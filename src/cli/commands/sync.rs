@@ -20,7 +20,7 @@ use crate::git::{clone_repo, get_current_branch, open_repo, path_exists};
 use git2::Repository;
 use indicatif::ProgressBar;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::task::JoinSet;
 
@@ -1023,7 +1023,7 @@ fn execute_post_sync_hooks(
 
 /// Rollback all repos to their state before the last sync.
 pub async fn run_sync_rollback(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     _manifest: &Manifest,
     quiet: bool,
     json: bool,

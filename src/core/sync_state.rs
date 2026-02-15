@@ -83,11 +83,11 @@ impl SyncSnapshot {
     pub fn save(&self, workspace_root: &Path) -> Result<(), GitError> {
         let path = workspace_root.join(STATE_FILE);
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| GitError::Io(e))?;
+            std::fs::create_dir_all(parent).map_err(GitError::Io)?;
         }
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| GitError::OperationFailed(format!("serialize sync state: {}", e)))?;
-        std::fs::write(&path, json).map_err(|e| GitError::Io(e))?;
+        std::fs::write(&path, json).map_err(GitError::Io)?;
         Ok(())
     }
 
@@ -97,7 +97,7 @@ impl SyncSnapshot {
         if !path.exists() {
             return Ok(None);
         }
-        let contents = std::fs::read_to_string(&path).map_err(|e| GitError::Io(e))?;
+        let contents = std::fs::read_to_string(&path).map_err(GitError::Io)?;
         let snapshot: Self = serde_json::from_str(&contents)
             .map_err(|e| GitError::OperationFailed(format!("parse sync state: {}", e)))?;
         Ok(Some(snapshot))

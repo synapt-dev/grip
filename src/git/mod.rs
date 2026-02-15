@@ -4,10 +4,12 @@
 //! Uses git2 (libgit2 bindings) by default.
 //! Can optionally use gitoxide (gix) with the "gitoxide" feature flag.
 
+pub mod backend;
 pub mod branch;
 pub mod cache;
 pub mod cherry_pick;
 pub mod gc;
+pub mod git2_backend;
 pub mod remote;
 pub mod status;
 

@@ -213,7 +213,10 @@ mod tests {
         sink.kv("branch", "main");
         sink.kv("status", "clean");
 
-        assert_eq!(sink.lines(), vec!["[kv] branch: main", "[kv] status: clean"]);
+        assert_eq!(
+            sink.lines(),
+            vec!["[kv] branch: main", "[kv] status: clean"]
+        );
     }
 
     #[test]
@@ -267,6 +270,9 @@ mod tests {
         sink.header("Section");
         sink.subheader("details");
 
-        assert_eq!(sink.lines(), vec!["[header] Section", "[subheader] details"]);
+        assert_eq!(
+            sink.lines(),
+            vec!["[header] Section", "[subheader] details"]
+        );
     }
 }

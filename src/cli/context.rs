@@ -5,6 +5,8 @@
 
 use crate::cli::output_sink::{OutputSink, TerminalSink};
 use crate::core::manifest::Manifest;
+use crate::git::backend::GitBackend;
+use crate::git::git2_backend::Git2Backend;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -25,6 +27,8 @@ pub struct WorkspaceContext {
     pub json: bool,
     /// Output sink for structured output (commands can adopt incrementally)
     pub sink: Arc<dyn OutputSink>,
+    /// Git backend for repository operations (commands can adopt incrementally)
+    pub git_backend: Arc<dyn GitBackend>,
 }
 
 impl WorkspaceContext {
@@ -48,6 +52,7 @@ impl WorkspaceContext {
             verbose,
             json,
             sink: Arc::new(TerminalSink::new(quiet, json)),
+            git_backend: Arc::new(Git2Backend),
         }
     }
 }

@@ -41,7 +41,7 @@ max-perf = ["tracing/max_level_off"]
 
 [dependencies]
 # Async runtime
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time"] }
 async-trait = "0.1"
 
 # CLI

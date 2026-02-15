@@ -9,6 +9,7 @@ use crate::core::griptree::GriptreeConfig;
 use crate::core::manifest::{HookCondition, Manifest};
 use crate::core::manifest_paths;
 use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
+use crate::core::sync_state::SyncSnapshot;
 use crate::files::process_composefiles;
 use crate::git::branch::{checkout_branch_at_upstream, checkout_detached, has_commits_ahead};
 use crate::git::remote::{
@@ -77,6 +78,15 @@ pub async fn run_sync(
     }
     let griptree_config = GriptreeConfig::load_from_workspace(workspace_root)?;
     let griptree_branch = griptree_config.as_ref().map(|cfg| cfg.branch.clone());
+
+    // Capture pre-sync snapshot for rollback support
+    if let Ok(snapshot) = SyncSnapshot::capture(workspace_root, &repos) {
+        if let Err(e) = snapshot.save(workspace_root) {
+            if !quiet && !json {
+                Output::warning(&format!("Could not save sync snapshot: {}", e));
+            }
+        }
+    }
 
     if !json {
         Output::header(&format!("Syncing {} repositories...", repos.len()));
@@ -1009,4 +1019,144 @@ fn execute_post_sync_hooks(
     }
 
     results
+}
+
+/// Rollback all repos to their state before the last sync.
+pub async fn run_sync_rollback(
+    workspace_root: &PathBuf,
+    _manifest: &Manifest,
+    quiet: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    let snapshot = SyncSnapshot::load_latest(workspace_root)?
+        .ok_or_else(|| anyhow::anyhow!("No sync snapshot found. Run `gr sync` first."))?;
+
+    if !quiet && !json {
+        Output::header(&format!(
+            "Rolling back to snapshot from {}",
+            snapshot.timestamp.format("%Y-%m-%d %H:%M:%S UTC")
+        ));
+        println!();
+    }
+
+    let mut success_count = 0;
+    let mut error_count = 0;
+
+    #[derive(serde::Serialize)]
+    struct JsonRollbackRepo {
+        name: String,
+        action: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    }
+    let mut json_repos: Vec<JsonRollbackRepo> = Vec::new();
+
+    for repo_snap in &snapshot.repos {
+        if !repo_snap.path.exists() {
+            if !quiet && !json {
+                Output::warning(&format!("{}: skipped (not on disk)", repo_snap.name));
+            }
+            json_repos.push(JsonRollbackRepo {
+                name: repo_snap.name.clone(),
+                action: "skipped".to_string(),
+                error: Some("not on disk".to_string()),
+            });
+            continue;
+        }
+
+        match open_repo(&repo_snap.path) {
+            Ok(git_repo) => {
+                // Checkout the recorded branch first (if different)
+                let current = get_current_branch(&git_repo).unwrap_or_default();
+                if current != repo_snap.branch {
+                    if let Err(e) =
+                        crate::git::branch::checkout_branch(&git_repo, &repo_snap.branch)
+                    {
+                        let msg = format!("checkout failed: {}", e);
+                        if !quiet && !json {
+                            Output::error(&format!("{}: {}", repo_snap.name, msg));
+                        }
+                        error_count += 1;
+                        json_repos.push(JsonRollbackRepo {
+                            name: repo_snap.name.clone(),
+                            action: "failed".to_string(),
+                            error: Some(msg),
+                        });
+                        continue;
+                    }
+                }
+
+                // Reset to the recorded commit
+                match reset_hard(&git_repo, &repo_snap.head_commit) {
+                    Ok(()) => {
+                        if !quiet && !json {
+                            Output::success(&format!(
+                                "{}: restored to {} on {}",
+                                repo_snap.name,
+                                &repo_snap.head_commit[..7.min(repo_snap.head_commit.len())],
+                                repo_snap.branch
+                            ));
+                        }
+                        success_count += 1;
+                        json_repos.push(JsonRollbackRepo {
+                            name: repo_snap.name.clone(),
+                            action: "restored".to_string(),
+                            error: None,
+                        });
+                    }
+                    Err(e) => {
+                        let msg = format!("reset failed: {}", e);
+                        if !quiet && !json {
+                            Output::error(&format!("{}: {}", repo_snap.name, msg));
+                        }
+                        error_count += 1;
+                        json_repos.push(JsonRollbackRepo {
+                            name: repo_snap.name.clone(),
+                            action: "failed".to_string(),
+                            error: Some(msg),
+                        });
+                    }
+                }
+            }
+            Err(e) => {
+                let msg = format!("open failed: {}", e);
+                if !quiet && !json {
+                    Output::error(&format!("{}: {}", repo_snap.name, msg));
+                }
+                error_count += 1;
+                json_repos.push(JsonRollbackRepo {
+                    name: repo_snap.name.clone(),
+                    action: "failed".to_string(),
+                    error: Some(msg),
+                });
+            }
+        }
+    }
+
+    if json {
+        #[derive(serde::Serialize)]
+        struct JsonRollbackResult {
+            success: bool,
+            timestamp: String,
+            repos: Vec<JsonRollbackRepo>,
+        }
+        let result = JsonRollbackResult {
+            success: error_count == 0,
+            timestamp: snapshot.timestamp.to_rfc3339(),
+            repos: json_repos,
+        };
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else if !quiet {
+        println!();
+        if error_count == 0 {
+            Output::success(&format!("Rolled back {} repo(s).", success_count));
+        } else {
+            Output::warning(&format!(
+                "{} restored, {} failed",
+                success_count, error_count
+            ));
+        }
+    }
+
+    Ok(())
 }

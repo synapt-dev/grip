@@ -72,6 +72,9 @@ enum Commands {
         /// Skip post-sync hooks
         #[arg(long)]
         no_hooks: bool,
+        /// Rollback repos to their state before the last sync
+        #[arg(long, conflicts_with_all = ["force", "reset_refs", "group", "sequential", "no_hooks"])]
+        rollback: bool,
     },
     /// Show status of all repositories
     Status {
@@ -615,20 +618,31 @@ async fn main() -> anyhow::Result<()> {
             group,
             sequential,
             no_hooks,
+            rollback,
         }) => {
             let ctx = load_workspace_context(cli_quiet, cli_verbose, cli_json)?;
-            gitgrip::cli::commands::sync::run_sync(
-                &ctx.workspace_root,
-                &ctx.manifest,
-                force,
-                ctx.quiet,
-                group.as_deref(),
-                sequential,
-                reset_refs,
-                ctx.json,
-                no_hooks,
-            )
-            .await?;
+            if rollback {
+                gitgrip::cli::commands::sync::run_sync_rollback(
+                    &ctx.workspace_root,
+                    &ctx.manifest,
+                    ctx.quiet,
+                    ctx.json,
+                )
+                .await?;
+            } else {
+                gitgrip::cli::commands::sync::run_sync(
+                    &ctx.workspace_root,
+                    &ctx.manifest,
+                    force,
+                    ctx.quiet,
+                    group.as_deref(),
+                    sequential,
+                    reset_refs,
+                    ctx.json,
+                    no_hooks,
+                )
+                .await?;
+            }
         }
         Some(Commands::Branch {
             name,

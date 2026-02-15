@@ -4,6 +4,7 @@
 
 pub mod azure;
 pub mod bitbucket;
+pub mod capabilities;
 pub mod github;
 pub mod gitlab;
 pub mod rate_limit;

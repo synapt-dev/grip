@@ -1235,13 +1235,13 @@ fn load_workspace_context(
     json: bool,
 ) -> anyhow::Result<gitgrip::cli::context::WorkspaceContext> {
     let (workspace_root, manifest) = load_gripspace()?;
-    Ok(gitgrip::cli::context::WorkspaceContext {
+    Ok(gitgrip::cli::context::WorkspaceContext::new(
         workspace_root,
         manifest,
         quiet,
         verbose,
         json,
-    })
+    ))
 }
 
 /// Load manifest from a griptree workspace.

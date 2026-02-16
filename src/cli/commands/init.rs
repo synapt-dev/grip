@@ -573,18 +573,34 @@ fn get_remote_url(repo: &Repository) -> Option<String> {
     None
 }
 
-/// Detect the default branch of a repository
+/// Detect the default branch of a repository by checking the remote first
 fn detect_default_branch(repo: &Repository) -> anyhow::Result<String> {
-    // Try to get the current branch
-    if let Ok(head) = repo.head() {
-        if head.is_branch() {
-            if let Some(name) = head.shorthand() {
-                return Ok(name.to_string());
+    // 1. Try origin/HEAD symbolic ref (set by git clone or git remote set-head)
+    if let Ok(reference) = repo.find_reference("refs/remotes/origin/HEAD") {
+        if let Ok(resolved) = reference.resolve() {
+            if let Some(name) = resolved.shorthand() {
+                // name is "origin/main" — strip the remote prefix
+                if let Some(branch) = name.strip_prefix("origin/") {
+                    return Ok(branch.to_string());
+                }
             }
         }
     }
 
-    // Check for common default branch names
+    // 2. Try common remote tracking branches
+    for branch_name in &["main", "master"] {
+        if repo
+            .find_branch(
+                &format!("origin/{}", branch_name),
+                git2::BranchType::Remote,
+            )
+            .is_ok()
+        {
+            return Ok(branch_name.to_string());
+        }
+    }
+
+    // 3. Fall back to common local branch names
     for branch_name in &["main", "master", "develop"] {
         if repo
             .find_branch(branch_name, git2::BranchType::Local)
@@ -594,7 +610,7 @@ fn detect_default_branch(repo: &Repository) -> anyhow::Result<String> {
         }
     }
 
-    // Default to main
+    // 4. Default to main
     Ok("main".to_string())
 }
 
@@ -1295,5 +1311,143 @@ mod tests {
             url,
             "https://dev.azure.com/myorg/myproject/_git/workspace-manifest"
         );
+    }
+
+    // ── detect_default_branch tests ─────────────────────────────
+
+    fn setup_git_repo(dir: &std::path::Path) -> Repository {
+        let repo = Repository::init(dir).unwrap();
+        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+        let tree_id = {
+            let mut index = repo.index().unwrap();
+            index.write_tree().unwrap()
+        };
+        {
+            let tree = repo.find_tree(tree_id).unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+                .unwrap();
+        }
+        repo
+    }
+
+    #[test]
+    fn test_detect_default_branch_with_origin_head() {
+        let tmp = TempDir::new().unwrap();
+        let origin_dir = tmp.path().join("origin");
+        std::fs::create_dir_all(&origin_dir).unwrap();
+
+        // Create a bare "remote" repo with main as default branch
+        let origin = Repository::init_bare(&origin_dir).unwrap();
+        origin.set_head("refs/heads/main").unwrap();
+        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+        let tree_id = origin.treebuilder(None).unwrap().write().unwrap();
+        {
+            let tree = origin.find_tree(tree_id).unwrap();
+            origin
+                .commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+                .unwrap();
+        }
+
+        // Clone it (sets origin/HEAD automatically)
+        let clone_dir = tmp.path().join("clone");
+        let repo = Repository::clone(origin_dir.to_str().unwrap(), &clone_dir).unwrap();
+
+        // Create and checkout a feature branch
+        let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("feat/something", &head_commit, false).unwrap();
+        repo.set_head("refs/heads/feat/something").unwrap();
+
+        // Should detect "main" from origin/HEAD, not "feat/something"
+        let result = detect_default_branch(&repo).unwrap();
+        assert_eq!(result, "main");
+    }
+
+    #[test]
+    fn test_detect_default_branch_remote_tracking_main() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create a local repo with a remote tracking branch but no origin/HEAD
+        let repo = setup_git_repo(tmp.path());
+
+        // Create origin/main as a remote tracking ref
+        let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.reference(
+            "refs/remotes/origin/main",
+            head_commit.id(),
+            true,
+            "test",
+        )
+        .unwrap();
+
+        // Rename local branch to a feature branch
+        let mut branch = repo
+            .find_branch("master", git2::BranchType::Local)
+            .or_else(|_| repo.find_branch("main", git2::BranchType::Local))
+            .unwrap();
+        branch.rename("feat/work", false).unwrap();
+
+        let result = detect_default_branch(&repo).unwrap();
+        assert_eq!(result, "main");
+    }
+
+    #[test]
+    fn test_detect_default_branch_remote_tracking_master() {
+        let tmp = TempDir::new().unwrap();
+        let repo = setup_git_repo(tmp.path());
+
+        // Create origin/master as remote tracking ref (no origin/main)
+        let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.reference(
+            "refs/remotes/origin/master",
+            head_commit.id(),
+            true,
+            "test",
+        )
+        .unwrap();
+
+        // Rename local branch to feature branch
+        let mut branch = repo
+            .find_branch("master", git2::BranchType::Local)
+            .or_else(|_| repo.find_branch("main", git2::BranchType::Local))
+            .unwrap();
+        branch.rename("feat/work", false).unwrap();
+
+        let result = detect_default_branch(&repo).unwrap();
+        assert_eq!(result, "master");
+    }
+
+    #[test]
+    fn test_detect_default_branch_local_main_only() {
+        let tmp = TempDir::new().unwrap();
+        let repo = setup_git_repo(tmp.path());
+
+        // Ensure there's a local "main" branch
+        let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+        // The initial branch could be "master" depending on git config
+        if repo
+            .find_branch("main", git2::BranchType::Local)
+            .is_err()
+        {
+            repo.branch("main", &head_commit, false).unwrap();
+        }
+
+        // Switch to a feature branch
+        repo.branch("feat/test", &head_commit, false).unwrap();
+        repo.set_head("refs/heads/feat/test").unwrap();
+
+        let result = detect_default_branch(&repo).unwrap();
+        // Should find local "main" or "master", not "feat/test"
+        assert!(result == "main" || result == "master");
+    }
+
+    #[test]
+    fn test_detect_default_branch_empty_repo() {
+        let tmp = TempDir::new().unwrap();
+        let _repo = Repository::init(tmp.path()).unwrap();
+
+        // Empty repo with no commits — no branches exist
+        let repo = Repository::open(tmp.path()).unwrap();
+        let result = detect_default_branch(&repo).unwrap();
+        assert_eq!(result, "main"); // Falls back to default
     }
 }

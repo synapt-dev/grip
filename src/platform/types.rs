@@ -79,7 +79,7 @@ pub struct PRCreateOptions {
 }
 
 /// Merge method for PRs
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
 pub enum MergeMethod {
     #[default]
     Merge,
@@ -277,6 +277,29 @@ mod tests {
     #[test]
     fn test_merge_method_default() {
         assert_eq!(MergeMethod::default(), MergeMethod::Merge);
+    }
+
+    #[test]
+    fn test_merge_method_value_enum() {
+        use clap::ValueEnum;
+
+        // Valid values parse correctly
+        let variants = MergeMethod::value_variants();
+        assert_eq!(variants.len(), 3);
+
+        // to_possible_value returns lowercase strings matching the API
+        assert_eq!(
+            MergeMethod::Merge.to_possible_value().unwrap().get_name(),
+            "merge"
+        );
+        assert_eq!(
+            MergeMethod::Squash.to_possible_value().unwrap().get_name(),
+            "squash"
+        );
+        assert_eq!(
+            MergeMethod::Rebase.to_possible_value().unwrap().get_name(),
+            "rebase"
+        );
     }
 
     #[test]

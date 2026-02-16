@@ -3,6 +3,7 @@
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Shell};
 use colored::Colorize;
+use gitgrip::platform::MergeMethod;
 
 #[derive(Parser)]
 #[command(name = "gr")]
@@ -410,8 +411,8 @@ enum PrCommands {
     /// Merge pull requests
     Merge {
         /// Merge method (merge, squash, rebase)
-        #[arg(short, long)]
-        method: Option<String>,
+        #[arg(long, value_enum)]
+        method: Option<MergeMethod>,
         /// Force merge without readiness checks
         #[arg(short, long)]
         force: bool,
@@ -781,7 +782,7 @@ async fn main() -> anyhow::Result<()> {
                     gitgrip::cli::commands::pr::run_pr_merge(
                         &ctx.workspace_root,
                         &ctx.manifest,
-                        method.as_deref(),
+                        method.as_ref(),
                         force,
                         update,
                         auto,

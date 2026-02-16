@@ -590,10 +590,7 @@ fn detect_default_branch(repo: &Repository) -> anyhow::Result<String> {
     // 2. Try common remote tracking branches
     for branch_name in &["main", "master"] {
         if repo
-            .find_branch(
-                &format!("origin/{}", branch_name),
-                git2::BranchType::Remote,
-            )
+            .find_branch(&format!("origin/{}", branch_name), git2::BranchType::Remote)
             .is_ok()
         {
             return Ok(branch_name.to_string());
@@ -1371,13 +1368,8 @@ mod tests {
 
         // Create origin/main as a remote tracking ref
         let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
-        repo.reference(
-            "refs/remotes/origin/main",
-            head_commit.id(),
-            true,
-            "test",
-        )
-        .unwrap();
+        repo.reference("refs/remotes/origin/main", head_commit.id(), true, "test")
+            .unwrap();
 
         // Rename local branch to a feature branch
         let mut branch = repo
@@ -1397,13 +1389,8 @@ mod tests {
 
         // Create origin/master as remote tracking ref (no origin/main)
         let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
-        repo.reference(
-            "refs/remotes/origin/master",
-            head_commit.id(),
-            true,
-            "test",
-        )
-        .unwrap();
+        repo.reference("refs/remotes/origin/master", head_commit.id(), true, "test")
+            .unwrap();
 
         // Rename local branch to feature branch
         let mut branch = repo
@@ -1424,10 +1411,7 @@ mod tests {
         // Ensure there's a local "main" branch
         let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
         // The initial branch could be "master" depending on git config
-        if repo
-            .find_branch("main", git2::BranchType::Local)
-            .is_err()
-        {
+        if repo.find_branch("main", git2::BranchType::Local).is_err() {
             repo.branch("main", &head_commit, false).unwrap();
         }
 

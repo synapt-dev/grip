@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.1] - 2026-02-13
+
+### Fixed
+- **`gr pr merge --method squash`** no longer switches repos to a branch named "squash" (#251)
+  - Merge method now uses clap `ValueEnum` for type-safe parsing
+  - Invalid values are rejected at CLI level with `[possible values: merge, squash, rebase]`
+  - Removed ambiguous `-m` short flag (use `--method` instead)
+- **`gr init --from-dirs`** now detects the remote's default branch instead of using the current local branch (#310)
+  - Checks `origin/HEAD` symref, then remote tracking branches, then local branches
+  - Previously picked up feature branches as `default_branch` in the generated manifest
+
+### Changed
+- Improved test coverage from 57.84% to 59.56% with 90+ new unit tests across 14 files (#325)
+
 ## [0.14.0] - 2026-02-13
 
 ### Added

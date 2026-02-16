@@ -729,7 +729,9 @@ mod tests {
 
     #[test]
     fn test_interpret_push_error_non_fast_forward() {
-        let msg = interpret_push_error("error: failed to push some refs\n ! [rejected] main -> main (non-fast-forward)");
+        let msg = interpret_push_error(
+            "error: failed to push some refs\n ! [rejected] main -> main (non-fast-forward)",
+        );
         assert!(msg.contains("Pull first"));
         assert!(msg.contains("Original:"));
     }

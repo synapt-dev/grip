@@ -1060,6 +1060,8 @@ mod tests {
     #[test]
     fn test_parse_non_azure_url_returns_none() {
         let adapter = AzureDevOpsAdapter::new(None);
-        assert!(adapter.parse_repo_url("https://github.com/user/repo").is_none());
+        assert!(adapter
+            .parse_repo_url("https://github.com/user/repo")
+            .is_none());
     }
 }

@@ -1071,8 +1071,12 @@ mod tests {
     #[test]
     fn test_parse_non_github_url_returns_none() {
         let adapter = GitHubAdapter::new(None);
-        assert!(adapter.parse_repo_url("git@gitlab.com:user/repo.git").is_none());
-        assert!(adapter.parse_repo_url("https://bitbucket.org/team/repo.git").is_none());
+        assert!(adapter
+            .parse_repo_url("git@gitlab.com:user/repo.git")
+            .is_none());
+        assert!(adapter
+            .parse_repo_url("https://bitbucket.org/team/repo.git")
+            .is_none());
     }
 
     #[test]

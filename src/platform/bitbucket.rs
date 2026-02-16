@@ -559,7 +559,9 @@ mod tests {
     #[test]
     fn test_parse_non_bitbucket_url() {
         let adapter = BitbucketAdapter::new(None);
-        assert!(adapter.parse_repo_url("https://github.com/user/repo").is_none());
+        assert!(adapter
+            .parse_repo_url("https://github.com/user/repo")
+            .is_none());
     }
 
     #[test]

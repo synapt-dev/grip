@@ -538,7 +538,11 @@ mod tests {
 
         create_and_checkout_branch(&repo, "multi-commit").unwrap();
         for i in 0..3 {
-            fs::write(temp.path().join(format!("file{}.txt", i)), format!("content {}", i)).unwrap();
+            fs::write(
+                temp.path().join(format!("file{}.txt", i)),
+                format!("content {}", i),
+            )
+            .unwrap();
             Command::new("git")
                 .args(["add", "."])
                 .current_dir(temp.path())

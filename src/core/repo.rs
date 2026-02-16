@@ -487,8 +487,7 @@ mod tests {
 
     #[test]
     fn test_parse_visualstudio_url() {
-        let parsed =
-            parse_git_url("https://org.visualstudio.com/project/_git/repo").unwrap();
+        let parsed = parse_git_url("https://org.visualstudio.com/project/_git/repo").unwrap();
         assert_eq!(parsed.owner, "org");
         assert_eq!(parsed.repo, "repo");
         assert_eq!(parsed.project, Some("project".to_string()));

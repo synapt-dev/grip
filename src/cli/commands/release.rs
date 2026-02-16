@@ -972,11 +972,7 @@ version = "0.2.0"
     fn test_bump_package_json_same_version() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("package.json");
-        std::fs::write(
-            &path,
-            r#"{"name": "test", "version": "1.0.0"}"#,
-        )
-        .unwrap();
+        std::fs::write(&path, r#"{"name": "test", "version": "1.0.0"}"#).unwrap();
 
         let changed = bump_package_json(&path, "1.0.0", false).unwrap();
         assert!(!changed);

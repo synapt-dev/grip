@@ -300,10 +300,7 @@ mod tests {
         let callback_calls = Arc::new(Mutex::new(Vec::new()));
         let cb_clone = callback_calls.clone();
         let on_retry: OnRetryFn = Box::new(move |attempt, error, _delay| {
-            cb_clone
-                .lock()
-                .unwrap()
-                .push((attempt, error.to_string()));
+            cb_clone.lock().unwrap().push((attempt, error.to_string()));
         });
 
         let mut attempt = 0;

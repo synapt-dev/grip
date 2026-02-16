@@ -880,7 +880,10 @@ mod tests {
     #[test]
     fn test_encode_project() {
         let adapter = GitLabAdapter::new(None);
-        assert_eq!(adapter.encode_project("mygroup", "myrepo"), "mygroup%2Fmyrepo");
+        assert_eq!(
+            adapter.encode_project("mygroup", "myrepo"),
+            "mygroup%2Fmyrepo"
+        );
     }
 
     #[test]
@@ -943,6 +946,8 @@ mod tests {
     #[test]
     fn test_parse_non_gitlab_url_returns_none() {
         let adapter = GitLabAdapter::new(None);
-        assert!(adapter.parse_repo_url("https://github.com/user/repo").is_none());
+        assert!(adapter
+            .parse_repo_url("https://github.com/user/repo")
+            .is_none());
     }
 }

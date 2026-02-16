@@ -940,4 +940,229 @@ version = "0.2.0"
         let updated = update_changelog(&path, "v0.1.0", None, false).unwrap();
         assert!(!updated);
     }
+
+    #[test]
+    fn test_update_changelog_without_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("CHANGELOG.md");
+        std::fs::write(&path, "# Changelog\n\n## [v0.1.0] - 2025-01-01\n").unwrap();
+
+        let updated = update_changelog(&path, "v0.2.0", None, false).unwrap();
+        assert!(updated);
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("## [v0.2.0]"));
+        assert!(content.contains("## [v0.1.0]"));
+    }
+
+    #[test]
+    fn test_update_changelog_dry_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("CHANGELOG.md");
+        std::fs::write(&path, "# Changelog\n\n## [v0.1.0] - 2025-01-01\n").unwrap();
+
+        let updated = update_changelog(&path, "v0.2.0", Some("Changes"), true).unwrap();
+        assert!(updated);
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(!content.contains("v0.2.0")); // Should NOT be written in dry run
+    }
+
+    #[test]
+    fn test_bump_package_json_same_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("package.json");
+        std::fs::write(&path, r#"{"name": "test", "version": "1.0.0"}"#).unwrap();
+
+        let changed = bump_package_json(&path, "1.0.0", false).unwrap();
+        assert!(!changed);
+    }
+
+    #[test]
+    fn test_bump_package_json_no_version_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("package.json");
+        std::fs::write(&path, r#"{"name": "test"}"#).unwrap();
+
+        let changed = bump_package_json(&path, "1.0.0", false).unwrap();
+        assert!(!changed);
+    }
+
+    #[test]
+    fn test_bump_custom_file_same_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("version.txt");
+        std::fs::write(&path, "APP_VERSION=2.0.0\n").unwrap();
+
+        let changed = bump_custom_file(&path, "APP_VERSION={version}", "2.0.0", false).unwrap();
+        assert!(!changed);
+    }
+
+    #[test]
+    fn test_bump_custom_file_no_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("version.txt");
+        std::fs::write(&path, "OTHER_KEY=1.0.0\n").unwrap();
+
+        let changed = bump_custom_file(&path, "APP_VERSION={version}", "2.0.0", false).unwrap();
+        assert!(!changed);
+    }
+
+    #[test]
+    fn test_bump_custom_file_dry_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("version.txt");
+        std::fs::write(&path, "APP_VERSION=1.0.0\n").unwrap();
+
+        let changed = bump_custom_file(&path, "APP_VERSION={version}", "2.0.0", true).unwrap();
+        assert!(changed);
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("1.0.0")); // Should NOT be written in dry run
+    }
+
+    #[test]
+    fn test_find_release_target_explicit() {
+        let repos = vec![
+            RepoInfo {
+                name: "frontend".to_string(),
+                url: "https://github.com/test/frontend.git".to_string(),
+                path: "./frontend".to_string(),
+                absolute_path: PathBuf::from("/tmp/frontend"),
+                default_branch: "main".to_string(),
+                owner: "test".to_string(),
+                repo: "frontend".to_string(),
+                platform_type: crate::core::manifest::PlatformType::GitHub,
+                platform_base_url: None,
+                project: None,
+                reference: false,
+                groups: vec![],
+                agent: None,
+            },
+            RepoInfo {
+                name: "backend".to_string(),
+                url: "https://github.com/test/backend.git".to_string(),
+                path: "./backend".to_string(),
+                absolute_path: PathBuf::from("/tmp/backend"),
+                default_branch: "main".to_string(),
+                owner: "test".to_string(),
+                repo: "backend".to_string(),
+                platform_type: crate::core::manifest::PlatformType::GitHub,
+                platform_base_url: None,
+                project: None,
+                reference: false,
+                groups: vec![],
+                agent: None,
+            },
+        ];
+
+        let target = find_release_target(&repos, Some("backend")).unwrap();
+        assert_eq!(target.name, "backend");
+    }
+
+    #[test]
+    fn test_find_release_target_auto_detect() {
+        let repos = vec![
+            RepoInfo {
+                name: "ref-repo".to_string(),
+                url: "https://github.com/test/ref.git".to_string(),
+                path: "./ref".to_string(),
+                absolute_path: PathBuf::from("/tmp/ref"),
+                default_branch: "main".to_string(),
+                owner: "test".to_string(),
+                repo: "ref".to_string(),
+                platform_type: crate::core::manifest::PlatformType::GitHub,
+                platform_base_url: None,
+                project: None,
+                reference: true,
+                groups: vec![],
+                agent: None,
+            },
+            RepoInfo {
+                name: "main-repo".to_string(),
+                url: "https://github.com/test/main.git".to_string(),
+                path: "./main".to_string(),
+                absolute_path: PathBuf::from("/tmp/main"),
+                default_branch: "main".to_string(),
+                owner: "test".to_string(),
+                repo: "main".to_string(),
+                platform_type: crate::core::manifest::PlatformType::GitHub,
+                platform_base_url: None,
+                project: None,
+                reference: false,
+                groups: vec![],
+                agent: None,
+            },
+        ];
+
+        let target = find_release_target(&repos, None).unwrap();
+        assert_eq!(target.name, "main-repo"); // Skips reference repos
+    }
+
+    #[test]
+    fn test_find_release_target_not_found() {
+        let repos = vec![];
+        assert!(find_release_target(&repos, Some("missing")).is_err());
+        assert!(find_release_target(&repos, None).is_err());
+    }
+
+    #[test]
+    fn test_detect_version_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_dir = dir.path().join("my-repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        std::fs::write(
+            repo_dir.join("Cargo.toml"),
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let repos = vec![RepoInfo {
+            name: "my-repo".to_string(),
+            url: "https://github.com/test/my-repo.git".to_string(),
+            path: "./my-repo".to_string(),
+            absolute_path: repo_dir,
+            default_branch: "main".to_string(),
+            owner: "test".to_string(),
+            repo: "my-repo".to_string(),
+            platform_type: crate::core::manifest::PlatformType::GitHub,
+            platform_base_url: None,
+            project: None,
+            reference: false,
+            groups: vec![],
+            agent: None,
+        }];
+
+        let files = detect_version_files(&dir.path().to_path_buf(), &repos);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].0, "my-repo");
+        assert!(files[0].1.ends_with("Cargo.toml"));
+    }
+
+    #[test]
+    fn test_detect_version_files_skips_reference() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_dir = dir.path().join("ref-repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        std::fs::write(repo_dir.join("Cargo.toml"), "[package]\n").unwrap();
+
+        let repos = vec![RepoInfo {
+            name: "ref-repo".to_string(),
+            url: "https://github.com/test/ref.git".to_string(),
+            path: "./ref".to_string(),
+            absolute_path: repo_dir,
+            default_branch: "main".to_string(),
+            owner: "test".to_string(),
+            repo: "ref".to_string(),
+            platform_type: crate::core::manifest::PlatformType::GitHub,
+            platform_base_url: None,
+            project: None,
+            reference: true,
+            groups: vec![],
+            agent: None,
+        }];
+
+        let files = detect_version_files(&dir.path().to_path_buf(), &repos);
+        assert!(files.is_empty());
+    }
 }

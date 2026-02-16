@@ -1056,4 +1056,83 @@ mod tests {
         assert_eq!(parsed[1].repo_name, "backend");
         assert_eq!(parsed[1].number, 123);
     }
+
+    #[test]
+    fn test_parse_github_https_url_without_git_suffix() {
+        let adapter = GitHubAdapter::new(None);
+        let result = adapter
+            .parse_repo_url("https://github.com/org/project")
+            .unwrap();
+        assert_eq!(result.owner, "org");
+        assert_eq!(result.repo, "project");
+        assert_eq!(result.platform, Some(PlatformType::GitHub));
+    }
+
+    #[test]
+    fn test_parse_non_github_url_returns_none() {
+        let adapter = GitHubAdapter::new(None);
+        assert!(adapter
+            .parse_repo_url("git@gitlab.com:user/repo.git")
+            .is_none());
+        assert!(adapter
+            .parse_repo_url("https://bitbucket.org/team/repo.git")
+            .is_none());
+    }
+
+    #[test]
+    fn test_generate_linked_pr_comment_empty() {
+        let adapter = GitHubAdapter::new(None);
+        assert_eq!(adapter.generate_linked_pr_comment(&[]), "");
+    }
+
+    #[test]
+    fn test_parse_linked_pr_comment_empty_body() {
+        let adapter = GitHubAdapter::new(None);
+        assert!(adapter.parse_linked_pr_comment("").is_empty());
+    }
+
+    #[test]
+    fn test_parse_linked_pr_comment_no_end_marker() {
+        let adapter = GitHubAdapter::new(None);
+        let body = "<!-- gitgrip-linked-prs\napp:42\n";
+        assert!(adapter.parse_linked_pr_comment(body).is_empty());
+    }
+
+    #[test]
+    fn test_parse_linked_pr_comment_malformed_entries() {
+        let adapter = GitHubAdapter::new(None);
+        let body = "<!-- gitgrip-linked-prs\nno-colon\napp:notanumber\nvalid:42\n-->";
+        let links = adapter.parse_linked_pr_comment(body);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].repo_name, "valid");
+        assert_eq!(links[0].number, 42);
+    }
+
+    #[test]
+    fn test_platform_type() {
+        let adapter = GitHubAdapter::new(None);
+        assert_eq!(adapter.platform_type(), PlatformType::GitHub);
+    }
+
+    #[test]
+    fn test_new_with_base_url() {
+        let adapter = GitHubAdapter::new(Some("https://github.example.com/api/v3"));
+        assert_eq!(
+            adapter.base_url,
+            Some("https://github.example.com/api/v3".to_string())
+        );
+    }
+
+    #[test]
+    fn test_generate_linked_pr_comment_single() {
+        let adapter = GitHubAdapter::new(None);
+        let links = vec![LinkedPRRef {
+            repo_name: "app".to_string(),
+            number: 1,
+        }];
+        let comment = adapter.generate_linked_pr_comment(&links);
+        assert!(comment.contains("<!-- gitgrip-linked-prs"));
+        assert!(comment.contains("app:1"));
+        assert!(comment.contains("-->"));
+    }
 }

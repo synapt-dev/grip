@@ -985,4 +985,83 @@ mod tests {
         assert_eq!(parsed[0].repo_name, "frontend");
         assert_eq!(parsed[0].number, 42);
     }
+
+    #[test]
+    fn test_parse_context_org_project() {
+        let adapter = AzureDevOpsAdapter::new(None);
+        let ctx = adapter.parse_context("myorg/myproject", "myrepo");
+        assert_eq!(ctx.organization, "myorg");
+        assert_eq!(ctx.project, "myproject");
+        assert_eq!(ctx.repository, "myrepo");
+    }
+
+    #[test]
+    fn test_parse_context_org_only() {
+        let adapter = AzureDevOpsAdapter::new(None);
+        let ctx = adapter.parse_context("myorg", "myrepo");
+        assert_eq!(ctx.organization, "myorg");
+        assert_eq!(ctx.project, "myrepo");
+        assert_eq!(ctx.repository, "myrepo");
+    }
+
+    #[test]
+    fn test_build_pr_url() {
+        let adapter = AzureDevOpsAdapter::new(None);
+        let ctx = AzureContext {
+            organization: "myorg".to_string(),
+            project: "myproject".to_string(),
+            repository: "myrepo".to_string(),
+        };
+        let url = adapter.build_pr_url(&ctx, 42);
+        assert_eq!(
+            url,
+            "https://dev.azure.com/myorg/myproject/_git/myrepo/pullrequest/42"
+        );
+    }
+
+    #[test]
+    fn test_build_pr_url_custom_base() {
+        let adapter = AzureDevOpsAdapter::new(Some("https://azure.example.com"));
+        let ctx = AzureContext {
+            organization: "org".to_string(),
+            project: "proj".to_string(),
+            repository: "repo".to_string(),
+        };
+        let url = adapter.build_pr_url(&ctx, 1);
+        assert_eq!(
+            url,
+            "https://azure.example.com/org/proj/_git/repo/pullrequest/1"
+        );
+    }
+
+    #[test]
+    fn test_parse_azure_ssh_url_with_git_suffix() {
+        let adapter = AzureDevOpsAdapter::new(None);
+        let result = adapter.parse_repo_url("git@ssh.dev.azure.com:v3/myorg/myproject/myrepo.git");
+        assert!(result.is_some());
+        let info = result.unwrap();
+        assert_eq!(info.repo, "myrepo");
+    }
+
+    #[test]
+    fn test_parse_linked_pr_empty_comment() {
+        let adapter = AzureDevOpsAdapter::new(None);
+        let parsed = adapter.parse_linked_pr_comment("no linked PRs here");
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn test_generate_linked_pr_empty() {
+        let adapter = AzureDevOpsAdapter::new(None);
+        let comment = adapter.generate_linked_pr_comment(&[]);
+        assert!(comment.is_empty());
+    }
+
+    #[test]
+    fn test_parse_non_azure_url_returns_none() {
+        let adapter = AzureDevOpsAdapter::new(None);
+        assert!(adapter
+            .parse_repo_url("https://github.com/user/repo")
+            .is_none());
+    }
 }

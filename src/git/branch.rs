@@ -422,4 +422,147 @@ mod tests {
         assert!(branches.contains(&"feature1".to_string()));
         assert!(branches.contains(&"feature2".to_string()));
     }
+
+    #[test]
+    fn test_checkout_nonexistent_branch() {
+        let (_temp, repo) = setup_test_repo();
+        let result = checkout_branch(&repo, "nonexistent");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            GitError::BranchNotFound(name) => assert_eq!(name, "nonexistent"),
+            e => panic!("Expected BranchNotFound, got: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_delete_local_branch() {
+        let (_temp, repo) = setup_test_repo();
+
+        // Create a branch, go back to default
+        create_and_checkout_branch(&repo, "to-delete").unwrap();
+        let default = if branch_exists(&repo, "main") {
+            "main"
+        } else {
+            "master"
+        };
+        checkout_branch(&repo, default).unwrap();
+
+        // Delete the branch
+        delete_local_branch(&repo, "to-delete", false).unwrap();
+        assert!(!branch_exists(&repo, "to-delete"));
+    }
+
+    #[test]
+    fn test_delete_current_branch_fails() {
+        let (_temp, repo) = setup_test_repo();
+        create_and_checkout_branch(&repo, "current").unwrap();
+
+        let result = delete_local_branch(&repo, "current", false);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("currently checked out"));
+    }
+
+    #[test]
+    fn test_is_branch_merged() {
+        let (temp, repo) = setup_test_repo();
+        let default = if branch_exists(&repo, "main") {
+            "main"
+        } else {
+            "master"
+        };
+
+        // Create a branch, add a commit, merge it back
+        create_and_checkout_branch(&repo, "to-merge").unwrap();
+        fs::write(temp.path().join("new-file.txt"), "content").unwrap();
+        Command::new("git")
+            .args(["add", "new-file.txt"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "new commit"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        checkout_branch(&repo, default).unwrap();
+        Command::new("git")
+            .args(["merge", "to-merge"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        assert!(is_branch_merged(&repo, "to-merge", default).unwrap());
+    }
+
+    #[test]
+    fn test_has_commits_ahead() {
+        let (temp, repo) = setup_test_repo();
+        let default = if branch_exists(&repo, "main") {
+            "main"
+        } else {
+            "master"
+        };
+
+        // On default branch, no commits ahead of itself
+        assert!(!has_commits_ahead(&repo, default).unwrap());
+
+        // Create a branch with a commit
+        create_and_checkout_branch(&repo, "ahead").unwrap();
+        fs::write(temp.path().join("ahead.txt"), "ahead content").unwrap();
+        Command::new("git")
+            .args(["add", "ahead.txt"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "ahead commit"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        assert!(has_commits_ahead(&repo, default).unwrap());
+    }
+
+    #[test]
+    fn test_get_commits_between() {
+        let (temp, repo) = setup_test_repo();
+        let default = if branch_exists(&repo, "main") {
+            "main"
+        } else {
+            "master"
+        };
+
+        create_and_checkout_branch(&repo, "multi-commit").unwrap();
+        for i in 0..3 {
+            fs::write(
+                temp.path().join(format!("file{}.txt", i)),
+                format!("content {}", i),
+            )
+            .unwrap();
+            Command::new("git")
+                .args(["add", "."])
+                .current_dir(temp.path())
+                .output()
+                .unwrap();
+            Command::new("git")
+                .args(["commit", "-m", &format!("commit {}", i)])
+                .current_dir(temp.path())
+                .output()
+                .unwrap();
+        }
+
+        let commits = get_commits_between(&repo, default, Some("multi-commit")).unwrap();
+        assert_eq!(commits.len(), 3);
+    }
+
+    #[test]
+    fn test_remote_branch_exists() {
+        let (_temp, repo) = setup_test_repo();
+        // No remote set up, so remote branch should not exist
+        assert!(!remote_branch_exists(&repo, "main", "origin"));
+    }
 }

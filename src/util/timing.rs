@@ -317,4 +317,90 @@ mod tests {
         report.add_entry(TimingEntry::new("op2", Duration::from_millis(20)));
         assert!(report.total_ms >= 30.0);
     }
+
+    #[test]
+    fn test_timer_checkpoint() {
+        let mut timer = Timer::start("with-checkpoints");
+        thread::sleep(Duration::from_millis(10));
+        timer.checkpoint("step1");
+        thread::sleep(Duration::from_millis(10));
+        timer.checkpoint("step2");
+        let entry = timer.stop();
+        assert_eq!(entry.children.len(), 2);
+        assert_eq!(entry.children[0].label, "step1");
+        assert_eq!(entry.children[1].label, "step2");
+        assert!(entry.children[0].duration_ms >= 5.0);
+        assert!(entry.children[1].duration_ms >= 5.0);
+    }
+
+    #[test]
+    fn test_timing_entry_children() {
+        let mut parent = TimingEntry::new("parent", Duration::from_millis(100));
+        parent.add_child(TimingEntry::new("child1", Duration::from_millis(40)));
+        parent.add_child(TimingEntry::new("child2", Duration::from_millis(60)));
+        assert_eq!(parent.children.len(), 2);
+        assert_eq!(parent.children[0].label, "child1");
+        assert_eq!(parent.children[1].label, "child2");
+    }
+
+    #[test]
+    fn test_timing_report_default() {
+        let report = TimingReport::default();
+        assert_eq!(report.total_ms, 0.0);
+        assert!(report.entries.is_empty());
+    }
+
+    #[test]
+    fn test_timer_elapsed() {
+        let timer = Timer::new("elapsed-test");
+        thread::sleep(Duration::from_millis(10));
+        let elapsed = timer.elapsed();
+        assert!(elapsed >= Duration::from_millis(5));
+        let ms = timer.elapsed_ms();
+        assert!(ms >= 5.0);
+    }
+
+    #[test]
+    fn test_benchmark_result_comparison_string() {
+        let result = BenchmarkResult {
+            name: "test-op".to_string(),
+            iterations: 100,
+            min_ms: 1.0,
+            max_ms: 5.0,
+            avg_ms: 2.5,
+            p50_ms: 2.0,
+            p95_ms: 4.5,
+            std_dev_ms: 1.0,
+        };
+        let s = result.to_comparison_string();
+        assert!(s.contains("test-op"));
+        assert!(s.contains("avg=2.500ms"));
+        assert!(s.contains("p50=2.000ms"));
+        assert!(s.contains("p95=4.500ms"));
+        assert!(s.contains("n=100"));
+    }
+
+    #[test]
+    fn test_benchmark_statistics() {
+        let result = benchmark("counter", 20, || {
+            // Just a no-op for fast iteration
+            let _ = 1 + 1;
+        });
+        assert_eq!(result.iterations, 20);
+        assert!(result.min_ms <= result.avg_ms);
+        assert!(result.avg_ms <= result.max_ms);
+        assert!(result.p50_ms <= result.p95_ms);
+        assert!(result.std_dev_ms >= 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_benchmark_async() {
+        let result = benchmark_async("async-op", 10, || async {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        })
+        .await;
+        assert_eq!(result.iterations, 10);
+        assert!(result.avg_ms >= 0.5);
+        assert!(result.min_ms <= result.max_ms);
+    }
 }

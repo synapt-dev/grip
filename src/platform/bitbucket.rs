@@ -520,3 +520,114 @@ impl HostingPlatform for BitbucketAdapter {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_bitbucket_ssh_url() {
+        let adapter = BitbucketAdapter::new(None);
+        let result = adapter.parse_repo_url("git@bitbucket.org:myteam/myrepo.git");
+        assert!(result.is_some());
+        let info = result.unwrap();
+        assert_eq!(info.owner, "myteam");
+        assert_eq!(info.repo, "myrepo");
+        assert_eq!(info.platform, Some(PlatformType::Bitbucket));
+    }
+
+    #[test]
+    fn test_parse_bitbucket_https_url() {
+        let adapter = BitbucketAdapter::new(None);
+        let result = adapter.parse_repo_url("https://bitbucket.org/myteam/myrepo.git");
+        assert!(result.is_some());
+        let info = result.unwrap();
+        assert_eq!(info.owner, "myteam");
+        assert_eq!(info.repo, "myrepo");
+    }
+
+    #[test]
+    fn test_parse_self_hosted_bitbucket_url() {
+        let adapter = BitbucketAdapter::new(Some("https://bitbucket.example.com"));
+        let result = adapter.parse_repo_url("https://bitbucket.example.com/team/repo.git");
+        assert!(result.is_some());
+        let info = result.unwrap();
+        assert_eq!(info.owner, "team");
+        assert_eq!(info.repo, "repo");
+    }
+
+    #[test]
+    fn test_parse_non_bitbucket_url() {
+        let adapter = BitbucketAdapter::new(None);
+        assert!(adapter.parse_repo_url("https://github.com/user/repo").is_none());
+    }
+
+    #[test]
+    fn test_matches_url() {
+        let adapter = BitbucketAdapter::new(None);
+        assert!(adapter.matches_url("https://bitbucket.org/team/repo"));
+        assert!(adapter.matches_url("git@bitbucket.org:team/repo.git"));
+        assert!(!adapter.matches_url("https://github.com/user/repo"));
+    }
+
+    #[test]
+    fn test_generate_linked_pr_comment() {
+        let adapter = BitbucketAdapter::new(None);
+        let links = vec![
+            LinkedPRRef {
+                repo_name: "frontend".to_string(),
+                number: 42,
+            },
+            LinkedPRRef {
+                repo_name: "backend".to_string(),
+                number: 99,
+            },
+        ];
+        let comment = adapter.generate_linked_pr_comment(&links);
+        assert!(comment.contains("frontend#42"));
+        assert!(comment.contains("backend#99"));
+    }
+
+    #[test]
+    fn test_parse_linked_pr_comment() {
+        let adapter = BitbucketAdapter::new(None);
+        let parsed = adapter.parse_linked_pr_comment("Linked PRs: frontend#42, backend#99");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].repo_name, "frontend");
+        assert_eq!(parsed[0].number, 42);
+        assert_eq!(parsed[1].repo_name, "backend");
+        assert_eq!(parsed[1].number, 99);
+    }
+
+    #[test]
+    fn test_linked_pr_comment_roundtrip() {
+        let adapter = BitbucketAdapter::new(None);
+        let links = vec![LinkedPRRef {
+            repo_name: "app".to_string(),
+            number: 1,
+        }];
+        let comment = adapter.generate_linked_pr_comment(&links);
+        let parsed = adapter.parse_linked_pr_comment(&comment);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].repo_name, "app");
+        assert_eq!(parsed[0].number, 1);
+    }
+
+    #[test]
+    fn test_api_base_url() {
+        let adapter = BitbucketAdapter::new(None);
+        assert_eq!(
+            adapter.api_base_url("team", "repo"),
+            "https://api.bitbucket.org/2.0/repositories/team/repo"
+        );
+    }
+
+    #[test]
+    fn test_api_base_url_custom() {
+        let adapter = BitbucketAdapter::new(Some("https://bb.example.com/api"));
+        assert_eq!(
+            adapter.api_base_url("team", "repo"),
+            "https://bb.example.com/api/repositories/team/repo"
+        );
+    }
+}

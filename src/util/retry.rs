@@ -238,4 +238,108 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(attempts, 1); // Should not retry non-retryable errors
     }
+
+    #[test]
+    fn test_calculate_delay_with_jitter() {
+        let options = RetryOptions {
+            initial_delay_ms: 1000,
+            max_delay_ms: 30000,
+            jitter: 0.5,
+            ..Default::default()
+        };
+        let delay = options.calculate_delay(0);
+        // With jitter 0.5, delay should be between 1000 and 1500ms
+        assert!(delay.as_millis() >= 1000);
+        assert!(delay.as_millis() <= 1500);
+    }
+
+    #[test]
+    fn test_default_retry_options() {
+        let opts = RetryOptions::default();
+        assert_eq!(opts.max_retries, 3);
+        assert_eq!(opts.initial_delay_ms, 1000);
+        assert_eq!(opts.max_delay_ms, 30000);
+        assert!((opts.jitter - 0.1).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_is_retryable_error_case_insensitive() {
+        assert!(is_retryable_error("Connection Reset by peer"));
+        assert!(is_retryable_error("TIMEOUT waiting for response"));
+        assert!(is_retryable_error("Rate Limit exceeded"));
+    }
+
+    #[test]
+    fn test_is_retryable_error_http_codes() {
+        assert!(is_retryable_error("HTTP 500 Internal Server Error"));
+        assert!(is_retryable_error("HTTP 502 Bad Gateway"));
+        assert!(is_retryable_error("HTTP 504 Gateway Timeout"));
+        assert!(!is_retryable_error("HTTP 401 Unauthorized"));
+        assert!(!is_retryable_error("HTTP 403 Forbidden"));
+    }
+
+    #[tokio::test]
+    async fn test_retry_with_callback_success() {
+        let options = RetryOptions::default();
+        let result: Result<i32, String> =
+            retry_with_callback(&options, || async { Ok(42) }, None).await;
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn test_retry_with_callback_invoked() {
+        use std::sync::{Arc, Mutex};
+
+        let options = RetryOptions {
+            max_retries: 2,
+            initial_delay_ms: 1,
+            max_delay_ms: 10,
+            jitter: 0.0,
+        };
+
+        let callback_calls = Arc::new(Mutex::new(Vec::new()));
+        let cb_clone = callback_calls.clone();
+        let on_retry: OnRetryFn = Box::new(move |attempt, error, _delay| {
+            cb_clone
+                .lock()
+                .unwrap()
+                .push((attempt, error.to_string()));
+        });
+
+        let mut attempt = 0;
+        let _result: Result<i32, String> = retry_with_callback(
+            &options,
+            || {
+                attempt += 1;
+                async move { Err("connection timeout".to_string()) }
+            },
+            Some(on_retry),
+        )
+        .await;
+
+        let calls = callback_calls.lock().unwrap();
+        assert_eq!(calls.len(), 2); // Called on retry 1 and 2
+        assert_eq!(calls[0].0, 1);
+        assert_eq!(calls[1].0, 2);
+    }
+
+    #[tokio::test]
+    async fn test_retry_exhausts_max_retries() {
+        let options = RetryOptions {
+            max_retries: 2,
+            initial_delay_ms: 1,
+            max_delay_ms: 10,
+            jitter: 0.0,
+        };
+
+        let mut attempts = 0;
+        let result: Result<i32, String> = retry_with_backoff(&options, || {
+            attempts += 1;
+            async { Err("ECONNRESET".to_string()) }
+        })
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(attempts, 3); // 1 initial + 2 retries
+    }
 }

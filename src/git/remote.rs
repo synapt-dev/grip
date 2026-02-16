@@ -700,4 +700,62 @@ mod tests {
             message
         );
     }
+
+    #[test]
+    fn test_split_upstream_ref_valid() {
+        let (remote, branch) = split_upstream_ref("origin/main").unwrap();
+        assert_eq!(remote, "origin");
+        assert_eq!(branch, "main");
+    }
+
+    #[test]
+    fn test_split_upstream_ref_nested_branch() {
+        let (remote, branch) = split_upstream_ref("origin/feat/my-feature").unwrap();
+        assert_eq!(remote, "origin");
+        assert_eq!(branch, "feat/my-feature");
+    }
+
+    #[test]
+    fn test_split_upstream_ref_no_slash() {
+        let result = split_upstream_ref("main");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_split_upstream_ref_empty_parts() {
+        assert!(split_upstream_ref("/main").is_err());
+        assert!(split_upstream_ref("origin/").is_err());
+    }
+
+    #[test]
+    fn test_interpret_push_error_non_fast_forward() {
+        let msg = interpret_push_error("error: failed to push some refs\n ! [rejected] main -> main (non-fast-forward)");
+        assert!(msg.contains("Pull first"));
+        assert!(msg.contains("Original:"));
+    }
+
+    #[test]
+    fn test_interpret_push_error_permission_denied() {
+        let msg = interpret_push_error("Permission denied (publickey).");
+        assert!(msg.contains("Authentication failed"));
+        assert!(msg.contains("gh auth login"));
+    }
+
+    #[test]
+    fn test_interpret_push_error_repo_not_found() {
+        let msg = interpret_push_error("fatal: repository not found");
+        assert!(msg.contains("Cannot reach remote"));
+    }
+
+    #[test]
+    fn test_interpret_push_error_could_not_read() {
+        let msg = interpret_push_error("fatal: Could not read from remote repository.");
+        assert!(msg.contains("Cannot reach remote"));
+    }
+
+    #[test]
+    fn test_interpret_push_error_unknown() {
+        let msg = interpret_push_error("some other error");
+        assert_eq!(msg, "some other error");
+    }
 }

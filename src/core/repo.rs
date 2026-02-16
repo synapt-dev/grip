@@ -444,4 +444,237 @@ mod tests {
         assert_eq!(info.default_branch, "main");
         assert!(!info.reference);
     }
+
+    #[test]
+    fn test_detect_platform_bitbucket_org() {
+        assert_eq!(
+            detect_platform("git@bitbucket.org:team/repo.git"),
+            PlatformType::Bitbucket
+        );
+    }
+
+    #[test]
+    fn test_detect_platform_self_hosted_bitbucket() {
+        assert_eq!(
+            detect_platform("https://bitbucket.example.com/team/repo.git"),
+            PlatformType::Bitbucket
+        );
+    }
+
+    #[test]
+    fn test_detect_platform_self_hosted_gitlab() {
+        assert_eq!(
+            detect_platform("git@gitlab.company.com:team/repo.git"),
+            PlatformType::GitLab
+        );
+    }
+
+    #[test]
+    fn test_detect_platform_visualstudio() {
+        assert_eq!(
+            detect_platform("https://org.visualstudio.com/project/_git/repo"),
+            PlatformType::AzureDevOps
+        );
+    }
+
+    #[test]
+    fn test_detect_platform_unknown_defaults_to_github() {
+        assert_eq!(
+            detect_platform("https://custom-git.example.com/user/repo.git"),
+            PlatformType::GitHub
+        );
+    }
+
+    #[test]
+    fn test_parse_visualstudio_url() {
+        let parsed =
+            parse_git_url("https://org.visualstudio.com/project/_git/repo").unwrap();
+        assert_eq!(parsed.owner, "org");
+        assert_eq!(parsed.repo, "repo");
+        assert_eq!(parsed.project, Some("project".to_string()));
+    }
+
+    #[test]
+    fn test_parse_http_url() {
+        let parsed = parse_git_url("http://github.com/user/repo.git").unwrap();
+        assert_eq!(parsed.owner, "user");
+        assert_eq!(parsed.repo, "repo");
+    }
+
+    #[test]
+    fn test_parse_invalid_url_returns_none() {
+        assert!(parse_git_url("not-a-url").is_none());
+        assert!(parse_git_url("").is_none());
+    }
+
+    #[test]
+    fn test_filter_repos_by_name() {
+        use crate::core::manifest::Manifest;
+        use std::collections::HashMap;
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut repos = HashMap::new();
+        repos.insert(
+            "app".to_string(),
+            RepoConfig {
+                url: "git@github.com:user/app.git".to_string(),
+                path: "app".to_string(),
+                default_branch: "main".to_string(),
+                copyfile: None,
+                linkfile: None,
+                platform: None,
+                reference: false,
+                groups: vec![],
+                agent: None,
+            },
+        );
+        repos.insert(
+            "lib".to_string(),
+            RepoConfig {
+                url: "git@github.com:user/lib.git".to_string(),
+                path: "lib".to_string(),
+                default_branch: "main".to_string(),
+                copyfile: None,
+                linkfile: None,
+                platform: None,
+                reference: false,
+                groups: vec![],
+                agent: None,
+            },
+        );
+
+        let manifest = Manifest {
+            version: 1,
+            gripspaces: None,
+            manifest: None,
+            repos,
+            settings: Default::default(),
+            workspace: None,
+        };
+
+        let filter = vec!["app".to_string()];
+        let result = filter_repos(
+            &manifest,
+            &temp.path().to_path_buf(),
+            Some(&filter),
+            None,
+            false,
+        );
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "app");
+    }
+
+    #[test]
+    fn test_filter_repos_excludes_reference() {
+        use crate::core::manifest::Manifest;
+        use std::collections::HashMap;
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut repos = HashMap::new();
+        repos.insert(
+            "ref-repo".to_string(),
+            RepoConfig {
+                url: "git@github.com:user/ref.git".to_string(),
+                path: "ref".to_string(),
+                default_branch: "main".to_string(),
+                copyfile: None,
+                linkfile: None,
+                platform: None,
+                reference: true,
+                groups: vec![],
+                agent: None,
+            },
+        );
+        repos.insert(
+            "normal".to_string(),
+            RepoConfig {
+                url: "git@github.com:user/normal.git".to_string(),
+                path: "normal".to_string(),
+                default_branch: "main".to_string(),
+                copyfile: None,
+                linkfile: None,
+                platform: None,
+                reference: false,
+                groups: vec![],
+                agent: None,
+            },
+        );
+
+        let manifest = Manifest {
+            version: 1,
+            gripspaces: None,
+            manifest: None,
+            repos,
+            settings: Default::default(),
+            workspace: None,
+        };
+
+        let result = filter_repos(&manifest, &temp.path().to_path_buf(), None, None, false);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "normal");
+
+        // With include_reference = true
+        let result = filter_repos(&manifest, &temp.path().to_path_buf(), None, None, true);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_filter_repos_by_group() {
+        use crate::core::manifest::Manifest;
+        use std::collections::HashMap;
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut repos = HashMap::new();
+        repos.insert(
+            "frontend".to_string(),
+            RepoConfig {
+                url: "git@github.com:user/frontend.git".to_string(),
+                path: "frontend".to_string(),
+                default_branch: "main".to_string(),
+                copyfile: None,
+                linkfile: None,
+                platform: None,
+                reference: false,
+                groups: vec!["web".to_string()],
+                agent: None,
+            },
+        );
+        repos.insert(
+            "backend".to_string(),
+            RepoConfig {
+                url: "git@github.com:user/backend.git".to_string(),
+                path: "backend".to_string(),
+                default_branch: "main".to_string(),
+                copyfile: None,
+                linkfile: None,
+                platform: None,
+                reference: false,
+                groups: vec!["api".to_string()],
+                agent: None,
+            },
+        );
+
+        let manifest = Manifest {
+            version: 1,
+            gripspaces: None,
+            manifest: None,
+            repos,
+            settings: Default::default(),
+            workspace: None,
+        };
+
+        let groups = vec!["web".to_string()];
+        let result = filter_repos(
+            &manifest,
+            &temp.path().to_path_buf(),
+            None,
+            Some(&groups),
+            false,
+        );
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "frontend");
+    }
 }

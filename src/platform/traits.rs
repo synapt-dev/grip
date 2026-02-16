@@ -445,4 +445,47 @@ More content
         let links = platform.parse_linked_pr_comment("No linked PRs here");
         assert!(links.is_empty());
     }
+
+    #[test]
+    fn test_generate_linked_pr_comment_empty() {
+        let platform = MockPlatform;
+        assert_eq!(platform.generate_linked_pr_comment(&[]), "");
+    }
+
+    #[test]
+    fn test_parse_linked_pr_comment_unterminated() {
+        let platform = MockPlatform;
+        let body = "<!-- gitgrip-linked-prs\napp:42\n";
+        assert!(platform.parse_linked_pr_comment(body).is_empty());
+    }
+
+    #[test]
+    fn test_parse_linked_pr_comment_malformed_lines() {
+        let platform = MockPlatform;
+        let body = "<!-- gitgrip-linked-prs\nno-colon-here\napp:notanumber\nvalid:99\n-->";
+        let links = platform.parse_linked_pr_comment(body);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].repo_name, "valid");
+        assert_eq!(links[0].number, 99);
+    }
+
+    #[test]
+    fn test_parse_linked_pr_comment_with_surrounding_text() {
+        let platform = MockPlatform;
+        let body = "PR description here.\n\n<!-- gitgrip-linked-prs\nrepo:1\n-->\n\nMore text.";
+        let links = platform.parse_linked_pr_comment(body);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].repo_name, "repo");
+    }
+
+    #[test]
+    fn test_generate_linked_pr_comment_format() {
+        let platform = MockPlatform;
+        let links = vec![LinkedPRRef {
+            repo_name: "myapp".to_string(),
+            number: 7,
+        }];
+        let comment = platform.generate_linked_pr_comment(&links);
+        assert_eq!(comment, "<!-- gitgrip-linked-prs\nmyapp:7\n-->");
+    }
 }

@@ -389,4 +389,118 @@ mod tests {
         assert_eq!(status.staged.len(), 1);
         assert!(status.staged.contains(&"staged.txt".to_string()));
     }
+
+    #[test]
+    fn test_parse_ahead_behind_valid() {
+        let output = b"3\t5";
+        let result = parse_ahead_behind(output);
+        assert_eq!(result, Some((5, 3)));
+    }
+
+    #[test]
+    fn test_parse_ahead_behind_zeros() {
+        let output = b"0\t0";
+        let result = parse_ahead_behind(output);
+        assert_eq!(result, Some((0, 0)));
+    }
+
+    #[test]
+    fn test_parse_ahead_behind_empty() {
+        let output = b"";
+        let result = parse_ahead_behind(output);
+        assert_eq!(result, Some((0, 0)));
+    }
+
+    #[test]
+    fn test_parse_ahead_behind_invalid() {
+        let output = b"notanumber\talsonotanumber";
+        let result = parse_ahead_behind(output);
+        assert_eq!(result, Some((0, 0)));
+    }
+
+    #[test]
+    fn test_parse_ahead_behind_with_newline() {
+        let output = b"2\t7\n";
+        let result = parse_ahead_behind(output);
+        assert_eq!(result, Some((7, 2)));
+    }
+
+    #[test]
+    fn test_modified_file() {
+        let (temp, repo) = setup_test_repo();
+
+        fs::write(temp.path().join("README.md"), "# Test").unwrap();
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        // Modify the committed file
+        fs::write(temp.path().join("README.md"), "# Modified").unwrap();
+
+        let status = get_status_info(&repo).unwrap();
+        assert!(!status.is_clean);
+        assert_eq!(status.modified.len(), 1);
+        assert!(status.modified.contains(&"README.md".to_string()));
+    }
+
+    #[test]
+    fn test_has_uncommitted_changes() {
+        let (temp, repo) = setup_test_repo();
+
+        fs::write(temp.path().join("README.md"), "# Test").unwrap();
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        assert!(!has_uncommitted_changes(&repo).unwrap());
+
+        // Create untracked file
+        fs::write(temp.path().join("new.txt"), "content").unwrap();
+        assert!(has_uncommitted_changes(&repo).unwrap());
+    }
+
+    #[test]
+    fn test_get_changed_files() {
+        let (temp, repo) = setup_test_repo();
+
+        fs::write(temp.path().join("README.md"), "# Test").unwrap();
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        // Stage a new file
+        fs::write(temp.path().join("staged.txt"), "staged").unwrap();
+        Command::new("git")
+            .args(["add", "staged.txt"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        // Create an untracked file
+        fs::write(temp.path().join("untracked.txt"), "untracked").unwrap();
+
+        let changed = get_changed_files(&repo).unwrap();
+        assert!(changed.contains(&"staged.txt".to_string()));
+        assert!(changed.contains(&"untracked.txt".to_string()));
+    }
 }

@@ -1534,4 +1534,120 @@ repos:
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Invalid rev"));
     }
+
+    // ── normalize_url tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_normalize_url_ssh_scp() {
+        assert_eq!(
+            normalize_url("git@github.com:user/repo.git"),
+            "github.com:user/repo"
+        );
+    }
+
+    #[test]
+    fn test_normalize_url_https() {
+        assert_eq!(
+            normalize_url("https://github.com/user/repo.git"),
+            "github.com:user/repo"
+        );
+    }
+
+    #[test]
+    fn test_normalize_url_ssh_scheme() {
+        assert_eq!(
+            normalize_url("ssh://git@github.com/user/repo.git"),
+            "github.com:user/repo"
+        );
+    }
+
+    #[test]
+    fn test_normalize_url_trailing_slash() {
+        assert_eq!(
+            normalize_url("https://github.com/user/repo/"),
+            "github.com:user/repo"
+        );
+    }
+
+    #[test]
+    fn test_normalize_url_case_insensitive_host() {
+        assert_eq!(
+            normalize_url("https://GitHub.COM/user/repo"),
+            "github.com:user/repo"
+        );
+    }
+
+    #[test]
+    fn test_normalize_url_ssh_and_https_equivalent() {
+        let ssh = normalize_url("git@github.com:user/repo.git");
+        let https = normalize_url("https://github.com/user/repo.git");
+        assert_eq!(ssh, https);
+    }
+
+    // ── gripspace_identity tests ───────────────────────────────────────
+
+    #[test]
+    fn test_gripspace_identity_no_rev() {
+        let config = GripspaceConfig {
+            url: "https://github.com/user/repo.git".to_string(),
+            rev: None,
+        };
+        let identity = gripspace_identity(&config);
+        assert_eq!(identity, "github.com:user/repo");
+    }
+
+    #[test]
+    fn test_gripspace_identity_with_rev() {
+        let config = GripspaceConfig {
+            url: "https://github.com/user/repo.git".to_string(),
+            rev: Some("v1.0".to_string()),
+        };
+        let identity = gripspace_identity(&config);
+        assert_eq!(identity, "github.com:user/repo#v1.0");
+    }
+
+    #[test]
+    fn test_gripspace_identity_empty_rev() {
+        let config = GripspaceConfig {
+            url: "https://github.com/user/repo.git".to_string(),
+            rev: Some("".to_string()),
+        };
+        // Empty rev should be treated as no rev
+        let identity = gripspace_identity(&config);
+        assert_eq!(identity, "github.com:user/repo");
+    }
+
+    // ── validate_space_name tests ──────────────────────────────────────
+
+    #[test]
+    fn test_validate_space_name_valid() {
+        assert!(validate_space_name("my-gripspace").is_ok());
+        assert!(validate_space_name("my_space.v2").is_ok());
+        assert!(validate_space_name("A123").is_ok());
+    }
+
+    #[test]
+    fn test_validate_space_name_rejects_dot() {
+        assert!(validate_space_name(".").is_err());
+    }
+
+    #[test]
+    fn test_validate_space_name_rejects_dotdot() {
+        assert!(validate_space_name("..").is_err());
+    }
+
+    #[test]
+    fn test_validate_space_name_rejects_slashes() {
+        assert!(validate_space_name("a/b").is_err());
+    }
+
+    #[test]
+    fn test_validate_space_name_rejects_spaces() {
+        assert!(validate_space_name("my space").is_err());
+    }
+
+    #[test]
+    fn test_validate_space_name_rejects_embedded_dotdot() {
+        assert!(validate_space_name("a..b").is_err());
+    }
 }

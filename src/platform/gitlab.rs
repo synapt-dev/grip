@@ -876,4 +876,73 @@ mod tests {
         assert_eq!(parsed[0].repo_name, "frontend");
         assert_eq!(parsed[0].number, 42);
     }
+
+    #[test]
+    fn test_encode_project() {
+        let adapter = GitLabAdapter::new(None);
+        assert_eq!(adapter.encode_project("mygroup", "myrepo"), "mygroup%2Fmyrepo");
+    }
+
+    #[test]
+    fn test_encode_project_with_subgroup() {
+        let adapter = GitLabAdapter::new(None);
+        assert_eq!(
+            adapter.encode_project("mygroup/subgroup", "myrepo"),
+            "mygroup%2Fsubgroup%2Fmyrepo"
+        );
+    }
+
+    #[test]
+    fn test_parse_self_hosted_gitlab_ssh() {
+        let adapter = GitLabAdapter::new(Some("https://gitlab.company.com"));
+        let result = adapter.parse_repo_url("git@gitlab.company.com:team/repo.git");
+        assert!(result.is_some());
+        let info = result.unwrap();
+        assert_eq!(info.owner, "team");
+        assert_eq!(info.repo, "repo");
+    }
+
+    #[test]
+    fn test_parse_self_hosted_gitlab_https() {
+        let adapter = GitLabAdapter::new(Some("https://gitlab.company.com"));
+        let result = adapter.parse_repo_url("https://gitlab.company.com/team/repo.git");
+        assert!(result.is_some());
+        let info = result.unwrap();
+        assert_eq!(info.owner, "team");
+        assert_eq!(info.repo, "repo");
+    }
+
+    #[test]
+    fn test_parse_linked_pr_empty_body() {
+        let adapter = GitLabAdapter::new(None);
+        let parsed = adapter.parse_linked_pr_comment("just a description");
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn test_parse_linked_pr_unterminated_comment() {
+        let adapter = GitLabAdapter::new(None);
+        let parsed = adapter.parse_linked_pr_comment("<!-- gitgrip-linked-prs\nfoo:42\n");
+        assert!(parsed.is_empty()); // no closing -->
+    }
+
+    #[test]
+    fn test_generate_linked_pr_empty() {
+        let adapter = GitLabAdapter::new(None);
+        let comment = adapter.generate_linked_pr_comment(&[]);
+        assert!(comment.is_empty());
+    }
+
+    #[test]
+    fn test_matches_url_non_gitlab() {
+        let adapter = GitLabAdapter::new(None);
+        assert!(!adapter.matches_url("https://github.com/user/repo"));
+        assert!(!adapter.matches_url("git@bitbucket.org:user/repo.git"));
+    }
+
+    #[test]
+    fn test_parse_non_gitlab_url_returns_none() {
+        let adapter = GitLabAdapter::new(None);
+        assert!(adapter.parse_repo_url("https://github.com/user/repo").is_none());
+    }
 }

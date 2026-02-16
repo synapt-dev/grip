@@ -231,4 +231,145 @@ mod tests {
         state.add_linked_pr(42, link);
         assert!(state.all_linked_prs_ready(42));
     }
+
+    #[test]
+    fn test_all_linked_prs_not_ready_when_not_approved() {
+        let mut state = StateFile::default();
+        let link = LinkedPR {
+            repo_name: "app".to_string(),
+            owner: "user".to_string(),
+            repo: "app".to_string(),
+            number: 1,
+            url: "https://github.com/user/app/pull/1".to_string(),
+            state: PRState::Open,
+            approved: false,
+            checks_pass: true,
+            mergeable: true,
+            platform_type: None,
+            check_details: None,
+        };
+        state.add_linked_pr(42, link);
+        assert!(!state.all_linked_prs_ready(42));
+    }
+
+    #[test]
+    fn test_all_linked_prs_not_ready_when_checks_fail() {
+        let mut state = StateFile::default();
+        let link = LinkedPR {
+            repo_name: "app".to_string(),
+            owner: "user".to_string(),
+            repo: "app".to_string(),
+            number: 1,
+            url: "url".to_string(),
+            state: PRState::Open,
+            approved: true,
+            checks_pass: false,
+            mergeable: true,
+            platform_type: None,
+            check_details: None,
+        };
+        state.add_linked_pr(42, link);
+        assert!(!state.all_linked_prs_ready(42));
+    }
+
+    #[test]
+    fn test_all_linked_prs_not_ready_when_merged() {
+        let mut state = StateFile::default();
+        let link = LinkedPR {
+            repo_name: "app".to_string(),
+            owner: "user".to_string(),
+            repo: "app".to_string(),
+            number: 1,
+            url: "url".to_string(),
+            state: PRState::Merged,
+            approved: true,
+            checks_pass: true,
+            mergeable: true,
+            platform_type: None,
+            check_details: None,
+        };
+        state.add_linked_pr(42, link);
+        assert!(!state.all_linked_prs_ready(42));
+    }
+
+    #[test]
+    fn test_all_linked_prs_not_ready_no_links() {
+        let state = StateFile::default();
+        assert!(!state.all_linked_prs_ready(999));
+    }
+
+    #[test]
+    fn test_update_linked_pr() {
+        let mut state = StateFile::default();
+        let link = LinkedPR {
+            repo_name: "app".to_string(),
+            owner: "user".to_string(),
+            repo: "app".to_string(),
+            number: 1,
+            url: "url".to_string(),
+            state: PRState::Open,
+            approved: false,
+            checks_pass: false,
+            mergeable: false,
+            platform_type: None,
+            check_details: None,
+        };
+        state.add_linked_pr(42, link);
+
+        state.update_linked_pr(42, "app", |pr| {
+            pr.approved = true;
+            pr.checks_pass = true;
+            pr.mergeable = true;
+        });
+
+        let links = state.get_linked_prs(42).unwrap();
+        assert!(links[0].approved);
+        assert!(links[0].checks_pass);
+        assert!(links[0].mergeable);
+    }
+
+    #[test]
+    fn test_remove_branch_cleans_pr_links() {
+        let mut state = StateFile::default();
+        state.set_pr_for_branch("feat/test", 100);
+        state.set_linked_prs(
+            100,
+            vec![LinkedPR {
+                repo_name: "app".to_string(),
+                owner: "user".to_string(),
+                repo: "app".to_string(),
+                number: 1,
+                url: "url".to_string(),
+                state: PRState::Open,
+                approved: true,
+                checks_pass: true,
+                mergeable: true,
+                platform_type: None,
+                check_details: None,
+            }],
+        );
+
+        state.remove_branch("feat/test");
+        assert!(state.get_pr_for_branch("feat/test").is_none());
+        assert!(state.get_linked_prs(100).is_none());
+    }
+
+    #[test]
+    fn test_save_and_load() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("state.json");
+
+        let mut state = StateFile::default();
+        state.set_pr_for_branch("feat/x", 42);
+        state.save(&path).unwrap();
+
+        let loaded = StateFile::load(&path).unwrap();
+        assert_eq!(loaded.get_pr_for_branch("feat/x"), Some(42));
+    }
+
+    #[test]
+    fn test_load_nonexistent_returns_default() {
+        let state = StateFile::load("/nonexistent/path/state.json").unwrap();
+        assert!(state.branch_to_pr.is_empty());
+    }
 }

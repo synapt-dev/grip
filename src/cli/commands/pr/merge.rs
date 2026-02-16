@@ -6,7 +6,7 @@ use crate::core::manifest::Manifest;
 use crate::core::repo::{get_manifest_repo_info, RepoInfo};
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::platform::traits::PlatformError;
-use crate::platform::{get_platform_adapter, CheckState, MergeMethod};
+use crate::platform::{get_platform_adapter, CheckState};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -15,7 +15,7 @@ use std::sync::Arc;
 pub async fn run_pr_merge(
     workspace_root: &PathBuf,
     manifest: &Manifest,
-    method: Option<&str>,
+    method: Option<&crate::platform::MergeMethod>,
     force: bool,
     update: bool,
     auto: bool,
@@ -35,11 +35,7 @@ pub async fn run_pr_merge(
         .filter(|r| !r.reference) // Skip reference repos
         .collect();
 
-    let merge_method = match method {
-        Some("squash") => MergeMethod::Squash,
-        Some("rebase") => MergeMethod::Rebase,
-        _ => MergeMethod::Merge,
-    };
+    let merge_method = method.copied().unwrap_or_default();
 
     // Also check manifest repo if configured
     let mut all_repos = repos.clone();

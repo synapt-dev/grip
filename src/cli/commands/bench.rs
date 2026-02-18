@@ -6,7 +6,7 @@ use anyhow::Result;
 use clap::Args;
 use colored::Colorize;
 
-use crate::core::manifest::{Manifest, RepoConfig};
+use crate::core::manifest::{Manifest, ManifestSettings, RepoConfig};
 use crate::core::repo::RepoInfo;
 use crate::core::state::StateFile;
 
@@ -207,7 +207,8 @@ fn run_benchmark_operation(name: &str) -> Result<()> {
             let config = RepoConfig {
                 url: "git@github.com:user/repo.git".to_string(),
                 path: "repo".to_string(),
-                default_branch: "main".to_string(),
+                default_branch: Some("main".to_string()),
+                target: None,
                 copyfile: None,
                 linkfile: None,
                 platform: None,
@@ -216,7 +217,8 @@ fn run_benchmark_operation(name: &str) -> Result<()> {
                 agent: None,
             };
             let workspace = std::path::PathBuf::from("/workspace");
-            let _ = RepoInfo::from_config("repo", &config, &workspace);
+            let _ =
+                RepoInfo::from_config("repo", &config, &workspace, &ManifestSettings::default());
             Ok(())
         }
         _ => Err(anyhow::anyhow!(

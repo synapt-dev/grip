@@ -392,7 +392,8 @@ impl XmlManifest {
                 RepoConfig {
                     url,
                     path,
-                    default_branch,
+                    default_branch: Some(default_branch),
+                    target: None,
                     copyfile,
                     linkfile,
                     platform: Some(PlatformConfig {
@@ -629,7 +630,7 @@ mod tests {
         let result = manifest.to_manifest().unwrap();
         let repo = result.manifest.repos.get("app").unwrap();
         assert_eq!(repo.url, "https://github.com/fork/app.git");
-        assert_eq!(repo.default_branch, "develop");
+        assert_eq!(repo.default_branch, Some("develop".to_string()));
     }
 
     #[test]
@@ -650,11 +651,11 @@ mod tests {
         assert_eq!(result.gerrit_skipped, 0);
 
         let frontend = result.manifest.repos.get("frontend").unwrap();
-        assert_eq!(frontend.default_branch, "main");
+        assert_eq!(frontend.default_branch, Some("main".to_string()));
         assert_eq!(frontend.url, "https://github.com/myorg/frontend.git");
 
         let backend = result.manifest.repos.get("backend").unwrap();
-        assert_eq!(backend.default_branch, "develop");
+        assert_eq!(backend.default_branch, Some("develop".to_string()));
     }
 
     #[test]

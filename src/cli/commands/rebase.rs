@@ -44,7 +44,9 @@ pub fn run_rebase(
     let repos: Vec<RepoInfo> = manifest
         .repos
         .iter()
-        .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
+        .filter_map(|(name, config)| {
+            RepoInfo::from_config(name, config, workspace_root, &manifest.settings)
+        })
         .collect();
 
     let mut success_count = 0;
@@ -73,8 +75,8 @@ pub fn run_rebase(
             }
         };
 
-        // Skip if on default branch
-        if branch == repo.default_branch {
+        // Skip if on target branch
+        if branch == repo.target_branch() {
             skip_count += 1;
             continue;
         }
@@ -90,7 +92,7 @@ pub fn run_rebase(
                         continue;
                     }
                 },
-                None => format!("origin/{}", repo.default_branch),
+                None => repo.target_ref.clone(),
             }
         } else {
             onto.unwrap_or("origin/main").to_string()
@@ -151,7 +153,9 @@ fn run_rebase_abort(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
     let repos: Vec<RepoInfo> = manifest
         .repos
         .iter()
-        .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
+        .filter_map(|(name, config)| {
+            RepoInfo::from_config(name, config, workspace_root, &manifest.settings)
+        })
         .collect();
 
     for repo in &repos {
@@ -188,7 +192,9 @@ fn run_rebase_continue(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow:
     let repos: Vec<RepoInfo> = manifest
         .repos
         .iter()
-        .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
+        .filter_map(|(name, config)| {
+            RepoInfo::from_config(name, config, workspace_root, &manifest.settings)
+        })
         .collect();
 
     for repo in &repos {

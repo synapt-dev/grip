@@ -18,7 +18,9 @@ pub fn run_group_list(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::
     let repos: Vec<RepoInfo> = manifest
         .repos
         .iter()
-        .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
+        .filter_map(|(name, config)| {
+            RepoInfo::from_config(name, config, workspace_root, &manifest.settings)
+        })
         .collect();
 
     // Collect groups -> repos mapping

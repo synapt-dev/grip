@@ -151,7 +151,8 @@ Each repository under `repos` supports:
 |-------|------|---------|-------------|
 | `url` | string | - | Git URL (SSH or HTTPS) |
 | `path` | string | - | Local path relative to workspace |
-| `default_branch` | string | `main` | Default branch name |
+| `default_branch` | string | `main` | Default branch (inherits from settings) |
+| `target` | string | - | Workflow target (remote/branch, e.g. origin/develop) |
 | `groups` | array | `[]` | Groups for selective operations |
 | `reference` | boolean | `false` | Read-only reference repo |
 | `copyfile` | array | - | Files to copy to workspace |
@@ -171,6 +172,8 @@ Each repository under `repos` supports:
 |-------|------|---------|-------------|
 | `pr_prefix` | string | `[cross-repo]` | Prefix for PR titles |
 | `merge_strategy` | string | `all-or-nothing` | `all-or-nothing` or `independent` |
+| `default_branch` | string | `main` | Default branch for all repos |
+| `target` | string | - | Workflow target for all repos (remote/branch) |
 
 ## Platform Types
 

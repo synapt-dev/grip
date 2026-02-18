@@ -461,7 +461,7 @@ fn sync_griptree_upstream(
                 };
             }
         },
-        None => format!("origin/{}", repo.default_branch),
+        None => repo.target_ref.clone(),
     };
 
     let remote = upstream.split('/').next().unwrap_or("origin");
@@ -587,7 +587,7 @@ fn sync_reference_reset(
                 };
             }
         },
-        None => format!("origin/{}", repo.default_branch),
+        None => repo.target_ref.clone(),
     };
 
     let mut upstream_parts = upstream.splitn(2, '/');
@@ -799,7 +799,8 @@ fn sync_single_repo(
                 );
                 Ok(result)
             } else {
-                let result = safe_pull_latest(&git_repo, &repo.default_branch, "origin");
+                let result =
+                    safe_pull_latest(&git_repo, repo.target_branch(), repo.target_remote());
 
                 match result {
                     Ok(pull_result) => {

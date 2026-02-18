@@ -65,11 +65,11 @@ pub fn run_prune(
 
         for branch in &branches {
             // Skip current branch and default branch
-            if branch == &current_branch || branch == &repo.default_branch {
+            if branch == &current_branch || branch == repo.target_branch() {
                 continue;
             }
 
-            match is_branch_merged(&git_repo, branch, &repo.default_branch) {
+            match is_branch_merged(&git_repo, branch, repo.target_branch()) {
                 Ok(true) => merged_branches.push(branch.clone()),
                 Ok(false) => {}
                 Err(e) => {

@@ -78,6 +78,7 @@ fn test_repo_add_https_url() {
         "https://github.com/owner/new-repo.git",
         None,
         None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -114,6 +115,7 @@ fn test_repo_add_ssh_url() {
         "git@github.com:owner/ssh-repo.git",
         None,
         None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -137,6 +139,7 @@ fn test_repo_add_custom_path() {
         &ws.workspace_root,
         "https://github.com/owner/repo.git",
         Some("custom/path"),
+        None,
         None,
     );
     assert!(
@@ -162,6 +165,7 @@ fn test_repo_add_custom_branch() {
         "https://github.com/owner/repo.git",
         None,
         Some("develop"),
+        None,
     );
     assert!(
         result.is_ok(),
@@ -184,6 +188,7 @@ fn test_repo_add_invalid_url() {
     let result = gitgrip::cli::commands::repo::run_repo_add(
         &ws.workspace_root,
         "not-a-valid-url",
+        None,
         None,
         None,
     );

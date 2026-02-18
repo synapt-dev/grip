@@ -21,7 +21,9 @@ pub async fn run_pr_diff(
     let repos: Vec<RepoInfo> = manifest
         .repos
         .iter()
-        .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
+        .filter_map(|(name, config)| {
+            RepoInfo::from_config(name, config, workspace_root, &manifest.settings)
+        })
         .collect();
 
     let mut total_files = 0;
@@ -43,8 +45,8 @@ pub async fn run_pr_diff(
             Err(_) => continue,
         };
 
-        // Skip if on default branch
-        if branch == repo.default_branch {
+        // Skip if on target branch
+        if branch == repo.target_branch() {
             continue;
         }
 

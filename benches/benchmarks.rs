@@ -6,7 +6,7 @@
 //! Results are saved in target/criterion/ for comparison
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use gitgrip::core::manifest::{Manifest, RepoConfig};
+use gitgrip::core::manifest::{Manifest, ManifestSettings, RepoConfig};
 use gitgrip::core::repo::RepoInfo;
 use gitgrip::core::state::StateFile;
 use std::fs;
@@ -112,7 +112,8 @@ fn bench_url_parse(c: &mut Criterion) {
     let config = RepoConfig {
         url: "git@github.com:organization/repository-name.git".to_string(),
         path: "packages/repository-name".to_string(),
-        default_branch: "main".to_string(),
+        default_branch: Some("main".to_string()),
+        target: None,
         copyfile: None,
         linkfile: None,
         platform: None,
@@ -121,9 +122,12 @@ fn bench_url_parse(c: &mut Criterion) {
         agent: None,
     };
     let workspace = PathBuf::from("/home/user/workspace");
+    let settings = ManifestSettings::default();
 
     c.bench_function("url_parse_github_ssh", |b| {
-        b.iter(|| RepoInfo::from_config("repo", black_box(&config), black_box(&workspace)))
+        b.iter(|| {
+            RepoInfo::from_config("repo", black_box(&config), black_box(&workspace), &settings)
+        })
     });
 }
 
@@ -132,7 +136,8 @@ fn bench_url_parse_azure(c: &mut Criterion) {
     let config = RepoConfig {
         url: "https://dev.azure.com/organization/project/_git/repository".to_string(),
         path: "repository".to_string(),
-        default_branch: "main".to_string(),
+        default_branch: Some("main".to_string()),
+        target: None,
         copyfile: None,
         linkfile: None,
         platform: None,
@@ -141,9 +146,12 @@ fn bench_url_parse_azure(c: &mut Criterion) {
         agent: None,
     };
     let workspace = PathBuf::from("/home/user/workspace");
+    let settings = ManifestSettings::default();
 
     c.bench_function("url_parse_azure_https", |b| {
-        b.iter(|| RepoInfo::from_config("repo", black_box(&config), black_box(&workspace)))
+        b.iter(|| {
+            RepoInfo::from_config("repo", black_box(&config), black_box(&workspace), &settings)
+        })
     });
 }
 
@@ -891,7 +899,7 @@ workspace:
                 .repos
                 .iter()
                 .filter_map(|(name, config)| {
-                    RepoInfo::from_config(name, config, black_box(&workspace))
+                    RepoInfo::from_config(name, config, black_box(&workspace), &manifest.settings)
                 })
                 .collect();
             black_box(repos)

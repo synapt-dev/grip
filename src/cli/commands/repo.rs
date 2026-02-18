@@ -17,7 +17,9 @@ pub fn run_repo_list(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::R
     let repos: Vec<RepoInfo> = manifest
         .repos
         .iter()
-        .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
+        .filter_map(|(name, config)| {
+            RepoInfo::from_config(name, config, workspace_root, &manifest.settings)
+        })
         .collect();
 
     let mut table = Table::new(vec!["Name", "Path", "Branch", "Status"]);
@@ -50,6 +52,7 @@ pub fn run_repo_add(
     url: &str,
     path: Option<&str>,
     default_branch: Option<&str>,
+    target: Option<&str>,
 ) -> anyhow::Result<()> {
     Output::header("Adding repository");
     println!();
@@ -70,7 +73,7 @@ pub fn run_repo_add(
     let content = std::fs::read_to_string(&manifest_path)?;
 
     // Simple YAML append (for a proper implementation, use serde_yaml to read/write)
-    let new_repo_yaml = format!(
+    let mut new_repo_yaml = format!(
         r#"
   {}:
     url: {}
@@ -78,6 +81,9 @@ pub fn run_repo_add(
     default_branch: {}"#,
         repo_name, url, repo_path, branch
     );
+    if let Some(t) = target {
+        new_repo_yaml.push_str(&format!("\n    target: {}", t));
+    }
 
     // Check if repos section exists and append
     let updated_content = if content.contains("repos:") {

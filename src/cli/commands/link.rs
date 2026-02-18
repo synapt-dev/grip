@@ -43,7 +43,9 @@ fn show_link_status(
     let repos: Vec<RepoInfo> = manifest
         .repos
         .iter()
-        .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
+        .filter_map(|(name, config)| {
+            RepoInfo::from_config(name, config, workspace_root, &manifest.settings)
+        })
         .collect();
 
     let mut total_links = 0;
@@ -378,7 +380,9 @@ pub fn apply_links(
     let repos: Vec<RepoInfo> = manifest
         .repos
         .iter()
-        .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
+        .filter_map(|(name, config)| {
+            RepoInfo::from_config(name, config, workspace_root, &manifest.settings)
+        })
         .collect();
 
     let mut applied = 0;
@@ -717,7 +721,8 @@ mod tests {
             RepoConfig {
                 url: "git@github.com:user/test-repo.git".to_string(),
                 path: "test-repo".to_string(),
-                default_branch: "main".to_string(),
+                default_branch: Some("main".to_string()),
+                target: None,
                 copyfile: copyfiles,
                 linkfile: linkfiles,
                 platform: None,
@@ -735,6 +740,8 @@ mod tests {
             settings: ManifestSettings {
                 pr_prefix: "[cross-repo]".to_string(),
                 merge_strategy: MergeStrategy::default(),
+                default_branch: None,
+                target: None,
             },
             workspace: None,
         }
@@ -902,7 +909,8 @@ mod tests {
             RepoConfig {
                 url: "git@github.com:test/repo.git".to_string(),
                 path: "test-repo".to_string(),
-                default_branch: "main".to_string(),
+                default_branch: Some("main".to_string()),
+                target: None,
                 copyfile: None,
                 linkfile: None,
                 platform: None,
@@ -917,7 +925,7 @@ mod tests {
             gripspaces: None,
             manifest: Some(ManifestRepoConfig {
                 url: "git@github.com:test/manifest.git".to_string(),
-                default_branch: "main".to_string(),
+                default_branch: Some("main".to_string()),
                 copyfile: Some(vec![CopyFileConfig {
                     src: "CLAUDE.md".to_string(),
                     dest: "CLAUDE.md".to_string(),
@@ -930,6 +938,8 @@ mod tests {
             settings: ManifestSettings {
                 pr_prefix: "[cross-repo]".to_string(),
                 merge_strategy: MergeStrategy::default(),
+                default_branch: None,
+                target: None,
             },
             workspace: None,
         };

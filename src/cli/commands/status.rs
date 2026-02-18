@@ -59,7 +59,7 @@ pub fn run_status(
     let filtered_statuses: Vec<&(RepoStatus, &RepoInfo)> = if quiet {
         statuses
             .iter()
-            .filter(|(s, repo)| !s.clean || !s.exists || s.branch != repo.default_branch)
+            .filter(|(s, repo)| !s.clean || !s.exists || s.branch != repo.target_branch())
             .collect()
     } else {
         statuses.iter().collect()
@@ -70,7 +70,7 @@ pub fn run_status(
 
     for (status, repo) in &filtered_statuses {
         let status_str = format_status(status, verbose);
-        let main_str = format_main_comparison(status, &repo.default_branch);
+        let main_str = format_main_comparison(status, repo.target_branch());
         // Add [ref] suffix for reference repos
         let repo_display = if repo.reference {
             format!("{} [ref]", Output::repo_name(&status.name))
@@ -106,6 +106,7 @@ pub fn run_status(
                 path: rel_path,
                 absolute_path: manifests_dir.clone(),
                 default_branch: "main".to_string(),
+                target_ref: "origin/main".to_string(),
                 owner: String::new(),
                 repo: "manifests".to_string(),
                 platform_type: crate::core::manifest::PlatformType::GitHub,
@@ -118,7 +119,7 @@ pub fn run_status(
 
             let status = get_repo_status(&manifest_repo_info);
             let status_str = format_status(&status, verbose);
-            let main_str = format_main_comparison(&status, &manifest_repo_info.default_branch);
+            let main_str = format_main_comparison(&status, manifest_repo_info.target_branch());
             let mut manifest_table = Table::new(vec!["Repo", "Branch", "Status", "vs main"]);
             manifest_table.add_row(vec![
                 &Output::repo_name("manifest"),

@@ -455,7 +455,7 @@ pub fn resolve_all_gripspaces(
     {
         manifest.manifest = Some(crate::core::manifest::ManifestRepoConfig {
             url: String::new(),
-            default_branch: "main".to_string(),
+            default_branch: None,
             copyfile: None,
             linkfile: None,
             composefile: None,
@@ -843,7 +843,8 @@ repos:
                     crate::core::manifest::RepoConfig {
                         url: "https://github.com/user/local.git".to_string(),
                         path: "./local".to_string(),
-                        default_branch: "main".to_string(),
+                        default_branch: Some("main".to_string()),
+                        target: None,
                         copyfile: None,
                         linkfile: None,
                         platform: None,
@@ -902,7 +903,8 @@ repos:
                     crate::core::manifest::RepoConfig {
                         url: "https://github.com/user/local-version.git".to_string(),
                         path: "./my-repo-local".to_string(),
-                        default_branch: "main".to_string(),
+                        default_branch: Some("main".to_string()),
+                        target: None,
                         copyfile: None,
                         linkfile: None,
                         platform: None,

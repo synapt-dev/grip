@@ -165,9 +165,13 @@ pub struct RepoConfig {
     pub url: String,
     /// Local path relative to manifest root
     pub path: String,
-    /// Default branch (e.g., "main", "master")
-    #[serde(default = "default_branch")]
-    pub default_branch: String,
+    /// Default branch (e.g., "main", "master"). Inherits from settings.default_branch if not set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_branch: Option<String>,
+    /// Workflow target branch (remote/branch format, e.g. "origin/develop").
+    /// Used for PRs, pull, rebase, prune, sync. Falls back to default_branch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
     /// Optional file copies
     #[serde(skip_serializing_if = "Option::is_none")]
     pub copyfile: Option<Vec<CopyFileConfig>>,
@@ -188,18 +192,14 @@ pub struct RepoConfig {
     pub agent: Option<RepoAgentConfig>,
 }
 
-fn default_branch() -> String {
-    "main".to_string()
-}
-
 /// Manifest repository self-tracking configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestRepoConfig {
     /// Git URL for the manifest repository
     pub url: String,
-    /// Default branch (defaults to "main")
-    #[serde(default = "default_branch")]
-    pub default_branch: String,
+    /// Default branch (inherits from settings.default_branch if not set)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_branch: Option<String>,
     /// Optional file copies
     #[serde(skip_serializing_if = "Option::is_none")]
     pub copyfile: Option<Vec<CopyFileConfig>>,
@@ -234,6 +234,13 @@ pub struct ManifestSettings {
     /// Merge strategy for linked PRs
     #[serde(default)]
     pub merge_strategy: MergeStrategy,
+    /// Default branch for all repos (overridden by per-repo default_branch). Defaults to "main".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_branch: Option<String>,
+    /// Default workflow target for all repos (remote/branch format, e.g. "origin/develop").
+    /// Overridden by per-repo target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
 }
 
 fn default_pr_prefix() -> String {
@@ -245,6 +252,8 @@ impl Default for ManifestSettings {
         Self {
             pr_prefix: default_pr_prefix(),
             merge_strategy: MergeStrategy::default(),
+            default_branch: None,
+            target: None,
         }
     }
 }

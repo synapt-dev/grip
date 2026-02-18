@@ -569,6 +569,9 @@ enum RepoCommands {
         /// Default branch
         #[arg(short, long)]
         branch: Option<String>,
+        /// Workflow target branch (remote/branch format, e.g. "origin/develop")
+        #[arg(short, long)]
+        target: Option<String>,
     },
     /// Remove a repository
     Remove {
@@ -988,12 +991,18 @@ async fn main() -> anyhow::Result<()> {
                         &ctx.manifest,
                     )?;
                 }
-                RepoCommands::Add { url, path, branch } => {
+                RepoCommands::Add {
+                    url,
+                    path,
+                    branch,
+                    target,
+                } => {
                     gitgrip::cli::commands::repo::run_repo_add(
                         &ctx.workspace_root,
                         &url,
                         path.as_deref(),
                         branch.as_deref(),
+                        target.as_deref(),
                     )?;
                 }
                 RepoCommands::Remove { name, delete } => {

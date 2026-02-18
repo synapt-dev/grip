@@ -35,7 +35,9 @@ pub async fn run_pr_create(
     let repos: Vec<RepoInfo> = manifest
         .repos
         .iter()
-        .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
+        .filter_map(|(name, config)| {
+            RepoInfo::from_config(name, config, workspace_root, &manifest.settings)
+        })
         .filter(|r| !r.reference) // Skip reference repos
         .collect();
 
@@ -55,13 +57,13 @@ pub async fn run_pr_create(
                     Err(_) => continue,
                 };
 
-                // Skip if on default branch
-                if current == repo.default_branch {
+                // Skip if on target branch
+                if current == repo.target_branch() {
                     continue;
                 }
 
-                // Check for changes ahead of default branch
-                if has_commits_ahead(&git_repo, &current, &repo.default_branch)? {
+                // Check for changes ahead of target branch
+                if has_commits_ahead(&git_repo, &current, repo.target_branch())? {
                     if let Some(ref bn) = branch_name {
                         if bn != &current {
                             anyhow::bail!(
@@ -169,7 +171,7 @@ pub async fn run_pr_create(
                 &repo.owner,
                 &repo.repo,
                 &branch,
-                &repo.default_branch,
+                repo.target_branch(),
                 &pr_title,
                 body,
                 draft,
@@ -305,13 +307,13 @@ pub(crate) fn check_repo_for_changes(
     let current = get_current_branch(&git_repo)
         .map_err(|e| anyhow::anyhow!("Failed to get current branch: {}", e))?;
 
-    // Skip if on default branch
-    if current == repo.default_branch {
+    // Skip if on target branch
+    if current == repo.target_branch() {
         return Ok(false);
     }
 
-    // Check for changes ahead of default branch
-    let has_commits = has_commits_ahead(&git_repo, &current, &repo.default_branch)
+    // Check for changes ahead of target branch
+    let has_commits = has_commits_ahead(&git_repo, &current, repo.target_branch())
         .map_err(|e| anyhow::anyhow!("Failed to check commits: {}", e))?;
 
     // Also check for uncommitted changes (staged or unstaged)

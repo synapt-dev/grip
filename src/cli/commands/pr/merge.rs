@@ -31,7 +31,9 @@ pub async fn run_pr_merge(
     let repos: Vec<RepoInfo> = manifest
         .repos
         .iter()
-        .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
+        .filter_map(|(name, config)| {
+            RepoInfo::from_config(name, config, workspace_root, &manifest.settings)
+        })
         .filter(|r| !r.reference) // Skip reference repos
         .collect();
 
@@ -93,8 +95,8 @@ pub async fn run_pr_merge(
             Err(_) => continue,
         };
 
-        // Skip if on default branch
-        if branch == repo.default_branch {
+        // Skip if on target branch
+        if branch == repo.target_branch() {
             continue;
         }
 
@@ -727,11 +729,11 @@ fn check_repo_for_changes(repo: &RepoInfo) -> anyhow::Result<bool> {
     let current = get_current_branch(&git_repo)
         .map_err(|e| anyhow::anyhow!("Failed to get current branch: {}", e))?;
 
-    // Skip if on default branch
-    if current == repo.default_branch {
+    // Skip if on target branch
+    if current == repo.target_branch() {
         return Ok(false);
     }
 
-    // Check for commits ahead of default branch using shared helper
-    has_commits_ahead(&git_repo, &current, &repo.default_branch)
+    // Check for commits ahead of target branch using shared helper
+    has_commits_ahead(&git_repo, &current, repo.target_branch())
 }

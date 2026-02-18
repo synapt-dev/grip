@@ -36,7 +36,9 @@ pub fn run_push(
     let mut repos: Vec<RepoInfo> = manifest
         .repos
         .iter()
-        .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
+        .filter_map(|(name, config)| {
+            RepoInfo::from_config(name, config, workspace_root, &manifest.settings)
+        })
         .filter(|r| !r.reference) // Skip reference repos
         .collect();
 

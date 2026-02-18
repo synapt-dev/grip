@@ -178,8 +178,12 @@ fn pull_single_repo(
 
     match open_repo(&repo.absolute_path) {
         Ok(git_repo) => {
-            let result =
-                safe_pull_latest_with_mode(&git_repo, &repo.default_branch, "origin", mode);
+            let result = safe_pull_latest_with_mode(
+                &git_repo,
+                repo.target_branch(),
+                repo.target_remote(),
+                mode,
+            );
 
             match result {
                 Ok(pull_result) => {

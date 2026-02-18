@@ -176,7 +176,9 @@ fn check_links(workspace_root: &PathBuf, manifest: &Manifest) -> CheckResult {
     let repos: Vec<RepoInfo> = manifest
         .repos
         .iter()
-        .filter_map(|(name, config)| RepoInfo::from_config(name, config, workspace_root))
+        .filter_map(|(name, config)| {
+            RepoInfo::from_config(name, config, workspace_root, &manifest.settings)
+        })
         .collect();
 
     for (name, config) in &manifest.repos {
@@ -314,6 +316,7 @@ mod tests {
             path: name.to_string(),
             absolute_path: path.to_path_buf(),
             default_branch: "main".to_string(),
+            target_ref: "origin/main".to_string(),
             owner: "local".to_string(),
             repo: name.to_string(),
             platform_type: PlatformType::GitHub,

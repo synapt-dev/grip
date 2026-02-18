@@ -66,11 +66,11 @@ pub fn run_status(
     };
 
     // Display table
-    let mut table = Table::new(vec!["Repo", "Branch", "Status", "vs main"]);
+    let mut table = Table::new(vec!["Repo", "Branch", "Status", "vs target"]);
 
     for (status, repo) in &filtered_statuses {
         let status_str = format_status(status, verbose);
-        let main_str = format_main_comparison(status, repo.target_branch());
+        let target_str = format_target_comparison(status, repo.target_branch());
         // Add [ref] suffix for reference repos
         let repo_display = if repo.reference {
             format!("{} [ref]", Output::repo_name(&status.name))
@@ -81,7 +81,7 @@ pub fn run_status(
             &repo_display,
             &Output::branch_name(&status.branch),
             &status_str,
-            &main_str,
+            &target_str,
         ]);
     }
 
@@ -119,13 +119,13 @@ pub fn run_status(
 
             let status = get_repo_status(&manifest_repo_info);
             let status_str = format_status(&status, verbose);
-            let main_str = format_main_comparison(&status, manifest_repo_info.target_branch());
-            let mut manifest_table = Table::new(vec!["Repo", "Branch", "Status", "vs main"]);
+            let target_str = format_target_comparison(&status, manifest_repo_info.target_branch());
+            let mut manifest_table = Table::new(vec!["Repo", "Branch", "Status", "vs target"]);
             manifest_table.add_row(vec![
                 &Output::repo_name("manifest"),
                 &Output::branch_name(&status.branch),
                 &status_str,
-                &main_str,
+                &target_str,
             ]);
             manifest_table.print();
         }
@@ -232,10 +232,10 @@ fn run_status_json(
     Ok(())
 }
 
-/// Format the vs main comparison column
-fn format_main_comparison(status: &RepoStatus, default_branch: &str) -> String {
-    // On default branch - no comparison needed
-    if status.branch == default_branch {
+/// Format the vs target comparison column
+fn format_target_comparison(status: &RepoStatus, target_branch: &str) -> String {
+    // On target branch - no comparison needed
+    if status.branch == target_branch {
         return "-".to_string();
     }
 
@@ -346,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_main_comparison_on_main() {
+    fn test_format_target_comparison_on_main() {
         let status = RepoStatus {
             name: "test".to_string(),
             branch: "main".to_string(),
@@ -360,11 +360,11 @@ mod tests {
             behind_main: 0,
             exists: true,
         };
-        assert_eq!(format_main_comparison(&status, "main"), "-");
+        assert_eq!(format_target_comparison(&status, "main"), "-");
     }
 
     #[test]
-    fn test_format_main_comparison_ahead() {
+    fn test_format_target_comparison_ahead() {
         let status = RepoStatus {
             name: "test".to_string(),
             branch: "feat/test".to_string(),
@@ -378,11 +378,11 @@ mod tests {
             behind_main: 0,
             exists: true,
         };
-        assert_eq!(format_main_comparison(&status, "main"), "↑5");
+        assert_eq!(format_target_comparison(&status, "main"), "↑5");
     }
 
     #[test]
-    fn test_format_main_comparison_behind() {
+    fn test_format_target_comparison_behind() {
         let status = RepoStatus {
             name: "test".to_string(),
             branch: "feat/test".to_string(),
@@ -396,11 +396,11 @@ mod tests {
             behind_main: 3,
             exists: true,
         };
-        assert_eq!(format_main_comparison(&status, "main"), "↓3");
+        assert_eq!(format_target_comparison(&status, "main"), "↓3");
     }
 
     #[test]
-    fn test_format_main_comparison_both() {
+    fn test_format_target_comparison_both() {
         let status = RepoStatus {
             name: "test".to_string(),
             branch: "feat/test".to_string(),
@@ -414,11 +414,11 @@ mod tests {
             behind_main: 5,
             exists: true,
         };
-        assert_eq!(format_main_comparison(&status, "main"), "↑2 ↓5");
+        assert_eq!(format_target_comparison(&status, "main"), "↑2 ↓5");
     }
 
     #[test]
-    fn test_format_main_comparison_in_sync() {
+    fn test_format_target_comparison_in_sync() {
         let status = RepoStatus {
             name: "test".to_string(),
             branch: "feat/test".to_string(),
@@ -432,6 +432,6 @@ mod tests {
             behind_main: 0,
             exists: true,
         };
-        assert_eq!(format_main_comparison(&status, "main"), "✓");
+        assert_eq!(format_target_comparison(&status, "main"), "✓");
     }
 }

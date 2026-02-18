@@ -105,8 +105,8 @@ impl RepoInfo {
     /// Get the effective workflow target branch name (for PR API).
     pub fn target_branch(&self) -> &str {
         self.target_ref
-            .splitn(2, '/')
-            .nth(1)
+            .split_once('/')
+            .map(|x| x.1)
             .unwrap_or(&self.target_ref)
     }
 

@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] - 2026-02-18
+
+### Added
+- **Per-repo workflow `target` branch** (#329, #330)
+  - New `target` field on repos and settings for specifying the workflow target branch (PRs, pull, rebase, prune, sync)
+  - Supports `remote/branch` format (e.g. `origin/develop`, `upstream/main`) for fork workflows
+  - Resolution chain: `repo.target` → `settings.target` → `repo.default_branch` → `settings.default_branch` → `"main"`
+  - `default_branch` is now optional at repo level, inheritable from `settings.default_branch`
+  - `gr repo add --target` flag for setting target on new repos
+  - `gr status` column renamed from "vs main" to "vs target"
+  - Full backward compatibility: existing manifests without `target` behave identically
+
 ## [0.14.1] - 2026-02-13
 
 ### Fixed

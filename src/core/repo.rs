@@ -3,25 +3,31 @@
 use std::path::{Path, PathBuf};
 
 use crate::core::manifest::{
-    Manifest, ManifestRepoConfig, ManifestSettings, PlatformType, RepoAgentConfig, RepoConfig,
+    Manifest, ManifestRepoConfig, ManifestSettings, PlatformType, RemoteConfig, RepoAgentConfig,
+    RepoConfig,
 };
 use crate::core::manifest_paths;
+use std::collections::HashMap;
 
 /// Extended repository information with computed fields
 #[derive(Debug, Clone)]
 pub struct RepoInfo {
     /// Repository name (from manifest key)
     pub name: String,
-    /// Git URL (SSH or HTTPS)
+    /// Git URL (resolved — explicit or derived from remote)
     pub url: String,
     /// Local path relative to manifest root
     pub path: String,
     /// Absolute path on disk
     pub absolute_path: PathBuf,
-    /// Default branch (resolved: repo → settings → "main")
-    pub default_branch: String,
-    /// Effective workflow target ref (resolved, e.g. "origin/develop")
-    pub target_ref: String,
+    /// Upstream revision (resolved: repo → settings → "main")
+    pub revision: String,
+    /// Workflow target branch name (resolved: repo → settings → revision)
+    pub target: String,
+    /// Remote for fetch/rebase (resolved: repo → settings → "origin")
+    pub sync_remote: String,
+    /// Remote for push (resolved: repo → settings → "origin")
+    pub push_remote: String,
     /// Owner/namespace from git URL
     pub owner: String,
     /// Repo name from git URL
@@ -40,16 +46,6 @@ pub struct RepoInfo {
     pub agent: Option<RepoAgentConfig>,
 }
 
-/// Resolve a raw target value into a full remote/branch ref.
-/// Bare branch names (no `/`) get `origin/` prepended.
-fn resolve_target_ref(raw: &str) -> String {
-    if raw.contains('/') {
-        raw.to_string()
-    } else {
-        format!("origin/{}", raw)
-    }
-}
-
 impl RepoInfo {
     /// Create RepoInfo from a manifest RepoConfig
     pub fn from_config(
@@ -57,8 +53,23 @@ impl RepoInfo {
         config: &RepoConfig,
         workspace_root: &PathBuf,
         settings: &ManifestSettings,
+        remotes: Option<&HashMap<String, RemoteConfig>>,
     ) -> Option<Self> {
-        let parsed = parse_git_url(&config.url)?;
+        // Resolve URL: explicit url, or derive from top-level remote
+        let url = config
+            .url
+            .clone()
+            .or_else(|| {
+                config.remote.as_ref().and_then(|remote_name| {
+                    remotes?.get(remote_name).map(|rc| {
+                        let base = rc.fetch.trim_end_matches('/');
+                        format!("{}/{}.git", base, name)
+                    })
+                })
+            })
+            .filter(|u| !u.is_empty())?;
+
+        let parsed = parse_git_url(&url)?;
 
         let absolute_path = workspace_root.join(&config.path);
 
@@ -66,31 +77,46 @@ impl RepoInfo {
             .platform
             .as_ref()
             .map(|p| p.platform_type)
-            .unwrap_or_else(|| detect_platform(&config.url));
+            .unwrap_or_else(|| detect_platform(&url));
         let platform_base_url = config.platform.as_ref().and_then(|p| p.base_url.clone());
 
-        // Resolve default_branch: repo → settings → "main"
-        let default_branch = config
-            .default_branch
+        // Resolve revision: repo → settings → "main"
+        let revision = config
+            .revision
             .clone()
-            .or_else(|| settings.default_branch.clone())
+            .or_else(|| settings.revision.clone())
             .unwrap_or_else(|| "main".to_string());
 
-        // Resolve target: repo.target → settings.target → default_branch
-        let raw_target = config
+        // Resolve target: repo.target → settings.target → revision
+        let target = config
             .target
-            .as_deref()
-            .or(settings.target.as_deref())
-            .unwrap_or(&default_branch);
-        let target_ref = resolve_target_ref(raw_target);
+            .clone()
+            .or_else(|| settings.target.clone())
+            .unwrap_or_else(|| revision.clone());
+
+        // Resolve sync_remote: repo → settings → "origin"
+        let sync_remote = config
+            .sync_remote
+            .clone()
+            .or_else(|| settings.sync_remote.clone())
+            .unwrap_or_else(|| "origin".to_string());
+
+        // Resolve push_remote: repo → settings → "origin"
+        let push_remote = config
+            .push_remote
+            .clone()
+            .or_else(|| settings.push_remote.clone())
+            .unwrap_or_else(|| "origin".to_string());
 
         Some(Self {
             name: name.to_string(),
-            url: config.url.clone(),
+            url,
             path: config.path.clone(),
             absolute_path,
-            default_branch,
-            target_ref,
+            revision,
+            target,
+            sync_remote,
+            push_remote,
             owner: parsed.owner,
             repo: parsed.repo,
             platform_type,
@@ -102,17 +128,14 @@ impl RepoInfo {
         })
     }
 
-    /// Get the effective workflow target branch name (for PR API).
+    /// Get the workflow target branch name (for PR base, prune, etc.)
     pub fn target_branch(&self) -> &str {
-        self.target_ref
-            .split_once('/')
-            .map(|x| x.1)
-            .unwrap_or(&self.target_ref)
+        &self.target
     }
 
-    /// Get the effective workflow target remote name.
-    pub fn target_remote(&self) -> &str {
-        self.target_ref.split('/').next().unwrap_or("origin")
+    /// Build the sync ref: "sync_remote/target" (e.g. "upstream/main")
+    pub fn sync_ref(&self) -> String {
+        format!("{}/{}", self.sync_remote, self.target)
     }
 
     /// Check if the repository exists on disk
@@ -244,7 +267,13 @@ pub fn filter_repos(
         .repos
         .iter()
         .filter_map(|(name, config)| {
-            RepoInfo::from_config(name, config, workspace_root, &manifest.settings)
+            RepoInfo::from_config(
+                name,
+                config,
+                workspace_root,
+                &manifest.settings,
+                manifest.remotes.as_ref(),
+            )
         })
         .filter(|r| include_reference || !r.reference)
         .filter(|r| {
@@ -293,10 +322,13 @@ fn create_manifest_repo_info(
     RepoInfo::from_config(
         "manifest",
         &RepoConfig {
-            url: config.url.clone(),
+            url: Some(config.url.clone()),
+            remote: None,
             path,
-            default_branch: config.default_branch.clone(),
+            revision: config.revision.clone(),
             target: None,
+            sync_remote: None,
+            push_remote: None,
             copyfile: config.copyfile.clone(),
             linkfile: config.linkfile.clone(),
             platform: config.platform.clone(),
@@ -306,6 +338,7 @@ fn create_manifest_repo_info(
         },
         &workspace_root.to_path_buf(),
         settings,
+        None,
     )
 }
 
@@ -417,7 +450,8 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let manifest = Manifest {
-            version: 1,
+            version: 2,
+            remotes: None,
             gripspaces: None,
             manifest: None,
             repos: HashMap::new(),
@@ -437,11 +471,12 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let manifest = Manifest {
-            version: 1,
+            version: 2,
+            remotes: None,
             gripspaces: None,
             manifest: Some(ManifestRepoConfig {
                 url: "git@github.com:user/manifest.git".to_string(),
-                default_branch: Some("main".to_string()),
+                revision: Some("main".to_string()),
                 copyfile: None,
                 linkfile: None,
                 composefile: None,
@@ -471,11 +506,12 @@ mod tests {
         fs::create_dir_all(manifests_dir.join(".git")).unwrap();
 
         let manifest = Manifest {
-            version: 1,
+            version: 2,
+            remotes: None,
             gripspaces: None,
             manifest: Some(ManifestRepoConfig {
                 url: "git@github.com:user/manifest.git".to_string(),
-                default_branch: Some("main".to_string()),
+                revision: Some("main".to_string()),
                 copyfile: None,
                 linkfile: None,
                 composefile: None,
@@ -492,7 +528,7 @@ mod tests {
         let info = result.unwrap();
         assert_eq!(info.name, "manifest");
         assert_eq!(info.path, ".gitgrip/spaces/main");
-        assert_eq!(info.default_branch, "main");
+        assert_eq!(info.revision, "main");
         assert!(!info.reference);
     }
 
@@ -568,10 +604,13 @@ mod tests {
         repos.insert(
             "app".to_string(),
             RepoConfig {
-                url: "git@github.com:user/app.git".to_string(),
+                url: Some("git@github.com:user/app.git".to_string()),
+                remote: None,
                 path: "app".to_string(),
-                default_branch: Some("main".to_string()),
+                revision: Some("main".to_string()),
                 target: None,
+                sync_remote: None,
+                push_remote: None,
                 copyfile: None,
                 linkfile: None,
                 platform: None,
@@ -583,10 +622,13 @@ mod tests {
         repos.insert(
             "lib".to_string(),
             RepoConfig {
-                url: "git@github.com:user/lib.git".to_string(),
+                url: Some("git@github.com:user/lib.git".to_string()),
+                remote: None,
                 path: "lib".to_string(),
-                default_branch: Some("main".to_string()),
+                revision: Some("main".to_string()),
                 target: None,
+                sync_remote: None,
+                push_remote: None,
                 copyfile: None,
                 linkfile: None,
                 platform: None,
@@ -597,7 +639,8 @@ mod tests {
         );
 
         let manifest = Manifest {
-            version: 1,
+            version: 2,
+            remotes: None,
             gripspaces: None,
             manifest: None,
             repos,
@@ -628,10 +671,13 @@ mod tests {
         repos.insert(
             "ref-repo".to_string(),
             RepoConfig {
-                url: "git@github.com:user/ref.git".to_string(),
+                url: Some("git@github.com:user/ref.git".to_string()),
+                remote: None,
                 path: "ref".to_string(),
-                default_branch: Some("main".to_string()),
+                revision: Some("main".to_string()),
                 target: None,
+                sync_remote: None,
+                push_remote: None,
                 copyfile: None,
                 linkfile: None,
                 platform: None,
@@ -643,10 +689,13 @@ mod tests {
         repos.insert(
             "normal".to_string(),
             RepoConfig {
-                url: "git@github.com:user/normal.git".to_string(),
+                url: Some("git@github.com:user/normal.git".to_string()),
+                remote: None,
                 path: "normal".to_string(),
-                default_branch: Some("main".to_string()),
+                revision: Some("main".to_string()),
                 target: None,
+                sync_remote: None,
+                push_remote: None,
                 copyfile: None,
                 linkfile: None,
                 platform: None,
@@ -657,7 +706,8 @@ mod tests {
         );
 
         let manifest = Manifest {
-            version: 1,
+            version: 2,
+            remotes: None,
             gripspaces: None,
             manifest: None,
             repos,
@@ -685,10 +735,13 @@ mod tests {
         repos.insert(
             "frontend".to_string(),
             RepoConfig {
-                url: "git@github.com:user/frontend.git".to_string(),
+                url: Some("git@github.com:user/frontend.git".to_string()),
+                remote: None,
                 path: "frontend".to_string(),
-                default_branch: Some("main".to_string()),
+                revision: Some("main".to_string()),
                 target: None,
+                sync_remote: None,
+                push_remote: None,
                 copyfile: None,
                 linkfile: None,
                 platform: None,
@@ -700,10 +753,13 @@ mod tests {
         repos.insert(
             "backend".to_string(),
             RepoConfig {
-                url: "git@github.com:user/backend.git".to_string(),
+                url: Some("git@github.com:user/backend.git".to_string()),
+                remote: None,
                 path: "backend".to_string(),
-                default_branch: Some("main".to_string()),
+                revision: Some("main".to_string()),
                 target: None,
+                sync_remote: None,
+                push_remote: None,
                 copyfile: None,
                 linkfile: None,
                 platform: None,
@@ -714,7 +770,8 @@ mod tests {
         );
 
         let manifest = Manifest {
-            version: 1,
+            version: 2,
+            remotes: None,
             gripspaces: None,
             manifest: None,
             repos,
@@ -735,18 +792,21 @@ mod tests {
     }
 
     #[test]
-    fn test_default_branch_resolution() {
+    fn test_revision_resolution() {
         use crate::core::manifest::{ManifestSettings, RepoConfig};
         use tempfile::TempDir;
 
         let temp = TempDir::new().unwrap();
 
-        // repo sets default_branch explicitly
+        // repo sets revision explicitly
         let config = RepoConfig {
-            url: "git@github.com:user/app.git".to_string(),
+            url: Some("git@github.com:user/app.git".to_string()),
+            remote: None,
             path: "app".to_string(),
-            default_branch: Some("develop".to_string()),
+            revision: Some("develop".to_string()),
             target: None,
+            sync_remote: None,
+            push_remote: None,
             copyfile: None,
             linkfile: None,
             platform: None,
@@ -756,15 +816,19 @@ mod tests {
         };
         let settings = ManifestSettings::default();
         let info =
-            RepoInfo::from_config("app", &config, &temp.path().to_path_buf(), &settings).unwrap();
-        assert_eq!(info.default_branch, "develop");
+            RepoInfo::from_config("app", &config, &temp.path().to_path_buf(), &settings, None)
+                .unwrap();
+        assert_eq!(info.revision, "develop");
 
-        // repo omits default_branch, inherits from settings
+        // repo omits revision, inherits from settings
         let config = RepoConfig {
-            url: "git@github.com:user/app.git".to_string(),
+            url: Some("git@github.com:user/app.git".to_string()),
+            remote: None,
             path: "app".to_string(),
-            default_branch: None,
+            revision: None,
             target: None,
+            sync_remote: None,
+            push_remote: None,
             copyfile: None,
             linkfile: None,
             platform: None,
@@ -773,31 +837,36 @@ mod tests {
             agent: None,
         };
         let settings = ManifestSettings {
-            default_branch: Some("master".to_string()),
+            revision: Some("master".to_string()),
             ..Default::default()
         };
         let info =
-            RepoInfo::from_config("app", &config, &temp.path().to_path_buf(), &settings).unwrap();
-        assert_eq!(info.default_branch, "master");
+            RepoInfo::from_config("app", &config, &temp.path().to_path_buf(), &settings, None)
+                .unwrap();
+        assert_eq!(info.revision, "master");
 
         // both omit → falls back to "main"
         let settings = ManifestSettings::default();
         let info =
-            RepoInfo::from_config("app", &config, &temp.path().to_path_buf(), &settings).unwrap();
-        assert_eq!(info.default_branch, "main");
+            RepoInfo::from_config("app", &config, &temp.path().to_path_buf(), &settings, None)
+                .unwrap();
+        assert_eq!(info.revision, "main");
     }
 
     #[test]
-    fn test_target_ref_resolution() {
+    fn test_target_resolution() {
         use crate::core::manifest::{ManifestSettings, RepoConfig};
         use tempfile::TempDir;
 
         let temp = TempDir::new().unwrap();
         let base_config = RepoConfig {
-            url: "git@github.com:user/app.git".to_string(),
+            url: Some("git@github.com:user/app.git".to_string()),
+            remote: None,
             path: "app".to_string(),
-            default_branch: Some("main".to_string()),
+            revision: Some("main".to_string()),
             target: None,
+            sync_remote: None,
+            push_remote: None,
             copyfile: None,
             linkfile: None,
             platform: None,
@@ -806,40 +875,39 @@ mod tests {
             agent: None,
         };
 
-        // No target set → falls back to origin/<default_branch>
+        // No target → falls back to revision
         let settings = ManifestSettings::default();
-        let info =
-            RepoInfo::from_config("app", &base_config, &temp.path().to_path_buf(), &settings)
-                .unwrap();
-        assert_eq!(info.target_ref, "origin/main");
+        let info = RepoInfo::from_config(
+            "app",
+            &base_config,
+            &temp.path().to_path_buf(),
+            &settings,
+            None,
+        )
+        .unwrap();
+        assert_eq!(info.target, "main");
         assert_eq!(info.target_branch(), "main");
-        assert_eq!(info.target_remote(), "origin");
+        assert_eq!(info.sync_ref(), "origin/main");
 
-        // Global target set (bare name)
+        // Global target set
         let settings = ManifestSettings {
             target: Some("develop".to_string()),
             ..Default::default()
         };
-        let info =
-            RepoInfo::from_config("app", &base_config, &temp.path().to_path_buf(), &settings)
-                .unwrap();
-        assert_eq!(info.target_ref, "origin/develop");
+        let info = RepoInfo::from_config(
+            "app",
+            &base_config,
+            &temp.path().to_path_buf(),
+            &settings,
+            None,
+        )
+        .unwrap();
+        assert_eq!(info.target, "develop");
         assert_eq!(info.target_branch(), "develop");
-        assert_eq!(info.target_remote(), "origin");
-
-        // Global target set (remote/branch format)
-        let settings = ManifestSettings {
-            target: Some("origin/develop".to_string()),
-            ..Default::default()
-        };
-        let info =
-            RepoInfo::from_config("app", &base_config, &temp.path().to_path_buf(), &settings)
-                .unwrap();
-        assert_eq!(info.target_ref, "origin/develop");
 
         // Per-repo target overrides global
         let config = RepoConfig {
-            target: Some("origin/staging".to_string()),
+            target: Some("staging".to_string()),
             ..base_config.clone()
         };
         let settings = ManifestSettings {
@@ -847,34 +915,131 @@ mod tests {
             ..Default::default()
         };
         let info =
-            RepoInfo::from_config("app", &config, &temp.path().to_path_buf(), &settings).unwrap();
-        assert_eq!(info.target_ref, "origin/staging");
+            RepoInfo::from_config("app", &config, &temp.path().to_path_buf(), &settings, None)
+                .unwrap();
+        assert_eq!(info.target, "staging");
         assert_eq!(info.target_branch(), "staging");
-
-        // Fork workflow: upstream/main
-        let config = RepoConfig {
-            target: Some("upstream/main".to_string()),
-            ..base_config.clone()
-        };
-        let settings = ManifestSettings::default();
-        let info =
-            RepoInfo::from_config("app", &config, &temp.path().to_path_buf(), &settings).unwrap();
-        assert_eq!(info.target_ref, "upstream/main");
-        assert_eq!(info.target_branch(), "main");
-        assert_eq!(info.target_remote(), "upstream");
     }
 
     #[test]
-    fn test_manifest_target_deserialization() {
+    fn test_sync_remote_and_push_remote_resolution() {
+        use crate::core::manifest::{ManifestSettings, RepoConfig};
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let base_config = RepoConfig {
+            url: Some("git@github.com:user/app.git".to_string()),
+            remote: None,
+            path: "app".to_string(),
+            revision: Some("main".to_string()),
+            target: None,
+            sync_remote: None,
+            push_remote: None,
+            copyfile: None,
+            linkfile: None,
+            platform: None,
+            reference: false,
+            groups: vec![],
+            agent: None,
+        };
+
+        // Defaults to "origin"
+        let settings = ManifestSettings::default();
+        let info = RepoInfo::from_config(
+            "app",
+            &base_config,
+            &temp.path().to_path_buf(),
+            &settings,
+            None,
+        )
+        .unwrap();
+        assert_eq!(info.sync_remote, "origin");
+        assert_eq!(info.push_remote, "origin");
+
+        // Settings override
+        let settings = ManifestSettings {
+            sync_remote: Some("upstream".to_string()),
+            push_remote: Some("myfork".to_string()),
+            ..Default::default()
+        };
+        let info = RepoInfo::from_config(
+            "app",
+            &base_config,
+            &temp.path().to_path_buf(),
+            &settings,
+            None,
+        )
+        .unwrap();
+        assert_eq!(info.sync_remote, "upstream");
+        assert_eq!(info.push_remote, "myfork");
+
+        // Per-repo overrides settings
+        let config = RepoConfig {
+            sync_remote: Some("other".to_string()),
+            push_remote: Some("origin".to_string()),
+            ..base_config.clone()
+        };
+        let info =
+            RepoInfo::from_config("app", &config, &temp.path().to_path_buf(), &settings, None)
+                .unwrap();
+        assert_eq!(info.sync_remote, "other");
+        assert_eq!(info.push_remote, "origin");
+    }
+
+    #[test]
+    fn test_url_from_remote() {
+        use crate::core::manifest::{ManifestSettings, RemoteConfig, RepoConfig};
+        use std::collections::HashMap;
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut remotes = HashMap::new();
+        remotes.insert(
+            "upstream".to_string(),
+            RemoteConfig {
+                fetch: "git@github.com:org/".to_string(),
+            },
+        );
+
+        let config = RepoConfig {
+            url: None,
+            remote: Some("upstream".to_string()),
+            path: "myrepo".to_string(),
+            revision: None,
+            target: None,
+            sync_remote: None,
+            push_remote: None,
+            copyfile: None,
+            linkfile: None,
+            platform: None,
+            reference: false,
+            groups: vec![],
+            agent: None,
+        };
+        let settings = ManifestSettings::default();
+        let info = RepoInfo::from_config(
+            "myrepo",
+            &config,
+            &temp.path().to_path_buf(),
+            &settings,
+            Some(&remotes),
+        )
+        .unwrap();
+        assert_eq!(info.url, "git@github.com:org/myrepo.git");
+    }
+
+    #[test]
+    fn test_v1_manifest_migration() {
         use crate::core::manifest::Manifest;
 
-        // target field parses from YAML
+        // v1 manifest with default_branch and target in remote/branch format
         let yaml = r#"
+version: 1
 repos:
   frontend:
     url: git@github.com:org/frontend.git
     path: ./frontend
-    target: origin/develop
+    target: upstream/develop
   backend:
     url: git@github.com:org/backend.git
     path: ./backend
@@ -883,13 +1048,58 @@ settings:
   default_branch: master
 "#;
         let manifest = Manifest::parse(yaml).unwrap();
+        // v1 auto-migrated to v2
+        assert_eq!(manifest.version, 2);
+        // default_branch alias → revision
+        assert_eq!(manifest.settings.revision, Some("master".to_string()));
+        // settings target stays as-is (no remote prefix)
+        assert_eq!(manifest.settings.target, Some("develop".to_string()));
+        // frontend target: "upstream/develop" → target="develop", sync_remote="upstream"
         assert_eq!(
             manifest.repos["frontend"].target,
-            Some("origin/develop".to_string())
+            Some("develop".to_string())
         );
+        assert_eq!(
+            manifest.repos["frontend"].sync_remote,
+            Some("upstream".to_string())
+        );
+        // backend has no target
         assert_eq!(manifest.repos["backend"].target, None);
+    }
+
+    #[test]
+    fn test_v2_manifest_deserialization() {
+        use crate::core::manifest::Manifest;
+
+        let yaml = r#"
+version: 2
+remotes:
+  upstream:
+    fetch: git@github.com:org/
+repos:
+  frontend:
+    url: git@github.com:me/frontend.git
+    path: ./frontend
+    target: develop
+    sync_remote: upstream
+  backend:
+    remote: upstream
+    path: ./backend
+settings:
+  revision: main
+  target: develop
+  push_remote: origin
+"#;
+        let manifest = Manifest::parse(yaml).unwrap();
+        assert_eq!(manifest.version, 2);
+        assert!(manifest.remotes.is_some());
+        assert_eq!(manifest.settings.revision, Some("main".to_string()));
         assert_eq!(manifest.settings.target, Some("develop".to_string()));
-        assert_eq!(manifest.settings.default_branch, Some("master".to_string()));
+        assert_eq!(manifest.settings.push_remote, Some("origin".to_string()));
+        assert_eq!(
+            manifest.repos["frontend"].sync_remote,
+            Some("upstream".to_string())
+        );
     }
 
     #[test]
@@ -897,7 +1107,7 @@ settings:
         use crate::core::manifest::Manifest;
         use tempfile::TempDir;
 
-        // Existing manifest without target field works unchanged
+        // Existing v1 manifest without target field works unchanged
         let yaml = r#"
 repos:
   app:
@@ -912,10 +1122,13 @@ repos:
             &manifest.repos["app"],
             &temp.path().to_path_buf(),
             &manifest.settings,
+            manifest.remotes.as_ref(),
         )
         .unwrap();
-        assert_eq!(info.default_branch, "main");
-        assert_eq!(info.target_ref, "origin/main");
+        assert_eq!(info.revision, "main");
+        assert_eq!(info.target, "main");
         assert_eq!(info.target_branch(), "main");
+        assert_eq!(info.sync_remote, "origin");
+        assert_eq!(info.push_remote, "origin");
     }
 }

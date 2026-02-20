@@ -597,6 +597,63 @@ pub struct SafePullResult {
     pub message: Option<String>,
 }
 
+/// Ensure a named remote is configured in a git repository.
+///
+/// If `remote_name` is "origin", this is a no-op (origin is always set up by clone).
+/// Otherwise, checks if the remote exists in the repo's git config. If not, looks up
+/// the remote in `manifest_remotes` and adds it with URL = `base_fetch_url / repo_name.git`.
+pub fn ensure_remote_configured(
+    repo_path: &std::path::Path,
+    remote_name: &str,
+    repo_name: &str,
+    manifest_remotes: Option<
+        &std::collections::HashMap<String, crate::core::manifest::RemoteConfig>,
+    >,
+) -> Result<(), GitError> {
+    if remote_name == "origin" {
+        return Ok(());
+    }
+
+    // Check if remote already exists
+    let mut cmd = Command::new("git");
+    cmd.args(["remote", "get-url", remote_name])
+        .current_dir(repo_path);
+    log_cmd(&cmd);
+    let output = cmd
+        .output()
+        .map_err(|e| GitError::OperationFailed(e.to_string()))?;
+
+    if output.status.success() {
+        // Remote already exists
+        return Ok(());
+    }
+
+    // Look up in manifest remotes and add it
+    if let Some(rc) = manifest_remotes.and_then(|m| m.get(remote_name)) {
+        let base = rc.fetch.trim_end_matches('/');
+        let url = format!("{}/{}.git", base, repo_name);
+
+        let mut cmd = Command::new("git");
+        cmd.args(["remote", "add", remote_name, &url])
+            .current_dir(repo_path);
+        log_cmd(&cmd);
+        let output = cmd
+            .output()
+            .map_err(|e| GitError::OperationFailed(e.to_string()))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(GitError::OperationFailed(format!(
+                "Failed to add remote '{}': {}",
+                remote_name,
+                stderr.trim()
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

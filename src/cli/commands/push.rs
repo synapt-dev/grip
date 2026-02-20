@@ -37,7 +37,13 @@ pub fn run_push(
         .repos
         .iter()
         .filter_map(|(name, config)| {
-            RepoInfo::from_config(name, config, workspace_root, &manifest.settings)
+            RepoInfo::from_config(
+                name,
+                config,
+                workspace_root,
+                &manifest.settings,
+                manifest.remotes.as_ref(),
+            )
         })
         .filter(|r| !r.reference) // Skip reference repos
         .collect();
@@ -96,9 +102,9 @@ pub fn run_push(
                 };
 
                 let result = if force {
-                    force_push_branch(&git_repo, &branch, "origin")
+                    force_push_branch(&git_repo, &branch, &repo.push_remote)
                 } else {
-                    push_branch(&git_repo, &branch, "origin", set_upstream)
+                    push_branch(&git_repo, &branch, &repo.push_remote, set_upstream)
                 };
 
                 match result {

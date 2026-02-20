@@ -44,7 +44,13 @@ fn show_link_status(
         .repos
         .iter()
         .filter_map(|(name, config)| {
-            RepoInfo::from_config(name, config, workspace_root, &manifest.settings)
+            RepoInfo::from_config(
+                name,
+                config,
+                workspace_root,
+                &manifest.settings,
+                manifest.remotes.as_ref(),
+            )
         })
         .collect();
 
@@ -381,7 +387,13 @@ pub fn apply_links(
         .repos
         .iter()
         .filter_map(|(name, config)| {
-            RepoInfo::from_config(name, config, workspace_root, &manifest.settings)
+            RepoInfo::from_config(
+                name,
+                config,
+                workspace_root,
+                &manifest.settings,
+                manifest.remotes.as_ref(),
+            )
         })
         .collect();
 
@@ -719,10 +731,13 @@ mod tests {
         repos.insert(
             "test-repo".to_string(),
             RepoConfig {
-                url: "git@github.com:user/test-repo.git".to_string(),
+                url: Some("git@github.com:user/test-repo.git".to_string()),
+                remote: None,
                 path: "test-repo".to_string(),
-                default_branch: Some("main".to_string()),
+                revision: Some("main".to_string()),
                 target: None,
+                sync_remote: None,
+                push_remote: None,
                 copyfile: copyfiles,
                 linkfile: linkfiles,
                 platform: None,
@@ -733,15 +748,18 @@ mod tests {
         );
 
         Manifest {
-            version: 1,
+            version: 2,
+            remotes: None,
             gripspaces: None,
             manifest: None,
             repos,
             settings: ManifestSettings {
                 pr_prefix: "[cross-repo]".to_string(),
                 merge_strategy: MergeStrategy::default(),
-                default_branch: None,
+                revision: None,
                 target: None,
+                sync_remote: None,
+                push_remote: None,
             },
             workspace: None,
         }
@@ -907,10 +925,13 @@ mod tests {
         repos.insert(
             "test-repo".to_string(),
             RepoConfig {
-                url: "git@github.com:test/repo.git".to_string(),
+                url: Some("git@github.com:test/repo.git".to_string()),
+                remote: None,
                 path: "test-repo".to_string(),
-                default_branch: Some("main".to_string()),
+                revision: Some("main".to_string()),
                 target: None,
+                sync_remote: None,
+                push_remote: None,
                 copyfile: None,
                 linkfile: None,
                 platform: None,
@@ -921,11 +942,12 @@ mod tests {
         );
 
         let manifest = Manifest {
-            version: 1,
+            version: 2,
+            remotes: None,
             gripspaces: None,
             manifest: Some(ManifestRepoConfig {
                 url: "git@github.com:test/manifest.git".to_string(),
-                default_branch: Some("main".to_string()),
+                revision: Some("main".to_string()),
                 copyfile: Some(vec![CopyFileConfig {
                     src: "CLAUDE.md".to_string(),
                     dest: "CLAUDE.md".to_string(),
@@ -938,8 +960,10 @@ mod tests {
             settings: ManifestSettings {
                 pr_prefix: "[cross-repo]".to_string(),
                 merge_strategy: MergeStrategy::default(),
-                default_branch: None,
+                revision: None,
                 target: None,
+                sync_remote: None,
+                push_remote: None,
             },
             workspace: None,
         };

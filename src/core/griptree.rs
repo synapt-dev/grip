@@ -107,17 +107,17 @@ impl GriptreeConfig {
         Self::load(&path).map(Some)
     }
 
-    /// Resolve upstream branch for a repo, falling back to origin/<default_branch>
+    /// Resolve upstream branch for a repo, falling back to origin/<revision>
     pub fn upstream_for_repo(
         &self,
         repo_name: &str,
-        default_branch: &str,
+        revision: &str,
     ) -> Result<String, GriptreeError> {
         let upstream = self
             .repo_upstreams
             .get(repo_name)
             .cloned()
-            .unwrap_or_else(|| format!("origin/{}", default_branch));
+            .unwrap_or_else(|| format!("origin/{}", revision));
         Self::validate_upstream_ref(&upstream)?;
         Ok(upstream)
     }

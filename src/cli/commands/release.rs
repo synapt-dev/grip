@@ -636,10 +636,7 @@ pub async fn run_release(opts: ReleaseOptions<'_>) -> anyhow::Result<()> {
 
         if !opts.dry_run {
             // Checkout default branch
-            let default_branch = repos
-                .first()
-                .map(|r| r.default_branch.as_str())
-                .unwrap_or("main");
+            let default_branch = repos.first().map(|r| r.revision.as_str()).unwrap_or("main");
             crate::cli::commands::checkout::run_checkout(
                 opts.workspace_root,
                 opts.manifest,
@@ -689,7 +686,7 @@ pub async fn run_release(opts: ReleaseOptions<'_>) -> anyhow::Result<()> {
             target_repo.platform_base_url.as_deref(),
         );
 
-        let default_branch = &target_repo.default_branch;
+        let default_branch = &target_repo.revision;
 
         let result: ReleaseResult = platform
             .create_release(
@@ -1029,8 +1026,10 @@ version = "0.2.0"
                 url: "https://github.com/test/frontend.git".to_string(),
                 path: "./frontend".to_string(),
                 absolute_path: PathBuf::from("/tmp/frontend"),
-                default_branch: "main".to_string(),
-                target_ref: "origin/main".to_string(),
+                revision: "main".to_string(),
+                target: "main".to_string(),
+                sync_remote: "origin".to_string(),
+                push_remote: "origin".to_string(),
                 owner: "test".to_string(),
                 repo: "frontend".to_string(),
                 platform_type: crate::core::manifest::PlatformType::GitHub,
@@ -1045,8 +1044,10 @@ version = "0.2.0"
                 url: "https://github.com/test/backend.git".to_string(),
                 path: "./backend".to_string(),
                 absolute_path: PathBuf::from("/tmp/backend"),
-                default_branch: "main".to_string(),
-                target_ref: "origin/main".to_string(),
+                revision: "main".to_string(),
+                target: "main".to_string(),
+                sync_remote: "origin".to_string(),
+                push_remote: "origin".to_string(),
                 owner: "test".to_string(),
                 repo: "backend".to_string(),
                 platform_type: crate::core::manifest::PlatformType::GitHub,
@@ -1070,8 +1071,10 @@ version = "0.2.0"
                 url: "https://github.com/test/ref.git".to_string(),
                 path: "./ref".to_string(),
                 absolute_path: PathBuf::from("/tmp/ref"),
-                default_branch: "main".to_string(),
-                target_ref: "origin/main".to_string(),
+                revision: "main".to_string(),
+                target: "main".to_string(),
+                sync_remote: "origin".to_string(),
+                push_remote: "origin".to_string(),
                 owner: "test".to_string(),
                 repo: "ref".to_string(),
                 platform_type: crate::core::manifest::PlatformType::GitHub,
@@ -1086,8 +1089,10 @@ version = "0.2.0"
                 url: "https://github.com/test/main.git".to_string(),
                 path: "./main".to_string(),
                 absolute_path: PathBuf::from("/tmp/main"),
-                default_branch: "main".to_string(),
-                target_ref: "origin/main".to_string(),
+                revision: "main".to_string(),
+                target: "main".to_string(),
+                sync_remote: "origin".to_string(),
+                push_remote: "origin".to_string(),
                 owner: "test".to_string(),
                 repo: "main".to_string(),
                 platform_type: crate::core::manifest::PlatformType::GitHub,
@@ -1126,8 +1131,10 @@ version = "0.2.0"
             url: "https://github.com/test/my-repo.git".to_string(),
             path: "./my-repo".to_string(),
             absolute_path: repo_dir,
-            default_branch: "main".to_string(),
-            target_ref: "origin/main".to_string(),
+            revision: "main".to_string(),
+            target: "main".to_string(),
+            sync_remote: "origin".to_string(),
+            push_remote: "origin".to_string(),
             owner: "test".to_string(),
             repo: "my-repo".to_string(),
             platform_type: crate::core::manifest::PlatformType::GitHub,
@@ -1156,8 +1163,10 @@ version = "0.2.0"
             url: "https://github.com/test/ref.git".to_string(),
             path: "./ref".to_string(),
             absolute_path: repo_dir,
-            default_branch: "main".to_string(),
-            target_ref: "origin/main".to_string(),
+            revision: "main".to_string(),
+            target: "main".to_string(),
+            sync_remote: "origin".to_string(),
+            push_remote: "origin".to_string(),
             owner: "test".to_string(),
             repo: "ref".to_string(),
             platform_type: crate::core::manifest::PlatformType::GitHub,

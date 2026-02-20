@@ -45,7 +45,13 @@ pub fn run_rebase(
         .repos
         .iter()
         .filter_map(|(name, config)| {
-            RepoInfo::from_config(name, config, workspace_root, &manifest.settings)
+            RepoInfo::from_config(
+                name,
+                config,
+                workspace_root,
+                &manifest.settings,
+                manifest.remotes.as_ref(),
+            )
         })
         .collect();
 
@@ -84,7 +90,7 @@ pub fn run_rebase(
         let spinner = Output::spinner(&format!("Rebasing {}...", repo.name));
         let target = if use_upstream {
             match griptree_config.as_ref() {
-                Some(cfg) => match cfg.upstream_for_repo(&repo.name, &repo.default_branch) {
+                Some(cfg) => match cfg.upstream_for_repo(&repo.name, &repo.revision) {
                     Ok(upstream) => upstream,
                     Err(e) => {
                         spinner.finish_with_message(format!("{}: error - {}", repo.name, e));
@@ -92,7 +98,7 @@ pub fn run_rebase(
                         continue;
                     }
                 },
-                None => repo.target_ref.clone(),
+                None => repo.sync_ref(),
             }
         } else {
             onto.unwrap_or("origin/main").to_string()
@@ -154,7 +160,13 @@ fn run_rebase_abort(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
         .repos
         .iter()
         .filter_map(|(name, config)| {
-            RepoInfo::from_config(name, config, workspace_root, &manifest.settings)
+            RepoInfo::from_config(
+                name,
+                config,
+                workspace_root,
+                &manifest.settings,
+                manifest.remotes.as_ref(),
+            )
         })
         .collect();
 
@@ -193,7 +205,13 @@ fn run_rebase_continue(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow:
         .repos
         .iter()
         .filter_map(|(name, config)| {
-            RepoInfo::from_config(name, config, workspace_root, &manifest.settings)
+            RepoInfo::from_config(
+                name,
+                config,
+                workspace_root,
+                &manifest.settings,
+                manifest.remotes.as_ref(),
+            )
         })
         .collect();
 

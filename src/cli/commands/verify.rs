@@ -177,7 +177,13 @@ fn check_links(workspace_root: &PathBuf, manifest: &Manifest) -> CheckResult {
         .repos
         .iter()
         .filter_map(|(name, config)| {
-            RepoInfo::from_config(name, config, workspace_root, &manifest.settings)
+            RepoInfo::from_config(
+                name,
+                config,
+                workspace_root,
+                &manifest.settings,
+                manifest.remotes.as_ref(),
+            )
         })
         .collect();
 
@@ -315,8 +321,10 @@ mod tests {
             url: format!("file://{}", path.display()),
             path: name.to_string(),
             absolute_path: path.to_path_buf(),
-            default_branch: "main".to_string(),
-            target_ref: "origin/main".to_string(),
+            revision: "main".to_string(),
+            target: "main".to_string(),
+            sync_remote: "origin".to_string(),
+            push_remote: "origin".to_string(),
             owner: "local".to_string(),
             repo: name.to_string(),
             platform_type: PlatformType::GitHub,

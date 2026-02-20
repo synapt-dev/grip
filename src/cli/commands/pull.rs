@@ -181,7 +181,7 @@ fn pull_single_repo(
             let result = safe_pull_latest_with_mode(
                 &git_repo,
                 repo.target_branch(),
-                repo.target_remote(),
+                &repo.sync_remote,
                 mode,
             );
 

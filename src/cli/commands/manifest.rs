@@ -104,7 +104,7 @@ pub fn run_manifest_schema(format: &str) -> anyhow::Result<()> {
 /// Print schema as markdown documentation
 fn print_schema_markdown() {
     println!(
-        r#"# gitgrip Manifest Schema
+        r#"# gitgrip Manifest Schema (v2)
 
 ## Overview
 
@@ -115,12 +115,22 @@ It is typically located at `.gitgrip/spaces/main/gripspace.yml`.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `version` | integer | Yes | Schema version (currently `1`) |
+| `version` | integer | Yes | Schema version (currently `2`) |
+| `remotes` | object | No | Named remotes with base fetch URLs |
 | `gripspaces` | array | No | Gripspace includes for manifest inheritance |
 | `manifest` | object | No | Self-tracking manifest repo config |
 | `repos` | object | Yes | Repository definitions |
 | `settings` | object | No | Global workspace settings |
 | `workspace` | object | No | Scripts, hooks, and environment |
+
+## Remotes
+
+Named remotes with base fetch URLs. Repos can reference a remote by name
+instead of specifying a full URL. The repo name + `.git` is auto-appended.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `fetch` | string | Yes | Base fetch URL (e.g. `git@github.com:org/`) |
 
 ## Gripspace Includes
 
@@ -149,10 +159,13 @@ Each repository under `repos` supports:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `url` | string | - | Git URL (SSH or HTTPS) |
+| `url` | string | - | Git URL (SSH or HTTPS). Required unless `remote` is set. |
+| `remote` | string | - | Reference to a top-level remote (derives URL from remote base + repo name) |
 | `path` | string | - | Local path relative to workspace |
-| `default_branch` | string | `main` | Default branch (inherits from settings) |
-| `target` | string | - | Workflow target (remote/branch, e.g. origin/develop) |
+| `revision` | string | `main` | Default revision/branch to clone (inherits from settings) |
+| `target` | string | revision | PR base branch name (inherits from settings, then revision) |
+| `sync_remote` | string | `origin` | Remote for fetch/rebase (inherits from settings) |
+| `push_remote` | string | `origin` | Remote for push (inherits from settings) |
 | `groups` | array | `[]` | Groups for selective operations |
 | `reference` | boolean | `false` | Read-only reference repo |
 | `copyfile` | array | - | Files to copy to workspace |
@@ -166,14 +179,24 @@ Each repository under `repos` supports:
 | `agent.lint` | string | - | Lint command |
 | `agent.format` | string | - | Format command |
 
+### Resolution Chains
+
+- **`revision`**: repo > settings > `"main"`
+- **`target`**: repo > settings > revision
+- **`sync_remote`**: repo > settings > `"origin"`
+- **`push_remote`**: repo > settings > `"origin"`
+- **`url`**: explicit `url`, or `remotes[repo.remote].fetch + name + ".git"`
+
 ## Settings
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `pr_prefix` | string | `[cross-repo]` | Prefix for PR titles |
 | `merge_strategy` | string | `all-or-nothing` | `all-or-nothing` or `independent` |
-| `default_branch` | string | `main` | Default branch for all repos |
-| `target` | string | - | Workflow target for all repos (remote/branch) |
+| `revision` | string | `main` | Default revision for all repos |
+| `target` | string | revision | PR base branch for all repos |
+| `sync_remote` | string | `origin` | Default remote for fetch/rebase |
+| `push_remote` | string | `origin` | Default remote for push |
 
 ## Platform Types
 
@@ -193,7 +216,11 @@ Each repository under `repos` supports:
 ## Example
 
 ```yaml
-version: 1
+version: 2
+
+remotes:
+  upstream:
+    fetch: git@github.com:org/
 
 gripspaces:
   - url: https://github.com/org/base-gripspace.git
@@ -201,7 +228,7 @@ gripspaces:
 
 manifest:
   url: git@github.com:org/manifest.git
-  default_branch: main
+  revision: main
   composefile:
     - dest: CLAUDE.md
       parts:
@@ -211,8 +238,9 @@ manifest:
 
 repos:
   frontend:
-    url: git@github.com:org/frontend.git
+    url: git@github.com:me/frontend.git
     path: ./frontend
+    sync_remote: upstream
     groups: [core, web]
     agent:
       description: "React web application"
@@ -222,8 +250,10 @@ repos:
       lint: "pnpm lint"
 
   backend:
-    url: git@github.com:org/backend.git
+    remote: upstream
     path: ./backend
+    revision: master
+    target: staging
     groups: [core, api]
     agent:
       description: "Rust API server"
@@ -236,6 +266,8 @@ repos:
 settings:
   pr_prefix: "[multi-repo]"
   merge_strategy: all-or-nothing
+  revision: main
+  target: develop
 
 workspace:
   agent:
@@ -249,6 +281,13 @@ workspace:
     build:
       command: "npm run build"
 ```
+
+## v1 Backward Compatibility
+
+v1 manifests are auto-migrated when parsed:
+- `default_branch` is accepted as an alias for `revision`
+- `target` containing "/" (e.g. `upstream/develop`) is split into `target=develop`, `sync_remote=upstream`
+- Version is upgraded to 2 internally
 "#
     );
 }

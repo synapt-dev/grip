@@ -552,7 +552,7 @@ pub fn run_branch(opts: BranchOptions<'_>) -> anyhow::Result<()> {
                         results.push(JsonBranch {
                             repo: repo.name.clone(),
                             branch: current,
-                            default_branch: repo.default_branch.clone(),
+                            default_branch: repo.revision.clone(),
                         });
                     }
                 }

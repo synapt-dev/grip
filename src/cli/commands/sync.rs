@@ -101,6 +101,7 @@ pub async fn run_sync(
             griptree_config.as_ref(),
             griptree_branch.as_deref(),
             reset_refs,
+            manifest.remotes.as_ref(),
         )?
     } else {
         sync_parallel(
@@ -110,6 +111,7 @@ pub async fn run_sync(
             griptree_config.clone(),
             griptree_branch.clone(),
             reset_refs,
+            manifest.remotes.clone(),
         )
         .await?
     };
@@ -354,6 +356,9 @@ fn sync_sequential(
     griptree_config: Option<&GriptreeConfig>,
     griptree_branch: Option<&str>,
     reset_refs: bool,
+    manifest_remotes: Option<
+        &std::collections::HashMap<String, crate::core::manifest::RemoteConfig>,
+    >,
 ) -> anyhow::Result<Vec<SyncResult>> {
     let mut results = Vec::new();
 
@@ -366,6 +371,7 @@ fn sync_sequential(
             griptree_config,
             griptree_branch,
             reset_refs,
+            manifest_remotes,
         )?;
         results.push(result);
     }
@@ -382,9 +388,13 @@ async fn sync_parallel(
     griptree_config: Option<GriptreeConfig>,
     griptree_branch: Option<String>,
     reset_refs: bool,
+    manifest_remotes: Option<
+        std::collections::HashMap<String, crate::core::manifest::RemoteConfig>,
+    >,
 ) -> anyhow::Result<Vec<SyncResult>> {
     let results: Arc<Mutex<Vec<SyncResult>>> = Arc::new(Mutex::new(Vec::new()));
     let mut join_set: JoinSet<anyhow::Result<()>> = JoinSet::new();
+    let manifest_remotes = Arc::new(manifest_remotes);
 
     // Show a single spinner for all repos
     let spinner = Output::spinner(&format!("Syncing {} repos in parallel...", repos.len()));
@@ -393,6 +403,7 @@ async fn sync_parallel(
         let results = Arc::clone(&results);
         let griptree_config = griptree_config.clone();
         let griptree_branch = griptree_branch.clone();
+        let manifest_remotes = Arc::clone(&manifest_remotes);
 
         join_set.spawn_blocking(move || {
             let result = sync_single_repo(
@@ -403,6 +414,7 @@ async fn sync_parallel(
                 griptree_config.as_ref(),
                 griptree_branch.as_deref(),
                 reset_refs,
+                manifest_remotes.as_ref().as_ref(),
             )?;
             results.lock().expect("mutex poisoned").push(result);
             Ok(())
@@ -445,7 +457,7 @@ fn sync_griptree_upstream(
     quiet: bool,
 ) -> SyncResult {
     let upstream = match griptree_config {
-        Some(cfg) => match cfg.upstream_for_repo(&repo.name, &repo.default_branch) {
+        Some(cfg) => match cfg.upstream_for_repo(&repo.name, &repo.revision) {
             Ok(upstream) => upstream,
             Err(e) => {
                 let msg = format!("error - {}", e);
@@ -461,7 +473,7 @@ fn sync_griptree_upstream(
                 };
             }
         },
-        None => repo.target_ref.clone(),
+        None => repo.sync_ref(),
     };
 
     let remote = upstream.split('/').next().unwrap_or("origin");
@@ -571,7 +583,7 @@ fn sync_reference_reset(
     quiet: bool,
 ) -> SyncResult {
     let upstream = match griptree_config {
-        Some(cfg) => match cfg.upstream_for_repo(&repo.name, &repo.default_branch) {
+        Some(cfg) => match cfg.upstream_for_repo(&repo.name, &repo.revision) {
             Ok(upstream) => upstream,
             Err(e) => {
                 let msg = format!("error - {}", e);
@@ -587,12 +599,12 @@ fn sync_reference_reset(
                 };
             }
         },
-        None => repo.target_ref.clone(),
+        None => repo.sync_ref(),
     };
 
     let mut upstream_parts = upstream.splitn(2, '/');
     let remote = upstream_parts.next().unwrap_or("origin");
-    let upstream_branch = upstream_parts.next().unwrap_or(&repo.default_branch);
+    let upstream_branch = upstream_parts.next().unwrap_or(&repo.revision);
 
     if let Ok(is_dirty) = has_uncommitted_changes(git_repo) {
         if is_dirty {
@@ -712,6 +724,9 @@ fn sync_single_repo(
     griptree_config: Option<&GriptreeConfig>,
     griptree_branch: Option<&str>,
     reset_refs: bool,
+    manifest_remotes: Option<
+        &std::collections::HashMap<String, crate::core::manifest::RemoteConfig>,
+    >,
 ) -> anyhow::Result<SyncResult> {
     let spinner = if show_spinner {
         Some(Output::spinner(&format!("Pulling {}...", repo.name)))
@@ -725,15 +740,15 @@ fn sync_single_repo(
             s.set_message(format!("Cloning {}...", repo.name));
         }
 
-        match clone_repo(&repo.url, &repo.absolute_path, Some(&repo.default_branch)) {
+        match clone_repo(&repo.url, &repo.absolute_path, Some(&repo.revision)) {
             Ok(_) => {
                 // Check actual branch after clone
                 let clone_msg = if let Ok(git_repo) = open_repo(&repo.absolute_path) {
                     if let Ok(actual_branch) = get_current_branch(&git_repo) {
-                        if actual_branch != repo.default_branch {
+                        if actual_branch != repo.revision {
                             format!(
                                 "cloned (on '{}', manifest specifies '{}')",
-                                actual_branch, repo.default_branch
+                                actual_branch, repo.revision
                             )
                         } else {
                             "cloned".to_string()
@@ -776,6 +791,39 @@ fn sync_single_repo(
     // Pull existing repo
     match open_repo(&repo.absolute_path) {
         Ok(git_repo) => {
+            // Ensure declared remotes are configured (e.g., upstream)
+            use crate::git::remote::ensure_remote_configured;
+            if repo.sync_remote != "origin" {
+                if let Err(e) = ensure_remote_configured(
+                    &repo.absolute_path,
+                    &repo.sync_remote,
+                    &repo.name,
+                    manifest_remotes,
+                ) {
+                    if !quiet {
+                        Output::warning(&format!(
+                            "{}: could not configure sync remote '{}': {}",
+                            repo.name, repo.sync_remote, e
+                        ));
+                    }
+                }
+            }
+            if repo.push_remote != "origin" && repo.push_remote != repo.sync_remote {
+                if let Err(e) = ensure_remote_configured(
+                    &repo.absolute_path,
+                    &repo.push_remote,
+                    &repo.name,
+                    manifest_remotes,
+                ) {
+                    if !quiet {
+                        Output::warning(&format!(
+                            "{}: could not configure push remote '{}': {}",
+                            repo.name, repo.push_remote, e
+                        ));
+                    }
+                }
+            }
+
             if repo.reference && reset_refs {
                 let result =
                     sync_reference_reset(repo, &git_repo, griptree_config, spinner.as_ref(), quiet);
@@ -799,8 +847,7 @@ fn sync_single_repo(
                 );
                 Ok(result)
             } else {
-                let result =
-                    safe_pull_latest(&git_repo, repo.target_branch(), repo.target_remote());
+                let result = safe_pull_latest(&git_repo, repo.target_branch(), &repo.sync_remote);
 
                 match result {
                     Ok(pull_result) => {

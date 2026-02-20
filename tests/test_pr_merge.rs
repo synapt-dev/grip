@@ -200,7 +200,7 @@ async fn test_pr_merge_force_bypasses_checks() {
 
     // Point manifest at mock GitHub
     let repo_config = manifest.repos.get_mut("app").unwrap();
-    repo_config.url = "https://github.com/owner/repo.git".to_string();
+    repo_config.url = Some("https://github.com/owner/repo.git".to_string());
     repo_config.platform = Some(PlatformConfig {
         platform_type: PlatformType::GitHub,
         base_url: Some(server.uri()),
@@ -259,7 +259,7 @@ async fn test_pr_merge_branch_behind_suggests_update() {
     );
 
     let repo_config = manifest.repos.get_mut("app").unwrap();
-    repo_config.url = "https://github.com/owner/repo.git".to_string();
+    repo_config.url = Some("https://github.com/owner/repo.git".to_string());
     repo_config.platform = Some(PlatformConfig {
         platform_type: PlatformType::GitHub,
         base_url: Some(server.uri()),

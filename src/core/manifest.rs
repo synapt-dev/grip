@@ -158,20 +158,40 @@ pub struct WorkspaceAgentConfig {
     pub targets: Option<Vec<AgentContextTarget>>,
 }
 
+/// Remote configuration (top-level named remotes with base fetch URLs)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteConfig {
+    /// Base fetch URL — repo name + ".git" is auto-appended
+    pub fetch: String,
+}
+
 /// Repository configuration in the manifest
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoConfig {
-    /// Git URL (SSH or HTTPS)
-    pub url: String,
+    /// Git URL (SSH or HTTPS). Required unless `remote` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Reference to a top-level remote (derives URL from remote's fetch base + repo name)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
     /// Local path relative to manifest root
     pub path: String,
-    /// Default branch (e.g., "main", "master"). Inherits from settings.default_branch if not set.
+    /// Upstream revision to sync/clone (e.g. "main", "master"). Inherits from settings.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "default_branch"
+    )]
+    pub revision: Option<String>,
+    /// PR base branch (just a branch name, e.g. "develop"). Falls back to revision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_branch: Option<String>,
-    /// Workflow target branch (remote/branch format, e.g. "origin/develop").
-    /// Used for PRs, pull, rebase, prune, sync. Falls back to default_branch.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
+    /// Remote for fetch/rebase operations (e.g. "origin", "upstream"). Inherits from settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_remote: Option<String>,
+    /// Remote for push operations (e.g. "origin"). Inherits from settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push_remote: Option<String>,
     /// Optional file copies
     #[serde(skip_serializing_if = "Option::is_none")]
     pub copyfile: Option<Vec<CopyFileConfig>>,
@@ -197,9 +217,13 @@ pub struct RepoConfig {
 pub struct ManifestRepoConfig {
     /// Git URL for the manifest repository
     pub url: String,
-    /// Default branch (inherits from settings.default_branch if not set)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_branch: Option<String>,
+    /// Upstream revision (inherits from settings.revision if not set)
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "default_branch"
+    )]
+    pub revision: Option<String>,
     /// Optional file copies
     #[serde(skip_serializing_if = "Option::is_none")]
     pub copyfile: Option<Vec<CopyFileConfig>>,
@@ -234,13 +258,23 @@ pub struct ManifestSettings {
     /// Merge strategy for linked PRs
     #[serde(default)]
     pub merge_strategy: MergeStrategy,
-    /// Default branch for all repos (overridden by per-repo default_branch). Defaults to "main".
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_branch: Option<String>,
-    /// Default workflow target for all repos (remote/branch format, e.g. "origin/develop").
-    /// Overridden by per-repo target.
+    /// Upstream revision for all repos (e.g. "main"). Overridden by per-repo revision.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "default_branch"
+    )]
+    pub revision: Option<String>,
+    /// PR base branch for all repos (just a branch name, e.g. "develop").
+    /// Overridden by per-repo target. Falls back to revision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
+    /// Remote for fetch/rebase operations (default: "origin"). Overridden by per-repo sync_remote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_remote: Option<String>,
+    /// Remote for push operations (default: "origin"). Overridden by per-repo push_remote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push_remote: Option<String>,
 }
 
 fn default_pr_prefix() -> String {
@@ -252,8 +286,10 @@ impl Default for ManifestSettings {
         Self {
             pr_prefix: default_pr_prefix(),
             merge_strategy: MergeStrategy::default(),
-            default_branch: None,
+            revision: None,
             target: None,
+            sync_remote: None,
+            push_remote: None,
         }
     }
 }
@@ -416,6 +452,9 @@ pub struct Manifest {
     /// Schema version
     #[serde(default = "default_version")]
     pub version: u32,
+    /// Named remotes with base fetch URLs (v2)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remotes: Option<HashMap<String, RemoteConfig>>,
     /// Gripspace includes (composable manifest inheritance)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gripspaces: Option<Vec<GripspaceConfig>>,
@@ -433,7 +472,7 @@ pub struct Manifest {
 }
 
 fn default_version() -> u32 {
-    1
+    2
 }
 
 impl Manifest {
@@ -448,13 +487,47 @@ impl Manifest {
     /// Use this when you need to process the manifest before validation,
     /// e.g., resolving gripspace includes that merge additional repos.
     pub fn parse_raw(yaml: &str) -> Result<Self, ManifestError> {
-        let manifest: Manifest = serde_yaml::from_str(yaml)?;
+        let mut manifest: Manifest = serde_yaml::from_str(yaml)?;
+        manifest.migrate_v1();
         Ok(manifest)
     }
 
-    /// Parse a manifest from a YAML string (deserialize + validate)
+    /// Migrate v1 manifests to v2 semantics.
+    /// - `default_branch` → `revision` is handled by serde `alias`
+    /// - `target` containing "/" is split into (sync_remote, target)
+    fn migrate_v1(&mut self) {
+        if self.version > 1 {
+            return;
+        }
+        // Migrate settings.target: "origin/develop" → target="develop", sync_remote="origin"
+        if let Some(ref target) = self.settings.target {
+            if let Some((remote, branch)) = target.split_once('/') {
+                if remote != "origin" {
+                    self.settings.sync_remote = Some(remote.to_string());
+                }
+                self.settings.target = Some(branch.to_string());
+            }
+        }
+        // Migrate per-repo targets
+        for repo in self.repos.values_mut() {
+            // Ensure v1 repos that had a required `url` field get it wrapped in Some
+            // (serde alias handles default_branch → revision)
+            if let Some(ref target) = repo.target {
+                if let Some((remote, branch)) = target.split_once('/') {
+                    if remote != "origin" && repo.sync_remote.is_none() {
+                        repo.sync_remote = Some(remote.to_string());
+                    }
+                    repo.target = Some(branch.to_string());
+                }
+            }
+        }
+        self.version = 2;
+    }
+
+    /// Parse a manifest from a YAML string (deserialize + validate + migrate)
     pub fn parse(yaml: &str) -> Result<Self, ManifestError> {
         let manifest = Self::parse_raw(yaml)?;
+        // Note: migrate_v1() is already called in parse_raw()
         manifest.validate()?;
         Ok(manifest)
     }
@@ -544,12 +617,30 @@ impl Manifest {
     }
 
     fn validate_repo_config(&self, name: &str, repo: &RepoConfig) -> Result<(), ManifestError> {
-        // URL must be non-empty
-        if repo.url.is_empty() {
+        // Must have either url or remote
+        let has_url = repo.url.as_ref().is_some_and(|u| !u.is_empty());
+        let has_remote = repo.remote.as_ref().is_some_and(|r| !r.is_empty());
+        if !has_url && !has_remote {
             return Err(ManifestError::ValidationError(format!(
-                "Repository '{}' must have a URL",
+                "Repository '{}' must have either a 'url' or 'remote'",
                 name
             )));
+        }
+
+        // If remote is set, verify it exists in top-level remotes
+        if let Some(ref remote_name) = repo.remote {
+            if !remote_name.is_empty() {
+                let remote_exists = self
+                    .remotes
+                    .as_ref()
+                    .is_some_and(|r| r.contains_key(remote_name));
+                if !remote_exists {
+                    return Err(ManifestError::ValidationError(format!(
+                        "Repository '{}' references remote '{}' which is not defined in top-level remotes",
+                        name, remote_name
+                    )));
+                }
+            }
         }
 
         // Path must be non-empty
@@ -801,7 +892,7 @@ workspace:
       command: npm run build
 "#;
         let manifest = Manifest::parse(yaml).unwrap();
-        assert_eq!(manifest.version, 1);
+        assert_eq!(manifest.version, 2); // v1 auto-migrated to v2
         assert!(manifest.manifest.is_some());
         assert_eq!(manifest.repos.len(), 1);
         assert_eq!(manifest.settings.pr_prefix, "[multi-repo]");

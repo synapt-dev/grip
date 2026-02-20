@@ -205,10 +205,13 @@ fn run_benchmark_operation(name: &str) -> Result<()> {
         }
         "url-parse" => {
             let config = RepoConfig {
-                url: "git@github.com:user/repo.git".to_string(),
+                url: Some("git@github.com:user/repo.git".to_string()),
+                remote: None,
                 path: "repo".to_string(),
-                default_branch: Some("main".to_string()),
+                revision: Some("main".to_string()),
                 target: None,
+                sync_remote: None,
+                push_remote: None,
                 copyfile: None,
                 linkfile: None,
                 platform: None,
@@ -217,8 +220,13 @@ fn run_benchmark_operation(name: &str) -> Result<()> {
                 agent: None,
             };
             let workspace = std::path::PathBuf::from("/workspace");
-            let _ =
-                RepoInfo::from_config("repo", &config, &workspace, &ManifestSettings::default());
+            let _ = RepoInfo::from_config(
+                "repo",
+                &config,
+                &workspace,
+                &ManifestSettings::default(),
+                None,
+            );
             Ok(())
         }
         _ => Err(anyhow::anyhow!(

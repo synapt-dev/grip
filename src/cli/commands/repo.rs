@@ -18,7 +18,13 @@ pub fn run_repo_list(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::R
         .repos
         .iter()
         .filter_map(|(name, config)| {
-            RepoInfo::from_config(name, config, workspace_root, &manifest.settings)
+            RepoInfo::from_config(
+                name,
+                config,
+                workspace_root,
+                &manifest.settings,
+                manifest.remotes.as_ref(),
+            )
         })
         .collect();
 
@@ -31,7 +37,7 @@ pub fn run_repo_list(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::R
             "not cloned"
         };
 
-        table.add_row(vec![&repo.name, &repo.path, &repo.default_branch, status]);
+        table.add_row(vec![&repo.name, &repo.path, &repo.revision, status]);
     }
 
     table.print();

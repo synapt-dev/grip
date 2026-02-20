@@ -115,7 +115,13 @@ pub fn run_tree_add(
         .repos
         .iter()
         .filter_map(|(name, config)| {
-            RepoInfo::from_config(name, config, workspace_root, &manifest.settings)
+            RepoInfo::from_config(
+                name,
+                config,
+                workspace_root,
+                &manifest.settings,
+                manifest.remotes.as_ref(),
+            )
         })
         .collect();
 
@@ -161,7 +167,7 @@ pub fn run_tree_add(
         // For reference repos: try to sync with upstream before creating worktree
         // Sync failure is not fatal - we'll create the worktree with current state
         let sync_warning = if repo.reference {
-            match sync_repo_with_upstream(&repo.absolute_path, &repo.default_branch) {
+            match sync_repo_with_upstream(&repo.absolute_path, &repo.revision) {
                 Ok(_) => None,
                 Err(e) => Some(format!("sync skipped: {}", e)),
             }
@@ -175,10 +181,10 @@ pub fn run_tree_add(
             &repo.absolute_path,
             &worktree_path,
             branch,
-            Some(&repo.default_branch),
+            Some(&repo.revision),
         ) {
             Ok(_) => {
-                let expected_upstream = format!("origin/{}", repo.default_branch);
+                let expected_upstream = format!("origin/{}", repo.revision);
                 let upstream_warning = match open_repo(&worktree_path) {
                     Ok(repo_handle) => {
                         match set_branch_upstream_ref(&repo_handle, branch, &expected_upstream) {
@@ -212,7 +218,7 @@ pub fn run_tree_add(
                 } else {
                     format!(
                         "{}: created on {} (from {})",
-                        repo.name, branch, repo.default_branch
+                        repo.name, branch, repo.revision
                     )
                 };
                 if let Some(warning) = upstream_warning {
@@ -279,9 +285,9 @@ pub fn run_tree_add(
         let upstream = match open_repo(&worktree_path) {
             Ok(repo_handle) => match get_upstream_branch(&repo_handle, Some(branch)) {
                 Ok(Some(name)) => name,
-                _ => format!("origin/{}", repo.default_branch),
+                _ => format!("origin/{}", repo.revision),
             },
-            Err(_) => format!("origin/{}", repo.default_branch),
+            Err(_) => format!("origin/{}", repo.revision),
         };
 
         repo_upstreams.insert(repo.name.clone(), upstream);
@@ -971,16 +977,16 @@ fn create_worktree(
     Ok(())
 }
 
-/// Sync reference repo with upstream default branch
-fn sync_repo_with_upstream(repo_path: &PathBuf, default_branch: &str) -> anyhow::Result<()> {
+/// Sync reference repo with upstream revision
+fn sync_repo_with_upstream(repo_path: &PathBuf, revision: &str) -> anyhow::Result<()> {
     let repo = open_repo(repo_path)?;
 
-    // Fetch from origin main to ensure up-to-date
+    // Fetch from origin to ensure up-to-date
     let mut remote = repo.find_remote("origin")?;
-    remote.fetch(&[default_branch], None, None)?;
+    remote.fetch(&[revision], None, None)?;
 
-    // Reset main worktree HEAD to upstream default branch
-    let upstream_ref = format!("refs/remotes/origin/{}", default_branch);
+    // Reset main worktree HEAD to upstream revision
+    let upstream_ref = format!("refs/remotes/origin/{}", revision);
     let upstream_commit = repo.revparse_single(&upstream_ref)?.peel_to_commit()?;
     repo.reset(upstream_commit.as_object(), git2::ResetType::Hard, None)?;
 

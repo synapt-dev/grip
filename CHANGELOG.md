@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Breaking Changes
+- **Manifest v2 schema** (#332)
+  - `default_branch` renamed to `revision` (aligns with git-repo terminology)
+  - `target` is now a branch name only (e.g. `develop`), not `remote/branch` format
+  - New `sync_remote` field: remote for fetch/rebase (default: `origin`)
+  - New `push_remote` field: remote for push (default: `origin`)
+  - New top-level `remotes` section for named remotes with base fetch URLs
+  - Repos can use `remote: upstream` instead of explicit `url` (URL derived from remote base + repo name + `.git`)
+  - Default version bumped to 2
+  - v1 manifests auto-migrate: `default_branch` aliased to `revision`, `target: upstream/develop` split into `target: develop` + `sync_remote: upstream`
+
+### Added
+- **Named remotes** — declare remotes at manifest top level with base URLs for URL derivation
+- **`ensure_remote_configured`** — `gr sync` auto-configures declared remotes (e.g. upstream) in repos
+- **Fork workflow support** — separate `sync_remote` (fetch from upstream) and `push_remote` (push to fork)
+
 ## [0.15.0] - 2026-02-18
 
 ### Added

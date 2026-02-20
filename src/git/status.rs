@@ -220,9 +220,9 @@ pub fn get_repo_status(repo_info: &RepoInfo) -> RepoStatus {
 
     match get_cached_status(&repo_info.absolute_path) {
         Ok(status) => {
-            // Get ahead/behind counts vs default branch
+            // Get ahead/behind counts vs target branch
             let (ahead_main, behind_main) =
-                get_ahead_behind_branch(&repo_info.absolute_path, &repo_info.default_branch)
+                get_ahead_behind_branch(&repo_info.absolute_path, &repo_info.revision)
                     .unwrap_or((0, 0));
 
             RepoStatus {

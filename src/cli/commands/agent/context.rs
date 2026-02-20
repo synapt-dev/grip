@@ -81,7 +81,7 @@ fn output_json(
             name: repo.name.clone(),
             path: repo.path.clone(),
             url: repo.url.clone(),
-            default_branch: repo.default_branch.clone(),
+            default_branch: repo.revision.clone(),
             current_branch: status.branch.clone(),
             clean: status.clean,
             exists: status.exists,
@@ -245,10 +245,7 @@ fn output_markdown(
                 parts.join(", ")
             };
 
-            println!(
-                "- Branch: {} (default: {})",
-                status.branch, repo.default_branch
-            );
+            println!("- Branch: {} (default: {})", status.branch, repo.revision);
             println!("- Status: {}", status_str);
         }
 

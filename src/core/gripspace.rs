@@ -455,7 +455,7 @@ pub fn resolve_all_gripspaces(
     {
         manifest.manifest = Some(crate::core::manifest::ManifestRepoConfig {
             url: String::new(),
-            default_branch: None,
+            revision: None,
             copyfile: None,
             linkfile: None,
             composefile: None,
@@ -753,6 +753,7 @@ mod tests {
     fn test_resolve_no_gripspaces() {
         let mut manifest = Manifest {
             version: 1,
+            remotes: None,
             gripspaces: None,
             manifest: None,
             repos: HashMap::new(),
@@ -769,6 +770,7 @@ mod tests {
     fn test_resolve_empty_gripspaces() {
         let mut manifest = Manifest {
             version: 1,
+            remotes: None,
             gripspaces: Some(vec![]),
             manifest: None,
             repos: HashMap::new(),
@@ -792,6 +794,7 @@ mod tests {
 
         let mut manifest = Manifest {
             version: 1,
+            remotes: None,
             gripspaces: Some(vec![GripspaceConfig {
                 url: "https://github.com/user/test-gripspace.git".to_string(),
                 rev: None,
@@ -831,6 +834,7 @@ repos:
 
         let mut manifest = Manifest {
             version: 1,
+            remotes: None,
             gripspaces: Some(vec![GripspaceConfig {
                 url: "https://github.com/user/base-gripspace.git".to_string(),
                 rev: None,
@@ -841,10 +845,13 @@ repos:
                 m.insert(
                     "local-repo".to_string(),
                     crate::core::manifest::RepoConfig {
-                        url: "https://github.com/user/local.git".to_string(),
+                        url: Some("https://github.com/user/local.git".to_string()),
+                        remote: None,
                         path: "./local".to_string(),
-                        default_branch: Some("main".to_string()),
+                        revision: Some("main".to_string()),
                         target: None,
+                        sync_remote: None,
+                        push_remote: None,
                         copyfile: None,
                         linkfile: None,
                         platform: None,
@@ -891,6 +898,7 @@ repos:
 
         let mut manifest = Manifest {
             version: 1,
+            remotes: None,
             gripspaces: Some(vec![GripspaceConfig {
                 url: "https://github.com/user/base-gripspace.git".to_string(),
                 rev: None,
@@ -901,10 +909,13 @@ repos:
                 m.insert(
                     "my-repo".to_string(),
                     crate::core::manifest::RepoConfig {
-                        url: "https://github.com/user/local-version.git".to_string(),
+                        url: Some("https://github.com/user/local-version.git".to_string()),
+                        remote: None,
                         path: "./my-repo-local".to_string(),
-                        default_branch: Some("main".to_string()),
+                        revision: Some("main".to_string()),
                         target: None,
+                        sync_remote: None,
+                        push_remote: None,
                         copyfile: None,
                         linkfile: None,
                         platform: None,
@@ -925,7 +936,10 @@ repos:
         // Local repo should win
         assert_eq!(manifest.repos.len(), 1);
         let repo = manifest.repos.get("my-repo").unwrap();
-        assert_eq!(repo.url, "https://github.com/user/local-version.git");
+        assert_eq!(
+            repo.url,
+            Some("https://github.com/user/local-version.git".to_string())
+        );
         assert_eq!(repo.path, "./my-repo-local");
     }
 
@@ -976,6 +990,7 @@ repos:
 
         let mut manifest = Manifest {
             version: 1,
+            remotes: None,
             gripspaces: Some(vec![GripspaceConfig {
                 url: "https://github.com/user/self-ref.git".to_string(),
                 rev: None,
@@ -1033,6 +1048,7 @@ repos:
 
         let mut manifest = Manifest {
             version: 1,
+            remotes: None,
             gripspaces: Some(vec![GripspaceConfig {
                 url: "https://github.com/user/gs-0.git".to_string(),
                 rev: None,
@@ -1079,6 +1095,7 @@ workspace:
 
         let mut manifest = Manifest {
             version: 1,
+            remotes: None,
             gripspaces: Some(vec![GripspaceConfig {
                 url: "https://github.com/user/base-gripspace.git".to_string(),
                 rev: None,
@@ -1202,6 +1219,7 @@ repos:
 
         let mut manifest = Manifest {
             version: 1,
+            remotes: None,
             gripspaces: Some(vec![GripspaceConfig {
                 url: "https://github.com/org/a.git".to_string(),
                 rev: None,
@@ -1284,6 +1302,7 @@ repos:
 
         let mut manifest = Manifest {
             version: 1,
+            remotes: None,
             gripspaces: Some(vec![GripspaceConfig {
                 url: "https://github.com/root/root-space.git".to_string(),
                 rev: None,

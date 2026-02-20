@@ -646,10 +646,13 @@ fn generate_manifest(repos: &[DiscoveredRepo]) -> Manifest {
         repo_configs.insert(
             repo.name.clone(),
             RepoConfig {
-                url,
+                url: Some(url),
+                remote: None,
                 path: repo.path.clone(),
-                default_branch: Some(repo.default_branch.clone()),
+                revision: Some(repo.default_branch.clone()),
                 target: None,
+                sync_remote: None,
+                push_remote: None,
                 copyfile: None,
                 linkfile: None,
                 platform: None,
@@ -662,6 +665,7 @@ fn generate_manifest(repos: &[DiscoveredRepo]) -> Manifest {
 
     Manifest {
         version: 1,
+        remotes: None,
         gripspaces: None,
         manifest: None,
         repos: repo_configs,
@@ -1063,16 +1067,20 @@ mod tests {
         assert!(manifest.repos.contains_key("backend"));
         assert_eq!(
             manifest.repos["frontend"].url,
-            "git@github.com:org/frontend.git"
+            Some("git@github.com:org/frontend.git".to_string())
         );
         assert_eq!(
-            manifest.repos["frontend"].default_branch,
+            manifest.repos["frontend"].revision,
             Some("main".to_string())
         );
         // Backend should have placeholder URL
-        assert!(manifest.repos["backend"].url.contains("OWNER"));
+        assert!(manifest.repos["backend"]
+            .url
+            .as_deref()
+            .unwrap()
+            .contains("OWNER"));
         assert_eq!(
-            manifest.repos["backend"].default_branch,
+            manifest.repos["backend"].revision,
             Some("master".to_string())
         );
     }

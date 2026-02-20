@@ -36,7 +36,13 @@ pub async fn run_pr_create(
         .repos
         .iter()
         .filter_map(|(name, config)| {
-            RepoInfo::from_config(name, config, workspace_root, &manifest.settings)
+            RepoInfo::from_config(
+                name,
+                config,
+                workspace_root,
+                &manifest.settings,
+                manifest.remotes.as_ref(),
+            )
         })
         .filter(|r| !r.reference) // Skip reference repos
         .collect();
@@ -126,7 +132,7 @@ pub async fn run_pr_create(
         for repo in &repos_with_changes {
             if let Ok(git_repo) = open_repo(&repo.absolute_path) {
                 let spinner = Output::spinner(&format!("Pushing {}...", repo.name));
-                match crate::git::remote::push_branch(&git_repo, &branch, "origin", true) {
+                match crate::git::remote::push_branch(&git_repo, &branch, &repo.push_remote, true) {
                     Ok(()) => spinner.finish_with_message(format!("{}: pushed", repo.name)),
                     Err(e) => {
                         spinner.finish_with_message(format!("{}: push failed - {}", repo.name, e))

@@ -1,11 +1,18 @@
 # gitgrip Manifest Schema Specification
-# Version: 1
+# Version: 2
 #
 # This document describes the structure of a gitgrip gripspace.yml file.
 # The workspace file defines a multi-repository workspace configuration.
 
 # Schema version (required)
-version: 1
+version: 2
+
+# Named remotes with base fetch URLs (optional, v2)
+# Repos can reference a remote by name instead of specifying a full URL.
+# The repo name + ".git" is auto-appended to the fetch base URL.
+remotes:
+  upstream:
+    fetch: "git@github.com:org/"    # → git@github.com:org/<repo-name>.git
 
 # Gripspace includes (optional)
 # Include repos, scripts, env, hooks, and linkfiles from other gripspace repositories.
@@ -22,8 +29,8 @@ manifest:
   # Git URL for the manifest repository (required)
   url: "git@github.com:org/workspace-manifest.git"
 
-  # Default branch (defaults to "main")
-  default_branch: "main"
+  # Upstream revision (defaults to "main")
+  revision: "main"
 
   # Files to copy from manifest repo to workspace root (optional)
   copyfile:
@@ -55,14 +62,23 @@ manifest:
 repos:
   # Key is the repository name used in gitgrip commands
   frontend:
-    # Git URL - SSH or HTTPS (required)
-    url: "git@github.com:org/frontend.git"
+    # Git URL - SSH or HTTPS (required unless `remote` is set)
+    url: "git@github.com:me/frontend.git"
 
     # Local path relative to workspace root (required)
     path: "./frontend"
 
-    # Default branch (defaults to "main")
-    default_branch: "main"
+    # Upstream revision to clone/sync (defaults to "main", inherits from settings)
+    revision: "main"
+
+    # PR base branch (just a branch name, inherits from settings, then revision)
+    target: "develop"
+
+    # Remote for fetch/rebase (defaults to "origin", inherits from settings)
+    sync_remote: "upstream"
+
+    # Remote for push (defaults to "origin", inherits from settings)
+    push_remote: "origin"
 
     # Groups for selective operations (optional)
     # Use with: gr sync --group=core
@@ -99,9 +115,12 @@ repos:
       lint: "pnpm lint"
       format: "pnpm format"
 
+  # Repo using top-level remote (URL derived: git@github.com:org/backend.git)
   backend:
-    url: "git@github.com:org/backend.git"
+    remote: "upstream"
     path: "./backend"
+    revision: "master"
+    target: "staging"
     groups:
       - core
       - api
@@ -128,6 +147,25 @@ settings:
   # all-or-nothing: All PRs must merge together or none
   # independent: Each PR can be merged separately
   merge_strategy: "all-or-nothing"
+
+  # Default revision for all repos (defaults to "main")
+  revision: "main"
+
+  # PR base branch for all repos (defaults to revision)
+  target: "develop"
+
+  # Default remote for fetch/rebase (defaults to "origin")
+  sync_remote: "origin"
+
+  # Default remote for push (defaults to "origin")
+  push_remote: "origin"
+
+# Resolution chains:
+#   revision:    repo > settings > "main"
+#   target:      repo > settings > revision
+#   sync_remote: repo > settings > "origin"
+#   push_remote: repo > settings > "origin"
+#   url:         explicit url, or remotes[repo.remote].fetch + name + ".git"
 
 # Workspace configuration (optional)
 # Includes scripts, hooks, env, CI, and agent metadata
@@ -208,3 +246,9 @@ workspace:
 # - Paths cannot start with ".." or "/"
 # - Paths cannot contain "/../"
 # - These rules prevent directory traversal attacks
+
+# v1 Backward Compatibility:
+# - v1 manifests are auto-migrated when parsed
+# - `default_branch` is accepted as an alias for `revision`
+# - `target` containing "/" (e.g. "upstream/develop") is split into target + sync_remote
+# - Version is upgraded to 2 internally

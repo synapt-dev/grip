@@ -22,7 +22,13 @@ pub async fn run_pr_diff(
         .repos
         .iter()
         .filter_map(|(name, config)| {
-            RepoInfo::from_config(name, config, workspace_root, &manifest.settings)
+            RepoInfo::from_config(
+                name,
+                config,
+                workspace_root,
+                &manifest.settings,
+                manifest.remotes.as_ref(),
+            )
         })
         .collect();
 

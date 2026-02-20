@@ -390,10 +390,13 @@ impl XmlManifest {
             repos.insert(
                 repo_name,
                 RepoConfig {
-                    url,
+                    url: Some(url),
+                    remote: None,
                     path,
-                    default_branch: Some(default_branch),
+                    revision: Some(default_branch),
                     target: None,
+                    sync_remote: None,
+                    push_remote: None,
                     copyfile,
                     linkfile,
                     platform: Some(PlatformConfig {
@@ -414,6 +417,7 @@ impl XmlManifest {
             gripspaces: None,
             manifest: None,
             repos,
+            remotes: None,
             settings: ManifestSettings::default(),
             workspace: Some(WorkspaceConfig::default()),
         };
@@ -546,7 +550,10 @@ mod tests {
         let manifest = XmlManifest::parse(xml).unwrap();
         let result = manifest.to_manifest().unwrap();
         let repo = result.manifest.repos.values().next().unwrap();
-        assert_eq!(repo.url, "https://github.com/myorg/myrepo.git");
+        assert_eq!(
+            repo.url,
+            Some("https://github.com/myorg/myrepo.git".to_string())
+        );
     }
 
     #[test]
@@ -629,8 +636,11 @@ mod tests {
         let manifest = XmlManifest::parse(xml).unwrap();
         let result = manifest.to_manifest().unwrap();
         let repo = result.manifest.repos.get("app").unwrap();
-        assert_eq!(repo.url, "https://github.com/fork/app.git");
-        assert_eq!(repo.default_branch, Some("develop".to_string()));
+        assert_eq!(
+            repo.url,
+            Some("https://github.com/fork/app.git".to_string())
+        );
+        assert_eq!(repo.revision, Some("develop".to_string()));
     }
 
     #[test]
@@ -651,11 +661,14 @@ mod tests {
         assert_eq!(result.gerrit_skipped, 0);
 
         let frontend = result.manifest.repos.get("frontend").unwrap();
-        assert_eq!(frontend.default_branch, Some("main".to_string()));
-        assert_eq!(frontend.url, "https://github.com/myorg/frontend.git");
+        assert_eq!(frontend.revision, Some("main".to_string()));
+        assert_eq!(
+            frontend.url,
+            Some("https://github.com/myorg/frontend.git".to_string())
+        );
 
         let backend = result.manifest.repos.get("backend").unwrap();
-        assert_eq!(backend.default_branch, Some("develop".to_string()));
+        assert_eq!(backend.revision, Some("develop".to_string()));
     }
 
     #[test]

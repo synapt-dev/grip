@@ -807,7 +807,7 @@ fn execute_parsed_command(
                 .env("REPO_NAME", &repo.name)
                 .env("REPO_PATH", repo_path)
                 .env("REPO_URL", &repo.url)
-                .env("REPO_BRANCH", &repo.default_branch)
+                .env("REPO_BRANCH", &repo.revision)
                 .output()
                 .map_err(|e| e.to_string())?;
 
@@ -951,7 +951,7 @@ fn run_parallel(
         let repo_name = repo.name.clone();
         let repo_path = repo.absolute_path.clone();
         let repo_url = repo.url.clone();
-        let repo_branch = repo.default_branch.clone();
+        let repo_branch = repo.revision.clone();
         let cmd = command.to_string();
         let results = Arc::clone(&results);
         let parsed_cmd = cloneable_cmd.clone();

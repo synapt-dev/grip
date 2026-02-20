@@ -456,7 +456,7 @@ async fn test_sync_clone_failure_invalid_url() {
     fs::remove_dir_all(ws.repo_path("app")).unwrap();
     assert!(!ws.repo_path("app").exists());
     manifest.repos.get_mut("app").expect("app repo config").url =
-        "file:///does-not-exist/repo.git".to_string();
+        Some("file:///does-not-exist/repo.git".to_string());
 
     let result = gitgrip::cli::commands::sync::run_sync(
         &ws.workspace_root,

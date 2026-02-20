@@ -110,10 +110,13 @@ fn bench_state_parse(c: &mut Criterion) {
 /// Benchmark git URL parsing
 fn bench_url_parse(c: &mut Criterion) {
     let config = RepoConfig {
-        url: "git@github.com:organization/repository-name.git".to_string(),
+        url: Some("git@github.com:organization/repository-name.git".to_string()),
+        remote: None,
         path: "packages/repository-name".to_string(),
-        default_branch: Some("main".to_string()),
+        revision: Some("main".to_string()),
         target: None,
+        sync_remote: None,
+        push_remote: None,
         copyfile: None,
         linkfile: None,
         platform: None,
@@ -126,7 +129,13 @@ fn bench_url_parse(c: &mut Criterion) {
 
     c.bench_function("url_parse_github_ssh", |b| {
         b.iter(|| {
-            RepoInfo::from_config("repo", black_box(&config), black_box(&workspace), &settings)
+            RepoInfo::from_config(
+                "repo",
+                black_box(&config),
+                black_box(&workspace),
+                &settings,
+                None,
+            )
         })
     });
 }
@@ -134,10 +143,13 @@ fn bench_url_parse(c: &mut Criterion) {
 /// Benchmark Azure DevOps URL parsing
 fn bench_url_parse_azure(c: &mut Criterion) {
     let config = RepoConfig {
-        url: "https://dev.azure.com/organization/project/_git/repository".to_string(),
+        url: Some("https://dev.azure.com/organization/project/_git/repository".to_string()),
+        remote: None,
         path: "repository".to_string(),
-        default_branch: Some("main".to_string()),
+        revision: Some("main".to_string()),
         target: None,
+        sync_remote: None,
+        push_remote: None,
         copyfile: None,
         linkfile: None,
         platform: None,
@@ -150,7 +162,13 @@ fn bench_url_parse_azure(c: &mut Criterion) {
 
     c.bench_function("url_parse_azure_https", |b| {
         b.iter(|| {
-            RepoInfo::from_config("repo", black_box(&config), black_box(&workspace), &settings)
+            RepoInfo::from_config(
+                "repo",
+                black_box(&config),
+                black_box(&workspace),
+                &settings,
+                None,
+            )
         })
     });
 }
@@ -899,7 +917,13 @@ workspace:
                 .repos
                 .iter()
                 .filter_map(|(name, config)| {
-                    RepoInfo::from_config(name, config, black_box(&workspace), &manifest.settings)
+                    RepoInfo::from_config(
+                        name,
+                        config,
+                        black_box(&workspace),
+                        &manifest.settings,
+                        manifest.remotes.as_ref(),
+                    )
                 })
                 .collect();
             black_box(repos)

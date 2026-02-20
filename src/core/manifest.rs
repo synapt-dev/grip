@@ -526,8 +526,8 @@ impl Manifest {
 
     /// Parse a manifest from a YAML string (deserialize + validate + migrate)
     pub fn parse(yaml: &str) -> Result<Self, ManifestError> {
-        let mut manifest = Self::parse_raw(yaml)?;
-        manifest.migrate_v1();
+        let manifest = Self::parse_raw(yaml)?;
+        // Note: migrate_v1() is already called in parse_raw()
         manifest.validate()?;
         Ok(manifest)
     }

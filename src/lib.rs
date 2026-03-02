@@ -7,6 +7,7 @@ pub mod cli;
 pub mod core;
 pub mod files;
 pub mod git;
+pub mod mcp;
 pub mod platform;
 pub mod telemetry;
 pub mod util;

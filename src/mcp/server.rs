@@ -3,10 +3,17 @@
 use anyhow::Context;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::collections::HashMap;
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
+use std::thread;
+use std::time::Duration;
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
+const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
+const CAPTURE_TRUNCATED_MSG: &str = "\n[output truncated: exceeded capture limit]";
 
 #[derive(Debug, Deserialize)]
 struct RpcRequest {
@@ -25,6 +32,12 @@ struct ToolCallParams {
     arguments: Value,
 }
 
+#[derive(Debug, Deserialize)]
+struct CancelledParams {
+    #[serde(rename = "requestId")]
+    request_id: Value,
+}
+
 #[derive(Debug, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct RepoArgs {
@@ -40,31 +53,124 @@ struct GenerateContextArgs {
 
 struct CommandOutput {
     success: bool,
+    cancelled: bool,
     status_code: Option<i32>,
     stdout: String,
     stderr: String,
 }
 
+enum ReaderEvent {
+    Frame(Vec<u8>),
+    Eof,
+    Error(String),
+}
+
+struct WorkerResponse {
+    request_key: String,
+    response: Value,
+}
+
 /// Run the gitgrip MCP server over stdio.
 pub fn run_mcp_server() -> anyhow::Result<()> {
-    let stdin = io::stdin();
-    let stdout = io::stdout();
-    let mut reader = BufReader::new(stdin.lock());
-    let mut writer = BufWriter::new(stdout.lock());
+    let (reader_tx, reader_rx) = mpsc::channel::<ReaderEvent>();
+    thread::spawn(move || {
+        let stdin = io::stdin();
+        let mut reader = BufReader::new(stdin.lock());
 
-    while let Some(bytes) = read_frame(&mut reader)? {
-        let request: RpcRequest = match serde_json::from_slice(&bytes) {
-            Ok(req) => req,
-            Err(err) => {
-                let response = jsonrpc_error(Value::Null, -32700, &format!("Parse error: {err}"));
-                write_frame(&mut writer, &response)?;
-                continue;
+        loop {
+            match read_frame(&mut reader) {
+                Ok(Some(bytes)) => {
+                    if reader_tx.send(ReaderEvent::Frame(bytes)).is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => {
+                    let _ = reader_tx.send(ReaderEvent::Eof);
+                    break;
+                }
+                Err(err) => {
+                    let _ = reader_tx.send(ReaderEvent::Error(err.to_string()));
+                    break;
+                }
             }
-        };
+        }
+    });
 
-        let maybe_response = handle_request(request);
-        if let Some(response) = maybe_response {
-            write_frame(&mut writer, &response)?;
+    let (worker_tx, worker_rx) = mpsc::channel::<WorkerResponse>();
+    let stdout = io::stdout();
+    let mut writer = io::BufWriter::new(stdout.lock());
+
+    let mut reader_done = false;
+    let mut cancellation_map: HashMap<String, Arc<AtomicBool>> = HashMap::new();
+
+    loop {
+        while let Ok(done) = worker_rx.try_recv() {
+            cancellation_map.remove(&done.request_key);
+            write_frame(&mut writer, &done.response)?;
+        }
+
+        if reader_done && cancellation_map.is_empty() {
+            break;
+        }
+
+        match reader_rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(ReaderEvent::Frame(bytes)) => {
+                let request: RpcRequest = match serde_json::from_slice(&bytes) {
+                    Ok(req) => req,
+                    Err(err) => {
+                        let response =
+                            jsonrpc_error(Value::Null, -32700, &format!("Parse error: {err}"));
+                        write_frame(&mut writer, &response)?;
+                        continue;
+                    }
+                };
+
+                if request.method == "notifications/cancelled" {
+                    handle_cancel_notification(request.params, &cancellation_map);
+                    continue;
+                }
+
+                let Some(id) = request.id.clone() else {
+                    continue;
+                };
+
+                if request.method == "tools/call" {
+                    let request_key = request_id_key(&id);
+                    let cancel_flag = Arc::new(AtomicBool::new(false));
+                    cancellation_map.insert(request_key.clone(), Arc::clone(&cancel_flag));
+
+                    let tx = worker_tx.clone();
+                    let params = request.params;
+                    thread::spawn(move || {
+                        let response = handle_tool_call(id, params, Some(cancel_flag));
+                        let _ = tx.send(WorkerResponse {
+                            request_key,
+                            response,
+                        });
+                    });
+                    continue;
+                }
+
+                if let Some(response) = handle_request(request) {
+                    write_frame(&mut writer, &response)?;
+                }
+            }
+            Ok(ReaderEvent::Eof) => {
+                reader_done = true;
+            }
+            Ok(ReaderEvent::Error(message)) => {
+                let response = jsonrpc_error(
+                    Value::Null,
+                    -32000,
+                    &format!("MCP server read failure: {message}"),
+                );
+                write_frame(&mut writer, &response)?;
+                reader_done = true;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                reader_done = true;
+            }
         }
     }
 
@@ -72,13 +178,9 @@ pub fn run_mcp_server() -> anyhow::Result<()> {
 }
 
 fn handle_request(request: RpcRequest) -> Option<Value> {
-    let id = request.id;
+    let id = request.id?;
 
-    if id.is_none() {
-        return None;
-    }
-
-    let response = match request.method.as_str() {
+    match request.method.as_str() {
         "initialize" => {
             let result = json!({
                 "protocolVersion": MCP_PROTOCOL_VERSION,
@@ -92,32 +194,39 @@ fn handle_request(request: RpcRequest) -> Option<Value> {
                     "version": env!("CARGO_PKG_VERSION")
                 }
             });
-            Some(jsonrpc_result(id.clone().unwrap_or(Value::Null), result))
+            Some(jsonrpc_result(id, result))
         }
-        "notifications/initialized" => None,
-        "notifications/cancelled" => None,
-        "ping" => Some(jsonrpc_result(id.clone().unwrap_or(Value::Null), json!({}))),
+        "ping" => Some(jsonrpc_result(id, json!({}))),
         "tools/list" => {
             let result = json!({
                 "tools": tools_definition()
             });
-            Some(jsonrpc_result(id.clone().unwrap_or(Value::Null), result))
+            Some(jsonrpc_result(id, result))
         }
-        "tools/call" => Some(handle_tool_call(
-            id.clone().unwrap_or(Value::Null),
-            request.params,
-        )),
         _ => Some(jsonrpc_error(
-            id.clone().unwrap_or(Value::Null),
+            id,
             -32601,
             &format!("Method not found: {}", request.method),
         )),
-    };
-
-    response
+    }
 }
 
-fn handle_tool_call(id: Value, params: Value) -> Value {
+fn handle_cancel_notification(params: Value, cancellation_map: &HashMap<String, Arc<AtomicBool>>) {
+    let Ok(parsed) = serde_json::from_value::<CancelledParams>(params) else {
+        return;
+    };
+
+    let key = request_id_key(&parsed.request_id);
+    if let Some(flag) = cancellation_map.get(&key) {
+        flag.store(true, Ordering::SeqCst);
+    }
+}
+
+fn request_id_key(id: &Value) -> String {
+    id.to_string()
+}
+
+fn handle_tool_call(id: Value, params: Value, cancel_flag: Option<Arc<AtomicBool>>) -> Value {
     let parsed: ToolCallParams = match serde_json::from_value(params) {
         Ok(v) => v,
         Err(err) => {
@@ -128,19 +237,19 @@ fn handle_tool_call(id: Value, params: Value) -> Value {
     let tool_result: anyhow::Result<Value> = (|| match parsed.name.as_str() {
         "gitgrip_agent_context" => {
             let args: RepoArgs = parse_tool_args(parsed.arguments)?;
-            run_context_tool(args.repo)
+            run_context_tool(args.repo, cancel_flag)
         }
         "gitgrip_agent_build" => {
             let args: RepoArgs = parse_tool_args(parsed.arguments)?;
-            run_text_tool("build", args.repo, &["agent", "build"])
+            run_text_tool("build", args.repo, &["agent", "build"], cancel_flag)
         }
         "gitgrip_agent_test" => {
             let args: RepoArgs = parse_tool_args(parsed.arguments)?;
-            run_text_tool("test", args.repo, &["agent", "test"])
+            run_text_tool("test", args.repo, &["agent", "test"], cancel_flag)
         }
         "gitgrip_agent_verify" => {
             let args: RepoArgs = parse_tool_args(parsed.arguments)?;
-            run_text_tool("verify", args.repo, &["agent", "verify"])
+            run_text_tool("verify", args.repo, &["agent", "verify"], cancel_flag)
         }
         "gitgrip_agent_generate_context" => {
             let args: GenerateContextArgs = parse_tool_args(parsed.arguments)?;
@@ -148,7 +257,7 @@ fn handle_tool_call(id: Value, params: Value) -> Value {
             if args.dry_run {
                 cmd.push("--dry-run".to_string());
             }
-            run_command_tool("generate-context", &cmd, None)
+            run_command_tool("generate-context", &cmd, None, cancel_flag)
         }
         _ => Err(anyhow::anyhow!("Unknown tool: {}", parsed.name)),
     })();
@@ -159,7 +268,10 @@ fn handle_tool_call(id: Value, params: Value) -> Value {
     }
 }
 
-fn run_context_tool(repo: Option<String>) -> anyhow::Result<Value> {
+fn run_context_tool(
+    repo: Option<String>,
+    cancel_flag: Option<Arc<AtomicBool>>,
+) -> anyhow::Result<Value> {
     let mut args = vec![
         "--json".to_string(),
         "agent".to_string(),
@@ -170,7 +282,7 @@ fn run_context_tool(repo: Option<String>) -> anyhow::Result<Value> {
         args.push(repo);
     }
 
-    let out = run_gitgrip_command(&args)?;
+    let out = run_gitgrip_command(&args, cancel_flag)?;
     if !out.success {
         let text = command_failure("context", &out);
         return Ok(tool_text_response(&text, true, None));
@@ -188,20 +300,26 @@ fn run_context_tool(repo: Option<String>) -> anyhow::Result<Value> {
     Ok(tool_text_response(&pretty, false, Some(parsed_json)))
 }
 
-fn run_text_tool(label: &str, repo: Option<String>, base_args: &[&str]) -> anyhow::Result<Value> {
+fn run_text_tool(
+    label: &str,
+    repo: Option<String>,
+    base_args: &[&str],
+    cancel_flag: Option<Arc<AtomicBool>>,
+) -> anyhow::Result<Value> {
     let mut args: Vec<String> = base_args.iter().map(|s| s.to_string()).collect();
     if let Some(repo) = repo {
         args.push(repo);
     }
-    run_command_tool(label, &args, None)
+    run_command_tool(label, &args, None, cancel_flag)
 }
 
 fn run_command_tool(
     label: &str,
     args: &[String],
     structured: Option<Value>,
+    cancel_flag: Option<Arc<AtomicBool>>,
 ) -> anyhow::Result<Value> {
-    let out = run_gitgrip_command(args)?;
+    let out = run_gitgrip_command(args, cancel_flag)?;
     if out.success {
         let text = non_empty_output(&out.stdout, &out.stderr)
             .unwrap_or_else(|| format!("gitgrip agent {label} completed successfully"));
@@ -219,32 +337,118 @@ fn parse_tool_args<T: for<'de> Deserialize<'de>>(value: Value) -> anyhow::Result
     serde_json::from_value(value).context("Invalid tool arguments")
 }
 
-fn run_gitgrip_command(args: &[String]) -> anyhow::Result<CommandOutput> {
+fn run_gitgrip_command(
+    args: &[String],
+    cancel_flag: Option<Arc<AtomicBool>>,
+) -> anyhow::Result<CommandOutput> {
     let exe = std::env::current_exe().context("Failed to locate current gitgrip executable")?;
-    let output = Command::new(exe)
+    let mut child = Command::new(exe)
         .args(args)
         .env("NO_COLOR", "1")
         .env("CLICOLOR", "0")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
+        .spawn()
         .context("Failed to execute gitgrip subprocess")?;
 
+    let stdout = child
+        .stdout
+        .take()
+        .context("Failed to capture subprocess stdout")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("Failed to capture subprocess stderr")?;
+
+    let out_thread = thread::spawn(move || capture_stream(stdout));
+    let err_thread = thread::spawn(move || capture_stream(stderr));
+
+    let mut cancelled = false;
+    let status = loop {
+        if cancel_flag
+            .as_ref()
+            .is_some_and(|f| f.load(Ordering::SeqCst))
+        {
+            cancelled = true;
+            let _ = child.kill();
+            break child
+                .wait()
+                .context("Failed waiting on cancelled subprocess")?;
+        }
+
+        if let Some(status) = child
+            .try_wait()
+            .context("Failed to poll subprocess status")?
+        {
+            break status;
+        }
+
+        thread::sleep(Duration::from_millis(30));
+    };
+
+    let (stdout, stdout_truncated) = out_thread
+        .join()
+        .map_err(|_| anyhow::anyhow!("stdout capture thread panicked"))??;
+    let (stderr, stderr_truncated) = err_thread
+        .join()
+        .map_err(|_| anyhow::anyhow!("stderr capture thread panicked"))??;
+
+    let mut stdout = String::from_utf8_lossy(&stdout).to_string();
+    let mut stderr = String::from_utf8_lossy(&stderr).to_string();
+
+    if stdout_truncated {
+        stdout.push_str(CAPTURE_TRUNCATED_MSG);
+    }
+    if stderr_truncated {
+        stderr.push_str(CAPTURE_TRUNCATED_MSG);
+    }
+
     Ok(CommandOutput {
-        success: output.status.success(),
-        status_code: output.status.code(),
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        success: status.success() && !cancelled,
+        cancelled,
+        status_code: status.code(),
+        stdout,
+        stderr,
     })
 }
 
+fn capture_stream<R: Read>(mut reader: R) -> anyhow::Result<(Vec<u8>, bool)> {
+    let mut out = Vec::new();
+    let mut buf = [0u8; 8192];
+    let mut truncated = false;
+
+    loop {
+        let read = reader.read(&mut buf)?;
+        if read == 0 {
+            break;
+        }
+
+        if out.len() < MAX_CAPTURE_BYTES {
+            let remaining = MAX_CAPTURE_BYTES - out.len();
+            let keep = remaining.min(read);
+            out.extend_from_slice(&buf[..keep]);
+            if keep < read {
+                truncated = true;
+            }
+        } else {
+            truncated = true;
+        }
+    }
+
+    Ok((out, truncated))
+}
+
 fn command_failure(label: &str, out: &CommandOutput) -> String {
-    let mut message = format!(
-        "gitgrip agent {label} failed (exit code: {})",
-        out.status_code
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| "unknown".to_string())
-    );
+    let mut message = if out.cancelled {
+        format!("gitgrip agent {label} cancelled")
+    } else {
+        format!(
+            "gitgrip agent {label} failed (exit code: {})",
+            out.status_code
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )
+    };
 
     if let Some(details) = non_empty_output(&out.stdout, &out.stderr) {
         message.push('\n');
@@ -427,6 +631,7 @@ fn write_frame<W: Write>(writer: &mut W, message: &Value) -> anyhow::Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     #[test]
     fn test_tool_list_has_expected_tools() {
@@ -468,6 +673,7 @@ mod tests {
                     "unexpected": true
                 }
             }),
+            None,
         );
 
         let is_error = response
@@ -476,5 +682,26 @@ mod tests {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         assert!(is_error, "expected tool call to fail on unknown arguments");
+    }
+
+    #[test]
+    fn test_capture_stream_truncates() {
+        let input = vec![b'a'; MAX_CAPTURE_BYTES + 128];
+        let (captured, truncated) = capture_stream(Cursor::new(input)).unwrap();
+        assert_eq!(captured.len(), MAX_CAPTURE_BYTES);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn test_cancel_notification_sets_flag() {
+        let request_id = json!(123);
+        let key = request_id_key(&request_id);
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut map = HashMap::new();
+        map.insert(key, Arc::clone(&flag));
+
+        handle_cancel_notification(json!({ "requestId": 123 }), &map);
+
+        assert!(flag.load(Ordering::SeqCst));
     }
 }

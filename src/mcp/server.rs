@@ -12,7 +12,8 @@ use std::thread;
 use std::time::Duration;
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
-const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
+const DEFAULT_MAX_CAPTURE_BYTES: usize = 1024 * 1024;
+const MAX_CAPTURE_ENV: &str = "GITGRIP_MCP_MAX_CAPTURE_BYTES";
 const CAPTURE_TRUNCATED_MSG: &str = "\n[output truncated: exceeded capture limit]";
 
 #[derive(Debug, Deserialize)]
@@ -56,6 +57,14 @@ struct CommandOutput {
     cancelled: bool,
     status_code: Option<i32>,
     stdout: String,
+    stderr: String,
+}
+
+struct ContextCommandOutput {
+    success: bool,
+    cancelled: bool,
+    status_code: Option<i32>,
+    context_json: Option<Value>,
     stderr: String,
 }
 
@@ -264,7 +273,10 @@ fn handle_tool_call(id: Value, params: Value, cancel_flag: Option<Arc<AtomicBool
 
     match tool_result {
         Ok(result) => jsonrpc_result(id, result),
-        Err(err) => jsonrpc_result(id, tool_text_response(&err.to_string(), true, None)),
+        Err(err) => jsonrpc_result(
+            id,
+            tool_text_response(&err.to_string(), true, None, false, None),
+        ),
     }
 }
 
@@ -282,22 +294,30 @@ fn run_context_tool(
         args.push(repo);
     }
 
-    let out = run_gitgrip_command(&args, cancel_flag)?;
+    let out = run_context_command(&args, cancel_flag)?;
     if !out.success {
-        let text = command_failure("context", &out);
-        return Ok(tool_text_response(&text, true, None));
+        let text = command_failure_context("context", &out);
+        return Ok(tool_text_response(
+            &text,
+            true,
+            None,
+            out.cancelled,
+            out.status_code,
+        ));
     }
 
-    let stdout = out.stdout.trim();
-    let parsed_json: Value = serde_json::from_str(stdout).with_context(|| {
-        format!(
-            "agent context produced non-JSON output. stdout:\n{}",
-            if stdout.is_empty() { "<empty>" } else { stdout }
-        )
-    })?;
+    let parsed_json = out
+        .context_json
+        .context("agent context did not produce structured JSON output")?;
 
     let pretty = serde_json::to_string_pretty(&parsed_json)?;
-    Ok(tool_text_response(&pretty, false, Some(parsed_json)))
+    Ok(tool_text_response(
+        &pretty,
+        false,
+        Some(parsed_json),
+        false,
+        out.status_code,
+    ))
 }
 
 fn run_text_tool(
@@ -323,10 +343,22 @@ fn run_command_tool(
     if out.success {
         let text = non_empty_output(&out.stdout, &out.stderr)
             .unwrap_or_else(|| format!("gitgrip agent {label} completed successfully"));
-        Ok(tool_text_response(&text, false, structured))
+        Ok(tool_text_response(
+            &text,
+            false,
+            structured,
+            false,
+            out.status_code,
+        ))
     } else {
         let text = command_failure(label, &out);
-        Ok(tool_text_response(&text, true, structured))
+        Ok(tool_text_response(
+            &text,
+            true,
+            structured,
+            out.cancelled,
+            out.status_code,
+        ))
     }
 }
 
@@ -360,31 +392,16 @@ fn run_gitgrip_command(
         .take()
         .context("Failed to capture subprocess stderr")?;
 
-    let out_thread = thread::spawn(move || capture_stream(stdout));
-    let err_thread = thread::spawn(move || capture_stream(stderr));
+    let max_capture = max_capture_bytes();
+    let out_thread = thread::spawn(move || capture_stream(stdout, max_capture));
+    let err_thread = thread::spawn(move || capture_stream(stderr, max_capture));
 
-    let mut cancelled = false;
-    let status = loop {
-        if cancel_flag
-            .as_ref()
-            .is_some_and(|f| f.load(Ordering::SeqCst))
-        {
-            cancelled = true;
-            let _ = child.kill();
-            break child
-                .wait()
-                .context("Failed waiting on cancelled subprocess")?;
-        }
+    let cancel_status = start_cancel_controller(child.id(), cancel_flag.clone());
 
-        if let Some(status) = child
-            .try_wait()
-            .context("Failed to poll subprocess status")?
-        {
-            break status;
-        }
-
-        thread::sleep(Duration::from_millis(30));
-    };
+    let status = child.wait().context("Failed waiting for subprocess")?;
+    cancel_status.done.store(true, Ordering::SeqCst);
+    let _ = cancel_status.join.join();
+    let cancelled = cancel_status.kill_sent.load(Ordering::SeqCst);
 
     let (stdout, stdout_truncated) = out_thread
         .join()
@@ -412,7 +429,148 @@ fn run_gitgrip_command(
     })
 }
 
-fn capture_stream<R: Read>(mut reader: R) -> anyhow::Result<(Vec<u8>, bool)> {
+fn run_context_command(
+    args: &[String],
+    cancel_flag: Option<Arc<AtomicBool>>,
+) -> anyhow::Result<ContextCommandOutput> {
+    let exe = std::env::current_exe().context("Failed to locate current gitgrip executable")?;
+    let mut child = Command::new(exe)
+        .args(args)
+        .env("NO_COLOR", "1")
+        .env("CLICOLOR", "0")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("Failed to execute gitgrip subprocess")?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .context("Failed to capture subprocess stdout")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("Failed to capture subprocess stderr")?;
+
+    let max_capture = max_capture_bytes();
+    let err_thread = thread::spawn(move || capture_stream(stderr, max_capture));
+    let parse_thread = thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        serde_json::from_reader::<_, Value>(&mut reader)
+    });
+
+    let cancel_status = start_cancel_controller(child.id(), cancel_flag);
+
+    let status = child.wait().context("Failed waiting for subprocess")?;
+    cancel_status.done.store(true, Ordering::SeqCst);
+    let _ = cancel_status.join.join();
+    let cancelled = cancel_status.kill_sent.load(Ordering::SeqCst);
+
+    let context_json = parse_thread
+        .join()
+        .map_err(|_| anyhow::anyhow!("stdout parser thread panicked"))?;
+
+    let (stderr, stderr_truncated) = err_thread
+        .join()
+        .map_err(|_| anyhow::anyhow!("stderr capture thread panicked"))??;
+    let mut stderr = String::from_utf8_lossy(&stderr).to_string();
+    if stderr_truncated {
+        stderr.push_str(CAPTURE_TRUNCATED_MSG);
+    }
+
+    let context_json = match context_json {
+        Ok(value) => Some(value),
+        Err(err) => {
+            if status.success() && !cancelled {
+                return Err(anyhow::anyhow!(
+                    "agent context produced non-JSON output: {err}"
+                ));
+            }
+            None
+        }
+    };
+
+    Ok(ContextCommandOutput {
+        success: status.success() && !cancelled && context_json.is_some(),
+        cancelled,
+        status_code: status.code(),
+        context_json,
+        stderr,
+    })
+}
+
+struct CancelController {
+    done: Arc<AtomicBool>,
+    kill_sent: Arc<AtomicBool>,
+    join: thread::JoinHandle<()>,
+}
+
+fn start_cancel_controller(pid: u32, cancel_flag: Option<Arc<AtomicBool>>) -> CancelController {
+    let done = Arc::new(AtomicBool::new(false));
+    let kill_sent = Arc::new(AtomicBool::new(false));
+
+    let done_clone = Arc::clone(&done);
+    let kill_clone = Arc::clone(&kill_sent);
+    let join = thread::spawn(move || {
+        let Some(flag) = cancel_flag else {
+            return;
+        };
+
+        while !done_clone.load(Ordering::SeqCst) {
+            if flag.load(Ordering::SeqCst) {
+                if kill_process(pid).is_ok() {
+                    kill_clone.store(true, Ordering::SeqCst);
+                }
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    });
+
+    CancelController {
+        done,
+        kill_sent,
+        join,
+    }
+}
+
+#[cfg(unix)]
+fn kill_process(pid: u32) -> std::io::Result<()> {
+    let pid_s = pid.to_string();
+    let status = Command::new("kill").args(["-TERM", &pid_s]).status()?;
+    if status.success() {
+        return Ok(());
+    }
+
+    let status = Command::new("kill").args(["-KILL", &pid_s]).status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("failed to kill process"))
+    }
+}
+
+#[cfg(windows)]
+fn kill_process(pid: u32) -> std::io::Result<()> {
+    let status = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/F"])
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("failed to kill process"))
+    }
+}
+
+fn max_capture_bytes() -> usize {
+    std::env::var(MAX_CAPTURE_ENV)
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(DEFAULT_MAX_CAPTURE_BYTES)
+}
+
+fn capture_stream<R: Read>(mut reader: R, max_bytes: usize) -> anyhow::Result<(Vec<u8>, bool)> {
     let mut out = Vec::new();
     let mut buf = [0u8; 8192];
     let mut truncated = false;
@@ -423,8 +581,8 @@ fn capture_stream<R: Read>(mut reader: R) -> anyhow::Result<(Vec<u8>, bool)> {
             break;
         }
 
-        if out.len() < MAX_CAPTURE_BYTES {
-            let remaining = MAX_CAPTURE_BYTES - out.len();
+        if out.len() < max_bytes {
+            let remaining = max_bytes - out.len();
             let keep = remaining.min(read);
             out.extend_from_slice(&buf[..keep]);
             if keep < read {
@@ -453,6 +611,26 @@ fn command_failure(label: &str, out: &CommandOutput) -> String {
     if let Some(details) = non_empty_output(&out.stdout, &out.stderr) {
         message.push('\n');
         message.push_str(&details);
+    }
+
+    message
+}
+
+fn command_failure_context(label: &str, out: &ContextCommandOutput) -> String {
+    let mut message = if out.cancelled {
+        format!("gitgrip agent {label} cancelled")
+    } else {
+        format!(
+            "gitgrip agent {label} failed (exit code: {})",
+            out.status_code
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )
+    };
+
+    if !out.stderr.trim().is_empty() {
+        message.push('\n');
+        message.push_str(out.stderr.trim());
     }
 
     message
@@ -544,7 +722,13 @@ fn tools_definition() -> Vec<Value> {
     ]
 }
 
-fn tool_text_response(text: &str, is_error: bool, structured_content: Option<Value>) -> Value {
+fn tool_text_response(
+    text: &str,
+    is_error: bool,
+    structured_content: Option<Value>,
+    cancelled: bool,
+    status_code: Option<i32>,
+) -> Value {
     let mut result = json!({
         "content": [
             {
@@ -555,11 +739,18 @@ fn tool_text_response(text: &str, is_error: bool, structured_content: Option<Val
         "isError": is_error
     });
 
+    let result_map = result
+        .as_object_mut()
+        .expect("tool response object must be an object");
+
     if let Some(content) = structured_content {
-        let result_map = result
-            .as_object_mut()
-            .expect("tool response object must be an object");
         result_map.insert("structuredContent".to_string(), content);
+    }
+    if cancelled {
+        result_map.insert("cancelled".to_string(), Value::Bool(true));
+    }
+    if let Some(code) = status_code {
+        result_map.insert("exitCode".to_string(), Value::Number(code.into()));
     }
 
     result
@@ -686,9 +877,10 @@ mod tests {
 
     #[test]
     fn test_capture_stream_truncates() {
-        let input = vec![b'a'; MAX_CAPTURE_BYTES + 128];
-        let (captured, truncated) = capture_stream(Cursor::new(input)).unwrap();
-        assert_eq!(captured.len(), MAX_CAPTURE_BYTES);
+        let max = 1024;
+        let input = vec![b'a'; max + 128];
+        let (captured, truncated) = capture_stream(Cursor::new(input), max).unwrap();
+        assert_eq!(captured.len(), max);
         assert!(truncated);
     }
 

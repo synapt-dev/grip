@@ -393,7 +393,7 @@ enum AgentCommands {
 
 #[derive(Subcommand)]
 enum McpCommands {
-    /// Start stdio MCP server exposing gitgrip agent tools
+    /// Start stdio MCP server exposing gitgrip tools
     Server,
 }
 

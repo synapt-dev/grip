@@ -1,4 +1,4 @@
-//! stdio MCP server for gitgrip agent operations.
+//! stdio MCP server for gitgrip operations.
 
 use anyhow::Context;
 use serde::Deserialize;
@@ -78,6 +78,173 @@ struct WorkerResponse {
     request_key: String,
     response: Value,
 }
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct PassthroughArgs {
+    #[serde(default)]
+    args: Vec<String>,
+}
+
+#[derive(Clone, Copy)]
+struct CliToolSpec {
+    tool_name: &'static str,
+    command: &'static str,
+    description: &'static str,
+}
+
+const CLI_TOOL_SPECS: &[CliToolSpec] = &[
+    CliToolSpec {
+        tool_name: "gitgrip_init",
+        command: "init",
+        description: "Initialize a new workspace (`gr init ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_sync",
+        command: "sync",
+        description: "Sync all repositories (`gr sync ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_status",
+        command: "status",
+        description: "Show status of all repositories (`gr status ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_branch",
+        command: "branch",
+        description: "Create/switch branches across repos (`gr branch ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_checkout",
+        command: "checkout",
+        description: "Checkout a branch across repos (`gr checkout ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_add",
+        command: "add",
+        description: "Stage changes across repos (`gr add ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_diff",
+        command: "diff",
+        description: "Show diff across repos (`gr diff ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_commit",
+        command: "commit",
+        description: "Commit changes across repos (`gr commit ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_push",
+        command: "push",
+        description: "Push changes across repos (`gr push ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_prune",
+        command: "prune",
+        description: "Clean merged branches across repos (`gr prune ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_pr",
+        command: "pr",
+        description: "Pull request operations (`gr pr ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_tree",
+        command: "tree",
+        description: "Griptree operations (`gr tree ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_grep",
+        command: "grep",
+        description: "Search across repos (`gr grep ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_forall",
+        command: "forall",
+        description: "Run a command in each repo (`gr forall ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_rebase",
+        command: "rebase",
+        description: "Rebase branches across repos (`gr rebase ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_pull",
+        command: "pull",
+        description: "Pull latest changes across repos (`gr pull ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_link",
+        command: "link",
+        description: "Manage links (`gr link ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_run",
+        command: "run",
+        description: "Run workspace scripts (`gr run ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_env",
+        command: "env",
+        description: "Show environment variables (`gr env`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_bench",
+        command: "bench",
+        description: "Run benchmarks (`gr bench ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_repo",
+        command: "repo",
+        description: "Repository operations (`gr repo ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_group",
+        command: "group",
+        description: "Repository group operations (`gr group ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_gc",
+        command: "gc",
+        description: "Run garbage collection (`gr gc ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_cherry_pick",
+        command: "cherry-pick",
+        description: "Cherry-pick commits across repos (`gr cherry-pick ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_ci",
+        command: "ci",
+        description: "CI/CD pipeline operations (`gr ci ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_manifest",
+        command: "manifest",
+        description: "Manifest operations (`gr manifest ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_agent",
+        command: "agent",
+        description: "Agent operations (`gr agent ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_release",
+        command: "release",
+        description: "Automated release workflow (`gr release ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_completions",
+        command: "completions",
+        description: "Generate shell completions (`gr completions ...`).",
+    },
+    CliToolSpec {
+        tool_name: "gitgrip_verify",
+        command: "verify",
+        description: "Verify workspace assertions (`gr verify ...`).",
+    },
+];
 
 /// Run the gitgrip MCP server over stdio.
 pub fn run_mcp_server() -> anyhow::Result<()> {
@@ -212,6 +379,18 @@ fn handle_request(request: RpcRequest) -> Option<Value> {
             });
             Some(jsonrpc_result(id, result))
         }
+        "resources/list" => {
+            let result = json!({
+                "resources": []
+            });
+            Some(jsonrpc_result(id, result))
+        }
+        "resources/templates/list" => {
+            let result = json!({
+                "resourceTemplates": []
+            });
+            Some(jsonrpc_result(id, result))
+        }
         _ => Some(jsonrpc_error(
             id,
             -32601,
@@ -250,15 +429,15 @@ fn handle_tool_call(id: Value, params: Value, cancel_flag: Option<Arc<AtomicBool
         }
         "gitgrip_agent_build" => {
             let args: RepoArgs = parse_tool_args(parsed.arguments)?;
-            run_text_tool("build", args.repo, &["agent", "build"], cancel_flag)
+            run_text_tool("agent build", args.repo, &["agent", "build"], cancel_flag)
         }
         "gitgrip_agent_test" => {
             let args: RepoArgs = parse_tool_args(parsed.arguments)?;
-            run_text_tool("test", args.repo, &["agent", "test"], cancel_flag)
+            run_text_tool("agent test", args.repo, &["agent", "test"], cancel_flag)
         }
         "gitgrip_agent_verify" => {
             let args: RepoArgs = parse_tool_args(parsed.arguments)?;
-            run_text_tool("verify", args.repo, &["agent", "verify"], cancel_flag)
+            run_text_tool("agent verify", args.repo, &["agent", "verify"], cancel_flag)
         }
         "gitgrip_agent_generate_context" => {
             let args: GenerateContextArgs = parse_tool_args(parsed.arguments)?;
@@ -266,9 +445,14 @@ fn handle_tool_call(id: Value, params: Value, cancel_flag: Option<Arc<AtomicBool
             if args.dry_run {
                 cmd.push("--dry-run".to_string());
             }
-            run_command_tool("generate-context", &cmd, None, cancel_flag)
+            run_command_tool("agent generate-context", &cmd, None, cancel_flag)
         }
-        _ => Err(anyhow::anyhow!("Unknown tool: {}", parsed.name)),
+        name => {
+            let spec = find_cli_tool_spec(name)
+                .ok_or_else(|| anyhow::anyhow!("Unknown tool: {}", parsed.name))?;
+            let args: PassthroughArgs = parse_tool_args(parsed.arguments)?;
+            run_passthrough_tool(spec, args, cancel_flag)
+        }
     })();
 
     match tool_result {
@@ -296,7 +480,7 @@ fn run_context_tool(
 
     let out = run_context_command(&args, cancel_flag)?;
     if !out.success {
-        let text = command_failure_context("context", &out);
+        let text = command_failure_context("agent context", &out);
         return Ok(tool_text_response(
             &text,
             true,
@@ -342,7 +526,7 @@ fn run_command_tool(
     let out = run_gitgrip_command(args, cancel_flag)?;
     if out.success {
         let text = non_empty_output(&out.stdout, &out.stderr)
-            .unwrap_or_else(|| format!("gitgrip agent {label} completed successfully"));
+            .unwrap_or_else(|| format!("gitgrip {label} completed successfully"));
         Ok(tool_text_response(
             &text,
             false,
@@ -360,6 +544,16 @@ fn run_command_tool(
             out.status_code,
         ))
     }
+}
+
+fn run_passthrough_tool(
+    spec: &CliToolSpec,
+    args: PassthroughArgs,
+    cancel_flag: Option<Arc<AtomicBool>>,
+) -> anyhow::Result<Value> {
+    let mut cmd = vec![spec.command.to_string()];
+    cmd.extend(args.args);
+    run_command_tool(spec.command, &cmd, None, cancel_flag)
 }
 
 fn parse_tool_args<T: for<'de> Deserialize<'de>>(value: Value) -> anyhow::Result<T> {
@@ -598,10 +792,10 @@ fn capture_stream<R: Read>(mut reader: R, max_bytes: usize) -> anyhow::Result<(V
 
 fn command_failure(label: &str, out: &CommandOutput) -> String {
     let mut message = if out.cancelled {
-        format!("gitgrip agent {label} cancelled")
+        format!("gitgrip {label} cancelled")
     } else {
         format!(
-            "gitgrip agent {label} failed (exit code: {})",
+            "gitgrip {label} failed (exit code: {})",
             out.status_code
                 .map(|c| c.to_string())
                 .unwrap_or_else(|| "unknown".to_string())
@@ -618,10 +812,10 @@ fn command_failure(label: &str, out: &CommandOutput) -> String {
 
 fn command_failure_context(label: &str, out: &ContextCommandOutput) -> String {
     let mut message = if out.cancelled {
-        format!("gitgrip agent {label} cancelled")
+        format!("gitgrip {label} cancelled")
     } else {
         format!(
-            "gitgrip agent {label} failed (exit code: {})",
+            "gitgrip {label} failed (exit code: {})",
             out.status_code
                 .map(|c| c.to_string())
                 .unwrap_or_else(|| "unknown".to_string())
@@ -648,7 +842,7 @@ fn non_empty_output(stdout: &str, stderr: &str) -> Option<String> {
 }
 
 fn tools_definition() -> Vec<Value> {
-    vec![
+    let mut tools = vec![
         json!({
             "name": "gitgrip_agent_context",
             "description": "Get gitgrip workspace/repo agent context as structured JSON.",
@@ -719,7 +913,35 @@ fn tools_definition() -> Vec<Value> {
                 "additionalProperties": false
             }
         }),
-    ]
+    ];
+
+    let passthrough_schema = json!({
+        "type": "object",
+        "properties": {
+            "args": {
+                "type": "array",
+                "items": {
+                    "type": "string"
+                },
+                "description": "Additional CLI args to pass after the command name."
+            }
+        },
+        "additionalProperties": false
+    });
+
+    for spec in CLI_TOOL_SPECS {
+        tools.push(json!({
+            "name": spec.tool_name,
+            "description": spec.description,
+            "inputSchema": passthrough_schema
+        }));
+    }
+
+    tools
+}
+
+fn find_cli_tool_spec(name: &str) -> Option<&'static CliToolSpec> {
+    CLI_TOOL_SPECS.iter().find(|spec| spec.tool_name == name)
 }
 
 fn tool_text_response(
@@ -837,6 +1059,9 @@ mod tests {
         assert!(names.contains(&"gitgrip_agent_test".to_string()));
         assert!(names.contains(&"gitgrip_agent_verify".to_string()));
         assert!(names.contains(&"gitgrip_agent_generate_context".to_string()));
+        assert!(names.contains(&"gitgrip_sync".to_string()));
+        assert!(names.contains(&"gitgrip_pr".to_string()));
+        assert!(names.contains(&"gitgrip_manifest".to_string()));
     }
 
     #[test]
@@ -873,6 +1098,46 @@ mod tests {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         assert!(is_error, "expected tool call to fail on unknown arguments");
+    }
+
+    #[test]
+    fn test_resources_list_returns_empty() {
+        let response = handle_request(RpcRequest {
+            jsonrpc: Some("2.0".to_string()),
+            id: Some(json!(1)),
+            method: "resources/list".to_string(),
+            params: json!({}),
+        })
+        .expect("resources/list should return a response");
+
+        assert_eq!(
+            response
+                .get("result")
+                .and_then(|r| r.get("resources"))
+                .and_then(|v| v.as_array())
+                .map(|a| a.len()),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn test_resources_templates_list_returns_empty() {
+        let response = handle_request(RpcRequest {
+            jsonrpc: Some("2.0".to_string()),
+            id: Some(json!(1)),
+            method: "resources/templates/list".to_string(),
+            params: json!({}),
+        })
+        .expect("resources/templates/list should return a response");
+
+        assert_eq!(
+            response
+                .get("result")
+                .and_then(|r| r.get("resourceTemplates"))
+                .and_then(|v| v.as_array())
+                .map(|a| a.len()),
+            Some(0)
+        );
     }
 
     #[test]

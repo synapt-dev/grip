@@ -42,15 +42,6 @@ pub fn assert_file_exists(path: &Path) {
     assert!(path.exists(), "Expected file to exist: {}", path.display());
 }
 
-/// Assert that a file does NOT exist at the given path.
-pub fn assert_file_not_exists(path: &Path) {
-    assert!(
-        !path.exists(),
-        "Expected file to NOT exist: {}",
-        path.display()
-    );
-}
-
 /// Assert the repo working tree is clean (no staged, modified, or untracked files).
 pub fn assert_repo_clean(repo_path: &Path) {
     let output = std::process::Command::new("git")

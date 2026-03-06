@@ -68,11 +68,6 @@ pub fn push_upstream(repo_path: &Path, remote: &str, branch: &str) {
     git(repo_path, &["push", "-u", remote, branch]);
 }
 
-/// Set upstream tracking for the current branch.
-pub fn set_upstream(repo_path: &Path, upstream: &str) {
-    git(repo_path, &["branch", "--set-upstream-to", upstream]);
-}
-
 /// Add a remote to a repository.
 pub fn add_remote(repo_path: &Path, name: &str, url: &str) {
     git(repo_path, &["remote", "add", name, url]);

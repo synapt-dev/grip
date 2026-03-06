@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::time::Duration;
 
-use super::traits::{HostingPlatform, LinkedPRRef, PlatformError};
+use super::traits::{HostingPlatform, PlatformError};
 use super::types::*;
 use crate::core::manifest::PlatformType;
 use tracing::debug;
@@ -755,60 +755,11 @@ impl HostingPlatform for GitLabAdapter {
 
         Ok(())
     }
-
-    fn generate_linked_pr_comment(&self, links: &[LinkedPRRef]) -> String {
-        if links.is_empty() {
-            return String::new();
-        }
-
-        let mut comment = String::from("<!-- gitgrip-linked-prs\n");
-        for link in links {
-            comment.push_str(&format!("{}:{}\n", link.repo_name, link.number));
-        }
-        comment.push_str("-->");
-        comment
-    }
-
-    fn parse_linked_pr_comment(&self, body: &str) -> Vec<LinkedPRRef> {
-        let start_marker = "<!-- gitgrip-linked-prs";
-        let end_marker = "-->";
-
-        let Some(start) = body.find(start_marker) else {
-            return Vec::new();
-        };
-
-        let content_start = start + start_marker.len();
-        let Some(end) = body[content_start..].find(end_marker) else {
-            return Vec::new();
-        };
-
-        let content = &body[content_start..content_start + end];
-
-        content
-            .lines()
-            .filter_map(|line| {
-                let line = line.trim();
-                if line.is_empty() {
-                    return None;
-                }
-
-                let parts: Vec<&str> = line.splitn(2, ':').collect();
-                if parts.len() != 2 {
-                    return None;
-                }
-
-                let number = parts[1].parse().ok()?;
-                Some(LinkedPRRef {
-                    repo_name: parts[0].to_string(),
-                    number,
-                })
-            })
-            .collect()
-    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::traits::LinkedPRRef;
     use super::*;
 
     #[test]

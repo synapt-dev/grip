@@ -1010,7 +1010,7 @@ fn read_frame<R: BufRead>(reader: &mut R) -> anyhow::Result<Option<Vec<u8>>> {
             anyhow::bail!("Unexpected EOF while reading MCP headers");
         }
 
-        let line = line.trim_end_matches(|c| c == '\r' || c == '\n');
+        let line = line.trim_end_matches(['\r', '\n']);
         if line.is_empty() {
             break;
         }

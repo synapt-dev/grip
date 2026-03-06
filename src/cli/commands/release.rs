@@ -616,14 +616,16 @@ pub async fn run_release(opts: ReleaseOptions<'_>) -> anyhow::Result<()> {
             crate::cli::commands::pr::run_pr_merge(
                 opts.workspace_root,
                 opts.manifest,
-                None,  // method (default)
-                false, // force
-                false, // update
-                false, // auto
-                opts.json,
-                true, // wait
-                opts.timeout,
-                true, // delete_branch
+                &crate::cli::commands::pr::MergeOptions {
+                    method: None,
+                    force: false,
+                    update: false,
+                    auto: false,
+                    json: opts.json,
+                    wait: true,
+                    timeout: opts.timeout,
+                    delete_branch: true,
+                },
             )
             .await?;
             steps.push(StepResultJson::ok("ci"));

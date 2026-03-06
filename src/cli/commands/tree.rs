@@ -415,20 +415,25 @@ pub fn run_tree_list(workspace_root: &PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Options for the tree return command.
+pub struct TreeReturnOptions<'a> {
+    pub base_override: Option<&'a str>,
+    pub no_sync: bool,
+    pub autostash: bool,
+    pub prune_branch: Option<&'a str>,
+    pub prune_current: bool,
+    pub prune_remote: bool,
+    pub force: bool,
+}
+
 /// Return to the griptree base branch, sync upstreams, and optionally prune a branch.
 pub async fn run_tree_return(
     workspace_root: &PathBuf,
     manifest: &Manifest,
-    base_override: Option<&str>,
-    no_sync: bool,
-    autostash: bool,
-    prune_branch: Option<&str>,
-    prune_current: bool,
-    prune_remote: bool,
-    force: bool,
+    opts: &TreeReturnOptions<'_>,
 ) -> anyhow::Result<()> {
     let griptree_config = GriptreeConfig::load_from_workspace(workspace_root)?;
-    let base_branch = match (base_override, griptree_config.as_ref()) {
+    let base_branch = match (opts.base_override, griptree_config.as_ref()) {
         (Some(base), _) => base.to_string(),
         (None, Some(cfg)) => cfg.branch.clone(),
         (None, None) => {
@@ -469,7 +474,7 @@ pub async fn run_tree_return(
         }
     }
 
-    if !dirty_repos.is_empty() && !autostash {
+    if !dirty_repos.is_empty() && !opts.autostash {
         anyhow::bail!(
             "Uncommitted changes in: {}. Use --autostash to proceed.",
             dirty_repos.join(", ")
@@ -477,7 +482,7 @@ pub async fn run_tree_return(
     }
 
     let mut stashed_repos: Vec<PathBuf> = Vec::new();
-    if autostash {
+    if opts.autostash {
         for repo in &repos {
             if !dirty_repos.contains(&repo.name) || !repo.exists() {
                 continue;
@@ -520,7 +525,7 @@ pub async fn run_tree_return(
         }
     }
 
-    if !no_sync {
+    if !opts.no_sync {
         println!();
         let _ = crate::cli::commands::sync::run_sync(
             workspace_root,
@@ -536,9 +541,9 @@ pub async fn run_tree_return(
         .await;
     }
 
-    if prune_branch.is_some() || prune_current {
+    if opts.prune_branch.is_some() || opts.prune_current {
         println!();
-        let prune_target = prune_branch.map(|b| b.to_string());
+        let prune_target = opts.prune_branch.map(|b| b.to_string());
         for repo in &repos {
             if !repo.exists() {
                 continue;
@@ -561,7 +566,7 @@ pub async fn run_tree_return(
                 ));
                 continue;
             }
-            if let Err(e) = delete_local_branch(&git_repo, &target_branch, force) {
+            if let Err(e) = delete_local_branch(&git_repo, &target_branch, opts.force) {
                 Output::warning(&format!(
                     "{}: failed to delete '{}' - {}",
                     repo.name, target_branch, e
@@ -573,7 +578,7 @@ pub async fn run_tree_return(
                 repo.name, target_branch
             ));
 
-            if prune_remote {
+            if opts.prune_remote {
                 let remote = "origin";
                 if remote_branch_exists(&git_repo, &target_branch, remote) {
                     match delete_remote_branch(&git_repo, &target_branch, remote) {
@@ -596,7 +601,7 @@ pub async fn run_tree_return(
         }
     }
 
-    if autostash && !stashed_repos.is_empty() {
+    if opts.autostash && !stashed_repos.is_empty() {
         println!();
         for repo_path in &stashed_repos {
             if let Err(e) = stash_pop_repo(repo_path) {

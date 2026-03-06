@@ -365,13 +365,15 @@ fn sync_sequential(
     for repo in repos {
         let result = sync_single_repo(
             repo,
-            force,
-            quiet,
-            true,
-            griptree_config,
-            griptree_branch,
-            reset_refs,
-            manifest_remotes,
+            &SyncOptions {
+                force,
+                quiet,
+                show_spinner: true,
+                griptree_config,
+                griptree_branch,
+                reset_refs,
+                manifest_remotes,
+            },
         )?;
         results.push(result);
     }
@@ -408,13 +410,15 @@ async fn sync_parallel(
         join_set.spawn_blocking(move || {
             let result = sync_single_repo(
                 &repo,
-                force,
-                quiet,
-                false,
-                griptree_config.as_ref(),
-                griptree_branch.as_deref(),
-                reset_refs,
-                manifest_remotes.as_ref().as_ref(),
+                &SyncOptions {
+                    force,
+                    quiet,
+                    show_spinner: false,
+                    griptree_config: griptree_config.as_ref(),
+                    griptree_branch: griptree_branch.as_deref(),
+                    reset_refs,
+                    manifest_remotes: manifest_remotes.as_ref().as_ref(),
+                },
             )?;
             results.lock().expect("mutex poisoned").push(result);
             Ok(())
@@ -715,20 +719,21 @@ fn is_worktree_branch_lock_error(message: &str) -> bool {
         || message.contains("already used by worktree")
 }
 
-/// Sync a single repository
-fn sync_single_repo(
-    repo: &RepoInfo,
+/// Options for syncing a single repository.
+struct SyncOptions<'a> {
     force: bool,
     quiet: bool,
     show_spinner: bool,
-    griptree_config: Option<&GriptreeConfig>,
-    griptree_branch: Option<&str>,
+    griptree_config: Option<&'a GriptreeConfig>,
+    griptree_branch: Option<&'a str>,
     reset_refs: bool,
-    manifest_remotes: Option<
-        &std::collections::HashMap<String, crate::core::manifest::RemoteConfig>,
-    >,
-) -> anyhow::Result<SyncResult> {
-    let spinner = if show_spinner {
+    manifest_remotes:
+        Option<&'a std::collections::HashMap<String, crate::core::manifest::RemoteConfig>>,
+}
+
+/// Sync a single repository
+fn sync_single_repo(repo: &RepoInfo, opts: &SyncOptions<'_>) -> anyhow::Result<SyncResult> {
+    let spinner = if opts.show_spinner {
         Some(Output::spinner(&format!("Pulling {}...", repo.name)))
     } else {
         None
@@ -798,9 +803,9 @@ fn sync_single_repo(
                     &repo.absolute_path,
                     &repo.sync_remote,
                     &repo.name,
-                    manifest_remotes,
+                    opts.manifest_remotes,
                 ) {
-                    if !quiet {
+                    if !opts.quiet {
                         Output::warning(&format!(
                             "{}: could not configure sync remote '{}': {}",
                             repo.name, repo.sync_remote, e
@@ -813,9 +818,9 @@ fn sync_single_repo(
                     &repo.absolute_path,
                     &repo.push_remote,
                     &repo.name,
-                    manifest_remotes,
+                    opts.manifest_remotes,
                 ) {
-                    if !quiet {
+                    if !opts.quiet {
                         Output::warning(&format!(
                             "{}: could not configure push remote '{}': {}",
                             repo.name, repo.push_remote, e
@@ -824,14 +829,19 @@ fn sync_single_repo(
                 }
             }
 
-            if repo.reference && reset_refs {
-                let result =
-                    sync_reference_reset(repo, &git_repo, griptree_config, spinner.as_ref(), quiet);
+            if repo.reference && opts.reset_refs {
+                let result = sync_reference_reset(
+                    repo,
+                    &git_repo,
+                    opts.griptree_config,
+                    spinner.as_ref(),
+                    opts.quiet,
+                );
                 return Ok(result);
             }
 
             let current_branch = get_current_branch(&git_repo).ok();
-            let use_griptree_upstream = match (griptree_branch, current_branch.as_deref()) {
+            let use_griptree_upstream = match (opts.griptree_branch, current_branch.as_deref()) {
                 (Some(base), Some(current)) => current == base,
                 _ => false,
             };
@@ -841,9 +851,9 @@ fn sync_single_repo(
                     repo,
                     &git_repo,
                     current_branch.as_deref(),
-                    griptree_config,
+                    opts.griptree_config,
                     spinner.as_ref(),
-                    quiet,
+                    opts.quiet,
                 );
                 Ok(result)
             } else {
@@ -867,7 +877,7 @@ fn sync_single_repo(
                                 )
                             }
                         } else if let Some(msg) = pull_result.message {
-                            if force {
+                            if opts.force {
                                 (true, format!("skipped - {}", msg))
                             } else {
                                 (true, msg)
@@ -877,7 +887,7 @@ fn sync_single_repo(
                         };
 
                         if let Some(s) = spinner {
-                            if !quiet || !success {
+                            if !opts.quiet || !success {
                                 s.finish_with_message(format!("{}: {}", repo.name, message));
                             } else {
                                 s.finish_and_clear();

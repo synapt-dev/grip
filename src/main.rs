@@ -825,14 +825,16 @@ async fn main() -> anyhow::Result<()> {
                     gitgrip::cli::commands::pr::run_pr_merge(
                         &ctx.workspace_root,
                         &ctx.manifest,
-                        method.as_ref(),
-                        force,
-                        update,
-                        auto,
-                        ctx.json,
-                        wait,
-                        timeout,
-                        !no_delete_branch,
+                        &gitgrip::cli::commands::pr::MergeOptions {
+                            method: method.as_ref(),
+                            force,
+                            update,
+                            auto,
+                            json: ctx.json,
+                            wait,
+                            timeout,
+                            delete_branch: !no_delete_branch,
+                        },
                     )
                     .await?;
                 }
@@ -920,13 +922,15 @@ async fn main() -> anyhow::Result<()> {
                     gitgrip::cli::commands::tree::run_tree_return(
                         &ctx.workspace_root,
                         &ctx.manifest,
-                        base.as_deref(),
-                        no_sync,
-                        autostash,
-                        prune.as_deref(),
-                        prune_current,
-                        prune_remote,
-                        force,
+                        &gitgrip::cli::commands::tree::TreeReturnOptions {
+                            base_override: base.as_deref(),
+                            no_sync,
+                            autostash,
+                            prune_branch: prune.as_deref(),
+                            prune_current,
+                            prune_remote,
+                            force,
+                        },
                     )
                     .await?;
                 }

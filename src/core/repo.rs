@@ -117,7 +117,12 @@ impl RepoInfo {
             target,
             sync_remote,
             push_remote,
-            owner: parsed.owner,
+            owner: match &parsed.project {
+                Some(project) if platform_type == PlatformType::AzureDevOps => {
+                    format!("{}/{}", parsed.owner, project)
+                }
+                _ => parsed.owner,
+            },
             repo: parsed.repo,
             platform_type,
             platform_base_url,

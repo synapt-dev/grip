@@ -130,14 +130,14 @@ impl AzureDevOpsAdapter {
             self.base_url, ctx.organization, ctx.project, endpoint
         );
 
-        // Azure DevOps uses Basic auth with PAT (username can be empty)
-        let auth = STANDARD.encode(format!(":{}", token));
-
         let mut request = self
             .http_client
             .request(method, &url)
-            .header("Authorization", format!("Basic {}", auth))
-            .header("Content-Type", "application/json");
+            .header("Authorization", self.build_auth_header(&token))
+            .header("Content-Type", "application/json")
+            // Required for Azure AD tokens with Microsoft personal accounts (MSA)
+            .header("X-VSS-ForceMsaPassThrough", "true")
+            .header("X-TFS-FedAuthRedirect", "Suppress");
 
         if let Some(b) = body {
             request = request.json(&b);
@@ -176,13 +176,13 @@ impl AzureDevOpsAdapter {
             self.base_url, ctx.organization, ctx.project, endpoint
         );
 
-        let auth = STANDARD.encode(format!(":{}", token));
-
         let response = self
             .http_client
             .patch(&url)
-            .header("Authorization", format!("Basic {}", auth))
+            .header("Authorization", self.build_auth_header(&token))
             .header("Content-Type", "application/json")
+            .header("X-VSS-ForceMsaPassThrough", "true")
+            .header("X-TFS-FedAuthRedirect", "Suppress")
             .json(&body)
             .send()
             .await
@@ -198,6 +198,16 @@ impl AzureDevOpsAdapter {
         }
 
         Ok(())
+    }
+
+    /// Build auth header: Bearer for Azure AD JWT tokens, Basic for PATs.
+    fn build_auth_header(&self, token: &str) -> String {
+        if token.starts_with("eyJ") {
+            format!("Bearer {}", token)
+        } else {
+            let encoded = STANDARD.encode(format!(":{}", token));
+            format!("Basic {}", encoded)
+        }
     }
 
     /// Build PR web URL

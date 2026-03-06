@@ -309,6 +309,11 @@ enum Commands {
         #[command(subcommand)]
         action: AgentCommands,
     },
+    /// MCP server operations
+    Mcp {
+        #[command(subcommand)]
+        action: McpCommands,
+    },
     /// Automated release workflow
     Release {
         /// Version to release (e.g. v0.12.4)
@@ -384,6 +389,12 @@ enum AgentCommands {
         #[arg(long)]
         dry_run: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum McpCommands {
+    /// Start stdio MCP server exposing gitgrip tools
+    Server,
 }
 
 #[derive(Subcommand)]
@@ -1152,6 +1163,11 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Some(Commands::Mcp { action }) => match action {
+            McpCommands::Server => {
+                gitgrip::mcp::server::run_mcp_server()?;
+            }
+        },
         Some(Commands::Release {
             version,
             notes,

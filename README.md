@@ -558,6 +558,30 @@ The skill file teaches AI assistants to:
 - Create proper linked PRs across repos
 - Manage branches and sync correctly
 
+### MCP Server (Tool Calling)
+
+gitgrip can run as a stdio MCP server that exposes agent operations as tools:
+
+- `gitgrip_agent_context`
+- `gitgrip_agent_build`
+- `gitgrip_agent_test`
+- `gitgrip_agent_verify`
+- `gitgrip_agent_generate_context`
+
+Add this to your MCP client config (for example `.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "gitgrip": {
+      "type": "stdio",
+      "command": "gitgrip",
+      "args": ["mcp", "server"]
+    }
+  }
+}
+```
+
 ## History
 
 This project was originally written in TypeScript and published to npm as `gitgrip`. It was rewritten in Rust for better performance and additional features.

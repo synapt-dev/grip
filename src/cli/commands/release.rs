@@ -623,6 +623,7 @@ pub async fn run_release(opts: ReleaseOptions<'_>) -> anyhow::Result<()> {
                 opts.json,
                 true, // wait
                 opts.timeout,
+                true, // delete_branch
             )
             .await?;
             steps.push(StepResultJson::ok("ci"));

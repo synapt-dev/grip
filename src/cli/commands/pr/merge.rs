@@ -22,6 +22,7 @@ pub async fn run_pr_merge(
     json: bool,
     wait: bool,
     timeout: u64,
+    delete_branch: bool,
 ) -> anyhow::Result<()> {
     if !json {
         Output::header("Merging pull requests...");
@@ -439,7 +440,7 @@ pub async fn run_pr_merge(
                 &pr.repo,
                 pr.pr_number,
                 Some(merge_method),
-                true, // delete branch
+                delete_branch,
             )
             .await;
 
@@ -491,7 +492,7 @@ pub async fn run_pr_merge(
                                 &pr.repo,
                                 pr.pr_number,
                                 Some(merge_method),
-                                true,
+                                delete_branch,
                             )
                             .await
                         {

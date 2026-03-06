@@ -1,6 +1,6 @@
 //! Agent build command — run agent.build for repo(s).
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::Command;
 
 use crate::cli::output::Output;
@@ -12,7 +12,7 @@ use crate::core::repo::filter_repos;
 /// Executes the `agent.build` command from the manifest for each repo
 /// (or a specific repo if `repo_filter` is set).
 pub fn run_agent_build(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     repo_filter: Option<&str>,
 ) -> anyhow::Result<()> {

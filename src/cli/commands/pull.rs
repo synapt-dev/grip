@@ -7,7 +7,7 @@ use crate::core::manifest::Manifest;
 use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
 use crate::git::remote::{safe_pull_latest_with_mode, PullMode};
 use crate::git::{open_repo, path_exists};
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::task::JoinSet;
 
@@ -21,7 +21,7 @@ struct PullResult {
 
 /// Run the pull command
 pub async fn run_pull(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     rebase: bool,
     group_filter: Option<&[String]>,

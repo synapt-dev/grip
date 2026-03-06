@@ -3,7 +3,7 @@
 //! Automates the full release workflow: version bump, changelog, build,
 //! branch, commit, push, PR, CI wait, merge, and GitHub release creation.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use chrono::Local;
@@ -95,10 +95,7 @@ pub fn normalize_version(version: &str) -> anyhow::Result<(String, String)> {
 }
 
 /// Auto-detect version files in repo directories
-pub fn detect_version_files(
-    workspace_root: &PathBuf,
-    repos: &[RepoInfo],
-) -> Vec<(String, PathBuf)> {
+pub fn detect_version_files(workspace_root: &Path, repos: &[RepoInfo]) -> Vec<(String, PathBuf)> {
     let mut files = Vec::new();
 
     for repo in repos {

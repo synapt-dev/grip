@@ -755,7 +755,7 @@ fn execute_redirected_command(
 
 /// Run the forall command
 pub fn run_forall(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     command: &str,
     parallel: bool,

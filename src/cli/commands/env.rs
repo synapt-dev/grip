@@ -5,10 +5,10 @@
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
 use crate::core::manifest_paths;
-use std::path::PathBuf;
+use std::path::Path;
 
 /// Run the env command
-pub fn run_env(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<()> {
+pub fn run_env(workspace_root: &Path, manifest: &Manifest) -> anyhow::Result<()> {
     Output::header("Workspace Environment");
     println!();
 

@@ -7,11 +7,11 @@ use crate::git::{
     branch::{branch_exists, checkout_branch, create_and_checkout_branch},
     open_repo,
 };
-use std::path::PathBuf;
+use std::path::Path;
 
 /// Run the checkout command
 pub fn run_checkout(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     branch_name: &str,
     create: bool,

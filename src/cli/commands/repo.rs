@@ -7,10 +7,10 @@ use crate::core::manifest::Manifest;
 use crate::core::manifest_paths;
 use crate::core::repo::RepoInfo;
 use crate::git::path_exists;
-use std::path::PathBuf;
+use std::path::Path;
 
 /// Run repo list command
-pub fn run_repo_list(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<()> {
+pub fn run_repo_list(workspace_root: &Path, manifest: &Manifest) -> anyhow::Result<()> {
     Output::header("Repositories");
     println!();
 
@@ -54,7 +54,7 @@ pub fn run_repo_list(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::R
 
 /// Run repo add command
 pub fn run_repo_add(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     url: &str,
     path: Option<&str>,
     default_branch: Option<&str>,
@@ -137,7 +137,7 @@ pub fn run_repo_add(
 
 /// Run repo remove command
 pub fn run_repo_remove(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     name: &str,
     delete_files: bool,
 ) -> anyhow::Result<()> {

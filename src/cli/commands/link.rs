@@ -8,11 +8,11 @@ use crate::core::manifest_paths;
 use crate::core::repo::RepoInfo;
 use crate::files::{process_composefiles, resolve_file_source};
 use crate::git::path_exists;
-use std::path::PathBuf;
+use std::path::Path;
 
 /// Run the link command
 pub fn run_link(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     status: bool,
     apply: bool,
@@ -30,11 +30,7 @@ pub fn run_link(
     Ok(())
 }
 
-fn show_link_status(
-    workspace_root: &PathBuf,
-    manifest: &Manifest,
-    json: bool,
-) -> anyhow::Result<()> {
+fn show_link_status(workspace_root: &Path, manifest: &Manifest, json: bool) -> anyhow::Result<()> {
     if !json {
         Output::header("File Link Status");
         println!();
@@ -373,11 +369,7 @@ fn show_link_status(
     Ok(())
 }
 
-pub fn apply_links(
-    workspace_root: &PathBuf,
-    manifest: &Manifest,
-    quiet: bool,
-) -> anyhow::Result<()> {
+pub fn apply_links(workspace_root: &Path, manifest: &Manifest, quiet: bool) -> anyhow::Result<()> {
     if !quiet {
         Output::header("Applying File Links");
         println!();

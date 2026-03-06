@@ -5,11 +5,11 @@ use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::platform::{get_platform_adapter, CheckState};
-use std::path::PathBuf;
+use std::path::Path;
 
 /// Run the PR checks command
 pub async fn run_pr_checks(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     json_output: bool,
 ) -> anyhow::Result<()> {

@@ -8,12 +8,12 @@ use crate::git::cache::invalidate_status_cache;
 use crate::git::{get_workdir, open_repo, path_exists};
 use crate::util::log_cmd;
 use git2::Repository;
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::Command;
 
 /// Run the commit command
 pub fn run_commit(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     message: &str,
     amend: bool,

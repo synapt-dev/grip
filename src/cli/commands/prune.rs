@@ -9,12 +9,12 @@ use crate::core::repo::{filter_repos, RepoInfo};
 use crate::git::branch::{delete_local_branch, is_branch_merged, list_local_branches};
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::util::log_cmd;
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::Command;
 
 /// Run the prune command
 pub fn run_prune(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     execute: bool,
     remote: bool,

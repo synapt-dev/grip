@@ -22,7 +22,7 @@ cargo bench                # Run benchmarks
 **Main Branch (`main`)**
 - Production-ready code
 - Protected with PR requirements
-- All PRs must target `main`
+- PRs target `main` by default (configurable via `gr target`)
 - Use `gr sync` to stay current (not `git pull`)
 
 **Feature Branches (`feat/*`, `fix/*`, `chore/*`)**
@@ -32,23 +32,57 @@ cargo bench                # Run benchmarks
 ### Standard Workflow
 
 ```bash
-# Start new work
+# 1. Start new work
 gr sync                              # Pull latest from all repos
 gr status                            # Verify clean state
+gr target list                       # Check current PR target (should be main)
 gr branch feat/my-feature            # Create branch across repos
 
-# Make changes...
+# 2. Develop
 gr diff                              # Review changes
 gr add .                             # Stage changes across repos
 gr commit -m "feat: description"     # Commit across repos
 gr push -u                           # Push with upstream tracking
 
-# Create PR
+# 3. Create PR
 gr pr create -t "feat: description" --push
 
-# After PR merged
+# 4. Merge (after review + CI)
+gr pr merge                          # Merge all PRs
+
+# 5. Cleanup
 gr sync                              # Pull latest and cleanup
 gr checkout main                     # Switch back to main
+```
+
+### Epic Branch Workflow
+
+For large features spanning multiple PRs, use `gr target` to redirect PRs to an epic branch:
+
+```bash
+# 1. Setup epic
+gr sync && gr checkout main
+gr branch epic/big-feature           # Create epic branch
+gr push -u                           # Push epic branch
+
+# 2. Set target to epic branch
+gr target set epic/big-feature       # All PRs now target the epic
+
+# 3. Work on sub-features (repeat as needed)
+gr branch feat/sub-feature-1
+# ... make changes, commit, push ...
+gr pr create -t "feat: sub-feature-1" --push
+gr pr merge
+gr checkout epic/big-feature && gr sync
+
+# 4. When epic is complete, reset target and merge epic → main
+gr target set main                   # PRs target main again
+gr checkout epic/big-feature
+gr pr create -t "epic: big feature" --push
+gr pr merge
+
+# 5. Cleanup
+gr sync && gr checkout main
 ```
 
 ### IMPORTANT: Never Use Raw Git
@@ -291,6 +325,11 @@ All commands use `gr` (or `gitgrip`):
 - `gr group list` - List all groups and their repos
   - `gr group add <group> <repos...>` - Add repos to a group
   - `gr group remove <group> <repos...>` - Remove repos from a group
+- `gr target list` - Show current PR target branches
+  - `gr target set <branch>` - Set global PR target branch
+  - `gr target set <branch> --repo <name>` - Set target for a specific repo
+  - `gr target unset` - Unset global target (falls back to revision)
+  - `gr target unset --repo <name>` - Unset per-repo target (falls back to global)
 - `gr grep <pattern>` - Search across all repos using git grep
   - `gr grep -i` - Case insensitive search
   - `gr grep --parallel` - Concurrent search

@@ -29,5 +29,6 @@ pub mod repo;
 pub mod run;
 pub mod status;
 pub mod sync;
+pub mod target;
 pub mod tree;
 pub mod verify;

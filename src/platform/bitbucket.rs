@@ -4,16 +4,11 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
 use std::env;
-use std::time::Duration;
 
+use super::http::create_http_client;
 use super::traits::{HostingPlatform, LinkedPRRef, PlatformError};
 use super::types::*;
 use crate::core::manifest::PlatformType;
-
-/// Default connection timeout in seconds
-const CONNECT_TIMEOUT_SECS: u64 = 10;
-/// Default request timeout in seconds
-const REQUEST_TIMEOUT_SECS: u64 = 30;
 
 /// Bitbucket API adapter
 pub struct BitbucketAdapter {
@@ -35,11 +30,7 @@ impl BitbucketAdapter {
 
     /// Create a configured HTTP client with timeouts
     fn http_client() -> Client {
-        Client::builder()
-            .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
-            .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
-            .build()
-            .unwrap_or_else(|_| Client::new())
+        create_http_client()
     }
 }
 

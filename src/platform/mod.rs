@@ -7,10 +7,12 @@ pub mod bitbucket;
 pub mod capabilities;
 pub mod github;
 pub mod gitlab;
+pub mod http;
 pub mod rate_limit;
 pub mod traits;
 pub mod types;
 
+pub use http::create_http_client;
 pub use traits::HostingPlatform;
 pub use types::{
     AllowedMergeMethods, CheckState, CheckStatusDetails, MergeMethod, PRBase, PRCreateResult,

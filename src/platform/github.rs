@@ -5,6 +5,7 @@ use octocrab::Octocrab;
 use std::env;
 use std::time::Duration;
 
+use super::http::create_http_client;
 use super::traits::{HostingPlatform, PlatformError};
 use super::types::*;
 use crate::core::manifest::PlatformType;
@@ -44,17 +45,7 @@ impl GitHubAdapter {
 
     /// Create a configured HTTP client with timeouts
     fn http_client() -> reqwest::Client {
-        reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
-            .timeout(Duration::from_secs(READ_TIMEOUT_SECS))
-            .build()
-            .unwrap_or_else(|err| {
-                debug!(
-                    error = %err,
-                    "Failed to build HTTP client with timeouts; falling back to default client"
-                );
-                reqwest::Client::new()
-            })
+        create_http_client()
     }
 
     /// Get configured Octocrab instance with proper timeouts

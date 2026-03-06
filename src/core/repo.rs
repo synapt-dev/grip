@@ -341,7 +341,7 @@ fn create_manifest_repo_info(
             groups: Vec::new(),
             agent: None,
         },
-        &workspace_root.to_path_buf(),
+        workspace_root,
         settings,
         None,
     )

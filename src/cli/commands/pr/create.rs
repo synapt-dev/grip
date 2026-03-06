@@ -172,6 +172,7 @@ pub async fn run_pr_create(
 
     // Create PRs for each repo
     let mut created_prs: Vec<(String, u64, String)> = Vec::new(); // (repo_name, pr_number, url)
+    let mut failed_repos: Vec<(String, String)> = Vec::new(); // (repo_name, error)
 
     for repo in &repos_with_changes {
         let platform = get_platform_adapter(repo.platform_type, repo.platform_base_url.as_deref());
@@ -199,6 +200,7 @@ pub async fn run_pr_create(
             }
             Err(e) => {
                 spinner.finish_with_message(format!("{}: failed - {}", repo.name, e));
+                failed_repos.push((repo.name.clone(), e.to_string()));
             }
         }
     }
@@ -228,6 +230,7 @@ pub async fn run_pr_create(
         struct JsonPrCreateResult {
             success: bool,
             prs: Vec<JsonCreatedPr>,
+            failed: Vec<JsonFailedRepo>,
         }
         #[derive(serde::Serialize)]
         struct JsonCreatedPr {
@@ -235,9 +238,14 @@ pub async fn run_pr_create(
             number: u64,
             url: String,
         }
+        #[derive(serde::Serialize)]
+        struct JsonFailedRepo {
+            repo: String,
+            reason: String,
+        }
 
         let result = JsonPrCreateResult {
-            success: !created_prs.is_empty(),
+            success: !created_prs.is_empty() && failed_repos.is_empty(),
             prs: created_prs
                 .iter()
                 .map(|(repo, number, url)| JsonCreatedPr {
@@ -246,16 +254,34 @@ pub async fn run_pr_create(
                     url: url.clone(),
                 })
                 .collect(),
+            failed: failed_repos
+                .iter()
+                .map(|(repo, reason)| JsonFailedRepo {
+                    repo: repo.clone(),
+                    reason: reason.clone(),
+                })
+                .collect(),
         };
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
         println!();
-        if created_prs.is_empty() {
+        if created_prs.is_empty() && failed_repos.is_empty() {
             Output::warning("No PRs were created.");
         } else {
-            Output::success(&format!("Created {} PR(s):", created_prs.len()));
-            for (repo_name, pr_number, url) in &created_prs {
-                println!("  {}: #{} - {}", repo_name, pr_number, url);
+            if !created_prs.is_empty() {
+                Output::success(&format!("Created {} PR(s):", created_prs.len()));
+                for (repo_name, pr_number, url) in &created_prs {
+                    println!("  {}: #{} - {}", repo_name, pr_number, url);
+                }
+            }
+            if !failed_repos.is_empty() {
+                if !created_prs.is_empty() {
+                    println!();
+                }
+                Output::error(&format!("Failed to create {} PR(s):", failed_repos.len()));
+                for (repo_name, error) in &failed_repos {
+                    println!("  {}: {}", repo_name, error);
+                }
             }
         }
     }

@@ -719,7 +719,16 @@ pub async fn run_pr_merge(
         if error_count == 0 {
             Output::success(&format!("Successfully merged {} PR(s).", success_count));
         } else {
-            Output::warning(&format!("{} merged, {} failed", success_count, error_count));
+            Output::warning(&format!(
+                "{} merged, {} failed:",
+                success_count, error_count
+            ));
+            for failed in &json_failed_prs {
+                println!(
+                    "  {}: PR #{} - {}",
+                    failed.repo, failed.pr_number, failed.reason
+                );
+            }
         }
     }
 

@@ -444,6 +444,9 @@ enum PrCommands {
         /// Timeout in seconds for --wait (default: 600)
         #[arg(long, default_value = "600")]
         timeout: u64,
+        /// Don't delete the source branch after merging
+        #[arg(long)]
+        no_delete_branch: bool,
     },
     /// Check CI status
     Checks,
@@ -817,6 +820,7 @@ async fn main() -> anyhow::Result<()> {
                     auto,
                     wait,
                     timeout,
+                    no_delete_branch,
                 } => {
                     gitgrip::cli::commands::pr::run_pr_merge(
                         &ctx.workspace_root,
@@ -828,6 +832,7 @@ async fn main() -> anyhow::Result<()> {
                         ctx.json,
                         wait,
                         timeout,
+                        !no_delete_branch,
                     )
                     .await?;
                 }

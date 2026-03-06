@@ -1119,7 +1119,10 @@ mod forall_tests {
         assert!(output.status.success());
 
         // Run forall to show remote URLs (--all to include repos without changes)
-        let output = run_gr_in_dir(&["forall", "--all", "-c", "git remote get-url origin"], workspace);
+        let output = run_gr_in_dir(
+            &["forall", "--all", "-c", "git remote get-url origin"],
+            workspace,
+        );
         assert!(output.status.success());
 
         let stdout = String::from_utf8_lossy(&output.stdout);

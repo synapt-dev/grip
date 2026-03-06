@@ -240,6 +240,11 @@ const CLI_TOOL_SPECS: &[CliToolSpec] = &[
         description: "Generate shell completions (`gr completions ...`).",
     },
     CliToolSpec {
+        tool_name: "gitgrip_target",
+        command: "target",
+        description: "View or set PR target branch (`gr target ...`).",
+    },
+    CliToolSpec {
         tool_name: "gitgrip_verify",
         command: "verify",
         description: "Verify workspace assertions (`gr verify ...`).",

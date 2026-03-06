@@ -40,6 +40,18 @@ pub fn run_status(
     Output::header("Repository Status");
     println!();
 
+    // Show current target if not default
+    let effective_target = manifest
+        .settings
+        .target
+        .as_deref()
+        .or(manifest.settings.revision.as_deref())
+        .unwrap_or("main");
+    if effective_target != "main" {
+        Output::info(&format!("Target: {}", effective_target));
+        println!();
+    }
+
     // Get all repo info (include reference repos for display)
     let repos: Vec<RepoInfo> = filter_repos(manifest, workspace_root, None, group_filter, true);
 

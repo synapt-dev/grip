@@ -157,7 +157,13 @@ pub async fn run_pr_create(
 
         Output::subheader("Repositories that would create PRs:");
         for repo in &repos_with_changes {
-            println!("  - {} ({}/{})", repo.name, repo.owner, repo.repo);
+            println!(
+                "  - {} ({}/{}) → {}",
+                repo.name,
+                repo.owner,
+                repo.repo,
+                repo.target_branch()
+            );
         }
         println!();
         Output::warning("Run without --dry-run to actually create the PRs.");

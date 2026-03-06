@@ -15,6 +15,15 @@ pub async fn run_pr_status(
 ) -> anyhow::Result<()> {
     if !json_output {
         Output::header("Pull Request Status");
+        let effective_target = manifest
+            .settings
+            .target
+            .as_deref()
+            .or(manifest.settings.revision.as_deref())
+            .unwrap_or("main");
+        if effective_target != "main" {
+            Output::info(&format!("Target: {}", effective_target));
+        }
         println!();
     }
 

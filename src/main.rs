@@ -261,6 +261,11 @@ enum Commands {
         #[command(subcommand)]
         action: GroupCommands,
     },
+    /// View or set the PR target branch (base branch)
+    Target {
+        #[command(subcommand)]
+        action: TargetCommands,
+    },
     /// Run garbage collection across repos
     Gc {
         /// More thorough gc (slower)
@@ -530,6 +535,26 @@ enum GroupCommands {
     Create {
         /// Group name
         name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum TargetCommands {
+    /// Show current target branches for all repos
+    List,
+    /// Set the global target branch
+    Set {
+        /// Branch name
+        branch: String,
+        /// Set target for a specific repo instead of globally
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// Unset the target (fall back to revision/default)
+    Unset {
+        /// Unset target for a specific repo instead of globally
+        #[arg(long)]
+        repo: Option<String>,
     },
 }
 
@@ -1050,6 +1075,43 @@ async fn main() -> anyhow::Result<()> {
                 }
                 GroupCommands::Create { name } => {
                     gitgrip::cli::commands::group::run_group_create(&ctx.workspace_root, &name)?;
+                }
+            }
+        }
+        Some(Commands::Target { action }) => {
+            let ctx = load_workspace_context(cli_quiet, cli_verbose, cli_json)?;
+            match action {
+                TargetCommands::List => {
+                    gitgrip::cli::commands::target::run_target_list(
+                        &ctx.workspace_root,
+                        &ctx.manifest,
+                    )?;
+                }
+                TargetCommands::Set { branch, repo } => {
+                    if let Some(repo_name) = repo {
+                        gitgrip::cli::commands::target::run_target_set_repo(
+                            &ctx.workspace_root,
+                            &repo_name,
+                            &branch,
+                        )?;
+                    } else {
+                        gitgrip::cli::commands::target::run_target_set(
+                            &ctx.workspace_root,
+                            &branch,
+                        )?;
+                    }
+                }
+                TargetCommands::Unset { repo } => {
+                    if let Some(repo_name) = repo {
+                        gitgrip::cli::commands::target::run_target_unset_repo(
+                            &ctx.workspace_root,
+                            &repo_name,
+                        )?;
+                    } else {
+                        gitgrip::cli::commands::target::run_target_unset(
+                            &ctx.workspace_root,
+                        )?;
+                    }
                 }
             }
         }

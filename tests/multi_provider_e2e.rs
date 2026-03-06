@@ -8,7 +8,7 @@
 //! - GitLab: laynepenney/gitgrip-test-1, gitgrip-test-2, gitgrip-test-manifest
 //! - Azure DevOps: laynepenney/gitgrip/gitgrip-test-1, gitgrip-test-2, gitgrip-test-manifest
 //!
-//! Run with: cargo test --features integration-tests -- --ignored multi_provider
+//! Run with: cargo test --features integration-tests --test multi_provider_e2e -- --ignored
 
 use std::fs;
 use std::path::Path;
@@ -1089,8 +1089,8 @@ mod forall_tests {
         );
         assert!(output.status.success());
 
-        // Run forall with a simple command
-        let output = run_gr_in_dir(&["forall", "-c", "pwd"], workspace);
+        // Run forall with a simple command (--all to include repos without changes)
+        let output = run_gr_in_dir(&["forall", "--all", "-c", "pwd"], workspace);
         assert!(
             output.status.success(),
             "forall failed: {}",
@@ -1118,8 +1118,8 @@ mod forall_tests {
         );
         assert!(output.status.success());
 
-        // Run forall to show remote URLs
-        let output = run_gr_in_dir(&["forall", "-c", "git remote get-url origin"], workspace);
+        // Run forall to show remote URLs (--all to include repos without changes)
+        let output = run_gr_in_dir(&["forall", "--all", "-c", "git remote get-url origin"], workspace);
         assert!(output.status.success());
 
         let stdout = String::from_utf8_lossy(&output.stdout);

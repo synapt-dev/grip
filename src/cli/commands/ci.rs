@@ -6,7 +6,7 @@ use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
 
@@ -33,7 +33,7 @@ pub struct PipelineResult {
 
 /// Run a CI pipeline
 pub fn run_ci_run(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     pipeline_name: &str,
     json: bool,
@@ -216,7 +216,7 @@ pub fn run_ci_list(manifest: &Manifest, json: bool) -> anyhow::Result<()> {
 }
 
 /// Show status of last CI runs
-pub fn run_ci_status(workspace_root: &PathBuf, json: bool) -> anyhow::Result<()> {
+pub fn run_ci_status(workspace_root: &Path, json: bool) -> anyhow::Result<()> {
     let results_dir = workspace_root.join(".gitgrip").join("ci-results");
 
     if !results_dir.exists() {
@@ -276,7 +276,7 @@ pub fn run_ci_status(workspace_root: &PathBuf, json: bool) -> anyhow::Result<()>
 
 /// Run a single CI step
 fn run_step(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     step: &crate::core::manifest::CiStep,
     manifest: &Manifest,
 ) -> StepResult {
@@ -285,7 +285,7 @@ fn run_step(
     // Resolve working directory
     let cwd = match &step.cwd {
         Some(dir) => workspace_root.join(dir),
-        None => workspace_root.clone(),
+        None => workspace_root.to_path_buf(),
     };
 
     let mut cmd = Command::new("sh");
@@ -339,7 +339,7 @@ fn run_step(
 }
 
 /// Save CI result to disk
-fn save_ci_result(workspace_root: &PathBuf, result: &PipelineResult) -> anyhow::Result<()> {
+fn save_ci_result(workspace_root: &Path, result: &PipelineResult) -> anyhow::Result<()> {
     let results_dir = workspace_root.join(".gitgrip").join("ci-results");
     std::fs::create_dir_all(&results_dir)?;
 

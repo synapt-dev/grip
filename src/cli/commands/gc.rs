@@ -7,11 +7,11 @@ use crate::core::manifest::Manifest;
 use crate::core::repo::filter_repos;
 use crate::git::gc::{format_bytes, git_dir_size, run_git_gc};
 use crate::git::path_exists;
-use std::path::PathBuf;
+use std::path::Path;
 
 /// Run the gc command
 pub fn run_gc(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     aggressive: bool,
     dry_run: bool,

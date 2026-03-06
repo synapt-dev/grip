@@ -8,12 +8,12 @@ use crate::core::manifest::Manifest;
 use crate::core::repo::{filter_repos, RepoInfo};
 use crate::git::path_exists;
 use crate::util::log_cmd;
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::Command;
 
 /// Run the grep command
 pub fn run_grep(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     pattern: &str,
     ignore_case: bool,

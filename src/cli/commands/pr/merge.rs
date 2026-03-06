@@ -7,13 +7,13 @@ use crate::core::repo::{get_manifest_repo_info, RepoInfo};
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::platform::traits::PlatformError;
 use crate::platform::{get_platform_adapter, CheckState};
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 
 /// Run the PR merge command
 #[allow(clippy::too_many_arguments)]
 pub async fn run_pr_merge(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     method: Option<&crate::platform::MergeMethod>,
     force: bool,

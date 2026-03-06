@@ -6,7 +6,7 @@ use crate::core::repo::{get_manifest_repo_info, RepoInfo};
 use crate::git::remote::{force_push_branch, push_branch};
 use crate::git::{get_current_branch, open_repo, path_exists};
 use git2::Repository;
-use std::path::PathBuf;
+use std::path::Path;
 
 /// JSON-serializable push error for --json output
 #[derive(serde::Serialize)]
@@ -17,7 +17,7 @@ struct JsonPushError {
 
 /// Run the push command
 pub fn run_push(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     set_upstream: bool,
     force: bool,

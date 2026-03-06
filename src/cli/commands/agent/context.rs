@@ -1,6 +1,6 @@
 //! Agent context command — dump workspace context for AI agent system prompts.
 
-use std::path::PathBuf;
+use std::path::Path;
 
 use crate::core::griptree::GriptreeConfig;
 use crate::core::manifest::Manifest;
@@ -17,7 +17,7 @@ use super::{
 /// Outputs workspace context as plain markdown (for system prompt injection)
 /// or structured JSON (for programmatic consumption).
 pub fn run_agent_context(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     repo_filter: Option<&str>,
     json: bool,
@@ -49,7 +49,7 @@ pub fn run_agent_context(
 }
 
 fn output_json(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     statuses: &[(&crate::core::repo::RepoInfo, crate::git::status::RepoStatus)],
     griptree: &Option<GriptreeConfig>,
@@ -115,7 +115,7 @@ fn output_json(
 }
 
 fn output_markdown(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     statuses: &[(&crate::core::repo::RepoInfo, crate::git::status::RepoStatus)],
     griptree: &Option<GriptreeConfig>,

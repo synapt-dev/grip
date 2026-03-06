@@ -9,7 +9,7 @@ use crate::core::manifest::Manifest;
 use crate::core::repo::{filter_repos, RepoInfo};
 use crate::git::path_exists;
 use crate::git::status::get_repo_status;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// JSON-serializable verification result
 #[derive(serde::Serialize)]
@@ -169,7 +169,7 @@ fn check_clean(repos: &[RepoInfo]) -> CheckResult {
 }
 
 /// Check that all file links (copyfile/linkfile) are valid
-fn check_links(workspace_root: &PathBuf, manifest: &Manifest) -> CheckResult {
+fn check_links(workspace_root: &Path, manifest: &Manifest) -> CheckResult {
     let mut details = Vec::new();
     let mut broken = 0;
 

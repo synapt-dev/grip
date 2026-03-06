@@ -43,7 +43,7 @@ pub fn run_manifest_import(path: &str, output_path: Option<&str>) -> anyhow::Res
 }
 
 /// Re-sync gitgrip YAML from .repo/ manifest XML
-pub fn run_manifest_sync(workspace_root: &std::path::PathBuf) -> anyhow::Result<()> {
+pub fn run_manifest_sync(workspace_root: &Path) -> anyhow::Result<()> {
     // Find the XML manifest
     let repo_dir = workspace_root.join(".repo");
     let xml_path = repo_dir.join("manifest.xml");

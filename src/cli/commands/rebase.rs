@@ -8,12 +8,12 @@ use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::util::log_cmd;
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::Command;
 
 /// Run the rebase command
 pub fn run_rebase(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     onto: Option<&str>,
     upstream: bool,
@@ -152,7 +152,7 @@ pub fn run_rebase(
     Ok(())
 }
 
-fn run_rebase_abort(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<()> {
+fn run_rebase_abort(workspace_root: &Path, manifest: &Manifest) -> anyhow::Result<()> {
     Output::header("Aborting rebase");
     println!();
 
@@ -197,7 +197,7 @@ fn run_rebase_abort(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Re
     Ok(())
 }
 
-fn run_rebase_continue(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<()> {
+fn run_rebase_continue(workspace_root: &Path, manifest: &Manifest) -> anyhow::Result<()> {
     Output::header("Continuing rebase");
     println!();
 

@@ -7,7 +7,7 @@ use crate::core::manifest_paths;
 use crate::core::repo::{filter_repos, RepoInfo};
 use crate::git::path_exists;
 use crate::git::status::{get_repo_status, RepoStatus};
-use std::path::PathBuf;
+use std::path::Path;
 
 /// JSON-serializable repo status for --json output
 #[derive(serde::Serialize)]
@@ -26,7 +26,7 @@ struct JsonRepoStatus {
 
 /// Run the status command
 pub fn run_status(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     verbose: bool,
     quiet: bool,
@@ -217,7 +217,7 @@ pub fn run_status(
 
 /// Run status in JSON mode
 fn run_status_json(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     group_filter: Option<&[String]>,
 ) -> anyhow::Result<()> {

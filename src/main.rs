@@ -1108,9 +1108,7 @@ async fn main() -> anyhow::Result<()> {
                             &repo_name,
                         )?;
                     } else {
-                        gitgrip::cli::commands::target::run_target_unset(
-                            &ctx.workspace_root,
-                        )?;
+                        gitgrip::cli::commands::target::run_target_unset(&ctx.workspace_root)?;
                     }
                 }
             }

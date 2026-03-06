@@ -557,13 +557,15 @@ async fn test_tree_return_checks_out_base_branch() {
     let result = gitgrip::cli::commands::tree::run_tree_return(
         &ws.workspace_root,
         &manifest,
-        None,
-        true,
-        false,
-        None,
-        false,
-        false,
-        false,
+        &gitgrip::cli::commands::tree::TreeReturnOptions {
+            base_override: None,
+            no_sync: true,
+            autostash: false,
+            prune_branch: None,
+            prune_current: false,
+            prune_remote: false,
+            force: false,
+        },
     )
     .await;
 
@@ -588,13 +590,15 @@ async fn test_tree_return_prunes_current_branch() {
     let result = gitgrip::cli::commands::tree::run_tree_return(
         &ws.workspace_root,
         &manifest,
-        None,
-        true,
-        false,
-        None,
-        true,
-        false,
-        true,
+        &gitgrip::cli::commands::tree::TreeReturnOptions {
+            base_override: None,
+            no_sync: true,
+            autostash: false,
+            prune_branch: None,
+            prune_current: true,
+            prune_remote: false,
+            force: true,
+        },
     )
     .await;
 

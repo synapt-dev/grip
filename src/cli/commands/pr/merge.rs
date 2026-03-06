@@ -10,21 +10,25 @@ use crate::platform::{get_platform_adapter, CheckState};
 use std::path::Path;
 use std::sync::Arc;
 
+/// Options for the PR merge command.
+pub struct MergeOptions<'a> {
+    pub method: Option<&'a crate::platform::MergeMethod>,
+    pub force: bool,
+    pub update: bool,
+    pub auto: bool,
+    pub json: bool,
+    pub wait: bool,
+    pub timeout: u64,
+    pub delete_branch: bool,
+}
+
 /// Run the PR merge command
-#[allow(clippy::too_many_arguments)]
 pub async fn run_pr_merge(
     workspace_root: &Path,
     manifest: &Manifest,
-    method: Option<&crate::platform::MergeMethod>,
-    force: bool,
-    update: bool,
-    auto: bool,
-    json: bool,
-    wait: bool,
-    timeout: u64,
-    delete_branch: bool,
+    opts: &MergeOptions<'_>,
 ) -> anyhow::Result<()> {
-    if !json {
+    if !opts.json {
         Output::header("Merging pull requests...");
         println!();
     }
@@ -44,7 +48,7 @@ pub async fn run_pr_merge(
         .filter(|r| !r.reference) // Skip reference repos
         .collect();
 
-    let merge_method = method.copied().unwrap_or_default();
+    let merge_method = opts.method.copied().unwrap_or_default();
 
     // Also check manifest repo if configured
     let mut all_repos = repos.clone();
@@ -170,13 +174,13 @@ pub async fn run_pr_merge(
                 });
             }
             Ok(None) => {
-                if !json {
+                if !opts.json {
                     Output::info(&format!("{}: no open PR for this branch", repo.name));
                 }
                 json_skipped.push(repo.name.clone());
             }
             Err(e) => {
-                if !json {
+                if !opts.json {
                     Output::error(&format!("{}: {}", repo.name, e));
                 }
             }
@@ -210,14 +214,14 @@ pub async fn run_pr_merge(
     }
 
     // Wait for checks to pass if --wait
-    if wait {
+    if opts.wait {
         let any_pending = prs_to_merge
             .iter()
             .any(|pr| matches!(pr.check_status, CheckStatus::Pending));
 
         if any_pending {
             let start = std::time::Instant::now();
-            let timeout_duration = std::time::Duration::from_secs(timeout);
+            let timeout_duration = std::time::Duration::from_secs(opts.timeout);
 
             let spinner = Output::spinner("Waiting for checks to pass...");
 
@@ -235,7 +239,7 @@ pub async fn run_pr_merge(
                     spinner.finish_with_message("Timed out waiting for checks");
                     anyhow::bail!(
                         "Timed out after {} seconds waiting for checks to pass",
-                        timeout
+                        opts.timeout
                     );
                 }
 
@@ -302,7 +306,7 @@ pub async fn run_pr_merge(
     }
 
     // Check readiness if not forcing
-    if !force {
+    if !opts.force {
         let mut issues = Vec::new();
         for pr in &prs_to_merge {
             if !pr.approved {
@@ -353,7 +357,7 @@ pub async fn run_pr_merge(
     }
 
     // Auto-merge flow: enable auto-merge and return early
-    if auto {
+    if opts.auto {
         let mut success_count = 0;
         let mut error_count = 0;
 
@@ -424,7 +428,7 @@ pub async fn run_pr_merge(
     let mut json_failed_prs: Vec<JsonFailedPr> = Vec::new();
 
     for pr in prs_to_merge {
-        let spinner = if !json {
+        let spinner = if !opts.json {
             Some(Output::spinner(&format!(
                 "Merging {} PR #{}...",
                 pr.repo_name, pr.pr_number
@@ -440,20 +444,20 @@ pub async fn run_pr_merge(
                 &pr.repo,
                 pr.pr_number,
                 Some(merge_method),
-                delete_branch,
+                opts.delete_branch,
             )
             .await;
 
         // Handle BranchBehind with --update retry
         let merge_result = match merge_result {
-            Err(PlatformError::BranchBehind(ref msg)) if update => {
+            Err(PlatformError::BranchBehind(ref msg)) if opts.update => {
                 if let Some(ref s) = spinner {
                     s.finish_with_message(format!(
                         "{}: branch behind base, updating...",
                         pr.repo_name
                     ));
                 }
-                let update_spinner = if !json {
+                let update_spinner = if !opts.json {
                     Some(Output::spinner(&format!(
                         "Updating {} PR #{} branch...",
                         pr.repo_name, pr.pr_number
@@ -476,7 +480,7 @@ pub async fn run_pr_merge(
                         }
                         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
-                        let retry_spinner = if !json {
+                        let retry_spinner = if !opts.json {
                             Some(Output::spinner(&format!(
                                 "Merging {} PR #{}...",
                                 pr.repo_name, pr.pr_number
@@ -492,7 +496,7 @@ pub async fn run_pr_merge(
                                 &pr.repo,
                                 pr.pr_number,
                                 Some(merge_method),
-                                delete_branch,
+                                opts.delete_branch,
                             )
                             .await
                         {
@@ -630,7 +634,7 @@ pub async fn run_pr_merge(
                         pr.repo_name, pr.pr_number
                     ));
                 }
-                if !json {
+                if !opts.json {
                     Output::info(
                         "  Hint: use 'gr pr merge --update' to update the branch and retry",
                     );
@@ -646,7 +650,7 @@ pub async fn run_pr_merge(
                 if let Some(ref s) = spinner {
                     s.finish_with_message(format!("{}: {}", pr.repo_name, msg));
                 }
-                if !json {
+                if !opts.json {
                     Output::info(
                         "  Hint: use 'gr pr merge --auto' to enable auto-merge when checks pass",
                     );
@@ -673,21 +677,21 @@ pub async fn run_pr_merge(
                 });
                 error_count += 1;
 
-                if !force
+                if !opts.force
                     && manifest.settings.merge_strategy
                         == crate::core::manifest::MergeStrategy::AllOrNothing
                 {
-                    if !json {
+                    if !opts.json {
                         Output::error(
                             "Stopping due to all-or-nothing merge strategy. Use --force to bypass.",
                         );
                     }
                     return Err(e.into());
                 }
-                if force
+                if opts.force
                     && manifest.settings.merge_strategy
                         == crate::core::manifest::MergeStrategy::AllOrNothing
-                    && !json
+                    && !opts.json
                 {
                     Output::warning(&format!(
                         "{}: merge failed but continuing due to --force flag",
@@ -699,7 +703,7 @@ pub async fn run_pr_merge(
     }
 
     // Summary
-    if json {
+    if opts.json {
         #[derive(serde::Serialize)]
         struct JsonPrMergeResult {
             success: bool,

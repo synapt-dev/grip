@@ -32,14 +32,16 @@ async fn test_pr_merge_no_open_prs() {
     let result = gitgrip::cli::commands::pr::run_pr_merge(
         &ws.workspace_root,
         &manifest,
-        None,  // method
-        false, // force
-        false, // update
-        false, // auto
-        false, // json
-        false, // wait
-        600,   // timeout
-        true,  // delete_branch
+        &gitgrip::cli::commands::pr::MergeOptions {
+            method: None,
+            force: false,
+            update: false,
+            auto: false,
+            json: false,
+            wait: false,
+            timeout: 600,
+            delete_branch: true,
+        },
     )
     .await;
 
@@ -79,14 +81,16 @@ async fn test_pr_merge_skip_default_branch() {
     let result = gitgrip::cli::commands::pr::run_pr_merge(
         &ws.workspace_root,
         &manifest,
-        None,  // method
-        false, // force
-        false, // update
-        false, // auto
-        false, // json
-        false, // wait
-        600,   // timeout
-        true,  // delete_branch
+        &gitgrip::cli::commands::pr::MergeOptions {
+            method: None,
+            force: false,
+            update: false,
+            auto: false,
+            json: false,
+            wait: false,
+            timeout: 600,
+            delete_branch: true,
+        },
     )
     .await;
 
@@ -120,14 +124,16 @@ async fn test_pr_merge_skip_reference_repos() {
     let result = gitgrip::cli::commands::pr::run_pr_merge(
         &ws.workspace_root,
         &manifest,
-        None,  // method
-        false, // force
-        false, // update
-        false, // auto
-        false, // json
-        false, // wait
-        600,   // timeout
-        true,  // delete_branch
+        &gitgrip::cli::commands::pr::MergeOptions {
+            method: None,
+            force: false,
+            update: false,
+            auto: false,
+            json: false,
+            wait: false,
+            timeout: 600,
+            delete_branch: true,
+        },
     )
     .await;
 
@@ -160,14 +166,16 @@ async fn test_pr_merge_mixed_repos_all_skipped() {
     let result = gitgrip::cli::commands::pr::run_pr_merge(
         &ws.workspace_root,
         &manifest,
-        None,  // method
-        false, // force
-        false, // update
-        false, // auto
-        false, // json
-        false, // wait
-        600,   // timeout
-        true,  // delete_branch
+        &gitgrip::cli::commands::pr::MergeOptions {
+            method: None,
+            force: false,
+            update: false,
+            auto: false,
+            json: false,
+            wait: false,
+            timeout: 600,
+            delete_branch: true,
+        },
     )
     .await;
 
@@ -219,14 +227,16 @@ async fn test_pr_merge_force_bypasses_checks() {
     let result = gitgrip::cli::commands::pr::run_pr_merge(
         &ws.workspace_root,
         &manifest,
-        None,
-        true,  // force
-        false, // update
-        false, // auto
-        false, // json
-        false, // wait
-        600,   // timeout
-        true,  // delete_branch
+        &gitgrip::cli::commands::pr::MergeOptions {
+            method: None,
+            force: true,
+            update: false,
+            auto: false,
+            json: false,
+            wait: false,
+            timeout: 600,
+            delete_branch: true,
+        },
     )
     .await;
 
@@ -284,14 +294,16 @@ async fn test_pr_merge_branch_behind_suggests_update() {
     let result = gitgrip::cli::commands::pr::run_pr_merge(
         &ws.workspace_root,
         &manifest,
-        None,
-        true,  // force to bypass readiness
-        false, // update
-        false, // auto
-        false, // json
-        false, // wait
-        600,   // timeout
-        true,  // delete_branch
+        &gitgrip::cli::commands::pr::MergeOptions {
+            method: None,
+            force: true,
+            update: false,
+            auto: false,
+            json: false,
+            wait: false,
+            timeout: 600,
+            delete_branch: true,
+        },
     )
     .await;
 

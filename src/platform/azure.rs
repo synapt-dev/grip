@@ -655,31 +655,11 @@ impl HostingPlatform for AzureDevOpsAdapter {
         pull_number: u64,
     ) -> Result<String, PlatformError> {
         let ctx = self.parse_context(owner, repo);
-        let token = self.get_token().await?;
 
-        // Azure DevOps doesn't have a direct diff endpoint, so we get the commits
-        // and generate a diff URL or message
-        let url = format!(
-            "{}/{}/{}/_apis/git/repositories/{}/pullRequests/{}/commits?api-version=7.0",
-            self.base_url, ctx.organization, ctx.project, ctx.repository, pull_number
+        let endpoint = format!(
+            "/git/repositories/{}/pullRequests/{}/commits",
+            ctx.repository, pull_number
         );
-
-        let auth = STANDARD.encode(format!(":{}", token));
-
-        let response = self
-            .http_client
-            .get(&url)
-            .header("Authorization", format!("Basic {}", auth))
-            .send()
-            .await
-            .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
-
-        if !response.status().is_success() {
-            return Err(PlatformError::ApiError(format!(
-                "Failed to get PR commits: {}",
-                response.status()
-            )));
-        }
 
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
@@ -693,10 +673,9 @@ impl HostingPlatform for AzureDevOpsAdapter {
             value: Vec<CommitInfo>,
         }
 
-        let commits: CommitsResponse = response
-            .json()
-            .await
-            .map_err(|e| PlatformError::ParseError(e.to_string()))?;
+        let commits: CommitsResponse = self
+            .api_request(reqwest::Method::GET, &ctx, &endpoint, None::<()>)
+            .await?;
 
         // Build a summary of commits
         let mut diff = String::new();
@@ -845,12 +824,12 @@ impl HostingPlatform for AzureDevOpsAdapter {
             self.base_url, ctx.organization, ctx.project, repo_info.id
         );
 
-        let auth = STANDARD.encode(format!(":{}", token));
-
         let response = self
             .http_client
             .delete(&url)
-            .header("Authorization", format!("Basic {}", auth))
+            .header("Authorization", self.build_auth_header(&token))
+            .header("X-VSS-ForceMsaPassThrough", "true")
+            .header("X-TFS-FedAuthRedirect", "Suppress")
             .send()
             .await
             .map_err(|e| PlatformError::NetworkError(e.to_string()))?;

@@ -51,7 +51,7 @@ impl RepoInfo {
     pub fn from_config(
         name: &str,
         config: &RepoConfig,
-        workspace_root: &PathBuf,
+        workspace_root: &Path,
         settings: &ManifestSettings,
         remotes: Option<&HashMap<String, RemoteConfig>>,
     ) -> Option<Self> {
@@ -263,7 +263,7 @@ fn parse_git_url(url: &str) -> Option<ParsedUrl> {
 /// found across commands.
 pub fn filter_repos(
     manifest: &Manifest,
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     repos_filter: Option<&[String]>,
     group_filter: Option<&[String]>,
     include_reference: bool,
@@ -341,7 +341,7 @@ fn create_manifest_repo_info(
             groups: Vec::new(),
             agent: None,
         },
-        &workspace_root.to_path_buf(),
+        workspace_root,
         settings,
         None,
     )

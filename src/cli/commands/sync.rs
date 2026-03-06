@@ -20,7 +20,7 @@ use crate::git::{clone_repo, get_current_branch, open_repo, path_exists};
 use git2::Repository;
 use indicatif::ProgressBar;
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::task::JoinSet;
 
@@ -56,7 +56,7 @@ struct HookResult {
 /// Run the sync command
 #[allow(clippy::too_many_arguments)]
 pub async fn run_sync(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     force: bool,
     quiet: bool,
@@ -262,7 +262,7 @@ pub async fn run_sync(
 
 /// Sync gripspaces: update existing or clone new ones, then resolve merged manifest.
 fn sync_gripspaces(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     quiet: bool,
 ) -> anyhow::Result<Manifest> {
@@ -939,7 +939,7 @@ impl Clone for SyncResult {
 
 /// Execute post-sync hooks defined in the manifest
 fn execute_post_sync_hooks(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     sync_results: &[SyncResult],
     quiet: bool,
@@ -1006,7 +1006,7 @@ fn execute_post_sync_hooks(
             .cwd
             .as_ref()
             .map(|p| workspace_root.join(p))
-            .unwrap_or_else(|| workspace_root.clone());
+            .unwrap_or_else(|| workspace_root.to_path_buf());
 
         let start = std::time::Instant::now();
         let status = std::process::Command::new("sh")

@@ -7,10 +7,10 @@ use crate::core::manifest::Manifest;
 use crate::core::manifest_paths;
 use crate::core::repo::RepoInfo;
 use serde_yaml::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Show current target branches for all repos
-pub fn run_target_list(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<()> {
+pub fn run_target_list(workspace_root: &Path, manifest: &Manifest) -> anyhow::Result<()> {
     Output::header("Target Branches");
     println!();
 
@@ -73,7 +73,7 @@ pub fn run_target_list(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow:
 }
 
 /// Set the global target branch
-pub fn run_target_set(workspace_root: &PathBuf, branch: &str) -> anyhow::Result<()> {
+pub fn run_target_set(workspace_root: &Path, branch: &str) -> anyhow::Result<()> {
     let manifest_path = find_manifest_path(workspace_root)?;
     let content = std::fs::read_to_string(&manifest_path)?;
     let mut manifest: Value = serde_yaml::from_str(&content)?;
@@ -116,7 +116,7 @@ pub fn run_target_set(workspace_root: &PathBuf, branch: &str) -> anyhow::Result<
 
 /// Set the target branch for a specific repo
 pub fn run_target_set_repo(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     repo_name: &str,
     branch: &str,
 ) -> anyhow::Result<()> {
@@ -157,7 +157,7 @@ pub fn run_target_set_repo(
 }
 
 /// Unset the global target (falls back to revision)
-pub fn run_target_unset(workspace_root: &PathBuf) -> anyhow::Result<()> {
+pub fn run_target_unset(workspace_root: &Path) -> anyhow::Result<()> {
     let manifest_path = find_manifest_path(workspace_root)?;
     let content = std::fs::read_to_string(&manifest_path)?;
     let mut manifest: Value = serde_yaml::from_str(&content)?;
@@ -178,7 +178,7 @@ pub fn run_target_unset(workspace_root: &PathBuf) -> anyhow::Result<()> {
 }
 
 /// Unset the target for a specific repo (falls back to global)
-pub fn run_target_unset_repo(workspace_root: &PathBuf, repo_name: &str) -> anyhow::Result<()> {
+pub fn run_target_unset_repo(workspace_root: &Path, repo_name: &str) -> anyhow::Result<()> {
     let manifest_path = find_manifest_path(workspace_root)?;
     let content = std::fs::read_to_string(&manifest_path)?;
     let mut manifest: Value = serde_yaml::from_str(&content)?;
@@ -214,7 +214,7 @@ pub fn run_target_unset_repo(workspace_root: &PathBuf, repo_name: &str) -> anyho
     Ok(())
 }
 
-fn find_manifest_path(workspace_root: &PathBuf) -> anyhow::Result<PathBuf> {
+fn find_manifest_path(workspace_root: &Path) -> anyhow::Result<PathBuf> {
     if let Some(path) = manifest_paths::resolve_gripspace_manifest_path(workspace_root) {
         return Ok(path);
     }

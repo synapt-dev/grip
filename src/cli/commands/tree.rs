@@ -72,7 +72,7 @@ impl GriptreeCreationContext {
 
 /// Run tree add command
 pub fn run_tree_add(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     branch: &str,
 ) -> anyhow::Result<()> {
@@ -366,7 +366,7 @@ pub fn run_tree_add(
 }
 
 /// Run tree list command
-pub fn run_tree_list(workspace_root: &PathBuf) -> anyhow::Result<()> {
+pub fn run_tree_list(workspace_root: &Path) -> anyhow::Result<()> {
     Output::header("Griptrees");
     println!();
 
@@ -417,7 +417,7 @@ pub fn run_tree_list(workspace_root: &PathBuf) -> anyhow::Result<()> {
 
 /// Return to the griptree base branch, sync upstreams, and optionally prune a branch.
 pub async fn run_tree_return(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     base_override: Option<&str>,
     no_sync: bool,
@@ -674,10 +674,10 @@ fn discover_legacy_griptrees(
     Ok(discovered)
 }
 
-fn resolve_griptrees_workspace_root(workspace_root: &PathBuf) -> PathBuf {
+fn resolve_griptrees_workspace_root(workspace_root: &Path) -> PathBuf {
     let local_registry = workspace_root.join(".gitgrip").join("griptrees.json");
     if local_registry.exists() {
-        return workspace_root.clone();
+        return workspace_root.to_path_buf();
     }
 
     let pointer_path = workspace_root.join(".griptree");
@@ -691,11 +691,11 @@ fn resolve_griptrees_workspace_root(workspace_root: &PathBuf) -> PathBuf {
         }
     }
 
-    workspace_root.clone()
+    workspace_root.to_path_buf()
 }
 
 /// Run tree remove command
-pub fn run_tree_remove(workspace_root: &PathBuf, branch: &str, force: bool) -> anyhow::Result<()> {
+pub fn run_tree_remove(workspace_root: &Path, branch: &str, force: bool) -> anyhow::Result<()> {
     Output::header(&format!("Removing griptree for '{}'", branch));
     println!();
 
@@ -799,7 +799,7 @@ fn prune_worktree(repo: &git2::Repository, worktree_name: &str) {
 
 /// Run tree lock command
 pub fn run_tree_lock(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     branch: &str,
     reason: Option<&str>,
 ) -> anyhow::Result<()> {
@@ -839,7 +839,7 @@ pub fn run_tree_lock(
 }
 
 /// Run tree unlock command
-pub fn run_tree_unlock(workspace_root: &PathBuf, branch: &str) -> anyhow::Result<()> {
+pub fn run_tree_unlock(workspace_root: &Path, branch: &str) -> anyhow::Result<()> {
     let griptrees_root = resolve_griptrees_workspace_root(workspace_root);
     let config_path = griptrees_root.join(".gitgrip").join("griptrees.json");
     if !config_path.exists() {
@@ -877,8 +877,8 @@ pub fn run_tree_unlock(workspace_root: &PathBuf, branch: &str) -> anyhow::Result
 
 /// Create manifest worktree for a griptree
 fn create_manifest_worktree(
-    main_manifests_dir: &PathBuf,
-    tree_manifests_dir: &PathBuf,
+    main_manifests_dir: &Path,
+    tree_manifests_dir: &Path,
     branch: &str,
 ) -> anyhow::Result<String> {
     let repo = open_repo(main_manifests_dir)?;
@@ -909,8 +909,8 @@ fn create_manifest_worktree(
 /// When creating a new branch, bases it off `base_branch` (e.g., "main") instead of HEAD.
 /// This ensures griptrees start from the default branch, not whatever branch the workspace is on.
 fn create_worktree(
-    repo_path: &PathBuf,
-    worktree_path: &PathBuf,
+    repo_path: &Path,
+    worktree_path: &Path,
     branch: &str,
     base_branch: Option<&str>,
 ) -> anyhow::Result<()> {
@@ -978,7 +978,7 @@ fn create_worktree(
 }
 
 /// Sync reference repo with upstream revision
-fn sync_repo_with_upstream(repo_path: &PathBuf, revision: &str) -> anyhow::Result<()> {
+fn sync_repo_with_upstream(repo_path: &Path, revision: &str) -> anyhow::Result<()> {
     let repo = open_repo(repo_path)?;
 
     // Fetch from origin to ensure up-to-date
@@ -993,7 +993,7 @@ fn sync_repo_with_upstream(repo_path: &PathBuf, revision: &str) -> anyhow::Resul
     Ok(())
 }
 
-fn stash_repo(repo_path: &PathBuf, message: &str) -> anyhow::Result<bool> {
+fn stash_repo(repo_path: &Path, message: &str) -> anyhow::Result<bool> {
     let mut cmd = Command::new("git");
     cmd.args(["stash", "push", "-u", "-m", message])
         .current_dir(repo_path);
@@ -1014,7 +1014,7 @@ fn stash_repo(repo_path: &PathBuf, message: &str) -> anyhow::Result<bool> {
     Ok(true)
 }
 
-fn stash_pop_repo(repo_path: &PathBuf) -> anyhow::Result<()> {
+fn stash_pop_repo(repo_path: &Path) -> anyhow::Result<()> {
     let mut cmd = Command::new("git");
     cmd.args(["stash", "pop"]).current_dir(repo_path);
     log_cmd(&cmd);

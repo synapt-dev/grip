@@ -5,11 +5,11 @@ use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::platform::get_platform_adapter;
-use std::path::PathBuf;
+use std::path::Path;
 
 /// Run the PR diff command
 pub async fn run_pr_diff(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     stat_only: bool,
 ) -> anyhow::Result<()> {

@@ -8,15 +8,11 @@ use crate::git::cache::invalidate_status_cache;
 use crate::git::{get_workdir, open_repo, path_exists};
 use crate::util::log_cmd;
 use git2::Repository;
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::Command;
 
 /// Run the add command
-pub fn run_add(
-    workspace_root: &PathBuf,
-    manifest: &Manifest,
-    files: &[String],
-) -> anyhow::Result<()> {
+pub fn run_add(workspace_root: &Path, manifest: &Manifest, files: &[String]) -> anyhow::Result<()> {
     Output::header("Checking repositories for changes to stage...");
     println!();
 
@@ -89,7 +85,7 @@ pub fn run_add(
 }
 
 /// Stage files in a repository using git CLI
-fn stage_files(repo: &Repository, _repo_path: &PathBuf, files: &[String]) -> anyhow::Result<usize> {
+fn stage_files(repo: &Repository, _repo_path: &Path, files: &[String]) -> anyhow::Result<usize> {
     let repo_dir = get_workdir(repo);
 
     // Get count of changes before staging

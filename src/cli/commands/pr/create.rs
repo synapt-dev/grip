@@ -8,12 +8,12 @@ use crate::git::status::has_uncommitted_changes;
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::platform::get_platform_adapter;
 use git2::Repository;
-use std::path::PathBuf;
+use std::path::Path;
 
 /// Run the PR create command
 #[allow(clippy::too_many_arguments)]
 pub async fn run_pr_create(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     title: Option<&str>,
     body: Option<&str>,

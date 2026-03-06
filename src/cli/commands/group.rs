@@ -8,10 +8,10 @@ use crate::core::manifest_paths;
 use crate::core::repo::RepoInfo;
 use serde_yaml::{self, Value};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Run the group list command
-pub fn run_group_list(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::Result<()> {
+pub fn run_group_list(workspace_root: &Path, manifest: &Manifest) -> anyhow::Result<()> {
     Output::header("Repository Groups");
     println!();
 
@@ -78,11 +78,7 @@ pub fn run_group_list(workspace_root: &PathBuf, manifest: &Manifest) -> anyhow::
 }
 
 /// Add repositories to a group
-pub fn run_group_add(
-    workspace_root: &PathBuf,
-    group: &str,
-    repos: &[String],
-) -> anyhow::Result<()> {
+pub fn run_group_add(workspace_root: &Path, group: &str, repos: &[String]) -> anyhow::Result<()> {
     let manifest_path = find_manifest_path(workspace_root)?;
 
     // Load the raw YAML to preserve formatting
@@ -178,7 +174,7 @@ pub fn run_group_add(
 
 /// Remove repositories from a group
 pub fn run_group_remove(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     group: &str,
     repos: &[String],
 ) -> anyhow::Result<()> {
@@ -284,7 +280,7 @@ pub fn run_group_remove(
 }
 
 /// Create a new group (informational - groups are created by adding repos)
-pub fn run_group_create(_workspace_root: &PathBuf, name: &str) -> anyhow::Result<()> {
+pub fn run_group_create(_workspace_root: &Path, name: &str) -> anyhow::Result<()> {
     Output::info("Groups are created implicitly when you add repos to them.");
     println!();
     Output::info(&format!(
@@ -296,7 +292,7 @@ pub fn run_group_create(_workspace_root: &PathBuf, name: &str) -> anyhow::Result
 }
 
 /// Find the workspace manifest path.
-fn find_manifest_path(workspace_root: &PathBuf) -> anyhow::Result<PathBuf> {
+fn find_manifest_path(workspace_root: &Path) -> anyhow::Result<PathBuf> {
     if let Some(path) = manifest_paths::resolve_gripspace_manifest_path(workspace_root) {
         return Ok(path);
     }

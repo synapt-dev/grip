@@ -9,11 +9,11 @@ use crate::git::cherry_pick::{
     cherry_pick, cherry_pick_abort, cherry_pick_continue, cherry_pick_in_progress, CherryPickResult,
 };
 use crate::git::path_exists;
-use std::path::PathBuf;
+use std::path::Path;
 
 /// Run the cherry-pick command
 pub fn run_cherry_pick(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     commit: Option<&str>,
     abort: bool,

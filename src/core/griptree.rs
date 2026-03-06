@@ -5,7 +5,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 /// Errors that can occur with griptree operations
@@ -99,7 +99,7 @@ impl GriptreeConfig {
     }
 
     /// Load griptree config from a workspace root (if present)
-    pub fn load_from_workspace(workspace_root: &PathBuf) -> Result<Option<Self>, GriptreeError> {
+    pub fn load_from_workspace(workspace_root: &Path) -> Result<Option<Self>, GriptreeError> {
         let path = workspace_root.join(".gitgrip").join("griptree.json");
         if !path.exists() {
             return Ok(None);

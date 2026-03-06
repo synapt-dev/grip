@@ -1,6 +1,6 @@
 //! Agent verify command — run all checks (build + test + lint) for repo(s).
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::Command;
 
 use crate::cli::output::Output;
@@ -12,7 +12,7 @@ use crate::core::repo::filter_repos;
 /// Executes build, test, and lint commands from the manifest for each repo
 /// that has them configured. Continues through failures and reports a summary.
 pub fn run_agent_verify(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     manifest: &Manifest,
     repo_filter: Option<&str>,
 ) -> anyhow::Result<()> {

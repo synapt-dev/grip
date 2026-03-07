@@ -331,6 +331,81 @@ fn checkout_rev(path: &Path, rev: &str) -> Result<(), ManifestError> {
     Ok(())
 }
 
+/// Deep-merge gripspace repo config underneath local overrides.
+///
+/// Local scalar fields win when explicitly set. Collections (groups, linkfile, copyfile)
+/// are unioned with deduplication. Optional struct fields (agent, platform) fall back to
+/// the gripspace version when the local manifest doesn't define them.
+fn deep_merge_repo_config(
+    local: &mut crate::core::manifest::RepoConfig,
+    gripspace: &crate::core::manifest::RepoConfig,
+) {
+    // Scalar fields: local wins if set, otherwise inherit from gripspace
+    if local.url.is_none() {
+        local.url.clone_from(&gripspace.url);
+    }
+    if local.remote.is_none() {
+        local.remote.clone_from(&gripspace.remote);
+    }
+    if local.revision.is_none() {
+        local.revision.clone_from(&gripspace.revision);
+    }
+    if local.target.is_none() {
+        local.target.clone_from(&gripspace.target);
+    }
+    if local.sync_remote.is_none() {
+        local.sync_remote.clone_from(&gripspace.sync_remote);
+    }
+    if local.push_remote.is_none() {
+        local.push_remote.clone_from(&gripspace.push_remote);
+    }
+
+    // Optional struct fields: local wins if present, otherwise inherit
+    if local.platform.is_none() {
+        local.platform.clone_from(&gripspace.platform);
+    }
+    if local.agent.is_none() {
+        local.agent.clone_from(&gripspace.agent);
+    }
+
+    // reference: only inherit if gripspace sets it true and local doesn't
+    if !local.reference && gripspace.reference {
+        local.reference = true;
+    }
+
+    // Groups: union with deduplication (gripspace groups + local groups)
+    if !gripspace.groups.is_empty() {
+        let existing: HashSet<String> = local.groups.iter().cloned().collect();
+        for g in &gripspace.groups {
+            if !existing.contains(g) {
+                local.groups.push(g.clone());
+            }
+        }
+    }
+
+    // Linkfiles: union, deduplicated by dest (local wins on conflict)
+    if let Some(gs_linkfiles) = &gripspace.linkfile {
+        let local_linkfiles = local.linkfile.get_or_insert_with(Vec::new);
+        let local_dests: HashSet<String> = local_linkfiles.iter().map(|l| l.dest.clone()).collect();
+        for lf in gs_linkfiles {
+            if !local_dests.contains(&lf.dest) {
+                local_linkfiles.push(lf.clone());
+            }
+        }
+    }
+
+    // Copyfiles: union, deduplicated by dest (local wins on conflict)
+    if let Some(gs_copyfiles) = &gripspace.copyfile {
+        let local_copyfiles = local.copyfile.get_or_insert_with(Vec::new);
+        let local_dests: HashSet<String> = local_copyfiles.iter().map(|c| c.dest.clone()).collect();
+        for cf in gs_copyfiles {
+            if !local_dests.contains(&cf.dest) {
+                local_copyfiles.push(cf.clone());
+            }
+        }
+    }
+}
+
 /// Resolve all gripspaces: clone/load their manifests, merge into the local manifest.
 ///
 /// Processes gripspaces in order, with recursive include support.
@@ -376,9 +451,19 @@ pub fn resolve_all_gripspaces(
 
     // Now merge gripspace values into the manifest, with local values winning
 
-    // Repos: gripspace repos first, then local overrides
-    for (name, config) in merged_repos {
-        manifest.repos.entry(name).or_insert(config);
+    // Repos: deep-merge gripspace repos with local overrides (local scalar fields win,
+    // collections like groups/linkfile/copyfile are unioned)
+    for (name, gs_config) in merged_repos {
+        match manifest.repos.entry(name) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                // Local repo exists — deep-merge gripspace fields underneath
+                let local = entry.get_mut();
+                deep_merge_repo_config(local, &gs_config);
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(gs_config);
+            }
+        }
     }
 
     // Workspace: merge scripts, env, hooks
@@ -941,6 +1026,171 @@ repos:
             Some("https://github.com/user/local-version.git".to_string())
         );
         assert_eq!(repo.path, "./my-repo-local");
+    }
+
+    #[test]
+    fn test_resolve_local_repo_deep_merges_gripspace_fields() {
+        let temp = tempfile::tempdir().unwrap();
+        let gripspaces_dir = temp.path();
+
+        // Create gripspace with a repo that has agent, groups, and linkfile
+        let gs_dir = gripspaces_dir.join("rich-gripspace");
+        std::fs::create_dir_all(&gs_dir).unwrap();
+        init_git_with_origin(&gs_dir, "https://github.com/user/rich-gripspace.git");
+        std::fs::write(
+            gs_dir.join("manifest.yaml"),
+            r#"
+version: 1
+repos:
+  my-repo:
+    url: https://github.com/user/gripspace-version.git
+    path: ./my-repo
+    revision: develop
+    groups:
+      - backend
+      - shared
+    agent:
+      description: "My repo agent"
+      language: typescript
+      build: "npm run build"
+      test: "npm test"
+    linkfile:
+      - src: config.yaml
+        dest: my-repo-config.yaml
+"#,
+        )
+        .unwrap();
+
+        // Local manifest overrides only url and path (e.g., SSH instead of HTTPS)
+        let mut manifest = Manifest {
+            version: 1,
+            remotes: None,
+            gripspaces: Some(vec![GripspaceConfig {
+                url: "https://github.com/user/rich-gripspace.git".to_string(),
+                rev: None,
+            }]),
+            manifest: None,
+            repos: {
+                let mut m = HashMap::new();
+                m.insert(
+                    "my-repo".to_string(),
+                    crate::core::manifest::RepoConfig {
+                        url: Some("git@github.com:user/local-version.git".to_string()),
+                        remote: None,
+                        path: "./my-repo".to_string(),
+                        revision: None,
+                        target: None,
+                        sync_remote: None,
+                        push_remote: None,
+                        copyfile: None,
+                        linkfile: None,
+                        platform: None,
+                        reference: false,
+                        groups: vec!["local-group".to_string()],
+                        agent: None,
+                    },
+                );
+                m
+            },
+            settings: Default::default(),
+            workspace: None,
+        };
+
+        let result = resolve_all_gripspaces(&mut manifest, gripspaces_dir);
+        assert!(result.is_ok());
+
+        let repo = manifest.repos.get("my-repo").unwrap();
+
+        // Local scalar fields should win
+        assert_eq!(
+            repo.url,
+            Some("git@github.com:user/local-version.git".to_string())
+        );
+        assert_eq!(repo.path, "./my-repo");
+
+        // Gripspace revision should be inherited (local didn't set it)
+        assert_eq!(repo.revision, Some("develop".to_string()));
+
+        // Agent config should be inherited from gripspace (local didn't set it)
+        assert!(repo.agent.is_some());
+        let agent = repo.agent.as_ref().unwrap();
+        assert_eq!(agent.description, Some("My repo agent".to_string()));
+        assert_eq!(agent.language, Some("typescript".to_string()));
+        assert_eq!(agent.build, Some("npm run build".to_string()));
+        assert_eq!(agent.test, Some("npm test".to_string()));
+
+        // Groups should be unioned (local + gripspace, deduplicated)
+        assert!(repo.groups.contains(&"local-group".to_string()));
+        assert!(repo.groups.contains(&"backend".to_string()));
+        assert!(repo.groups.contains(&"shared".to_string()));
+
+        // Linkfiles should be inherited from gripspace (local didn't set any)
+        assert!(repo.linkfile.is_some());
+        let linkfiles = repo.linkfile.as_ref().unwrap();
+        assert_eq!(linkfiles.len(), 1);
+        assert_eq!(linkfiles[0].dest, "my-repo-config.yaml");
+    }
+
+    #[test]
+    fn test_deep_merge_repo_config_local_agent_wins() {
+        let mut local = crate::core::manifest::RepoConfig {
+            url: Some("git@github.com:user/local.git".to_string()),
+            remote: None,
+            path: "./repo".to_string(),
+            revision: None,
+            target: None,
+            sync_remote: None,
+            push_remote: None,
+            copyfile: None,
+            linkfile: None,
+            platform: None,
+            reference: false,
+            groups: Vec::new(),
+            agent: Some(crate::core::manifest::RepoAgentConfig {
+                description: Some("Local agent".to_string()),
+                language: Some("rust".to_string()),
+                build: None,
+                test: None,
+                lint: None,
+                format: None,
+            }),
+        };
+
+        let gripspace = crate::core::manifest::RepoConfig {
+            url: Some("https://github.com/user/gs.git".to_string()),
+            remote: None,
+            path: "./repo".to_string(),
+            revision: Some("main".to_string()),
+            target: None,
+            sync_remote: None,
+            push_remote: None,
+            copyfile: None,
+            linkfile: None,
+            platform: None,
+            reference: false,
+            groups: vec!["gs-group".to_string()],
+            agent: Some(crate::core::manifest::RepoAgentConfig {
+                description: Some("GS agent".to_string()),
+                language: Some("typescript".to_string()),
+                build: Some("npm build".to_string()),
+                test: Some("npm test".to_string()),
+                lint: None,
+                format: None,
+            }),
+        };
+
+        deep_merge_repo_config(&mut local, &gripspace);
+
+        // Local URL wins
+        assert_eq!(local.url, Some("git@github.com:user/local.git".to_string()));
+        // Gripspace revision inherited
+        assert_eq!(local.revision, Some("main".to_string()));
+        // Local agent wins entirely (it was set)
+        let agent = local.agent.as_ref().unwrap();
+        assert_eq!(agent.description, Some("Local agent".to_string()));
+        assert_eq!(agent.language, Some("rust".to_string()));
+        // Groups unioned
+        assert!(local.groups.contains(&"gs-group".to_string()));
     }
 
     #[test]

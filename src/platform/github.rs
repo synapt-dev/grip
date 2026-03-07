@@ -5,7 +5,7 @@ use octocrab::Octocrab;
 use std::env;
 use std::time::Duration;
 
-use super::http::create_http_client;
+use super::http::{check_response_rate_limit, create_http_client};
 use super::traits::{HostingPlatform, PlatformError};
 use super::types::*;
 use crate::core::manifest::PlatformType;
@@ -16,9 +16,6 @@ const CONNECT_TIMEOUT_SECS: u64 = 10;
 const READ_TIMEOUT_SECS: u64 = 30;
 /// Default write timeout in seconds
 const WRITE_TIMEOUT_SECS: u64 = 30;
-
-#[allow(unused_imports)]
-use super::rate_limit::{check_rate_limit_warning, parse_github_rate_limits};
 
 #[cfg(feature = "telemetry")]
 use crate::telemetry::metrics::GLOBAL_METRICS;
@@ -258,6 +255,8 @@ impl HostingPlatform for GitHubAdapter {
             .await
             .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
 
+        check_response_rate_limit(response.headers(), "GitHub").await;
+
         let status = response.status().as_u16();
         let body_text = response.text().await.unwrap_or_default();
 
@@ -347,6 +346,8 @@ impl HostingPlatform for GitHubAdapter {
             .send()
             .await
             .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+
+        check_response_rate_limit(response.headers(), "GitHub").await;
 
         match response.status().as_u16() {
             202 => Ok(true),
@@ -532,6 +533,8 @@ impl HostingPlatform for GitHubAdapter {
             .await
             .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
 
+        check_response_rate_limit(response.headers(), "GitHub").await;
+
         if response.status().is_success() {
             #[derive(serde::Deserialize)]
             struct CheckRunsResponse {
@@ -604,6 +607,8 @@ impl HostingPlatform for GitHubAdapter {
             .send()
             .await
             .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+
+        check_response_rate_limit(response.headers(), "GitHub").await;
 
         if !response.status().is_success() {
             return Err(PlatformError::ApiError(format!(
@@ -691,6 +696,8 @@ impl HostingPlatform for GitHubAdapter {
             .await
             .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
 
+        check_response_rate_limit(response.headers(), "GitHub").await;
+
         if !response.status().is_success() {
             return Err(PlatformError::ApiError(format!(
                 "Failed to get diff: {}",
@@ -767,6 +774,8 @@ impl HostingPlatform for GitHubAdapter {
             .await
             .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
 
+        check_response_rate_limit(user_response.headers(), "GitHub").await;
+
         #[derive(serde::Deserialize)]
         struct User {
             login: String,
@@ -808,6 +817,8 @@ impl HostingPlatform for GitHubAdapter {
             .await
             .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
 
+        check_response_rate_limit(response.headers(), "GitHub").await;
+
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
@@ -845,6 +856,8 @@ impl HostingPlatform for GitHubAdapter {
             .send()
             .await
             .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+
+        check_response_rate_limit(response.headers(), "GitHub").await;
 
         if response.status() == 404 {
             return Err(PlatformError::NotFound(format!(
@@ -908,6 +921,8 @@ impl HostingPlatform for GitHubAdapter {
             .send()
             .await
             .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+
+        check_response_rate_limit(response.headers(), "GitHub").await;
 
         if !response.status().is_success() {
             let status = response.status();

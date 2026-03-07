@@ -6,7 +6,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::env;
 
-use super::http::create_http_client;
+use super::http::{check_response_rate_limit, create_http_client};
 use super::traits::{HostingPlatform, PlatformError};
 use super::types::*;
 use crate::core::manifest::PlatformType;
@@ -137,6 +137,8 @@ impl AzureDevOpsAdapter {
             .await
             .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
 
+        check_response_rate_limit(response.headers(), "Azure DevOps").await;
+
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
@@ -176,6 +178,8 @@ impl AzureDevOpsAdapter {
             .send()
             .await
             .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+
+        check_response_rate_limit(response.headers(), "Azure DevOps").await;
 
         if !response.status().is_success() {
             let status = response.status();

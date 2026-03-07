@@ -96,12 +96,9 @@ pub enum Commands {
         /// Move recent commits to new branch (resets current branch to remote)
         #[arg(short, long)]
         r#move: bool,
-        /// Only operate on specific repos
+        /// Only operate on specific repos (use "manifest" to target manifest repo)
         #[arg(long, value_delimiter = ',')]
         repo: Option<Vec<String>>,
-        /// Include manifest repo
-        #[arg(long)]
-        include_manifest: bool,
         /// Only operate on repos in these groups
         #[arg(long, value_delimiter = ',')]
         group: Option<Vec<String>>,

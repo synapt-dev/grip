@@ -170,6 +170,26 @@ pub async fn run_sync(
         }
     }
 
+    // Warn if manifest repo has unpushed commits
+    if !json && !quiet {
+        if let Some(manifest_repo) = get_manifest_repo_info(manifest, workspace_root) {
+            if manifest_repo.absolute_path.exists() {
+                if let Ok(git_repo) = crate::git::open_repo(&manifest_repo.absolute_path) {
+                    let upstream = format!("origin/{}", manifest_repo.revision);
+                    if let Ok(true) = has_commits_ahead(&git_repo, &upstream) {
+                        let branch = crate::git::get_current_branch(&git_repo)
+                            .unwrap_or_else(|_| "unknown".to_string());
+                        println!();
+                        Output::warning(&format!(
+                            "Manifest repo has unpushed commits on '{}'. Create a PR or push to avoid divergence.",
+                            branch
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
     // Process composefiles after sync
     let mut composefiles_count = 0;
     if let Some(ref manifest_config) = manifest.manifest {

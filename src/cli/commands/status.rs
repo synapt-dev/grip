@@ -22,6 +22,8 @@ struct JsonRepoStatus {
     behind: usize,
     reference: bool,
     groups: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state: Option<String>,
 }
 
 /// Run the status command
@@ -67,11 +69,16 @@ pub fn run_status(
     let with_changes = statuses.iter().filter(|(s, _)| !s.clean).count();
     let ahead_count = statuses.iter().filter(|(s, _)| s.ahead_main > 0).count();
 
-    // In quiet mode, only show repos with changes or not on default branch
+    // In quiet mode, only show repos with changes, in-progress ops, or not on default branch
     let filtered_statuses: Vec<&(RepoStatus, &RepoInfo)> = if quiet {
         statuses
             .iter()
-            .filter(|(s, repo)| !s.clean || !s.exists || s.branch != repo.target_branch())
+            .filter(|(s, repo)| {
+                !s.clean
+                    || !s.exists
+                    || s.branch != repo.target_branch()
+                    || s.state != crate::git::status::RepositoryState::Clean
+            })
             .collect()
     } else {
         statuses.iter().collect()
@@ -180,7 +187,42 @@ pub fn run_status(
                         .as_deref()
                         .map(|r| format!(" (pinned: {})", r))
                         .unwrap_or_default();
-                    (rev, format!("✓{}", pinned))
+                    // Check actual working tree status
+                    let gs_repo_info = RepoInfo {
+                        name: name.clone(),
+                        url: gs.url.clone(),
+                        path: gs_path.to_string_lossy().to_string(),
+                        absolute_path: gs_path.clone(),
+                        revision: rev.clone(),
+                        target: rev.clone(),
+                        sync_remote: "origin".to_string(),
+                        push_remote: "origin".to_string(),
+                        owner: String::new(),
+                        repo: name.clone(),
+                        platform_type: crate::core::manifest::PlatformType::GitHub,
+                        platform_base_url: None,
+                        project: None,
+                        reference: false,
+                        groups: Vec::new(),
+                        agent: None,
+                    };
+                    let gs_status = get_repo_status(&gs_repo_info);
+                    let status_str = if gs_status.clean {
+                        format!("✓{}", pinned)
+                    } else {
+                        let mut parts = Vec::new();
+                        if gs_status.staged > 0 {
+                            parts.push(format!("+{}", gs_status.staged));
+                        }
+                        if gs_status.modified > 0 {
+                            parts.push(format!("~{}", gs_status.modified));
+                        }
+                        if gs_status.untracked > 0 {
+                            parts.push(format!("?{}", gs_status.untracked));
+                        }
+                        format!("{}{}", parts.join(" "), pinned)
+                    };
+                    (rev, status_str)
                 } else {
                     ("—".to_string(), "not cloned".to_string())
                 };
@@ -238,6 +280,7 @@ fn run_status_json(
                 behind: status.behind_main,
                 reference: repo.reference,
                 groups: repo.groups.clone(),
+                state: status.state.label().map(|s| s.to_lowercase()),
             }
         })
         .collect();
@@ -273,11 +316,16 @@ fn format_status(status: &RepoStatus, verbose: bool) -> String {
         return "not cloned".to_string();
     }
 
-    if status.clean {
-        return "✓".to_string();
+    let mut parts = Vec::new();
+
+    // Show in-progress operation state prominently
+    if let Some(label) = status.state.label() {
+        parts.push(label.to_string());
     }
 
-    let mut parts = Vec::new();
+    if status.clean && parts.is_empty() {
+        return "✓".to_string();
+    }
 
     if status.staged > 0 {
         parts.push(format!("+{}", status.staged));
@@ -319,6 +367,7 @@ mod tests {
             ahead_main: 0,
             behind_main: 0,
             exists: true,
+            state: crate::git::status::RepositoryState::Clean,
         };
         assert_eq!(format_status(&status, false), "✓");
     }
@@ -337,6 +386,7 @@ mod tests {
             ahead_main: 0,
             behind_main: 0,
             exists: true,
+            state: crate::git::status::RepositoryState::Clean,
         };
         assert_eq!(format_status(&status, false), "+2 ~3 ?1");
     }
@@ -355,8 +405,47 @@ mod tests {
             ahead_main: 0,
             behind_main: 0,
             exists: true,
+            state: crate::git::status::RepositoryState::Clean,
         };
         assert_eq!(format_status(&status, true), "+1 ↑3 ↓1");
+    }
+
+    #[test]
+    fn test_format_status_rebasing() {
+        let status = RepoStatus {
+            name: "test".to_string(),
+            branch: "feat".to_string(),
+            clean: true,
+            staged: 0,
+            modified: 0,
+            untracked: 0,
+            ahead: 0,
+            behind: 0,
+            ahead_main: 0,
+            behind_main: 0,
+            exists: true,
+            state: crate::git::status::RepositoryState::Rebasing,
+        };
+        assert_eq!(format_status(&status, false), "REBASING");
+    }
+
+    #[test]
+    fn test_format_status_merging_with_changes() {
+        let status = RepoStatus {
+            name: "test".to_string(),
+            branch: "feat".to_string(),
+            clean: false,
+            staged: 0,
+            modified: 2,
+            untracked: 0,
+            ahead: 0,
+            behind: 0,
+            ahead_main: 0,
+            behind_main: 0,
+            exists: true,
+            state: crate::git::status::RepositoryState::Merging,
+        };
+        assert_eq!(format_status(&status, false), "MERGING ~2");
     }
 
     #[test]
@@ -373,6 +462,7 @@ mod tests {
             ahead_main: 0,
             behind_main: 0,
             exists: true,
+            state: crate::git::status::RepositoryState::Clean,
         };
         assert_eq!(format_target_comparison(&status, "main"), "-");
     }
@@ -391,6 +481,7 @@ mod tests {
             ahead_main: 5,
             behind_main: 0,
             exists: true,
+            state: crate::git::status::RepositoryState::Clean,
         };
         assert_eq!(format_target_comparison(&status, "main"), "↑5");
     }
@@ -409,6 +500,7 @@ mod tests {
             ahead_main: 0,
             behind_main: 3,
             exists: true,
+            state: crate::git::status::RepositoryState::Clean,
         };
         assert_eq!(format_target_comparison(&status, "main"), "↓3");
     }
@@ -427,6 +519,7 @@ mod tests {
             ahead_main: 2,
             behind_main: 5,
             exists: true,
+            state: crate::git::status::RepositoryState::Clean,
         };
         assert_eq!(format_target_comparison(&status, "main"), "↑2 ↓5");
     }
@@ -445,6 +538,7 @@ mod tests {
             ahead_main: 0,
             behind_main: 0,
             exists: true,
+            state: crate::git::status::RepositoryState::Clean,
         };
         assert_eq!(format_target_comparison(&status, "main"), "✓");
     }

@@ -4,10 +4,72 @@ use git2::Repository;
 use std::path::PathBuf;
 use std::process::Command;
 
+use std::path::Path;
+
 use super::cache::STATUS_CACHE;
 use super::{get_current_branch, open_repo, path_exists, GitError};
 use crate::core::repo::RepoInfo;
 use crate::util::log_cmd;
+
+/// State of an in-progress git operation
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RepositoryState {
+    Clean,
+    Rebasing,
+    Merging,
+    CherryPicking,
+}
+
+impl RepositoryState {
+    /// Detect in-progress git operations by checking sentinel files in .git/
+    pub fn detect(repo_path: &Path) -> Self {
+        // For worktrees, .git may be a file pointing to the real gitdir.
+        // Use `git rev-parse --git-dir` to resolve the actual git directory.
+        let git_dir = resolve_git_dir(repo_path);
+
+        if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
+            RepositoryState::Rebasing
+        } else if git_dir.join("MERGE_HEAD").exists() {
+            RepositoryState::Merging
+        } else if git_dir.join("CHERRY_PICK_HEAD").exists() {
+            RepositoryState::CherryPicking
+        } else {
+            RepositoryState::Clean
+        }
+    }
+
+    pub fn label(&self) -> Option<&'static str> {
+        match self {
+            RepositoryState::Clean => None,
+            RepositoryState::Rebasing => Some("REBASING"),
+            RepositoryState::Merging => Some("MERGING"),
+            RepositoryState::CherryPicking => Some("CHERRY-PICKING"),
+        }
+    }
+}
+
+/// Resolve the actual .git directory (handles worktrees where .git is a file)
+fn resolve_git_dir(repo_path: &Path) -> PathBuf {
+    let dot_git = repo_path.join(".git");
+    if dot_git.is_dir() {
+        return dot_git;
+    }
+    // Worktree: .git is a file containing "gitdir: /path/to/real/gitdir"
+    if dot_git.is_file() {
+        if let Ok(content) = std::fs::read_to_string(&dot_git) {
+            if let Some(gitdir) = content.strip_prefix("gitdir: ") {
+                let gitdir = gitdir.trim();
+                let path = PathBuf::from(gitdir);
+                if path.is_absolute() {
+                    return path;
+                }
+                // Relative path — resolve from repo_path
+                return repo_path.join(path);
+            }
+        }
+    }
+    dot_git
+}
 
 /// Repository status information
 #[derive(Debug, Clone)]
@@ -53,6 +115,8 @@ pub struct RepoStatus {
     pub behind_main: usize,
     /// Whether repo exists
     pub exists: bool,
+    /// In-progress git operation (rebase, merge, cherry-pick)
+    pub state: RepositoryState,
 }
 
 /// Get detailed status for a repository using git2
@@ -85,12 +149,12 @@ pub fn get_status_info(repo: &Repository) -> Result<RepoStatusInfo, GitError> {
         let path = line[3..].to_string();
 
         // Staged changes (index)
-        if matches!(index_status, 'A' | 'M' | 'D' | 'R' | 'C') {
+        if matches!(index_status, 'A' | 'M' | 'D' | 'R' | 'C' | 'T') {
             staged.push(path.clone());
         }
 
         // Worktree changes
-        if matches!(worktree_status, 'M' | 'D') {
+        if matches!(worktree_status, 'M' | 'D' | 'T') {
             modified.push(path.clone());
         }
 
@@ -215,8 +279,11 @@ pub fn get_repo_status(repo_info: &RepoInfo) -> RepoStatus {
             ahead_main: 0,
             behind_main: 0,
             exists: false,
+            state: RepositoryState::Clean,
         };
     }
+
+    let state = RepositoryState::detect(&repo_info.absolute_path);
 
     match get_cached_status(&repo_info.absolute_path) {
         Ok(status) => {
@@ -237,6 +304,7 @@ pub fn get_repo_status(repo_info: &RepoInfo) -> RepoStatus {
                 ahead_main,
                 behind_main,
                 exists: true,
+                state,
             }
         }
         Err(_) => RepoStatus {
@@ -251,6 +319,7 @@ pub fn get_repo_status(repo_info: &RepoInfo) -> RepoStatus {
             ahead_main: 0,
             behind_main: 0,
             exists: true,
+            state,
         },
     }
 }
@@ -471,6 +540,63 @@ mod tests {
         // Create untracked file
         fs::write(temp.path().join("new.txt"), "content").unwrap();
         assert!(has_uncommitted_changes(&repo).unwrap());
+    }
+
+    #[test]
+    fn test_repository_state_clean() {
+        let (temp, _repo) = setup_test_repo();
+        assert_eq!(RepositoryState::detect(temp.path()), RepositoryState::Clean);
+    }
+
+    #[test]
+    fn test_repository_state_rebasing() {
+        let (temp, _repo) = setup_test_repo();
+        fs::create_dir_all(temp.path().join(".git/rebase-merge")).unwrap();
+        assert_eq!(
+            RepositoryState::detect(temp.path()),
+            RepositoryState::Rebasing
+        );
+    }
+
+    #[test]
+    fn test_repository_state_rebase_apply() {
+        let (temp, _repo) = setup_test_repo();
+        fs::create_dir_all(temp.path().join(".git/rebase-apply")).unwrap();
+        assert_eq!(
+            RepositoryState::detect(temp.path()),
+            RepositoryState::Rebasing
+        );
+    }
+
+    #[test]
+    fn test_repository_state_merging() {
+        let (temp, _repo) = setup_test_repo();
+        fs::write(temp.path().join(".git/MERGE_HEAD"), "abc123").unwrap();
+        assert_eq!(
+            RepositoryState::detect(temp.path()),
+            RepositoryState::Merging
+        );
+    }
+
+    #[test]
+    fn test_repository_state_cherry_picking() {
+        let (temp, _repo) = setup_test_repo();
+        fs::write(temp.path().join(".git/CHERRY_PICK_HEAD"), "abc123").unwrap();
+        assert_eq!(
+            RepositoryState::detect(temp.path()),
+            RepositoryState::CherryPicking
+        );
+    }
+
+    #[test]
+    fn test_repository_state_labels() {
+        assert_eq!(RepositoryState::Clean.label(), None);
+        assert_eq!(RepositoryState::Rebasing.label(), Some("REBASING"));
+        assert_eq!(RepositoryState::Merging.label(), Some("MERGING"));
+        assert_eq!(
+            RepositoryState::CherryPicking.label(),
+            Some("CHERRY-PICKING")
+        );
     }
 
     #[test]

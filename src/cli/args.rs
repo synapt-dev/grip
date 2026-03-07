@@ -1,0 +1,623 @@
+//! CLI argument types and command definitions
+
+use clap::{Parser, Subcommand};
+use clap_complete::Shell;
+
+use crate::platform::MergeMethod;
+
+#[derive(Parser)]
+#[command(name = "gr")]
+#[command(author, version, about = "Multi-repo workflow tool", long_about = None)]
+pub struct Cli {
+    /// Suppress output for repos with no relevant changes (saves tokens for AI tools)
+    #[arg(short, long, global = true)]
+    pub quiet: bool,
+
+    /// Show verbose output including external commands being executed
+    #[arg(short, long, global = true)]
+    pub verbose: bool,
+
+    /// Output in JSON format (machine-readable)
+    #[arg(long, global = true)]
+    pub json: bool,
+
+    #[command(subcommand)]
+    pub command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+pub enum Commands {
+    /// Initialize a new workspace
+    Init {
+        /// Manifest URL
+        url: Option<String>,
+        /// Target directory
+        #[arg(short, long)]
+        path: Option<String>,
+        /// Create workspace from existing local directories
+        #[arg(long, conflicts_with_all = ["url", "from_repo"])]
+        from_dirs: bool,
+        /// Specific directories to scan (requires --from-dirs)
+        #[arg(long, requires = "from_dirs")]
+        dirs: Vec<String>,
+        /// Interactive mode - preview and confirm before writing
+        #[arg(short, long)]
+        interactive: bool,
+        /// Create manifest repository on detected platform (requires --from-dirs)
+        #[arg(long, requires = "from_dirs")]
+        create_manifest: bool,
+        /// Name for manifest repository (default: workspace-manifest)
+        #[arg(long, requires = "create_manifest")]
+        manifest_name: Option<String>,
+        /// Make manifest repository private (default: false)
+        #[arg(long, requires = "create_manifest")]
+        private: bool,
+        /// Initialize from existing .repo/ directory (git-repo coexistence)
+        #[arg(long, conflicts_with_all = ["from_dirs", "url"])]
+        from_repo: bool,
+    },
+    /// Sync all repositories
+    Sync {
+        /// Force sync even with local changes
+        #[arg(short, long)]
+        force: bool,
+        /// Hard reset reference repos to upstream (discard local changes)
+        #[arg(long, alias = "reset-ref")]
+        reset_refs: bool,
+        /// Only sync repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
+        /// Sync repos sequentially (default: parallel)
+        #[arg(long)]
+        sequential: bool,
+        /// Skip post-sync hooks
+        #[arg(long)]
+        no_hooks: bool,
+        /// Rollback repos to their state before the last sync
+        #[arg(long, conflicts_with_all = ["force", "reset_refs", "group", "sequential", "no_hooks"])]
+        rollback: bool,
+    },
+    /// Show status of all repositories
+    Status {
+        /// Show detailed status
+        #[arg(short, long)]
+        verbose: bool,
+        /// Only show repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
+    },
+    /// Create or switch branches across repos
+    Branch {
+        /// Branch name
+        name: Option<String>,
+        /// Delete branch
+        #[arg(short, long)]
+        delete: bool,
+        /// Move recent commits to new branch (resets current branch to remote)
+        #[arg(short, long)]
+        r#move: bool,
+        /// Only operate on specific repos
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
+        /// Include manifest repo
+        #[arg(long)]
+        include_manifest: bool,
+        /// Only operate on repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
+    },
+    /// Checkout a branch across repos
+    Checkout {
+        /// Branch name
+        name: Option<String>,
+        /// Create branch if it doesn't exist
+        #[arg(short = 'b', long)]
+        create: bool,
+        /// Checkout the griptree base branch for this worktree
+        #[arg(long, conflicts_with = "create")]
+        base: bool,
+    },
+    /// Stage changes across repos
+    Add {
+        /// Files to add (. for all)
+        #[arg(default_value = ".")]
+        files: Vec<String>,
+    },
+    /// Show diff across repos
+    Diff {
+        /// Show staged changes
+        #[arg(long)]
+        staged: bool,
+    },
+    /// Commit changes across repos
+    Commit {
+        /// Commit message
+        #[arg(short, long)]
+        message: Option<String>,
+        /// Amend previous commit
+        #[arg(long)]
+        amend: bool,
+    },
+    /// Push changes across repos
+    Push {
+        /// Set upstream
+        #[arg(short = 'u', long)]
+        set_upstream: bool,
+        /// Force push
+        #[arg(short, long)]
+        force: bool,
+    },
+    /// Clean up merged branches across repos
+    Prune {
+        /// Actually delete branches (default: dry-run)
+        #[arg(long)]
+        execute: bool,
+        /// Also prune remote tracking refs
+        #[arg(long)]
+        remote: bool,
+        /// Only prune repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
+    },
+    /// Pull request operations
+    Pr {
+        #[command(subcommand)]
+        action: PrCommands,
+    },
+    /// Griptree (worktree) operations
+    Tree {
+        #[command(subcommand)]
+        action: TreeCommands,
+    },
+    /// Search across all repos using git grep
+    Grep {
+        /// Search pattern
+        pattern: String,
+        /// Case insensitive
+        #[arg(short = 'i', long)]
+        ignore_case: bool,
+        /// Run in parallel
+        #[arg(short, long)]
+        parallel: bool,
+        /// File pattern (after --)
+        #[arg(last = true)]
+        pathspec: Vec<String>,
+        /// Only search repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
+    },
+    /// Run command in each repo
+    Forall {
+        /// Command to run
+        #[arg(short, long)]
+        command: String,
+        /// Run in parallel
+        #[arg(short, long)]
+        parallel: bool,
+        /// Run in ALL repos (default: only repos with changes)
+        #[arg(short, long)]
+        all: bool,
+        /// Disable git command interception (use CLI for all commands)
+        #[arg(long)]
+        no_intercept: bool,
+        /// Only run in repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
+    },
+    /// Rebase branches across repos
+    Rebase {
+        /// Target branch
+        onto: Option<String>,
+        /// Use upstream tracking branch when no target is provided
+        #[arg(long)]
+        upstream: bool,
+        /// Abort rebase in progress
+        #[arg(long)]
+        abort: bool,
+        /// Continue rebase after resolving conflicts
+        #[arg(long, name = "continue")]
+        continue_rebase: bool,
+    },
+    /// Pull latest changes across repos
+    Pull {
+        /// Rebase instead of merge
+        #[arg(long)]
+        rebase: bool,
+        /// Only pull repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
+        /// Sync repos sequentially (default: parallel)
+        #[arg(long)]
+        sequential: bool,
+    },
+    /// Manage file links
+    Link {
+        /// Show link status
+        #[arg(long)]
+        status: bool,
+        /// Apply/fix links
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Run workspace scripts
+    Run {
+        /// Script name
+        name: Option<String>,
+        /// List available scripts
+        #[arg(long)]
+        list: bool,
+    },
+    /// Show environment variables
+    Env,
+    /// Run benchmarks
+    Bench(crate::cli::commands::bench::BenchArgs),
+    /// Repository operations
+    Repo {
+        #[command(subcommand)]
+        action: RepoCommands,
+    },
+    /// Repository group operations
+    Group {
+        #[command(subcommand)]
+        action: GroupCommands,
+    },
+    /// View or set the PR target branch (base branch)
+    Target {
+        #[command(subcommand)]
+        action: TargetCommands,
+    },
+    /// Run garbage collection across repos
+    Gc {
+        /// More thorough gc (slower)
+        #[arg(long)]
+        aggressive: bool,
+        /// Only report .git sizes, don't gc
+        #[arg(long)]
+        dry_run: bool,
+        /// Only operate on specific repos
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
+        /// Only gc repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
+    },
+    /// Cherry-pick commits across repos
+    CherryPick {
+        /// Commit SHA to cherry-pick
+        #[arg(conflicts_with_all = ["abort", "continue"])]
+        commit: Option<String>,
+        /// Abort in-progress cherry-pick
+        #[arg(long, conflicts_with = "continue")]
+        abort: bool,
+        /// Continue after conflict resolution
+        #[arg(long, name = "continue", conflicts_with = "abort")]
+        continue_pick: bool,
+        /// Only operate on specific repos
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
+        /// Only operate on repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
+    },
+    /// CI/CD pipeline operations
+    Ci {
+        #[command(subcommand)]
+        action: CiCommands,
+    },
+    /// Manifest operations (import, sync)
+    Manifest {
+        #[command(subcommand)]
+        action: ManifestCommands,
+    },
+    /// AI agent operations (context, build, test, verify)
+    Agent {
+        #[command(subcommand)]
+        action: AgentCommands,
+    },
+    /// MCP server operations
+    Mcp {
+        #[command(subcommand)]
+        action: McpCommands,
+    },
+    /// Automated release workflow
+    Release {
+        /// Version to release (e.g. v0.12.4)
+        version: String,
+        /// Release notes
+        #[arg(short, long)]
+        notes: Option<String>,
+        /// Show what would happen without doing it
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip PR workflow (bump, tag, release only)
+        #[arg(long)]
+        skip_pr: bool,
+        /// Target repo for GitHub release (default: auto-detect)
+        #[arg(long)]
+        repo: Option<String>,
+        /// Timeout in seconds for CI wait (default: 600)
+        #[arg(long, default_value = "600")]
+        timeout: u64,
+    },
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: Shell,
+    },
+    /// Verify workspace assertions (exit 0 = pass, 1 = fail)
+    Verify {
+        /// All repos are clean (no uncommitted changes)
+        #[arg(long)]
+        clean: bool,
+        /// All copyfile/linkfile entries are valid
+        #[arg(long)]
+        links: bool,
+        /// All non-reference repos are on this branch
+        #[arg(long, value_name = "BRANCH")]
+        on_branch: Option<String>,
+        /// All repos are synced with remote (not ahead/behind)
+        #[arg(long)]
+        synced: bool,
+        /// Only verify repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AgentCommands {
+    /// Dump workspace context for AI agent system prompts
+    Context {
+        /// Filter to a specific repo
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// Build repo(s) using manifest agent config
+    Build {
+        /// Specific repo to build (default: all with agent.build)
+        repo: Option<String>,
+    },
+    /// Test repo(s) using manifest agent config
+    Test {
+        /// Specific repo to test (default: all with agent.test)
+        repo: Option<String>,
+    },
+    /// Run all verification checks (build + test + lint)
+    Verify {
+        /// Specific repo to verify (default: all with agent config)
+        repo: Option<String>,
+    },
+    /// Generate context files for all configured AI tool targets
+    GenerateContext {
+        /// Show what would be generated without writing files
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum McpCommands {
+    /// Start stdio MCP server exposing gitgrip tools
+    Server,
+}
+
+#[derive(Subcommand)]
+pub enum PrCommands {
+    /// Create a pull request
+    Create {
+        /// PR title
+        #[arg(short, long)]
+        title: Option<String>,
+        /// PR body/description
+        #[arg(short, long)]
+        body: Option<String>,
+        /// Push before creating
+        #[arg(long)]
+        push: bool,
+        /// Create as draft
+        #[arg(long)]
+        draft: bool,
+        /// Preview without creating PR
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Show PR status
+    Status,
+    /// Merge pull requests
+    Merge {
+        /// Merge method (merge, squash, rebase)
+        #[arg(long, value_enum)]
+        method: Option<MergeMethod>,
+        /// Force merge without readiness checks
+        #[arg(short, long)]
+        force: bool,
+        /// Update branch from base if behind before merging
+        #[arg(short = 'u', long)]
+        update: bool,
+        /// Enable auto-merge (merges when all checks pass)
+        #[arg(long)]
+        auto: bool,
+        /// Wait for checks to pass before merging
+        #[arg(short = 'w', long)]
+        wait: bool,
+        /// Timeout in seconds for --wait (default: 600)
+        #[arg(long, default_value = "600")]
+        timeout: u64,
+        /// Don't delete the source branch after merging
+        #[arg(long)]
+        no_delete_branch: bool,
+    },
+    /// Check CI status
+    Checks,
+    /// Show PR diff
+    Diff {
+        /// Show stat summary only
+        #[arg(long)]
+        stat: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum TreeCommands {
+    /// Add a new griptree
+    Add {
+        /// Branch name
+        branch: String,
+    },
+    /// List griptrees
+    List,
+    /// Remove a griptree
+    Remove {
+        /// Branch name
+        branch: String,
+        /// Force removal
+        #[arg(short, long)]
+        force: bool,
+    },
+    /// Lock a griptree
+    Lock {
+        /// Branch name
+        branch: String,
+        /// Lock reason
+        #[arg(short, long)]
+        reason: Option<String>,
+    },
+    /// Unlock a griptree
+    Unlock {
+        /// Branch name
+        branch: String,
+    },
+    /// Return to the griptree base branch, sync, and optionally prune a branch
+    Return {
+        /// Override base branch (defaults to griptree config)
+        #[arg(long)]
+        base: Option<String>,
+        /// Skip syncing after checkout
+        #[arg(long)]
+        no_sync: bool,
+        /// Stash and restore local changes automatically
+        #[arg(long)]
+        autostash: bool,
+        /// Prune this branch after returning
+        #[arg(long)]
+        prune: Option<String>,
+        /// Prune the current branch (pre-return) after returning
+        #[arg(long, conflicts_with = "prune")]
+        prune_current: bool,
+        /// Also prune the remote branch (origin)
+        #[arg(long)]
+        prune_remote: bool,
+        /// Force delete local branches even if not merged
+        #[arg(short, long)]
+        force: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum GroupCommands {
+    /// List all groups and their repos
+    List,
+    /// Add repo(s) to a group
+    Add {
+        /// Group name
+        group: String,
+        /// Repository names
+        #[arg(required = true)]
+        repos: Vec<String>,
+    },
+    /// Remove repo(s) from a group
+    Remove {
+        /// Group name
+        group: String,
+        /// Repository names
+        #[arg(required = true)]
+        repos: Vec<String>,
+    },
+    /// Create a new empty group (for documentation purposes)
+    Create {
+        /// Group name
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum TargetCommands {
+    /// Show current target branches for all repos
+    List,
+    /// Set the global target branch
+    Set {
+        /// Branch name
+        branch: String,
+        /// Set target for a specific repo instead of globally
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// Unset the target (fall back to revision/default)
+    Unset {
+        /// Unset target for a specific repo instead of globally
+        #[arg(long)]
+        repo: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum CiCommands {
+    /// Run a CI pipeline
+    Run {
+        /// Pipeline name
+        name: String,
+    },
+    /// List available pipelines
+    List,
+    /// Show status of last CI runs
+    Status,
+}
+
+#[derive(Subcommand)]
+pub enum ManifestCommands {
+    /// Convert git-repo XML manifest to gitgrip YAML
+    Import {
+        /// Path to XML manifest (e.g., .repo/manifests/default.xml)
+        path: String,
+        /// Output path for YAML manifest
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Re-sync gitgrip YAML from .repo/ manifest after repo sync
+    Sync,
+    /// Show manifest schema specification
+    Schema {
+        /// Output format (yaml, json, markdown)
+        #[arg(long, default_value = "yaml")]
+        format: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum RepoCommands {
+    /// List repositories
+    List,
+    /// Add a repository
+    Add {
+        /// Repository URL
+        url: String,
+        /// Local path
+        #[arg(short, long)]
+        path: Option<String>,
+        /// Default branch
+        #[arg(short, long)]
+        branch: Option<String>,
+        /// Workflow target branch (remote/branch format, e.g. "origin/develop")
+        #[arg(short, long)]
+        target: Option<String>,
+    },
+    /// Remove a repository
+    Remove {
+        /// Repository name
+        name: String,
+        /// Delete files from disk
+        #[arg(long)]
+        delete: bool,
+    },
+}

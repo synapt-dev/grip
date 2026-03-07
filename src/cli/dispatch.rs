@@ -71,7 +71,6 @@ pub async fn dispatch_command(
             delete,
             r#move,
             repo,
-            include_manifest: _,
             group,
         }) => {
             let ctx = load_workspace_context(quiet, verbose, json)?;

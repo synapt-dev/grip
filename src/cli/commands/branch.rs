@@ -31,9 +31,15 @@ pub fn run_branch(opts: BranchOptions<'_>) -> anyhow::Result<()> {
         false,
     );
 
-    // Include manifest repo in branch operations
+    // Include manifest repo in branch operations (unless filtered out by --repo)
     if let Some(manifest_repo) = get_manifest_repo_info(opts.manifest, opts.workspace_root) {
-        repos.push(manifest_repo);
+        let include_manifest = match opts.repos_filter {
+            None => true,
+            Some(filter) => filter.iter().any(|r| r == "manifest"),
+        };
+        if include_manifest {
+            repos.push(manifest_repo);
+        }
     }
 
     match opts.name {

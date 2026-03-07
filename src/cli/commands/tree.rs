@@ -380,12 +380,10 @@ pub fn run_tree_list(workspace_root: &Path) -> anyhow::Result<()> {
     };
 
     // Detect if we're currently inside a griptree
-    let current_branch = std::env::current_dir()
-        .ok()
-        .and_then(|cwd| {
-            crate::core::griptree::GriptreePointer::find_in_ancestors(&cwd)
-                .map(|(_, pointer)| pointer.branch)
-        });
+    let current_branch = std::env::current_dir().ok().and_then(|cwd| {
+        crate::core::griptree::GriptreePointer::find_in_ancestors(&cwd)
+            .map(|(_, pointer)| pointer.branch)
+    });
 
     if griptrees.griptrees.is_empty() {
         println!("No griptrees configured.");

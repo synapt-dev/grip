@@ -379,20 +379,36 @@ pub fn run_tree_list(workspace_root: &Path) -> anyhow::Result<()> {
         GriptreesList::default()
     };
 
+    // Detect if we're currently inside a griptree
+    let current_branch = std::env::current_dir().ok().and_then(|cwd| {
+        crate::core::griptree::GriptreePointer::find_in_ancestors(&cwd)
+            .map(|(_, pointer)| pointer.branch)
+    });
+
     if griptrees.griptrees.is_empty() {
         println!("No griptrees configured.");
     } else {
         for (branch, entry) in &griptrees.griptrees {
             let exists = PathBuf::from(&entry.path).exists();
-            let status = if !exists {
-                " (missing)"
-            } else if entry.locked {
-                " (locked)"
+            let is_current = current_branch.as_deref() == Some(branch.as_str());
+            let mut markers = Vec::new();
+            if is_current {
+                markers.push("current");
+            }
+            if !exists {
+                markers.push("missing");
+            }
+            if entry.locked {
+                markers.push("locked");
+            }
+            let suffix = if markers.is_empty() {
+                String::new()
             } else {
-                ""
+                format!(" ({})", markers.join(", "))
             };
 
-            println!("  {} -> {}{}", branch, entry.path, status);
+            let prefix = if is_current { "* " } else { "  " };
+            println!("{}{} -> {}{}", prefix, branch, entry.path, suffix);
             if let Some(ref reason) = entry.lock_reason {
                 println!("    Lock reason: {}", reason);
             }
@@ -405,7 +421,14 @@ pub fn run_tree_list(workspace_root: &Path) -> anyhow::Result<()> {
         println!();
         Output::warning("Found unregistered griptrees:");
         for (path, branch) in &discovered {
-            println!("  {} -> {} (unregistered)", branch, path.display());
+            let is_current = current_branch.as_deref() == Some(branch.as_str());
+            let prefix = if is_current { "* " } else { "  " };
+            let suffix = if is_current {
+                " (current, unregistered)"
+            } else {
+                " (unregistered)"
+            };
+            println!("{}{} -> {}{}", prefix, branch, path.display(), suffix);
         }
         println!();
         println!("These griptrees point to this workspace but are not in griptrees.json.");

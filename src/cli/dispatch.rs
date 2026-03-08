@@ -128,6 +128,22 @@ pub async fn dispatch_command(
                 group.as_deref(),
             )?;
         }
+        Some(Commands::Restore {
+            files,
+            staged,
+            repo,
+            group,
+        }) => {
+            let ctx = load_workspace_context(quiet, verbose, json)?;
+            crate::cli::commands::restore::run_restore(
+                &ctx.workspace_root,
+                &ctx.manifest,
+                &files,
+                staged,
+                repo.as_deref(),
+                group.as_deref(),
+            )?;
+        }
         Some(Commands::Diff {
             staged,
             repo,

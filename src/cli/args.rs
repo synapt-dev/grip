@@ -138,6 +138,21 @@ pub enum Commands {
         #[arg(long, value_delimiter = ',')]
         group: Option<Vec<String>>,
     },
+    /// Unstage or discard changes across repos
+    Restore {
+        /// Files to restore (. for all)
+        #[arg(default_value = ".")]
+        files: Vec<String>,
+        /// Unstage files (remove from index)
+        #[arg(long)]
+        staged: bool,
+        /// Only restore in specific repos (use "manifest" to target manifest repo)
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
+        /// Only restore in repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
+    },
     /// Show diff across repos
     Diff {
         /// Show staged changes

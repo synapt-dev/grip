@@ -3,7 +3,7 @@
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
 use crate::core::manifest_paths;
-use crate::core::repo::RepoInfo;
+use crate::core::repo::{filter_repos, RepoInfo};
 use crate::git::cache::invalidate_status_cache;
 use crate::git::{get_workdir, open_repo, path_exists};
 use crate::util::log_cmd;
@@ -12,31 +12,23 @@ use std::path::Path;
 use std::process::Command;
 
 /// Run the commit command
+#[allow(clippy::too_many_arguments)]
 pub fn run_commit(
     workspace_root: &Path,
     manifest: &Manifest,
     message: &str,
     amend: bool,
     json: bool,
+    repos_filter: Option<&[String]>,
+    group_filter: Option<&[String]>,
 ) -> anyhow::Result<()> {
     if !json {
         Output::header("Committing changes...");
         println!();
     }
 
-    let repos: Vec<RepoInfo> = manifest
-        .repos
-        .iter()
-        .filter_map(|(name, config)| {
-            RepoInfo::from_config(
-                name,
-                config,
-                workspace_root,
-                &manifest.settings,
-                manifest.remotes.as_ref(),
-            )
-        })
-        .collect();
+    let repos: Vec<RepoInfo> =
+        filter_repos(manifest, workspace_root, repos_filter, group_filter, false);
 
     let mut success_count = 0;
     let mut skip_count = 0;
@@ -98,47 +90,53 @@ pub fn run_commit(
         }
     }
 
-    // Also handle manifest worktree if it exists (in griptree scenario)
-    if let Some(manifests_dir) = manifest_paths::resolve_manifest_repo_dir(workspace_root) {
-        let manifests_git_dir = manifests_dir.join(".git");
-        if manifests_git_dir.exists() && path_exists(&manifests_dir) {
-            match open_repo(&manifests_dir) {
-                Ok(git_repo) => {
-                    if has_staged_changes(&git_repo)? {
-                        match create_commit(&git_repo, message, amend) {
-                            Ok(commit_id) => {
-                                let short_id = &commit_id[..7.min(commit_id.len())];
-                                if !json {
-                                    if amend {
-                                        Output::success(&format!(
-                                            "manifest: amended ({})",
-                                            short_id
-                                        ));
-                                    } else {
-                                        Output::success(&format!(
-                                            "manifest: committed ({})",
-                                            short_id
-                                        ));
+    // Also handle manifest worktree if it exists (in griptree scenario), respecting --repo filter
+    let include_manifest = match repos_filter {
+        None => true,
+        Some(filter) => filter.iter().any(|r| r == "manifest"),
+    };
+    if include_manifest {
+        if let Some(manifests_dir) = manifest_paths::resolve_manifest_repo_dir(workspace_root) {
+            let manifests_git_dir = manifests_dir.join(".git");
+            if manifests_git_dir.exists() && path_exists(&manifests_dir) {
+                match open_repo(&manifests_dir) {
+                    Ok(git_repo) => {
+                        if has_staged_changes(&git_repo)? {
+                            match create_commit(&git_repo, message, amend) {
+                                Ok(commit_id) => {
+                                    let short_id = &commit_id[..7.min(commit_id.len())];
+                                    if !json {
+                                        if amend {
+                                            Output::success(&format!(
+                                                "manifest: amended ({})",
+                                                short_id
+                                            ));
+                                        } else {
+                                            Output::success(&format!(
+                                                "manifest: committed ({})",
+                                                short_id
+                                            ));
+                                        }
                                     }
+                                    success_count += 1;
+                                    json_committed.push(JsonCommit {
+                                        repo: "manifest".to_string(),
+                                        sha: commit_id.clone(),
+                                    });
+                                    invalidate_status_cache(&manifests_dir);
                                 }
-                                success_count += 1;
-                                json_committed.push(JsonCommit {
-                                    repo: "manifest".to_string(),
-                                    sha: commit_id.clone(),
-                                });
-                                invalidate_status_cache(&manifests_dir);
-                            }
-                            Err(e) => {
-                                if !json {
-                                    Output::error(&format!("manifest: {}", e));
+                                Err(e) => {
+                                    if !json {
+                                        Output::error(&format!("manifest: {}", e));
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                Err(e) => {
-                    if !json {
-                        Output::warning(&format!("manifest: {}", e));
+                    Err(e) => {
+                        if !json {
+                            Output::warning(&format!("manifest: {}", e));
+                        }
                     }
                 }
             }

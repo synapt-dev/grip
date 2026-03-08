@@ -60,6 +60,7 @@ pub async fn run_sync(
     manifest: &Manifest,
     force: bool,
     quiet: bool,
+    repos_filter: Option<&[String]>,
     group_filter: Option<&[String]>,
     sequential: bool,
     reset_refs: bool,
@@ -70,11 +71,18 @@ pub async fn run_sync(
     let manifest = sync_gripspaces(workspace_root, manifest, quiet)?;
     let manifest = &manifest;
 
-    let mut repos: Vec<RepoInfo> = filter_repos(manifest, workspace_root, None, group_filter, true);
+    let mut repos: Vec<RepoInfo> =
+        filter_repos(manifest, workspace_root, repos_filter, group_filter, true);
 
-    // Include manifest repo at the beginning (sync it first)
-    if let Some(manifest_repo) = get_manifest_repo_info(manifest, workspace_root) {
-        repos.insert(0, manifest_repo);
+    // Include manifest repo at the beginning (sync it first), respecting --repo filter
+    let include_manifest = match repos_filter {
+        None => true,
+        Some(filter) => filter.iter().any(|r| r == "manifest"),
+    };
+    if include_manifest {
+        if let Some(manifest_repo) = get_manifest_repo_info(manifest, workspace_root) {
+            repos.insert(0, manifest_repo);
+        }
     }
     let griptree_config = GriptreeConfig::load_from_workspace(workspace_root)?;
     let griptree_branch = griptree_config.as_ref().map(|cfg| cfg.branch.clone());

@@ -123,6 +123,7 @@ fn test_status_with_missing_repo() {
         false,
         false,
         None,
+        None,
         false,
     );
     // Status should succeed even with a missing repo (reports "not cloned")
@@ -145,6 +146,8 @@ fn test_commit_with_no_staged_changes() {
         "should not commit",
         false,
         false,
+        None,
+        None,
     );
     // Should succeed but report "no changes to commit"
     assert!(
@@ -164,6 +167,8 @@ fn test_checkout_nonexistent_branch() {
         &manifest,
         "nonexistent-branch",
         false,
+        None,
+        None,
     );
     // Should succeed (returns Ok) but skip repos where branch doesn't exist
     assert!(
@@ -192,8 +197,15 @@ fn test_branch_already_exists() {
     .unwrap();
 
     // Switch back to main
-    gitgrip::cli::commands::checkout::run_checkout(&ws.workspace_root, &manifest, "main", false)
-        .unwrap();
+    gitgrip::cli::commands::checkout::run_checkout(
+        &ws.workspace_root,
+        &manifest,
+        "main",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
 
     // Try creating same branch again - should handle gracefully
     let result =
@@ -231,6 +243,7 @@ async fn test_sync_with_deleted_remote() {
         false,
         false,
         None,
+        None,
         false,
         false,
         false,
@@ -266,6 +279,8 @@ fn test_push_on_main_nothing_to_push() {
         false,
         false,
         false,
+        None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -293,6 +308,7 @@ fn test_forall_with_nonexistent_command() {
         false, // changed_only
         false, // no_intercept
         None,
+        None,
     );
     // Forall should handle per-repo command failures gracefully
     match &result {
@@ -316,7 +332,8 @@ fn test_add_with_no_changes() {
 
     // Add when there's nothing to add
     let files = vec![".".to_string()];
-    let result = gitgrip::cli::commands::add::run_add(&ws.workspace_root, &manifest, &files);
+    let result =
+        gitgrip::cli::commands::add::run_add(&ws.workspace_root, &manifest, &files, None, None);
     assert!(
         result.is_ok(),
         "add with no changes should succeed: {:?}",

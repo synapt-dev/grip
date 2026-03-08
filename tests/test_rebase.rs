@@ -22,6 +22,8 @@ fn test_rebase_on_default_branch_skips() {
         false,
         false,
         false,
+        None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -54,6 +56,8 @@ fn test_rebase_on_feature_branch() {
         false,
         false,
         false,
+        None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -90,6 +94,8 @@ fn test_rebase_uses_griptree_upstream_mapping() {
         true,
         false,
         false,
+        None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -115,6 +121,8 @@ fn test_rebase_abort_no_rebase() {
         false,
         true, // abort
         false,
+        None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -140,6 +148,8 @@ fn test_rebase_missing_repo() {
         false,
         false,
         false,
+        None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -164,6 +174,8 @@ fn test_rebase_invalid_target_keeps_commits() {
         false,
         false,
         false,
+        None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -204,6 +216,8 @@ fn test_rebase_skips_non_git_repo() {
         false,
         false,
         false,
+        None,
+        None,
     );
     assert!(
         result.is_ok(),

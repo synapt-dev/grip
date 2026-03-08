@@ -32,11 +32,12 @@ pub fn run_status(
     manifest: &Manifest,
     verbose: bool,
     quiet: bool,
+    repos_filter: Option<&[String]>,
     group_filter: Option<&[String]>,
     json: bool,
 ) -> anyhow::Result<()> {
     if json {
-        return run_status_json(workspace_root, manifest, group_filter);
+        return run_status_json(workspace_root, manifest, repos_filter, group_filter);
     }
 
     Output::header("Repository Status");
@@ -55,7 +56,8 @@ pub fn run_status(
     }
 
     // Get all repo info (include reference repos for display)
-    let repos: Vec<RepoInfo> = filter_repos(manifest, workspace_root, None, group_filter, true);
+    let repos: Vec<RepoInfo> =
+        filter_repos(manifest, workspace_root, repos_filter, group_filter, true);
 
     // Get status for all repos
     let statuses: Vec<(RepoStatus, &RepoInfo)> = repos
@@ -261,9 +263,11 @@ pub fn run_status(
 fn run_status_json(
     workspace_root: &Path,
     manifest: &Manifest,
+    repos_filter: Option<&[String]>,
     group_filter: Option<&[String]>,
 ) -> anyhow::Result<()> {
-    let repos: Vec<RepoInfo> = filter_repos(manifest, workspace_root, None, group_filter, true);
+    let repos: Vec<RepoInfo> =
+        filter_repos(manifest, workspace_root, repos_filter, group_filter, true);
 
     let json_statuses: Vec<JsonRepoStatus> = repos
         .iter()

@@ -27,13 +27,16 @@ fn test_push_to_remote() {
 
     std::fs::write(ws.repo_path("app").join("pushed.txt"), "content").unwrap();
     let files = vec![".".to_string()];
-    gitgrip::cli::commands::add::run_add(&ws.workspace_root, &manifest, &files).unwrap();
+    gitgrip::cli::commands::add::run_add(&ws.workspace_root, &manifest, &files, None, None)
+        .unwrap();
     gitgrip::cli::commands::commit::run_commit(
         &ws.workspace_root,
         &manifest,
         "feat: push test",
         false,
         false,
+        None,
+        None,
     )
     .unwrap();
 
@@ -45,6 +48,8 @@ fn test_push_to_remote() {
         false,
         false,
         false,
+        None,
+        None,
     );
     assert!(result.is_ok(), "push should succeed: {:?}", result.err());
 
@@ -69,6 +74,8 @@ fn test_push_nothing_to_push() {
         false,
         false,
         false,
+        None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -101,13 +108,16 @@ fn test_push_skips_reference_repos() {
 
     std::fs::write(ws.repo_path("app").join("change.txt"), "data").unwrap();
     let files = vec![".".to_string()];
-    gitgrip::cli::commands::add::run_add(&ws.workspace_root, &manifest, &files).unwrap();
+    gitgrip::cli::commands::add::run_add(&ws.workspace_root, &manifest, &files, None, None)
+        .unwrap();
     gitgrip::cli::commands::commit::run_commit(
         &ws.workspace_root,
         &manifest,
         "change",
         false,
         false,
+        None,
+        None,
     )
     .unwrap();
 
@@ -119,6 +129,8 @@ fn test_push_skips_reference_repos() {
         false,
         false,
         false,
+        None,
+        None,
     );
     assert!(result.is_ok(), "push should succeed: {:?}", result.err());
 
@@ -151,13 +163,16 @@ fn test_push_multiple_repos() {
     std::fs::write(ws.repo_path("frontend").join("fe.txt"), "fe").unwrap();
     std::fs::write(ws.repo_path("backend").join("be.txt"), "be").unwrap();
     let files = vec![".".to_string()];
-    gitgrip::cli::commands::add::run_add(&ws.workspace_root, &manifest, &files).unwrap();
+    gitgrip::cli::commands::add::run_add(&ws.workspace_root, &manifest, &files, None, None)
+        .unwrap();
     gitgrip::cli::commands::commit::run_commit(
         &ws.workspace_root,
         &manifest,
         "feat: multi push",
         false,
         false,
+        None,
+        None,
     )
     .unwrap();
 
@@ -168,6 +183,8 @@ fn test_push_multiple_repos() {
         false,
         false,
         false,
+        None,
+        None,
     );
     assert!(result.is_ok(), "push should succeed: {:?}", result.err());
 }
@@ -193,13 +210,16 @@ fn test_push_force() {
 
     std::fs::write(ws.repo_path("app").join("first.txt"), "first").unwrap();
     let files = vec![".".to_string()];
-    gitgrip::cli::commands::add::run_add(&ws.workspace_root, &manifest, &files).unwrap();
+    gitgrip::cli::commands::add::run_add(&ws.workspace_root, &manifest, &files, None, None)
+        .unwrap();
     gitgrip::cli::commands::commit::run_commit(
         &ws.workspace_root,
         &manifest,
         "first commit",
         false,
         false,
+        None,
+        None,
     )
     .unwrap();
     gitgrip::cli::commands::push::run_push(
@@ -209,18 +229,23 @@ fn test_push_force() {
         false,
         false,
         false,
+        None,
+        None,
     )
     .unwrap();
 
     // Make another commit
     std::fs::write(ws.repo_path("app").join("second.txt"), "second").unwrap();
-    gitgrip::cli::commands::add::run_add(&ws.workspace_root, &manifest, &files).unwrap();
+    gitgrip::cli::commands::add::run_add(&ws.workspace_root, &manifest, &files, None, None)
+        .unwrap();
     gitgrip::cli::commands::commit::run_commit(
         &ws.workspace_root,
         &manifest,
         "second commit",
         false,
         false,
+        None,
+        None,
     )
     .unwrap();
 
@@ -232,6 +257,8 @@ fn test_push_force() {
         true, // force
         false,
         false,
+        None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -257,6 +284,8 @@ fn test_push_quiet_mode() {
         false,
         true, // quiet
         false,
+        None,
+        None,
     );
     assert!(
         result.is_ok(),

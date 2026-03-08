@@ -33,7 +33,8 @@ fn test_commit_across_repos() {
     std::fs::write(ws.repo_path("backend").join("server.rs"), "// server").unwrap();
 
     let files = vec![".".to_string()];
-    gitgrip::cli::commands::add::run_add(&ws.workspace_root, &manifest, &files).unwrap();
+    gitgrip::cli::commands::add::run_add(&ws.workspace_root, &manifest, &files, None, None)
+        .unwrap();
 
     // Commit
     let result = gitgrip::cli::commands::commit::run_commit(
@@ -42,6 +43,8 @@ fn test_commit_across_repos() {
         "feat: add initial files",
         false,
         false,
+        None,
+        None,
     );
     assert!(result.is_ok(), "commit should succeed: {:?}", result.err());
 
@@ -74,6 +77,8 @@ fn test_commit_skips_no_staged_changes() {
         "feat: app only",
         false,
         false,
+        None,
+        None,
     );
     assert!(result.is_ok(), "commit should succeed: {:?}", result.err());
 
@@ -95,6 +100,8 @@ fn test_commit_no_changes() {
         "empty commit",
         false,
         false,
+        None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -122,6 +129,8 @@ fn test_commit_amend() {
         "initial",
         false,
         false,
+        None,
+        None,
     )
     .unwrap();
 
@@ -140,6 +149,8 @@ fn test_commit_amend() {
         "amended",
         true,
         false,
+        None,
+        None,
     );
     assert!(result.is_ok(), "amend should succeed: {:?}", result.err());
 

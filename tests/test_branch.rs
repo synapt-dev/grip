@@ -62,8 +62,15 @@ fn test_branch_delete() {
     .unwrap();
 
     // Switch back to main so we can delete
-    gitgrip::cli::commands::checkout::run_checkout(&ws.workspace_root, &manifest, "main", false)
-        .unwrap();
+    gitgrip::cli::commands::checkout::run_checkout(
+        &ws.workspace_root,
+        &manifest,
+        "main",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
 
     // Delete the branch
     let result =

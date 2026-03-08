@@ -67,6 +67,9 @@ pub enum Commands {
         /// Only sync repos in these groups
         #[arg(long, value_delimiter = ',')]
         group: Option<Vec<String>>,
+        /// Only sync specific repos (use "manifest" to target manifest repo)
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
         /// Sync repos sequentially (default: parallel)
         #[arg(long)]
         sequential: bool,
@@ -74,7 +77,7 @@ pub enum Commands {
         #[arg(long)]
         no_hooks: bool,
         /// Rollback repos to their state before the last sync
-        #[arg(long, conflicts_with_all = ["force", "reset_refs", "group", "sequential", "no_hooks"])]
+        #[arg(long, conflicts_with_all = ["force", "reset_refs", "group", "repo", "sequential", "no_hooks"])]
         rollback: bool,
     },
     /// Show status of all repositories
@@ -85,6 +88,9 @@ pub enum Commands {
         /// Only show repos in these groups
         #[arg(long, value_delimiter = ',')]
         group: Option<Vec<String>>,
+        /// Only show specific repos
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
     },
     /// Create or switch branches across repos
     Branch {
@@ -113,18 +119,36 @@ pub enum Commands {
         /// Checkout the griptree base branch for this worktree
         #[arg(long, conflicts_with = "create")]
         base: bool,
+        /// Only operate on specific repos (use "manifest" to target manifest repo)
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
+        /// Only operate on repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
     },
     /// Stage changes across repos
     Add {
         /// Files to add (. for all)
         #[arg(default_value = ".")]
         files: Vec<String>,
+        /// Only stage in specific repos
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
+        /// Only stage in repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
     },
     /// Show diff across repos
     Diff {
         /// Show staged changes
         #[arg(long)]
         staged: bool,
+        /// Only diff specific repos
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
+        /// Only diff repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
     },
     /// Commit changes across repos
     Commit {
@@ -134,6 +158,12 @@ pub enum Commands {
         /// Amend previous commit
         #[arg(long)]
         amend: bool,
+        /// Only commit in specific repos
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
+        /// Only commit in repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
     },
     /// Push changes across repos
     Push {
@@ -143,6 +173,12 @@ pub enum Commands {
         /// Force push
         #[arg(short, long)]
         force: bool,
+        /// Only push specific repos (use "manifest" to target manifest repo)
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
+        /// Only push repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
     },
     /// Clean up merged branches across repos
     Prune {
@@ -152,6 +188,9 @@ pub enum Commands {
         /// Also prune remote tracking refs
         #[arg(long)]
         remote: bool,
+        /// Only prune specific repos
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
         /// Only prune repos in these groups
         #[arg(long, value_delimiter = ',')]
         group: Option<Vec<String>>,
@@ -179,6 +218,9 @@ pub enum Commands {
         /// File pattern (after --)
         #[arg(last = true)]
         pathspec: Vec<String>,
+        /// Only search specific repos
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
         /// Only search repos in these groups
         #[arg(long, value_delimiter = ',')]
         group: Option<Vec<String>>,
@@ -197,6 +239,9 @@ pub enum Commands {
         /// Disable git command interception (use CLI for all commands)
         #[arg(long)]
         no_intercept: bool,
+        /// Only run in specific repos
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
         /// Only run in repos in these groups
         #[arg(long, value_delimiter = ',')]
         group: Option<Vec<String>>,
@@ -214,12 +259,21 @@ pub enum Commands {
         /// Continue rebase after resolving conflicts
         #[arg(long, name = "continue")]
         continue_rebase: bool,
+        /// Only rebase specific repos
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
+        /// Only rebase repos in these groups
+        #[arg(long, value_delimiter = ',')]
+        group: Option<Vec<String>>,
     },
     /// Pull latest changes across repos
     Pull {
         /// Rebase instead of merge
         #[arg(long)]
         rebase: bool,
+        /// Only pull specific repos (use "manifest" to target manifest repo)
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
         /// Only pull repos in these groups
         #[arg(long, value_delimiter = ',')]
         group: Option<Vec<String>>,
@@ -356,6 +410,9 @@ pub enum Commands {
         /// All repos are synced with remote (not ahead/behind)
         #[arg(long)]
         synced: bool,
+        /// Only verify specific repos
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
         /// Only verify repos in these groups
         #[arg(long, value_delimiter = ',')]
         group: Option<Vec<String>>,

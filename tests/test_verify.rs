@@ -18,6 +18,7 @@ fn test_verify_clean_passes_on_clean_workspace() {
         gitgrip::cli::commands::verify::run_verify(gitgrip::cli::commands::verify::VerifyOptions {
             workspace_root: &ws.workspace_root,
             manifest: &manifest,
+            repos_filter: None,
             group_filter: None,
             json: true, // Use JSON mode so we don't exit(1)
             quiet: false,
@@ -49,6 +50,7 @@ fn test_verify_clean_fails_with_changes() {
         gitgrip::cli::commands::verify::run_verify(gitgrip::cli::commands::verify::VerifyOptions {
             workspace_root: &ws.workspace_root,
             manifest: &manifest,
+            repos_filter: None,
             group_filter: None,
             json: true,
             quiet: false,
@@ -75,6 +77,7 @@ fn test_verify_on_branch_passes() {
         gitgrip::cli::commands::verify::run_verify(gitgrip::cli::commands::verify::VerifyOptions {
             workspace_root: &ws.workspace_root,
             manifest: &manifest,
+            repos_filter: None,
             group_filter: None,
             json: true,
             quiet: false,
@@ -100,6 +103,7 @@ fn test_verify_on_branch_fails() {
         gitgrip::cli::commands::verify::run_verify(gitgrip::cli::commands::verify::VerifyOptions {
             workspace_root: &ws.workspace_root,
             manifest: &manifest,
+            repos_filter: None,
             group_filter: None,
             json: true,
             quiet: false,
@@ -122,6 +126,7 @@ fn test_verify_no_flags_returns_error() {
         gitgrip::cli::commands::verify::run_verify(gitgrip::cli::commands::verify::VerifyOptions {
             workspace_root: &ws.workspace_root,
             manifest: &manifest,
+            repos_filter: None,
             group_filter: None,
             json: false,
             quiet: false,
@@ -144,6 +149,7 @@ fn test_verify_links_no_links_defined() {
         gitgrip::cli::commands::verify::run_verify(gitgrip::cli::commands::verify::VerifyOptions {
             workspace_root: &ws.workspace_root,
             manifest: &manifest,
+            repos_filter: None,
             group_filter: None,
             json: true,
             quiet: false,
@@ -172,6 +178,7 @@ fn test_verify_multiple_checks_combined() {
         gitgrip::cli::commands::verify::run_verify(gitgrip::cli::commands::verify::VerifyOptions {
             workspace_root: &ws.workspace_root,
             manifest: &manifest,
+            repos_filter: None,
             group_filter: None,
             json: true,
             quiet: false,
@@ -203,6 +210,7 @@ fn test_verify_on_branch_after_branch_switch() {
         gitgrip::cli::commands::verify::run_verify(gitgrip::cli::commands::verify::VerifyOptions {
             workspace_root: &ws.workspace_root,
             manifest: &manifest,
+            repos_filter: None,
             group_filter: None,
             json: true,
             quiet: false,

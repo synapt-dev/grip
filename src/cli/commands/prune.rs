@@ -18,6 +18,7 @@ pub fn run_prune(
     manifest: &Manifest,
     execute: bool,
     remote: bool,
+    repos_filter: Option<&[String]>,
     group_filter: Option<&[String]>,
 ) -> anyhow::Result<()> {
     if execute {
@@ -27,7 +28,8 @@ pub fn run_prune(
     }
     println!();
 
-    let repos: Vec<RepoInfo> = filter_repos(manifest, workspace_root, None, group_filter, false);
+    let repos: Vec<RepoInfo> =
+        filter_repos(manifest, workspace_root, repos_filter, group_filter, false);
 
     let mut total_pruned = 0;
     let mut total_repos = 0;

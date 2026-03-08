@@ -2,7 +2,7 @@
 
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
-use crate::core::repo::{get_manifest_repo_info, RepoInfo};
+use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
 use crate::git::{open_repo, path_exists};
 use git2::{DiffOptions, Repository};
 use std::path::PathBuf;
@@ -13,24 +13,21 @@ pub fn run_diff(
     manifest: &Manifest,
     staged: bool,
     json: bool,
+    repos_filter: Option<&[String]>,
+    group_filter: Option<&[String]>,
 ) -> anyhow::Result<()> {
-    let mut repos: Vec<RepoInfo> = manifest
-        .repos
-        .iter()
-        .filter_map(|(name, config)| {
-            RepoInfo::from_config(
-                name,
-                config,
-                workspace_root,
-                &manifest.settings,
-                manifest.remotes.as_ref(),
-            )
-        })
-        .collect();
+    let mut repos: Vec<RepoInfo> =
+        filter_repos(manifest, workspace_root, repos_filter, group_filter, true);
 
-    // Include manifest repo in diff operations
-    if let Some(manifest_repo) = get_manifest_repo_info(manifest, workspace_root) {
-        repos.push(manifest_repo);
+    // Include manifest repo, respecting --repo filter
+    let include_manifest = match repos_filter {
+        None => true,
+        Some(filter) => filter.iter().any(|r| r == "manifest"),
+    };
+    if include_manifest {
+        if let Some(manifest_repo) = get_manifest_repo_info(manifest, workspace_root) {
+            repos.push(manifest_repo);
+        }
     }
 
     if json {

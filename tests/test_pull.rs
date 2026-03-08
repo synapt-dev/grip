@@ -17,6 +17,7 @@ async fn test_pull_merge_on_clean_repo() {
         &manifest,
         false,
         None,
+        None,
         true,
         true,
     )

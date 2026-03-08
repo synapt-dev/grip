@@ -23,6 +23,7 @@ pub async fn dispatch_command(
         Some(Commands::Status {
             verbose: status_verbose,
             group,
+            repo,
         }) => {
             let ctx = load_workspace_context(quiet, verbose, json)?;
             crate::cli::commands::status::run_status(
@@ -30,6 +31,7 @@ pub async fn dispatch_command(
                 &ctx.manifest,
                 status_verbose,
                 ctx.quiet,
+                repo.as_deref(),
                 group.as_deref(),
                 ctx.json,
             )?;
@@ -38,6 +40,7 @@ pub async fn dispatch_command(
             force,
             reset_refs,
             group,
+            repo,
             sequential,
             no_hooks,
             rollback,
@@ -57,6 +60,7 @@ pub async fn dispatch_command(
                     &ctx.manifest,
                     force,
                     ctx.quiet,
+                    repo.as_deref(),
                     group.as_deref(),
                     sequential,
                     reset_refs,
@@ -87,7 +91,13 @@ pub async fn dispatch_command(
                 },
             )?;
         }
-        Some(Commands::Checkout { name, create, base }) => {
+        Some(Commands::Checkout {
+            name,
+            create,
+            base,
+            repo,
+            group,
+        }) => {
             let ctx = load_workspace_context(quiet, verbose, json)?;
             let branch = if base {
                 let config = crate::core::griptree::GriptreeConfig::load_from_workspace(
@@ -104,22 +114,41 @@ pub async fn dispatch_command(
                 &ctx.manifest,
                 &branch,
                 create,
+                repo.as_deref(),
+                group.as_deref(),
             )?;
         }
-        Some(Commands::Add { files }) => {
+        Some(Commands::Add { files, repo, group }) => {
             let ctx = load_workspace_context(quiet, verbose, json)?;
-            crate::cli::commands::add::run_add(&ctx.workspace_root, &ctx.manifest, &files)?;
+            crate::cli::commands::add::run_add(
+                &ctx.workspace_root,
+                &ctx.manifest,
+                &files,
+                repo.as_deref(),
+                group.as_deref(),
+            )?;
         }
-        Some(Commands::Diff { staged }) => {
+        Some(Commands::Diff {
+            staged,
+            repo,
+            group,
+        }) => {
             let ctx = load_workspace_context(quiet, verbose, json)?;
             crate::cli::commands::diff::run_diff(
                 &ctx.workspace_root,
                 &ctx.manifest,
                 staged,
                 ctx.json,
+                repo.as_deref(),
+                group.as_deref(),
             )?;
         }
-        Some(Commands::Commit { message, amend }) => {
+        Some(Commands::Commit {
+            message,
+            amend,
+            repo,
+            group,
+        }) => {
             let ctx = load_workspace_context(quiet, verbose, json)?;
             let msg = message.unwrap_or_else(|| {
                 eprintln!("Error: commit message required (-m)");
@@ -131,11 +160,15 @@ pub async fn dispatch_command(
                 &msg,
                 amend,
                 ctx.json,
+                repo.as_deref(),
+                group.as_deref(),
             )?;
         }
         Some(Commands::Push {
             set_upstream,
             force,
+            repo,
+            group,
         }) => {
             let ctx = load_workspace_context(quiet, verbose, json)?;
             crate::cli::commands::push::run_push(
@@ -145,11 +178,14 @@ pub async fn dispatch_command(
                 force,
                 ctx.quiet,
                 ctx.json,
+                repo.as_deref(),
+                group.as_deref(),
             )?;
         }
         Some(Commands::Prune {
             execute,
             remote,
+            repo,
             group,
         }) => {
             let ctx = load_workspace_context(quiet, verbose, json)?;
@@ -158,6 +194,7 @@ pub async fn dispatch_command(
                 &ctx.manifest,
                 execute,
                 remote,
+                repo.as_deref(),
                 group.as_deref(),
             )?;
         }
@@ -315,6 +352,7 @@ pub async fn dispatch_command(
             ignore_case,
             parallel,
             pathspec,
+            repo,
             group,
         }) => {
             let ctx = load_workspace_context(quiet, verbose, json)?;
@@ -325,6 +363,7 @@ pub async fn dispatch_command(
                 ignore_case,
                 parallel,
                 &pathspec,
+                repo.as_deref(),
                 group.as_deref(),
             )?;
         }
@@ -333,6 +372,7 @@ pub async fn dispatch_command(
             parallel,
             all,
             no_intercept,
+            repo,
             group,
         }) => {
             let ctx = load_workspace_context(quiet, verbose, json)?;
@@ -343,6 +383,7 @@ pub async fn dispatch_command(
                 parallel,
                 !all, // Default: only repos with changes (changed_only=true unless --all)
                 no_intercept,
+                repo.as_deref(),
                 group.as_deref(),
             )?;
         }
@@ -351,6 +392,8 @@ pub async fn dispatch_command(
             upstream,
             abort,
             continue_rebase,
+            repo,
+            group,
         }) => {
             let ctx = load_workspace_context(quiet, verbose, json)?;
             crate::cli::commands::rebase::run_rebase(
@@ -360,10 +403,13 @@ pub async fn dispatch_command(
                 upstream,
                 abort,
                 continue_rebase,
+                repo.as_deref(),
+                group.as_deref(),
             )?;
         }
         Some(Commands::Pull {
             rebase,
+            repo,
             group,
             sequential,
         }) => {
@@ -372,6 +418,7 @@ pub async fn dispatch_command(
                 &ctx.workspace_root,
                 &ctx.manifest,
                 rebase,
+                repo.as_deref(),
                 group.as_deref(),
                 sequential,
                 ctx.quiet,
@@ -639,6 +686,7 @@ pub async fn dispatch_command(
             links,
             on_branch,
             synced,
+            repo,
             group,
         }) => {
             let ctx = load_workspace_context(quiet, verbose, json)?;
@@ -646,6 +694,7 @@ pub async fn dispatch_command(
                 crate::cli::commands::verify::VerifyOptions {
                     workspace_root: &ctx.workspace_root,
                     manifest: &ctx.manifest,
+                    repos_filter: repo.as_deref(),
                     group_filter: group.as_deref(),
                     json: ctx.json,
                     quiet: ctx.quiet,

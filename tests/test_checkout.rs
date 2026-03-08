@@ -28,8 +28,15 @@ fn test_checkout_existing_branch() {
     .unwrap();
 
     // Go back to main
-    gitgrip::cli::commands::checkout::run_checkout(&ws.workspace_root, &manifest, "main", false)
-        .unwrap();
+    gitgrip::cli::commands::checkout::run_checkout(
+        &ws.workspace_root,
+        &manifest,
+        "main",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
     assert_on_branch(&ws.repo_path("frontend"), "main");
     assert_on_branch(&ws.repo_path("backend"), "main");
 
@@ -39,6 +46,8 @@ fn test_checkout_existing_branch() {
         &manifest,
         "feat/checkout-test",
         false,
+        None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -62,6 +71,8 @@ fn test_checkout_nonexistent_branch() {
         &manifest,
         "feat/does-not-exist",
         false,
+        None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -102,6 +113,8 @@ fn test_checkout_main() {
         &manifest,
         "main",
         false,
+        None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -128,6 +141,8 @@ fn test_checkout_create_flag() {
         &manifest,
         "feat/new-feature",
         true, // create = true (-b flag)
+        None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -169,6 +184,8 @@ fn test_checkout_skips_non_git_repo() {
         &manifest,
         "feat/checkout-safe",
         false,
+        None,
+        None,
     );
     assert!(
         result.is_ok(),

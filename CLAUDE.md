@@ -220,6 +220,7 @@ src/
 │   ├── branch.rs         # gr branch
 │   ├── checkout.rs       # gr checkout
 │   ├── add.rs            # gr add
+│   ├── restore.rs        # gr restore
 │   ├── diff.rs           # gr diff
 │   ├── commit.rs         # gr commit
 │   ├── push.rs           # gr push
@@ -298,6 +299,7 @@ All commands use `gr` (or `gitgrip`):
 - `gr sync` - Pull all repos in parallel + process links + run hooks (includes manifest)
   - `gr sync --sequential` - Sync repos sequentially (slower but ordered output)
   - `gr sync --group <name>` - Sync only repos in a group
+  - `gr sync --repo <names>` - Sync only specific repos (use "manifest" to target manifest repo)
 - `gr status` - Show repo and manifest status
   - `gr status --json` - Machine-readable output
 - `gr branch <name>` - Create branch across all repos (includes manifest)
@@ -308,6 +310,9 @@ All commands use `gr` (or `gitgrip`):
   - `gr checkout -b <branch>` - Create and checkout branch in one command
   - `gr checkout --base` - Checkout griptree base branch (griptree workspaces only)
 - `gr add` - Stage changes across all repos
+- `gr restore` - Unstage or discard changes across repos
+  - `gr restore --staged` - Unstage files (remove from index)
+  - `gr restore --repo <names>` - Only restore in specific repos
 - `gr diff` - Show diff across all repos (includes manifest)
 - `gr commit` - Commit staged changes across all repos
 - `gr push` - Push current branch in all repos (includes manifest)

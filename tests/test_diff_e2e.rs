@@ -18,8 +18,14 @@ fn test_diff_no_changes() {
 
     let manifest = ws.load_manifest();
 
-    let result =
-        gitgrip::cli::commands::diff::run_diff(&ws.workspace_root, &manifest, false, false);
+    let result = gitgrip::cli::commands::diff::run_diff(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+        None,
+    );
     assert!(
         result.is_ok(),
         "diff on clean workspace should succeed: {:?}",
@@ -38,8 +44,14 @@ fn test_diff_unstaged_changes() {
     // Modify a tracked file (README.md was committed by WorkspaceBuilder)
     std::fs::write(ws.repo_path("frontend").join("README.md"), "modified\n").unwrap();
 
-    let result =
-        gitgrip::cli::commands::diff::run_diff(&ws.workspace_root, &manifest, false, false);
+    let result = gitgrip::cli::commands::diff::run_diff(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+        None,
+    );
     assert!(
         result.is_ok(),
         "diff with unstaged changes should succeed: {:?}",
@@ -70,6 +82,8 @@ fn test_diff_staged_changes() {
         &manifest,
         true, // staged
         false,
+        None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -94,6 +108,8 @@ fn test_diff_json_output() {
         &manifest,
         false,
         true, // json
+        None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -117,8 +133,14 @@ fn test_diff_multi_repo() {
     std::fs::write(ws.repo_path("frontend").join("README.md"), "fe changes\n").unwrap();
     std::fs::write(ws.repo_path("backend").join("README.md"), "be changes\n").unwrap();
 
-    let result =
-        gitgrip::cli::commands::diff::run_diff(&ws.workspace_root, &manifest, false, false);
+    let result = gitgrip::cli::commands::diff::run_diff(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+        None,
+    );
     assert!(
         result.is_ok(),
         "multi-repo diff should succeed: {:?}",
@@ -141,7 +163,13 @@ fn test_diff_includes_reference_repos() {
     std::fs::write(ws.repo_path("ref-lib").join("README.md"), "ref changes\n").unwrap();
 
     // diff includes reference repos (they're still regular git repos on disk)
-    let result =
-        gitgrip::cli::commands::diff::run_diff(&ws.workspace_root, &manifest, false, false);
+    let result = gitgrip::cli::commands::diff::run_diff(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        false,
+        None,
+        None,
+    );
     assert!(result.is_ok(), "diff should succeed: {:?}", result.err());
 }

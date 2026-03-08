@@ -761,9 +761,11 @@ pub fn run_forall(
     parallel: bool,
     changed_only: bool,
     no_intercept: bool,
+    repos_filter: Option<&[String]>,
     group_filter: Option<&[String]>,
 ) -> anyhow::Result<()> {
-    let repos: Vec<RepoInfo> = filter_repos(manifest, workspace_root, None, group_filter, true);
+    let repos: Vec<RepoInfo> =
+        filter_repos(manifest, workspace_root, repos_filter, group_filter, true);
 
     // Parse the command (handles pipes, redirects, git interception)
     let parsed = if no_intercept {

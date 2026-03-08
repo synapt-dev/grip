@@ -2,7 +2,7 @@
 
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
-use crate::core::repo::{get_manifest_repo_info, RepoInfo};
+use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
 use crate::git::{
     branch::{branch_exists, checkout_branch, create_and_checkout_branch},
     open_repo,
@@ -15,39 +15,36 @@ pub fn run_checkout(
     manifest: &Manifest,
     branch_name: &str,
     create: bool,
+    repos_filter: Option<&[String]>,
+    group_filter: Option<&[String]>,
 ) -> anyhow::Result<()> {
     let action = if create {
         "Creating and checking out"
     } else {
         "Checking out"
     };
+
+    let mut repos: Vec<RepoInfo> =
+        filter_repos(manifest, workspace_root, repos_filter, group_filter, false);
+
+    // Include manifest repo, respecting --repo filter
+    let include_manifest = match repos_filter {
+        None => true,
+        Some(filter) => filter.iter().any(|r| r == "manifest"),
+    };
+    if include_manifest {
+        if let Some(manifest_repo) = get_manifest_repo_info(manifest, workspace_root) {
+            repos.push(manifest_repo);
+        }
+    }
+
     Output::header(&format!(
         "{} '{}' in {} repos...",
         action,
         branch_name,
-        manifest.repos.len()
+        repos.len()
     ));
     println!();
-
-    let mut repos: Vec<RepoInfo> = manifest
-        .repos
-        .iter()
-        .filter_map(|(name, config)| {
-            RepoInfo::from_config(
-                name,
-                config,
-                workspace_root,
-                &manifest.settings,
-                manifest.remotes.as_ref(),
-            )
-        })
-        .filter(|r| !r.reference) // Skip reference repos
-        .collect();
-
-    // Include manifest repo in checkout operations
-    if let Some(manifest_repo) = get_manifest_repo_info(manifest, workspace_root) {
-        repos.push(manifest_repo);
-    }
 
     let mut success_count = 0;
     let mut _skip_count = 0;

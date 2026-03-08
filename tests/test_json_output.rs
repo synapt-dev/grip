@@ -25,6 +25,7 @@ fn test_status_json_clean() {
         false,
         false,
         None,
+        None,
         true, // json
     );
     assert!(
@@ -52,6 +53,7 @@ fn test_status_json_with_changes() {
         false,
         false,
         None,
+        None,
         true, // json
     );
     assert!(
@@ -76,6 +78,7 @@ fn test_status_json_reference_repos() {
         false,
         false,
         None,
+        None,
         true, // json
     );
     assert!(
@@ -98,6 +101,8 @@ fn test_diff_json_no_changes() {
         &manifest,
         false,
         true, // json
+        None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -120,6 +125,8 @@ fn test_diff_json_with_changes() {
         &manifest,
         false,
         true, // json
+        None,
+        None,
     );
     assert!(
         result.is_ok(),

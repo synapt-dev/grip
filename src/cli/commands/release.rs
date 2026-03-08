@@ -535,6 +535,8 @@ pub async fn run_release(opts: ReleaseOptions<'_>) -> anyhow::Result<()> {
                 opts.workspace_root,
                 opts.manifest,
                 &[".".to_string()],
+                None,
+                None,
             )?;
 
             // Commit
@@ -544,6 +546,8 @@ pub async fn run_release(opts: ReleaseOptions<'_>) -> anyhow::Result<()> {
                 &format!("chore: release {}", version_tag),
                 false,
                 opts.json,
+                None,
+                None,
             )?;
         }
 
@@ -564,6 +568,8 @@ pub async fn run_release(opts: ReleaseOptions<'_>) -> anyhow::Result<()> {
                 false, // force
                 opts.quiet,
                 opts.json,
+                None,
+                None,
             )?;
         }
 
@@ -642,6 +648,8 @@ pub async fn run_release(opts: ReleaseOptions<'_>) -> anyhow::Result<()> {
                 opts.manifest,
                 default_branch,
                 false,
+                None,
+                None,
             )?;
 
             // Sync
@@ -650,6 +658,7 @@ pub async fn run_release(opts: ReleaseOptions<'_>) -> anyhow::Result<()> {
                 opts.manifest,
                 false, // force
                 opts.quiet,
+                None,  // repos_filter
                 None,  // group
                 false, // sequential
                 false, // reset_refs

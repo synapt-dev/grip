@@ -19,9 +19,11 @@ pub fn run_grep(
     ignore_case: bool,
     parallel: bool,
     pathspec: &[String],
+    repos_filter: Option<&[String]>,
     group_filter: Option<&[String]>,
 ) -> anyhow::Result<()> {
-    let repos: Vec<RepoInfo> = filter_repos(manifest, workspace_root, None, group_filter, false);
+    let repos: Vec<RepoInfo> =
+        filter_repos(manifest, workspace_root, repos_filter, group_filter, false);
 
     if parallel {
         run_grep_parallel(&repos, pattern, ignore_case, pathspec)?;

@@ -22,6 +22,7 @@ fn test_status_clean_workspace() {
         false,
         false,
         None,
+        None,
         false,
     );
     assert!(result.is_ok(), "status should succeed: {:?}", result.err());
@@ -45,6 +46,7 @@ fn test_status_with_changes() {
         false,
         false,
         None,
+        None,
         false,
     );
     assert!(
@@ -65,6 +67,7 @@ fn test_status_verbose() {
         &manifest,
         true,
         false,
+        None,
         None,
         false,
     );
@@ -91,6 +94,7 @@ fn test_status_reference_repo() {
         false,
         false,
         None,
+        None,
         false,
     );
     assert!(
@@ -115,6 +119,7 @@ fn test_status_quiet_mode() {
         &manifest,
         false,
         true,
+        None,
         None,
         false,
     );
@@ -143,6 +148,7 @@ fn test_status_quiet_mode_with_changes() {
         &manifest,
         false,
         true,
+        None,
         None,
         false,
     );

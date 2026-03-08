@@ -5,13 +5,14 @@
 use crate::cli::output::Output;
 use crate::core::griptree::GriptreeConfig;
 use crate::core::manifest::Manifest;
-use crate::core::repo::RepoInfo;
+use crate::core::repo::{filter_repos, RepoInfo};
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::util::log_cmd;
 use std::path::Path;
 use std::process::Command;
 
 /// Run the rebase command
+#[allow(clippy::too_many_arguments)]
 pub fn run_rebase(
     workspace_root: &Path,
     manifest: &Manifest,
@@ -19,13 +20,15 @@ pub fn run_rebase(
     upstream: bool,
     abort: bool,
     _continue: bool,
+    repos_filter: Option<&[String]>,
+    group_filter: Option<&[String]>,
 ) -> anyhow::Result<()> {
     if abort {
-        return run_rebase_abort(workspace_root, manifest);
+        return run_rebase_abort(workspace_root, manifest, repos_filter, group_filter);
     }
 
     if _continue {
-        return run_rebase_continue(workspace_root, manifest);
+        return run_rebase_continue(workspace_root, manifest, repos_filter, group_filter);
     }
 
     let use_upstream = upstream || onto.is_none();
@@ -41,19 +44,8 @@ pub fn run_rebase(
 
     let griptree_config = GriptreeConfig::load_from_workspace(workspace_root)?;
 
-    let repos: Vec<RepoInfo> = manifest
-        .repos
-        .iter()
-        .filter_map(|(name, config)| {
-            RepoInfo::from_config(
-                name,
-                config,
-                workspace_root,
-                &manifest.settings,
-                manifest.remotes.as_ref(),
-            )
-        })
-        .collect();
+    let repos: Vec<RepoInfo> =
+        filter_repos(manifest, workspace_root, repos_filter, group_filter, false);
 
     let mut success_count = 0;
     let mut skip_count = 0;
@@ -152,23 +144,17 @@ pub fn run_rebase(
     Ok(())
 }
 
-fn run_rebase_abort(workspace_root: &Path, manifest: &Manifest) -> anyhow::Result<()> {
+fn run_rebase_abort(
+    workspace_root: &Path,
+    manifest: &Manifest,
+    repos_filter: Option<&[String]>,
+    group_filter: Option<&[String]>,
+) -> anyhow::Result<()> {
     Output::header("Aborting rebase");
     println!();
 
-    let repos: Vec<RepoInfo> = manifest
-        .repos
-        .iter()
-        .filter_map(|(name, config)| {
-            RepoInfo::from_config(
-                name,
-                config,
-                workspace_root,
-                &manifest.settings,
-                manifest.remotes.as_ref(),
-            )
-        })
-        .collect();
+    let repos: Vec<RepoInfo> =
+        filter_repos(manifest, workspace_root, repos_filter, group_filter, false);
 
     for repo in &repos {
         if !path_exists(&repo.absolute_path) {
@@ -197,23 +183,17 @@ fn run_rebase_abort(workspace_root: &Path, manifest: &Manifest) -> anyhow::Resul
     Ok(())
 }
 
-fn run_rebase_continue(workspace_root: &Path, manifest: &Manifest) -> anyhow::Result<()> {
+fn run_rebase_continue(
+    workspace_root: &Path,
+    manifest: &Manifest,
+    repos_filter: Option<&[String]>,
+    group_filter: Option<&[String]>,
+) -> anyhow::Result<()> {
     Output::header("Continuing rebase");
     println!();
 
-    let repos: Vec<RepoInfo> = manifest
-        .repos
-        .iter()
-        .filter_map(|(name, config)| {
-            RepoInfo::from_config(
-                name,
-                config,
-                workspace_root,
-                &manifest.settings,
-                manifest.remotes.as_ref(),
-            )
-        })
-        .collect();
+    let repos: Vec<RepoInfo> =
+        filter_repos(manifest, workspace_root, repos_filter, group_filter, false);
 
     for repo in &repos {
         if !path_exists(&repo.absolute_path) {

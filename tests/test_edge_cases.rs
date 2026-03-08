@@ -27,6 +27,7 @@ fn test_status_group_filter() {
         &manifest,
         false,
         false,
+        None,
         Some(&group),
         false,
     );
@@ -52,6 +53,7 @@ fn test_status_group_filter_json() {
         &manifest,
         false,
         false,
+        None,
         Some(&group),
         true, // json
     );
@@ -74,6 +76,8 @@ fn test_diff_staged_no_changes() {
         &manifest,
         true, // staged
         false,
+        None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -92,6 +96,8 @@ fn test_diff_staged_json() {
         &manifest,
         true, // staged
         true, // json
+        None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -255,6 +261,8 @@ fn test_rebase_continue_no_rebase() {
         false,
         false,
         true, // continue
+        None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -293,6 +301,8 @@ fn test_checkout_main_from_feature() {
         &manifest,
         "main",
         false,
+        None,
+        None,
     );
     assert!(
         result.is_ok(),
@@ -349,6 +359,8 @@ fn test_commit_amend_with_changes() {
         "amended message",
         true, // amend
         false,
+        None,
+        None,
     );
     assert!(
         result.is_ok(),

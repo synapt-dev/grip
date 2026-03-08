@@ -30,6 +30,7 @@ struct CheckResult {
 pub struct VerifyOptions<'a> {
     pub workspace_root: &'a PathBuf,
     pub manifest: &'a Manifest,
+    pub repos_filter: Option<&'a [String]>,
     pub group_filter: Option<&'a [String]>,
     pub json: bool,
     pub quiet: bool,
@@ -66,7 +67,7 @@ pub fn run_verify(opts: VerifyOptions) -> anyhow::Result<()> {
     let repos: Vec<RepoInfo> = filter_repos(
         opts.manifest,
         opts.workspace_root,
-        None,
+        opts.repos_filter,
         opts.group_filter,
         false,
     );

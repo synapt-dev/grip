@@ -820,11 +820,21 @@ fn generate_manifest(repos: &[DiscoveredRepo], options: &ManifestGenerationOptio
             "Use `gr` for all git operations (not raw git/gh)".to_string(),
             "All development on feature branches — never push to main".to_string(),
         ],
-        workflows: Some(HashMap::from([
-            ("build".to_string(), "gr run build-all".to_string()),
-            ("test".to_string(), "gr run test-all".to_string()),
-            ("sync".to_string(), "gr sync".to_string()),
-        ])),
+        workflows: {
+            let mut wf = HashMap::new();
+            if scripts.contains_key("build-all") {
+                wf.insert("build".to_string(), "gr run build-all".to_string());
+            } else if let Some((name, _)) = scripts.iter().find(|(k, _)| k.starts_with("build-")) {
+                wf.insert("build".to_string(), format!("gr run {name}"));
+            }
+            if scripts.contains_key("test-all") {
+                wf.insert("test".to_string(), "gr run test-all".to_string());
+            } else if let Some((name, _)) = scripts.iter().find(|(k, _)| k.starts_with("test-")) {
+                wf.insert("test".to_string(), format!("gr run {name}"));
+            }
+            wf.insert("sync".to_string(), "gr sync".to_string());
+            Some(wf)
+        },
         context_source: None,
         targets: if options.agent_targets.is_empty() {
             None
@@ -1404,6 +1414,214 @@ mod tests {
         assert!(yaml.contains("repos:"));
         assert!(yaml.contains("test:"));
         assert!(yaml.contains("git@github.com:org/test.git"));
+    }
+
+    #[test]
+    fn test_generate_manifest_with_toolchains() {
+        use crate::core::detect::DetectedToolchain;
+
+        let repos = vec![
+            DiscoveredRepo {
+                name: "api".to_string(),
+                path: "./api".to_string(),
+                absolute_path: PathBuf::from("/tmp/api"),
+                url: Some("git@github.com:org/api.git".to_string()),
+                default_branch: "main".to_string(),
+                toolchain: Some(DetectedToolchain {
+                    language: "rust".to_string(),
+                    package_manager: Some("cargo".to_string()),
+                    build: Some("cargo build".to_string()),
+                    test: Some("cargo test".to_string()),
+                    lint: Some("cargo clippy".to_string()),
+                    format: Some("cargo fmt".to_string()),
+                    install: None,
+                }),
+            },
+            DiscoveredRepo {
+                name: "web".to_string(),
+                path: "./web".to_string(),
+                absolute_path: PathBuf::from("/tmp/web"),
+                url: Some("git@github.com:org/web.git".to_string()),
+                default_branch: "main".to_string(),
+                toolchain: Some(DetectedToolchain {
+                    language: "typescript".to_string(),
+                    package_manager: Some("pnpm".to_string()),
+                    build: Some("pnpm run build".to_string()),
+                    test: Some("pnpm test".to_string()),
+                    lint: Some("pnpm run lint".to_string()),
+                    format: Some("pnpm run format".to_string()),
+                    install: Some("pnpm install".to_string()),
+                }),
+            },
+        ];
+
+        let manifest = generate_manifest(&repos, &ManifestGenerationOptions::default());
+
+        // Version should be 2
+        assert_eq!(manifest.version, 2);
+
+        // Agent config should be populated
+        let api = &manifest.repos["api"];
+        let agent = api.agent.as_ref().unwrap();
+        assert_eq!(agent.language.as_deref(), Some("rust"));
+        assert_eq!(agent.build.as_deref(), Some("cargo build"));
+        assert_eq!(agent.test.as_deref(), Some("cargo test"));
+
+        let web = &manifest.repos["web"];
+        let agent = web.agent.as_ref().unwrap();
+        assert_eq!(agent.language.as_deref(), Some("typescript"));
+
+        // Workspace scripts should exist
+        let ws = manifest.workspace.as_ref().unwrap();
+        let scripts = ws.scripts.as_ref().unwrap();
+        assert!(scripts.contains_key("build-api"));
+        assert!(scripts.contains_key("test-api"));
+        assert!(scripts.contains_key("build-web"));
+        assert!(scripts.contains_key("test-web"));
+        assert!(scripts.contains_key("build-all"));
+        assert!(scripts.contains_key("test-all"));
+
+        // build-all should have steps
+        let build_all = &scripts["build-all"];
+        assert!(build_all.steps.is_some());
+        assert_eq!(build_all.steps.as_ref().unwrap().len(), 2);
+
+        // Post-sync hooks should include web (has install) but not api
+        let hooks = ws.hooks.as_ref().unwrap();
+        let post_sync = hooks.post_sync.as_ref().unwrap();
+        assert_eq!(post_sync.len(), 1);
+        assert_eq!(post_sync[0].command, "pnpm install");
+
+        // Agent workflows should reference build-all/test-all
+        let agent = ws.agent.as_ref().unwrap();
+        let workflows = agent.workflows.as_ref().unwrap();
+        assert_eq!(workflows["build"], "gr run build-all");
+        assert_eq!(workflows["test"], "gr run test-all");
+    }
+
+    #[test]
+    fn test_generate_manifest_single_repo_workflows() {
+        use crate::core::detect::DetectedToolchain;
+
+        let repos = vec![DiscoveredRepo {
+            name: "app".to_string(),
+            path: "./app".to_string(),
+            absolute_path: PathBuf::from("/tmp/app"),
+            url: Some("git@github.com:org/app.git".to_string()),
+            default_branch: "main".to_string(),
+            toolchain: Some(DetectedToolchain {
+                language: "rust".to_string(),
+                package_manager: Some("cargo".to_string()),
+                build: Some("cargo build".to_string()),
+                test: Some("cargo test".to_string()),
+                lint: None,
+                format: None,
+                install: None,
+            }),
+        }];
+
+        let manifest = generate_manifest(&repos, &ManifestGenerationOptions::default());
+
+        let ws = manifest.workspace.as_ref().unwrap();
+        let scripts = ws.scripts.as_ref().unwrap();
+
+        // Single repo should NOT have build-all/test-all
+        assert!(!scripts.contains_key("build-all"));
+        assert!(!scripts.contains_key("test-all"));
+        assert!(scripts.contains_key("build-app"));
+        assert!(scripts.contains_key("test-app"));
+
+        // Workflows should reference the single-repo script, not build-all
+        let agent = ws.agent.as_ref().unwrap();
+        let workflows = agent.workflows.as_ref().unwrap();
+        assert_eq!(workflows["build"], "gr run build-app");
+        assert_eq!(workflows["test"], "gr run test-app");
+    }
+
+    #[test]
+    fn test_generate_manifest_roundtrip() {
+        use crate::core::detect::DetectedToolchain;
+
+        let repos = vec![DiscoveredRepo {
+            name: "myrepo".to_string(),
+            path: "./myrepo".to_string(),
+            absolute_path: PathBuf::from("/tmp/myrepo"),
+            url: Some("git@github.com:org/myrepo.git".to_string()),
+            default_branch: "main".to_string(),
+            toolchain: Some(DetectedToolchain {
+                language: "python".to_string(),
+                package_manager: Some("uv".to_string()),
+                build: None,
+                test: Some("pytest".to_string()),
+                lint: Some("ruff check .".to_string()),
+                format: Some("ruff format .".to_string()),
+                install: Some("uv sync".to_string()),
+            }),
+        }];
+
+        let manifest = generate_manifest(&repos, &ManifestGenerationOptions::default());
+        let yaml = manifest_to_yaml(&manifest).unwrap();
+
+        // Round-trip: serialize -> parse should succeed
+        let parsed = Manifest::parse(&yaml).unwrap();
+        assert_eq!(parsed.version, 2);
+        assert_eq!(parsed.repos.len(), 1);
+        assert!(parsed.repos.contains_key("myrepo"));
+        let agent = parsed.repos["myrepo"].agent.as_ref().unwrap();
+        assert_eq!(agent.language.as_deref(), Some("python"));
+    }
+
+    #[test]
+    fn test_generate_manifest_post_sync_filtering() {
+        use crate::core::detect::DetectedToolchain;
+
+        let repos = vec![
+            DiscoveredRepo {
+                name: "a".to_string(),
+                path: "./a".to_string(),
+                absolute_path: PathBuf::from("/tmp/a"),
+                url: Some("git@github.com:org/a.git".to_string()),
+                default_branch: "main".to_string(),
+                toolchain: Some(DetectedToolchain {
+                    language: "typescript".to_string(),
+                    package_manager: Some("npm".to_string()),
+                    build: Some("npm run build".to_string()),
+                    test: Some("npm test".to_string()),
+                    lint: None,
+                    format: None,
+                    install: Some("npm install".to_string()),
+                }),
+            },
+            DiscoveredRepo {
+                name: "b".to_string(),
+                path: "./b".to_string(),
+                absolute_path: PathBuf::from("/tmp/b"),
+                url: Some("git@github.com:org/b.git".to_string()),
+                default_branch: "main".to_string(),
+                toolchain: Some(DetectedToolchain {
+                    language: "ruby".to_string(),
+                    package_manager: Some("bundler".to_string()),
+                    build: None,
+                    test: Some("bundle exec rspec".to_string()),
+                    lint: None,
+                    format: None,
+                    install: Some("bundle install".to_string()),
+                }),
+            },
+        ];
+
+        // Only include repo "a" in post-sync hooks
+        let options = ManifestGenerationOptions {
+            include_post_sync_hooks: true,
+            agent_targets: vec![],
+            post_sync_repos: Some(vec!["a".to_string()]),
+        };
+
+        let manifest = generate_manifest(&repos, &options);
+        let hooks = manifest.workspace.as_ref().unwrap().hooks.as_ref().unwrap();
+        let post_sync = hooks.post_sync.as_ref().unwrap();
+        assert_eq!(post_sync.len(), 1);
+        assert_eq!(post_sync[0].command, "npm install");
     }
 
     #[test]

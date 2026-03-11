@@ -97,8 +97,13 @@ fn detect_rust() -> DetectedToolchain {
 
 fn detect_javascript(repo_path: &Path) -> DetectedToolchain {
     let pm = detect_js_package_manager(repo_path);
+    let language = if repo_path.join("tsconfig.json").exists() {
+        "typescript"
+    } else {
+        "javascript"
+    };
     DetectedToolchain {
-        language: "typescript".to_string(),
+        language: language.to_string(),
         package_manager: Some(pm.clone()),
         build: Some(format!("{pm} run build")),
         test: Some(format!("{pm} test")),
@@ -233,6 +238,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         create_file(dir.path(), "package.json");
         create_file(dir.path(), "pnpm-lock.yaml");
+        create_file(dir.path(), "tsconfig.json");
         let tc = detect_toolchain(dir.path()).unwrap();
         assert_eq!(tc.language, "typescript");
         assert_eq!(tc.package_manager.as_deref(), Some("pnpm"));
@@ -241,16 +247,17 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_typescript_yarn() {
+    fn test_detect_javascript_yarn() {
         let dir = TempDir::new().unwrap();
         create_file(dir.path(), "package.json");
         create_file(dir.path(), "yarn.lock");
         let tc = detect_toolchain(dir.path()).unwrap();
+        assert_eq!(tc.language, "javascript");
         assert_eq!(tc.package_manager.as_deref(), Some("yarn"));
     }
 
     #[test]
-    fn test_detect_typescript_bun() {
+    fn test_detect_javascript_bun() {
         let dir = TempDir::new().unwrap();
         create_file(dir.path(), "package.json");
         create_file(dir.path(), "bun.lockb");
@@ -259,10 +266,21 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_typescript_npm_fallback() {
+    fn test_detect_javascript_npm_fallback() {
         let dir = TempDir::new().unwrap();
         create_file(dir.path(), "package.json");
         let tc = detect_toolchain(dir.path()).unwrap();
+        assert_eq!(tc.language, "javascript");
+        assert_eq!(tc.package_manager.as_deref(), Some("npm"));
+    }
+
+    #[test]
+    fn test_detect_typescript_with_tsconfig() {
+        let dir = TempDir::new().unwrap();
+        create_file(dir.path(), "package.json");
+        create_file(dir.path(), "tsconfig.json");
+        let tc = detect_toolchain(dir.path()).unwrap();
+        assert_eq!(tc.language, "typescript");
         assert_eq!(tc.package_manager.as_deref(), Some("npm"));
     }
 

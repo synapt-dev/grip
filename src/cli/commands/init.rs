@@ -18,7 +18,7 @@ use crate::platform;
 use crate::util::log_cmd;
 use dialoguer::{theme::ColorfulTheme, Confirm, Editor, MultiSelect, Select};
 use git2::Repository;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -645,13 +645,25 @@ fn ensure_unique_names(repos: &mut [DiscoveredRepo]) {
         *name_counts.entry(repo.name.clone()).or_insert(0) += 1;
     }
 
-    // Second pass: rename duplicates
+    // Second pass: rename duplicates, avoiding collisions with existing names
+    let all_names: HashSet<String> = repos.iter().map(|r| r.name.clone()).collect();
+    let mut used_names: HashSet<String> = all_names;
     let mut name_indices: HashMap<String, usize> = HashMap::new();
     for repo in repos.iter_mut() {
         if name_counts[&repo.name] > 1 {
             let idx = name_indices.entry(repo.name.clone()).or_insert(1);
             if *idx > 1 {
-                repo.name = format!("{}-{}", repo.name, idx);
+                let base = repo.name.clone();
+                let mut suffix = *idx;
+                let mut candidate = format!("{}-{}", base, suffix);
+                while used_names.contains(&candidate) {
+                    suffix += 1;
+                    candidate = format!("{}-{}", base, suffix);
+                }
+                repo.name = candidate.clone();
+                used_names.insert(candidate);
+            } else {
+                // First occurrence keeps original name (already in used_names)
             }
             *idx += 1;
         }

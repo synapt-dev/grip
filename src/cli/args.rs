@@ -40,9 +40,12 @@ pub enum Commands {
         /// Specific directories to scan (requires --from-dirs)
         #[arg(long, requires = "from_dirs")]
         dirs: Vec<String>,
-        /// Interactive mode - preview and confirm before writing
+        /// Interactive mode - preview and confirm before writing (default: auto-detect from TTY)
         #[arg(short, long)]
         interactive: bool,
+        /// Disable interactive mode (overrides TTY auto-detection)
+        #[arg(long, conflicts_with = "interactive")]
+        no_interactive: bool,
         /// Create manifest repository on detected platform (requires --from-dirs)
         #[arg(long, requires = "from_dirs")]
         create_manifest: bool,

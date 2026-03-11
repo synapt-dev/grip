@@ -289,17 +289,26 @@ pub async fn dispatch_command(
             from_dirs,
             dirs,
             interactive,
+            no_interactive,
             create_manifest,
             manifest_name,
             private,
             from_repo,
         }) => {
+            use std::io::IsTerminal;
+            let effective_interactive = if no_interactive {
+                false
+            } else if interactive {
+                true
+            } else {
+                from_dirs && std::io::stdin().is_terminal()
+            };
             crate::cli::commands::init::run_init(crate::cli::commands::init::InitOptions {
                 url: url.as_deref(),
                 path: path.as_deref(),
                 from_dirs,
                 dirs: &dirs,
-                interactive,
+                interactive: effective_interactive,
                 create_manifest,
                 manifest_name: manifest_name.as_deref(),
                 private,

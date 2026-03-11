@@ -6,15 +6,19 @@
 //! - Existing local directories (--from-dirs)
 
 use crate::cli::output::Output;
+use crate::core::detect::{detect_toolchain, DetectedToolchain};
 use crate::core::gripspace::{ensure_gripspace, resolve_all_gripspaces};
-use crate::core::manifest::{Manifest, PlatformType, RepoConfig};
+use crate::core::manifest::{
+    AgentContextTarget, HookCommand, Manifest, ManifestSettings, PlatformType, RepoAgentConfig,
+    RepoConfig, ScriptStep, WorkspaceAgentConfig, WorkspaceConfig, WorkspaceHooks, WorkspaceScript,
+};
 use crate::core::manifest_paths;
 use crate::git::clone_repo;
 use crate::platform;
 use crate::util::log_cmd;
-use dialoguer::{theme::ColorfulTheme, Editor, Select};
+use dialoguer::{theme::ColorfulTheme, Confirm, Editor, MultiSelect, Select};
 use git2::Repository;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -31,6 +35,8 @@ pub struct DiscoveredRepo {
     pub url: Option<String>,
     /// Default branch (main, master, etc.)
     pub default_branch: String,
+    /// Detected language and toolchain
+    pub toolchain: Option<DetectedToolchain>,
 }
 
 /// Options for the init command
@@ -301,7 +307,22 @@ async fn run_init_from_dirs(
     println!();
     for repo in &discovered {
         let url_display = repo.url.as_deref().unwrap_or("(no remote)");
-        Output::list_item(&format!("{} → {} ({})", repo.name, repo.path, url_display));
+        let lang_display = repo
+            .toolchain
+            .as_ref()
+            .map(|t| {
+                let pm = t
+                    .package_manager
+                    .as_deref()
+                    .map(|p| format!(" ({p})"))
+                    .unwrap_or_default();
+                format!(" [{}{}]", t.language, pm)
+            })
+            .unwrap_or_default();
+        Output::list_item(&format!(
+            "{}{} → {} ({})",
+            repo.name, lang_display, repo.path, url_display
+        ));
     }
     println!();
 
@@ -315,7 +336,7 @@ async fn run_init_from_dirs(
             }
         }
     } else {
-        generate_manifest(&discovered)
+        generate_manifest(&discovered, &ManifestGenerationOptions::default())
     };
 
     // Create .gitgrip directory structure
@@ -541,12 +562,16 @@ fn try_discover_repo(workspace_root: &Path, dir: &Path) -> anyhow::Result<Option
     // Detect default branch
     let default_branch = detect_default_branch(&repo).unwrap_or_else(|_| "main".to_string());
 
+    // Detect language and toolchain
+    let toolchain = detect_toolchain(dir);
+
     Ok(Some(DiscoveredRepo {
         name,
         path,
         absolute_path: dir.to_path_buf(),
         url,
         default_branch,
+        toolchain,
     }))
 }
 
@@ -620,13 +645,25 @@ fn ensure_unique_names(repos: &mut [DiscoveredRepo]) {
         *name_counts.entry(repo.name.clone()).or_insert(0) += 1;
     }
 
-    // Second pass: rename duplicates
+    // Second pass: rename duplicates, avoiding collisions with existing names
+    let all_names: HashSet<String> = repos.iter().map(|r| r.name.clone()).collect();
+    let mut used_names: HashSet<String> = all_names;
     let mut name_indices: HashMap<String, usize> = HashMap::new();
     for repo in repos.iter_mut() {
         if name_counts[&repo.name] > 1 {
             let idx = name_indices.entry(repo.name.clone()).or_insert(1);
             if *idx > 1 {
-                repo.name = format!("{}-{}", repo.name, idx);
+                let base = repo.name.clone();
+                let mut suffix = *idx;
+                let mut candidate = format!("{}-{}", base, suffix);
+                while used_names.contains(&candidate) {
+                    suffix += 1;
+                    candidate = format!("{}-{}", base, suffix);
+                }
+                repo.name = candidate.clone();
+                used_names.insert(candidate);
+            } else {
+                // First occurrence keeps original name (already in used_names)
             }
             *idx += 1;
         }
@@ -634,14 +671,103 @@ fn ensure_unique_names(repos: &mut [DiscoveredRepo]) {
 }
 
 /// Generate a manifest from discovered repositories
-fn generate_manifest(repos: &[DiscoveredRepo]) -> Manifest {
+/// Options controlling what gets generated in the manifest.
+struct ManifestGenerationOptions {
+    /// Include post-sync hooks for repos with detected install commands
+    include_post_sync_hooks: bool,
+    /// Agent context targets to include
+    agent_targets: Vec<AgentContextTarget>,
+    /// Repos selected for post-sync hooks (if None, include all with install commands)
+    post_sync_repos: Option<Vec<String>>,
+}
+
+impl Default for ManifestGenerationOptions {
+    fn default() -> Self {
+        Self {
+            include_post_sync_hooks: true,
+            agent_targets: Vec::new(),
+            post_sync_repos: None,
+        }
+    }
+}
+
+fn generate_manifest(repos: &[DiscoveredRepo], options: &ManifestGenerationOptions) -> Manifest {
     let mut repo_configs = HashMap::new();
+    let mut scripts = HashMap::new();
+    let mut build_steps = Vec::new();
+    let mut test_steps = Vec::new();
+    let mut post_sync_hooks = Vec::new();
 
     for repo in repos {
         let url = repo
             .url
             .clone()
             .unwrap_or_else(|| format!("git@github.com:OWNER/{}.git", repo.name));
+
+        // Build agent config from detected toolchain
+        let agent = repo.toolchain.as_ref().map(|t| RepoAgentConfig {
+            description: None,
+            language: Some(t.language.clone()),
+            build: t.build.clone(),
+            test: t.test.clone(),
+            lint: t.lint.clone(),
+            format: t.format.clone(),
+        });
+
+        // Generate per-repo scripts and aggregate steps
+        if let Some(tc) = &repo.toolchain {
+            if let Some(build) = &tc.build {
+                scripts.insert(
+                    format!("build-{}", repo.name),
+                    WorkspaceScript {
+                        description: Some(format!("Build {}", repo.name)),
+                        command: Some(build.clone()),
+                        cwd: Some(repo.path.clone()),
+                        steps: None,
+                    },
+                );
+                build_steps.push(ScriptStep {
+                    name: format!("Build {}", repo.name),
+                    command: build.clone(),
+                    cwd: Some(repo.path.clone()),
+                });
+            }
+            if let Some(test) = &tc.test {
+                scripts.insert(
+                    format!("test-{}", repo.name),
+                    WorkspaceScript {
+                        description: Some(format!("Test {}", repo.name)),
+                        command: Some(test.clone()),
+                        cwd: Some(repo.path.clone()),
+                        steps: None,
+                    },
+                );
+                test_steps.push(ScriptStep {
+                    name: format!("Test {}", repo.name),
+                    command: test.clone(),
+                    cwd: Some(repo.path.clone()),
+                });
+            }
+
+            // Collect post-sync hooks for repos with install commands
+            if options.include_post_sync_hooks {
+                if let Some(install) = &tc.install {
+                    let include = match &options.post_sync_repos {
+                        Some(selected) => selected.contains(&repo.name),
+                        None => true,
+                    };
+                    if include {
+                        post_sync_hooks.push(HookCommand {
+                            command: install.clone(),
+                            cwd: Some(repo.path.clone()),
+                            name: Some(format!("Install {}", repo.name)),
+                            repos: None,
+                            condition: Default::default(),
+                        });
+                    }
+                }
+            }
+        }
 
         repo_configs.insert(
             repo.name.clone(),
@@ -658,26 +784,124 @@ fn generate_manifest(repos: &[DiscoveredRepo]) -> Manifest {
                 platform: None,
                 reference: false,
                 groups: Vec::new(),
-                agent: None,
+                agent,
             },
         );
     }
 
+    // Add aggregated build-all / test-all scripts
+    if build_steps.len() > 1 {
+        scripts.insert(
+            "build-all".to_string(),
+            WorkspaceScript {
+                description: Some("Build all repositories".to_string()),
+                command: None,
+                cwd: None,
+                steps: Some(build_steps),
+            },
+        );
+    }
+    if test_steps.len() > 1 {
+        scripts.insert(
+            "test-all".to_string(),
+            WorkspaceScript {
+                description: Some("Test all repositories".to_string()),
+                command: None,
+                cwd: None,
+                steps: Some(test_steps),
+            },
+        );
+    }
+
+    // Build workspace config
+    let hooks = if post_sync_hooks.is_empty() {
+        None
+    } else {
+        Some(WorkspaceHooks {
+            post_sync: Some(post_sync_hooks),
+            post_checkout: None,
+        })
+    };
+
+    let workspace_agent = WorkspaceAgentConfig {
+        description: Some(format!(
+            "Multi-repo workspace with {} repositories",
+            repos.len()
+        )),
+        conventions: vec![
+            "Use `gr` for all git operations (not raw git/gh)".to_string(),
+            "All development on feature branches — never push to main".to_string(),
+        ],
+        workflows: {
+            let mut wf = HashMap::new();
+            if scripts.contains_key("build-all") {
+                wf.insert("build".to_string(), "gr run build-all".to_string());
+            } else if let Some((name, _)) = scripts.iter().find(|(k, _)| k.starts_with("build-")) {
+                wf.insert("build".to_string(), format!("gr run {name}"));
+            }
+            if scripts.contains_key("test-all") {
+                wf.insert("test".to_string(), "gr run test-all".to_string());
+            } else if let Some((name, _)) = scripts.iter().find(|(k, _)| k.starts_with("test-")) {
+                wf.insert("test".to_string(), format!("gr run {name}"));
+            }
+            wf.insert("sync".to_string(), "gr sync".to_string());
+            Some(wf)
+        },
+        context_source: None,
+        targets: if options.agent_targets.is_empty() {
+            None
+        } else {
+            Some(options.agent_targets.clone())
+        },
+    };
+
+    let workspace = Some(WorkspaceConfig {
+        env: None,
+        scripts: if scripts.is_empty() {
+            None
+        } else {
+            Some(scripts)
+        },
+        hooks,
+        ci: None,
+        agent: Some(workspace_agent),
+        release: None,
+    });
+
     Manifest {
-        version: 1,
+        version: 2,
         remotes: None,
         gripspaces: None,
         manifest: None,
         repos: repo_configs,
-        settings: Default::default(),
-        workspace: None,
+        settings: ManifestSettings::default(),
+        workspace,
     }
 }
 
-/// Convert a manifest to YAML string
+/// Convert a manifest to YAML string with section comments.
 fn manifest_to_yaml(manifest: &Manifest) -> anyhow::Result<String> {
     let yaml = serde_yaml::to_string(manifest)?;
-    Ok(yaml)
+    Ok(add_yaml_section_comments(&yaml))
+}
+
+/// Post-process YAML to add section header comments.
+fn add_yaml_section_comments(yaml: &str) -> String {
+    let mut result = String::with_capacity(yaml.len() + 200);
+    result.push_str("# Generated by gr init --from-dirs\n");
+
+    for line in yaml.lines() {
+        if line == "repos:" {
+            result.push_str("\n# Repository definitions\n");
+        } else if line == "workspace:" {
+            result.push_str("\n# Workspace configuration (scripts, hooks, agent context)\n");
+        } else if line == "settings:" {
+            result.push_str("\n# Global settings\n");
+        }
+        result.push_str(line);
+        result.push('\n');
+    }
+    result
 }
 
 /// Run interactive initialization
@@ -687,122 +911,182 @@ fn run_interactive_init(
 ) -> anyhow::Result<Option<Manifest>> {
     let theme = ColorfulTheme::default();
 
-    loop {
-        // Show options
-        let options = vec![
-            "Proceed with these repositories",
-            "Edit repository list",
-            "Cancel",
+    let all_discovered = discovered.clone();
+
+    'wizard: loop {
+        // Reset to full list on each iteration (in case "Start over" was selected)
+        *discovered = all_discovered.clone();
+
+        // Step 1: Review and select repositories
+        let include_all = Confirm::with_theme(&theme)
+            .with_prompt(format!("Include all {} repositories?", discovered.len()))
+            .default(true)
+            .interact()?;
+
+        if !include_all {
+            let items: Vec<String> = discovered
+                .iter()
+                .map(|r| {
+                    let lang = r
+                        .toolchain
+                        .as_ref()
+                        .map(|t| format!(" [{}]", t.language))
+                        .unwrap_or_default();
+                    format!("{}{} ({})", r.name, lang, r.path)
+                })
+                .collect();
+
+            let defaults: Vec<bool> = discovered.iter().map(|_| true).collect();
+
+            let selected = MultiSelect::with_theme(&theme)
+                .with_prompt("Select repositories to include")
+                .items(&items)
+                .defaults(&defaults)
+                .interact()?;
+
+            if selected.is_empty() {
+                Output::warning("No repositories selected. Please select at least one.");
+                continue 'wizard;
+            }
+
+            // Keep only selected repos
+            let mut kept = Vec::new();
+            for (i, repo) in discovered.drain(..).enumerate() {
+                if selected.contains(&i) {
+                    kept.push(repo);
+                }
+            }
+            *discovered = kept;
+        }
+
+        // Step 2: Post-sync hooks
+        let installable: Vec<(usize, String, String)> = discovered
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| {
+                r.toolchain.as_ref().and_then(|t| {
+                    t.install
+                        .as_ref()
+                        .map(|cmd| (i, r.name.clone(), cmd.clone()))
+                })
+            })
+            .collect();
+
+        let mut post_sync_repos: Option<Vec<String>> = None;
+
+        if !installable.is_empty() {
+            let hook_items: Vec<String> = installable
+                .iter()
+                .map(|(_, name, cmd)| format!("{} → {}", name, cmd))
+                .collect();
+
+            let hook_defaults: Vec<bool> = installable.iter().map(|_| true).collect();
+
+            println!();
+            let selected_hooks = MultiSelect::with_theme(&theme)
+                .with_prompt("Configure post-sync hooks? (auto-install dependencies after gr sync)")
+                .items(&hook_items)
+                .defaults(&hook_defaults)
+                .interact()?;
+
+            let selected_names: Vec<String> = selected_hooks
+                .iter()
+                .map(|&i| installable[i].1.clone())
+                .collect();
+            post_sync_repos = Some(selected_names);
+        }
+
+        // Step 3: Agent context targets
+        let agent_options = vec![
+            "Yes, for Claude Code",
+            "Yes, for all tools (Claude, OpenCode, Codex)",
+            "Skip",
         ];
 
-        let selection = Select::with_theme(&theme)
-            .with_prompt("What would you like to do?")
-            .items(&options)
+        println!();
+        let agent_selection = Select::with_theme(&theme)
+            .with_prompt("Generate agent context files?")
+            .items(&agent_options)
             .default(0)
             .interact()?;
 
-        match selection {
-            0 => {
-                // Proceed - generate and show YAML preview
-                let manifest = generate_manifest(discovered);
-                let yaml = manifest_to_yaml(&manifest)?;
+        let agent_targets = match agent_selection {
+            0 => vec![AgentContextTarget {
+                format: "claude".to_string(),
+                dest: ".claude/skills/{repo}/SKILL.md".to_string(),
+                compose_with: None,
+            }],
+            1 => vec![
+                AgentContextTarget {
+                    format: "claude".to_string(),
+                    dest: ".claude/skills/{repo}/SKILL.md".to_string(),
+                    compose_with: None,
+                },
+                AgentContextTarget {
+                    format: "opencode".to_string(),
+                    dest: ".opencode/skill/{repo}/SKILL.md".to_string(),
+                    compose_with: None,
+                },
+                AgentContextTarget {
+                    format: "codex".to_string(),
+                    dest: ".codex/skills/{repo}/SKILL.md".to_string(),
+                    compose_with: None,
+                },
+            ],
+            _ => vec![],
+        };
 
-                println!();
-                println!("Generated gripspace.yml:");
-                println!("─────────────────────────────────────────");
-                println!("{}", yaml);
-                println!("─────────────────────────────────────────");
-                println!();
+        // Step 4: Generate and review manifest
+        let options = ManifestGenerationOptions {
+            include_post_sync_hooks: true,
+            agent_targets,
+            post_sync_repos,
+        };
 
-                let edit_options = vec!["Use this manifest", "Edit in editor", "Go back"];
+        let manifest = generate_manifest(discovered, &options);
+        let yaml = manifest_to_yaml(&manifest)?;
 
-                let edit_selection = Select::with_theme(&theme)
-                    .with_prompt("Review the manifest")
-                    .items(&edit_options)
-                    .default(0)
-                    .interact()?;
+        println!();
+        println!("Generated gripspace.yml:");
+        println!("─────────────────────────────────────────");
+        println!("{}", yaml);
+        println!("─────────────────────────────────────────");
+        println!();
 
-                match edit_selection {
-                    0 => return Ok(Some(manifest)),
-                    1 => {
-                        // Edit in external editor
-                        if let Some(edited_yaml) = Editor::new().extension(".yaml").edit(&yaml)? {
-                            // Parse and validate the edited YAML
-                            match Manifest::parse(&edited_yaml) {
-                                Ok(edited_manifest) => {
-                                    println!();
-                                    Output::success("Manifest validated successfully.");
-                                    return Ok(Some(edited_manifest));
-                                }
-                                Err(e) => {
-                                    Output::error(&format!("Invalid YAML: {}", e));
-                                    println!("Please fix the errors and try again.");
-                                    continue;
-                                }
-                            }
-                        } else {
-                            Output::info("No changes made.");
-                            continue;
+        let review_options = vec!["Accept", "Edit in editor", "Start over"];
+
+        let review_selection = Select::with_theme(&theme)
+            .with_prompt("Review the manifest")
+            .items(&review_options)
+            .default(0)
+            .interact()?;
+
+        match review_selection {
+            0 => return Ok(Some(manifest)),
+            1 => {
+                // Edit in external editor
+                if let Some(edited_yaml) = Editor::new().extension(".yaml").edit(&yaml)? {
+                    match Manifest::parse(&edited_yaml) {
+                        Ok(edited_manifest) => {
+                            println!();
+                            Output::success("Manifest validated successfully.");
+                            return Ok(Some(edited_manifest));
+                        }
+                        Err(e) => {
+                            Output::error(&format!("Invalid YAML: {}", e));
+                            println!("Please fix the errors and try again.");
+                            continue 'wizard;
                         }
                     }
-                    2 => continue,
-                    _ => unreachable!(),
+                } else {
+                    Output::info("No changes made.");
+                    continue 'wizard;
                 }
             }
-            1 => {
-                // Edit repository list
-                run_edit_repo_list(discovered)?;
-                if discovered.is_empty() {
-                    Output::warning("No repositories selected. Add at least one to continue.");
-                    continue;
-                }
-                // Show updated list
-                println!();
-                println!("Selected repositories:");
-                for repo in discovered.iter() {
-                    Output::list_item(&format!("{} → {}", repo.name, repo.path));
-                }
-                println!();
-            }
-            2 => return Ok(None),
+            2 => continue 'wizard,
             _ => unreachable!(),
         }
     }
-}
-
-/// Interactive editing of the repository list
-fn run_edit_repo_list(repos: &mut Vec<DiscoveredRepo>) -> anyhow::Result<()> {
-    let theme = ColorfulTheme::default();
-
-    loop {
-        let mut options: Vec<String> = repos
-            .iter()
-            .map(|r| format!("[✓] {} ({})", r.name, r.path))
-            .collect();
-        options.push("Done editing".to_string());
-
-        let selection = Select::with_theme(&theme)
-            .with_prompt("Toggle repositories (select to remove)")
-            .items(&options)
-            .default(options.len() - 1)
-            .interact()?;
-
-        if selection == repos.len() {
-            // Done editing
-            break;
-        }
-
-        // Remove the selected repo
-        let removed = repos.remove(selection);
-        Output::info(&format!("Removed: {}", removed.name));
-
-        if repos.is_empty() {
-            Output::warning("All repositories removed.");
-            break;
-        }
-    }
-
-    Ok(())
 }
 
 /// Initialize the manifest directory as a git repository
@@ -1016,6 +1300,7 @@ mod tests {
                 absolute_path: PathBuf::from("/tmp/app1"),
                 url: None,
                 default_branch: "main".to_string(),
+                toolchain: None,
             },
             DiscoveredRepo {
                 name: "app".to_string(),
@@ -1023,6 +1308,7 @@ mod tests {
                 absolute_path: PathBuf::from("/tmp/app2"),
                 url: None,
                 default_branch: "main".to_string(),
+                toolchain: None,
             },
             DiscoveredRepo {
                 name: "backend".to_string(),
@@ -1030,6 +1316,7 @@ mod tests {
                 absolute_path: PathBuf::from("/tmp/backend"),
                 url: None,
                 default_branch: "main".to_string(),
+                toolchain: None,
             },
         ];
 
@@ -1050,6 +1337,7 @@ mod tests {
                 absolute_path: PathBuf::from("/tmp/frontend"),
                 url: Some("git@github.com:org/frontend.git".to_string()),
                 default_branch: "main".to_string(),
+                toolchain: None,
             },
             DiscoveredRepo {
                 name: "backend".to_string(),
@@ -1057,10 +1345,11 @@ mod tests {
                 absolute_path: PathBuf::from("/tmp/backend"),
                 url: None,
                 default_branch: "master".to_string(),
+                toolchain: None,
             },
         ];
 
-        let manifest = generate_manifest(&repos);
+        let manifest = generate_manifest(&repos, &ManifestGenerationOptions::default());
 
         assert_eq!(manifest.repos.len(), 2);
         assert!(manifest.repos.contains_key("frontend"));
@@ -1133,14 +1422,223 @@ mod tests {
             absolute_path: PathBuf::from("/tmp/test"),
             url: Some("git@github.com:org/test.git".to_string()),
             default_branch: "main".to_string(),
+            toolchain: None,
         }];
 
-        let manifest = generate_manifest(&repos);
+        let manifest = generate_manifest(&repos, &ManifestGenerationOptions::default());
         let yaml = manifest_to_yaml(&manifest).unwrap();
 
         assert!(yaml.contains("repos:"));
         assert!(yaml.contains("test:"));
         assert!(yaml.contains("git@github.com:org/test.git"));
+    }
+
+    #[test]
+    fn test_generate_manifest_with_toolchains() {
+        use crate::core::detect::DetectedToolchain;
+
+        let repos = vec![
+            DiscoveredRepo {
+                name: "api".to_string(),
+                path: "./api".to_string(),
+                absolute_path: PathBuf::from("/tmp/api"),
+                url: Some("git@github.com:org/api.git".to_string()),
+                default_branch: "main".to_string(),
+                toolchain: Some(DetectedToolchain {
+                    language: "rust".to_string(),
+                    package_manager: Some("cargo".to_string()),
+                    build: Some("cargo build".to_string()),
+                    test: Some("cargo test".to_string()),
+                    lint: Some("cargo clippy".to_string()),
+                    format: Some("cargo fmt".to_string()),
+                    install: None,
+                }),
+            },
+            DiscoveredRepo {
+                name: "web".to_string(),
+                path: "./web".to_string(),
+                absolute_path: PathBuf::from("/tmp/web"),
+                url: Some("git@github.com:org/web.git".to_string()),
+                default_branch: "main".to_string(),
+                toolchain: Some(DetectedToolchain {
+                    language: "typescript".to_string(),
+                    package_manager: Some("pnpm".to_string()),
+                    build: Some("pnpm run build".to_string()),
+                    test: Some("pnpm test".to_string()),
+                    lint: Some("pnpm run lint".to_string()),
+                    format: Some("pnpm run format".to_string()),
+                    install: Some("pnpm install".to_string()),
+                }),
+            },
+        ];
+
+        let manifest = generate_manifest(&repos, &ManifestGenerationOptions::default());
+
+        // Version should be 2
+        assert_eq!(manifest.version, 2);
+
+        // Agent config should be populated
+        let api = &manifest.repos["api"];
+        let agent = api.agent.as_ref().unwrap();
+        assert_eq!(agent.language.as_deref(), Some("rust"));
+        assert_eq!(agent.build.as_deref(), Some("cargo build"));
+        assert_eq!(agent.test.as_deref(), Some("cargo test"));
+
+        let web = &manifest.repos["web"];
+        let agent = web.agent.as_ref().unwrap();
+        assert_eq!(agent.language.as_deref(), Some("typescript"));
+
+        // Workspace scripts should exist
+        let ws = manifest.workspace.as_ref().unwrap();
+        let scripts = ws.scripts.as_ref().unwrap();
+        assert!(scripts.contains_key("build-api"));
+        assert!(scripts.contains_key("test-api"));
+        assert!(scripts.contains_key("build-web"));
+        assert!(scripts.contains_key("test-web"));
+        assert!(scripts.contains_key("build-all"));
+        assert!(scripts.contains_key("test-all"));
+
+        // build-all should have steps
+        let build_all = &scripts["build-all"];
+        assert!(build_all.steps.is_some());
+        assert_eq!(build_all.steps.as_ref().unwrap().len(), 2);
+
+        // Post-sync hooks should include web (has install) but not api
+        let hooks = ws.hooks.as_ref().unwrap();
+        let post_sync = hooks.post_sync.as_ref().unwrap();
+        assert_eq!(post_sync.len(), 1);
+        assert_eq!(post_sync[0].command, "pnpm install");
+
+        // Agent workflows should reference build-all/test-all
+        let agent = ws.agent.as_ref().unwrap();
+        let workflows = agent.workflows.as_ref().unwrap();
+        assert_eq!(workflows["build"], "gr run build-all");
+        assert_eq!(workflows["test"], "gr run test-all");
+    }
+
+    #[test]
+    fn test_generate_manifest_single_repo_workflows() {
+        use crate::core::detect::DetectedToolchain;
+
+        let repos = vec![DiscoveredRepo {
+            name: "app".to_string(),
+            path: "./app".to_string(),
+            absolute_path: PathBuf::from("/tmp/app"),
+            url: Some("git@github.com:org/app.git".to_string()),
+            default_branch: "main".to_string(),
+            toolchain: Some(DetectedToolchain {
+                language: "rust".to_string(),
+                package_manager: Some("cargo".to_string()),
+                build: Some("cargo build".to_string()),
+                test: Some("cargo test".to_string()),
+                lint: None,
+                format: None,
+                install: None,
+            }),
+        }];
+
+        let manifest = generate_manifest(&repos, &ManifestGenerationOptions::default());
+
+        let ws = manifest.workspace.as_ref().unwrap();
+        let scripts = ws.scripts.as_ref().unwrap();
+
+        // Single repo should NOT have build-all/test-all
+        assert!(!scripts.contains_key("build-all"));
+        assert!(!scripts.contains_key("test-all"));
+        assert!(scripts.contains_key("build-app"));
+        assert!(scripts.contains_key("test-app"));
+
+        // Workflows should reference the single-repo script, not build-all
+        let agent = ws.agent.as_ref().unwrap();
+        let workflows = agent.workflows.as_ref().unwrap();
+        assert_eq!(workflows["build"], "gr run build-app");
+        assert_eq!(workflows["test"], "gr run test-app");
+    }
+
+    #[test]
+    fn test_generate_manifest_roundtrip() {
+        use crate::core::detect::DetectedToolchain;
+
+        let repos = vec![DiscoveredRepo {
+            name: "myrepo".to_string(),
+            path: "./myrepo".to_string(),
+            absolute_path: PathBuf::from("/tmp/myrepo"),
+            url: Some("git@github.com:org/myrepo.git".to_string()),
+            default_branch: "main".to_string(),
+            toolchain: Some(DetectedToolchain {
+                language: "python".to_string(),
+                package_manager: Some("uv".to_string()),
+                build: None,
+                test: Some("pytest".to_string()),
+                lint: Some("ruff check .".to_string()),
+                format: Some("ruff format .".to_string()),
+                install: Some("uv sync".to_string()),
+            }),
+        }];
+
+        let manifest = generate_manifest(&repos, &ManifestGenerationOptions::default());
+        let yaml = manifest_to_yaml(&manifest).unwrap();
+
+        // Round-trip: serialize -> parse should succeed
+        let parsed = Manifest::parse(&yaml).unwrap();
+        assert_eq!(parsed.version, 2);
+        assert_eq!(parsed.repos.len(), 1);
+        assert!(parsed.repos.contains_key("myrepo"));
+        let agent = parsed.repos["myrepo"].agent.as_ref().unwrap();
+        assert_eq!(agent.language.as_deref(), Some("python"));
+    }
+
+    #[test]
+    fn test_generate_manifest_post_sync_filtering() {
+        use crate::core::detect::DetectedToolchain;
+
+        let repos = vec![
+            DiscoveredRepo {
+                name: "a".to_string(),
+                path: "./a".to_string(),
+                absolute_path: PathBuf::from("/tmp/a"),
+                url: Some("git@github.com:org/a.git".to_string()),
+                default_branch: "main".to_string(),
+                toolchain: Some(DetectedToolchain {
+                    language: "typescript".to_string(),
+                    package_manager: Some("npm".to_string()),
+                    build: Some("npm run build".to_string()),
+                    test: Some("npm test".to_string()),
+                    lint: None,
+                    format: None,
+                    install: Some("npm install".to_string()),
+                }),
+            },
+            DiscoveredRepo {
+                name: "b".to_string(),
+                path: "./b".to_string(),
+                absolute_path: PathBuf::from("/tmp/b"),
+                url: Some("git@github.com:org/b.git".to_string()),
+                default_branch: "main".to_string(),
+                toolchain: Some(DetectedToolchain {
+                    language: "ruby".to_string(),
+                    package_manager: Some("bundler".to_string()),
+                    build: None,
+                    test: Some("bundle exec rspec".to_string()),
+                    lint: None,
+                    format: None,
+                    install: Some("bundle install".to_string()),
+                }),
+            },
+        ];
+
+        // Only include repo "a" in post-sync hooks
+        let options = ManifestGenerationOptions {
+            include_post_sync_hooks: true,
+            agent_targets: vec![],
+            post_sync_repos: Some(vec!["a".to_string()]),
+        };
+
+        let manifest = generate_manifest(&repos, &options);
+        let hooks = manifest.workspace.as_ref().unwrap().hooks.as_ref().unwrap();
+        let post_sync = hooks.post_sync.as_ref().unwrap();
+        assert_eq!(post_sync.len(), 1);
+        assert_eq!(post_sync[0].command, "npm install");
     }
 
     #[test]
@@ -1152,6 +1650,7 @@ mod tests {
                 absolute_path: PathBuf::from("/tmp/frontend"),
                 url: Some("git@github.com:myorg/frontend.git".to_string()),
                 default_branch: "main".to_string(),
+                toolchain: None,
             },
             DiscoveredRepo {
                 name: "backend".to_string(),
@@ -1159,6 +1658,7 @@ mod tests {
                 absolute_path: PathBuf::from("/tmp/backend"),
                 url: Some("git@github.com:myorg/backend.git".to_string()),
                 default_branch: "main".to_string(),
+                toolchain: None,
             },
         ];
 
@@ -1179,6 +1679,7 @@ mod tests {
                 absolute_path: PathBuf::from("/tmp/app"),
                 url: Some("git@ssh.dev.azure.com:v3/myorg/myproject/app".to_string()),
                 default_branch: "main".to_string(),
+                toolchain: None,
             },
             DiscoveredRepo {
                 name: "lib".to_string(),
@@ -1186,6 +1687,7 @@ mod tests {
                 absolute_path: PathBuf::from("/tmp/lib"),
                 url: Some("https://dev.azure.com/myorg/myproject/_git/lib".to_string()),
                 default_branch: "main".to_string(),
+                toolchain: None,
             },
         ];
 
@@ -1205,6 +1707,7 @@ mod tests {
                 absolute_path: PathBuf::from("/tmp/frontend"),
                 url: Some("git@gitlab.com:mygroup/frontend.git".to_string()),
                 default_branch: "main".to_string(),
+                toolchain: None,
             },
             DiscoveredRepo {
                 name: "backend".to_string(),
@@ -1212,6 +1715,7 @@ mod tests {
                 absolute_path: PathBuf::from("/tmp/backend"),
                 url: Some("https://gitlab.com/mygroup/backend.git".to_string()),
                 default_branch: "main".to_string(),
+                toolchain: None,
             },
         ];
 
@@ -1231,6 +1735,7 @@ mod tests {
                 absolute_path: PathBuf::from("/tmp/local1"),
                 url: None,
                 default_branch: "main".to_string(),
+                toolchain: None,
             },
             DiscoveredRepo {
                 name: "local2".to_string(),
@@ -1238,6 +1743,7 @@ mod tests {
                 absolute_path: PathBuf::from("/tmp/local2"),
                 url: None,
                 default_branch: "main".to_string(),
+                toolchain: None,
             },
         ];
 
@@ -1254,6 +1760,7 @@ mod tests {
                 absolute_path: PathBuf::from("/tmp/gh1"),
                 url: Some("git@github.com:org1/gh1.git".to_string()),
                 default_branch: "main".to_string(),
+                toolchain: None,
             },
             DiscoveredRepo {
                 name: "gh2".to_string(),
@@ -1261,6 +1768,7 @@ mod tests {
                 absolute_path: PathBuf::from("/tmp/gh2"),
                 url: Some("git@github.com:org1/gh2.git".to_string()),
                 default_branch: "main".to_string(),
+                toolchain: None,
             },
             DiscoveredRepo {
                 name: "gl1".to_string(),
@@ -1268,6 +1776,7 @@ mod tests {
                 absolute_path: PathBuf::from("/tmp/gl1"),
                 url: Some("git@gitlab.com:org2/gl1.git".to_string()),
                 default_branch: "main".to_string(),
+                toolchain: None,
             },
         ];
 

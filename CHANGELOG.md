@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0] - 2026-03-11
+
+### Added
+- **Init wizard with auto-detection** (#361)
+  - `gr init --from-dirs` now auto-detects language, package manager, and toolchain commands for 9 languages (Rust, TypeScript, JavaScript, Python, Go, Ruby, Java, C++, C)
+  - Interactive multi-step wizard: repo selection, post-sync hooks, agent context targets, manifest review
+  - Auto-populates per-repo `agent:` config (language, build, test, lint, format commands)
+  - Generates workspace scripts (`build-all`, `test-all`, per-repo variants)
+  - Generates `workspace.hooks.post_sync` for repos with install commands (e.g., `pnpm install`, `uv sync`)
+  - Generates `workspace.agent` with description, conventions, and workflows
+  - TTY auto-detection: wizard runs automatically on TTY, non-interactive when piped
+  - `--no-interactive` flag to explicitly skip the wizard
+  - YAML section comments in generated manifests
+- **`gr restore` command** (#359)
+  - Unstage files with `gr restore --staged`
+  - Discard working tree changes with `gr restore`
+  - `--repo` filtering support
+- **Per-repo `--repo` filtering on all commands** (#358)
+- **`gr target` command** for managing PR base branches (#336)
+- **MCP stdio server** for agent tool access (#335)
+  - CLI passthrough tools and resource endpoints
+  - Cancellation support and bounded output capture
+
+### Fixed
+- Deep-merge gripspace repo config with local overrides (#356)
+- Status typechanges, in-progress operations, and tree list detection (#355)
+- Azure PR diff auth and `--no-delete-branch` flag (#345)
+- Surface per-repo errors in `gr pr create/merge` summaries (#344)
+- Manifest repo handling in branch and sync (#357)
+
+### Changed
+- Extract command dispatch from `main.rs` into `src/cli/dispatch.rs` (#352)
+- Introduce option structs for complex function signatures (#350)
+- Change `&PathBuf` to `&Path` across all function signatures (#349)
+- Extract shared HTTP client creation for platform adapters (#348)
+- Remove duplicated code and unused test helpers (#347)
+- Wire up rate limiting across platform adapters (#351)
+
 ## [0.16.0] - 2026-02-20
 
 ### Breaking Changes

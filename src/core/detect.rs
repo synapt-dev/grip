@@ -266,6 +266,15 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_javascript_bun_text_lockfile() {
+        let dir = TempDir::new().unwrap();
+        create_file(dir.path(), "package.json");
+        create_file(dir.path(), "bun.lock");
+        let tc = detect_toolchain(dir.path()).unwrap();
+        assert_eq!(tc.package_manager.as_deref(), Some("bun"));
+    }
+
+    #[test]
     fn test_detect_javascript_npm_fallback() {
         let dir = TempDir::new().unwrap();
         create_file(dir.path(), "package.json");

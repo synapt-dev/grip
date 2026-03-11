@@ -899,7 +899,12 @@ fn run_interactive_init(
 ) -> anyhow::Result<Option<Manifest>> {
     let theme = ColorfulTheme::default();
 
+    let all_discovered = discovered.clone();
+
     'wizard: loop {
+        // Reset to full list on each iteration (in case "Start over" was selected)
+        *discovered = all_discovered.clone();
+
         // Step 1: Review and select repositories
         let include_all = Confirm::with_theme(&theme)
             .with_prompt(format!("Include all {} repositories?", discovered.len()))

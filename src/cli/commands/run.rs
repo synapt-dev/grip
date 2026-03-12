@@ -45,7 +45,9 @@ pub fn run_run(
         return Ok(());
     }
 
-    let name = script_name.unwrap();
+    let Some(name) = script_name else {
+        return Ok(());
+    };
 
     // Find the script
     let script = scripts.and_then(|s| s.get(name)).ok_or_else(|| {

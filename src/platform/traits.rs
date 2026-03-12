@@ -124,6 +124,18 @@ pub trait HostingPlatform: Send + Sync {
         branch: &str,
     ) -> Result<Option<PRCreateResult>, PlatformError>;
 
+    /// List pull requests for a repository
+    async fn list_pull_requests(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _filter: &PRListFilter,
+    ) -> Result<Vec<PullRequest>, PlatformError> {
+        Err(PlatformError::ApiError(
+            "Listing pull requests is not supported on this platform".to_string(),
+        ))
+    }
+
     /// Check if PR is approved
     async fn is_pull_request_approved(
         &self,

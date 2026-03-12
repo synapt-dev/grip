@@ -5,6 +5,15 @@ use clap_complete::Shell;
 
 use crate::platform::MergeMethod;
 
+/// Filter for listing pull requests
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum PrStateFilter {
+    Open,
+    Closed,
+    Merged,
+    All,
+}
+
 #[derive(Parser)]
 #[command(name = "gr")]
 #[command(author, version, about = "Multi-repo workflow tool", long_about = None)]
@@ -612,6 +621,26 @@ pub enum PrCommands {
         /// Show stat summary only
         #[arg(long)]
         stat: bool,
+    },
+    /// List pull requests
+    List {
+        /// Filter by state
+        #[arg(long, value_enum, default_value = "open")]
+        state: PrStateFilter,
+        /// Filter to a specific repo
+        #[arg(long)]
+        repo: Option<String>,
+        /// Maximum number of PRs per repo
+        #[arg(long, default_value = "30", value_parser = clap::value_parser!(u32).range(1..=100))]
+        limit: u32,
+    },
+    /// View pull request details
+    View {
+        /// PR number (omit to find PR for current branch)
+        number: Option<u64>,
+        /// Filter to a specific repo
+        #[arg(long)]
+        repo: Option<String>,
     },
 }
 

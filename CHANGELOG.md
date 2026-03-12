@@ -48,6 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **MCP stdio server** for agent tool access (#335)
   - CLI passthrough tools and resource endpoints
   - Cancellation support and bounded output capture
+- **`gr pr list` and `gr pr view` commands** (#202)
+  - `gr pr list` — list PRs across all repos with `--state`, `--repo`, `--limit` filters
+  - `gr pr view [number]` — view PR details, reviews, and body (auto-detects from current branch)
+  - `list_pull_requests` platform trait method with GitHub implementation
 
 - **`gr pr checks` improvements** (#238)
   - `--repo` flag to filter checks to a specific repository

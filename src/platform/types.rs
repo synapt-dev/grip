@@ -106,6 +106,15 @@ pub struct PRMergeOptions {
     pub delete_branch: Option<bool>,
 }
 
+/// Filter options for listing PRs
+#[derive(Debug, Clone, Default)]
+pub struct PRListFilter {
+    /// Filter by state (default: open)
+    pub state: Option<PRState>,
+    /// Maximum number of PRs to return
+    pub limit: Option<u32>,
+}
+
 /// Result of creating a PR
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PRCreateResult {

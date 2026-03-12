@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`gr push` skip repos with no unique commits** (#372)
   - New branches with no unique commits are skipped instead of causing push errors
 
+### Fixed
+- **`gr add` partial staging** (#374)
+  - Stage files individually so one missing path doesn't block the rest
+  - Warn instead of error when a pathspec doesn't match in a repo
+
 ## [0.17.0] - 2026-03-11
 
 ### Added

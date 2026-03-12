@@ -775,15 +775,17 @@ impl HostingPlatform for GitHubAdapter {
     ) -> Result<Vec<Issue>, PlatformError> {
         let token = self.get_token().await?;
         let base_url = self.base_url.as_deref().unwrap_or("https://api.github.com");
+        let http_client = Self::http_client();
 
-        let mut url = format!("{}/repos/{}/{}/issues", base_url, owner, repo);
+        let limit = filter.limit.unwrap_or(30).min(100) as usize;
 
-        let mut params = Vec::new();
+        // Build base query params (without pagination)
+        let mut base_params = Vec::new();
         let state_str = filter
             .state
             .map(|s| s.to_string())
             .unwrap_or_else(|| "all".to_string());
-        params.push(format!("state={}", state_str));
+        base_params.push(format!("state={}", state_str));
 
         if !filter.labels.is_empty() {
             let encoded: Vec<String> = filter
@@ -791,50 +793,75 @@ impl HostingPlatform for GitHubAdapter {
                 .iter()
                 .map(|l| urlencoding::encode(l).into_owned())
                 .collect();
-            params.push(format!("labels={}", encoded.join(",")));
+            base_params.push(format!("labels={}", encoded.join(",")));
         }
         if let Some(ref assignee) = filter.assignee {
-            params.push(format!("assignee={}", urlencoding::encode(assignee)));
-        }
-        let limit = filter.limit.unwrap_or(30).min(100);
-        params.push(format!("per_page={}", limit));
-
-        if !params.is_empty() {
-            url = format!("{}?{}", url, params.join("&"));
+            base_params.push(format!("assignee={}", urlencoding::encode(assignee)));
         }
 
-        let http_client = Self::http_client();
-        let response = http_client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", token))
-            .header("Accept", "application/vnd.github.v3+json")
-            .header("User-Agent", "gitgrip")
-            .send()
-            .await
-            .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+        // Paginate to fill the requested limit, since GitHub's issues endpoint
+        // returns PRs mixed with issues and we filter PRs client-side.
+        let mut issues = Vec::new();
+        let mut page = 1u32;
+        let per_page = 100; // Fetch max per page to minimize round-trips
+        let max_pages = 5; // Safety cap to avoid runaway pagination
 
-        check_response_rate_limit(response.headers(), "GitHub").await;
+        loop {
+            let mut params = base_params.clone();
+            params.push(format!("per_page={}", per_page));
+            params.push(format!("page={}", page));
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(PlatformError::ApiError(format!(
-                "Failed to list issues ({}): {}",
-                status, error_text
-            )));
+            let url = format!(
+                "{}/repos/{}/{}/issues?{}",
+                base_url,
+                owner,
+                repo,
+                params.join("&")
+            );
+
+            let response = http_client
+                .get(&url)
+                .header("Authorization", format!("Bearer {}", token))
+                .header("Accept", "application/vnd.github.v3+json")
+                .header("User-Agent", "gitgrip")
+                .send()
+                .await
+                .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+
+            check_response_rate_limit(response.headers(), "GitHub").await;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let error_text = response.text().await.unwrap_or_default();
+                return Err(PlatformError::ApiError(format!(
+                    "Failed to list issues ({}): {}",
+                    status, error_text
+                )));
+            }
+
+            let gh_issues: Vec<GhIssueDetail> = response
+                .json()
+                .await
+                .map_err(|e| PlatformError::ParseError(e.to_string()))?;
+
+            let fetched_count = gh_issues.len();
+
+            // Filter out pull requests (GitHub returns PRs in the issues endpoint)
+            for item in gh_issues {
+                if item.pull_request.is_none() {
+                    issues.push(item.into_issue());
+                    if issues.len() >= limit {
+                        return Ok(issues);
+                    }
+                }
+            }
+
+            // Stop if this page was incomplete (no more results) or we hit the page cap
+            if fetched_count < per_page || page >= max_pages {
+                break;
+            }
+            page += 1;
         }
-
-        let gh_issues: Vec<GhIssueDetail> = response
-            .json()
-            .await
-            .map_err(|e| PlatformError::ParseError(e.to_string()))?;
-
-        // Filter out pull requests (GitHub returns PRs in the issues endpoint)
-        let issues = gh_issues
-            .into_iter()
-            .filter(|i| i.pull_request.is_none())
-            .map(|i| i.into_issue())
-            .collect();
 
         Ok(issues)
     }

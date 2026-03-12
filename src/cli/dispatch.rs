@@ -269,6 +269,16 @@ pub async fn dispatch_command(
                     )
                     .await?;
                 }
+                PrCommands::Edit { title, body } => {
+                    crate::cli::commands::pr::run_pr_edit(
+                        &ctx.workspace_root,
+                        &ctx.manifest,
+                        title.as_deref(),
+                        body.as_deref(),
+                        ctx.json,
+                    )
+                    .await?;
+                }
                 PrCommands::Checks { repo } => {
                     crate::cli::commands::pr::run_pr_checks(
                         &ctx.workspace_root,

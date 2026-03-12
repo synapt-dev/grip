@@ -275,6 +275,33 @@ impl HostingPlatform for GitHubAdapter {
         Ok(())
     }
 
+    async fn update_pull_request(
+        &self,
+        owner: &str,
+        repo: &str,
+        pull_number: u64,
+        title: Option<&str>,
+        body: Option<&str>,
+    ) -> Result<(), PlatformError> {
+        let client = self.get_client().await?;
+        let pulls = client.pulls(owner, repo);
+        let mut builder = pulls.update(pull_number);
+
+        if let Some(t) = title {
+            builder = builder.title(t);
+        }
+        if let Some(b) = body {
+            builder = builder.body(b);
+        }
+
+        builder
+            .send()
+            .await
+            .map_err(|e| PlatformError::ApiError(format!("Failed to update PR: {}", e)))?;
+
+        Ok(())
+    }
+
     async fn merge_pull_request(
         &self,
         owner: &str,

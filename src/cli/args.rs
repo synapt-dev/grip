@@ -592,6 +592,15 @@ pub enum PrCommands {
         #[arg(long)]
         no_delete_branch: bool,
     },
+    /// Edit pull request title/body
+    Edit {
+        /// New PR title
+        #[arg(short, long)]
+        title: Option<String>,
+        /// New PR body/description
+        #[arg(short, long)]
+        body: Option<String>,
+    },
     /// Check CI status
     Checks {
         /// Filter to a specific repo

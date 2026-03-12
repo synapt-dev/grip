@@ -80,6 +80,31 @@ pub trait HostingPlatform: Send + Sync {
         body: &str,
     ) -> Result<(), PlatformError>;
 
+    /// Update pull request title and/or body
+    ///
+    /// At least one of `title` or `body` must be `Some`.
+    async fn update_pull_request(
+        &self,
+        owner: &str,
+        repo: &str,
+        pull_number: u64,
+        title: Option<&str>,
+        body: Option<&str>,
+    ) -> Result<(), PlatformError> {
+        // Default: delegate to update_pull_request_body if only body is provided.
+        // Platforms that support title updates should override this.
+        if let Some(body_text) = body {
+            self.update_pull_request_body(owner, repo, pull_number, body_text)
+                .await?;
+        }
+        if title.is_some() {
+            return Err(PlatformError::ApiError(
+                "Updating PR title is not supported on this platform".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Merge a pull request
     async fn merge_pull_request(
         &self,

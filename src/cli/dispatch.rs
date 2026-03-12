@@ -292,6 +292,29 @@ pub async fn dispatch_command(
                     crate::cli::commands::pr::run_pr_diff(&ctx.workspace_root, &ctx.manifest, stat)
                         .await?;
                 }
+                PrCommands::List { state, repo, limit } => {
+                    crate::cli::commands::pr::run_pr_list(
+                        &ctx.workspace_root,
+                        &ctx.manifest,
+                        state,
+                        repo.as_deref(),
+                        limit,
+                        ctx.json,
+                    )
+                    .await?;
+                }
+                PrCommands::View { number, repo } => {
+                    crate::cli::commands::pr::run_pr_view(
+                        crate::cli::commands::pr::PRViewOptions {
+                            workspace_root: &ctx.workspace_root,
+                            manifest: &ctx.manifest,
+                            number,
+                            repo_filter: repo.as_deref(),
+                            json_output: ctx.json,
+                        },
+                    )
+                    .await?;
+                }
             }
         }
         Some(Commands::Init {

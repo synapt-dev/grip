@@ -541,6 +541,74 @@ impl HostingPlatform for GitHubAdapter {
         }
     }
 
+    async fn list_pull_requests(
+        &self,
+        owner: &str,
+        repo: &str,
+        filter: &PRListFilter,
+    ) -> Result<Vec<PullRequest>, PlatformError> {
+        let client = self.get_client().await?;
+
+        let state = match filter.state {
+            Some(PRState::Open) => octocrab::params::State::Open,
+            Some(PRState::Closed) | Some(PRState::Merged) => octocrab::params::State::Closed,
+            None => octocrab::params::State::All,
+        };
+
+        // GitHub API max per_page is 100; clamp to u8 for octocrab
+        let limit = filter.limit.unwrap_or(30).min(100) as u8;
+
+        let prs = client
+            .pulls(owner, repo)
+            .list()
+            .state(state)
+            .per_page(limit)
+            .send()
+            .await
+            .map_err(|e| PlatformError::ApiError(format!("Failed to list PRs: {}", e)))?;
+
+        let mut result: Vec<PullRequest> = Vec::new();
+        for pr in &prs.items {
+            let pr_state = if pr.merged_at.is_some() {
+                PRState::Merged
+            } else {
+                match pr.state {
+                    Some(octocrab::models::IssueState::Open) => PRState::Open,
+                    Some(octocrab::models::IssueState::Closed) => PRState::Closed,
+                    _ => PRState::Open,
+                }
+            };
+
+            // If filtering for merged, skip non-merged closed PRs
+            if filter.state == Some(PRState::Merged) && pr.merged_at.is_none() {
+                continue;
+            }
+
+            result.push(PullRequest {
+                number: pr.number,
+                url: pr
+                    .html_url
+                    .as_ref()
+                    .map(|u| u.to_string())
+                    .unwrap_or_default(),
+                title: pr.title.clone().unwrap_or_default(),
+                body: pr.body.clone().unwrap_or_default(),
+                state: pr_state,
+                merged: pr.merged_at.is_some(),
+                mergeable: pr.mergeable,
+                head: PRHead {
+                    ref_name: pr.head.ref_field.clone(),
+                    sha: pr.head.sha.clone(),
+                },
+                base: PRBase {
+                    ref_name: pr.base.ref_field.clone(),
+                },
+            });
+        }
+
+        Ok(result)
+    }
+
     async fn is_pull_request_approved(
         &self,
         owner: &str,

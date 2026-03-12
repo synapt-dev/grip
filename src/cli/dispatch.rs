@@ -223,6 +223,7 @@ pub async fn dispatch_command(
                     push,
                     draft,
                     dry_run,
+                    repo,
                 } => {
                     crate::cli::commands::pr::run_pr_create(
                         &ctx.workspace_root,
@@ -232,6 +233,7 @@ pub async fn dispatch_command(
                         draft,
                         push,
                         dry_run,
+                        repo.as_deref(),
                         ctx.json,
                     )
                     .await?;

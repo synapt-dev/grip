@@ -593,7 +593,11 @@ pub enum PrCommands {
         no_delete_branch: bool,
     },
     /// Check CI status
-    Checks,
+    Checks {
+        /// Filter to a specific repo
+        #[arg(long)]
+        repo: Option<String>,
+    },
     /// Show PR diff
     Diff {
         /// Show stat summary only

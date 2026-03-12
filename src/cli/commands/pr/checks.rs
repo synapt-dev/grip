@@ -98,10 +98,11 @@ pub async fn run_pr_checks(
             .await
         {
             Ok(status_result) => {
-                // Deduplicate checks: keep only the latest per context.
+                // Deduplicate checks: keep one entry per context.
                 // When multiple runs exist for the same context (e.g., re-runs),
                 // stale "in_progress" entries can make the overall status look pending
-                // even though a newer run succeeded.
+                // even though a newer run succeeded. We prefer terminal states
+                // (success/failure/error) over non-terminal ones regardless of order.
                 let mut latest_by_context: HashMap<String, &crate::platform::types::StatusCheck> =
                     HashMap::new();
                 for s in &status_result.statuses {
@@ -179,7 +180,7 @@ pub async fn run_pr_checks(
                 all_checks.push(RepoChecks {
                     repo: repo.name.clone(),
                     pr_number,
-                    overall_state: format!("{:?}", overall_state).to_lowercase(),
+                    overall_state: overall_state.to_string(),
                     checks: check_infos,
                 });
             }

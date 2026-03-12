@@ -23,6 +23,7 @@ async fn test_pr_checks_all_on_default_branch() {
     let result = gitgrip::cli::commands::pr::run_pr_checks(
         &ws.workspace_root,
         &manifest,
+        None, // no repo filter
         true, // json output to avoid terminal formatting issues in tests
     )
     .await;
@@ -43,6 +44,7 @@ async fn test_pr_checks_json_output_empty() {
     let result = gitgrip::cli::commands::pr::run_pr_checks(
         &ws.workspace_root,
         &manifest,
+        None, // no repo filter
         true, // json
     )
     .await;
@@ -62,6 +64,7 @@ async fn test_pr_checks_handles_api_error_on_feature_branch() {
     let result = gitgrip::cli::commands::pr::run_pr_checks(
         &ws.workspace_root,
         &manifest,
+        None, // no repo filter
         true, // json
     )
     .await;
@@ -83,6 +86,7 @@ async fn test_pr_checks_skips_non_git_repo() {
     let result = gitgrip::cli::commands::pr::run_pr_checks(
         &ws.workspace_root,
         &manifest,
+        None, // no repo filter
         true, // json
     )
     .await;
@@ -90,6 +94,65 @@ async fn test_pr_checks_skips_non_git_repo() {
     assert!(
         result.is_ok(),
         "pr checks should skip non-git repos: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test]
+async fn test_pr_checks_repo_filter_not_found() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let manifest = ws.load_manifest();
+
+    let result = gitgrip::cli::commands::pr::run_pr_checks(
+        &ws.workspace_root,
+        &manifest,
+        Some("nonexistent"),
+        true,
+    )
+    .await;
+
+    assert!(result.is_err(), "should error for unknown repo");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("not found"),
+        "error should mention 'not found': {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_pr_checks_repo_filter_valid() {
+    let ws = WorkspaceBuilder::new()
+        .add_repo("app")
+        .add_repo("lib")
+        .build();
+    let manifest = ws.load_manifest();
+
+    // Filter to just "app" — should succeed (all on default branch, so no API calls)
+    let result =
+        gitgrip::cli::commands::pr::run_pr_checks(&ws.workspace_root, &manifest, Some("app"), true)
+            .await;
+
+    assert!(
+        result.is_ok(),
+        "repo filter to valid repo should succeed: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test]
+async fn test_pr_checks_skips_reference_repos() {
+    let ws = WorkspaceBuilder::new()
+        .add_repo("app")
+        .add_reference_repo("docs")
+        .build();
+    let manifest = ws.load_manifest();
+
+    let result =
+        gitgrip::cli::commands::pr::run_pr_checks(&ws.workspace_root, &manifest, None, true).await;
+
+    assert!(
+        result.is_ok(),
+        "pr checks should skip reference repos: {:?}",
         result.err()
     );
 }

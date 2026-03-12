@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - MCP server integration via `gitgrip_issue` tool
   - Pagination to fill requested `--limit` despite GitHub's mixed issues/PRs endpoint
   - URL-encoded query parameters for labels and assignees
+- **`gr pr edit` command** (#257)
+  - Update PR title and/or body across linked PRs
+  - `gr pr edit --title "new title"` to update title
+  - `gr pr edit --body "new body"` to update body
+  - Updates all open PRs on the current branch across repos
+  - JSON output support with `--json`
 
 ## [0.17.0] - 2026-03-11
 

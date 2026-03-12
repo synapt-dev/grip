@@ -128,10 +128,13 @@ pub async fn run_pr_edit(
         println!();
         if updated > 0 {
             Output::success(&format!("{} PR(s) updated", updated));
+        } else if errors.is_empty() {
+            Output::info("No open PRs found to edit");
         }
-        if !errors.is_empty() {
-            anyhow::bail!("{} error(s) occurred", errors.len());
-        }
+    }
+
+    if !errors.is_empty() {
+        anyhow::bail!("{} error(s) occurred", errors.len());
     }
 
     Ok(())

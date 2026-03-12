@@ -93,14 +93,15 @@ pub trait HostingPlatform: Send + Sync {
     ) -> Result<(), PlatformError> {
         // Default: delegate to update_pull_request_body if only body is provided.
         // Platforms that support title updates should override this.
-        if let Some(body_text) = body {
-            self.update_pull_request_body(owner, repo, pull_number, body_text)
-                .await?;
-        }
+        // Check title first to avoid partial updates (body mutated, then title errors).
         if title.is_some() {
             return Err(PlatformError::ApiError(
                 "Updating PR title is not supported on this platform".to_string(),
             ));
+        }
+        if let Some(body_text) = body {
+            self.update_pull_request_body(owner, repo, pull_number, body_text)
+                .await?;
         }
         Ok(())
     }

@@ -103,25 +103,36 @@ fn stage_files(repo: &Repository, _repo_path: &Path, files: &[String]) -> anyhow
         return Ok(0);
     }
 
-    // Build git add command
-    let mut args = vec!["add"];
-
     if files.len() == 1 && files[0] == "." {
-        args.push("-A"); // Add all changes including deletions
-    } else {
-        for file in files {
-            args.push(file);
+        // Add all changes including deletions
+        let mut cmd = Command::new("git");
+        cmd.args(["add", "-A"]).current_dir(repo_dir);
+        log_cmd(&cmd);
+        let output = cmd.output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("git add failed: {}", stderr.trim());
         }
-    }
+    } else {
+        // Stage files individually so one missing file doesn't block the rest
+        for file in files {
+            let mut cmd = Command::new("git");
+            cmd.args(["add", file]).current_dir(repo_dir);
+            log_cmd(&cmd);
+            let output = cmd.output()?;
 
-    let mut cmd = Command::new("git");
-    cmd.args(&args).current_dir(repo_dir);
-    log_cmd(&cmd);
-    let output = cmd.output()?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git add failed: {}", stderr);
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                // "pathspec did not match" is expected when a file doesn't exist
+                // in this repo — warn instead of failing
+                if stderr.contains("did not match any files") {
+                    Output::warning(&format!("{}: skipped (not in this repo)", file));
+                } else {
+                    Output::error(&format!("git add {}: {}", file, stderr));
+                }
+            }
+        }
     }
 
     // Count what was actually staged

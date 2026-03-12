@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `gr pr edit --body "new body"` to update body
   - Updates all open PRs on the current branch across repos
   - JSON output support with `--json`
+- **`gr pr create` multi-branch support** (#225)
+  - Repos on different branches are now grouped by branch with PRs created per group
+  - `--repo` filter for targeting specific repos
+- **`gr push` skip repos with no unique commits** (#372)
+  - New branches with no unique commits are skipped instead of causing push errors
 
 ## [0.17.0] - 2026-03-11
 

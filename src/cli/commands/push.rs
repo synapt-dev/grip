@@ -82,7 +82,7 @@ pub fn run_push(
                 };
 
                 // Check if there's anything to push
-                if !has_commits_to_push(&git_repo, &branch)? {
+                if !has_commits_to_push(&git_repo, &branch, repo.target_branch())? {
                     if !quiet && !json {
                         Output::info(&format!("{}: nothing to push", repo.name));
                     }
@@ -225,7 +225,11 @@ pub fn run_push(
 }
 
 /// Check if branch has commits that aren't on the remote
-fn has_commits_to_push(repo: &Repository, branch: &str) -> anyhow::Result<bool> {
+fn has_commits_to_push(
+    repo: &Repository,
+    branch: &str,
+    default_branch: &str,
+) -> anyhow::Result<bool> {
     // Try to find the remote tracking branch
     let remote_ref = format!("refs/remotes/origin/{}", branch);
 
@@ -234,20 +238,52 @@ fn has_commits_to_push(repo: &Repository, branch: &str) -> anyhow::Result<bool> 
         Err(_) => return Ok(false),
     };
 
-    let remote_branch = match repo.find_reference(&remote_ref) {
-        Ok(r) => r,
-        Err(_) => {
-            // No remote tracking branch - we have commits to push if local has any
-            return Ok(local_ref.peel_to_commit().is_ok());
-        }
-    };
-
     let local_oid = local_ref.target().ok_or_else(|| {
         anyhow::anyhow!(
             "Could not resolve local branch '{}'. Ensure it exists and has at least one commit.",
             branch
         )
     })?;
+
+    let remote_branch = match repo.find_reference(&remote_ref) {
+        Ok(r) => r,
+        Err(_) => {
+            // No remote tracking branch for this branch.
+            // If we're on the default branch itself, this is likely the first push
+            // — always allow it.
+            if branch == default_branch {
+                return Ok(local_ref.peel_to_commit().is_ok());
+            }
+
+            // For feature branches, compare against origin/<default_branch>
+            // to check for unique commits (not just "any commits exist").
+            let base_ref = format!("refs/remotes/origin/{}", default_branch);
+            let base = match repo.find_reference(&base_ref) {
+                Ok(r) => r,
+                Err(_) => {
+                    // No remote default branch either — fall back to local default branch
+                    match repo.find_reference(&format!("refs/heads/{}", default_branch)) {
+                        Ok(r) => r,
+                        // Can't determine base; assume there are commits to push
+                        Err(_) => return Ok(true),
+                    }
+                }
+            };
+
+            let base_oid = match base.target() {
+                Some(oid) => oid,
+                None => return Ok(true),
+            };
+
+            if local_oid == base_oid {
+                return Ok(false);
+            }
+
+            let (ahead, _behind) = repo.graph_ahead_behind(local_oid, base_oid)?;
+            return Ok(ahead > 0);
+        }
+    };
+
     let remote_oid = remote_branch.target().ok_or_else(|| {
         anyhow::anyhow!(
             "Could not resolve remote tracking branch 'origin/{}'. Try running `gr sync` first.",
@@ -304,8 +340,62 @@ mod tests {
     fn test_has_commits_to_push_no_remote() {
         let (_temp_dir, repo) = setup_test_repo();
 
-        // Has commits but no remote - should return true
-        let result = has_commits_to_push(&repo, "master").unwrap();
+        // On the default branch with no remote — should return true
+        // (this is the initial push scenario)
+        let result = has_commits_to_push(&repo, "master", "master").unwrap();
         assert!(result);
+    }
+
+    #[test]
+    fn test_has_commits_to_push_new_branch_no_changes() {
+        let (temp_dir, repo) = setup_test_repo();
+
+        // Get the default branch name
+        let head = repo.head().unwrap();
+        let default_branch = head.shorthand().unwrap().to_string();
+
+        // Create a new branch from the same commit (no new commits)
+        let head_commit = head.peel_to_commit().unwrap();
+        repo.branch("feat/test", &head_commit, false).unwrap();
+
+        // The new branch has no unique commits vs the default branch
+        let result = has_commits_to_push(&repo, "feat/test", &default_branch).unwrap();
+        assert!(!result, "Should not push branch with no unique commits");
+
+        let _ = temp_dir; // keep alive
+    }
+
+    #[test]
+    fn test_has_commits_to_push_new_branch_with_changes() {
+        let (temp_dir, repo) = setup_test_repo();
+
+        let head = repo.head().unwrap();
+        let default_branch = head.shorthand().unwrap().to_string();
+        let head_commit = head.peel_to_commit().unwrap();
+
+        // Create a new branch and add a commit
+        repo.branch("feat/test", &head_commit, false).unwrap();
+        repo.set_head("refs/heads/feat/test").unwrap();
+
+        let file_path = temp_dir.path().join("feature.txt");
+        fs::write(&file_path, "new feature").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("feature.txt")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = repo.signature().unwrap();
+        repo.commit(
+            Some("HEAD"),
+            &sig,
+            &sig,
+            "Add feature",
+            &tree,
+            &[&head_commit],
+        )
+        .unwrap();
+
+        let result = has_commits_to_push(&repo, "feat/test", &default_branch).unwrap();
+        assert!(result, "Should push branch with unique commits");
     }
 }

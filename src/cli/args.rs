@@ -574,6 +574,9 @@ pub enum PrCommands {
         /// Preview without creating PR
         #[arg(long)]
         dry_run: bool,
+        /// Only create PRs for specific repos (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
     },
     /// Show PR status
     Status,

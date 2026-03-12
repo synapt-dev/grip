@@ -489,8 +489,8 @@ pub enum IssueCommands {
         /// Filter by assignee
         #[arg(long)]
         assignee: Option<String>,
-        /// Maximum number of issues to show
-        #[arg(long, default_value = "30")]
+        /// Maximum number of issues to show (1-100)
+        #[arg(long, default_value = "30", value_parser = clap::value_parser!(u32).range(1..=100))]
         limit: u32,
     },
     /// Create a new issue
@@ -514,6 +514,7 @@ pub enum IssueCommands {
     /// View issue details
     View {
         /// Issue number
+        #[arg(value_parser = clap::value_parser!(u64).range(1..))]
         number: u64,
         /// Target repo (required when workspace has multiple repos with remotes)
         #[arg(long)]
@@ -522,6 +523,7 @@ pub enum IssueCommands {
     /// Close an issue
     Close {
         /// Issue number
+        #[arg(value_parser = clap::value_parser!(u64).range(1..))]
         number: u64,
         /// Target repo (required when workspace has multiple repos with remotes)
         #[arg(long)]
@@ -530,6 +532,7 @@ pub enum IssueCommands {
     /// Reopen an issue
     Reopen {
         /// Issue number
+        #[arg(value_parser = clap::value_parser!(u64).range(1..))]
         number: u64,
         /// Target repo (required when workspace has multiple repos with remotes)
         #[arg(long)]

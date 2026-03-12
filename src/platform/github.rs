@@ -67,6 +67,62 @@ impl GitHubAdapter {
     }
 }
 
+/// Shared deserialization structs for GitHub issue responses.
+/// Used by both `list_issues` and `get_issue`.
+#[derive(serde::Deserialize)]
+struct GhIssueDetail {
+    number: u64,
+    html_url: String,
+    title: String,
+    body: Option<String>,
+    state: String,
+    labels: Vec<GhIssueLabel>,
+    assignees: Vec<GhIssueUser>,
+    user: Option<GhIssueUser>,
+    created_at: String,
+    updated_at: String,
+    pull_request: Option<serde_json::Value>,
+}
+
+#[derive(serde::Deserialize)]
+struct GhIssueLabel {
+    name: String,
+    color: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct GhIssueUser {
+    login: String,
+}
+
+impl GhIssueDetail {
+    fn into_issue(self) -> Issue {
+        Issue {
+            number: self.number,
+            url: self.html_url,
+            title: self.title,
+            body: self.body.unwrap_or_default(),
+            state: if self.state == "open" {
+                IssueState::Open
+            } else {
+                IssueState::Closed
+            },
+            labels: self
+                .labels
+                .into_iter()
+                .map(|l| IssueLabel {
+                    name: l.name,
+                    color: l.color,
+                })
+                .collect(),
+            assignees: self.assignees.into_iter().map(|a| a.login).collect(),
+            author: self.user.map(|u| u.login).unwrap_or_default(),
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
+    }
+}
+
 #[async_trait]
 impl HostingPlatform for GitHubAdapter {
     fn platform_type(&self) -> PlatformType {
@@ -730,10 +786,15 @@ impl HostingPlatform for GitHubAdapter {
         params.push(format!("state={}", state_str));
 
         if !filter.labels.is_empty() {
-            params.push(format!("labels={}", filter.labels.join(",")));
+            let encoded: Vec<String> = filter
+                .labels
+                .iter()
+                .map(|l| urlencoding::encode(l).into_owned())
+                .collect();
+            params.push(format!("labels={}", encoded.join(",")));
         }
         if let Some(ref assignee) = filter.assignee {
-            params.push(format!("assignee={}", assignee));
+            params.push(format!("assignee={}", urlencoding::encode(assignee)));
         }
         let limit = filter.limit.unwrap_or(30).min(100);
         params.push(format!("per_page={}", limit));
@@ -755,39 +816,15 @@ impl HostingPlatform for GitHubAdapter {
         check_response_rate_limit(response.headers(), "GitHub").await;
 
         if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
             return Err(PlatformError::ApiError(format!(
-                "Failed to list issues: {}",
-                response.status()
+                "Failed to list issues ({}): {}",
+                status, error_text
             )));
         }
 
-        #[derive(serde::Deserialize)]
-        struct GhIssue {
-            number: u64,
-            html_url: String,
-            title: String,
-            body: Option<String>,
-            state: String,
-            labels: Vec<GhLabel>,
-            assignees: Vec<GhUser>,
-            user: Option<GhUser>,
-            created_at: String,
-            updated_at: String,
-            pull_request: Option<serde_json::Value>,
-        }
-
-        #[derive(serde::Deserialize)]
-        struct GhLabel {
-            name: String,
-            color: Option<String>,
-        }
-
-        #[derive(serde::Deserialize)]
-        struct GhUser {
-            login: String,
-        }
-
-        let gh_issues: Vec<GhIssue> = response
+        let gh_issues: Vec<GhIssueDetail> = response
             .json()
             .await
             .map_err(|e| PlatformError::ParseError(e.to_string()))?;
@@ -796,29 +833,7 @@ impl HostingPlatform for GitHubAdapter {
         let issues = gh_issues
             .into_iter()
             .filter(|i| i.pull_request.is_none())
-            .map(|i| Issue {
-                number: i.number,
-                url: i.html_url,
-                title: i.title,
-                body: i.body.unwrap_or_default(),
-                state: if i.state == "open" {
-                    IssueState::Open
-                } else {
-                    IssueState::Closed
-                },
-                labels: i
-                    .labels
-                    .into_iter()
-                    .map(|l| IssueLabel {
-                        name: l.name,
-                        color: l.color,
-                    })
-                    .collect(),
-                assignees: i.assignees.into_iter().map(|a| a.login).collect(),
-                author: i.user.map(|u| u.login).unwrap_or_default(),
-                created_at: i.created_at,
-                updated_at: i.updated_at,
-            })
+            .map(|i| i.into_issue())
             .collect();
 
         Ok(issues)
@@ -921,39 +936,15 @@ impl HostingPlatform for GitHubAdapter {
         }
 
         if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
             return Err(PlatformError::ApiError(format!(
-                "Failed to get issue: {}",
-                response.status()
+                "Failed to get issue ({}): {}",
+                status, error_text
             )));
         }
 
-        #[derive(serde::Deserialize)]
-        struct GhIssue {
-            number: u64,
-            html_url: String,
-            title: String,
-            body: Option<String>,
-            state: String,
-            labels: Vec<GhLabel>,
-            assignees: Vec<GhUser>,
-            user: Option<GhUser>,
-            created_at: String,
-            updated_at: String,
-            pull_request: Option<serde_json::Value>,
-        }
-
-        #[derive(serde::Deserialize)]
-        struct GhLabel {
-            name: String,
-            color: Option<String>,
-        }
-
-        #[derive(serde::Deserialize)]
-        struct GhUser {
-            login: String,
-        }
-
-        let i: GhIssue = response
+        let i: GhIssueDetail = response
             .json()
             .await
             .map_err(|e| PlatformError::ParseError(e.to_string()))?;
@@ -966,29 +957,7 @@ impl HostingPlatform for GitHubAdapter {
             )));
         }
 
-        Ok(Issue {
-            number: i.number,
-            url: i.html_url,
-            title: i.title,
-            body: i.body.unwrap_or_default(),
-            state: if i.state == "open" {
-                IssueState::Open
-            } else {
-                IssueState::Closed
-            },
-            labels: i
-                .labels
-                .into_iter()
-                .map(|l| IssueLabel {
-                    name: l.name,
-                    color: l.color,
-                })
-                .collect(),
-            assignees: i.assignees.into_iter().map(|a| a.login).collect(),
-            author: i.user.map(|u| u.login).unwrap_or_default(),
-            created_at: i.created_at,
-            updated_at: i.updated_at,
-        })
+        Ok(i.into_issue())
     }
 
     async fn close_issue(
@@ -997,6 +966,9 @@ impl HostingPlatform for GitHubAdapter {
         repo: &str,
         issue_number: u64,
     ) -> Result<(), PlatformError> {
+        // Guard: ensure the number refers to an issue, not a PR
+        self.get_issue(owner, repo, issue_number).await?;
+
         let token = self.get_token().await?;
         let base_url = self.base_url.as_deref().unwrap_or("https://api.github.com");
 
@@ -1043,6 +1015,9 @@ impl HostingPlatform for GitHubAdapter {
         repo: &str,
         issue_number: u64,
     ) -> Result<(), PlatformError> {
+        // Guard: ensure the number refers to an issue, not a PR
+        self.get_issue(owner, repo, issue_number).await?;
+
         let token = self.get_token().await?;
         let base_url = self.base_url.as_deref().unwrap_or("https://api.github.com");
 

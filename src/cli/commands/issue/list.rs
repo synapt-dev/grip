@@ -50,11 +50,12 @@ pub async fn run_issue_list(opts: &IssueListOptions<'_>) -> anyhow::Result<()> {
     println!();
 
     if issues.is_empty() {
-        if opts.state == "all" {
-            println!("  No issues found.");
-        } else {
-            println!("  No {} issues found.", opts.state);
-        }
+        let state_label = match issue_state {
+            Some(IssueState::Open) => "open ",
+            Some(IssueState::Closed) => "closed ",
+            None => "",
+        };
+        println!("  No {}issues found.", state_label);
         return Ok(());
     }
 

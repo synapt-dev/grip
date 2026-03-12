@@ -51,7 +51,7 @@ pub(crate) fn resolve_target_repo(
             .find(|r| r.name == name)
             .ok_or_else(|| anyhow::anyhow!("Repository '{}' not found in manifest", name))
     } else if repos.len() == 1 {
-        Ok(repos.into_iter().next().unwrap())
+        Ok(repos.into_iter().next().expect("checked len == 1"))
     } else if repos.is_empty() {
         anyhow::bail!("No repositories with remotes found in manifest")
     } else {

@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`gr issue` commands** (#239)
+  - `gr issue list` — list issues with state, label, and assignee filters
+  - `gr issue create -t "title"` — create issues with body, labels, and assignees
+  - `gr issue view <number>` — view full issue details
+  - `gr issue close <number>` — close an issue (with PR guard)
+  - `gr issue reopen <number>` — reopen an issue (with PR guard)
+  - Per-repo targeting with `--repo` flag; auto-selects single-repo workspaces
+  - `--json` output for all subcommands
+  - MCP server integration via `gitgrip_issue` tool
+  - Pagination to fill requested `--limit` despite GitHub's mixed issues/PRs endpoint
+  - URL-encoded query parameters for labels and assignees
+
 ## [0.17.0] - 2026-03-11
 
 ### Added

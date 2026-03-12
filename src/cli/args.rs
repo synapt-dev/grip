@@ -383,6 +383,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: AgentCommands,
     },
+    /// Issue operations
+    Issue {
+        #[command(subcommand)]
+        action: IssueCommands,
+    },
     /// MCP server operations
     Mcp {
         #[command(subcommand)]
@@ -465,6 +470,73 @@ pub enum AgentCommands {
         /// Show what would be generated without writing files
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum IssueCommands {
+    /// List issues
+    List {
+        /// Target repo (required when workspace has multiple repos with remotes)
+        #[arg(long)]
+        repo: Option<String>,
+        /// Filter by state (open, closed, all)
+        #[arg(long, default_value = "open")]
+        state: String,
+        /// Filter by labels (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        label: Option<Vec<String>>,
+        /// Filter by assignee
+        #[arg(long)]
+        assignee: Option<String>,
+        /// Maximum number of issues to show (1-100)
+        #[arg(long, default_value = "30", value_parser = clap::value_parser!(u32).range(1..=100))]
+        limit: u32,
+    },
+    /// Create a new issue
+    Create {
+        /// Target repo (required when workspace has multiple repos with remotes)
+        #[arg(long)]
+        repo: Option<String>,
+        /// Issue title
+        #[arg(short, long)]
+        title: String,
+        /// Issue body/description
+        #[arg(short, long)]
+        body: Option<String>,
+        /// Labels (comma-separated)
+        #[arg(short, long, value_delimiter = ',')]
+        label: Option<Vec<String>>,
+        /// Assignees (comma-separated)
+        #[arg(short, long, value_delimiter = ',')]
+        assignee: Option<Vec<String>>,
+    },
+    /// View issue details
+    View {
+        /// Issue number
+        #[arg(value_parser = clap::value_parser!(u64).range(1..))]
+        number: u64,
+        /// Target repo (required when workspace has multiple repos with remotes)
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// Close an issue
+    Close {
+        /// Issue number
+        #[arg(value_parser = clap::value_parser!(u64).range(1..))]
+        number: u64,
+        /// Target repo (required when workspace has multiple repos with remotes)
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// Reopen an issue
+    Reopen {
+        /// Issue number
+        #[arg(value_parser = clap::value_parser!(u64).range(1..))]
+        number: u64,
+        /// Target repo (required when workspace has multiple repos with remotes)
+        #[arg(long)]
+        repo: Option<String>,
     },
 }
 

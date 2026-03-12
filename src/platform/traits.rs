@@ -224,6 +224,66 @@ pub trait HostingPlatform: Send + Sync {
         ))
     }
 
+    /// List issues for a repository
+    async fn list_issues(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _filter: &IssueListFilter,
+    ) -> Result<Vec<Issue>, PlatformError> {
+        Err(PlatformError::ApiError(
+            "Issue listing not supported on this platform".to_string(),
+        ))
+    }
+
+    /// Create an issue on a repository
+    async fn create_issue(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _options: &IssueCreateOptions,
+    ) -> Result<IssueCreateResult, PlatformError> {
+        Err(PlatformError::ApiError(
+            "Issue creation not supported on this platform".to_string(),
+        ))
+    }
+
+    /// Get a single issue by number
+    async fn get_issue(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _issue_number: u64,
+    ) -> Result<Issue, PlatformError> {
+        Err(PlatformError::ApiError(
+            "Issue retrieval not supported on this platform".to_string(),
+        ))
+    }
+
+    /// Close an issue
+    async fn close_issue(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _issue_number: u64,
+    ) -> Result<(), PlatformError> {
+        Err(PlatformError::ApiError(
+            "Issue closing not supported on this platform".to_string(),
+        ))
+    }
+
+    /// Reopen an issue
+    async fn reopen_issue(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _issue_number: u64,
+    ) -> Result<(), PlatformError> {
+        Err(PlatformError::ApiError(
+            "Issue reopening not supported on this platform".to_string(),
+        ))
+    }
+
     /// Generate HTML comment for linked PR tracking
     fn generate_linked_pr_comment(&self, links: &[LinkedPRRef]) -> String {
         if links.is_empty() {

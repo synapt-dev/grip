@@ -17,6 +17,7 @@ pub mod gc;
 pub mod grep;
 pub mod group;
 pub mod init;
+pub mod issue;
 pub mod link;
 pub mod manifest;
 pub mod pr;

@@ -224,6 +224,93 @@ pub struct ReleaseResult {
     pub url: String,
 }
 
+/// Issue state
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum IssueState {
+    #[default]
+    Open,
+    Closed,
+}
+
+impl std::fmt::Display for IssueState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IssueState::Open => write!(f, "open"),
+            IssueState::Closed => write!(f, "closed"),
+        }
+    }
+}
+
+/// Issue label
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueLabel {
+    /// Label name
+    pub name: String,
+    /// Label color (hex)
+    pub color: Option<String>,
+}
+
+/// Normalized issue data across platforms
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Issue {
+    /// Issue number
+    pub number: u64,
+    /// Issue URL
+    pub url: String,
+    /// Issue title
+    pub title: String,
+    /// Issue body/description
+    pub body: String,
+    /// Issue state
+    pub state: IssueState,
+    /// Labels
+    pub labels: Vec<IssueLabel>,
+    /// Assignees (usernames)
+    pub assignees: Vec<String>,
+    /// Author username
+    pub author: String,
+    /// Created timestamp (ISO 8601)
+    pub created_at: String,
+    /// Updated timestamp (ISO 8601)
+    pub updated_at: String,
+}
+
+/// Options for creating an issue
+#[derive(Debug, Clone, Default)]
+pub struct IssueCreateOptions {
+    /// Issue title
+    pub title: String,
+    /// Issue body/description
+    pub body: Option<String>,
+    /// Labels to apply
+    pub labels: Vec<String>,
+    /// Assignees (usernames)
+    pub assignees: Vec<String>,
+}
+
+/// Result of creating an issue
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueCreateResult {
+    /// Issue number
+    pub number: u64,
+    /// Issue URL
+    pub url: String,
+}
+
+/// Filter options for listing issues
+#[derive(Debug, Clone, Default)]
+pub struct IssueListFilter {
+    /// Filter by state (default: open)
+    pub state: Option<IssueState>,
+    /// Filter by labels
+    pub labels: Vec<String>,
+    /// Filter by assignee
+    pub assignee: Option<String>,
+    /// Maximum results to return
+    pub limit: Option<u32>,
+}
+
 /// Azure DevOps specific context
 #[derive(Debug, Clone)]
 pub struct AzureDevOpsContext {
@@ -507,5 +594,111 @@ mod tests {
     fn test_merge_method_equality() {
         assert_eq!(MergeMethod::Squash, MergeMethod::Squash);
         assert_ne!(MergeMethod::Merge, MergeMethod::Rebase);
+    }
+
+    // ── Issue types ─────────────────────────────────────────────
+
+    #[test]
+    fn test_issue_state_display() {
+        assert_eq!(IssueState::Open.to_string(), "open");
+        assert_eq!(IssueState::Closed.to_string(), "closed");
+    }
+
+    #[test]
+    fn test_issue_state_default() {
+        assert_eq!(IssueState::default(), IssueState::Open);
+    }
+
+    #[test]
+    fn test_issue_state_equality() {
+        assert_eq!(IssueState::Open, IssueState::Open);
+        assert_ne!(IssueState::Open, IssueState::Closed);
+    }
+
+    #[test]
+    fn test_issue_state_serde_roundtrip() {
+        let json = serde_json::to_string(&IssueState::Open).unwrap();
+        assert_eq!(json, "\"open\"");
+
+        let json = serde_json::to_string(&IssueState::Closed).unwrap();
+        assert_eq!(json, "\"closed\"");
+
+        let state: IssueState = serde_json::from_str("\"open\"").unwrap();
+        assert_eq!(state, IssueState::Open);
+
+        let state: IssueState = serde_json::from_str("\"closed\"").unwrap();
+        assert_eq!(state, IssueState::Closed);
+    }
+
+    #[test]
+    fn test_issue_serde_roundtrip() {
+        let issue = Issue {
+            number: 42,
+            url: "https://github.com/owner/repo/issues/42".to_string(),
+            title: "Bug report".to_string(),
+            body: "Description of bug".to_string(),
+            state: IssueState::Open,
+            labels: vec![IssueLabel {
+                name: "bug".to_string(),
+                color: Some("d73a4a".to_string()),
+            }],
+            assignees: vec!["user1".to_string()],
+            author: "reporter".to_string(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-02T00:00:00Z".to_string(),
+        };
+
+        let json = serde_json::to_string(&issue).unwrap();
+        let deserialized: Issue = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.number, 42);
+        assert_eq!(deserialized.title, "Bug report");
+        assert_eq!(deserialized.state, IssueState::Open);
+        assert_eq!(deserialized.labels.len(), 1);
+        assert_eq!(deserialized.labels[0].name, "bug");
+        assert_eq!(deserialized.assignees, vec!["user1"]);
+        assert_eq!(deserialized.author, "reporter");
+    }
+
+    #[test]
+    fn test_issue_create_result_serde() {
+        let result = IssueCreateResult {
+            number: 99,
+            url: "https://github.com/owner/repo/issues/99".to_string(),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let deserialized: IssueCreateResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.number, 99);
+        assert_eq!(deserialized.url, "https://github.com/owner/repo/issues/99");
+    }
+
+    #[test]
+    fn test_issue_create_options_default() {
+        let opts = IssueCreateOptions::default();
+        assert!(opts.title.is_empty());
+        assert!(opts.body.is_none());
+        assert!(opts.labels.is_empty());
+        assert!(opts.assignees.is_empty());
+    }
+
+    #[test]
+    fn test_issue_list_filter_default() {
+        let filter = IssueListFilter::default();
+        assert!(filter.state.is_none());
+        assert!(filter.labels.is_empty());
+        assert!(filter.assignee.is_none());
+        assert!(filter.limit.is_none());
+    }
+
+    #[test]
+    fn test_issue_label_serde() {
+        let label = IssueLabel {
+            name: "enhancement".to_string(),
+            color: Some("a2eeef".to_string()),
+        };
+        let json = serde_json::to_string(&label).unwrap();
+        let deserialized: IssueLabel = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.name, "enhancement");
+        assert_eq!(deserialized.color, Some("a2eeef".to_string()));
     }
 }

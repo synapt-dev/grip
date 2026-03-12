@@ -5,12 +5,14 @@ use crate::core::manifest::Manifest;
 use crate::core::repo::RepoInfo;
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::platform::{get_platform_adapter, CheckState};
+use std::collections::HashMap;
 use std::path::Path;
 
 /// Run the PR checks command
 pub async fn run_pr_checks(
     workspace_root: &Path,
     manifest: &Manifest,
+    repo_filter: Option<&str>,
     json_output: bool,
 ) -> anyhow::Result<()> {
     if !json_output {
@@ -30,7 +32,15 @@ pub async fn run_pr_checks(
                 manifest.remotes.as_ref(),
             )
         })
+        .filter(|r| !r.reference)
+        .filter(|r| repo_filter.map(|f| r.name == f).unwrap_or(true))
         .collect();
+
+    if let Some(name) = repo_filter {
+        if repos.is_empty() {
+            anyhow::bail!("Repository '{}' not found in manifest", name);
+        }
+    }
 
     #[derive(serde::Serialize)]
     struct CheckInfo {
@@ -88,9 +98,35 @@ pub async fn run_pr_checks(
             .await
         {
             Ok(status_result) => {
-                let check_infos: Vec<CheckInfo> = status_result
-                    .statuses
-                    .iter()
+                // Deduplicate checks: keep only the latest per context.
+                // When multiple runs exist for the same context (e.g., re-runs),
+                // stale "in_progress" entries can make the overall status look pending
+                // even though a newer run succeeded.
+                let mut latest_by_context: HashMap<String, &crate::platform::types::StatusCheck> =
+                    HashMap::new();
+                for s in &status_result.statuses {
+                    latest_by_context
+                        .entry(s.context.clone())
+                        .and_modify(|existing| {
+                            // Prefer terminal states (success/failure) over pending
+                            let existing_state = existing.state.to_lowercase();
+                            let new_state = s.state.to_lowercase();
+                            let is_existing_terminal = existing_state == "success"
+                                || existing_state == "failure"
+                                || existing_state == "error";
+                            let is_new_terminal = new_state == "success"
+                                || new_state == "failure"
+                                || new_state == "error";
+
+                            if !is_existing_terminal && is_new_terminal {
+                                *existing = s;
+                            }
+                        })
+                        .or_insert(s);
+                }
+
+                let check_infos: Vec<CheckInfo> = latest_by_context
+                    .values()
                     .map(|s| {
                         let state = s.state.to_lowercase();
                         match state.as_str() {
@@ -105,9 +141,22 @@ pub async fn run_pr_checks(
                     })
                     .collect();
 
+                // Recompute overall state from deduplicated checks
+                let overall_state = if check_infos
+                    .iter()
+                    .any(|c| c.state == "failure" || c.state == "error")
+                {
+                    CheckState::Failure
+                } else if check_infos.iter().any(|c| c.state != "success") {
+                    CheckState::Pending
+                } else if check_infos.is_empty() {
+                    CheckState::Pending
+                } else {
+                    CheckState::Success
+                };
+
                 if !json_output {
-                    // Print status with indicator
-                    let overall = match status_result.state {
+                    let overall = match overall_state {
                         CheckState::Success => "✓",
                         CheckState::Failure => "✗",
                         CheckState::Pending => "●",
@@ -130,7 +179,7 @@ pub async fn run_pr_checks(
                 all_checks.push(RepoChecks {
                     repo: repo.name.clone(),
                     pr_number,
-                    overall_state: format!("{:?}", status_result.state).to_lowercase(),
+                    overall_state: format!("{:?}", overall_state).to_lowercase(),
                     checks: check_infos,
                 });
             }
@@ -158,11 +207,6 @@ pub async fn run_pr_checks(
             Output::warning("Some checks are failing. PR cannot be merged.");
         } else if total_pending > 0 {
             Output::info("Some checks are still pending.");
-            println!();
-            Output::info("Note: GitHub may require additional CI checks (e.g., 'CI' workflow)");
-            Output::info(
-                "that are not visible here. Wait for all checks to complete before merging.",
-            );
         } else {
             Output::success("All checks passing!");
         }

@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - CLI passthrough tools and resource endpoints
   - Cancellation support and bounded output capture
 
+- **`gr pr checks` improvements** (#238)
+  - `--repo` flag to filter checks to a specific repository
+  - Skip reference repos from checks output
+  - Deduplicate stale check runs (prefer terminal states over pending for same context)
+
 ### Fixed
 - Deep-merge gripspace repo config with local overrides (#356)
 - Status typechanges, in-progress operations, and tree list detection (#355)

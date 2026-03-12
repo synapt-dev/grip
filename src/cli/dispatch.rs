@@ -269,10 +269,11 @@ pub async fn dispatch_command(
                     )
                     .await?;
                 }
-                PrCommands::Checks => {
+                PrCommands::Checks { repo } => {
                     crate::cli::commands::pr::run_pr_checks(
                         &ctx.workspace_root,
                         &ctx.manifest,
+                        repo.as_deref(),
                         ctx.json,
                     )
                     .await?;

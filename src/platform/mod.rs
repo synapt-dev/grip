@@ -15,9 +15,10 @@ pub mod types;
 pub use http::create_http_client;
 pub use traits::HostingPlatform;
 pub use types::{
-    AllowedMergeMethods, CheckState, CheckStatusDetails, MergeMethod, PRBase, PRCreateResult,
-    PRHead, PRReview, PRState, ParsedRepoInfo, PullRequest, ReleaseResult, StatusCheck,
-    StatusCheckResult,
+    AllowedMergeMethods, CheckState, CheckStatusDetails, Issue, IssueCreateOptions,
+    IssueCreateResult, IssueLabel, IssueListFilter, IssueState, MergeMethod, PRBase,
+    PRCreateResult, PRHead, PRReview, PRState, ParsedRepoInfo, PullRequest, ReleaseResult,
+    StatusCheck, StatusCheckResult,
 };
 
 use crate::core::manifest::PlatformType;

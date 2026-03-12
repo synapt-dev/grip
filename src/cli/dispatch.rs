@@ -7,8 +7,8 @@ use clap_complete::generate;
 use colored::Colorize;
 
 use super::args::{
-    AgentCommands, CiCommands, Cli, Commands, GroupCommands, ManifestCommands, McpCommands,
-    PrCommands, RepoCommands, TargetCommands, TreeCommands,
+    AgentCommands, CiCommands, Cli, Commands, GroupCommands, IssueCommands, ManifestCommands,
+    McpCommands, PrCommands, RepoCommands, TargetCommands, TreeCommands,
 };
 use super::context::WorkspaceContext;
 
@@ -669,6 +669,83 @@ pub async fn dispatch_command(
                         dry_run,
                         ctx.quiet,
                     )?;
+                }
+            }
+        }
+        Some(Commands::Issue { action }) => {
+            let ctx = load_workspace_context(quiet, verbose, json)?;
+            match action {
+                IssueCommands::List {
+                    repo,
+                    state,
+                    label,
+                    assignee,
+                    limit,
+                } => {
+                    crate::cli::commands::issue::run_issue_list(
+                        &crate::cli::commands::issue::IssueListOptions {
+                            workspace_root: &ctx.workspace_root,
+                            manifest: &ctx.manifest,
+                            repo_filter: repo.as_deref(),
+                            state: &state,
+                            labels: label.as_deref(),
+                            assignee: assignee.as_deref(),
+                            limit,
+                            json: ctx.json,
+                        },
+                    )
+                    .await?;
+                }
+                IssueCommands::Create {
+                    repo,
+                    title,
+                    body,
+                    label,
+                    assignee,
+                } => {
+                    crate::cli::commands::issue::run_issue_create(
+                        &crate::cli::commands::issue::IssueCreateCommandOptions {
+                            workspace_root: &ctx.workspace_root,
+                            manifest: &ctx.manifest,
+                            repo_filter: repo.as_deref(),
+                            title: &title,
+                            body: body.as_deref(),
+                            labels: label.as_deref(),
+                            assignees: assignee.as_deref(),
+                            json: ctx.json,
+                        },
+                    )
+                    .await?;
+                }
+                IssueCommands::View { number, repo } => {
+                    crate::cli::commands::issue::run_issue_view(
+                        &ctx.workspace_root,
+                        &ctx.manifest,
+                        repo.as_deref(),
+                        number,
+                        ctx.json,
+                    )
+                    .await?;
+                }
+                IssueCommands::Close { number, repo } => {
+                    crate::cli::commands::issue::run_issue_close(
+                        &ctx.workspace_root,
+                        &ctx.manifest,
+                        repo.as_deref(),
+                        number,
+                        ctx.json,
+                    )
+                    .await?;
+                }
+                IssueCommands::Reopen { number, repo } => {
+                    crate::cli::commands::issue::run_issue_reopen(
+                        &ctx.workspace_root,
+                        &ctx.manifest,
+                        repo.as_deref(),
+                        number,
+                        ctx.json,
+                    )
+                    .await?;
                 }
             }
         }

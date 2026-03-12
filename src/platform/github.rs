@@ -711,6 +711,378 @@ impl HostingPlatform for GitHubAdapter {
             .map_err(|e| PlatformError::NetworkError(e.to_string()))
     }
 
+    async fn list_issues(
+        &self,
+        owner: &str,
+        repo: &str,
+        filter: &IssueListFilter,
+    ) -> Result<Vec<Issue>, PlatformError> {
+        let token = self.get_token().await?;
+        let base_url = self.base_url.as_deref().unwrap_or("https://api.github.com");
+
+        let mut url = format!("{}/repos/{}/{}/issues", base_url, owner, repo);
+
+        let mut params = Vec::new();
+        let state_str = filter
+            .state
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "all".to_string());
+        params.push(format!("state={}", state_str));
+
+        if !filter.labels.is_empty() {
+            params.push(format!("labels={}", filter.labels.join(",")));
+        }
+        if let Some(ref assignee) = filter.assignee {
+            params.push(format!("assignee={}", assignee));
+        }
+        let limit = filter.limit.unwrap_or(30).min(100);
+        params.push(format!("per_page={}", limit));
+
+        if !params.is_empty() {
+            url = format!("{}?{}", url, params.join("&"));
+        }
+
+        let http_client = Self::http_client();
+        let response = http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github.v3+json")
+            .header("User-Agent", "gitgrip")
+            .send()
+            .await
+            .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+
+        check_response_rate_limit(response.headers(), "GitHub").await;
+
+        if !response.status().is_success() {
+            return Err(PlatformError::ApiError(format!(
+                "Failed to list issues: {}",
+                response.status()
+            )));
+        }
+
+        #[derive(serde::Deserialize)]
+        struct GhIssue {
+            number: u64,
+            html_url: String,
+            title: String,
+            body: Option<String>,
+            state: String,
+            labels: Vec<GhLabel>,
+            assignees: Vec<GhUser>,
+            user: Option<GhUser>,
+            created_at: String,
+            updated_at: String,
+            pull_request: Option<serde_json::Value>,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct GhLabel {
+            name: String,
+            color: Option<String>,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct GhUser {
+            login: String,
+        }
+
+        let gh_issues: Vec<GhIssue> = response
+            .json()
+            .await
+            .map_err(|e| PlatformError::ParseError(e.to_string()))?;
+
+        // Filter out pull requests (GitHub returns PRs in the issues endpoint)
+        let issues = gh_issues
+            .into_iter()
+            .filter(|i| i.pull_request.is_none())
+            .map(|i| Issue {
+                number: i.number,
+                url: i.html_url,
+                title: i.title,
+                body: i.body.unwrap_or_default(),
+                state: if i.state == "open" {
+                    IssueState::Open
+                } else {
+                    IssueState::Closed
+                },
+                labels: i
+                    .labels
+                    .into_iter()
+                    .map(|l| IssueLabel {
+                        name: l.name,
+                        color: l.color,
+                    })
+                    .collect(),
+                assignees: i.assignees.into_iter().map(|a| a.login).collect(),
+                author: i.user.map(|u| u.login).unwrap_or_default(),
+                created_at: i.created_at,
+                updated_at: i.updated_at,
+            })
+            .collect();
+
+        Ok(issues)
+    }
+
+    async fn create_issue(
+        &self,
+        owner: &str,
+        repo: &str,
+        options: &IssueCreateOptions,
+    ) -> Result<IssueCreateResult, PlatformError> {
+        let token = self.get_token().await?;
+        let base_url = self.base_url.as_deref().unwrap_or("https://api.github.com");
+
+        let url = format!("{}/repos/{}/{}/issues", base_url, owner, repo);
+
+        let mut body = serde_json::json!({
+            "title": options.title,
+        });
+        if let Some(ref desc) = options.body {
+            body["body"] = serde_json::Value::String(desc.clone());
+        }
+        if !options.labels.is_empty() {
+            body["labels"] = serde_json::json!(options.labels);
+        }
+        if !options.assignees.is_empty() {
+            body["assignees"] = serde_json::json!(options.assignees);
+        }
+
+        let http_client = Self::http_client();
+        let response = http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github.v3+json")
+            .header("User-Agent", "gitgrip")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+
+        check_response_rate_limit(response.headers(), "GitHub").await;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(PlatformError::ApiError(format!(
+                "Failed to create issue ({}): {}",
+                status, error_text
+            )));
+        }
+
+        #[derive(serde::Deserialize)]
+        struct GhIssueResponse {
+            number: u64,
+            html_url: String,
+        }
+
+        let issue: GhIssueResponse = response
+            .json()
+            .await
+            .map_err(|e| PlatformError::ParseError(e.to_string()))?;
+
+        Ok(IssueCreateResult {
+            number: issue.number,
+            url: issue.html_url,
+        })
+    }
+
+    async fn get_issue(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+    ) -> Result<Issue, PlatformError> {
+        let token = self.get_token().await?;
+        let base_url = self.base_url.as_deref().unwrap_or("https://api.github.com");
+
+        let url = format!(
+            "{}/repos/{}/{}/issues/{}",
+            base_url, owner, repo, issue_number
+        );
+
+        let http_client = Self::http_client();
+        let response = http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github.v3+json")
+            .header("User-Agent", "gitgrip")
+            .send()
+            .await
+            .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+
+        check_response_rate_limit(response.headers(), "GitHub").await;
+
+        if response.status().as_u16() == 404 {
+            return Err(PlatformError::NotFound(format!(
+                "Issue #{} not found",
+                issue_number
+            )));
+        }
+
+        if !response.status().is_success() {
+            return Err(PlatformError::ApiError(format!(
+                "Failed to get issue: {}",
+                response.status()
+            )));
+        }
+
+        #[derive(serde::Deserialize)]
+        struct GhIssue {
+            number: u64,
+            html_url: String,
+            title: String,
+            body: Option<String>,
+            state: String,
+            labels: Vec<GhLabel>,
+            assignees: Vec<GhUser>,
+            user: Option<GhUser>,
+            created_at: String,
+            updated_at: String,
+            pull_request: Option<serde_json::Value>,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct GhLabel {
+            name: String,
+            color: Option<String>,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct GhUser {
+            login: String,
+        }
+
+        let i: GhIssue = response
+            .json()
+            .await
+            .map_err(|e| PlatformError::ParseError(e.to_string()))?;
+
+        // GitHub returns PRs via the issues endpoint; reject them
+        if i.pull_request.is_some() {
+            return Err(PlatformError::NotFound(format!(
+                "#{} is a pull request, not an issue",
+                issue_number
+            )));
+        }
+
+        Ok(Issue {
+            number: i.number,
+            url: i.html_url,
+            title: i.title,
+            body: i.body.unwrap_or_default(),
+            state: if i.state == "open" {
+                IssueState::Open
+            } else {
+                IssueState::Closed
+            },
+            labels: i
+                .labels
+                .into_iter()
+                .map(|l| IssueLabel {
+                    name: l.name,
+                    color: l.color,
+                })
+                .collect(),
+            assignees: i.assignees.into_iter().map(|a| a.login).collect(),
+            author: i.user.map(|u| u.login).unwrap_or_default(),
+            created_at: i.created_at,
+            updated_at: i.updated_at,
+        })
+    }
+
+    async fn close_issue(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+    ) -> Result<(), PlatformError> {
+        let token = self.get_token().await?;
+        let base_url = self.base_url.as_deref().unwrap_or("https://api.github.com");
+
+        let url = format!(
+            "{}/repos/{}/{}/issues/{}",
+            base_url, owner, repo, issue_number
+        );
+
+        let http_client = Self::http_client();
+        let response = http_client
+            .patch(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github.v3+json")
+            .header("User-Agent", "gitgrip")
+            .json(&serde_json::json!({ "state": "closed" }))
+            .send()
+            .await
+            .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+
+        check_response_rate_limit(response.headers(), "GitHub").await;
+
+        if response.status().as_u16() == 404 {
+            return Err(PlatformError::NotFound(format!(
+                "Issue #{} not found",
+                issue_number
+            )));
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(PlatformError::ApiError(format!(
+                "Failed to close issue ({}): {}",
+                status, error_text
+            )));
+        }
+
+        Ok(())
+    }
+
+    async fn reopen_issue(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+    ) -> Result<(), PlatformError> {
+        let token = self.get_token().await?;
+        let base_url = self.base_url.as_deref().unwrap_or("https://api.github.com");
+
+        let url = format!(
+            "{}/repos/{}/{}/issues/{}",
+            base_url, owner, repo, issue_number
+        );
+
+        let http_client = Self::http_client();
+        let response = http_client
+            .patch(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github.v3+json")
+            .header("User-Agent", "gitgrip")
+            .json(&serde_json::json!({ "state": "open" }))
+            .send()
+            .await
+            .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+
+        check_response_rate_limit(response.headers(), "GitHub").await;
+
+        if response.status().as_u16() == 404 {
+            return Err(PlatformError::NotFound(format!(
+                "Issue #{} not found",
+                issue_number
+            )));
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(PlatformError::ApiError(format!(
+                "Failed to reopen issue ({}): {}",
+                status, error_text
+            )));
+        }
+
+        Ok(())
+    }
+
     fn parse_repo_url(&self, url: &str) -> Option<ParsedRepoInfo> {
         // SSH format: git@github.com:owner/repo.git
         if url.starts_with("git@github.com:") {

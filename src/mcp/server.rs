@@ -215,6 +215,11 @@ const CLI_TOOL_SPECS: &[CliToolSpec] = &[
         description: "Cherry-pick commits across repos (`gr cherry-pick ...`).",
     },
     CliToolSpec {
+        tool_name: "gitgrip_issue",
+        command: "issue",
+        description: "Issue operations — list, create, view, close, reopen (`gr issue ...`).",
+    },
+    CliToolSpec {
         tool_name: "gitgrip_ci",
         command: "ci",
         description: "CI/CD pipeline operations (`gr ci ...`).",
@@ -1066,6 +1071,7 @@ mod tests {
         assert!(names.contains(&"gitgrip_agent_generate_context".to_string()));
         assert!(names.contains(&"gitgrip_sync".to_string()));
         assert!(names.contains(&"gitgrip_pr".to_string()));
+        assert!(names.contains(&"gitgrip_issue".to_string()));
         assert!(names.contains(&"gitgrip_manifest".to_string()));
     }
 

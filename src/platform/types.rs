@@ -638,12 +638,10 @@ mod tests {
             title: "Bug report".to_string(),
             body: "Description of bug".to_string(),
             state: IssueState::Open,
-            labels: vec![
-                IssueLabel {
-                    name: "bug".to_string(),
-                    color: Some("d73a4a".to_string()),
-                },
-            ],
+            labels: vec![IssueLabel {
+                name: "bug".to_string(),
+                color: Some("d73a4a".to_string()),
+            }],
             assignees: vec!["user1".to_string()],
             author: "reporter".to_string(),
             created_at: "2024-01-01T00:00:00Z".to_string(),

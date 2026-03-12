@@ -64,8 +64,6 @@ pub(crate) fn resolve_target_repo(
 }
 
 /// Get the platform adapter for a resolved repo.
-pub(crate) fn get_adapter(
-    repo: &RepoInfo,
-) -> Arc<dyn crate::platform::HostingPlatform> {
+pub(crate) fn get_adapter(repo: &RepoInfo) -> Arc<dyn crate::platform::HostingPlatform> {
     get_platform_adapter(repo.platform_type, repo.platform_base_url.as_deref())
 }

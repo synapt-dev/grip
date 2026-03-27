@@ -1,0 +1,67 @@
+# .gitgrip/agents.toml — team composition for `gr spawn`
+#
+# This file defines the multi-agent team that `gr spawn` launches.
+# Each agent gets its own tmux window, worktree, and startup context.
+
+[spawn]
+session_name = "synapt"             # tmux session name
+channel = "dev"                     # default channel all agents join
+auto_journal = true                 # agents read recall_journal on startup
+mock_launch = true                  # Phase 1: echo instead of real agents
+
+[agents.opus]
+role = "CEO / product design — release framing, product decisions, team coordination"
+model = "claude-opus-4-6"
+tool = "claude"
+worktree = "main"
+startup_prompt = ".gitgrip/prompts/opus.md"
+channel = "dev"
+loop_interval = "1m"
+heartbeat_interval = 60
+timeout_threshold = 180
+restart_policy = "always"
+restart_delay = 5
+max_restarts = 3
+env = { AGENT_NAME = "opus", SYNAPT_ROLE = "opus" }
+
+[agents.apollo]
+role = "Rust implementation / gitgrip — CLI, build system, Rust codebase"
+model = "claude-sonnet-4-6"
+tool = "claude"
+worktree = "main"
+startup_prompt = ".gitgrip/prompts/apollo.md"
+loop_interval = "5m"
+heartbeat_interval = 60
+timeout_threshold = 180
+restart_policy = "always"
+restart_delay = 5
+max_restarts = 3
+env = { AGENT_NAME = "apollo", SYNAPT_ROLE = "apollo" }
+
+[agents.sentinel]
+role = "Monitoring / eval / quality — benchmarks, eval runs, process monitoring"
+model = "claude-sonnet-4-6"
+tool = "claude"
+worktree = "main"
+startup_prompt = ".gitgrip/prompts/sentinel.md"
+loop_interval = "3m"
+heartbeat_interval = 60
+timeout_threshold = 180
+restart_policy = "always"
+restart_delay = 5
+max_restarts = 3
+env = { AGENT_NAME = "sentinel", SYNAPT_ROLE = "sentinel" }
+
+[agents.atlas]
+role = "Research / cross-platform testing — schema design, analysis, testing"
+model = "claude-opus-4-6"
+tool = "claude"
+worktree = "main"
+startup_prompt = ".gitgrip/prompts/atlas.md"
+loop_interval = "2m"
+heartbeat_interval = 60
+timeout_threshold = 180
+restart_policy = "always"
+restart_delay = 5
+max_restarts = 3
+env = { AGENT_NAME = "atlas", SYNAPT_ROLE = "atlas" }

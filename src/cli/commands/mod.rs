@@ -28,6 +28,7 @@ pub mod rebase;
 pub mod release;
 pub mod repo;
 pub mod restore;
+pub mod spawn;
 pub mod run;
 pub mod status;
 pub mod sync;

@@ -8,7 +8,7 @@ use colored::Colorize;
 
 use super::args::{
     AgentCommands, CiCommands, Cli, Commands, GroupCommands, IssueCommands, ManifestCommands,
-    McpCommands, PrCommands, RepoCommands, TargetCommands, TreeCommands,
+    McpCommands, PrCommands, RepoCommands, SpawnCommands, TargetCommands, TreeCommands,
 };
 use super::context::WorkspaceContext;
 
@@ -705,6 +705,26 @@ pub async fn dispatch_command(
                         dry_run,
                         ctx.quiet,
                     )?;
+                }
+            }
+        }
+        Some(Commands::Spawn { action }) => {
+            match action {
+                SpawnCommands::Up {
+                    agent,
+                    config,
+                    mock,
+                } => {
+                    crate::cli::commands::spawn::run_spawn_up(agent, config, mock, quiet, json)?;
+                }
+                SpawnCommands::Status => {
+                    crate::cli::commands::spawn::run_spawn_status(quiet, json)?;
+                }
+                SpawnCommands::Down { agent } => {
+                    crate::cli::commands::spawn::run_spawn_down(agent, quiet, json)?;
+                }
+                SpawnCommands::List => {
+                    crate::cli::commands::spawn::run_spawn_list(quiet, json)?;
                 }
             }
         }

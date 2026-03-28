@@ -52,7 +52,11 @@ pub fn run_channel(action: ChannelCommands, quiet: bool, _json: bool) -> Result<
             pin,
         } => run_channel_post(&message, &channel, pin, quiet),
 
-        ChannelCommands::Read { channel, limit } => run_channel_read(&channel, limit, quiet),
+        ChannelCommands::Read {
+            channel,
+            limit,
+            detail,
+        } => run_channel_read(&channel, limit, &detail, quiet),
 
         ChannelCommands::Who => run_channel_who(quiet),
 
@@ -61,6 +65,10 @@ pub fn run_channel(action: ChannelCommands, quiet: bool, _json: bool) -> Result<
         }
 
         ChannelCommands::List => run_channel_list(quiet),
+
+        ChannelCommands::Join { channel, name } => {
+            run_channel_join(&channel, name.as_deref(), quiet)
+        }
     }
 }
 
@@ -70,22 +78,29 @@ pub fn run_channel(action: ChannelCommands, quiet: bool, _json: bool) -> Result<
 
 /// Post a message to a channel.
 fn run_channel_post(message: &str, channel: &str, pin: bool, quiet: bool) -> Result<()> {
-    // synapt recall channel post <channel> <message> [--pin]
     let mut args: Vec<&str> = vec!["post", channel, message];
-
     if pin {
         args.push("--pin");
     }
-
     run_synapt_channel(&args, quiet)?;
     Ok(())
 }
 
 /// Read recent messages from a channel.
-fn run_channel_read(channel: &str, limit: u32, quiet: bool) -> Result<()> {
-    // synapt recall channel read <channel> --limit <N>
+fn run_channel_read(channel: &str, limit: u32, detail: &str, quiet: bool) -> Result<()> {
     let limit_str = limit.to_string();
-    let args = vec!["read", channel, "--limit", &limit_str];
+    let mut args = vec!["read", channel, "--limit", &limit_str];
+    args.extend(["--detail", detail]);
+    run_synapt_channel(&args, quiet)?;
+    Ok(())
+}
+
+/// Join a channel with an optional display name.
+fn run_channel_join(channel: &str, name: Option<&str>, quiet: bool) -> Result<()> {
+    let mut args = vec!["join", channel];
+    if let Some(n) = name {
+        args.extend(["--name", n]);
+    }
     run_synapt_channel(&args, quiet)?;
     Ok(())
 }

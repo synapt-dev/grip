@@ -8,6 +8,8 @@ session_name = "synapt"             # tmux session name
 channel = "dev"                     # default channel all agents join
 auto_journal = true                 # agents read recall_journal on startup
 mock_launch = true                  # Phase 1: echo instead of real agents
+# Coordination rule: post intent in #dev, then claim before shared execution.
+# Use this for demos, reviews, merges, eval runs, and other team-visible actions.
 
 [agents.opus]
 role = "CEO / product design — release framing, product decisions, team coordination"

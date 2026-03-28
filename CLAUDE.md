@@ -118,6 +118,15 @@ All git operations must go through `gr`. There is no exception.
 
 **CRITICAL: GitHub checks must pass before merging.** If checks are pending, wait. If checks fail, fix the issues first.
 
+### Spawn Coordination Process
+
+For multi-agent work coordinated through `gr spawn` and `#dev`, use this workflow to prevent duplicate execution:
+
+1. Post `intent` in `#dev` before starting any shared demo, review, merge, benchmark run, or other team-visible action.
+2. Claim the task in-channel before executing it.
+3. If another agent already claimed it, coordinate instead of racing.
+4. If you skip intent/claim by mistake, correct the channel state immediately after and do not repeat it.
+
 **Feature completeness checklist:**
 - [ ] New command registered in `src/main.rs`
 - [ ] Types added to appropriate module if needed

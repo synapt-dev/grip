@@ -107,9 +107,7 @@ fn find_workspace_root() -> anyhow::Result<PathBuf> {
         }
         match dir.parent() {
             Some(parent) => dir = parent.to_path_buf(),
-            None => anyhow::bail!(
-                "Not in a gitgrip workspace (no .gitgrip directory found)"
-            ),
+            None => anyhow::bail!("Not in a gitgrip workspace (no .gitgrip directory found)"),
         }
     }
 }
@@ -225,10 +223,7 @@ pub fn run_spawn_up(
 
     for name in &targets {
         let agent = &config.agents[*name];
-        let channel = agent
-            .channel
-            .as_deref()
-            .unwrap_or(&config.spawn.channel);
+        let channel = agent.channel.as_deref().unwrap_or(&config.spawn.channel);
 
         // Create window
         let target = format!("{}:{}", session, name);
@@ -299,10 +294,7 @@ pub fn run_spawn_up(
     }
 
     println!();
-    Output::info(&format!(
-        "Attach with: tmux attach -t {}",
-        session
-    ));
+    Output::info(&format!("Attach with: tmux attach -t {}", session));
 
     Ok(())
 }
@@ -341,13 +333,7 @@ pub fn run_spawn_status(_quiet: bool, _json: bool) -> anyhow::Result<()> {
 
     // List windows in the session
     let windows_output = Command::new("tmux")
-        .args([
-            "list-windows",
-            "-t",
-            session,
-            "-F",
-            "#{window_name}",
-        ])
+        .args(["list-windows", "-t", session, "-F", "#{window_name}"])
         .output()?;
     let active_windows: Vec<String> = String::from_utf8_lossy(&windows_output.stdout)
         .lines()
@@ -466,11 +452,7 @@ pub fn run_spawn_down(
         if status.success() {
             println!("  {} {} stopped", "✗".red(), name.bold());
         } else {
-            println!(
-                "  {} {} (window not found)",
-                "-".dimmed(),
-                name.bold(),
-            );
+            println!("  {} {} (window not found)", "-".dimmed(), name.bold(),);
         }
     }
 
@@ -478,20 +460,10 @@ pub fn run_spawn_down(
     if agent_filter.is_none() {
         // Check if any windows remain (besides the default)
         let windows_output = Command::new("tmux")
-            .args([
-                "list-windows",
-                "-t",
-                session,
-                "-F",
-                "#{window_name}",
-            ])
+            .args(["list-windows", "-t", session, "-F", "#{window_name}"])
             .output();
         let remaining = windows_output
-            .map(|o| {
-                String::from_utf8_lossy(&o.stdout)
-                    .lines()
-                    .count()
-            })
+            .map(|o| String::from_utf8_lossy(&o.stdout).lines().count())
             .unwrap_or(0);
         if remaining <= 1 {
             let _ = Command::new("tmux")
@@ -562,9 +534,7 @@ pub fn run_spawn_list(_quiet: bool, _json: bool) -> anyhow::Result<()> {
     println!();
     Output::info(&format!(
         "Session: {}  |  Channel: {}  |  Mock: {}",
-        config.spawn.session_name,
-        config.spawn.channel,
-        config.spawn.mock_launch,
+        config.spawn.session_name, config.spawn.channel, config.spawn.mock_launch,
     ));
     println!();
 

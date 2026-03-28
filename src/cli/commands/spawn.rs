@@ -726,3 +726,176 @@ pub fn run_spawn_logs(
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Dashboard
+// ---------------------------------------------------------------------------
+
+/// Open a mission control dashboard: 2x2 agent grid + #dev input pane.
+///
+/// Layout:
+/// ```text
+/// ┌─────────────────┬─────────────────┐
+/// │  agent 0 (tail) │  agent 1 (tail) │
+/// ├─────────────────┼─────────────────┤
+/// │  agent 2 (tail) │  agent 3 (tail) │
+/// ├─────────────────┴─────────────────┤
+/// │ #dev> _                           │
+/// └───────────────────────────────────┘
+/// ```
+pub fn run_spawn_dashboard(_quiet: bool) -> anyhow::Result<()> {
+    require_tmux()?;
+    let (config, workspace_root) = load_config(None)?;
+    let session = &config.spawn.session_name;
+
+    if !session_exists(session) {
+        anyhow::bail!(
+            "Session '{}' not running. Run `gr spawn up` first.",
+            session
+        );
+    }
+
+    let names = sorted_agent_names(&config.agents);
+    if names.is_empty() {
+        anyhow::bail!("No agents configured.");
+    }
+
+    let dashboard_target = format!("{}:dashboard", session);
+
+    // Kill existing dashboard window if present
+    let _ = Command::new("tmux")
+        .args(["kill-window", "-t", &dashboard_target])
+        .status();
+
+    // Create dashboard window
+    Command::new("tmux")
+        .args(["new-window", "-t", session, "-n", "dashboard"])
+        .status()?;
+
+    // Build capture-loop script for each agent pane
+    let capture_script = |agent: &str| -> String {
+        let target = format!("{}:{}", session, agent);
+        format!(
+            "while true; do clear; echo '═══ {} ═══'; tmux capture-pane -t {} -p -S -25 2>/dev/null || echo '(not running)'; sleep 1; done",
+            agent, target
+        )
+    };
+
+    // Build the #dev input loop using gr channel
+    let gr_path = std::env::current_exe()
+        .unwrap_or_else(|_| "gr".into())
+        .display()
+        .to_string();
+    let input_script = format!(
+        "cd {} && while IFS= read -rp $'\\033[36m#dev>\\033[0m ' msg; do [ -n \"$msg\" ] && {} channel post \"$msg\"; done",
+        workspace_root.display(),
+        gr_path
+    );
+
+    // First pane (pane 0) gets agent 0
+    if let Some(name) = names.first() {
+        Command::new("tmux")
+            .args([
+                "send-keys",
+                "-t",
+                &dashboard_target,
+                &capture_script(name),
+                "Enter",
+            ])
+            .status()?;
+    }
+
+    // Split right for agent 1 (pane 1)
+    if names.len() > 1 {
+        Command::new("tmux")
+            .args([
+                "split-window",
+                "-h",
+                "-t",
+                &format!("{}.0", dashboard_target),
+            ])
+            .status()?;
+        Command::new("tmux")
+            .args([
+                "send-keys",
+                "-t",
+                &format!("{}.1", dashboard_target),
+                &capture_script(&names[1]),
+                "Enter",
+            ])
+            .status()?;
+    }
+
+    // Split pane 0 vertically for agent 2 (pane 2)
+    if names.len() > 2 {
+        Command::new("tmux")
+            .args([
+                "split-window",
+                "-v",
+                "-t",
+                &format!("{}.0", dashboard_target),
+            ])
+            .status()?;
+        Command::new("tmux")
+            .args([
+                "send-keys",
+                "-t",
+                &format!("{}.2", dashboard_target),
+                &capture_script(&names[2]),
+                "Enter",
+            ])
+            .status()?;
+    }
+
+    // Split pane 1 vertically for agent 3 (pane 3)
+    if names.len() > 3 {
+        Command::new("tmux")
+            .args([
+                "split-window",
+                "-v",
+                "-t",
+                &format!("{}.1", dashboard_target),
+            ])
+            .status()?;
+        Command::new("tmux")
+            .args([
+                "send-keys",
+                "-t",
+                &format!("{}.3", dashboard_target),
+                &capture_script(&names[3]),
+                "Enter",
+            ])
+            .status()?;
+    }
+
+    // Bottom input pane — split the full width at the bottom
+    Command::new("tmux")
+        .args(["split-window", "-v", "-l", "3", "-t", &dashboard_target])
+        .status()?;
+
+    // Find the last pane (input pane) and send the input script
+    let pane_count = names.len().min(4) + 1; // agent panes + input pane
+    let input_pane = format!("{}.{}", dashboard_target, pane_count);
+    Command::new("tmux")
+        .args(["send-keys", "-t", &input_pane, &input_script, "Enter"])
+        .status()?;
+
+    // Focus the input pane
+    Command::new("tmux")
+        .args(["select-pane", "-t", &input_pane])
+        .status()?;
+
+    // Attach to the session (select dashboard window first)
+    Output::info("Dashboard opened. Ctrl-b d to detach.");
+
+    use std::os::unix::process::CommandExt;
+    Command::new("tmux")
+        .args(["select-window", "-t", &dashboard_target])
+        .status()?;
+
+    let err = Command::new("tmux")
+        .args(["attach-session", "-t", session])
+        .exec();
+
+    anyhow::bail!("Failed to attach to dashboard: {}", err)
+}

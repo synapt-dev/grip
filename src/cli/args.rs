@@ -515,6 +515,22 @@ pub enum SpawnCommands {
     },
     /// List configured agents
     List,
+    /// Attach to an agent's tmux window
+    Attach {
+        /// Agent name
+        agent: String,
+    },
+    /// View agent output without attaching
+    Logs {
+        /// Agent name (required unless --all)
+        agent: Option<String>,
+        /// Number of lines to show
+        #[arg(short = 'n', long, default_value = "50")]
+        lines: u32,
+        /// Show logs from all running agents
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 #[derive(Subcommand)]

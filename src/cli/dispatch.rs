@@ -725,6 +725,12 @@ pub async fn dispatch_command(
             SpawnCommands::List => {
                 crate::cli::commands::spawn::run_spawn_list(quiet, json)?;
             }
+            SpawnCommands::Attach { agent } => {
+                crate::cli::commands::spawn::run_spawn_attach(&agent, quiet)?;
+            }
+            SpawnCommands::Logs { agent, lines, all } => {
+                crate::cli::commands::spawn::run_spawn_logs(agent.as_deref(), lines, all, quiet)?;
+            }
         },
         Some(Commands::Channel { action }) => {
             crate::cli::commands::channel::run_channel(action, quiet, json)?;

@@ -545,6 +545,9 @@ pub enum ChannelCommands {
         /// Pin this message
         #[arg(long)]
         pin: bool,
+        /// Display name for this agent
+        #[arg(long)]
+        name: Option<String>,
     },
     /// Read recent messages
     Read {
@@ -554,6 +557,9 @@ pub enum ChannelCommands {
         /// Max messages to return
         #[arg(short, long, default_value = "20")]
         limit: u32,
+        /// Output detail level (max/high/medium/low/min)
+        #[arg(short, long, default_value = "medium")]
+        detail: String,
     },
     /// Show who's online
     Who,
@@ -567,6 +573,15 @@ pub enum ChannelCommands {
     },
     /// List all channels
     List,
+    /// Join a channel with a display name
+    Join {
+        /// Channel name
+        #[arg(default_value = "dev")]
+        channel: String,
+        /// Display name for this agent
+        #[arg(long)]
+        name: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

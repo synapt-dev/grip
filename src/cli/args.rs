@@ -227,7 +227,7 @@ pub enum Commands {
         #[command(subcommand)]
         action: PrCommands,
     },
-    /// Griptree (worktree) operations
+    /// Griptree operations — manage worktree-based checkouts that share the gripspace
     Tree {
         #[command(subcommand)]
         action: TreeCommands,

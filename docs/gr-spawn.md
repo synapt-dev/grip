@@ -22,13 +22,13 @@ gr spawn --stop
 
 - **tmux** installed and available in PATH
 - **gitgrip** (`gr`) built and installed
-- A `.gitgrip/agents.toml` config file in your gripspace root
+- A `.gitgrip/agents.toml` config file in your gripspace (`.gitgrip/` directory)
 
 ## Configuration
 
 ### agents.toml
 
-Create `.gitgrip/agents.toml` in your gripspace root:
+Create `.gitgrip/agents.toml` in your gripspace:
 
 ```toml
 [spawn]
@@ -169,7 +169,7 @@ tmux select-window -t myproject:lead
 |----------|--------|---------|
 | `AGENT_NAME` | TOML key or `env` table | `opus` |
 | `AGENT_ROLE` | `role` field | `CEO — product design` |
-| `GRIPTREE_NAME` | gripspace config | `synapt-dev` |
+| `GRIPTREE_NAME` | griptree directory name | `synapt-dev` |
 | `SYNAPT_CHANNELS` | `channel` field | `dev` |
 | `SYNAPT_LOOP_INTERVAL` | `loop_interval` field | `2m` |
 

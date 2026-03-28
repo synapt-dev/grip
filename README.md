@@ -18,6 +18,15 @@ Manage multiple related repositories as a single workspace with synchronized bra
 
 Inspired by Android's [repo tool](https://source.android.com/docs/setup/create/repo), gitgrip brings manifest-based multi-repo management to any project.
 
+## Concepts
+
+| Term | Definition |
+|------|-----------|
+| **Gripspace** | The `.gitgrip/` directory — workspace-level config, state, and manifest. One per workspace, shared across all griptrees. |
+| **Griptree** | A worktree-based checkout managed by gitgrip. Each agent or feature branch gets its own griptree with isolated code but shared gripspace config. |
+| **Manifest** | The config file (`gripspace.yml`) inside `.gitgrip/` that defines repos, scripts, hooks, and workspace settings. |
+| **Repo** | A git repository within the workspace. Multiple repos coexist under one gripspace. |
+
 ## Features
 
 - **Manifest-based configuration** - Define all your repos in a single YAML file
@@ -111,7 +120,7 @@ gr init --from-dirs --dirs ./frontend ./backend
 gr init --from-dirs --interactive
 ```
 
-This creates `.gitgrip/spaces/main/gripspace.yml` (with legacy `.gitgrip/manifests/manifest.yaml` compatibility).
+This creates the gripspace at `.gitgrip/` with the manifest at `.gitgrip/spaces/main/gripspace.yml` (with legacy `.gitgrip/manifests/manifest.yaml` compatibility).
 
 ### 3. Start working
 
@@ -286,7 +295,7 @@ Environment variables available in command:
 
 ## Gripspace Format
 
-The workspace file (`gripspace.yml`) defines your workspace:
+The manifest file (`gripspace.yml`) inside your gripspace (`.gitgrip/`) defines the workspace:
 
 ```yaml
 version: 1
@@ -319,7 +328,7 @@ settings:
 
 ### Gripspace Includes
 
-Compose workspaces from shared base configurations using `gripspaces:`. Gripspace repos are cloned into `.gitgrip/spaces/` and their manifests are merged into the local workspace.
+Compose workspaces from shared base configurations using `gripspaces:`. External gripspace repos are cloned into `.gitgrip/spaces/` and their manifests are merged into the local gripspace.
 
 What gets merged: repos, scripts, env, hooks, linkfiles, and copyfiles. Local values always win on conflict. Resolution is recursive (max depth 5) with cycle detection.
 
@@ -413,7 +422,7 @@ repos:
 
 ## Griptrees (Multi-Branch Workspaces)
 
-Work on multiple branches simultaneously without switching. Griptrees use git worktrees to create parallel workspace directories.
+Work on multiple branches simultaneously without switching. Each griptree is an isolated worktree-based checkout that shares the same gripspace config (`.gitgrip/`) but has its own code directories.
 
 <p align="center">
   <img src="assets/griptree-concept.svg" alt="Griptrees Concept" width="700">

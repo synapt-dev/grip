@@ -545,9 +545,6 @@ pub enum ChannelCommands {
         /// Pin this message
         #[arg(long)]
         pin: bool,
-        /// Display name for this agent
-        #[arg(long)]
-        name: Option<String>,
     },
     /// Read recent messages
     Read {

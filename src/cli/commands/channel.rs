@@ -50,8 +50,7 @@ pub fn run_channel(action: ChannelCommands, quiet: bool, _json: bool) -> Result<
             message,
             channel,
             pin,
-            name,
-        } => run_channel_post(&message, &channel, pin, name.as_deref(), quiet),
+        } => run_channel_post(&message, &channel, pin, quiet),
 
         ChannelCommands::Read {
             channel,
@@ -78,20 +77,10 @@ pub fn run_channel(action: ChannelCommands, quiet: bool, _json: bool) -> Result<
 // ---------------------------------------------------------------------------
 
 /// Post a message to a channel.
-fn run_channel_post(
-    message: &str,
-    channel: &str,
-    pin: bool,
-    name: Option<&str>,
-    quiet: bool,
-) -> Result<()> {
+fn run_channel_post(message: &str, channel: &str, pin: bool, quiet: bool) -> Result<()> {
     let mut args: Vec<&str> = vec!["post", channel, message];
     if pin {
         args.push("--pin");
-    }
-    // Join with display name before posting if --name provided
-    if let Some(n) = name {
-        run_synapt_channel(&["join", channel, "--name", n], true)?;
     }
     run_synapt_channel(&args, quiet)?;
     Ok(())

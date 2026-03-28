@@ -29,6 +29,7 @@ pub mod release;
 pub mod repo;
 pub mod restore;
 pub mod run;
+pub mod spawn;
 pub mod status;
 pub mod sync;
 pub mod target;

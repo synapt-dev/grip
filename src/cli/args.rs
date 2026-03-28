@@ -531,6 +531,8 @@ pub enum SpawnCommands {
         #[arg(long)]
         all: bool,
     },
+    /// Open mission control dashboard (2x2 agent grid + #dev input)
+    Dashboard,
 }
 
 #[derive(Subcommand)]

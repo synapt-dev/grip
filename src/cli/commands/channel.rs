@@ -6,7 +6,6 @@
 use std::process::Command;
 
 use anyhow::Result;
-use colored::Colorize;
 
 use crate::cli::args::ChannelCommands;
 
@@ -79,17 +78,6 @@ fn run_channel_post(message: &str, channel: &str, pin: bool, quiet: bool) -> Res
     }
 
     run_synapt_channel(&args, quiet)?;
-
-    if !quiet {
-        let pin_str = if pin { " (pinned)" } else { "" };
-        eprintln!(
-            "  {} Message posted to #{}{}",
-            "✓".green(),
-            channel,
-            pin_str
-        );
-    }
-
     Ok(())
 }
 
@@ -110,8 +98,7 @@ fn run_channel_who(quiet: bool) -> Result<()> {
 
 /// Search across channel history.
 fn run_channel_search(query: &str, channel: Option<&str>, quiet: bool) -> Result<()> {
-    // synapt recall channel search <channel> <query>
-    // If no channel specified, search "dev" (the CLI requires a channel positional)
+    // synapt CLI requires a channel positional; default to "dev" when omitted
     let ch = channel.unwrap_or("dev");
     let args = vec!["search", ch, query];
     run_synapt_channel(&args, quiet)?;

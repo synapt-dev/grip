@@ -227,7 +227,7 @@ pub enum Commands {
         #[command(subcommand)]
         action: PrCommands,
     },
-    /// Griptree (worktree) operations
+    /// Griptree operations — manage worktree-based checkouts that share the gripspace
     Tree {
         #[command(subcommand)]
         action: TreeCommands,
@@ -514,6 +514,58 @@ pub enum SpawnCommands {
         agent: Option<String>,
     },
     /// List configured agents
+    List,
+    /// Attach to an agent's tmux window
+    Attach {
+        /// Agent name
+        agent: String,
+    },
+    /// View agent output without attaching
+    Logs {
+        /// Agent name (required unless --all)
+        agent: Option<String>,
+        /// Number of lines to show
+        #[arg(short = 'n', long, default_value = "50")]
+        lines: u32,
+        /// Show logs from all running agents
+        #[arg(long)]
+        all: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ChannelCommands {
+    /// Post a message to a channel
+    Post {
+        /// Message body
+        message: String,
+        /// Channel name
+        #[arg(short, long, default_value = "dev")]
+        channel: String,
+        /// Pin this message
+        #[arg(long)]
+        pin: bool,
+    },
+    /// Read recent messages
+    Read {
+        /// Channel name
+        #[arg(default_value = "dev")]
+        channel: String,
+        /// Max messages to return
+        #[arg(short, long, default_value = "20")]
+        limit: u32,
+    },
+    /// Show who's online
+    Who,
+    /// Search across channel history
+    Search {
+        /// Search query
+        query: String,
+        /// Channel to search (all channels if omitted)
+        #[arg(short, long)]
+        channel: Option<String>,
+    },
+    /// List all channels
     List,
 }
 

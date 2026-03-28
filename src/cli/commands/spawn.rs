@@ -589,3 +589,129 @@ pub fn run_spawn_list(_quiet: bool, _json: bool) -> anyhow::Result<()> {
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Attach
+// ---------------------------------------------------------------------------
+
+/// Attach to an agent's tmux window (replaces current process).
+pub fn run_spawn_attach(agent: &str, _quiet: bool) -> anyhow::Result<()> {
+    require_tmux()?;
+    let (config, _) = load_config(None)?;
+
+    if !config.agents.contains_key(agent) {
+        anyhow::bail!(
+            "Unknown agent '{}'. Available: {}",
+            agent,
+            sorted_agent_names(&config.agents).join(", ")
+        );
+    }
+
+    let session = &config.spawn.session_name;
+    let target = format!("{}:{}", session, agent);
+
+    // Verify the tmux window exists before attaching
+    let check = Command::new("tmux")
+        .args(["has-session", "-t", session])
+        .output()?;
+
+    if !check.status.success() {
+        anyhow::bail!(
+            "tmux session '{}' not found. Run `gr spawn up` first.",
+            session
+        );
+    }
+
+    // Use exec to replace this process with tmux attach
+    use std::os::unix::process::CommandExt;
+    let err = Command::new("tmux")
+        .args(["select-window", "-t", &target])
+        .status();
+
+    if let Err(e) = err {
+        anyhow::bail!("Failed to select tmux window '{}': {}", target, e);
+    }
+
+    // Now attach to the session
+    let err = Command::new("tmux")
+        .args(["attach-session", "-t", session])
+        .exec();
+
+    // exec() only returns on error
+    anyhow::bail!("Failed to attach to tmux session: {}", err)
+}
+
+// ---------------------------------------------------------------------------
+// Logs
+// ---------------------------------------------------------------------------
+
+/// View agent output without attaching (uses tmux capture-pane).
+pub fn run_spawn_logs(
+    agent: Option<&str>,
+    lines: u32,
+    all: bool,
+    quiet: bool,
+) -> anyhow::Result<()> {
+    require_tmux()?;
+    let (config, _) = load_config(None)?;
+    let session = &config.spawn.session_name;
+
+    if !all && agent.is_none() {
+        anyhow::bail!("Specify an agent name or use --all to show logs from all agents.");
+    }
+
+    let agents_to_show: Vec<String> = if all {
+        sorted_agent_names(&config.agents)
+    } else {
+        let name = agent.unwrap();
+        if !config.agents.contains_key(name) {
+            anyhow::bail!(
+                "Unknown agent '{}'. Available: {}",
+                name,
+                sorted_agent_names(&config.agents).join(", ")
+            );
+        }
+        vec![name.to_string()]
+    };
+
+    for name in &agents_to_show {
+        let target = format!("{}:{}", session, name);
+        let line_arg = format!("-{}", lines);
+
+        let output = Command::new("tmux")
+            .args(["capture-pane", "-t", &target, "-p", "-S", &line_arg])
+            .output();
+
+        match output {
+            Ok(out) if out.status.success() => {
+                if !quiet {
+                    if all {
+                        println!("{}", format!("═══ {} ═══", name).cyan().bold());
+                    }
+                    print!("{}", String::from_utf8_lossy(&out.stdout));
+                    if all {
+                        println!();
+                    }
+                }
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                if !quiet {
+                    eprintln!(
+                        "  {} {}: {} (is the agent running?)",
+                        "✗".red(),
+                        name,
+                        stderr.trim()
+                    );
+                }
+            }
+            Err(e) => {
+                if !quiet {
+                    eprintln!("  {} {}: {}", "✗".red(), name, e);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}

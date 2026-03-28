@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# claudemock — lightweight mock agent for testing gr spawn tmux integration.
+#
+# Simulates an interactive agent session without requiring real Claude/Codex.
+# Responds to commands, stays alive until /exit or SIGTERM, and respects
+# the AGENT_NAME env var set by gr spawn.
+
+set -euo pipefail
+
+AGENT="${AGENT_NAME:-mock-agent}"
+START_TIME=$(date +%s)
+
+# Clean shutdown on SIGTERM (from gr spawn down)
+trap 'echo "[$AGENT] Received SIGTERM — shutting down."; exit 0' TERM
+
+# Banner
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  claudemock — $AGENT"
+echo "  PID: $$"
+echo "  Started: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "Type /help for commands, /exit to quit."
+echo ""
+
+while true; do
+    # Print prompt
+    printf "[%s] > " "$AGENT"
+
+    # Read with timeout so SIGTERM can interrupt
+    if ! read -r -t 5 line 2>/dev/null; then
+        # Timeout — just loop (keeps agent alive, allows SIGTERM)
+        continue
+    fi
+
+    # Skip empty lines
+    [[ -z "$line" ]] && continue
+
+    case "$line" in
+        /exit)
+            echo "[$AGENT] Exiting."
+            exit 0
+            ;;
+        /status)
+            NOW=$(date +%s)
+            UPTIME=$(( NOW - START_TIME ))
+            echo "[$AGENT] Agent: $AGENT"
+            echo "[$AGENT] PID: $$"
+            echo "[$AGENT] Uptime: ${UPTIME}s"
+            echo "[$AGENT] Role: ${AGENT_ROLE:-unset}"
+            echo "[$AGENT] Channel: ${SYNAPT_CHANNELS:-unset}"
+            ;;
+        /help)
+            echo "[$AGENT] Available commands:"
+            echo "  /status  — show agent name, PID, uptime"
+            echo "  /help    — show this help"
+            echo "  /exit    — clean shutdown"
+            echo "  (anything else is echoed back)"
+            ;;
+        *)
+            echo "[$AGENT] echo: $line"
+            ;;
+    esac
+done

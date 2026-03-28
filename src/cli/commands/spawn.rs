@@ -114,7 +114,7 @@ fn default_max_restarts() -> u64 {
 // ---------------------------------------------------------------------------
 
 /// Find the workspace root by walking up from the current directory.
-fn find_workspace_root() -> anyhow::Result<PathBuf> {
+pub(crate) fn find_workspace_root() -> anyhow::Result<PathBuf> {
     let mut dir = std::env::current_dir()?;
     loop {
         if dir.join(".gitgrip").exists() {
@@ -300,10 +300,25 @@ pub fn run_spawn_up(
                 .map(|t| t.default_args.as_slice())
                 .unwrap_or(&[]);
 
+            // Resolve relative paths against gripspace root
+            // (griptrees don't have .gitgrip/, so paths need to be absolute)
+            let resolve = |arg: &str| -> String {
+                if arg.starts_with(".gitgrip/") || arg.starts_with("prompts/") {
+                    workspace_root.join(arg).display().to_string()
+                } else {
+                    arg.to_string()
+                }
+            };
+
+            let resolved_defaults: Vec<String> =
+                default_args.iter().map(|s| resolve(s)).collect();
+            let resolved_args: Vec<String> =
+                agent.args.iter().map(|s| resolve(s)).collect();
+
             let mut parts: Vec<&str> = vec![binary];
             parts.extend(cmd_parts.iter().map(|s| s.as_str()));
-            parts.extend(default_args.iter().map(|s| s.as_str()));
-            parts.extend(agent.args.iter().map(|s| s.as_str()));
+            parts.extend(resolved_defaults.iter().map(|s| s.as_str()));
+            parts.extend(resolved_args.iter().map(|s| s.as_str()));
 
             let launch = parts.join(" ");
             format!("cd {} && {}", worktree_path.display(), launch)

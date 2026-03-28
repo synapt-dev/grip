@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # Integration test: gr spawn down sends /exit before killing tmux windows.
 #
+# NOTE: This is a LOCAL-ONLY integration test. It requires tmux, which is
+# not available on GitHub Actions runners. Run manually before merging
+# spawn-related changes:
+#
+#   cd gitgrip && GR=./target/debug/gr ./tests/spawn_graceful_shutdown.sh
+#
 # Requires: tmux, gr (built), .gitgrip/agents.toml with at least one agent.
-# Uses claudemock as the agent to detect /exit receipt.
 
 set -euo pipefail
 

@@ -17,6 +17,8 @@ use std::process::Command;
 #[derive(Deserialize)]
 pub struct SpawnConfig {
     pub spawn: SpawnGlobal,
+    #[serde(default)]
+    pub tools: HashMap<String, ToolConfig>,
     pub agents: HashMap<String, AgentConfig>,
 }
 
@@ -30,6 +32,15 @@ pub struct SpawnGlobal {
     pub auto_journal: bool,
     #[serde(default)]
     pub mock_launch: bool,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct ToolConfig {
+    pub binary: String,
+    #[serde(default)]
+    pub cmd: Vec<String>,
+    #[serde(default)]
+    pub default_args: Vec<String>,
 }
 
 fn default_session() -> String {
@@ -49,6 +60,10 @@ pub struct AgentConfig {
     #[serde(default = "default_worktree")]
     pub worktree: String,
     pub startup_prompt: Option<String>,
+    #[serde(default)]
+    pub cmd: Vec<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
     pub channel: Option<String>,
     #[serde(default = "default_loop")]
     pub loop_interval: String,
@@ -99,7 +114,7 @@ fn default_max_restarts() -> u64 {
 // ---------------------------------------------------------------------------
 
 /// Find the workspace root by walking up from the current directory.
-fn find_workspace_root() -> anyhow::Result<PathBuf> {
+pub(crate) fn find_workspace_root() -> anyhow::Result<PathBuf> {
     let mut dir = std::env::current_dir()?;
     loop {
         if dir.join(".gitgrip").exists() {
@@ -265,12 +280,46 @@ pub fn run_spawn_up(
             )
         } else {
             let worktree_path = resolve_worktree_path(&workspace_root, &agent.worktree);
-            let mut cmd = format!("cd {} && {}", worktree_path.display(), agent.tool);
-            cmd.push_str(&format!(" --model {}", agent.model));
-            if let Some(ref prompt_path) = agent.startup_prompt {
-                cmd.push_str(&format!(" --prompt \"$(cat {})\"", prompt_path));
-            }
-            cmd
+
+            // Resolve tool config
+            let tool_config = config.tools.get(&agent.tool);
+            let binary = tool_config
+                .map(|t| t.binary.as_str())
+                .unwrap_or(&agent.tool);
+
+            // Build: binary + cmd + args + default_args
+            // cmd: agent cmd overrides tool cmd (if agent has it)
+            let cmd_parts: &[String] = if !agent.cmd.is_empty() {
+                &agent.cmd
+            } else {
+                tool_config.map(|t| t.cmd.as_slice()).unwrap_or(&[])
+            };
+
+            // default_args from tool config (appended last)
+            let default_args: &[String] = tool_config
+                .map(|t| t.default_args.as_slice())
+                .unwrap_or(&[]);
+
+            // Resolve relative paths against gripspace root
+            // (griptrees don't have .gitgrip/, so paths need to be absolute)
+            let resolve = |arg: &str| -> String {
+                if arg.starts_with(".gitgrip/") || arg.starts_with("prompts/") {
+                    workspace_root.join(arg).display().to_string()
+                } else {
+                    arg.to_string()
+                }
+            };
+
+            let resolved_defaults: Vec<String> = default_args.iter().map(|s| resolve(s)).collect();
+            let resolved_args: Vec<String> = agent.args.iter().map(|s| resolve(s)).collect();
+
+            let mut parts: Vec<&str> = vec![binary];
+            parts.extend(cmd_parts.iter().map(|s| s.as_str()));
+            parts.extend(resolved_defaults.iter().map(|s| s.as_str()));
+            parts.extend(resolved_args.iter().map(|s| s.as_str()));
+
+            let launch = parts.join(" ");
+            format!("cd {} && {}", worktree_path.display(), launch)
         };
 
         let _ = Command::new("tmux")

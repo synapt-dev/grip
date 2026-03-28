@@ -726,6 +726,9 @@ pub async fn dispatch_command(
                 crate::cli::commands::spawn::run_spawn_list(quiet, json)?;
             }
         },
+        Some(Commands::Channel { action }) => {
+            crate::cli::commands::channel::run_channel(action, quiet, json)?;
+        }
         Some(Commands::Issue { action }) => {
             let ctx = load_workspace_context(quiet, verbose, json)?;
             match action {

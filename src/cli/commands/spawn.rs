@@ -493,6 +493,17 @@ pub fn run_spawn_down(
     // Write spawn state before killing
     write_spawn_state(&workspace_root, &targets)?;
 
+    // Send graceful shutdown (/exit) to each agent before force-killing
+    for name in &targets {
+        let target = format!("{}:{}", session, name);
+        let _ = Command::new("tmux")
+            .args(["send-keys", "-t", &target, "/exit", "Enter"])
+            .status();
+    }
+
+    // Brief pause for agents to process /exit and clean up
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
     for name in &targets {
         let target = format!("{}:{}", session, name);
         let status = Command::new("tmux")
@@ -501,7 +512,7 @@ pub fn run_spawn_down(
         if status.success() {
             println!("  {} {} stopped", "✗".red(), name.bold());
         } else {
-            println!("  {} {} (window not found)", "-".dimmed(), name.bold(),);
+            println!("  {} {} (already exited)", "-".dimmed(), name.bold(),);
         }
     }
 

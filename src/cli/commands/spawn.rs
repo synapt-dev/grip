@@ -495,6 +495,16 @@ pub fn run_spawn_down(
 
     for name in &targets {
         let target = format!("{}:{}", session, name);
+
+        // Graceful shutdown: send /exit first, then kill if still alive
+        let _ = Command::new("tmux")
+            .args(["send-keys", "-t", &target, "/exit", "Enter"])
+            .status();
+
+        // Wait for graceful exit
+        std::thread::sleep(std::time::Duration::from_secs(2));
+
+        // Kill the window (handles both exited and stuck agents)
         let status = Command::new("tmux")
             .args(["kill-window", "-t", &target])
             .status()?;

@@ -310,10 +310,8 @@ pub fn run_spawn_up(
                 }
             };
 
-            let resolved_defaults: Vec<String> =
-                default_args.iter().map(|s| resolve(s)).collect();
-            let resolved_args: Vec<String> =
-                agent.args.iter().map(|s| resolve(s)).collect();
+            let resolved_defaults: Vec<String> = default_args.iter().map(|s| resolve(s)).collect();
+            let resolved_args: Vec<String> = agent.args.iter().map(|s| resolve(s)).collect();
 
             let mut parts: Vec<&str> = vec![binary];
             parts.extend(cmd_parts.iter().map(|s| s.as_str()));

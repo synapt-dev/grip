@@ -392,6 +392,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: AgentCommands,
     },
+    /// Multi-agent spawn and orchestration
+    Spawn {
+        #[command(subcommand)]
+        action: SpawnCommands,
+    },
     /// Issue operations
     Issue {
         #[command(subcommand)]
@@ -480,6 +485,31 @@ pub enum AgentCommands {
         #[arg(long)]
         dry_run: bool,
     },
+}
+
+#[derive(Subcommand)]
+pub enum SpawnCommands {
+    /// Launch all agents (or a specific agent)
+    Up {
+        /// Launch only this agent
+        #[arg(long)]
+        agent: Option<String>,
+        /// Path to agents.toml (default: .gitgrip/agents.toml)
+        #[arg(long)]
+        config: Option<String>,
+        /// Force mock mode regardless of config
+        #[arg(long)]
+        mock: bool,
+    },
+    /// Show agent status (tmux + heartbeat)
+    Status,
+    /// Stop all agents (or a specific agent)
+    Down {
+        /// Stop only this agent
+        agent: Option<String>,
+    },
+    /// List configured agents
+    List,
 }
 
 #[derive(Subcommand)]

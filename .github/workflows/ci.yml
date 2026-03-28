@@ -123,11 +123,37 @@ jobs:
       - name: Run benchmarks
         run: cargo bench --no-run
 
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install tmux
+        run: sudo apt-get install -y tmux
+
+      - name: Build
+        run: cargo build
+
+      - name: Setup mock gripspace
+        run: |
+          mkdir -p .gitgrip
+          cp agents.toml .gitgrip/agents.toml
+
+      - name: Run spawn integration tests
+        run: GR=./target/debug/gr ./tests/spawn_graceful_shutdown.sh
+
   # Summary job for branch protection - requires all other jobs to pass
   ci:
     name: CI
     runs-on: ubuntu-latest
-    needs: [check, fmt, clippy, test, build, bench]
+    needs: [check, fmt, clippy, test, build, bench, integration]
     if: always()
     steps:
       - name: Check all jobs passed
@@ -137,7 +163,8 @@ jobs:
              [[ "${{ needs.clippy.result }}" != "success" ]] || \
              [[ "${{ needs.test.result }}" != "success" ]] || \
              [[ "${{ needs.build.result }}" != "success" ]] || \
-             [[ "${{ needs.bench.result }}" != "success" ]]; then
+             [[ "${{ needs.bench.result }}" != "success" ]] || \
+             [[ "${{ needs.integration.result }}" != "success" ]]; then
             echo "One or more jobs failed"
             exit 1
           fi

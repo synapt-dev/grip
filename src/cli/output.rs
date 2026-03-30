@@ -71,7 +71,7 @@ impl Output {
         pb.set_style(
             ProgressStyle::default_spinner()
                 .template("{spinner:.cyan} {msg}")
-                .unwrap()
+                .expect("static spinner template is valid")
                 .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
         );
         pb.set_message(message.to_string());
@@ -85,7 +85,7 @@ impl Output {
         pb.set_style(
             ProgressStyle::default_bar()
                 .template("{msg} [{bar:40.cyan/blue}] {pos}/{len}")
-                .unwrap()
+                .expect("static progress bar template is valid")
                 .progress_chars("█▓░"),
         );
         pb.set_message(message.to_string());

@@ -734,6 +734,9 @@ pub async fn dispatch_command(
             SpawnCommands::Dashboard => {
                 crate::cli::commands::spawn::run_spawn_dashboard(quiet)?;
             }
+            SpawnCommands::Web { port, no_open } => {
+                crate::cli::commands::spawn::run_spawn_web(port, no_open, quiet)?;
+            }
         },
         Some(Commands::Channel { action }) => {
             crate::cli::commands::channel::run_channel(action, quiet, json)?;

@@ -899,3 +899,32 @@ pub fn run_spawn_dashboard(_quiet: bool) -> anyhow::Result<()> {
 
     anyhow::bail!("Failed to attach to dashboard: {}", err)
 }
+
+// ---------------------------------------------------------------------------
+// Web dashboard
+// ---------------------------------------------------------------------------
+
+/// Launch the web dashboard by shelling out to `synapt dashboard`.
+pub fn run_spawn_web(port: u16, no_open: bool, _quiet: bool) -> anyhow::Result<()> {
+    let mut args = vec![
+        "dashboard".to_string(),
+        "--port".to_string(),
+        port.to_string(),
+    ];
+    if no_open {
+        args.push("--no-open".to_string());
+    }
+
+    let status = Command::new("synapt").args(&args).status().map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to run synapt dashboard: {} (is synapt[dashboard] installed?)",
+            e
+        )
+    })?;
+
+    if !status.success() {
+        anyhow::bail!("synapt dashboard exited with status {}", status);
+    }
+
+    Ok(())
+}

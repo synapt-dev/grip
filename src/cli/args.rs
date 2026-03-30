@@ -533,6 +533,15 @@ pub enum SpawnCommands {
     },
     /// Open mission control dashboard (2x2 agent grid + #dev input)
     Dashboard,
+    /// Open web dashboard in browser (synapt dashboard)
+    Web {
+        /// Port for the web dashboard
+        #[arg(long, default_value = "8420")]
+        port: u16,
+        /// Don't auto-open browser
+        #[arg(long)]
+        no_open: bool,
+    },
 }
 
 #[derive(Subcommand)]

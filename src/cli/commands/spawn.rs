@@ -633,8 +633,6 @@ pub fn run_spawn_attach(agent: &str, _quiet: bool) -> anyhow::Result<()> {
         );
     }
 
-    // Use exec to replace this process with tmux attach
-    use std::os::unix::process::CommandExt;
     let err = Command::new("tmux")
         .args(["select-window", "-t", &target])
         .status();
@@ -643,13 +641,7 @@ pub fn run_spawn_attach(agent: &str, _quiet: bool) -> anyhow::Result<()> {
         anyhow::bail!("Failed to select tmux window '{}': {}", target, e);
     }
 
-    // Now attach to the session
-    let err = Command::new("tmux")
-        .args(["attach-session", "-t", session])
-        .exec();
-
-    // exec() only returns on error
-    anyhow::bail!("Failed to attach to tmux session: {}", err)
+    attach_tmux_session(session)
 }
 
 // ---------------------------------------------------------------------------
@@ -888,16 +880,41 @@ pub fn run_spawn_dashboard(_quiet: bool) -> anyhow::Result<()> {
     // Attach to the session (select dashboard window first)
     Output::info("Dashboard opened. Ctrl-b d to detach.");
 
-    use std::os::unix::process::CommandExt;
     Command::new("tmux")
         .args(["select-window", "-t", &dashboard_target])
         .status()?;
+
+    attach_tmux_session(session)
+}
+
+#[cfg(unix)]
+fn attach_tmux_session(session: &str) -> anyhow::Result<()> {
+    use std::os::unix::process::CommandExt;
 
     let err = Command::new("tmux")
         .args(["attach-session", "-t", session])
         .exec();
 
-    anyhow::bail!("Failed to attach to dashboard: {}", err)
+    anyhow::bail!("Failed to attach to tmux session: {}", err)
+}
+
+#[cfg(not(unix))]
+fn attach_tmux_session(session: &str) -> anyhow::Result<()> {
+    let status = Command::new("tmux")
+        .args(["attach-session", "-t", session])
+        .status()?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "Failed to attach to tmux session (exit code: {})",
+            status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -209,7 +209,7 @@ where
     }
 
     // Sort for percentile calculations
-    durations.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    durations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
     let min = durations[0];
     let max = durations[durations.len() - 1];
@@ -259,7 +259,7 @@ where
     }
 
     // Sort for percentile calculations
-    durations.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    durations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
     let min = durations[0];
     let max = durations[durations.len() - 1];

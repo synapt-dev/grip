@@ -254,6 +254,11 @@ const CLI_TOOL_SPECS: &[CliToolSpec] = &[
         command: "verify",
         description: "Verify workspace assertions (`gr verify ...`).",
     },
+    CliToolSpec {
+        tool_name: "gitgrip_restore",
+        command: "restore",
+        description: "Restore/unstage files across repos (`gr restore ...`).",
+    },
 ];
 
 /// Run the gitgrip MCP server over stdio.
@@ -373,6 +378,10 @@ fn handle_request(request: RpcRequest) -> Option<Value> {
                 "capabilities": {
                     "tools": {
                         "listChanged": false
+                    },
+                    "resources": {
+                        "subscribe": false,
+                        "listChanged": false
                     }
                 },
                 "serverInfo": {
@@ -391,7 +400,7 @@ fn handle_request(request: RpcRequest) -> Option<Value> {
         }
         "resources/list" => {
             let result = json!({
-                "resources": []
+                "resources": resources_definition()
             });
             Some(jsonrpc_result(id, result))
         }
@@ -400,6 +409,23 @@ fn handle_request(request: RpcRequest) -> Option<Value> {
                 "resourceTemplates": []
             });
             Some(jsonrpc_result(id, result))
+        }
+        "resources/read" => {
+            let Some(uri) = request.params.get("uri").and_then(|v| v.as_str()) else {
+                return Some(jsonrpc_error(id, -32602, "Missing required parameter: uri"));
+            };
+            let result = handle_resource_read(uri);
+            if result.get("error").is_some() {
+                Some(jsonrpc_error(
+                    id,
+                    result["error"]["code"].as_i64().unwrap_or(-32002),
+                    result["error"]["message"]
+                        .as_str()
+                        .unwrap_or("Unknown error"),
+                ))
+            } else {
+                Some(jsonrpc_result(id, result))
+            }
         }
         _ => Some(jsonrpc_error(
             id,
@@ -1043,6 +1069,127 @@ fn read_frame<R: BufRead>(reader: &mut R) -> anyhow::Result<Option<Vec<u8>>> {
     Ok(Some(payload))
 }
 
+fn resources_definition() -> Vec<Value> {
+    vec![
+        json!({
+            "uri": "gitgrip://status",
+            "name": "Workspace Status",
+            "description": "Current status of all repositories (branches, changes, sync state).",
+            "mimeType": "text/plain"
+        }),
+        json!({
+            "uri": "gitgrip://manifest",
+            "name": "Workspace Manifest",
+            "description": "The gripspace.yml manifest defining repos, scripts, hooks, and settings.",
+            "mimeType": "text/yaml"
+        }),
+        json!({
+            "uri": "gitgrip://repos",
+            "name": "Repository List",
+            "description": "List of all repositories with paths and remotes.",
+            "mimeType": "text/plain"
+        }),
+        json!({
+            "uri": "gitgrip://scripts",
+            "name": "Workspace Scripts",
+            "description": "Available workspace scripts that can be run with `gr run`.",
+            "mimeType": "text/plain"
+        }),
+        json!({
+            "uri": "gitgrip://agent-context",
+            "name": "Agent Context",
+            "description": "Structured workspace context for AI agents (JSON).",
+            "mimeType": "application/json"
+        }),
+    ]
+}
+
+fn handle_resource_read(uri: &str) -> Value {
+    match uri {
+        "gitgrip://status" => read_resource_from_command(uri, &["status"], "text/plain"),
+        "gitgrip://manifest" => read_resource_from_manifest(),
+        "gitgrip://repos" => read_resource_from_command(uri, &["repo", "list"], "text/plain"),
+        "gitgrip://scripts" => read_resource_from_command(uri, &["run", "--list"], "text/plain"),
+        "gitgrip://agent-context" => {
+            read_resource_from_command(uri, &["--json", "agent", "context"], "application/json")
+        }
+        _ => jsonrpc_error_value(-32002, &format!("Resource not found: {uri}")),
+    }
+}
+
+fn read_resource_from_command(uri: &str, args: &[&str], mime_type: &str) -> Value {
+    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    match run_gitgrip_command(&args, None) {
+        Ok(out) => {
+            let text = if out.success {
+                non_empty_output(&out.stdout, &out.stderr)
+                    .unwrap_or_else(|| "(no output)".to_string())
+            } else {
+                format!(
+                    "Error (exit {}): {}",
+                    out.status_code.unwrap_or(-1),
+                    non_empty_output(&out.stdout, &out.stderr).unwrap_or_default()
+                )
+            };
+            json!({
+                "contents": [{
+                    "uri": uri,
+                    "mimeType": mime_type,
+                    "text": text
+                }]
+            })
+        }
+        Err(err) => json!({
+            "contents": [{
+                "uri": uri,
+                "mimeType": "text/plain",
+                "text": format!("Failed to read resource: {err}")
+            }]
+        }),
+    }
+}
+
+fn read_resource_from_manifest() -> Value {
+    use crate::core::manifest_paths;
+
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let Some(manifest_path) = manifest_paths::resolve_gripspace_manifest_path(&cwd) else {
+        return json!({
+            "contents": [{
+                "uri": "gitgrip://manifest",
+                "mimeType": "text/plain",
+                "text": "No manifest found in current workspace."
+            }]
+        });
+    };
+
+    match std::fs::read_to_string(&manifest_path) {
+        Ok(content) => json!({
+            "contents": [{
+                "uri": "gitgrip://manifest",
+                "mimeType": "text/yaml",
+                "text": content
+            }]
+        }),
+        Err(err) => json!({
+            "contents": [{
+                "uri": "gitgrip://manifest",
+                "mimeType": "text/plain",
+                "text": format!("Failed to read manifest: {err}")
+            }]
+        }),
+    }
+}
+
+fn jsonrpc_error_value(code: i64, message: &str) -> Value {
+    json!({
+        "error": {
+            "code": code,
+            "message": message
+        }
+    })
+}
+
 fn write_frame<W: Write>(writer: &mut W, message: &Value) -> anyhow::Result<()> {
     let body = serde_json::to_vec(message)?;
     write!(writer, "Content-Length: {}\r\n\r\n", body.len())?;
@@ -1112,7 +1259,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resources_list_returns_empty() {
+    fn test_resources_list_returns_defined_resources() {
         let response = handle_request(RpcRequest {
             jsonrpc: Some("2.0".to_string()),
             id: Some(json!(1)),
@@ -1121,14 +1268,23 @@ mod tests {
         })
         .expect("resources/list should return a response");
 
-        assert_eq!(
-            response
-                .get("result")
-                .and_then(|r| r.get("resources"))
-                .and_then(|v| v.as_array())
-                .map(|a| a.len()),
-            Some(0)
-        );
+        let resources = response
+            .get("result")
+            .and_then(|r| r.get("resources"))
+            .and_then(|v| v.as_array())
+            .expect("resources should be an array");
+
+        assert_eq!(resources.len(), 5);
+
+        let uris: Vec<&str> = resources
+            .iter()
+            .filter_map(|r| r.get("uri").and_then(|v| v.as_str()))
+            .collect();
+        assert!(uris.contains(&"gitgrip://status"));
+        assert!(uris.contains(&"gitgrip://manifest"));
+        assert!(uris.contains(&"gitgrip://repos"));
+        assert!(uris.contains(&"gitgrip://scripts"));
+        assert!(uris.contains(&"gitgrip://agent-context"));
     }
 
     #[test]
@@ -1148,6 +1304,44 @@ mod tests {
                 .and_then(|v| v.as_array())
                 .map(|a| a.len()),
             Some(0)
+        );
+    }
+
+    #[test]
+    fn test_resource_read_unknown_uri_returns_error() {
+        let response = handle_request(RpcRequest {
+            jsonrpc: Some("2.0".to_string()),
+            id: Some(json!(1)),
+            method: "resources/read".to_string(),
+            params: json!({ "uri": "gitgrip://nope" }),
+        })
+        .expect("resources/read should return a response");
+
+        assert_eq!(
+            response
+                .get("error")
+                .and_then(|e| e.get("code"))
+                .and_then(|v| v.as_i64()),
+            Some(-32002)
+        );
+    }
+
+    #[test]
+    fn test_resource_read_missing_uri_returns_error() {
+        let response = handle_request(RpcRequest {
+            jsonrpc: Some("2.0".to_string()),
+            id: Some(json!(1)),
+            method: "resources/read".to_string(),
+            params: json!({}),
+        })
+        .expect("resources/read should return a response");
+
+        assert_eq!(
+            response
+                .get("error")
+                .and_then(|e| e.get("code"))
+                .and_then(|v| v.as_i64()),
+            Some(-32602)
         );
     }
 

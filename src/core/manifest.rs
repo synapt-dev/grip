@@ -572,8 +572,7 @@ impl Manifest {
         if repo.reference {
             return CloneStrategy::Clone;
         }
-        repo.clone_strategy
-            .unwrap_or(self.settings.clone_strategy)
+        repo.clone_strategy.unwrap_or(self.settings.clone_strategy)
     }
 
     /// Validate the manifest
@@ -619,6 +618,47 @@ impl Manifest {
         }
 
         Ok(())
+    }
+
+    /// Lint the manifest for portability issues (warnings, not errors).
+    /// Returns a list of warning messages about absolute paths in hooks,
+    /// scripts, and env values. (#418)
+    pub fn lint_absolute_paths(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+
+        if let Some(ref workspace) = self.workspace {
+            // Check hooks (post-sync and post-checkout)
+            if let Some(ref hooks) = workspace.hooks {
+                let all_hooks = hooks
+                    .post_sync
+                    .iter()
+                    .flatten()
+                    .chain(hooks.post_checkout.iter().flatten());
+                for hook in all_hooks {
+                    if hook.command.starts_with('/') || is_windows_absolute(&hook.command) {
+                        warnings.push(format!(
+                            "Hook command contains absolute path: {}",
+                            hook.command.chars().take(80).collect::<String>()
+                        ));
+                    }
+                }
+            }
+
+            // Check env values
+            if let Some(ref env) = workspace.env {
+                for (key, val) in env {
+                    if val.starts_with('/') || is_windows_absolute(val) {
+                        warnings.push(format!(
+                            "Env var {} contains absolute path: {}",
+                            key,
+                            val.chars().take(80).collect::<String>()
+                        ));
+                    }
+                }
+            }
+        }
+
+        warnings
     }
 
     /// Validate a gripspace manifest (allows empty repos since gripspaces may only contribute
@@ -1587,5 +1627,47 @@ settings:
             manifest.effective_clone_strategy(&manifest.repos["synapt"]),
             CloneStrategy::Clone
         );
+    }
+
+    #[test]
+    fn test_lint_catches_absolute_paths_in_hooks() {
+        let yaml = r#"
+repos:
+  myrepo:
+    url: https://github.com/test/repo.git
+    path: ./myrepo
+workspace:
+  hooks:
+    post-sync:
+      - command: "/usr/local/bin/setup.sh"
+    post-checkout:
+      - command: "echo ok"
+  env:
+    HOME_DIR: "/Users/layne/Development"
+"#;
+        let manifest: Manifest = serde_yaml::from_str(yaml).unwrap();
+        let warnings = manifest.lint_absolute_paths();
+        assert_eq!(warnings.len(), 2);
+        assert!(warnings[0].contains("Hook command"));
+        assert!(warnings[1].contains("Env var"));
+    }
+
+    #[test]
+    fn test_lint_no_warnings_for_relative_paths() {
+        let yaml = r#"
+repos:
+  myrepo:
+    url: https://github.com/test/repo.git
+    path: ./myrepo
+workspace:
+  hooks:
+    post-sync:
+      - command: "./scripts/setup.sh"
+  env:
+    PROJECT: "myproject"
+"#;
+        let manifest: Manifest = serde_yaml::from_str(yaml).unwrap();
+        let warnings = manifest.lint_absolute_paths();
+        assert!(warnings.is_empty());
     }
 }

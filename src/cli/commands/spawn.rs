@@ -32,6 +32,9 @@ pub struct SpawnGlobal {
     pub auto_journal: bool,
     #[serde(default)]
     pub mock_launch: bool,
+    /// Global environment variables injected into all agent sessions.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -255,16 +258,25 @@ pub fn run_spawn_up(
             .args(["set-option", "-t", &target, "remain-on-exit", "on"])
             .status();
 
-        // Send environment variables
+        // Send environment variables — GRIPSPACE_ROOT first (#418)
+        let grip_root = workspace_root.display();
         let env_cmd = format!(
-            "export AGENT_NAME={} AGENT_ROLE=\"{}\" SYNAPT_CHANNELS={} SYNAPT_LOOP_INTERVAL={}",
-            name, agent.role, channel, agent.loop_interval
+            "export GRIPSPACE_ROOT=\"{}\" AGENT_NAME={} AGENT_ROLE=\"{}\" SYNAPT_CHANNELS={} SYNAPT_LOOP_INTERVAL={}",
+            grip_root, name, agent.role, channel, agent.loop_interval
         );
         let _ = Command::new("tmux")
             .args(["send-keys", "-t", &target, &env_cmd, "Enter"])
             .status();
 
-        // Send any custom env vars
+        // Send global spawn env vars from [spawn] config
+        for (key, val) in &config.spawn.env {
+            let global_env = format!("export {}=\"{}\"", key, val);
+            let _ = Command::new("tmux")
+                .args(["send-keys", "-t", &target, &global_env, "Enter"])
+                .status();
+        }
+
+        // Send per-agent custom env vars
         for (key, val) in &agent.env {
             let custom_env = format!("export {}=\"{}\"", key, val);
             let _ = Command::new("tmux")

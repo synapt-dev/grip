@@ -476,6 +476,19 @@ impl HostingPlatform for GitLabAdapter {
         }
     }
 
+    async fn create_pull_request_review(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _pull_number: u64,
+        _event: ReviewEvent,
+        _body: Option<&str>,
+    ) -> Result<(), PlatformError> {
+        Err(PlatformError::ApiError(
+            "GitLab review creation not yet implemented".into(),
+        ))
+    }
+
     async fn get_status_checks(
         &self,
         owner: &str,

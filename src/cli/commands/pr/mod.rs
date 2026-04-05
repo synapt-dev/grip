@@ -8,6 +8,7 @@ mod diff;
 mod edit;
 mod list;
 mod merge;
+mod review;
 mod status;
 mod view;
 
@@ -17,5 +18,6 @@ pub use diff::run_pr_diff;
 pub use edit::run_pr_edit;
 pub use list::run_pr_list;
 pub use merge::{run_pr_merge, MergeOptions};
+pub use review::run_pr_review;
 pub use status::run_pr_status;
 pub use view::{run_pr_view, PRViewOptions};

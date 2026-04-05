@@ -133,6 +133,18 @@ pub struct PRReview {
     pub user: String,
 }
 
+/// Review event type for creating reviews
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ReviewEvent {
+    /// Approve the PR
+    Approve,
+    /// Request changes
+    RequestChanges,
+    /// Leave a comment without approval/rejection
+    Comment,
+}
+
 /// Status check state
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]

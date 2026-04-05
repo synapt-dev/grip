@@ -152,6 +152,16 @@ pub trait HostingPlatform: Send + Sync {
         pull_number: u64,
     ) -> Result<Vec<PRReview>, PlatformError>;
 
+    /// Create a review on a PR
+    async fn create_pull_request_review(
+        &self,
+        owner: &str,
+        repo: &str,
+        pull_number: u64,
+        event: ReviewEvent,
+        body: Option<&str>,
+    ) -> Result<(), PlatformError>;
+
     /// Get CI/CD status checks for a commit
     async fn get_status_checks(
         &self,
@@ -458,6 +468,17 @@ mod tests {
             _repo: &str,
             _pull_number: u64,
         ) -> Result<Vec<PRReview>, PlatformError> {
+            unimplemented!()
+        }
+
+        async fn create_pull_request_review(
+            &self,
+            _owner: &str,
+            _repo: &str,
+            _pull_number: u64,
+            _event: ReviewEvent,
+            _body: Option<&str>,
+        ) -> Result<(), PlatformError> {
             unimplemented!()
         }
 

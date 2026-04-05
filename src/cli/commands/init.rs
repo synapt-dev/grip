@@ -785,6 +785,7 @@ fn generate_manifest(repos: &[DiscoveredRepo], options: &ManifestGenerationOptio
                 reference: false,
                 groups: Vec::new(),
                 agent,
+                clone_strategy: None,
             },
         );
     }

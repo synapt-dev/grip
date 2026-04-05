@@ -168,6 +168,7 @@ Each repository under `repos` supports:
 | `push_remote` | string | `origin` | Remote for push (inherits from settings) |
 | `groups` | array | `[]` | Groups for selective operations |
 | `reference` | boolean | `false` | Read-only reference repo |
+| `clone_strategy` | string | inherit | `clone` or `worktree` (inherits from settings) |
 | `copyfile` | array | - | Files to copy to workspace |
 | `linkfile` | array | - | Symlinks to create |
 | `platform` | object | auto | Platform type and base URL |
@@ -197,6 +198,7 @@ Each repository under `repos` supports:
 | `target` | string | revision | PR base branch for all repos |
 | `sync_remote` | string | `origin` | Default remote for fetch/rebase |
 | `push_remote` | string | `origin` | Default remote for push |
+| `clone_strategy` | string | `clone` | Default clone strategy: `clone` or `worktree` |
 
 ## Platform Types
 

@@ -10,6 +10,7 @@ pub mod repo_manifest;
 pub mod state;
 pub mod sync_state;
 
+pub use manifest::CloneStrategy;
 pub use manifest::Manifest;
 pub use repo::RepoInfo;
 pub use state::StateFile;

@@ -406,6 +406,7 @@ impl XmlManifest {
                     reference,
                     groups,
                     agent: None,
+                    clone_strategy: None,
                 },
             );
 

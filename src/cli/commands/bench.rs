@@ -218,6 +218,7 @@ fn run_benchmark_operation(name: &str) -> Result<()> {
                 reference: false,
                 groups: Vec::new(),
                 agent: None,
+                clone_strategy: None,
             };
             let workspace = std::path::PathBuf::from("/workspace");
             let _ = RepoInfo::from_config(

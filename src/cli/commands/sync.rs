@@ -768,11 +768,19 @@ fn sync_single_repo(repo: &RepoInfo, opts: &SyncOptions<'_>) -> anyhow::Result<S
     };
 
     if !path_exists(&repo.absolute_path) {
-        // Clone the repo
+        // Clone the repo using the configured strategy
         if let Some(ref s) = spinner {
-            s.set_message(format!("Cloning {}...", repo.name));
+            let strategy_label = match repo.clone_strategy {
+                crate::core::manifest::CloneStrategy::Worktree => " (worktree — experimental)",
+                crate::core::manifest::CloneStrategy::Clone => "",
+            };
+            s.set_message(format!("Cloning {}{}...", repo.name, strategy_label));
         }
 
+        // TODO: when CloneStrategy::Worktree is implemented, branch here
+        // to use git worktree add instead of a standalone clone.
+        // For now, both strategies use clone_repo() — worktree support
+        // will be added in a follow-up once the manifest/config layer is stable.
         match clone_repo(&repo.url, &repo.absolute_path, Some(&repo.revision)) {
             Ok(_) => {
                 // Check actual branch after clone

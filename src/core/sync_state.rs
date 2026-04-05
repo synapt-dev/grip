@@ -172,7 +172,7 @@ mod tests {
             project: None,
             reference: false,
             groups: vec![],
-            agent: None,
+            agent: None, clone_strategy: crate::core::manifest::CloneStrategy::Clone,
         }];
 
         let snapshot = SyncSnapshot::capture(workspace.path(), &repos).unwrap();
@@ -216,7 +216,7 @@ mod tests {
             project: None,
             reference: false,
             groups: vec![],
-            agent: None,
+            agent: None, clone_strategy: crate::core::manifest::CloneStrategy::Clone,
         }];
 
         let snapshot = SyncSnapshot::capture(workspace.path(), &repos).unwrap();

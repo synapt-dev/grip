@@ -367,6 +367,9 @@ fn deep_merge_repo_config(
     if local.agent.is_none() {
         local.agent.clone_from(&gripspace.agent);
     }
+    if local.clone_strategy.is_none() {
+        local.clone_strategy = gripspace.clone_strategy;
+    }
 
     // reference: only inherit if gripspace sets it true and local doesn't
     if !local.reference && gripspace.reference {
@@ -942,7 +945,7 @@ repos:
                         platform: None,
                         reference: false,
                         groups: Vec::new(),
-                        agent: None,
+                        agent: None, clone_strategy: None,
                     },
                 );
                 m
@@ -1006,7 +1009,7 @@ repos:
                         platform: None,
                         reference: false,
                         groups: Vec::new(),
-                        agent: None,
+                        agent: None, clone_strategy: None,
                     },
                 );
                 m
@@ -1087,7 +1090,7 @@ repos:
                         platform: None,
                         reference: false,
                         groups: vec!["local-group".to_string()],
-                        agent: None,
+                        agent: None, clone_strategy: None,
                     },
                 );
                 m
@@ -1154,6 +1157,7 @@ repos:
                 lint: None,
                 format: None,
             }),
+            clone_strategy: None,
         };
 
         let gripspace = crate::core::manifest::RepoConfig {
@@ -1177,6 +1181,7 @@ repos:
                 lint: None,
                 format: None,
             }),
+            clone_strategy: None,
         };
 
         deep_merge_repo_config(&mut local, &gripspace);
@@ -1191,6 +1196,96 @@ repos:
         assert_eq!(agent.language, Some("rust".to_string()));
         // Groups unioned
         assert!(local.groups.contains(&"gs-group".to_string()));
+    }
+
+    #[test]
+    fn test_deep_merge_inherits_clone_strategy_from_gripspace() {
+        let mut local = crate::core::manifest::RepoConfig {
+            url: Some("git@github.com:user/local.git".to_string()),
+            remote: None,
+            path: "./repo".to_string(),
+            revision: None,
+            target: None,
+            sync_remote: None,
+            push_remote: None,
+            copyfile: None,
+            linkfile: None,
+            platform: None,
+            reference: false,
+            groups: Vec::new(),
+            agent: None,
+            clone_strategy: None,
+        };
+
+        let gripspace = crate::core::manifest::RepoConfig {
+            url: Some("https://github.com/user/gs.git".to_string()),
+            remote: None,
+            path: "./repo".to_string(),
+            revision: None,
+            target: None,
+            sync_remote: None,
+            push_remote: None,
+            copyfile: None,
+            linkfile: None,
+            platform: None,
+            reference: false,
+            groups: Vec::new(),
+            agent: None,
+            clone_strategy: Some(crate::core::manifest::CloneStrategy::Worktree),
+        };
+
+        deep_merge_repo_config(&mut local, &gripspace);
+
+        // clone_strategy inherited from gripspace when local is None
+        assert_eq!(
+            local.clone_strategy,
+            Some(crate::core::manifest::CloneStrategy::Worktree)
+        );
+    }
+
+    #[test]
+    fn test_deep_merge_local_clone_strategy_wins() {
+        let mut local = crate::core::manifest::RepoConfig {
+            url: Some("git@github.com:user/local.git".to_string()),
+            remote: None,
+            path: "./repo".to_string(),
+            revision: None,
+            target: None,
+            sync_remote: None,
+            push_remote: None,
+            copyfile: None,
+            linkfile: None,
+            platform: None,
+            reference: false,
+            groups: Vec::new(),
+            agent: None,
+            clone_strategy: Some(crate::core::manifest::CloneStrategy::Clone),
+        };
+
+        let gripspace = crate::core::manifest::RepoConfig {
+            url: Some("https://github.com/user/gs.git".to_string()),
+            remote: None,
+            path: "./repo".to_string(),
+            revision: None,
+            target: None,
+            sync_remote: None,
+            push_remote: None,
+            copyfile: None,
+            linkfile: None,
+            platform: None,
+            reference: false,
+            groups: Vec::new(),
+            agent: None,
+            clone_strategy: Some(crate::core::manifest::CloneStrategy::Worktree),
+        };
+
+        deep_merge_repo_config(&mut local, &gripspace);
+
+        // Local clone_strategy wins when set
+        assert_eq!(
+            local.clone_strategy,
+            Some(crate::core::manifest::CloneStrategy::Clone)
+        );
     }
 
     #[test]

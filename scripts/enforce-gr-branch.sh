@@ -17,7 +17,7 @@ INPUT=$(cat)
 COMMAND=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('command',''))" 2>/dev/null || echo "")
 
 # Check for raw git branch creation commands
-if echo "$COMMAND" | grep -qE '^\s*git\s+(checkout\s+-b|branch\s+[^-])'; then
+if echo "$COMMAND" | grep -qE '^\s*git\s+(checkout\s+-b|switch\s+-c|branch\s+[^-])'; then
     # Check if we're in a gripspace (look for .gitgrip dir upward)
     DIR="${PWD}"
     IN_GRIPSPACE=false
@@ -33,7 +33,8 @@ if echo "$COMMAND" | grep -qE '^\s*git\s+(checkout\s+-b|branch\s+[^-])'; then
         echo "WARNING: Use 'gr branch' instead of raw git branch commands in a gripspace." >&2
         echo "Raw git creates the branch in only one repo. 'gr branch' creates it across all repos." >&2
         echo "" >&2
-        echo "Suggested: gr branch $(echo "$COMMAND" | sed -E 's/.*git (checkout -b|branch) //')" >&2
+        BRANCH_NAME=$(echo "$COMMAND" | sed -E 's/.*git (checkout -b|switch -c|branch) //')
+        echo "Suggested: gr branch $BRANCH_NAME" >&2
         exit 2
     fi
 fi

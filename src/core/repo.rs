@@ -3,8 +3,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::core::manifest::{
-    Manifest, ManifestRepoConfig, ManifestSettings, PlatformType, RemoteConfig, RepoAgentConfig,
-    RepoConfig,
+    CloneStrategy, Manifest, ManifestRepoConfig, ManifestSettings, PlatformType, RemoteConfig,
+    RepoAgentConfig, RepoConfig,
 };
 use crate::core::manifest_paths;
 use std::collections::HashMap;
@@ -44,6 +44,8 @@ pub struct RepoInfo {
     pub groups: Vec<String>,
     /// Agent context metadata (build/test/lint commands for AI agents)
     pub agent: Option<RepoAgentConfig>,
+    /// Resolved clone strategy for this repo
+    pub clone_strategy: CloneStrategy,
 }
 
 impl RepoInfo {
@@ -130,6 +132,13 @@ impl RepoInfo {
             reference: config.reference,
             groups: config.groups.clone(),
             agent: config.agent.clone(),
+            clone_strategy: if config.reference {
+                CloneStrategy::Clone
+            } else {
+                config
+                    .clone_strategy
+                    .unwrap_or(settings.clone_strategy)
+            },
         })
     }
 
@@ -340,6 +349,7 @@ fn create_manifest_repo_info(
             reference: false,
             groups: Vec::new(),
             agent: None,
+            clone_strategy: None,
         },
         workspace_root,
         settings,
@@ -621,7 +631,7 @@ mod tests {
                 platform: None,
                 reference: false,
                 groups: vec![],
-                agent: None,
+                agent: None, clone_strategy: None,
             },
         );
         repos.insert(
@@ -639,7 +649,7 @@ mod tests {
                 platform: None,
                 reference: false,
                 groups: vec![],
-                agent: None,
+                agent: None, clone_strategy: None,
             },
         );
 
@@ -688,7 +698,7 @@ mod tests {
                 platform: None,
                 reference: true,
                 groups: vec![],
-                agent: None,
+                agent: None, clone_strategy: None,
             },
         );
         repos.insert(
@@ -706,7 +716,7 @@ mod tests {
                 platform: None,
                 reference: false,
                 groups: vec![],
-                agent: None,
+                agent: None, clone_strategy: None,
             },
         );
 
@@ -752,7 +762,7 @@ mod tests {
                 platform: None,
                 reference: false,
                 groups: vec!["web".to_string()],
-                agent: None,
+                agent: None, clone_strategy: None,
             },
         );
         repos.insert(
@@ -770,7 +780,7 @@ mod tests {
                 platform: None,
                 reference: false,
                 groups: vec!["api".to_string()],
-                agent: None,
+                agent: None, clone_strategy: None,
             },
         );
 
@@ -817,7 +827,7 @@ mod tests {
             platform: None,
             reference: false,
             groups: vec![],
-            agent: None,
+            agent: None, clone_strategy: None,
         };
         let settings = ManifestSettings::default();
         let info =
@@ -839,7 +849,7 @@ mod tests {
             platform: None,
             reference: false,
             groups: vec![],
-            agent: None,
+            agent: None, clone_strategy: None,
         };
         let settings = ManifestSettings {
             revision: Some("master".to_string()),
@@ -877,7 +887,7 @@ mod tests {
             platform: None,
             reference: false,
             groups: vec![],
-            agent: None,
+            agent: None, clone_strategy: None,
         };
 
         // No target → falls back to revision
@@ -945,7 +955,7 @@ mod tests {
             platform: None,
             reference: false,
             groups: vec![],
-            agent: None,
+            agent: None, clone_strategy: None,
         };
 
         // Defaults to "origin"
@@ -1019,7 +1029,7 @@ mod tests {
             platform: None,
             reference: false,
             groups: vec![],
-            agent: None,
+            agent: None, clone_strategy: None,
         };
         let settings = ManifestSettings::default();
         let info = RepoInfo::from_config(

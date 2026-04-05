@@ -942,7 +942,7 @@ repos:
                         platform: None,
                         reference: false,
                         groups: Vec::new(),
-                        agent: None,
+                        agent: None, clone_strategy: None,
                     },
                 );
                 m
@@ -1006,7 +1006,7 @@ repos:
                         platform: None,
                         reference: false,
                         groups: Vec::new(),
-                        agent: None,
+                        agent: None, clone_strategy: None,
                     },
                 );
                 m
@@ -1087,7 +1087,7 @@ repos:
                         platform: None,
                         reference: false,
                         groups: vec!["local-group".to_string()],
-                        agent: None,
+                        agent: None, clone_strategy: None,
                     },
                 );
                 m
@@ -1154,6 +1154,7 @@ repos:
                 lint: None,
                 format: None,
             }),
+            clone_strategy: None,
         };
 
         let gripspace = crate::core::manifest::RepoConfig {
@@ -1177,6 +1178,7 @@ repos:
                 lint: None,
                 format: None,
             }),
+            clone_strategy: None,
         };
 
         deep_merge_repo_config(&mut local, &gripspace);

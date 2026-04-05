@@ -333,7 +333,7 @@ mod tests {
             project: None,
             reference: false,
             groups: Vec::new(),
-            agent: None,
+            agent: None, clone_strategy: crate::core::manifest::CloneStrategy::Clone,
         }
     }
 

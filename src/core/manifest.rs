@@ -165,6 +165,26 @@ pub struct RemoteConfig {
     pub fetch: String,
 }
 
+/// Clone strategy for a repository
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CloneStrategy {
+    /// Standalone git clone (default — best isolation, no shared .git state)
+    #[default]
+    Clone,
+    /// Git worktree off the gripspace root repo (opt-in, experimental)
+    Worktree,
+}
+
+impl std::fmt::Display for CloneStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CloneStrategy::Clone => write!(f, "clone"),
+            CloneStrategy::Worktree => write!(f, "worktree"),
+        }
+    }
+}
+
 /// Repository configuration in the manifest
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoConfig {
@@ -210,6 +230,11 @@ pub struct RepoConfig {
     /// Agent context metadata (build/test/lint commands for AI agents)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<RepoAgentConfig>,
+    /// Clone strategy: `clone` (default) or `worktree` (opt-in experimental).
+    /// Reference repos always use `clone` regardless of this setting.
+    /// Inherits from `settings.clone_strategy` if not set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clone_strategy: Option<CloneStrategy>,
 }
 
 /// Manifest repository self-tracking configuration
@@ -275,6 +300,10 @@ pub struct ManifestSettings {
     /// Remote for push operations (default: "origin"). Overridden by per-repo push_remote.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub push_remote: Option<String>,
+    /// Default clone strategy for all repos. Per-repo `clone_strategy` overrides this.
+    /// Defaults to `clone` if not set.
+    #[serde(default)]
+    pub clone_strategy: CloneStrategy,
 }
 
 fn default_pr_prefix() -> String {
@@ -290,6 +319,7 @@ impl Default for ManifestSettings {
             target: None,
             sync_remote: None,
             push_remote: None,
+            clone_strategy: CloneStrategy::default(),
         }
     }
 }
@@ -532,6 +562,20 @@ impl Manifest {
         Ok(manifest)
     }
 
+    /// Resolve the effective clone strategy for a repo.
+    ///
+    /// Resolution order:
+    /// 1. Reference repos always return `Clone` regardless of config
+    /// 2. Per-repo `clone_strategy` if set
+    /// 3. Global `settings.clone_strategy`
+    pub fn effective_clone_strategy(&self, repo: &RepoConfig) -> CloneStrategy {
+        if repo.reference {
+            return CloneStrategy::Clone;
+        }
+        repo.clone_strategy
+            .unwrap_or(self.settings.clone_strategy)
+    }
+
     /// Validate the manifest
     pub fn validate(&self) -> Result<(), ManifestError> {
         // Must have at least one repo
@@ -656,6 +700,18 @@ impl Manifest {
             return Err(ManifestError::PathTraversal(format!(
                 "Repository '{}' path escapes workspace boundary: {}",
                 name, repo.path
+            )));
+        }
+
+        // Reference repos must use clone strategy — reject worktree
+        if repo.reference
+            && repo
+                .clone_strategy
+                .is_some_and(|s| s == CloneStrategy::Worktree)
+        {
+            return Err(ManifestError::ValidationError(format!(
+                "Repository '{}' is a reference repo and cannot use clone_strategy 'worktree'",
+                name
             )));
         }
 
@@ -1414,5 +1470,122 @@ repos:
 "#;
         let manifest = Manifest::parse(yaml).unwrap();
         assert!(manifest.gripspaces.is_none());
+    }
+
+    #[test]
+    fn test_clone_strategy_defaults_to_clone() {
+        let yaml = r#"
+repos:
+  myrepo:
+    url: git@github.com:user/repo.git
+    path: repo
+"#;
+        let manifest = Manifest::parse(yaml).unwrap();
+        let repo = &manifest.repos["myrepo"];
+        assert_eq!(manifest.settings.clone_strategy, CloneStrategy::Clone);
+        assert!(repo.clone_strategy.is_none());
+        assert_eq!(
+            manifest.effective_clone_strategy(repo),
+            CloneStrategy::Clone
+        );
+    }
+
+    #[test]
+    fn test_clone_strategy_per_repo_override() {
+        let yaml = r#"
+repos:
+  cloned:
+    url: git@github.com:user/a.git
+    path: a
+  worktree:
+    url: git@github.com:user/b.git
+    path: b
+    clone_strategy: worktree
+"#;
+        let manifest = Manifest::parse(yaml).unwrap();
+        assert_eq!(
+            manifest.effective_clone_strategy(&manifest.repos["cloned"]),
+            CloneStrategy::Clone
+        );
+        assert_eq!(
+            manifest.effective_clone_strategy(&manifest.repos["worktree"]),
+            CloneStrategy::Worktree
+        );
+    }
+
+    #[test]
+    fn test_clone_strategy_global_override() {
+        let yaml = r#"
+repos:
+  myrepo:
+    url: git@github.com:user/repo.git
+    path: repo
+settings:
+  clone_strategy: worktree
+"#;
+        let manifest = Manifest::parse(yaml).unwrap();
+        assert_eq!(manifest.settings.clone_strategy, CloneStrategy::Worktree);
+        assert_eq!(
+            manifest.effective_clone_strategy(&manifest.repos["myrepo"]),
+            CloneStrategy::Worktree
+        );
+    }
+
+    #[test]
+    fn test_reference_repo_always_clone() {
+        let yaml = r#"
+repos:
+  refonly:
+    url: https://github.com/other/repo.git
+    path: reference/repo
+    reference: true
+    clone_strategy: worktree
+settings:
+  clone_strategy: worktree
+"#;
+        // Validation must reject worktree on reference repos
+        let result = Manifest::parse(yaml);
+        assert!(matches!(result, Err(ManifestError::ValidationError(_))));
+    }
+
+    #[test]
+    fn test_reference_repo_effective_strategy_always_clone() {
+        let yaml = r#"
+repos:
+  refonly:
+    url: https://github.com/other/repo.git
+    path: reference/repo
+    reference: true
+settings:
+  clone_strategy: worktree
+"#;
+        let manifest = Manifest::parse(yaml).unwrap();
+        // Even though global default is worktree, reference repos resolve to clone
+        assert_eq!(
+            manifest.effective_clone_strategy(&manifest.repos["refonly"]),
+            CloneStrategy::Clone
+        );
+    }
+
+    #[test]
+    fn test_clone_strategy_backward_compat_no_field() {
+        // Existing manifests without clone_strategy should parse and default to clone
+        let yaml = r#"
+version: 2
+repos:
+  synapt:
+    url: git@github.com:user/synapt.git
+    path: ./synapt
+    revision: main
+settings:
+  pr_prefix: "[cross-repo]"
+  merge_strategy: independent
+"#;
+        let manifest = Manifest::parse(yaml).unwrap();
+        assert_eq!(manifest.settings.clone_strategy, CloneStrategy::Clone);
+        assert_eq!(
+            manifest.effective_clone_strategy(&manifest.repos["synapt"]),
+            CloneStrategy::Clone
+        );
     }
 }

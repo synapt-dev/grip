@@ -1047,7 +1047,7 @@ version = "0.2.0"
                 project: None,
                 reference: false,
                 groups: vec![],
-                agent: None,
+                agent: None, clone_strategy: crate::core::manifest::CloneStrategy::Clone,
             },
             RepoInfo {
                 name: "backend".to_string(),
@@ -1065,7 +1065,7 @@ version = "0.2.0"
                 project: None,
                 reference: false,
                 groups: vec![],
-                agent: None,
+                agent: None, clone_strategy: crate::core::manifest::CloneStrategy::Clone,
             },
         ];
 
@@ -1092,7 +1092,7 @@ version = "0.2.0"
                 project: None,
                 reference: true,
                 groups: vec![],
-                agent: None,
+                agent: None, clone_strategy: crate::core::manifest::CloneStrategy::Clone,
             },
             RepoInfo {
                 name: "main-repo".to_string(),
@@ -1110,7 +1110,7 @@ version = "0.2.0"
                 project: None,
                 reference: false,
                 groups: vec![],
-                agent: None,
+                agent: None, clone_strategy: crate::core::manifest::CloneStrategy::Clone,
             },
         ];
 
@@ -1152,7 +1152,7 @@ version = "0.2.0"
             project: None,
             reference: false,
             groups: vec![],
-            agent: None,
+            agent: None, clone_strategy: crate::core::manifest::CloneStrategy::Clone,
         }];
 
         let files = detect_version_files(&dir.path().to_path_buf(), &repos);
@@ -1184,7 +1184,7 @@ version = "0.2.0"
             project: None,
             reference: true,
             groups: vec![],
-            agent: None,
+            agent: None, clone_strategy: crate::core::manifest::CloneStrategy::Clone,
         }];
 
         let files = detect_version_files(&dir.path().to_path_buf(), &repos);

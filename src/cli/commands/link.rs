@@ -709,8 +709,8 @@ pub fn apply_links(workspace_root: &Path, manifest: &Manifest, quiet: bool) -> a
 mod tests {
     use super::*;
     use crate::core::manifest::{
-        CopyFileConfig, LinkFileConfig, ManifestRepoConfig, ManifestSettings, MergeStrategy,
-        RepoConfig,
+        CloneStrategy, CopyFileConfig, LinkFileConfig, ManifestRepoConfig, ManifestSettings,
+        MergeStrategy, RepoConfig,
     };
     use std::collections::HashMap;
     use tempfile::TempDir;
@@ -735,7 +735,7 @@ mod tests {
                 platform: None,
                 reference: false,
                 groups: Vec::new(),
-                agent: None,
+                agent: None, clone_strategy: None,
             },
         );
 
@@ -752,6 +752,7 @@ mod tests {
                 target: None,
                 sync_remote: None,
                 push_remote: None,
+                clone_strategy: CloneStrategy::default(),
             },
             workspace: None,
         }
@@ -929,7 +930,7 @@ mod tests {
                 platform: None,
                 reference: false,
                 groups: Vec::new(),
-                agent: None,
+                agent: None, clone_strategy: None,
             },
         );
 
@@ -956,6 +957,7 @@ mod tests {
                 target: None,
                 sync_remote: None,
                 push_remote: None,
+                clone_strategy: CloneStrategy::default(),
             },
             workspace: None,
         };

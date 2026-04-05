@@ -138,6 +138,7 @@ pub fn run_status(
                 reference: false,
                 groups: Vec::new(),
                 agent: None,
+                clone_strategy: crate::core::manifest::CloneStrategy::Clone,
             };
 
             let status = get_repo_status(&manifest_repo_info);
@@ -207,6 +208,7 @@ pub fn run_status(
                         reference: false,
                         groups: Vec::new(),
                         agent: None,
+                        clone_strategy: crate::core::manifest::CloneStrategy::Clone,
                     };
                     let gs_status = get_repo_status(&gs_repo_info);
                     let status_str = if gs_status.clean {

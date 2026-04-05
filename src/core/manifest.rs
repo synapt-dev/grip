@@ -621,6 +621,42 @@ impl Manifest {
         Ok(())
     }
 
+    /// Lint the manifest for portability issues (warnings, not errors).
+    /// Returns a list of warning messages about absolute paths in hooks,
+    /// scripts, and env values. (#418)
+    pub fn lint_absolute_paths(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+
+        if let Some(ref workspace) = self.workspace {
+            // Check hooks
+            if let Some(ref hooks) = workspace.hooks {
+                for hook in hooks.post_sync.iter().flatten() {
+                    if hook.command.starts_with('/') || is_windows_absolute(&hook.command) {
+                        warnings.push(format!(
+                            "Hook command contains absolute path: {}",
+                            hook.command.chars().take(80).collect::<String>()
+                        ));
+                    }
+                }
+            }
+
+            // Check env values
+            if let Some(ref env) = workspace.env {
+                for (key, val) in env {
+                    if val.starts_with('/') || is_windows_absolute(val) {
+                        warnings.push(format!(
+                            "Env var {} contains absolute path: {}",
+                            key,
+                            val.chars().take(80).collect::<String>()
+                        ));
+                    }
+                }
+            }
+        }
+
+        warnings
+    }
+
     /// Validate a gripspace manifest (allows empty repos since gripspaces may only contribute
     /// scripts, hooks, env, or file configs).
     pub fn validate_as_gripspace(&self) -> Result<(), ManifestError> {

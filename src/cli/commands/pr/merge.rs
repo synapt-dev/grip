@@ -5,10 +5,36 @@ use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
 use crate::core::repo::{get_manifest_repo_info, RepoInfo};
 use crate::git::{get_current_branch, open_repo, path_exists};
-use crate::platform::traits::PlatformError;
-use crate::platform::{get_platform_adapter, CheckState};
+use crate::platform::traits::{HostingPlatform, PlatformError};
+use crate::platform::{get_platform_adapter, CheckState, MergeMethod};
 use std::path::Path;
 use std::sync::Arc;
+
+/// Auto-detect the best merge method for a repo when none is specified.
+///
+/// Queries the repo's allowed merge methods and picks the first available
+/// in preference order: squash > merge > rebase.  Falls back to the
+/// default (merge) if the query fails.
+async fn detect_merge_method(
+    platform: &dyn HostingPlatform,
+    owner: &str,
+    repo: &str,
+) -> MergeMethod {
+    match platform.get_allowed_merge_methods(owner, repo).await {
+        Ok(allowed) => {
+            if allowed.squash {
+                MergeMethod::Squash
+            } else if allowed.merge {
+                MergeMethod::Merge
+            } else if allowed.rebase {
+                MergeMethod::Rebase
+            } else {
+                MergeMethod::default()
+            }
+        }
+        Err(_) => MergeMethod::default(),
+    }
+}
 
 /// Options for the PR merge command.
 pub struct MergeOptions<'a> {
@@ -362,14 +388,20 @@ pub async fn run_pr_merge(
         let mut error_count = 0;
 
         for pr in prs_to_merge {
+            let effective_method = if opts.method.is_some() {
+                merge_method
+            } else {
+                detect_merge_method(pr.platform.as_ref(), &pr.owner, &pr.repo).await
+            };
+
             let spinner = Output::spinner(&format!(
-                "Enabling auto-merge for {} PR #{}...",
-                pr.repo_name, pr.pr_number
+                "Enabling auto-merge for {} PR #{} ({:?})...",
+                pr.repo_name, pr.pr_number, effective_method
             ));
 
             match pr
                 .platform
-                .enable_auto_merge(&pr.owner, &pr.repo, pr.pr_number, Some(merge_method))
+                .enable_auto_merge(&pr.owner, &pr.repo, pr.pr_number, Some(effective_method))
                 .await
             {
                 Ok(true) => {
@@ -428,10 +460,17 @@ pub async fn run_pr_merge(
     let mut json_failed_prs: Vec<JsonFailedPr> = Vec::new();
 
     for pr in prs_to_merge {
+        // Auto-detect merge method per repo when not explicitly set (#380)
+        let effective_method = if opts.method.is_some() {
+            merge_method
+        } else {
+            detect_merge_method(pr.platform.as_ref(), &pr.owner, &pr.repo).await
+        };
+
         let spinner = if !opts.json {
             Some(Output::spinner(&format!(
-                "Merging {} PR #{}...",
-                pr.repo_name, pr.pr_number
+                "Merging {} PR #{} ({:?})...",
+                pr.repo_name, pr.pr_number, effective_method
             )))
         } else {
             None
@@ -443,7 +482,7 @@ pub async fn run_pr_merge(
                 &pr.owner,
                 &pr.repo,
                 pr.pr_number,
-                Some(merge_method),
+                Some(effective_method),
                 opts.delete_branch,
             )
             .await;

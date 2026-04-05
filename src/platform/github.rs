@@ -668,7 +668,8 @@ impl HostingPlatform for GitHubAdapter {
         body: Option<&str>,
     ) -> Result<(), PlatformError> {
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = Self::http_client();
+        let base_url = self.base_url.as_deref().unwrap_or("https://api.github.com");
 
         let gh_event = match event {
             ReviewEvent::Approve => "APPROVE",
@@ -683,8 +684,8 @@ impl HostingPlatform for GitHubAdapter {
 
         let resp = client
             .post(format!(
-                "https://api.github.com/repos/{}/{}/pulls/{}/reviews",
-                owner, repo, pull_number
+                "{}/repos/{}/{}/pulls/{}/reviews",
+                base_url, owner, repo, pull_number
             ))
             .header("Authorization", format!("Bearer {}", token))
             .header("Accept", "application/vnd.github+json")

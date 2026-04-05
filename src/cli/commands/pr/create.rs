@@ -138,6 +138,21 @@ pub async fn run_pr_create(
         .map(|(branch, repos)| BranchGroup { branch, repos })
         .collect();
 
+    // Warn if PRs target main/master — may want a sprint branch (#418)
+    if !json {
+        let default_targets: Vec<&str> = groups
+            .iter()
+            .flat_map(|g| g.repos.iter())
+            .filter(|r| matches!(r.target_branch(), "main" | "master"))
+            .map(|r| r.target_branch())
+            .collect();
+        if !default_targets.is_empty() {
+            Output::warning(
+                "PR targets 'main'. If a sprint branch is active, use `gr target set <branch>` first.",
+            );
+        }
+    }
+
     let multi_branch = groups.len() > 1;
 
     // All results across all branch groups

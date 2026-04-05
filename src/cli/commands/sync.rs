@@ -1010,6 +1010,14 @@ fn execute_post_sync_hooks(
 
     let any_changed = !changed_repos.is_empty();
 
+    // Lint manifest for absolute paths before running hooks (#418)
+    if !quiet && !json {
+        let lint_warnings = manifest.lint_absolute_paths();
+        for warning in &lint_warnings {
+            Output::warning(warning);
+        }
+    }
+
     if !quiet && !json {
         Output::header("Post-Sync Hooks");
         println!();

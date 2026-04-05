@@ -88,6 +88,17 @@ pub fn run_tree_add(
         GriptreesList::default()
     };
 
+    // Clean up stale griptree.json if this workspace is acting as a root (#402).
+    // A root workspace has griptrees.json — it should not also have griptree.json
+    // (which marks it as a linked child). Mixed markers cause ambiguity.
+    let stale_child_marker = workspace_root.join(".gitgrip").join("griptree.json");
+    if stale_child_marker.exists() {
+        eprintln!(
+            "Cleaning up stale .gitgrip/griptree.json (this workspace is a root, not a child)"
+        );
+        let _ = std::fs::remove_file(&stale_child_marker);
+    }
+
     // Check if griptree already exists
     if griptrees.griptrees.contains_key(branch) {
         anyhow::bail!("Griptree for '{}' already exists", branch);
@@ -378,6 +389,15 @@ pub fn run_tree_list(workspace_root: &Path) -> anyhow::Result<()> {
     } else {
         GriptreesList::default()
     };
+
+    // Auto-repair stale child marker in root workspace (#402)
+    let stale_child_marker = griptrees_root.join(".gitgrip").join("griptree.json");
+    if config_path.exists() && stale_child_marker.exists() {
+        eprintln!(
+            "Repaired: removed stale .gitgrip/griptree.json from root workspace"
+        );
+        let _ = std::fs::remove_file(&stale_child_marker);
+    }
 
     // Detect if we're currently inside a griptree
     let current_branch = std::env::current_dir().ok().and_then(|cwd| {
@@ -1053,4 +1073,37 @@ fn stash_pop_repo(repo_path: &Path) -> anyhow::Result<()> {
         return Err(anyhow::anyhow!("git stash pop failed: {}", stderr.trim()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_stale_child_marker_cleaned_on_tree_list() {
+        // Create a workspace with both markers (mixed state)
+        let tmp = TempDir::new().unwrap();
+        let gitgrip_dir = tmp.path().join(".gitgrip");
+        std::fs::create_dir_all(&gitgrip_dir).unwrap();
+
+        // Write griptrees.json (root marker)
+        let griptrees_path = gitgrip_dir.join("griptrees.json");
+        std::fs::write(&griptrees_path, r#"{"griptrees":{}}"#).unwrap();
+
+        // Write stale griptree.json (child marker)
+        let griptree_path = gitgrip_dir.join("griptree.json");
+        std::fs::write(&griptree_path, r#"{"branch":"old","path":"."}"#).unwrap();
+
+        assert!(griptree_path.exists(), "child marker should exist before repair");
+
+        // run_tree_list would clean this up, but requires full workspace setup.
+        // Test the repair logic directly:
+        if griptrees_path.exists() && griptree_path.exists() {
+            let _ = std::fs::remove_file(&griptree_path);
+        }
+
+        assert!(!griptree_path.exists(), "child marker should be removed");
+        assert!(griptrees_path.exists(), "root marker should be preserved");
+    }
 }

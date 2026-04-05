@@ -208,6 +208,7 @@ impl IpcServer {
             writer: writer_mutex,
         });
 
+        let this_session = Arc::clone(&session);
         agents.write().await.insert(agent_id.clone(), session);
 
         let _ = event_tx
@@ -245,13 +246,22 @@ impl IpcServer {
             }
         }
 
-        // Cleanup on disconnect.
-        agents.write().await.remove(&agent_id);
-        let _ = event_tx
-            .send(ServerEvent::AgentDisconnected {
-                agent_id: agent_id.clone(),
-            })
-            .await;
+        // Cleanup on disconnect — only remove if this session is still the active one.
+        // A reconnecting agent may have already replaced this session in the map,
+        // so removing unconditionally would delete the new connection.
+        {
+            let mut map = agents.write().await;
+            if let Some(current) = map.get(&agent_id) {
+                if Arc::ptr_eq(current, &this_session) {
+                    map.remove(&agent_id);
+                    let _ = event_tx
+                        .send(ServerEvent::AgentDisconnected {
+                            agent_id: agent_id.clone(),
+                        })
+                        .await;
+                }
+            }
+        }
 
         info!("Agent disconnected: {}", agent_id);
         Ok(())
@@ -262,5 +272,63 @@ impl Drop for IpcServer {
     fn drop(&mut self) {
         // Clean up socket file.
         let _ = std::fs::remove_file(&self.socket_path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ipc::protocol::{encode, decode, AgentMessage, CoordinatorMessage};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_handshake_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("wake.sock");
+
+        let mut server = IpcServer::new(&sock);
+        let mut event_rx = server.take_event_rx().unwrap();
+        server.start().await.unwrap();
+
+        // Connect as an agent client.
+        let mut stream = transport::connect(&sock).await.unwrap();
+
+        let handshake = AgentMessage::Handshake {
+            agent_id: "atlas".to_string(),
+            watch_channels: vec!["dev".to_string()],
+            watch_targets: vec!["@atlas".to_string()],
+        };
+        let encoded = encode(&handshake).unwrap();
+        stream.write_all(encoded.as_bytes()).await.unwrap();
+        stream.flush().await.unwrap();
+
+        // Read the handshake ack.
+        let (reader, _writer) = tokio::io::split(stream);
+        let mut lines = BufReader::new(reader).lines();
+        let ack_line = lines.next_line().await.unwrap().unwrap();
+        let ack: CoordinatorMessage = decode(&ack_line).unwrap();
+
+        match ack {
+            CoordinatorMessage::HandshakeAck { accepted, fallback_interval_s } => {
+                assert!(accepted);
+                assert_eq!(fallback_interval_s, 120);
+            }
+            _ => panic!("expected HandshakeAck"),
+        }
+
+        // Verify server emitted the connected event.
+        let event = event_rx.recv().await.unwrap();
+        match event {
+            ServerEvent::AgentConnected { agent_id, watch_channels, .. } => {
+                assert_eq!(agent_id, "atlas");
+                assert_eq!(watch_channels, vec!["dev"]);
+            }
+            _ => panic!("expected AgentConnected event"),
+        }
+
+        // Verify agent is in connected list.
+        let agents = server.connected_agents().await;
+        assert!(agents.contains(&"atlas".to_string()));
     }
 }

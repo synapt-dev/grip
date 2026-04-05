@@ -27,6 +27,8 @@ pub struct IpcListener {
     inner: UnixListener,
     #[cfg(windows)]
     name: String,
+    #[cfg(windows)]
+    first: std::sync::Mutex<Option<tokio::net::windows::named_pipe::NamedPipeServer>>,
 }
 
 /// Bind a listener to a socket/pipe path.
@@ -47,9 +49,13 @@ pub async fn bind(path: &Path) -> io::Result<IpcListener> {
 
     #[cfg(windows)]
     {
-        Ok(IpcListener {
-            name: pipe_name_from_path(path),
-        })
+        use tokio::net::windows::named_pipe::ServerOptions;
+        let name = pipe_name_from_path(path);
+        // Create the first pipe instance — must use first_pipe_instance(true).
+        let first = ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(&name)?;
+        Ok(IpcListener { name, first: std::sync::Mutex::new(Some(first)) })
     }
 }
 
@@ -82,9 +88,14 @@ impl IpcListener {
         #[cfg(windows)]
         {
             use tokio::net::windows::named_pipe::ServerOptions;
-            let server = ServerOptions::new()
-                .first_pipe_instance(false)
-                .create(&self.name)?;
+            // Use the pre-created first instance if available, otherwise create a new one.
+            let server = if let Some(first) = self.first.lock().unwrap().take() {
+                first
+            } else {
+                ServerOptions::new()
+                    .first_pipe_instance(false)
+                    .create(&self.name)?
+            };
             server.connect().await?;
             Ok(Box::new(server))
         }

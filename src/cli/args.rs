@@ -755,6 +755,15 @@ pub enum PrCommands {
         #[arg(long)]
         repo: Option<String>,
     },
+    /// Review pull requests (approve, request changes, or comment)
+    Review {
+        /// Review action
+        #[arg(value_enum)]
+        event: crate::platform::ReviewEvent,
+        /// Review comment body (required for comment and request-changes)
+        #[arg(short, long)]
+        body: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

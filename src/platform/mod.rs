@@ -18,7 +18,7 @@ pub use types::{
     AllowedMergeMethods, CheckState, CheckStatusDetails, Issue, IssueCreateOptions,
     IssueCreateResult, IssueLabel, IssueListFilter, IssueState, MergeMethod, PRBase,
     PRCreateResult, PRHead, PRReview, PRState, ParsedRepoInfo, PullRequest, ReleaseResult,
-    StatusCheck, StatusCheckResult,
+    ReviewEvent, StatusCheck, StatusCheckResult,
 };
 
 use crate::core::manifest::PlatformType;

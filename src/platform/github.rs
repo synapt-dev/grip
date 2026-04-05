@@ -659,6 +659,54 @@ impl HostingPlatform for GitHubAdapter {
             .collect())
     }
 
+    async fn create_pull_request_review(
+        &self,
+        owner: &str,
+        repo: &str,
+        pull_number: u64,
+        event: ReviewEvent,
+        body: Option<&str>,
+    ) -> Result<(), PlatformError> {
+        let token = self.get_token().await?;
+        let client = Self::http_client();
+        let base_url = self.base_url.as_deref().unwrap_or("https://api.github.com");
+
+        let gh_event = match event {
+            ReviewEvent::Approve => "APPROVE",
+            ReviewEvent::RequestChanges => "REQUEST_CHANGES",
+            ReviewEvent::Comment => "COMMENT",
+        };
+
+        let mut payload = serde_json::json!({ "event": gh_event });
+        if let Some(b) = body {
+            payload["body"] = serde_json::Value::String(b.to_string());
+        }
+
+        let resp = client
+            .post(format!(
+                "{}/repos/{}/{}/pulls/{}/reviews",
+                base_url, owner, repo, pull_number
+            ))
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "gitgrip")
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| PlatformError::ApiError(format!("Failed to create review: {}", e)))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(PlatformError::ApiError(format!(
+                "Review creation failed ({}): {}",
+                status, text
+            )));
+        }
+
+        Ok(())
+    }
+
     async fn get_status_checks(
         &self,
         owner: &str,

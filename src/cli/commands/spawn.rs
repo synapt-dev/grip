@@ -35,6 +35,9 @@ pub struct SpawnGlobal {
     /// Global environment variables injected into all agent sessions.
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// Org ID for the agent registry. Defaults to session_name if not set.
+    #[serde(default)]
+    pub org_id: Option<String>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -258,11 +261,37 @@ pub fn run_spawn_up(
             .args(["set-option", "-t", &target, "remain-on-exit", "on"])
             .status();
 
-        // Send environment variables — GRIPSPACE_ROOT first (#418)
+        // Register agent in org registry and get stable ID (#510)
+        let org_id = config
+            .spawn
+            .org_id
+            .as_deref()
+            .unwrap_or(&config.spawn.session_name);
+        let org_dir = crate::core::agent_registry::org_dir(org_id);
+        let agent_id = match crate::core::agent_registry::get_agent_by_name(&org_dir, org_id, name)
+        {
+            Ok(Some(entry)) => entry.agent_id,
+            _ => {
+                match crate::core::agent_registry::register_agent(
+                    &org_dir,
+                    org_id,
+                    name,
+                    Some(&agent.role),
+                ) {
+                    Ok(id) => id,
+                    Err(e) => {
+                        Output::warning(&format!("Failed to register agent '{}': {}", name, e));
+                        format!("{}-000", name.to_lowercase())
+                    }
+                }
+            }
+        };
+
+        // Send environment variables — GRIPSPACE_ROOT + SYNAPT_AGENT_ID first (#418, #510)
         let grip_root = workspace_root.display();
         let env_cmd = format!(
-            "export GRIPSPACE_ROOT=\"{}\" AGENT_NAME={} AGENT_ROLE=\"{}\" SYNAPT_CHANNELS={} SYNAPT_LOOP_INTERVAL={}",
-            grip_root, name, agent.role, channel, agent.loop_interval
+            "export GRIPSPACE_ROOT=\"{}\" SYNAPT_AGENT_ID=\"{}\" AGENT_NAME={} AGENT_ROLE=\"{}\" SYNAPT_CHANNELS={} SYNAPT_LOOP_INTERVAL={}",
+            grip_root, agent_id, name, agent.role, channel, agent.loop_interval
         );
         let _ = Command::new("tmux")
             .args(["send-keys", "-t", &target, &env_cmd, "Enter"])

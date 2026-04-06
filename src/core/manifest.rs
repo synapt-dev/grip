@@ -572,8 +572,7 @@ impl Manifest {
         if repo.reference {
             return CloneStrategy::Clone;
         }
-        repo.clone_strategy
-            .unwrap_or(self.settings.clone_strategy)
+        repo.clone_strategy.unwrap_or(self.settings.clone_strategy)
     }
 
     /// Validate the manifest

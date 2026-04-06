@@ -265,21 +265,14 @@ fn run_init_from_url(url: Option<&str>, path: Option<&str>) -> anyhow::Result<()
             }
 
             // Resolve URL from config or remotes
-            let url = config
-                .url
-                .clone()
-                .or_else(|| {
-                    config.remote.as_ref().and_then(|remote_name| {
-                        manifest
-                            .remotes
-                            .as_ref()?
-                            .get(remote_name)
-                            .map(|rc| {
-                                let base = rc.fetch.trim_end_matches('/');
-                                format!("{}/{}.git", base, name)
-                            })
+            let url = config.url.clone().or_else(|| {
+                config.remote.as_ref().and_then(|remote_name| {
+                    manifest.remotes.as_ref()?.get(remote_name).map(|rc| {
+                        let base = rc.fetch.trim_end_matches('/');
+                        format!("{}/{}.git", base, name)
                     })
-                });
+                })
+            });
 
             let url = match url {
                 Some(u) if !u.is_empty() => u,
@@ -308,11 +301,7 @@ fn run_init_from_url(url: Option<&str>, path: Option<&str>) -> anyhow::Result<()
         if failed.is_empty() {
             spinner.finish_with_message(format!("All {} repositories cloned", cloned));
         } else {
-            spinner.finish_with_message(format!(
-                "{} cloned, {} failed",
-                cloned,
-                failed.len()
-            ));
+            spinner.finish_with_message(format!("{} cloned, {} failed", cloned, failed.len()));
             for (name, err) in &failed {
                 Output::warning(&format!("  {} - {}", name, err));
             }

@@ -393,9 +393,7 @@ pub fn run_tree_list(workspace_root: &Path) -> anyhow::Result<()> {
     // Auto-repair stale child marker in root workspace (#402)
     let stale_child_marker = griptrees_root.join(".gitgrip").join("griptree.json");
     if config_path.exists() && stale_child_marker.exists() {
-        eprintln!(
-            "Repaired: removed stale .gitgrip/griptree.json from root workspace"
-        );
+        eprintln!("Repaired: removed stale .gitgrip/griptree.json from root workspace");
         let _ = std::fs::remove_file(&stale_child_marker);
     }
 
@@ -1095,7 +1093,10 @@ mod tests {
         let griptree_path = gitgrip_dir.join("griptree.json");
         std::fs::write(&griptree_path, r#"{"branch":"old","path":"."}"#).unwrap();
 
-        assert!(griptree_path.exists(), "child marker should exist before repair");
+        assert!(
+            griptree_path.exists(),
+            "child marker should exist before repair"
+        );
 
         // run_tree_list would clean this up, but requires full workspace setup.
         // Test the repair logic directly:

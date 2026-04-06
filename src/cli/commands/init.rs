@@ -319,48 +319,9 @@ fn run_init_from_url(url: Option<&str>, path: Option<&str>) -> anyhow::Result<()
         }
     }
 
-    // Apply linkfiles and copyfiles
-    {
-        let mut link_count = 0;
-        for (_name, config) in &manifest.repos {
-            let repo_path = target_dir.join(&config.path);
-            if let Some(ref linkfiles) = config.linkfile {
-                for lf in linkfiles {
-                    let src = repo_path.join(&lf.src);
-                    let dest = target_dir.join(&lf.dest);
-                    if src.exists() {
-                        if let Some(parent) = dest.parent() {
-                            let _ = std::fs::create_dir_all(parent);
-                        }
-                        match std::os::unix::fs::symlink(&src, &dest) {
-                            Ok(_) => link_count += 1,
-                            Err(e) => {
-                                Output::warning(&format!("Link {} -> {}: {}", lf.src, lf.dest, e));
-                            }
-                        }
-                    }
-                }
-            }
-            if let Some(ref copyfiles) = config.copyfile {
-                for cf in copyfiles {
-                    let src = repo_path.join(&cf.src);
-                    let dest = target_dir.join(&cf.dest);
-                    if src.exists() {
-                        if let Some(parent) = dest.parent() {
-                            let _ = std::fs::create_dir_all(parent);
-                        }
-                        if let Err(e) = std::fs::copy(&src, &dest) {
-                            Output::warning(&format!("Copy {} -> {}: {}", cf.src, cf.dest, e));
-                        } else {
-                            link_count += 1;
-                        }
-                    }
-                }
-            }
-        }
-        if link_count > 0 {
-            Output::success(&format!("Applied {} file link(s)", link_count));
-        }
+    // Apply linkfiles and copyfiles using the same cross-platform logic as gr sync
+    if let Err(e) = super::link::apply_links(&target_dir, &manifest, false) {
+        Output::warning(&format!("Link application: {}", e));
     }
 
     println!();

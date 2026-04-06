@@ -55,7 +55,10 @@ pub async fn bind(path: &Path) -> io::Result<IpcListener> {
         let first = ServerOptions::new()
             .first_pipe_instance(true)
             .create(&name)?;
-        Ok(IpcListener { name, first: std::sync::Mutex::new(Some(first)) })
+        Ok(IpcListener {
+            name,
+            first: std::sync::Mutex::new(Some(first)),
+        })
     }
 }
 
@@ -104,10 +107,7 @@ impl IpcListener {
 
 #[cfg(windows)]
 fn pipe_name_from_path(path: &Path) -> String {
-    let name = path
-        .to_string_lossy()
-        .replace('/', "-")
-        .replace('\\', "-");
+    let name = path.to_string_lossy().replace('/', "-").replace('\\', "-");
     format!(r"\\.\pipe\gitgrip-{}", name)
 }
 

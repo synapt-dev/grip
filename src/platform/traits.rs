@@ -44,6 +44,7 @@ pub struct LinkedPRRef {
 /// Interface for hosting platform adapters
 /// Each platform (GitHub, GitLab, Azure DevOps) implements this trait
 #[async_trait]
+#[allow(clippy::too_many_arguments)]
 pub trait HostingPlatform: Send + Sync {
     /// Platform type identifier
     fn platform_type(&self) -> PlatformType;

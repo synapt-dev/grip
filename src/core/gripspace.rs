@@ -945,7 +945,8 @@ repos:
                         platform: None,
                         reference: false,
                         groups: Vec::new(),
-                        agent: None, clone_strategy: None,
+                        agent: None,
+                        clone_strategy: None,
                     },
                 );
                 m
@@ -1009,7 +1010,8 @@ repos:
                         platform: None,
                         reference: false,
                         groups: Vec::new(),
-                        agent: None, clone_strategy: None,
+                        agent: None,
+                        clone_strategy: None,
                     },
                 );
                 m
@@ -1090,7 +1092,8 @@ repos:
                         platform: None,
                         reference: false,
                         groups: vec!["local-group".to_string()],
-                        agent: None, clone_strategy: None,
+                        agent: None,
+                        clone_strategy: None,
                     },
                 );
                 m

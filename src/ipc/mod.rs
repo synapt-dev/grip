@@ -15,5 +15,5 @@ pub mod server;
 pub mod transport;
 
 pub use error::{IpcError, IpcResult};
-pub use protocol::{AgentMessage, CoordinatorMessage, WakeReason, WakePriority};
+pub use protocol::{AgentMessage, CoordinatorMessage, WakePriority, WakeReason};
 pub use server::{IpcServer, ServerEvent};

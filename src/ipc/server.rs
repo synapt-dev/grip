@@ -12,13 +12,15 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
 use super::error::{IpcError, IpcResult};
-use super::protocol::{encode, decode, AgentMessage, CoordinatorMessage, WakeReason};
+use super::protocol::{decode, encode, AgentMessage, CoordinatorMessage, WakeReason};
 use super::transport::{self, IpcListener, IpcStream};
 
 /// Connected agent session.
 struct AgentSession {
+    #[allow(dead_code)]
     agent_id: String,
     watch_channels: Vec<String>,
+    #[allow(dead_code)]
     watch_targets: Vec<String>,
     writer: tokio::sync::Mutex<Box<dyn tokio::io::AsyncWrite + Unpin + Send>>,
 }
@@ -33,14 +35,9 @@ pub enum ServerEvent {
         watch_targets: Vec<String>,
     },
     /// Agent acknowledged wakes up to a sequence number.
-    AgentAck {
-        agent_id: String,
-        up_to_seq: u64,
-    },
+    AgentAck { agent_id: String, up_to_seq: u64 },
     /// Agent disconnected.
-    AgentDisconnected {
-        agent_id: String,
-    },
+    AgentDisconnected { agent_id: String },
 }
 
 /// IPC server that accepts agent connections and dispatches wake messages.
@@ -139,9 +136,7 @@ impl IpcServer {
                     let agents = Arc::clone(&agents);
                     let event_tx = event_tx.clone();
                     tokio::spawn(async move {
-                        if let Err(e) =
-                            Self::handle_connection(stream, agents, event_tx).await
-                        {
+                        if let Err(e) = Self::handle_connection(stream, agents, event_tx).await {
                             debug!("Connection ended: {}", e);
                         }
                     });
@@ -192,12 +187,15 @@ impl IpcServer {
             fallback_interval_s: 120,
         };
         let writer = Box::new(writer);
-        let writer_mutex = tokio::sync::Mutex::new(writer as Box<dyn tokio::io::AsyncWrite + Unpin + Send>);
+        let writer_mutex =
+            tokio::sync::Mutex::new(writer as Box<dyn tokio::io::AsyncWrite + Unpin + Send>);
 
         {
             let mut w = writer_mutex.lock().await;
             let encoded = encode(&ack)?;
-            w.write_all(encoded.as_bytes()).await.map_err(IpcError::Io)?;
+            w.write_all(encoded.as_bytes())
+                .await
+                .map_err(IpcError::Io)?;
             w.flush().await.map_err(IpcError::Io)?;
         }
 
@@ -278,7 +276,7 @@ impl Drop for IpcServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ipc::protocol::{encode, decode, AgentMessage, CoordinatorMessage};
+    use crate::ipc::protocol::{decode, encode, AgentMessage, CoordinatorMessage};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     #[cfg(unix)]
@@ -310,7 +308,10 @@ mod tests {
         let ack: CoordinatorMessage = decode(&ack_line).unwrap();
 
         match ack {
-            CoordinatorMessage::HandshakeAck { accepted, fallback_interval_s } => {
+            CoordinatorMessage::HandshakeAck {
+                accepted,
+                fallback_interval_s,
+            } => {
                 assert!(accepted);
                 assert_eq!(fallback_interval_s, 120);
             }
@@ -320,7 +321,11 @@ mod tests {
         // Verify server emitted the connected event.
         let event = event_rx.recv().await.unwrap();
         match event {
-            ServerEvent::AgentConnected { agent_id, watch_channels, .. } => {
+            ServerEvent::AgentConnected {
+                agent_id,
+                watch_channels,
+                ..
+            } => {
                 assert_eq!(agent_id, "atlas");
                 assert_eq!(watch_channels, vec!["dev"]);
             }

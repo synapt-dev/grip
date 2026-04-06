@@ -12,6 +12,7 @@ use std::path::Path;
 use std::process::Command;
 
 /// Run the grep command
+#[allow(clippy::too_many_arguments)]
 pub fn run_grep(
     workspace_root: &Path,
     manifest: &Manifest,

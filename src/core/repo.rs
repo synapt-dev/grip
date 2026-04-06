@@ -135,9 +135,7 @@ impl RepoInfo {
             clone_strategy: if config.reference {
                 CloneStrategy::Clone
             } else {
-                config
-                    .clone_strategy
-                    .unwrap_or(settings.clone_strategy)
+                config.clone_strategy.unwrap_or(settings.clone_strategy)
             },
         })
     }
@@ -631,7 +629,8 @@ mod tests {
                 platform: None,
                 reference: false,
                 groups: vec![],
-                agent: None, clone_strategy: None,
+                agent: None,
+                clone_strategy: None,
             },
         );
         repos.insert(
@@ -649,7 +648,8 @@ mod tests {
                 platform: None,
                 reference: false,
                 groups: vec![],
-                agent: None, clone_strategy: None,
+                agent: None,
+                clone_strategy: None,
             },
         );
 
@@ -698,7 +698,8 @@ mod tests {
                 platform: None,
                 reference: true,
                 groups: vec![],
-                agent: None, clone_strategy: None,
+                agent: None,
+                clone_strategy: None,
             },
         );
         repos.insert(
@@ -716,7 +717,8 @@ mod tests {
                 platform: None,
                 reference: false,
                 groups: vec![],
-                agent: None, clone_strategy: None,
+                agent: None,
+                clone_strategy: None,
             },
         );
 
@@ -762,7 +764,8 @@ mod tests {
                 platform: None,
                 reference: false,
                 groups: vec!["web".to_string()],
-                agent: None, clone_strategy: None,
+                agent: None,
+                clone_strategy: None,
             },
         );
         repos.insert(
@@ -780,7 +783,8 @@ mod tests {
                 platform: None,
                 reference: false,
                 groups: vec!["api".to_string()],
-                agent: None, clone_strategy: None,
+                agent: None,
+                clone_strategy: None,
             },
         );
 
@@ -827,7 +831,8 @@ mod tests {
             platform: None,
             reference: false,
             groups: vec![],
-            agent: None, clone_strategy: None,
+            agent: None,
+            clone_strategy: None,
         };
         let settings = ManifestSettings::default();
         let info =
@@ -849,7 +854,8 @@ mod tests {
             platform: None,
             reference: false,
             groups: vec![],
-            agent: None, clone_strategy: None,
+            agent: None,
+            clone_strategy: None,
         };
         let settings = ManifestSettings {
             revision: Some("master".to_string()),
@@ -887,7 +893,8 @@ mod tests {
             platform: None,
             reference: false,
             groups: vec![],
-            agent: None, clone_strategy: None,
+            agent: None,
+            clone_strategy: None,
         };
 
         // No target → falls back to revision
@@ -955,7 +962,8 @@ mod tests {
             platform: None,
             reference: false,
             groups: vec![],
-            agent: None, clone_strategy: None,
+            agent: None,
+            clone_strategy: None,
         };
 
         // Defaults to "origin"
@@ -1029,7 +1037,8 @@ mod tests {
             platform: None,
             reference: false,
             groups: vec![],
-            agent: None, clone_strategy: None,
+            agent: None,
+            clone_strategy: None,
         };
         let settings = ManifestSettings::default();
         let info = RepoInfo::from_config(

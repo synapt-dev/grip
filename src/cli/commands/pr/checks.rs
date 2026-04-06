@@ -148,9 +148,8 @@ pub async fn run_pr_checks(
                     .any(|c| c.state == "failure" || c.state == "error")
                 {
                     CheckState::Failure
-                } else if check_infos.iter().any(|c| c.state != "success") {
-                    CheckState::Pending
-                } else if check_infos.is_empty() {
+                } else if check_infos.is_empty() || check_infos.iter().any(|c| c.state != "success")
+                {
                     CheckState::Pending
                 } else {
                     CheckState::Success

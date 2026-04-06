@@ -1,5 +1,6 @@
 //! Core business logic for gitgrip
 
+pub mod agent_registry;
 pub mod detect;
 pub mod gripspace;
 pub mod griptree;

@@ -18,7 +18,13 @@ CREATE TABLE IF NOT EXISTS org_agents (
     role TEXT,
     org_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    last_seen_at TEXT
+    last_seen_at TEXT,
+    -- Process tracking columns (Sprint 9 Mission Control)
+    pid INTEGER,
+    tmux_target TEXT,
+    status TEXT DEFAULT 'offline',
+    log_path TEXT,
+    session_id TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_org_display
     ON org_agents(org_id, display_name);
@@ -163,6 +169,38 @@ pub fn rename_agent(org_dir: &Path, agent_id: &str, new_display_name: &str) -> R
     let updated = conn.execute(
         "UPDATE org_agents SET display_name = ? WHERE agent_id = ?",
         rusqlite::params![new_display_name, agent_id],
+    )?;
+    if updated == 0 {
+        anyhow::bail!("Agent '{}' not found", agent_id);
+    }
+    Ok(())
+}
+
+/// Update an agent's process state (called by gr spawn).
+pub fn update_process_state(
+    org_dir: &Path,
+    agent_id: &str,
+    pid: Option<u32>,
+    tmux_target: Option<&str>,
+    status: &str,
+    log_path: Option<&str>,
+    session_id: Option<&str>,
+) -> Result<()> {
+    let conn = open_db(org_dir)?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let updated = conn.execute(
+        "UPDATE org_agents SET pid = ?1, tmux_target = ?2, status = ?3, \
+         log_path = ?4, session_id = ?5, last_seen_at = ?6 \
+         WHERE agent_id = ?7",
+        rusqlite::params![
+            pid.map(|p| p as i64),
+            tmux_target,
+            status,
+            log_path,
+            session_id,
+            now,
+            agent_id,
+        ],
     )?;
     if updated == 0 {
         anyhow::bail!("Agent '{}' not found", agent_id);

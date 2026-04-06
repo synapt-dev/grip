@@ -12,7 +12,7 @@ Thank you for your interest in contributing to gitgrip! This document provides g
 
 ```bash
 # Clone the repository
-git clone git@github.com:laynepenney/gitgrip.git
+git clone git@github.com:laynepenney/grip.git
 cd gitgrip
 
 # Build the project
@@ -201,7 +201,7 @@ The PR for gitgrip changes should be created from the `tooling` repo's perspecti
 ```bash
 gh pr create  # From the tooling directory
 ```
-This creates the PR for `github.com/laynepenney/gitgrip`, not the workspace manifest.
+This creates the PR for `github.com/laynepenney/grip`, not the workspace manifest.
 
 ## Documentation
 

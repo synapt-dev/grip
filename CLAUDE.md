@@ -177,7 +177,7 @@ When creating a new release:
 
 3. **Create GitHub release:**
    ```bash
-   gh release create vX.Y.Z --repo laynepenney/gitgrip --title "vX.Y.Z" --notes "Release notes..."
+   gh release create vX.Y.Z --repo laynepenney/grip --title "vX.Y.Z" --notes "Release notes..."
    ```
    This triggers GitHub Actions to automatically:
    - Build binaries for all platforms
@@ -190,7 +190,7 @@ When creating a new release:
 
    ```bash
    # Get SHA256 of the new release tarball
-   curl -sL https://github.com/laynepenney/gitgrip/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256
+   curl -sL https://github.com/laynepenney/grip/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256
 
    # Update the formula
    # Edit homebrew-tap/Formula/gitgrip.rb:

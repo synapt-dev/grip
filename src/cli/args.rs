@@ -69,6 +69,11 @@ pub enum Commands {
         from_repo: bool,
     },
     /// Sync all repositories
+    /// Migrate existing repos into a new gripspace
+    Migrate {
+        #[command(subcommand)]
+        action: MigrateCommands,
+    },
     Sync {
         /// Force sync even with local changes
         #[arg(short, long)]
@@ -927,5 +932,30 @@ pub enum RepoCommands {
         /// Delete files from disk
         #[arg(long)]
         delete: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum MigrateCommands {
+    /// Generate a gripspace from existing GitHub repos
+    FromRepos {
+        /// GitHub repos to include (format: owner/repo)
+        #[arg(long = "repo", required = true)]
+        repos: Vec<String>,
+        /// GitHub org for manifest + config repos
+        #[arg(long)]
+        org: Option<String>,
+        /// Prefix for manifest/config repo names
+        #[arg(long)]
+        prefix: Option<String>,
+        /// Target directory for the gripspace
+        #[arg(short, long)]
+        path: Option<String>,
+        /// Create manifest + config repos on GitHub
+        #[arg(long)]
+        create_repos: bool,
+        /// Make created repos private
+        #[arg(long)]
+        private: bool,
     },
 }

@@ -329,6 +329,26 @@ pub async fn dispatch_command(
                 }
             }
         }
+        Some(Commands::Migrate { action }) => {
+            use crate::cli::args::MigrateCommands;
+            match action {
+                MigrateCommands::FromRepos {
+                    repos,
+                    org,
+                    prefix,
+                    path,
+                } => {
+                    crate::cli::commands::migrate::run_migrate_from_repos(
+                        &repos,
+                        org.as_deref(),
+                        prefix.as_deref(),
+                        path.as_deref(),
+                        json,
+                    )
+                    .await?;
+                }
+            }
+        }
         Some(Commands::Init {
             url,
             path,

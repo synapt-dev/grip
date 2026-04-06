@@ -68,6 +68,11 @@ pub enum Commands {
         #[arg(long, conflicts_with_all = ["from_dirs", "url"])]
         from_repo: bool,
     },
+    /// Migrate existing repos into a new gripspace
+    Migrate {
+        #[command(subcommand)]
+        action: MigrateCommands,
+    },
     /// Sync all repositories
     Sync {
         /// Force sync even with local changes
@@ -927,5 +932,24 @@ pub enum RepoCommands {
         /// Delete files from disk
         #[arg(long)]
         delete: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum MigrateCommands {
+    /// Generate a gripspace from existing GitHub repos
+    FromRepos {
+        /// GitHub repos to include (format: owner/repo)
+        #[arg(long = "repo", required = true)]
+        repos: Vec<String>,
+        /// GitHub org for manifest + config repos
+        #[arg(long)]
+        org: Option<String>,
+        /// Prefix for manifest/config repo names
+        #[arg(long)]
+        prefix: Option<String>,
+        /// Target directory for the gripspace
+        #[arg(short, long)]
+        path: Option<String>,
     },
 }

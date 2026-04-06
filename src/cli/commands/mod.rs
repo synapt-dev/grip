@@ -21,6 +21,7 @@ pub mod init;
 pub mod issue;
 pub mod link;
 pub mod manifest;
+pub mod migrate;
 pub mod pr;
 pub mod prune;
 pub mod pull;

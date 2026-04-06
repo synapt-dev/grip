@@ -754,6 +754,7 @@ fn execute_redirected_command(
 }
 
 /// Run the forall command
+#[allow(clippy::too_many_arguments)]
 pub fn run_forall(
     workspace_root: &Path,
     manifest: &Manifest,

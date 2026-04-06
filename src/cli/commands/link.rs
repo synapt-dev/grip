@@ -735,7 +735,8 @@ mod tests {
                 platform: None,
                 reference: false,
                 groups: Vec::new(),
-                agent: None, clone_strategy: None,
+                agent: None,
+                clone_strategy: None,
             },
         );
 
@@ -930,7 +931,8 @@ mod tests {
                 platform: None,
                 reference: false,
                 groups: Vec::new(),
-                agent: None, clone_strategy: None,
+                agent: None,
+                clone_strategy: None,
             },
         );
 

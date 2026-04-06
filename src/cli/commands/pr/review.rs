@@ -81,14 +81,10 @@ pub async fn run_pr_review(
             .await
         {
             Ok(Some(pr)) => {
-                let spinner = Output::spinner(&format!(
-                    "Reviewing {} PR #{}...",
-                    repo.name, pr.number
-                ));
+                let spinner =
+                    Output::spinner(&format!("Reviewing {} PR #{}...", repo.name, pr.number));
                 match platform
-                    .create_pull_request_review(
-                        &repo.owner, &repo.repo, pr.number, event, body,
-                    )
+                    .create_pull_request_review(&repo.owner, &repo.repo, pr.number, event, body)
                     .await
                 {
                     Ok(()) => {

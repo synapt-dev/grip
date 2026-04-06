@@ -51,9 +51,7 @@ pub enum AgentMessage {
         watch_targets: Vec<String>,
     },
     /// Acknowledge processed wakes up to a sequence number.
-    Ack {
-        up_to_seq: u64,
-    },
+    Ack { up_to_seq: u64 },
     /// Agent is alive (response to ping).
     Pong,
     /// Agent is shutting down gracefully.
@@ -71,9 +69,7 @@ pub enum CoordinatorMessage {
         fallback_interval_s: u64,
     },
     /// Wake the agent — something needs attention.
-    Wake {
-        reason: WakeReason,
-    },
+    Wake { reason: WakeReason },
     /// Health check.
     Ping,
     /// Coordinator is shutting down.

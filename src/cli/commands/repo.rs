@@ -180,9 +180,9 @@ pub fn run_repo_remove(
 
         if skip_until_next_repo {
             // Check if this is a new repo entry or top-level key
-            if line.starts_with("  ") && !line.starts_with("    ") && line.contains(':') {
-                skip_until_next_repo = false;
-            } else if !line.starts_with("  ") && !line.starts_with("    ") {
+            if (line.starts_with("  ") && !line.starts_with("    ") && line.contains(':'))
+                || (!line.starts_with("  ") && !line.starts_with("    "))
+            {
                 skip_until_next_repo = false;
             } else {
                 continue;

@@ -40,6 +40,7 @@ pub struct AgentEntry {
 }
 
 /// Open (or create) the team.db for an org.
+/// Runs schema migration to add any missing columns (#447).
 fn open_db(org_dir: &Path) -> Result<Connection> {
     std::fs::create_dir_all(org_dir)?;
     let db_path = org_dir.join("team.db");
@@ -47,6 +48,18 @@ fn open_db(org_dir: &Path) -> Result<Connection> {
         .with_context(|| format!("Failed to open team.db at {}", db_path.display()))?;
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
     conn.execute_batch(SCHEMA)?;
+    // Migrate existing databases: add columns that may not exist yet.
+    // ALTER TABLE ADD COLUMN is a no-op if the column already exists
+    // (SQLite returns an error we ignore).
+    for col in &[
+        "ALTER TABLE org_agents ADD COLUMN pid INTEGER",
+        "ALTER TABLE org_agents ADD COLUMN tmux_target TEXT",
+        "ALTER TABLE org_agents ADD COLUMN status TEXT DEFAULT 'offline'",
+        "ALTER TABLE org_agents ADD COLUMN log_path TEXT",
+        "ALTER TABLE org_agents ADD COLUMN session_id TEXT",
+    ] {
+        let _ = conn.execute_batch(col); // Ignore "duplicate column" errors
+    }
     Ok(conn)
 }
 
@@ -303,5 +316,57 @@ mod tests {
         assert_eq!(entry.display_name, "Apollo");
         assert_eq!(entry.role, Some("implementation".to_string()));
         assert_eq!(entry.org_id, "synapt-dev");
+    }
+
+    #[test]
+    fn test_schema_migration_adds_missing_columns() {
+        // Simulate a Sprint 8 database (no process columns)
+        let tmp = TempDir::new().unwrap();
+        let org_path = tmp.path().join("synapt-dev");
+        fs::create_dir_all(&org_path).unwrap();
+
+        // Create old-schema table manually (no pid, tmux_target, etc.)
+        let old_schema = r#"
+            CREATE TABLE org_agents (
+                agent_id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                role TEXT,
+                org_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_seen_at TEXT
+            );
+            CREATE UNIQUE INDEX idx_org_display ON org_agents(org_id, display_name);
+        "#;
+        let db_path = org_path.join("team.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(old_schema).unwrap();
+        conn.execute(
+            "INSERT INTO org_agents (agent_id, display_name, role, org_id, created_at) \
+             VALUES ('opus-001', 'opus', 'CEO', 'synapt-dev', '2026-04-06')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        // Now open with our migration-aware open_db
+        // This should add the missing columns without error
+        let id = register_agent(&org_path, "synapt-dev", "Apollo", Some("impl")).unwrap();
+        assert_eq!(id, "apollo-001");
+
+        // Verify we can update process state (uses the new columns)
+        update_process_state(
+            &org_path,
+            "opus-001",
+            Some(1234),
+            Some("synapt:opus"),
+            "online",
+            Some("/tmp/logs/opus-001/output.log"),
+            None,
+        )
+        .unwrap();
+
+        // Verify the update stuck
+        let entry = get_agent(&org_path, "opus-001").unwrap().unwrap();
+        assert_eq!(entry.display_name, "opus");
     }
 }

@@ -68,7 +68,6 @@ pub enum Commands {
         #[arg(long, conflicts_with_all = ["from_dirs", "url"])]
         from_repo: bool,
     },
-    /// Sync all repositories
     /// Migrate existing repos into a new gripspace
     Migrate {
         #[command(subcommand)]

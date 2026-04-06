@@ -214,12 +214,7 @@ fn generate_manifest_yaml(repos: &[(String, String)], org: &str, prefix: &str) -
         "  url: https://github.com/{}/{}-gripspace.git\n",
         org, prefix
     ));
-    yaml.push_str("  revision: main\n");
-    yaml.push_str("  linkfile:\n");
-    yaml.push_str("    - src: config/CLAUDE.md\n");
-    yaml.push_str("      dest: CLAUDE.md\n");
-    yaml.push_str("    - src: config/agents.toml\n");
-    yaml.push_str("      dest: .gitgrip/agents.toml\n\n");
+    yaml.push_str("  revision: main\n\n");
 
     // Repos
     yaml.push_str("repos:\n");
@@ -233,14 +228,19 @@ fn generate_manifest_yaml(repos: &[(String, String)], org: &str, prefix: &str) -
         yaml.push_str("    revision: main\n\n");
     }
 
-    // Config repo
+    // Config repo — linkfiles source CLAUDE.md and agents.toml into workspace root
     yaml.push_str(&format!("  {}-config:\n", prefix));
     yaml.push_str(&format!(
         "    url: https://github.com/{}/{}-config.git\n",
         org, prefix
     ));
     yaml.push_str("    path: ./config\n");
-    yaml.push_str("    revision: main\n\n");
+    yaml.push_str("    revision: main\n");
+    yaml.push_str("    linkfile:\n");
+    yaml.push_str("      - src: CLAUDE.md\n");
+    yaml.push_str("        dest: CLAUDE.md\n");
+    yaml.push_str("      - src: agents.toml\n");
+    yaml.push_str("        dest: .gitgrip/agents.toml\n\n");
 
     // Settings
     yaml.push_str("settings:\n");

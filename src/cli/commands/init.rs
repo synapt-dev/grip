@@ -250,12 +250,125 @@ fn run_init_from_url(url: Option<&str>, path: Option<&str>) -> anyhow::Result<()
         Output::warning(&format!("Manifest validation: {}", e));
     }
 
+    // Clone all repos from the manifest
+    let repo_count = manifest.repos.len();
+    if repo_count > 0 {
+        println!();
+        let spinner = Output::spinner(&format!("Cloning {} repositories...", repo_count));
+        let mut cloned = 0;
+        let mut failed = Vec::new();
+
+        for (name, config) in &manifest.repos {
+            let repo_path = target_dir.join(&config.path);
+            if repo_path.exists() {
+                continue;
+            }
+
+            // Resolve URL from config or remotes
+            let url = config
+                .url
+                .clone()
+                .or_else(|| {
+                    config.remote.as_ref().and_then(|remote_name| {
+                        manifest
+                            .remotes
+                            .as_ref()?
+                            .get(remote_name)
+                            .map(|rc| {
+                                let base = rc.fetch.trim_end_matches('/');
+                                format!("{}/{}.git", base, name)
+                            })
+                    })
+                });
+
+            let url = match url {
+                Some(u) if !u.is_empty() => u,
+                _ => {
+                    failed.push((name.clone(), "no URL configured".to_string()));
+                    continue;
+                }
+            };
+
+            let revision = config
+                .revision
+                .as_deref()
+                .or(manifest.settings.revision.as_deref());
+
+            match clone_repo(&url, &repo_path, revision) {
+                Ok(_) => {
+                    cloned += 1;
+                    spinner.set_message(format!("Cloned {}/{}: {}", cloned, repo_count, name));
+                }
+                Err(e) => {
+                    failed.push((name.clone(), format!("{}", e)));
+                }
+            }
+        }
+
+        if failed.is_empty() {
+            spinner.finish_with_message(format!("All {} repositories cloned", cloned));
+        } else {
+            spinner.finish_with_message(format!(
+                "{} cloned, {} failed",
+                cloned,
+                failed.len()
+            ));
+            for (name, err) in &failed {
+                Output::warning(&format!("  {} - {}", name, err));
+            }
+        }
+    }
+
+    // Apply linkfiles and copyfiles
+    {
+        let mut link_count = 0;
+        for (_name, config) in &manifest.repos {
+            let repo_path = target_dir.join(&config.path);
+            if let Some(ref linkfiles) = config.linkfile {
+                for lf in linkfiles {
+                    let src = repo_path.join(&lf.src);
+                    let dest = target_dir.join(&lf.dest);
+                    if src.exists() {
+                        if let Some(parent) = dest.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        match std::os::unix::fs::symlink(&src, &dest) {
+                            Ok(_) => link_count += 1,
+                            Err(e) => {
+                                Output::warning(&format!("Link {} -> {}: {}", lf.src, lf.dest, e));
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(ref copyfiles) = config.copyfile {
+                for cf in copyfiles {
+                    let src = repo_path.join(&cf.src);
+                    let dest = target_dir.join(&cf.dest);
+                    if src.exists() {
+                        if let Some(parent) = dest.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        if let Err(e) = std::fs::copy(&src, &dest) {
+                            Output::warning(&format!("Copy {} -> {}: {}", cf.src, cf.dest, e));
+                        } else {
+                            link_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+        if link_count > 0 {
+            Output::success(&format!("Applied {} file link(s)", link_count));
+        }
+    }
+
     println!();
-    Output::success("Workspace initialized successfully!");
+    Output::success("Workspace initialized and synced!");
     println!();
     println!("Next steps:");
     println!("  cd {:?}", target_dir);
-    println!("  gr sync    # Clone all repositories");
+    println!("  gr status   # Verify workspace state");
 
     Ok(())
 }

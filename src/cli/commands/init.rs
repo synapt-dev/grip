@@ -250,12 +250,75 @@ fn run_init_from_url(url: Option<&str>, path: Option<&str>) -> anyhow::Result<()
         Output::warning(&format!("Manifest validation: {}", e));
     }
 
+    // Clone all repos from the manifest
+    let repo_count = manifest.repos.len();
+    if repo_count > 0 {
+        println!();
+        let spinner = Output::spinner(&format!("Cloning {} repositories...", repo_count));
+        let mut cloned = 0;
+        let mut failed = Vec::new();
+
+        for (name, config) in &manifest.repos {
+            let repo_path = target_dir.join(&config.path);
+            if repo_path.exists() {
+                continue;
+            }
+
+            // Resolve URL from config or remotes
+            let url = config.url.clone().or_else(|| {
+                config.remote.as_ref().and_then(|remote_name| {
+                    manifest.remotes.as_ref()?.get(remote_name).map(|rc| {
+                        let base = rc.fetch.trim_end_matches('/');
+                        format!("{}/{}.git", base, name)
+                    })
+                })
+            });
+
+            let url = match url {
+                Some(u) if !u.is_empty() => u,
+                _ => {
+                    failed.push((name.clone(), "no URL configured".to_string()));
+                    continue;
+                }
+            };
+
+            let revision = config
+                .revision
+                .as_deref()
+                .or(manifest.settings.revision.as_deref());
+
+            match clone_repo(&url, &repo_path, revision) {
+                Ok(_) => {
+                    cloned += 1;
+                    spinner.set_message(format!("Cloned {}/{}: {}", cloned, repo_count, name));
+                }
+                Err(e) => {
+                    failed.push((name.clone(), format!("{}", e)));
+                }
+            }
+        }
+
+        if failed.is_empty() {
+            spinner.finish_with_message(format!("All {} repositories cloned", cloned));
+        } else {
+            spinner.finish_with_message(format!("{} cloned, {} failed", cloned, failed.len()));
+            for (name, err) in &failed {
+                Output::warning(&format!("  {} - {}", name, err));
+            }
+        }
+    }
+
+    // Apply linkfiles and copyfiles using the same cross-platform logic as gr sync
+    if let Err(e) = super::link::apply_links(&target_dir, &manifest, false) {
+        Output::warning(&format!("Link application: {}", e));
+    }
+
     println!();
-    Output::success("Workspace initialized successfully!");
+    Output::success("Workspace initialized and synced!");
     println!();
     println!("Next steps:");
     println!("  cd {:?}", target_dir);
-    println!("  gr sync    # Clone all repositories");
+    println!("  gr status   # Verify workspace state");
 
     Ok(())
 }

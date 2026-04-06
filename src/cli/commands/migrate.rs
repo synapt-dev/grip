@@ -23,8 +23,6 @@ pub async fn run_migrate_from_repos(
     org: Option<&str>,
     prefix: Option<&str>,
     path: Option<&str>,
-    _create_repos: bool,
-    _private: bool,
     json: bool,
 ) -> anyhow::Result<()> {
     if repos.is_empty() {
@@ -388,19 +386,87 @@ fn create_gripspace_dirs(
         std::fs::write(prompts_dir.join(format!("{}.md", name)), content)?;
     }
 
-    // Initialize manifest as git repo
-    let _ = std::process::Command::new("git")
+    // Initialize manifest directory as a git repo so gr init can use it
+    let git_init = std::process::Command::new("git")
         .args(["init", "-b", "main"])
         .current_dir(&manifest_dir)
         .output();
-    let _ = std::process::Command::new("git")
+    if let Err(e) = git_init {
+        Output::warning(&format!("git init failed: {}", e));
+    }
+    let git_add = std::process::Command::new("git")
         .args(["add", "."])
         .current_dir(&manifest_dir)
         .output();
-    let _ = std::process::Command::new("git")
+    if let Err(e) = git_add {
+        Output::warning(&format!("git add failed: {}", e));
+    }
+    let git_commit = std::process::Command::new("git")
         .args(["commit", "-m", "Initial gripspace manifest"])
         .current_dir(&manifest_dir)
         .output();
+    if let Err(e) = git_commit {
+        Output::warning(&format!("git commit failed: {}", e));
+    }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_manifest_yaml() {
+        let repos = vec![
+            ("GetConversa".to_string(), "conversa-app".to_string()),
+            ("GetConversa".to_string(), "blessed-sound".to_string()),
+        ];
+        let yaml = generate_manifest_yaml(&repos, "synapt-dev", "consult-conversa");
+        assert!(yaml.contains("version: 2"));
+        assert!(yaml.contains("conversa-app:"));
+        assert!(yaml.contains("blessed-sound:"));
+        assert!(yaml.contains("GetConversa/conversa-app.git"));
+        assert!(yaml.contains("consult-conversa-config:"));
+        assert!(yaml.contains("clone_strategy: clone"));
+    }
+
+    #[test]
+    fn test_generate_claude_md() {
+        let repos = vec![("org".to_string(), "myrepo".to_string())];
+        let agents = vec![AgentSpec {
+            name: "atlas".to_string(),
+            role: "research".to_string(),
+            model: "claude-opus-4-6".to_string(),
+            tool: "claude".to_string(),
+        }];
+        let md = generate_claude_md(&repos, "myproject", &agents, true);
+        assert!(md.contains("# myproject"));
+        assert!(md.contains("| **myrepo**"));
+        assert!(md.contains("| **atlas**"));
+        assert!(md.contains("Premium Features"));
+        assert!(md.contains("recall_identity"));
+    }
+
+    #[test]
+    fn test_generate_agents_toml_with_agents() {
+        let agents = vec![AgentSpec {
+            name: "apollo".to_string(),
+            role: "implementation".to_string(),
+            model: "claude-sonnet-4-6".to_string(),
+            tool: "claude".to_string(),
+        }];
+        let toml = generate_agents_toml("myproject", &agents);
+        assert!(toml.contains("[agents.apollo]"));
+        assert!(toml.contains("role = \"implementation\""));
+        assert!(toml.contains("model = \"claude-sonnet-4-6\""));
+        assert!(toml.contains("config/prompts/apollo.md"));
+    }
+
+    #[test]
+    fn test_generate_agents_toml_empty() {
+        let toml = generate_agents_toml("myproject", &[]);
+        assert!(toml.contains("session_name = \"myproject\""));
+        assert!(toml.contains("# Add agents here:"));
+    }
 }

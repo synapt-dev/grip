@@ -74,6 +74,7 @@ pub enum Commands {
         #[command(subcommand)]
         action: MigrateCommands,
     },
+    /// Sync all repositories
     Sync {
         /// Force sync even with local changes
         #[arg(short, long)]
@@ -951,11 +952,5 @@ pub enum MigrateCommands {
         /// Target directory for the gripspace
         #[arg(short, long)]
         path: Option<String>,
-        /// Create manifest + config repos on GitHub
-        #[arg(long)]
-        create_repos: bool,
-        /// Make created repos private
-        #[arg(long)]
-        private: bool,
     },
 }

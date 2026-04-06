@@ -367,6 +367,43 @@ pub fn run_spawn_up(
             .args(["send-keys", "-t", &target, &launch_cmd, "Enter"])
             .status();
 
+        // Set up pipe-pane for output streaming (#443 Mission Control)
+        let log_dir = workspace_root.join(".synapt").join("logs").join(&agent_id);
+        let _ = std::fs::create_dir_all(&log_dir);
+        let log_path = log_dir.join("output.log");
+        let pipe_cmd = format!("cat >> {}", log_path.display());
+        let _ = Command::new("tmux")
+            .args(["pipe-pane", "-t", &target, &pipe_cmd])
+            .status();
+
+        // Get tmux pane PID for process tracking
+        let pane_pid = Command::new("tmux")
+            .args(["display-message", "-t", &target, "-p", "#{pane_pid}"])
+            .output()
+            .ok()
+            .and_then(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .trim()
+                    .parse::<u32>()
+                    .ok()
+            });
+
+        // Update process state in team.db
+        if let Err(e) = crate::core::agent_registry::update_process_state(
+            &org_dir,
+            &agent_id,
+            pane_pid,
+            Some(&target),
+            "online",
+            Some(log_path.to_str().unwrap_or("")),
+            None, // session_id set by agent on join
+        ) {
+            Output::warning(&format!(
+                "Failed to update process state for {}: {}",
+                name, e
+            ));
+        }
+
         // Print status
         let mode_tag = if mock_mode {
             " [mock]".dimmed().to_string()

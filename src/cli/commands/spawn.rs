@@ -862,80 +862,79 @@ pub fn run_spawn_dashboard(_quiet: bool) -> anyhow::Result<()> {
         gr_path
     );
 
-    // First pane (pane 0) gets agent 0
+    // Helper: get the active pane ID after a split or window creation.
+    // Returns %N format (e.g. "%42") which is stable across splits.
+    let get_pane_id = |target: &str| -> Option<String> {
+        Command::new("tmux")
+            .args(["display-message", "-t", target, "-p", "#{pane_id}"])
+            .output()
+            .ok()
+            .and_then(|o| {
+                let id = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if id.starts_with('%') {
+                    Some(id)
+                } else {
+                    None
+                }
+            })
+    };
+
+    // Track pane IDs for stable targeting (#452)
+    let mut pane_ids: Vec<String> = Vec::new();
+
+    // First pane (initial pane in the new window) gets agent 0
     if let Some(name) = names.first() {
-        Command::new("tmux")
-            .args([
-                "send-keys",
-                "-t",
-                &dashboard_target,
-                &capture_script(name),
-                "Enter",
-            ])
-            .status()?;
+        if let Some(id) = get_pane_id(&dashboard_target) {
+            pane_ids.push(id.clone());
+            Command::new("tmux")
+                .args(["send-keys", "-t", &id, &capture_script(name), "Enter"])
+                .status()?;
+        }
     }
 
-    // Split right for agent 1 (pane 1)
+    // Split right for agent 1
     if names.len() > 1 {
-        Command::new("tmux")
-            .args([
-                "split-window",
-                "-h",
-                "-t",
-                &format!("{}.0", dashboard_target),
-            ])
-            .status()?;
-        Command::new("tmux")
-            .args([
-                "send-keys",
-                "-t",
-                &format!("{}.1", dashboard_target),
-                &capture_script(&names[1]),
-                "Enter",
-            ])
-            .status()?;
+        if let Some(ref first_pane) = pane_ids.first().cloned() {
+            Command::new("tmux")
+                .args(["split-window", "-h", "-t", first_pane])
+                .status()?;
+            if let Some(id) = get_pane_id(&dashboard_target) {
+                pane_ids.push(id.clone());
+                Command::new("tmux")
+                    .args(["send-keys", "-t", &id, &capture_script(&names[1]), "Enter"])
+                    .status()?;
+            }
+        }
     }
 
-    // Split pane 0 vertically for agent 2 (pane 2)
+    // Split first pane vertically for agent 2
     if names.len() > 2 {
-        Command::new("tmux")
-            .args([
-                "split-window",
-                "-v",
-                "-t",
-                &format!("{}.0", dashboard_target),
-            ])
-            .status()?;
-        Command::new("tmux")
-            .args([
-                "send-keys",
-                "-t",
-                &format!("{}.2", dashboard_target),
-                &capture_script(&names[2]),
-                "Enter",
-            ])
-            .status()?;
+        if let Some(ref first_pane) = pane_ids.first().cloned() {
+            Command::new("tmux")
+                .args(["split-window", "-v", "-t", first_pane])
+                .status()?;
+            if let Some(id) = get_pane_id(&dashboard_target) {
+                pane_ids.push(id.clone());
+                Command::new("tmux")
+                    .args(["send-keys", "-t", &id, &capture_script(&names[2]), "Enter"])
+                    .status()?;
+            }
+        }
     }
 
-    // Split pane 1 vertically for agent 3 (pane 3)
+    // Split second pane vertically for agent 3
     if names.len() > 3 {
-        Command::new("tmux")
-            .args([
-                "split-window",
-                "-v",
-                "-t",
-                &format!("{}.1", dashboard_target),
-            ])
-            .status()?;
-        Command::new("tmux")
-            .args([
-                "send-keys",
-                "-t",
-                &format!("{}.3", dashboard_target),
-                &capture_script(&names[3]),
-                "Enter",
-            ])
-            .status()?;
+        if let Some(ref second_pane) = pane_ids.get(1).cloned() {
+            Command::new("tmux")
+                .args(["split-window", "-v", "-t", second_pane])
+                .status()?;
+            if let Some(id) = get_pane_id(&dashboard_target) {
+                pane_ids.push(id.clone());
+                Command::new("tmux")
+                    .args(["send-keys", "-t", &id, &capture_script(&names[3]), "Enter"])
+                    .status()?;
+            }
+        }
     }
 
     // Bottom input pane — split the full width at the bottom
@@ -943,9 +942,9 @@ pub fn run_spawn_dashboard(_quiet: bool) -> anyhow::Result<()> {
         .args(["split-window", "-v", "-l", "3", "-t", &dashboard_target])
         .status()?;
 
-    // Find the last pane (input pane) and send the input script
-    let pane_count = names.len().min(4) + 1; // agent panes + input pane
-    let input_pane = format!("{}.{}", dashboard_target, pane_count);
+    // Get the input pane ID (the newly created pane after the last split)
+    let input_pane = get_pane_id(&dashboard_target)
+        .unwrap_or_else(|| format!("{}.{}", dashboard_target, pane_ids.len()));
     Command::new("tmux")
         .args(["send-keys", "-t", &input_pane, &input_script, "Enter"])
         .status()?;

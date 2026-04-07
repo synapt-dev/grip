@@ -347,6 +347,14 @@ pub async fn dispatch_command(
                     )
                     .await?;
                 }
+                MigrateCommands::InPlace { path, dry_run } => {
+                    crate::cli::commands::migrate::run_migrate_in_place(
+                        path.as_deref(),
+                        dry_run,
+                        json,
+                    )
+                    .await?;
+                }
             }
         }
         Some(Commands::Init {

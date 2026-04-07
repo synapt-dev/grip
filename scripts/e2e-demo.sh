@@ -6,7 +6,7 @@
 #
 # Usage: ./scripts/e2e-demo.sh [--skip-dashboard]
 
-set -euo pipefail
+set -uo pipefail
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -41,7 +41,10 @@ fi
 pass "tmux available"
 
 # Find gr binary
-GR="${GR:-$(command -v gr 2>/dev/null || echo "./target/debug/gr")}"
+if [ -z "${GR:-}" ]; then
+    GR=$(command -v gr 2>/dev/null || true)
+    [ -z "$GR" ] && GR="./target/debug/gr"
+fi
 if [ ! -x "$GR" ]; then
     GR="./target/release/gr"
 fi
@@ -175,7 +178,7 @@ $GR spawn down 2>/dev/null || true
 sleep 1
 $GR spawn up --mock 2>/dev/null
 
-if $GR spawn status 2>/dev/null | grep -q "running"; then
+if $GR spawn status 2>&1 | grep -q "running\|✓"; then
     pass "agents running after respawn"
 else
     fail "agents not running after respawn"

@@ -470,3 +470,252 @@ mod tests {
         assert!(toml.contains("# Add agents here:"));
     }
 }
+
+// ---------------------------------------------------------------------------
+// gr migrate in-place (#456)
+// ---------------------------------------------------------------------------
+
+/// Migrate an existing git repo directory into a gripspace in-place.
+///
+/// Algorithm v3.1 from the design session:
+/// 1. Derive repo name from git remote URL
+/// 2. Move everything into a child dir named after the repo
+/// 3. Copy metadata (.synapt, .claude, .env) back to gripspace root
+/// 4. Run `git worktree repair` (requires git 2.30+)
+/// 5. Initialize gripspace structure (.gitgrip/)
+pub async fn run_migrate_in_place(
+    path: Option<&str>,
+    dry_run: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    let target = match path {
+        Some(p) => PathBuf::from(p),
+        None => std::env::current_dir()?,
+    };
+
+    // Verify it's a git repo
+    if !target.join(".git").exists() {
+        anyhow::bail!(
+            "{} is not a git repository (no .git found)",
+            target.display()
+        );
+    }
+
+    // Derive repo name from remote URL
+    let repo_name = get_repo_name(&target)?;
+
+    if !json {
+        Output::header("Migrating repo to gripspace in-place...");
+        println!();
+        Output::info(&format!("Directory: {}", target.display()));
+        Output::info(&format!("Repo name: {}", repo_name));
+        Output::info(&format!("Result: {}/{}/", target.display(), repo_name));
+        println!();
+    }
+
+    if dry_run {
+        if !json {
+            Output::info("Dry run — no changes made.");
+            println!();
+            println!("Would:");
+            println!("  1. Move all files into ./{}/", repo_name);
+            println!("  2. Copy .synapt/, .claude/, .env back to root");
+            println!("  3. Run git worktree repair in ./{}/", repo_name);
+            println!("  4. Create .gitgrip/ structure");
+        }
+        if json {
+            let result = serde_json::json!({
+                "dry_run": true,
+                "repo_name": repo_name,
+                "target": target.display().to_string(),
+            });
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        return Ok(());
+    }
+
+    // Check git version >= 2.30 (for worktree repair)
+    check_git_version()?;
+
+    let child_dir = target.join(&repo_name);
+    if child_dir.exists() {
+        anyhow::bail!(
+            "Child directory {}/{} already exists. Already migrated?",
+            target.display(),
+            repo_name
+        );
+    }
+
+    // Step 1: Move everything into a temp dir
+    let tmp_name = "_tmp_migrate";
+    let tmp_dir = target.join(tmp_name);
+    std::fs::create_dir(&tmp_dir)?;
+
+    // Metadata dirs that stay at root (will be copied back)
+    let metadata_dirs = [".synapt", ".claude", ".gitgrip"];
+    let metadata_files = [".env"];
+
+    for entry in std::fs::read_dir(&target)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+
+        // Skip the temp dir itself
+        if name_str == tmp_name {
+            continue;
+        }
+
+        // Move everything into temp
+        let src = entry.path();
+        let dst = tmp_dir.join(&name);
+        if let Err(e) = std::fs::rename(&src, &dst) {
+            Output::warning(&format!("Could not move {}: {}", name_str, e));
+        }
+    }
+
+    // Step 2: Rename temp to repo name
+    std::fs::rename(&tmp_dir, &child_dir)?;
+    if !json {
+        Output::success(&format!("Moved files into {}/", repo_name));
+    }
+
+    // Step 3: Copy metadata back to gripspace root
+    for dir_name in &metadata_dirs {
+        let src = child_dir.join(dir_name);
+        if src.is_dir() {
+            let dst = target.join(dir_name);
+            copy_dir_recursive(&src, &dst)?;
+            if !json {
+                Output::info(&format!("Copied {}/ to gripspace root", dir_name));
+            }
+        }
+    }
+    for file_name in &metadata_files {
+        let src = child_dir.join(file_name);
+        if src.is_file() {
+            let dst = target.join(file_name);
+            std::fs::copy(&src, &dst)?;
+            if !json {
+                Output::info(&format!("Copied {} to gripspace root", file_name));
+            }
+        }
+    }
+
+    // Step 4: git worktree repair
+    let repair = std::process::Command::new("git")
+        .args(["worktree", "repair"])
+        .current_dir(&child_dir)
+        .output();
+
+    match repair {
+        Ok(output) if output.status.success() => {
+            if !json {
+                Output::success("git worktree repair succeeded");
+            }
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Output::warning(&format!("git worktree repair: {}", stderr.trim()));
+        }
+        Err(e) => {
+            Output::warning(&format!("git worktree repair failed: {}", e));
+        }
+    }
+
+    // Step 5: Create .gitgrip structure
+    let gitgrip_dir = target.join(".gitgrip");
+    std::fs::create_dir_all(&gitgrip_dir)?;
+
+    if !json {
+        println!();
+        Output::success("Migration complete!");
+        println!();
+        println!("  {}/", target.display());
+        println!("    .gitgrip/          (gripspace marker)");
+        println!("    .synapt/           (recall data)");
+        println!("    .claude/           (Claude Code settings)");
+        println!("    {}/          (repo)", repo_name);
+        println!();
+        println!("Next steps:");
+        println!("  1. Create gripspace manifest (gripspace.yml)");
+        println!("  2. gr init --in-place");
+        println!("  3. gr sync && gr status");
+    }
+
+    if json {
+        let result = serde_json::json!({
+            "success": true,
+            "repo_name": repo_name,
+            "child_dir": child_dir.display().to_string(),
+        });
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    }
+
+    Ok(())
+}
+
+/// Derive repo name from git remote URL, fallback to directory name.
+fn get_repo_name(repo_dir: &Path) -> anyhow::Result<String> {
+    let output = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(repo_dir)
+        .output();
+
+    if let Ok(output) = output {
+        if output.status.success() {
+            let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            // Extract name from URL: git@github.com:org/name.git → name
+            let name = url
+                .rsplit('/')
+                .next()
+                .unwrap_or(&url)
+                .trim_end_matches(".git")
+                .to_string();
+            if !name.is_empty() {
+                return Ok(name);
+            }
+        }
+    }
+
+    // Fallback: directory name
+    repo_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .ok_or_else(|| anyhow::anyhow!("Cannot determine repo name"))
+}
+
+/// Check that git version is >= 2.30 (required for worktree repair).
+fn check_git_version() -> anyhow::Result<()> {
+    let output = std::process::Command::new("git")
+        .args(["--version"])
+        .output()?;
+    let version_str = String::from_utf8_lossy(&output.stdout);
+    // Parse "git version 2.XX.Y"
+    if let Some(ver) = version_str.split_whitespace().nth(2) {
+        let parts: Vec<u32> = ver.split('.').filter_map(|p| p.parse().ok()).collect();
+        if parts.len() >= 2 && (parts[0] > 2 || (parts[0] == 2 && parts[1] >= 30)) {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "git {} is too old. git 2.30+ required for worktree repair.",
+            ver
+        );
+    }
+    Ok(()) // Can't parse, proceed anyway
+}
+
+/// Recursively copy a directory.
+fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
+}

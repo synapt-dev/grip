@@ -952,4 +952,22 @@ pub enum MigrateCommands {
         #[arg(short, long)]
         path: Option<String>,
     },
+    /// Convert an existing git repo directory into a gripspace in-place
+    ///
+    /// Moves the repo contents into a child directory (named after the repo),
+    /// keeps .synapt/ and .claude/ at the gripspace root, and repairs any
+    /// linked worktree paths. Requires git 2.30+.
+    ///
+    /// Example: gr migrate in-place
+    ///   ~/conversa/           → ~/conversa/conversa-app/ (repo)
+    ///                            ~/conversa/.synapt/     (stays)
+    ///                            ~/conversa/.claude/     (stays)
+    InPlace {
+        /// Show what would happen without making any changes
+        #[arg(long)]
+        dry_run: bool,
+        /// Path to the repo directory (default: current directory)
+        #[arg(short, long)]
+        path: Option<String>,
+    },
 }

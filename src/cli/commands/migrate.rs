@@ -1,11 +1,12 @@
 //! `gr migrate` — convert existing repos into a gripspace (#424).
 //!
-//! First customer migration tooling. Generates gripspace.yml +
-//! agents.toml + CLAUDE.md + per-agent prompts from a list of
-//! GitHub repos. Interactive mode configures the full agent team.
+//! Two subcommands:
+//!   - `from-repos`: Generate a new gripspace from GitHub repo list
+//!   - `in-place`:   Convert an existing git repo dir into a gripspace
 
 use crate::cli::output::Output;
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
+use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
@@ -409,6 +410,244 @@ fn create_gripspace_dirs(
         Output::warning(&format!("git commit failed: {}", e));
     }
 
+    Ok(())
+}
+
+/// Run `gr migrate in-place` — convert a git repo dir into a gripspace.
+///
+/// Algorithm (v3.1):
+/// 1. Derive repo name from `git remote get-url origin` (basename, strip .git)
+///    Falls back to directory name if no remote or command fails.
+/// 2. Create `_migrate_tmp/` and move everything into it EXCEPT:
+///    .synapt/, .claude/, _migrate_tmp/, and the child dir name
+/// 3. Rename `_migrate_tmp/` → `<repo-name>/`
+/// 4. Run `git worktree repair` inside `<repo-name>/` to fix linked worktree paths
+/// 5. Create `.gitgrip/` marker at the root to signal this is a gripspace
+pub async fn run_migrate_in_place(
+    path: Option<&str>,
+    dry_run: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    let root = match path {
+        Some(p) => PathBuf::from(p).canonicalize()?,
+        None => std::env::current_dir()?,
+    };
+
+    // Guard: must be a git repo (has .git at root)
+    if !root.join(".git").exists() {
+        if root.join(".gitgrip").exists() {
+            anyhow::bail!(
+                "Already a gripspace (has .gitgrip/). Run `gr status` to check the workspace."
+            );
+        }
+        anyhow::bail!("Not a git repository: no .git found at {}", root.display());
+    }
+
+    // Guard: git 2.30+ required for `git worktree repair`
+    check_git_version_for_repair()?;
+
+    // Derive repo name
+    let repo_name = derive_repo_name_from_remote(&root);
+    let child = root.join(&repo_name);
+
+    if !json {
+        Output::header("gr migrate in-place");
+        println!();
+        Output::info(&format!("Gripspace root: {}", root.display()));
+        Output::info(&format!("Repo child:     {}/{}", root.display(), repo_name));
+        println!();
+        if dry_run {
+            Output::warning("DRY RUN — no changes will be made");
+            println!();
+        }
+    }
+
+    if child.exists() {
+        anyhow::bail!(
+            "Child directory already exists: {}. \
+             Migration may have already run, or choose a different path.",
+            child.display()
+        );
+    }
+
+    // Enumerate what will move vs stay
+    let keep: HashSet<&str> = [".synapt", ".claude", "_migrate_tmp"]
+        .iter()
+        .cloned()
+        .collect();
+
+    let mut to_move: Vec<PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(&root)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy().to_string();
+        if keep.contains(name_str.as_str()) || name_str == repo_name {
+            continue;
+        }
+        to_move.push(entry.path());
+    }
+
+    if !json && dry_run {
+        println!("  Would move to {}/{}:", root.display(), repo_name);
+        for p in &to_move {
+            println!("    {}", p.file_name().unwrap_or_default().to_string_lossy());
+        }
+        println!();
+        println!("  Would keep at gripspace root:");
+        for dir in &[".synapt", ".claude"] {
+            if root.join(dir).exists() {
+                println!("    {}/", dir);
+            }
+        }
+        println!();
+        println!("  Would run: git worktree repair (in {}/)", repo_name);
+        println!("  Would create: .gitgrip/");
+        return Ok(());
+    }
+
+    if dry_run {
+        let result = serde_json::json!({
+            "root": root.display().to_string(),
+            "repo_name": repo_name,
+            "to_move": to_move.iter()
+                .map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string())
+                .collect::<Vec<_>>(),
+            "dry_run": true,
+        });
+        println!("{}", serde_json::to_string_pretty(&result)?);
+        return Ok(());
+    }
+
+    // Step 1: create temp dir
+    let tmp = root.join("_migrate_tmp");
+    std::fs::create_dir_all(&tmp)?;
+
+    // Step 2: move everything (except excluded) into temp
+    for src in &to_move {
+        let dest = tmp.join(src.file_name().unwrap());
+        std::fs::rename(src, dest).map_err(|e| {
+            anyhow::anyhow!("Failed to move {}: {}", src.display(), e)
+        })?;
+    }
+
+    // Step 3: rename temp → child
+    std::fs::rename(&tmp, &child).map_err(|e| {
+        anyhow::anyhow!("Failed to rename _migrate_tmp to {}: {}", child.display(), e)
+    })?;
+
+    // Step 4: git worktree repair (fixes linked worktree .git file paths)
+    let repair = std::process::Command::new("git")
+        .args(["worktree", "repair"])
+        .current_dir(&child)
+        .output()
+        .map_err(|e| anyhow::anyhow!("Failed to run git worktree repair: {}", e))?;
+
+    if !json {
+        let repair_out = String::from_utf8_lossy(&repair.stdout);
+        let repair_err = String::from_utf8_lossy(&repair.stderr);
+        if !repair_out.trim().is_empty() || !repair_err.trim().is_empty() {
+            Output::info("git worktree repair output:");
+            for line in repair_out.lines().chain(repair_err.lines()) {
+                println!("  {}", line);
+            }
+        }
+    }
+
+    if !repair.status.success() {
+        let stderr = String::from_utf8_lossy(&repair.stderr);
+        Output::warning(&format!("git worktree repair exited non-zero: {}", stderr.trim()));
+    }
+
+    // Step 5: create .gitgrip/ marker
+    std::fs::create_dir_all(root.join(".gitgrip"))?;
+
+    if json {
+        let result = serde_json::json!({
+            "root": root.display().to_string(),
+            "repo_name": repo_name,
+            "child": child.display().to_string(),
+            "worktree_repair": repair.status.success(),
+        });
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        Output::success("Migration complete!");
+        println!();
+        println!("  Repo moved to:  {}/{}/", root.display(), repo_name);
+        if root.join(".synapt").exists() {
+            println!("  .synapt/        stays at gripspace root");
+        }
+        if root.join(".claude").exists() {
+            println!("  .claude/        stays at gripspace root");
+        }
+        println!("  .gitgrip/       created (gripspace marker)");
+        println!();
+        Output::info("Next steps:");
+        println!("  cd {}", root.display());
+        println!("  gr status       # verify repos are visible");
+        println!("  gr spawn up     # launch agents (once gripspace.yml is configured)");
+    }
+
+    Ok(())
+}
+
+/// Derive the repo name from `git remote get-url origin`, falling back to dir name.
+/// "git@github.com:GetConversa/conversa-app.git" → "conversa-app"
+fn derive_repo_name_from_remote(repo: &Path) -> String {
+    let result = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(repo)
+        .output();
+
+    if let Ok(out) = result {
+        if out.status.success() {
+            let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !url.is_empty() {
+                // SSH: git@github.com:org/repo.git  → after last '/' or ':'
+                // HTTPS: https://github.com/org/repo.git → after last '/'
+                let base = url
+                    .rsplit(['/', ':'])
+                    .next()
+                    .unwrap_or(&url)
+                    .to_string();
+                // Strip .git suffix
+                return base.strip_suffix(".git").unwrap_or(&base).to_string();
+            }
+        }
+    }
+
+    // Fallback: use the directory name
+    repo.file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string()
+}
+
+/// Check that git >= 2.30 is available (required for `git worktree repair`).
+fn check_git_version_for_repair() -> anyhow::Result<()> {
+    let out = std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .map_err(|_| anyhow::anyhow!("git not found — is git installed?"))?;
+
+    let version_str = String::from_utf8_lossy(&out.stdout);
+    // "git version 2.43.0 (Apple Git-115)" → parse major.minor
+    let parts: Vec<u32> = version_str
+        .split_whitespace()
+        .find(|s| s.contains('.'))
+        .unwrap_or("0.0")
+        .split('.')
+        .take(2)
+        .filter_map(|s| s.parse().ok())
+        .collect();
+
+    let (major, minor) = (parts.first().copied().unwrap_or(0), parts.get(1).copied().unwrap_or(0));
+    if major < 2 || (major == 2 && minor < 30) {
+        anyhow::bail!(
+            "git 2.30+ required for `git worktree repair` (found git {}.{}). \
+             Please upgrade git.",
+            major, minor
+        );
+    }
     Ok(())
 }
 

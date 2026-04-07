@@ -952,4 +952,13 @@ pub enum MigrateCommands {
         #[arg(short, long)]
         path: Option<String>,
     },
+    /// Restructure an existing repo into a gripspace in-place
+    InPlace {
+        /// Directory to migrate (default: current directory)
+        #[arg(short, long)]
+        path: Option<String>,
+        /// Dry run — show what would happen without changing anything
+        #[arg(long)]
+        dry_run: bool,
+    },
 }

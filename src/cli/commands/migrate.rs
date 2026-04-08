@@ -1160,12 +1160,20 @@ branch refs/heads/feat/dev
 
         let worktree_list = assert_git_ok(&main_child, &["worktree", "list", "--porcelain"]);
         let worktree_output = String::from_utf8_lossy(&worktree_list.stdout);
-        // git worktree list --porcelain uses forward slashes on Windows; normalize before compare.
-        let linked_path_normalized = linked_child.to_string_lossy().replace('\\', "/");
+        // Avoid comparing absolute paths: on Windows, TempDir may return 8.3 short names
+        // (RUNNER~1) while git resolves the full long name (runneradmin). Instead check the
+        // last two components (parent_dir/repo_name) which are unique to the linked worktree.
+        let parent_name = linked_child
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let dir_name = linked_child.file_name().unwrap().to_string_lossy();
+        let relative_suffix = format!("{}/{}", parent_name, dir_name);
         assert!(
-            worktree_output.contains(linked_path_normalized.as_str()),
+            worktree_output.contains(relative_suffix.as_str()),
             "worktree list should contain '{}'\nActual output:\n{}",
-            linked_path_normalized,
+            relative_suffix,
             worktree_output
         );
     }

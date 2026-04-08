@@ -545,6 +545,25 @@ fn test_gr2_repo_remove_requires_gr2_workspace() {
         ));
 }
 
+#[test]
+fn test_checkout_help_mentions_add_mode() {
+    let mut cmd = Command::cargo_bin("gr").unwrap();
+    cmd.arg("checkout")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Checkout a branch across repos or create an independent child checkout",
+        ))
+        .stdout(predicate::str::contains(
+            "Branch name, or `add` to create an independent child checkout",
+        ))
+        .stdout(predicate::str::contains("gr checkout add sandbox"))
+        .stdout(predicate::str::contains(
+            "gr checkout add docs-only --group docs",
+        ));
+}
+
 /// Test that `gr status` fails gracefully outside a workspace
 #[test]
 fn test_status_outside_workspace() {

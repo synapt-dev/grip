@@ -93,30 +93,53 @@ pub async fn dispatch_command(
         }
         Some(Commands::Checkout {
             name,
+            extra,
             create,
             base,
             repo,
             group,
         }) => {
             let ctx = load_workspace_context(quiet, verbose, json)?;
-            let branch = if base {
-                let config = crate::core::griptree::GriptreeConfig::load_from_workspace(
-                    &ctx.workspace_root,
-                )?
-                .ok_or_else(|| anyhow::anyhow!("Not in a griptree workspace"))?;
-                config.branch
-            } else {
-                name.ok_or_else(|| anyhow::anyhow!("Branch name is required"))?
-            };
 
-            crate::cli::commands::checkout::run_checkout(
-                &ctx.workspace_root,
-                &ctx.manifest,
-                &branch,
-                create,
-                repo.as_deref(),
-                group.as_deref(),
-            )?;
+            if matches!(name.as_deref(), Some("add")) {
+                // `add` is reserved for checkout materialization, not branch switching.
+                if create || base {
+                    anyhow::bail!("--create and --base are not valid with 'add'");
+                }
+                if extra.len() > 1 {
+                    anyhow::bail!("unexpected extra arguments after checkout name");
+                }
+                let checkout_name = extra.first().ok_or_else(|| {
+                    anyhow::anyhow!("Checkout name is required: gr checkout add <name>")
+                })?;
+
+                crate::cli::commands::checkout::run_checkout_add(
+                    &ctx.workspace_root,
+                    &ctx.manifest,
+                    checkout_name,
+                    repo.as_deref(),
+                    group.as_deref(),
+                )?;
+            } else {
+                let branch = if base {
+                    let config = crate::core::griptree::GriptreeConfig::load_from_workspace(
+                        &ctx.workspace_root,
+                    )?
+                    .ok_or_else(|| anyhow::anyhow!("Not in a griptree workspace"))?;
+                    config.branch
+                } else {
+                    name.ok_or_else(|| anyhow::anyhow!("Branch name is required"))?
+                };
+
+                crate::cli::commands::checkout::run_checkout(
+                    &ctx.workspace_root,
+                    &ctx.manifest,
+                    &branch,
+                    create,
+                    repo.as_deref(),
+                    group.as_deref(),
+                )?;
+            }
         }
         Some(Commands::Add { files, repo, group }) => {
             let ctx = load_workspace_context(quiet, verbose, json)?;

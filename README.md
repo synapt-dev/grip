@@ -150,6 +150,7 @@ gr sync
 | `gr branch [name]` | Create or list branches |
 | `gr checkout <branch>` | Checkout branch across repos |
 | `gr checkout -b <branch>` | Create and checkout branch in one command |
+| `gr checkout add <name>` | Create an independent child checkout from cached repos |
 | `gr add [files]` | Stage changes across repos |
 | `gr diff` | Show diff across repos |
 | `gr commit -m "msg"` | Commit across repos |
@@ -262,6 +263,33 @@ Checkout a branch across all repos. Can also create branches with the `-b` flag.
 |--------|-------------|
 | `-b` | Create branch if it doesn't exist |
 | `--base` | Checkout the griptree base branch (griptree workspaces only) |
+
+#### `gr checkout add <name>`
+
+Create an independent child checkout under `.grip/checkouts/<name>/` using the
+workspace cache as an accelerator.
+
+Unlike `gr tree add`, this creates normal child clones with their own `.git`
+directories. The checkout keeps the canonical remote URL as `origin`; the cache
+is only used to speed up materialization.
+
+| Option | Description |
+|--------|-------------|
+| `--repo <name>` | Only materialize specific repos |
+| `--group <name>` | Only materialize repos in a group |
+
+**Examples:**
+
+```bash
+# Materialize all repos into an independent child checkout
+gr checkout add sandbox
+
+# Materialize only the docs group
+gr checkout add docs-only --group docs
+
+# Materialize just one repo
+gr checkout add app-only --repo app
+```
 
 #### `gr branch [name]`
 

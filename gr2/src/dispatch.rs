@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::args::{Commands, TeamCommands};
+use crate::args::{Commands, RepoCommands, TeamCommands};
 
 pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
     match command {
@@ -101,6 +101,37 @@ pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
 
                 fs::remove_dir_all(&agent_root)?;
                 println!("Removed gr2 agent workspace '{}'", name);
+                Ok(())
+            }
+        },
+        Commands::Repo { command } => match command {
+            RepoCommands::Add { name, url } => {
+                let workspace_root = require_workspace_root()?;
+                let repos_root = workspace_root.join("repos");
+                let registry_path = workspace_root.join(".grip/repos.toml");
+                let repo_dir = repos_root.join(&name);
+
+                if repo_dir.exists() {
+                    anyhow::bail!("repo '{}' already exists", name);
+                }
+
+                fs::create_dir_all(&repo_dir)?;
+                fs::write(
+                    repo_dir.join("repo.toml"),
+                    format!("name = \"{}\"\nurl = \"{}\"\n", name, url),
+                )?;
+
+                let mut entries = Vec::new();
+                if registry_path.exists() {
+                    entries.push(fs::read_to_string(&registry_path)?);
+                }
+                entries.push(format!(
+                    "[[repo]]\nname = \"{}\"\nurl = \"{}\"\n",
+                    name, url
+                ));
+                fs::write(&registry_path, entries.join("\n"))?;
+
+                println!("Added gr2 repo '{}' -> {}", name, url);
                 Ok(())
             }
         },

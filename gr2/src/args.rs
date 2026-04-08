@@ -37,6 +37,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: TeamCommands,
     },
+
+    /// Repo registry operations
+    Repo {
+        #[command(subcommand)]
+        command: RepoCommands,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -54,5 +60,17 @@ pub enum TeamCommands {
     Remove {
         /// Agent workspace name
         name: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum RepoCommands {
+    /// Register a repo in the team workspace
+    Add {
+        /// Logical repo name
+        name: String,
+
+        /// Canonical remote URL
+        url: String,
     },
 }

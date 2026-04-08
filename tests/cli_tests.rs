@@ -322,6 +322,84 @@ fn test_gr2_team_remove_requires_gr2_workspace() {
         ));
 }
 
+#[test]
+fn test_gr2_repo_add_registers_repo() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut repo_add = Command::cargo_bin("gr2").unwrap();
+    repo_add
+        .current_dir(&workspace_root)
+        .arg("repo")
+        .arg("add")
+        .arg("app")
+        .arg("https://github.com/synapt-dev/app.git")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Added gr2 repo 'app' -> https://github.com/synapt-dev/app.git",
+        ));
+
+    let repo_toml = std::fs::read_to_string(workspace_root.join("repos/app/repo.toml")).unwrap();
+    assert!(repo_toml.contains("name = \"app\""));
+    assert!(repo_toml.contains("url = \"https://github.com/synapt-dev/app.git\""));
+
+    let registry = std::fs::read_to_string(workspace_root.join(".grip/repos.toml")).unwrap();
+    assert!(registry.contains("[[repo]]"));
+    assert!(registry.contains("name = \"app\""));
+}
+
+#[test]
+fn test_gr2_repo_add_rejects_duplicate_repo() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut first = Command::cargo_bin("gr2").unwrap();
+    first
+        .current_dir(&workspace_root)
+        .arg("repo")
+        .arg("add")
+        .arg("app")
+        .arg("https://github.com/synapt-dev/app.git")
+        .assert()
+        .success();
+
+    let mut duplicate = Command::cargo_bin("gr2").unwrap();
+    duplicate
+        .current_dir(&workspace_root)
+        .arg("repo")
+        .arg("add")
+        .arg("app")
+        .arg("https://github.com/synapt-dev/app.git")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("repo 'app' already exists"));
+}
+
+#[test]
+fn test_gr2_repo_add_requires_gr2_workspace() {
+    let temp = TempDir::new().unwrap();
+
+    let mut repo_add = Command::cargo_bin("gr2").unwrap();
+    repo_add
+        .current_dir(temp.path())
+        .arg("repo")
+        .arg("add")
+        .arg("app")
+        .arg("https://github.com/synapt-dev/app.git")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "not in a gr2 workspace: missing .grip/workspace.toml",
+        ));
+}
+
 /// Test that `gr status` fails gracefully outside a workspace
 #[test]
 fn test_status_outside_workspace() {

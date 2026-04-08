@@ -349,6 +349,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: TargetCommands,
     },
+    /// Manage workspace repo caches (.grip/cache/)
+    Cache {
+        #[command(subcommand)]
+        action: CacheCommands,
+    },
     /// Run garbage collection across repos
     Gc {
         /// More thorough gc (slower)
@@ -871,6 +876,21 @@ pub enum TargetCommands {
         /// Unset target for a specific repo instead of globally
         #[arg(long)]
         repo: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum CacheCommands {
+    /// Bootstrap bare caches for all manifest repos
+    Bootstrap,
+    /// Fetch latest refs into all caches
+    Update,
+    /// Show cache status
+    Status,
+    /// Remove a repo cache
+    Remove {
+        /// Repo name
+        repo: String,
     },
 }
 

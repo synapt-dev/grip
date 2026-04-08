@@ -123,6 +123,7 @@ fn bench_url_parse(c: &mut Criterion) {
         reference: false,
         groups: Vec::new(),
         agent: None,
+        clone_strategy: None,
     };
     let workspace = PathBuf::from("/home/user/workspace");
     let settings = ManifestSettings::default();
@@ -156,6 +157,7 @@ fn bench_url_parse_azure(c: &mut Criterion) {
         reference: false,
         groups: Vec::new(),
         agent: None,
+        clone_strategy: None,
     };
     let workspace = PathBuf::from("/home/user/workspace");
     let settings = ManifestSettings::default();

@@ -137,9 +137,13 @@ pub fn clone_repo(url: &str, dest: &Path) {
         "git clone failed: {}",
         String::from_utf8_lossy(&status.stderr)
     );
-    // Configure git identity (CI runners may not have global config)
-    git(dest, &["config", "user.email", "test@example.com"]);
-    git(dest, &["config", "user.name", "Test User"]);
+    configure_identity(dest);
+}
+
+/// Configure local git identity for commits in a repo.
+pub fn configure_identity(repo_path: &Path) {
+    git(repo_path, &["config", "user.email", "test@example.com"]);
+    git(repo_path, &["config", "user.name", "Test User"]);
 }
 
 /// Run a git command, panic on failure.

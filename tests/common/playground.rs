@@ -72,6 +72,7 @@ impl PlaygroundHarness {
                 .to_str()
                 .expect("workspace path should be utf-8"),
         ]);
+        self.ensure_repo_identities();
     }
 
     pub fn run_in_workspace<I, S>(&self, args: I)
@@ -96,6 +97,15 @@ impl PlaygroundHarness {
         S: AsRef<str>,
     {
         self.run_output(args, &self.workspace_root)
+    }
+
+    pub fn ensure_repo_identities(&self) {
+        for repo_name in &self.repo_names {
+            let repo_path = self.repo_path(repo_name);
+            if repo_path.join(".git").exists() {
+                git_helpers::configure_identity(&repo_path);
+            }
+        }
     }
 
     fn run<I, S>(&self, args: I, current_dir: &Path)

@@ -32,6 +32,7 @@ fn test_playground_cli_flow_init_sync_branch_checkout_and_prune() {
     );
 
     playground.run_in_workspace(["sync"]);
+    playground.ensure_repo_identities();
     assert_file_exists(&playground.repo_path("backend").join(".git"));
 
     playground.run_in_workspace(["branch", "feat/playground"]);

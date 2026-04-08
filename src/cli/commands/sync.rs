@@ -53,6 +53,94 @@ struct HookResult {
     error: Option<String>,
 }
 
+/// Auto-recover: if `spaces/main/` exists but is not a git repository, clone from `manifest.url`.
+///
+/// This happens when a user copies a `gripspace.yml` without running `gr init`, or after a
+/// manual migration that doesn't preserve `.git/`. Without recovery, `gr sync` silently reads
+/// the stale local file and never pulls from the remote manifest.
+///
+/// Returns the (possibly reloaded) manifest.
+fn recover_manifest_repo<'a>(
+    workspace_root: &Path,
+    manifest: &'a Manifest,
+    quiet: bool,
+) -> anyhow::Result<std::borrow::Cow<'a, Manifest>> {
+    let main_space = manifest_paths::main_space_dir(workspace_root);
+
+    // Nothing to recover: either doesn't exist yet (normal first-run) or already a git repo.
+    if !main_space.exists() || main_space.join(".git").exists() {
+        return Ok(std::borrow::Cow::Borrowed(manifest));
+    }
+
+    let manifest_url = manifest
+        .manifest
+        .as_ref()
+        .map(|m| m.url.as_str())
+        .unwrap_or("");
+
+    if manifest_url.is_empty() {
+        Output::warning(&format!(
+            "manifest dir '{}' is not a git repository and no manifest.url is set. \
+             Run `gr init <url>` to re-initialize the workspace.",
+            main_space.display()
+        ));
+        return Ok(std::borrow::Cow::Borrowed(manifest));
+    }
+
+    let revision = manifest
+        .manifest
+        .as_ref()
+        .and_then(|m| m.revision.as_deref());
+
+    if !quiet {
+        Output::warning(&format!(
+            "manifest dir '{}' is not a git repository — re-cloning from {}",
+            main_space.display(),
+            manifest_url
+        ));
+    }
+
+    // Remove the non-git directory and clone fresh. The gripspace.yml inside it came from
+    // somewhere (or was created manually), but the clone will restore it from the remote.
+    std::fs::remove_dir_all(&main_space).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to remove non-git manifest dir '{}': {}",
+            main_space.display(),
+            e
+        )
+    })?;
+
+    match clone_repo(manifest_url, &main_space, revision) {
+        Ok(_) => {
+            if !quiet {
+                Output::success("manifest repo re-cloned");
+            }
+        }
+        Err(e) => {
+            anyhow::bail!(
+                "Failed to re-clone manifest repo from {}: {}",
+                manifest_url,
+                e
+            );
+        }
+    }
+
+    // Reload the manifest from the fresh clone so subsequent operations see up-to-date content.
+    let manifest_path = manifest_paths::resolve_gripspace_manifest_path(workspace_root);
+    let fresh = if let Some(path) = manifest_path {
+        let content = std::fs::read_to_string(&path).map_err(|e| {
+            anyhow::anyhow!("Failed to read fresh manifest after re-clone: {}", e)
+        })?;
+        Manifest::parse_raw(&content).map_err(|e| {
+            anyhow::anyhow!("Failed to parse fresh manifest after re-clone: {}", e)
+        })?
+    } else {
+        manifest.clone()
+    };
+
+    Ok(std::borrow::Cow::Owned(fresh))
+}
+
 /// Run the sync command
 #[allow(clippy::too_many_arguments)]
 pub async fn run_sync(
@@ -67,6 +155,10 @@ pub async fn run_sync(
     json: bool,
     no_hooks: bool,
 ) -> anyhow::Result<()> {
+    // Auto-recover: if spaces/main/ is not a git repo, re-clone before doing anything else.
+    let manifest_cow = recover_manifest_repo(workspace_root, manifest, quiet)?;
+    let manifest = manifest_cow.as_ref();
+
     // Re-load and resolve gripspaces before syncing repos
     let manifest = sync_gripspaces(workspace_root, manifest, quiet)?;
     let manifest = &manifest;

@@ -709,3 +709,36 @@ fn test_checkout_add_respects_group_filter() {
     assert!(checkout_root.join("docs/.git").is_dir());
     assert!(!checkout_root.join("app").exists());
 }
+
+#[test]
+fn test_checkout_add_requires_name() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    let mut cmd = Command::cargo_bin("gr").unwrap();
+    cmd.current_dir(&ws.workspace_root)
+        .arg("checkout")
+        .arg("add")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Checkout name is required: gr checkout add <name>",
+        ));
+}
+
+#[test]
+fn test_checkout_add_errors_when_filters_match_no_repos() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    let mut cmd = Command::cargo_bin("gr").unwrap();
+    cmd.current_dir(&ws.workspace_root)
+        .arg("checkout")
+        .arg("add")
+        .arg("empty")
+        .arg("--repo")
+        .arg("missing")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "no repos matched checkout filters",
+        ));
+}

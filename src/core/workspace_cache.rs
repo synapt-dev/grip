@@ -259,16 +259,20 @@ pub fn remove_cache(workspace_root: &Path, repo_name: &str, url: &str) -> Result
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod test_support {
     use once_cell::sync::Lazy;
-    use std::fs;
     use std::sync::Mutex;
 
-    static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+    pub(crate) static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
 
     fn with_cache_dir<T>(cache_dir: &Path, f: impl FnOnce() -> T) -> T {
-        let _guard = ENV_LOCK
+        let _guard = test_support::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous = env::var_os(CACHE_ENV_VAR);

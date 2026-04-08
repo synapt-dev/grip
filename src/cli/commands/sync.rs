@@ -128,12 +128,10 @@ fn recover_manifest_repo<'a>(
     // Reload the manifest from the fresh clone so subsequent operations see up-to-date content.
     let manifest_path = manifest_paths::resolve_gripspace_manifest_path(workspace_root);
     let fresh = if let Some(path) = manifest_path {
-        let content = std::fs::read_to_string(&path).map_err(|e| {
-            anyhow::anyhow!("Failed to read fresh manifest after re-clone: {}", e)
-        })?;
-        Manifest::parse_raw(&content).map_err(|e| {
-            anyhow::anyhow!("Failed to parse fresh manifest after re-clone: {}", e)
-        })?
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| anyhow::anyhow!("Failed to read fresh manifest after re-clone: {}", e))?;
+        Manifest::parse_raw(&content)
+            .map_err(|e| anyhow::anyhow!("Failed to parse fresh manifest after re-clone: {}", e))?
     } else {
         manifest.clone()
     };

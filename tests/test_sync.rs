@@ -683,11 +683,17 @@ async fn test_sync_reclones_non_git_manifest_dir() {
     git_helpers::clone_repo(&manifest_url, &spaces_main);
 
     // Verify it's a proper git clone before we corrupt it
-    assert!(spaces_main.join(".git").exists(), "pre-condition: should be a git repo");
+    assert!(
+        spaces_main.join(".git").exists(),
+        "pre-condition: should be a git repo"
+    );
 
     // Simulate corruption: remove .git from spaces/main/ (the bug scenario)
     fs::remove_dir_all(spaces_main.join(".git")).unwrap();
-    assert!(!spaces_main.join(".git").exists(), "pre-condition: .git removed");
+    assert!(
+        !spaces_main.join(".git").exists(),
+        "pre-condition: .git removed"
+    );
 
     // Build a manifest that includes manifest.url so recover_manifest_repo can re-clone
     let manifest_with_url = format!(
@@ -713,7 +719,11 @@ async fn test_sync_reclones_non_git_manifest_dir() {
     )
     .await;
 
-    assert!(result.is_ok(), "sync should succeed after auto-recovery: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "sync should succeed after auto-recovery: {:?}",
+        result.err()
+    );
 
     // spaces/main/ should now have a .git (re-cloned)
     assert!(

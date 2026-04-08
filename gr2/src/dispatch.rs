@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::gr2::args::Commands;
+use crate::args::Commands;
 
 pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
     match command {

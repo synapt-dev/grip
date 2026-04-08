@@ -13,6 +13,9 @@ readme = "README.md"
 keywords = ["git", "monorepo", "workflow", "multi-repo", "cli"]
 categories = ["development-tools", "command-line-utilities"]
 
+[workspace]
+members = ["gr2"]
+
 [[bin]]
 name = "gr"
 path = "src/main.rs"
@@ -44,6 +47,7 @@ release-logs = ["tracing/release_max_level_info"]
 max-perf = ["tracing/max_level_off"]
 
 [dependencies]
+gr2_cli = { package = "gr2-cli", path = "gr2" }
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "net", "io-util", "sync"] }
 uuid = { version = "1", features = ["v4"] }

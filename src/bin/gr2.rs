@@ -1,7 +1,7 @@
 //! gr2 CLI entry point
 
 use clap::Parser;
-use gitgrip::gr2::args::Cli;
+use gr2_cli::args::Cli;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -18,5 +18,5 @@ async fn main() -> anyhow::Result<()> {
             .init();
     }
 
-    gitgrip::gr2::dispatch::dispatch_command(cli.command, cli.verbose).await
+    gr2_cli::dispatch::dispatch_command(cli.command, cli.verbose).await
 }

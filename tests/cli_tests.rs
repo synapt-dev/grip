@@ -51,7 +51,7 @@ fn test_gr2_version() {
     cmd.arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
+        .stdout(predicate::str::contains("gr2 0.1.0"));
 }
 
 #[test]

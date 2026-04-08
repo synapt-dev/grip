@@ -5,6 +5,7 @@
 pub mod add;
 pub mod agent;
 pub mod bench;
+pub mod cache;
 pub mod branch;
 pub mod channel;
 pub mod checkout;

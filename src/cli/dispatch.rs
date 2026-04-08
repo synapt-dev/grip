@@ -628,6 +628,15 @@ pub async fn dispatch_command(
                 }
             }
         }
+        Some(Commands::Cache { action }) => {
+            let ctx = load_workspace_context(quiet, verbose, json)?;
+            crate::cli::commands::cache::run_cache(
+                &ctx.workspace_root,
+                &ctx.manifest,
+                action,
+                ctx.quiet,
+            )?;
+        }
         Some(Commands::Gc {
             aggressive,
             dry_run,

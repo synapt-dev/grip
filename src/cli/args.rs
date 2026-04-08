@@ -127,11 +127,11 @@ pub enum Commands {
         group: Option<Vec<String>>,
     },
     #[command(
-        after_help = "Examples:\n  gr checkout feat/login\n  gr checkout --base\n  gr checkout add sandbox\n  gr checkout add docs-only --group docs\n  gr checkout add app-only --repo app"
+        after_help = "Examples:\n  gr checkout feat/login\n  gr checkout --base\n  gr checkout add sandbox\n  gr checkout add docs-only --group docs\n  gr checkout add app-only --repo app\n  gr checkout list\n  gr checkout remove sandbox"
     )]
-    /// Checkout a branch across repos or create an independent child checkout
+    /// Checkout a branch across repos or manage independent child checkouts
     Checkout {
-        /// Branch name, or `add` to create an independent child checkout
+        /// Branch name, or `add`/`list`/`remove` for child checkout lifecycle
         name: Option<String>,
         /// Additional checkout action args (e.g. `add <name>`)
         #[arg(hide = true)]

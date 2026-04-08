@@ -553,15 +553,17 @@ fn test_checkout_help_mentions_add_mode() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "Checkout a branch across repos or create an independent child checkout",
+            "Checkout a branch across repos or manage independent child checkouts",
         ))
         .stdout(predicate::str::contains(
-            "Branch name, or `add` to create an independent child checkout",
+            "Branch name, or `add`/`list`/`remove` for child checkout lifecycle",
         ))
         .stdout(predicate::str::contains("gr checkout add sandbox"))
         .stdout(predicate::str::contains(
             "gr checkout add docs-only --group docs",
-        ));
+        ))
+        .stdout(predicate::str::contains("gr checkout list"))
+        .stdout(predicate::str::contains("gr checkout remove sandbox"));
 }
 
 /// Test that `gr status` fails gracefully outside a workspace
@@ -834,4 +836,69 @@ fn test_checkout_add_rejects_duplicate_checkout_name() {
         .stderr(predicate::str::contains(
             "checkout 'sandbox' already exists",
         ));
+}
+
+#[test]
+fn test_checkout_list_shows_materialized_checkouts() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    let mut add = Command::cargo_bin("gr").unwrap();
+    add.current_dir(&ws.workspace_root)
+        .arg("checkout")
+        .arg("add")
+        .arg("sandbox")
+        .assert()
+        .success();
+
+    let mut list = Command::cargo_bin("gr").unwrap();
+    list.current_dir(&ws.workspace_root)
+        .arg("checkout")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Checkouts"))
+        .stdout(predicate::str::contains("sandbox ->"));
+}
+
+#[test]
+fn test_checkout_remove_deletes_materialized_checkout() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let checkout_root = ws.workspace_root.join(".grip/checkouts/sandbox");
+
+    let mut add = Command::cargo_bin("gr").unwrap();
+    add.current_dir(&ws.workspace_root)
+        .arg("checkout")
+        .arg("add")
+        .arg("sandbox")
+        .assert()
+        .success();
+
+    assert!(checkout_root.is_dir());
+
+    let mut remove = Command::cargo_bin("gr").unwrap();
+    remove
+        .current_dir(&ws.workspace_root)
+        .arg("checkout")
+        .arg("remove")
+        .arg("sandbox")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed checkout 'sandbox'"));
+
+    assert!(!checkout_root.exists());
+}
+
+#[test]
+fn test_checkout_remove_errors_for_missing_checkout() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    let mut remove = Command::cargo_bin("gr").unwrap();
+    remove
+        .current_dir(&ws.workspace_root)
+        .arg("checkout")
+        .arg("remove")
+        .arg("missing")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Checkout 'missing' not found"));
 }

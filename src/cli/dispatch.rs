@@ -120,6 +120,25 @@ pub async fn dispatch_command(
                     repo.as_deref(),
                     group.as_deref(),
                 )?;
+            } else if matches!(name.as_deref(), Some("list")) {
+                if create || base || !extra.is_empty() {
+                    anyhow::bail!("`gr checkout list` does not accept extra arguments");
+                }
+                crate::cli::commands::checkout::run_checkout_list(&ctx.workspace_root)?;
+            } else if matches!(name.as_deref(), Some("remove")) {
+                if create || base {
+                    anyhow::bail!("--create and --base are not valid with 'remove'");
+                }
+                if extra.len() > 1 {
+                    anyhow::bail!("unexpected extra arguments after checkout name");
+                }
+                let checkout_name = extra.first().ok_or_else(|| {
+                    anyhow::anyhow!("Checkout name is required: gr checkout remove <name>")
+                })?;
+                crate::cli::commands::checkout::run_checkout_remove(
+                    &ctx.workspace_root,
+                    checkout_name,
+                )?;
             } else {
                 let branch = if base {
                     let config = crate::core::griptree::GriptreeConfig::load_from_workspace(

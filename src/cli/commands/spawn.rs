@@ -354,9 +354,19 @@ pub fn run_spawn_up(
             let resolved_defaults: Vec<String> = default_args.iter().map(|s| resolve(s)).collect();
             let resolved_args: Vec<String> = agent.args.iter().map(|s| resolve(s)).collect();
 
+            // Inject --model from agent.model if not already in args (#472)
+            let has_model_flag = resolved_args.iter().any(|a| a == "--model")
+                || resolved_defaults.iter().any(|a| a == "--model");
+            let model_inject: Vec<String> = if !has_model_flag && !agent.model.is_empty() {
+                vec!["--model".into(), agent.model.clone()]
+            } else {
+                vec![]
+            };
+
             let mut parts: Vec<&str> = vec![binary];
             parts.extend(cmd_parts.iter().map(|s| s.as_str()));
             parts.extend(resolved_defaults.iter().map(|s| s.as_str()));
+            parts.extend(model_inject.iter().map(|s| s.as_str()));
             parts.extend(resolved_args.iter().map(|s| s.as_str()));
 
             let launch = parts.join(" ");
@@ -1021,4 +1031,110 @@ pub fn run_spawn_web(port: u16, no_open: bool, _quiet: bool) -> anyhow::Result<(
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_agent(model: &str, args: Vec<&str>) -> AgentConfig {
+        AgentConfig {
+            role: "test".into(),
+            model: model.into(),
+            tool: "claude".into(),
+            worktree: "main".into(),
+            startup_prompt: None,
+            cmd: vec![],
+            args: args.into_iter().map(String::from).collect(),
+            channel: None,
+            loop_interval: "5m".into(),
+            heartbeat_interval: 60,
+            timeout_threshold: 180,
+            restart_policy: "always".into(),
+            restart_delay: 5,
+            max_restarts: 3,
+            env: HashMap::new(),
+        }
+    }
+
+    /// Model injection: --model is auto-injected from agent.model when not in args (#472)
+    #[test]
+    fn test_model_injected_when_absent() {
+        let agent = make_agent("claude-opus-4-6", vec!["-n", "opus"]);
+        let default_args: Vec<String> = vec![];
+        let resolved_args: Vec<String> = agent.args.clone();
+
+        let has_model_flag = resolved_args.iter().any(|a| a == "--model")
+            || default_args.iter().any(|a| a == "--model");
+
+        assert!(!has_model_flag);
+
+        let model_inject: Vec<String> = if !has_model_flag && !agent.model.is_empty() {
+            vec!["--model".into(), agent.model.clone()]
+        } else {
+            vec![]
+        };
+
+        assert_eq!(model_inject, vec!["--model", "claude-opus-4-6"]);
+    }
+
+    /// Model injection: --model is NOT injected when already in agent.args (#472)
+    #[test]
+    fn test_model_not_duplicated_when_in_args() {
+        let agent = make_agent(
+            "claude-opus-4-6",
+            vec!["--model", "claude-opus-4-6", "-n", "opus"],
+        );
+        let default_args: Vec<String> = vec![];
+        let resolved_args: Vec<String> = agent.args.clone();
+
+        let has_model_flag = resolved_args.iter().any(|a| a == "--model")
+            || default_args.iter().any(|a| a == "--model");
+
+        assert!(has_model_flag);
+
+        let model_inject: Vec<String> = if !has_model_flag && !agent.model.is_empty() {
+            vec!["--model".into(), agent.model.clone()]
+        } else {
+            vec![]
+        };
+
+        assert!(model_inject.is_empty());
+    }
+
+    /// Model injection: --model in default_args also prevents injection (#472)
+    #[test]
+    fn test_model_not_duplicated_when_in_default_args() {
+        let agent = make_agent("claude-opus-4-6", vec!["-n", "opus"]);
+        let default_args: Vec<String> = vec!["--model".into(), "claude-sonnet-4-6".into()];
+        let resolved_args: Vec<String> = agent.args.clone();
+
+        let has_model_flag = resolved_args.iter().any(|a| a == "--model")
+            || default_args.iter().any(|a| a == "--model");
+
+        assert!(has_model_flag);
+    }
+
+    /// Model injection: empty model string does not inject --model
+    #[test]
+    fn test_empty_model_no_injection() {
+        let agent = make_agent("", vec!["-n", "opus"]);
+        let default_args: Vec<String> = vec![];
+        let resolved_args: Vec<String> = agent.args.clone();
+
+        let has_model_flag = resolved_args.iter().any(|a| a == "--model")
+            || default_args.iter().any(|a| a == "--model");
+
+        let model_inject: Vec<String> = if !has_model_flag && !agent.model.is_empty() {
+            vec!["--model".into(), agent.model.clone()]
+        } else {
+            vec![]
+        };
+
+        assert!(model_inject.is_empty());
+    }
 }

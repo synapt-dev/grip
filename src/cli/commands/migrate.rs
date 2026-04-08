@@ -524,7 +524,10 @@ pub async fn run_migrate_in_place(
         if linked_worktrees.is_empty() {
             println!("  Would run: git worktree repair (in {}/)", repo_name);
         } else {
-            println!("  Would repair {} linked worktree(s):", linked_worktrees.len());
+            println!(
+                "  Would repair {} linked worktree(s):",
+                linked_worktrees.len()
+            );
             for wt in &linked_worktrees {
                 println!("    {}", wt);
             }

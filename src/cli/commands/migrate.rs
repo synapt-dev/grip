@@ -504,8 +504,34 @@ pub async fn run_migrate_in_place(
                 }
             }
         }
+        // Show linked worktrees that will be repaired
+        let wt_out = std::process::Command::new("git")
+            .args(["worktree", "list", "--porcelain"])
+            .current_dir(&root)
+            .output();
+        let linked_worktrees: Vec<String> = if let Ok(out) = wt_out {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter_map(|l| l.strip_prefix("worktree "))
+                .filter(|p| *p != root.to_string_lossy().as_ref())
+                .map(|p| p.to_string())
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         println!();
-        println!("  Would run: git worktree repair (in {}/)", repo_name);
+        if linked_worktrees.is_empty() {
+            println!("  Would run: git worktree repair (in {}/)", repo_name);
+        } else {
+            println!(
+                "  Would repair {} linked worktree(s):",
+                linked_worktrees.len()
+            );
+            for wt in &linked_worktrees {
+                println!("    {}", wt);
+            }
+        }
         println!("  Would create: .gitgrip/");
         return Ok(());
     }

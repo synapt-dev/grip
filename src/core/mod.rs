@@ -11,6 +11,7 @@ pub mod repo_manifest;
 pub mod state;
 pub mod sync_state;
 pub mod workspace_cache;
+pub mod workspace_checkout;
 
 pub use manifest::CloneStrategy;
 pub use manifest::Manifest;

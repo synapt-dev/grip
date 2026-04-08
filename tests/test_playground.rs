@@ -119,3 +119,57 @@ fn test_playground_sync_cli_pulls_upstream_change() {
     assert_file_exists(&playground.repo_path("frontend").join("upstream.txt"));
     assert_on_branch(&playground.repo_path("frontend"), "main");
 }
+
+#[test]
+fn test_playground_prune_dry_run_keeps_merged_branch() {
+    let playground = PlaygroundHarness::new(&["frontend"]);
+
+    playground.init_from_dirs();
+    playground.run_in_workspace(["branch", "feat/dry-run"]);
+
+    git_helpers::commit_file(
+        &playground.repo_path("frontend"),
+        "dry-run.txt",
+        "dry run content\n",
+        "Add dry-run change",
+    );
+
+    playground.run_in_workspace(["checkout", "main"]);
+
+    let merge_output = std::process::Command::new("git")
+        .args([
+            "merge",
+            "feat/dry-run",
+            "--no-ff",
+            "-m",
+            "Merge feat/dry-run",
+        ])
+        .current_dir(playground.repo_path("frontend"))
+        .output()
+        .expect("failed to run git merge");
+    assert!(
+        merge_output.status.success(),
+        "git merge failed: {}",
+        String::from_utf8_lossy(&merge_output.stderr)
+    );
+
+    let prune_output = playground.run_in_workspace_output(["prune"]);
+    assert!(
+        prune_output.status.success(),
+        "prune dry-run should succeed: {}",
+        String::from_utf8_lossy(&prune_output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&prune_output.stdout);
+    assert!(
+        stdout.contains("Would delete: feat/dry-run"),
+        "expected dry-run prune output to mention feat/dry-run, got:\n{}",
+        stdout
+    );
+
+    assert_on_branch(&playground.repo_path("frontend"), "main");
+    assert!(
+        git_helpers::branch_exists(&playground.repo_path("frontend"), "feat/dry-run"),
+        "dry-run prune should not delete the merged branch"
+    );
+}

@@ -73,4 +73,7 @@ pub enum RepoCommands {
         /// Canonical remote URL
         url: String,
     },
+
+    /// List registered repos
+    List,
 }

@@ -134,6 +134,46 @@ pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
                 println!("Added gr2 repo '{}' -> {}", name, url);
                 Ok(())
             }
+            RepoCommands::List => {
+                let workspace_root = require_workspace_root()?;
+                let repos_root = workspace_root.join("repos");
+
+                let mut repos = Vec::new();
+                for entry in fs::read_dir(&repos_root)? {
+                    let entry = entry?;
+                    let repo_toml = entry.path().join("repo.toml");
+                    if entry.file_type()?.is_dir() && repo_toml.exists() {
+                        let content = fs::read_to_string(repo_toml)?;
+                        let fallback_name = entry.file_name().to_string_lossy().into_owned();
+                        let name = content
+                            .lines()
+                            .find_map(|line| line.strip_prefix("name = \""))
+                            .and_then(|line| line.strip_suffix('"'))
+                            .map(str::to_owned)
+                            .unwrap_or(fallback_name);
+                        let url = content
+                            .lines()
+                            .find_map(|line| line.strip_prefix("url = \""))
+                            .and_then(|line| line.strip_suffix('"'))
+                            .unwrap_or("")
+                            .to_string();
+                        repos.push((name, url));
+                    }
+                }
+
+                repos.sort_by(|a, b| a.0.cmp(&b.0));
+
+                if repos.is_empty() {
+                    println!("No gr2 repos registered.");
+                } else {
+                    println!("Repos");
+                    for (name, url) in repos {
+                        println!("- {} -> {}", name, url);
+                    }
+                }
+
+                Ok(())
+            }
         },
     }
 }

@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::args::Commands;
+use crate::args::{Commands, TeamCommands};
 
 pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
     match command {
@@ -48,5 +48,28 @@ pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
             }
             Ok(())
         }
+        Commands::Team { command } => match command {
+            TeamCommands::Add { name } => {
+                let workspace_root = std::env::current_dir()?;
+                let workspace_toml = workspace_root.join(".grip/workspace.toml");
+                if !workspace_toml.exists() {
+                    anyhow::bail!("not in a gr2 workspace: missing .grip/workspace.toml");
+                }
+
+                let agent_root = workspace_root.join("agents").join(&name);
+                if agent_root.exists() {
+                    anyhow::bail!("agent '{}' already exists", name);
+                }
+
+                fs::create_dir_all(&agent_root)?;
+                fs::write(
+                    agent_root.join("agent.toml"),
+                    format!("name = \"{}\"\nkind = \"agent-workspace\"\n", name),
+                )?;
+
+                println!("Added gr2 agent workspace '{}'", name);
+                Ok(())
+            }
+        },
     }
 }

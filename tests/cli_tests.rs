@@ -105,6 +105,82 @@ fn test_gr2_init_rejects_existing_path() {
         .stderr(predicate::str::contains("workspace path already exists"));
 }
 
+#[test]
+fn test_gr2_team_add_registers_agent_workspace() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let mut team_add = Command::cargo_bin("gr2").unwrap();
+    team_add
+        .current_dir(&workspace_root)
+        .arg("team")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Added gr2 agent workspace 'atlas'",
+        ));
+
+    let agent_toml =
+        std::fs::read_to_string(workspace_root.join("agents/atlas/agent.toml")).unwrap();
+    assert!(agent_toml.contains("name = \"atlas\""));
+    assert!(agent_toml.contains("kind = \"agent-workspace\""));
+}
+
+#[test]
+fn test_gr2_team_add_rejects_duplicate_agent() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut first = Command::cargo_bin("gr2").unwrap();
+    first
+        .current_dir(&workspace_root)
+        .arg("team")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .success();
+
+    let mut duplicate = Command::cargo_bin("gr2").unwrap();
+    duplicate
+        .current_dir(&workspace_root)
+        .arg("team")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("agent 'atlas' already exists"));
+}
+
+#[test]
+fn test_gr2_team_add_requires_gr2_workspace() {
+    let temp = TempDir::new().unwrap();
+
+    let mut team_add = Command::cargo_bin("gr2").unwrap();
+    team_add
+        .current_dir(temp.path())
+        .arg("team")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "not in a gr2 workspace: missing .grip/workspace.toml",
+        ));
+}
+
 /// Test that `gr status` fails gracefully outside a workspace
 #[test]
 fn test_status_outside_workspace() {

@@ -31,4 +31,19 @@ pub enum Commands {
 
     /// Verify the gr2 bootstrap binary is wired correctly
     Doctor,
+
+    /// Team workspace operations
+    Team {
+        #[command(subcommand)]
+        command: TeamCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TeamCommands {
+    /// Register an agent workspace under agents/
+    Add {
+        /// Agent workspace name
+        name: String,
+    },
 }

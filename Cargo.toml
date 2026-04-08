@@ -21,6 +21,10 @@ path = "src/main.rs"
 name = "gitgrip"
 path = "src/main.rs"
 
+[[bin]]
+name = "gr2"
+path = "src/bin/gr2.rs"
+
 [lib]
 name = "gitgrip"
 path = "src/lib.rs"

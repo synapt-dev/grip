@@ -32,6 +32,37 @@ fn test_version() {
         .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
 }
 
+#[test]
+fn test_gr2_help() {
+    let mut cmd = Command::cargo_bin("gr2").unwrap();
+    cmd.arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "gr2 is the clean-break gitgrip CLI for the new team-workspace, cache, and checkout model.",
+        ))
+        .stdout(predicate::str::contains("doctor"))
+        .stdout(predicate::str::contains("gr2"));
+}
+
+#[test]
+fn test_gr2_version() {
+    let mut cmd = Command::cargo_bin("gr2").unwrap();
+    cmd.arg("--version")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
+}
+
+#[test]
+fn test_gr2_doctor() {
+    let mut cmd = Command::cargo_bin("gr2").unwrap();
+    cmd.arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("gr2 bootstrap OK"));
+}
+
 /// Test that `gr status` fails gracefully outside a workspace
 #[test]
 fn test_status_outside_workspace() {

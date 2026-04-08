@@ -349,7 +349,7 @@ pub enum Commands {
         #[command(subcommand)]
         action: TargetCommands,
     },
-    /// Manage workspace repo caches (.grip/cache/)
+    /// Manage machine-level repo caches (~/.grip/cache/ by default)
     Cache {
         #[command(subcommand)]
         action: CacheCommands,

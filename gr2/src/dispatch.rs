@@ -50,11 +50,7 @@ pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
         }
         Commands::Team { command } => match command {
             TeamCommands::Add { name } => {
-                let workspace_root = std::env::current_dir()?;
-                let workspace_toml = workspace_root.join(".grip/workspace.toml");
-                if !workspace_toml.exists() {
-                    anyhow::bail!("not in a gr2 workspace: missing .grip/workspace.toml");
-                }
+                let workspace_root = require_workspace_root()?;
 
                 let agent_root = workspace_root.join("agents").join(&name);
                 if agent_root.exists() {
@@ -70,6 +66,40 @@ pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
                 println!("Added gr2 agent workspace '{}'", name);
                 Ok(())
             }
+            TeamCommands::List => {
+                let workspace_root = require_workspace_root()?;
+                let agents_root = workspace_root.join("agents");
+
+                let mut names = Vec::new();
+                for entry in fs::read_dir(&agents_root)? {
+                    let entry = entry?;
+                    if entry.file_type()?.is_dir() && entry.path().join("agent.toml").exists() {
+                        names.push(entry.file_name().to_string_lossy().into_owned());
+                    }
+                }
+
+                names.sort();
+
+                if names.is_empty() {
+                    println!("No gr2 agent workspaces registered.");
+                } else {
+                    println!("Agent workspaces");
+                    for name in names {
+                        println!("- {}", name);
+                    }
+                }
+
+                Ok(())
+            }
         },
     }
+}
+
+fn require_workspace_root() -> Result<PathBuf> {
+    let workspace_root = std::env::current_dir()?;
+    let workspace_toml = workspace_root.join(".grip/workspace.toml");
+    if !workspace_toml.exists() {
+        anyhow::bail!("not in a gr2 workspace: missing .grip/workspace.toml");
+    }
+    Ok(workspace_root)
 }

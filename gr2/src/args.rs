@@ -46,4 +46,7 @@ pub enum TeamCommands {
         /// Agent workspace name
         name: String,
     },
+
+    /// List registered agent workspaces
+    List,
 }

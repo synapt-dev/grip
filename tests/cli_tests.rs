@@ -181,6 +181,77 @@ fn test_gr2_team_add_requires_gr2_workspace() {
         ));
 }
 
+#[test]
+fn test_gr2_team_list_shows_registered_agents() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut add_atlas = Command::cargo_bin("gr2").unwrap();
+    add_atlas
+        .current_dir(&workspace_root)
+        .arg("team")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .success();
+
+    let mut add_opus = Command::cargo_bin("gr2").unwrap();
+    add_opus
+        .current_dir(&workspace_root)
+        .arg("team")
+        .arg("add")
+        .arg("opus")
+        .assert()
+        .success();
+
+    let mut list = Command::cargo_bin("gr2").unwrap();
+    list.current_dir(&workspace_root)
+        .arg("team")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Agent workspaces"))
+        .stdout(predicate::str::contains("- atlas"))
+        .stdout(predicate::str::contains("- opus"));
+}
+
+#[test]
+fn test_gr2_team_list_reports_empty_state() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut list = Command::cargo_bin("gr2").unwrap();
+    list.current_dir(&workspace_root)
+        .arg("team")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "No gr2 agent workspaces registered.",
+        ));
+}
+
+#[test]
+fn test_gr2_team_list_requires_gr2_workspace() {
+    let temp = TempDir::new().unwrap();
+
+    let mut list = Command::cargo_bin("gr2").unwrap();
+    list.current_dir(temp.path())
+        .arg("team")
+        .arg("list")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "not in a gr2 workspace: missing .grip/workspace.toml",
+        ));
+}
+
 /// Test that `gr status` fails gracefully outside a workspace
 #[test]
 fn test_status_outside_workspace() {

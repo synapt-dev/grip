@@ -1159,7 +1159,14 @@ branch refs/heads/feat/dev
         );
 
         let worktree_list = assert_git_ok(&main_child, &["worktree", "list", "--porcelain"]);
-        assert!(String::from_utf8_lossy(&worktree_list.stdout)
-            .contains(linked_child.to_string_lossy().as_ref()));
+        let worktree_output = String::from_utf8_lossy(&worktree_list.stdout);
+        // git worktree list --porcelain uses forward slashes on Windows; normalize before compare.
+        let linked_path_normalized = linked_child.to_string_lossy().replace('\\', "/");
+        assert!(
+            worktree_output.contains(linked_path_normalized.as_str()),
+            "worktree list should contain '{}'\nActual output:\n{}",
+            linked_path_normalized,
+            worktree_output
+        );
     }
 }

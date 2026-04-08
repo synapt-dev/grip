@@ -354,9 +354,19 @@ pub fn run_spawn_up(
             let resolved_defaults: Vec<String> = default_args.iter().map(|s| resolve(s)).collect();
             let resolved_args: Vec<String> = agent.args.iter().map(|s| resolve(s)).collect();
 
+            // Inject --model from agent.model if not already in args (#472)
+            let has_model_flag = resolved_args.iter().any(|a| a == "--model")
+                || resolved_defaults.iter().any(|a| a == "--model");
+            let model_inject: Vec<String> = if !has_model_flag && !agent.model.is_empty() {
+                vec!["--model".into(), agent.model.clone()]
+            } else {
+                vec![]
+            };
+
             let mut parts: Vec<&str> = vec![binary];
             parts.extend(cmd_parts.iter().map(|s| s.as_str()));
             parts.extend(resolved_defaults.iter().map(|s| s.as_str()));
+            parts.extend(model_inject.iter().map(|s| s.as_str()));
             parts.extend(resolved_args.iter().map(|s| s.as_str()));
 
             let launch = parts.join(" ");
@@ -366,6 +376,43 @@ pub fn run_spawn_up(
         let _ = Command::new("tmux")
             .args(["send-keys", "-t", &target, &launch_cmd, "Enter"])
             .status();
+
+        // Set up pipe-pane for output streaming (#443 Mission Control)
+        let log_dir = workspace_root.join(".synapt").join("logs").join(&agent_id);
+        let _ = std::fs::create_dir_all(&log_dir);
+        let log_path = log_dir.join("output.log");
+        let pipe_cmd = format!("cat >> {}", log_path.display());
+        let _ = Command::new("tmux")
+            .args(["pipe-pane", "-t", &target, &pipe_cmd])
+            .status();
+
+        // Get tmux pane PID for process tracking
+        let pane_pid = Command::new("tmux")
+            .args(["display-message", "-t", &target, "-p", "#{pane_pid}"])
+            .output()
+            .ok()
+            .and_then(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .trim()
+                    .parse::<u32>()
+                    .ok()
+            });
+
+        // Update process state in team.db
+        if let Err(e) = crate::core::agent_registry::update_process_state(
+            &org_dir,
+            &agent_id,
+            pane_pid,
+            Some(&target),
+            "online",
+            Some(log_path.to_str().unwrap_or("")),
+            None, // session_id set by agent on join
+        ) {
+            Output::warning(&format!(
+                "Failed to update process state for {}: {}",
+                name, e
+            ));
+        }
 
         // Print status
         let mode_tag = if mock_mode {
@@ -825,80 +872,79 @@ pub fn run_spawn_dashboard(_quiet: bool) -> anyhow::Result<()> {
         gr_path
     );
 
-    // First pane (pane 0) gets agent 0
+    // Helper: get the active pane ID after a split or window creation.
+    // Returns %N format (e.g. "%42") which is stable across splits.
+    let get_pane_id = |target: &str| -> Option<String> {
+        Command::new("tmux")
+            .args(["display-message", "-t", target, "-p", "#{pane_id}"])
+            .output()
+            .ok()
+            .and_then(|o| {
+                let id = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if id.starts_with('%') {
+                    Some(id)
+                } else {
+                    None
+                }
+            })
+    };
+
+    // Track pane IDs for stable targeting (#452)
+    let mut pane_ids: Vec<String> = Vec::new();
+
+    // First pane (initial pane in the new window) gets agent 0
     if let Some(name) = names.first() {
-        Command::new("tmux")
-            .args([
-                "send-keys",
-                "-t",
-                &dashboard_target,
-                &capture_script(name),
-                "Enter",
-            ])
-            .status()?;
+        if let Some(id) = get_pane_id(&dashboard_target) {
+            pane_ids.push(id.clone());
+            Command::new("tmux")
+                .args(["send-keys", "-t", &id, &capture_script(name), "Enter"])
+                .status()?;
+        }
     }
 
-    // Split right for agent 1 (pane 1)
+    // Split right for agent 1
     if names.len() > 1 {
-        Command::new("tmux")
-            .args([
-                "split-window",
-                "-h",
-                "-t",
-                &format!("{}.0", dashboard_target),
-            ])
-            .status()?;
-        Command::new("tmux")
-            .args([
-                "send-keys",
-                "-t",
-                &format!("{}.1", dashboard_target),
-                &capture_script(&names[1]),
-                "Enter",
-            ])
-            .status()?;
+        if let Some(ref first_pane) = pane_ids.first().cloned() {
+            Command::new("tmux")
+                .args(["split-window", "-h", "-t", first_pane])
+                .status()?;
+            if let Some(id) = get_pane_id(&dashboard_target) {
+                pane_ids.push(id.clone());
+                Command::new("tmux")
+                    .args(["send-keys", "-t", &id, &capture_script(&names[1]), "Enter"])
+                    .status()?;
+            }
+        }
     }
 
-    // Split pane 0 vertically for agent 2 (pane 2)
+    // Split first pane vertically for agent 2
     if names.len() > 2 {
-        Command::new("tmux")
-            .args([
-                "split-window",
-                "-v",
-                "-t",
-                &format!("{}.0", dashboard_target),
-            ])
-            .status()?;
-        Command::new("tmux")
-            .args([
-                "send-keys",
-                "-t",
-                &format!("{}.2", dashboard_target),
-                &capture_script(&names[2]),
-                "Enter",
-            ])
-            .status()?;
+        if let Some(ref first_pane) = pane_ids.first().cloned() {
+            Command::new("tmux")
+                .args(["split-window", "-v", "-t", first_pane])
+                .status()?;
+            if let Some(id) = get_pane_id(&dashboard_target) {
+                pane_ids.push(id.clone());
+                Command::new("tmux")
+                    .args(["send-keys", "-t", &id, &capture_script(&names[2]), "Enter"])
+                    .status()?;
+            }
+        }
     }
 
-    // Split pane 1 vertically for agent 3 (pane 3)
+    // Split second pane vertically for agent 3
     if names.len() > 3 {
-        Command::new("tmux")
-            .args([
-                "split-window",
-                "-v",
-                "-t",
-                &format!("{}.1", dashboard_target),
-            ])
-            .status()?;
-        Command::new("tmux")
-            .args([
-                "send-keys",
-                "-t",
-                &format!("{}.3", dashboard_target),
-                &capture_script(&names[3]),
-                "Enter",
-            ])
-            .status()?;
+        if let Some(ref second_pane) = pane_ids.get(1).cloned() {
+            Command::new("tmux")
+                .args(["split-window", "-v", "-t", second_pane])
+                .status()?;
+            if let Some(id) = get_pane_id(&dashboard_target) {
+                pane_ids.push(id.clone());
+                Command::new("tmux")
+                    .args(["send-keys", "-t", &id, &capture_script(&names[3]), "Enter"])
+                    .status()?;
+            }
+        }
     }
 
     // Bottom input pane — split the full width at the bottom
@@ -906,9 +952,9 @@ pub fn run_spawn_dashboard(_quiet: bool) -> anyhow::Result<()> {
         .args(["split-window", "-v", "-l", "3", "-t", &dashboard_target])
         .status()?;
 
-    // Find the last pane (input pane) and send the input script
-    let pane_count = names.len().min(4) + 1; // agent panes + input pane
-    let input_pane = format!("{}.{}", dashboard_target, pane_count);
+    // Get the input pane ID (the newly created pane after the last split)
+    let input_pane = get_pane_id(&dashboard_target)
+        .unwrap_or_else(|| format!("{}.{}", dashboard_target, pane_ids.len()));
     Command::new("tmux")
         .args(["send-keys", "-t", &input_pane, &input_script, "Enter"])
         .status()?;
@@ -985,4 +1031,110 @@ pub fn run_spawn_web(port: u16, no_open: bool, _quiet: bool) -> anyhow::Result<(
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_agent(model: &str, args: Vec<&str>) -> AgentConfig {
+        AgentConfig {
+            role: "test".into(),
+            model: model.into(),
+            tool: "claude".into(),
+            worktree: "main".into(),
+            startup_prompt: None,
+            cmd: vec![],
+            args: args.into_iter().map(String::from).collect(),
+            channel: None,
+            loop_interval: "5m".into(),
+            heartbeat_interval: 60,
+            timeout_threshold: 180,
+            restart_policy: "always".into(),
+            restart_delay: 5,
+            max_restarts: 3,
+            env: HashMap::new(),
+        }
+    }
+
+    /// Model injection: --model is auto-injected from agent.model when not in args (#472)
+    #[test]
+    fn test_model_injected_when_absent() {
+        let agent = make_agent("claude-opus-4-6", vec!["-n", "opus"]);
+        let default_args: Vec<String> = vec![];
+        let resolved_args: Vec<String> = agent.args.clone();
+
+        let has_model_flag = resolved_args.iter().any(|a| a == "--model")
+            || default_args.iter().any(|a| a == "--model");
+
+        assert!(!has_model_flag);
+
+        let model_inject: Vec<String> = if !has_model_flag && !agent.model.is_empty() {
+            vec!["--model".into(), agent.model.clone()]
+        } else {
+            vec![]
+        };
+
+        assert_eq!(model_inject, vec!["--model", "claude-opus-4-6"]);
+    }
+
+    /// Model injection: --model is NOT injected when already in agent.args (#472)
+    #[test]
+    fn test_model_not_duplicated_when_in_args() {
+        let agent = make_agent(
+            "claude-opus-4-6",
+            vec!["--model", "claude-opus-4-6", "-n", "opus"],
+        );
+        let default_args: Vec<String> = vec![];
+        let resolved_args: Vec<String> = agent.args.clone();
+
+        let has_model_flag = resolved_args.iter().any(|a| a == "--model")
+            || default_args.iter().any(|a| a == "--model");
+
+        assert!(has_model_flag);
+
+        let model_inject: Vec<String> = if !has_model_flag && !agent.model.is_empty() {
+            vec!["--model".into(), agent.model.clone()]
+        } else {
+            vec![]
+        };
+
+        assert!(model_inject.is_empty());
+    }
+
+    /// Model injection: --model in default_args also prevents injection (#472)
+    #[test]
+    fn test_model_not_duplicated_when_in_default_args() {
+        let agent = make_agent("claude-opus-4-6", vec!["-n", "opus"]);
+        let default_args: Vec<String> = vec!["--model".into(), "claude-sonnet-4-6".into()];
+        let resolved_args: Vec<String> = agent.args.clone();
+
+        let has_model_flag = resolved_args.iter().any(|a| a == "--model")
+            || default_args.iter().any(|a| a == "--model");
+
+        assert!(has_model_flag);
+    }
+
+    /// Model injection: empty model string does not inject --model
+    #[test]
+    fn test_empty_model_no_injection() {
+        let agent = make_agent("", vec!["-n", "opus"]);
+        let default_args: Vec<String> = vec![];
+        let resolved_args: Vec<String> = agent.args.clone();
+
+        let has_model_flag = resolved_args.iter().any(|a| a == "--model")
+            || default_args.iter().any(|a| a == "--model");
+
+        let model_inject: Vec<String> = if !has_model_flag && !agent.model.is_empty() {
+            vec!["--model".into(), agent.model.clone()]
+        } else {
+            vec![]
+        };
+
+        assert!(model_inject.is_empty());
+    }
 }

@@ -648,3 +648,86 @@ workspace:
         "hook marker file should NOT exist when --no-hooks is set"
     );
 }
+
+/// grip#468: `gr sync` should auto-reclone spaces/main when it exists but has no .git
+#[tokio::test]
+async fn test_sync_reclones_non_git_manifest_dir() {
+    use tempfile::TempDir;
+
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("workspace");
+    let remotes_dir = temp.path().join("remotes");
+    fs::create_dir_all(&workspace_root).unwrap();
+    fs::create_dir_all(&remotes_dir).unwrap();
+
+    // Set up a bare remote for the manifest repo
+    let manifest_remote = remotes_dir.join("manifest.git");
+    git_helpers::init_bare_repo(&manifest_remote);
+
+    // Commit a gripspace.yml to the manifest remote via a staging repo
+    let manifest_staging = temp.path().join("manifest-staging");
+    git_helpers::init_repo(&manifest_staging);
+    let manifest_url = format!("file://{}", manifest_remote.display());
+    let manifest_yaml = "version: 1\nrepos: {}\n";
+    git_helpers::commit_file(
+        &manifest_staging,
+        "gripspace.yml",
+        manifest_yaml,
+        "Initial manifest",
+    );
+    git_helpers::add_remote(&manifest_staging, "origin", &manifest_url);
+    git_helpers::push_upstream(&manifest_staging, "origin", "main");
+
+    // Clone the manifest remote into spaces/main/ (normal first-time setup)
+    let spaces_main = workspace_root.join(".gitgrip").join("spaces").join("main");
+    git_helpers::clone_repo(&manifest_url, &spaces_main);
+
+    // Verify it's a proper git clone before we corrupt it
+    assert!(
+        spaces_main.join(".git").exists(),
+        "pre-condition: should be a git repo"
+    );
+
+    // Simulate corruption: remove .git from spaces/main/ (the bug scenario)
+    fs::remove_dir_all(spaces_main.join(".git")).unwrap();
+    assert!(
+        !spaces_main.join(".git").exists(),
+        "pre-condition: .git removed"
+    );
+
+    // Build a manifest that includes manifest.url so recover_manifest_repo can re-clone
+    let manifest_with_url = format!(
+        "version: 1\nmanifest:\n  url: {}\n  default_branch: main\nrepos: {{}}\n",
+        manifest_url
+    );
+    fs::write(spaces_main.join("gripspace.yml"), &manifest_with_url).unwrap();
+
+    let manifest = gitgrip::core::manifest::Manifest::parse_raw(&manifest_with_url)
+        .expect("failed to parse test manifest");
+
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &workspace_root,
+        &manifest,
+        false,
+        true, // quiet
+        None,
+        None,
+        false,
+        false,
+        false,
+        false,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "sync should succeed after auto-recovery: {:?}",
+        result.err()
+    );
+
+    // spaces/main/ should now have a .git (re-cloned)
+    assert!(
+        spaces_main.join(".git").exists(),
+        "spaces/main/ should be a git repo after auto-recovery"
+    );
+}

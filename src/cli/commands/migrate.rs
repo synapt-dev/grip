@@ -1,13 +1,19 @@
 //! `gr migrate` — convert existing repos into a gripspace (#424).
 //!
-//! First customer migration tooling. Generates gripspace.yml +
-//! agents.toml + CLAUDE.md + per-agent prompts from a list of
-//! GitHub repos. Interactive mode configures the full agent team.
+//! Two subcommands:
+//!   - `from-repos`: Generate a new gripspace from GitHub repo list
+//!   - `in-place`:   Convert an existing git repo dir into a gripspace
 
 use crate::cli::output::Output;
+use crate::core::griptree::{GriptreeConfig, GriptreePointer, GriptreeRepoInfo};
+use crate::core::manifest::{CloneStrategy, Manifest, ManifestSettings, MergeStrategy, RepoConfig};
+use crate::core::manifest_paths;
+use chrono::Utc;
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
+use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::process::Output as ProcessOutput;
 
 /// Agent configuration collected during interactive setup.
 struct AgentSpec {
@@ -15,6 +21,26 @@ struct AgentSpec {
     role: String,
     model: String,
     tool: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExistingWorktree {
+    root: PathBuf,
+    branch: Option<String>,
+    is_main: bool,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+struct MigratedGriptreesList {
+    griptrees: HashMap<String, MigratedGriptreeEntry>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct MigratedGriptreeEntry {
+    path: String,
+    branch: String,
+    locked: bool,
+    lock_reason: Option<String>,
 }
 
 /// Run `gr migrate from-repos` — generate gripspace from GitHub repos.
@@ -412,9 +438,611 @@ fn create_gripspace_dirs(
     Ok(())
 }
 
+/// Run `gr migrate in-place` — convert a git repo dir into a gripspace.
+///
+/// Algorithm (v3.2):
+/// 1. Derive repo name from `git remote get-url origin` (basename, strip .git)
+///    Falls back to directory name if no remote or command fails.
+/// 2. Enumerate the main repo plus linked worktrees via `git worktree list --porcelain`.
+/// 3. For each worktree root, move everything into `<worktree-root>/<repo-name>` EXCEPT:
+///    .synapt/, .claude/, .env, _migrate_tmp/, and the child dir name.
+/// 4. Run `git worktree repair` after all paths move so linked worktree metadata points at
+///    the new `<worktree-root>/<repo-name>` locations.
+/// 5. Create `.gitgrip/griptrees.json` at the main root and `.griptree` /
+///    `.gitgrip/griptree.json` in each linked worktree root.
+pub async fn run_migrate_in_place(
+    path: Option<&str>,
+    dry_run: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    let root = match path {
+        Some(p) => PathBuf::from(p).canonicalize()?,
+        None => std::env::current_dir()?,
+    };
+
+    // Guard: must be a git repo (has .git at root)
+    if !root.join(".git").exists() {
+        if root.join(".gitgrip").exists() {
+            anyhow::bail!(
+                "Already a gripspace (has .gitgrip/). Run `gr status` to check the workspace."
+            );
+        }
+        anyhow::bail!("Not a git repository: no .git found at {}", root.display());
+    }
+
+    // Guard: git 2.30+ required for `git worktree repair`
+    check_git_version_for_repair()?;
+
+    // Derive repo name
+    let repo_name = derive_repo_name_from_remote(&root);
+    let worktrees = list_existing_worktrees(&root)?;
+    let linked_worktrees: Vec<ExistingWorktree> =
+        worktrees.iter().filter(|wt| !wt.is_main).cloned().collect();
+    let main_revision = worktrees
+        .iter()
+        .find(|wt| wt.is_main)
+        .and_then(|wt| wt.branch.clone())
+        .unwrap_or_else(|| "main".to_string());
+
+    validate_migration_targets(&worktrees, &repo_name)?;
+
+    if !json {
+        Output::header("gr migrate in-place");
+        println!();
+        Output::info(&format!("Gripspace root: {}", root.display()));
+        Output::info(&format!("Repo child:     {}/{}", root.display(), repo_name));
+        if !linked_worktrees.is_empty() {
+            Output::info(&format!("Linked worktrees: {}", linked_worktrees.len()));
+            for wt in &linked_worktrees {
+                let branch = wt.branch.as_deref().unwrap_or("(detached)");
+                println!("  {} -> {}/{}", branch, wt.root.display(), repo_name);
+            }
+        }
+        println!();
+        if dry_run {
+            Output::warning("DRY RUN — no changes will be made");
+            println!();
+        }
+    }
+
+    if !json && dry_run {
+        for wt in &worktrees {
+            let to_move = collect_paths_to_move(&wt.root, &repo_name)?;
+            let label = if wt.is_main {
+                "main repo".to_string()
+            } else {
+                format!(
+                    "linked worktree ({})",
+                    wt.branch.as_deref().unwrap_or("detached")
+                )
+            };
+            println!(
+                "  Would move {} into {}/{}:",
+                label,
+                wt.root.display(),
+                repo_name
+            );
+            for p in &to_move {
+                println!(
+                    "    {}",
+                    p.file_name().unwrap_or_default().to_string_lossy()
+                );
+            }
+            println!();
+            println!("  Would keep at {}:", wt.root.display());
+            for path in [".synapt", ".claude", ".env"] {
+                if wt.root.join(path).exists() {
+                    if wt.root.join(path).is_dir() {
+                        println!("    {}/", path);
+                    } else {
+                        println!("    {}", path);
+                    }
+                }
+            }
+            println!();
+        }
+        println!("  Would run: git worktree repair");
+        println!("  Would create: {}/.gitgrip/griptrees.json", root.display());
+        println!(
+            "  Would create: {}/.gitgrip/spaces/main/gripspace.yml",
+            root.display()
+        );
+        for wt in &linked_worktrees {
+            println!("  Would create: {}/.griptree", wt.root.display());
+            println!(
+                "  Would create: {}/.gitgrip/griptree.json",
+                wt.root.display()
+            );
+        }
+        return Ok(());
+    }
+
+    if dry_run {
+        let result = serde_json::json!({
+            "root": root.display().to_string(),
+            "repo_name": repo_name,
+            "worktrees": worktrees.iter().map(|wt| serde_json::json!({
+                "root": wt.root.display().to_string(),
+                "branch": wt.branch,
+                "is_main": wt.is_main,
+                "to_move": collect_paths_to_move(&wt.root, &repo_name).unwrap_or_default().iter()
+                    .map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string())
+                    .collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+            "dry_run": true,
+        });
+        println!("{}", serde_json::to_string_pretty(&result)?);
+        return Ok(());
+    }
+
+    for wt in &worktrees {
+        migrate_single_worktree_root(&wt.root, &repo_name)?;
+    }
+
+    let repair_outputs = run_worktree_repairs(&worktrees, &repo_name)?;
+    for repair in &repair_outputs {
+        if !json {
+            let repair_out = String::from_utf8_lossy(&repair.stdout);
+            let repair_err = String::from_utf8_lossy(&repair.stderr);
+            if !repair_out.trim().is_empty() || !repair_err.trim().is_empty() {
+                Output::info("git worktree repair output:");
+                for line in repair_out.lines().chain(repair_err.lines()) {
+                    println!("  {}", line);
+                }
+            }
+        }
+        worktree_repair_must_succeed(repair)?;
+    }
+
+    create_root_gripspace_metadata(&root, &linked_worktrees)?;
+    create_root_gripspace_manifest(&root, &repo_name, &main_revision)?;
+    for wt in &linked_worktrees {
+        create_linked_griptree_metadata(&root, wt, &repo_name)?;
+    }
+
+    if json {
+        let result = serde_json::json!({
+            "root": root.display().to_string(),
+            "repo_name": repo_name,
+            "main_child": root.join(&repo_name).display().to_string(),
+            "linked_worktrees": linked_worktrees.iter().map(|wt| serde_json::json!({
+                "root": wt.root.display().to_string(),
+                "child": wt.root.join(&repo_name).display().to_string(),
+                "branch": wt.branch,
+            })).collect::<Vec<_>>(),
+            "worktree_repair": true,
+        });
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        Output::success("Migration complete!");
+        println!();
+        println!("  Main repo moved to: {}/{}/", root.display(), repo_name);
+        for wt in &linked_worktrees {
+            println!(
+                "  Linked worktree:   {}/{} ({})",
+                wt.root.display(),
+                repo_name,
+                wt.branch.as_deref().unwrap_or("detached")
+            );
+        }
+        if root.join(".synapt").exists() {
+            println!("  .synapt/           stays at gripspace root");
+        }
+        if root.join(".claude").exists() {
+            println!("  .claude/           stays at gripspace root");
+        }
+        if root.join(".env").exists() {
+            println!("  .env               stays at gripspace root");
+        }
+        println!("  .gitgrip/          created (gripspace marker)");
+        println!();
+        Output::info("Next steps:");
+        println!("  cd {}", root.display());
+        println!("  gr tree list    # verify linked worktrees became griptrees");
+        println!("  gr status       # verify repos are visible");
+    }
+
+    Ok(())
+}
+
+fn migration_keep_names() -> HashSet<&'static str> {
+    [".synapt", ".claude", ".env", "_migrate_tmp"]
+        .iter()
+        .copied()
+        .collect()
+}
+
+fn collect_paths_to_move(root: &Path, repo_name: &str) -> anyhow::Result<Vec<PathBuf>> {
+    let keep = migration_keep_names();
+    let mut to_move: Vec<PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy().to_string();
+        if keep.contains(name_str.as_str()) || name_str == repo_name {
+            continue;
+        }
+        to_move.push(entry.path());
+    }
+    Ok(to_move)
+}
+
+fn list_existing_worktrees(root: &Path) -> anyhow::Result<Vec<ExistingWorktree>> {
+    let output = std::process::Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(root)
+        .output()
+        .map_err(|e| anyhow::anyhow!("Failed to run git worktree list --porcelain: {}", e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git worktree list --porcelain failed: {}", stderr.trim());
+    }
+    parse_worktree_list_porcelain(&String::from_utf8_lossy(&output.stdout), root)
+}
+
+fn parse_worktree_list_porcelain(
+    stdout: &str,
+    main_root: &Path,
+) -> anyhow::Result<Vec<ExistingWorktree>> {
+    let mut worktrees = Vec::new();
+    let mut current_path: Option<PathBuf> = None;
+    let mut current_branch: Option<String> = None;
+
+    let mut flush_current =
+        |path: &mut Option<PathBuf>, branch: &mut Option<String>| -> anyhow::Result<()> {
+            if let Some(root) = path.take() {
+                let canonical = root.canonicalize().unwrap_or(root.clone());
+                worktrees.push(ExistingWorktree {
+                    is_main: canonical == main_root,
+                    root,
+                    branch: branch.take(),
+                });
+            }
+            Ok(())
+        };
+
+    for line in stdout.lines() {
+        if line.trim().is_empty() {
+            flush_current(&mut current_path, &mut current_branch)?;
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("worktree ") {
+            flush_current(&mut current_path, &mut current_branch)?;
+            current_path = Some(PathBuf::from(path.trim()));
+            continue;
+        }
+        if let Some(branch) = line.strip_prefix("branch ") {
+            current_branch = Some(normalize_branch_name(branch.trim()));
+        }
+    }
+
+    flush_current(&mut current_path, &mut current_branch)?;
+
+    if !worktrees.iter().any(|wt| wt.is_main) {
+        anyhow::bail!(
+            "git worktree list did not include the main repo path {}",
+            main_root.display()
+        );
+    }
+
+    Ok(worktrees)
+}
+
+fn normalize_branch_name(branch: &str) -> String {
+    branch
+        .strip_prefix("refs/heads/")
+        .unwrap_or(branch)
+        .to_string()
+}
+
+fn validate_migration_targets(
+    worktrees: &[ExistingWorktree],
+    repo_name: &str,
+) -> anyhow::Result<()> {
+    for wt in worktrees {
+        if !wt.is_main && wt.branch.is_none() {
+            anyhow::bail!(
+                "Linked worktree at {} is detached; migrate in-place requires branch-backed worktrees",
+                wt.root.display()
+            );
+        }
+        let child = wt.root.join(repo_name);
+        if child.exists() {
+            anyhow::bail!(
+                "Child directory already exists: {}. Migration may have already run.",
+                child.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn migrate_single_worktree_root(root: &Path, repo_name: &str) -> anyhow::Result<()> {
+    let to_move = collect_paths_to_move(root, repo_name)?;
+    let tmp = root.join("_migrate_tmp");
+    std::fs::create_dir_all(&tmp)?;
+
+    for src in &to_move {
+        let dest = tmp.join(src.file_name().unwrap());
+        std::fs::rename(src, dest)
+            .map_err(|e| anyhow::anyhow!("Failed to move {}: {}", src.display(), e))?;
+    }
+
+    let child = root.join(repo_name);
+    std::fs::rename(&tmp, &child).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to rename _migrate_tmp to {}: {}",
+            child.display(),
+            e
+        )
+    })?;
+    Ok(())
+}
+
+fn run_worktree_repairs(
+    worktrees: &[ExistingWorktree],
+    repo_name: &str,
+) -> anyhow::Result<Vec<ProcessOutput>> {
+    let main = worktrees
+        .iter()
+        .find(|wt| wt.is_main)
+        .ok_or_else(|| anyhow::anyhow!("Missing main worktree entry"))?;
+    let main_child = main.root.join(repo_name);
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["worktree", "repair"]).current_dir(&main_child);
+    for wt in worktrees.iter().filter(|wt| !wt.is_main) {
+        cmd.arg(wt.root.join(repo_name));
+    }
+
+    let output = cmd.output().map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to run git worktree repair in {}: {}",
+            main_child.display(),
+            e
+        )
+    })?;
+
+    Ok(vec![output])
+}
+
+fn create_root_gripspace_metadata(
+    root: &Path,
+    linked_worktrees: &[ExistingWorktree],
+) -> anyhow::Result<()> {
+    let gitgrip_dir = root.join(".gitgrip");
+    std::fs::create_dir_all(&gitgrip_dir)?;
+    let stale_child_marker = gitgrip_dir.join("griptree.json");
+    if stale_child_marker.exists() {
+        let _ = std::fs::remove_file(&stale_child_marker);
+    }
+
+    let mut griptrees = MigratedGriptreesList::default();
+    for wt in linked_worktrees {
+        let branch = wt.branch.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("Missing branch for linked worktree {}", wt.root.display())
+        })?;
+        griptrees.griptrees.insert(
+            branch.clone(),
+            MigratedGriptreeEntry {
+                path: wt.root.to_string_lossy().to_string(),
+                branch: branch.clone(),
+                locked: false,
+                lock_reason: None,
+            },
+        );
+    }
+
+    let griptrees_json = serde_json::to_string_pretty(&griptrees)?;
+    std::fs::write(gitgrip_dir.join("griptrees.json"), griptrees_json)?;
+    Ok(())
+}
+
+fn create_root_gripspace_manifest(
+    root: &Path,
+    repo_name: &str,
+    revision: &str,
+) -> anyhow::Result<()> {
+    let repo_child = root.join(repo_name);
+    let remote_url = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(&repo_child)
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let manifest_dir = manifest_paths::main_space_dir(root);
+    std::fs::create_dir_all(&manifest_dir)?;
+
+    let repo = RepoConfig {
+        url: remote_url,
+        remote: None,
+        path: format!("./{}", repo_name),
+        revision: Some(revision.to_string()),
+        target: None,
+        sync_remote: None,
+        push_remote: None,
+        copyfile: None,
+        linkfile: None,
+        platform: None,
+        reference: false,
+        groups: vec![],
+        agent: None,
+        clone_strategy: None,
+    };
+
+    let manifest = Manifest {
+        version: 2,
+        remotes: None,
+        gripspaces: None,
+        manifest: None,
+        repos: HashMap::from([(repo_name.to_string(), repo)]),
+        settings: ManifestSettings {
+            pr_prefix: "[cross-repo]".to_string(),
+            merge_strategy: MergeStrategy::default(),
+            revision: Some(revision.to_string()),
+            target: None,
+            sync_remote: None,
+            push_remote: None,
+            clone_strategy: CloneStrategy::default(),
+        },
+        workspace: None,
+    };
+
+    let yaml = format!(
+        "# Generated by gr migrate in-place\n{}",
+        serde_yaml::to_string(&manifest)?
+    );
+    std::fs::write(manifest_dir.join("gripspace.yml"), yaml)?;
+    Ok(())
+}
+
+fn create_linked_griptree_metadata(
+    main_root: &Path,
+    worktree: &ExistingWorktree,
+    repo_name: &str,
+) -> anyhow::Result<()> {
+    let branch = worktree.branch.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Missing branch for linked worktree {}",
+            worktree.root.display()
+        )
+    })?;
+    let gitgrip_dir = worktree.root.join(".gitgrip");
+    std::fs::create_dir_all(&gitgrip_dir)?;
+    std::fs::write(gitgrip_dir.join("state.json"), "{}")?;
+
+    let mut config = GriptreeConfig::new(branch, &worktree.root.to_string_lossy());
+    config
+        .repo_upstreams
+        .insert(repo_name.to_string(), format!("origin/{}", branch));
+    config.save(&gitgrip_dir.join("griptree.json"))?;
+
+    let child = worktree.root.join(repo_name);
+    let main_child = main_root.join(repo_name);
+    let pointer = GriptreePointer {
+        main_workspace: main_root.to_string_lossy().to_string(),
+        branch: branch.clone(),
+        locked: false,
+        created_at: Some(Utc::now()),
+        repos: vec![GriptreeRepoInfo {
+            name: repo_name.to_string(),
+            original_branch: branch.clone(),
+            is_reference: false,
+            worktree_name: None,
+            worktree_path: Some(child.to_string_lossy().to_string()),
+            main_repo_path: Some(main_child.to_string_lossy().to_string()),
+        }],
+        manifest_branch: None,
+        manifest_worktree_name: None,
+    };
+    let pointer_json = serde_json::to_string_pretty(&pointer)?;
+    std::fs::write(worktree.root.join(".griptree"), pointer_json)?;
+    Ok(())
+}
+
+fn worktree_repair_must_succeed(repair: &ProcessOutput) -> anyhow::Result<()> {
+    if repair.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&repair.stderr);
+    anyhow::bail!("git worktree repair exited non-zero: {}", stderr.trim());
+}
+
+/// Derive the repo name from `git remote get-url origin`, falling back to dir name.
+/// "git@github.com:GetConversa/conversa-app.git" → "conversa-app"
+fn derive_repo_name_from_remote(repo: &Path) -> String {
+    let result = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(repo)
+        .output();
+
+    if let Ok(out) = result {
+        if out.status.success() {
+            let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !url.is_empty() {
+                // SSH: git@github.com:org/repo.git  → after last '/' or ':'
+                // HTTPS: https://github.com/org/repo.git → after last '/'
+                let base = url.rsplit(['/', ':']).next().unwrap_or(&url).to_string();
+                // Strip .git suffix
+                return base.strip_suffix(".git").unwrap_or(&base).to_string();
+            }
+        }
+    }
+
+    // Fallback: use the directory name
+    repo.file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string()
+}
+
+/// Check that git >= 2.30 is available (required for `git worktree repair`).
+fn check_git_version_for_repair() -> anyhow::Result<()> {
+    let out = std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .map_err(|_| anyhow::anyhow!("git not found — is git installed?"))?;
+
+    let version_str = String::from_utf8_lossy(&out.stdout);
+    // "git version 2.43.0 (Apple Git-115)" → parse major.minor
+    let parts: Vec<u32> = version_str
+        .split_whitespace()
+        .find(|s| s.contains('.'))
+        .unwrap_or("0.0")
+        .split('.')
+        .take(2)
+        .filter_map(|s| s.parse().ok())
+        .collect();
+
+    let (major, minor) = (
+        parts.first().copied().unwrap_or(0),
+        parts.get(1).copied().unwrap_or(0),
+    );
+    if major < 2 || (major == 2 && minor < 30) {
+        anyhow::bail!(
+            "git 2.30+ required for `git worktree repair` (found git {}.{}). \
+             Please upgrade git.",
+            major,
+            minor
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
+
+    fn run_git(dir: &Path, args: &[&str]) -> ProcessOutput {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run git {:?}: {}", args, e))
+    }
+
+    fn assert_git_ok(dir: &Path, args: &[&str]) -> ProcessOutput {
+        let output = run_git(dir, args);
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    }
+
+    fn normalize_git_path(path: &Path) -> String {
+        path.canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/")
+            .replace("//?/", "")
+    }
 
     #[test]
     fn test_generate_manifest_yaml() {
@@ -468,5 +1096,165 @@ mod tests {
         let toml = generate_agents_toml("myproject", &[]);
         assert!(toml.contains("session_name = \"myproject\""));
         assert!(toml.contains("# Add agents here:"));
+    }
+
+    #[test]
+    fn test_migration_keep_names_includes_root_env() {
+        let keep = migration_keep_names();
+        assert!(keep.contains(".synapt"));
+        assert!(keep.contains(".claude"));
+        assert!(keep.contains(".env"));
+        assert!(keep.contains("_migrate_tmp"));
+    }
+
+    #[test]
+    fn test_worktree_repair_failure_is_error() {
+        let output = std::process::Command::new("git")
+            .args(["worktree", "definitely-not-a-subcommand"])
+            .output()
+            .expect("git should be runnable in test environment");
+        assert!(worktree_repair_must_succeed(&output).is_err());
+    }
+
+    #[test]
+    fn test_parse_worktree_list_marks_main_and_branch_names() {
+        let main = PathBuf::from("/tmp/conversa")
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from("/tmp/conversa"));
+        let porcelain = "\
+worktree /tmp/conversa
+HEAD deadbeef
+branch refs/heads/main
+
+worktree /tmp/conversa-dev
+HEAD feedface
+branch refs/heads/feat/dev
+";
+
+        let worktrees = parse_worktree_list_porcelain(porcelain, &main).unwrap();
+        assert_eq!(worktrees.len(), 2);
+        assert!(worktrees[0].is_main);
+        assert_eq!(worktrees[0].branch.as_deref(), Some("main"));
+        assert!(!worktrees[1].is_main);
+        assert_eq!(worktrees[1].branch.as_deref(), Some("feat/dev"));
+    }
+
+    #[tokio::test]
+    async fn test_migrate_in_place_converts_linked_worktrees_into_griptrees() {
+        let temp = TempDir::new().unwrap();
+        let main_root = temp.path().join("conversa");
+        let linked_root = temp.path().join("conversa-dev");
+        std::fs::create_dir_all(&main_root).unwrap();
+
+        assert_git_ok(&main_root, &["init", "-b", "main"]);
+        assert_git_ok(&main_root, &["config", "user.name", "Test User"]);
+        assert_git_ok(&main_root, &["config", "user.email", "test@example.com"]);
+        std::fs::write(main_root.join("README.md"), "hello\n").unwrap();
+        std::fs::write(main_root.join(".env"), "FOO=bar\n").unwrap();
+        assert_git_ok(&main_root, &["add", "."]);
+        assert_git_ok(&main_root, &["commit", "-m", "init"]);
+        assert_git_ok(
+            &main_root,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "git@github.com:GetConversa/conversa-app.git",
+            ],
+        );
+
+        assert_git_ok(
+            &main_root,
+            &[
+                "worktree",
+                "add",
+                linked_root.to_str().unwrap(),
+                "-b",
+                "feat/dev",
+            ],
+        );
+        std::fs::create_dir_all(linked_root.join(".claude")).unwrap();
+
+        run_migrate_in_place(Some(main_root.to_str().unwrap()), false, false)
+            .await
+            .unwrap();
+
+        let repo_name = "conversa-app";
+        let main_child = main_root.join(repo_name);
+        let linked_child = linked_root.join(repo_name);
+
+        assert!(main_child.exists(), "main child repo should exist");
+        assert!(linked_child.exists(), "linked child repo should exist");
+        assert!(
+            main_root.join(".env").exists(),
+            ".env should stay at main root"
+        );
+        assert!(
+            linked_root.join(".claude").exists(),
+            ".claude should stay at linked worktree root"
+        );
+
+        let griptrees: MigratedGriptreesList = serde_json::from_str(
+            &std::fs::read_to_string(main_root.join(".gitgrip").join("griptrees.json")).unwrap(),
+        )
+        .unwrap();
+        let entry = griptrees.griptrees.get("feat/dev").unwrap();
+        assert_eq!(
+            PathBuf::from(&entry.path).canonicalize().unwrap(),
+            linked_root.canonicalize().unwrap()
+        );
+
+        let griptree_cfg = GriptreeConfig::load_from_workspace(&linked_root)
+            .unwrap()
+            .unwrap();
+        assert_eq!(griptree_cfg.branch, "feat/dev");
+
+        let manifest_path = manifest_paths::main_space_dir(&main_root).join("gripspace.yml");
+        assert!(
+            manifest_path.exists(),
+            "root manifest should exist after migration"
+        );
+        let manifest = crate::core::manifest::Manifest::load(&manifest_path).unwrap();
+        let repo = manifest.repos.get(repo_name).unwrap();
+        assert_eq!(repo.path, format!("./{}", repo_name));
+        assert_eq!(repo.revision.as_deref(), Some("main"));
+        assert_eq!(
+            repo.url.as_deref(),
+            Some("git@github.com:GetConversa/conversa-app.git")
+        );
+
+        let pointer = GriptreePointer::load(&linked_root.join(".griptree")).unwrap();
+        assert_eq!(
+            PathBuf::from(pointer.main_workspace)
+                .canonicalize()
+                .unwrap(),
+            main_root.canonicalize().unwrap()
+        );
+        assert_eq!(pointer.branch, "feat/dev");
+        assert_eq!(pointer.repos.len(), 1);
+        assert_eq!(pointer.repos[0].name, repo_name);
+        assert_eq!(
+            PathBuf::from(pointer.repos[0].worktree_path.as_ref().unwrap())
+                .canonicalize()
+                .unwrap(),
+            linked_child.canonicalize().unwrap()
+        );
+        assert_eq!(
+            PathBuf::from(pointer.repos[0].main_repo_path.as_ref().unwrap())
+                .canonicalize()
+                .unwrap(),
+            main_child.canonicalize().unwrap()
+        );
+
+        assert_git_ok(&main_child, &["status", "--short"]);
+        let linked_branch = assert_git_ok(&linked_child, &["rev-parse", "--abbrev-ref", "HEAD"]);
+        assert_eq!(
+            String::from_utf8_lossy(&linked_branch.stdout).trim(),
+            "feat/dev"
+        );
+
+        let worktree_list = assert_git_ok(&main_child, &["worktree", "list", "--porcelain"]);
+        let worktree_stdout = String::from_utf8_lossy(&worktree_list.stdout).replace('\\', "/");
+        assert!(worktree_stdout.contains(&normalize_git_path(&linked_child)));
     }
 }

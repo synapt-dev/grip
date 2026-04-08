@@ -5,8 +5,8 @@
 pub mod add;
 pub mod agent;
 pub mod bench;
-pub mod cache;
 pub mod branch;
+pub mod cache;
 pub mod channel;
 pub mod checkout;
 pub mod cherry_pick;

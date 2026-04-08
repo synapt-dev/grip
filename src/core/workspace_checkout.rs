@@ -34,10 +34,7 @@ pub struct CheckoutRepo {
 
 /// Resolve the checkout root: `<workspace_root>/.grip/checkouts/<name>/`
 pub fn checkout_path(workspace_root: &Path, name: &str) -> PathBuf {
-    workspace_root
-        .join(".grip")
-        .join(CHECKOUTS_DIR)
-        .join(name)
+    workspace_root.join(".grip").join(CHECKOUTS_DIR).join(name)
 }
 
 /// Check whether a checkout exists.
@@ -129,14 +126,7 @@ pub fn create_checkout<'a>(
     let mut checkout_repos = Vec::new();
 
     for (name, url, path) in repos {
-        let target = materialize_repo(
-            workspace_root,
-            checkout_name,
-            name,
-            url,
-            path,
-            branch,
-        )?;
+        let target = materialize_repo(workspace_root, checkout_name, name, url, path, branch)?;
         checkout_repos.push(CheckoutRepo {
             name: name.to_string(),
             path: target,
@@ -266,8 +256,7 @@ mod tests {
         // Create workspace and bootstrap cache
         fs::create_dir_all(&workspace).expect("mkdir workspace");
         let url = remote_path.to_string_lossy().to_string();
-        workspace_cache::bootstrap_cache(&workspace, "testrepo", &url)
-            .expect("bootstrap cache");
+        workspace_cache::bootstrap_cache(&workspace, "testrepo", &url).expect("bootstrap cache");
 
         (workspace, remote_path)
     }
@@ -335,15 +324,8 @@ mod tests {
         let (workspace, remote) = setup_cached_workspace(tmp.path());
 
         let url = remote.to_string_lossy().to_string();
-        let target = materialize_repo(
-            &workspace,
-            "ref-test",
-            "testrepo",
-            &url,
-            "testrepo",
-            None,
-        )
-        .expect("materialize");
+        let target = materialize_repo(&workspace, "ref-test", "testrepo", &url, "testrepo", None)
+            .expect("materialize");
 
         // Check alternates file exists (proves --reference was used)
         let alternates = target.join(".git/objects/info/alternates");

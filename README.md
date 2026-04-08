@@ -183,6 +183,9 @@ gr sync
 | `gr link` | Manage file links |
 | `gr run <script>` | Run workspace scripts |
 | `gr env` | Show environment variables |
+| `gr cache status` | Show machine-level cache state for workspace repos |
+| `gr cache bootstrap` | Materialize missing machine-level repo caches |
+| `gr cache update` | Fetch updates into existing machine-level repo caches |
 | `gr bench` | Run performance benchmarks |
 | `gr completions <shell>` | Generate shell completions |
 
@@ -222,6 +225,34 @@ Pull latest changes from the manifest and all repositories. Syncs in parallel by
 #### `gr status`
 
 Show status of all repositories including branch, changes, and sync state.
+
+#### `gr cache <subcommand>`
+
+Manage the machine-level bare-repo cache used by workspace repos.
+
+By default caches live under `~/.grip/cache/`, keyed by canonical repo identity.
+You can override the cache root with `GRIP_CACHE_DIR` when you need a custom or
+isolated cache location.
+
+| Subcommand | Description |
+|-----------|-------------|
+| `gr cache status` | Show whether each workspace repo has a cache and where it lives |
+| `gr cache bootstrap` | Create missing caches without touching existing ones |
+| `gr cache update` | Fetch updates into existing caches |
+| `gr cache remove <repo>` | Remove one repo cache explicitly |
+
+**Examples:**
+
+```bash
+# See where caches are currently resolved
+gr cache status
+
+# Create missing caches before materializing child checkouts
+gr cache bootstrap
+
+# Use a custom cache root for an isolated environment
+GRIP_CACHE_DIR=/tmp/grip-cache gr cache status
+```
 
 #### `gr checkout <branch>`
 

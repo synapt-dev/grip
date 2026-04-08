@@ -1,6 +1,6 @@
 //! Cache command implementation
 //!
-//! Manages bare-repo caches under `.grip/cache/` for workspace repos.
+//! Manages bare-repo caches under the machine-level cache root for workspace repos.
 
 use crate::cli::args::CacheCommands;
 use crate::cli::output::Output;
@@ -50,7 +50,12 @@ pub fn run_cache(
                 Output::info("Updating all caches...");
             }
 
-            let count = workspace_cache::update_all(workspace_root)?;
+            let repo_pairs: Vec<(&str, &str)> = repos
+                .iter()
+                .map(|r| (r.name.as_str(), r.url.as_str()))
+                .collect();
+
+            let count = workspace_cache::update_all(workspace_root, repo_pairs.into_iter())?;
 
             if !quiet {
                 Output::success(&format!("Updated {} cache(s)", count));
@@ -58,12 +63,6 @@ pub fn run_cache(
         }
 
         CacheCommands::Status => {
-            let cache_dir = workspace_root.join(".grip").join("cache");
-            if !cache_dir.is_dir() {
-                Output::info("No caches exist yet. Run 'gr cache bootstrap' to create them.");
-                return Ok(());
-            }
-
             println!(
                 "{:<20} {:<8} {}",
                 "Repo".bold(),
@@ -73,8 +72,9 @@ pub fn run_cache(
             println!("{}", "─".repeat(70));
 
             for repo in &repos {
-                let exists = workspace_cache::cache_exists(workspace_root, &repo.name);
-                let path = workspace_cache::cache_path(workspace_root, &repo.name);
+                let exists = workspace_cache::cache_exists(workspace_root, &repo.name, &repo.url)?;
+                let path =
+                    workspace_cache::resolve_cache_path(workspace_root, &repo.name, &repo.url)?;
                 let status = if exists {
                     "cached".green().to_string()
                 } else {
@@ -85,7 +85,11 @@ pub fn run_cache(
         }
 
         CacheCommands::Remove { repo } => {
-            let removed = workspace_cache::remove_cache(workspace_root, &repo)?;
+            let Some(repo_info) = repos.iter().find(|r| r.name == repo) else {
+                anyhow::bail!("repo '{}' is not in this manifest", repo);
+            };
+            let removed =
+                workspace_cache::remove_cache(workspace_root, &repo_info.name, &repo_info.url)?;
             if removed {
                 Output::success(&format!("Removed cache for {}", repo));
             } else {

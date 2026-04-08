@@ -69,8 +69,8 @@ pub fn materialize_repo(
             .with_context(|| format!("creating checkout dir: {}", parent.display()))?;
     }
 
-    let cache = workspace_cache::cache_path(workspace_root, repo_name);
-    let has_cache = workspace_cache::cache_exists(workspace_root, repo_name);
+    let cache = workspace_cache::resolve_cache_path(workspace_root, repo_name, repo_url)?;
+    let has_cache = workspace_cache::cache_exists(workspace_root, repo_name, repo_url)?;
 
     let mut cmd = Command::new("git");
     cmd.arg("clone");
@@ -200,7 +200,22 @@ pub fn remove_checkout(workspace_root: &Path, name: &str) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::workspace_cache::test_support;
     use std::fs;
+
+    fn with_cache_dir<T>(cache_dir: &Path, f: impl FnOnce() -> T) -> T {
+        let _guard = test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = std::env::var_os("GRIP_CACHE_DIR");
+        std::env::set_var("GRIP_CACHE_DIR", cache_dir);
+        let result = f();
+        match previous {
+            Some(value) => std::env::set_var("GRIP_CACHE_DIR", value),
+            None => std::env::remove_var("GRIP_CACHE_DIR"),
+        }
+        result
+    }
 
     /// Helper: create a test remote repo and bootstrap its cache
     fn setup_cached_workspace(dir: &Path) -> (PathBuf, PathBuf) {
@@ -279,111 +294,127 @@ mod tests {
     #[test]
     fn test_materialize_single_repo() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let (workspace, remote) = setup_cached_workspace(tmp.path());
+        let cache_dir = tmp.path().join("global-cache");
+        with_cache_dir(&cache_dir, || {
+            let (workspace, remote) = setup_cached_workspace(tmp.path());
 
-        let url = remote.to_string_lossy().to_string();
-        let target = materialize_repo(
-            &workspace,
-            "test-checkout",
-            "testrepo",
-            &url,
-            "testrepo",
-            None,
-        )
-        .expect("materialize");
+            let url = remote.to_string_lossy().to_string();
+            let target = materialize_repo(
+                &workspace,
+                "test-checkout",
+                "testrepo",
+                &url,
+                "testrepo",
+                None,
+            )
+            .expect("materialize");
 
-        assert!(target.join(".git").exists());
-        assert!(target.join("README.md").exists());
+            assert!(target.join(".git").exists());
+            assert!(target.join("README.md").exists());
+        });
     }
 
     #[test]
     fn test_materialize_is_independent_clone() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let (workspace, remote) = setup_cached_workspace(tmp.path());
+        let cache_dir = tmp.path().join("global-cache");
+        with_cache_dir(&cache_dir, || {
+            let (workspace, remote) = setup_cached_workspace(tmp.path());
 
-        let url = remote.to_string_lossy().to_string();
-        let target = materialize_repo(
-            &workspace,
-            "independent",
-            "testrepo",
-            &url,
-            "testrepo",
-            None,
-        )
-        .expect("materialize");
+            let url = remote.to_string_lossy().to_string();
+            let target = materialize_repo(
+                &workspace,
+                "independent",
+                "testrepo",
+                &url,
+                "testrepo",
+                None,
+            )
+            .expect("materialize");
 
-        // The clone has its own .git directory (not a worktree link)
-        assert!(target.join(".git").is_dir());
-        // Not a file pointing elsewhere (that would be a worktree)
-        assert!(!target.join(".git").is_file());
+            assert!(target.join(".git").is_dir());
+            assert!(!target.join(".git").is_file());
+        });
     }
 
     #[test]
     fn test_materialize_uses_cache_reference() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let (workspace, remote) = setup_cached_workspace(tmp.path());
+        let cache_dir = tmp.path().join("global-cache");
+        with_cache_dir(&cache_dir, || {
+            let (workspace, remote) = setup_cached_workspace(tmp.path());
 
-        let url = remote.to_string_lossy().to_string();
-        let target = materialize_repo(&workspace, "ref-test", "testrepo", &url, "testrepo", None)
-            .expect("materialize");
+            let url = remote.to_string_lossy().to_string();
+            let target =
+                materialize_repo(&workspace, "ref-test", "testrepo", &url, "testrepo", None)
+                    .expect("materialize");
 
-        // Check alternates file exists (proves --reference was used)
-        let alternates = target.join(".git/objects/info/alternates");
-        assert!(alternates.is_file(), "alternates file should exist");
-        let content = fs::read_to_string(&alternates).expect("read alternates");
-        assert!(
-            content.contains("cache/testrepo.git"),
-            "alternates should reference the cache"
-        );
+            let alternates = target.join(".git/objects/info/alternates");
+            assert!(alternates.is_file(), "alternates file should exist");
+            let content = fs::read_to_string(&alternates).expect("read alternates");
+            assert!(
+                content.contains(&workspace_cache::cache_key(&url)),
+                "alternates should reference the global cache path"
+            );
+        });
     }
 
     #[test]
     fn test_create_and_list_checkout() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let (workspace, remote) = setup_cached_workspace(tmp.path());
+        let cache_dir = tmp.path().join("global-cache");
+        with_cache_dir(&cache_dir, || {
+            let (workspace, remote) = setup_cached_workspace(tmp.path());
 
-        let url = remote.to_string_lossy().to_string();
-        let repos = vec![("testrepo", url.as_str(), "testrepo")];
+            let url = remote.to_string_lossy().to_string();
+            let repos = vec![("testrepo", url.as_str(), "testrepo")];
 
-        let info = create_checkout(&workspace, "feat-x", repos.into_iter(), None)
-            .expect("create checkout");
+            let info = create_checkout(&workspace, "feat-x", repos.into_iter(), None)
+                .expect("create checkout");
 
-        assert_eq!(info.name, "feat-x");
-        assert_eq!(info.repos.len(), 1);
-        assert!(checkout_exists(&workspace, "feat-x"));
+            assert_eq!(info.name, "feat-x");
+            assert_eq!(info.repos.len(), 1);
+            assert!(checkout_exists(&workspace, "feat-x"));
 
-        let all = list_checkouts(&workspace).expect("list");
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].name, "feat-x");
+            let all = list_checkouts(&workspace).expect("list");
+            assert_eq!(all.len(), 1);
+            assert_eq!(all[0].name, "feat-x");
+        });
     }
 
     #[test]
     fn test_create_duplicate_fails() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let (workspace, remote) = setup_cached_workspace(tmp.path());
+        let cache_dir = tmp.path().join("global-cache");
+        with_cache_dir(&cache_dir, || {
+            let (workspace, remote) = setup_cached_workspace(tmp.path());
 
-        let url = remote.to_string_lossy().to_string();
-        let repos = vec![("testrepo", url.as_str(), "testrepo")];
-        create_checkout(&workspace, "dup", repos.into_iter(), None).expect("first");
+            let url = remote.to_string_lossy().to_string();
+            let repos = vec![("testrepo", url.as_str(), "testrepo")];
+            create_checkout(&workspace, "dup", repos.into_iter(), None).expect("first");
 
-        let repos2 = vec![("testrepo", url.as_str(), "testrepo")];
-        let result = create_checkout(&workspace, "dup", repos2.into_iter(), None);
-        assert!(result.is_err());
+            let repos2 = vec![("testrepo", url.as_str(), "testrepo")];
+            let result = create_checkout(&workspace, "dup", repos2.into_iter(), None);
+            assert!(result.is_err());
+        });
     }
 
     #[test]
     fn test_remove_checkout() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let (workspace, remote) = setup_cached_workspace(tmp.path());
+        let cache_dir = tmp.path().join("global-cache");
+        with_cache_dir(&cache_dir, || {
+            let (workspace, remote) = setup_cached_workspace(tmp.path());
 
-        let url = remote.to_string_lossy().to_string();
-        let repos = vec![("testrepo", url.as_str(), "testrepo")];
-        create_checkout(&workspace, "removeme", repos.into_iter(), None).expect("create");
+            let url = remote.to_string_lossy().to_string();
+            let repos = vec![("testrepo", url.as_str(), "testrepo")];
+            create_checkout(&workspace, "removeme", repos.into_iter(), None).expect("create");
 
-        assert!(checkout_exists(&workspace, "removeme"));
-        let removed = remove_checkout(&workspace, "removeme").expect("remove");
-        assert!(removed);
-        assert!(!checkout_exists(&workspace, "removeme"));
+            assert!(checkout_exists(&workspace, "removeme"));
+            let removed = remove_checkout(&workspace, "removeme").expect("remove");
+            assert!(removed);
+            assert!(!checkout_exists(&workspace, "removeme"));
+        });
     }
 
     #[test]
@@ -396,19 +427,20 @@ mod tests {
     #[test]
     fn test_cache_survives_checkout_removal() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let (workspace, remote) = setup_cached_workspace(tmp.path());
+        let cache_dir = tmp.path().join("global-cache");
+        with_cache_dir(&cache_dir, || {
+            let (workspace, remote) = setup_cached_workspace(tmp.path());
 
-        let url = remote.to_string_lossy().to_string();
-        let repos = vec![("testrepo", url.as_str(), "testrepo")];
-        create_checkout(&workspace, "ephemeral", repos.into_iter(), None).expect("create");
+            let url = remote.to_string_lossy().to_string();
+            let repos = vec![("testrepo", url.as_str(), "testrepo")];
+            create_checkout(&workspace, "ephemeral", repos.into_iter(), None).expect("create");
 
-        // Remove the checkout
-        remove_checkout(&workspace, "ephemeral").expect("remove");
+            remove_checkout(&workspace, "ephemeral").expect("remove");
 
-        // Cache must still exist — this is a first-class guarantee
-        assert!(
-            workspace_cache::cache_exists(&workspace, "testrepo"),
-            "cache must survive checkout deletion"
-        );
+            assert!(
+                workspace_cache::cache_exists(&workspace, "testrepo", &url).expect("cache exists"),
+                "cache must survive checkout deletion"
+            );
+        });
     }
 }

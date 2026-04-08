@@ -84,3 +84,38 @@ fn test_playground_cli_flow_init_sync_branch_checkout_and_prune() {
         assert_on_branch(&playground.repo_path(repo_name), "main");
     }
 }
+
+#[test]
+fn test_playground_sync_cli_pulls_upstream_change() {
+    let playground = PlaygroundHarness::new(&["frontend"]);
+
+    playground.init_from_dirs();
+
+    let staging = playground._temp.path().join("sync-staging-frontend");
+    git_helpers::clone_repo(&playground.remote_url("frontend"), &staging);
+    git_helpers::commit_file(
+        &staging,
+        "upstream.txt",
+        "new upstream content\n",
+        "Add upstream change",
+    );
+    git_helpers::push_branch(&staging, "origin", "main");
+
+    let status_output = playground.run_in_workspace_output(["status", "--quiet"]);
+    assert!(
+        status_output.status.success(),
+        "status should succeed before sync: {}",
+        String::from_utf8_lossy(&status_output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&status_output.stdout);
+    assert!(
+        stdout.contains("SUMMARY:"),
+        "quiet status should include summary line, got:\n{}",
+        stdout
+    );
+
+    playground.run_in_workspace(["sync"]);
+
+    assert_file_exists(&playground.repo_path("frontend").join("upstream.txt"));
+    assert_on_branch(&playground.repo_path("frontend"), "main");
+}

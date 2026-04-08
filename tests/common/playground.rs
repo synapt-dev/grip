@@ -12,6 +12,7 @@ use super::git_helpers;
 pub struct PlaygroundHarness {
     pub _temp: TempDir,
     pub workspace_root: PathBuf,
+    pub remotes_dir: PathBuf,
     pub repo_names: Vec<String>,
 }
 
@@ -46,12 +47,20 @@ impl PlaygroundHarness {
         Self {
             _temp: temp,
             workspace_root,
+            remotes_dir,
             repo_names: repo_names.iter().map(|name| (*name).to_string()).collect(),
         }
     }
 
     pub fn repo_path(&self, name: &str) -> PathBuf {
         self.workspace_root.join(name)
+    }
+
+    pub fn remote_url(&self, name: &str) -> String {
+        format!(
+            "file://{}",
+            self.remotes_dir.join(format!("{}.git", name)).display()
+        )
     }
 
     pub fn init_from_dirs(&self) {
@@ -81,18 +90,21 @@ impl PlaygroundHarness {
         self.run(args, Path::new(env!("CARGO_MANIFEST_DIR")));
     }
 
+    pub fn run_in_workspace_output<I, S>(&self, args: I) -> std::process::Output
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.run_output(args, &self.workspace_root)
+    }
+
     fn run<I, S>(&self, args: I, current_dir: &Path)
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
         let args_vec: Vec<String> = args.into_iter().map(|s| s.as_ref().to_string()).collect();
-        let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("gr"));
-        let output = cmd
-            .current_dir(current_dir)
-            .args(args_vec.iter().map(String::as_str))
-            .output()
-            .expect("failed to run gr binary");
+        let output = self.run_output(args_vec.iter().map(String::as_str), current_dir);
         assert!(
             output.status.success(),
             "gr {:?} failed in {}:\nstdout:\n{}\nstderr:\n{}",
@@ -101,5 +113,17 @@ impl PlaygroundHarness {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    fn run_output<I, S>(&self, args: I, current_dir: &Path) -> std::process::Output
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let args_vec: Vec<String> = args.into_iter().map(|s| s.as_ref().to_string()).collect();
+        let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("gr"));
+        cmd.current_dir(current_dir)
+            .args(args_vec.iter().map(String::as_str));
+        cmd.output().expect("failed to run gr binary")
     }
 }

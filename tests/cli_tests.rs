@@ -645,8 +645,11 @@ fn test_checkout_add_materializes_independent_child_checkout() {
 
     let checkout_root = ws.workspace_root.join(".grip/checkouts/sandbox");
     let app_checkout = checkout_root.join("app");
+    let lib_checkout = checkout_root.join("lib");
     assert!(app_checkout.join(".git").is_dir());
     assert!(!app_checkout.join(".git").is_file());
+    assert!(lib_checkout.join(".git").is_dir());
+    assert!(!lib_checkout.join(".git").is_file());
 
     let origin = std::process::Command::new("git")
         .args(["remote", "get-url", "origin"])
@@ -655,4 +658,54 @@ fn test_checkout_add_materializes_independent_child_checkout() {
         .expect("git remote get-url");
     let origin = String::from_utf8_lossy(&origin.stdout).trim().to_string();
     assert_eq!(origin, ws.remote_url("app"));
+}
+
+#[test]
+fn test_checkout_add_respects_repo_filter() {
+    let ws = WorkspaceBuilder::new()
+        .add_repo("app")
+        .add_repo("lib")
+        .build();
+
+    let mut cmd = Command::cargo_bin("gr").unwrap();
+    cmd.current_dir(&ws.workspace_root)
+        .arg("checkout")
+        .arg("add")
+        .arg("app-only")
+        .arg("--repo")
+        .arg("app")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Created checkout 'app-only' with 1 repo(s)",
+        ));
+
+    let checkout_root = ws.workspace_root.join(".grip/checkouts/app-only");
+    assert!(checkout_root.join("app/.git").is_dir());
+    assert!(!checkout_root.join("lib").exists());
+}
+
+#[test]
+fn test_checkout_add_respects_group_filter() {
+    let ws = WorkspaceBuilder::new()
+        .add_repo_with_groups("app", vec!["product"])
+        .add_repo_with_groups("docs", vec!["docs"])
+        .build();
+
+    let mut cmd = Command::cargo_bin("gr").unwrap();
+    cmd.current_dir(&ws.workspace_root)
+        .arg("checkout")
+        .arg("add")
+        .arg("docs-only")
+        .arg("--group")
+        .arg("docs")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Created checkout 'docs-only' with 1 repo(s)",
+        ));
+
+    let checkout_root = ws.workspace_root.join(".grip/checkouts/docs-only");
+    assert!(checkout_root.join("docs/.git").is_dir());
+    assert!(!checkout_root.join("app").exists());
 }

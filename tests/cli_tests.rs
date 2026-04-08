@@ -626,3 +626,33 @@ fn test_checkout_base_uses_griptree_config() {
         "feat/base"
     );
 }
+
+#[test]
+fn test_checkout_add_materializes_independent_child_checkout() {
+    let ws = WorkspaceBuilder::new()
+        .add_repo("app")
+        .add_repo("lib")
+        .build();
+
+    let mut cmd = Command::cargo_bin("gr").unwrap();
+    cmd.current_dir(&ws.workspace_root)
+        .arg("checkout")
+        .arg("add")
+        .arg("sandbox")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created checkout 'sandbox'"));
+
+    let checkout_root = ws.workspace_root.join(".grip/checkouts/sandbox");
+    let app_checkout = checkout_root.join("app");
+    assert!(app_checkout.join(".git").is_dir());
+    assert!(!app_checkout.join(".git").is_file());
+
+    let origin = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(&app_checkout)
+        .output()
+        .expect("git remote get-url");
+    let origin = String::from_utf8_lossy(&origin.stdout).trim().to_string();
+    assert_eq!(origin, ws.remote_url("app"));
+}

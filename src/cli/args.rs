@@ -130,6 +130,9 @@ pub enum Commands {
     Checkout {
         /// Branch name
         name: Option<String>,
+        /// Additional checkout action args (e.g. `add <name>`)
+        #[arg(hide = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        extra: Vec<String>,
         /// Create branch if it doesn't exist
         #[arg(short = 'b', long)]
         create: bool,

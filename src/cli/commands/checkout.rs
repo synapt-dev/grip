@@ -3,6 +3,7 @@
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
 use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
+use crate::core::workspace_checkout;
 use crate::git::{
     branch::{branch_exists, checkout_branch, create_and_checkout_branch},
     open_repo,
@@ -111,5 +112,54 @@ pub fn run_checkout(
         Output::branch_name(branch_name)
     );
 
+    Ok(())
+}
+
+/// Materialize an independent child checkout from cached repos.
+///
+/// This reserves `gr checkout add <name>` while preserving the existing
+/// `gr checkout <branch>` behavior for cross-repo branch switching.
+pub fn run_checkout_add(
+    workspace_root: &Path,
+    manifest: &Manifest,
+    checkout_name: &str,
+    repos_filter: Option<&[String]>,
+    group_filter: Option<&[String]>,
+) -> anyhow::Result<()> {
+    let mut repos: Vec<RepoInfo> =
+        filter_repos(manifest, workspace_root, repos_filter, group_filter, false);
+
+    let include_manifest = match repos_filter {
+        None => true,
+        Some(filter) => filter.iter().any(|r| r == "manifest"),
+    };
+    if include_manifest {
+        if let Some(manifest_repo) = get_manifest_repo_info(manifest, workspace_root) {
+            repos.push(manifest_repo);
+        }
+    }
+
+    if repos.is_empty() {
+        anyhow::bail!("no repos matched checkout filters");
+    }
+
+    let repo_specs: Vec<(&str, &str, &str)> = repos
+        .iter()
+        .map(|repo| (repo.name.as_str(), repo.url.as_str(), repo.path.as_str()))
+        .collect();
+
+    let info = workspace_checkout::create_checkout(
+        workspace_root,
+        checkout_name,
+        repo_specs.into_iter(),
+        None,
+    )?;
+
+    Output::success(&format!(
+        "Created checkout '{}' with {} repo(s)",
+        info.name,
+        info.repos.len()
+    ));
+    Output::info(&format!("Path: {}", info.path.display()));
     Ok(())
 }

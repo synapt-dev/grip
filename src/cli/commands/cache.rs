@@ -34,8 +34,7 @@ pub fn run_cache(
                 .map(|r| (r.name.as_str(), r.url.as_str()))
                 .collect();
 
-            let count =
-                workspace_cache::bootstrap_all(workspace_root, repo_pairs.into_iter())?;
+            let count = workspace_cache::bootstrap_all(workspace_root, repo_pairs.into_iter())?;
 
             if !quiet {
                 if count > 0 {

@@ -46,8 +46,7 @@ pub fn bootstrap_cache(workspace_root: &Path, repo_name: &str, url: &str) -> Res
     }
 
     let mut cmd = Command::new("git");
-    cmd.args(["clone", "--bare", url])
-        .arg(&path);
+    cmd.args(["clone", "--bare", url]).arg(&path);
     log_cmd(&cmd);
 
     let output = cmd
@@ -73,11 +72,7 @@ pub fn update_cache(workspace_root: &Path, repo_name: &str) -> Result<()> {
     let path = cache_path(workspace_root, repo_name);
 
     if !cache_exists(workspace_root, repo_name) {
-        anyhow::bail!(
-            "cache does not exist for {}: {}",
-            repo_name,
-            path.display()
-        );
+        anyhow::bail!("cache does not exist for {}: {}", repo_name, path.display());
     }
 
     let mut cmd = Command::new("git");

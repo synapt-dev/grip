@@ -49,4 +49,10 @@ pub enum TeamCommands {
 
     /// List registered agent workspaces
     List,
+
+    /// Remove a registered agent workspace
+    Remove {
+        /// Agent workspace name
+        name: String,
+    },
 }

@@ -91,6 +91,18 @@ pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
 
                 Ok(())
             }
+            TeamCommands::Remove { name } => {
+                let workspace_root = require_workspace_root()?;
+                let agent_root = workspace_root.join("agents").join(&name);
+
+                if !agent_root.join("agent.toml").exists() {
+                    anyhow::bail!("agent '{}' not found", name);
+                }
+
+                fs::remove_dir_all(&agent_root)?;
+                println!("Removed gr2 agent workspace '{}'", name);
+                Ok(())
+            }
         },
     }
 }

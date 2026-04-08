@@ -252,6 +252,76 @@ fn test_gr2_team_list_requires_gr2_workspace() {
         ));
 }
 
+#[test]
+fn test_gr2_team_remove_deletes_registered_agent() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut add = Command::cargo_bin("gr2").unwrap();
+    add.current_dir(&workspace_root)
+        .arg("team")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .success();
+
+    let agent_root = workspace_root.join("agents/atlas");
+    assert!(agent_root.join("agent.toml").exists());
+
+    let mut remove = Command::cargo_bin("gr2").unwrap();
+    remove
+        .current_dir(&workspace_root)
+        .arg("team")
+        .arg("remove")
+        .arg("atlas")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Removed gr2 agent workspace 'atlas'",
+        ));
+
+    assert!(!agent_root.exists());
+}
+
+#[test]
+fn test_gr2_team_remove_rejects_missing_agent() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut remove = Command::cargo_bin("gr2").unwrap();
+    remove
+        .current_dir(&workspace_root)
+        .arg("team")
+        .arg("remove")
+        .arg("atlas")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("agent 'atlas' not found"));
+}
+
+#[test]
+fn test_gr2_team_remove_requires_gr2_workspace() {
+    let temp = TempDir::new().unwrap();
+
+    let mut remove = Command::cargo_bin("gr2").unwrap();
+    remove
+        .current_dir(temp.path())
+        .arg("team")
+        .arg("remove")
+        .arg("atlas")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "not in a gr2 workspace: missing .grip/workspace.toml",
+        ));
+}
+
 /// Test that `gr status` fails gracefully outside a workspace
 #[test]
 fn test_status_outside_workspace() {

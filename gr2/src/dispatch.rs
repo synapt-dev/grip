@@ -174,6 +174,57 @@ pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
 
                 Ok(())
             }
+            RepoCommands::Remove { name } => {
+                let workspace_root = require_workspace_root()?;
+                let repos_root = workspace_root.join("repos");
+                let repo_root = repos_root.join(&name);
+                let repo_toml = repo_root.join("repo.toml");
+
+                if !repo_toml.exists() {
+                    anyhow::bail!("repo '{}' not found", name);
+                }
+
+                fs::remove_dir_all(&repo_root)?;
+
+                let registry_path = workspace_root.join(".grip/repos.toml");
+                if registry_path.exists() {
+                    let registry = fs::read_to_string(&registry_path)?;
+                    let kept_entries = registry
+                        .split("\n[[repo]]\n")
+                        .filter_map(|chunk| {
+                            let chunk = chunk.trim();
+                            if chunk.is_empty() {
+                                return None;
+                            }
+                            let normalized = if chunk.starts_with("[[repo]]") {
+                                chunk.to_string()
+                            } else {
+                                format!("[[repo]]\n{}", chunk)
+                            };
+                            let matches_name = normalized
+                                .lines()
+                                .find_map(|line| line.strip_prefix("name = \""))
+                                .and_then(|line| line.strip_suffix('"'))
+                                .map(|entry_name| entry_name == name)
+                                .unwrap_or(false);
+                            if matches_name {
+                                None
+                            } else {
+                                Some(normalized)
+                            }
+                        })
+                        .collect::<Vec<_>>();
+
+                    if kept_entries.is_empty() {
+                        fs::remove_file(&registry_path)?;
+                    } else {
+                        fs::write(&registry_path, kept_entries.join("\n\n"))?;
+                    }
+                }
+
+                println!("Removed gr2 repo '{}'", name);
+                Ok(())
+            }
         },
     }
 }

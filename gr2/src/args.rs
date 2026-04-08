@@ -76,4 +76,10 @@ pub enum RepoCommands {
 
     /// List registered repos
     List,
+
+    /// Remove a registered repo
+    Remove {
+        /// Logical repo name
+        name: String,
+    },
 }

@@ -861,6 +861,35 @@ fn test_checkout_list_shows_materialized_checkouts() {
 }
 
 #[test]
+fn test_checkout_list_reports_empty_state() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    let mut list = Command::cargo_bin("gr").unwrap();
+    list.current_dir(&ws.workspace_root)
+        .arg("checkout")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No checkouts configured."));
+}
+
+#[test]
+fn test_checkout_list_rejects_extra_positional_args() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    let mut list = Command::cargo_bin("gr").unwrap();
+    list.current_dir(&ws.workspace_root)
+        .arg("checkout")
+        .arg("list")
+        .arg("extra")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "`gr checkout list` does not accept extra arguments",
+        ));
+}
+
+#[test]
 fn test_checkout_remove_deletes_materialized_checkout() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
     let checkout_root = ws.workspace_root.join(".grip/checkouts/sandbox");
@@ -901,4 +930,22 @@ fn test_checkout_remove_errors_for_missing_checkout() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("Checkout 'missing' not found"));
+}
+
+#[test]
+fn test_checkout_remove_rejects_extra_positional_args() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    let mut remove = Command::cargo_bin("gr").unwrap();
+    remove
+        .current_dir(&ws.workspace_root)
+        .arg("checkout")
+        .arg("remove")
+        .arg("sandbox")
+        .arg("extra")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "unexpected extra arguments after checkout name",
+        ));
 }

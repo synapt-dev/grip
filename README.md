@@ -291,6 +291,32 @@ gr checkout add docs-only --group docs
 gr checkout add app-only --repo app
 ```
 
+#### `gr checkout list`
+
+Show the currently materialized child checkouts under
+`.grip/checkouts/`.
+
+**Examples:**
+
+```bash
+# List all materialized child checkouts
+gr checkout list
+```
+
+#### `gr checkout remove <name>`
+
+Remove a materialized child checkout under `.grip/checkouts/<name>/`.
+
+This deletes the child clone only. It does not delete the shared cache under
+`~/.grip/cache/`.
+
+**Examples:**
+
+```bash
+# Remove a disposable child checkout
+gr checkout remove sandbox
+```
+
 #### `gr branch [name]`
 
 Create a new branch across all repositories, or list existing branches. Manifest repo is always included.

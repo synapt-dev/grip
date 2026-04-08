@@ -73,4 +73,13 @@ pub enum RepoCommands {
         /// Canonical remote URL
         url: String,
     },
+
+    /// List registered repos
+    List,
+
+    /// Remove a registered repo
+    Remove {
+        /// Logical repo name
+        name: String,
+    },
 }

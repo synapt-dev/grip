@@ -400,6 +400,151 @@ fn test_gr2_repo_add_requires_gr2_workspace() {
         ));
 }
 
+#[test]
+fn test_gr2_repo_list_shows_registered_repos() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut add_app = Command::cargo_bin("gr2").unwrap();
+    add_app
+        .current_dir(&workspace_root)
+        .arg("repo")
+        .arg("add")
+        .arg("app")
+        .arg("https://github.com/synapt-dev/app.git")
+        .assert()
+        .success();
+
+    let mut add_docs = Command::cargo_bin("gr2").unwrap();
+    add_docs
+        .current_dir(&workspace_root)
+        .arg("repo")
+        .arg("add")
+        .arg("docs")
+        .arg("https://github.com/synapt-dev/docs.git")
+        .assert()
+        .success();
+
+    let mut list = Command::cargo_bin("gr2").unwrap();
+    list.current_dir(&workspace_root)
+        .arg("repo")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Repos"))
+        .stdout(predicate::str::contains(
+            "- app -> https://github.com/synapt-dev/app.git",
+        ))
+        .stdout(predicate::str::contains(
+            "- docs -> https://github.com/synapt-dev/docs.git",
+        ));
+}
+
+#[test]
+fn test_gr2_repo_list_reports_empty_state() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut list = Command::cargo_bin("gr2").unwrap();
+    list.current_dir(&workspace_root)
+        .arg("repo")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No gr2 repos registered."));
+}
+
+#[test]
+fn test_gr2_repo_list_requires_gr2_workspace() {
+    let temp = TempDir::new().unwrap();
+
+    let mut list = Command::cargo_bin("gr2").unwrap();
+    list.current_dir(temp.path())
+        .arg("repo")
+        .arg("list")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "not in a gr2 workspace: missing .grip/workspace.toml",
+        ));
+}
+
+#[test]
+fn test_gr2_repo_remove_deletes_registered_repo() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut add = Command::cargo_bin("gr2").unwrap();
+    add.current_dir(&workspace_root)
+        .arg("repo")
+        .arg("add")
+        .arg("app")
+        .arg("https://github.com/synapt-dev/app.git")
+        .assert()
+        .success();
+
+    let repo_root = workspace_root.join("repos/app");
+    assert!(repo_root.join("repo.toml").exists());
+
+    let mut remove = Command::cargo_bin("gr2").unwrap();
+    remove
+        .current_dir(&workspace_root)
+        .arg("repo")
+        .arg("remove")
+        .arg("app")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed gr2 repo 'app'"));
+
+    assert!(!repo_root.exists());
+    assert!(!workspace_root.join(".grip/repos.toml").exists());
+}
+
+#[test]
+fn test_gr2_repo_remove_rejects_missing_repo() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut remove = Command::cargo_bin("gr2").unwrap();
+    remove
+        .current_dir(&workspace_root)
+        .arg("repo")
+        .arg("remove")
+        .arg("app")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("repo 'app' not found"));
+}
+
+#[test]
+fn test_gr2_repo_remove_requires_gr2_workspace() {
+    let temp = TempDir::new().unwrap();
+
+    let mut remove = Command::cargo_bin("gr2").unwrap();
+    remove
+        .current_dir(temp.path())
+        .arg("repo")
+        .arg("remove")
+        .arg("app")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "not in a gr2 workspace: missing .grip/workspace.toml",
+        ));
+}
+
 /// Test that `gr status` fails gracefully outside a workspace
 #[test]
 fn test_status_outside_workspace() {

@@ -200,14 +200,11 @@ pub fn remove_checkout(workspace_root: &Path, name: &str) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use once_cell::sync::Lazy;
+    use crate::core::workspace_cache::test_support;
     use std::fs;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     fn with_cache_dir<T>(cache_dir: &Path, f: impl FnOnce() -> T) -> T {
-        let _guard = ENV_LOCK
+        let _guard = test_support::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous = std::env::var_os("GRIP_CACHE_DIR");

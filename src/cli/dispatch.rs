@@ -102,6 +102,13 @@ pub async fn dispatch_command(
             let ctx = load_workspace_context(quiet, verbose, json)?;
 
             if matches!(name.as_deref(), Some("add")) {
+                // `add` is reserved for checkout materialization, not branch switching.
+                if create || base {
+                    anyhow::bail!("--create and --base are not valid with 'add'");
+                }
+                if extra.len() > 1 {
+                    anyhow::bail!("unexpected extra arguments after checkout name");
+                }
                 let checkout_name = extra.first().ok_or_else(|| {
                     anyhow::anyhow!("Checkout name is required: gr checkout add <name>")
                 })?;

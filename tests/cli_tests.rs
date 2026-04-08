@@ -761,3 +761,77 @@ fn test_checkout_add_errors_when_filters_match_no_repos() {
             "no repos matched checkout filters",
         ));
 }
+
+#[test]
+fn test_checkout_add_rejects_create_and_base_flags() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    let mut create_cmd = Command::cargo_bin("gr").unwrap();
+    create_cmd
+        .current_dir(&ws.workspace_root)
+        .arg("checkout")
+        .arg("add")
+        .arg("sandbox")
+        .arg("--create")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--create and --base are not valid with 'add'",
+        ));
+
+    let mut base_cmd = Command::cargo_bin("gr").unwrap();
+    base_cmd
+        .current_dir(&ws.workspace_root)
+        .arg("checkout")
+        .arg("add")
+        .arg("sandbox")
+        .arg("--base")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--create and --base are not valid with 'add'",
+        ));
+}
+
+#[test]
+fn test_checkout_add_rejects_extra_positional_args() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    let mut cmd = Command::cargo_bin("gr").unwrap();
+    cmd.current_dir(&ws.workspace_root)
+        .arg("checkout")
+        .arg("add")
+        .arg("sandbox")
+        .arg("extra")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "unexpected extra arguments after checkout name",
+        ));
+}
+
+#[test]
+fn test_checkout_add_rejects_duplicate_checkout_name() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    let mut first = Command::cargo_bin("gr").unwrap();
+    first
+        .current_dir(&ws.workspace_root)
+        .arg("checkout")
+        .arg("add")
+        .arg("sandbox")
+        .assert()
+        .success();
+
+    let mut duplicate = Command::cargo_bin("gr").unwrap();
+    duplicate
+        .current_dir(&ws.workspace_root)
+        .arg("checkout")
+        .arg("add")
+        .arg("sandbox")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "checkout 'sandbox' already exists",
+        ));
+}

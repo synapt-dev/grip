@@ -63,6 +63,48 @@ fn test_gr2_doctor() {
         .stdout(predicate::str::contains("gr2 bootstrap OK"));
 }
 
+#[test]
+fn test_gr2_init_scaffolds_team_workspace() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut cmd = Command::cargo_bin("gr2").unwrap();
+    cmd.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Initialized gr2 team workspace 'demo'",
+        ));
+
+    assert!(workspace_root.join(".grip").is_dir());
+    assert!(workspace_root.join("config").is_dir());
+    assert!(workspace_root.join("agents").is_dir());
+    assert!(workspace_root.join("repos").is_dir());
+
+    let workspace_toml =
+        std::fs::read_to_string(workspace_root.join(".grip/workspace.toml")).unwrap();
+    assert!(workspace_toml.contains("version = 2"));
+    assert!(workspace_toml.contains("name = \"demo\""));
+    assert!(workspace_toml.contains("layout = \"team-workspace\""));
+}
+
+#[test]
+fn test_gr2_init_rejects_existing_path() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+    std::fs::create_dir_all(&workspace_root).unwrap();
+
+    let mut cmd = Command::cargo_bin("gr2").unwrap();
+    cmd.arg("init")
+        .arg(&workspace_root)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("workspace path already exists"));
+}
+
 /// Test that `gr status` fails gracefully outside a workspace
 #[test]
 fn test_status_outside_workspace() {

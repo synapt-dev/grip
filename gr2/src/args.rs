@@ -19,6 +19,16 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Initialize a new team workspace root
+    Init {
+        /// Path to create the workspace in
+        path: String,
+
+        /// Optional logical workspace name
+        #[arg(long)]
+        name: Option<String>,
+    },
+
     /// Verify the gr2 bootstrap binary is wired correctly
     Doctor,
 }

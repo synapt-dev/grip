@@ -163,3 +163,35 @@ pub fn run_checkout_add(
     Output::info(&format!("Path: {}", info.path.display()));
     Ok(())
 }
+
+/// List cache-backed child checkouts.
+pub fn run_checkout_list(workspace_root: &Path) -> anyhow::Result<()> {
+    Output::header("Checkouts");
+    println!();
+
+    let checkouts = workspace_checkout::list_checkouts(workspace_root)?;
+    if checkouts.is_empty() {
+        println!("No checkouts configured.");
+        return Ok(());
+    }
+
+    for checkout in checkouts {
+        println!("{} -> {}", checkout.name, checkout.path.display());
+    }
+
+    Ok(())
+}
+
+/// Remove a cache-backed child checkout.
+pub fn run_checkout_remove(workspace_root: &Path, checkout_name: &str) -> anyhow::Result<()> {
+    Output::header(&format!("Removing checkout '{}'", checkout_name));
+    println!();
+
+    let removed = workspace_checkout::remove_checkout(workspace_root, checkout_name)?;
+    if removed {
+        Output::success(&format!("Removed checkout '{}'", checkout_name));
+        Ok(())
+    } else {
+        anyhow::bail!("Checkout '{}' not found", checkout_name);
+    }
+}

@@ -16,7 +16,7 @@ use super::spawn::find_workspace_root;
 // ---------------------------------------------------------------------------
 
 /// Run `synapt recall channel <args...>` and return stdout.
-fn run_synapt_channel(args: &[&str], quiet: bool) -> Result<String> {
+fn run_synapt_channel(args: &[String], quiet: bool) -> Result<String> {
     let workspace_root = find_workspace_root()?;
 
     let output = Command::new("synapt")
@@ -40,88 +40,134 @@ fn run_synapt_channel(args: &[&str], quiet: bool) -> Result<String> {
     Ok(stdout)
 }
 
-// ---------------------------------------------------------------------------
-// Dispatch
-// ---------------------------------------------------------------------------
-
-pub fn run_channel(action: ChannelCommands, quiet: bool, _json: bool) -> Result<()> {
+fn build_channel_args(action: &ChannelCommands) -> Vec<String> {
     match action {
         ChannelCommands::Post {
             message,
             channel,
             pin,
-        } => run_channel_post(&message, &channel, pin, quiet),
-
+        } => {
+            let mut args = vec!["post".to_string(), channel.clone(), message.clone()];
+            if *pin {
+                args.push("--pin".to_string());
+            }
+            args
+        }
         ChannelCommands::Read {
             channel,
             limit,
             detail,
-        } => run_channel_read(&channel, limit, &detail, quiet),
-
-        ChannelCommands::Who => run_channel_who(quiet),
-
-        ChannelCommands::Search { query, channel } => {
-            run_channel_search(&query, channel.as_deref(), quiet)
-        }
-
-        ChannelCommands::List => run_channel_list(quiet),
-
+        } => vec![
+            "read".to_string(),
+            channel.clone(),
+            "--limit".to_string(),
+            limit.to_string(),
+            "--detail".to_string(),
+            detail.clone(),
+        ],
+        ChannelCommands::Who => vec!["who".to_string()],
+        ChannelCommands::Search { query, channel } => vec![
+            "search".to_string(),
+            channel.clone().unwrap_or_else(|| "dev".to_string()),
+            query.clone(),
+        ],
+        ChannelCommands::List => vec!["list".to_string()],
         ChannelCommands::Join { channel, name } => {
-            run_channel_join(&channel, name.as_deref(), quiet)
+            let mut args = vec!["join".to_string(), channel.clone()];
+            if let Some(name) = name {
+                args.extend(["--name".to_string(), name.clone()]);
+            }
+            args
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Subcommands
+// Dispatch
 // ---------------------------------------------------------------------------
 
-/// Post a message to a channel.
-fn run_channel_post(message: &str, channel: &str, pin: bool, quiet: bool) -> Result<()> {
-    let mut args: Vec<&str> = vec!["post", channel, message];
-    if pin {
-        args.push("--pin");
+pub fn run_channel(action: ChannelCommands, quiet: bool, _json: bool) -> Result<()> {
+    let args = build_channel_args(&action);
+    run_synapt_channel(&args, quiet)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_channel_args;
+    use crate::cli::args::ChannelCommands;
+
+    #[test]
+    fn post_includes_channel_message_and_pin_flag() {
+        let args = build_channel_args(&ChannelCommands::Post {
+            message: "hello team".into(),
+            channel: "ops".into(),
+            pin: true,
+        });
+
+        assert_eq!(args, vec!["post", "ops", "hello team", "--pin"]);
     }
-    run_synapt_channel(&args, quiet)?;
-    Ok(())
-}
 
-/// Read recent messages from a channel.
-fn run_channel_read(channel: &str, limit: u32, detail: &str, quiet: bool) -> Result<()> {
-    let limit_str = limit.to_string();
-    let mut args = vec!["read", channel, "--limit", &limit_str];
-    args.extend(["--detail", detail]);
-    run_synapt_channel(&args, quiet)?;
-    Ok(())
-}
+    #[test]
+    fn read_includes_limit_and_detail() {
+        let args = build_channel_args(&ChannelCommands::Read {
+            channel: "dev".into(),
+            limit: 10,
+            detail: "high".into(),
+        });
 
-/// Join a channel with an optional display name.
-fn run_channel_join(channel: &str, name: Option<&str>, quiet: bool) -> Result<()> {
-    let mut args = vec!["join", channel];
-    if let Some(n) = name {
-        args.extend(["--name", n]);
+        assert_eq!(args, vec!["read", "dev", "--limit", "10", "--detail", "high"]);
     }
-    run_synapt_channel(&args, quiet)?;
-    Ok(())
-}
 
-/// Show who's online.
-fn run_channel_who(quiet: bool) -> Result<()> {
-    run_synapt_channel(&["who"], quiet)?;
-    Ok(())
-}
+    #[test]
+    fn who_has_no_extra_args() {
+        let args = build_channel_args(&ChannelCommands::Who);
+        assert_eq!(args, vec!["who"]);
+    }
 
-/// Search across channel history.
-fn run_channel_search(query: &str, channel: Option<&str>, quiet: bool) -> Result<()> {
-    // synapt CLI requires a channel positional; default to "dev" when omitted
-    let ch = channel.unwrap_or("dev");
-    let args = vec!["search", ch, query];
-    run_synapt_channel(&args, quiet)?;
-    Ok(())
-}
+    #[test]
+    fn search_defaults_to_dev_when_channel_omitted() {
+        let args = build_channel_args(&ChannelCommands::Search {
+            query: "heartbeat".into(),
+            channel: None,
+        });
 
-/// List all channels.
-fn run_channel_list(quiet: bool) -> Result<()> {
-    run_synapt_channel(&["list"], quiet)?;
-    Ok(())
+        assert_eq!(args, vec!["search", "dev", "heartbeat"]);
+    }
+
+    #[test]
+    fn search_uses_explicit_channel_when_provided() {
+        let args = build_channel_args(&ChannelCommands::Search {
+            query: "heartbeat".into(),
+            channel: Some("ops".into()),
+        });
+
+        assert_eq!(args, vec!["search", "ops", "heartbeat"]);
+    }
+
+    #[test]
+    fn list_has_no_extra_args() {
+        let args = build_channel_args(&ChannelCommands::List);
+        assert_eq!(args, vec!["list"]);
+    }
+
+    #[test]
+    fn join_omits_name_when_not_provided() {
+        let args = build_channel_args(&ChannelCommands::Join {
+            channel: "dev".into(),
+            name: None,
+        });
+
+        assert_eq!(args, vec!["join", "dev"]);
+    }
+
+    #[test]
+    fn join_includes_name_when_provided() {
+        let args = build_channel_args(&ChannelCommands::Join {
+            channel: "dev".into(),
+            name: Some("Atlas".into()),
+        });
+
+        assert_eq!(args, vec!["join", "dev", "--name", "Atlas"]);
+    }
 }

@@ -725,6 +725,148 @@ fn test_gr2_unit_requires_gr2_workspace() {
 }
 
 #[test]
+fn test_gr2_spec_show_round_trips_workspace_spec() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let mut repo_add = Command::cargo_bin("gr2").unwrap();
+    repo_add
+        .current_dir(&workspace_root)
+        .arg("repo")
+        .arg("add")
+        .arg("app")
+        .arg("https://github.com/synapt-dev/app.git")
+        .assert()
+        .success();
+
+    let mut unit_add = Command::cargo_bin("gr2").unwrap();
+    unit_add
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .success();
+
+    let mut show = Command::cargo_bin("gr2").unwrap();
+    show.current_dir(&workspace_root)
+        .arg("spec")
+        .arg("show")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("schema_version = 1"))
+        .stdout(predicate::str::contains("workspace_name = \"demo\""))
+        .stdout(predicate::str::contains("name = \"app\""))
+        .stdout(predicate::str::contains("name = \"atlas\""));
+
+    let spec = std::fs::read_to_string(workspace_root.join(".grip/workspace_spec.toml")).unwrap();
+    assert!(spec.contains("schema_version = 1"));
+    assert!(spec.contains("workspace_name = \"demo\""));
+    assert!(spec.contains("path = \"repos/app\""));
+    assert!(spec.contains("path = \"agents/atlas\""));
+
+    let mut validate = Command::cargo_bin("gr2").unwrap();
+    validate
+        .current_dir(&workspace_root)
+        .arg("spec")
+        .arg("validate")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Workspace spec is valid"));
+}
+
+#[test]
+fn test_gr2_spec_validate_detects_missing_repo_metadata() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut repo_add = Command::cargo_bin("gr2").unwrap();
+    repo_add
+        .current_dir(&workspace_root)
+        .arg("repo")
+        .arg("add")
+        .arg("app")
+        .arg("https://github.com/synapt-dev/app.git")
+        .assert()
+        .success();
+
+    let mut show = Command::cargo_bin("gr2").unwrap();
+    show.current_dir(&workspace_root)
+        .arg("spec")
+        .arg("show")
+        .assert()
+        .success();
+
+    std::fs::remove_file(workspace_root.join("repos/app/repo.toml")).unwrap();
+
+    let mut validate = Command::cargo_bin("gr2").unwrap();
+    validate
+        .current_dir(&workspace_root)
+        .arg("spec")
+        .arg("validate")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "workspace spec repo 'app' is missing repo metadata",
+        ));
+}
+
+#[test]
+fn test_gr2_spec_validate_detects_conflicting_unit_names() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut unit_add = Command::cargo_bin("gr2").unwrap();
+    unit_add
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .success();
+
+    let mut show = Command::cargo_bin("gr2").unwrap();
+    show.current_dir(&workspace_root)
+        .arg("spec")
+        .arg("show")
+        .assert()
+        .success();
+
+    let spec_path = workspace_root.join(".grip/workspace_spec.toml");
+    let spec = std::fs::read_to_string(&spec_path).unwrap();
+    let conflicting = format!(
+        "{}\n[[units]]\nname = \"atlas\"\npath = \"agents/atlas-copy\"\nrepos = []\n",
+        spec.trim_end()
+    );
+    std::fs::write(&spec_path, conflicting).unwrap();
+
+    let mut validate = Command::cargo_bin("gr2").unwrap();
+    validate
+        .current_dir(&workspace_root)
+        .arg("spec")
+        .arg("validate")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "workspace spec contains duplicate unit 'atlas'",
+        ));
+}
+
+#[test]
 fn test_checkout_help_mentions_add_mode() {
     let mut cmd = Command::cargo_bin("gr").unwrap();
     cmd.arg("checkout")

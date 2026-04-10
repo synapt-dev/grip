@@ -2,7 +2,10 @@ use anyhow::Result;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::args::{Commands, RepoCommands, TeamCommands, UnitCommands};
+use crate::args::{Commands, RepoCommands, SpecCommands, TeamCommands, UnitCommands};
+use crate::spec::{
+    read_workspace_spec, workspace_spec_path, write_workspace_spec, WorkspaceSpec,
+};
 
 pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
     match command {
@@ -328,6 +331,32 @@ pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
                 }
 
                 println!("Removed gr2 unit '{}'", name);
+                Ok(())
+            }
+        },
+        Commands::Spec { command } => match command {
+            SpecCommands::Show => {
+                let workspace_root = require_workspace_root()?;
+                let spec_path = workspace_spec_path(&workspace_root);
+                let spec = if spec_path.exists() {
+                    read_workspace_spec(&workspace_root)?
+                } else {
+                    let spec = WorkspaceSpec::from_workspace(&workspace_root)?;
+                    write_workspace_spec(&workspace_root, &spec)?;
+                    spec
+                };
+
+                println!("{}", toml::to_string_pretty(&spec)?);
+                Ok(())
+            }
+            SpecCommands::Validate => {
+                let workspace_root = require_workspace_root()?;
+                let spec = read_workspace_spec(&workspace_root)?;
+                spec.validate(&workspace_root)?;
+                println!(
+                    "Workspace spec is valid: {}",
+                    workspace_spec_path(&workspace_root).display()
+                );
                 Ok(())
             }
         },

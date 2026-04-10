@@ -49,6 +49,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: UnitCommands,
     },
+
+    /// Declarative workspace spec operations
+    Spec {
+        #[command(subcommand)]
+        command: SpecCommands,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -106,4 +112,13 @@ pub enum UnitCommands {
         /// Unit name
         name: String,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SpecCommands {
+    /// Print the current workspace spec
+    Show,
+
+    /// Validate the current workspace spec against the filesystem
+    Validate,
 }

@@ -150,6 +150,7 @@ gr sync
 | `gr branch [name]` | Create or list branches |
 | `gr checkout <branch>` | Checkout branch across repos |
 | `gr checkout -b <branch>` | Create and checkout branch in one command |
+| `gr checkout add <name>` | Create an independent child checkout from cached repos |
 | `gr add [files]` | Stage changes across repos |
 | `gr diff` | Show diff across repos |
 | `gr commit -m "msg"` | Commit across repos |
@@ -183,6 +184,9 @@ gr sync
 | `gr link` | Manage file links |
 | `gr run <script>` | Run workspace scripts |
 | `gr env` | Show environment variables |
+| `gr cache status` | Show machine-level cache state for workspace repos |
+| `gr cache bootstrap` | Materialize missing machine-level repo caches |
+| `gr cache update` | Fetch updates into existing machine-level repo caches |
 | `gr bench` | Run performance benchmarks |
 | `gr completions <shell>` | Generate shell completions |
 
@@ -223,6 +227,34 @@ Pull latest changes from the manifest and all repositories. Syncs in parallel by
 
 Show status of all repositories including branch, changes, and sync state.
 
+#### `gr cache <subcommand>`
+
+Manage the machine-level bare-repo cache used by workspace repos.
+
+By default caches live under `~/.grip/cache/`, keyed by canonical repo identity.
+You can override the cache root with `GRIP_CACHE_DIR` when you need a custom or
+isolated cache location.
+
+| Subcommand | Description |
+|-----------|-------------|
+| `gr cache status` | Show whether each workspace repo has a cache and where it lives |
+| `gr cache bootstrap` | Create missing caches without touching existing ones |
+| `gr cache update` | Fetch updates into existing caches |
+| `gr cache remove <repo>` | Remove one repo cache explicitly |
+
+**Examples:**
+
+```bash
+# See where caches are currently resolved
+gr cache status
+
+# Create missing caches before materializing child checkouts
+gr cache bootstrap
+
+# Use a custom cache root for an isolated environment
+GRIP_CACHE_DIR=/tmp/grip-cache gr cache status
+```
+
 #### `gr checkout <branch>`
 
 Checkout a branch across all repos. Can also create branches with the `-b` flag.
@@ -231,6 +263,59 @@ Checkout a branch across all repos. Can also create branches with the `-b` flag.
 |--------|-------------|
 | `-b` | Create branch if it doesn't exist |
 | `--base` | Checkout the griptree base branch (griptree workspaces only) |
+
+#### `gr checkout add <name>`
+
+Create an independent child checkout under `.grip/checkouts/<name>/` using the
+workspace cache as an accelerator.
+
+Unlike `gr tree add`, this creates normal child clones with their own `.git`
+directories. The checkout keeps the canonical remote URL as `origin`; the cache
+is only used to speed up materialization.
+
+| Option | Description |
+|--------|-------------|
+| `--repo <name>` | Only materialize specific repos |
+| `--group <name>` | Only materialize repos in a group |
+
+**Examples:**
+
+```bash
+# Materialize all repos into an independent child checkout
+gr checkout add sandbox
+
+# Materialize only the docs group
+gr checkout add docs-only --group docs
+
+# Materialize just one repo
+gr checkout add app-only --repo app
+```
+
+#### `gr checkout list`
+
+Show the currently materialized child checkouts under
+`.grip/checkouts/`.
+
+**Examples:**
+
+```bash
+# List all materialized child checkouts
+gr checkout list
+```
+
+#### `gr checkout remove <name>`
+
+Remove a materialized child checkout under `.grip/checkouts/<name>/`.
+
+This deletes the child clone only. It does not delete the shared cache under
+`~/.grip/cache/`.
+
+**Examples:**
+
+```bash
+# Remove a disposable child checkout
+gr checkout remove sandbox
+```
 
 #### `gr branch [name]`
 

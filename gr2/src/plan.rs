@@ -1,9 +1,12 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::Path;
 
-use crate::spec::{read_workspace_spec, workspace_spec_path, write_workspace_spec, WorkspaceSpec};
+use crate::spec::{
+    read_workspace_spec, workspace_spec_path, write_workspace_spec, UnitSpec, WorkspaceSpec,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExecutionPlan {
@@ -93,6 +96,48 @@ impl ExecutionPlan {
         })
     }
 
+    pub fn apply(&self, workspace_root: &Path, spec: &WorkspaceSpec) -> Result<Vec<String>> {
+        let mut applied = Vec::new();
+
+        for operation in &self.operations {
+            let unit_spec = spec
+                .units
+                .iter()
+                .find(|unit| unit.name == operation.unit_name)
+                .with_context(|| {
+                    format!(
+                        "execution plan references unknown unit '{}'",
+                        operation.unit_name
+                    )
+                })?;
+
+            match operation.operation {
+                OperationType::Clone => {
+                    materialize_unit(workspace_root, unit_spec)?;
+                    applied.push(format!(
+                        "cloned unit '{}' into {}",
+                        unit_spec.name, unit_spec.path
+                    ));
+                }
+                OperationType::Configure => {
+                    materialize_unit(workspace_root, unit_spec)?;
+                    applied.push(format!(
+                        "configured unit '{}' at {}",
+                        unit_spec.name, unit_spec.path
+                    ));
+                }
+                OperationType::Link => {
+                    anyhow::bail!(
+                        "link operations are not implemented yet for unit '{}'",
+                        unit_spec.name
+                    );
+                }
+            }
+        }
+
+        Ok(applied)
+    }
+
     pub fn guard_for_apply(
         &self,
         workspace_root: &Path,
@@ -159,4 +204,33 @@ impl OperationType {
             Self::Link => "link",
         }
     }
+}
+
+fn materialize_unit(workspace_root: &Path, unit: &UnitSpec) -> Result<()> {
+    let unit_root = workspace_root.join(&unit.path);
+    fs::create_dir_all(&unit_root)
+        .with_context(|| format!("create unit directory {}", unit_root.display()))?;
+    fs::write(unit_root.join("unit.toml"), render_unit_toml(unit))
+        .with_context(|| format!("write unit metadata for '{}'", unit.name))?;
+    Ok(())
+}
+
+fn render_unit_toml(unit: &UnitSpec) -> String {
+    let repos = if unit.repos.is_empty() {
+        "[]".to_string()
+    } else {
+        format!(
+            "[{}]",
+            unit.repos
+                .iter()
+                .map(|repo| format!("\"{}\"", repo))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+
+    format!(
+        "name = \"{}\"\nkind = \"unit\"\nrepos = {}\n",
+        unit.name, repos
+    )
 }

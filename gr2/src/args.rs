@@ -62,6 +62,13 @@ pub enum Commands {
         #[arg(long)]
         yes: bool,
     },
+
+    /// Apply the current execution plan to the workspace
+    Apply {
+        /// Pre-approve plans with more than 3 operations
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

@@ -971,6 +971,70 @@ fn test_gr2_plan_fully_materialized_workspace_produces_noop_plan() {
 }
 
 #[test]
+fn test_gr2_plan_does_not_flag_repo_attachment_presence_as_drift() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let mut repo_add = Command::cargo_bin("gr2").unwrap();
+    repo_add
+        .current_dir(&workspace_root)
+        .arg("repo")
+        .arg("add")
+        .arg("app")
+        .arg("https://github.com/synapt-dev/app.git")
+        .assert()
+        .success();
+
+    let mut unit_add = Command::cargo_bin("gr2").unwrap();
+    unit_add
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .success();
+
+    let spec = r#"
+schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "app"
+path = "repos/app"
+url = "https://github.com/synapt-dev/app.git"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = ["app"]
+"#;
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        spec.trim_start(),
+    )
+    .unwrap();
+
+    let mut plan = Command::cargo_bin("gr2").unwrap();
+    plan.current_dir(&workspace_root)
+        .arg("plan")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no changes required"))
+        .stdout(predicate::str::contains("configure").not());
+}
+
+#[test]
 fn test_gr2_plan_missing_unit_produces_single_clone_plan() {
     let temp = TempDir::new().unwrap();
     let workspace_root = temp.path().join("demo-team");
@@ -1078,6 +1142,42 @@ repos = ["missing"]
         .stderr(predicate::str::contains(
             "unit 'atlas' references missing repo 'missing'",
         ));
+}
+
+#[test]
+fn test_gr2_plan_reports_when_it_generates_a_missing_workspace_spec() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let mut unit_add = Command::cargo_bin("gr2").unwrap();
+    unit_add
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .success();
+
+    let spec_path = workspace_root.join(".grip/workspace_spec.toml");
+    assert!(!spec_path.exists());
+
+    let mut plan = Command::cargo_bin("gr2").unwrap();
+    plan.current_dir(&workspace_root)
+        .arg("plan")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Generated workspace spec at"))
+        .stdout(predicate::str::contains("no changes required"));
+
+    assert!(spec_path.exists());
 }
 
 #[test]

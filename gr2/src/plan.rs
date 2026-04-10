@@ -10,6 +10,13 @@ pub struct ExecutionPlan {
     pub operations: Vec<PlanOperation>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanBuild {
+    pub spec: WorkspaceSpec,
+    pub plan: ExecutionPlan,
+    pub generated_spec: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlanOperation {
     pub unit_name: String,
@@ -34,14 +41,14 @@ pub struct PlanGuardReport {
 }
 
 impl ExecutionPlan {
-    pub fn from_workspace_spec(workspace_root: &Path) -> Result<(WorkspaceSpec, Self)> {
+    pub fn from_workspace_spec(workspace_root: &Path) -> Result<PlanBuild> {
         let spec_path = workspace_spec_path(workspace_root);
-        let spec = if spec_path.exists() {
-            read_workspace_spec(workspace_root)?
+        let (spec, generated_spec) = if spec_path.exists() {
+            (read_workspace_spec(workspace_root)?, false)
         } else {
             let generated = WorkspaceSpec::from_workspace(workspace_root)?;
             write_workspace_spec(workspace_root, &generated)?;
-            generated
+            (generated, true)
         };
 
         spec.validate_for_plan()?;
@@ -66,7 +73,7 @@ impl ExecutionPlan {
             }
 
             let expected_path = format!("agents/{}", unit.name);
-            if unit.path != expected_path || !unit.repos.is_empty() {
+            if unit.path != expected_path {
                 let mut parameters = BTreeMap::new();
                 parameters.insert("path".to_string(), unit.path.clone());
                 parameters.insert("repos".to_string(), unit.repos.join(","));
@@ -79,7 +86,11 @@ impl ExecutionPlan {
             }
         }
 
-        Ok((spec, Self { operations }))
+        Ok(PlanBuild {
+            spec,
+            plan: Self { operations },
+            generated_spec,
+        })
     }
 
     pub fn guard_for_apply(

@@ -361,10 +361,16 @@ pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
         },
         Commands::Plan { yes } => {
             let workspace_root = require_workspace_root()?;
-            let (_spec, plan) = ExecutionPlan::from_workspace_spec(&workspace_root)?;
-            let guard_report = plan.guard_for_apply(&workspace_root, yes)?;
+            let build = ExecutionPlan::from_workspace_spec(&workspace_root)?;
+            let guard_report = build.plan.guard_for_apply(&workspace_root, yes)?;
 
-            println!("{}", plan.render_table());
+            if build.generated_spec {
+                println!(
+                    "Generated workspace spec at {} from current workspace state.",
+                    workspace_spec_path(&workspace_root).display()
+                );
+            }
+            println!("{}", build.plan.render_table());
             for warning in guard_report.warnings {
                 println!("warning: {}", warning);
             }

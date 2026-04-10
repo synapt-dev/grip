@@ -55,6 +55,13 @@ pub enum Commands {
         #[command(subcommand)]
         command: SpecCommands,
     },
+
+    /// Diff the workspace spec into an execution plan
+    Plan {
+        /// Pre-approve plans with more than 3 operations
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

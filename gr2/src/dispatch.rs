@@ -3,9 +3,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::args::{Commands, RepoCommands, SpecCommands, TeamCommands, UnitCommands};
-use crate::spec::{
-    read_workspace_spec, workspace_spec_path, write_workspace_spec, WorkspaceSpec,
-};
+use crate::plan::ExecutionPlan;
+use crate::spec::{read_workspace_spec, workspace_spec_path, write_workspace_spec, WorkspaceSpec};
 
 pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
     match command {
@@ -360,6 +359,20 @@ pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
                 Ok(())
             }
         },
+        Commands::Plan { yes } => {
+            let workspace_root = require_workspace_root()?;
+            let (_spec, plan) = ExecutionPlan::from_workspace_spec(&workspace_root)?;
+            let guard_report = plan.guard_for_apply(&workspace_root, yes)?;
+
+            println!("{}", plan.render_table());
+            for warning in guard_report.warnings {
+                println!("warning: {}", warning);
+            }
+            if guard_report.requires_confirmation {
+                println!("warning: plan contains more than 3 operations; apply will require --yes");
+            }
+            Ok(())
+        }
     }
 }
 

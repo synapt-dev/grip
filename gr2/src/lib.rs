@@ -4,4 +4,5 @@
 
 pub mod args;
 pub mod dispatch;
+pub mod plan;
 pub mod spec;

@@ -54,7 +54,7 @@ impl WorkspaceSpec {
         })
     }
 
-    pub fn validate(&self, workspace_root: &Path) -> Result<()> {
+    pub fn validate_for_plan(&self) -> Result<()> {
         if self.schema_version != WORKSPACE_SPEC_VERSION {
             anyhow::bail!(
                 "unsupported workspace spec schema_version {}: expected {}",
@@ -76,15 +76,6 @@ impl WorkspaceSpec {
             if repo.path.trim().is_empty() || repo.url.trim().is_empty() {
                 anyhow::bail!("repo '{}' must include non-empty path and url", repo.name);
             }
-
-            let repo_root = workspace_root.join(&repo.path);
-            if !repo_root.join("repo.toml").exists() {
-                anyhow::bail!(
-                    "workspace spec repo '{}' is missing repo metadata at {}",
-                    repo.name,
-                    repo_root.join("repo.toml").display()
-                );
-            }
         }
 
         let mut unit_names = HashSet::new();
@@ -95,15 +86,6 @@ impl WorkspaceSpec {
 
             if unit.path.trim().is_empty() {
                 anyhow::bail!("unit '{}' must include a non-empty path", unit.name);
-            }
-
-            let unit_root = workspace_root.join(&unit.path);
-            if !unit_root.join("unit.toml").exists() {
-                anyhow::bail!(
-                    "workspace spec unit '{}' is missing unit metadata at {}",
-                    unit.name,
-                    unit_root.join("unit.toml").display()
-                );
             }
 
             for repo_name in &unit.repos {
@@ -119,14 +101,41 @@ impl WorkspaceSpec {
 
         Ok(())
     }
+
+    pub fn validate(&self, workspace_root: &Path) -> Result<()> {
+        self.validate_for_plan()?;
+
+        for repo in &self.repos {
+            let repo_root = workspace_root.join(&repo.path);
+            if !repo_root.join("repo.toml").exists() {
+                anyhow::bail!(
+                    "workspace spec repo '{}' is missing repo metadata at {}",
+                    repo.name,
+                    repo_root.join("repo.toml").display()
+                );
+            }
+        }
+
+        for unit in &self.units {
+            let unit_root = workspace_root.join(&unit.path);
+            if !unit_root.join("unit.toml").exists() {
+                anyhow::bail!(
+                    "workspace spec unit '{}' is missing unit metadata at {}",
+                    unit.name,
+                    unit_root.join("unit.toml").display()
+                );
+            }
+        }
+
+        Ok(())
+    }
 }
 
 pub fn write_workspace_spec(workspace_root: &Path, spec: &WorkspaceSpec) -> Result<PathBuf> {
     let spec_path = workspace_spec_path(workspace_root);
     let content = toml::to_string_pretty(spec).context("serialize workspace spec")?;
-    fs::write(&spec_path, content).with_context(|| {
-        format!("write workspace spec to {}", spec_path.display())
-    })?;
+    fs::write(&spec_path, content)
+        .with_context(|| format!("write workspace spec to {}", spec_path.display()))?;
     Ok(spec_path)
 }
 
@@ -197,6 +206,10 @@ fn read_registered_repos(workspace_root: &Path) -> Result<Vec<RepoSpec>> {
 fn read_registered_units(workspace_root: &Path) -> Result<Vec<UnitSpec>> {
     let units_root = workspace_root.join("agents");
     let mut units = Vec::new();
+
+    if !units_root.exists() {
+        return Ok(units);
+    }
 
     for entry in fs::read_dir(&units_root)? {
         let entry = entry?;

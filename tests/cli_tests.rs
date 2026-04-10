@@ -867,6 +867,220 @@ fn test_gr2_spec_validate_detects_conflicting_unit_names() {
 }
 
 #[test]
+fn test_gr2_plan_empty_workspace_produces_clone_all_plan() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let spec = r#"
+schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "app"
+path = "repos/app"
+url = "https://github.com/synapt-dev/app.git"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = ["app"]
+
+[[units]]
+name = "apollo"
+path = "agents/apollo"
+repos = []
+"#;
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        spec.trim_start(),
+    )
+    .unwrap();
+    std::fs::create_dir_all(workspace_root.join("repos/app")).unwrap();
+    std::fs::write(
+        workspace_root.join("repos/app/repo.toml"),
+        "name = \"app\"\nurl = \"https://github.com/synapt-dev/app.git\"\n",
+    )
+    .unwrap();
+
+    let mut plan = Command::cargo_bin("gr2").unwrap();
+    plan.current_dir(&workspace_root)
+        .arg("plan")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ExecutionPlan"))
+        .stdout(predicate::str::contains("atlas\tclone"))
+        .stdout(predicate::str::contains("apollo\tclone"));
+}
+
+#[test]
+fn test_gr2_plan_fully_materialized_workspace_produces_noop_plan() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let mut repo_add = Command::cargo_bin("gr2").unwrap();
+    repo_add
+        .current_dir(&workspace_root)
+        .arg("repo")
+        .arg("add")
+        .arg("app")
+        .arg("https://github.com/synapt-dev/app.git")
+        .assert()
+        .success();
+
+    let mut unit_add = Command::cargo_bin("gr2").unwrap();
+    unit_add
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .success();
+
+    let mut show = Command::cargo_bin("gr2").unwrap();
+    show.current_dir(&workspace_root)
+        .arg("spec")
+        .arg("show")
+        .assert()
+        .success();
+
+    let mut plan = Command::cargo_bin("gr2").unwrap();
+    plan.current_dir(&workspace_root)
+        .arg("plan")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no changes required"));
+}
+
+#[test]
+fn test_gr2_plan_missing_unit_produces_single_clone_plan() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let mut repo_add = Command::cargo_bin("gr2").unwrap();
+    repo_add
+        .current_dir(&workspace_root)
+        .arg("repo")
+        .arg("add")
+        .arg("app")
+        .arg("https://github.com/synapt-dev/app.git")
+        .assert()
+        .success();
+
+    let mut unit_add = Command::cargo_bin("gr2").unwrap();
+    unit_add
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .success();
+
+    let mut show = Command::cargo_bin("gr2").unwrap();
+    show.current_dir(&workspace_root)
+        .arg("spec")
+        .arg("show")
+        .assert()
+        .success();
+
+    std::fs::create_dir_all(workspace_root.join("agents/apollo")).unwrap();
+    std::fs::write(
+        workspace_root.join("agents/apollo/unit.toml"),
+        "name = \"apollo\"\nkind = \"unit\"\n",
+    )
+    .unwrap();
+
+    let spec_path = workspace_root.join(".grip/workspace_spec.toml");
+    let spec = std::fs::read_to_string(&spec_path).unwrap();
+    let with_apollo = format!(
+        "{}\n[[units]]\nname = \"apollo\"\npath = \"agents/apollo\"\nrepos = []\n",
+        spec.trim_end()
+    );
+    std::fs::write(&spec_path, with_apollo).unwrap();
+    std::fs::remove_file(workspace_root.join("agents/apollo/unit.toml")).unwrap();
+
+    let mut plan = Command::cargo_bin("gr2").unwrap();
+    plan.current_dir(&workspace_root)
+        .arg("plan")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("apollo\tclone"))
+        .stdout(predicate::str::contains("clone unit 'apollo'"));
+}
+
+#[test]
+fn test_gr2_plan_rejects_invalid_unit_repo_reference() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let spec = r#"
+schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "app"
+path = "repos/app"
+url = "https://github.com/synapt-dev/app.git"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = ["missing"]
+"#;
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        spec.trim_start(),
+    )
+    .unwrap();
+
+    let mut plan = Command::cargo_bin("gr2").unwrap();
+    plan.current_dir(&workspace_root)
+        .arg("plan")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "unit 'atlas' references missing repo 'missing'",
+        ));
+}
+
+#[test]
 fn test_checkout_help_mentions_add_mode() {
     let mut cmd = Command::cargo_bin("gr").unwrap();
     cmd.arg("checkout")

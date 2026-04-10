@@ -229,6 +229,7 @@ pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
         Commands::Unit { command } => match command {
             UnitCommands::Add { name } => {
                 let workspace_root = require_workspace_root()?;
+                validate_unit_name(&name)?;
                 let units_root = workspace_root.join("agents");
                 let registry_path = workspace_root.join(".grip/units.toml");
                 let unit_root = units_root.join(&name);
@@ -340,4 +341,22 @@ fn require_workspace_root() -> Result<PathBuf> {
         anyhow::bail!("not in a gr2 workspace: missing .grip/workspace.toml");
     }
     Ok(workspace_root)
+}
+
+fn validate_unit_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        anyhow::bail!("unit name must not be empty");
+    }
+
+    if !name
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        anyhow::bail!(
+            "invalid unit name '{}': use only ASCII letters, numbers, '_' or '-'",
+            name
+        );
+    }
+
+    Ok(())
 }

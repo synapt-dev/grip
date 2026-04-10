@@ -601,6 +601,27 @@ fn test_gr2_unit_add_rejects_duplicate_unit() {
 }
 
 #[test]
+fn test_gr2_unit_add_rejects_invalid_name() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut invalid = Command::cargo_bin("gr2").unwrap();
+    invalid
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("atlas/dev")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "invalid unit name 'atlas/dev': use only ASCII letters, numbers, '_' or '-'",
+        ));
+}
+
+#[test]
 fn test_gr2_unit_list_shows_registered_units() {
     let temp = TempDir::new().unwrap();
     let workspace_root = temp.path().join("demo-team");

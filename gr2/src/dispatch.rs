@@ -379,6 +379,38 @@ pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
             }
             Ok(())
         }
+        Commands::Apply { yes } => {
+            let workspace_root = require_workspace_root()?;
+            let build = ExecutionPlan::from_workspace_spec(&workspace_root)?;
+            let guard_report = build.plan.guard_for_apply(&workspace_root, yes)?;
+
+            if build.generated_spec {
+                println!(
+                    "Generated workspace spec at {} from current workspace state.",
+                    workspace_spec_path(&workspace_root).display()
+                );
+            }
+
+            if guard_report.requires_confirmation {
+                anyhow::bail!("plan contains more than 3 operations; rerun with --yes to apply it");
+            }
+
+            for warning in &guard_report.warnings {
+                println!("warning: {}", warning);
+            }
+
+            let applied = build.plan.apply(&workspace_root, &build.spec)?;
+            if applied.is_empty() {
+                println!("ExecutionPlan");
+                println!("- no changes required");
+            } else {
+                println!("Applied execution plan");
+                for line in applied {
+                    println!("- {}", line);
+                }
+            }
+            Ok(())
+        }
     }
 }
 

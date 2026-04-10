@@ -1181,6 +1181,123 @@ fn test_gr2_plan_reports_when_it_generates_a_missing_workspace_spec() {
 }
 
 #[test]
+fn test_gr2_apply_materializes_missing_units_from_plan() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let spec = r#"
+schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "app"
+path = "repos/app"
+url = "https://github.com/synapt-dev/app.git"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = ["app"]
+"#;
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        spec.trim_start(),
+    )
+    .unwrap();
+    std::fs::create_dir_all(workspace_root.join("repos/app")).unwrap();
+    std::fs::write(
+        workspace_root.join("repos/app/repo.toml"),
+        "name = \"app\"\nurl = \"https://github.com/synapt-dev/app.git\"\n",
+    )
+    .unwrap();
+
+    let mut apply = Command::cargo_bin("gr2").unwrap();
+    apply
+        .current_dir(&workspace_root)
+        .arg("apply")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Applied execution plan"))
+        .stdout(predicate::str::contains("cloned unit 'atlas'"));
+
+    let unit_toml = std::fs::read_to_string(workspace_root.join("agents/atlas/unit.toml")).unwrap();
+    assert!(unit_toml.contains("name = \"atlas\""));
+    assert!(unit_toml.contains("kind = \"unit\""));
+    assert!(unit_toml.contains("repos = [\"app\"]"));
+}
+
+#[test]
+fn test_gr2_apply_requires_yes_for_large_plans() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let spec = r#"
+schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = []
+
+[[units]]
+name = "apollo"
+path = "agents/apollo"
+repos = []
+
+[[units]]
+name = "sentinel"
+path = "agents/sentinel"
+repos = []
+
+[[units]]
+name = "opus"
+path = "agents/opus"
+repos = []
+"#;
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        spec.trim_start(),
+    )
+    .unwrap();
+
+    let mut apply = Command::cargo_bin("gr2").unwrap();
+    apply
+        .current_dir(&workspace_root)
+        .arg("apply")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "plan contains more than 3 operations; rerun with --yes to apply it",
+        ));
+
+    assert!(!workspace_root.join("agents/atlas/unit.toml").exists());
+    assert!(!workspace_root.join("agents/apollo/unit.toml").exists());
+}
+
+#[test]
 fn test_checkout_help_mentions_add_mode() {
     let mut cmd = Command::cargo_bin("gr").unwrap();
     cmd.arg("checkout")

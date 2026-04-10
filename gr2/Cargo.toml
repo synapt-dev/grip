@@ -1,0 +1,15 @@
+[package]
+name = "gr2-cli"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "gr2_cli"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

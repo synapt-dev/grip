@@ -126,10 +126,16 @@ pub enum Commands {
         #[arg(long, value_delimiter = ',')]
         group: Option<Vec<String>>,
     },
-    /// Checkout a branch across repos
+    #[command(
+        after_help = "Examples:\n  gr checkout feat/login\n  gr checkout --base\n  gr checkout add sandbox\n  gr checkout add docs-only --group docs\n  gr checkout add app-only --repo app\n  gr checkout list\n  gr checkout remove sandbox"
+    )]
+    /// Checkout a branch across repos or manage independent child checkouts
     Checkout {
-        /// Branch name
+        /// Branch name, or `add`/`list`/`remove` for child checkout lifecycle
         name: Option<String>,
+        /// Additional checkout action args (e.g. `add <name>`)
+        #[arg(hide = true)]
+        extra: Vec<String>,
         /// Create branch if it doesn't exist
         #[arg(short = 'b', long)]
         create: bool,
@@ -348,6 +354,11 @@ pub enum Commands {
     Target {
         #[command(subcommand)]
         action: TargetCommands,
+    },
+    /// Manage machine-level repo caches (~/.grip/cache/ by default)
+    Cache {
+        #[command(subcommand)]
+        action: CacheCommands,
     },
     /// Run garbage collection across repos
     Gc {
@@ -871,6 +882,21 @@ pub enum TargetCommands {
         /// Unset target for a specific repo instead of globally
         #[arg(long)]
         repo: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum CacheCommands {
+    /// Bootstrap bare caches for all manifest repos
+    Bootstrap,
+    /// Fetch latest refs into all caches
+    Update,
+    /// Show cache status
+    Status,
+    /// Remove a repo cache
+    Remove {
+        /// Repo name
+        repo: String,
     },
 }
 

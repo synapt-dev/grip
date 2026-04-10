@@ -3,6 +3,7 @@
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
 use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
+use crate::core::workspace_checkout;
 use crate::git::{
     branch::{branch_exists, checkout_branch, create_and_checkout_branch},
     open_repo,
@@ -112,4 +113,85 @@ pub fn run_checkout(
     );
 
     Ok(())
+}
+
+/// Materialize an independent child checkout from cached repos.
+///
+/// This reserves `gr checkout add <name>` while preserving the existing
+/// `gr checkout <branch>` behavior for cross-repo branch switching.
+pub fn run_checkout_add(
+    workspace_root: &Path,
+    manifest: &Manifest,
+    checkout_name: &str,
+    repos_filter: Option<&[String]>,
+    group_filter: Option<&[String]>,
+) -> anyhow::Result<()> {
+    let mut repos: Vec<RepoInfo> =
+        filter_repos(manifest, workspace_root, repos_filter, group_filter, false);
+
+    let include_manifest = match repos_filter {
+        None => true,
+        Some(filter) => filter.iter().any(|r| r == "manifest"),
+    };
+    if include_manifest {
+        if let Some(manifest_repo) = get_manifest_repo_info(manifest, workspace_root) {
+            repos.push(manifest_repo);
+        }
+    }
+
+    if repos.is_empty() {
+        anyhow::bail!("no repos matched checkout filters");
+    }
+
+    let repo_specs: Vec<(&str, &str, &str)> = repos
+        .iter()
+        .map(|repo| (repo.name.as_str(), repo.url.as_str(), repo.path.as_str()))
+        .collect();
+
+    let info = workspace_checkout::create_checkout(
+        workspace_root,
+        checkout_name,
+        repo_specs.into_iter(),
+        None,
+    )?;
+
+    Output::success(&format!(
+        "Created checkout '{}' with {} repo(s)",
+        info.name,
+        info.repos.len()
+    ));
+    Output::info(&format!("Path: {}", info.path.display()));
+    Ok(())
+}
+
+/// List cache-backed child checkouts.
+pub fn run_checkout_list(workspace_root: &Path) -> anyhow::Result<()> {
+    Output::header("Checkouts");
+    println!();
+
+    let checkouts = workspace_checkout::list_checkouts(workspace_root)?;
+    if checkouts.is_empty() {
+        println!("No checkouts configured.");
+        return Ok(());
+    }
+
+    for checkout in checkouts {
+        println!("{} -> {}", checkout.name, checkout.path.display());
+    }
+
+    Ok(())
+}
+
+/// Remove a cache-backed child checkout.
+pub fn run_checkout_remove(workspace_root: &Path, checkout_name: &str) -> anyhow::Result<()> {
+    Output::header(&format!("Removing checkout '{}'", checkout_name));
+    println!();
+
+    let removed = workspace_checkout::remove_checkout(workspace_root, checkout_name)?;
+    if removed {
+        Output::success(&format!("Removed checkout '{}'", checkout_name));
+        Ok(())
+    } else {
+        anyhow::bail!("Checkout '{}' not found", checkout_name);
+    }
 }

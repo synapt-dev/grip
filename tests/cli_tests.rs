@@ -1701,3 +1701,187 @@ fn test_checkout_remove_rejects_extra_positional_args() {
             "unexpected extra arguments after checkout name",
         ));
 }
+
+// ── gr2 apply additional TDD specs (grip#514) ───────────────────────────────
+
+/// gr2 apply is a recognized subcommand (not "error: unrecognized subcommand").
+#[test]
+fn test_gr2_apply_command_recognized() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let mut apply = Command::cargo_bin("gr2").unwrap();
+    apply
+        .current_dir(&workspace_root)
+        .arg("apply")
+        .assert()
+        // Must not fail with "unrecognized subcommand"
+        .stderr(predicate::str::contains("unrecognized subcommand").not());
+}
+
+/// gr2 apply outside a gr2 workspace returns a clear error.
+#[test]
+fn test_gr2_apply_requires_gr2_workspace() {
+    let temp = TempDir::new().unwrap();
+
+    let mut apply = Command::cargo_bin("gr2").unwrap();
+    apply
+        .current_dir(temp.path())
+        .arg("apply")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not in a gr2 workspace"));
+}
+
+/// gr2 apply is idempotent: running twice on a fully-materialized workspace
+/// succeeds without error.
+#[test]
+fn test_gr2_apply_idempotent_on_materialized_workspace() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let spec = r#"schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[units]]
+name = "apollo"
+path = "agents/apollo"
+repos = []
+"#;
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        spec,
+    )
+    .unwrap();
+
+    let mut first = Command::cargo_bin("gr2").unwrap();
+    first
+        .current_dir(&workspace_root)
+        .arg("apply")
+        .assert()
+        .success();
+
+    let mut second = Command::cargo_bin("gr2").unwrap();
+    second
+        .current_dir(&workspace_root)
+        .arg("apply")
+        .assert()
+        .success();
+}
+
+/// gr2 apply creates symlinks declared in the spec's linkfile entries.
+#[cfg(unix)]
+#[test]
+fn test_gr2_apply_creates_symlinks_for_link_operations() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    std::fs::create_dir_all(workspace_root.join("config")).unwrap();
+    std::fs::write(workspace_root.join("config/claude.md"), "# Claude").unwrap();
+
+    let spec = r#"schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = []
+
+[[units.linkfiles]]
+src = "config/claude.md"
+dest = "agents/atlas/CLAUDE.md"
+"#;
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        spec,
+    )
+    .unwrap();
+
+    let mut apply = Command::cargo_bin("gr2").unwrap();
+    apply
+        .current_dir(&workspace_root)
+        .arg("apply")
+        .assert()
+        .success();
+
+    let link_dest = workspace_root.join("agents/atlas/CLAUDE.md");
+    assert!(link_dest.exists(), "symlink dest must exist after apply");
+    assert!(link_dest.is_symlink(), "dest must be a symlink, not a copy");
+}
+
+/// gr2 apply records applied state in .grip/state for restart safety.
+#[test]
+fn test_gr2_apply_records_state_after_apply() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let spec = r#"schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = []
+"#;
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        spec,
+    )
+    .unwrap();
+
+    let mut apply = Command::cargo_bin("gr2").unwrap();
+    apply
+        .current_dir(&workspace_root)
+        .arg("apply")
+        .assert()
+        .success();
+
+    let state_path = workspace_root.join(".grip/state");
+    assert!(state_path.exists(), ".grip/state must exist after apply");
+    let state = std::fs::read_to_string(&state_path).unwrap();
+    assert!(
+        state.contains("atlas") || state.contains("applied"),
+        ".grip/state must reference the applied unit or contain 'applied'"
+    );
+}

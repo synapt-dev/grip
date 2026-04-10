@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::args::{Commands, RepoCommands, TeamCommands};
+use crate::args::{Commands, RepoCommands, TeamCommands, UnitCommands};
 
 pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
     match command {
@@ -226,6 +226,111 @@ pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
                 Ok(())
             }
         },
+        Commands::Unit { command } => match command {
+            UnitCommands::Add { name } => {
+                let workspace_root = require_workspace_root()?;
+                validate_unit_name(&name)?;
+                let units_root = workspace_root.join("agents");
+                let registry_path = workspace_root.join(".grip/units.toml");
+                let unit_root = units_root.join(&name);
+
+                if unit_root.exists() {
+                    anyhow::bail!("unit '{}' already exists", name);
+                }
+
+                fs::create_dir_all(&unit_root)?;
+                fs::write(
+                    unit_root.join("unit.toml"),
+                    format!("name = \"{}\"\nkind = \"unit\"\n", name),
+                )?;
+
+                let mut entries = Vec::new();
+                if registry_path.exists() {
+                    entries.push(fs::read_to_string(&registry_path)?);
+                }
+                entries.push(format!("[[unit]]\nname = \"{}\"\nkind = \"unit\"\n", name));
+                fs::write(&registry_path, entries.join("\n"))?;
+
+                println!("Added gr2 unit '{}'", name);
+                Ok(())
+            }
+            UnitCommands::List => {
+                let workspace_root = require_workspace_root()?;
+                let units_root = workspace_root.join("agents");
+
+                let mut names = Vec::new();
+                for entry in fs::read_dir(&units_root)? {
+                    let entry = entry?;
+                    if entry.file_type()?.is_dir() && entry.path().join("unit.toml").exists() {
+                        names.push(entry.file_name().to_string_lossy().into_owned());
+                    }
+                }
+
+                names.sort();
+
+                if names.is_empty() {
+                    println!("No gr2 units registered.");
+                } else {
+                    println!("Units");
+                    for name in names {
+                        println!("- {}", name);
+                    }
+                }
+
+                Ok(())
+            }
+            UnitCommands::Remove { name } => {
+                let workspace_root = require_workspace_root()?;
+                let units_root = workspace_root.join("agents");
+                let unit_root = units_root.join(&name);
+                let unit_toml = unit_root.join("unit.toml");
+
+                if !unit_toml.exists() {
+                    anyhow::bail!("unit '{}' not found", name);
+                }
+
+                fs::remove_dir_all(&unit_root)?;
+
+                let registry_path = workspace_root.join(".grip/units.toml");
+                if registry_path.exists() {
+                    let registry = fs::read_to_string(&registry_path)?;
+                    let kept_entries = registry
+                        .split("\n[[unit]]\n")
+                        .filter_map(|chunk| {
+                            let chunk = chunk.trim();
+                            if chunk.is_empty() {
+                                return None;
+                            }
+                            let normalized = if chunk.starts_with("[[unit]]") {
+                                chunk.to_string()
+                            } else {
+                                format!("[[unit]]\n{}", chunk)
+                            };
+                            let matches_name = normalized
+                                .lines()
+                                .find_map(|line| line.strip_prefix("name = \""))
+                                .and_then(|line| line.strip_suffix('"'))
+                                .map(|entry_name| entry_name == name)
+                                .unwrap_or(false);
+                            if matches_name {
+                                None
+                            } else {
+                                Some(normalized)
+                            }
+                        })
+                        .collect::<Vec<_>>();
+
+                    if kept_entries.is_empty() {
+                        fs::remove_file(&registry_path)?;
+                    } else {
+                        fs::write(&registry_path, kept_entries.join("\n\n"))?;
+                    }
+                }
+
+                println!("Removed gr2 unit '{}'", name);
+                Ok(())
+            }
+        },
     }
 }
 
@@ -236,4 +341,22 @@ fn require_workspace_root() -> Result<PathBuf> {
         anyhow::bail!("not in a gr2 workspace: missing .grip/workspace.toml");
     }
     Ok(workspace_root)
+}
+
+fn validate_unit_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        anyhow::bail!("unit name must not be empty");
+    }
+
+    if !name
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        anyhow::bail!(
+            "invalid unit name '{}': use only ASCII letters, numbers, '_' or '-'",
+            name
+        );
+    }
+
+    Ok(())
 }

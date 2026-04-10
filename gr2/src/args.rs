@@ -43,6 +43,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: RepoCommands,
     },
+
+    /// Unit registry operations
+    Unit {
+        #[command(subcommand)]
+        command: UnitCommands,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -80,6 +86,24 @@ pub enum RepoCommands {
     /// Remove a registered repo
     Remove {
         /// Logical repo name
+        name: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum UnitCommands {
+    /// Register a local unit in the workspace materialization model
+    Add {
+        /// Unit name
+        name: String,
+    },
+
+    /// List registered units
+    List,
+
+    /// Remove a registered unit
+    Remove {
+        /// Unit name
         name: String,
     },
 }

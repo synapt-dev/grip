@@ -546,6 +546,185 @@ fn test_gr2_repo_remove_requires_gr2_workspace() {
 }
 
 #[test]
+fn test_gr2_unit_add_registers_unit() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut unit_add = Command::cargo_bin("gr2").unwrap();
+    unit_add
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Added gr2 unit 'atlas'"));
+
+    let unit_toml = std::fs::read_to_string(workspace_root.join("agents/atlas/unit.toml")).unwrap();
+    assert!(unit_toml.contains("name = \"atlas\""));
+    assert!(unit_toml.contains("kind = \"unit\""));
+
+    let registry = std::fs::read_to_string(workspace_root.join(".grip/units.toml")).unwrap();
+    assert!(registry.contains("[[unit]]"));
+    assert!(registry.contains("name = \"atlas\""));
+}
+
+#[test]
+fn test_gr2_unit_add_rejects_duplicate_unit() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut first = Command::cargo_bin("gr2").unwrap();
+    first
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .success();
+
+    let mut duplicate = Command::cargo_bin("gr2").unwrap();
+    duplicate
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unit 'atlas' already exists"));
+}
+
+#[test]
+fn test_gr2_unit_add_rejects_invalid_name() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut invalid = Command::cargo_bin("gr2").unwrap();
+    invalid
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("atlas/dev")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "invalid unit name 'atlas/dev': use only ASCII letters, numbers, '_' or '-'",
+        ));
+}
+
+#[test]
+fn test_gr2_unit_list_shows_registered_units() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut add_atlas = Command::cargo_bin("gr2").unwrap();
+    add_atlas
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .success();
+
+    let mut add_opus = Command::cargo_bin("gr2").unwrap();
+    add_opus
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("opus")
+        .assert()
+        .success();
+
+    let mut list = Command::cargo_bin("gr2").unwrap();
+    list.current_dir(&workspace_root)
+        .arg("unit")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Units"))
+        .stdout(predicate::str::contains("- atlas"))
+        .stdout(predicate::str::contains("- opus"));
+}
+
+#[test]
+fn test_gr2_unit_list_reports_empty_state() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut list = Command::cargo_bin("gr2").unwrap();
+    list.current_dir(&workspace_root)
+        .arg("unit")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No gr2 units registered."));
+}
+
+#[test]
+fn test_gr2_unit_remove_deletes_registered_unit() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut add = Command::cargo_bin("gr2").unwrap();
+    add.current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .success();
+
+    let unit_root = workspace_root.join("agents/atlas");
+    assert!(unit_root.join("unit.toml").exists());
+
+    let mut remove = Command::cargo_bin("gr2").unwrap();
+    remove
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("remove")
+        .arg("atlas")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed gr2 unit 'atlas'"));
+
+    assert!(!unit_root.exists());
+    assert!(!workspace_root.join(".grip/units.toml").exists());
+}
+
+#[test]
+fn test_gr2_unit_requires_gr2_workspace() {
+    let temp = TempDir::new().unwrap();
+
+    let mut add = Command::cargo_bin("gr2").unwrap();
+    add.current_dir(temp.path())
+        .arg("unit")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "not in a gr2 workspace: missing .grip/workspace.toml",
+        ));
+}
+
+#[test]
 fn test_checkout_help_mentions_add_mode() {
     let mut cmd = Command::cargo_bin("gr").unwrap();
     cmd.arg("checkout")

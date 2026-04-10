@@ -546,6 +546,758 @@ fn test_gr2_repo_remove_requires_gr2_workspace() {
 }
 
 #[test]
+fn test_gr2_unit_add_registers_unit() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut unit_add = Command::cargo_bin("gr2").unwrap();
+    unit_add
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Added gr2 unit 'atlas'"));
+
+    let unit_toml = std::fs::read_to_string(workspace_root.join("agents/atlas/unit.toml")).unwrap();
+    assert!(unit_toml.contains("name = \"atlas\""));
+    assert!(unit_toml.contains("kind = \"unit\""));
+
+    let registry = std::fs::read_to_string(workspace_root.join(".grip/units.toml")).unwrap();
+    assert!(registry.contains("[[unit]]"));
+    assert!(registry.contains("name = \"atlas\""));
+}
+
+#[test]
+fn test_gr2_unit_add_rejects_duplicate_unit() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut first = Command::cargo_bin("gr2").unwrap();
+    first
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .success();
+
+    let mut duplicate = Command::cargo_bin("gr2").unwrap();
+    duplicate
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unit 'atlas' already exists"));
+}
+
+#[test]
+fn test_gr2_unit_add_rejects_invalid_name() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut invalid = Command::cargo_bin("gr2").unwrap();
+    invalid
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("atlas/dev")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "invalid unit name 'atlas/dev': use only ASCII letters, numbers, '_' or '-'",
+        ));
+}
+
+#[test]
+fn test_gr2_unit_list_shows_registered_units() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut add_atlas = Command::cargo_bin("gr2").unwrap();
+    add_atlas
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .success();
+
+    let mut add_opus = Command::cargo_bin("gr2").unwrap();
+    add_opus
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("opus")
+        .assert()
+        .success();
+
+    let mut list = Command::cargo_bin("gr2").unwrap();
+    list.current_dir(&workspace_root)
+        .arg("unit")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Units"))
+        .stdout(predicate::str::contains("- atlas"))
+        .stdout(predicate::str::contains("- opus"));
+}
+
+#[test]
+fn test_gr2_unit_list_reports_empty_state() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut list = Command::cargo_bin("gr2").unwrap();
+    list.current_dir(&workspace_root)
+        .arg("unit")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No gr2 units registered."));
+}
+
+#[test]
+fn test_gr2_unit_remove_deletes_registered_unit() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut add = Command::cargo_bin("gr2").unwrap();
+    add.current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .success();
+
+    let unit_root = workspace_root.join("agents/atlas");
+    assert!(unit_root.join("unit.toml").exists());
+
+    let mut remove = Command::cargo_bin("gr2").unwrap();
+    remove
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("remove")
+        .arg("atlas")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed gr2 unit 'atlas'"));
+
+    assert!(!unit_root.exists());
+    assert!(!workspace_root.join(".grip/units.toml").exists());
+}
+
+#[test]
+fn test_gr2_unit_requires_gr2_workspace() {
+    let temp = TempDir::new().unwrap();
+
+    let mut add = Command::cargo_bin("gr2").unwrap();
+    add.current_dir(temp.path())
+        .arg("unit")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "not in a gr2 workspace: missing .grip/workspace.toml",
+        ));
+}
+
+#[test]
+fn test_gr2_spec_show_round_trips_workspace_spec() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let mut repo_add = Command::cargo_bin("gr2").unwrap();
+    repo_add
+        .current_dir(&workspace_root)
+        .arg("repo")
+        .arg("add")
+        .arg("app")
+        .arg("https://github.com/synapt-dev/app.git")
+        .assert()
+        .success();
+
+    let mut unit_add = Command::cargo_bin("gr2").unwrap();
+    unit_add
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .success();
+
+    let mut show = Command::cargo_bin("gr2").unwrap();
+    show.current_dir(&workspace_root)
+        .arg("spec")
+        .arg("show")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("schema_version = 1"))
+        .stdout(predicate::str::contains("workspace_name = \"demo\""))
+        .stdout(predicate::str::contains("name = \"app\""))
+        .stdout(predicate::str::contains("name = \"atlas\""));
+
+    let spec = std::fs::read_to_string(workspace_root.join(".grip/workspace_spec.toml")).unwrap();
+    assert!(spec.contains("schema_version = 1"));
+    assert!(spec.contains("workspace_name = \"demo\""));
+    assert!(spec.contains("path = \"repos/app\""));
+    assert!(spec.contains("path = \"agents/atlas\""));
+
+    let mut validate = Command::cargo_bin("gr2").unwrap();
+    validate
+        .current_dir(&workspace_root)
+        .arg("spec")
+        .arg("validate")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Workspace spec is valid"));
+}
+
+#[test]
+fn test_gr2_spec_validate_detects_missing_repo_metadata() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut repo_add = Command::cargo_bin("gr2").unwrap();
+    repo_add
+        .current_dir(&workspace_root)
+        .arg("repo")
+        .arg("add")
+        .arg("app")
+        .arg("https://github.com/synapt-dev/app.git")
+        .assert()
+        .success();
+
+    let mut show = Command::cargo_bin("gr2").unwrap();
+    show.current_dir(&workspace_root)
+        .arg("spec")
+        .arg("show")
+        .assert()
+        .success();
+
+    std::fs::remove_file(workspace_root.join("repos/app/repo.toml")).unwrap();
+
+    let mut validate = Command::cargo_bin("gr2").unwrap();
+    validate
+        .current_dir(&workspace_root)
+        .arg("spec")
+        .arg("validate")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "workspace spec repo 'app' is missing repo metadata",
+        ));
+}
+
+#[test]
+fn test_gr2_spec_validate_detects_conflicting_unit_names() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let mut unit_add = Command::cargo_bin("gr2").unwrap();
+    unit_add
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .success();
+
+    let mut show = Command::cargo_bin("gr2").unwrap();
+    show.current_dir(&workspace_root)
+        .arg("spec")
+        .arg("show")
+        .assert()
+        .success();
+
+    let spec_path = workspace_root.join(".grip/workspace_spec.toml");
+    let spec = std::fs::read_to_string(&spec_path).unwrap();
+    let conflicting = format!(
+        "{}\n[[units]]\nname = \"atlas\"\npath = \"agents/atlas-copy\"\nrepos = []\n",
+        spec.trim_end()
+    );
+    std::fs::write(&spec_path, conflicting).unwrap();
+
+    let mut validate = Command::cargo_bin("gr2").unwrap();
+    validate
+        .current_dir(&workspace_root)
+        .arg("spec")
+        .arg("validate")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "workspace spec contains duplicate unit 'atlas'",
+        ));
+}
+
+#[test]
+fn test_gr2_plan_empty_workspace_produces_clone_all_plan() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let spec = r#"
+schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "app"
+path = "repos/app"
+url = "https://github.com/synapt-dev/app.git"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = ["app"]
+
+[[units]]
+name = "apollo"
+path = "agents/apollo"
+repos = []
+"#;
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        spec.trim_start(),
+    )
+    .unwrap();
+    std::fs::create_dir_all(workspace_root.join("repos/app")).unwrap();
+    std::fs::write(
+        workspace_root.join("repos/app/repo.toml"),
+        "name = \"app\"\nurl = \"https://github.com/synapt-dev/app.git\"\n",
+    )
+    .unwrap();
+
+    let mut plan = Command::cargo_bin("gr2").unwrap();
+    plan.current_dir(&workspace_root)
+        .arg("plan")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ExecutionPlan"))
+        .stdout(predicate::str::contains("atlas\tclone"))
+        .stdout(predicate::str::contains("apollo\tclone"));
+}
+
+#[test]
+fn test_gr2_plan_fully_materialized_workspace_produces_noop_plan() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let mut repo_add = Command::cargo_bin("gr2").unwrap();
+    repo_add
+        .current_dir(&workspace_root)
+        .arg("repo")
+        .arg("add")
+        .arg("app")
+        .arg("https://github.com/synapt-dev/app.git")
+        .assert()
+        .success();
+
+    let mut unit_add = Command::cargo_bin("gr2").unwrap();
+    unit_add
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .success();
+
+    let mut show = Command::cargo_bin("gr2").unwrap();
+    show.current_dir(&workspace_root)
+        .arg("spec")
+        .arg("show")
+        .assert()
+        .success();
+
+    let mut plan = Command::cargo_bin("gr2").unwrap();
+    plan.current_dir(&workspace_root)
+        .arg("plan")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no changes required"));
+}
+
+#[test]
+fn test_gr2_plan_does_not_flag_repo_attachment_presence_as_drift() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let mut repo_add = Command::cargo_bin("gr2").unwrap();
+    repo_add
+        .current_dir(&workspace_root)
+        .arg("repo")
+        .arg("add")
+        .arg("app")
+        .arg("https://github.com/synapt-dev/app.git")
+        .assert()
+        .success();
+
+    let mut unit_add = Command::cargo_bin("gr2").unwrap();
+    unit_add
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .success();
+
+    let spec = r#"
+schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "app"
+path = "repos/app"
+url = "https://github.com/synapt-dev/app.git"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = ["app"]
+"#;
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        spec.trim_start(),
+    )
+    .unwrap();
+
+    let mut plan = Command::cargo_bin("gr2").unwrap();
+    plan.current_dir(&workspace_root)
+        .arg("plan")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no changes required"))
+        .stdout(predicate::str::contains("configure").not());
+}
+
+#[test]
+fn test_gr2_plan_missing_unit_produces_single_clone_plan() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let mut repo_add = Command::cargo_bin("gr2").unwrap();
+    repo_add
+        .current_dir(&workspace_root)
+        .arg("repo")
+        .arg("add")
+        .arg("app")
+        .arg("https://github.com/synapt-dev/app.git")
+        .assert()
+        .success();
+
+    let mut unit_add = Command::cargo_bin("gr2").unwrap();
+    unit_add
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .success();
+
+    let mut show = Command::cargo_bin("gr2").unwrap();
+    show.current_dir(&workspace_root)
+        .arg("spec")
+        .arg("show")
+        .assert()
+        .success();
+
+    std::fs::create_dir_all(workspace_root.join("agents/apollo")).unwrap();
+    std::fs::write(
+        workspace_root.join("agents/apollo/unit.toml"),
+        "name = \"apollo\"\nkind = \"unit\"\n",
+    )
+    .unwrap();
+
+    let spec_path = workspace_root.join(".grip/workspace_spec.toml");
+    let spec = std::fs::read_to_string(&spec_path).unwrap();
+    let with_apollo = format!(
+        "{}\n[[units]]\nname = \"apollo\"\npath = \"agents/apollo\"\nrepos = []\n",
+        spec.trim_end()
+    );
+    std::fs::write(&spec_path, with_apollo).unwrap();
+    std::fs::remove_file(workspace_root.join("agents/apollo/unit.toml")).unwrap();
+
+    let mut plan = Command::cargo_bin("gr2").unwrap();
+    plan.current_dir(&workspace_root)
+        .arg("plan")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("apollo\tclone"))
+        .stdout(predicate::str::contains("clone unit 'apollo'"));
+}
+
+#[test]
+fn test_gr2_plan_rejects_invalid_unit_repo_reference() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let spec = r#"
+schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "app"
+path = "repos/app"
+url = "https://github.com/synapt-dev/app.git"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = ["missing"]
+"#;
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        spec.trim_start(),
+    )
+    .unwrap();
+
+    let mut plan = Command::cargo_bin("gr2").unwrap();
+    plan.current_dir(&workspace_root)
+        .arg("plan")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "unit 'atlas' references missing repo 'missing'",
+        ));
+}
+
+#[test]
+fn test_gr2_plan_reports_when_it_generates_a_missing_workspace_spec() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let mut unit_add = Command::cargo_bin("gr2").unwrap();
+    unit_add
+        .current_dir(&workspace_root)
+        .arg("unit")
+        .arg("add")
+        .arg("atlas")
+        .assert()
+        .success();
+
+    let spec_path = workspace_root.join(".grip/workspace_spec.toml");
+    assert!(!spec_path.exists());
+
+    let mut plan = Command::cargo_bin("gr2").unwrap();
+    plan.current_dir(&workspace_root)
+        .arg("plan")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Generated workspace spec at"))
+        .stdout(predicate::str::contains("no changes required"));
+
+    assert!(spec_path.exists());
+}
+
+#[test]
+fn test_gr2_apply_materializes_missing_units_from_plan() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let spec = r#"
+schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "app"
+path = "repos/app"
+url = "https://github.com/synapt-dev/app.git"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = ["app"]
+"#;
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        spec.trim_start(),
+    )
+    .unwrap();
+    std::fs::create_dir_all(workspace_root.join("repos/app")).unwrap();
+    std::fs::write(
+        workspace_root.join("repos/app/repo.toml"),
+        "name = \"app\"\nurl = \"https://github.com/synapt-dev/app.git\"\n",
+    )
+    .unwrap();
+
+    let mut apply = Command::cargo_bin("gr2").unwrap();
+    apply
+        .current_dir(&workspace_root)
+        .arg("apply")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Applied execution plan"))
+        .stdout(predicate::str::contains("cloned unit 'atlas'"));
+
+    let unit_toml = std::fs::read_to_string(workspace_root.join("agents/atlas/unit.toml")).unwrap();
+    assert!(unit_toml.contains("name = \"atlas\""));
+    assert!(unit_toml.contains("kind = \"unit\""));
+    assert!(unit_toml.contains("repos = [\"app\"]"));
+}
+
+#[test]
+fn test_gr2_apply_requires_yes_for_large_plans() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let spec = r#"
+schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = []
+
+[[units]]
+name = "apollo"
+path = "agents/apollo"
+repos = []
+
+[[units]]
+name = "sentinel"
+path = "agents/sentinel"
+repos = []
+
+[[units]]
+name = "opus"
+path = "agents/opus"
+repos = []
+"#;
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        spec.trim_start(),
+    )
+    .unwrap();
+
+    let mut apply = Command::cargo_bin("gr2").unwrap();
+    apply
+        .current_dir(&workspace_root)
+        .arg("apply")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "plan contains more than 3 operations; rerun with --yes to apply it",
+        ));
+
+    assert!(!workspace_root.join("agents/atlas/unit.toml").exists());
+    assert!(!workspace_root.join("agents/apollo/unit.toml").exists());
+}
+
+#[test]
 fn test_checkout_help_mentions_add_mode() {
     let mut cmd = Command::cargo_bin("gr").unwrap();
     cmd.arg("checkout")

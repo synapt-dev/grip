@@ -43,6 +43,32 @@ pub enum Commands {
         #[command(subcommand)]
         command: RepoCommands,
     },
+
+    /// Unit registry operations
+    Unit {
+        #[command(subcommand)]
+        command: UnitCommands,
+    },
+
+    /// Declarative workspace spec operations
+    Spec {
+        #[command(subcommand)]
+        command: SpecCommands,
+    },
+
+    /// Diff the workspace spec into an execution plan
+    Plan {
+        /// Pre-approve plans with more than 3 operations
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Apply the current execution plan to the workspace
+    Apply {
+        /// Pre-approve plans with more than 3 operations
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -82,4 +108,31 @@ pub enum RepoCommands {
         /// Logical repo name
         name: String,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum UnitCommands {
+    /// Register a local unit in the workspace materialization model
+    Add {
+        /// Unit name
+        name: String,
+    },
+
+    /// List registered units
+    List,
+
+    /// Remove a registered unit
+    Remove {
+        /// Unit name
+        name: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SpecCommands {
+    /// Print the current workspace spec
+    Show,
+
+    /// Validate the current workspace spec against the filesystem
+    Validate,
 }

@@ -432,6 +432,22 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_github_org_ssh() {
+        // Regression test for grip#429: org URLs must extract owner correctly
+        let parsed = parse_git_url("git@github.com:synapt-dev/grip.git").unwrap();
+        assert_eq!(parsed.owner, "synapt-dev");
+        assert_eq!(parsed.repo, "grip");
+    }
+
+    #[test]
+    fn test_parse_github_org_https() {
+        // Regression test for grip#429: org URLs must extract owner correctly
+        let parsed = parse_git_url("https://github.com/synapt-dev/recall.git").unwrap();
+        assert_eq!(parsed.owner, "synapt-dev");
+        assert_eq!(parsed.repo, "recall");
+    }
+
+    #[test]
     fn test_detect_github() {
         assert_eq!(
             detect_platform("git@github.com:user/repo.git"),

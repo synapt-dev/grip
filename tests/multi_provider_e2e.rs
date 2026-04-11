@@ -151,7 +151,7 @@ mod github_tests {
 
         // Verify manifest
         let manifest_path =
-            gitgrip::core::manifest_paths::resolve_gripspace_manifest_path(&workspace)
+            gitgrip::core::manifest_paths::resolve_gripspace_manifest_path(workspace)
                 .expect("manifest not found");
         let manifest = fs::read_to_string(&manifest_path).unwrap();
         assert!(manifest.contains("repo1"), "repo1 not in manifest");
@@ -339,7 +339,7 @@ mod gitlab_tests {
         );
 
         let manifest_path =
-            gitgrip::core::manifest_paths::resolve_gripspace_manifest_path(&workspace)
+            gitgrip::core::manifest_paths::resolve_gripspace_manifest_path(workspace)
                 .expect("manifest not found");
         let manifest = fs::read_to_string(&manifest_path).unwrap();
         assert!(manifest.contains("repo1"));
@@ -454,7 +454,7 @@ mod gitlab_tests {
 
         // Read and print the manifest
         let manifest_path =
-            gitgrip::core::manifest_paths::resolve_gripspace_manifest_path(&workspace)
+            gitgrip::core::manifest_paths::resolve_gripspace_manifest_path(workspace)
                 .expect("manifest not found");
         if manifest_path.exists() {
             let manifest_content = fs::read_to_string(&manifest_path).unwrap();
@@ -633,7 +633,7 @@ mod azure_tests {
         );
 
         let manifest_path =
-            gitgrip::core::manifest_paths::resolve_gripspace_manifest_path(&workspace)
+            gitgrip::core::manifest_paths::resolve_gripspace_manifest_path(workspace)
                 .expect("manifest not found");
         let manifest = fs::read_to_string(&manifest_path).unwrap();
         assert!(manifest.contains("repo1"));
@@ -853,7 +853,7 @@ mod mixed_platform_tests {
         );
 
         let manifest_path =
-            gitgrip::core::manifest_paths::resolve_gripspace_manifest_path(&workspace)
+            gitgrip::core::manifest_paths::resolve_gripspace_manifest_path(workspace)
                 .expect("manifest not found");
         let manifest = fs::read_to_string(&manifest_path).unwrap();
 

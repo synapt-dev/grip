@@ -35,6 +35,43 @@ pub struct UnitSpec {
     pub path: String,
     #[serde(default)]
     pub repos: Vec<String>,
+    #[serde(default)]
+    pub links: Vec<LinkSpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LinkSpec {
+    /// Source path relative to workspace root
+    pub src: String,
+    /// Destination path relative to unit root
+    pub dest: String,
+    #[serde(default)]
+    pub kind: LinkKind,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkKind {
+    #[default]
+    Symlink,
+    Copy,
+}
+
+impl LinkKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Symlink => "symlink",
+            Self::Copy => "copy",
+        }
+    }
+
+    pub fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "symlink" => Ok(Self::Symlink),
+            "copy" => Ok(Self::Copy),
+            _ => anyhow::bail!("unknown link kind '{}': expected 'symlink' or 'copy'", s),
+        }
+    }
 }
 
 impl WorkspaceSpec {
@@ -228,6 +265,7 @@ fn read_registered_units(workspace_root: &Path) -> Result<Vec<UnitSpec>> {
             name: fallback_name.clone(),
             path: format!("agents/{}", fallback_name),
             repos: Vec::new(),
+            links: Vec::new(),
         });
     }
 

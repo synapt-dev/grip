@@ -1702,7 +1702,405 @@ fn test_checkout_remove_rejects_extra_positional_args() {
         ));
 }
 
-// ── gr2 apply additional TDD specs (grip#514) ───────────────────────────────
+// ─── gr2 apply link operations (grip#514) ──────────────────────────────
+
+#[test]
+fn test_gr2_plan_detects_missing_symlink() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    // Create a source file that the link will point to
+    std::fs::write(workspace_root.join("config/shared.toml"), "key = \"value\"\n").unwrap();
+
+    // Create the unit directory so Clone isn't planned
+    std::fs::create_dir_all(workspace_root.join("agents/atlas")).unwrap();
+    std::fs::write(
+        workspace_root.join("agents/atlas/unit.toml"),
+        "name = \"atlas\"\nkind = \"unit\"\n",
+    )
+    .unwrap();
+
+    let spec = r#"
+schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = []
+
+[[units.links]]
+src = "config/shared.toml"
+dest = ".config/shared.toml"
+kind = "symlink"
+"#;
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        spec.trim_start(),
+    )
+    .unwrap();
+
+    let mut plan = Command::cargo_bin("gr2").unwrap();
+    plan.current_dir(&workspace_root)
+        .arg("plan")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("link"))
+        .stdout(predicate::str::contains("config/shared.toml"));
+}
+
+#[test]
+fn test_gr2_apply_creates_symlink() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    // Create a source file
+    std::fs::write(workspace_root.join("config/shared.toml"), "key = \"value\"\n").unwrap();
+
+    // Create the unit directory
+    std::fs::create_dir_all(workspace_root.join("agents/atlas")).unwrap();
+    std::fs::write(
+        workspace_root.join("agents/atlas/unit.toml"),
+        "name = \"atlas\"\nkind = \"unit\"\n",
+    )
+    .unwrap();
+
+    let spec = r#"
+schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = []
+
+[[units.links]]
+src = "config/shared.toml"
+dest = ".config/shared.toml"
+kind = "symlink"
+"#;
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        spec.trim_start(),
+    )
+    .unwrap();
+
+    let mut apply = Command::cargo_bin("gr2").unwrap();
+    apply
+        .current_dir(&workspace_root)
+        .arg("apply")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("symlink config/shared.toml -> agents/atlas/.config/shared.toml"));
+
+    let link_path = workspace_root.join("agents/atlas/.config/shared.toml");
+    assert!(link_path.exists(), "symlink destination should exist");
+    assert!(
+        link_path.symlink_metadata().unwrap().file_type().is_symlink(),
+        "destination should be a symlink"
+    );
+
+    let content = std::fs::read_to_string(&link_path).unwrap();
+    assert_eq!(content, "key = \"value\"\n");
+}
+
+#[test]
+fn test_gr2_apply_creates_copy() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    std::fs::write(
+        workspace_root.join("config/env.toml"),
+        "env = \"production\"\n",
+    )
+    .unwrap();
+
+    std::fs::create_dir_all(workspace_root.join("agents/apollo")).unwrap();
+    std::fs::write(
+        workspace_root.join("agents/apollo/unit.toml"),
+        "name = \"apollo\"\nkind = \"unit\"\n",
+    )
+    .unwrap();
+
+    let spec = r#"
+schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[units]]
+name = "apollo"
+path = "agents/apollo"
+repos = []
+
+[[units.links]]
+src = "config/env.toml"
+dest = "env.toml"
+kind = "copy"
+"#;
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        spec.trim_start(),
+    )
+    .unwrap();
+
+    let mut apply = Command::cargo_bin("gr2").unwrap();
+    apply
+        .current_dir(&workspace_root)
+        .arg("apply")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("copy config/env.toml -> agents/apollo/env.toml"));
+
+    let dest_path = workspace_root.join("agents/apollo/env.toml");
+    assert!(dest_path.exists(), "copy destination should exist");
+    assert!(
+        !dest_path.symlink_metadata().unwrap().file_type().is_symlink(),
+        "copy destination should NOT be a symlink"
+    );
+
+    let content = std::fs::read_to_string(&dest_path).unwrap();
+    assert_eq!(content, "env = \"production\"\n");
+}
+
+#[test]
+fn test_gr2_apply_link_fails_for_missing_source() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    std::fs::create_dir_all(workspace_root.join("agents/atlas")).unwrap();
+    std::fs::write(
+        workspace_root.join("agents/atlas/unit.toml"),
+        "name = \"atlas\"\nkind = \"unit\"\n",
+    )
+    .unwrap();
+
+    let spec = r#"
+schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = []
+
+[[units.links]]
+src = "nonexistent/file.toml"
+dest = "file.toml"
+"#;
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        spec.trim_start(),
+    )
+    .unwrap();
+
+    let mut apply = Command::cargo_bin("gr2").unwrap();
+    apply
+        .current_dir(&workspace_root)
+        .arg("apply")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("link source does not exist"));
+}
+
+#[test]
+fn test_gr2_plan_noop_when_link_already_exists() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    std::fs::write(workspace_root.join("config/shared.toml"), "key = \"value\"\n").unwrap();
+
+    std::fs::create_dir_all(workspace_root.join("agents/atlas/.config")).unwrap();
+    std::fs::write(
+        workspace_root.join("agents/atlas/unit.toml"),
+        "name = \"atlas\"\nkind = \"unit\"\n",
+    )
+    .unwrap();
+    // Pre-create the destination so the link is already satisfied
+    std::fs::write(
+        workspace_root.join("agents/atlas/.config/shared.toml"),
+        "existing",
+    )
+    .unwrap();
+
+    let spec = r#"
+schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = []
+
+[[units.links]]
+src = "config/shared.toml"
+dest = ".config/shared.toml"
+"#;
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        spec.trim_start(),
+    )
+    .unwrap();
+
+    let mut plan = Command::cargo_bin("gr2").unwrap();
+    plan.current_dir(&workspace_root)
+        .arg("plan")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no changes required"));
+}
+
+#[test]
+fn test_gr2_apply_records_state() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let spec = r#"
+schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = []
+"#;
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        spec.trim_start(),
+    )
+    .unwrap();
+
+    let mut apply = Command::cargo_bin("gr2").unwrap();
+    apply
+        .current_dir(&workspace_root)
+        .arg("apply")
+        .assert()
+        .success();
+
+    let state_path = workspace_root.join(".grip/state/applied.toml");
+    assert!(state_path.exists(), "apply should record state");
+
+    let state = std::fs::read_to_string(&state_path).unwrap();
+    assert!(state.contains("[[applied]]"), "state should contain applied entries");
+    assert!(state.contains("cloned unit"), "state should record clone action");
+}
+
+#[test]
+fn test_gr2_apply_mixed_clone_and_link() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    std::fs::write(workspace_root.join("config/shared.toml"), "shared = true\n").unwrap();
+
+    let spec = r#"
+schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = []
+
+[[units.links]]
+src = "config/shared.toml"
+dest = ".config/shared.toml"
+kind = "symlink"
+"#;
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        spec.trim_start(),
+    )
+    .unwrap();
+
+    let mut apply = Command::cargo_bin("gr2").unwrap();
+    apply
+        .current_dir(&workspace_root)
+        .arg("apply")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("cloned unit 'atlas'"))
+        .stdout(predicate::str::contains("symlink config/shared.toml"));
+
+    assert!(workspace_root.join("agents/atlas/unit.toml").exists());
+    assert!(workspace_root.join("agents/atlas/.config/shared.toml").exists());
+}
+
+// ── gr2 apply TDD specs (grip#514, grip#526) ────────────────────────────────
 
 /// gr2 apply is a recognized subcommand (not "error: unrecognized subcommand").
 #[test]
@@ -1723,7 +2121,6 @@ fn test_gr2_apply_command_recognized() {
         .current_dir(&workspace_root)
         .arg("apply")
         .assert()
-        // Must not fail with "unrecognized subcommand"
         .stderr(predicate::str::contains("unrecognized subcommand").not());
 }
 
@@ -1756,7 +2153,8 @@ fn test_gr2_apply_idempotent_on_materialized_workspace() {
         .assert()
         .success();
 
-    let spec = r#"schema_version = 1
+    let spec = r#"
+schema_version = 1
 workspace_name = "demo"
 
 [cache]
@@ -1769,7 +2167,7 @@ repos = []
 "#;
     std::fs::write(
         workspace_root.join(".grip/workspace_spec.toml"),
-        spec,
+        spec.trim_start(),
     )
     .unwrap();
 
@@ -1786,102 +2184,4 @@ repos = []
         .arg("apply")
         .assert()
         .success();
-}
-
-/// gr2 apply creates symlinks declared in the spec's linkfile entries.
-#[cfg(unix)]
-#[test]
-fn test_gr2_apply_creates_symlinks_for_link_operations() {
-    let temp = TempDir::new().unwrap();
-    let workspace_root = temp.path().join("demo-team");
-
-    let mut init = Command::cargo_bin("gr2").unwrap();
-    init.arg("init")
-        .arg(&workspace_root)
-        .arg("--name")
-        .arg("demo")
-        .assert()
-        .success();
-
-    std::fs::create_dir_all(workspace_root.join("config")).unwrap();
-    std::fs::write(workspace_root.join("config/claude.md"), "# Claude").unwrap();
-
-    let spec = r#"schema_version = 1
-workspace_name = "demo"
-
-[cache]
-root = ".grip/cache"
-
-[[units]]
-name = "atlas"
-path = "agents/atlas"
-repos = []
-
-[[units.linkfiles]]
-src = "config/claude.md"
-dest = "agents/atlas/CLAUDE.md"
-"#;
-    std::fs::write(
-        workspace_root.join(".grip/workspace_spec.toml"),
-        spec,
-    )
-    .unwrap();
-
-    let mut apply = Command::cargo_bin("gr2").unwrap();
-    apply
-        .current_dir(&workspace_root)
-        .arg("apply")
-        .assert()
-        .success();
-
-    let link_dest = workspace_root.join("agents/atlas/CLAUDE.md");
-    assert!(link_dest.exists(), "symlink dest must exist after apply");
-    assert!(link_dest.is_symlink(), "dest must be a symlink, not a copy");
-}
-
-/// gr2 apply records applied state in .grip/state for restart safety.
-#[test]
-fn test_gr2_apply_records_state_after_apply() {
-    let temp = TempDir::new().unwrap();
-    let workspace_root = temp.path().join("demo-team");
-
-    let mut init = Command::cargo_bin("gr2").unwrap();
-    init.arg("init")
-        .arg(&workspace_root)
-        .arg("--name")
-        .arg("demo")
-        .assert()
-        .success();
-
-    let spec = r#"schema_version = 1
-workspace_name = "demo"
-
-[cache]
-root = ".grip/cache"
-
-[[units]]
-name = "atlas"
-path = "agents/atlas"
-repos = []
-"#;
-    std::fs::write(
-        workspace_root.join(".grip/workspace_spec.toml"),
-        spec,
-    )
-    .unwrap();
-
-    let mut apply = Command::cargo_bin("gr2").unwrap();
-    apply
-        .current_dir(&workspace_root)
-        .arg("apply")
-        .assert()
-        .success();
-
-    let state_path = workspace_root.join(".grip/state");
-    assert!(state_path.exists(), ".grip/state must exist after apply");
-    let state = std::fs::read_to_string(&state_path).unwrap();
-    assert!(
-        state.contains("atlas") || state.contains("applied"),
-        ".grip/state must reference the applied unit or contain 'applied'"
-    );
 }

@@ -399,7 +399,7 @@ mod tests {
 
         // p50 should be around 50 (rounding may cause slight differences)
         let p50 = hist.p50().unwrap().as_millis();
-        assert!(p50 >= 49 && p50 <= 51, "p50 was {p50}, expected ~50");
+        assert!((49..=51).contains(&p50), "p50 was {p50}, expected ~50");
         assert!(hist.p99().unwrap() >= Duration::from_millis(99));
     }
 

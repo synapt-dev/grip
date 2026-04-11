@@ -1379,7 +1379,7 @@ fn test_checkout_base_uses_griptree_config() {
     git_helpers::create_branch(&ws.repo_path("lib"), "feat/base");
     git_helpers::checkout(&ws.repo_path("lib"), "main");
 
-    let mut config = GriptreeConfig::new("feat/base", &ws.workspace_root.to_string_lossy());
+    let config = GriptreeConfig::new("feat/base", &ws.workspace_root.to_string_lossy());
     let config_path = ws.workspace_root.join(".gitgrip").join("griptree.json");
     config.save(&config_path).unwrap();
 

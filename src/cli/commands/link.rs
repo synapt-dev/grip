@@ -666,7 +666,7 @@ pub fn apply_links(workspace_root: &Path, manifest: &Manifest, quiet: bool) -> a
                             if dest.exists() || dest.is_symlink() {
                                 let _ = std::fs::remove_file(&dest);
                             }
-                            let (result, label) = apply_symlink(&source, &dest);
+                            let (result, label) = apply_symlink(source, &dest);
                             match result {
                                 Ok(_) => {
                                     if !quiet {
@@ -828,7 +828,7 @@ mod tests {
         let manifest = create_test_manifest(None, None);
 
         // Should not error even with no links
-        let result = show_link_status(&temp.path().to_path_buf(), &manifest, false);
+        let result = show_link_status(temp.path(), &manifest, false);
         assert!(result.is_ok());
     }
 
@@ -1061,7 +1061,7 @@ mod tests {
         // Verify symlink points to the source file
         let dest_path = workspace.join("linked.config");
         let link_target = std::fs::read_link(&dest_path).unwrap();
-        let expected_source = repo_dir.join("shared.config");
+        let _expected_source = repo_dir.join("shared.config");
 
         // The target should resolve to the source file
         assert!(

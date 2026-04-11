@@ -2,7 +2,6 @@
 
 mod common;
 
-use common::assertions::assert_repo_clean;
 use common::fixtures::WorkspaceBuilder;
 
 #[test]

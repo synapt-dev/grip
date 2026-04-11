@@ -288,7 +288,6 @@ mod tests {
 
 #[cfg(test)]
 mod yaml_insertion_tests {
-    use super::*;
 
     /// Helper function to extract the insertion logic for testing
     fn test_insert_yaml(content: &str, new_entry: &str) -> String {

@@ -165,7 +165,7 @@ impl ExecutionPlan {
                         .get("kind")
                         .map(|s| s.as_str())
                         .unwrap_or("symlink");
-                    let kind = LinkKind::from_str(kind_str)?;
+                    let kind = kind_str.parse::<LinkKind>()?;
 
                     let link_spec = LinkSpec {
                         src: src.clone(),

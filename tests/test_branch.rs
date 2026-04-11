@@ -2,9 +2,7 @@
 
 mod common;
 
-use common::assertions::{
-    assert_all_on_branch, assert_branch_exists, assert_branch_not_exists, assert_on_branch,
-};
+use common::assertions::{assert_branch_exists, assert_branch_not_exists, assert_on_branch};
 use common::fixtures::WorkspaceBuilder;
 use common::git_helpers;
 

@@ -238,7 +238,7 @@ mod tests {
         };
         let wait = info.wait_seconds().unwrap();
         // Should be approximately 120 seconds (allow 2s tolerance for test execution)
-        assert!(wait >= 118 && wait <= 122, "wait_seconds was {}", wait);
+        assert!((118..=122).contains(&wait), "wait_seconds was {}", wait);
     }
 
     #[test]

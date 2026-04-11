@@ -1160,7 +1160,7 @@ version = "0.2.0"
             clone_strategy: crate::core::manifest::CloneStrategy::Clone,
         }];
 
-        let files = detect_version_files(&dir.path().to_path_buf(), &repos);
+        let files = detect_version_files(dir.path(), &repos);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].0, "my-repo");
         assert!(files[0].1.ends_with("Cargo.toml"));
@@ -1193,7 +1193,7 @@ version = "0.2.0"
             clone_strategy: crate::core::manifest::CloneStrategy::Clone,
         }];
 
-        let files = detect_version_files(&dir.path().to_path_buf(), &repos);
+        let files = detect_version_files(dir.path(), &repos);
         assert!(files.is_empty());
     }
 }

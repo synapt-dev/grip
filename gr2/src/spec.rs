@@ -64,8 +64,12 @@ impl LinkKind {
             Self::Copy => "copy",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> anyhow::Result<Self> {
+impl std::str::FromStr for LinkKind {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
         match s {
             "symlink" => Ok(Self::Symlink),
             "copy" => Ok(Self::Copy),

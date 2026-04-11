@@ -1718,7 +1718,11 @@ fn test_gr2_plan_detects_missing_symlink() {
         .success();
 
     // Create a source file that the link will point to
-    std::fs::write(workspace_root.join("config/shared.toml"), "key = \"value\"\n").unwrap();
+    std::fs::write(
+        workspace_root.join("config/shared.toml"),
+        "key = \"value\"\n",
+    )
+    .unwrap();
 
     // Create the unit directory so Clone isn't planned
     std::fs::create_dir_all(workspace_root.join("agents/atlas")).unwrap();
@@ -1774,7 +1778,11 @@ fn test_gr2_apply_creates_symlink() {
         .success();
 
     // Create a source file
-    std::fs::write(workspace_root.join("config/shared.toml"), "key = \"value\"\n").unwrap();
+    std::fs::write(
+        workspace_root.join("config/shared.toml"),
+        "key = \"value\"\n",
+    )
+    .unwrap();
 
     // Create the unit directory
     std::fs::create_dir_all(workspace_root.join("agents/atlas")).unwrap();
@@ -1813,12 +1821,18 @@ kind = "symlink"
         .arg("apply")
         .assert()
         .success()
-        .stdout(predicate::str::contains("symlink config/shared.toml -> agents/atlas/.config/shared.toml"));
+        .stdout(predicate::str::contains(
+            "symlink config/shared.toml -> agents/atlas/.config/shared.toml",
+        ));
 
     let link_path = workspace_root.join("agents/atlas/.config/shared.toml");
     assert!(link_path.exists(), "symlink destination should exist");
     assert!(
-        link_path.symlink_metadata().unwrap().file_type().is_symlink(),
+        link_path
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink(),
         "destination should be a symlink"
     );
 
@@ -1881,12 +1895,18 @@ kind = "copy"
         .arg("apply")
         .assert()
         .success()
-        .stdout(predicate::str::contains("copy config/env.toml -> agents/apollo/env.toml"));
+        .stdout(predicate::str::contains(
+            "copy config/env.toml -> agents/apollo/env.toml",
+        ));
 
     let dest_path = workspace_root.join("agents/apollo/env.toml");
     assert!(dest_path.exists(), "copy destination should exist");
     assert!(
-        !dest_path.symlink_metadata().unwrap().file_type().is_symlink(),
+        !dest_path
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink(),
         "copy destination should NOT be a symlink"
     );
 
@@ -1958,7 +1978,11 @@ fn test_gr2_plan_noop_when_link_already_exists() {
         .assert()
         .success();
 
-    std::fs::write(workspace_root.join("config/shared.toml"), "key = \"value\"\n").unwrap();
+    std::fs::write(
+        workspace_root.join("config/shared.toml"),
+        "key = \"value\"\n",
+    )
+    .unwrap();
 
     std::fs::create_dir_all(workspace_root.join("agents/atlas/.config")).unwrap();
     std::fs::write(
@@ -2045,8 +2069,14 @@ repos = []
     assert!(state_path.exists(), "apply should record state");
 
     let state = std::fs::read_to_string(&state_path).unwrap();
-    assert!(state.contains("[[applied]]"), "state should contain applied entries");
-    assert!(state.contains("cloned unit"), "state should record clone action");
+    assert!(
+        state.contains("[[applied]]"),
+        "state should contain applied entries"
+    );
+    assert!(
+        state.contains("cloned unit"),
+        "state should record clone action"
+    );
 }
 
 #[test]
@@ -2097,7 +2127,9 @@ kind = "symlink"
         .stdout(predicate::str::contains("symlink config/shared.toml"));
 
     assert!(workspace_root.join("agents/atlas/unit.toml").exists());
-    assert!(workspace_root.join("agents/atlas/.config/shared.toml").exists());
+    assert!(workspace_root
+        .join("agents/atlas/.config/shared.toml")
+        .exists());
 }
 
 // ── gr2 apply TDD specs (grip#514, grip#526) ────────────────────────────────

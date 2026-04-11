@@ -23,11 +23,7 @@ fn is_glob_pattern(src: &str) -> bool {
 ///
 /// The glob base (the non-glob prefix before the first glob character) is
 /// stripped from each matched path, and the remainder is appended to `dest`.
-fn expand_glob(
-    src_pattern: &str,
-    dest: &str,
-    base_dir: &Path,
-) -> Vec<(PathBuf, PathBuf)> {
+fn expand_glob(src_pattern: &str, dest: &str, base_dir: &Path) -> Vec<(PathBuf, PathBuf)> {
     let full_pattern = base_dir.join(src_pattern);
     let pattern_str = match full_pattern.to_str() {
         Some(s) => s.to_string(),
@@ -721,10 +717,7 @@ pub fn apply_links(workspace_root: &Path, manifest: &Manifest, quiet: bool) -> a
                     match result {
                         Ok(_) => {
                             if !quiet {
-                                Output::success(&format!(
-                                    "[link] {} -> {}",
-                                    label, linkfile.dest
-                                ));
+                                Output::success(&format!("[link] {} -> {}", label, linkfile.dest));
                             }
                             applied += 1;
                         }

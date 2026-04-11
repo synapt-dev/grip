@@ -983,13 +983,16 @@ fn test_gr2_plan_does_not_flag_repo_attachment_presence_as_drift() {
         .assert()
         .success();
 
+    // Use a local bare repo so the checkout can actually exist
+    let bare = create_bare_repo_with_content(temp.path(), "app");
+
     let mut repo_add = Command::cargo_bin("gr2").unwrap();
     repo_add
         .current_dir(&workspace_root)
         .arg("repo")
         .arg("add")
         .arg("app")
-        .arg("https://github.com/synapt-dev/app.git")
+        .arg(bare.to_str().unwrap())
         .assert()
         .success();
 
@@ -1002,7 +1005,17 @@ fn test_gr2_plan_does_not_flag_repo_attachment_presence_as_drift() {
         .assert()
         .success();
 
-    let spec = r#"
+    // Simulate a fully-converged unit: clone the repo into the unit directory
+    let unit_repo_dir = workspace_root.join("agents/atlas/app");
+    std::process::Command::new("git")
+        .args(["clone"])
+        .arg(&bare)
+        .arg(&unit_repo_dir)
+        .output()
+        .unwrap();
+
+    let spec = format!(
+        r#"
 schema_version = 1
 workspace_name = "demo"
 
@@ -1012,13 +1025,15 @@ root = ".grip/cache"
 [[repos]]
 name = "app"
 path = "repos/app"
-url = "https://github.com/synapt-dev/app.git"
+url = "{}"
 
 [[units]]
 name = "atlas"
 path = "agents/atlas"
 repos = ["app"]
-"#;
+"#,
+        bare.display()
+    );
     std::fs::write(
         workspace_root.join(".grip/workspace_spec.toml"),
         spec.trim_start(),
@@ -2788,4 +2803,230 @@ fn test_gr2_apply_clean_repo_no_autostash_needed() {
         .arg("apply")
         .assert()
         .success();
+}
+
+// ── gr2 apply: partial unit convergence (grip#539) ────────────────────────────
+
+/// When a unit exists (unit.toml present, path correct) but a declared repo
+/// has not been cloned, plan should emit an operation to converge it.
+#[test]
+fn test_gr2_plan_detects_missing_repo_in_existing_unit() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let bare = create_bare_repo_with_content(temp.path(), "myrepo");
+
+    // Register the repo
+    let mut repo_add = Command::cargo_bin("gr2").unwrap();
+    repo_add
+        .current_dir(&workspace_root)
+        .args(["repo", "add", "myrepo"])
+        .arg(bare.to_str().unwrap())
+        .assert()
+        .success();
+
+    // Manually create the unit directory with unit.toml (simulating a
+    // partially-materialized unit where the unit exists but repos aren't cloned)
+    let unit_root = workspace_root.join("agents/apollo");
+    std::fs::create_dir_all(&unit_root).unwrap();
+    std::fs::write(
+        unit_root.join("unit.toml"),
+        "name = \"apollo\"\nkind = \"unit\"\nrepos = [\"myrepo\"]\n",
+    )
+    .unwrap();
+
+    // Write a spec declaring the unit with the repo
+    let spec = format!(
+        r#"schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "myrepo"
+path = "repos/myrepo"
+url = "{}"
+
+[[units]]
+name = "apollo"
+path = "agents/apollo"
+repos = ["myrepo"]
+"#,
+        bare.display()
+    );
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        &spec,
+    )
+    .unwrap();
+
+    // Plan should detect the missing repo and emit a non-empty plan
+    let mut plan = Command::cargo_bin("gr2").unwrap();
+    plan.current_dir(&workspace_root)
+        .arg("plan")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("apollo"))
+        .stdout(predicate::str::contains("no changes required").not());
+}
+
+/// Apply should clone missing repos into an existing unit, converging it
+/// to match the declared spec.
+#[test]
+fn test_gr2_apply_converges_missing_repo_in_existing_unit() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let bare = create_bare_repo_with_content(temp.path(), "myrepo");
+
+    let mut repo_add = Command::cargo_bin("gr2").unwrap();
+    repo_add
+        .current_dir(&workspace_root)
+        .args(["repo", "add", "myrepo"])
+        .arg(bare.to_str().unwrap())
+        .assert()
+        .success();
+
+    // Create partially-materialized unit (unit.toml exists, repo not cloned)
+    let unit_root = workspace_root.join("agents/apollo");
+    std::fs::create_dir_all(&unit_root).unwrap();
+    std::fs::write(
+        unit_root.join("unit.toml"),
+        "name = \"apollo\"\nkind = \"unit\"\nrepos = [\"myrepo\"]\n",
+    )
+    .unwrap();
+
+    let spec = format!(
+        r#"schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "myrepo"
+path = "repos/myrepo"
+url = "{}"
+
+[[units]]
+name = "apollo"
+path = "agents/apollo"
+repos = ["myrepo"]
+"#,
+        bare.display()
+    );
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        &spec,
+    )
+    .unwrap();
+
+    // Apply should converge: clone the missing repo
+    let mut apply = Command::cargo_bin("gr2").unwrap();
+    apply
+        .current_dir(&workspace_root)
+        .arg("apply")
+        .assert()
+        .success();
+
+    // Verify the repo was cloned into the unit
+    let repo_checkout = unit_root.join("myrepo");
+    assert!(
+        repo_checkout.join(".git").exists(),
+        "missing repo should be cloned into existing unit at agents/apollo/myrepo"
+    );
+}
+
+/// Apply is idempotent: running on a fully-converged unit (repos already
+/// cloned) should produce "no changes required".
+#[test]
+fn test_gr2_apply_idempotent_after_repo_convergence() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let bare = create_bare_repo_with_content(temp.path(), "myrepo");
+
+    let mut repo_add = Command::cargo_bin("gr2").unwrap();
+    repo_add
+        .current_dir(&workspace_root)
+        .args(["repo", "add", "myrepo"])
+        .arg(bare.to_str().unwrap())
+        .assert()
+        .success();
+
+    // Create partially-materialized unit
+    let unit_root = workspace_root.join("agents/apollo");
+    std::fs::create_dir_all(&unit_root).unwrap();
+    std::fs::write(
+        unit_root.join("unit.toml"),
+        "name = \"apollo\"\nkind = \"unit\"\nrepos = [\"myrepo\"]\n",
+    )
+    .unwrap();
+
+    let spec = format!(
+        r#"schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "myrepo"
+path = "repos/myrepo"
+url = "{}"
+
+[[units]]
+name = "apollo"
+path = "agents/apollo"
+repos = ["myrepo"]
+"#,
+        bare.display()
+    );
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        &spec,
+    )
+    .unwrap();
+
+    // First apply converges
+    let mut first = Command::cargo_bin("gr2").unwrap();
+    first
+        .current_dir(&workspace_root)
+        .arg("apply")
+        .assert()
+        .success();
+
+    // Second apply should be a no-op
+    let mut second = Command::cargo_bin("gr2").unwrap();
+    second
+        .current_dir(&workspace_root)
+        .arg("apply")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no changes required"));
 }

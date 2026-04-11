@@ -2099,3 +2099,89 @@ kind = "symlink"
     assert!(workspace_root.join("agents/atlas/unit.toml").exists());
     assert!(workspace_root.join("agents/atlas/.config/shared.toml").exists());
 }
+
+// ── gr2 apply TDD specs (grip#514, grip#526) ────────────────────────────────
+
+/// gr2 apply is a recognized subcommand (not "error: unrecognized subcommand").
+#[test]
+fn test_gr2_apply_command_recognized() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let mut apply = Command::cargo_bin("gr2").unwrap();
+    apply
+        .current_dir(&workspace_root)
+        .arg("apply")
+        .assert()
+        .stderr(predicate::str::contains("unrecognized subcommand").not());
+}
+
+/// gr2 apply outside a gr2 workspace returns a clear error.
+#[test]
+fn test_gr2_apply_requires_gr2_workspace() {
+    let temp = TempDir::new().unwrap();
+
+    let mut apply = Command::cargo_bin("gr2").unwrap();
+    apply
+        .current_dir(temp.path())
+        .arg("apply")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not in a gr2 workspace"));
+}
+
+/// gr2 apply is idempotent: running twice on a fully-materialized workspace
+/// succeeds without error.
+#[test]
+fn test_gr2_apply_idempotent_on_materialized_workspace() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let spec = r#"
+schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[units]]
+name = "apollo"
+path = "agents/apollo"
+repos = []
+"#;
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        spec.trim_start(),
+    )
+    .unwrap();
+
+    let mut first = Command::cargo_bin("gr2").unwrap();
+    first
+        .current_dir(&workspace_root)
+        .arg("apply")
+        .assert()
+        .success();
+
+    let mut second = Command::cargo_bin("gr2").unwrap();
+    second
+        .current_dir(&workspace_root)
+        .arg("apply")
+        .assert()
+        .success();
+}

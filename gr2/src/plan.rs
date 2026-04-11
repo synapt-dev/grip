@@ -87,15 +87,34 @@ impl ExecutionPlan {
                 // doesn't exist yet, but they should be planned alongside the Clone)
             } else {
                 let expected_path = format!("agents/{}", unit.name);
-                if unit.path != expected_path {
+                let path_mismatch = unit.path != expected_path;
+
+                // Check for missing repo checkouts inside the unit
+                let missing_repos: Vec<&str> = unit
+                    .repos
+                    .iter()
+                    .filter(|repo_name| !unit_root.join(repo_name).exists())
+                    .map(|s| s.as_str())
+                    .collect();
+
+                if path_mismatch || !missing_repos.is_empty() {
                     let mut parameters = BTreeMap::new();
                     parameters.insert("path".to_string(), unit.path.clone());
                     parameters.insert("repos".to_string(), unit.repos.join(","));
+                    let preview = if !missing_repos.is_empty() {
+                        format!(
+                            "converge unit '{}': clone missing repos [{}]",
+                            unit.name,
+                            missing_repos.join(", ")
+                        )
+                    } else {
+                        format!("reconfigure unit '{}' to match {}", unit.name, unit.path)
+                    };
                     operations.push(PlanOperation {
                         unit_name: unit.name.clone(),
                         operation: OperationType::Configure,
                         parameters,
-                        preview: format!("reconfigure unit '{}' to match {}", unit.name, unit.path),
+                        preview,
                     });
                 }
             }

@@ -68,6 +68,10 @@ pub enum Commands {
         /// Pre-approve plans with more than 3 operations
         #[arg(long)]
         yes: bool,
+
+        /// Automatically stash and restore uncommitted changes in dirty repos
+        #[arg(long)]
+        autostash: bool,
     },
 }
 

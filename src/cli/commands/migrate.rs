@@ -266,11 +266,7 @@ fn generate_manifest_yaml(repos: &[(String, String)], org: &str, prefix: &str) -
 }
 
 /// Generate CLAUDE.md with repo table and agent context.
-fn generate_claude_md(
-    repos: &[(String, String)],
-    prefix: &str,
-    agents: &[AgentSpec],
-) -> String {
+fn generate_claude_md(repos: &[(String, String)], prefix: &str, agents: &[AgentSpec]) -> String {
     let mut md = String::new();
     md.push_str(&format!("# {}\n\n", prefix));
     md.push_str("Multi-repo workspace managed by **gitgrip** (`gr`). Always use `gr` — never raw `git` or `gh`.\n\n");

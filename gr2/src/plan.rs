@@ -85,10 +85,7 @@ impl ExecutionPlan {
                         unit_name: unit.name.clone(),
                         operation: OperationType::Configure,
                         parameters,
-                        preview: format!(
-                            "reconfigure unit '{}' to match {}",
-                            unit.name, unit.path
-                        ),
+                        preview: format!("reconfigure unit '{}' to match {}", unit.name, unit.path),
                     });
                 }
             }
@@ -300,7 +297,10 @@ fn apply_link(workspace_root: &Path, unit: &UnitSpec, link: &LinkSpec) -> Result
     match link.kind {
         LinkKind::Symlink => {
             let abs_src = fs::canonicalize(&src_path).with_context(|| {
-                format!("resolve absolute path for link source {}", src_path.display())
+                format!(
+                    "resolve absolute path for link source {}",
+                    src_path.display()
+                )
             })?;
             #[cfg(unix)]
             std::os::unix::fs::symlink(&abs_src, &dest_path).with_context(|| {

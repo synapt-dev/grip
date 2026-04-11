@@ -4,7 +4,10 @@ use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
 use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
 use crate::git::{
-    branch::{branch_exists, create_and_checkout_branch, delete_local_branch, list_local_branches},
+    branch::{
+        branch_exists, checkout_branch, create_and_checkout_branch, delete_local_branch,
+        list_local_branches,
+    },
     get_current_branch, open_repo,
 };
 use std::path::PathBuf;
@@ -473,15 +476,42 @@ pub fn run_branch(opts: BranchOptions<'_>) -> anyhow::Result<()> {
                 match open_repo(&repo.absolute_path) {
                     Ok(git_repo) => {
                         if branch_exists(&git_repo, branch_name) {
-                            if opts.json {
-                                json_results.push(JsonCreateResult {
-                                    repo: repo.name.clone(),
-                                    branch: branch_name.to_string(),
-                                    action: "already_exists".to_string(),
-                                    error: None,
-                                });
-                            } else {
-                                Output::info(&format!("{}: already exists", repo.name));
+                            // Branch exists — switch to it so subsequent commits
+                            // land on this branch, not the previous one (grip#401).
+                            match checkout_branch(&git_repo, branch_name) {
+                                Ok(()) => {
+                                    if opts.json {
+                                        json_results.push(JsonCreateResult {
+                                            repo: repo.name.clone(),
+                                            branch: branch_name.to_string(),
+                                            action: "switched".to_string(),
+                                            error: None,
+                                        });
+                                    } else {
+                                        Output::info(&format!(
+                                            "{}: already exists, switched",
+                                            repo.name
+                                        ));
+                                    }
+                                }
+                                Err(e) => {
+                                    if opts.json {
+                                        json_results.push(JsonCreateResult {
+                                            repo: repo.name.clone(),
+                                            branch: branch_name.to_string(),
+                                            action: "error".to_string(),
+                                            error: Some(format!(
+                                                "exists but failed to switch: {}",
+                                                e
+                                            )),
+                                        });
+                                    } else {
+                                        Output::error(&format!(
+                                            "{}: exists but failed to switch: {}",
+                                            repo.name, e
+                                        ));
+                                    }
+                                }
                             }
                             continue;
                         }

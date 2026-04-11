@@ -2428,3 +2428,364 @@ repos = ["test-repo"]
         .stdout(predicate::str::contains("clone"))
         .stdout(predicate::str::contains("apollo"));
 }
+
+// ── gr2 apply: autostash policy (grip#534) ────────────────────────────────────
+
+/// Helper: create a local bare repo with one committed file, suitable for
+/// cloning into unit workspaces. Returns the path to the bare repo.
+fn create_bare_repo_with_content(parent: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let bare = parent.join(format!("{}.git", name));
+    std::process::Command::new("git")
+        .args(["init", "--bare"])
+        .arg(&bare)
+        .output()
+        .unwrap();
+
+    // Clone into a temp working copy, add a file, push back
+    let work = parent.join(format!("{}-work", name));
+    std::process::Command::new("git")
+        .args(["clone"])
+        .arg(&bare)
+        .arg(&work)
+        .output()
+        .unwrap();
+    std::fs::write(work.join("README.md"), "# test\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(&work)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(&work)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["push"])
+        .current_dir(&work)
+        .output()
+        .unwrap();
+
+    bare
+}
+
+/// Helper: set up a workspace with a unit that has an already-cloned repo.
+/// Returns the workspace root path.
+fn setup_workspace_with_cloned_unit(
+    temp: &TempDir,
+    bare_repo: &std::path::Path,
+) -> std::path::PathBuf {
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    // Register the repo
+    let mut repo_add = Command::cargo_bin("gr2").unwrap();
+    repo_add
+        .current_dir(&workspace_root)
+        .args(["repo", "add", "app"])
+        .arg(bare_repo.to_str().unwrap())
+        .assert()
+        .success();
+
+    // Write spec with the unit referencing the repo
+    let spec = format!(
+        r#"schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "app"
+path = "repos/app"
+url = "{}"
+
+[[units]]
+name = "apollo"
+path = "agents/apollo"
+repos = ["app"]
+"#,
+        bare_repo.display()
+    );
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        &spec,
+    )
+    .unwrap();
+
+    // Run apply once to materialize the unit + clone the repo
+    let mut apply = Command::cargo_bin("gr2").unwrap();
+    apply
+        .current_dir(&workspace_root)
+        .arg("apply")
+        .assert()
+        .success();
+
+    // Verify the repo is cloned
+    assert!(workspace_root.join("agents/apollo/app/.git").exists());
+
+    workspace_root
+}
+
+/// gr2 apply should block when a unit's cloned repo has uncommitted changes
+/// and --autostash is not provided. Default must be safe: no silent discard.
+#[test]
+fn test_gr2_apply_blocks_dirty_repo_without_autostash() {
+    let temp = TempDir::new().unwrap();
+    let bare = create_bare_repo_with_content(temp.path(), "app");
+    let workspace_root = setup_workspace_with_cloned_unit(&temp, &bare);
+
+    // Dirty the cloned repo: modify the tracked file
+    let repo_checkout = workspace_root.join("agents/apollo/app");
+    std::fs::write(repo_checkout.join("README.md"), "# modified\n").unwrap();
+
+    // Create a shared config file so we can add a link operation to the plan
+    std::fs::write(workspace_root.join("config/shared.toml"), "shared = true\n").unwrap();
+
+    // Rewrite spec to add a link (triggers a Link operation since dest doesn't exist)
+    let spec = format!(
+        r#"schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "app"
+path = "repos/app"
+url = "{}"
+
+[[units]]
+name = "apollo"
+path = "agents/apollo"
+repos = ["app"]
+
+[[units.links]]
+src = "config/shared.toml"
+dest = ".config/shared.toml"
+kind = "symlink"
+"#,
+        bare.display()
+    );
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        &spec,
+    )
+    .unwrap();
+
+    // Apply without --autostash should fail because the unit's repo is dirty
+    let mut apply = Command::cargo_bin("gr2").unwrap();
+    apply
+        .current_dir(&workspace_root)
+        .arg("apply")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("dirty")
+            .or(predicate::str::contains("uncommitted")));
+}
+
+/// gr2 apply --autostash should preserve dirty changes by stashing before
+/// the operation and popping after.
+#[test]
+fn test_gr2_apply_autostash_preserves_dirty_changes() {
+    let temp = TempDir::new().unwrap();
+    let bare = create_bare_repo_with_content(temp.path(), "app");
+    let workspace_root = setup_workspace_with_cloned_unit(&temp, &bare);
+
+    // Dirty the cloned repo
+    let repo_checkout = workspace_root.join("agents/apollo/app");
+    std::fs::write(repo_checkout.join("README.md"), "# modified by agent\n").unwrap();
+
+    // Add a link to trigger an operation
+    std::fs::write(workspace_root.join("config/shared.toml"), "shared = true\n").unwrap();
+    let spec = format!(
+        r#"schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "app"
+path = "repos/app"
+url = "{}"
+
+[[units]]
+name = "apollo"
+path = "agents/apollo"
+repos = ["app"]
+
+[[units.links]]
+src = "config/shared.toml"
+dest = ".config/shared.toml"
+kind = "symlink"
+"#,
+        bare.display()
+    );
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        &spec,
+    )
+    .unwrap();
+
+    // Apply with --autostash should succeed
+    let mut apply = Command::cargo_bin("gr2").unwrap();
+    apply
+        .current_dir(&workspace_root)
+        .args(["apply", "--autostash"])
+        .assert()
+        .success();
+
+    // The dirty change should still be present after apply
+    let content = std::fs::read_to_string(repo_checkout.join("README.md")).unwrap();
+    assert!(
+        content.contains("modified by agent"),
+        "autostash should preserve the dirty change; got: {}",
+        content
+    );
+}
+
+/// gr2 plan should report actual dirty state (uncommitted changes detected)
+/// rather than just "possible uncommitted changes" based on .git existence.
+#[test]
+fn test_gr2_plan_shows_actual_dirty_state() {
+    let temp = TempDir::new().unwrap();
+    let bare = create_bare_repo_with_content(temp.path(), "app");
+    let workspace_root = setup_workspace_with_cloned_unit(&temp, &bare);
+
+    // Dirty the cloned repo
+    let repo_checkout = workspace_root.join("agents/apollo/app");
+    std::fs::write(repo_checkout.join("README.md"), "# dirty\n").unwrap();
+
+    // Add a link to trigger an operation in the plan
+    std::fs::write(workspace_root.join("config/shared.toml"), "shared = true\n").unwrap();
+    let spec = format!(
+        r#"schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "app"
+path = "repos/app"
+url = "{}"
+
+[[units]]
+name = "apollo"
+path = "agents/apollo"
+repos = ["app"]
+
+[[units.links]]
+src = "config/shared.toml"
+dest = ".config/shared.toml"
+kind = "symlink"
+"#,
+        bare.display()
+    );
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        &spec,
+    )
+    .unwrap();
+
+    // Plan should report the dirty state with specifics
+    let mut plan = Command::cargo_bin("gr2").unwrap();
+    plan.current_dir(&workspace_root)
+        .arg("plan")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("uncommitted changes"));
+}
+
+/// When --autostash is used, gr2 apply should record the stash action
+/// in .grip/state for recovery and auditability.
+#[test]
+fn test_gr2_autostash_records_state() {
+    let temp = TempDir::new().unwrap();
+    let bare = create_bare_repo_with_content(temp.path(), "app");
+    let workspace_root = setup_workspace_with_cloned_unit(&temp, &bare);
+
+    // Dirty the cloned repo
+    let repo_checkout = workspace_root.join("agents/apollo/app");
+    std::fs::write(repo_checkout.join("README.md"), "# dirty for stash\n").unwrap();
+
+    // Add a link to trigger an operation
+    std::fs::write(workspace_root.join("config/shared.toml"), "shared = true\n").unwrap();
+    let spec = format!(
+        r#"schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "app"
+path = "repos/app"
+url = "{}"
+
+[[units]]
+name = "apollo"
+path = "agents/apollo"
+repos = ["app"]
+
+[[units.links]]
+src = "config/shared.toml"
+dest = ".config/shared.toml"
+kind = "symlink"
+"#,
+        bare.display()
+    );
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        &spec,
+    )
+    .unwrap();
+
+    // Apply with --autostash
+    let mut apply = Command::cargo_bin("gr2").unwrap();
+    apply
+        .current_dir(&workspace_root)
+        .args(["apply", "--autostash"])
+        .assert()
+        .success();
+
+    // Stash state should be recorded
+    let stash_state = workspace_root.join(".grip/state/stash.toml");
+    assert!(
+        stash_state.exists(),
+        "autostash should record state in .grip/state/stash.toml"
+    );
+    let content = std::fs::read_to_string(&stash_state).unwrap();
+    assert!(
+        content.contains("apollo") && content.contains("app"),
+        "stash state should reference the unit and repo; got: {}",
+        content
+    );
+}
+
+/// gr2 apply should succeed without --autostash when repos are clean
+/// (no uncommitted changes). Clean workspaces need no special handling.
+#[test]
+fn test_gr2_apply_clean_repo_no_autostash_needed() {
+    let temp = TempDir::new().unwrap();
+    let bare = create_bare_repo_with_content(temp.path(), "app");
+    let workspace_root = setup_workspace_with_cloned_unit(&temp, &bare);
+
+    // Don't dirty anything — the repo is clean
+
+    // Apply without --autostash should succeed on clean workspace
+    let mut apply = Command::cargo_bin("gr2").unwrap();
+    apply
+        .current_dir(&workspace_root)
+        .arg("apply")
+        .assert()
+        .success();
+}

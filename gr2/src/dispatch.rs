@@ -362,7 +362,10 @@ pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
         Commands::Plan { yes } => {
             let workspace_root = require_workspace_root()?;
             let build = ExecutionPlan::from_workspace_spec(&workspace_root)?;
-            let guard_report = build.plan.guard_for_apply(&workspace_root, &build.spec, yes)?;
+            let guard_report =
+                build
+                    .plan
+                    .guard_for_apply(&workspace_root, &build.spec, yes, false)?;
 
             if build.generated_spec {
                 println!(
@@ -379,10 +382,13 @@ pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
             }
             Ok(())
         }
-        Commands::Apply { yes } => {
+        Commands::Apply { yes, autostash } => {
             let workspace_root = require_workspace_root()?;
             let build = ExecutionPlan::from_workspace_spec(&workspace_root)?;
-            let guard_report = build.plan.guard_for_apply(&workspace_root, &build.spec, yes)?;
+            let guard_report =
+                build
+                    .plan
+                    .guard_for_apply(&workspace_root, &build.spec, yes, autostash)?;
 
             if build.generated_spec {
                 println!(
@@ -395,11 +401,21 @@ pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
                 anyhow::bail!("plan contains more than 3 operations; rerun with --yes to apply it");
             }
 
+            if guard_report.has_dirty_repos && !autostash {
+                anyhow::bail!(
+                    "refusing to apply: units have repos with uncommitted changes; \
+                     rerun with --autostash to stash and restore them automatically"
+                );
+            }
+
             for warning in &guard_report.warnings {
                 println!("warning: {}", warning);
             }
 
-            let applied = build.plan.apply(&workspace_root, &build.spec)?;
+            let applied =
+                build
+                    .plan
+                    .apply(&workspace_root, &build.spec, &guard_report.dirty_repos)?;
             if applied.is_empty() {
                 println!("ExecutionPlan");
                 println!("- no changes required");

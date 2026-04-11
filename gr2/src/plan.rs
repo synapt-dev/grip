@@ -138,14 +138,14 @@ impl ExecutionPlan {
 
             match operation.operation {
                 OperationType::Clone => {
-                    materialize_unit(workspace_root, unit_spec)?;
+                    materialize_unit(workspace_root, unit_spec, spec)?;
                     applied.push(format!(
                         "cloned unit '{}' into {}",
                         unit_spec.name, unit_spec.path
                     ));
                 }
                 OperationType::Configure => {
-                    materialize_unit(workspace_root, unit_spec)?;
+                    materialize_unit(workspace_root, unit_spec, spec)?;
                     applied.push(format!(
                         "configured unit '{}' at {}",
                         unit_spec.name, unit_spec.path
@@ -191,21 +191,30 @@ impl ExecutionPlan {
     pub fn guard_for_apply(
         &self,
         workspace_root: &Path,
+        spec: &WorkspaceSpec,
         assume_yes: bool,
     ) -> Result<PlanGuardReport> {
         let mut warnings = Vec::new();
 
         for operation in &self.operations {
-            match operation.operation {
-                OperationType::Link => {
-                    // For link operations, check the destination path inside the unit
-                    let unit_path = operation
+            // Resolve the unit's actual path from the spec, not from parameters
+            let unit_path = spec
+                .units
+                .iter()
+                .find(|u| u.name == operation.unit_name)
+                .map(|u| u.path.as_str())
+                .unwrap_or_else(|| {
+                    operation
                         .parameters
                         .get("path")
-                        .cloned()
-                        .unwrap_or_else(|| format!("agents/{}", operation.unit_name));
+                        .map(|s| s.as_str())
+                        .unwrap_or("")
+                });
+
+            match operation.operation {
+                OperationType::Link => {
                     if let Some(dest) = operation.parameters.get("dest") {
-                        let dest_path = workspace_root.join(&unit_path).join(dest);
+                        let dest_path = workspace_root.join(unit_path).join(dest);
                         if dest_path.exists() {
                             anyhow::bail!(
                                 "refusing to apply plan: link destination already exists for unit '{}': {}",
@@ -216,13 +225,7 @@ impl ExecutionPlan {
                     }
                 }
                 _ => {
-                    let path = operation
-                        .parameters
-                        .get("path")
-                        .map(|value| workspace_root.join(value))
-                        .unwrap_or_else(|| {
-                            workspace_root.join(format!("agents/{}", operation.unit_name))
-                        });
+                    let path = workspace_root.join(unit_path);
 
                     if path.join(".git").exists() {
                         warnings.push(format!(
@@ -364,12 +367,54 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
-fn materialize_unit(workspace_root: &Path, unit: &UnitSpec) -> Result<()> {
+fn materialize_unit(workspace_root: &Path, unit: &UnitSpec, spec: &WorkspaceSpec) -> Result<()> {
     let unit_root = workspace_root.join(&unit.path);
     fs::create_dir_all(&unit_root)
         .with_context(|| format!("create unit directory {}", unit_root.display()))?;
     fs::write(unit_root.join("unit.toml"), render_unit_toml(unit))
         .with_context(|| format!("write unit metadata for '{}'", unit.name))?;
+
+    // Clone repos declared in the unit's repos list
+    for repo_name in &unit.repos {
+        let repo_spec = spec
+            .repos
+            .iter()
+            .find(|r| r.name == *repo_name)
+            .with_context(|| {
+                format!(
+                    "unit '{}' references repo '{}' which is not in the workspace spec",
+                    unit.name, repo_name
+                )
+            })?;
+
+        let clone_dest = unit_root.join(repo_name);
+        if clone_dest.exists() {
+            continue; // Already cloned, skip
+        }
+
+        let output = std::process::Command::new("git")
+            .args(["clone", &repo_spec.url])
+            .arg(&clone_dest)
+            .output()
+            .with_context(|| {
+                format!(
+                    "run git clone for repo '{}' into {}",
+                    repo_name,
+                    clone_dest.display()
+                )
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!(
+                "git clone failed for repo '{}' into {}: {}",
+                repo_name,
+                clone_dest.display(),
+                stderr.trim()
+            );
+        }
+    }
+
     Ok(())
 }
 

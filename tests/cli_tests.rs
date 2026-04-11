@@ -1193,8 +1193,16 @@ fn test_gr2_apply_materializes_missing_units_from_plan() {
         .assert()
         .success();
 
-    let spec = r#"
-schema_version = 1
+    // Create a local bare repo to use as the "remote"
+    let bare_repo = temp.path().join("app-bare.git");
+    std::process::Command::new("git")
+        .args(["init", "--bare"])
+        .arg(&bare_repo)
+        .output()
+        .unwrap();
+
+    let spec = format!(
+        r#"schema_version = 1
 workspace_name = "demo"
 
 [cache]
@@ -1203,22 +1211,24 @@ root = ".grip/cache"
 [[repos]]
 name = "app"
 path = "repos/app"
-url = "https://github.com/synapt-dev/app.git"
+url = "{}"
 
 [[units]]
 name = "atlas"
 path = "agents/atlas"
 repos = ["app"]
-"#;
+"#,
+        bare_repo.display()
+    );
     std::fs::write(
         workspace_root.join(".grip/workspace_spec.toml"),
-        spec.trim_start(),
+        &spec,
     )
     .unwrap();
     std::fs::create_dir_all(workspace_root.join("repos/app")).unwrap();
     std::fs::write(
         workspace_root.join("repos/app/repo.toml"),
-        "name = \"app\"\nurl = \"https://github.com/synapt-dev/app.git\"\n",
+        format!("name = \"app\"\nurl = \"{}\"\n", bare_repo.display()),
     )
     .unwrap();
 
@@ -1235,6 +1245,9 @@ repos = ["app"]
     assert!(unit_toml.contains("name = \"atlas\""));
     assert!(unit_toml.contains("kind = \"unit\""));
     assert!(unit_toml.contains("repos = [\"app\"]"));
+
+    // Repo should be cloned into the unit workspace
+    assert!(workspace_root.join("agents/atlas/app/.git").exists());
 }
 
 #[test]
@@ -2216,4 +2229,202 @@ repos = []
         .arg("apply")
         .assert()
         .success();
+}
+
+// ── gr2 apply: guard correctness + repo materialization (grip#514) ──────────
+
+/// guard_for_apply uses the unit's actual path from the spec, not the
+/// `agents/{name}` fallback, when checking for dirty checkouts.
+/// Regression test for Atlas's review note on grip#531.
+#[test]
+fn test_gr2_guard_uses_actual_unit_path_for_warnings() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    // Create a unit at a NON-default path (units/apollo, not agents/apollo)
+    // with a .git directory to trigger the dirty-checkout warning.
+    std::fs::create_dir_all(workspace_root.join("units/apollo/.git")).unwrap();
+    std::fs::write(
+        workspace_root.join("units/apollo/unit.toml"),
+        "name = \"apollo\"\nkind = \"unit\"\n",
+    )
+    .unwrap();
+
+    let spec = r#"
+schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[units]]
+name = "apollo"
+path = "units/apollo"
+repos = []
+"#;
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        spec.trim_start(),
+    )
+    .unwrap();
+
+    // Plan should warn about dirty checkout at units/apollo, NOT agents/apollo.
+    let mut plan = Command::cargo_bin("gr2").unwrap();
+    plan.current_dir(&workspace_root)
+        .arg("plan")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("units/apollo"))
+        .stdout(predicate::str::contains("uncommitted changes"));
+}
+
+/// Clone operation materializes repos declared in the unit's `repos` list
+/// by cloning them from their registered URLs.
+#[test]
+fn test_gr2_apply_clone_materializes_unit_repos() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    // Create a local bare repo to use as the "remote"
+    let bare_repo = temp.path().join("bare-repo.git");
+    std::process::Command::new("git")
+        .args(["init", "--bare"])
+        .arg(&bare_repo)
+        .output()
+        .unwrap();
+
+    // Register the repo in the workspace
+    let mut repo_add = Command::cargo_bin("gr2").unwrap();
+    repo_add
+        .current_dir(&workspace_root)
+        .args(["repo", "add", "test-repo"])
+        .arg(bare_repo.to_str().unwrap())
+        .assert()
+        .success();
+
+    // Write a spec that declares a unit referencing the repo
+    let spec = format!(
+        r#"schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "test-repo"
+path = "repos/test-repo"
+url = "{}"
+
+[[units]]
+name = "apollo"
+path = "agents/apollo"
+repos = ["test-repo"]
+"#,
+        bare_repo.display()
+    );
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        &spec,
+    )
+    .unwrap();
+
+    let mut apply = Command::cargo_bin("gr2").unwrap();
+    apply
+        .current_dir(&workspace_root)
+        .arg("apply")
+        .assert()
+        .success();
+
+    // The unit directory and unit.toml should exist
+    assert!(workspace_root.join("agents/apollo/unit.toml").exists());
+
+    // The repo should be cloned into the unit's workspace
+    let repo_checkout = workspace_root.join("agents/apollo/test-repo");
+    assert!(
+        repo_checkout.exists(),
+        "repo should be cloned into unit workspace at agents/apollo/test-repo"
+    );
+    assert!(
+        repo_checkout.join(".git").exists(),
+        "cloned repo should have a .git directory"
+    );
+}
+
+/// Plan output shows repo clone operations for units with declared repos.
+#[test]
+fn test_gr2_plan_shows_repo_clone_for_unit() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let bare_repo = temp.path().join("bare-repo.git");
+    std::process::Command::new("git")
+        .args(["init", "--bare"])
+        .arg(&bare_repo)
+        .output()
+        .unwrap();
+
+    let mut repo_add = Command::cargo_bin("gr2").unwrap();
+    repo_add
+        .current_dir(&workspace_root)
+        .args(["repo", "add", "test-repo"])
+        .arg(bare_repo.to_str().unwrap())
+        .assert()
+        .success();
+
+    let spec = format!(
+        r#"schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "test-repo"
+path = "repos/test-repo"
+url = "{}"
+
+[[units]]
+name = "apollo"
+path = "agents/apollo"
+repos = ["test-repo"]
+"#,
+        bare_repo.display()
+    );
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        &spec,
+    )
+    .unwrap();
+
+    let mut plan = Command::cargo_bin("gr2").unwrap();
+    plan.current_dir(&workspace_root)
+        .arg("plan")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("clone"))
+        .stdout(predicate::str::contains("apollo"));
 }

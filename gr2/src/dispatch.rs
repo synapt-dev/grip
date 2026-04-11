@@ -362,7 +362,7 @@ pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
         Commands::Plan { yes } => {
             let workspace_root = require_workspace_root()?;
             let build = ExecutionPlan::from_workspace_spec(&workspace_root)?;
-            let guard_report = build.plan.guard_for_apply(&workspace_root, yes)?;
+            let guard_report = build.plan.guard_for_apply(&workspace_root, &build.spec, yes)?;
 
             if build.generated_spec {
                 println!(
@@ -382,7 +382,7 @@ pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
         Commands::Apply { yes } => {
             let workspace_root = require_workspace_root()?;
             let build = ExecutionPlan::from_workspace_spec(&workspace_root)?;
-            let guard_report = build.plan.guard_for_apply(&workspace_root, yes)?;
+            let guard_report = build.plan.guard_for_apply(&workspace_root, &build.spec, yes)?;
 
             if build.generated_spec {
                 println!(

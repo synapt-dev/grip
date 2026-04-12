@@ -292,6 +292,14 @@ pub fn show_lane(workspace_root: &Path, owner_unit: &str, lane_name: &str) -> Re
     fs::read_to_string(&path).with_context(|| format!("read lane metadata from {}", path.display()))
 }
 
+pub fn load_lane(workspace_root: &Path, owner_unit: &str, lane_name: &str) -> Result<LaneRecord> {
+    let path = lane_metadata_path(workspace_root, owner_unit, lane_name);
+    if !path.exists() {
+        anyhow::bail!("lane '{}' for unit '{}' not found", lane_name, owner_unit);
+    }
+    load_lane_record_path(&path)
+}
+
 pub fn remove_lane(workspace_root: &Path, owner_unit: &str, lane_name: &str) -> Result<()> {
     let metadata_path = lane_metadata_path(workspace_root, owner_unit, lane_name);
     if !metadata_path.exists() {

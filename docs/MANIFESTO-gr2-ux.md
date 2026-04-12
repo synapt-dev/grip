@@ -20,6 +20,12 @@ more legible.
 
 `gr2` is a multi-repo workspace router.
 
+And for Synapt, it is more than that:
+
+- `gr2` is the workspace infrastructure layer
+- Synapt org shape should compile into `gr2`
+- channels, recall, and agent lanes should feel native to the workspace
+
 It should make it easy to:
 
 - start the right task context
@@ -167,6 +173,28 @@ That requires:
 - cache/materialization optimization that speeds up everyone without becoming a
   new conceptual burden
 
+## Synapt-Native Integration Requirements
+
+`gr2` should work with Synapt out of the box.
+
+That means:
+
+- a Synapt-backed workspace should not treat channels, recall, or agent identity
+  as optional afterthoughts
+- a premium org/control-plane should compile into `WorkspaceSpec` and lane
+  policy rather than bypassing the workspace model
+- the local workspace should materialize the result of org, team, agent, and
+  access policy decisions without leaking premium-only control-plane semantics
+  into the wrong layer
+
+The user should be able to think:
+
+- "init the workspace"
+- "enter the right lane"
+- "use channels and recall in that workspace"
+
+without first assembling plugin wiring manually.
+
 ## What Good Looks Like
 
 The user says:
@@ -190,5 +218,15 @@ When choosing a `gr2` feature, ask:
 3. Does this make the active task more legible?
 4. Does this reduce guessing for both humans and agents?
 5. Does this keep git normal once the user is in the correct checkout?
+6. Does this improve the Synapt workspace model instead of working around it?
 
 If the answer is not clearly yes, the design should be revised.
+
+The four user modes are not just examples. They are the product test:
+
+- solo human
+- single agent
+- multi-agent
+- mixed human + agent
+
+If a surface works for only one of them, it is not finished.

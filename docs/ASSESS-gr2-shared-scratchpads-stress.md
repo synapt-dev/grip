@@ -182,3 +182,10 @@ able to answer these questions clearly:
 - how does content graduate from scratchpad to repo artifact?
 
 If those are still fuzzy, the prototype is not ready for MVP.
+
+The prototype should also expose explicit operator surfaces for those cases:
+
+- a recommendation surface when the user is choosing between feature lane,
+  review lane, shared scratchpad, and PR
+- an audit surface for stale, orphaned, or weakly tracked scratchpads
+- a promotion surface that makes the handoff to repo artifact and PR explicit

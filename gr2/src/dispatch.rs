@@ -3,7 +3,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::args::{Commands, LaneCommands, RepoCommands, SpecCommands, TeamCommands, UnitCommands};
+use crate::args::{
+    Commands, ExecCommands, LaneCommands, RepoCommands, SpecCommands, TeamCommands, UnitCommands,
+};
+use crate::exec::{ExecStatusFilter, ExecStatusReport};
 use crate::lane::{
     create_lane, list_lanes, remove_lane, render_lane_table, show_lane, validate_lane_name,
     LaneCreateRequest, LanePrAssociation, LaneType,
@@ -414,6 +417,27 @@ pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
                 validate_lane_name(&name)?;
                 remove_lane(&workspace_root, &owner_unit, &name)?;
                 println!("Removed lane '{}' for unit '{}'", name, owner_unit);
+                Ok(())
+            }
+        },
+        Commands::Exec { command } => match command {
+            ExecCommands::Status {
+                lane,
+                owner_unit,
+                repos,
+            } => {
+                let workspace_root = require_workspace_root()?;
+                validate_unit_name(&owner_unit)?;
+                validate_lane_name(&lane)?;
+                let report = ExecStatusReport::load(
+                    &workspace_root,
+                    &ExecStatusFilter {
+                        owner_unit,
+                        lane_name: lane,
+                        repos,
+                    },
+                )?;
+                println!("{}", report.render_table());
                 Ok(())
             }
         },

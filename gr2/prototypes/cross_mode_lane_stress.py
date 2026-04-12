@@ -92,35 +92,47 @@ name = "web"
 path = "repos/web"
 url = "https://example.invalid/web.git"
 
+[[repos]]
+name = "premium"
+path = "repos/premium"
+url = "https://example.invalid/premium.git"
+
+[workspace_constraints]
+max_concurrent_edit_leases_global = 2
+
+[workspace_constraints.required_reviewers]
+premium = 2
+app = 1
+
 [[units]]
 name = "atlas"
 path = "agents/atlas"
 agent_id = "atlas-agent"
-repos = ["app", "api", "web"]
+repos = ["app", "api", "web", "premium"]
 
 [[units]]
 name = "apollo"
 path = "agents/apollo"
 agent_id = "apollo-agent"
-repos = ["app", "api", "web"]
+repos = ["app", "api", "web", "premium"]
 
 [[units]]
 name = "layne"
 path = "agents/layne"
 agent_id = "layne-human"
-repos = ["app", "api", "web"]
+repos = ["app", "api", "web", "premium"]
 
 [[units]]
 name = "synapt-core"
 path = "agents/synapt-core"
 agent_id = "agent_opus_abc123"
-repos = ["app", "api", "web"]
+repos = ["app", "api", "web", "premium"]
 
 [[units]]
 name = "release-control"
 path = "agents/release-control"
 agent_id = "agent_opus_abc123"
-repos = ["app", "api", "web"]
+repos = ["app", "api", "web", "premium"]
 """
     (workspace_root / ".grip" / "workspace_spec.toml").write_text(spec)
 
@@ -207,6 +219,22 @@ def show_leases_json(root: Path, workspace_root: Path, owner_unit: str, lane_nam
             str(workspace_root),
             owner_unit,
             lane_name,
+            "--json",
+        ],
+        capture=True,
+    )
+    return json.loads(proc.stdout)
+
+
+def check_review_requirements_json(root: Path, workspace_root: Path, repo: str, pr_number: int) -> dict:
+    proc = run(
+        [
+            "python3",
+            str(lane_proto(root)),
+            "check-review-requirements",
+            str(workspace_root),
+            repo,
+            str(pr_number),
             "--json",
         ],
         capture=True,
@@ -892,6 +920,119 @@ def scenario_identity_rebind_live_lanes(root: Path, workspace_root: Path) -> Sce
     )
 
 
+def scenario_global_edit_lease_cap(root: Path, workspace_root: Path) -> ScenarioResult:
+    create_lane(root, workspace_root, "atlas", "feat-cap-a", "app", "feat/cap-a")
+    create_lane(root, workspace_root, "apollo", "feat-cap-b", "api", "feat/cap-b")
+    create_lane(root, workspace_root, "layne", "feat-cap-c", "web", "feat/cap-c")
+
+    create_lane(root, workspace_root, "release-control", "feat-cap-stale", "premium", "feat/cap-stale")
+    acquire_lease(root, workspace_root, "release-control", "feat-cap-stale", "agent:opus", "edit", ttl_seconds=0)
+
+    lease_a = acquire_lease(root, workspace_root, "atlas", "feat-cap-a", "agent:atlas", "edit")
+    lease_b = acquire_lease(root, workspace_root, "apollo", "feat-cap-b", "agent:apollo", "edit")
+    lease_c = acquire_lease(
+        root, workspace_root, "layne", "feat-cap-c", "human:layne", "edit", expect_ok=False
+    )
+
+    stale_force = acquire_lease(
+        root,
+        workspace_root,
+        "release-control",
+        "feat-cap-stale",
+        "agent:opus",
+        "edit",
+        ttl_seconds=900,
+        force=True,
+        expect_ok=False,
+    )
+
+    holds = []
+    gaps = []
+    evidence = [lease_c.stdout.strip(), stale_force.stdout.strip()]
+
+    if lease_a.returncode == 0 and lease_b.returncode == 0 and lease_c.returncode != 0:
+        holds.append("third edit lease is blocked when global cap of 2 is reached")
+    else:
+        gaps.append("global edit lease cap did not block the third concurrent edit lease")
+
+    if stale_force.returncode != 0 and "workspace-edit-lease-cap" in stale_force.stdout:
+        holds.append("force-breaking a stale local lease does not bypass the workspace edit cap")
+    else:
+        gaps.append("stale force-break bypassed the workspace edit lease cap")
+
+    # Release leases so later scenarios aren't blocked by the global cap
+    for unit, lane, actor in [
+        ("atlas", "feat-cap-a", "agent:atlas"),
+        ("apollo", "feat-cap-b", "agent:apollo"),
+    ]:
+        run(
+            [
+                "python3",
+                str(lane_proto(root)),
+                "release-lane-lease",
+                str(workspace_root),
+                unit,
+                lane,
+                "--actor",
+                actor,
+            ],
+            capture=True,
+        )
+
+    verdict = "holds" if not gaps else "fails"
+    return ScenarioResult(
+        scenario_id="global-edit-lease-cap",
+        user_mode="cross-mode",
+        title="workspace-wide edit lease cap is enforced across all units",
+        verdict=verdict,
+        holds=holds,
+        gaps=gaps,
+        evidence=evidence,
+    )
+
+
+def scenario_required_reviewers(root: Path, workspace_root: Path) -> ScenarioResult:
+    zero = check_review_requirements_json(root, workspace_root, "premium", 777)
+    create_review_lane(root, workspace_root, "atlas", "premium", 777)
+    one = check_review_requirements_json(root, workspace_root, "premium", 777)
+    create_review_lane(root, workspace_root, "apollo", "premium", 777)
+    two = check_review_requirements_json(root, workspace_root, "premium", 777)
+
+    holds = []
+    gaps = []
+    evidence = [
+        json.dumps(zero, indent=2),
+        json.dumps(one, indent=2),
+        json.dumps(two, indent=2),
+    ]
+
+    if zero["required_reviewers"] == 2 and zero["actual_reviewers"] == 0 and not zero["satisfied"]:
+        holds.append("review requirements report unsatisfied with zero review lanes")
+    else:
+        gaps.append("zero-reviewer requirement state is incorrect")
+
+    if one["actual_reviewers"] == 1 and not one["satisfied"]:
+        holds.append("one review lane is still unsatisfied when premium requires two reviewers")
+    else:
+        gaps.append("single reviewer state is incorrect")
+
+    if two["actual_reviewers"] == 2 and two["satisfied"]:
+        holds.append("two review lanes satisfy the premium repo review requirement")
+    else:
+        gaps.append("two reviewers did not satisfy the premium repo requirement")
+
+    verdict = "holds" if not gaps else "fails"
+    return ScenarioResult(
+        scenario_id="required-reviewers",
+        user_mode="cross-mode",
+        title="required reviewer counts are enforced from workspace constraints",
+        verdict=verdict,
+        holds=holds,
+        gaps=gaps,
+        evidence=evidence,
+    )
+
+
 def run_scenarios(workspace_root: Path) -> list[ScenarioResult]:
     root = repo_root()
     init_workspace(workspace_root)
@@ -902,6 +1043,8 @@ def run_scenarios(workspace_root: Path) -> list[ScenarioResult]:
         scenario_multi_agent_same_repo(root, workspace_root),
         scenario_agent_handoff_relay(root, workspace_root),
         scenario_identity_rebind_live_lanes(root, workspace_root),
+        scenario_global_edit_lease_cap(root, workspace_root),
+        scenario_required_reviewers(root, workspace_root),
         scenario_mixed_same_lane_exec(root, workspace_root),
         scenario_single_agent_interrupt_recovery(root, workspace_root),
         scenario_solo_human_forgets_lane(root, workspace_root),

@@ -317,6 +317,12 @@ def parse_args() -> argparse.Namespace:
     recommend.add_argument("--repos", type=int, default=1)
     recommend.add_argument("--shared-draft", action="store_true")
 
+    review_check = sub.add_parser("check-review-requirements")
+    review_check.add_argument("workspace_root", type=Path)
+    review_check.add_argument("repo")
+    review_check.add_argument("pr_number", type=int)
+    review_check.add_argument("--json", action="store_true")
+
     return parser.parse_args()
 
 
@@ -453,6 +459,37 @@ def load_lane_leases(workspace_root: Path, owner_unit: str, lane_name: str) -> l
     if not path.exists():
         return []
     return json.loads(path.read_text())
+
+
+def workspace_constraints(workspace_root: Path) -> dict:
+    spec = load_workspace_spec(workspace_root)
+    return spec.get("workspace_constraints", {})
+
+
+def max_global_edit_leases(workspace_root: Path) -> int | None:
+    value = workspace_constraints(workspace_root).get("max_concurrent_edit_leases_global")
+    if value is None:
+        return None
+    return int(value)
+
+
+def active_workspace_edit_leases(workspace_root: Path) -> list[dict]:
+    rows: list[dict] = []
+    for path in iter_lane_files(workspace_root):
+        lane_doc = tomllib.loads(path.read_text())
+        owner_unit = lane_doc["owner_unit"]
+        lane_name = lane_doc["lane_name"]
+        for lease in load_lane_leases(workspace_root, owner_unit, lane_name):
+            if lease["mode"] != "edit" or is_stale_lease(lease):
+                continue
+            rows.append(
+                {
+                    "owner_unit": owner_unit,
+                    "lane_name": lane_name,
+                    **lease,
+                }
+            )
+    return rows
 
 
 def lease_locking_enabled() -> bool:
@@ -936,6 +973,34 @@ def rebind_unit(args: argparse.Namespace) -> int:
 def acquire_lane_lease(args: argparse.Namespace) -> int:
     workspace_root = args.workspace_root.resolve()
     load_lane_doc(workspace_root, args.owner_unit, args.lane_name)
+    if args.mode == "edit":
+        cap = max_global_edit_leases(workspace_root)
+        if cap is not None:
+            active_edits = active_workspace_edit_leases(workspace_root)
+            active_edits = [
+                lease
+                for lease in active_edits
+                if not (
+                    lease["owner_unit"] == args.owner_unit
+                    and lease["lane_name"] == args.lane_name
+                    and lease["actor"] == args.actor
+                )
+            ]
+            if len(active_edits) >= cap:
+                payload = {
+                    "status": "blocked",
+                    "reason": "workspace-edit-lease-cap",
+                    "requested": {
+                        "owner_unit": args.owner_unit,
+                        "lane_name": args.lane_name,
+                        "actor": args.actor,
+                        "mode": args.mode,
+                    },
+                    "active_edit_leases": active_edits,
+                    "max_concurrent_edit_leases_global": cap,
+                }
+                print(json.dumps(payload, indent=2))
+                return 1
     result = mutate_lane_leases(
         workspace_root,
         args.owner_unit,
@@ -1084,6 +1149,45 @@ def create_review_lane(args: argparse.Namespace) -> int:
     content += f'\n\n[[pr_associations]]\nref = "{args.repo}#{args.pr_number}"\n'
     lane_path.write_text(content)
     print(f"created review lane {args.owner_unit}/{lane_name} for {args.repo}#{args.pr_number}")
+    return 0
+
+
+def check_review_requirements(args: argparse.Namespace) -> int:
+    workspace_root = args.workspace_root.resolve()
+    ref = f"{args.repo}#{args.pr_number}"
+    required = int(
+        workspace_constraints(workspace_root)
+        .get("required_reviewers", {})
+        .get(args.repo, 0)
+    )
+    matching: list[dict] = []
+    for path in iter_lane_files(workspace_root):
+        doc = tomllib.loads(path.read_text())
+        if doc.get("lane_type") != "review":
+            continue
+        refs = [item["ref"] for item in doc.get("pr_associations", [])]
+        if ref not in refs:
+            continue
+        matching.append(
+            {
+                "owner_unit": doc["owner_unit"],
+                "lane_name": doc["lane_name"],
+                "repos": doc.get("repos", []),
+            }
+        )
+    reviewer_units = sorted({row["owner_unit"] for row in matching})
+    payload = {
+        "repo": args.repo,
+        "pr_number": args.pr_number,
+        "required_reviewers": required,
+        "actual_reviewers": len(reviewer_units),
+        "satisfied": len(reviewer_units) >= required,
+        "review_lanes": matching,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(json.dumps(payload, indent=2))
     return 0
 
 
@@ -1561,6 +1665,8 @@ def main() -> int:
         return plan_promote_scratchpad(args)
     if args.command == "recommend-surface":
         return recommend_surface(args)
+    if args.command == "check-review-requirements":
+        return check_review_requirements(args)
     raise SystemExit(f"unknown command: {args.command}")
 
 

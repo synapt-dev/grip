@@ -138,3 +138,20 @@ That is why it includes:
 - `next-step`
 - `create-review-lane`
 - `create-shared-scratchpad`
+
+## Stress Testing
+
+This prototype is not considered verified on the happy path alone.
+
+The break-case matrix lives at:
+
+- `docs/ASSESS-gr2-shared-scratchpads-stress.md`
+
+The MVP should not be finalized until the prototype has been evaluated against:
+
+- concurrent shared editing
+- stale / abandoned scratchpads
+- wrong-surface selection
+- scope creep into shared implementation
+- cleanup and lifecycle handling
+- promotion from scratchpad to real repo artifact / PR

@@ -73,6 +73,10 @@ def lane_proto(root: Path) -> Path:
     return root / "gr2" / "prototypes" / "lane_workspace_prototype.py"
 
 
+def transport_probe(root: Path) -> Path:
+    return root / "gr2" / "prototypes" / "repo_transport_probe.py"
+
+
 def repo_url(repo_name: str, transport: str) -> str:
     return PLAYGROUND_REPOS[repo_name][transport]
 
@@ -170,6 +174,7 @@ def main() -> int:
 
     gr2 = gr2_binary(root)
     lane_script = lane_proto(root)
+    probe_script = transport_probe(root)
     has_exec = gr2_supports_exec(gr2)
 
     if not workspace_root.exists():
@@ -196,6 +201,27 @@ def main() -> int:
         workspace_root, args.owner_unit, args.workspace_name, args.transport
     )
 
+    try:
+        probe = run(
+            [
+                sys.executable,
+                str(probe_script),
+                str(workspace_root / ".grip" / "workspace_spec.toml"),
+            ],
+            cwd=root,
+            capture=True,
+        )
+        print(probe.stdout)
+    except subprocess.CalledProcessError as exc:
+        if exc.stdout:
+            print(exc.stdout)
+        raise SystemExit(
+            f"repo transport probe failed before apply.\n"
+            f"transport={args.transport}\n"
+            "The selected remotes are not ready to clone from this environment.\n"
+            "Fix auth/transport first or rerun with a different `--transport`."
+        ) from exc
+
     run([str(gr2), "spec", "validate"], cwd=workspace_root)
     run([str(gr2), "plan", "--yes"], cwd=workspace_root)
     try:
@@ -204,6 +230,8 @@ def main() -> int:
         raise SystemExit(
             f"gr2 apply failed during real-git bootstrap.\n"
             f"transport={args.transport}\n"
+            "Probe output above should indicate whether the failure is due to "
+            "transport reachability or authentication.\n"
             "This usually means the selected Git transport is not reachable or "
             "authenticated in the current environment.\n"
             "Try rerunning with `--transport https` or `--transport ssh` as appropriate."

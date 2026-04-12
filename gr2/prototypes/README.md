@@ -237,3 +237,24 @@ These are intentionally user-first:
 
 This keeps the prototype from overfitting to happy-path metadata creation while
 ignoring the actual decisions users struggle with.
+
+## Transport/Auth Preflight
+
+Real multi-repo bootstrap fails early if transport or auth is wrong, so the
+prototype now includes a dedicated preflight surface:
+
+```bash
+python3 gr2/prototypes/repo_transport_probe.py \
+  /path/to/workspace/.grip/workspace_spec.toml
+```
+
+This reports, per repo:
+
+- transport type
+- whether the remote looks reachable
+- whether auth is failing
+- the next recommended action
+
+The real-git playground harness now runs this probe before `gr2 apply` so
+transport/auth problems are surfaced as an explicit status surface instead of a
+late clone failure buried inside apply output.

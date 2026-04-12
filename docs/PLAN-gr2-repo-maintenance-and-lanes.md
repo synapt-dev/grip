@@ -27,6 +27,8 @@ The workspace model needs to support:
 - checking out a PR without disturbing ongoing work
 - keeping repo state explicit and recoverable
 - preserving dirty local work by default
+- shared team context plus unit-specific private context
+- multi-repo build, test, and command execution scoped to a lane
 
 ## Design Goals
 
@@ -37,6 +39,8 @@ The workspace model needs to support:
 - preserve local modifications safely
 - keep agent and human behavior on the same primitives
 - avoid hidden pull/merge/rebase side effects
+- make shared context and unit-private context explicit
+- make multi-repo execution lane-aware
 
 ## Non-Goals
 
@@ -149,9 +153,142 @@ A lane contains:
 - local dirtiness state
 - lane-local checkout paths
 - review metadata if it came from a PR
+- shared and private context references
+- execution defaults for build/test/run commands
 
 This is the multi-repo equivalent of a worktree, but not tied to git's
 single-repo worktree mechanism.
+
+## Context Model
+
+The workspace needs two context scopes.
+
+### Shared Context
+
+Shared context is visible to everyone in the workspace:
+
+- workspace instructions
+- shared prompts
+- release plan
+- shared notes and decisions
+- cross-repo task state
+
+This should live in stable workspace-managed locations such as:
+
+- `config/`
+- `.grip/context/shared/`
+
+This is the context a human or agent should inherit by default when entering
+the workspace or a lane.
+
+### Unit-Private Context
+
+Each unit needs private context that is not treated as shared scratch space:
+
+- local notes
+- pending ideas
+- temporary debugging context
+- agent-specific reminders
+- local execution state
+
+This should live under the unit root, not in shared workspace state:
+
+- `agents/<unit>/home/context/`
+- `agents/<unit>/lanes/<lane>/context/`
+
+The rule should be:
+
+- shared context is workspace-owned
+- private context is unit-owned
+- lane context inherits both, but may add lane-local notes
+
+That gives us the right behavior for both humans and agents:
+
+- the team can share durable operational context
+- each worker can keep private working memory without trampling others
+
+## Execution Model
+
+The workspace also needs a first-class multi-repo execution surface.
+
+Users need to run:
+
+- builds
+- tests
+- linters
+- migrations
+- verification commands
+
+across a selected repo set, inside a selected lane.
+
+### Why This Matters
+
+If lane management exists but execution stays global, users will still be
+forced back into the old failure mode:
+
+- wrong branch
+- wrong checkout
+- wrong repo subset
+- wrong temporary context
+
+So command execution must be lane-aware.
+
+### Proposed Execution Commands
+
+```bash
+gr2 exec status
+gr2 exec run <command>
+gr2 exec test
+gr2 exec build
+```
+
+Each execution should be scoped by:
+
+- lane
+- repo selection
+- execution order or parallelism policy
+- fail-fast vs collect-all behavior
+
+Examples:
+
+```bash
+gr2 exec test --lane feat-auth
+gr2 exec run --lane review-541 --repo grip 'cargo test'
+gr2 exec build --lane feat-billing --repos app,api
+```
+
+### Execution Metadata
+
+Each lane should be able to record:
+
+- default repo set
+- default working directory per repo
+- common scripts or commands
+- last known successful verification set
+
+This should not be a hidden shell convention. It should be lane metadata.
+
+## Lane Metadata
+
+The lane record should be explicit and durable.
+
+At minimum it should contain:
+
+- lane name
+- owner unit
+- lane type: `home`, `feature`, `review`, `scratch`
+- included repos
+- branch map per repo
+- PR associations
+- context roots
+- execution defaults
+- creation source
+- dirty/autostash recovery state
+
+That metadata is what makes lane switching trustworthy.
+
+Without it, `gr2` would just be managing directories and hoping the user
+remembers what each one is for.
 
 ## Why Lanes Instead of Plain Worktrees
 
@@ -308,6 +445,23 @@ gr2 lane checkout-pr <lane> --repo <repo> --pr <num>
 gr2 lane status [<lane>]
 ```
 
+### Context
+
+```bash
+gr2 context show [--lane <lane>]
+gr2 context shared edit
+gr2 context unit edit [--lane <lane>]
+```
+
+### Execution
+
+```bash
+gr2 exec status [--lane <lane>]
+gr2 exec run --lane <lane> [--repo <repo>] <command>
+gr2 exec test --lane <lane>
+gr2 exec build --lane <lane>
+```
+
 ## Branch and PR Behavior
 
 ### Branch Switching
@@ -343,6 +497,8 @@ A feature spanning three repos should have one lane record that knows:
 - which repos are included
 - what branch each repo should be on
 - which PRs belong to that lane
+- what shared and private context applies there
+- what the expected verification commands are
 
 That is the real unit of work. Not "three separate branches that happen to
 share a name."
@@ -394,6 +550,8 @@ Every lane needs durable metadata:
 - PR associations
 - creation source
 - dirty/preserved state
+- context roots
+- execution defaults
 
 If lane state is inferred ad hoc from the filesystem, users will not trust it.
 
@@ -417,6 +575,16 @@ will be surprised by sync results.
 
 If checking out a PR is treated as a second-class hack, users will keep opening
 ad hoc worktrees and the multi-repo abstraction will fracture.
+
+### 7. Shared and private context stay separate
+
+If unit-private context leaks into shared context, agents will step on each
+other and humans will stop trusting the workspace.
+
+### 8. Execution is lane-aware
+
+If build/test/run commands are not scoped to lanes, users will still make the
+wrong changes in the wrong place and the workspace model will feel fake.
 
 ## Risks
 
@@ -457,11 +625,12 @@ Build `gr2` in this order:
 
 1. finish narrow `apply`
 2. add `gr2 repo status` using the prototype action taxonomy
-3. define lane metadata format
+3. define lane metadata format, including context and execution defaults
 4. add `gr2 lane create/status/enter/remove`
 5. add `gr2 lane branch`
-6. add `gr2 lane checkout-pr`
-7. add `gr2 repo sync` with explicit policy and autostash logging
+6. add lane-aware `gr2 exec` surfaces for build/test/run
+7. add `gr2 lane checkout-pr`
+8. add `gr2 repo sync` with explicit policy and autostash logging
 
 ## Bottom Line
 

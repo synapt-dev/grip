@@ -288,6 +288,25 @@ This prototype keeps the compiler seam explicit:
 - gr2 sees unit repo access, lane limits, and workspace constraints, but not the
   raw org policy logic that produced them.
 
+Recall lane history example:
+
+```bash
+python3 gr2/prototypes/recall_lane_history.py demo-data /tmp/gr2-recall-demo
+python3 gr2/prototypes/recall_lane_history.py query /tmp/gr2-recall-demo --lane auth-refactor --json
+python3 gr2/prototypes/recall_lane_history.py query /tmp/gr2-recall-demo --actor agent:atlas --json
+python3 gr2/prototypes/recall_lane_history.py query /tmp/gr2-recall-demo --repo grip --json
+```
+
+This prototype indexes lane events into a neutral recall-friendly timeline:
+
+- by lane
+- by actor
+- by repo
+- by time range
+
+Recall can answer lane-history questions from structured workspace events
+without importing premium identity or org semantics.
+
 ## Real-Git Same-Repo Multi-Agent Materialization
 
 To verify that unit-local-first is real and not only metadata, run:

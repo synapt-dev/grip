@@ -14,12 +14,15 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import os
 import json
 import shlex
 import sys
+import time
 import tomllib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+import fcntl
 
 
 LANE_SCHEMA_VERSION = 1
@@ -298,6 +301,10 @@ def lane_leases_file(workspace_root: Path, owner_unit: str, lane_name: str) -> P
     return lane_dir(workspace_root, owner_unit, lane_name) / "leases.json"
 
 
+def lane_leases_lock_file(workspace_root: Path, owner_unit: str, lane_name: str) -> Path:
+    return lane_dir(workspace_root, owner_unit, lane_name) / "leases.lock"
+
+
 def events_dir(workspace_root: Path) -> Path:
     return workspace_root / ".grip" / "events"
 
@@ -378,9 +385,71 @@ def load_lane_leases(workspace_root: Path, owner_unit: str, lane_name: str) -> l
     return json.loads(path.read_text())
 
 
-def write_lane_leases(workspace_root: Path, owner_unit: str, lane_name: str, leases: list[dict]) -> None:
+def lease_locking_enabled() -> bool:
+    return os.environ.get("GR2_DISABLE_LEASE_LOCKING") != "1"
+
+
+def write_lane_leases(
+    workspace_root: Path,
+    owner_unit: str,
+    lane_name: str,
+    leases: list[dict],
+    *,
+    lock_fh=None,
+) -> None:
     path = lane_leases_file(workspace_root, owner_unit, lane_name)
-    path.write_text(json.dumps(leases, indent=2) + "\n")
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    if lock_fh is None:
+        lock_path = lane_leases_lock_file(workspace_root, owner_unit, lane_name)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+", encoding="utf-8") as owned_lock_fh:
+            if lease_locking_enabled():
+                fcntl.flock(owned_lock_fh.fileno(), fcntl.LOCK_EX)
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(leases, indent=2) + "\n")
+            os.replace(tmp, path)
+            if lease_locking_enabled():
+                fcntl.flock(owned_lock_fh.fileno(), fcntl.LOCK_UN)
+        return
+
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(leases, indent=2) + "\n")
+    os.replace(tmp, path)
+
+
+def mutate_lane_leases(
+    workspace_root: Path,
+    owner_unit: str,
+    lane_name: str,
+    mutator,
+):
+    lock_path = lane_leases_lock_file(workspace_root, owner_unit, lane_name)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock_fh:
+        if lease_locking_enabled():
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+        path = lane_leases_file(workspace_root, owner_unit, lane_name)
+        if path.exists():
+            leases = json.loads(path.read_text())
+        else:
+            leases = []
+        if not lease_locking_enabled():
+            delay = float(os.environ.get("GR2_LEASE_TEST_DELAY", "0"))
+            if delay > 0:
+                time.sleep(delay)
+        result = mutator(leases)
+        if result.get("write"):
+            write_lane_leases(
+                workspace_root,
+                owner_unit,
+                lane_name,
+                result["leases"],
+                lock_fh=lock_fh,
+            )
+        if lease_locking_enabled():
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+        return result
 
 
 def iter_lane_files(workspace_root: Path, owner_unit: str | None = None) -> list[Path]:
@@ -691,51 +760,17 @@ def lane_history(args: argparse.Namespace) -> int:
 def acquire_lane_lease(args: argparse.Namespace) -> int:
     workspace_root = args.workspace_root.resolve()
     load_lane_doc(workspace_root, args.owner_unit, args.lane_name)
-    leases = load_lane_leases(workspace_root, args.owner_unit, args.lane_name)
-    retained = [lease for lease in leases if lease["actor"] != args.actor]
-    active_conflicts, stale_conflicts = conflicting_leases(retained, args.actor, args.mode)
-
-    if active_conflicts:
-        payload = {
-            "status": "blocked",
-            "reason": "conflicting-active-lease",
-            "lane": args.lane_name,
-            "owner_unit": args.owner_unit,
-            "requested": {"actor": args.actor, "mode": args.mode},
-            "conflicting_leases": active_conflicts,
-        }
-        print(json.dumps(payload, indent=2))
+    result = mutate_lane_leases(
+        workspace_root,
+        args.owner_unit,
+        args.lane_name,
+        lambda leases: _acquire_lane_lease_mutation(leases, args),
+    )
+    if result["status"] == "blocked":
+        print(json.dumps(result["payload"], indent=2))
         return 1
-
-    if stale_conflicts and not args.force:
-        payload = {
-            "status": "blocked",
-            "reason": "stale-conflicting-lease",
-            "lane": args.lane_name,
-            "owner_unit": args.owner_unit,
-            "requested": {"actor": args.actor, "mode": args.mode},
-            "conflicting_leases": stale_conflicts,
-            "hint": "rerun with --force to break stale conflicting leases",
-        }
-        print(json.dumps(payload, indent=2))
-        return 1
-
-    if stale_conflicts and args.force:
-        print(
-            json.dumps(
-                {
-                    "status": "warning",
-                    "reason": "breaking-stale-conflicting-leases",
-                    "broken_leases": stale_conflicts,
-                },
-                indent=2,
-            )
-        )
-        stale_actors = {lease["actor"] for lease in stale_conflicts}
-        retained = [lease for lease in retained if lease["actor"] not in stale_actors]
-
-    retained.append(build_lease(args.actor, args.mode, args.ttl_seconds))
-    write_lane_leases(workspace_root, args.owner_unit, args.lane_name, retained)
+    if result["status"] == "warning":
+        print(json.dumps(result["warning"], indent=2))
     lane_doc = load_lane_doc(workspace_root, args.owner_unit, args.lane_name)
     unit_spec = find_unit_spec(workspace_root, args.owner_unit)
     emit_lane_event(
@@ -757,13 +792,72 @@ def acquire_lane_lease(args: argparse.Namespace) -> int:
     return 0
 
 
+def _acquire_lane_lease_mutation(leases: list[dict], args: argparse.Namespace) -> dict:
+    retained = [lease for lease in leases if lease["actor"] != args.actor]
+    active_conflicts, stale_conflicts = conflicting_leases(retained, args.actor, args.mode)
+
+    if active_conflicts:
+        return {
+            "status": "blocked",
+            "payload": {
+                "status": "blocked",
+                "reason": "conflicting-active-lease",
+                "lane": args.lane_name,
+                "owner_unit": args.owner_unit,
+                "requested": {"actor": args.actor, "mode": args.mode},
+                "conflicting_leases": active_conflicts,
+            },
+            "write": False,
+        }
+
+    if stale_conflicts and not args.force:
+        return {
+            "status": "blocked",
+            "payload": {
+                "status": "blocked",
+                "reason": "stale-conflicting-lease",
+                "lane": args.lane_name,
+                "owner_unit": args.owner_unit,
+                "requested": {"actor": args.actor, "mode": args.mode},
+                "conflicting_leases": stale_conflicts,
+                "hint": "rerun with --force to break stale conflicting leases",
+            },
+            "write": False,
+        }
+
+    warning = None
+    if stale_conflicts and args.force:
+        warning = {
+            "status": "warning",
+            "reason": "breaking-stale-conflicting-leases",
+            "broken_leases": stale_conflicts,
+        }
+        stale_actors = {lease["actor"] for lease in stale_conflicts}
+        retained = [lease for lease in retained if lease["actor"] not in stale_actors]
+
+    retained.append(build_lease(args.actor, args.mode, args.ttl_seconds))
+    return {
+        "status": "warning" if warning else "ok",
+        "warning": warning,
+        "leases": retained,
+        "write": True,
+    }
+
+
 def release_lane_lease(args: argparse.Namespace) -> int:
     workspace_root = args.workspace_root.resolve()
     lane_doc = load_lane_doc(workspace_root, args.owner_unit, args.lane_name)
     unit_spec = find_unit_spec(workspace_root, args.owner_unit)
-    leases = load_lane_leases(workspace_root, args.owner_unit, args.lane_name)
-    retained = [lease for lease in leases if lease["actor"] != args.actor]
-    write_lane_leases(workspace_root, args.owner_unit, args.lane_name, retained)
+    mutate_lane_leases(
+        workspace_root,
+        args.owner_unit,
+        args.lane_name,
+        lambda leases: {
+            "status": "ok",
+            "leases": [lease for lease in leases if lease["actor"] != args.actor],
+            "write": True,
+        },
+    )
     emit_lane_event(
         workspace_root,
         {

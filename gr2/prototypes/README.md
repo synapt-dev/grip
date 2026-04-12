@@ -273,6 +273,25 @@ This harness:
 - makes independent commits in each checkout
 - verifies the checkouts do not interfere
 
+## Concurrent Lease Stress
+
+To verify that lease writes survive contention, run:
+
+```bash
+python3 gr2/prototypes/concurrent_lease_stress.py
+```
+
+This harness runs two phases in one command:
+
+- before locking: `GR2_DISABLE_LEASE_LOCKING=1`
+- after locking: default locking enabled
+
+It reports:
+
+- JSON corruption count
+- rounds where both conflicting edit acquisitions succeeded
+- rounds where the final lease count was wrong
+
 Bootstrap command:
 
 ```bash

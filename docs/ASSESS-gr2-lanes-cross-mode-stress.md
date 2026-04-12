@@ -28,3 +28,27 @@ The current expected outcomes are mixed by design:
   surfaces exist
 - solo-human lane recovery should only partially hold until return-to-previous
   flow exists
+
+## Concurrent Lease Stress Result
+
+The concurrent lease harness lives at:
+
+- `gr2/prototypes/concurrent_lease_stress.py`
+
+Current before/after result over 50 rounds:
+
+- before locking
+  - `corruption_count = 0`
+  - `both_succeeded_count = 23`
+  - `unexpected_lease_count = 0`
+- after locking
+  - `corruption_count = 0`
+  - `both_succeeded_count = 0`
+  - `unexpected_lease_count = 0`
+
+Important interpretation:
+
+- the pre-locking failure mode was semantic race, not invalid JSON
+- atomic replace kept the file parseable
+- transaction-level locking was still required because conflicting edit leases
+  could both succeed without it

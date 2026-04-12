@@ -233,7 +233,27 @@ Lease behavior is now explicit in the prototype:
 - the conflict matrix is deliberate:
   - `edit` conflicts with `edit`, `exec`, and `review`
   - `exec` conflicts with `edit` and `review`, but not `exec`
-  - `review` is exclusive
+- `review` is exclusive
+
+## Synapt Integration Prototype
+
+The lane prototype now includes a minimal Synapt-native event layer:
+
+- `enter-lane --notify-channel --recall`
+- `exit-lane --notify-channel --recall`
+- append-only event log at `.grip/events/lane_events.jsonl`
+- recall-compatible log at `.grip/events/recall_lane_history.jsonl`
+- `lane-history` to reconstruct a unit's lane timeline
+
+Unit `agent_id` can now flow from `WorkspaceSpec` into:
+
+- lane metadata
+- current-lane state
+- emitted lane events
+
+This is still prototype scope, but it tests the right product direction:
+lane transitions and lease changes should be observable workspace events rather
+than invisible local state.
 
 Bootstrap command:
 

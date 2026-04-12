@@ -31,6 +31,7 @@ class LaneMetadata:
     schema_version: int
     lane_name: str
     owner_unit: str
+    agent_id: str | None
     lane_type: str
     repos: list[str]
     branch_map: dict[str, str]
@@ -45,6 +46,7 @@ class LaneMetadata:
             f"schema_version = {self.schema_version}",
             f'lane_name = "{self.lane_name}"',
             f'owner_unit = "{self.owner_unit}"',
+            f'agent_id = "{self.agent_id or ""}"',
             f'lane_type = "{self.lane_type}"',
             f'creation_source = "{self.creation_source}"',
             "",
@@ -179,11 +181,25 @@ def parse_args() -> argparse.Namespace:
     enter.add_argument("owner_unit")
     enter.add_argument("lane_name")
     enter.add_argument("--actor", required=True, help="actor label, e.g. human:layne or agent:atlas")
+    enter.add_argument("--notify-channel", action="store_true")
+    enter.add_argument("--recall", action="store_true")
+
+    exit_lane = sub.add_parser("exit-lane")
+    exit_lane.add_argument("workspace_root", type=Path)
+    exit_lane.add_argument("owner_unit")
+    exit_lane.add_argument("--actor", required=True)
+    exit_lane.add_argument("--notify-channel", action="store_true")
+    exit_lane.add_argument("--recall", action="store_true")
 
     current = sub.add_parser("current-lane")
     current.add_argument("workspace_root", type=Path)
     current.add_argument("owner_unit")
     current.add_argument("--json", action="store_true")
+
+    history = sub.add_parser("lane-history")
+    history.add_argument("workspace_root", type=Path)
+    history.add_argument("owner_unit")
+    history.add_argument("--json", action="store_true")
 
     lease = sub.add_parser("acquire-lane-lease")
     lease.add_argument("workspace_root", type=Path)
@@ -282,9 +298,29 @@ def lane_leases_file(workspace_root: Path, owner_unit: str, lane_name: str) -> P
     return lane_dir(workspace_root, owner_unit, lane_name) / "leases.json"
 
 
+def events_dir(workspace_root: Path) -> Path:
+    return workspace_root / ".grip" / "events"
+
+
+def lane_events_file(workspace_root: Path) -> Path:
+    return events_dir(workspace_root) / "lane_events.jsonl"
+
+
+def recall_lane_events_file(workspace_root: Path) -> Path:
+    return events_dir(workspace_root) / "recall_lane_history.jsonl"
+
+
 def load_workspace_spec(workspace_root: Path) -> dict:
     with (workspace_root / ".grip" / "workspace_spec.toml").open("rb") as fh:
         return tomllib.load(fh)
+
+
+def find_unit_spec(workspace_root: Path, owner_unit: str) -> dict:
+    spec = load_workspace_spec(workspace_root)
+    for unit in spec.get("units", []):
+        if unit.get("name") == owner_unit:
+            return unit
+    raise SystemExit(f"unit not found in workspace spec: {owner_unit}")
 
 
 def load_lane_doc(workspace_root: Path, owner_unit: str, lane_name: str) -> dict:
@@ -306,6 +342,33 @@ def load_current_lane_doc(workspace_root: Path, owner_unit: str) -> dict:
     if not path.exists():
         raise SystemExit(f"no current lane recorded for unit: {owner_unit}")
     return json.loads(path.read_text())
+
+
+def append_jsonl(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload) + "\n")
+
+
+def emit_lane_event(workspace_root: Path, payload: dict) -> None:
+    append_jsonl(lane_events_file(workspace_root), payload)
+
+
+def emit_recall_lane_event(workspace_root: Path, payload: dict) -> None:
+    append_jsonl(recall_lane_events_file(workspace_root), payload)
+
+
+def iter_lane_events(workspace_root: Path) -> list[dict]:
+    path = lane_events_file(workspace_root)
+    if not path.exists():
+        return []
+    items: list[dict] = []
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        items.append(json.loads(line))
+    return items
 
 
 def load_lane_leases(workspace_root: Path, owner_unit: str, lane_name: str) -> list[dict]:
@@ -430,6 +493,7 @@ def parse_branch_arg(raw: str, repos: list[str]) -> dict[str, str]:
 def create_lane(args: argparse.Namespace) -> int:
     workspace_root = args.workspace_root.resolve()
     spec = load_workspace_spec(workspace_root)
+    unit_spec = find_unit_spec(workspace_root, args.owner_unit)
     repo_names = [item["name"] for item in spec.get("repos", [])]
     repos = parse_repo_list(args.repos)
 
@@ -446,6 +510,7 @@ def create_lane(args: argparse.Namespace) -> int:
         schema_version=LANE_SCHEMA_VERSION,
         lane_name=args.lane_name,
         owner_unit=args.owner_unit,
+        agent_id=unit_spec.get("agent_id"),
         lane_type=args.type,
         repos=repos,
         branch_map=parse_branch_arg(args.branch, repos),
@@ -471,6 +536,7 @@ def create_lane(args: argparse.Namespace) -> int:
 def enter_lane(args: argparse.Namespace) -> int:
     workspace_root = args.workspace_root.resolve()
     lane_doc = load_lane_doc(workspace_root, args.owner_unit, args.lane_name)
+    unit_spec = find_unit_spec(workspace_root, args.owner_unit)
     path = current_lane_file(workspace_root, args.owner_unit)
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -495,6 +561,7 @@ def enter_lane(args: argparse.Namespace) -> int:
     doc = {
         "current": {
             "owner_unit": args.owner_unit,
+            "agent_id": unit_spec.get("agent_id"),
             "lane_name": args.lane_name,
             "lane_type": lane_doc["lane_type"],
             "repos": lane_doc.get("repos", []),
@@ -504,7 +571,87 @@ def enter_lane(args: argparse.Namespace) -> int:
         "recent": deduped,
     }
     path.write_text(json.dumps(doc, indent=2) + "\n")
+    event = {
+        "type": "lane_enter",
+        "agent": args.actor,
+        "agent_id": unit_spec.get("agent_id"),
+        "owner_unit": args.owner_unit,
+        "lane": args.lane_name,
+        "lane_type": lane_doc["lane_type"],
+        "repos": lane_doc.get("repos", []),
+        "timestamp": now_utc(),
+    }
+    emit_lane_event(workspace_root, event)
+    if args.notify_channel:
+        event["channel_message"] = (
+            f'{args.actor} entered {args.owner_unit}/{args.lane_name} '
+            f'[{lane_doc["lane_type"]}] repos={",".join(lane_doc.get("repos", []))}'
+        )
+    if args.recall:
+        emit_recall_lane_event(
+            workspace_root,
+            {
+                "kind": "lane_transition",
+                "action": "enter",
+                "owner_unit": args.owner_unit,
+                "agent_id": unit_spec.get("agent_id"),
+                "actor": args.actor,
+                "lane": args.lane_name,
+                "lane_type": lane_doc["lane_type"],
+                "repos": lane_doc.get("repos", []),
+                "timestamp": event["timestamp"],
+            },
+        )
     print(path)
+    return 0
+
+
+def exit_lane(args: argparse.Namespace) -> int:
+    workspace_root = args.workspace_root.resolve()
+    doc = load_current_lane_doc(workspace_root, args.owner_unit)
+    current_doc = doc.get("current")
+    if not current_doc:
+        raise SystemExit(f"no current lane to exit for unit: {args.owner_unit}")
+    event = {
+        "type": "lane_exit",
+        "agent": args.actor,
+        "agent_id": current_doc.get("agent_id"),
+        "owner_unit": args.owner_unit,
+        "lane": current_doc["lane_name"],
+        "lane_type": current_doc["lane_type"],
+        "repos": current_doc.get("repos", []),
+        "timestamp": now_utc(),
+    }
+    emit_lane_event(workspace_root, event)
+    if args.notify_channel:
+        event["channel_message"] = (
+            f'{args.actor} exited {args.owner_unit}/{current_doc["lane_name"]} '
+            f'[{current_doc["lane_type"]}]'
+        )
+    if args.recall:
+        emit_recall_lane_event(
+            workspace_root,
+            {
+                "kind": "lane_transition",
+                "action": "exit",
+                "owner_unit": args.owner_unit,
+                "agent_id": current_doc.get("agent_id"),
+                "actor": args.actor,
+                "lane": current_doc["lane_name"],
+                "lane_type": current_doc["lane_type"],
+                "repos": current_doc.get("repos", []),
+                "timestamp": event["timestamp"],
+            },
+        )
+
+    recent = doc.get("recent", [])
+    next_current = recent[0] if recent else None
+    updated = {
+        "current": next_current,
+        "recent": recent[1:] if next_current else [],
+    }
+    current_lane_file(workspace_root, args.owner_unit).write_text(json.dumps(updated, indent=2) + "\n")
+    print(current_lane_file(workspace_root, args.owner_unit))
     return 0
 
 
@@ -522,6 +669,22 @@ def current_lane(args: argparse.Namespace) -> int:
         print("recent:")
         for item in recent:
             print(f'  - {item["owner_unit"]}/{item["lane_name"]} ({item["lane_type"]})')
+    return 0
+
+
+def lane_history(args: argparse.Namespace) -> int:
+    rows = [
+        event for event in iter_lane_events(args.workspace_root.resolve())
+        if event.get("owner_unit") == args.owner_unit
+    ]
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return 0
+    print("TIMESTAMP\tTYPE\tACTOR\tAGENT_ID\tLANE\tREPOS")
+    for row in rows:
+        print(
+            f'{row.get("timestamp","-")}\t{row.get("type","-")}\t{row.get("agent","-")}\t{row.get("agent_id","-")}\t{row.get("lane","-")}\t{",".join(row.get("repos", []))}'
+        )
     return 0
 
 
@@ -573,15 +736,47 @@ def acquire_lane_lease(args: argparse.Namespace) -> int:
 
     retained.append(build_lease(args.actor, args.mode, args.ttl_seconds))
     write_lane_leases(workspace_root, args.owner_unit, args.lane_name, retained)
+    lane_doc = load_lane_doc(workspace_root, args.owner_unit, args.lane_name)
+    unit_spec = find_unit_spec(workspace_root, args.owner_unit)
+    emit_lane_event(
+        workspace_root,
+        {
+            "type": "lease_acquire",
+            "agent": args.actor,
+            "agent_id": unit_spec.get("agent_id"),
+            "owner_unit": args.owner_unit,
+            "lane": args.lane_name,
+            "lane_type": lane_doc["lane_type"],
+            "lease_mode": args.mode,
+            "ttl_seconds": args.ttl_seconds,
+            "repos": lane_doc.get("repos", []),
+            "timestamp": now_utc(),
+        },
+    )
     print(lane_leases_file(workspace_root, args.owner_unit, args.lane_name))
     return 0
 
 
 def release_lane_lease(args: argparse.Namespace) -> int:
     workspace_root = args.workspace_root.resolve()
+    lane_doc = load_lane_doc(workspace_root, args.owner_unit, args.lane_name)
+    unit_spec = find_unit_spec(workspace_root, args.owner_unit)
     leases = load_lane_leases(workspace_root, args.owner_unit, args.lane_name)
     retained = [lease for lease in leases if lease["actor"] != args.actor]
     write_lane_leases(workspace_root, args.owner_unit, args.lane_name, retained)
+    emit_lane_event(
+        workspace_root,
+        {
+            "type": "lease_release",
+            "agent": args.actor,
+            "agent_id": unit_spec.get("agent_id"),
+            "owner_unit": args.owner_unit,
+            "lane": args.lane_name,
+            "lane_type": lane_doc["lane_type"],
+            "repos": lane_doc.get("repos", []),
+            "timestamp": now_utc(),
+        },
+    )
     print(lane_leases_file(workspace_root, args.owner_unit, args.lane_name))
     return 0
 
@@ -906,8 +1101,12 @@ def main() -> int:
         return create_lane(args)
     if args.command == "enter-lane":
         return enter_lane(args)
+    if args.command == "exit-lane":
+        return exit_lane(args)
     if args.command == "current-lane":
         return current_lane(args)
+    if args.command == "lane-history":
+        return lane_history(args)
     if args.command == "create-review-lane":
         return create_review_lane(args)
     if args.command == "show-lane":

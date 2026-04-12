@@ -95,16 +95,19 @@ url = "https://example.invalid/web.git"
 [[units]]
 name = "atlas"
 path = "agents/atlas"
+agent_id = "atlas-agent"
 repos = ["app", "api", "web"]
 
 [[units]]
 name = "apollo"
 path = "agents/apollo"
+agent_id = "apollo-agent"
 repos = ["app", "api", "web"]
 
 [[units]]
 name = "layne"
 path = "agents/layne"
+agent_id = "layne-human"
 repos = ["app", "api", "web"]
 """
     (workspace_root / ".grip" / "workspace_spec.toml").write_text(spec)
@@ -417,6 +420,96 @@ def scenario_lease_conflict_matrix(root: Path, workspace_root: Path) -> Scenario
     )
 
 
+def scenario_synapt_lane_events(root: Path, workspace_root: Path) -> ScenarioResult:
+    create_lane(root, workspace_root, "atlas", "feat-events", "app,api", "feat/events")
+    run(
+        [
+            "python3",
+            str(lane_proto(root)),
+            "enter-lane",
+            str(workspace_root),
+            "atlas",
+            "feat-events",
+            "--actor",
+            "agent:atlas",
+            "--notify-channel",
+            "--recall",
+        ]
+    )
+    acquire_lease(root, workspace_root, "atlas", "feat-events", "agent:atlas", "exec")
+    run(
+        [
+            "python3",
+            str(lane_proto(root)),
+            "release-lane-lease",
+            str(workspace_root),
+            "atlas",
+            "feat-events",
+            "--actor",
+            "agent:atlas",
+        ]
+    )
+    run(
+        [
+            "python3",
+            str(lane_proto(root)),
+            "exit-lane",
+            str(workspace_root),
+            "atlas",
+            "--actor",
+            "agent:atlas",
+            "--notify-channel",
+            "--recall",
+        ]
+    )
+    history_proc = run(
+        [
+            "python3",
+            str(lane_proto(root)),
+            "lane-history",
+            str(workspace_root),
+            "atlas",
+            "--json",
+        ],
+        capture=True,
+    )
+    history_rows = json.loads(history_proc.stdout)
+    events_path = workspace_root / ".grip" / "events" / "lane_events.jsonl"
+    recall_path = workspace_root / ".grip" / "events" / "recall_lane_history.jsonl"
+
+    holds = []
+    gaps = []
+    evidence = [json.dumps(history_rows, indent=2)]
+
+    event_types = [row["type"] for row in history_rows]
+    expected = ["lane_enter", "lease_acquire", "lease_release", "lane_exit"]
+    if event_types == expected:
+        holds.append("lane event timeline is reconstructible from append-only event log")
+    else:
+        gaps.append(f"unexpected lane event order: {event_types}")
+
+    if all(row.get("agent_id") == "atlas-agent" for row in history_rows):
+        holds.append("agent_id flows from workspace spec into lane events")
+    else:
+        gaps.append("agent_id did not flow consistently into lane events")
+
+    if events_path.exists() and recall_path.exists():
+        holds.append("channel-compatible and recall-compatible event logs are both written")
+    else:
+        gaps.append("expected event logs were not both written")
+
+    verdict = "holds" if not gaps else "fails"
+    return ScenarioResult(
+        scenario_id="synapt-lane-events",
+        user_mode="single-agent",
+        title="lane enter/lease/exit emits reconstructible synapt-compatible events",
+        verdict=verdict,
+        holds=holds,
+        gaps=gaps,
+        evidence=evidence,
+    )
+
+
 def scenario_stale_lease_force_break(root: Path, workspace_root: Path) -> ScenarioResult:
     create_lane(root, workspace_root, "atlas", "feat-stale", "app", "feat/stale")
     stale = acquire_lease(
@@ -546,6 +639,7 @@ def run_scenarios(workspace_root: Path) -> list[ScenarioResult]:
     root = repo_root()
     init_workspace(workspace_root)
     return [
+        scenario_synapt_lane_events(root, workspace_root),
         scenario_lease_conflict_matrix(root, workspace_root),
         scenario_stale_lease_force_break(root, workspace_root),
         scenario_multi_agent_same_repo(root, workspace_root),

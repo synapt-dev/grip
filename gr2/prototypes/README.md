@@ -255,6 +255,23 @@ This is still prototype scope, but it tests the right product direction:
 lane transitions and lease changes should be observable workspace events rather
 than invisible local state.
 
+Identity -> unit binding example:
+
+```bash
+python3 gr2/prototypes/identity_unit_binding.py demo
+python3 gr2/prototypes/identity_unit_binding.py resolve-binding ws_synapt_core opus --json
+python3 gr2/prototypes/identity_unit_binding.py compile-workspace ws_synapt_core --json
+```
+
+This prototype keeps the premium boundary hard:
+
+- Premium owns persistent agent identity, org membership, and workspace assignment.
+- gr2 only consumes the compiled workspace-scoped unit view.
+- the same persistent agent can map to different `owner_unit` names in different
+  workspaces without gr2 learning org logic.
+- reassignment is a premium recompilation event, not a gr2-side identity
+  decision.
+
 ## Real-Git Same-Repo Multi-Agent Materialization
 
 To verify that unit-local-first is real and not only metadata, run:

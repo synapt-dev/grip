@@ -255,6 +255,30 @@ This is still prototype scope, but it tests the right product direction:
 lane transitions and lease changes should be observable workspace events rather
 than invisible local state.
 
+Agent handoff example:
+
+```bash
+python3 gr2/prototypes/lane_workspace_prototype.py share-lane \
+  /path/to/workspace atlas feat-router apollo
+
+python3 gr2/prototypes/lane_workspace_prototype.py plan-handoff \
+  /path/to/workspace atlas feat-router apollo --mode shared --json
+
+python3 gr2/prototypes/lane_workspace_prototype.py create-continuation-lane \
+  /path/to/workspace atlas feat-router apollo feat-router-relay
+
+python3 gr2/prototypes/lane_workspace_prototype.py plan-handoff \
+  /path/to/workspace atlas feat-router apollo --mode continuation \
+  --target-lane-name feat-router-relay --json
+```
+
+Current prototype conclusion:
+
+- cross-unit shared-lane relay violates the unit-scoping invariant
+- continuation lanes preserve unit-scoped cwd, lease scope, and current-lane state
+- handoff should preserve lineage to the source lane without forcing the target
+  unit to execute inside the source unit's lane root
+
 Identity -> unit binding example:
 
 ```bash

@@ -215,6 +215,33 @@ def list_lanes_text(root: Path, workspace_root: Path, owner_unit: str | None = N
     return proc.stdout
 
 
+def plan_handoff_json(
+    root: Path,
+    workspace_root: Path,
+    source_owner_unit: str,
+    source_lane_name: str,
+    target_unit: str,
+    mode: str,
+    target_lane_name: str | None = None,
+) -> dict:
+    argv = [
+        "python3",
+        str(lane_proto(root)),
+        "plan-handoff",
+        str(workspace_root),
+        source_owner_unit,
+        source_lane_name,
+        target_unit,
+        "--mode",
+        mode,
+        "--json",
+    ]
+    if target_lane_name:
+        argv.extend(["--target-lane-name", target_lane_name])
+    proc = run(argv, capture=True)
+    return json.loads(proc.stdout)
+
+
 def scenario_multi_agent_same_repo(root: Path, workspace_root: Path) -> ScenarioResult:
     create_lane(root, workspace_root, "atlas", "feat-router", "app", "feat/router")
     create_lane(root, workspace_root, "apollo", "feat-materialize", "app", "feat/materialize")
@@ -246,6 +273,91 @@ def scenario_multi_agent_same_repo(root: Path, workspace_root: Path) -> Scenario
         scenario_id="multi-agent-same-repo",
         user_mode="multi-agent",
         title="two agents create lanes that touch the same repo",
+        verdict=verdict,
+        holds=holds,
+        gaps=gaps,
+        evidence=evidence,
+    )
+
+
+def scenario_agent_handoff_relay(root: Path, workspace_root: Path) -> ScenarioResult:
+    create_lane(root, workspace_root, "atlas", "feat-router", "app,api", "feat/router")
+    run(
+        [
+            "python3",
+            str(lane_proto(root)),
+            "share-lane",
+            str(workspace_root),
+            "atlas",
+            "feat-router",
+            "apollo",
+        ]
+    )
+    shared_plan = plan_handoff_json(
+        root,
+        workspace_root,
+        "atlas",
+        "feat-router",
+        "apollo",
+        "shared",
+    )
+    run(
+        [
+            "python3",
+            str(lane_proto(root)),
+            "create-continuation-lane",
+            str(workspace_root),
+            "atlas",
+            "feat-router",
+            "apollo",
+            "feat-router-relay",
+        ]
+    )
+    continuation_plan = plan_handoff_json(
+        root,
+        workspace_root,
+        "atlas",
+        "feat-router",
+        "apollo",
+        "continuation",
+        "feat-router-relay",
+    )
+
+    holds = []
+    gaps = []
+    evidence = [
+        json.dumps(shared_plan, indent=2),
+        json.dumps(continuation_plan, indent=2),
+    ]
+
+    if not shared_plan["invariant_assessment"]["unit_scoped"]:
+        holds.append("cross-unit shared-lane relay exposes the unit-scoping violation directly")
+    else:
+        gaps.append("shared-lane relay incorrectly appears unit-scoped")
+
+    shared_cwds = {row["cwd"] for row in shared_plan["exec_rows"]}
+    if all("/agents/atlas/lanes/feat-router/" in cwd for cwd in shared_cwds):
+        holds.append("shared-lane relay forces the target unit to execute inside the source unit lane root")
+    else:
+        gaps.append("shared-lane relay did not clearly surface source-unit cwd ownership")
+
+    if continuation_plan["invariant_assessment"]["unit_scoped"]:
+        holds.append("continuation lane preserves unit-scoped cwd and lease ownership")
+    else:
+        gaps.append("continuation lane did not preserve unit scoping")
+
+    continuation_cwds = {row["cwd"] for row in continuation_plan["exec_rows"]}
+    if all("/agents/apollo/lanes/feat-router-relay/" in cwd for cwd in continuation_cwds):
+        holds.append("continuation lane gives the target unit an independent lane root")
+        verdict = "holds"
+    else:
+        gaps.append("continuation lane did not create target-unit-local execution roots")
+        verdict = "fails"
+
+    return ScenarioResult(
+        scenario_id="agent-handoff-relay",
+        user_mode="multi-agent",
+        title="agent-to-agent lane handoff prefers continuation over cross-unit shared lanes",
         verdict=verdict,
         holds=holds,
         gaps=gaps,
@@ -643,6 +755,7 @@ def run_scenarios(workspace_root: Path) -> list[ScenarioResult]:
         scenario_lease_conflict_matrix(root, workspace_root),
         scenario_stale_lease_force_break(root, workspace_root),
         scenario_multi_agent_same_repo(root, workspace_root),
+        scenario_agent_handoff_relay(root, workspace_root),
         scenario_mixed_same_lane_exec(root, workspace_root),
         scenario_single_agent_interrupt_recovery(root, workspace_root),
         scenario_solo_human_forgets_lane(root, workspace_root),

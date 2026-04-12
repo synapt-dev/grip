@@ -43,6 +43,8 @@ class LaneMetadata:
     private_context_roots: list[str]
     exec_defaults: dict[str, object]
     creation_source: str
+    shared_with: list[str]
+    handoff_source: dict[str, str] | None
 
     def as_toml(self) -> str:
         lines = [
@@ -54,6 +56,7 @@ class LaneMetadata:
             f'creation_source = "{self.creation_source}"',
             "",
             f"repos = [{', '.join(f'\"{r}\"' for r in self.repos)}]",
+            f"shared_with = [{', '.join(f'\"{u}\"' for u in self.shared_with)}]",
             "",
             "[branch_map]",
         ]
@@ -81,6 +84,17 @@ class LaneMetadata:
 
         for assoc in self.pr_associations:
             lines.extend(["", "[[pr_associations]]", f'ref = "{assoc}"'])
+
+        if self.handoff_source:
+            lines.extend(
+                [
+                    "",
+                    "[handoff]",
+                    f'kind = "{self.handoff_source["kind"]}"',
+                    f'source_owner_unit = "{self.handoff_source["source_owner_unit"]}"',
+                    f'source_lane = "{self.handoff_source["source_lane"]}"',
+                ]
+            )
 
         return "\n".join(lines) + "\n"
 
@@ -156,6 +170,28 @@ def parse_args() -> argparse.Namespace:
     review.add_argument("pr_number", type=int)
     review.add_argument("--lane-name")
     review.add_argument("--branch")
+
+    share_lane = sub.add_parser("share-lane")
+    share_lane.add_argument("workspace_root", type=Path)
+    share_lane.add_argument("owner_unit")
+    share_lane.add_argument("lane_name")
+    share_lane.add_argument("target_unit")
+
+    continuation = sub.add_parser("create-continuation-lane")
+    continuation.add_argument("workspace_root", type=Path)
+    continuation.add_argument("source_owner_unit")
+    continuation.add_argument("source_lane_name")
+    continuation.add_argument("target_unit")
+    continuation.add_argument("target_lane_name")
+
+    handoff = sub.add_parser("plan-handoff")
+    handoff.add_argument("workspace_root", type=Path)
+    handoff.add_argument("source_owner_unit")
+    handoff.add_argument("source_lane_name")
+    handoff.add_argument("target_unit")
+    handoff.add_argument("--mode", choices=["shared", "continuation"], required=True)
+    handoff.add_argument("--target-lane-name")
+    handoff.add_argument("--json", action="store_true")
 
     show = sub.add_parser("show-lane")
     show.add_argument("workspace_root", type=Path)
@@ -303,6 +339,17 @@ def lane_leases_file(workspace_root: Path, owner_unit: str, lane_name: str) -> P
 
 def lane_leases_lock_file(workspace_root: Path, owner_unit: str, lane_name: str) -> Path:
     return lane_dir(workspace_root, owner_unit, lane_name) / "leases.lock"
+
+
+def shared_lane_access_file(workspace_root: Path, owner_unit: str, lane_name: str) -> Path:
+    return (
+        workspace_root
+        / ".grip"
+        / "state"
+        / "shared_lane_access"
+        / owner_unit
+        / f"{lane_name}.json"
+    )
 
 
 def events_dir(workspace_root: Path) -> Path:
@@ -596,6 +643,8 @@ def create_lane(args: argparse.Namespace) -> int:
             "commands": args.default_commands,
         },
         creation_source=args.source,
+        shared_with=[],
+        handoff_source=None,
     )
     lane_file(workspace_root, args.owner_unit, args.lane_name).write_text(metadata.as_toml())
     print(lane_file(workspace_root, args.owner_unit, args.lane_name))
@@ -911,6 +960,131 @@ def create_review_lane(args: argparse.Namespace) -> int:
     return 0
 
 
+def share_lane(args: argparse.Namespace) -> int:
+    workspace_root = args.workspace_root.resolve()
+    load_lane_doc(workspace_root, args.owner_unit, args.lane_name)
+    find_unit_spec(workspace_root, args.target_unit)
+    access_path = shared_lane_access_file(workspace_root, args.owner_unit, args.lane_name)
+    access_path.parent.mkdir(parents=True, exist_ok=True)
+    if access_path.exists():
+        doc = json.loads(access_path.read_text())
+    else:
+        doc = {
+            "owner_unit": args.owner_unit,
+            "lane_name": args.lane_name,
+            "shared_with": [],
+        }
+    if args.target_unit not in doc["shared_with"]:
+        doc["shared_with"].append(args.target_unit)
+    access_path.write_text(json.dumps(doc, indent=2) + "\n")
+    print(access_path)
+    return 0
+
+
+def create_continuation_lane(args: argparse.Namespace) -> int:
+    workspace_root = args.workspace_root.resolve()
+    source = load_lane_doc(workspace_root, args.source_owner_unit, args.source_lane_name)
+    unit_spec = find_unit_spec(workspace_root, args.target_unit)
+    lane_root = lane_dir(workspace_root, args.target_unit, args.target_lane_name)
+    lane_root.mkdir(parents=True, exist_ok=True)
+    (lane_root / "repos").mkdir(exist_ok=True)
+    (lane_root / "context").mkdir(exist_ok=True)
+
+    metadata = LaneMetadata(
+        schema_version=LANE_SCHEMA_VERSION,
+        lane_name=args.target_lane_name,
+        owner_unit=args.target_unit,
+        agent_id=unit_spec.get("agent_id"),
+        lane_type=source["lane_type"],
+        repos=source.get("repos", []),
+        branch_map=source.get("branch_map", {}),
+        pr_associations=[item["ref"] for item in source.get("pr_associations", [])],
+        shared_context_roots=source.get("context", {}).get("shared_roots", []),
+        private_context_roots=[
+            f"agents/{args.target_unit}/home/context",
+            f"agents/{args.target_unit}/lanes/{args.target_lane_name}/context",
+        ],
+        exec_defaults=source.get("exec_defaults", {}),
+        creation_source="lane-handoff",
+        shared_with=[],
+        handoff_source={
+            "kind": "continuation",
+            "source_owner_unit": args.source_owner_unit,
+            "source_lane": args.source_lane_name,
+        },
+    )
+    lane_file(workspace_root, args.target_unit, args.target_lane_name).write_text(
+        metadata.as_toml()
+    )
+    print(lane_file(workspace_root, args.target_unit, args.target_lane_name))
+    return 0
+
+
+def plan_handoff(args: argparse.Namespace) -> int:
+    workspace_root = args.workspace_root.resolve()
+    source = load_lane_doc(workspace_root, args.source_owner_unit, args.source_lane_name)
+    find_unit_spec(workspace_root, args.target_unit)
+    if args.mode == "shared":
+        access_path = shared_lane_access_file(workspace_root, args.source_owner_unit, args.source_lane_name)
+        access = json.loads(access_path.read_text()) if access_path.exists() else None
+        payload = {
+            "mode": "shared",
+            "source_owner_unit": args.source_owner_unit,
+            "source_lane_name": args.source_lane_name,
+            "target_unit": args.target_unit,
+            "shared_access_present": bool(access and args.target_unit in access.get("shared_with", [])),
+            "exec_rows": [
+                {
+                    "acting_unit": args.target_unit,
+                    "owner_unit": args.source_owner_unit,
+                    "lane_name": args.source_lane_name,
+                    "repo": repo,
+                    "cwd": str(workspace_root / "agents" / args.source_owner_unit / "lanes" / args.source_lane_name / "repos" / repo),
+                    "lease_scope": f"{args.source_owner_unit}/{args.source_lane_name}",
+                }
+                for repo in source.get("repos", [])
+            ],
+            "invariant_assessment": {
+                "unit_scoped": False,
+                "reason": "target unit must execute inside another unit's lane root and lease scope",
+            },
+        }
+    else:
+        target_lane_name = args.target_lane_name or f"{args.source_lane_name}-relay"
+        payload = {
+            "mode": "continuation",
+            "source_owner_unit": args.source_owner_unit,
+            "source_lane_name": args.source_lane_name,
+            "target_unit": args.target_unit,
+            "target_lane_name": target_lane_name,
+            "exec_rows": [
+                {
+                    "acting_unit": args.target_unit,
+                    "owner_unit": args.target_unit,
+                    "lane_name": target_lane_name,
+                    "repo": repo,
+                    "cwd": str(workspace_root / "agents" / args.target_unit / "lanes" / target_lane_name / "repos" / repo),
+                    "lease_scope": f"{args.target_unit}/{target_lane_name}",
+                }
+                for repo in source.get("repos", [])
+            ],
+            "handoff_source": {
+                "source_owner_unit": args.source_owner_unit,
+                "source_lane_name": args.source_lane_name,
+            },
+            "invariant_assessment": {
+                "unit_scoped": True,
+                "reason": "target unit gets its own lane root, lease scope, and current-lane state while keeping source linkage",
+            },
+        }
+
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(json.dumps(payload, indent=2))
+    return 0
+
+
 def create_shared_scratchpad(args: argparse.Namespace) -> int:
     workspace_root = args.workspace_root.resolve()
     root = shared_scratchpad_dir(workspace_root, args.name)
@@ -1203,6 +1377,12 @@ def main() -> int:
         return lane_history(args)
     if args.command == "create-review-lane":
         return create_review_lane(args)
+    if args.command == "share-lane":
+        return share_lane(args)
+    if args.command == "create-continuation-lane":
+        return create_continuation_lane(args)
+    if args.command == "plan-handoff":
+        return plan_handoff(args)
     if args.command == "show-lane":
         return show_lane(args)
     if args.command == "list-lanes":

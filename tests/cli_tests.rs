@@ -3466,3 +3466,207 @@ path = "agents/atlas"
         .failure()
         .stderr(predicate::str::contains("unknown repo 'missing'"));
 }
+
+#[test]
+fn test_gr2_exec_status_reports_lane_execution_surface() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    for (name, url) in [
+        ("app", "https://example.com/app.git"),
+        ("api", "https://example.com/api.git"),
+    ] {
+        let mut repo_add = Command::cargo_bin("gr2").unwrap();
+        repo_add
+            .current_dir(&workspace_root)
+            .args(["repo", "add", name, url])
+            .assert()
+            .success();
+    }
+
+    let mut unit_add = Command::cargo_bin("gr2").unwrap();
+    unit_add
+        .current_dir(&workspace_root)
+        .args(["unit", "add", "atlas"])
+        .assert()
+        .success();
+
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        r#"
+schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "app"
+path = "repos/app"
+url = "https://example.com/app.git"
+
+[[repos]]
+name = "api"
+path = "repos/api"
+url = "https://example.com/api.git"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = ["app", "api"]
+"#,
+    )
+    .unwrap();
+
+    let mut create = Command::cargo_bin("gr2").unwrap();
+    create
+        .current_dir(&workspace_root)
+        .args([
+            "lane",
+            "create",
+            "feat-auth",
+            "--owner-unit",
+            "atlas",
+            "--branch",
+            "app=feat-auth",
+            "--pr",
+            "app:548",
+            "--exec",
+            "cargo test -p app",
+            "--exec",
+            "cargo test -p api",
+        ])
+        .assert()
+        .success();
+
+    let mut exec_status = Command::cargo_bin("gr2").unwrap();
+    exec_status
+        .current_dir(&workspace_root)
+        .args([
+            "exec",
+            "status",
+            "--lane",
+            "feat-auth",
+            "--owner-unit",
+            "atlas",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("gr2 exec status"))
+        .stdout(predicate::str::contains("lane: atlas/feat-auth"))
+        .stdout(predicate::str::contains("parallel: false"))
+        .stdout(predicate::str::contains("fail_fast: true"))
+        .stdout(predicate::str::contains("- cargo test -p app"))
+        .stdout(predicate::str::contains("app missing"))
+        .stdout(predicate::str::contains("feat-auth"))
+        .stdout(predicate::str::contains("548 2"))
+        .stdout(predicate::str::contains("api missing"))
+        .stdout(predicate::str::contains("repos"))
+        .stdout(predicate::str::contains("api"))
+        .stdout(predicate::str::contains(" - - 2"));
+}
+
+#[test]
+fn test_gr2_exec_status_filters_to_selected_repo() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    for (name, url) in [
+        ("app", "https://example.com/app.git"),
+        ("api", "https://example.com/api.git"),
+    ] {
+        let mut repo_add = Command::cargo_bin("gr2").unwrap();
+        repo_add
+            .current_dir(&workspace_root)
+            .args(["repo", "add", name, url])
+            .assert()
+            .success();
+    }
+
+    let mut unit_add = Command::cargo_bin("gr2").unwrap();
+    unit_add
+        .current_dir(&workspace_root)
+        .args(["unit", "add", "atlas"])
+        .assert()
+        .success();
+
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        r#"
+schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "app"
+path = "repos/app"
+url = "https://example.com/app.git"
+
+[[repos]]
+name = "api"
+path = "repos/api"
+url = "https://example.com/api.git"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = ["app", "api"]
+"#,
+    )
+    .unwrap();
+
+    let mut create = Command::cargo_bin("gr2").unwrap();
+    create
+        .current_dir(&workspace_root)
+        .args([
+            "lane",
+            "create",
+            "feat-filter",
+            "--owner-unit",
+            "atlas",
+            "--repo",
+            "app",
+            "--repo",
+            "api",
+        ])
+        .assert()
+        .success();
+
+    let mut exec_status = Command::cargo_bin("gr2").unwrap();
+    exec_status
+        .current_dir(&workspace_root)
+        .args([
+            "exec",
+            "status",
+            "--lane",
+            "feat-filter",
+            "--owner-unit",
+            "atlas",
+            "--repo",
+            "api",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("api missing"))
+        .stdout(predicate::str::contains("feat-filter"))
+        .stdout(predicate::str::contains("repos"))
+        .stdout(predicate::str::contains("app").not());
+}

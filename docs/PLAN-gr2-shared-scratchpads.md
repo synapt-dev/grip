@@ -123,3 +123,18 @@ The prototype should answer:
 - does the metadata feel sufficient?
 - do users understand when to use a scratchpad instead of a PR or private lane?
 - does this preserve the private-workspace safety model?
+
+## Verification Gate
+
+This prototype is only considered verified if it survives the adversarial
+scenarios in:
+
+- `docs/ASSESS-gr2-shared-scratchpads-stress.md`
+
+That includes pressure around:
+
+- concurrency
+- stale state
+- wrong-surface use
+- lifecycle and cleanup
+- graduation from scratchpad to real repo artifact / PR

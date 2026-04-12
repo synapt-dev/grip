@@ -5,4 +5,5 @@
 pub mod args;
 pub mod dispatch;
 pub mod plan;
+pub mod repo_status;
 pub mod spec;

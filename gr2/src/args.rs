@@ -107,6 +107,17 @@ pub enum RepoCommands {
     /// List registered repos
     List,
 
+    /// Inspect repo-maintenance state across shared repos and unit repos
+    Status {
+        /// Only show repo state for a specific unit
+        #[arg(long)]
+        unit: Option<String>,
+
+        /// Only show a specific repo name
+        #[arg(long)]
+        repo: Option<String>,
+    },
+
     /// Remove a registered repo
     Remove {
         /// Logical repo name

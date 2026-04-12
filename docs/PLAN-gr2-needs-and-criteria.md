@@ -12,6 +12,32 @@ workspace that must work for:
 It is not a feature wishlist. It is the rulebook for what the workspace must
 be able to do without unsafe workarounds.
 
+## Development Workflow
+
+`gr2` should be developed with this sequence:
+
+- design
+- prototype
+- verify
+- repeat that loop until the shape holds
+- build
+- assess
+- repeat for the next slice
+
+The shorthand is:
+
+- `(design -> prototype -> verify)^n`
+- `build`
+- `assess`
+- `repeat`
+
+For `gr2`, verification is not just a happy-path demo. It includes:
+
+- adversarial scenarios
+- real git behavior
+- user-mode checks across solo human, single agent, multi-agent, and mixed
+  human + agent workflows
+
 ## Primary Design Principle
 
 The workspace unit is not a single repo checkout.

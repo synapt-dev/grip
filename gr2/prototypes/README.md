@@ -278,3 +278,28 @@ This compares the observed workspace against two candidate models:
 
 It is intentionally blunt. If the workspace behaves like one model while the
 docs imply another, the prototype should say so directly.
+
+## Cache Materialization Probe
+
+The next question is whether shared cache as apply substrate is actually worth
+it in practice.
+
+The prototype now includes:
+
+```bash
+python3 gr2/prototypes/cache_materialization_probe.py --transport ssh
+```
+
+This measures, per playground repo:
+
+- direct remote clone time
+- one-time mirror seed time
+- cache-backed working clone time using `git clone --reference-if-able`
+- whether the resulting working clone actually uses alternates
+
+This keeps the cache discussion grounded in evidence:
+
+- lanes remain the UX
+- cache remains the optimization
+- the prototype should tell us whether the optimization is material enough to
+  justify building it into `apply`

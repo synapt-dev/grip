@@ -71,3 +71,30 @@ That gives us a concrete design target for future commands like:
 - `gr2 repo pull`
 
 without turning plain `gr2 apply` into an unsafe catch-all mutation command.
+
+## Lane Workspace Prototype
+
+`lane_workspace_prototype.py` explores the next layer above repo maintenance:
+
+- explicit lane metadata on disk
+- lane-local repo membership and branch map
+- shared + private context roots
+- lane-aware execution planning
+
+Example:
+
+```bash
+python3 gr2/prototypes/lane_workspace_prototype.py create-lane \
+  /path/to/workspace atlas feat-auth --repos app,api --branch feat/auth
+
+python3 gr2/prototypes/lane_workspace_prototype.py plan-exec \
+  /path/to/workspace atlas feat-auth 'cargo test'
+```
+
+This prototype does not execute commands. It proves that lane metadata can
+become the durable source of truth for:
+
+- which repos belong to a lane
+- which branch each repo should use
+- which context roots apply
+- where multi-repo commands should run

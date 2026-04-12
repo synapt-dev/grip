@@ -155,3 +155,31 @@ The MVP should not be finalized until the prototype has been evaluated against:
 - scope creep into shared implementation
 - cleanup and lifecycle handling
 - promotion from scratchpad to real repo artifact / PR
+
+## Real Git Verification
+
+Prototype confidence should not stop at metadata or tempdir-only happy paths.
+
+The next verification phase should use real GitHub repos in `synapt-dev`:
+
+- `synapt-dev/gr2-playground-app`
+- `synapt-dev/gr2-playground-api`
+- `synapt-dev/gr2-playground-web`
+
+These repos exist specifically to pressure the UX against actual git behavior:
+
+- cloning and default branches
+- multi-repo branch switching
+- review-lane isolation
+- dirty-work detection and recovery
+- shared scratchpad usage alongside private lanes
+
+That real-git verification phase is now tracked in:
+
+- `grip#523`
+- `grip#555`
+
+The design standard should be:
+
+- prototype behavior must survive both synthetic stress cases and real-repo
+  workflow checks before the MVP is treated as solid

@@ -28,6 +28,46 @@ If `gr2` gets that right, humans and agents can work safely in parallel.
 If it gets that wrong, users will fall back to ad hoc worktrees, raw git, and
 hidden state.
 
+## Tool Boundary Principle
+
+`gr2` is not a replacement for git.
+
+`gr2` should be the first-class surface for multi-repo workspace routing.
+Git should remain the first-class surface for normal repo-local work inside a
+chosen checkout.
+
+If that boundary gets blurred, users and agents will distrust the system for
+opposite reasons:
+
+- if `gr2` does too much, it feels magical and unsafe
+- if `gr2` does too little, users will ignore it and fall back to ad hoc shell
+
+So the system must make this split legible.
+
+### `gr2` Must Own
+
+- lane selection and switching
+- review-lane setup
+- shared scratchpads
+- multi-repo status and scope
+- structural workspace planning and apply
+- lane-aware execution planning
+
+### Git Must Still Own
+
+- repo-local `status`, `diff`, `log`
+- staging and committing
+- normal branch work inside one checkout
+- low-level recovery when a user is already in the correct repo
+
+### User Decision Rule
+
+The default user rule should be:
+
+1. use `gr2` to get into the right workspace context
+2. use git to work inside that chosen repo checkout
+3. return to `gr2` when changing context, scope, or execution surface
+
 ## User Modes
 
 `gr2` must support all of these without changing its core model.
@@ -40,6 +80,7 @@ The user needs to:
 - review another PR without disturbing that feature
 - start a second feature while the first waits on review
 - run build/test/verify for the active multi-repo lane
+- know when to use raw git versus `gr2` without second-guessing
 
 ### Single Agent
 
@@ -50,6 +91,7 @@ The agent needs to:
 - branch and execute commands without guessing
 - report deterministic status
 - avoid clobbering unrelated work
+- prefer the workspace primitives over ad hoc raw git when the task is multi-repo
 
 ### Multi-Agent Team
 
@@ -60,6 +102,7 @@ The team needs to:
 - preserve private context where appropriate
 - coordinate across linked PRs and sprint lanes
 - switch between tasks without contaminating each other's state
+- avoid entering each other's private directories just to collaborate
 
 ## Hard Requirements
 
@@ -205,7 +248,56 @@ Agents and humans need trustworthy read surfaces.
 
 These should be machine-readable as well as human-readable.
 
-### 10. Multi-Repo Scratchpads
+### 9a. Structured Output Must Be First-Class
+
+Machine-readable output should not be treated as an optional afterthought.
+
+Agents routinely need:
+
+- stable field names
+- stable object shapes
+- deterministic exit codes
+- explicit next-step hints
+- explicit scope metadata
+
+So every status-style surface should support structured output as a first-class
+mode, not a best-effort pretty-print after the human CLI is finished.
+
+Required properties:
+
+- all read surfaces support structured output
+- structured output is versioned
+- field names are stable across patch releases
+- error output is also structured when structured mode is enabled
+- command scope is explicit in the payload
+
+Examples of required structured surfaces:
+
+- `gr2 spec show`
+- `gr2 plan`
+- `gr2 repo status`
+- `gr2 lane list`
+- `gr2 lane show`
+- `gr2 exec status`
+
+The target user problem is simple:
+
+- agents should not have to scrape prose
+- humans should not lose readable output by default
+
+### 10. Strong UX Guidance
+
+The product must teach the user which surface to use.
+
+That means:
+
+- CLI help must state command scope clearly
+- status output should suggest likely next steps
+- docs should include "use `gr2` for this, use git for that"
+- common workflows should be expressed as short procedural paths
+- structured output should be easy to enable and hard to forget
+
+### 11. Multi-Repo Scratchpads
 
 The system must support two or more temporary scratchpads simultaneously.
 
@@ -250,6 +342,9 @@ Required surfaces:
 - `gr2 repo fetch`
 - `gr2 repo sync`
 - `gr2 repo checkout`
+
+This surface must remain explicit enough that users do not confuse it with
+plain repo-local git operations.
 
 ### Lane Surface
 

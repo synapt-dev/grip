@@ -42,6 +42,100 @@ The workspace model needs to support:
 - make shared context and unit-private context explicit
 - make multi-repo execution lane-aware
 
+## UX Principles
+
+`gr2` should not try to replace git.
+
+It should make workspace-level behavior easier than raw git, while still
+leaving normal repo-local git workflows available when they are the right tool.
+
+The design should optimize for a user who thinks:
+
+- "I need to keep working on feature A while feature B is in review"
+- "I need to review a PR without disturbing my current work"
+- "I need to run the right commands in the right repos without guessing"
+- "I do not want a tool to silently move my branches or hide my work"
+
+That leads to four UX rules.
+
+### 1. `gr2` Owns Workspace Context
+
+`gr2` should own:
+
+- lane creation and switching
+- review-lane setup
+- shared scratchpads
+- multi-repo scope selection
+- workspace and lane status
+- lane-aware execution planning
+
+These are the things raw git does poorly across many repos.
+
+### 2. Git Still Owns Repo-Local Work
+
+Raw git should still own:
+
+- `status`
+- `diff`
+- `log`
+- `add`
+- `commit`
+- repo-local branch surgery
+- low-level recovery inside one checkout
+
+Once a user is in the correct lane and repo root, git should still feel normal.
+
+### 3. `gr2` Must Be Easier Than Raw Git For Multi-Repo Tasks
+
+If a multi-repo task is easier with ad hoc shell plus raw git, users and agents
+will route around `gr2`.
+
+So `gr2` should be the easiest path for:
+
+- starting a multi-repo feature context
+- checking out a PR across one or more repos
+- seeing which repos and branches belong to a task
+- running build/test/verify in the right scope
+- creating a lightweight shared collaboration surface
+
+### 4. Commands Must Explain Their Scope
+
+Users should not have to guess whether a command is:
+
+- structural
+- repo-maintenance
+- lane-management
+- execution
+
+The CLI, help text, and status output should make that obvious.
+
+### 5. Structured Output Must Be Easy To Keep On
+
+Agents benefit from machine-readable output, but "remember to pass `--json`"
+is not a reliable workflow.
+
+So `gr2` should support a persistent structured-output mode for users or
+agents that prefer it.
+
+The design should support:
+
+- one-shot structured output with `--json`
+- persistent structured output via config or environment
+- readable human output as the default for casual interactive use
+
+The likely shape is:
+
+- `--json` for per-command override
+- workspace or user setting such as `output.mode = "json"`
+- environment override such as `GR2_OUTPUT=json`
+- possibly a higher-level `agent_mode = true` preset later, but only if it
+  remains transparent and does not hide command behavior
+
+The important UX rule is:
+
+- agents should not need to remember flags
+- humans should not be forced into JSON when they do not want it
+
 ## Non-Goals
 
 - `gr2 apply` is not a global "make it all right somehow" button
@@ -92,6 +186,60 @@ Repo maintenance should be an explicit surface above structural apply:
 - divergence handling
 
 That should become a separate command family, not hidden inside `apply`.
+
+## When To Use `gr2` vs Raw Git
+
+This should be an explicit user rule, not tribal knowledge.
+
+### Use `gr2` When You Need Workspace-Level Coordination
+
+Use `gr2` for:
+
+- creating or selecting a lane
+- checking out a PR into an isolated review context
+- understanding repo membership and branch intent across a task
+- planning multi-repo execution
+- creating or inspecting shared scratchpads
+- inspecting structural workspace drift
+
+### Use Raw Git When You Are Already In The Right Checkout
+
+Use raw git for:
+
+- looking at diffs and logs
+- staging and committing
+- local branch cleanup
+- low-level repo repair
+- any normal single-repo operation inside the selected lane checkout
+
+The intended model is:
+
+1. use `gr2` to get into the right workspace context
+2. use git normally inside that context
+
+## Structured Output Policy
+
+Structured output should be treated as part of the product surface, not only
+as a convenience flag.
+
+For read-heavy commands, the command should be able to emit:
+
+- human output
+- structured output with stable field names
+- deterministic exit codes
+
+That matters most for:
+
+- `gr2 repo status`
+- `gr2 lane list`
+- `gr2 lane show`
+- `gr2 exec status`
+- later `gr2 plan`
+
+This helps both agents and humans:
+
+- agents can consume stable payloads
+- humans can switch into structured mode when scripting or debugging
 
 ## Proposed Workspace Model
 

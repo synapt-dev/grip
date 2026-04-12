@@ -109,6 +109,18 @@ name = "layne"
 path = "agents/layne"
 agent_id = "layne-human"
 repos = ["app", "api", "web"]
+
+[[units]]
+name = "synapt-core"
+path = "agents/synapt-core"
+agent_id = "agent_opus_abc123"
+repos = ["app", "api", "web"]
+
+[[units]]
+name = "release-control"
+path = "agents/release-control"
+agent_id = "agent_opus_abc123"
+repos = ["app", "api", "web"]
 """
     (workspace_root / ".grip" / "workspace_spec.toml").write_text(spec)
 
@@ -747,6 +759,139 @@ def scenario_solo_human_forgets_lane(root: Path, workspace_root: Path) -> Scenar
     )
 
 
+def scenario_identity_rebind_live_lanes(root: Path, workspace_root: Path) -> ScenarioResult:
+    create_lane(root, workspace_root, "synapt-core", "feat-auth", "app,api", "feat/auth")
+    create_lane(root, workspace_root, "synapt-core", "feat-deploy", "web", "feat/deploy")
+    acquire_lease(root, workspace_root, "synapt-core", "feat-auth", "agent:opus", "edit")
+    acquire_lease(root, workspace_root, "synapt-core", "feat-deploy", "agent:opus", "edit")
+    run(
+        [
+            "python3",
+            str(lane_proto(root)),
+            "enter-lane",
+            str(workspace_root),
+            "synapt-core",
+            "feat-auth",
+            "--actor",
+            "agent:opus",
+        ]
+    )
+    rebind_active = run(
+        [
+            "python3",
+            str(lane_proto(root)),
+            "rebind-unit",
+            str(workspace_root),
+            "synapt-core",
+            "release-control",
+            "--actor",
+            "premium:control-plane",
+            "--json",
+        ],
+        capture=True,
+    )
+    rebind_active_doc = json.loads(rebind_active.stdout)
+    blocked_old = plan_exec_json(root, workspace_root, "synapt-core", "feat-auth", "cargo test")
+    continuation = plan_handoff_json(
+        root,
+        workspace_root,
+        "synapt-core",
+        "feat-auth",
+        "release-control",
+        "continuation",
+        "feat-auth-relay",
+    )
+    history_proc = run(
+        [
+            "python3",
+            str(lane_proto(root)),
+            "lane-history",
+            str(workspace_root),
+            "synapt-core",
+            "--json",
+        ],
+        capture=True,
+    )
+    history_rows = json.loads(history_proc.stdout)
+
+    clean_workspace = workspace_root / "clean-rebind"
+    clean_workspace.mkdir(parents=True, exist_ok=True)
+    init_workspace(clean_workspace)
+    create_lane(root, clean_workspace, "synapt-core", "feat-clean", "app", "feat/clean")
+    rebind_clean = run(
+        [
+            "python3",
+            str(lane_proto(root)),
+            "rebind-unit",
+            str(clean_workspace),
+            "synapt-core",
+            "release-control",
+            "--actor",
+            "premium:control-plane",
+            "--json",
+        ],
+        capture=True,
+    )
+    rebind_clean_doc = json.loads(rebind_clean.stdout)
+
+    holds = []
+    gaps = []
+    evidence = [
+        json.dumps(rebind_active_doc, indent=2),
+        json.dumps(blocked_old, indent=2),
+        json.dumps(continuation, indent=2),
+        json.dumps(history_rows, indent=2),
+        json.dumps(rebind_clean_doc, indent=2),
+    ]
+
+    if all(item["status"] == "frozen" for item in rebind_active_doc["affected_lanes"]):
+        holds.append("active lanes stay in the old unit and become frozen rather than moving silently")
+    else:
+        gaps.append("rebind did not freeze old lanes deterministically")
+
+    if len(rebind_active_doc["expired_leases"]) == 2:
+        holds.append("active edit leases are force-released during rebind")
+    else:
+        gaps.append("active leases were not force-released during rebind")
+
+    if isinstance(blocked_old, dict) and blocked_old.get("reason") == "unit-rebound":
+        holds.append("old unit lanes are blocked for further exec planning after rebind")
+    else:
+        gaps.append("old unit lanes were not blocked after rebind")
+
+    if continuation["invariant_assessment"]["unit_scoped"]:
+        holds.append("post-rebind recovery path is continuation under the new unit")
+    else:
+        gaps.append("rebind recovery path did not preserve unit scoping")
+
+    if any(row["type"] == "unit_rebind" for row in history_rows):
+        holds.append("lane event history records the unit rebind for recall reconstruction")
+    else:
+        gaps.append("lane history did not record the rebind transition")
+
+    contract = rebind_active_doc.get("required_contract", {})
+    if contract.get("same_agent_id") and contract.get("old_to_new_mapping"):
+        holds.append("prototype identifies same-agent-id continuity and explicit old->new mapping as required contract")
+    else:
+        gaps.append("rebind contract requirements are not explicit enough")
+
+    if rebind_clean_doc["expired_leases"] == []:
+        holds.append("clean rebind with no active leases avoids unnecessary lease churn")
+    else:
+        gaps.append("clean rebind unexpectedly expired leases")
+
+    verdict = "holds" if not gaps else "fails"
+    return ScenarioResult(
+        scenario_id="identity-rebind-live-lanes",
+        user_mode="single-agent",
+        title="identity rebinding freezes old lanes and resumes through continuation under the new unit",
+        verdict=verdict,
+        holds=holds,
+        gaps=gaps,
+        evidence=evidence,
+    )
+
+
 def run_scenarios(workspace_root: Path) -> list[ScenarioResult]:
     root = repo_root()
     init_workspace(workspace_root)
@@ -756,6 +901,7 @@ def run_scenarios(workspace_root: Path) -> list[ScenarioResult]:
         scenario_stale_lease_force_break(root, workspace_root),
         scenario_multi_agent_same_repo(root, workspace_root),
         scenario_agent_handoff_relay(root, workspace_root),
+        scenario_identity_rebind_live_lanes(root, workspace_root),
         scenario_mixed_same_lane_exec(root, workspace_root),
         scenario_single_agent_interrupt_recovery(root, workspace_root),
         scenario_solo_human_forgets_lane(root, workspace_root),

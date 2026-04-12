@@ -279,6 +279,24 @@ Current prototype conclusion:
 - handoff should preserve lineage to the source lane without forcing the target
   unit to execute inside the source unit's lane root
 
+Identity rebind example:
+
+```bash
+python3 gr2/prototypes/lane_workspace_prototype.py rebind-unit \
+  /path/to/workspace synapt-core release-control --actor premium:control-plane --json
+```
+
+Current prototype conclusion:
+
+- active lanes under the old unit stay in place and become frozen
+- active leases are force-released and logged during the rebind
+- old-unit exec planning is blocked after rebind
+- recovery should happen through continuation lanes under the new unit
+- the minimal safe contract from premium is:
+  - same `agent_id` continuity
+  - explicit old -> new unit mapping
+  - pending-reassignment hint is recommended to reduce operator surprise
+
 Identity -> unit binding example:
 
 ```bash

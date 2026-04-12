@@ -240,6 +240,13 @@ def parse_args() -> argparse.Namespace:
     history.add_argument("owner_unit")
     history.add_argument("--json", action="store_true")
 
+    rebind = sub.add_parser("rebind-unit")
+    rebind.add_argument("workspace_root", type=Path)
+    rebind.add_argument("old_owner_unit")
+    rebind.add_argument("new_owner_unit")
+    rebind.add_argument("--actor", required=True)
+    rebind.add_argument("--json", action="store_true")
+
     lease = sub.add_parser("acquire-lane-lease")
     lease.add_argument("workspace_root", type=Path)
     lease.add_argument("owner_unit")
@@ -352,6 +359,10 @@ def shared_lane_access_file(workspace_root: Path, owner_unit: str, lane_name: st
     )
 
 
+def unit_rebind_file(workspace_root: Path, owner_unit: str) -> Path:
+    return workspace_root / ".grip" / "state" / "rebindings" / f"{owner_unit}.json"
+
+
 def events_dir(workspace_root: Path) -> Path:
     return workspace_root / ".grip" / "events"
 
@@ -398,6 +409,13 @@ def load_current_lane_doc(workspace_root: Path, owner_unit: str) -> dict:
     return json.loads(path.read_text())
 
 
+def load_unit_rebind_doc(workspace_root: Path, owner_unit: str) -> dict | None:
+    path = unit_rebind_file(workspace_root, owner_unit)
+    if not path.exists():
+        return None
+    return json.loads(path.read_text())
+
+
 def append_jsonl(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
@@ -423,6 +441,11 @@ def iter_lane_events(workspace_root: Path) -> list[dict]:
             continue
         items.append(json.loads(line))
     return items
+
+
+def write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n")
 
 
 def load_lane_leases(workspace_root: Path, owner_unit: str, lane_name: str) -> list[dict]:
@@ -803,6 +826,110 @@ def lane_history(args: argparse.Namespace) -> int:
         print(
             f'{row.get("timestamp","-")}\t{row.get("type","-")}\t{row.get("agent","-")}\t{row.get("agent_id","-")}\t{row.get("lane","-")}\t{",".join(row.get("repos", []))}'
         )
+    return 0
+
+
+def rebind_unit(args: argparse.Namespace) -> int:
+    workspace_root = args.workspace_root.resolve()
+    old_unit = find_unit_spec(workspace_root, args.old_owner_unit)
+    new_unit = find_unit_spec(workspace_root, args.new_owner_unit)
+    old_agent_id = old_unit.get("agent_id")
+    new_agent_id = new_unit.get("agent_id")
+    if not old_agent_id or not new_agent_id or old_agent_id != new_agent_id:
+        raise SystemExit("rebind-unit requires old and new units with the same agent_id")
+
+    lane_paths = iter_lane_files(workspace_root, args.old_owner_unit)
+    affected_lanes: list[dict] = []
+    expired_leases: list[dict] = []
+    for path in lane_paths:
+        lane_doc = tomllib.loads(path.read_text())
+        lane_name = lane_doc["lane_name"]
+        leases = load_lane_leases(workspace_root, args.old_owner_unit, lane_name)
+        active_leases = [lease for lease in leases if not is_stale_lease(lease)]
+        if active_leases:
+            write_lane_leases(workspace_root, args.old_owner_unit, lane_name, [])
+            for lease in active_leases:
+                expired_leases.append(
+                    {
+                        "lane_name": lane_name,
+                        "actor": lease["actor"],
+                        "mode": lease["mode"],
+                        "acquired_at": lease["acquired_at"],
+                        "expires_at": lease.get("expires_at"),
+                    }
+                )
+                emit_lane_event(
+                    workspace_root,
+                    {
+                        "type": "lease_release",
+                        "agent": lease["actor"],
+                        "agent_id": old_agent_id,
+                        "owner_unit": args.old_owner_unit,
+                        "lane": lane_name,
+                        "lane_type": lane_doc["lane_type"],
+                        "repos": lane_doc.get("repos", []),
+                        "timestamp": now_utc(),
+                        "reason": "unit_rebind",
+                    },
+                )
+
+        affected_lanes.append(
+            {
+                "lane_name": lane_name,
+                "lane_type": lane_doc["lane_type"],
+                "repos": lane_doc.get("repos", []),
+                "status": "frozen",
+                "expired_lease_count": len(active_leases),
+            }
+        )
+
+    current_lane = None
+    current_path = current_lane_file(workspace_root, args.old_owner_unit)
+    if current_path.exists():
+        current_doc = json.loads(current_path.read_text())
+        current_lane = current_doc.get("current")
+        updated = dict(current_doc)
+        updated["status"] = "rebound"
+        updated["rebound_to"] = args.new_owner_unit
+        write_json(current_path, updated)
+
+    rebind_doc = {
+        "old_owner_unit": args.old_owner_unit,
+        "new_owner_unit": args.new_owner_unit,
+        "agent_id": old_agent_id,
+        "rebound_at": now_utc(),
+        "actor": args.actor,
+        "status": "complete",
+        "affected_lanes": affected_lanes,
+        "expired_leases": expired_leases,
+        "current_lane_at_rebind": current_lane,
+        "required_contract": {
+            "same_agent_id": True,
+            "old_to_new_mapping": True,
+            "pending_reassignment_hint": "recommended",
+        },
+    }
+    write_json(unit_rebind_file(workspace_root, args.old_owner_unit), rebind_doc)
+    emit_lane_event(
+        workspace_root,
+        {
+            "type": "unit_rebind",
+            "agent": args.actor,
+            "agent_id": old_agent_id,
+            "owner_unit": args.old_owner_unit,
+            "new_owner_unit": args.new_owner_unit,
+            "lane": current_lane["lane_name"] if current_lane else None,
+            "lane_type": current_lane["lane_type"] if current_lane else None,
+            "repos": sorted({repo for item in affected_lanes for repo in item["repos"]}),
+            "timestamp": rebind_doc["rebound_at"],
+            "frozen_lane_count": len(affected_lanes),
+            "expired_lease_count": len(expired_leases),
+        },
+    )
+    if args.json:
+        print(json.dumps(rebind_doc, indent=2))
+    else:
+        print(json.dumps(rebind_doc, indent=2))
     return 0
 
 
@@ -1280,6 +1407,29 @@ def next_step(args: argparse.Namespace) -> int:
 def plan_exec(args: argparse.Namespace) -> int:
     workspace_root = args.workspace_root.resolve()
     lane_doc = load_lane_doc(workspace_root, args.owner_unit, args.lane_name)
+    rebind_doc = load_unit_rebind_doc(workspace_root, args.owner_unit)
+    if rebind_doc:
+        affected = {
+            item["lane_name"]: item for item in rebind_doc.get("affected_lanes", [])
+        }
+        if args.lane_name in affected:
+            payload = {
+                "status": "blocked",
+                "reason": "unit-rebound",
+                "lane": lane_doc["lane_name"],
+                "owner_unit": lane_doc["owner_unit"],
+                "new_owner_unit": rebind_doc["new_owner_unit"],
+                "hint": "create a continuation lane under the new unit before resuming work",
+            }
+            if args.json:
+                print(json.dumps(payload, indent=2))
+            else:
+                print("gr2 lane-exec prototype")
+                print("status=blocked reason=unit-rebound")
+                print(
+                    f"owner={lane_doc['owner_unit']} rebound_to={rebind_doc['new_owner_unit']} lane={lane_doc['lane_name']}"
+                )
+            return 0
     leases = load_lane_leases(workspace_root, args.owner_unit, args.lane_name)
     active_conflicts, stale_conflicts = conflicting_leases(leases, "agent:exec-planner", "exec")
     if active_conflicts:
@@ -1375,6 +1525,8 @@ def main() -> int:
         return current_lane(args)
     if args.command == "lane-history":
         return lane_history(args)
+    if args.command == "rebind-unit":
+        return rebind_unit(args)
     if args.command == "create-review-lane":
         return create_review_lane(args)
     if args.command == "share-lane":

@@ -4,6 +4,7 @@
 
 pub mod args;
 pub mod dispatch;
+pub mod exec;
 pub mod lane;
 pub mod plan;
 pub mod repo_status;

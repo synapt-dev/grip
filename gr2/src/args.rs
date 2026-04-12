@@ -56,6 +56,12 @@ pub enum Commands {
         command: LaneCommands,
     },
 
+    /// Lane-aware execution planning and commands
+    Exec {
+        #[command(subcommand)]
+        command: ExecCommands,
+    },
+
     /// Declarative workspace spec operations
     Spec {
         #[command(subcommand)]
@@ -226,6 +232,24 @@ pub enum LaneCommands {
         /// Owning unit
         #[arg(long = "owner-unit")]
         owner_unit: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ExecCommands {
+    /// Show the execution plan surface for one lane
+    Status {
+        /// Lane name
+        #[arg(long = "lane")]
+        lane: String,
+
+        /// Owning unit
+        #[arg(long = "owner-unit")]
+        owner_unit: String,
+
+        /// Filter to one or more repos inside the lane
+        #[arg(long = "repo")]
+        repos: Vec<String>,
     },
 }
 

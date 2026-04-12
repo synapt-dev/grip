@@ -18,7 +18,7 @@ import json
 import shlex
 import sys
 import tomllib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 
@@ -191,6 +191,17 @@ def parse_args() -> argparse.Namespace:
     lease.add_argument("lane_name")
     lease.add_argument("--actor", required=True)
     lease.add_argument("--mode", choices=["edit", "exec", "review"], required=True)
+    lease.add_argument(
+        "--ttl-seconds",
+        type=int,
+        default=900,
+        help="lease TTL in seconds before it is considered stale",
+    )
+    lease.add_argument(
+        "--force",
+        action="store_true",
+        help="break conflicting stale leases with a warning",
+    )
 
     release = sub.add_parser("release-lane-lease")
     release.add_argument("workspace_root", type=Path)
@@ -335,6 +346,53 @@ def now_utc() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
+def parse_utc(raw: str) -> datetime:
+    return datetime.fromisoformat(raw)
+
+
+def is_stale_lease(lease: dict) -> bool:
+    expires_at = lease.get("expires_at")
+    if not expires_at:
+        return False
+    return parse_utc(expires_at) <= datetime.now(UTC)
+
+
+def build_lease(actor: str, mode: str, ttl_seconds: int) -> dict:
+    acquired = datetime.now(UTC).replace(microsecond=0)
+    expires = acquired + timedelta(seconds=ttl_seconds)
+    return {
+        "actor": actor,
+        "mode": mode,
+        "ttl_seconds": ttl_seconds,
+        "acquired_at": acquired.isoformat(),
+        "expires_at": expires.isoformat(),
+    }
+
+
+def lease_conflicts(existing_mode: str, requested_mode: str) -> bool:
+    matrix = {
+        "edit": {"edit", "exec", "review"},
+        "exec": {"edit", "review"},
+        "review": {"edit", "exec", "review"},
+    }
+    return requested_mode in matrix.get(existing_mode, set())
+
+
+def conflicting_leases(leases: list[dict], actor: str, requested_mode: str) -> tuple[list[dict], list[dict]]:
+    active: list[dict] = []
+    stale: list[dict] = []
+    for lease in leases:
+        if lease["actor"] == actor:
+            continue
+        if not lease_conflicts(lease["mode"], requested_mode):
+            continue
+        if is_stale_lease(lease):
+            stale.append(lease)
+        else:
+            active.append(lease)
+    return active, stale
+
+
 def age_days(path: Path) -> int:
     modified = datetime.fromtimestamp(path.stat().st_mtime, UTC)
     return max(0, int((datetime.now(UTC) - modified).total_seconds() // 86400))
@@ -472,13 +530,48 @@ def acquire_lane_lease(args: argparse.Namespace) -> int:
     load_lane_doc(workspace_root, args.owner_unit, args.lane_name)
     leases = load_lane_leases(workspace_root, args.owner_unit, args.lane_name)
     retained = [lease for lease in leases if lease["actor"] != args.actor]
-    retained.append(
-        {
-            "actor": args.actor,
-            "mode": args.mode,
-            "acquired_at": now_utc(),
+    active_conflicts, stale_conflicts = conflicting_leases(retained, args.actor, args.mode)
+
+    if active_conflicts:
+        payload = {
+            "status": "blocked",
+            "reason": "conflicting-active-lease",
+            "lane": args.lane_name,
+            "owner_unit": args.owner_unit,
+            "requested": {"actor": args.actor, "mode": args.mode},
+            "conflicting_leases": active_conflicts,
         }
-    )
+        print(json.dumps(payload, indent=2))
+        return 1
+
+    if stale_conflicts and not args.force:
+        payload = {
+            "status": "blocked",
+            "reason": "stale-conflicting-lease",
+            "lane": args.lane_name,
+            "owner_unit": args.owner_unit,
+            "requested": {"actor": args.actor, "mode": args.mode},
+            "conflicting_leases": stale_conflicts,
+            "hint": "rerun with --force to break stale conflicting leases",
+        }
+        print(json.dumps(payload, indent=2))
+        return 1
+
+    if stale_conflicts and args.force:
+        print(
+            json.dumps(
+                {
+                    "status": "warning",
+                    "reason": "breaking-stale-conflicting-leases",
+                    "broken_leases": stale_conflicts,
+                },
+                indent=2,
+            )
+        )
+        stale_actors = {lease["actor"] for lease in stale_conflicts}
+        retained = [lease for lease in retained if lease["actor"] not in stale_actors]
+
+    retained.append(build_lease(args.actor, args.mode, args.ttl_seconds))
     write_lane_leases(workspace_root, args.owner_unit, args.lane_name, retained)
     print(lane_leases_file(workspace_root, args.owner_unit, args.lane_name))
     return 0
@@ -498,9 +591,12 @@ def show_lane_leases(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(leases, indent=2))
         return 0
-    print("ACTOR\tMODE\tACQUIRED_AT")
+    print("ACTOR\tMODE\tTTL\tACQUIRED_AT\tEXPIRES_AT\tSTATE")
     for lease in leases:
-        print(f'{lease["actor"]}\t{lease["mode"]}\t{lease["acquired_at"]}')
+        state = "stale" if is_stale_lease(lease) else "active"
+        print(
+            f'{lease["actor"]}\t{lease["mode"]}\t{lease.get("ttl_seconds", "-")}\t{lease["acquired_at"]}\t{lease.get("expires_at", "-")}\t{state}'
+        )
     return 0
 
 
@@ -722,27 +818,41 @@ def plan_exec(args: argparse.Namespace) -> int:
     workspace_root = args.workspace_root.resolve()
     lane_doc = load_lane_doc(workspace_root, args.owner_unit, args.lane_name)
     leases = load_lane_leases(workspace_root, args.owner_unit, args.lane_name)
-
-    conflicting = [
-        lease
-        for lease in leases
-        if lease["mode"] == "edit" and not lease["actor"].startswith("agent:")
-    ]
-    if conflicting:
+    active_conflicts, stale_conflicts = conflicting_leases(leases, "agent:exec-planner", "exec")
+    if active_conflicts:
         payload = {
             "status": "blocked",
-            "reason": "human-edit-lease",
+            "reason": "conflicting-active-lease",
             "lane": lane_doc["lane_name"],
             "owner_unit": lane_doc["owner_unit"],
-            "conflicting_leases": conflicting,
+            "requested_mode": "exec",
+            "conflicting_leases": active_conflicts,
         }
         if args.json:
             print(json.dumps(payload, indent=2))
         else:
             print("gr2 lane-exec prototype")
-            print("status=blocked reason=human-edit-lease")
-            for lease in conflicting:
+            print("status=blocked reason=conflicting-active-lease")
+            for lease in active_conflicts:
                 print(f'conflict: actor={lease["actor"]} mode={lease["mode"]} acquired_at={lease["acquired_at"]}')
+        return 0
+    if stale_conflicts:
+        payload = {
+            "status": "blocked",
+            "reason": "stale-conflicting-lease",
+            "lane": lane_doc["lane_name"],
+            "owner_unit": lane_doc["owner_unit"],
+            "requested_mode": "exec",
+            "conflicting_leases": stale_conflicts,
+            "hint": "break stale leases with acquire-lane-lease --force or clean them up first",
+        }
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            print("gr2 lane-exec prototype")
+            print("status=blocked reason=stale-conflicting-lease")
+            for lease in stale_conflicts:
+                print(f'stale-conflict: actor={lease["actor"]} mode={lease["mode"]} expires_at={lease.get("expires_at", "-")}')
         return 0
 
     selected_repos = lane_doc["repos"]

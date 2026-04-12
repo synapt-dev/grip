@@ -160,6 +160,45 @@ def plan_exec_json(root: Path, workspace_root: Path, owner_unit: str, lane_name:
     return json.loads(proc.stdout)
 
 
+def acquire_lease(root: Path, workspace_root: Path, owner_unit: str, lane_name: str, actor: str, mode: str, ttl_seconds: int = 900, force: bool = False, expect_ok: bool = True) -> subprocess.CompletedProcess[str]:
+    argv = [
+        "python3",
+        str(lane_proto(root)),
+        "acquire-lane-lease",
+        str(workspace_root),
+        owner_unit,
+        lane_name,
+        "--actor",
+        actor,
+        "--mode",
+        mode,
+        "--ttl-seconds",
+        str(ttl_seconds),
+    ]
+    if force:
+        argv.append("--force")
+    proc = subprocess.run(argv, check=False, text=True, capture_output=True)
+    if expect_ok and proc.returncode != 0:
+        raise SystemExit(f"lease acquisition failed unexpectedly: {' '.join(argv)}\n{proc.stdout}\n{proc.stderr}")
+    return proc
+
+
+def show_leases_json(root: Path, workspace_root: Path, owner_unit: str, lane_name: str) -> list[dict]:
+    proc = run(
+        [
+            "python3",
+            str(lane_proto(root)),
+            "show-lane-leases",
+            str(workspace_root),
+            owner_unit,
+            lane_name,
+            "--json",
+        ],
+        capture=True,
+    )
+    return json.loads(proc.stdout)
+
+
 def list_lanes_text(root: Path, workspace_root: Path, owner_unit: str | None = None) -> str:
     argv = [
         "python3",
@@ -213,20 +252,7 @@ def scenario_multi_agent_same_repo(root: Path, workspace_root: Path) -> Scenario
 
 def scenario_mixed_same_lane_exec(root: Path, workspace_root: Path) -> ScenarioResult:
     create_lane(root, workspace_root, "layne", "feat-blog", "app", "feat/blog")
-    run(
-        [
-            "python3",
-            str(lane_proto(root)),
-            "acquire-lane-lease",
-            str(workspace_root),
-            "layne",
-            "feat-blog",
-            "--actor",
-            "human:layne",
-            "--mode",
-            "edit",
-        ]
-    )
+    acquire_lease(root, workspace_root, "layne", "feat-blog", "human:layne", "edit")
 
     exec_rows = plan_exec_json(root, workspace_root, "layne", "feat-blog", "cargo test")
 
@@ -328,6 +354,120 @@ def scenario_single_agent_interrupt_recovery(root: Path, workspace_root: Path) -
     )
 
 
+def scenario_lease_conflict_matrix(root: Path, workspace_root: Path) -> ScenarioResult:
+    create_lane(root, workspace_root, "atlas", "feat-matrix", "app", "feat/matrix")
+
+    exec_one = acquire_lease(root, workspace_root, "atlas", "feat-matrix", "agent:atlas", "exec")
+    exec_two = acquire_lease(root, workspace_root, "atlas", "feat-matrix", "agent:apollo", "exec")
+    edit_conflict = acquire_lease(
+        root,
+        workspace_root,
+        "atlas",
+        "feat-matrix",
+        "human:layne",
+        "edit",
+        expect_ok=False,
+    )
+
+    create_lane(root, workspace_root, "atlas", "feat-review-lock", "app", "feat/review-lock")
+    acquire_lease(root, workspace_root, "atlas", "feat-review-lock", "agent:atlas", "review")
+    review_conflict = acquire_lease(
+        root,
+        workspace_root,
+        "atlas",
+        "feat-review-lock",
+        "agent:apollo",
+        "exec",
+        expect_ok=False,
+    )
+
+    holds = []
+    gaps = []
+    evidence = []
+
+    if exec_one.returncode == 0 and exec_two.returncode == 0:
+        holds.append("exec-vs-exec is allowed for the same lane")
+        evidence.append("two exec leases acquired successfully on atlas/feat-matrix")
+    else:
+        gaps.append("exec-vs-exec was blocked unexpectedly")
+
+    if edit_conflict.returncode != 0:
+        holds.append("edit-vs-exec conflicts as expected")
+        evidence.append(edit_conflict.stdout.strip())
+    else:
+        gaps.append("edit-vs-exec did not conflict")
+
+    if review_conflict.returncode != 0:
+        holds.append("review-vs-anything is exclusive")
+        evidence.append(review_conflict.stdout.strip())
+    else:
+        gaps.append("review-vs-exec did not conflict")
+
+    leases = show_leases_json(root, workspace_root, "atlas", "feat-matrix")
+    evidence.append(json.dumps(leases, indent=2))
+    verdict = "holds" if not gaps else "fails"
+    return ScenarioResult(
+        scenario_id="lease-conflict-matrix",
+        user_mode="cross-mode",
+        title="lease conflict matrix enforces edit/exec/review semantics",
+        verdict=verdict,
+        holds=holds,
+        gaps=gaps,
+        evidence=evidence,
+    )
+
+
+def scenario_stale_lease_force_break(root: Path, workspace_root: Path) -> ScenarioResult:
+    create_lane(root, workspace_root, "atlas", "feat-stale", "app", "feat/stale")
+    stale = acquire_lease(
+        root,
+        workspace_root,
+        "atlas",
+        "feat-stale",
+        "human:layne",
+        "edit",
+        ttl_seconds=0,
+    )
+    blocked_exec = plan_exec_json(root, workspace_root, "atlas", "feat-stale", "cargo test")
+    forced = acquire_lease(
+        root,
+        workspace_root,
+        "atlas",
+        "feat-stale",
+        "agent:atlas",
+        "exec",
+        ttl_seconds=900,
+        force=True,
+    )
+    leases_after = show_leases_json(root, workspace_root, "atlas", "feat-stale")
+
+    holds = []
+    gaps = []
+    evidence = [stale.stdout.strip(), json.dumps(blocked_exec, indent=2), forced.stdout.strip(), json.dumps(leases_after, indent=2)]
+
+    if isinstance(blocked_exec, dict) and blocked_exec.get("reason") == "stale-conflicting-lease":
+        holds.append("plan-exec detects stale conflicting leases")
+    else:
+        gaps.append("plan-exec did not flag stale conflicting leases")
+
+    actors_after = {lease["actor"] for lease in leases_after}
+    if "human:layne" not in actors_after and "agent:atlas" in actors_after:
+        holds.append("force acquisition breaks stale conflicting lease and installs new lease")
+    else:
+        gaps.append("force acquisition did not replace stale conflicting lease cleanly")
+
+    verdict = "holds" if not gaps else "fails"
+    return ScenarioResult(
+        scenario_id="stale-lease-force-break",
+        user_mode="cross-mode",
+        title="stale leases are detectable and force-breakable",
+        verdict=verdict,
+        holds=holds,
+        gaps=gaps,
+        evidence=evidence,
+    )
+
+
 def scenario_solo_human_forgets_lane(root: Path, workspace_root: Path) -> ScenarioResult:
     create_lane(root, workspace_root, "layne", "feat-auth", "app,api", "feat/auth")
     create_lane(root, workspace_root, "layne", "feat-web", "web", "feat/web")
@@ -406,6 +546,8 @@ def run_scenarios(workspace_root: Path) -> list[ScenarioResult]:
     root = repo_root()
     init_workspace(workspace_root)
     return [
+        scenario_lease_conflict_matrix(root, workspace_root),
+        scenario_stale_lease_force_break(root, workspace_root),
         scenario_multi_agent_same_repo(root, workspace_root),
         scenario_mixed_same_lane_exec(root, workspace_root),
         scenario_single_agent_interrupt_recovery(root, workspace_root),

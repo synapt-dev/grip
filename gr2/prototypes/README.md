@@ -225,6 +225,16 @@ Those are still prototype surfaces, but they let us test whether the lane
 model can survive interruption and mixed human/agent use rather than only
 describe those needs abstractly.
 
+Lease behavior is now explicit in the prototype:
+
+- leases have `ttl_seconds`
+- stale leases are detectable
+- `acquire-lane-lease --force` can break stale conflicting leases
+- the conflict matrix is deliberate:
+  - `edit` conflicts with `edit`, `exec`, and `review`
+  - `exec` conflicts with `edit` and `review`, but not `exec`
+  - `review` is exclusive
+
 Bootstrap command:
 
 ```bash

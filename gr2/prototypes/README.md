@@ -183,3 +183,19 @@ The design standard should be:
 
 - prototype behavior must survive both synthetic stress cases and real-repo
   workflow checks before the MVP is treated as solid
+
+Bootstrap command:
+
+```bash
+python3 gr2/prototypes/real_git_playground.py /tmp/gr2-real-git-demo
+```
+
+That harness will:
+
+- initialize a fresh gr2 workspace
+- register the three private playground repos
+- write a real `WorkspaceSpec`
+- run `plan` and `apply`
+- create real local git branches in the cloned repos
+- create multiple lanes and one shared scratchpad
+- print repo, lane, exec, and scratchpad status surfaces

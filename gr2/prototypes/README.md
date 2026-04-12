@@ -255,6 +255,24 @@ This is still prototype scope, but it tests the right product direction:
 lane transitions and lease changes should be observable workspace events rather
 than invisible local state.
 
+## Real-Git Same-Repo Multi-Agent Materialization
+
+To verify that unit-local-first is real and not only metadata, run:
+
+```bash
+python3 gr2/prototypes/real_git_lane_materialization.py
+```
+
+This harness:
+
+- creates a local bare remote
+- writes a workspace spec that points at it
+- creates two lanes for two different units that both touch the same repo
+- verifies `plan-exec` produces distinct cwd paths
+- clones into those lane cwd paths
+- makes independent commits in each checkout
+- verifies the checkouts do not interfere
+
 Bootstrap command:
 
 ```bash

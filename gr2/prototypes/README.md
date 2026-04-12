@@ -272,6 +272,22 @@ This prototype keeps the premium boundary hard:
 - reassignment is a premium recompilation event, not a gr2-side identity
   decision.
 
+Org/policy compiler example:
+
+```bash
+python3 gr2/prototypes/org_policy_compiler.py demo
+python3 gr2/prototypes/org_policy_compiler.py compile --scenario baseline --json
+python3 gr2/prototypes/org_policy_compiler.py compile --scenario repo-update --json
+python3 gr2/prototypes/org_policy_compiler.py compile --scenario downgrade --json
+```
+
+This prototype keeps the compiler seam explicit:
+
+- Premium reads org config, roles, entitlements, and reviewer policy.
+- Premium outputs workspace-scoped constraints that gr2 can enforce locally.
+- gr2 sees unit repo access, lane limits, and workspace constraints, but not the
+  raw org policy logic that produced them.
+
 ## Real-Git Same-Repo Multi-Agent Materialization
 
 To verify that unit-local-first is real and not only metadata, run:

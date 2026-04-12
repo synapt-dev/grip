@@ -12,34 +12,8 @@ workspace that must work for:
 It is not a feature wishlist. It is the rulebook for what the workspace must
 be able to do without unsafe workarounds.
 
-## Development Workflow
-
-`gr2` should be developed with this sequence:
-
-- design
-- prototype
-- verify
-- repeat that loop until the shape holds
-- build
-- assess
-- repeat for the next slice
-
-The shorthand is:
-
-- `(design -> prototype -> verify)^n`
-- `build`
-- `assess`
-- `repeat`
-
-For `gr2`, verification is not just a happy-path demo. It includes:
-
-- adversarial scenarios
-- real git behavior
-- user-mode checks across solo human, single agent, multi-agent, and mixed
-  human + agent workflows
-
-The lane model should be pressure-tested with the cross-mode matrix in
-`ASSESS-gr2-lanes-cross-mode-stress.md`, not only per-mode happy paths.
+For Synapt, `gr2` is the workspace infrastructure layer, not just a helper
+around multi-repo git state.
 
 ## Primary Design Principle
 
@@ -57,6 +31,63 @@ If `gr2` gets that right, humans and agents can work safely in parallel.
 If it gets that wrong, users will fall back to ad hoc worktrees, raw git, and
 hidden state.
 
+## Tool Boundary Principle
+
+`gr2` is not a replacement for git.
+
+`gr2` should be the first-class surface for multi-repo workspace routing.
+Git should remain the first-class surface for normal repo-local work inside a
+chosen checkout.
+
+If that boundary gets blurred, users and agents will distrust the system for
+opposite reasons:
+
+- if `gr2` does too much, it feels magical and unsafe
+- if `gr2` does too little, users will ignore it and fall back to ad hoc shell
+
+So the system must make this split legible.
+
+## Synapt Infrastructure Principle
+
+`gr2` should be the local workspace substrate that Synapt compiles into.
+
+That means:
+
+- premium org shape compiles into `WorkspaceSpec` and lane policy
+- local workspaces materialize teams, agents, repo scope, and context surfaces
+- channels, recall, and agent lanes should feel native to the workspace model
+
+This is still compatible with the local-first split:
+
+- premium owns org identity, policy, entitlements, and coordination semantics
+- `gr2` owns local workspace materialization and lane execution surfaces
+
+But the user experience should feel integrated rather than patched together.
+
+### `gr2` Must Own
+
+- lane selection and switching
+- review-lane setup
+- shared scratchpads
+- multi-repo status and scope
+- structural workspace planning and apply
+- lane-aware execution planning
+
+### Git Must Still Own
+
+- repo-local `status`, `diff`, `log`
+- staging and committing
+- normal branch work inside one checkout
+- low-level recovery when a user is already in the correct repo
+
+### User Decision Rule
+
+The default user rule should be:
+
+1. use `gr2` to get into the right workspace context
+2. use git to work inside that chosen repo checkout
+3. return to `gr2` when changing context, scope, or execution surface
+
 ## User Modes
 
 `gr2` must support all of these without changing its core model.
@@ -69,6 +100,7 @@ The user needs to:
 - review another PR without disturbing that feature
 - start a second feature while the first waits on review
 - run build/test/verify for the active multi-repo lane
+- know when to use raw git versus `gr2` without second-guessing
 
 The solo human should not need to understand or manage a shared repo cache.
 If clone acceleration exists, it should feel like faster materialization, not a
@@ -83,6 +115,7 @@ The agent needs to:
 - branch and execute commands without guessing
 - report deterministic status
 - avoid clobbering unrelated work
+- prefer the workspace primitives over ad hoc raw git when the task is multi-repo
 
 The agent should receive explicit status about active working checkouts, not be
 forced to reason about cache internals unless a clone/materialization problem
@@ -97,6 +130,7 @@ The team needs to:
 - preserve private context where appropriate
 - coordinate across linked PRs and sprint lanes
 - switch between tasks without contaminating each other's state
+- avoid entering each other's private directories just to collaborate
 
 The team should benefit from shared clone acceleration, but the optimization
 must not weaken private-workspace boundaries or turn `repos/<repo>` into a
@@ -104,17 +138,17 @@ confusing second place where work might be happening.
 
 ### Mixed Human + Agent
 
-The mixed mode is not a special edge case. It is a primary operating mode.
+The mixed mode is a primary operating mode, not a special case.
 
 The workspace needs to let a human and an agent collaborate without either of
-them needing to enter the other's private lane to get work done.
+them needing to enter the other's private lane just to get work done.
 
-That implies:
+That requires:
 
-- private implementation lanes remain private
-- shared scratchpads are workspace-owned
-- review lanes are disposable and isolated
-- status surfaces must work for both human readers and machine consumers
+- private implementation lanes
+- shared scratchpads for lightweight collaboration
+- isolated review lanes
+- status surfaces that work for both humans and machines
 
 ## Hard Requirements
 
@@ -235,21 +269,6 @@ That means:
 - review lanes can run their own commands
 - review lanes do not mutate the current feature lane
 
-### 8. Cross-Mode Recovery And Concurrency
-
-The lane model must hold under interruption and concurrency across all user
-modes.
-
-That includes:
-
-- solo-human lane recovery after review interruptions
-- single-agent context switching under new prompts
-- multi-agent same-repo parallel work
-- mixed human + agent same-lane conflict handling
-
-The adversarial lane matrix in `ASSESS-gr2-lanes-cross-mode-stress.md` is part
-of the verification gate for this requirement.
-
 ### 8. Cross-Repo Feature Coherence
 
 A cross-repo feature must be representable as one lane record, not merely
@@ -291,6 +310,30 @@ Agents routinely need:
 - deterministic exit codes
 - explicit next-step hints
 
+### 10. Materialization Optimization Must Not Become A Second UX Model
+
+`gr2 apply` may use shared local mirrors or reference clones as its materialization
+substrate.
+
+That is desirable for:
+
+- speed
+- disk reuse
+- cheap review lanes
+- adoptability on large workspaces
+
+But the optimization must not become a user-facing mental model.
+
+Required rule:
+
+- users work in unit-local or lane-local checkouts
+- `.grip/cache/repos/` is infrastructure
+- status surfaces should describe active working checkouts first
+
+If the design makes users reason about shared cache topology during normal work,
+the UX has failed.
+- explicit scope metadata
+
 So every status-style surface should support structured output as a first-class
 mode, not a best-effort pretty-print after the human CLI is finished.
 
@@ -316,30 +359,7 @@ The target user problem is simple:
 - agents should not have to scrape prose
 - humans should not lose readable output by default
 
-### 10. Materialization Optimization Must Not Become A Second UX Model
-
-`gr2 apply` may use shared local mirrors or reference clones as its materialization
-substrate.
-
-That is desirable for:
-
-- speed
-- disk reuse
-- cheap review lanes
-- adoptability on large workspaces
-
-But the optimization must not become a user-facing mental model.
-
-Required rule:
-
-- users work in unit-local or lane-local checkouts
-- `.grip/cache/repos/` is infrastructure
-- status surfaces should describe active working checkouts first
-
-If the design makes users reason about shared cache topology during normal work,
-the UX has failed.
-
-### 11. Strong UX Guidance
+### 10. Strong UX Guidance
 
 The product must teach the user which surface to use.
 
@@ -351,7 +371,7 @@ That means:
 - common workflows should be expressed as short procedural paths
 - structured output should be easy to enable and hard to forget
 
-### 12. Multi-Repo Scratchpads
+### 11. Multi-Repo Scratchpads
 
 The system must support two or more temporary scratchpads simultaneously.
 
@@ -396,6 +416,9 @@ Required surfaces:
 - `gr2 repo fetch`
 - `gr2 repo sync`
 - `gr2 repo checkout`
+
+This surface must remain explicit enough that users do not confuse it with
+plain repo-local git operations.
 
 ### Lane Surface
 

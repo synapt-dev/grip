@@ -113,6 +113,8 @@ That implies explicit read surfaces:
 
 - list scratchpads
 - show one scratchpad
+- audit stale or orphaned scratchpads
+- plan promotion into a repo artifact
 - suggest next step
 
 ## Prototype Goal
@@ -123,6 +125,11 @@ The prototype should answer:
 - does the metadata feel sufficient?
 - do users understand when to use a scratchpad instead of a PR or private lane?
 - does this preserve the private-workspace safety model?
+- can the tool help the user choose between scratchpad, review lane, feature lane,
+  and PR without guesswork?
+- can the tool surface stale or weakly tracked scratchpads before they become
+  clutter or coordination debt?
+- can the tool show a clear graduation path from scratchpad to repo artifact?
 
 ## Verification Gate
 

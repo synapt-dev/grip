@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use crate::args::{Commands, RepoCommands, SpecCommands, TeamCommands, UnitCommands};
 use crate::plan::ExecutionPlan;
+use crate::repo_status::{RepoStatusFilter, RepoStatusReport};
 use crate::spec::{read_workspace_spec, workspace_spec_path, write_workspace_spec, WorkspaceSpec};
 
 pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
@@ -174,6 +175,13 @@ pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
                     }
                 }
 
+                Ok(())
+            }
+            RepoCommands::Status { unit, repo } => {
+                let workspace_root = require_workspace_root()?;
+                let report =
+                    RepoStatusReport::load(&workspace_root, &RepoStatusFilter { unit, repo })?;
+                println!("{}", report.render_table());
                 Ok(())
             }
             RepoCommands::Remove { name } => {

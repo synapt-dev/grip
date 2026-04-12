@@ -476,6 +476,172 @@ fn test_gr2_repo_list_requires_gr2_workspace() {
 }
 
 #[test]
+fn test_gr2_repo_status_reports_missing_unit_checkout_as_clone_missing() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let bare = create_bare_repo_with_content(temp.path(), "app");
+
+    let spec = format!(
+        r#"schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "app"
+path = "repos/app"
+url = "{}"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = ["app"]
+"#,
+        toml_path(&bare)
+    );
+    std::fs::write(workspace_root.join(".grip/workspace_spec.toml"), spec).unwrap();
+    std::fs::create_dir_all(workspace_root.join("agents/atlas")).unwrap();
+    std::fs::write(
+        workspace_root.join("agents/atlas/unit.toml"),
+        "name = \"atlas\"\nkind = \"unit\"\nrepos = [\"app\"]\n",
+    )
+    .unwrap();
+
+    let mut status = Command::cargo_bin("gr2").unwrap();
+    status
+        .current_dir(&workspace_root)
+        .args(["repo", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("RepoStatus"))
+        .stdout(predicate::str::contains("clone_missing"))
+        .stdout(predicate::str::contains("atlas"))
+        .stdout(predicate::str::contains("app"));
+}
+
+#[test]
+fn test_gr2_repo_status_reports_dirty_unit_repo_as_block_dirty() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let bare = create_bare_repo_with_content(temp.path(), "app");
+
+    let spec = format!(
+        r#"schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "app"
+path = "repos/app"
+url = "{}"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = ["app"]
+"#,
+        toml_path(&bare)
+    );
+    std::fs::write(workspace_root.join(".grip/workspace_spec.toml"), spec).unwrap();
+    std::fs::create_dir_all(workspace_root.join("agents/atlas")).unwrap();
+    std::fs::write(
+        workspace_root.join("agents/atlas/unit.toml"),
+        "name = \"atlas\"\nkind = \"unit\"\nrepos = [\"app\"]\n",
+    )
+    .unwrap();
+
+    let clone_dest = workspace_root.join("agents/atlas/app");
+    let status = std::process::Command::new("git")
+        .arg("clone")
+        .arg(&bare)
+        .arg(&clone_dest)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    std::fs::write(clone_dest.join("dirty.txt"), "local change").unwrap();
+
+    let mut repo_status = Command::cargo_bin("gr2").unwrap();
+    repo_status
+        .current_dir(&workspace_root)
+        .args(["repo", "status", "--unit", "atlas"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("block_dirty"))
+        .stdout(predicate::str::contains("working tree is dirty"));
+}
+
+#[test]
+fn test_gr2_repo_status_reports_shared_repo_behind_upstream_as_fast_forward() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init").arg(&workspace_root).assert().success();
+
+    let bare = create_bare_repo_with_content(temp.path(), "app");
+
+    let spec = format!(
+        r#"schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "app"
+path = "repos/app"
+url = "{}"
+"#,
+        toml_path(&bare)
+    );
+    std::fs::write(workspace_root.join(".grip/workspace_spec.toml"), spec).unwrap();
+
+    let shared_repo = workspace_root.join("repos/app");
+    let status = std::process::Command::new("git")
+        .arg("clone")
+        .arg(&bare)
+        .arg(&shared_repo)
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let staging = temp.path().join("staging");
+    let status = std::process::Command::new("git")
+        .arg("clone")
+        .arg(&bare)
+        .arg(&staging)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    git_helpers::configure_identity(&staging);
+    git_helpers::commit_file(&staging, "later.txt", "upstream", "Add upstream");
+    let branch = git_helpers::current_branch(&staging);
+    git_helpers::push_branch(&staging, "origin", &branch);
+    git_helpers::fetch(&shared_repo, "origin", Some(&branch));
+
+    let mut repo_status = Command::cargo_bin("gr2").unwrap();
+    repo_status
+        .current_dir(&workspace_root)
+        .args(["repo", "status", "--repo", "app"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fast_forward"))
+        .stdout(predicate::str::contains("shared"))
+        .stdout(predicate::str::contains("behind=1"));
+}
+
+#[test]
 fn test_gr2_repo_remove_deletes_registered_repo() {
     let temp = TempDir::new().unwrap();
     let workspace_root = temp.path().join("demo-team");
@@ -1032,7 +1198,7 @@ name = "atlas"
 path = "agents/atlas"
 repos = ["app"]
 "#,
-        bare.display()
+        toml_path(&bare)
     );
     std::fs::write(
         workspace_root.join(".grip/workspace_spec.toml"),
@@ -1233,17 +1399,13 @@ name = "atlas"
 path = "agents/atlas"
 repos = ["app"]
 "#,
-        bare_repo.display()
+        toml_path(&bare_repo)
     );
-    std::fs::write(
-        workspace_root.join(".grip/workspace_spec.toml"),
-        &spec,
-    )
-    .unwrap();
+    std::fs::write(workspace_root.join(".grip/workspace_spec.toml"), &spec).unwrap();
     std::fs::create_dir_all(workspace_root.join("repos/app")).unwrap();
     std::fs::write(
         workspace_root.join("repos/app/repo.toml"),
-        format!("name = \"app\"\nurl = \"{}\"\n", bare_repo.display()),
+        format!("name = \"app\"\nurl = \"{}\"\n", toml_path(&bare_repo)),
     )
     .unwrap();
 
@@ -2351,13 +2513,9 @@ name = "apollo"
 path = "agents/apollo"
 repos = ["test-repo"]
 "#,
-        bare_repo.display()
+        toml_path(&bare_repo)
     );
-    std::fs::write(
-        workspace_root.join(".grip/workspace_spec.toml"),
-        &spec,
-    )
-    .unwrap();
+    std::fs::write(workspace_root.join(".grip/workspace_spec.toml"), &spec).unwrap();
 
     let mut apply = Command::cargo_bin("gr2").unwrap();
     apply
@@ -2427,13 +2585,9 @@ name = "apollo"
 path = "agents/apollo"
 repos = ["test-repo"]
 "#,
-        bare_repo.display()
+        toml_path(&bare_repo)
     );
-    std::fs::write(
-        workspace_root.join(".grip/workspace_spec.toml"),
-        &spec,
-    )
-    .unwrap();
+    std::fs::write(workspace_root.join(".grip/workspace_spec.toml"), &spec).unwrap();
 
     let mut plan = Command::cargo_bin("gr2").unwrap();
     plan.current_dir(&workspace_root)
@@ -2451,7 +2605,7 @@ repos = ["test-repo"]
 fn create_bare_repo_with_content(parent: &std::path::Path, name: &str) -> std::path::PathBuf {
     let bare = parent.join(format!("{}.git", name));
     std::process::Command::new("git")
-        .args(["init", "--bare"])
+        .args(["init", "--bare", "-b", "main"])
         .arg(&bare)
         .output()
         .unwrap();
@@ -2464,6 +2618,7 @@ fn create_bare_repo_with_content(parent: &std::path::Path, name: &str) -> std::p
         .arg(&work)
         .output()
         .unwrap();
+    git_helpers::configure_identity(&work);
     std::fs::write(work.join("README.md"), "# test\n").unwrap();
     std::process::Command::new("git")
         .args(["add", "."])
@@ -2482,6 +2637,10 @@ fn create_bare_repo_with_content(parent: &std::path::Path, name: &str) -> std::p
         .unwrap();
 
     bare
+}
+
+fn toml_path(path: &std::path::Path) -> String {
+    path.display().to_string().replace('\\', "\\\\")
 }
 
 /// Helper: set up a workspace with a unit that has an already-cloned repo.
@@ -2527,13 +2686,9 @@ name = "apollo"
 path = "agents/apollo"
 repos = ["app"]
 "#,
-        bare_repo.display()
+        toml_path(&bare_repo)
     );
-    std::fs::write(
-        workspace_root.join(".grip/workspace_spec.toml"),
-        &spec,
-    )
-    .unwrap();
+    std::fs::write(workspace_root.join(".grip/workspace_spec.toml"), &spec).unwrap();
 
     // Run apply once to materialize the unit + clone the repo
     let mut apply = Command::cargo_bin("gr2").unwrap();
@@ -2587,13 +2742,9 @@ src = "config/shared.toml"
 dest = ".config/shared.toml"
 kind = "symlink"
 "#,
-        bare.display()
+        toml_path(&bare)
     );
-    std::fs::write(
-        workspace_root.join(".grip/workspace_spec.toml"),
-        &spec,
-    )
-    .unwrap();
+    std::fs::write(workspace_root.join(".grip/workspace_spec.toml"), &spec).unwrap();
 
     // Apply without --autostash should fail because the unit's repo is dirty
     let mut apply = Command::cargo_bin("gr2").unwrap();
@@ -2602,8 +2753,7 @@ kind = "symlink"
         .arg("apply")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("dirty")
-            .or(predicate::str::contains("uncommitted")));
+        .stderr(predicate::str::contains("dirty").or(predicate::str::contains("uncommitted")));
 }
 
 /// gr2 apply --autostash should preserve dirty changes by stashing before
@@ -2642,13 +2792,9 @@ src = "config/shared.toml"
 dest = ".config/shared.toml"
 kind = "symlink"
 "#,
-        bare.display()
+        toml_path(&bare)
     );
-    std::fs::write(
-        workspace_root.join(".grip/workspace_spec.toml"),
-        &spec,
-    )
-    .unwrap();
+    std::fs::write(workspace_root.join(".grip/workspace_spec.toml"), &spec).unwrap();
 
     // Apply with --autostash should succeed
     let mut apply = Command::cargo_bin("gr2").unwrap();
@@ -2703,13 +2849,9 @@ src = "config/shared.toml"
 dest = ".config/shared.toml"
 kind = "symlink"
 "#,
-        bare.display()
+        toml_path(&bare)
     );
-    std::fs::write(
-        workspace_root.join(".grip/workspace_spec.toml"),
-        &spec,
-    )
-    .unwrap();
+    std::fs::write(workspace_root.join(".grip/workspace_spec.toml"), &spec).unwrap();
 
     // Plan should report the dirty state with specifics
     let mut plan = Command::cargo_bin("gr2").unwrap();
@@ -2756,13 +2898,9 @@ src = "config/shared.toml"
 dest = ".config/shared.toml"
 kind = "symlink"
 "#,
-        bare.display()
+        toml_path(&bare)
     );
-    std::fs::write(
-        workspace_root.join(".grip/workspace_spec.toml"),
-        &spec,
-    )
-    .unwrap();
+    std::fs::write(workspace_root.join(".grip/workspace_spec.toml"), &spec).unwrap();
 
     // Apply with --autostash
     let mut apply = Command::cargo_bin("gr2").unwrap();
@@ -2861,13 +2999,9 @@ name = "apollo"
 path = "agents/apollo"
 repos = ["myrepo"]
 "#,
-        bare.display()
+        toml_path(&bare)
     );
-    std::fs::write(
-        workspace_root.join(".grip/workspace_spec.toml"),
-        &spec,
-    )
-    .unwrap();
+    std::fs::write(workspace_root.join(".grip/workspace_spec.toml"), &spec).unwrap();
 
     // Plan should detect the missing repo and emit a non-empty plan
     let mut plan = Command::cargo_bin("gr2").unwrap();
@@ -2930,13 +3064,9 @@ name = "apollo"
 path = "agents/apollo"
 repos = ["myrepo"]
 "#,
-        bare.display()
+        toml_path(&bare)
     );
-    std::fs::write(
-        workspace_root.join(".grip/workspace_spec.toml"),
-        &spec,
-    )
-    .unwrap();
+    std::fs::write(workspace_root.join(".grip/workspace_spec.toml"), &spec).unwrap();
 
     // Apply should converge: clone the missing repo
     let mut apply = Command::cargo_bin("gr2").unwrap();
@@ -3005,13 +3135,9 @@ name = "apollo"
 path = "agents/apollo"
 repos = ["myrepo"]
 "#,
-        bare.display()
+        toml_path(&bare)
     );
-    std::fs::write(
-        workspace_root.join(".grip/workspace_spec.toml"),
-        &spec,
-    )
-    .unwrap();
+    std::fs::write(workspace_root.join(".grip/workspace_spec.toml"), &spec).unwrap();
 
     // First apply converges
     let mut first = Command::cargo_bin("gr2").unwrap();

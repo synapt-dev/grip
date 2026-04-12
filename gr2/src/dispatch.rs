@@ -1,8 +1,13 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::args::{Commands, RepoCommands, SpecCommands, TeamCommands, UnitCommands};
+use crate::args::{Commands, LaneCommands, RepoCommands, SpecCommands, TeamCommands, UnitCommands};
+use crate::lane::{
+    create_lane, list_lanes, remove_lane, render_lane_table, show_lane, validate_lane_name,
+    LaneCreateRequest, LanePrAssociation, LaneType,
+};
 use crate::plan::ExecutionPlan;
 use crate::repo_status::{RepoStatusFilter, RepoStatusReport};
 use crate::spec::{read_workspace_spec, workspace_spec_path, write_workspace_spec, WorkspaceSpec};
@@ -341,6 +346,77 @@ pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
                 Ok(())
             }
         },
+        Commands::Lane { command } => match command {
+            LaneCommands::Create {
+                name,
+                owner_unit,
+                lane_type,
+                repos,
+                branches,
+                shared_context,
+                private_context,
+                exec,
+                prs,
+                source,
+                parallel,
+                no_fail_fast,
+            } => {
+                let workspace_root = require_workspace_root()?;
+                validate_unit_name(&owner_unit)?;
+                validate_lane_name(&name)?;
+
+                let branch_map = parse_branch_map(branches)?;
+                let pr_associations = parse_pr_associations(prs)?;
+                let request = LaneCreateRequest {
+                    name: name.clone(),
+                    owner_unit: owner_unit.clone(),
+                    lane_type: lane_type.parse::<LaneType>()?,
+                    repos,
+                    branch_map,
+                    shared_context,
+                    private_context,
+                    exec_commands: exec,
+                    creation_source: source.unwrap_or_else(|| "manual".to_string()),
+                    pr_associations,
+                    parallel,
+                    fail_fast: !no_fail_fast,
+                };
+
+                let record = create_lane(&workspace_root, request)?;
+                println!(
+                    "Created lane '{}'\n- owner: {}\n- type: {}\n- repos: {}",
+                    record.lane_name,
+                    record.owner_unit,
+                    record.lane_type.as_str(),
+                    record.repos.join(", ")
+                );
+                Ok(())
+            }
+            LaneCommands::List { owner_unit } => {
+                let workspace_root = require_workspace_root()?;
+                if let Some(owner_unit) = &owner_unit {
+                    validate_unit_name(owner_unit)?;
+                }
+                let lanes = list_lanes(&workspace_root, owner_unit.as_deref())?;
+                println!("{}", render_lane_table(&lanes));
+                Ok(())
+            }
+            LaneCommands::Show { name, owner_unit } => {
+                let workspace_root = require_workspace_root()?;
+                validate_unit_name(&owner_unit)?;
+                validate_lane_name(&name)?;
+                println!("{}", show_lane(&workspace_root, &owner_unit, &name)?);
+                Ok(())
+            }
+            LaneCommands::Remove { name, owner_unit } => {
+                let workspace_root = require_workspace_root()?;
+                validate_unit_name(&owner_unit)?;
+                validate_lane_name(&name)?;
+                remove_lane(&workspace_root, &owner_unit, &name)?;
+                println!("Removed lane '{}' for unit '{}'", name, owner_unit);
+                Ok(())
+            }
+        },
         Commands::Spec { command } => match command {
             SpecCommands::Show => {
                 let workspace_root = require_workspace_root()?;
@@ -463,4 +539,41 @@ fn validate_unit_name(name: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn parse_branch_map(entries: Vec<String>) -> Result<BTreeMap<String, String>> {
+    let mut branch_map = BTreeMap::new();
+    for entry in entries {
+        let (repo, branch) = entry
+            .split_once('=')
+            .with_context(|| format!("invalid branch mapping '{}': expected repo=branch", entry))?;
+        if repo.trim().is_empty() || branch.trim().is_empty() {
+            anyhow::bail!(
+                "invalid branch mapping '{}': repo and branch must both be non-empty",
+                entry
+            );
+        }
+        branch_map.insert(repo.trim().to_string(), branch.trim().to_string());
+    }
+    Ok(branch_map)
+}
+
+fn parse_pr_associations(entries: Vec<String>) -> Result<Vec<LanePrAssociation>> {
+    let mut prs = Vec::new();
+    for entry in entries {
+        let (repo, number) = entry
+            .split_once(':')
+            .with_context(|| format!("invalid PR association '{}': expected repo:number", entry))?;
+        if repo.trim().is_empty() {
+            anyhow::bail!("invalid PR association '{}': repo must not be empty", entry);
+        }
+        prs.push(LanePrAssociation {
+            repo: repo.trim().to_string(),
+            number: number
+                .trim()
+                .parse::<u64>()
+                .with_context(|| format!("invalid PR number in '{}'", entry))?,
+        });
+    }
+    Ok(prs)
 }

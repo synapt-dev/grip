@@ -50,6 +50,12 @@ pub enum Commands {
         command: UnitCommands,
     },
 
+    /// Lane metadata operations
+    Lane {
+        #[command(subcommand)]
+        command: LaneCommands,
+    },
+
     /// Declarative workspace spec operations
     Spec {
         #[command(subcommand)]
@@ -140,6 +146,86 @@ pub enum UnitCommands {
     Remove {
         /// Unit name
         name: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum LaneCommands {
+    /// Create a lane record and scaffold its workspace directories
+    Create {
+        /// Lane name
+        name: String,
+
+        /// Owning unit
+        #[arg(long = "owner-unit")]
+        owner_unit: String,
+
+        /// Lane type
+        #[arg(long = "type", default_value = "feature")]
+        lane_type: String,
+
+        /// Repo membership for the lane (defaults to unit repos from workspace spec)
+        #[arg(long = "repo")]
+        repos: Vec<String>,
+
+        /// Branch intent entries in repo=branch form
+        #[arg(long = "branch")]
+        branches: Vec<String>,
+
+        /// Extra shared context roots relative to workspace root
+        #[arg(long = "shared-context")]
+        shared_context: Vec<String>,
+
+        /// Extra private context roots relative to workspace root
+        #[arg(long = "private-context")]
+        private_context: Vec<String>,
+
+        /// Default execution command for the lane (repeatable)
+        #[arg(long = "exec")]
+        exec: Vec<String>,
+
+        /// PR associations in repo:number form
+        #[arg(long = "pr")]
+        prs: Vec<String>,
+
+        /// Creation source label
+        #[arg(long)]
+        source: Option<String>,
+
+        /// Allow execution fan-out across repos by default
+        #[arg(long)]
+        parallel: bool,
+
+        /// Do not fail fast when running multi-repo commands
+        #[arg(long)]
+        no_fail_fast: bool,
+    },
+
+    /// List persisted lanes
+    List {
+        /// Filter to one owner unit
+        #[arg(long = "owner-unit")]
+        owner_unit: Option<String>,
+    },
+
+    /// Print one lane record
+    Show {
+        /// Lane name
+        name: String,
+
+        /// Owning unit
+        #[arg(long = "owner-unit")]
+        owner_unit: String,
+    },
+
+    /// Remove one lane record and its scaffolded directories
+    Remove {
+        /// Lane name
+        name: String,
+
+        /// Owning unit
+        #[arg(long = "owner-unit")]
+        owner_unit: String,
     },
 }
 

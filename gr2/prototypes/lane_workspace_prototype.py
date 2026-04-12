@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import os
 import json
 import shlex
@@ -357,11 +358,21 @@ def append_jsonl(path: Path, payload: dict) -> None:
         fh.write(json.dumps(payload) + "\n")
 
 
+def event_id(payload: dict) -> str:
+    body = {key: value for key, value in payload.items() if key != "event_id"}
+    raw = json.dumps(body, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
 def emit_lane_event(workspace_root: Path, payload: dict) -> None:
+    payload = dict(payload)
+    payload.setdefault("event_id", event_id(payload))
     append_jsonl(lane_events_file(workspace_root), payload)
 
 
 def emit_recall_lane_event(workspace_root: Path, payload: dict) -> None:
+    payload = dict(payload)
+    payload.setdefault("event_id", event_id(payload))
     append_jsonl(recall_lane_events_file(workspace_root), payload)
 
 
@@ -650,12 +661,12 @@ def enter_lane(args: argparse.Namespace) -> int:
         "repos": lane_doc.get("repos", []),
         "timestamp": now_utc(),
     }
-    emit_lane_event(workspace_root, event)
     if args.notify_channel:
         event["channel_message"] = (
             f'{args.actor} entered {args.owner_unit}/{args.lane_name} '
             f'[{lane_doc["lane_type"]}] repos={",".join(lane_doc.get("repos", []))}'
         )
+    emit_lane_event(workspace_root, event)
     if args.recall:
         emit_recall_lane_event(
             workspace_root,
@@ -691,12 +702,12 @@ def exit_lane(args: argparse.Namespace) -> int:
         "repos": current_doc.get("repos", []),
         "timestamp": now_utc(),
     }
-    emit_lane_event(workspace_root, event)
     if args.notify_channel:
         event["channel_message"] = (
             f'{args.actor} exited {args.owner_unit}/{current_doc["lane_name"]} '
             f'[{current_doc["lane_type"]}]'
         )
+    emit_lane_event(workspace_root, event)
     if args.recall:
         emit_recall_lane_event(
             workspace_root,

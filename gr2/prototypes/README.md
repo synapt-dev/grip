@@ -244,6 +244,7 @@ The lane prototype now includes a minimal Synapt-native event layer:
 - append-only event log at `.grip/events/lane_events.jsonl`
 - recall-compatible log at `.grip/events/recall_lane_history.jsonl`
 - `lane-history` to reconstruct a unit's lane timeline
+- `channel_lane_bridge.py` to derive `#dev`-compatible notifications from the event log
 
 Unit `agent_id` can now flow from `WorkspaceSpec` into:
 
@@ -254,6 +255,22 @@ Unit `agent_id` can now flow from `WorkspaceSpec` into:
 This is still prototype scope, but it tests the right product direction:
 lane transitions and lease changes should be observable workspace events rather
 than invisible local state.
+
+Channel bridge example:
+
+```bash
+python3 gr2/prototypes/channel_lane_bridge.py recommend-delivery
+python3 gr2/prototypes/channel_lane_bridge.py bridge-events /path/to/workspace --delivery watcher
+python3 gr2/prototypes/channel_lane_bridge.py show-outbox /path/to/workspace
+```
+
+Current prototype recommendation:
+
+- watcher mode should be the default bridge behavior
+- lane transitions remain durable even if channel delivery is down
+- the bridge can resume cleanly from `.grip/events/lane_events.jsonl`
+- synchronous delivery can still exist for comparison, but it should not be the
+  primary model
 
 ## Real-Git Same-Repo Multi-Agent Materialization
 

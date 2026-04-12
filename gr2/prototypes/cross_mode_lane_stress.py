@@ -58,6 +58,10 @@ def lane_proto(root: Path) -> Path:
     return root / "gr2" / "prototypes" / "lane_workspace_prototype.py"
 
 
+def channel_bridge_proto(root: Path) -> Path:
+    return root / "gr2" / "prototypes" / "channel_lane_bridge.py"
+
+
 def run(argv: list[str], *, capture: bool = False, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         argv,
@@ -436,7 +440,7 @@ def scenario_synapt_lane_events(root: Path, workspace_root: Path) -> ScenarioRes
             "--recall",
         ]
     )
-    acquire_lease(root, workspace_root, "atlas", "feat-events", "agent:atlas", "exec")
+    acquire_lease(root, workspace_root, "atlas", "feat-events", "agent:atlas", "edit")
     run(
         [
             "python3",
@@ -462,6 +466,30 @@ def scenario_synapt_lane_events(root: Path, workspace_root: Path) -> ScenarioRes
             "--recall",
         ]
     )
+    bridge_once = run(
+        [
+            "python3",
+            str(channel_bridge_proto(root)),
+            "bridge-events",
+            str(workspace_root),
+            "--delivery",
+            "watcher",
+            "--json",
+        ],
+        capture=True,
+    )
+    bridge_twice = run(
+        [
+            "python3",
+            str(channel_bridge_proto(root)),
+            "bridge-events",
+            str(workspace_root),
+            "--delivery",
+            "watcher",
+            "--json",
+        ],
+        capture=True,
+    )
     history_proc = run(
         [
             "python3",
@@ -473,13 +501,31 @@ def scenario_synapt_lane_events(root: Path, workspace_root: Path) -> ScenarioRes
         ],
         capture=True,
     )
+    outbox_proc = run(
+        [
+            "python3",
+            str(channel_bridge_proto(root)),
+            "show-outbox",
+            str(workspace_root),
+            "--json",
+        ],
+        capture=True,
+    )
     history_rows = json.loads(history_proc.stdout)
+    bridge_once_doc = json.loads(bridge_once.stdout)
+    bridge_twice_doc = json.loads(bridge_twice.stdout)
+    outbox_rows = json.loads(outbox_proc.stdout)
     events_path = workspace_root / ".grip" / "events" / "lane_events.jsonl"
     recall_path = workspace_root / ".grip" / "events" / "recall_lane_history.jsonl"
 
     holds = []
     gaps = []
-    evidence = [json.dumps(history_rows, indent=2)]
+    evidence = [
+        json.dumps(history_rows, indent=2),
+        json.dumps(bridge_once_doc, indent=2),
+        json.dumps(bridge_twice_doc, indent=2),
+        json.dumps(outbox_rows, indent=2),
+    ]
 
     event_types = [row["type"] for row in history_rows]
     expected = ["lane_enter", "lease_acquire", "lease_release", "lane_exit"]
@@ -498,11 +544,21 @@ def scenario_synapt_lane_events(root: Path, workspace_root: Path) -> ScenarioRes
     else:
         gaps.append("expected event logs were not both written")
 
+    if bridge_once_doc.get("bridged_count") == 4 and bridge_twice_doc.get("bridged_count") == 0:
+        holds.append("watcher bridge replays lane events once and dedupes on subsequent scans")
+    else:
+        gaps.append("watcher bridge did not dedupe replayed events correctly")
+
+    if len(outbox_rows) == 4 and all(row.get("channel") == "#dev" for row in outbox_rows):
+        holds.append("lane timeline can be transformed into #dev-compatible notifications")
+    else:
+        gaps.append("channel outbox did not contain the expected lane notifications")
+
     verdict = "holds" if not gaps else "fails"
     return ScenarioResult(
         scenario_id="synapt-lane-events",
         user_mode="single-agent",
-        title="lane enter/lease/exit emits reconstructible synapt-compatible events",
+        title="lane enter/lease/exit emits reconstructible synapt-compatible events and bridgeable notifications",
         verdict=verdict,
         holds=holds,
         gaps=gaps,

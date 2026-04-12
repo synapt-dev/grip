@@ -41,6 +41,10 @@ The user needs to:
 - start a second feature while the first waits on review
 - run build/test/verify for the active multi-repo lane
 
+The solo human should not need to understand or manage a shared repo cache.
+If clone acceleration exists, it should feel like faster materialization, not a
+second workspace concept.
+
 ### Single Agent
 
 The agent needs to:
@@ -51,6 +55,10 @@ The agent needs to:
 - report deterministic status
 - avoid clobbering unrelated work
 
+The agent should receive explicit status about active working checkouts, not be
+forced to reason about cache internals unless a clone/materialization problem
+actually occurs.
+
 ### Multi-Agent Team
 
 The team needs to:
@@ -60,6 +68,10 @@ The team needs to:
 - preserve private context where appropriate
 - coordinate across linked PRs and sprint lanes
 - switch between tasks without contaminating each other's state
+
+The team should benefit from shared clone acceleration, but the optimization
+must not weaken private-workspace boundaries or turn `repos/<repo>` into a
+confusing second place where work might be happening.
 
 ## Hard Requirements
 
@@ -117,6 +129,8 @@ That implies:
 - disposable review lanes
 
 If lane creation is slow or expensive, users will bypass the model.
+
+The cache is an implementation detail. The UX object remains the lane.
 
 ### 4. Shared and Private Context
 
@@ -203,9 +217,83 @@ Agents and humans need trustworthy read surfaces.
 - execution status
 - PR linkage
 
+Cache or transport state should only surface when it affects the user's ability
+to materialize or repair a lane.
+
 These should be machine-readable as well as human-readable.
 
-### 10. Multi-Repo Scratchpads
+### 9a. Structured Output Must Be First-Class
+
+Machine-readable output should not be treated as an optional afterthought.
+
+Agents routinely need:
+
+- stable field names
+- stable object shapes
+- deterministic exit codes
+- explicit next-step hints
+
+So every status-style surface should support structured output as a first-class
+mode, not a best-effort pretty-print after the human CLI is finished.
+
+Required properties:
+
+- all read surfaces support structured output
+- structured output is versioned
+- field names are stable across patch releases
+- error output is also structured when structured mode is enabled
+- command scope is explicit in the payload
+
+Examples of required structured surfaces:
+
+- `gr2 spec show`
+- `gr2 plan`
+- `gr2 repo status`
+- `gr2 lane list`
+- `gr2 lane show`
+- `gr2 exec status`
+
+The target user problem is simple:
+
+- agents should not have to scrape prose
+- humans should not lose readable output by default
+
+### 10. Materialization Optimization Must Not Become A Second UX Model
+
+`gr2 apply` may use shared local mirrors or reference clones as its materialization
+substrate.
+
+That is desirable for:
+
+- speed
+- disk reuse
+- cheap review lanes
+- adoptability on large workspaces
+
+But the optimization must not become a user-facing mental model.
+
+Required rule:
+
+- users work in unit-local or lane-local checkouts
+- `.grip/cache/repos/` is infrastructure
+- status surfaces should describe active working checkouts first
+
+If the design makes users reason about shared cache topology during normal work,
+the UX has failed.
+
+### 11. Strong UX Guidance
+
+The product must teach the user which surface to use.
+
+That means:
+
+- CLI help must state command scope clearly
+- status output should suggest likely next steps
+- docs should include "use `gr2` for this, use git for that"
+- common workflows should be expressed as short procedural paths
+- structured output should be easy to enable and hard to forget
+
+### 12. Multi-Repo Scratchpads
 
 The system must support two or more temporary scratchpads simultaneously.
 

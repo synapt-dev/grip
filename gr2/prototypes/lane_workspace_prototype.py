@@ -18,6 +18,7 @@ import json
 import shlex
 import sys
 import tomllib
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -92,6 +93,8 @@ class SharedScratchpad:
     docs_root: str
     notes_root: str
     context_root: str
+    created_at: str
+    updated_at: str
 
     def as_toml(self) -> str:
         lines = [
@@ -101,6 +104,8 @@ class SharedScratchpad:
             f'purpose = "{self.purpose}"',
             f'lifecycle = "{self.lifecycle}"',
             f'creation_source = "{self.creation_source}"',
+            f'created_at = "{self.created_at}"',
+            f'updated_at = "{self.updated_at}"',
             "",
             f'participants = [{", ".join(f"\"{p}\"" for p in self.participants)}]',
             f'linked_refs = [{", ".join(f"\"{r}\"" for r in self.linked_refs)}]',
@@ -185,6 +190,30 @@ def parse_args() -> argparse.Namespace:
     scratch_list = sub.add_parser("list-shared-scratchpads")
     scratch_list.add_argument("workspace_root", type=Path)
 
+    scratch_audit = sub.add_parser("audit-shared-scratchpads")
+    scratch_audit.add_argument("workspace_root", type=Path)
+    scratch_audit.add_argument(
+        "--stale-days",
+        type=int,
+        default=7,
+        help="mark scratchpads as stale when untouched for this many days",
+    )
+
+    promote = sub.add_parser("plan-promote-scratchpad")
+    promote.add_argument("workspace_root", type=Path)
+    promote.add_argument("name")
+    promote.add_argument("--target-repo", required=True)
+    promote.add_argument("--target-path", required=True)
+    promote.add_argument("--owner-unit", required=True)
+    promote.add_argument("--lane", help="optional lane that should carry the promotion")
+
+    recommend = sub.add_parser("recommend-surface")
+    recommend.add_argument("--kind", choices=["code", "doc", "review", "planning"], required=True)
+    recommend.add_argument("--collaborative", action="store_true")
+    recommend.add_argument("--formal-review", action="store_true")
+    recommend.add_argument("--repos", type=int, default=1)
+    recommend.add_argument("--shared-draft", action="store_true")
+
     return parser.parse_args()
 
 
@@ -243,6 +272,15 @@ def iter_shared_scratchpad_files(workspace_root: Path) -> list[Path]:
     if not root.exists():
         return []
     return sorted(root.glob("*/scratchpad.toml"))
+
+
+def now_utc() -> str:
+    return datetime.now(UTC).replace(microsecond=0).isoformat()
+
+
+def age_days(path: Path) -> int:
+    modified = datetime.fromtimestamp(path.stat().st_mtime, UTC)
+    return max(0, int((datetime.now(UTC) - modified).total_seconds() // 86400))
 
 
 def parse_repo_list(raw: str) -> list[str]:
@@ -357,6 +395,8 @@ def create_shared_scratchpad(args: argparse.Namespace) -> int:
         docs_root=f"shared/scratchpads/{args.name}/docs",
         notes_root=f"shared/scratchpads/{args.name}/notes",
         context_root=f"shared/scratchpads/{args.name}/context",
+        created_at=now_utc(),
+        updated_at=now_utc(),
     )
     shared_scratchpad_file(workspace_root, args.name).write_text(scratchpad.as_toml())
     readme = root / "docs" / "README.md"
@@ -394,13 +434,104 @@ def show_shared_scratchpad(args: argparse.Namespace) -> int:
 
 def list_shared_scratchpads(args: argparse.Namespace) -> int:
     workspace_root = args.workspace_root.resolve()
-    print("NAME\tKIND\tLIFECYCLE\tPARTICIPANTS\tPURPOSE")
+    print("NAME\tKIND\tLIFECYCLE\tAGE_DAYS\tPARTICIPANTS\tPURPOSE")
     for path in iter_shared_scratchpad_files(workspace_root):
         doc = tomllib.loads(path.read_text())
         participants = ",".join(doc.get("participants", [])) or "-"
         print(
-            f'{doc["name"]}\t{doc["kind"]}\t{doc["lifecycle"]}\t{participants}\t{doc["purpose"]}'
+            f'{doc["name"]}\t{doc["kind"]}\t{doc["lifecycle"]}\t{age_days(path)}\t{participants}\t{doc["purpose"]}'
         )
+    return 0
+
+
+def audit_shared_scratchpads(args: argparse.Namespace) -> int:
+    workspace_root = args.workspace_root.resolve()
+    print("NAME\tSTATUS\tAGE_DAYS\tISSUES")
+    for path in iter_shared_scratchpad_files(workspace_root):
+        doc = tomllib.loads(path.read_text())
+        root = path.parent
+        issues: list[str] = []
+        days = age_days(path)
+        docs_root = root / "docs"
+        notes_root = root / "notes"
+        context_root = root / "context"
+
+        if days >= args.stale_days and doc.get("lifecycle") not in {"done", "paused"}:
+            issues.append("stale-active")
+        if not doc.get("participants"):
+            issues.append("no-participants")
+        if not doc.get("linked_refs"):
+            issues.append("no-refs")
+        if not docs_root.exists():
+            issues.append("missing-docs-root")
+        if not notes_root.exists():
+            issues.append("missing-notes-root")
+        if not context_root.exists():
+            issues.append("missing-context-root")
+        if doc.get("kind") == "doc" and not any(docs_root.iterdir()):
+            issues.append("empty-docs")
+
+        status = "ok" if not issues else "needs-attention"
+        print(f'{doc["name"]}\t{status}\t{days}\t{",".join(issues) or "-"}')
+    return 0
+
+
+def plan_promote_scratchpad(args: argparse.Namespace) -> int:
+    workspace_root = args.workspace_root.resolve()
+    doc = load_shared_scratchpad_doc(workspace_root, args.name)
+    lane_name = args.lane or f"promote-{args.name}"
+    print("gr2 prototype scratchpad-promotion plan")
+    print(f'scratchpad: {doc["name"]}')
+    print(f'kind: {doc["kind"]}')
+    print(f'lifecycle: {doc["lifecycle"]}')
+    print(f'target repo: {args.target_repo}')
+    print(f'target path: {args.target_path}')
+    print(f'owner unit: {args.owner_unit}')
+    print(f'suggested lane: {lane_name}')
+    print("recommended:")
+    print(
+        f"  1. create or reuse a feature lane for {args.target_repo} under {args.owner_unit}"
+    )
+    print(
+        f"  2. copy content from shared/scratchpads/{doc['name']}/docs into {args.target_repo}:{args.target_path}"
+    )
+    print(f"  3. branch and commit in lane {lane_name}")
+    print("  4. open a PR once the artifact is ready for formal review")
+    if not doc.get("linked_refs"):
+        print("warning: scratchpad has no linked refs; traceability should be added before promotion")
+    return 0
+
+
+def recommend_surface(args: argparse.Namespace) -> int:
+    recommendation = "feature-lane"
+    rationale: list[str] = []
+
+    if args.kind == "review" or args.formal_review:
+        recommendation = "review-lane"
+        rationale.append("formal review or PR inspection should stay isolated")
+    elif args.kind in {"doc", "planning"} and args.collaborative:
+        recommendation = "shared-scratchpad"
+        rationale.append("shared drafting is lighter than a PR and should not invade private lanes")
+    elif args.shared_draft:
+        recommendation = "shared-scratchpad"
+        rationale.append("explicit shared draft requested")
+    elif args.kind == "code" and args.repos > 1:
+        recommendation = "feature-lane"
+        rationale.append("cross-repo implementation needs one named task context")
+    elif args.kind == "code":
+        recommendation = "feature-lane"
+        rationale.append("private implementation should start in an isolated lane")
+    else:
+        recommendation = "feature-lane"
+        rationale.append("default safe choice is an isolated lane")
+
+    print("gr2 prototype surface recommendation")
+    print(f"recommended: {recommendation}")
+    print(f"why: {'; '.join(rationale)}")
+    print("rules:")
+    print("  - use a review lane for formal PR inspection")
+    print("  - use a shared scratchpad for collaborative drafting")
+    print("  - use a feature lane for implementation work")
     return 0
 
 
@@ -505,6 +636,12 @@ def main() -> int:
         return show_shared_scratchpad(args)
     if args.command == "list-shared-scratchpads":
         return list_shared_scratchpads(args)
+    if args.command == "audit-shared-scratchpads":
+        return audit_shared_scratchpads(args)
+    if args.command == "plan-promote-scratchpad":
+        return plan_promote_scratchpad(args)
+    if args.command == "recommend-surface":
+        return recommend_surface(args)
     raise SystemExit(f"unknown command: {args.command}")
 
 

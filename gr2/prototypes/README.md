@@ -190,6 +190,13 @@ Bootstrap command:
 python3 gr2/prototypes/real_git_playground.py /tmp/gr2-real-git-demo
 ```
 
+If the local environment cannot reach GitHub over SSH, use:
+
+```bash
+python3 gr2/prototypes/real_git_playground.py /tmp/gr2-real-git-demo \
+  --transport https
+```
+
 That harness will:
 
 - initialize a fresh gr2 workspace
@@ -199,3 +206,34 @@ That harness will:
 - create real local git branches in the cloned repos
 - create multiple lanes and one shared scratchpad
 - print repo, lane, exec, and scratchpad status surfaces
+
+## New UX-Focused Prototype Surfaces
+
+The prototype now includes explicit user-guidance commands for the cases that
+usually break first in real workflows:
+
+```bash
+python3 gr2/prototypes/lane_workspace_prototype.py recommend-surface \
+  --kind doc --collaborative --shared-draft
+
+python3 gr2/prototypes/lane_workspace_prototype.py audit-shared-scratchpads \
+  /path/to/workspace --stale-days 3
+
+python3 gr2/prototypes/lane_workspace_prototype.py plan-promote-scratchpad \
+  /path/to/workspace blog-s17 \
+  --target-repo app \
+  --target-path docs/blog/sprint-17.md \
+  --owner-unit atlas
+```
+
+These are intentionally user-first:
+
+- `recommend-surface`
+  - answers "should this be a feature lane, review lane, or shared scratchpad?"
+- `audit-shared-scratchpads`
+  - exposes stale, orphaned, or weakly tracked scratchpads
+- `plan-promote-scratchpad`
+  - makes the graduation path from shared draft to repo artifact explicit
+
+This keeps the prototype from overfitting to happy-path metadata creation while
+ignoring the actual decisions users struggle with.

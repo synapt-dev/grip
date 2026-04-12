@@ -21,9 +21,18 @@ from pathlib import Path
 
 
 PLAYGROUND_REPOS = {
-    "app": "git@github.com:synapt-dev/gr2-playground-app.git",
-    "api": "git@github.com:synapt-dev/gr2-playground-api.git",
-    "web": "git@github.com:synapt-dev/gr2-playground-web.git",
+    "app": {
+        "ssh": "git@github.com:synapt-dev/gr2-playground-app.git",
+        "https": "https://github.com/synapt-dev/gr2-playground-app.git",
+    },
+    "api": {
+        "ssh": "git@github.com:synapt-dev/gr2-playground-api.git",
+        "https": "https://github.com/synapt-dev/gr2-playground-api.git",
+    },
+    "web": {
+        "ssh": "git@github.com:synapt-dev/gr2-playground-web.git",
+        "https": "https://github.com/synapt-dev/gr2-playground-web.git",
+    },
 }
 
 
@@ -38,6 +47,12 @@ def parse_args() -> argparse.Namespace:
         "--keep-existing",
         action="store_true",
         help="reuse an existing workspace root instead of failing",
+    )
+    parser.add_argument(
+        "--transport",
+        choices=["ssh", "https"],
+        default="ssh",
+        help="git remote transport to use for playground repos",
     )
     return parser.parse_args()
 
@@ -56,6 +71,10 @@ def gr2_binary(root: Path) -> Path:
 
 def lane_proto(root: Path) -> Path:
     return root / "gr2" / "prototypes" / "lane_workspace_prototype.py"
+
+
+def repo_url(repo_name: str, transport: str) -> str:
+    return PLAYGROUND_REPOS[repo_name][transport]
 
 
 def run(
@@ -79,7 +98,9 @@ def gr2_supports_exec(gr2: Path) -> bool:
     return "\n  exec" in help_out.stdout
 
 
-def write_workspace_spec(workspace_root: Path, owner_unit: str, workspace_name: str) -> None:
+def write_workspace_spec(
+    workspace_root: Path, owner_unit: str, workspace_name: str, transport: str
+) -> None:
     spec = f"""schema_version = 1
 workspace_name = "{workspace_name}"
 
@@ -89,17 +110,17 @@ root = ".grip/cache"
 [[repos]]
 name = "app"
 path = "repos/app"
-url = "{PLAYGROUND_REPOS["app"]}"
+url = "{repo_url("app", transport)}"
 
 [[repos]]
 name = "api"
 path = "repos/api"
-url = "{PLAYGROUND_REPOS["api"]}"
+url = "{repo_url("api", transport)}"
 
 [[repos]]
 name = "web"
 path = "repos/web"
-url = "{PLAYGROUND_REPOS["web"]}"
+url = "{repo_url("web", transport)}"
 
 [[units]]
 name = "{owner_unit}"
@@ -165,14 +186,28 @@ def main() -> int:
 
     run([str(gr2), "unit", "add", args.owner_unit], cwd=workspace_root)
 
-    for repo_name, repo_url in PLAYGROUND_REPOS.items():
-        run([str(gr2), "repo", "add", repo_name, repo_url], cwd=workspace_root)
+    for repo_name in PLAYGROUND_REPOS:
+        run(
+            [str(gr2), "repo", "add", repo_name, repo_url(repo_name, args.transport)],
+            cwd=workspace_root,
+        )
 
-    write_workspace_spec(workspace_root, args.owner_unit, args.workspace_name)
+    write_workspace_spec(
+        workspace_root, args.owner_unit, args.workspace_name, args.transport
+    )
 
     run([str(gr2), "spec", "validate"], cwd=workspace_root)
     run([str(gr2), "plan", "--yes"], cwd=workspace_root)
-    run([str(gr2), "apply", "--yes"], cwd=workspace_root)
+    try:
+        run([str(gr2), "apply", "--yes"], cwd=workspace_root)
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(
+            f"gr2 apply failed during real-git bootstrap.\n"
+            f"transport={args.transport}\n"
+            "This usually means the selected Git transport is not reachable or "
+            "authenticated in the current environment.\n"
+            "Try rerunning with `--transport https` or `--transport ssh` as appropriate."
+        ) from exc
 
     run(["git", "-C", str(unit_repo_path(workspace_root, args.owner_unit, "app")), "checkout", "-b", "feat/auth"])
     run(["git", "-C", str(unit_repo_path(workspace_root, args.owner_unit, "api")), "checkout", "-b", "feat/auth"])
@@ -306,6 +341,56 @@ def main() -> int:
     )
     print(scratchpads.stdout)
 
+    recommendation = run(
+        [
+            sys.executable,
+            str(lane_script),
+            "recommend-surface",
+            "--kind",
+            "doc",
+            "--collaborative",
+            "--shared-draft",
+            "--repos",
+            "1",
+        ],
+        cwd=root,
+        capture=True,
+    )
+    print(recommendation.stdout)
+
+    scratchpad_audit = run(
+        [
+            sys.executable,
+            str(lane_script),
+            "audit-shared-scratchpads",
+            str(workspace_root),
+            "--stale-days",
+            "1",
+        ],
+        cwd=root,
+        capture=True,
+    )
+    print(scratchpad_audit.stdout)
+
+    promotion_plan = run(
+        [
+            sys.executable,
+            str(lane_script),
+            "plan-promote-scratchpad",
+            str(workspace_root),
+            "blog-draft",
+            "--target-repo",
+            "app",
+            "--target-path",
+            "docs/blog/blog-draft.md",
+            "--owner-unit",
+            args.owner_unit,
+        ],
+        cwd=root,
+        capture=True,
+    )
+    print(promotion_plan.stdout)
+
     verify_paths(workspace_root, args.owner_unit)
 
     print("\nreal-git playground bootstrap complete")
@@ -314,6 +399,9 @@ def main() -> int:
     print("- real remotes cloned into unit-local repo paths")
     print("- dirty local git state can be observed")
     print("- multiple lanes can coexist in metadata")
+    print("- the prototype can recommend lane vs review vs shared scratchpad")
+    print("- the prototype can audit scratchpads for stale or weak tracking")
+    print("- the prototype can show a promotion path from scratchpad to repo artifact")
     if has_exec:
         print("- exec status stays lane-scoped")
     else:

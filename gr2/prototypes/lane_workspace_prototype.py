@@ -174,6 +174,36 @@ def parse_args() -> argparse.Namespace:
     plan.add_argument("--repos", help="optional comma-separated repo subset")
     plan.add_argument("--json", action="store_true")
 
+    enter = sub.add_parser("enter-lane")
+    enter.add_argument("workspace_root", type=Path)
+    enter.add_argument("owner_unit")
+    enter.add_argument("lane_name")
+    enter.add_argument("--actor", required=True, help="actor label, e.g. human:layne or agent:atlas")
+
+    current = sub.add_parser("current-lane")
+    current.add_argument("workspace_root", type=Path)
+    current.add_argument("owner_unit")
+    current.add_argument("--json", action="store_true")
+
+    lease = sub.add_parser("acquire-lane-lease")
+    lease.add_argument("workspace_root", type=Path)
+    lease.add_argument("owner_unit")
+    lease.add_argument("lane_name")
+    lease.add_argument("--actor", required=True)
+    lease.add_argument("--mode", choices=["edit", "exec", "review"], required=True)
+
+    release = sub.add_parser("release-lane-lease")
+    release.add_argument("workspace_root", type=Path)
+    release.add_argument("owner_unit")
+    release.add_argument("lane_name")
+    release.add_argument("--actor", required=True)
+
+    show_leases = sub.add_parser("show-lane-leases")
+    show_leases.add_argument("workspace_root", type=Path)
+    show_leases.add_argument("owner_unit")
+    show_leases.add_argument("lane_name")
+    show_leases.add_argument("--json", action="store_true")
+
     scratch = sub.add_parser("create-shared-scratchpad")
     scratch.add_argument("workspace_root", type=Path)
     scratch.add_argument("name")
@@ -233,6 +263,14 @@ def shared_scratchpad_file(workspace_root: Path, name: str) -> Path:
     return shared_scratchpad_dir(workspace_root, name) / "scratchpad.toml"
 
 
+def current_lane_file(workspace_root: Path, owner_unit: str) -> Path:
+    return workspace_root / ".grip" / "state" / "current_lane" / f"{owner_unit}.json"
+
+
+def lane_leases_file(workspace_root: Path, owner_unit: str, lane_name: str) -> Path:
+    return lane_dir(workspace_root, owner_unit, lane_name) / "leases.json"
+
+
 def load_workspace_spec(workspace_root: Path) -> dict:
     with (workspace_root / ".grip" / "workspace_spec.toml").open("rb") as fh:
         return tomllib.load(fh)
@@ -250,6 +288,25 @@ def load_shared_scratchpad_doc(workspace_root: Path, name: str) -> dict:
     if not path.exists():
         raise SystemExit(f"shared scratchpad not found: {name}")
     return tomllib.loads(path.read_text())
+
+
+def load_current_lane_doc(workspace_root: Path, owner_unit: str) -> dict:
+    path = current_lane_file(workspace_root, owner_unit)
+    if not path.exists():
+        raise SystemExit(f"no current lane recorded for unit: {owner_unit}")
+    return json.loads(path.read_text())
+
+
+def load_lane_leases(workspace_root: Path, owner_unit: str, lane_name: str) -> list[dict]:
+    path = lane_leases_file(workspace_root, owner_unit, lane_name)
+    if not path.exists():
+        return []
+    return json.loads(path.read_text())
+
+
+def write_lane_leases(workspace_root: Path, owner_unit: str, lane_name: str, leases: list[dict]) -> None:
+    path = lane_leases_file(workspace_root, owner_unit, lane_name)
+    path.write_text(json.dumps(leases, indent=2) + "\n")
 
 
 def iter_lane_files(workspace_root: Path, owner_unit: str | None = None) -> list[Path]:
@@ -350,6 +407,100 @@ def create_lane(args: argparse.Namespace) -> int:
     )
     lane_file(workspace_root, args.owner_unit, args.lane_name).write_text(metadata.as_toml())
     print(lane_file(workspace_root, args.owner_unit, args.lane_name))
+    return 0
+
+
+def enter_lane(args: argparse.Namespace) -> int:
+    workspace_root = args.workspace_root.resolve()
+    lane_doc = load_lane_doc(workspace_root, args.owner_unit, args.lane_name)
+    path = current_lane_file(workspace_root, args.owner_unit)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    previous: list[dict] = []
+    if path.exists():
+        old = json.loads(path.read_text())
+        previous = old.get("recent", [])
+        current = old.get("current")
+        if current:
+            previous.insert(0, current)
+
+    deduped: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for item in previous:
+        key = (item["owner_unit"], item["lane_name"])
+        if key in seen or key == (args.owner_unit, args.lane_name):
+            continue
+        seen.add(key)
+        deduped.append(item)
+    deduped = deduped[:5]
+
+    doc = {
+        "current": {
+            "owner_unit": args.owner_unit,
+            "lane_name": args.lane_name,
+            "lane_type": lane_doc["lane_type"],
+            "repos": lane_doc.get("repos", []),
+            "actor": args.actor,
+            "entered_at": now_utc(),
+        },
+        "recent": deduped,
+    }
+    path.write_text(json.dumps(doc, indent=2) + "\n")
+    print(path)
+    return 0
+
+
+def current_lane(args: argparse.Namespace) -> int:
+    doc = load_current_lane_doc(args.workspace_root.resolve(), args.owner_unit)
+    if args.json:
+        print(json.dumps(doc, indent=2))
+        return 0
+    current_doc = doc["current"]
+    print("gr2 prototype current-lane")
+    print(f'owner={current_doc["owner_unit"]} lane={current_doc["lane_name"]} type={current_doc["lane_type"]} actor={current_doc["actor"]}')
+    print(f'entered_at={current_doc["entered_at"]}')
+    recent = doc.get("recent", [])
+    if recent:
+        print("recent:")
+        for item in recent:
+            print(f'  - {item["owner_unit"]}/{item["lane_name"]} ({item["lane_type"]})')
+    return 0
+
+
+def acquire_lane_lease(args: argparse.Namespace) -> int:
+    workspace_root = args.workspace_root.resolve()
+    load_lane_doc(workspace_root, args.owner_unit, args.lane_name)
+    leases = load_lane_leases(workspace_root, args.owner_unit, args.lane_name)
+    retained = [lease for lease in leases if lease["actor"] != args.actor]
+    retained.append(
+        {
+            "actor": args.actor,
+            "mode": args.mode,
+            "acquired_at": now_utc(),
+        }
+    )
+    write_lane_leases(workspace_root, args.owner_unit, args.lane_name, retained)
+    print(lane_leases_file(workspace_root, args.owner_unit, args.lane_name))
+    return 0
+
+
+def release_lane_lease(args: argparse.Namespace) -> int:
+    workspace_root = args.workspace_root.resolve()
+    leases = load_lane_leases(workspace_root, args.owner_unit, args.lane_name)
+    retained = [lease for lease in leases if lease["actor"] != args.actor]
+    write_lane_leases(workspace_root, args.owner_unit, args.lane_name, retained)
+    print(lane_leases_file(workspace_root, args.owner_unit, args.lane_name))
+    return 0
+
+
+def show_lane_leases(args: argparse.Namespace) -> int:
+    leases = load_lane_leases(args.workspace_root.resolve(), args.owner_unit, args.lane_name)
+    if args.json:
+        print(json.dumps(leases, indent=2))
+        return 0
+    print("ACTOR\tMODE\tACQUIRED_AT")
+    for lease in leases:
+        print(f'{lease["actor"]}\t{lease["mode"]}\t{lease["acquired_at"]}')
     return 0
 
 
@@ -570,6 +721,29 @@ def next_step(args: argparse.Namespace) -> int:
 def plan_exec(args: argparse.Namespace) -> int:
     workspace_root = args.workspace_root.resolve()
     lane_doc = load_lane_doc(workspace_root, args.owner_unit, args.lane_name)
+    leases = load_lane_leases(workspace_root, args.owner_unit, args.lane_name)
+
+    conflicting = [
+        lease
+        for lease in leases
+        if lease["mode"] == "edit" and not lease["actor"].startswith("agent:")
+    ]
+    if conflicting:
+        payload = {
+            "status": "blocked",
+            "reason": "human-edit-lease",
+            "lane": lane_doc["lane_name"],
+            "owner_unit": lane_doc["owner_unit"],
+            "conflicting_leases": conflicting,
+        }
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            print("gr2 lane-exec prototype")
+            print("status=blocked reason=human-edit-lease")
+            for lease in conflicting:
+                print(f'conflict: actor={lease["actor"]} mode={lease["mode"]} acquired_at={lease["acquired_at"]}')
+        return 0
 
     selected_repos = lane_doc["repos"]
     if args.repos:
@@ -620,6 +794,10 @@ def main() -> int:
     args = parse_args()
     if args.command == "create-lane":
         return create_lane(args)
+    if args.command == "enter-lane":
+        return enter_lane(args)
+    if args.command == "current-lane":
+        return current_lane(args)
     if args.command == "create-review-lane":
         return create_review_lane(args)
     if args.command == "show-lane":
@@ -630,6 +808,12 @@ def main() -> int:
         return next_step(args)
     if args.command == "plan-exec":
         return plan_exec(args)
+    if args.command == "acquire-lane-lease":
+        return acquire_lane_lease(args)
+    if args.command == "release-lane-lease":
+        return release_lane_lease(args)
+    if args.command == "show-lane-leases":
+        return show_lane_leases(args)
     if args.command == "create-shared-scratchpad":
         return create_shared_scratchpad(args)
     if args.command == "show-shared-scratchpad":

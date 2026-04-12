@@ -184,6 +184,47 @@ The design standard should be:
 - prototype behavior must survive both synthetic stress cases and real-repo
   workflow checks before the MVP is treated as solid
 
+## Cross-Mode Lane Stress
+
+The lane model also needs adversarial verification across the four primary
+operating modes:
+
+- solo human
+- single agent
+- multi-agent
+- mixed human + agent
+
+Run:
+
+```bash
+python3 gr2/prototypes/cross_mode_lane_stress.py
+```
+
+This harness does not just show happy-path lane creation. It reports where the
+current model:
+
+- holds
+- partially holds
+- still fails
+
+across interruption recovery, same-repo parallelism, mixed-mode conflicts, and
+lane-recovery ambiguity.
+
+The current prototype adds two explicit recovery/safety concepts to support
+that stress loop:
+
+- lane session state
+  - `enter-lane`
+  - `current-lane`
+- lane leases
+  - `acquire-lane-lease`
+  - `release-lane-lease`
+  - `show-lane-leases`
+
+Those are still prototype surfaces, but they let us test whether the lane
+model can survive interruption and mixed human/agent use rather than only
+describe those needs abstractly.
+
 Bootstrap command:
 
 ```bash

@@ -12,6 +12,9 @@ workspace that must work for:
 It is not a feature wishlist. It is the rulebook for what the workspace must
 be able to do without unsafe workarounds.
 
+For Synapt, `gr2` is the workspace infrastructure layer, not just a helper
+around multi-repo git state.
+
 ## Primary Design Principle
 
 The workspace unit is not a single repo checkout.
@@ -43,6 +46,23 @@ opposite reasons:
 - if `gr2` does too little, users will ignore it and fall back to ad hoc shell
 
 So the system must make this split legible.
+
+## Synapt Infrastructure Principle
+
+`gr2` should be the local workspace substrate that Synapt compiles into.
+
+That means:
+
+- premium org shape compiles into `WorkspaceSpec` and lane policy
+- local workspaces materialize teams, agents, repo scope, and context surfaces
+- channels, recall, and agent lanes should feel native to the workspace model
+
+This is still compatible with the local-first split:
+
+- premium owns org identity, policy, entitlements, and coordination semantics
+- `gr2` owns local workspace materialization and lane execution surfaces
+
+But the user experience should feel integrated rather than patched together.
 
 ### `gr2` Must Own
 
@@ -115,6 +135,20 @@ The team needs to:
 The team should benefit from shared clone acceleration, but the optimization
 must not weaken private-workspace boundaries or turn `repos/<repo>` into a
 confusing second place where work might be happening.
+
+### Mixed Human + Agent
+
+The mixed mode is a primary operating mode, not a special case.
+
+The workspace needs to let a human and an agent collaborate without either of
+them needing to enter the other's private lane just to get work done.
+
+That requires:
+
+- private implementation lanes
+- shared scratchpads for lightweight collaboration
+- isolated review lanes
+- status surfaces that work for both humans and machines
 
 ## Hard Requirements
 

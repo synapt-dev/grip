@@ -1,4 +1,4 @@
-# gr2 Repo Maintenance + Collaboration Prototypes
+# gr2 Repo Maintenance Prototype
 
 This prototype explores a split between:
 
@@ -80,7 +80,6 @@ without turning plain `gr2 apply` into an unsafe catch-all mutation command.
 - lane-local repo membership and branch map
 - shared + private context roots
 - lane-aware execution planning
-- shared scratchpads for lightweight collaboration
 
 Example:
 
@@ -92,66 +91,10 @@ python3 gr2/prototypes/lane_workspace_prototype.py plan-exec \
   /path/to/workspace atlas feat-auth 'cargo test'
 ```
 
-Review lane example:
-
-```bash
-python3 gr2/prototypes/lane_workspace_prototype.py create-review-lane \
-  /path/to/workspace atlas grip 548
-```
-
-Shared scratchpad example:
-
-```bash
-python3 gr2/prototypes/lane_workspace_prototype.py create-shared-scratchpad \
-  /path/to/workspace blog-s17 \
-  --kind doc \
-  --purpose "Sprint 17 blog draft" \
-  --participant atlas \
-  --participant layne \
-  --ref grip#552
-
-python3 gr2/prototypes/lane_workspace_prototype.py list-shared-scratchpads \
-  /path/to/workspace
-```
-
-This prototype still does not execute commands. It proves that lane and
-scratchpad metadata can become the durable source of truth for:
+This prototype does not execute commands. It proves that lane metadata can
+become the durable source of truth for:
 
 - which repos belong to a lane
 - which branch each repo should use
 - which context roots apply
 - where multi-repo commands should run
-- where lightweight collaboration should happen without violating private
-  workspaces
-
-## UX Focus
-
-This prototype is intentionally trying to answer user-facing questions:
-
-- how do I create a review lane quickly?
-- how do I know what I should do next in this lane?
-- when should I use a shared scratchpad instead of a PR or a private lane?
-
-That is why it includes:
-
-- `list-lanes`
-- `next-step`
-- `create-review-lane`
-- `create-shared-scratchpad`
-
-## Stress Testing
-
-This prototype is not considered verified on the happy path alone.
-
-The break-case matrix lives at:
-
-- `docs/ASSESS-gr2-shared-scratchpads-stress.md`
-
-The MVP should not be finalized until the prototype has been evaluated against:
-
-- concurrent shared editing
-- stale / abandoned scratchpads
-- wrong-surface selection
-- scope creep into shared implementation
-- cleanup and lifecycle handling
-- promotion from scratchpad to real repo artifact / PR

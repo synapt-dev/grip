@@ -30,6 +30,13 @@ The workspace model needs to support:
 - shared team context plus unit-specific private context
 - multi-repo build, test, and command execution scoped to a lane
 
+And it must hold under adversarial cross-mode pressure:
+
+- solo human recovery after interruption
+- single-agent context switching
+- multi-agent same-repo parallelism
+- mixed human + agent conflict handling
+
 ## Design Goals
 
 - make workspace intent explicit
@@ -41,6 +48,9 @@ The workspace model needs to support:
 - avoid hidden pull/merge/rebase side effects
 - make shared context and unit-private context explicit
 - make multi-repo execution lane-aware
+
+The lane model should be validated with the cross-mode matrix in
+`ASSESS-gr2-lanes-cross-mode-stress.md`, not only by per-mode happy paths.
 
 ## Non-Goals
 

@@ -38,6 +38,9 @@ For `gr2`, verification is not just a happy-path demo. It includes:
 - user-mode checks across solo human, single agent, multi-agent, and mixed
   human + agent workflows
 
+The lane model should be pressure-tested with the cross-mode matrix in
+`ASSESS-gr2-lanes-cross-mode-stress.md`, not only per-mode happy paths.
+
 ## Primary Design Principle
 
 The workspace unit is not a single repo checkout.
@@ -98,6 +101,20 @@ The team needs to:
 The team should benefit from shared clone acceleration, but the optimization
 must not weaken private-workspace boundaries or turn `repos/<repo>` into a
 confusing second place where work might be happening.
+
+### Mixed Human + Agent
+
+The mixed mode is not a special edge case. It is a primary operating mode.
+
+The workspace needs to let a human and an agent collaborate without either of
+them needing to enter the other's private lane to get work done.
+
+That implies:
+
+- private implementation lanes remain private
+- shared scratchpads are workspace-owned
+- review lanes are disposable and isolated
+- status surfaces must work for both human readers and machine consumers
 
 ## Hard Requirements
 
@@ -217,6 +234,21 @@ That means:
 - review lanes are disposable
 - review lanes can run their own commands
 - review lanes do not mutate the current feature lane
+
+### 8. Cross-Mode Recovery And Concurrency
+
+The lane model must hold under interruption and concurrency across all user
+modes.
+
+That includes:
+
+- solo-human lane recovery after review interruptions
+- single-agent context switching under new prompts
+- multi-agent same-repo parallel work
+- mixed human + agent same-lane conflict handling
+
+The adversarial lane matrix in `ASSESS-gr2-lanes-cross-mode-stress.md` is part
+of the verification gate for this requirement.
 
 ### 8. Cross-Repo Feature Coherence
 

@@ -3156,3 +3156,313 @@ repos = ["myrepo"]
         .success()
         .stdout(predicate::str::contains("no changes required"));
 }
+
+#[test]
+fn test_gr2_lane_create_persists_metadata_and_scaffolds_lane_root() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let mut repo_add = Command::cargo_bin("gr2").unwrap();
+    repo_add
+        .current_dir(&workspace_root)
+        .args(["repo", "add", "app", "https://example.com/app.git"])
+        .assert()
+        .success();
+
+    let mut unit_add = Command::cargo_bin("gr2").unwrap();
+    unit_add
+        .current_dir(&workspace_root)
+        .args(["unit", "add", "atlas"])
+        .assert()
+        .success();
+
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        r#"
+schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "app"
+path = "repos/app"
+url = "https://example.com/app.git"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = ["app"]
+"#,
+    )
+    .unwrap();
+
+    let mut create = Command::cargo_bin("gr2").unwrap();
+    create
+        .current_dir(&workspace_root)
+        .args([
+            "lane",
+            "create",
+            "feat-123",
+            "--owner-unit",
+            "atlas",
+            "--type",
+            "feature",
+            "--branch",
+            "app=feat-123",
+            "--exec",
+            "cargo test -p app",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created lane 'feat-123'"))
+        .stdout(predicate::str::contains("repos: app"));
+
+    let metadata_path = workspace_root.join(".grip/state/lanes/atlas/feat-123.toml");
+    assert!(metadata_path.exists());
+    let metadata = std::fs::read_to_string(&metadata_path).unwrap();
+    assert!(metadata.contains("lane_id = \"atlas:feat-123\""));
+    assert!(metadata.contains("lane_name = \"feat-123\""));
+    assert!(metadata.contains("owner_unit = \"atlas\""));
+    assert!(metadata.contains("lane_type = \"feature\""));
+    assert!(metadata.contains("repos = [\"app\"]"));
+    assert!(metadata.contains("app = \"feat-123\""));
+    assert!(metadata.contains("commands = [\"cargo test -p app\"]"));
+
+    assert!(workspace_root
+        .join("agents/atlas/lanes/feat-123/repos")
+        .is_dir());
+    assert!(workspace_root
+        .join("agents/atlas/lanes/feat-123/context")
+        .is_dir());
+}
+
+#[test]
+fn test_gr2_lane_list_and_show_report_persisted_lane() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let mut repo_add = Command::cargo_bin("gr2").unwrap();
+    repo_add
+        .current_dir(&workspace_root)
+        .args(["repo", "add", "app", "https://example.com/app.git"])
+        .assert()
+        .success();
+
+    let mut unit_add = Command::cargo_bin("gr2").unwrap();
+    unit_add
+        .current_dir(&workspace_root)
+        .args(["unit", "add", "atlas"])
+        .assert()
+        .success();
+
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        r#"
+schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "app"
+path = "repos/app"
+url = "https://example.com/app.git"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = ["app"]
+"#,
+    )
+    .unwrap();
+
+    let mut create = Command::cargo_bin("gr2").unwrap();
+    create
+        .current_dir(&workspace_root)
+        .args([
+            "lane",
+            "create",
+            "review-548",
+            "--owner-unit",
+            "atlas",
+            "--type",
+            "review",
+            "--repo",
+            "app",
+            "--pr",
+            "app:548",
+        ])
+        .assert()
+        .success();
+
+    let mut list = Command::cargo_bin("gr2").unwrap();
+    list.current_dir(&workspace_root)
+        .args(["lane", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Lanes"))
+        .stdout(predicate::str::contains("atlas review-548 review 1"));
+
+    let mut show = Command::cargo_bin("gr2").unwrap();
+    show.current_dir(&workspace_root)
+        .args(["lane", "show", "review-548", "--owner-unit", "atlas"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("lane_name = \"review-548\""))
+        .stdout(predicate::str::contains("number = 548"));
+}
+
+#[test]
+fn test_gr2_lane_remove_deletes_metadata_and_lane_root() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let mut repo_add = Command::cargo_bin("gr2").unwrap();
+    repo_add
+        .current_dir(&workspace_root)
+        .args(["repo", "add", "app", "https://example.com/app.git"])
+        .assert()
+        .success();
+
+    let mut unit_add = Command::cargo_bin("gr2").unwrap();
+    unit_add
+        .current_dir(&workspace_root)
+        .args(["unit", "add", "atlas"])
+        .assert()
+        .success();
+
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        r#"
+schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[repos]]
+name = "app"
+path = "repos/app"
+url = "https://example.com/app.git"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+repos = ["app"]
+"#,
+    )
+    .unwrap();
+
+    let mut create = Command::cargo_bin("gr2").unwrap();
+    create
+        .current_dir(&workspace_root)
+        .args([
+            "lane",
+            "create",
+            "scratch-a",
+            "--owner-unit",
+            "atlas",
+            "--type",
+            "scratch",
+        ])
+        .assert()
+        .success();
+
+    let metadata_path = workspace_root.join(".grip/state/lanes/atlas/scratch-a.toml");
+    let lane_root = workspace_root.join("agents/atlas/lanes/scratch-a");
+    assert!(metadata_path.exists());
+    assert!(lane_root.exists());
+
+    let mut remove = Command::cargo_bin("gr2").unwrap();
+    remove
+        .current_dir(&workspace_root)
+        .args(["lane", "remove", "scratch-a", "--owner-unit", "atlas"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Removed lane 'scratch-a' for unit 'atlas'",
+        ));
+
+    assert!(!metadata_path.exists());
+    assert!(!lane_root.exists());
+}
+
+#[test]
+fn test_gr2_lane_create_rejects_unknown_repo_membership() {
+    let temp = TempDir::new().unwrap();
+    let workspace_root = temp.path().join("demo-team");
+
+    let mut init = Command::cargo_bin("gr2").unwrap();
+    init.arg("init")
+        .arg(&workspace_root)
+        .arg("--name")
+        .arg("demo")
+        .assert()
+        .success();
+
+    let mut unit_add = Command::cargo_bin("gr2").unwrap();
+    unit_add
+        .current_dir(&workspace_root)
+        .args(["unit", "add", "atlas"])
+        .assert()
+        .success();
+
+    std::fs::write(
+        workspace_root.join(".grip/workspace_spec.toml"),
+        r#"
+schema_version = 1
+workspace_name = "demo"
+
+[cache]
+root = ".grip/cache"
+
+[[units]]
+name = "atlas"
+path = "agents/atlas"
+"#,
+    )
+    .unwrap();
+
+    let mut create = Command::cargo_bin("gr2").unwrap();
+    create
+        .current_dir(&workspace_root)
+        .args([
+            "lane",
+            "create",
+            "feat-unknown",
+            "--owner-unit",
+            "atlas",
+            "--repo",
+            "missing",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown repo 'missing'"));
+}

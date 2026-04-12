@@ -52,6 +52,9 @@ So `gr2` must center:
 
 Repos are part of the context. They are not the context.
 
+Shared repo caches may exist underneath `gr2`, but they are implementation
+substrate, not the user-facing place where work is expected to happen.
+
 ### 2. Private Work And Shared Work Must Stay Separate
 
 Users need both:
@@ -76,6 +79,14 @@ The intended user flow is:
 If `gr2` tries to replace normal repo-local git, users will distrust it.
 If `gr2` does not simplify multi-repo context changes, users will route around
 it.
+
+### 3a. Optimization Must Stay Behind The UX
+
+If `gr2 apply` uses shared local repo caches, mirrors, or `git clone
+--reference-if-able`, that should improve speed and disk use without changing
+the user mental model.
+
+Users should not need to understand cache topology to work effectively.
 
 ### 4. The Tool Must Never Hide Important State
 
@@ -115,6 +126,13 @@ A human should be able to:
 - tell, quickly, which repos matter for the current task
 - run the right build/test commands without reconstructing scope manually
 
+The human should not need to care whether a working checkout was materialized
+from:
+
+- a shared local mirror
+- a reference clone
+- a direct remote clone
+
 ## Agent UX Requirements
 
 An agent should be able to:
@@ -124,6 +142,9 @@ An agent should be able to:
 - know which repos matter without guessing
 - avoid entering another worker's private directory
 - choose the right next command from explicit status surfaces
+
+The agent should be able to trust that optimization layers are invisible unless
+they matter for diagnosis or repair.
 
 This means structured output is not optional polish. It is first-class product
 surface.
@@ -143,6 +164,8 @@ That requires:
 - one shared status model
 - private lanes by default
 - shared collaboration surfaces when collaboration is the point
+- cache/materialization optimization that speeds up everyone without becoming a
+  new conceptual burden
 
 ## What Good Looks Like
 

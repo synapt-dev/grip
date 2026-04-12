@@ -82,6 +82,10 @@ The user needs to:
 - run build/test/verify for the active multi-repo lane
 - know when to use raw git versus `gr2` without second-guessing
 
+The solo human should not need to understand or manage a shared repo cache.
+If clone acceleration exists, it should feel like faster materialization, not a
+second workspace concept.
+
 ### Single Agent
 
 The agent needs to:
@@ -93,6 +97,10 @@ The agent needs to:
 - avoid clobbering unrelated work
 - prefer the workspace primitives over ad hoc raw git when the task is multi-repo
 
+The agent should receive explicit status about active working checkouts, not be
+forced to reason about cache internals unless a clone/materialization problem
+actually occurs.
+
 ### Multi-Agent Team
 
 The team needs to:
@@ -103,6 +111,10 @@ The team needs to:
 - coordinate across linked PRs and sprint lanes
 - switch between tasks without contaminating each other's state
 - avoid entering each other's private directories just to collaborate
+
+The team should benefit from shared clone acceleration, but the optimization
+must not weaken private-workspace boundaries or turn `repos/<repo>` into a
+confusing second place where work might be happening.
 
 ## Hard Requirements
 
@@ -160,6 +172,8 @@ That implies:
 - disposable review lanes
 
 If lane creation is slow or expensive, users will bypass the model.
+
+The cache is an implementation detail. The UX object remains the lane.
 
 ### 4. Shared and Private Context
 
@@ -246,6 +260,9 @@ Agents and humans need trustworthy read surfaces.
 - execution status
 - PR linkage
 
+Cache or transport state should only surface when it affects the user's ability
+to materialize or repair a lane.
+
 These should be machine-readable as well as human-readable.
 
 ### 9a. Structured Output Must Be First-Class
@@ -258,6 +275,29 @@ Agents routinely need:
 - stable object shapes
 - deterministic exit codes
 - explicit next-step hints
+
+### 10. Materialization Optimization Must Not Become A Second UX Model
+
+`gr2 apply` may use shared local mirrors or reference clones as its materialization
+substrate.
+
+That is desirable for:
+
+- speed
+- disk reuse
+- cheap review lanes
+- adoptability on large workspaces
+
+But the optimization must not become a user-facing mental model.
+
+Required rule:
+
+- users work in unit-local or lane-local checkouts
+- `.grip/cache/repos/` is infrastructure
+- status surfaces should describe active working checkouts first
+
+If the design makes users reason about shared cache topology during normal work,
+the UX has failed.
 - explicit scope metadata
 
 So every status-style surface should support structured output as a first-class

@@ -174,6 +174,11 @@ It should not silently:
 - rebase local work
 - switch active branches unexpectedly
 
+Materialization may use a shared cache or local mirror under `.grip/cache/repos`
+to accelerate clone/setup.
+
+That is an implementation strategy, not a separate workspace surface.
+
 ### 3. Repo Maintenance
 
 Repo maintenance should be an explicit surface above structural apply:
@@ -270,19 +275,39 @@ The workspace should have three layers:
 
 ### Shared Cache
 
-`.grip/cache/repos/` stores reusable repo sources.
+`.grip/cache/repos/` stores reusable repo sources or mirrors.
 
 This is the acceleration layer:
 
-- clone once
+- fetch once
 - materialize many
 - cheap temporary sandboxes
+- reference-clone substrate for `apply`
 
-### Shared Repos
+The likely implementation path is:
 
-`repos/` is for shared baseline or stable workspace-level repos.
+- maintain a shared local mirror/cache under `.grip/cache/repos/`
+- materialize unit/lane working clones from that cache with
+  `git clone --reference-if-able` or equivalent
 
-These are not where active feature work should live by default.
+This should improve adoptability on large workspaces without introducing a new
+user-facing concept.
+
+### `repos/` Is Not The Primary Working Surface
+
+The real-git prototype currently shows that active work materializes under
+`agents/<unit>/...`, not under `repos/<repo>`.
+
+That should be treated as the primary UX model unless the implementation
+changes substantially.
+
+So:
+
+- `repos/` should not be presented as where users normally work
+- shared repo state belongs in cache/infrastructure unless a concrete UX need
+  emerges
+- unit-local and lane-local checkouts are the places users and agents actually
+  operate
 
 ### Unit Home
 
@@ -306,6 +331,11 @@ A lane contains:
 
 This is the multi-repo equivalent of a worktree, but not tied to git's
 single-repo worktree mechanism.
+
+For UX purposes, the important distinction is:
+
+- cache and reference clones exist to make lanes cheap
+- lanes are still the thing the user thinks in
 
 ## Context Model
 

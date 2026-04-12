@@ -65,16 +65,13 @@ impl ExecStatusReport {
 
         let mut entries = Vec::new();
         for repo_name in repo_names {
-            let repo_spec = repo_specs
+            repo_specs
                 .get(&repo_name)
                 .with_context(|| format!("lane references unknown repo '{}'", repo_name))?;
 
             let lane_repo_path = lane_root.join("repos").join(&repo_name);
-            let shared_repo_path = workspace_root.join(&repo_spec.path);
             let (exec_path, path_kind) = if lane_repo_path.exists() {
                 (lane_repo_path, "lane")
-            } else if shared_repo_path.exists() {
-                (shared_repo_path, "shared")
             } else {
                 (lane_repo_path, "missing")
             };

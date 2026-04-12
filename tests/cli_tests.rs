@@ -3565,10 +3565,10 @@ repos = ["app", "api"]
         .stdout(predicate::str::contains("parallel: false"))
         .stdout(predicate::str::contains("fail_fast: true"))
         .stdout(predicate::str::contains("- cargo test -p app"))
-        .stdout(predicate::str::contains("app shared"))
-        .stdout(predicate::str::contains("repos/app feat-auth 548 2"))
-        .stdout(predicate::str::contains("api shared"))
-        .stdout(predicate::str::contains("repos/api - - 2"));
+        .stdout(predicate::str::contains("app missing"))
+        .stdout(predicate::str::contains("agents/atlas/lanes/feat-auth/repos/app feat-auth 548 2"))
+        .stdout(predicate::str::contains("api missing"))
+        .stdout(predicate::str::contains("agents/atlas/lanes/feat-auth/repos/api - - 2"));
 }
 
 #[test]
@@ -3662,7 +3662,7 @@ repos = ["app", "api"]
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("api shared"))
-        .stdout(predicate::str::contains("repos/api"))
+        .stdout(predicate::str::contains("api missing"))
+        .stdout(predicate::str::contains("agents/atlas/lanes/feat-filter/repos/api"))
         .stdout(predicate::str::contains("app").not());
 }

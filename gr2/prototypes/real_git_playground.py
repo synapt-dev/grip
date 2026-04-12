@@ -77,6 +77,10 @@ def transport_probe(root: Path) -> Path:
     return root / "gr2" / "prototypes" / "repo_transport_probe.py"
 
 
+def layout_probe(root: Path) -> Path:
+    return root / "gr2" / "prototypes" / "layout_model_probe.py"
+
+
 def repo_url(repo_name: str, transport: str) -> str:
     return PLAYGROUND_REPOS[repo_name][transport]
 
@@ -175,6 +179,7 @@ def main() -> int:
     gr2 = gr2_binary(root)
     lane_script = lane_proto(root)
     probe_script = transport_probe(root)
+    layout_script = layout_probe(root)
     has_exec = gr2_supports_exec(gr2)
 
     if not workspace_root.exists():
@@ -419,6 +424,19 @@ def main() -> int:
     )
     print(promotion_plan.stdout)
 
+    layout_assessment = run(
+        [
+            sys.executable,
+            str(layout_script),
+            str(workspace_root),
+            "--owner-unit",
+            args.owner_unit,
+        ],
+        cwd=root,
+        capture=True,
+    )
+    print(layout_assessment.stdout)
+
     verify_paths(workspace_root, args.owner_unit)
 
     print("\nreal-git playground bootstrap complete")
@@ -430,6 +448,7 @@ def main() -> int:
     print("- the prototype can recommend lane vs review vs shared scratchpad")
     print("- the prototype can audit scratchpads for stale or weak tracking")
     print("- the prototype can show a promotion path from scratchpad to repo artifact")
+    print("- the prototype can assess whether the observed layout matches the intended model")
     if has_exec:
         print("- exec status stays lane-scoped")
     else:

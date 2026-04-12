@@ -258,3 +258,23 @@ This reports, per repo:
 The real-git playground harness now runs this probe before `gr2 apply` so
 transport/auth problems are surfaced as an explicit status surface instead of a
 late clone failure buried inside apply output.
+
+## Layout Model Probe
+
+The real-git playground also needs to answer a harder product question:
+
+- does the observed layout actually match the mental model we are designing?
+
+The prototype now includes:
+
+```bash
+python3 gr2/prototypes/layout_model_probe.py /path/to/workspace --owner-unit atlas
+```
+
+This compares the observed workspace against two candidate models:
+
+- shared-repo-first
+- unit-local-first
+
+It is intentionally blunt. If the workspace behaves like one model while the
+docs imply another, the prototype should say so directly.

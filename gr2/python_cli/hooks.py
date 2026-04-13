@@ -151,9 +151,15 @@ def render_text(template: str, ctx: HookContext) -> str:
 
 def apply_file_projections(hooks: RepoHooks, ctx: HookContext) -> None:
     for item in [*hooks.file_links, *hooks.file_copies]:
-        src = ctx.repo_root / item.src
+        rendered_src = render_text(item.src, ctx)
+        src = Path(rendered_src)
+        if not src.is_absolute():
+            src = ctx.repo_root / src
         dest = render_path(item.dest, ctx)
         dest.parent.mkdir(parents=True, exist_ok=True)
+
+        if not src.exists():
+            raise SystemExit(f"projection source does not exist: {src} from {hooks.path}")
 
         if dest.exists() or dest.is_symlink():
             if item.if_exists == "skip":

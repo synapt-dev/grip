@@ -121,28 +121,33 @@ name = "synapt"
 [[files.link]]
 src = "CLAUDE.md"
 dest = "{workspace_root}/CLAUDE.md"
+if_exists = "error"
 
 [[files.copy]]
 src = ".env.example"
 dest = "{unit_root}/repos/synapt/.env.example"
+if_exists = "error"
 
 [[lifecycle.on_materialize]]
 name = "editable-install"
 command = "uv pip install -e ."
 cwd = "{repo_root}"
 when = "first_materialize"
+on_failure = "block"
 
 [[lifecycle.on_enter]]
 name = "show-dev-hints"
 command = "python scripts/dev_hints.py"
 cwd = "{repo_root}"
 when = "always"
+on_failure = "warn"
 
 [[lifecycle.on_exit]]
 name = "cleanup-temp-state"
 command = "python scripts/cleanup.py"
 cwd = "{repo_root}"
 when = "dirty"
+on_failure = "warn"
 
 [policy]
 required_reviewers = 1
@@ -169,7 +174,79 @@ Possible later sections:
 - `[[lifecycle.on_review_start]]`
 - `[[lifecycle.on_review_complete]]`
 
-### 3.2 Template Variables
+### 3.2 File Projection Conflict Policy
+
+Each file projection must define how conflicts are handled with:
+
+- `if_exists = "skip" | "overwrite" | "merge" | "error"`
+
+Default:
+
+- `error`
+
+Meaning:
+
+- `skip`
+  - leave the existing destination untouched
+- `overwrite`
+  - replace the destination with the source
+- `merge`
+  - delegate to a merge-capable projection handler for supported file types
+- `error`
+  - fail materialization instead of silently colliding
+
+This matters immediately because multiple repos may want to project to the
+same workspace path, for example `CLAUDE.md`.
+
+### 3.3 Lifecycle `when` Semantics
+
+The initial `when` values are:
+
+- `first_materialize`
+  - run only when the repo is being materialized into this workspace target for
+    the first time
+- `always`
+  - run every time the lifecycle stage is reached
+- `dirty`
+  - run only when the repo has uncommitted local state, including tracked
+    modifications, staged changes, or untracked files
+- `manual`
+  - never run automatically; only run when the user explicitly requests the
+    hook or hook group
+
+### 3.4 Hook Failure Policy
+
+Each lifecycle hook may define:
+
+- `on_failure = "block" | "warn" | "skip"`
+
+Default behavior:
+
+- `on_materialize`
+  - `block`
+- `on_enter`
+  - `warn`
+- `on_exit`
+  - `warn`
+- file projections
+  - `block`
+
+Meaning:
+
+- `block`
+  - stop the current operation with a failure
+- `warn`
+  - record the failure and continue
+- `skip`
+  - do not treat failure as an error and continue silently except for logging
+
+These defaults are deliberate:
+
+- broken repo setup during materialization should stop early
+- broken enter/exit hooks should not trap users outside their lane
+- broken file projections should not fail silently
+
+### 3.5 Template Variables
 
 Allowed interpolation variables:
 
@@ -178,7 +255,8 @@ Allowed interpolation variables:
 - `{lane_root}`
 - `{repo_root}`
 - `{repo_name}`
-- `{owner_unit}`
+- `{lane_owner}`
+- `{lane_subject}`
 - `{lane_name}`
 
 Rules:
@@ -243,6 +321,7 @@ name = "cargo-check"
 command = "cargo check -q"
 cwd = "{repo_root}"
 when = "manual"
+on_failure = "warn"
 ```
 
 Why:
@@ -273,6 +352,7 @@ name = "editable-install"
 command = "uv pip install -e ."
 cwd = "{repo_root}"
 when = "first_materialize"
+on_failure = "block"
 
 [[lifecycle.on_enter]]
 name = "workspace-doctor"
@@ -307,12 +387,14 @@ preferred_exec = ["pytest tests/ -q"]
 [[files.link]]
 src = "config/models.json"
 dest = "{lane_root}/repos/synapt-private/.gr2-linked/models.json"
+if_exists = "error"
 
 [[lifecycle.on_materialize]]
 name = "editable-install"
 command = "uv pip install -e ."
 cwd = "{repo_root}"
 when = "first_materialize"
+on_failure = "block"
 
 [[lifecycle.on_enter]]
 name = "validate-private-config"
@@ -333,7 +415,7 @@ For a lane touching `grip`, `synapt`, and `synapt-private`, `gr2` should:
 
 1. create the lane root
 2. materialize the lane-local or unit-local checkouts
-3. load `.gr2/hooks.toml` from each checkout
+3. load `.gr2/hooks.toml` from each checkout in `[[repos]]` declaration order
 4. apply file actions declared by each repo
 5. run `on_materialize` for first-time repo setup
 6. record what ran in `.grip/state/`
@@ -415,6 +497,21 @@ But keeps:
 
 If moving from Python `gr2` to Rust `gr2` requires users to relearn the model,
 the migration failed.
+
+## 8.4 `agents.toml` Relationship
+
+Current `agents.toml` should be treated as input to the compilation step, not
+as a parallel runtime authority once Python `gr2` is active.
+
+Recommended direction:
+
+- `agents.toml` remains a premium/control-plane input during transition
+- compilation resolves it into:
+  - workspace `units`
+  - `agent_id`
+  - repo access
+  - lane limits
+- `WorkspaceSpec` becomes the OSS runtime contract
 
 ## 9. Python-First CLI Implication
 

@@ -43,6 +43,8 @@ class LaneMetadata:
     private_context_roots: list[str]
     exec_defaults: dict[str, object]
     creation_source: str
+    shared_with: list[str]
+    handoff_source: dict[str, str] | None
 
     def as_toml(self) -> str:
         lines = [
@@ -54,6 +56,7 @@ class LaneMetadata:
             f'creation_source = "{self.creation_source}"',
             "",
             f"repos = [{', '.join(f'\"{r}\"' for r in self.repos)}]",
+            f"shared_with = [{', '.join(f'\"{u}\"' for u in self.shared_with)}]",
             "",
             "[branch_map]",
         ]
@@ -81,6 +84,17 @@ class LaneMetadata:
 
         for assoc in self.pr_associations:
             lines.extend(["", "[[pr_associations]]", f'ref = "{assoc}"'])
+
+        if self.handoff_source:
+            lines.extend(
+                [
+                    "",
+                    "[handoff]",
+                    f'kind = "{self.handoff_source["kind"]}"',
+                    f'source_owner_unit = "{self.handoff_source["source_owner_unit"]}"',
+                    f'source_lane = "{self.handoff_source["source_lane"]}"',
+                ]
+            )
 
         return "\n".join(lines) + "\n"
 
@@ -157,6 +171,28 @@ def parse_args() -> argparse.Namespace:
     review.add_argument("--lane-name")
     review.add_argument("--branch")
 
+    share_lane = sub.add_parser("share-lane")
+    share_lane.add_argument("workspace_root", type=Path)
+    share_lane.add_argument("owner_unit")
+    share_lane.add_argument("lane_name")
+    share_lane.add_argument("target_unit")
+
+    continuation = sub.add_parser("create-continuation-lane")
+    continuation.add_argument("workspace_root", type=Path)
+    continuation.add_argument("source_owner_unit")
+    continuation.add_argument("source_lane_name")
+    continuation.add_argument("target_unit")
+    continuation.add_argument("target_lane_name")
+
+    handoff = sub.add_parser("plan-handoff")
+    handoff.add_argument("workspace_root", type=Path)
+    handoff.add_argument("source_owner_unit")
+    handoff.add_argument("source_lane_name")
+    handoff.add_argument("target_unit")
+    handoff.add_argument("--mode", choices=["shared", "continuation"], required=True)
+    handoff.add_argument("--target-lane-name")
+    handoff.add_argument("--json", action="store_true")
+
     show = sub.add_parser("show-lane")
     show.add_argument("workspace_root", type=Path)
     show.add_argument("owner_unit")
@@ -203,6 +239,13 @@ def parse_args() -> argparse.Namespace:
     history.add_argument("workspace_root", type=Path)
     history.add_argument("owner_unit")
     history.add_argument("--json", action="store_true")
+
+    rebind = sub.add_parser("rebind-unit")
+    rebind.add_argument("workspace_root", type=Path)
+    rebind.add_argument("old_owner_unit")
+    rebind.add_argument("new_owner_unit")
+    rebind.add_argument("--actor", required=True)
+    rebind.add_argument("--json", action="store_true")
 
     lease = sub.add_parser("acquire-lane-lease")
     lease.add_argument("workspace_root", type=Path)
@@ -274,6 +317,12 @@ def parse_args() -> argparse.Namespace:
     recommend.add_argument("--repos", type=int, default=1)
     recommend.add_argument("--shared-draft", action="store_true")
 
+    review_check = sub.add_parser("check-review-requirements")
+    review_check.add_argument("workspace_root", type=Path)
+    review_check.add_argument("repo")
+    review_check.add_argument("pr_number", type=int)
+    review_check.add_argument("--json", action="store_true")
+
     return parser.parse_args()
 
 
@@ -303,6 +352,21 @@ def lane_leases_file(workspace_root: Path, owner_unit: str, lane_name: str) -> P
 
 def lane_leases_lock_file(workspace_root: Path, owner_unit: str, lane_name: str) -> Path:
     return lane_dir(workspace_root, owner_unit, lane_name) / "leases.lock"
+
+
+def shared_lane_access_file(workspace_root: Path, owner_unit: str, lane_name: str) -> Path:
+    return (
+        workspace_root
+        / ".grip"
+        / "state"
+        / "shared_lane_access"
+        / owner_unit
+        / f"{lane_name}.json"
+    )
+
+
+def unit_rebind_file(workspace_root: Path, owner_unit: str) -> Path:
+    return workspace_root / ".grip" / "state" / "rebindings" / f"{owner_unit}.json"
 
 
 def events_dir(workspace_root: Path) -> Path:
@@ -351,6 +415,13 @@ def load_current_lane_doc(workspace_root: Path, owner_unit: str) -> dict:
     return json.loads(path.read_text())
 
 
+def load_unit_rebind_doc(workspace_root: Path, owner_unit: str) -> dict | None:
+    path = unit_rebind_file(workspace_root, owner_unit)
+    if not path.exists():
+        return None
+    return json.loads(path.read_text())
+
+
 def append_jsonl(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
@@ -378,11 +449,47 @@ def iter_lane_events(workspace_root: Path) -> list[dict]:
     return items
 
 
+def write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n")
+
+
 def load_lane_leases(workspace_root: Path, owner_unit: str, lane_name: str) -> list[dict]:
     path = lane_leases_file(workspace_root, owner_unit, lane_name)
     if not path.exists():
         return []
     return json.loads(path.read_text())
+
+
+def workspace_constraints(workspace_root: Path) -> dict:
+    spec = load_workspace_spec(workspace_root)
+    return spec.get("workspace_constraints", {})
+
+
+def max_global_edit_leases(workspace_root: Path) -> int | None:
+    value = workspace_constraints(workspace_root).get("max_concurrent_edit_leases_global")
+    if value is None:
+        return None
+    return int(value)
+
+
+def active_workspace_edit_leases(workspace_root: Path) -> list[dict]:
+    rows: list[dict] = []
+    for path in iter_lane_files(workspace_root):
+        lane_doc = tomllib.loads(path.read_text())
+        owner_unit = lane_doc["owner_unit"]
+        lane_name = lane_doc["lane_name"]
+        for lease in load_lane_leases(workspace_root, owner_unit, lane_name):
+            if lease["mode"] != "edit" or is_stale_lease(lease):
+                continue
+            rows.append(
+                {
+                    "owner_unit": owner_unit,
+                    "lane_name": lane_name,
+                    **lease,
+                }
+            )
+    return rows
 
 
 def lease_locking_enabled() -> bool:
@@ -596,6 +703,8 @@ def create_lane(args: argparse.Namespace) -> int:
             "commands": args.default_commands,
         },
         creation_source=args.source,
+        shared_with=[],
+        handoff_source=None,
     )
     lane_file(workspace_root, args.owner_unit, args.lane_name).write_text(metadata.as_toml())
     print(lane_file(workspace_root, args.owner_unit, args.lane_name))
@@ -757,9 +866,141 @@ def lane_history(args: argparse.Namespace) -> int:
     return 0
 
 
+def rebind_unit(args: argparse.Namespace) -> int:
+    workspace_root = args.workspace_root.resolve()
+    old_unit = find_unit_spec(workspace_root, args.old_owner_unit)
+    new_unit = find_unit_spec(workspace_root, args.new_owner_unit)
+    old_agent_id = old_unit.get("agent_id")
+    new_agent_id = new_unit.get("agent_id")
+    if not old_agent_id or not new_agent_id or old_agent_id != new_agent_id:
+        raise SystemExit("rebind-unit requires old and new units with the same agent_id")
+
+    lane_paths = iter_lane_files(workspace_root, args.old_owner_unit)
+    affected_lanes: list[dict] = []
+    expired_leases: list[dict] = []
+    for path in lane_paths:
+        lane_doc = tomllib.loads(path.read_text())
+        lane_name = lane_doc["lane_name"]
+        leases = load_lane_leases(workspace_root, args.old_owner_unit, lane_name)
+        active_leases = [lease for lease in leases if not is_stale_lease(lease)]
+        if active_leases:
+            write_lane_leases(workspace_root, args.old_owner_unit, lane_name, [])
+            for lease in active_leases:
+                expired_leases.append(
+                    {
+                        "lane_name": lane_name,
+                        "actor": lease["actor"],
+                        "mode": lease["mode"],
+                        "acquired_at": lease["acquired_at"],
+                        "expires_at": lease.get("expires_at"),
+                    }
+                )
+                emit_lane_event(
+                    workspace_root,
+                    {
+                        "type": "lease_release",
+                        "agent": lease["actor"],
+                        "agent_id": old_agent_id,
+                        "owner_unit": args.old_owner_unit,
+                        "lane": lane_name,
+                        "lane_type": lane_doc["lane_type"],
+                        "repos": lane_doc.get("repos", []),
+                        "timestamp": now_utc(),
+                        "reason": "unit_rebind",
+                    },
+                )
+
+        affected_lanes.append(
+            {
+                "lane_name": lane_name,
+                "lane_type": lane_doc["lane_type"],
+                "repos": lane_doc.get("repos", []),
+                "status": "frozen",
+                "expired_lease_count": len(active_leases),
+            }
+        )
+
+    current_lane = None
+    current_path = current_lane_file(workspace_root, args.old_owner_unit)
+    if current_path.exists():
+        current_doc = json.loads(current_path.read_text())
+        current_lane = current_doc.get("current")
+        updated = dict(current_doc)
+        updated["status"] = "rebound"
+        updated["rebound_to"] = args.new_owner_unit
+        write_json(current_path, updated)
+
+    rebind_doc = {
+        "old_owner_unit": args.old_owner_unit,
+        "new_owner_unit": args.new_owner_unit,
+        "agent_id": old_agent_id,
+        "rebound_at": now_utc(),
+        "actor": args.actor,
+        "status": "complete",
+        "affected_lanes": affected_lanes,
+        "expired_leases": expired_leases,
+        "current_lane_at_rebind": current_lane,
+        "required_contract": {
+            "same_agent_id": True,
+            "old_to_new_mapping": True,
+            "pending_reassignment_hint": "recommended",
+        },
+    }
+    write_json(unit_rebind_file(workspace_root, args.old_owner_unit), rebind_doc)
+    emit_lane_event(
+        workspace_root,
+        {
+            "type": "unit_rebind",
+            "agent": args.actor,
+            "agent_id": old_agent_id,
+            "owner_unit": args.old_owner_unit,
+            "new_owner_unit": args.new_owner_unit,
+            "lane": current_lane["lane_name"] if current_lane else None,
+            "lane_type": current_lane["lane_type"] if current_lane else None,
+            "repos": sorted({repo for item in affected_lanes for repo in item["repos"]}),
+            "timestamp": rebind_doc["rebound_at"],
+            "frozen_lane_count": len(affected_lanes),
+            "expired_lease_count": len(expired_leases),
+        },
+    )
+    if args.json:
+        print(json.dumps(rebind_doc, indent=2))
+    else:
+        print(json.dumps(rebind_doc, indent=2))
+    return 0
+
+
 def acquire_lane_lease(args: argparse.Namespace) -> int:
     workspace_root = args.workspace_root.resolve()
     load_lane_doc(workspace_root, args.owner_unit, args.lane_name)
+    if args.mode == "edit":
+        cap = max_global_edit_leases(workspace_root)
+        if cap is not None:
+            active_edits = active_workspace_edit_leases(workspace_root)
+            active_edits = [
+                lease
+                for lease in active_edits
+                if not (
+                    lease["owner_unit"] == args.owner_unit
+                    and lease["lane_name"] == args.lane_name
+                    and lease["actor"] == args.actor
+                )
+            ]
+            if len(active_edits) >= cap:
+                payload = {
+                    "status": "blocked",
+                    "reason": "workspace-edit-lease-cap",
+                    "requested": {
+                        "owner_unit": args.owner_unit,
+                        "lane_name": args.lane_name,
+                        "actor": args.actor,
+                        "mode": args.mode,
+                    },
+                    "active_edit_leases": active_edits,
+                    "max_concurrent_edit_leases_global": cap,
+                }
+                print(json.dumps(payload, indent=2))
+                return 1
     result = mutate_lane_leases(
         workspace_root,
         args.owner_unit,
@@ -908,6 +1149,170 @@ def create_review_lane(args: argparse.Namespace) -> int:
     content += f'\n\n[[pr_associations]]\nref = "{args.repo}#{args.pr_number}"\n'
     lane_path.write_text(content)
     print(f"created review lane {args.owner_unit}/{lane_name} for {args.repo}#{args.pr_number}")
+    return 0
+
+
+def check_review_requirements(args: argparse.Namespace) -> int:
+    workspace_root = args.workspace_root.resolve()
+    ref = f"{args.repo}#{args.pr_number}"
+    required = int(
+        workspace_constraints(workspace_root)
+        .get("required_reviewers", {})
+        .get(args.repo, 0)
+    )
+    matching: list[dict] = []
+    for path in iter_lane_files(workspace_root):
+        doc = tomllib.loads(path.read_text())
+        if doc.get("lane_type") != "review":
+            continue
+        refs = [item["ref"] for item in doc.get("pr_associations", [])]
+        if ref not in refs:
+            continue
+        matching.append(
+            {
+                "owner_unit": doc["owner_unit"],
+                "lane_name": doc["lane_name"],
+                "repos": doc.get("repos", []),
+            }
+        )
+    reviewer_units = sorted({row["owner_unit"] for row in matching})
+    payload = {
+        "repo": args.repo,
+        "pr_number": args.pr_number,
+        "required_reviewers": required,
+        "actual_reviewers": len(reviewer_units),
+        "satisfied": len(reviewer_units) >= required,
+        "review_lanes": matching,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(json.dumps(payload, indent=2))
+    return 0
+
+
+def share_lane(args: argparse.Namespace) -> int:
+    workspace_root = args.workspace_root.resolve()
+    load_lane_doc(workspace_root, args.owner_unit, args.lane_name)
+    find_unit_spec(workspace_root, args.target_unit)
+    access_path = shared_lane_access_file(workspace_root, args.owner_unit, args.lane_name)
+    access_path.parent.mkdir(parents=True, exist_ok=True)
+    if access_path.exists():
+        doc = json.loads(access_path.read_text())
+    else:
+        doc = {
+            "owner_unit": args.owner_unit,
+            "lane_name": args.lane_name,
+            "shared_with": [],
+        }
+    if args.target_unit not in doc["shared_with"]:
+        doc["shared_with"].append(args.target_unit)
+    access_path.write_text(json.dumps(doc, indent=2) + "\n")
+    print(access_path)
+    return 0
+
+
+def create_continuation_lane(args: argparse.Namespace) -> int:
+    workspace_root = args.workspace_root.resolve()
+    source = load_lane_doc(workspace_root, args.source_owner_unit, args.source_lane_name)
+    unit_spec = find_unit_spec(workspace_root, args.target_unit)
+    lane_root = lane_dir(workspace_root, args.target_unit, args.target_lane_name)
+    lane_root.mkdir(parents=True, exist_ok=True)
+    (lane_root / "repos").mkdir(exist_ok=True)
+    (lane_root / "context").mkdir(exist_ok=True)
+
+    metadata = LaneMetadata(
+        schema_version=LANE_SCHEMA_VERSION,
+        lane_name=args.target_lane_name,
+        owner_unit=args.target_unit,
+        agent_id=unit_spec.get("agent_id"),
+        lane_type=source["lane_type"],
+        repos=source.get("repos", []),
+        branch_map=source.get("branch_map", {}),
+        pr_associations=[item["ref"] for item in source.get("pr_associations", [])],
+        shared_context_roots=source.get("context", {}).get("shared_roots", []),
+        private_context_roots=[
+            f"agents/{args.target_unit}/home/context",
+            f"agents/{args.target_unit}/lanes/{args.target_lane_name}/context",
+        ],
+        exec_defaults=source.get("exec_defaults", {}),
+        creation_source="lane-handoff",
+        shared_with=[],
+        handoff_source={
+            "kind": "continuation",
+            "source_owner_unit": args.source_owner_unit,
+            "source_lane": args.source_lane_name,
+        },
+    )
+    lane_file(workspace_root, args.target_unit, args.target_lane_name).write_text(
+        metadata.as_toml()
+    )
+    print(lane_file(workspace_root, args.target_unit, args.target_lane_name))
+    return 0
+
+
+def plan_handoff(args: argparse.Namespace) -> int:
+    workspace_root = args.workspace_root.resolve()
+    source = load_lane_doc(workspace_root, args.source_owner_unit, args.source_lane_name)
+    find_unit_spec(workspace_root, args.target_unit)
+    if args.mode == "shared":
+        access_path = shared_lane_access_file(workspace_root, args.source_owner_unit, args.source_lane_name)
+        access = json.loads(access_path.read_text()) if access_path.exists() else None
+        payload = {
+            "mode": "shared",
+            "source_owner_unit": args.source_owner_unit,
+            "source_lane_name": args.source_lane_name,
+            "target_unit": args.target_unit,
+            "shared_access_present": bool(access and args.target_unit in access.get("shared_with", [])),
+            "exec_rows": [
+                {
+                    "acting_unit": args.target_unit,
+                    "owner_unit": args.source_owner_unit,
+                    "lane_name": args.source_lane_name,
+                    "repo": repo,
+                    "cwd": str(workspace_root / "agents" / args.source_owner_unit / "lanes" / args.source_lane_name / "repos" / repo),
+                    "lease_scope": f"{args.source_owner_unit}/{args.source_lane_name}",
+                }
+                for repo in source.get("repos", [])
+            ],
+            "invariant_assessment": {
+                "unit_scoped": False,
+                "reason": "target unit must execute inside another unit's lane root and lease scope",
+            },
+        }
+    else:
+        target_lane_name = args.target_lane_name or f"{args.source_lane_name}-relay"
+        payload = {
+            "mode": "continuation",
+            "source_owner_unit": args.source_owner_unit,
+            "source_lane_name": args.source_lane_name,
+            "target_unit": args.target_unit,
+            "target_lane_name": target_lane_name,
+            "exec_rows": [
+                {
+                    "acting_unit": args.target_unit,
+                    "owner_unit": args.target_unit,
+                    "lane_name": target_lane_name,
+                    "repo": repo,
+                    "cwd": str(workspace_root / "agents" / args.target_unit / "lanes" / target_lane_name / "repos" / repo),
+                    "lease_scope": f"{args.target_unit}/{target_lane_name}",
+                }
+                for repo in source.get("repos", [])
+            ],
+            "handoff_source": {
+                "source_owner_unit": args.source_owner_unit,
+                "source_lane_name": args.source_lane_name,
+            },
+            "invariant_assessment": {
+                "unit_scoped": True,
+                "reason": "target unit gets its own lane root, lease scope, and current-lane state while keeping source linkage",
+            },
+        }
+
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(json.dumps(payload, indent=2))
     return 0
 
 
@@ -1106,6 +1511,29 @@ def next_step(args: argparse.Namespace) -> int:
 def plan_exec(args: argparse.Namespace) -> int:
     workspace_root = args.workspace_root.resolve()
     lane_doc = load_lane_doc(workspace_root, args.owner_unit, args.lane_name)
+    rebind_doc = load_unit_rebind_doc(workspace_root, args.owner_unit)
+    if rebind_doc:
+        affected = {
+            item["lane_name"]: item for item in rebind_doc.get("affected_lanes", [])
+        }
+        if args.lane_name in affected:
+            payload = {
+                "status": "blocked",
+                "reason": "unit-rebound",
+                "lane": lane_doc["lane_name"],
+                "owner_unit": lane_doc["owner_unit"],
+                "new_owner_unit": rebind_doc["new_owner_unit"],
+                "hint": "create a continuation lane under the new unit before resuming work",
+            }
+            if args.json:
+                print(json.dumps(payload, indent=2))
+            else:
+                print("gr2 lane-exec prototype")
+                print("status=blocked reason=unit-rebound")
+                print(
+                    f"owner={lane_doc['owner_unit']} rebound_to={rebind_doc['new_owner_unit']} lane={lane_doc['lane_name']}"
+                )
+            return 0
     leases = load_lane_leases(workspace_root, args.owner_unit, args.lane_name)
     active_conflicts, stale_conflicts = conflicting_leases(leases, "agent:exec-planner", "exec")
     if active_conflicts:
@@ -1201,8 +1629,16 @@ def main() -> int:
         return current_lane(args)
     if args.command == "lane-history":
         return lane_history(args)
+    if args.command == "rebind-unit":
+        return rebind_unit(args)
     if args.command == "create-review-lane":
         return create_review_lane(args)
+    if args.command == "share-lane":
+        return share_lane(args)
+    if args.command == "create-continuation-lane":
+        return create_continuation_lane(args)
+    if args.command == "plan-handoff":
+        return plan_handoff(args)
     if args.command == "show-lane":
         return show_lane(args)
     if args.command == "list-lanes":
@@ -1229,6 +1665,8 @@ def main() -> int:
         return plan_promote_scratchpad(args)
     if args.command == "recommend-surface":
         return recommend_surface(args)
+    if args.command == "check-review-requirements":
+        return check_review_requirements(args)
     raise SystemExit(f"unknown command: {args.command}")
 
 

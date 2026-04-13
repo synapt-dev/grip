@@ -255,6 +255,121 @@ This is still prototype scope, but it tests the right product direction:
 lane transitions and lease changes should be observable workspace events rather
 than invisible local state.
 
+Agent handoff example:
+
+```bash
+python3 gr2/prototypes/lane_workspace_prototype.py share-lane \
+  /path/to/workspace atlas feat-router apollo
+
+python3 gr2/prototypes/lane_workspace_prototype.py plan-handoff \
+  /path/to/workspace atlas feat-router apollo --mode shared --json
+
+python3 gr2/prototypes/lane_workspace_prototype.py create-continuation-lane \
+  /path/to/workspace atlas feat-router apollo feat-router-relay
+
+python3 gr2/prototypes/lane_workspace_prototype.py plan-handoff \
+  /path/to/workspace atlas feat-router apollo --mode continuation \
+  --target-lane-name feat-router-relay --json
+```
+
+Current prototype conclusion:
+
+- cross-unit shared-lane relay violates the unit-scoping invariant
+- continuation lanes preserve unit-scoped cwd, lease scope, and current-lane state
+- handoff should preserve lineage to the source lane without forcing the target
+  unit to execute inside the source unit's lane root
+
+Identity rebind example:
+
+```bash
+python3 gr2/prototypes/lane_workspace_prototype.py rebind-unit \
+  /path/to/workspace synapt-core release-control --actor premium:control-plane --json
+```
+
+Current prototype conclusion:
+
+- active lanes under the old unit stay in place and become frozen
+- active leases are force-released and logged during the rebind
+- old-unit exec planning is blocked after rebind
+- recovery should happen through continuation lanes under the new unit
+- the minimal safe contract from premium is:
+  - same `agent_id` continuity
+  - explicit old -> new unit mapping
+  - pending-reassignment hint is recommended to reduce operator surprise
+
+Identity -> unit binding example:
+
+```bash
+python3 gr2/prototypes/identity_unit_binding.py demo
+python3 gr2/prototypes/identity_unit_binding.py resolve-binding ws_synapt_core opus --json
+python3 gr2/prototypes/identity_unit_binding.py compile-workspace ws_synapt_core --json
+```
+
+This prototype keeps the premium boundary hard:
+
+- Premium owns persistent agent identity, org membership, and workspace assignment.
+- gr2 only consumes the compiled workspace-scoped unit view.
+- the same persistent agent can map to different `owner_unit` names in different
+  workspaces without gr2 learning org logic.
+- reassignment is a premium recompilation event, not a gr2-side identity
+  decision.
+
+Org/policy compiler example:
+
+```bash
+python3 gr2/prototypes/org_policy_compiler.py demo
+python3 gr2/prototypes/org_policy_compiler.py compile --scenario baseline --json
+python3 gr2/prototypes/org_policy_compiler.py compile --scenario repo-update --json
+python3 gr2/prototypes/org_policy_compiler.py compile --scenario downgrade --json
+```
+
+This prototype keeps the compiler seam explicit:
+
+- Premium reads org config, roles, entitlements, and reviewer policy.
+- Premium outputs workspace-scoped constraints that gr2 can enforce locally.
+- gr2 sees unit repo access, lane limits, and workspace constraints, but not the
+  raw org policy logic that produced them.
+
+Workspace constraint enforcement example:
+
+```bash
+python3 gr2/prototypes/lane_workspace_prototype.py acquire-lane-lease \
+  /path/to/workspace atlas feat-a --actor agent:atlas --mode edit --json
+
+python3 gr2/prototypes/lane_workspace_prototype.py check-review-requirements \
+  /path/to/workspace premium 777 --json
+```
+
+Current prototype conclusion:
+
+- `max_concurrent_edit_leases_global` is enforced across all units, not just
+  the requesting unit
+- a stale local lease can be force-broken, but that does not bypass the
+  workspace-wide edit cap
+- `required_reviewers` is evaluated from compiled workspace constraints plus
+  review-lane state
+- OSS enforces the compiled constraint, but Premium still owns the policy that
+  produced it
+
+Recall lane history example:
+
+```bash
+python3 gr2/prototypes/recall_lane_history.py demo-data /tmp/gr2-recall-demo
+python3 gr2/prototypes/recall_lane_history.py query /tmp/gr2-recall-demo --lane auth-refactor --json
+python3 gr2/prototypes/recall_lane_history.py query /tmp/gr2-recall-demo --actor agent:atlas --json
+python3 gr2/prototypes/recall_lane_history.py query /tmp/gr2-recall-demo --repo grip --json
+```
+
+This prototype indexes lane events into a neutral recall-friendly timeline:
+
+- by lane
+- by actor
+- by repo
+- by time range
+
+Recall can answer lane-history questions from structured workspace events
+without importing premium identity or org semantics.
+
 ## Real-Git Same-Repo Multi-Agent Materialization
 
 To verify that unit-local-first is real and not only metadata, run:

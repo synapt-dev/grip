@@ -1,0 +1,24 @@
+[repo]
+name = "grip"
+
+[[files.link]]
+src = "{workspace_root}/config/claude.md"
+dest = "{repo_root}/CLAUDE.md"
+if_exists = "overwrite"
+
+[[lifecycle.on_materialize]]
+name = "cargo-build"
+command = "cargo build"
+cwd = "{repo_root}"
+when = "first_materialize"
+on_failure = "block"
+
+[[lifecycle.on_enter]]
+name = "cargo-check"
+command = "cargo check"
+cwd = "{repo_root}"
+when = "always"
+on_failure = "warn"
+
+[policy]
+required_reviewers = 1

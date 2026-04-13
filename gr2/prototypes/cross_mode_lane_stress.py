@@ -92,23 +92,47 @@ name = "web"
 path = "repos/web"
 url = "https://example.invalid/web.git"
 
+[[repos]]
+name = "premium"
+path = "repos/premium"
+url = "https://example.invalid/premium.git"
+
+[workspace_constraints]
+max_concurrent_edit_leases_global = 2
+
+[workspace_constraints.required_reviewers]
+premium = 2
+app = 1
+
 [[units]]
 name = "atlas"
 path = "agents/atlas"
 agent_id = "atlas-agent"
-repos = ["app", "api", "web"]
+repos = ["app", "api", "web", "premium"]
 
 [[units]]
 name = "apollo"
 path = "agents/apollo"
 agent_id = "apollo-agent"
-repos = ["app", "api", "web"]
+repos = ["app", "api", "web", "premium"]
 
 [[units]]
 name = "layne"
 path = "agents/layne"
 agent_id = "layne-human"
-repos = ["app", "api", "web"]
+repos = ["app", "api", "web", "premium"]
+
+[[units]]
+name = "synapt-core"
+path = "agents/synapt-core"
+agent_id = "agent_opus_abc123"
+repos = ["app", "api", "web", "premium"]
+
+[[units]]
+name = "release-control"
+path = "agents/release-control"
+agent_id = "agent_opus_abc123"
+repos = ["app", "api", "web", "premium"]
 """
     (workspace_root / ".grip" / "workspace_spec.toml").write_text(spec)
 
@@ -202,6 +226,22 @@ def show_leases_json(root: Path, workspace_root: Path, owner_unit: str, lane_nam
     return json.loads(proc.stdout)
 
 
+def check_review_requirements_json(root: Path, workspace_root: Path, repo: str, pr_number: int) -> dict:
+    proc = run(
+        [
+            "python3",
+            str(lane_proto(root)),
+            "check-review-requirements",
+            str(workspace_root),
+            repo,
+            str(pr_number),
+            "--json",
+        ],
+        capture=True,
+    )
+    return json.loads(proc.stdout)
+
+
 def list_lanes_text(root: Path, workspace_root: Path, owner_unit: str | None = None) -> str:
     argv = [
         "python3",
@@ -213,6 +253,33 @@ def list_lanes_text(root: Path, workspace_root: Path, owner_unit: str | None = N
         argv.extend(["--owner-unit", owner_unit])
     proc = run(argv, capture=True)
     return proc.stdout
+
+
+def plan_handoff_json(
+    root: Path,
+    workspace_root: Path,
+    source_owner_unit: str,
+    source_lane_name: str,
+    target_unit: str,
+    mode: str,
+    target_lane_name: str | None = None,
+) -> dict:
+    argv = [
+        "python3",
+        str(lane_proto(root)),
+        "plan-handoff",
+        str(workspace_root),
+        source_owner_unit,
+        source_lane_name,
+        target_unit,
+        "--mode",
+        mode,
+        "--json",
+    ]
+    if target_lane_name:
+        argv.extend(["--target-lane-name", target_lane_name])
+    proc = run(argv, capture=True)
+    return json.loads(proc.stdout)
 
 
 def scenario_multi_agent_same_repo(root: Path, workspace_root: Path) -> ScenarioResult:
@@ -246,6 +313,91 @@ def scenario_multi_agent_same_repo(root: Path, workspace_root: Path) -> Scenario
         scenario_id="multi-agent-same-repo",
         user_mode="multi-agent",
         title="two agents create lanes that touch the same repo",
+        verdict=verdict,
+        holds=holds,
+        gaps=gaps,
+        evidence=evidence,
+    )
+
+
+def scenario_agent_handoff_relay(root: Path, workspace_root: Path) -> ScenarioResult:
+    create_lane(root, workspace_root, "atlas", "feat-router", "app,api", "feat/router")
+    run(
+        [
+            "python3",
+            str(lane_proto(root)),
+            "share-lane",
+            str(workspace_root),
+            "atlas",
+            "feat-router",
+            "apollo",
+        ]
+    )
+    shared_plan = plan_handoff_json(
+        root,
+        workspace_root,
+        "atlas",
+        "feat-router",
+        "apollo",
+        "shared",
+    )
+    run(
+        [
+            "python3",
+            str(lane_proto(root)),
+            "create-continuation-lane",
+            str(workspace_root),
+            "atlas",
+            "feat-router",
+            "apollo",
+            "feat-router-relay",
+        ]
+    )
+    continuation_plan = plan_handoff_json(
+        root,
+        workspace_root,
+        "atlas",
+        "feat-router",
+        "apollo",
+        "continuation",
+        "feat-router-relay",
+    )
+
+    holds = []
+    gaps = []
+    evidence = [
+        json.dumps(shared_plan, indent=2),
+        json.dumps(continuation_plan, indent=2),
+    ]
+
+    if not shared_plan["invariant_assessment"]["unit_scoped"]:
+        holds.append("cross-unit shared-lane relay exposes the unit-scoping violation directly")
+    else:
+        gaps.append("shared-lane relay incorrectly appears unit-scoped")
+
+    shared_cwds = {row["cwd"] for row in shared_plan["exec_rows"]}
+    if all("/agents/atlas/lanes/feat-router/" in cwd for cwd in shared_cwds):
+        holds.append("shared-lane relay forces the target unit to execute inside the source unit lane root")
+    else:
+        gaps.append("shared-lane relay did not clearly surface source-unit cwd ownership")
+
+    if continuation_plan["invariant_assessment"]["unit_scoped"]:
+        holds.append("continuation lane preserves unit-scoped cwd and lease ownership")
+    else:
+        gaps.append("continuation lane did not preserve unit scoping")
+
+    continuation_cwds = {row["cwd"] for row in continuation_plan["exec_rows"]}
+    if all("/agents/apollo/lanes/feat-router-relay/" in cwd for cwd in continuation_cwds):
+        holds.append("continuation lane gives the target unit an independent lane root")
+        verdict = "holds"
+    else:
+        gaps.append("continuation lane did not create target-unit-local execution roots")
+        verdict = "fails"
+
+    return ScenarioResult(
+        scenario_id="agent-handoff-relay",
+        user_mode="multi-agent",
+        title="agent-to-agent lane handoff prefers continuation over cross-unit shared lanes",
         verdict=verdict,
         holds=holds,
         gaps=gaps,
@@ -635,6 +787,252 @@ def scenario_solo_human_forgets_lane(root: Path, workspace_root: Path) -> Scenar
     )
 
 
+def scenario_identity_rebind_live_lanes(root: Path, workspace_root: Path) -> ScenarioResult:
+    create_lane(root, workspace_root, "synapt-core", "feat-auth", "app,api", "feat/auth")
+    create_lane(root, workspace_root, "synapt-core", "feat-deploy", "web", "feat/deploy")
+    acquire_lease(root, workspace_root, "synapt-core", "feat-auth", "agent:opus", "edit")
+    acquire_lease(root, workspace_root, "synapt-core", "feat-deploy", "agent:opus", "edit")
+    run(
+        [
+            "python3",
+            str(lane_proto(root)),
+            "enter-lane",
+            str(workspace_root),
+            "synapt-core",
+            "feat-auth",
+            "--actor",
+            "agent:opus",
+        ]
+    )
+    rebind_active = run(
+        [
+            "python3",
+            str(lane_proto(root)),
+            "rebind-unit",
+            str(workspace_root),
+            "synapt-core",
+            "release-control",
+            "--actor",
+            "premium:control-plane",
+            "--json",
+        ],
+        capture=True,
+    )
+    rebind_active_doc = json.loads(rebind_active.stdout)
+    blocked_old = plan_exec_json(root, workspace_root, "synapt-core", "feat-auth", "cargo test")
+    continuation = plan_handoff_json(
+        root,
+        workspace_root,
+        "synapt-core",
+        "feat-auth",
+        "release-control",
+        "continuation",
+        "feat-auth-relay",
+    )
+    history_proc = run(
+        [
+            "python3",
+            str(lane_proto(root)),
+            "lane-history",
+            str(workspace_root),
+            "synapt-core",
+            "--json",
+        ],
+        capture=True,
+    )
+    history_rows = json.loads(history_proc.stdout)
+
+    clean_workspace = workspace_root / "clean-rebind"
+    clean_workspace.mkdir(parents=True, exist_ok=True)
+    init_workspace(clean_workspace)
+    create_lane(root, clean_workspace, "synapt-core", "feat-clean", "app", "feat/clean")
+    rebind_clean = run(
+        [
+            "python3",
+            str(lane_proto(root)),
+            "rebind-unit",
+            str(clean_workspace),
+            "synapt-core",
+            "release-control",
+            "--actor",
+            "premium:control-plane",
+            "--json",
+        ],
+        capture=True,
+    )
+    rebind_clean_doc = json.loads(rebind_clean.stdout)
+
+    holds = []
+    gaps = []
+    evidence = [
+        json.dumps(rebind_active_doc, indent=2),
+        json.dumps(blocked_old, indent=2),
+        json.dumps(continuation, indent=2),
+        json.dumps(history_rows, indent=2),
+        json.dumps(rebind_clean_doc, indent=2),
+    ]
+
+    if all(item["status"] == "frozen" for item in rebind_active_doc["affected_lanes"]):
+        holds.append("active lanes stay in the old unit and become frozen rather than moving silently")
+    else:
+        gaps.append("rebind did not freeze old lanes deterministically")
+
+    if len(rebind_active_doc["expired_leases"]) == 2:
+        holds.append("active edit leases are force-released during rebind")
+    else:
+        gaps.append("active leases were not force-released during rebind")
+
+    if isinstance(blocked_old, dict) and blocked_old.get("reason") == "unit-rebound":
+        holds.append("old unit lanes are blocked for further exec planning after rebind")
+    else:
+        gaps.append("old unit lanes were not blocked after rebind")
+
+    if continuation["invariant_assessment"]["unit_scoped"]:
+        holds.append("post-rebind recovery path is continuation under the new unit")
+    else:
+        gaps.append("rebind recovery path did not preserve unit scoping")
+
+    if any(row["type"] == "unit_rebind" for row in history_rows):
+        holds.append("lane event history records the unit rebind for recall reconstruction")
+    else:
+        gaps.append("lane history did not record the rebind transition")
+
+    contract = rebind_active_doc.get("required_contract", {})
+    if contract.get("same_agent_id") and contract.get("old_to_new_mapping"):
+        holds.append("prototype identifies same-agent-id continuity and explicit old->new mapping as required contract")
+    else:
+        gaps.append("rebind contract requirements are not explicit enough")
+
+    if rebind_clean_doc["expired_leases"] == []:
+        holds.append("clean rebind with no active leases avoids unnecessary lease churn")
+    else:
+        gaps.append("clean rebind unexpectedly expired leases")
+
+    verdict = "holds" if not gaps else "fails"
+    return ScenarioResult(
+        scenario_id="identity-rebind-live-lanes",
+        user_mode="single-agent",
+        title="identity rebinding freezes old lanes and resumes through continuation under the new unit",
+        verdict=verdict,
+        holds=holds,
+        gaps=gaps,
+        evidence=evidence,
+    )
+
+
+def scenario_global_edit_lease_cap(root: Path, workspace_root: Path) -> ScenarioResult:
+    create_lane(root, workspace_root, "atlas", "feat-cap-a", "app", "feat/cap-a")
+    create_lane(root, workspace_root, "apollo", "feat-cap-b", "api", "feat/cap-b")
+    create_lane(root, workspace_root, "layne", "feat-cap-c", "web", "feat/cap-c")
+
+    create_lane(root, workspace_root, "release-control", "feat-cap-stale", "premium", "feat/cap-stale")
+    acquire_lease(root, workspace_root, "release-control", "feat-cap-stale", "agent:opus", "edit", ttl_seconds=0)
+
+    lease_a = acquire_lease(root, workspace_root, "atlas", "feat-cap-a", "agent:atlas", "edit")
+    lease_b = acquire_lease(root, workspace_root, "apollo", "feat-cap-b", "agent:apollo", "edit")
+    lease_c = acquire_lease(
+        root, workspace_root, "layne", "feat-cap-c", "human:layne", "edit", expect_ok=False
+    )
+
+    stale_force = acquire_lease(
+        root,
+        workspace_root,
+        "release-control",
+        "feat-cap-stale",
+        "agent:opus",
+        "edit",
+        ttl_seconds=900,
+        force=True,
+        expect_ok=False,
+    )
+
+    holds = []
+    gaps = []
+    evidence = [lease_c.stdout.strip(), stale_force.stdout.strip()]
+
+    if lease_a.returncode == 0 and lease_b.returncode == 0 and lease_c.returncode != 0:
+        holds.append("third edit lease is blocked when global cap of 2 is reached")
+    else:
+        gaps.append("global edit lease cap did not block the third concurrent edit lease")
+
+    if stale_force.returncode != 0 and "workspace-edit-lease-cap" in stale_force.stdout:
+        holds.append("force-breaking a stale local lease does not bypass the workspace edit cap")
+    else:
+        gaps.append("stale force-break bypassed the workspace edit lease cap")
+
+    # Release leases so later scenarios aren't blocked by the global cap
+    for unit, lane, actor in [
+        ("atlas", "feat-cap-a", "agent:atlas"),
+        ("apollo", "feat-cap-b", "agent:apollo"),
+    ]:
+        run(
+            [
+                "python3",
+                str(lane_proto(root)),
+                "release-lane-lease",
+                str(workspace_root),
+                unit,
+                lane,
+                "--actor",
+                actor,
+            ],
+            capture=True,
+        )
+
+    verdict = "holds" if not gaps else "fails"
+    return ScenarioResult(
+        scenario_id="global-edit-lease-cap",
+        user_mode="cross-mode",
+        title="workspace-wide edit lease cap is enforced across all units",
+        verdict=verdict,
+        holds=holds,
+        gaps=gaps,
+        evidence=evidence,
+    )
+
+
+def scenario_required_reviewers(root: Path, workspace_root: Path) -> ScenarioResult:
+    zero = check_review_requirements_json(root, workspace_root, "premium", 777)
+    create_review_lane(root, workspace_root, "atlas", "premium", 777)
+    one = check_review_requirements_json(root, workspace_root, "premium", 777)
+    create_review_lane(root, workspace_root, "apollo", "premium", 777)
+    two = check_review_requirements_json(root, workspace_root, "premium", 777)
+
+    holds = []
+    gaps = []
+    evidence = [
+        json.dumps(zero, indent=2),
+        json.dumps(one, indent=2),
+        json.dumps(two, indent=2),
+    ]
+
+    if zero["required_reviewers"] == 2 and zero["actual_reviewers"] == 0 and not zero["satisfied"]:
+        holds.append("review requirements report unsatisfied with zero review lanes")
+    else:
+        gaps.append("zero-reviewer requirement state is incorrect")
+
+    if one["actual_reviewers"] == 1 and not one["satisfied"]:
+        holds.append("one review lane is still unsatisfied when premium requires two reviewers")
+    else:
+        gaps.append("single reviewer state is incorrect")
+
+    if two["actual_reviewers"] == 2 and two["satisfied"]:
+        holds.append("two review lanes satisfy the premium repo review requirement")
+    else:
+        gaps.append("two reviewers did not satisfy the premium repo requirement")
+
+    verdict = "holds" if not gaps else "fails"
+    return ScenarioResult(
+        scenario_id="required-reviewers",
+        user_mode="cross-mode",
+        title="required reviewer counts are enforced from workspace constraints",
+        verdict=verdict,
+        holds=holds,
+        gaps=gaps,
+        evidence=evidence,
+    )
+
+
 def run_scenarios(workspace_root: Path) -> list[ScenarioResult]:
     root = repo_root()
     init_workspace(workspace_root)
@@ -643,6 +1041,10 @@ def run_scenarios(workspace_root: Path) -> list[ScenarioResult]:
         scenario_lease_conflict_matrix(root, workspace_root),
         scenario_stale_lease_force_break(root, workspace_root),
         scenario_multi_agent_same_repo(root, workspace_root),
+        scenario_agent_handoff_relay(root, workspace_root),
+        scenario_identity_rebind_live_lanes(root, workspace_root),
+        scenario_global_edit_lease_cap(root, workspace_root),
+        scenario_required_reviewers(root, workspace_root),
         scenario_mixed_same_lane_exec(root, workspace_root),
         scenario_single_agent_interrupt_recovery(root, workspace_root),
         scenario_solo_human_forgets_lane(root, workspace_root),

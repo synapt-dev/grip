@@ -852,24 +852,83 @@ pub fn run_spawn_dashboard(_quiet: bool) -> anyhow::Result<()> {
         .args(["new-window", "-t", session, "-n", "dashboard"])
         .status()?;
 
-    // Build capture-loop script for each agent pane
+    // Build capture-loop script for each agent pane.
+    // Uses ANSI cursor-home + clear-to-end instead of `clear` so tmux
+    // scrollback is preserved and copy-mode (prefix+[) works for scrolling.
     let capture_script = |agent: &str| -> String {
         let target = format!("{}:{}", session, agent);
         format!(
-            "while true; do clear; echo '═══ {} ═══'; tmux capture-pane -t {} -p -S -25 2>/dev/null || echo '(not running)'; sleep 1; done",
+            "while true; do printf '\\033[H\\033[J'; echo '═══ {} ═══'; tmux capture-pane -t {} -p -S -40 2>/dev/null || echo '(not running)'; sleep 1; done",
             agent, target
         )
     };
 
-    // Build the #dev input loop using gr channel
+    // Build the #dev input loop with /send, /focus, /back, /zoom commands.
     let gr_path = std::env::current_exe()
         .unwrap_or_else(|_| "gr".into())
         .display()
         .to_string();
+
+    // Detect which agents use codex (need double-Enter when sending)
+    let codex_agents: Vec<&str> = names
+        .iter()
+        .filter(|n| {
+            config
+                .agents
+                .get(n.as_str())
+                .map(|a| a.tool == "codex")
+                .unwrap_or(false)
+        })
+        .map(|s| s.as_str())
+        .collect();
+    let codex_case = codex_agents
+        .iter()
+        .map(|a| format!("{})", a))
+        .collect::<Vec<_>>()
+        .join("|");
+
     let input_script = format!(
-        "cd {} && while IFS= read -rp $'\\033[36m#dev>\\033[0m ' msg; do [ -n \"$msg\" ] && {} channel post \"$msg\"; done",
-        workspace_root.display(),
-        gr_path
+        r#"cd {workspace} && echo '  Commands: /send <agent> <msg> | /focus <agent> | /back | /zoom | /help'
+while IFS= read -rp $'\033[36m#dev>\033[0m ' msg; do
+  case "$msg" in
+    /send\ *)
+      _rest="${{msg#/send }}"
+      _agent="${{_rest%% *}}"
+      _text="${{_rest#* }}"
+      tmux send-keys -t "{session}:$_agent" "$_text" Enter
+      case "$_agent" in {codex_case} sleep 0.3; tmux send-keys -t "{session}:$_agent" Enter ;; esac
+      echo "  -> sent to $_agent"
+      ;;
+    /focus\ *)
+      _agent="${{msg#/focus }}"
+      tmux select-window -t "{session}:$_agent" 2>/dev/null || echo "  agent '$_agent' not found"
+      ;;
+    /back)
+      tmux select-window -t "{session}:dashboard"
+      ;;
+    /zoom)
+      tmux resize-pane -Z
+      ;;
+    /help)
+      echo '  /send <agent> <msg>  — send message to agent (auto double-Enter for codex)'
+      echo '  /focus <agent>       — switch to agent window (full screen, interactive)'
+      echo '  /back                — return to dashboard'
+      echo '  /zoom                — toggle fullscreen on current pane'
+      echo '  <text>               — post to #dev channel'
+      ;;
+    *)
+      [ -n "$msg" ] && {gr} channel post "$msg"
+      ;;
+  esac
+done"#,
+        workspace = workspace_root.display(),
+        session = session,
+        codex_case = if codex_case.is_empty() {
+            "____never_match____)".to_string()
+        } else {
+            codex_case
+        },
+        gr = gr_path,
     );
 
     // Helper: get the active pane ID after a split or window creation.
@@ -949,7 +1008,7 @@ pub fn run_spawn_dashboard(_quiet: bool) -> anyhow::Result<()> {
 
     // Bottom input pane — split the full width at the bottom
     Command::new("tmux")
-        .args(["split-window", "-v", "-l", "3", "-t", &dashboard_target])
+        .args(["split-window", "-v", "-l", "6", "-t", &dashboard_target])
         .status()?;
 
     // Get the input pane ID (the newly created pane after the last split)
@@ -965,7 +1024,7 @@ pub fn run_spawn_dashboard(_quiet: bool) -> anyhow::Result<()> {
         .status()?;
 
     // Attach to the session (select dashboard window first)
-    Output::info("Dashboard opened. Ctrl-b d to detach.");
+    Output::info("Dashboard opened. /help for commands, Ctrl-b [ to scroll, Ctrl-b d to detach.");
 
     Command::new("tmux")
         .args(["select-window", "-t", &dashboard_target])

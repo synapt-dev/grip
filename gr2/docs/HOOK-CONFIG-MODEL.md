@@ -532,6 +532,13 @@ The point is:
 - identify hot paths
 - only then move those paths to Rust
 
+Current decision:
+
+- Python `gr2` is the active UX authority
+- Rust `gr2` is the future backend/runtime target
+
+If the two surfaces disagree, Python wins until the Rust port catches up.
+
 ## 10. Open Questions
 
 These still need prototype pressure:

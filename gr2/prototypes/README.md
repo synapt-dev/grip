@@ -330,6 +330,27 @@ This prototype keeps the compiler seam explicit:
 - gr2 sees unit repo access, lane limits, and workspace constraints, but not the
   raw org policy logic that produced them.
 
+Workspace constraint enforcement example:
+
+```bash
+python3 gr2/prototypes/lane_workspace_prototype.py acquire-lane-lease \
+  /path/to/workspace atlas feat-a --actor agent:atlas --mode edit --json
+
+python3 gr2/prototypes/lane_workspace_prototype.py check-review-requirements \
+  /path/to/workspace premium 777 --json
+```
+
+Current prototype conclusion:
+
+- `max_concurrent_edit_leases_global` is enforced across all units, not just
+  the requesting unit
+- a stale local lease can be force-broken, but that does not bypass the
+  workspace-wide edit cap
+- `required_reviewers` is evaluated from compiled workspace constraints plus
+  review-lane state
+- OSS enforces the compiled constraint, but Premium still owns the policy that
+  produced it
+
 Recall lane history example:
 
 ```bash

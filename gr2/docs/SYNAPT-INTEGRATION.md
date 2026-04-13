@@ -332,7 +332,74 @@ Living prototype:
 
 - [channel_lane_bridge.py](/Users/layne/Development/synapt-codex/atlas-gr2-playground-stack/gr2/prototypes/channel_lane_bridge.py)
 
-## 6. Premium Boundary Rules
+## 6. Lane Lifecycle Invariants
+
+The lane model needs three additional invariants to survive real
+human/agent collaboration.
+
+### 6.1 Handoff Uses Continuation Lanes
+
+Agent-to-agent relay should not let the target agent execute inside the source
+unit's lane root.
+
+Rules:
+
+- cross-unit shared working lanes are not the handoff model
+- handoff creates a continuation lane under the target unit
+- continuation lanes preserve source linkage, but give the target unit:
+  - its own lane root
+  - its own lease scope
+  - its own current-lane state
+
+Implication:
+
+- handoff preserves the unit-scoping invariant
+- shared cross-unit lane execution does not
+
+### 6.2 Identity Rebinding Freezes And Continues
+
+When Premium recompiles an agent from one unit to another while live lanes
+exist:
+
+- old lanes stay where they are
+- old lanes become frozen
+- active leases under the old unit are force-released
+- old-unit exec planning is blocked
+- resumption happens through continuation lanes under the new unit
+
+The minimal contract gr2 needs from Premium is:
+
+- same `agent_id` continuity
+- explicit `old_owner_unit -> new_owner_unit` mapping
+- `pending_reassignment` hint recommended
+
+Implication:
+
+- gr2 does not silently move or rename active lane roots
+- rebind is a freeze-and-relay flow, not a mutation-in-place flow
+
+### 6.3 Workspace Constraints Are Enforced Locally
+
+Premium compiles workspace-wide constraints into the spec. gr2 enforces the
+compiled result without importing org logic.
+
+The current prototype proves two critical cases:
+
+- `max_concurrent_edit_leases_global`
+  - enforced across all units in the workspace
+  - a third edit lease is blocked once the workspace cap is reached
+  - force-breaking a stale local lease does not bypass the global cap
+- `required_reviewers`
+  - evaluated per repo and PR from review-lane state
+  - `check-review-requirements` reports satisfied vs unsatisfied based on the
+    compiled count
+
+Implication:
+
+- workspace-wide coordination rules can remain Premium-owned in definition
+- OSS can still enforce the compiled constraint deterministically
+
+## 7. Premium Boundary Rules
 
 These rules should remain hard.
 
@@ -353,6 +420,8 @@ These rules should remain hard.
 - workspace-scoped unit records
 - lane metadata
 - lease enforcement
+- workspace-wide constraint enforcement from compiled spec
+- review-requirement satisfaction checks from compiled spec
 - lane events
 - event indexing
 - channel outbox derivation
@@ -363,6 +432,7 @@ These rules should remain hard.
 
 - `gr2` must not decide who an agent is
 - `gr2` must not resolve org role semantics
+- `gr2` must not invent workspace policy not present in the compiled spec
 - recall must not require Premium logic to answer lane-history queries
 - channel bridge must not depend on synchronous control-plane availability
 
@@ -373,6 +443,8 @@ Living examples for this integration layer:
 - [identity_unit_binding.py](/Users/layne/Development/synapt-codex/atlas-gr2-identity-org/gr2/prototypes/identity_unit_binding.py)
 - [org_policy_compiler.py](/Users/layne/Development/synapt-codex/atlas-gr2-identity-org/gr2/prototypes/org_policy_compiler.py)
 - [recall_lane_history.py](/Users/layne/Development/synapt-codex/atlas-gr2-identity-org/gr2/prototypes/recall_lane_history.py)
+- [lane_workspace_prototype.py](/Users/layne/Development/synapt-codex/atlas-gr2-identity-org/gr2/prototypes/lane_workspace_prototype.py)
+- [cross_mode_lane_stress.py](/Users/layne/Development/synapt-codex/atlas-gr2-identity-org/gr2/prototypes/cross_mode_lane_stress.py)
 - [channel_lane_bridge.py](/Users/layne/Development/synapt-codex/atlas-gr2-playground-stack/gr2/prototypes/channel_lane_bridge.py)
 
 These prototypes are still part of the loop:

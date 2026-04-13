@@ -24,6 +24,29 @@ def repo_dirty(path: Path) -> bool:
     return proc.returncode == 0 and bool(proc.stdout.strip())
 
 
+def remote_origin_url(path: Path) -> str | None:
+    proc = git(path, "config", "--get", "remote.origin.url")
+    if proc.returncode != 0:
+        return None
+    value = proc.stdout.strip()
+    return value or None
+
+
+def clone_repo(url: str, target_repo_root: Path) -> bool:
+    if target_repo_root.exists() and is_git_repo(target_repo_root):
+        return False
+    target_repo_root.parent.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run(
+        ["git", "clone", url, str(target_repo_root)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise SystemExit(f"failed to clone {url} -> {target_repo_root}:\n{proc.stderr or proc.stdout}")
+    return True
+
+
 def ensure_lane_checkout(
     *,
     source_repo_root: Path,

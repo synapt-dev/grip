@@ -808,8 +808,8 @@ pub async fn dispatch_command(
             SpawnCommands::Status => {
                 crate::cli::commands::spawn::run_spawn_status(quiet, json)?;
             }
-            SpawnCommands::Down { agent } => {
-                crate::cli::commands::spawn::run_spawn_down(agent, quiet, json)?;
+            SpawnCommands::Down { agent, timeout } => {
+                crate::cli::commands::spawn::run_spawn_down(agent, timeout, quiet, json)?;
             }
             SpawnCommands::List => {
                 crate::cli::commands::spawn::run_spawn_list(quiet, json)?;

@@ -543,6 +543,7 @@ pub fn run_spawn_status(_quiet: bool, _json: bool) -> anyhow::Result<()> {
 
 pub fn run_spawn_down(
     agent_filter: Option<String>,
+    timeout_secs: u64,
     _quiet: bool,
     _json: bool,
 ) -> anyhow::Result<()> {
@@ -578,10 +579,10 @@ pub fn run_spawn_down(
     ));
     println!();
 
-    // Write spawn state before killing
+    // Write spawn state before shutdown
     write_spawn_state(&workspace_root, &targets)?;
 
-    // Send graceful shutdown (/exit) to each agent before force-killing
+    // Phase 1: Send /exit to each agent for graceful shutdown
     for name in &targets {
         let target = format!("{}:{}", session, name);
         let _ = Command::new("tmux")
@@ -589,24 +590,51 @@ pub fn run_spawn_down(
             .status();
     }
 
-    // Brief pause for agents to process /exit and clean up
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    // Phase 2: Wait for each process to exit, polling pane_dead
+    let poll_interval = std::time::Duration::from_millis(500);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    let mut exited: Vec<bool> = vec![false; targets.len()];
 
-    for name in &targets {
+    while std::time::Instant::now() < deadline && exited.iter().any(|e| !e) {
+        for (i, name) in targets.iter().enumerate() {
+            if exited[i] {
+                continue;
+            }
+            if is_pane_dead(session, name) {
+                exited[i] = true;
+            }
+        }
+        if exited.iter().all(|e| *e) {
+            break;
+        }
+        std::thread::sleep(poll_interval);
+    }
+
+    // Phase 3: Report status and force-kill any remaining
+    for (i, name) in targets.iter().enumerate() {
         let target = format!("{}:{}", session, name);
-        let status = Command::new("tmux")
-            .args(["kill-window", "-t", &target])
-            .status()?;
-        if status.success() {
-            println!("  {} {} stopped", "✗".red(), name.bold());
+        if exited[i] {
+            // Process exited gracefully; clean up the dead pane/window
+            let _ = Command::new("tmux")
+                .args(["kill-window", "-t", &target])
+                .status();
+            println!("  {} {} exited gracefully", "✓".green(), name.bold());
         } else {
-            println!("  {} {} (already exited)", "-".dimmed(), name.bold(),);
+            // Process did not exit in time; force-kill
+            let _ = Command::new("tmux")
+                .args(["kill-window", "-t", &target])
+                .status();
+            println!(
+                "  {} {} force-killed (did not exit within {}s)",
+                "✗".red(),
+                name.bold(),
+                timeout_secs
+            );
         }
     }
 
-    // If we stopped all agents, optionally kill the session
+    // If we stopped all agents, kill the session if empty
     if agent_filter.is_none() {
-        // Check if any windows remain (besides the default)
         let windows_output = Command::new("tmux")
             .args(["list-windows", "-t", session, "-F", "#{window_name}"])
             .output();
@@ -623,6 +651,22 @@ pub fn run_spawn_down(
 
     println!();
     Ok(())
+}
+
+/// Check if a tmux pane's process has exited (pane is dead or window gone).
+fn is_pane_dead(session: &str, window_name: &str) -> bool {
+    let target = format!("{}:{}", session, window_name);
+    let output = Command::new("tmux")
+        .args(["list-panes", "-t", &target, "-F", "#{pane_dead}"])
+        .output();
+    match output {
+        Ok(o) if o.status.success() => {
+            let text = String::from_utf8_lossy(&o.stdout);
+            text.trim() == "1"
+        }
+        // Window already gone (e.g. remain-on-exit not set and process exited)
+        _ => true,
+    }
 }
 
 /// Write intentional stop state to .synapt/recall/spawn_state.json

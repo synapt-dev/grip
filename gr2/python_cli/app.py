@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,8 +9,21 @@ from typing import Optional
 
 import typer
 
-from .gitops import checkout_branch, clone_repo, ensure_lane_checkout, is_git_repo, remote_origin_url, repo_dirty, stash_if_dirty
+from . import execops
+from . import migration
+from .gitops import (
+    branch_exists,
+    checkout_branch,
+    ensure_lane_checkout,
+    fetch_ref,
+    is_git_repo,
+    refresh_existing_branch,
+    remote_origin_url,
+    repo_dirty,
+    stash_if_dirty,
+)
 from .hooks import HookContext, apply_file_projections, load_repo_hooks, run_lifecycle_stage
+from . import spec_apply
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 from gr2.prototypes import repo_maintenance_prototype as repo_proto
 
@@ -21,12 +36,16 @@ lane_app = typer.Typer(help="Lane creation and navigation")
 lease_app = typer.Typer(help="Lane lease operations")
 review_app = typer.Typer(help="Review and reviewer requirement operations")
 workspace_app = typer.Typer(help="Workspace bootstrap and materialization")
+spec_app = typer.Typer(help="Declarative workspace spec operations")
+exec_app = typer.Typer(help="Lane-aware execution planning and execution")
 
 app.add_typer(repo_app, name="repo")
 app.add_typer(lane_app, name="lane")
 lane_app.add_typer(lease_app, name="lease")
 app.add_typer(review_app, name="review")
 app.add_typer(workspace_app, name="workspace")
+app.add_typer(spec_app, name="spec")
+app.add_typer(exec_app, name="exec")
 
 
 def _workspace_repo_spec(workspace_root: Path, repo_name: str) -> dict[str, object]:
@@ -45,7 +64,7 @@ def _lane_repo_root(workspace_root: Path, owner_unit: str, lane_name: str, repo_
     return lane_proto.lane_dir(workspace_root, owner_unit, lane_name) / "repos" / repo_name
 
 
-def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: str) -> None:
+def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: str, *, manual_hooks: bool = False) -> None:
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
     branch_map = dict(lane_doc.get("branch_map", {}))
     lane_root = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
@@ -80,10 +99,11 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
             ctx,
             repo_dirty=repo_dirty(target_repo_root),
             first_materialize=first_materialize,
+            allow_manual=manual_hooks,
         )
 
 
-def _run_lane_stage(workspace_root: Path, owner_unit: str, lane_name: str, stage: str) -> None:
+def _run_lane_stage(workspace_root: Path, owner_unit: str, lane_name: str, stage: str, *, manual_hooks: bool = False) -> None:
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
     lane_root = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
     for repo_name in lane_doc.get("repos", []):
@@ -111,40 +131,64 @@ def _run_lane_stage(workspace_root: Path, owner_unit: str, lane_name: str, stage
             ctx,
             repo_dirty=repo_dirty(repo_root),
             first_materialize=False,
+            allow_manual=manual_hooks,
         )
 
 
-def _materialize_workspace_repo(workspace_root: Path, repo_spec: dict[str, object]) -> None:
-    repo_name = str(repo_spec["name"])
+def _prepare_review_branch(workspace_root: Path, repo: str, pr_number: int, branch: str | None) -> str:
+    repo_spec = _workspace_repo_spec(workspace_root, repo)
     repo_root = (workspace_root / str(repo_spec["path"])).resolve()
-    url = str(repo_spec.get("url", "")).strip()
-    first_materialize = False
     if not repo_root.exists():
-        if not url:
-            raise SystemExit(f"repo missing and no url configured for workspace materialization: {repo_name}")
-        first_materialize = clone_repo(url, repo_root)
-    elif not is_git_repo(repo_root):
-        raise SystemExit(f"workspace repo path exists but is not a git repo: {repo_root}")
+        raise SystemExit(f"shared repo missing for review checkout: {repo_root}\nrun `gr2 apply {workspace_root} --yes` first")
 
-    hooks = load_repo_hooks(repo_root)
-    if not hooks:
-        return
-    ctx = HookContext(
+    target_branch = branch or f"pr/{pr_number}"
+    source_ref = f"refs/heads/{branch}" if branch else f"refs/pull/{pr_number}/head"
+
+    if branch_exists(repo_root, target_branch):
+        refresh_existing_branch(repo_root, "origin", source_ref, target_branch)
+        return target_branch
+
+    if branch:
+        fetch_ref(repo_root, "origin", source_ref, target_branch)
+        return target_branch
+
+    fetch_ref(repo_root, "origin", source_ref, target_branch)
+    return target_branch
+
+
+def _create_review_lane_metadata(
+    workspace_root: Path,
+    owner_unit: str,
+    repo: str,
+    pr_number: int,
+    *,
+    lane_name: str | None = None,
+    branch: str | None = None,
+) -> str:
+    review_lane = lane_name or f"review-{pr_number}"
+    review_branch = branch or f"pr/{pr_number}"
+    ns = SimpleNamespace(
+        workspace_root=workspace_root,
+        owner_unit=owner_unit,
+        repo=repo,
+        pr_number=pr_number,
+        lane_name=review_lane,
+        branch=review_branch,
+    )
+    with contextlib.redirect_stdout(io.StringIO()):
+        _exit(lane_proto.create_review_lane(ns))
+    return review_lane
+
+
+def _repo_hook_context(workspace_root: Path, repo_root: Path) -> HookContext:
+    return HookContext(
         workspace_root=workspace_root,
         lane_root=repo_root,
         repo_root=repo_root,
-        repo_name=repo_name,
+        repo_name=repo_root.name,
         lane_owner="workspace",
-        lane_subject=repo_name,
+        lane_subject=repo_root.name,
         lane_name="workspace",
-    )
-    apply_file_projections(hooks, ctx)
-    run_lifecycle_stage(
-        hooks,
-        "on_materialize",
-        ctx,
-        repo_dirty=repo_dirty(repo_root),
-        first_materialize=first_materialize,
     )
 
 
@@ -227,30 +271,176 @@ def workspace_init(
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
     else:
-        typer.echo(json.dumps(payload, indent=2))
+        lines = [
+            "WorkspaceInit",
+            f"workspace_root = {workspace_root}",
+            f"spec_path = {spec_path}",
+            f"default_unit = {default_unit}",
+            f"repo_count = {len(repos)}",
+            "REPOS",
+        ]
+        lines.extend(f"- {repo['name']}\t{repo['path']}\t{repo['url'] or '-'}" for repo in repos)
+        typer.echo("\n".join(lines))
 
 
 @workspace_app.command("materialize")
 def workspace_materialize(
     workspace_root: Path,
+    yes: bool = typer.Option(False, "--yes", help="Pre-approve plans with more than 3 operations"),
+    manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Read workspace_spec.toml, clone any missing repos, and run on_materialize hooks."""
+    """Read workspace_spec.toml and apply the current workspace materialization plan."""
     workspace_root = workspace_root.resolve()
-    spec = lane_proto.load_workspace_spec(workspace_root)
-    materialized: list[dict[str, object]] = []
-    for repo_spec in spec.get("repos", []):
-        _materialize_workspace_repo(workspace_root, repo_spec)
-        materialized.append(
-            {
-                "name": repo_spec["name"],
-                "path": str((workspace_root / str(repo_spec["path"])).resolve()),
-            }
-        )
+    payload = spec_apply.apply_plan(workspace_root, yes=yes, manual_hooks=manual_hooks)
     if json_output:
-        typer.echo(json.dumps({"workspace_root": str(workspace_root), "repos": materialized}, indent=2))
+        typer.echo(json.dumps(payload, indent=2))
     else:
-        typer.echo(json.dumps({"workspace_root": str(workspace_root), "repos": materialized}, indent=2))
+        typer.echo(spec_apply.render_apply_result(payload))
+
+
+@workspace_app.command("detect-gr1")
+def workspace_detect_gr1(
+    workspace_root: Path,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Detect whether a workspace is using the gr1 (.gitgrip) layout."""
+    workspace_root = workspace_root.resolve()
+    payload = migration.detect_gr1_workspace(workspace_root)
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        typer.echo(migration.render_detection(payload))
+    if not payload["detected"]:
+        raise typer.Exit(code=1)
+
+
+@workspace_app.command("migrate-gr1")
+def workspace_migrate_gr1(
+    workspace_root: Path,
+    force: bool = typer.Option(False, "--force", help="Allow overwrite of an existing .grip/workspace_spec.toml"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Convert an existing gr1 (.gitgrip) workspace into parallel gr2 (.grip) layout."""
+    workspace_root = workspace_root.resolve()
+    payload = migration.migrate_gr1_workspace(workspace_root, force=force)
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        typer.echo(migration.render_migration(payload))
+
+
+@spec_app.command("show")
+def spec_show(
+    workspace_root: Path,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Show the current workspace spec."""
+    workspace_root = workspace_root.resolve()
+    typer.echo(spec_apply.show_spec(workspace_root, json_output=json_output))
+
+
+@spec_app.command("validate")
+def spec_validate(
+    workspace_root: Path,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Validate the current workspace spec."""
+    workspace_root = workspace_root.resolve()
+    issues = spec_apply.validate_spec(workspace_root)
+    payload = {
+        "workspace_root": str(workspace_root),
+        "valid": not any(issue.level == "error" for issue in issues),
+        "issues": [issue.as_dict() for issue in issues],
+    }
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        typer.echo(spec_apply.render_validation(issues))
+    if not payload["valid"]:
+        raise typer.Exit(code=1)
+
+
+@app.command("plan")
+def workspace_plan(
+    workspace_root: Path,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Build a Python gr2 execution plan from the workspace spec."""
+    workspace_root = workspace_root.resolve()
+    _, operations = spec_apply.build_plan(workspace_root)
+    if json_output:
+        typer.echo(json.dumps([item.as_dict() for item in operations], indent=2))
+    else:
+        typer.echo(spec_apply.render_plan(operations))
+
+
+@app.command("apply")
+def workspace_apply(
+    workspace_root: Path,
+    yes: bool = typer.Option(False, "--yes", help="Pre-approve plans with more than 3 operations"),
+    manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Apply the Python gr2 execution plan."""
+    workspace_root = workspace_root.resolve()
+    payload = spec_apply.apply_plan(workspace_root, yes=yes, manual_hooks=manual_hooks)
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        typer.echo(spec_apply.render_apply_result(payload))
+
+
+@exec_app.command("status")
+def exec_status(
+    workspace_root: Path,
+    owner_unit: str,
+    lane_name: Optional[str] = typer.Argument(None, help="Lane name. Defaults to the unit's current lane."),
+    repos: Optional[str] = typer.Option(None, help="Optional comma-separated repo subset"),
+    actor: str = typer.Option("agent:exec-status", help="Actor label for lease conflict evaluation"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Show lane-aware execution status for a lane."""
+    workspace_root = workspace_root.resolve()
+    payload = execops.exec_status_payload(workspace_root, owner_unit, lane_name, repos=repos, actor=actor)
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        typer.echo(execops.render_exec_status(payload))
+
+
+@exec_app.command("run", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+def exec_run(
+    ctx: typer.Context,
+    workspace_root: Path,
+    owner_unit: str,
+    command: list[str] = typer.Argument(None, help="Command to run inside each selected lane repo"),
+    lane_name: Optional[str] = typer.Option(None, "--lane", help="Lane name. Defaults to the unit's current lane."),
+    repos: Optional[str] = typer.Option(None, help="Optional comma-separated repo subset"),
+    actor: str = typer.Option(..., help="Actor label, e.g. agent:atlas"),
+    ttl_seconds: int = typer.Option(900, "--ttl-seconds", help="TTL for the temporary exec lease"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Run a command across the repos in a lane."""
+    workspace_root = workspace_root.resolve()
+    full_command = list(command or []) + list(ctx.args)
+    if not full_command:
+        raise typer.BadParameter("missing command to run")
+    payload = execops.run_exec(
+        workspace_root,
+        owner_unit,
+        lane_name,
+        actor=actor,
+        command=full_command,
+        repos=repos,
+        ttl_seconds=ttl_seconds,
+    )
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        typer.echo(execops.render_exec_run(payload))
+    if payload.get("status") in {"blocked", "failed"}:
+        raise typer.Exit(code=1)
 
 
 @repo_app.command("status")
@@ -293,6 +483,69 @@ def repo_hooks_show(
         typer.echo(json.dumps(hooks.as_dict(), indent=2))
 
 
+@repo_app.command("hook-run")
+def repo_hook_run(
+    workspace_root: Path,
+    repo_root: Path,
+    stage: str = typer.Argument(..., help="Lifecycle stage: on_materialize | on_enter | on_exit"),
+    manual: bool = typer.Option(False, "--manual", help="Allow hooks with when=manual to run"),
+    first_materialize: bool = typer.Option(False, "--first-materialize", help="Treat this invocation as first materialization"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Run repo hooks explicitly for one lifecycle stage."""
+    workspace_root = workspace_root.resolve()
+    repo_root = repo_root.resolve()
+    if stage not in {"on_materialize", "on_enter", "on_exit"}:
+        raise typer.BadParameter("stage must be one of: on_materialize, on_enter, on_exit")
+    hooks = load_repo_hooks(repo_root)
+    if hooks is None:
+        raise SystemExit(f"no .gr2/hooks.toml found in repo: {repo_root}")
+    ctx = _repo_hook_context(workspace_root, repo_root)
+    results = run_lifecycle_stage(
+        hooks,
+        stage,
+        ctx,
+        repo_dirty=repo_dirty(repo_root),
+        first_materialize=first_materialize,
+        allow_manual=manual,
+    )
+    payload = {
+        "workspace_root": str(workspace_root),
+        "repo_root": str(repo_root),
+        "stage": stage,
+        "results": [item.as_dict() for item in results],
+    }
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+
+@repo_app.command("projection-run")
+def repo_projection_run(
+    workspace_root: Path,
+    repo_root: Path,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Apply file projections explicitly for one repo."""
+    workspace_root = workspace_root.resolve()
+    repo_root = repo_root.resolve()
+    hooks = load_repo_hooks(repo_root)
+    if hooks is None:
+        raise SystemExit(f"no .gr2/hooks.toml found in repo: {repo_root}")
+    ctx = _repo_hook_context(workspace_root, repo_root)
+    results = apply_file_projections(hooks, ctx)
+    payload = {
+        "workspace_root": str(workspace_root),
+        "repo_root": str(repo_root),
+        "results": [item.as_dict() for item in results],
+    }
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+
 @lane_app.command("create")
 def lane_create(
     workspace_root: Path,
@@ -303,6 +556,7 @@ def lane_create(
     lane_type: str = typer.Option("feature", "--type", help="Lane type"),
     source: str = typer.Option("manual", help="Creation source label"),
     command: list[str] = typer.Option(None, "--command", help="Default command for the lane"),
+    manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual during lane materialization"),
 ) -> None:
     """Create a lane."""
     workspace_root = workspace_root.resolve()
@@ -317,7 +571,7 @@ def lane_create(
         default_commands=command or [],
     )
     _exit(lane_proto.create_lane(ns))
-    _materialize_lane_repos(workspace_root, owner_unit, lane_name)
+    _materialize_lane_repos(workspace_root, owner_unit, lane_name, manual_hooks=manual_hooks)
 
 
 @lane_app.command("enter")
@@ -328,10 +582,11 @@ def lane_enter(
     actor: str = typer.Option(..., help="Actor label, e.g. agent:atlas"),
     notify_channel: bool = typer.Option(False, "--notify-channel"),
     recall: bool = typer.Option(False, "--recall"),
+    manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual"),
 ) -> None:
     """Enter a lane and optionally emit channel/recall-compatible events."""
     workspace_root = workspace_root.resolve()
-    _run_lane_stage(workspace_root, owner_unit, lane_name, "on_enter")
+    _run_lane_stage(workspace_root, owner_unit, lane_name, "on_enter", manual_hooks=manual_hooks)
     ns = SimpleNamespace(
         workspace_root=workspace_root,
         owner_unit=owner_unit,
@@ -350,6 +605,7 @@ def lane_exit(
     actor: str = typer.Option(..., help="Actor label, e.g. human:layne"),
     notify_channel: bool = typer.Option(False, "--notify-channel"),
     recall: bool = typer.Option(False, "--recall"),
+    manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual"),
 ) -> None:
     """Exit the current lane for a unit."""
     workspace_root = workspace_root.resolve()
@@ -360,7 +616,7 @@ def lane_exit(
         repo_root = _lane_repo_root(workspace_root, owner_unit, lane_name, repo_name)
         if repo_root.exists():
             stash_if_dirty(repo_root, f"gr2 exit {owner_unit}/{lane_name}")
-    _run_lane_stage(workspace_root, owner_unit, lane_name, "on_exit")
+    _run_lane_stage(workspace_root, owner_unit, lane_name, "on_exit", manual_hooks=manual_hooks)
     ns = SimpleNamespace(
         workspace_root=workspace_root,
         owner_unit=owner_unit,
@@ -452,6 +708,65 @@ def review_requirements(
         json=json_output,
     )
     _exit(lane_proto.check_review_requirements(ns))
+
+
+@review_app.command("checkout-pr")
+def review_checkout_pr(
+    workspace_root: Path,
+    owner_unit: str,
+    repo: str,
+    pr_number: int,
+    lane_name: Optional[str] = typer.Option(None, "--lane", help="Override the review lane name"),
+    branch: Optional[str] = typer.Option(None, "--branch", help="Override the source branch/ref to fetch"),
+    enter: bool = typer.Option(False, "--enter", help="Enter the review lane after materialization"),
+    actor: Optional[str] = typer.Option(None, "--actor", help="Actor label to use when entering the lane"),
+    manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual during materialization/enter"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Create and materialize a review lane for a PR."""
+    workspace_root = workspace_root.resolve()
+    resolved_branch = _prepare_review_branch(workspace_root, repo, pr_number, branch)
+    resolved_lane = _create_review_lane_metadata(
+        workspace_root,
+        owner_unit,
+        repo,
+        pr_number,
+        lane_name=lane_name,
+        branch=resolved_branch,
+    )
+    _materialize_lane_repos(workspace_root, owner_unit, resolved_lane, manual_hooks=manual_hooks)
+
+    entered = False
+    if enter:
+        if not actor:
+            raise typer.BadParameter("--actor is required when using --enter")
+        _run_lane_stage(workspace_root, owner_unit, resolved_lane, "on_enter", manual_hooks=manual_hooks)
+        ns = SimpleNamespace(
+            workspace_root=workspace_root,
+            owner_unit=owner_unit,
+            lane_name=resolved_lane,
+            actor=actor,
+            notify_channel=False,
+            recall=False,
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            _exit(lane_proto.enter_lane(ns))
+        entered = True
+
+    payload = {
+        "workspace_root": str(workspace_root),
+        "owner_unit": owner_unit,
+        "repo": repo,
+        "pr_number": pr_number,
+        "lane_name": resolved_lane,
+        "branch": resolved_branch,
+        "entered": entered,
+        "lane_repo_root": str(_lane_repo_root(workspace_root, owner_unit, resolved_lane, repo)),
+    }
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        typer.echo(json.dumps(payload, indent=2))
 
 
 if __name__ == "__main__":

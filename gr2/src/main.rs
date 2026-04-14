@@ -1,4 +1,4 @@
-//! gr2 CLI entry point
+//! gr2 CLI entry point (development binary, not shipped with `cargo install gitgrip`)
 
 use clap::Parser;
 use gr2_cli::args::Cli;
@@ -9,7 +9,7 @@ async fn main() -> anyhow::Result<()> {
 
     if cli.verbose {
         tracing_subscriber::fmt()
-            .with_env_filter("gitgrip=debug")
+            .with_env_filter("gr2=debug")
             .with_target(false)
             .init();
     } else {

@@ -1,6 +1,6 @@
 [package]
 name = "gitgrip"
-version = "0.18.0"
+version = "0.19.0"
 edition = "2021"
 rust-version = "1.80"
 description = "Multi-repo workflow tool - manage multiple git repositories as one"
@@ -24,10 +24,6 @@ path = "src/main.rs"
 name = "gitgrip"
 path = "src/main.rs"
 
-[[bin]]
-name = "gr2"
-path = "src/bin/gr2.rs"
-
 [lib]
 name = "gitgrip"
 path = "src/lib.rs"
@@ -47,7 +43,6 @@ release-logs = ["tracing/release_max_level_info"]
 max-perf = ["tracing/max_level_off"]
 
 [dependencies]
-gr2_cli = { package = "gr2-cli", path = "gr2" }
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "net", "io-util", "sync"] }
 uuid = { version = "1", features = ["v4"] }

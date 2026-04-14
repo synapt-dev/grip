@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0] - 2026-04-14
+
+### Added
+- **gr2 team-workspace model** — declarative spec, plan, and apply lifecycle
+  - `gr2 init` creates team workspace structure (agents/, repos/, .grip/)
+  - `gr2 spec show/validate` for workspace spec management
+  - `gr2 plan` diffs workspace spec into an execution plan
+  - `gr2 apply` materializes repos via git clone into unit workspaces (#514)
+  - `gr2 apply --autostash` automatically stashes and restores dirty repos (#534)
+  - Partial unit convergence: detects and clones missing repos in existing units (#539)
+  - `gr2 team add/list/remove` for agent workspace management
+  - `gr2 repo add/list/remove` for repo registry
+  - `gr2 unit add/list/remove` for unit registry
+  - Guard checks with dirty state detection via `git status --porcelain`
+  - Stash state audit trail in `.grip/state/stash.toml`
+- **Checkout lifecycle commands** (#489) — `gr checkout --create`, `--orphan`
+- **Cache-backed checkout creation** (#485) — checkout creates from local cache when available
+- **Machine-level manifest repo caches** (#484) — shared manifest caches across workspaces
+- **`gr migrate in-place`** (#458) — upgrade existing workspaces without re-cloning
+- **E2E demo script** (#454) — automated release verification
+
+### Changed
+- **gr2 binary removed from main crate** — gr2 development continues as a standalone Python CLI; Rust gr2 code retained as library
+- CI: Windows tests run in non-blocking lane (#487)
+- Stripped premium prompts from migrate flow (#510)
+
+### Fixed
+- Spawn model passthrough from agents.toml (#474)
+- Root manifest creation during migrate in-place (#467)
+- Auto-reclone spaces/main when not a git repo (#470)
+- Migrate linked worktrees into griptrees (#466)
+- Preserve .env at gripspace root during worktree repair
+- Stable pane IDs for dashboard targeting (#453)
+- Benchmark CI fixture literals
+
 ## [0.17.1] - 2026-03-12
 
 ### Added

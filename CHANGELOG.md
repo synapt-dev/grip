@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.0] - 2026-04-14
+
+### Added
+- **`gr spawn down` graceful shutdown** (#567)
+  - Three-phase shutdown: send `/exit` to agents, poll `pane_dead`, force-kill remaining
+  - `pane_exit_state()` with tri-state return (`Option<bool>`) for proper tmux error handling
+  - Per-agent shutdown via `--agent <name>` flag
+  - Configurable timeout via `--timeout` flag (default 10s)
+  - Full error reporting on all tmux operations
+
+- **Python-first gr2 workspace orchestration** (#566)
+  - Complete Python gr2 CLI with typer: spec, plan, apply, exec, review, workspace, repo, lane, lease commands
+  - Cache-backed materialization for workspace apply
+  - Structured hook runtime with dataclasses and lifecycle stages
+  - Review checkout-pr with remote refetch on existing branches
+  - gr1 detect and migration commands
+
 ## [0.19.0] - 2026-04-14
 
 ### Added

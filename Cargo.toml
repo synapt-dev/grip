@@ -1,13 +1,13 @@
 [package]
 name = "gitgrip"
-version = "0.19.0"
+version = "0.20.0"
 edition = "2021"
 rust-version = "1.80"
 description = "Multi-repo workflow tool - manage multiple git repositories as one"
 license = "MIT"
 authors = ["Layne Penney"]
-repository = "https://github.com/laynepenney/grip"
-homepage = "https://github.com/laynepenney/grip"
+repository = "https://github.com/synapt-dev/grip"
+homepage = "https://github.com/synapt-dev/grip"
 documentation = "https://docs.rs/gitgrip"
 readme = "README.md"
 keywords = ["git", "monorepo", "workflow", "multi-repo", "cli"]

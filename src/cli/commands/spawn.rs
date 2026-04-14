@@ -582,79 +582,152 @@ pub fn run_spawn_down(
     // Write spawn state before shutdown
     write_spawn_state(&workspace_root, &targets)?;
 
-    // Phase 1: Send /exit to each agent for graceful shutdown
+    // Phase 1: Send /exit to each agent pane for graceful shutdown.
+    // This asks the agent process to clean up and terminate on its own terms.
     for name in &targets {
         let target = format!("{}:{}", session, name);
-        let _ = Command::new("tmux")
+        match Command::new("tmux")
             .args(["send-keys", "-t", &target, "/exit", "Enter"])
-            .status();
+            .status()
+        {
+            Ok(s) if !s.success() => {
+                eprintln!(
+                    "  {} send-keys to {} failed (exit {})",
+                    "⚠".yellow(),
+                    name,
+                    s.code().unwrap_or(-1)
+                );
+            }
+            Err(e) => {
+                eprintln!("  {} failed to send /exit to {}: {}", "⚠".yellow(), name, e);
+            }
+            _ => {}
+        }
     }
 
-    // Phase 2: Wait for each process to exit, polling pane_dead
+    // Phase 2: Poll pane_dead every 500ms until all agents exit or timeout.
     let poll_interval = std::time::Duration::from_millis(500);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
-    let mut exited: Vec<bool> = vec![false; targets.len()];
 
-    while std::time::Instant::now() < deadline && exited.iter().any(|e| !e) {
+    #[derive(Clone, Copy, PartialEq)]
+    enum PaneState {
+        Running,
+        Exited,
+        Unknown, // tmux error; state could not be determined
+    }
+    let mut states: Vec<PaneState> = vec![PaneState::Running; targets.len()];
+
+    while std::time::Instant::now() < deadline && states.contains(&PaneState::Running) {
         for (i, name) in targets.iter().enumerate() {
-            if exited[i] {
+            if states[i] != PaneState::Running {
                 continue;
             }
-            if is_pane_dead(session, name) {
-                exited[i] = true;
+            match pane_exit_state(session, name) {
+                Some(true) => states[i] = PaneState::Exited,
+                Some(false) => {} // still running
+                None => states[i] = PaneState::Unknown,
             }
         }
-        if exited.iter().all(|e| *e) {
+        if !states.contains(&PaneState::Running) {
             break;
         }
         std::thread::sleep(poll_interval);
     }
 
-    // Phase 3: Report status and force-kill any remaining
+    // Phase 3: Report per-agent status and clean up tmux windows.
+    // Agents that exited gracefully still need their dead pane/window removed.
+    // Agents that timed out get force-killed via kill-window.
+    let mut any_error = false;
     for (i, name) in targets.iter().enumerate() {
         let target = format!("{}:{}", session, name);
-        if exited[i] {
-            // Process exited gracefully; clean up the dead pane/window
-            let _ = Command::new("tmux")
-                .args(["kill-window", "-t", &target])
-                .status();
-            println!("  {} {} exited gracefully", "✓".green(), name.bold());
-        } else {
-            // Process did not exit in time; force-kill
-            let _ = Command::new("tmux")
-                .args(["kill-window", "-t", &target])
-                .status();
-            println!(
-                "  {} {} force-killed (did not exit within {}s)",
-                "✗".red(),
-                name.bold(),
-                timeout_secs
-            );
+        let kill_result = Command::new("tmux")
+            .args(["kill-window", "-t", &target])
+            .output();
+        let kill_ok = match &kill_result {
+            Ok(o) if o.status.success() => true,
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                // Window already gone is fine (agent cleaned up fully)
+                stderr.contains("can't find") || stderr.contains("no server running")
+            }
+            Err(e) => {
+                eprintln!("  {} kill-window failed for {}: {}", "⚠".yellow(), name, e);
+                false
+            }
+        };
+
+        match states[i] {
+            PaneState::Exited => {
+                println!("  {} {} exited gracefully", "✓".green(), name.bold());
+            }
+            PaneState::Unknown => {
+                println!(
+                    "  {} {} state unknown (tmux query failed){}",
+                    "?".yellow(),
+                    name.bold(),
+                    if kill_ok { ", window cleaned up" } else { "" }
+                );
+                any_error = true;
+            }
+            PaneState::Running => {
+                println!(
+                    "  {} {} force-killed (did not exit within {}s)",
+                    "✗".red(),
+                    name.bold(),
+                    timeout_secs
+                );
+            }
         }
     }
 
-    // If we stopped all agents, kill the session if empty
+    // If we stopped all agents, kill the session if it's empty
     if agent_filter.is_none() {
         let windows_output = Command::new("tmux")
             .args(["list-windows", "-t", session, "-F", "#{window_name}"])
             .output();
-        let remaining = windows_output
-            .map(|o| String::from_utf8_lossy(&o.stdout).lines().count())
-            .unwrap_or(0);
+        let remaining = match &windows_output {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).lines().count(),
+            _ => 0,
+        };
         if remaining <= 1 {
-            let _ = Command::new("tmux")
+            match Command::new("tmux")
                 .args(["kill-session", "-t", session])
-                .status();
-            Output::info(&format!("Session '{}' terminated", session));
+                .status()
+            {
+                Ok(s) if s.success() => {
+                    Output::info(&format!("Session '{}' terminated", session));
+                }
+                Ok(s) => {
+                    eprintln!(
+                        "  {} kill-session failed (exit {})",
+                        "⚠".yellow(),
+                        s.code().unwrap_or(-1)
+                    );
+                    any_error = true;
+                }
+                Err(e) => {
+                    eprintln!("  {} kill-session failed: {}", "⚠".yellow(), e);
+                    any_error = true;
+                }
+            }
         }
+    }
+
+    if any_error {
+        Output::warning("Some tmux operations reported errors (see warnings above)");
     }
 
     println!();
     Ok(())
 }
 
-/// Check if a tmux pane's process has exited (pane is dead or window gone).
-fn is_pane_dead(session: &str, window_name: &str) -> bool {
+/// Check the exit state of a tmux pane's process.
+///
+/// Returns:
+/// - `Some(true)`  if the pane process has exited (pane_dead=1 or window gone)
+/// - `Some(false)` if the pane process is still running
+/// - `None`        if tmux itself failed (broken socket, unexpected error)
+fn pane_exit_state(session: &str, window_name: &str) -> Option<bool> {
     let target = format!("{}:{}", session, window_name);
     let output = Command::new("tmux")
         .args(["list-panes", "-t", &target, "-F", "#{pane_dead}"])
@@ -662,10 +735,34 @@ fn is_pane_dead(session: &str, window_name: &str) -> bool {
     match output {
         Ok(o) if o.status.success() => {
             let text = String::from_utf8_lossy(&o.stdout);
-            text.trim() == "1"
+            Some(text.trim() == "1")
         }
-        // Window already gone (e.g. remain-on-exit not set and process exited)
-        _ => true,
+        Ok(o) => {
+            // tmux ran but returned an error. Exit code 1 with "can't find"
+            // in stderr means the window is gone (process exited and
+            // remain-on-exit is off). Any other error is unexpected.
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            if stderr.contains("can't find") || stderr.contains("no server running") {
+                Some(true)
+            } else {
+                eprintln!(
+                    "  {} tmux error querying {}: {}",
+                    "⚠".yellow(),
+                    window_name,
+                    stderr.trim()
+                );
+                None
+            }
+        }
+        Err(e) => {
+            eprintln!(
+                "  {} failed to run tmux for {}: {}",
+                "⚠".yellow(),
+                window_name,
+                e
+            );
+            None
+        }
     }
 }
 

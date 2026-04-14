@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import sys
 import subprocess
 import tomllib
 from pathlib import Path
@@ -67,6 +68,28 @@ class HookContext:
     lane_owner: str
     lane_subject: str
     lane_name: str
+
+
+@dataclasses.dataclass(frozen=True)
+class HookResult:
+    kind: str
+    name: str
+    status: str
+    detail: str
+    cwd: str | None = None
+    command: str | None = None
+    returncode: int | None = None
+    stdout: str | None = None
+    stderr: str | None = None
+
+    def as_dict(self) -> dict[str, object]:
+        return dataclasses.asdict(self)
+
+
+class HookRuntimeError(SystemExit):
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.payload = payload
+        super().__init__(json.dumps(payload, indent=2))
 
 
 def hook_file(repo_root: Path) -> Path:
@@ -149,7 +172,8 @@ def render_text(template: str, ctx: HookContext) -> str:
     )
 
 
-def apply_file_projections(hooks: RepoHooks, ctx: HookContext) -> None:
+def apply_file_projections(hooks: RepoHooks, ctx: HookContext) -> list[HookResult]:
+    results: list[HookResult] = []
     for item in [*hooks.file_links, *hooks.file_copies]:
         rendered_src = render_text(item.src, ctx)
         src = Path(rendered_src)
@@ -159,24 +183,81 @@ def apply_file_projections(hooks: RepoHooks, ctx: HookContext) -> None:
         dest.parent.mkdir(parents=True, exist_ok=True)
 
         if not src.exists():
-            raise SystemExit(f"projection source does not exist: {src} from {hooks.path}")
+            raise HookRuntimeError(
+                {
+                    "kind": "projection",
+                    "projection": item.kind,
+                    "status": "blocked",
+                    "detail": f"projection source does not exist: {src}",
+                    "repo_hooks_path": str(hooks.path),
+                    "src": str(src),
+                    "dest": str(dest),
+                }
+            )
 
         if dest.exists() or dest.is_symlink():
             if item.if_exists == "skip":
+                results.append(
+                    HookResult(
+                        kind="projection",
+                        name=f"{item.kind}:{dest.name}",
+                        status="skipped",
+                        detail=f"destination already exists and if_exists=skip: {dest}",
+                    )
+                )
                 continue
             if item.if_exists == "error":
-                raise SystemExit(f"projection conflict at {dest} from {hooks.path}")
+                raise HookRuntimeError(
+                    {
+                        "kind": "projection",
+                        "projection": item.kind,
+                        "status": "blocked",
+                        "detail": f"projection conflict at {dest}",
+                        "repo_hooks_path": str(hooks.path),
+                        "src": str(src),
+                        "dest": str(dest),
+                    }
+                )
             if item.if_exists == "merge":
-                raise SystemExit(f"merge projections not implemented yet for {dest}")
+                raise HookRuntimeError(
+                    {
+                        "kind": "projection",
+                        "projection": item.kind,
+                        "status": "blocked",
+                        "detail": f"merge projections not implemented yet for {dest}",
+                        "repo_hooks_path": str(hooks.path),
+                        "src": str(src),
+                        "dest": str(dest),
+                    }
+                )
             if item.if_exists == "overwrite":
                 if dest.is_dir() and not dest.is_symlink():
-                    raise SystemExit(f"refusing to overwrite directory projection target: {dest}")
+                    raise HookRuntimeError(
+                        {
+                            "kind": "projection",
+                            "projection": item.kind,
+                            "status": "blocked",
+                            "detail": f"refusing to overwrite directory projection target: {dest}",
+                            "repo_hooks_path": str(hooks.path),
+                            "src": str(src),
+                            "dest": str(dest),
+                        }
+                    )
                 dest.unlink(missing_ok=True)
 
         if item.kind == "link":
             dest.symlink_to(src)
         else:
             dest.write_bytes(src.read_bytes())
+        results.append(
+            HookResult(
+                kind="projection",
+                name=f"{item.kind}:{dest.name}",
+                status="applied",
+                detail=f"{item.kind} {src} -> {dest}",
+            )
+        )
+    return results
 
 
 def run_lifecycle_stage(
@@ -186,14 +267,29 @@ def run_lifecycle_stage(
     *,
     repo_dirty: bool,
     first_materialize: bool,
-) -> None:
+    allow_manual: bool = False,
+) -> list[HookResult]:
     hooks_for_stage = {
         "on_materialize": hooks.on_materialize,
         "on_enter": hooks.on_enter,
         "on_exit": hooks.on_exit,
     }[stage]
+    results: list[HookResult] = []
     for hook in hooks_for_stage:
-        if not _should_run(hook.when, repo_dirty=repo_dirty, first_materialize=first_materialize):
+        if not _should_run(
+            hook.when,
+            repo_dirty=repo_dirty,
+            first_materialize=first_materialize,
+            allow_manual=allow_manual,
+        ):
+            results.append(
+                HookResult(
+                    kind="lifecycle",
+                    name=hook.name,
+                    status="skipped",
+                    detail=f"hook when={hook.when} did not match current invocation",
+                )
+            )
             continue
         cwd = render_path(hook.cwd, ctx)
         command = render_text(hook.command, ctx)
@@ -205,26 +301,66 @@ def run_lifecycle_stage(
             text=True,
         )
         if proc.returncode == 0:
+            results.append(
+                HookResult(
+                    kind="lifecycle",
+                    name=hook.name,
+                    status="applied",
+                    detail=f"stage {stage} completed successfully",
+                    cwd=str(cwd),
+                    command=command,
+                    returncode=proc.returncode,
+                    stdout=proc.stdout,
+                    stderr=proc.stderr,
+                )
+            )
             continue
-        message = json.dumps(
-            {
-                "stage": stage,
-                "hook": hook.name,
-                "cwd": str(cwd),
-                "command": command,
-                "returncode": proc.returncode,
-                "stdout": proc.stdout,
-                "stderr": proc.stderr,
-            },
-            indent=2,
-        )
+        payload = {
+            "kind": "lifecycle",
+            "stage": stage,
+            "hook": hook.name,
+            "cwd": str(cwd),
+            "command": command,
+            "returncode": proc.returncode,
+            "stdout": proc.stdout,
+            "stderr": proc.stderr,
+            "on_failure": hook.on_failure,
+        }
         if hook.on_failure == "block":
-            raise SystemExit(message)
+            raise HookRuntimeError(payload)
         if hook.on_failure == "warn":
-            print(message)
+            print(json.dumps(payload, indent=2), file=sys.stderr)
+            results.append(
+                HookResult(
+                    kind="lifecycle",
+                    name=hook.name,
+                    status="warned",
+                    detail=f"hook failed with on_failure=warn during {stage}",
+                    cwd=str(cwd),
+                    command=command,
+                    returncode=proc.returncode,
+                    stdout=proc.stdout,
+                    stderr=proc.stderr,
+                )
+            )
+            continue
+        results.append(
+            HookResult(
+                kind="lifecycle",
+                name=hook.name,
+                status="skipped",
+                detail=f"hook failed with on_failure=skip during {stage}",
+                cwd=str(cwd),
+                command=command,
+                returncode=proc.returncode,
+                stdout=proc.stdout,
+                stderr=proc.stderr,
+            )
+        )
+    return results
 
 
-def _should_run(when: str, *, repo_dirty: bool, first_materialize: bool) -> bool:
+def _should_run(when: str, *, repo_dirty: bool, first_materialize: bool, allow_manual: bool) -> bool:
     if when == "always":
         return True
     if when == "first_materialize":
@@ -232,5 +368,5 @@ def _should_run(when: str, *, repo_dirty: bool, first_materialize: bool) -> bool
     if when == "dirty":
         return repo_dirty
     if when == "manual":
-        return False
+        return allow_manual
     return False

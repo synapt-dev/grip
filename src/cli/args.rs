@@ -527,7 +527,11 @@ pub enum SpawnCommands {
     /// Stop all agents (or a specific agent)
     Down {
         /// Stop only this agent
+        #[arg(long)]
         agent: Option<String>,
+        /// Seconds to wait for graceful exit before force-killing (default: 10)
+        #[arg(long, default_value = "10")]
+        timeout: u64,
     },
     /// List configured agents
     List,

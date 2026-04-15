@@ -76,7 +76,8 @@ class TestEventTypeEnum:
 
     def test_total_count(self):
         from gr2.python_cli.events import EventType
-        assert len(EventType) == 28
+        # 5 lane + 4 lease + 4 hook + 7 PR + 5 sync + 2 recovery + 2 workspace = 29
+        assert len(EventType) == 29
 
 
 # ---------------------------------------------------------------------------

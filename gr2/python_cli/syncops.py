@@ -723,6 +723,20 @@ def run_sync(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncResult:
                 "workspace_root": str(workspace_root),
             },
         )
+        _emit_sync_event(
+            workspace_root,
+            {
+                "type": "sync.completed",
+                "operation_id": operation_id,
+                "workspace_root": str(workspace_root),
+                "status": "blocked",
+                "blocked_codes": [blocked_issue.code],
+                "repos_updated": 0,
+                "repos_skipped": 0,
+                "repos_failed": 1,
+                "duration_ms": int((time.monotonic() - started_at) * 1000),
+            },
+        )
         return SyncResult(
             workspace_root=str(workspace_root),
             status="blocked",

@@ -595,12 +595,12 @@ def test_pr_create_persists_group_state_by_pr_group_id(tmp_path: Path, monkeypat
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["pr_group_id"].startswith("pg_")
-    assert len(payload["refs"]) == 2
+    assert len(payload["prs"]) == 2
 
     group_path = workspace_root / ".grip" / "pr_groups" / f'{payload["pr_group_id"]}.json'
     assert group_path.exists(), "group state should be stored by pr_group_id, not lane name"
     stored = json.loads(group_path.read_text())
-    assert {item["repo"]: item["number"] for item in stored["refs"]} == {"app": 41, "api": 42}
+    assert {item["repo"]: item["pr_number"] for item in stored["prs"]} == {"app": 41, "api": 42}
 
 
 def test_pr_status_aggregates_group_state(tmp_path: Path, monkeypatch) -> None:
@@ -621,10 +621,11 @@ def test_pr_status_aggregates_group_state(tmp_path: Path, monkeypatch) -> None:
                 "owner_unit": "atlas",
                 "lane_name": "feat-router",
                 "platform": "github",
-                "refs": [
-                    {"repo": "app", "number": 41, "url": "https://example.test/app/41"},
-                    {"repo": "api", "number": 42, "url": "https://example.test/api/42"},
+                "prs": [
+                    {"repo": "app", "pr_number": 41, "url": "https://example.test/app/41"},
+                    {"repo": "api", "pr_number": 42, "url": "https://example.test/api/42"},
                 ],
+                "status": {"app": "OPEN", "api": "OPEN"},
             }
         )
     )
@@ -676,10 +677,11 @@ def test_pr_merge_reports_partial_failure_and_preserves_state(tmp_path: Path, mo
                 "owner_unit": "atlas",
                 "lane_name": "feat-router",
                 "platform": "github",
-                "refs": [
-                    {"repo": "app", "number": 41, "url": "https://example.test/app/41"},
-                    {"repo": "api", "number": 42, "url": "https://example.test/api/42"},
+                "prs": [
+                    {"repo": "app", "pr_number": 41, "url": "https://example.test/app/41"},
+                    {"repo": "api", "pr_number": 42, "url": "https://example.test/api/42"},
                 ],
+                "status": {"app": "OPEN", "api": "OPEN"},
             }
         )
     )
@@ -692,7 +694,9 @@ def test_pr_merge_reports_partial_failure_and_preserves_state(tmp_path: Path, mo
 
         def merge_pr(self, repo: str, number: int) -> PRRef:
             if repo == "api":
-                raise RuntimeError("merge conflict")
+                from gr2.python_cli.platform import AdapterError
+
+                raise AdapterError("merge conflict")
             return PRRef(repo=repo, number=number, url=f"https://example.test/{repo}/{number}")
 
         def pr_status(self, repo: str, number: int) -> PRStatus:  # pragma: no cover

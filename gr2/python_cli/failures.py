@@ -5,7 +5,7 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .events import append_outbox_event
+from .events import EventType, emit
 
 
 def _now_utc() -> str:
@@ -78,13 +78,12 @@ def resolve_failure_marker(
         raise SystemExit(f"failure marker not found: {operation_id}")
     marker = json.loads(path.read_text())
     path.unlink()
-    event = append_outbox_event(
-        workspace_root,
-        {
-            "type": "failure.resolved",
-            "workspace": workspace_root.name,
-            "actor": resolved_by,
-            "owner_unit": owner_unit,
+    emit(
+        event_type=EventType.FAILURE_RESOLVED,
+        workspace_root=workspace_root,
+        actor=resolved_by,
+        owner_unit=owner_unit,
+        payload={
             "operation_id": operation_id,
             "resolved_by": resolved_by,
             "resolution": resolution,
@@ -96,5 +95,4 @@ def resolve_failure_marker(
         "resolved_by": resolved_by,
         "resolution": resolution,
         "lane_name": marker.get("lane_name", ""),
-        "event_id": None if event is None else event["event_id"],
     }

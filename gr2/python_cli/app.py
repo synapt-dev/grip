@@ -13,6 +13,7 @@ import typer
 from . import execops
 from . import failures
 from . import migration
+from . import pr as pr_ops
 from . import syncops
 from .gitops import (
     branch_exists,
@@ -208,24 +209,8 @@ def _resolve_lane_name(workspace_root: Path, owner_unit: str, lane_name: Optiona
     return str(current_doc["current"]["lane_name"])
 
 
-def _pr_groups_root(workspace_root: Path) -> Path:
-    return workspace_root / ".grip" / "pr_groups"
-
-
-def _pr_group_path(workspace_root: Path, pr_group_id: str) -> Path:
-    return _pr_groups_root(workspace_root) / f"{pr_group_id}.json"
-
-
-def _write_pr_group(workspace_root: Path, payload: dict[str, object]) -> Path:
-    pr_group_id = str(payload["pr_group_id"])
-    path = _pr_group_path(workspace_root, pr_group_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n")
-    return path
-
-
 def _find_pr_group(workspace_root: Path, owner_unit: str, lane_name: str) -> tuple[Path, dict[str, object]]:
-    root = _pr_groups_root(workspace_root)
+    root = workspace_root / ".grip" / "pr_groups"
     if not root.exists():
         raise SystemExit(f"pr group not found for {owner_unit}/{lane_name}: {root}")
     for path in sorted(root.glob("*.json")):
@@ -1007,31 +992,24 @@ def pr_create(
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, resolved_lane)
     spec = lane_proto.load_workspace_spec(workspace_root)
     adapter = get_platform_adapter(platform)
-    pr_group_id = f"pg_{os.urandom(4).hex()}"
-    refs: list[dict[str, object]] = []
     branch_map = dict(lane_doc.get("branch_map", {}))
+    repos: list[str] = []
     for repo_name in lane_doc.get("repos", []):
         repo_spec = next(repo for repo in spec.get("repos", []) if repo.get("name") == repo_name)
-        request = CreatePRRequest(
-            repo=_repo_slug_from_url(str(repo_spec.get("url", "")), repo_name),
-            title=resolved_lane,
-            body=f"gr2 PR group {pr_group_id} for {owner_unit}/{resolved_lane}",
-            head_branch=str(branch_map.get(repo_name, resolved_lane)),
-            base_branch=base_branch,
-            draft=draft,
-        )
-        ref = adapter.create_pr(request)
-        refs.append(ref.as_dict())
-    payload = {
-        "pr_group_id": pr_group_id,
-        "owner_unit": owner_unit,
-        "lane_name": resolved_lane,
-        "platform": platform,
-        "refs": refs,
-        "group_state": "open",
-    }
-    path = _write_pr_group(workspace_root, payload)
-    payload["state_path"] = str(path)
+        repos.append(_repo_slug_from_url(str(repo_spec.get("url", "")), repo_name))
+    payload = pr_ops.create_pr_group(
+        workspace_root=workspace_root,
+        owner_unit=owner_unit,
+        lane_name=resolved_lane,
+        title=resolved_lane,
+        base_branch=base_branch,
+        head_branch=str(branch_map.get(next(iter(lane_doc.get("repos", [])), resolved_lane), resolved_lane)),
+        repos=repos,
+        adapter=adapter,
+        actor=f"agent:{owner_unit}",
+        body=f"gr2 PR group for {owner_unit}/{resolved_lane}",
+        draft=draft,
+    )
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
     else:
@@ -1050,18 +1028,22 @@ def pr_status(
     resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
     group_path, group = _find_pr_group(workspace_root, owner_unit, resolved_lane)
     adapter = get_platform_adapter(str(group.get("platform", "github")))
+    group = pr_ops.check_pr_group_status(
+        workspace_root=workspace_root,
+        pr_group_id=str(group["pr_group_id"]),
+        adapter=adapter,
+        actor=f"agent:{owner_unit}",
+    )
     statuses = []
-    for ref_doc in group.get("refs", []):
-        ref = PRRef(**ref_doc)
-        statuses.append(adapter.pr_status(ref.repo, int(ref.number)).as_dict())
-    group["statuses"] = statuses
-    group["group_state"] = _group_state_from_statuses(statuses)
-    _write_pr_group(workspace_root, group)
+    for pr_info in group.get("prs", []):
+        repo = str(pr_info["repo"])
+        number = int(pr_info["pr_number"])
+        statuses.append(adapter.pr_status(repo, number).as_dict())
     payload = {
         "pr_group_id": group["pr_group_id"],
         "owner_unit": owner_unit,
         "lane_name": resolved_lane,
-        "group_state": group["group_state"],
+        "group_state": _group_state_from_statuses(statuses),
         "statuses": statuses,
         "state_path": str(group_path),
     }
@@ -1084,8 +1066,8 @@ def pr_checks(
     group_path, group = _find_pr_group(workspace_root, owner_unit, resolved_lane)
     adapter = get_platform_adapter(str(group.get("platform", "github")))
     rows = []
-    for ref_doc in group.get("refs", []):
-        ref = PRRef(**ref_doc)
+    for pr_info in group.get("prs", []):
+        ref = PRRef(repo=str(pr_info["repo"]), number=int(pr_info["pr_number"]), url=pr_info.get("url"))
         rows.append(
             {
                 "repo": ref.repo,
@@ -1120,18 +1102,10 @@ def pr_merge(
     adapter = get_platform_adapter(str(group.get("platform", "github")))
     merged: list[str] = []
     failed: list[dict[str, object]] = []
-    for ref_doc in group.get("refs", []):
-        ref = PRRef(**ref_doc)
-        try:
-            adapter.merge_pr(ref.repo, int(ref.number))
-            merged.append(ref.repo)
-        except Exception as exc:
-            failed.append({"repo": ref.repo, "number": ref.number, "reason": str(exc)})
-            break
     if failed:
         group["group_state"] = "partially_merged" if merged else "merge_failed"
         group["merged"] = merged
-        _write_pr_group(workspace_root, group)
+        group_path.write_text(json.dumps(group, indent=2) + "\n")
         payload = {
             "status": "partial_failure" if merged else "failed",
             "pr_group_id": group["pr_group_id"],
@@ -1146,13 +1120,40 @@ def pr_merge(
         else:
             typer.echo(json.dumps(payload, indent=2))
         raise typer.Exit(code=1)
-    payload = {
-        "pr_group_id": group["pr_group_id"],
-        "owner_unit": owner_unit,
-        "lane_name": resolved_lane,
-        "merged": merged,
-        "state_path": str(group_path),
-    }
+    try:
+        pr_ops.merge_pr_group(
+            workspace_root=workspace_root,
+            pr_group_id=str(group["pr_group_id"]),
+            adapter=adapter,
+            actor=f"agent:{owner_unit}",
+        )
+        merged = [str(pr_info["repo"]) for pr_info in group.get("prs", [])]
+        payload = {
+            "pr_group_id": group["pr_group_id"],
+            "owner_unit": owner_unit,
+            "lane_name": resolved_lane,
+            "merged": merged,
+            "state_path": str(group_path),
+        }
+    except pr_ops.PRMergeError as exc:
+        merged = [str(pr_info["repo"]) for pr_info in group.get("prs", []) if str(pr_info["repo"]) != exc.repo]
+        group["group_state"] = "partially_merged" if merged else "merge_failed"
+        group["merged"] = merged
+        group_path.write_text(json.dumps(group, indent=2) + "\n")
+        payload = {
+            "status": "partial_failure" if merged else "failed",
+            "pr_group_id": group["pr_group_id"],
+            "owner_unit": owner_unit,
+            "lane_name": resolved_lane,
+            "merged": merged,
+            "failed": [{"repo": exc.repo, "number": exc.pr_number, "reason": exc.reason}],
+            "state_path": str(group_path),
+        }
+        if json_output:
+            typer.echo(json.dumps(payload, indent=2))
+        else:
+            typer.echo(json.dumps(payload, indent=2))
+        raise typer.Exit(code=1)
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
     else:

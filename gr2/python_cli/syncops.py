@@ -24,7 +24,7 @@ from .gitops import (
     repo_dirty,
     stash_if_dirty,
 )
-from .events import append_outbox_event
+from .events import EventType, emit
 from .hooks import load_repo_hooks
 from .spec_apply import (
     ValidationIssue,
@@ -204,12 +204,18 @@ def _sync_lock_file(workspace_root: Path) -> Path:
     return workspace_root / ".grip" / "state" / "sync.lock"
 
 
-def _append_outbox_event(workspace_root: Path, payload: dict[str, object]) -> None:
-    append_outbox_event(workspace_root, payload)
-
-
 def _emit_sync_event(workspace_root: Path, payload: dict[str, object]) -> None:
-    _append_outbox_event(workspace_root, payload)
+    event_type = EventType(str(payload.pop("type")))
+    payload.pop("workspace", None)
+    agent_id = payload.pop("agent_id", None)
+    emit(
+        event_type=event_type,
+        workspace_root=workspace_root,
+        actor=str(payload.pop("actor")),
+        owner_unit=str(payload.pop("owner_unit")),
+        payload=payload,
+        agent_id=None if agent_id is None else str(agent_id),
+    )
 
 
 def _sync_context(workspace_root: Path, *, actor: str = "system", owner_unit: str = "workspace") -> dict[str, object]:

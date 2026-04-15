@@ -7,7 +7,7 @@ import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .events import append_outbox_event
+from .events import EventType, emit
 from .gitops import clone_repo, ensure_repo_cache, is_git_dir, is_git_repo, repo_dirty
 from .hooks import HookContext, apply_file_projections, load_repo_hooks, run_lifecycle_stage
 
@@ -281,13 +281,12 @@ def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -
                 manual_hooks=manual_hooks,
             )
             for projection in hook_payload["projected_files"]:
-                append_outbox_event(
-                    workspace_root,
-                    {
-                        "type": "workspace.file_projected",
-                        "workspace": workspace_root.name,
-                        "actor": "system",
-                        "owner_unit": "workspace",
+                emit(
+                    event_type=EventType.WORKSPACE_FILE_PROJECTED,
+                    workspace_root=workspace_root,
+                    actor="system",
+                    owner_unit="workspace",
+                    payload={
                         "repo": str(repo_spec["name"]),
                         "kind": projection["kind"],
                         "src": projection["src"],
@@ -321,15 +320,12 @@ def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -
     if applied:
         _record_apply_state(workspace_root, applied)
     if materialized_repos:
-        append_outbox_event(
-            workspace_root,
-            {
-                "type": "workspace.materialized",
-                "workspace": workspace_root.name,
-                "actor": "system",
-                "owner_unit": "workspace",
-                "repos": materialized_repos,
-            },
+        emit(
+            event_type=EventType.WORKSPACE_MATERIALIZED,
+            workspace_root=workspace_root,
+            actor="system",
+            owner_unit="workspace",
+            payload={"repos": materialized_repos},
         )
 
     return {

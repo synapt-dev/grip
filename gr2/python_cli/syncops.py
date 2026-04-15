@@ -4,6 +4,7 @@ import dataclasses
 import fcntl
 import json
 import os
+import time
 from pathlib import Path
 from datetime import UTC, datetime
 
@@ -11,6 +12,7 @@ from gr2.prototypes import lane_workspace_prototype as lane_proto
 
 from .gitops import (
     clone_repo,
+    commits_between,
     current_branch,
     current_head_sha,
     discard_if_dirty,
@@ -39,6 +41,7 @@ SYNC_ROLLBACK_CONTRACT = (
     "it does not attempt automatic cross-repo rollback"
 )
 VALID_DIRTY_MODES = {"stash", "block", "discard"}
+SYNC_STRATEGY = "reference-cache"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -252,6 +255,14 @@ def _append_outbox_event(workspace_root: Path, payload: dict[str, object]) -> No
 
 def _emit_sync_event(workspace_root: Path, payload: dict[str, object]) -> None:
     _append_outbox_event(workspace_root, payload)
+
+
+def _plan_repo_names(plan: SyncPlan) -> list[str]:
+    repo_names: list[str] = []
+    for op in plan.operations:
+        if op.scope in {"shared_repo", "lane"}:
+            repo_names.append(op.subject.split(":")[-1])
+    return sorted(dict.fromkeys(repo_names))
 
 
 def build_sync_plan(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncPlan:
@@ -550,6 +561,15 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
         repo_spec = _find_repo(spec, op.subject)
         cache_path = repo_cache_path(workspace_root, str(repo_spec["name"]))
         created = ensure_repo_cache(str(repo_spec["url"]), cache_path)
+        _emit_sync_event(
+            workspace_root,
+            {
+                "type": "sync.cache_seeded" if created else "sync.cache_refreshed",
+                "repo": op.subject,
+                "strategy": SYNC_STRATEGY,
+                "cache_path": str(cache_path),
+            },
+        )
         if op.kind == "seed_repo_cache":
             return f"seeded repo cache for '{op.subject}' at {cache_path}"
         if created:
@@ -571,6 +591,8 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
                 "scope": "shared_repo",
                 "old_sha": before_sha,
                 "new_sha": after_sha,
+                "strategy": SYNC_STRATEGY,
+                "commits_pulled": commits_between(repo_root, before_sha, after_sha),
             },
         )
         return f"cloned shared repo '{op.subject}' into {repo_root}"
@@ -607,6 +629,8 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
                 "old_sha": before_sha,
                 "new_sha": after_sha,
                 "branch": expected_branch,
+                "strategy": SYNC_STRATEGY,
+                "commits_pulled": commits_between(target_repo_root, before_sha, after_sha),
             },
         )
         return f"materialized lane repo '{op.subject}' at {target_repo_root}"
@@ -677,6 +701,7 @@ def run_sync(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncResult:
     workspace_root = workspace_root.resolve()
     dirty_mode = _normalize_dirty_mode(dirty_mode)
     operation_id = _operation_id()
+    started_at = time.monotonic()
     lock_fh = _acquire_sync_lock(workspace_root)
     if lock_fh is None:
         blocked_issue = SyncIssue(
@@ -718,6 +743,8 @@ def run_sync(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncResult:
             "operation_id": operation_id,
             "workspace_root": str(workspace_root),
             "dirty_mode": dirty_mode,
+            "repos": _plan_repo_names(build_sync_plan(workspace_root, dirty_mode=dirty_mode)),
+            "strategy": SYNC_STRATEGY,
         },
     )
     plan = build_sync_plan(workspace_root, dirty_mode=dirty_mode)
@@ -744,6 +771,10 @@ def run_sync(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncResult:
                 "workspace_root": str(workspace_root),
                 "status": "blocked",
                 "blocked_codes": [item.code for item in blocked],
+                "repos_updated": 0,
+                "repos_skipped": 0,
+                "repos_failed": len(blocked),
+                "duration_ms": int((time.monotonic() - started_at) * 1000),
             },
         )
         _release_sync_lock(lock_fh)
@@ -789,6 +820,10 @@ def run_sync(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncResult:
                 "status": status,
                 "applied_count": len(applied),
                 "failure_codes": [item.code for item in failures],
+                "repos_updated": sum(1 for op in plan.operations if op.kind in {"clone_shared_repo", "materialize_lane_repo"}),
+                "repos_skipped": sum(1 for op in plan.operations if op.kind in {"stash_dirty_repo", "discard_dirty_repo"}),
+                "repos_failed": len(failures),
+                "duration_ms": int((time.monotonic() - started_at) * 1000),
             },
         )
 

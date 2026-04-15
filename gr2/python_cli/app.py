@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
@@ -25,6 +26,7 @@ from .gitops import (
 )
 from .events import emit, EventType
 from .hooks import HookContext, apply_file_projections, load_repo_hooks, run_lifecycle_stage
+from .platform import CreatePRRequest, PRRef, get_platform_adapter
 from . import spec_apply
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 from gr2.prototypes import repo_maintenance_prototype as repo_proto
@@ -37,6 +39,7 @@ repo_app = typer.Typer(help="Repo maintenance and inspection")
 lane_app = typer.Typer(help="Lane creation and navigation")
 lease_app = typer.Typer(help="Lane lease operations")
 review_app = typer.Typer(help="Review and reviewer requirement operations")
+pr_app = typer.Typer(help="Cross-repo PR orchestration")
 workspace_app = typer.Typer(help="Workspace bootstrap and materialization")
 spec_app = typer.Typer(help="Declarative workspace spec operations")
 exec_app = typer.Typer(help="Lane-aware execution planning and execution")
@@ -46,6 +49,7 @@ app.add_typer(repo_app, name="repo")
 app.add_typer(lane_app, name="lane")
 lane_app.add_typer(lease_app, name="lease")
 app.add_typer(review_app, name="review")
+app.add_typer(pr_app, name="pr")
 app.add_typer(workspace_app, name="workspace")
 app.add_typer(spec_app, name="spec")
 app.add_typer(exec_app, name="exec")
@@ -194,6 +198,46 @@ def _repo_hook_context(workspace_root: Path, repo_root: Path) -> HookContext:
         lane_subject=repo_root.name,
         lane_name="workspace",
     )
+
+
+def _resolve_lane_name(workspace_root: Path, owner_unit: str, lane_name: Optional[str]) -> str:
+    if lane_name:
+        return lane_name
+    current_doc = lane_proto.load_current_lane_doc(workspace_root, owner_unit)
+    return str(current_doc["current"]["lane_name"])
+
+
+def _pr_groups_root(workspace_root: Path) -> Path:
+    return workspace_root / ".grip" / "pr_groups"
+
+
+def _pr_group_path(workspace_root: Path, owner_unit: str, lane_name: str) -> Path:
+    return _pr_groups_root(workspace_root) / owner_unit / f"{lane_name}.json"
+
+
+def _write_pr_group(workspace_root: Path, owner_unit: str, lane_name: str, payload: dict[str, object]) -> Path:
+    path = _pr_group_path(workspace_root, owner_unit, lane_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n")
+    return path
+
+
+def _load_pr_group(workspace_root: Path, owner_unit: str, lane_name: str) -> dict[str, object]:
+    path = _pr_group_path(workspace_root, owner_unit, lane_name)
+    if not path.exists():
+        raise SystemExit(f"pr group not found for {owner_unit}/{lane_name}: {path}")
+    return json.loads(path.read_text())
+
+
+def _repo_slug_from_url(url: str, fallback_name: str) -> str:
+    cleaned = url.strip()
+    if cleaned.startswith("git@github.com:"):
+        slug = cleaned.split("git@github.com:", 1)[1]
+        return slug.removesuffix(".git")
+    if cleaned.startswith("https://github.com/"):
+        slug = cleaned.split("https://github.com/", 1)[1]
+        return slug.removesuffix(".git")
+    return fallback_name
 
 
 def _write_workspace_spec(workspace_root: Path, repos: list[dict[str, str]], default_unit: str) -> Path:
@@ -866,6 +910,142 @@ def review_checkout_pr(
         "branch": resolved_branch,
         "entered": entered,
         "lane_repo_root": str(_lane_repo_root(workspace_root, owner_unit, resolved_lane, repo)),
+    }
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+
+@pr_app.command("create")
+def pr_create(
+    workspace_root: Path,
+    owner_unit: str,
+    lane_name: Optional[str] = typer.Argument(None, help="Lane name. Defaults to the unit's current lane."),
+    platform: str = typer.Option("github", "--platform", help="Platform adapter name"),
+    base_branch: str = typer.Option("main", "--base", help="Base branch for created PRs"),
+    draft: bool = typer.Option(False, "--draft", help="Create PRs as drafts"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Create a grouped set of per-repo PRs for a lane."""
+    workspace_root = workspace_root.resolve()
+    resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
+    lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, resolved_lane)
+    spec = lane_proto.load_workspace_spec(workspace_root)
+    adapter = get_platform_adapter(platform)
+    pr_group_id = f"pg_{os.urandom(4).hex()}"
+    refs: list[dict[str, object]] = []
+    branch_map = dict(lane_doc.get("branch_map", {}))
+    for repo_name in lane_doc.get("repos", []):
+        repo_spec = next(repo for repo in spec.get("repos", []) if repo.get("name") == repo_name)
+        request = CreatePRRequest(
+            repo=_repo_slug_from_url(str(repo_spec.get("url", "")), repo_name),
+            title=resolved_lane,
+            body=f"gr2 PR group {pr_group_id} for {owner_unit}/{resolved_lane}",
+            head_branch=str(branch_map.get(repo_name, resolved_lane)),
+            base_branch=base_branch,
+            draft=draft,
+        )
+        ref = adapter.create_pr(request)
+        refs.append(ref.as_dict())
+    payload = {
+        "pr_group_id": pr_group_id,
+        "owner_unit": owner_unit,
+        "lane_name": resolved_lane,
+        "platform": platform,
+        "refs": refs,
+    }
+    path = _write_pr_group(workspace_root, owner_unit, resolved_lane, payload)
+    payload["state_path"] = str(path)
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+
+@pr_app.command("status")
+def pr_status(
+    workspace_root: Path,
+    owner_unit: str,
+    lane_name: Optional[str] = typer.Argument(None, help="Lane name. Defaults to the unit's current lane."),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Show grouped PR status for a lane."""
+    workspace_root = workspace_root.resolve()
+    resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
+    group = _load_pr_group(workspace_root, owner_unit, resolved_lane)
+    adapter = get_platform_adapter(str(group.get("platform", "github")))
+    statuses = []
+    for ref_doc in group.get("refs", []):
+        ref = PRRef(**ref_doc)
+        statuses.append(adapter.pr_status(ref.repo, int(ref.number)).as_dict())
+    payload = {
+        "pr_group_id": group["pr_group_id"],
+        "owner_unit": owner_unit,
+        "lane_name": resolved_lane,
+        "statuses": statuses,
+    }
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+
+@pr_app.command("checks")
+def pr_checks(
+    workspace_root: Path,
+    owner_unit: str,
+    lane_name: Optional[str] = typer.Argument(None, help="Lane name. Defaults to the unit's current lane."),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Show grouped PR checks for a lane."""
+    workspace_root = workspace_root.resolve()
+    resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
+    group = _load_pr_group(workspace_root, owner_unit, resolved_lane)
+    adapter = get_platform_adapter(str(group.get("platform", "github")))
+    rows = []
+    for ref_doc in group.get("refs", []):
+        ref = PRRef(**ref_doc)
+        rows.append(
+            {
+                "repo": ref.repo,
+                "number": ref.number,
+                "checks": [item.as_dict() for item in adapter.pr_checks(ref.repo, int(ref.number))],
+            }
+        )
+    payload = {
+        "pr_group_id": group["pr_group_id"],
+        "owner_unit": owner_unit,
+        "lane_name": resolved_lane,
+        "checks": rows,
+    }
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+
+@pr_app.command("merge")
+def pr_merge(
+    workspace_root: Path,
+    owner_unit: str,
+    lane_name: Optional[str] = typer.Argument(None, help="Lane name. Defaults to the unit's current lane."),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Merge grouped PRs for a lane."""
+    workspace_root = workspace_root.resolve()
+    resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
+    group = _load_pr_group(workspace_root, owner_unit, resolved_lane)
+    adapter = get_platform_adapter(str(group.get("platform", "github")))
+    merged = []
+    for ref_doc in group.get("refs", []):
+        ref = PRRef(**ref_doc)
+        merged.append(adapter.merge_pr(ref.repo, int(ref.number)).as_dict())
+    payload = {
+        "pr_group_id": group["pr_group_id"],
+        "owner_unit": owner_unit,
+        "lane_name": resolved_lane,
+        "merged": merged,
     }
     if json_output:
         typer.echo(json.dumps(payload, indent=2))

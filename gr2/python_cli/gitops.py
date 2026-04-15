@@ -32,6 +32,36 @@ def remote_origin_url(path: Path) -> str | None:
     return value or None
 
 
+def current_head_sha(path: Path) -> str | None:
+    proc = git(path, "rev-parse", "HEAD")
+    if proc.returncode != 0:
+        return None
+    value = proc.stdout.strip()
+    return value or None
+
+
+def commits_between(path: Path, old_sha: str | None, new_sha: str | None) -> int:
+    if not new_sha:
+        return 0
+    if not old_sha:
+        proc = git(path, "rev-list", "--count", new_sha)
+    else:
+        proc = git(path, "rev-list", "--count", f"{old_sha}..{new_sha}")
+    if proc.returncode != 0:
+        return 0
+    try:
+        return int(proc.stdout.strip() or "0")
+    except ValueError:
+        return 0
+
+
+def conflicting_files(path: Path) -> list[str]:
+    proc = git(path, "diff", "--name-only", "--diff-filter=U")
+    if proc.returncode != 0:
+        return []
+    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+
+
 def ensure_repo_cache(url: str, cache_repo_root: Path) -> bool:
     """Ensure a local bare mirror exists for a repo URL.
 
@@ -145,10 +175,29 @@ def checkout_branch(repo_root: Path, branch: str) -> None:
         raise SystemExit(f"failed to checkout {branch} in {repo_root}:\n{proc.stderr or proc.stdout}")
 
 
+def current_branch(repo_root: Path) -> str:
+    proc = git(repo_root, "branch", "--show-current")
+    if proc.returncode != 0:
+        raise SystemExit(f"failed to determine current branch in {repo_root}:\n{proc.stderr or proc.stdout}")
+    return proc.stdout.strip()
+
+
 def stash_if_dirty(repo_root: Path, message: str) -> bool:
     if not repo_dirty(repo_root):
         return False
     proc = git(repo_root, "stash", "push", "-u", "-m", message)
     if proc.returncode != 0:
         raise SystemExit(f"failed to stash dirty work in {repo_root}:\n{proc.stderr or proc.stdout}")
+    return True
+
+
+def discard_if_dirty(repo_root: Path) -> bool:
+    if not repo_dirty(repo_root):
+        return False
+    proc = git(repo_root, "reset", "--hard", "HEAD")
+    if proc.returncode != 0:
+        raise SystemExit(f"failed to discard tracked changes in {repo_root}:\n{proc.stderr or proc.stdout}")
+    proc = git(repo_root, "clean", "-fd")
+    if proc.returncode != 0:
+        raise SystemExit(f"failed to discard untracked changes in {repo_root}:\n{proc.stderr or proc.stdout}")
     return True

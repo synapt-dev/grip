@@ -41,7 +41,7 @@ fields sit at the same level. There is no nested `payload` wrapper.
 ```json
 {
   "version": 1,
-  "event_id": "a1b2c3d4e5f6",
+  "event_id": "a1b2c3d4e5f67890",
   "seq": 42,
   "timestamp": "2026-04-15T16:30:00+00:00",
   "type": "lane.entered",
@@ -224,8 +224,8 @@ The outbox file is the single source of truth for all gr2 events in a workspace.
 Events are written synchronously at the point of state change:
 
 1. Operation performs its work (e.g., creates a lane, runs a hook).
-2. Operation calls `emit_event(type, payload)`.
-3. `emit_event` assigns `event_id`, `seq`, `timestamp`.
+2. Operation calls `emit(event_type, workspace_root, actor, owner_unit, payload)`.
+3. `emit()` assigns `event_id`, `seq`, `timestamp`.
 4. Event is serialized and appended to `outbox.jsonl`.
 5. File is flushed (fsync not required; OS page cache is sufficient for
    local-only delivery).
@@ -268,7 +268,7 @@ Cursor format:
 {
   "consumer": "channel_bridge",
   "last_seq": 41,
-  "last_event_id": "a1b2c3d4e5f6",
+  "last_event_id": "a1b2c3d4e5f67890",
   "last_read": "2026-04-15T16:31:00+00:00"
 }
 ```
@@ -532,6 +532,14 @@ exclude = ["hook.started", "hook.completed", "hook.skipped"]
 
 Default: the mapping table above. Filter file is optional.
 
+**Filter vs. mapping**: The `include` globs may match event types that have no
+entry in the mapping table (e.g., `lane.*` matches `lane.switched` and
+`lane.archived`, which are not in the table above). Events that match the
+include filter but have no mapping template are silently dropped by the bridge.
+The filter controls which events the bridge *considers*; the mapping table
+controls which events produce channel messages. To add a channel message for a
+new event type, add both a mapping entry and ensure the filter covers it.
+
 ## 9. Recall Indexing
 
 Recall indexes all events (not just the channel-visible subset) for searchable
@@ -557,14 +565,14 @@ event stream as the channel bridge.
 
 ### 10.1 Outbox Write Failure
 
-If `emit_event` fails to append (disk full, permission error):
+If `emit()` fails to append (disk full, permission error):
 
 - The event is lost. The operation that triggered it still completed.
 - The outbox may be in an inconsistent state (partial line written).
 - Recovery: consumers skip malformed lines. `gr2 gc` can truncate trailing
   partial lines.
 
-Mitigation: `emit_event` should catch write errors and log them to stderr
+Mitigation: `emit()` should catch write errors and log them to stderr
 without crashing the parent operation. Events are important but not
 operation-critical.
 
@@ -696,7 +704,7 @@ Marker format:
   "owner_unit": "apollo",
   "lane_name": "feat/hook-events",
   "failed_at": "2026-04-15T17:00:00+00:00",
-  "event_id": "abc123def456",
+  "event_id": "9f3a7b2c1d4e8f06",
   "partial_state": {
     "repos_completed": ["grip"],
     "repos_pending": ["synapt-private"],
@@ -715,7 +723,7 @@ Marker behavior:
   agent must decide whether to retry, skip, or escalate. Resolution is always
   explicit.
 - **Event**: Resolving a marker emits a new event type:
-  `failure.resolved` with payload `{operation_id, resolved_by, resolution}`.
+  `failure.resolved` with payload `{operation_id, resolved_by, resolution, lane_name}`.
 
 Why no automatic retry: retrying a failed hook might produce the same failure.
 The agent (or spawn) has context about whether retry is appropriate. gr2 does
@@ -756,7 +764,9 @@ Leases use TTL-first expiry with optional heartbeat renewal.
 5. `acquire` finds A's lease, evaluates `is_stale_lease()` -> true.
 6. Emits `lease.expired` event (payload: `{lane_name, lease_id, expired_at}`).
 7. Garbage-collects A's stale lease from the lane doc.
-8. Grants B's new lease. Emits `lease.acquired` event.
+8. Emits `lease.reclaimed` event (payload:
+   `{lane_name, lease_id, previous_holder, expired_at, reclaimed_by}`).
+9. Grants B's new lease. Emits `lease.acquired` event.
 
 **Force break**:
 

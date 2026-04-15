@@ -150,7 +150,7 @@ Flow:
 
 1. Find the PR group for the lane (scan `.grip/pr_groups/` for matching
    `lane_name` and `owner_unit`).
-2. For each child PR, call `PlatformAdapter.get_pr_status(repo, pr_number)`.
+2. For each child PR, call `PlatformAdapter.get_pr(repo, pr_number)`.
 3. For each child PR, call `PlatformAdapter.get_checks(repo, pr_number)`.
 4. For each child PR, call `PlatformAdapter.get_reviews(repo, pr_number)`.
 5. Aggregate into group state.

@@ -241,6 +241,7 @@ def _append_outbox_event(workspace_root: Path, payload: dict[str, object]) -> No
                         if value >= seq:
                             seq = value + 1
             event = {
+                "version": 1,
                 "seq": seq,
                 "event_id": os.urandom(8).hex(),
                 "timestamp": _now_utc(),
@@ -255,6 +256,14 @@ def _append_outbox_event(workspace_root: Path, payload: dict[str, object]) -> No
 
 def _emit_sync_event(workspace_root: Path, payload: dict[str, object]) -> None:
     _append_outbox_event(workspace_root, payload)
+
+
+def _sync_context(workspace_root: Path, *, actor: str = "system", owner_unit: str = "workspace") -> dict[str, object]:
+    return {
+        "workspace": workspace_root.name,
+        "actor": actor,
+        "owner_unit": owner_unit,
+    }
 
 
 def _plan_repo_names(plan: SyncPlan) -> list[str]:
@@ -565,6 +574,7 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
             workspace_root,
             {
                 "type": "sync.cache_seeded" if created else "sync.cache_refreshed",
+                **_sync_context(workspace_root),
                 "repo": op.subject,
                 "strategy": SYNC_STRATEGY,
                 "cache_path": str(cache_path),
@@ -587,8 +597,8 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
             workspace_root,
             {
                 "type": "sync.repo_updated",
+                **_sync_context(workspace_root),
                 "repo": op.subject,
-                "scope": "shared_repo",
                 "old_sha": before_sha,
                 "new_sha": after_sha,
                 "strategy": SYNC_STRATEGY,
@@ -622,13 +632,10 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
             workspace_root,
             {
                 "type": "sync.repo_updated",
+                **_sync_context(workspace_root, owner_unit=owner_unit),
                 "repo": repo_name,
-                "scope": "lane",
-                "owner_unit": owner_unit,
-                "lane": lane_name,
                 "old_sha": before_sha,
                 "new_sha": after_sha,
-                "branch": expected_branch,
                 "strategy": SYNC_STRATEGY,
                 "commits_pulled": commits_between(target_repo_root, before_sha, after_sha),
             },
@@ -652,8 +659,8 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
                 workspace_root,
                 {
                     "type": "sync.repo_skipped",
+                    **_sync_context(workspace_root),
                     "repo": op.subject.split(":")[-1],
-                    "scope": op.scope,
                     "reason": "dirty_stashed",
                 },
             )
@@ -667,8 +674,8 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
                 workspace_root,
                 {
                     "type": "sync.repo_skipped",
+                    **_sync_context(workspace_root),
                     "repo": op.subject.split(":")[-1],
-                    "scope": op.scope,
                     "reason": "dirty_discarded",
                 },
             )
@@ -718,19 +725,17 @@ def run_sync(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncResult:
             workspace_root,
             {
                 "type": "sync.conflict",
-                "operation_id": operation_id,
+                **_sync_context(workspace_root),
                 "reason": "lock_held",
-                "workspace_root": str(workspace_root),
+                "repo": workspace_root.name,
             },
         )
         _emit_sync_event(
             workspace_root,
             {
                 "type": "sync.completed",
-                "operation_id": operation_id,
-                "workspace_root": str(workspace_root),
+                **_sync_context(workspace_root),
                 "status": "blocked",
-                "blocked_codes": [blocked_issue.code],
                 "repos_updated": 0,
                 "repos_skipped": 0,
                 "repos_failed": 1,
@@ -754,9 +759,7 @@ def run_sync(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncResult:
         workspace_root,
         {
             "type": "sync.started",
-            "operation_id": operation_id,
-            "workspace_root": str(workspace_root),
-            "dirty_mode": dirty_mode,
+            **_sync_context(workspace_root),
             "repos": _plan_repo_names(build_sync_plan(workspace_root, dirty_mode=dirty_mode)),
             "strategy": SYNC_STRATEGY,
         },
@@ -770,21 +773,18 @@ def run_sync(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncResult:
                     workspace_root,
                     {
                         "type": "sync.conflict",
-                        "operation_id": operation_id,
-                        "workspace_root": str(workspace_root),
+                        **_sync_context(workspace_root, owner_unit=issue.subject.split("/", 1)[0]),
                         "reason": "active_lease",
-                        "subject": issue.subject,
-                        "leases": issue.details.get("leases", []),
+                        "repo": issue.subject,
+                        "conflicting_files": [],
                     },
                 )
         _emit_sync_event(
             workspace_root,
             {
                 "type": "sync.completed",
-                "operation_id": operation_id,
-                "workspace_root": str(workspace_root),
+                **_sync_context(workspace_root),
                 "status": "blocked",
-                "blocked_codes": [item.code for item in blocked],
                 "repos_updated": 0,
                 "repos_skipped": 0,
                 "repos_failed": len(blocked),
@@ -829,11 +829,8 @@ def run_sync(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncResult:
             workspace_root,
             {
                 "type": "sync.completed",
-                "operation_id": operation_id,
-                "workspace_root": str(workspace_root),
+                **_sync_context(workspace_root),
                 "status": status,
-                "applied_count": len(applied),
-                "failure_codes": [item.code for item in failures],
                 "repos_updated": sum(1 for op in plan.operations if op.kind in {"clone_shared_repo", "materialize_lane_repo"}),
                 "repos_skipped": sum(1 for op in plan.operations if op.kind in {"stash_dirty_repo", "discard_dirty_repo"}),
                 "repos_failed": len(failures),

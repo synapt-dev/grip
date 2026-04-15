@@ -159,6 +159,68 @@ def test_sync_run_emits_contract_payloads_and_cache_events(tmp_path: Path) -> No
     assert completed["duration_ms"] >= 0
 
 
+def test_sync_core_events_match_hook_event_contract_field_names(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    _, repo_url = _init_bare_remote(tmp_path, "app")
+    _write_workspace_spec(workspace_root, "app", repo_url)
+
+    result = run_sync(workspace_root)
+    assert result.status == "success"
+
+    outbox = _read_outbox(workspace_root)
+    started = next(row for row in outbox if row["type"] == "sync.started")
+    updated = next(row for row in outbox if row["type"] == "sync.repo_updated")
+    completed = next(row for row in outbox if row["type"] == "sync.completed")
+
+    started_expected = {
+        "version",
+        "event_id",
+        "seq",
+        "timestamp",
+        "type",
+        "workspace",
+        "actor",
+        "owner_unit",
+        "repos",
+        "strategy",
+    }
+    updated_expected = {
+        "version",
+        "event_id",
+        "seq",
+        "timestamp",
+        "type",
+        "workspace",
+        "actor",
+        "owner_unit",
+        "repo",
+        "old_sha",
+        "new_sha",
+        "strategy",
+        "commits_pulled",
+    }
+    completed_expected = {
+        "version",
+        "event_id",
+        "seq",
+        "timestamp",
+        "type",
+        "workspace",
+        "actor",
+        "owner_unit",
+        "status",
+        "repos_updated",
+        "repos_skipped",
+        "repos_failed",
+        "duration_ms",
+    }
+
+    assert set(started.keys()) == started_expected
+    assert set(updated.keys()) == updated_expected
+    assert set(completed.keys()) == completed_expected
+
+
 def test_sync_run_emits_cache_refresh_event_when_cache_exists(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()

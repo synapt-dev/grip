@@ -92,6 +92,7 @@ These are not optional polish. They are spawn prerequisites.
 - lane-aware
 - explicit about what it mutates
 - resumable after partial failure
+- explicit about lease-blocked lanes
 
 ## 5. Sync Phases
 
@@ -173,6 +174,11 @@ This is the seam premium and QA will consume.
 5. Event emission is part of correctness.
    `sync` must emit enough machine-readable state for premium spawn and QA.
    Emit failure does not block the parent operation.
+
+6. Terminal sync state is normalized.
+   `sync.completed` is the terminal event for success, blocked, failed, and
+   partial-failure outcomes. Intermediate contention may still emit
+   `sync.conflict`.
 
 ## 7. Proposed Command Shapes
 

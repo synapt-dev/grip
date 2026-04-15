@@ -135,6 +135,8 @@ If sync encounters an active conflicting lease:
 - it is a blocker, not a warning
 - sync does not override or steal the lease
 - result points to the owning actor and lease mode when available
+- `sync.conflict` is emitted with the blocking lease metadata
+- terminal state still arrives through `sync.completed` with `status = "blocked"`
 
 If a stale lease policy is added later, it must be explicit and separately
 authorized. It is not part of the default sync contract.

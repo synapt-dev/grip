@@ -74,6 +74,8 @@ class SyncPlan:
     workspace_root: str
     spec_path: str
     status: str
+    dirty_mode: str
+    dirty_targets: list[str]
     issues: list[SyncIssue]
     operations: list[SyncOperation]
 
@@ -82,6 +84,8 @@ class SyncPlan:
             "workspace_root": self.workspace_root,
             "spec_path": self.spec_path,
             "status": self.status,
+            "dirty_mode": self.dirty_mode,
+            "dirty_targets": list(self.dirty_targets),
             "issue_count": len(self.issues),
             "operation_count": len(self.operations),
             "issues": [item.as_dict() for item in self.issues],
@@ -94,6 +98,8 @@ class SyncResult:
     workspace_root: str
     status: str
     plan_status: str
+    dirty_mode: str
+    dirty_targets: list[str]
     applied: list[str]
     blocked: list[SyncIssue]
     failures: list[SyncIssue]
@@ -105,6 +111,8 @@ class SyncResult:
             "workspace_root": self.workspace_root,
             "status": self.status,
             "plan_status": self.plan_status,
+            "dirty_mode": self.dirty_mode,
+            "dirty_targets": list(self.dirty_targets),
             "applied": list(self.applied),
             "blocked": [item.as_dict() for item in self.blocked],
             "failures": [item.as_dict() for item in self.failures],
@@ -163,6 +171,17 @@ def _status_from_issues(issues: list[SyncIssue]) -> str:
     if issues:
         return "attention"
     return "ready"
+
+
+def _dirty_targets(issues: list[SyncIssue], operations: list[SyncOperation]) -> list[str]:
+    targets: list[str] = []
+    for issue in issues:
+        if issue.code in {"dirty_shared_repo", "dirty_lane_repo"}:
+            targets.append(issue.subject)
+    for op in operations:
+        if op.kind in {"stash_dirty_repo", "discard_dirty_repo"}:
+            targets.append(op.subject)
+    return sorted(dict.fromkeys(targets))
 
 
 def _normalize_dirty_mode(dirty_mode: str) -> str:
@@ -254,6 +273,8 @@ def build_sync_plan(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncP
             workspace_root=str(workspace_root),
             spec_path=str(spec_path),
             status=_status_from_issues(issues),
+            dirty_mode=dirty_mode,
+            dirty_targets=[],
             issues=issues,
             operations=operations,
         )
@@ -377,6 +398,30 @@ def build_sync_plan(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncP
             continue
 
         lane_root = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
+        active_leases = [
+            lease
+            for lease in lane_proto.load_lane_leases(workspace_root, owner_unit, lane_name)
+            if not lane_proto.is_stale_lease(lease)
+        ]
+        if active_leases:
+            issues.append(
+                SyncIssue(
+                    level="error",
+                    code="lease_blocked_sync",
+                    scope="lane",
+                    subject=f"{owner_unit}/{lane_name}",
+                    message=f"lane has active leases that block sync mutation: {owner_unit}/{lane_name}",
+                    blocks=True,
+                    path=str(workspace_root / "agents" / owner_unit / "lanes" / lane_name),
+                    details={
+                        "leases": [
+                            {"actor": lease["actor"], "mode": lease["mode"], "acquired_at": lease["acquired_at"]}
+                            for lease in active_leases
+                        ]
+                    },
+                )
+            )
+
         for repo_name in lane_doc.get("repos", []):
             lane_repo_root = lane_root / "repos" / str(repo_name)
             expected_branch = str(dict(lane_doc.get("branch_map", {})).get(repo_name, ""))
@@ -445,6 +490,8 @@ def build_sync_plan(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncP
         workspace_root=str(workspace_root),
         spec_path=str(spec_path),
         status=_status_from_issues(issues),
+        dirty_mode=dirty_mode,
+        dirty_targets=_dirty_targets(issues, operations),
         issues=issues,
         operations=operations,
     )
@@ -455,9 +502,13 @@ def render_sync_plan(plan: SyncPlan) -> str:
         "SyncPlan",
         f"workspace_root = {plan.workspace_root}",
         f"status = {plan.status}",
+        f"dirty_mode = {plan.dirty_mode}",
         f"issue_count = {len(plan.issues)}",
         f"operation_count = {len(plan.operations)}",
     ]
+    if plan.dirty_targets:
+        lines.append("DIRTY_TARGETS")
+        lines.extend(f"- {item}" for item in plan.dirty_targets)
     if plan.issues:
         lines.append("ISSUES")
         for issue in plan.issues:
@@ -651,6 +702,8 @@ def run_sync(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncResult:
             workspace_root=str(workspace_root),
             status="blocked",
             plan_status="blocked",
+            dirty_mode=dirty_mode,
+            dirty_targets=[],
             applied=[],
             blocked=[blocked_issue],
             failures=[],
@@ -670,10 +723,23 @@ def run_sync(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncResult:
     plan = build_sync_plan(workspace_root, dirty_mode=dirty_mode)
     blocked = [issue for issue in plan.issues if issue.blocks]
     if blocked:
+        for issue in blocked:
+            if issue.code == "lease_blocked_sync":
+                _emit_sync_event(
+                    workspace_root,
+                    {
+                        "type": "sync.conflict",
+                        "operation_id": operation_id,
+                        "workspace_root": str(workspace_root),
+                        "reason": "active_lease",
+                        "subject": issue.subject,
+                        "leases": issue.details.get("leases", []),
+                    },
+                )
         _emit_sync_event(
             workspace_root,
             {
-                "type": "sync.failed",
+                "type": "sync.completed",
                 "operation_id": operation_id,
                 "workspace_root": str(workspace_root),
                 "status": "blocked",
@@ -685,6 +751,8 @@ def run_sync(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncResult:
             workspace_root=str(workspace_root),
             status="blocked",
             plan_status=plan.status,
+            dirty_mode=dirty_mode,
+            dirty_targets=list(plan.dirty_targets),
             applied=[],
             blocked=blocked,
             failures=[],
@@ -715,7 +783,7 @@ def run_sync(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncResult:
         _emit_sync_event(
             workspace_root,
             {
-                "type": "sync.completed" if status == "success" else "sync.failed",
+                "type": "sync.completed",
                 "operation_id": operation_id,
                 "workspace_root": str(workspace_root),
                 "status": status,
@@ -728,6 +796,8 @@ def run_sync(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncResult:
             workspace_root=str(workspace_root),
             status=status,
             plan_status=plan.status,
+            dirty_mode=dirty_mode,
+            dirty_targets=list(plan.dirty_targets),
             applied=applied,
             blocked=[],
             failures=failures,
@@ -744,10 +814,14 @@ def render_sync_result(result: SyncResult) -> str:
         f"workspace_root = {result.workspace_root}",
         f"status = {result.status}",
         f"plan_status = {result.plan_status}",
+        f"dirty_mode = {result.dirty_mode}",
         f"operation_id = {result.operation_id or '-'}",
         f"applied_count = {len(result.applied)}",
         f"failure_count = {len(result.failures)}",
     ]
+    if result.dirty_targets:
+        lines.append("DIRTY_TARGETS")
+        lines.extend(f"- {item}" for item in result.dirty_targets)
     if result.applied:
         lines.append("APPLIED")
         lines.extend(f"- {item}" for item in result.applied)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import subprocess
 import sys
@@ -84,6 +85,12 @@ def _read_outbox(workspace_root: Path) -> list[dict[str, object]]:
             continue
         rows.append(json.loads(line))
     return rows
+
+
+def _stash_list(repo_root: Path) -> list[str]:
+    proc = _git(repo_root, "stash", "list")
+    assert proc.returncode == 0
+    return [line for line in proc.stdout.splitlines() if line.strip()]
 
 
 def test_sync_run_emits_contract_payloads_and_cache_events(tmp_path: Path) -> None:
@@ -216,3 +223,100 @@ def test_pr_commands_route_through_platform_adapter(tmp_path: Path, monkeypatch)
     result = runner.invoke(app, ["pr", "merge", str(workspace_root), "atlas", "feat-auth", "--json"])
     assert result.exit_code == 0
     assert any(kind == "merge" for kind, _ in calls)
+
+
+def test_sync_run_reports_terminal_blocked_event_on_lock_contention(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    _, repo_url = _init_bare_remote(tmp_path, "app")
+    _write_workspace_spec(workspace_root, "app", repo_url)
+    run_sync(workspace_root)
+
+    lock_path = workspace_root / ".grip" / "state" / "sync.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock_fh:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = runner.invoke(app, ["sync", "run", str(workspace_root), "--json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "blocked"
+    assert any(item["code"] == "sync_lock_held" for item in payload["blocked"])
+
+    outbox = _read_outbox(workspace_root)
+    assert any(row["type"] == "sync.conflict" for row in outbox)
+    terminal = [row for row in outbox if row["type"] == "sync.completed" and row.get("status") == "blocked"]
+    assert terminal, "lock contention must still emit terminal sync.completed status=blocked"
+
+
+def test_sync_run_dirty_block_reports_blocked_without_mutation(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    _, repo_url = _init_bare_remote(tmp_path, "app")
+    _write_workspace_spec(workspace_root, "app", repo_url)
+    run_sync(workspace_root)
+
+    repo_root = workspace_root / "repos" / "app"
+    (repo_root / "README.md").write_text("dirty block\n")
+
+    result = runner.invoke(app, ["sync", "run", str(workspace_root), "--dirty", "block", "--json"])
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "blocked"
+    assert payload["dirty_mode"] == "block"
+    assert "app" in payload["dirty_targets"]
+    assert any(item["code"] == "dirty_shared_repo" for item in payload["blocked"])
+    assert repo_root.joinpath("README.md").read_text() == "dirty block\n"
+    assert _stash_list(repo_root) == []
+
+
+def test_sync_run_dirty_stash_stashes_changes_and_continues(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    _, repo_url = _init_bare_remote(tmp_path, "app")
+    _write_workspace_spec(workspace_root, "app", repo_url)
+    run_sync(workspace_root)
+
+    repo_root = workspace_root / "repos" / "app"
+    (repo_root / "README.md").write_text("dirty stash\n")
+
+    result = runner.invoke(app, ["sync", "run", str(workspace_root), "--dirty", "stash", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "success"
+    assert payload["dirty_mode"] == "stash"
+    assert "app" in payload["dirty_targets"]
+    assert _git(repo_root, "status", "--porcelain").stdout.strip() == ""
+    assert _stash_list(repo_root), "stash mode should leave a git stash entry"
+
+    outbox = _read_outbox(workspace_root)
+    assert any(
+        row["type"] == "sync.repo_skipped" and row.get("repo") == "app" and row.get("reason") == "dirty_stashed"
+        for row in outbox
+    )
+
+
+def test_sync_run_dirty_discard_discards_changes_without_stash(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    _, repo_url = _init_bare_remote(tmp_path, "app")
+    _write_workspace_spec(workspace_root, "app", repo_url)
+    run_sync(workspace_root)
+
+    repo_root = workspace_root / "repos" / "app"
+    (repo_root / "README.md").write_text("dirty discard\n")
+
+    result = runner.invoke(app, ["sync", "run", str(workspace_root), "--dirty", "discard", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "success"
+    assert payload["dirty_mode"] == "discard"
+    assert "app" in payload["dirty_targets"]
+    assert repo_root.joinpath("README.md").read_text() == "# app\n"
+    assert _stash_list(repo_root) == []
+
+    outbox = _read_outbox(workspace_root)
+    assert any(
+        row["type"] == "sync.repo_skipped" and row.get("repo") == "app" and row.get("reason") == "dirty_discarded"
+        for row in outbox
+    )

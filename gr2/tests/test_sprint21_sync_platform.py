@@ -75,6 +75,38 @@ def _write_workspace_spec(workspace_root: Path, repo_name: str, repo_url: str) -
     )
 
 
+def _write_workspace_spec_multi(workspace_root: Path, repos: list[tuple[str, str]]) -> None:
+    spec_path = workspace_root / ".grip" / "workspace_spec.toml"
+    spec_path.parent.mkdir(parents=True, exist_ok=True)
+    repo_blocks = []
+    for repo_name, repo_url in repos:
+        repo_blocks.append(
+            textwrap.dedent(
+                f"""
+                [[repos]]
+                name = "{repo_name}"
+                path = "repos/{repo_name}"
+                url = "{repo_url}"
+                """
+            ).strip()
+        )
+    spec_path.write_text(
+        textwrap.dedent(
+            f"""
+            workspace_name = "{workspace_root.name}"
+
+            {'\n\n'.join(repo_blocks)}
+
+            [[units]]
+            name = "atlas"
+            path = "agents/atlas/home"
+            repos = [{", ".join(f'"{name}"' for name, _ in repos)}]
+            """
+        ).strip()
+        + "\n"
+    )
+
+
 def _read_outbox(workspace_root: Path) -> list[dict[str, object]]:
     outbox = workspace_root / ".grip" / "events" / "outbox.jsonl"
     rows: list[dict[str, object]] = []
@@ -223,6 +255,181 @@ def test_pr_commands_route_through_platform_adapter(tmp_path: Path, monkeypatch)
     result = runner.invoke(app, ["pr", "merge", str(workspace_root), "atlas", "feat-auth", "--json"])
     assert result.exit_code == 0
     assert any(kind == "merge" for kind, _ in calls)
+
+
+def test_pr_create_persists_group_state_by_pr_group_id(tmp_path: Path, monkeypatch) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    _, app_url = _init_bare_remote(tmp_path, "app")
+    _, api_url = _init_bare_remote(tmp_path, "api")
+    _write_workspace_spec_multi(workspace_root, [("app", app_url), ("api", api_url)])
+    run_sync(workspace_root)
+
+    ns = SimpleNamespace(
+        workspace_root=workspace_root,
+        owner_unit="atlas",
+        lane_name="feat-router",
+        type="feature",
+        repos="app,api",
+        branch="feat/router",
+        default_commands=[],
+        source="pytest",
+    )
+    lane_proto.create_lane(ns)
+
+    class FakeAdapter:
+        name = "fake"
+
+        def create_pr(self, request: CreatePRRequest) -> PRRef:
+            number = 41 if request.repo == "app" else 42
+            return PRRef(
+                repo=request.repo,
+                number=number,
+                url=f"https://example.test/{request.repo}/pull/{number}",
+                head_branch=request.head_branch,
+                base_branch=request.base_branch,
+                title=request.title,
+            )
+
+        def merge_pr(self, repo: str, number: int) -> PRRef:  # pragma: no cover - not used here
+            raise AssertionError("merge_pr should not be called")
+
+        def pr_status(self, repo: str, number: int) -> PRStatus:  # pragma: no cover - not used here
+            raise AssertionError("pr_status should not be called")
+
+        def list_prs(self, repo: str, *, head_branch: str | None = None) -> list[PRRef]:  # pragma: no cover
+            return []
+
+        def pr_checks(self, repo: str, number: int) -> list[PRCheck]:  # pragma: no cover
+            return []
+
+    monkeypatch.setattr(app_module, "get_platform_adapter", lambda name="github": FakeAdapter())
+
+    result = runner.invoke(app, ["pr", "create", str(workspace_root), "atlas", "feat-router", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["pr_group_id"].startswith("pg_")
+    assert len(payload["refs"]) == 2
+
+    group_path = workspace_root / ".grip" / "pr_groups" / f'{payload["pr_group_id"]}.json'
+    assert group_path.exists(), "group state should be stored by pr_group_id, not lane name"
+    stored = json.loads(group_path.read_text())
+    assert {item["repo"]: item["number"] for item in stored["refs"]} == {"app": 41, "api": 42}
+
+
+def test_pr_status_aggregates_group_state(tmp_path: Path, monkeypatch) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    _, app_url = _init_bare_remote(tmp_path, "app")
+    _, api_url = _init_bare_remote(tmp_path, "api")
+    _write_workspace_spec_multi(workspace_root, [("app", app_url), ("api", api_url)])
+    run_sync(workspace_root)
+
+    pr_group_id = "pg_deadbeef"
+    group_path = workspace_root / ".grip" / "pr_groups" / f"{pr_group_id}.json"
+    group_path.parent.mkdir(parents=True, exist_ok=True)
+    group_path.write_text(
+        json.dumps(
+            {
+                "pr_group_id": pr_group_id,
+                "owner_unit": "atlas",
+                "lane_name": "feat-router",
+                "platform": "github",
+                "refs": [
+                    {"repo": "app", "number": 41, "url": "https://example.test/app/41"},
+                    {"repo": "api", "number": 42, "url": "https://example.test/api/42"},
+                ],
+            }
+        )
+    )
+
+    class FakeAdapter:
+        name = "fake"
+
+        def create_pr(self, request: CreatePRRequest) -> PRRef:  # pragma: no cover
+            raise AssertionError("create_pr should not be called")
+
+        def merge_pr(self, repo: str, number: int) -> PRRef:  # pragma: no cover
+            raise AssertionError("merge_pr should not be called")
+
+        def pr_status(self, repo: str, number: int) -> PRStatus:
+            state = "OPEN" if repo == "app" else "MERGED"
+            ref = PRRef(repo=repo, number=number, url=f"https://example.test/{repo}/{number}")
+            return PRStatus(ref=ref, state=state, mergeable="MERGEABLE", checks=[])
+
+        def list_prs(self, repo: str, *, head_branch: str | None = None) -> list[PRRef]:  # pragma: no cover
+            return []
+
+        def pr_checks(self, repo: str, number: int) -> list[PRCheck]:  # pragma: no cover
+            return []
+
+    monkeypatch.setattr(app_module, "get_platform_adapter", lambda name="github": FakeAdapter())
+
+    result = runner.invoke(app, ["pr", "status", str(workspace_root), "atlas", "feat-router", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["pr_group_id"] == pr_group_id
+    assert payload["group_state"] == "partially_merged"
+
+
+def test_pr_merge_reports_partial_failure_and_preserves_state(tmp_path: Path, monkeypatch) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    _, app_url = _init_bare_remote(tmp_path, "app")
+    _, api_url = _init_bare_remote(tmp_path, "api")
+    _write_workspace_spec_multi(workspace_root, [("app", app_url), ("api", api_url)])
+    run_sync(workspace_root)
+
+    pr_group_id = "pg_badmerge"
+    group_path = workspace_root / ".grip" / "pr_groups" / f"{pr_group_id}.json"
+    group_path.parent.mkdir(parents=True, exist_ok=True)
+    group_path.write_text(
+        json.dumps(
+            {
+                "pr_group_id": pr_group_id,
+                "owner_unit": "atlas",
+                "lane_name": "feat-router",
+                "platform": "github",
+                "refs": [
+                    {"repo": "app", "number": 41, "url": "https://example.test/app/41"},
+                    {"repo": "api", "number": 42, "url": "https://example.test/api/42"},
+                ],
+            }
+        )
+    )
+
+    class FakeAdapter:
+        name = "fake"
+
+        def create_pr(self, request: CreatePRRequest) -> PRRef:  # pragma: no cover
+            raise AssertionError("create_pr should not be called")
+
+        def merge_pr(self, repo: str, number: int) -> PRRef:
+            if repo == "api":
+                raise RuntimeError("merge conflict")
+            return PRRef(repo=repo, number=number, url=f"https://example.test/{repo}/{number}")
+
+        def pr_status(self, repo: str, number: int) -> PRStatus:  # pragma: no cover
+            raise AssertionError("pr_status should not be called")
+
+        def list_prs(self, repo: str, *, head_branch: str | None = None) -> list[PRRef]:  # pragma: no cover
+            return []
+
+        def pr_checks(self, repo: str, number: int) -> list[PRCheck]:  # pragma: no cover
+            return []
+
+    monkeypatch.setattr(app_module, "get_platform_adapter", lambda name="github": FakeAdapter())
+
+    result = runner.invoke(app, ["pr", "merge", str(workspace_root), "atlas", "feat-router", "--json"])
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "partial_failure"
+    assert payload["pr_group_id"] == pr_group_id
+    assert payload["merged"] == ["app"]
+    assert payload["failed"][0]["repo"] == "api"
+
+    stored = json.loads(group_path.read_text())
+    assert stored["group_state"] == "partially_merged"
 
 
 def test_sync_run_reports_terminal_blocked_event_on_lock_contention(tmp_path: Path) -> None:

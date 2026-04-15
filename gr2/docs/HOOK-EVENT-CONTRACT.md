@@ -605,3 +605,134 @@ This document is a dependency for:
    JSONL is simpler and auditable; SQLite handles concurrent writes better.
 5. **Event signing**: Should events carry a signature or checksum for tamper
    detection? Relevant if the outbox is consumed by premium policy enforcement.
+
+## 14. Failure Recovery Contract
+
+This section formalizes how gr2 handles operation failures at the state level.
+Section 10 covers event infrastructure failures (outbox writes, consumer
+crashes). This section covers operation-level failures: what happens to
+workspace state when hooks fail, leases expire, or lane switches encounter
+dirty repos.
+
+The core principle: **gr2 operations are forward-only. There is no rollback.**
+Failures leave partial state with explicit markers that require resolution.
+
+### 14.1 Failure Markers
+
+When an operation fails mid-execution, gr2 writes a failure marker:
+
+```
+.grip/state/failures/{operation_id}.json
+```
+
+Marker format:
+
+```json
+{
+  "operation_id": "op_9f2a3b4c",
+  "operation": "sync",
+  "stage": "on_enter",
+  "hook_name": "editable-install",
+  "repo": "synapt",
+  "owner_unit": "apollo",
+  "lane_name": "feat/hook-events",
+  "failed_at": "2026-04-15T17:00:00+00:00",
+  "event_id": "abc123def456",
+  "partial_state": {
+    "repos_completed": ["grip"],
+    "repos_pending": ["synapt-private"],
+    "repo_failed": "synapt"
+  },
+  "resolved": false
+}
+```
+
+Marker behavior:
+
+- **Blocking**: The next operation on the same scope (lane, repos) checks for
+  unresolved failure markers. If one exists, the operation refuses to proceed
+  and reports the marker.
+- **Resolution**: `gr2 lane resolve <operation_id>` clears the marker. The
+  agent must decide whether to retry, skip, or escalate. Resolution is always
+  explicit.
+- **Event**: Resolving a marker emits a new event type:
+  `failure.resolved` with payload `{operation_id, resolved_by, resolution}`.
+
+Why no automatic retry: retrying a failed hook might produce the same failure.
+The agent (or spawn) has context about whether retry is appropriate. gr2 does
+not guess.
+
+Why no rollback: reverting git operations (undo fetch+merge, undo checkout) is
+dangerous, sometimes impossible (remote state changed), and introduces a second
+failure mode (what if the revert fails?). Forward-only resolution is simpler and
+more honest about what happened.
+
+### 14.2 Lease Reclaim Lifecycle
+
+Leases use TTL-first expiry with optional heartbeat renewal.
+
+**TTL expiry** is the primary reclaim mechanism:
+
+- Every lease carries `ttl_seconds` (default 900s) and `expires_at`.
+- Expiry is checked lazily: the next `acquire`, `show`, or `status` call
+  evaluates `is_stale_lease()` (already in prototype at
+  `lane_workspace_prototype.py:592`).
+- No daemon or background process required.
+
+**Heartbeat renewal** is optional:
+
+- `gr2 lane lease renew <workspace_root> <owner_unit> <lane_name>` resets
+  `expires_at` to `now + ttl_seconds`.
+- Agents running long operations (multi-repo test suites, large builds) call
+  renew periodically to prevent premature expiry.
+- If the agent crashes, renewal stops, and TTL expiry reclaims the lease
+  naturally.
+
+**Reclaim flow**:
+
+1. Agent A holds lease with `expires_at = T`.
+2. Agent A crashes (no explicit release).
+3. Time passes beyond T.
+4. Agent B calls `gr2 lane lease acquire`.
+5. `acquire` finds A's lease, evaluates `is_stale_lease()` -> true.
+6. Emits `lease.expired` event (payload: `{lane_name, lease_id, expired_at}`).
+7. Garbage-collects A's stale lease from the lane doc.
+8. Grants B's new lease. Emits `lease.acquired` event.
+
+**Force break**:
+
+- `gr2 lane lease acquire --force` breaks a live (non-expired) lease.
+- Emits `lease.force_broken` event with `{broken_by, reason}`.
+- Spawn can route this event to the original holder's channel as a notification.
+
+### 14.3 Dirty State on Lane Switch
+
+Lane transitions handle uncommitted changes via an explicit `--dirty` mode.
+
+**Modes** (flag on `lane enter` and `lane exit`):
+
+| Mode | Behavior | Default? |
+|------|----------|----------|
+| `stash` | Auto-stash dirty repos. Stash message: `"gr2 auto-stash: exiting {unit}/{lane}"`. | Yes |
+| `block` | Refuse to switch if any repo is dirty. List dirty repos in error. | No |
+| `discard` | Discard uncommitted changes. Requires `--yes` flag. | No |
+
+**Event payloads for dirty state**:
+
+- `lane.exited` with `stashed_repos: ["synapt"]` when stash mode is used.
+- `lane.exited` with `discarded_repos: ["synapt"]` when discard mode is used.
+- No `lane.exited` event when block mode prevents the exit.
+
+**Re-entry with stashed state**:
+
+When `lane enter` is called and the lane has stashed state from a previous exit:
+
+- Default: warn that stashed state exists, do not auto-pop. The agent decides
+  whether to `git stash pop` manually.
+- `--dirty=restore` on `lane enter`: auto-pop the stash. If the pop produces
+  a merge conflict, leave the conflict markers and emit a `hook.failed`-style
+  warning event.
+
+**Consistency rule**: The `--dirty` flag and its values (`stash`, `block`,
+`discard`, `restore`) must be consistent across `lane enter`, `lane exit`, and
+`sync`. This is a shared contract with Atlas's sync algorithm design.

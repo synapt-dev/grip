@@ -310,6 +310,19 @@ class PlatformAdapter(Protocol):
     def update_pr_body(self, repo: str, pr_number: int, body: str) -> None: ...
 ```
 
+**PlatformAdapter is group-unaware.** It operates on individual per-repo PRs and
+has no concept of `pr_group_id` or cross-repo correlation. The grouping logic
+lives in gr2's `pr.py` orchestration module, which:
+
+1. Calls PlatformAdapter per-repo to create/query/merge individual PRs.
+2. Assigns the `pr_group_id` (format: `pg_` + 8-char hex).
+3. Correlates per-repo `PRRef` objects into a PR group.
+4. Manages cross-link injection into PR bodies.
+5. Emits `pr.*` events with the group ID.
+
+This separation keeps platform adapters simple and reusable. A platform adapter
+can be used by other tools that don't need grouping semantics.
+
 ### 5.2 Adapter Resolution
 
 `get_platform_adapter(repo_spec)` resolves the correct adapter based on the

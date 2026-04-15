@@ -35,7 +35,8 @@ and monotonic sequence number within the outbox.
 
 ### 3.1 Common Envelope
 
-Every event shares a common envelope:
+Every event is a single flat JSON object. Envelope fields and domain-specific
+fields sit at the same level. There is no nested `payload` wrapper.
 
 ```json
 {
@@ -48,11 +49,18 @@ Every event shares a common envelope:
   "actor": "agent:apollo",
   "agent_id": "agent_apollo_xyz789",
   "owner_unit": "apollo",
-  "payload": { ... }
+  "lane_name": "feat/hook-events",
+  "lane_type": "feature",
+  "repos": ["grip", "synapt"]
 }
 ```
 
-Field definitions:
+This flat shape matches Atlas's sync outbox implementation (`syncops.py`), where
+`_append_outbox_event` spreads caller-provided fields into the envelope via
+`{**envelope, **payload}`. Consumers read domain fields directly from the
+top-level object without unwrapping a nested payload.
+
+**Envelope fields** (added automatically by the emit function):
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -61,11 +69,19 @@ Field definitions:
 | `seq` | int | yes | Monotonically increasing sequence number within this outbox file. Starts at 1. |
 | `timestamp` | string | yes | ISO 8601 with timezone. |
 | `type` | string | yes | Dotted event type from the taxonomy (section 3.2). |
+
+**Context fields** (provided by the caller, required unless noted):
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
 | `workspace` | string | yes | Workspace name from WorkspaceSpec. |
 | `actor` | string | yes | Who triggered the event. Format: `agent:<name>`, `human:<name>`, or `system`. |
 | `agent_id` | string | no | Persistent agent identity from premium. Opaque in OSS. |
 | `owner_unit` | string | yes | Unit that owns the context where this event occurred. |
-| `payload` | object | yes | Event-type-specific data. |
+
+**Domain fields** vary by event type. See section 3.2 for the fields each event
+type carries. Domain fields are top-level keys alongside envelope and context
+fields.
 
 Rules:
 - `event_id` must be unique within a workspace.
@@ -74,6 +90,9 @@ Rules:
   automated operations.
 - `agent_id` is optional because human-triggered and system-triggered events
   do not have one.
+- Domain field names must not collide with envelope or context field names.
+  The reserved names are: `version`, `event_id`, `seq`, `timestamp`, `type`,
+  `workspace`, `actor`, `agent_id`, `owner_unit`.
 
 ### 3.2 Event Type Taxonomy
 
@@ -128,6 +147,12 @@ Rules for hook events:
 PRs in multiple repos, they share the same `pr_group_id`. This is how consumers
 reconstruct the cross-repo PR as a unit.
 
+**Boundary**: `pr_group_id` is assigned by gr2's orchestration layer (`pr.py`),
+not by PlatformAdapter. PlatformAdapter is group-unaware: it creates, queries,
+and merges individual per-repo PRs. The `pr.py` module correlates them into a
+group and assigns the `pg_` prefixed ID. This keeps platform adapters simple and
+reusable across contexts that may not need grouping.
+
 #### Sync Operations
 
 | Type | Trigger | Payload |
@@ -136,7 +161,34 @@ reconstruct the cross-repo PR as a unit.
 | `sync.repo_updated` | Single repo pull/rebase completes | `{repo, old_sha, new_sha, strategy, commits_pulled: int}` |
 | `sync.repo_skipped` | Repo skipped (dirty, no remote, etc.) | `{repo, reason}` |
 | `sync.conflict` | Merge/rebase conflict during sync | `{repo, conflicting_files: [str]}` |
-| `sync.completed` | `gr2 sync` finishes | `{repos_updated: int, repos_skipped: int, repos_failed: int, duration_ms}` |
+| `sync.completed` | `gr2 sync` finishes | `{status, repos_updated: int, repos_skipped: int, repos_failed: int, duration_ms}` |
+
+`sync.completed` is the **single terminal event** for sync operations. There is no
+separate `sync.failed` type. The `status` field distinguishes outcomes:
+
+| `status` value | Meaning |
+|----------------|---------|
+| `success` | All repos updated without error. |
+| `partial_failure` | Some repos updated, some failed. `repos_failed > 0`. |
+| `blocked` | Sync could not proceed (e.g., unresolved failure marker). |
+| `failed` | All repos failed or sync aborted early. |
+
+This matches Atlas's `syncops.py` pattern, which uses `sync.completed` with a
+status field rather than emitting a separate `sync.failed` event type.
+
+#### Recovery
+
+| Type | Trigger | Payload |
+|------|---------|---------|
+| `failure.resolved` | `gr2 lane resolve <operation_id>` | `{operation_id, resolved_by, resolution, lane_name}` |
+| `lease.reclaimed` | Stale lease garbage-collected during acquire | `{lane_name, lease_id, previous_holder, expired_at, reclaimed_by}` |
+
+`failure.resolved` is emitted when an agent explicitly clears a failure marker
+(section 14.1). `lease.reclaimed` is emitted when a stale lease is
+garbage-collected during a new acquire (section 14.2, step 6-7). This is
+distinct from `lease.expired` (which fires at the point of staleness detection)
+and `lease.force_broken` (which fires when a live lease is broken with
+`--force`).
 
 #### Workspace Operations
 
@@ -420,6 +472,10 @@ class EventType(str, Enum):
     SYNC_CONFLICT = "sync.conflict"
     SYNC_COMPLETED = "sync.completed"
 
+    # Recovery
+    FAILURE_RESOLVED = "failure.resolved"
+    LEASE_RECLAIMED = "lease.reclaimed"
+
     # Workspace operations
     WORKSPACE_MATERIALIZED = "workspace.materialized"
     WORKSPACE_FILE_PROJECTED = "workspace.file_projected"
@@ -456,6 +512,9 @@ produces a channel message.
 | `pr.checks_failed` | `"CI failed on {repo}#{pr_number}: {failed_checks}"` | #dev |
 | `hook.failed` (block) | `"Hook {hook_name} failed in {repo} (blocking): {stderr_tail}"` | #dev |
 | `sync.conflict` | `"Sync conflict in {repo}: {conflicting_files}"` | #dev |
+| `lease.force_broken` | `"Lease on {lane_name} force-broken by {broken_by}: {reason}"` | #dev |
+| `failure.resolved` | `"{resolved_by} resolved failure {operation_id} on {lane_name}"` | #dev |
+| `lease.reclaimed` | `"Stale lease on {lane_name} reclaimed (was held by {previous_holder})"` | #dev |
 
 Events not listed (hook.started, hook.completed, hook.skipped, lease.acquired,
 lease.released, sync.repo_updated, workspace.file_projected, etc.) are **not**
@@ -467,7 +526,7 @@ via a filter file at `.grip/events/channel_filter.toml`:
 
 ```toml
 [channel_bridge]
-include = ["lane.*", "pr.*", "hook.failed", "sync.conflict"]
+include = ["lane.*", "pr.*", "hook.failed", "sync.conflict", "lease.force_broken", "failure.resolved", "lease.reclaimed"]
 exclude = ["hook.started", "hook.completed", "hook.skipped"]
 ```
 
@@ -703,7 +762,11 @@ Leases use TTL-first expiry with optional heartbeat renewal.
 
 - `gr2 lane lease acquire --force` breaks a live (non-expired) lease.
 - Emits `lease.force_broken` event with `{broken_by, reason}`.
-- Spawn can route this event to the original holder's channel as a notification.
+- Notification routing to the original holder is a **channel_bridge consumer
+  responsibility**, not a core gr2 concern. The `lease.force_broken` event
+  carries `broken_by` and the original holder's identity in context fields.
+  The channel bridge (or spawn_watcher) decides how and where to deliver the
+  notification based on its own routing rules.
 
 ### 14.3 Dirty State on Lane Switch
 

@@ -63,6 +63,8 @@ class TestEventTypeEnum:
         assert EventType.SYNC_REPO_SKIPPED == "sync.repo_skipped"
         assert EventType.SYNC_CONFLICT == "sync.conflict"
         assert EventType.SYNC_COMPLETED == "sync.completed"
+        assert EventType.SYNC_CACHE_SEEDED == "sync.cache_seeded"
+        assert EventType.SYNC_CACHE_REFRESHED == "sync.cache_refreshed"
 
     def test_recovery_types(self):
         from gr2.python_cli.events import EventType
@@ -76,8 +78,8 @@ class TestEventTypeEnum:
 
     def test_total_count(self):
         from gr2.python_cli.events import EventType
-        # 5 lane + 4 lease + 4 hook + 7 PR + 5 sync + 2 recovery + 2 workspace = 29
-        assert len(EventType) == 29
+        # 5 lane + 4 lease + 4 hook + 7 PR + 7 sync + 2 recovery + 2 workspace = 31
+        assert len(EventType) == 31
 
 
 # ---------------------------------------------------------------------------

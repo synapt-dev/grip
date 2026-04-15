@@ -8,6 +8,7 @@ Implements the event contract from HOOK-EVENT-CONTRACT.md sections 3-8:
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import sys
@@ -60,6 +61,8 @@ class EventType(str, Enum):
     SYNC_REPO_SKIPPED = "sync.repo_skipped"
     SYNC_CONFLICT = "sync.conflict"
     SYNC_COMPLETED = "sync.completed"
+    SYNC_CACHE_SEEDED = "sync.cache_seeded"
+    SYNC_CACHE_REFRESHED = "sync.cache_refreshed"
 
     # Recovery
     FAILURE_RESOLVED = "failure.resolved"
@@ -142,30 +145,36 @@ def emit(
     try:
         outbox = _outbox_path(workspace_root)
         outbox.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = outbox.with_suffix(".lock")
 
-        # Capture seq before rotation (rotation empties the current file).
-        seq = _current_seq(outbox) + 1
-        _maybe_rotate(outbox)
+        with lock_path.open("a+") as lock_fh:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+            try:
+                # Capture seq before rotation (rotation empties the current file).
+                seq = _current_seq(outbox) + 1
+                _maybe_rotate(outbox)
 
-        # Build flat event object.
-        event: dict[str, object] = {
-            "version": 1,
-            "event_id": os.urandom(8).hex(),
-            "seq": seq,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "type": str(event_type.value),
-            "workspace": workspace_root.name,
-            "actor": actor,
-            "owner_unit": owner_unit,
-        }
-        if agent_id is not None:
-            event["agent_id"] = agent_id
-        event.update(payload)
+                # Build flat event object.
+                event: dict[str, object] = {
+                    "version": 1,
+                    "event_id": os.urandom(8).hex(),
+                    "seq": seq,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "type": str(event_type.value),
+                    "workspace": workspace_root.name,
+                    "actor": actor,
+                    "owner_unit": owner_unit,
+                }
+                if agent_id is not None:
+                    event["agent_id"] = agent_id
+                event.update(payload)
 
-        # Append as single JSONL line.
-        with outbox.open("a") as f:
-            f.write(json.dumps(event, separators=(",", ":")) + "\n")
-            f.flush()
+                # Append as single JSONL line.
+                with outbox.open("a") as f:
+                    f.write(json.dumps(event, separators=(",", ":")) + "\n")
+                    f.flush()
+            finally:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
 
     except Exception as exc:
         print(f"gr2: event emit failed: {exc}", file=sys.stderr)

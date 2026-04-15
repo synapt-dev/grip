@@ -211,22 +211,40 @@ def _pr_groups_root(workspace_root: Path) -> Path:
     return workspace_root / ".grip" / "pr_groups"
 
 
-def _pr_group_path(workspace_root: Path, owner_unit: str, lane_name: str) -> Path:
-    return _pr_groups_root(workspace_root) / owner_unit / f"{lane_name}.json"
+def _pr_group_path(workspace_root: Path, pr_group_id: str) -> Path:
+    return _pr_groups_root(workspace_root) / f"{pr_group_id}.json"
 
 
-def _write_pr_group(workspace_root: Path, owner_unit: str, lane_name: str, payload: dict[str, object]) -> Path:
-    path = _pr_group_path(workspace_root, owner_unit, lane_name)
+def _write_pr_group(workspace_root: Path, payload: dict[str, object]) -> Path:
+    pr_group_id = str(payload["pr_group_id"])
+    path = _pr_group_path(workspace_root, pr_group_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n")
     return path
 
 
-def _load_pr_group(workspace_root: Path, owner_unit: str, lane_name: str) -> dict[str, object]:
-    path = _pr_group_path(workspace_root, owner_unit, lane_name)
-    if not path.exists():
-        raise SystemExit(f"pr group not found for {owner_unit}/{lane_name}: {path}")
-    return json.loads(path.read_text())
+def _find_pr_group(workspace_root: Path, owner_unit: str, lane_name: str) -> tuple[Path, dict[str, object]]:
+    root = _pr_groups_root(workspace_root)
+    if not root.exists():
+        raise SystemExit(f"pr group not found for {owner_unit}/{lane_name}: {root}")
+    for path in sorted(root.glob("*.json")):
+        doc = json.loads(path.read_text())
+        if doc.get("owner_unit") == owner_unit and doc.get("lane_name") == lane_name:
+            return path, doc
+    raise SystemExit(f"pr group not found for {owner_unit}/{lane_name}: {root}")
+
+
+def _group_state_from_statuses(statuses: list[dict[str, object]]) -> str:
+    states = [str(item.get("state", "")).upper() for item in statuses]
+    if not states:
+        return "empty"
+    if all(state == "MERGED" for state in states):
+        return "merged"
+    if any(state == "MERGED" for state in states):
+        return "partially_merged"
+    if all(state in {"OPEN", "MERGEABLE", "CLEAN"} for state in states):
+        return "open"
+    return "mixed"
 
 
 def _repo_slug_from_url(url: str, fallback_name: str) -> str:
@@ -954,8 +972,9 @@ def pr_create(
         "lane_name": resolved_lane,
         "platform": platform,
         "refs": refs,
+        "group_state": "open",
     }
-    path = _write_pr_group(workspace_root, owner_unit, resolved_lane, payload)
+    path = _write_pr_group(workspace_root, payload)
     payload["state_path"] = str(path)
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
@@ -973,17 +992,22 @@ def pr_status(
     """Show grouped PR status for a lane."""
     workspace_root = workspace_root.resolve()
     resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
-    group = _load_pr_group(workspace_root, owner_unit, resolved_lane)
+    group_path, group = _find_pr_group(workspace_root, owner_unit, resolved_lane)
     adapter = get_platform_adapter(str(group.get("platform", "github")))
     statuses = []
     for ref_doc in group.get("refs", []):
         ref = PRRef(**ref_doc)
         statuses.append(adapter.pr_status(ref.repo, int(ref.number)).as_dict())
+    group["statuses"] = statuses
+    group["group_state"] = _group_state_from_statuses(statuses)
+    _write_pr_group(workspace_root, group)
     payload = {
         "pr_group_id": group["pr_group_id"],
         "owner_unit": owner_unit,
         "lane_name": resolved_lane,
+        "group_state": group["group_state"],
         "statuses": statuses,
+        "state_path": str(group_path),
     }
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
@@ -1001,7 +1025,7 @@ def pr_checks(
     """Show grouped PR checks for a lane."""
     workspace_root = workspace_root.resolve()
     resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
-    group = _load_pr_group(workspace_root, owner_unit, resolved_lane)
+    group_path, group = _find_pr_group(workspace_root, owner_unit, resolved_lane)
     adapter = get_platform_adapter(str(group.get("platform", "github")))
     rows = []
     for ref_doc in group.get("refs", []):
@@ -1018,6 +1042,7 @@ def pr_checks(
         "owner_unit": owner_unit,
         "lane_name": resolved_lane,
         "checks": rows,
+        "state_path": str(group_path),
     }
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
@@ -1035,17 +1060,42 @@ def pr_merge(
     """Merge grouped PRs for a lane."""
     workspace_root = workspace_root.resolve()
     resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
-    group = _load_pr_group(workspace_root, owner_unit, resolved_lane)
+    group_path, group = _find_pr_group(workspace_root, owner_unit, resolved_lane)
     adapter = get_platform_adapter(str(group.get("platform", "github")))
-    merged = []
+    merged: list[str] = []
+    failed: list[dict[str, object]] = []
     for ref_doc in group.get("refs", []):
         ref = PRRef(**ref_doc)
-        merged.append(adapter.merge_pr(ref.repo, int(ref.number)).as_dict())
+        try:
+            adapter.merge_pr(ref.repo, int(ref.number))
+            merged.append(ref.repo)
+        except Exception as exc:
+            failed.append({"repo": ref.repo, "number": ref.number, "reason": str(exc)})
+            break
+    if failed:
+        group["group_state"] = "partially_merged" if merged else "merge_failed"
+        group["merged"] = merged
+        _write_pr_group(workspace_root, group)
+        payload = {
+            "status": "partial_failure" if merged else "failed",
+            "pr_group_id": group["pr_group_id"],
+            "owner_unit": owner_unit,
+            "lane_name": resolved_lane,
+            "merged": merged,
+            "failed": failed,
+            "state_path": str(group_path),
+        }
+        if json_output:
+            typer.echo(json.dumps(payload, indent=2))
+        else:
+            typer.echo(json.dumps(payload, indent=2))
+        raise typer.Exit(code=1)
     payload = {
         "pr_group_id": group["pr_group_id"],
         "owner_unit": owner_unit,
         "lane_name": resolved_lane,
         "merged": merged,
+        "state_path": str(group_path),
     }
     if json_output:
         typer.echo(json.dumps(payload, indent=2))

@@ -32,6 +32,14 @@ def remote_origin_url(path: Path) -> str | None:
     return value or None
 
 
+def current_head_sha(path: Path) -> str | None:
+    proc = git(path, "rev-parse", "HEAD")
+    if proc.returncode != 0:
+        return None
+    value = proc.stdout.strip()
+    return value or None
+
+
 def ensure_repo_cache(url: str, cache_repo_root: Path) -> bool:
     """Ensure a local bare mirror exists for a repo URL.
 
@@ -158,4 +166,16 @@ def stash_if_dirty(repo_root: Path, message: str) -> bool:
     proc = git(repo_root, "stash", "push", "-u", "-m", message)
     if proc.returncode != 0:
         raise SystemExit(f"failed to stash dirty work in {repo_root}:\n{proc.stderr or proc.stdout}")
+    return True
+
+
+def discard_if_dirty(repo_root: Path) -> bool:
+    if not repo_dirty(repo_root):
+        return False
+    proc = git(repo_root, "reset", "--hard", "HEAD")
+    if proc.returncode != 0:
+        raise SystemExit(f"failed to discard tracked changes in {repo_root}:\n{proc.stderr or proc.stdout}")
+    proc = git(repo_root, "clean", "-fd")
+    if proc.returncode != 0:
+        raise SystemExit(f"failed to discard untracked changes in {repo_root}:\n{proc.stderr or proc.stdout}")
     return True

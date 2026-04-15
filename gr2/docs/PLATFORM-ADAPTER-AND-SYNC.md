@@ -157,8 +157,9 @@ This is the seam premium and QA will consume.
 
 ## 6. Sync Safety Rules
 
-1. Dirty state wins over convenience.
-   If a repo is dirty, `sync` blocks instead of mutating through it.
+1. Dirty state is explicit, not implicit.
+   `sync` accepts `--dirty=stash|block|discard`.
+   Default is `stash`, per Sprint 20 ruling.
 
 2. Lanes are first-class.
    `sync` must treat shared repos and lane checkouts differently.
@@ -171,6 +172,7 @@ This is the seam premium and QA will consume.
 
 5. Event emission is part of correctness.
    `sync` must emit enough machine-readable state for premium spawn and QA.
+   Emit failure does not block the parent operation.
 
 ## 7. Proposed Command Shapes
 
@@ -184,7 +186,7 @@ Possible later flags:
 - `--lane <name>`
 - `--owner-unit <unit>`
 - `--refresh-prs`
-- `--allow-dirty-stash`
+- `--dirty=stash|block|discard`
 - `--json`
 
 `sync status` should be the dry-run/default read path.

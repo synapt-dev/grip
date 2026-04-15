@@ -54,17 +54,21 @@ Not:
 
 ## 4. Dirty State
 
-Dirty state is a pre-execution blocker by default.
+Dirty handling is explicit through `--dirty=stash|block|discard`.
 
-If a shared repo or lane checkout is dirty:
-- `sync status` returns `blocked`
-- `sync run` must not mutate through that checkout unless the command explicitly
-  supports a later opt-in dirty-state strategy
+Default:
+- `--dirty=stash`
 
-Initial Sprint 20 contract:
-- no implicit stash
+Behavior:
+- `stash`: preserve local work by stashing it before sync mutation proceeds
+- `block`: return a blocking dirty-state issue and do not mutate through that
+  checkout
+- `discard`: explicitly discard local changes before sync mutation proceeds
+
+Rules:
 - no implicit commit
-- no implicit reset
+- no dirty-state behavior outside the declared `--dirty` mode
+- `discard` is always explicit and never the default
 
 ## 5. Partial State Contract
 

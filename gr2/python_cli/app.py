@@ -255,13 +255,14 @@ def _exit(code: int) -> None:
 @sync_app.command("status")
 def sync_status(
     workspace_root: Path,
+    dirty_mode: str = typer.Option("stash", "--dirty", help="Dirty-state handling: stash, block, or discard"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Inspect workspace-wide sync readiness without mutating any repo state."""
     workspace_root = workspace_root.resolve()
-    plan = syncops.build_sync_plan(workspace_root)
+    plan = syncops.build_sync_plan(workspace_root, dirty_mode=dirty_mode)
     if json_output:
-        typer.echo(syncops.sync_status_json(workspace_root))
+        typer.echo(json.dumps(plan.as_dict(), indent=2))
         return
     typer.echo(syncops.render_sync_plan(plan))
 
@@ -269,11 +270,12 @@ def sync_status(
 @sync_app.command("run")
 def sync_run(
     workspace_root: Path,
+    dirty_mode: str = typer.Option("stash", "--dirty", help="Dirty-state handling: stash, block, or discard"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Execute the current sync plan, stopping on the first blocking runtime failure."""
     workspace_root = workspace_root.resolve()
-    result = syncops.run_sync(workspace_root)
+    result = syncops.run_sync(workspace_root, dirty_mode=dirty_mode)
     if json_output:
         typer.echo(json.dumps(result.as_dict(), indent=2))
     else:

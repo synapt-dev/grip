@@ -1,12 +1,26 @@
 from __future__ import annotations
 
 import dataclasses
+import fcntl
 import json
+import os
 from pathlib import Path
+from datetime import UTC, datetime
 
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 
-from .gitops import current_branch, ensure_lane_checkout, ensure_repo_cache, is_git_dir, is_git_repo, repo_dirty, clone_repo
+from .gitops import (
+    clone_repo,
+    current_branch,
+    current_head_sha,
+    discard_if_dirty,
+    ensure_lane_checkout,
+    ensure_repo_cache,
+    is_git_dir,
+    is_git_repo,
+    repo_dirty,
+    stash_if_dirty,
+)
 from .hooks import load_repo_hooks
 from .spec_apply import (
     ValidationIssue,
@@ -24,6 +38,7 @@ SYNC_ROLLBACK_CONTRACT = (
     "sync preserves completed operations, stops on blocking failure, and reports partial state explicitly; "
     "it does not attempt automatic cross-repo rollback"
 )
+VALID_DIRTY_MODES = {"stash", "block", "discard"}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -83,6 +98,7 @@ class SyncResult:
     blocked: list[SyncIssue]
     failures: list[SyncIssue]
     rollback_contract: str
+    operation_id: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -93,6 +109,7 @@ class SyncResult:
             "blocked": [item.as_dict() for item in self.blocked],
             "failures": [item.as_dict() for item in self.failures],
             "rollback_contract": self.rollback_contract,
+            "operation_id": self.operation_id,
         }
 
 
@@ -148,8 +165,79 @@ def _status_from_issues(issues: list[SyncIssue]) -> str:
     return "ready"
 
 
-def build_sync_plan(workspace_root: Path) -> SyncPlan:
+def _normalize_dirty_mode(dirty_mode: str) -> str:
+    normalized = dirty_mode.strip().lower()
+    if normalized not in VALID_DIRTY_MODES:
+        raise SystemExit(f"invalid --dirty value '{dirty_mode}'; expected one of: stash, block, discard")
+    return normalized
+
+
+def _operation_id() -> str:
+    return os.urandom(8).hex()
+
+
+def _now_utc() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _events_dir(workspace_root: Path) -> Path:
+    return workspace_root / ".grip" / "events"
+
+
+def _outbox_file(workspace_root: Path) -> Path:
+    return _events_dir(workspace_root) / "outbox.jsonl"
+
+
+def _outbox_lock_file(workspace_root: Path) -> Path:
+    return _events_dir(workspace_root) / "outbox.lock"
+
+
+def _sync_lock_file(workspace_root: Path) -> Path:
+    return workspace_root / ".grip" / "state" / "sync.lock"
+
+
+def _append_outbox_event(workspace_root: Path, payload: dict[str, object]) -> None:
+    outbox_path = _outbox_file(workspace_root)
+    lock_path = _outbox_lock_file(workspace_root)
+    outbox_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with lock_path.open("a+", encoding="utf-8") as lock_fh:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+            seq = 1
+            if outbox_path.exists():
+                with outbox_path.open("r", encoding="utf-8") as existing:
+                    for line in existing:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            row = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        value = int(row.get("seq", 0))
+                        if value >= seq:
+                            seq = value + 1
+            event = {
+                "seq": seq,
+                "event_id": os.urandom(8).hex(),
+                "timestamp": _now_utc(),
+                **payload,
+            }
+            with outbox_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(event) + "\n")
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        return
+
+
+def _emit_sync_event(workspace_root: Path, payload: dict[str, object]) -> None:
+    _append_outbox_event(workspace_root, payload)
+
+
+def build_sync_plan(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncPlan:
     workspace_root = workspace_root.resolve()
+    dirty_mode = _normalize_dirty_mode(dirty_mode)
     spec_path = workspace_spec_path(workspace_root)
     if not spec_path.exists():
         raise SystemExit(
@@ -236,17 +324,30 @@ def build_sync_plan(workspace_root: Path) -> SyncPlan:
             )
         else:
             if repo_dirty(repo_root):
-                issues.append(
-                    SyncIssue(
-                        level="error",
-                        code="dirty_shared_repo",
-                        scope="shared_repo",
-                        subject=repo_name,
-                        message=f"shared repo has uncommitted changes and blocks sync: {repo_root}",
-                        blocks=True,
-                        path=str(repo_root),
+                if dirty_mode == "block":
+                    issues.append(
+                        SyncIssue(
+                            level="error",
+                            code="dirty_shared_repo",
+                            scope="shared_repo",
+                            subject=repo_name,
+                            message=f"shared repo has uncommitted changes and blocks sync: {repo_root}",
+                            blocks=True,
+                            path=str(repo_root),
+                            details={"dirty_mode": dirty_mode},
+                        )
                     )
-                )
+                else:
+                    operations.append(
+                        SyncOperation(
+                            kind="stash_dirty_repo" if dirty_mode == "stash" else "discard_dirty_repo",
+                            scope="shared_repo",
+                            subject=repo_name,
+                            target_path=str(repo_root),
+                            reason=f"shared repo is dirty and will be handled via --dirty={dirty_mode}",
+                            details={"dirty_mode": dirty_mode},
+                        )
+                    )
             hooks = load_repo_hooks(repo_root)
             if hooks:
                 operations.append(
@@ -305,18 +406,30 @@ def build_sync_plan(workspace_root: Path) -> SyncPlan:
                 )
                 continue
             if repo_dirty(lane_repo_root):
-                issues.append(
-                    SyncIssue(
-                        level="error",
-                        code="dirty_lane_repo",
-                        scope="lane",
-                        subject=f"{owner_unit}/{lane_name}:{repo_name}",
-                        message=f"lane repo has uncommitted changes and blocks sync: {lane_repo_root}",
-                        blocks=True,
-                        path=str(lane_repo_root),
-                        details={"expected_branch": expected_branch},
+                if dirty_mode == "block":
+                    issues.append(
+                        SyncIssue(
+                            level="error",
+                            code="dirty_lane_repo",
+                            scope="lane",
+                            subject=f"{owner_unit}/{lane_name}:{repo_name}",
+                            message=f"lane repo has uncommitted changes and blocks sync: {lane_repo_root}",
+                            blocks=True,
+                            path=str(lane_repo_root),
+                            details={"expected_branch": expected_branch, "dirty_mode": dirty_mode},
+                        )
                     )
-                )
+                else:
+                    operations.append(
+                        SyncOperation(
+                            kind="stash_dirty_repo" if dirty_mode == "stash" else "discard_dirty_repo",
+                            scope="lane",
+                            subject=f"{owner_unit}/{lane_name}:{repo_name}",
+                            target_path=str(lane_repo_root),
+                            reason=f"lane repo is dirty and will be handled via --dirty={dirty_mode}",
+                            details={"expected_branch": expected_branch, "dirty_mode": dirty_mode},
+                        )
+                    )
             operations.append(
                 SyncOperation(
                     kind="inspect_lane_repo_branch",
@@ -380,6 +493,8 @@ def _issue_from_exception(op: SyncOperation, exc: BaseException) -> SyncIssue:
 
 
 def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOperation) -> str:
+    target_path = Path(op.target_path)
+    before_sha = current_head_sha(target_path) if op.scope in {"shared_repo", "lane"} and target_path.exists() else None
     if op.kind in {"seed_repo_cache", "refresh_repo_cache"}:
         repo_spec = _find_repo(spec, op.subject)
         cache_path = repo_cache_path(workspace_root, str(repo_spec["name"]))
@@ -396,6 +511,17 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
         cache_path = repo_cache_path(workspace_root, str(repo_spec["name"]))
         first_materialize = clone_repo(str(repo_spec["url"]), repo_root, reference_repo_root=cache_path)
         _run_materialize_hooks(workspace_root, repo_root, str(repo_spec["name"]), first_materialize, manual_hooks=False)
+        after_sha = current_head_sha(repo_root)
+        _emit_sync_event(
+            workspace_root,
+            {
+                "type": "sync.repo_updated",
+                "repo": op.subject,
+                "scope": "shared_repo",
+                "old_sha": before_sha,
+                "new_sha": after_sha,
+            },
+        )
         return f"cloned shared repo '{op.subject}' into {repo_root}"
 
     if op.kind == "evaluate_repo_hooks":
@@ -418,6 +544,20 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
             branch=expected_branch,
         )
         _run_materialize_hooks(workspace_root, target_repo_root, repo_name, first_materialize, manual_hooks=False)
+        after_sha = current_head_sha(target_repo_root)
+        _emit_sync_event(
+            workspace_root,
+            {
+                "type": "sync.repo_updated",
+                "repo": repo_name,
+                "scope": "lane",
+                "owner_unit": owner_unit,
+                "lane": lane_name,
+                "old_sha": before_sha,
+                "new_sha": after_sha,
+                "branch": expected_branch,
+            },
+        )
         return f"materialized lane repo '{op.subject}' at {target_repo_root}"
 
     if op.kind == "inspect_lane_repo_branch":
@@ -430,14 +570,117 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
             )
         return f"verified lane branch for '{op.subject}' ({actual_branch or '-'})"
 
+    if op.kind == "stash_dirty_repo":
+        repo_root = Path(op.target_path)
+        if stash_if_dirty(repo_root, f"gr2 sync auto-stash: {op.subject}"):
+            _emit_sync_event(
+                workspace_root,
+                {
+                    "type": "sync.repo_skipped",
+                    "repo": op.subject.split(":")[-1],
+                    "scope": op.scope,
+                    "reason": "dirty_stashed",
+                },
+            )
+            return f"stashed dirty repo state for '{op.subject}'"
+        return f"repo already clean for '{op.subject}'"
+
+    if op.kind == "discard_dirty_repo":
+        repo_root = Path(op.target_path)
+        if discard_if_dirty(repo_root):
+            _emit_sync_event(
+                workspace_root,
+                {
+                    "type": "sync.repo_skipped",
+                    "repo": op.subject.split(":")[-1],
+                    "scope": op.scope,
+                    "reason": "dirty_discarded",
+                },
+            )
+            return f"discarded dirty repo state for '{op.subject}'"
+        return f"repo already clean for '{op.subject}'"
+
     raise SystemExit(f"unsupported sync operation kind: {op.kind}")
 
 
-def run_sync(workspace_root: Path) -> SyncResult:
+def _acquire_sync_lock(workspace_root: Path):
+    lock_path = _sync_lock_file(workspace_root)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_fh = lock_path.open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_fh.close()
+        return None
+    return lock_fh
+
+
+def _release_sync_lock(lock_fh) -> None:
+    if lock_fh is None:
+        return
+    fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+    lock_fh.close()
+
+
+def run_sync(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncResult:
     workspace_root = workspace_root.resolve()
-    plan = build_sync_plan(workspace_root)
+    dirty_mode = _normalize_dirty_mode(dirty_mode)
+    operation_id = _operation_id()
+    lock_fh = _acquire_sync_lock(workspace_root)
+    if lock_fh is None:
+        blocked_issue = SyncIssue(
+            level="error",
+            code="sync_lock_held",
+            scope="workspace",
+            subject=str(workspace_root),
+            message="another sync run currently holds the workspace lock",
+            blocks=True,
+            path=str(_sync_lock_file(workspace_root)),
+            details={"operation_id": operation_id},
+        )
+        _emit_sync_event(
+            workspace_root,
+            {
+                "type": "sync.conflict",
+                "operation_id": operation_id,
+                "reason": "lock_held",
+                "workspace_root": str(workspace_root),
+            },
+        )
+        return SyncResult(
+            workspace_root=str(workspace_root),
+            status="blocked",
+            plan_status="blocked",
+            applied=[],
+            blocked=[blocked_issue],
+            failures=[],
+            rollback_contract=SYNC_ROLLBACK_CONTRACT,
+            operation_id=operation_id,
+        )
+
+    _emit_sync_event(
+        workspace_root,
+        {
+            "type": "sync.started",
+            "operation_id": operation_id,
+            "workspace_root": str(workspace_root),
+            "dirty_mode": dirty_mode,
+        },
+    )
+    plan = build_sync_plan(workspace_root, dirty_mode=dirty_mode)
     blocked = [issue for issue in plan.issues if issue.blocks]
     if blocked:
+        _emit_sync_event(
+            workspace_root,
+            {
+                "type": "sync.failed",
+                "operation_id": operation_id,
+                "workspace_root": str(workspace_root),
+                "status": "blocked",
+                "blocked_codes": [item.code for item in blocked],
+            },
+        )
+        _release_sync_lock(lock_fh)
         return SyncResult(
             workspace_root=str(workspace_root),
             status="blocked",
@@ -446,36 +689,53 @@ def run_sync(workspace_root: Path) -> SyncResult:
             blocked=blocked,
             failures=[],
             rollback_contract=SYNC_ROLLBACK_CONTRACT,
+            operation_id=operation_id,
         )
 
     spec = load_workspace_spec_doc(workspace_root)
     applied: list[str] = []
     failures: list[SyncIssue] = []
-    for op in plan.operations:
-        try:
-            applied.append(_execute_operation(workspace_root, spec, op))
-        except BaseException as exc:
-            failures.append(_issue_from_exception(op, exc))
-            break
+    try:
+        for op in plan.operations:
+            try:
+                applied.append(_execute_operation(workspace_root, spec, op))
+            except BaseException as exc:
+                failures.append(_issue_from_exception(op, exc))
+                break
 
-    if applied:
-        _record_apply_state(workspace_root, applied)
+        if applied:
+            _record_apply_state(workspace_root, applied)
 
-    status = "success"
-    if failures and applied:
-        status = "partial_failure"
-    elif failures:
-        status = "failed"
+        status = "success"
+        if failures and applied:
+            status = "partial_failure"
+        elif failures:
+            status = "failed"
 
-    return SyncResult(
-        workspace_root=str(workspace_root),
-        status=status,
-        plan_status=plan.status,
-        applied=applied,
-        blocked=[],
-        failures=failures,
-        rollback_contract=SYNC_ROLLBACK_CONTRACT,
-    )
+        _emit_sync_event(
+            workspace_root,
+            {
+                "type": "sync.completed" if status == "success" else "sync.failed",
+                "operation_id": operation_id,
+                "workspace_root": str(workspace_root),
+                "status": status,
+                "applied_count": len(applied),
+                "failure_codes": [item.code for item in failures],
+            },
+        )
+
+        return SyncResult(
+            workspace_root=str(workspace_root),
+            status=status,
+            plan_status=plan.status,
+            applied=applied,
+            blocked=[],
+            failures=failures,
+            rollback_contract=SYNC_ROLLBACK_CONTRACT,
+            operation_id=operation_id,
+        )
+    finally:
+        _release_sync_lock(lock_fh)
 
 
 def render_sync_result(result: SyncResult) -> str:
@@ -484,6 +744,7 @@ def render_sync_result(result: SyncResult) -> str:
         f"workspace_root = {result.workspace_root}",
         f"status = {result.status}",
         f"plan_status = {result.plan_status}",
+        f"operation_id = {result.operation_id or '-'}",
         f"applied_count = {len(result.applied)}",
         f"failure_count = {len(result.failures)}",
     ]

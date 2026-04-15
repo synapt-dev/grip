@@ -4,8 +4,11 @@ import dataclasses
 import json
 import sys
 import subprocess
+import time
 import tomllib
 from pathlib import Path
+
+from .events import emit, EventType
 
 
 VALID_IF_EXISTS = {"skip", "overwrite", "merge", "error"}
@@ -282,6 +285,18 @@ def run_lifecycle_stage(
             first_materialize=first_materialize,
             allow_manual=allow_manual,
         ):
+            emit(
+                event_type=EventType.HOOK_SKIPPED,
+                workspace_root=ctx.workspace_root,
+                actor="system",
+                owner_unit=ctx.lane_owner,
+                payload={
+                    "stage": stage,
+                    "hook_name": hook.name,
+                    "repo": ctx.repo_name,
+                    "reason": f"when={hook.when} did not match current invocation",
+                },
+            )
             results.append(
                 HookResult(
                     kind="lifecycle",
@@ -293,6 +308,20 @@ def run_lifecycle_stage(
             continue
         cwd = render_path(hook.cwd, ctx)
         command = render_text(hook.command, ctx)
+        emit(
+            event_type=EventType.HOOK_STARTED,
+            workspace_root=ctx.workspace_root,
+            actor="system",
+            owner_unit=ctx.lane_owner,
+            payload={
+                "stage": stage,
+                "hook_name": hook.name,
+                "repo": ctx.repo_name,
+                "command": command,
+                "cwd": str(cwd),
+            },
+        )
+        t0 = time.monotonic()
         proc = subprocess.run(
             command,
             cwd=cwd,
@@ -300,7 +329,21 @@ def run_lifecycle_stage(
             capture_output=True,
             text=True,
         )
+        duration_ms = int((time.monotonic() - t0) * 1000)
         if proc.returncode == 0:
+            emit(
+                event_type=EventType.HOOK_COMPLETED,
+                workspace_root=ctx.workspace_root,
+                actor="system",
+                owner_unit=ctx.lane_owner,
+                payload={
+                    "stage": stage,
+                    "hook_name": hook.name,
+                    "repo": ctx.repo_name,
+                    "duration_ms": duration_ms,
+                    "exit_code": 0,
+                },
+            )
             results.append(
                 HookResult(
                     kind="lifecycle",
@@ -315,6 +358,22 @@ def run_lifecycle_stage(
                 )
             )
             continue
+        stderr_tail = proc.stderr[-500:] if proc.stderr else ""
+        emit(
+            event_type=EventType.HOOK_FAILED,
+            workspace_root=ctx.workspace_root,
+            actor="system",
+            owner_unit=ctx.lane_owner,
+            payload={
+                "stage": stage,
+                "hook_name": hook.name,
+                "repo": ctx.repo_name,
+                "duration_ms": duration_ms,
+                "exit_code": proc.returncode,
+                "on_failure": hook.on_failure,
+                "stderr_tail": stderr_tail,
+            },
+        )
         payload = {
             "kind": "lifecycle",
             "stage": stage,

@@ -23,6 +23,7 @@ from .gitops import (
     repo_dirty,
     stash_if_dirty,
 )
+from .events import emit, EventType
 from .hooks import HookContext, apply_file_projections, load_repo_hooks, run_lifecycle_stage
 from . import spec_apply
 from gr2.prototypes import lane_workspace_prototype as lane_proto
@@ -607,6 +608,28 @@ def lane_create(
     )
     _exit(lane_proto.create_lane(ns))
     _materialize_lane_repos(workspace_root, owner_unit, lane_name, manual_hooks=manual_hooks)
+    repo_list = [r.strip() for r in repos.split(",")]
+    branch_parts = branch.split(",")
+    branch_map = {}
+    for part in branch_parts:
+        if "=" in part:
+            k, v = part.split("=", 1)
+            branch_map[k.strip()] = v.strip()
+        else:
+            for r in repo_list:
+                branch_map[r] = part.strip()
+    emit(
+        event_type=EventType.LANE_CREATED,
+        workspace_root=workspace_root,
+        actor=source,
+        owner_unit=owner_unit,
+        payload={
+            "lane_name": lane_name,
+            "lane_type": lane_type,
+            "repos": repo_list,
+            "branch_map": branch_map,
+        },
+    )
 
 
 @lane_app.command("enter")
@@ -631,6 +654,18 @@ def lane_enter(
         recall=recall,
     )
     _exit(lane_proto.enter_lane(ns))
+    lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
+    emit(
+        event_type=EventType.LANE_ENTERED,
+        workspace_root=workspace_root,
+        actor=actor,
+        owner_unit=owner_unit,
+        payload={
+            "lane_name": lane_name,
+            "lane_type": lane_doc.get("type", "feature"),
+            "repos": lane_doc.get("repos", []),
+        },
+    )
 
 
 @lane_app.command("exit")
@@ -647,10 +682,12 @@ def lane_exit(
     current_doc = lane_proto.load_current_lane_doc(workspace_root, owner_unit)
     lane_name = current_doc["current"]["lane_name"]
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
+    stashed_repos: list[str] = []
     for repo_name in lane_doc.get("repos", []):
         repo_root = _lane_repo_root(workspace_root, owner_unit, lane_name, repo_name)
         if repo_root.exists():
-            stash_if_dirty(repo_root, f"gr2 exit {owner_unit}/{lane_name}")
+            if stash_if_dirty(repo_root, f"gr2 exit {owner_unit}/{lane_name}"):
+                stashed_repos.append(repo_name)
     _run_lane_stage(workspace_root, owner_unit, lane_name, "on_exit", manual_hooks=manual_hooks)
     ns = SimpleNamespace(
         workspace_root=workspace_root,
@@ -660,6 +697,16 @@ def lane_exit(
         recall=recall,
     )
     _exit(lane_proto.exit_lane(ns))
+    emit(
+        event_type=EventType.LANE_EXITED,
+        workspace_root=workspace_root,
+        actor=actor,
+        owner_unit=owner_unit,
+        payload={
+            "lane_name": lane_name,
+            "stashed_repos": stashed_repos,
+        },
+    )
 
 
 @lane_app.command("current")
@@ -698,6 +745,18 @@ def lane_lease_acquire(
         force=force,
     )
     _exit(lane_proto.acquire_lane_lease(ns))
+    emit(
+        event_type=EventType.LEASE_ACQUIRED,
+        workspace_root=workspace_root,
+        actor=actor,
+        owner_unit=owner_unit,
+        payload={
+            "lane_name": lane_name,
+            "mode": mode,
+            "ttl_seconds": ttl_seconds,
+            "lease_id": f"{owner_unit}:{lane_name}",
+        },
+    )
 
 
 @lease_app.command("release")
@@ -715,6 +774,16 @@ def lane_lease_release(
         actor=actor,
     )
     _exit(lane_proto.release_lane_lease(ns))
+    emit(
+        event_type=EventType.LEASE_RELEASED,
+        workspace_root=workspace_root,
+        actor=actor,
+        owner_unit=owner_unit,
+        payload={
+            "lane_name": lane_name,
+            "lease_id": f"{owner_unit}:{lane_name}",
+        },
+    )
 
 
 @lease_app.command("show")

@@ -84,6 +84,8 @@ class HookResult:
     returncode: int | None = None
     stdout: str | None = None
     stderr: str | None = None
+    src: str | None = None
+    dest: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         return dataclasses.asdict(self)
@@ -206,6 +208,8 @@ def apply_file_projections(hooks: RepoHooks, ctx: HookContext) -> list[HookResul
                         name=f"{item.kind}:{dest.name}",
                         status="skipped",
                         detail=f"destination already exists and if_exists=skip: {dest}",
+                        src=str(src),
+                        dest=str(dest),
                     )
                 )
                 continue
@@ -258,6 +262,8 @@ def apply_file_projections(hooks: RepoHooks, ctx: HookContext) -> list[HookResul
                 name=f"{item.kind}:{dest.name}",
                 status="applied",
                 detail=f"{item.kind} {src} -> {dest}",
+                src=str(src),
+                dest=str(dest),
             )
         )
     return results

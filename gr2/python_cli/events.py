@@ -8,7 +8,6 @@ Implements the event contract from HOOK-EVENT-CONTRACT.md sections 3-8:
 """
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import sys
@@ -17,36 +16,40 @@ from enum import Enum
 from pathlib import Path
 
 
-# Reserved field names that payload keys must not collide with (section 3.1).
-_RESERVED_NAMES = frozenset({
-    "version", "event_id", "seq", "timestamp", "type",
-    "workspace", "actor", "agent_id", "owner_unit",
-})
+_RESERVED_NAMES = frozenset(
+    {
+        "version",
+        "event_id",
+        "seq",
+        "timestamp",
+        "type",
+        "workspace",
+        "actor",
+        "agent_id",
+        "owner_unit",
+    }
+)
 
-_ROTATION_THRESHOLD = 10 * 1024 * 1024  # 10 MB
+_ROTATION_THRESHOLD = 10 * 1024 * 1024
 
 
 class EventType(str, Enum):
-    # Lane lifecycle
     LANE_CREATED = "lane.created"
     LANE_ENTERED = "lane.entered"
     LANE_EXITED = "lane.exited"
     LANE_SWITCHED = "lane.switched"
     LANE_ARCHIVED = "lane.archived"
 
-    # Lease lifecycle
     LEASE_ACQUIRED = "lease.acquired"
     LEASE_RELEASED = "lease.released"
     LEASE_EXPIRED = "lease.expired"
     LEASE_FORCE_BROKEN = "lease.force_broken"
 
-    # Hook execution
     HOOK_STARTED = "hook.started"
     HOOK_COMPLETED = "hook.completed"
     HOOK_FAILED = "hook.failed"
     HOOK_SKIPPED = "hook.skipped"
 
-    # PR lifecycle
     PR_CREATED = "pr.created"
     PR_STATUS_CHANGED = "pr.status_changed"
     PR_CHECKS_PASSED = "pr.checks_passed"
@@ -55,20 +58,17 @@ class EventType(str, Enum):
     PR_MERGED = "pr.merged"
     PR_MERGE_FAILED = "pr.merge_failed"
 
-    # Sync operations
     SYNC_STARTED = "sync.started"
+    SYNC_CACHE_SEEDED = "sync.cache_seeded"
+    SYNC_CACHE_REFRESHED = "sync.cache_refreshed"
     SYNC_REPO_UPDATED = "sync.repo_updated"
     SYNC_REPO_SKIPPED = "sync.repo_skipped"
     SYNC_CONFLICT = "sync.conflict"
     SYNC_COMPLETED = "sync.completed"
-    SYNC_CACHE_SEEDED = "sync.cache_seeded"
-    SYNC_CACHE_REFRESHED = "sync.cache_refreshed"
 
-    # Recovery
     FAILURE_RESOLVED = "failure.resolved"
     LEASE_RECLAIMED = "lease.reclaimed"
 
-    # Workspace operations
     WORKSPACE_MATERIALIZED = "workspace.materialized"
     WORKSPACE_FILE_PROJECTED = "workspace.file_projected"
 
@@ -82,7 +82,6 @@ def _cursors_dir(workspace_root: Path) -> Path:
 
 
 def _current_seq(outbox: Path) -> int:
-    """Return the highest seq in the outbox, or 0 if empty/missing."""
     if not outbox.exists():
         return 0
     try:
@@ -104,7 +103,6 @@ def _current_seq(outbox: Path) -> int:
 
 
 def _maybe_rotate(outbox: Path) -> None:
-    """Rotate the outbox file if it exceeds the size threshold."""
     if not outbox.exists():
         return
     try:
@@ -127,65 +125,40 @@ def emit(
     *,
     agent_id: str | None = None,
 ) -> None:
-    """Emit a single event to the workspace outbox.
-
-    Builds a flat JSON object from envelope + context + payload fields and
-    appends it as one line to .grip/events/outbox.jsonl.
-
-    Does not raise on write failure (section 10.1). Errors are logged to
-    stderr so the parent operation can continue.
-    """
-    # Validate payload keys against reserved names.
     collisions = _RESERVED_NAMES & payload.keys()
     if collisions:
-        raise ValueError(
-            f"payload keys collide with reserved envelope/context names: {collisions}"
-        )
+        raise ValueError(f"payload keys collide with reserved envelope/context names: {collisions}")
 
     try:
         outbox = _outbox_path(workspace_root)
         outbox.parent.mkdir(parents=True, exist_ok=True)
-        lock_path = outbox.with_suffix(".lock")
 
-        with lock_path.open("a+") as lock_fh:
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
-            try:
-                # Capture seq before rotation (rotation empties the current file).
-                seq = _current_seq(outbox) + 1
-                _maybe_rotate(outbox)
+        seq = _current_seq(outbox) + 1
+        _maybe_rotate(outbox)
 
-                # Build flat event object.
-                event: dict[str, object] = {
-                    "version": 1,
-                    "event_id": os.urandom(8).hex(),
-                    "seq": seq,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "type": str(event_type.value),
-                    "workspace": workspace_root.name,
-                    "actor": actor,
-                    "owner_unit": owner_unit,
-                }
-                if agent_id is not None:
-                    event["agent_id"] = agent_id
-                event.update(payload)
+        event: dict[str, object] = {
+            "version": 1,
+            "event_id": os.urandom(8).hex(),
+            "seq": seq,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": str(event_type.value),
+            "workspace": workspace_root.name,
+            "actor": actor,
+            "owner_unit": owner_unit,
+        }
+        if agent_id is not None:
+            event["agent_id"] = agent_id
+        event.update(payload)
 
-                # Append as single JSONL line.
-                with outbox.open("a") as f:
-                    f.write(json.dumps(event, separators=(",", ":")) + "\n")
-                    f.flush()
-            finally:
-                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+        with outbox.open("a") as f:
+            f.write(json.dumps(event, separators=(",", ":")) + "\n")
+            f.flush()
 
     except Exception as exc:
         print(f"gr2: event emit failed: {exc}", file=sys.stderr)
 
 
 def read_events(workspace_root: Path, consumer: str) -> list[dict[str, object]]:
-    """Read new events from the outbox for the named consumer.
-
-    Returns events with seq > cursor's last_seq. Updates the cursor file
-    atomically after reading.
-    """
     outbox = _outbox_path(workspace_root)
     if not outbox.exists():
         return []
@@ -211,12 +184,16 @@ def read_events(workspace_root: Path, consumer: str) -> list[dict[str, object]]:
 
     if events:
         last_event = events[-1]
-        _save_cursor(workspace_root, consumer, {
-            "consumer": consumer,
-            "last_seq": last_event["seq"],
-            "last_event_id": last_event.get("event_id", ""),
-            "last_read": datetime.now(timezone.utc).isoformat(),
-        })
+        _save_cursor(
+            workspace_root,
+            consumer,
+            {
+                "consumer": consumer,
+                "last_seq": last_event["seq"],
+                "last_event_id": last_event.get("event_id", ""),
+                "last_read": datetime.now(timezone.utc).isoformat(),
+            },
+        )
 
     return events
 

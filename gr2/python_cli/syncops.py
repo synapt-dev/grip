@@ -4,6 +4,7 @@ import dataclasses
 import fcntl
 import json
 import os
+import time
 from pathlib import Path
 from datetime import UTC, datetime
 
@@ -11,6 +12,8 @@ from gr2.prototypes import lane_workspace_prototype as lane_proto
 
 from .gitops import (
     clone_repo,
+    commits_between,
+    conflicting_files,
     current_branch,
     current_head_sha,
     discard_if_dirty,
@@ -21,6 +24,7 @@ from .gitops import (
     repo_dirty,
     stash_if_dirty,
 )
+from .events import EventType, emit
 from .hooks import load_repo_hooks
 from .spec_apply import (
     ValidationIssue,
@@ -39,6 +43,7 @@ SYNC_ROLLBACK_CONTRACT = (
     "it does not attempt automatic cross-repo rollback"
 )
 VALID_DIRTY_MODES = {"stash", "block", "discard"}
+SYNC_STRATEGY = "reference-cache"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -195,63 +200,38 @@ def _operation_id() -> str:
     return os.urandom(8).hex()
 
 
-def _now_utc() -> str:
-    return datetime.now(UTC).isoformat()
-
-
-def _events_dir(workspace_root: Path) -> Path:
-    return workspace_root / ".grip" / "events"
-
-
-def _outbox_file(workspace_root: Path) -> Path:
-    return _events_dir(workspace_root) / "outbox.jsonl"
-
-
-def _outbox_lock_file(workspace_root: Path) -> Path:
-    return _events_dir(workspace_root) / "outbox.lock"
-
-
 def _sync_lock_file(workspace_root: Path) -> Path:
     return workspace_root / ".grip" / "state" / "sync.lock"
 
 
-def _append_outbox_event(workspace_root: Path, payload: dict[str, object]) -> None:
-    outbox_path = _outbox_file(workspace_root)
-    lock_path = _outbox_lock_file(workspace_root)
-    outbox_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with lock_path.open("a+", encoding="utf-8") as lock_fh:
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
-            seq = 1
-            if outbox_path.exists():
-                with outbox_path.open("r", encoding="utf-8") as existing:
-                    for line in existing:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            row = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        value = int(row.get("seq", 0))
-                        if value >= seq:
-                            seq = value + 1
-            event = {
-                "seq": seq,
-                "event_id": os.urandom(8).hex(),
-                "timestamp": _now_utc(),
-                **payload,
-            }
-            with outbox_path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(event) + "\n")
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
-    except OSError:
-        return
-
-
 def _emit_sync_event(workspace_root: Path, payload: dict[str, object]) -> None:
-    _append_outbox_event(workspace_root, payload)
+    event_type = EventType(str(payload.pop("type")))
+    payload.pop("workspace", None)
+    agent_id = payload.pop("agent_id", None)
+    emit(
+        event_type=event_type,
+        workspace_root=workspace_root,
+        actor=str(payload.pop("actor")),
+        owner_unit=str(payload.pop("owner_unit")),
+        payload=payload,
+        agent_id=None if agent_id is None else str(agent_id),
+    )
+
+
+def _sync_context(workspace_root: Path, *, actor: str = "system", owner_unit: str = "workspace") -> dict[str, object]:
+    return {
+        "workspace": workspace_root.name,
+        "actor": actor,
+        "owner_unit": owner_unit,
+    }
+
+
+def _plan_repo_names(plan: SyncPlan) -> list[str]:
+    repo_names: list[str] = []
+    for op in plan.operations:
+        if op.scope in {"shared_repo", "lane"}:
+            repo_names.append(op.subject.split(":")[-1])
+    return sorted(dict.fromkeys(repo_names))
 
 
 def build_sync_plan(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncPlan:
@@ -345,6 +325,7 @@ def build_sync_plan(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncP
             )
         else:
             if repo_dirty(repo_root):
+                repo_conflicts = conflicting_files(repo_root)
                 if dirty_mode == "block":
                     issues.append(
                         SyncIssue(
@@ -355,7 +336,7 @@ def build_sync_plan(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncP
                             message=f"shared repo has uncommitted changes and blocks sync: {repo_root}",
                             blocks=True,
                             path=str(repo_root),
-                            details={"dirty_mode": dirty_mode},
+                            details={"dirty_mode": dirty_mode, "conflicting_files": repo_conflicts},
                         )
                     )
                 else:
@@ -451,6 +432,7 @@ def build_sync_plan(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncP
                 )
                 continue
             if repo_dirty(lane_repo_root):
+                repo_conflicts = conflicting_files(lane_repo_root)
                 if dirty_mode == "block":
                     issues.append(
                         SyncIssue(
@@ -461,7 +443,11 @@ def build_sync_plan(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncP
                             message=f"lane repo has uncommitted changes and blocks sync: {lane_repo_root}",
                             blocks=True,
                             path=str(lane_repo_root),
-                            details={"expected_branch": expected_branch, "dirty_mode": dirty_mode},
+                            details={
+                                "expected_branch": expected_branch,
+                                "dirty_mode": dirty_mode,
+                                "conflicting_files": repo_conflicts,
+                            },
                         )
                     )
                 else:
@@ -550,6 +536,16 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
         repo_spec = _find_repo(spec, op.subject)
         cache_path = repo_cache_path(workspace_root, str(repo_spec["name"]))
         created = ensure_repo_cache(str(repo_spec["url"]), cache_path)
+        _emit_sync_event(
+            workspace_root,
+            {
+                "type": "sync.cache_seeded" if created else "sync.cache_refreshed",
+                **_sync_context(workspace_root),
+                "repo": op.subject,
+                "strategy": SYNC_STRATEGY,
+                "cache_path": str(cache_path),
+            },
+        )
         if op.kind == "seed_repo_cache":
             return f"seeded repo cache for '{op.subject}' at {cache_path}"
         if created:
@@ -567,10 +563,12 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
             workspace_root,
             {
                 "type": "sync.repo_updated",
+                **_sync_context(workspace_root),
                 "repo": op.subject,
-                "scope": "shared_repo",
                 "old_sha": before_sha,
                 "new_sha": after_sha,
+                "strategy": SYNC_STRATEGY,
+                "commits_pulled": commits_between(repo_root, before_sha, after_sha),
             },
         )
         return f"cloned shared repo '{op.subject}' into {repo_root}"
@@ -600,13 +598,12 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
             workspace_root,
             {
                 "type": "sync.repo_updated",
+                **_sync_context(workspace_root, owner_unit=owner_unit),
                 "repo": repo_name,
-                "scope": "lane",
-                "owner_unit": owner_unit,
-                "lane": lane_name,
                 "old_sha": before_sha,
                 "new_sha": after_sha,
-                "branch": expected_branch,
+                "strategy": SYNC_STRATEGY,
+                "commits_pulled": commits_between(target_repo_root, before_sha, after_sha),
             },
         )
         return f"materialized lane repo '{op.subject}' at {target_repo_root}"
@@ -628,8 +625,8 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
                 workspace_root,
                 {
                     "type": "sync.repo_skipped",
+                    **_sync_context(workspace_root),
                     "repo": op.subject.split(":")[-1],
-                    "scope": op.scope,
                     "reason": "dirty_stashed",
                 },
             )
@@ -643,8 +640,8 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
                 workspace_root,
                 {
                     "type": "sync.repo_skipped",
+                    **_sync_context(workspace_root),
                     "repo": op.subject.split(":")[-1],
-                    "scope": op.scope,
                     "reason": "dirty_discarded",
                 },
             )
@@ -677,6 +674,7 @@ def run_sync(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncResult:
     workspace_root = workspace_root.resolve()
     dirty_mode = _normalize_dirty_mode(dirty_mode)
     operation_id = _operation_id()
+    started_at = time.monotonic()
     lock_fh = _acquire_sync_lock(workspace_root)
     if lock_fh is None:
         blocked_issue = SyncIssue(
@@ -693,9 +691,21 @@ def run_sync(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncResult:
             workspace_root,
             {
                 "type": "sync.conflict",
-                "operation_id": operation_id,
+                **_sync_context(workspace_root),
                 "reason": "lock_held",
-                "workspace_root": str(workspace_root),
+                "repo": workspace_root.name,
+            },
+        )
+        _emit_sync_event(
+            workspace_root,
+            {
+                "type": "sync.completed",
+                **_sync_context(workspace_root),
+                "status": "blocked",
+                "repos_updated": 0,
+                "repos_skipped": 0,
+                "repos_failed": 1,
+                "duration_ms": int((time.monotonic() - started_at) * 1000),
             },
         )
         return SyncResult(
@@ -715,9 +725,9 @@ def run_sync(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncResult:
         workspace_root,
         {
             "type": "sync.started",
-            "operation_id": operation_id,
-            "workspace_root": str(workspace_root),
-            "dirty_mode": dirty_mode,
+            **_sync_context(workspace_root),
+            "repos": _plan_repo_names(build_sync_plan(workspace_root, dirty_mode=dirty_mode)),
+            "strategy": SYNC_STRATEGY,
         },
     )
     plan = build_sync_plan(workspace_root, dirty_mode=dirty_mode)
@@ -729,21 +739,36 @@ def run_sync(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncResult:
                     workspace_root,
                     {
                         "type": "sync.conflict",
-                        "operation_id": operation_id,
-                        "workspace_root": str(workspace_root),
+                        **_sync_context(workspace_root, owner_unit=issue.subject.split("/", 1)[0]),
                         "reason": "active_lease",
-                        "subject": issue.subject,
-                        "leases": issue.details.get("leases", []),
+                        "repo": issue.subject,
+                        "conflicting_files": [],
+                    },
+                )
+            elif issue.code in {"dirty_shared_repo", "dirty_lane_repo"} and issue.details.get("conflicting_files"):
+                repo_name = issue.subject.split(":")[-1]
+                _emit_sync_event(
+                    workspace_root,
+                    {
+                        "type": "sync.conflict",
+                        **_sync_context(
+                            workspace_root,
+                            owner_unit=issue.subject.split("/", 1)[0] if issue.scope == "lane" else "workspace",
+                        ),
+                        "repo": repo_name,
+                        "conflicting_files": list(issue.details.get("conflicting_files", [])),
                     },
                 )
         _emit_sync_event(
             workspace_root,
             {
                 "type": "sync.completed",
-                "operation_id": operation_id,
-                "workspace_root": str(workspace_root),
+                **_sync_context(workspace_root),
                 "status": "blocked",
-                "blocked_codes": [item.code for item in blocked],
+                "repos_updated": 0,
+                "repos_skipped": 0,
+                "repos_failed": len(blocked),
+                "duration_ms": int((time.monotonic() - started_at) * 1000),
             },
         )
         _release_sync_lock(lock_fh)
@@ -784,11 +809,12 @@ def run_sync(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncResult:
             workspace_root,
             {
                 "type": "sync.completed",
-                "operation_id": operation_id,
-                "workspace_root": str(workspace_root),
+                **_sync_context(workspace_root),
                 "status": status,
-                "applied_count": len(applied),
-                "failure_codes": [item.code for item in failures],
+                "repos_updated": sum(1 for op in plan.operations if op.kind in {"clone_shared_repo", "materialize_lane_repo"}),
+                "repos_skipped": sum(1 for op in plan.operations if op.kind in {"stash_dirty_repo", "discard_dirty_repo"}),
+                "repos_failed": len(failures),
+                "duration_ms": int((time.monotonic() - started_at) * 1000),
             },
         )
 

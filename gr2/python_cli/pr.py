@@ -16,7 +16,7 @@ import json
 import os
 from pathlib import Path
 
-from .events import emit, EventType
+from .events import EventType, emit
 from .platform import AdapterError, CreatePRRequest, PlatformAdapter
 
 
@@ -43,11 +43,12 @@ def _load_group(workspace_root: Path, pr_group_id: str) -> dict:
     return json.loads(path.read_text())
 
 
-def _save_group(workspace_root: Path, group: dict) -> None:
+def _save_group(workspace_root: Path, group: dict) -> Path:
     d = _pr_groups_dir(workspace_root)
     d.mkdir(parents=True, exist_ok=True)
     path = d / f"{group['pr_group_id']}.json"
     path.write_text(json.dumps(group, indent=2))
+    return path
 
 
 def create_pr_group(
@@ -78,35 +79,30 @@ def create_pr_group(
             draft=draft,
         )
         ref = adapter.create_pr(request)
-        prs.append({
-            "repo": repo,
-            "pr_number": ref.number,
-            "url": ref.url,
-        })
+        prs.append({"repo": repo, "pr_number": ref.number, "url": ref.url})
 
     group = {
         "pr_group_id": pr_group_id,
+        "owner_unit": owner_unit,
         "lane_name": lane_name,
         "title": title,
         "base_branch": base_branch,
         "head_branch": head_branch,
+        "platform": getattr(adapter, "name", "github"),
         "prs": prs,
         "status": {repo: "OPEN" for repo in repos},
     }
-    _save_group(workspace_root, group)
+    path = _save_group(workspace_root, group)
 
     emit(
         event_type=EventType.PR_CREATED,
         workspace_root=workspace_root,
         actor=actor,
         owner_unit=owner_unit,
-        payload={
-            "pr_group_id": pr_group_id,
-            "lane_name": lane_name,
-            "repos": prs,
-        },
+        payload={"pr_group_id": pr_group_id, "lane_name": lane_name, "repos": prs},
     )
 
+    group["state_path"] = str(path)
     return group
 
 
@@ -146,10 +142,7 @@ def merge_pr_group(
         workspace_root=workspace_root,
         actor=actor,
         owner_unit=group.get("owner_unit", actor),
-        payload={
-            "pr_group_id": pr_group_id,
-            "repos": merged,
-        },
+        payload={"pr_group_id": pr_group_id, "repos": merged},
     )
 
     return group
@@ -171,7 +164,6 @@ def check_pr_group_status(
         status = adapter.pr_status(repo, number)
         old_state = cached_status.get(repo, "OPEN")
 
-        # Detect state change (OPEN -> MERGED, OPEN -> CLOSED, etc.)
         if status.state != old_state:
             emit(
                 event_type=EventType.PR_STATUS_CHANGED,
@@ -188,7 +180,6 @@ def check_pr_group_status(
             )
             cached_status[repo] = status.state
 
-        # Detect check results (only when checks are complete)
         if status.checks:
             completed = [c for c in status.checks if c.status == "COMPLETED"]
             if completed and len(completed) == len(status.checks):
@@ -234,11 +225,7 @@ def record_pr_review(
     state: str,
     actor: str,
 ) -> None:
-    """Record an externally-submitted PR review and emit pr.review_submitted.
-
-    Reviews come from outside gr2 (GitHub webhooks, human action, etc.).
-    The adapter doesn't query reviews, so this is a push-model entry point.
-    """
+    """Record an externally-submitted PR review and emit pr.review_submitted."""
     emit(
         event_type=EventType.PR_REVIEW_SUBMITTED,
         workspace_root=workspace_root,

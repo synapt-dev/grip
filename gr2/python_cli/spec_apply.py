@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .events import append_outbox_event
 from .gitops import clone_repo, ensure_repo_cache, is_git_dir, is_git_repo, repo_dirty
 from .hooks import HookContext, apply_file_projections, load_repo_hooks, run_lifecycle_stage
 
@@ -264,19 +266,35 @@ def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -
         raise SystemExit("plan contains more than 3 operations; rerun with --yes to apply it")
 
     applied: list[str] = []
+    materialized_repos: list[dict[str, object]] = []
     for op in operations:
         if op.kind == "clone_repo":
             repo_spec = _find_repo(spec, op.subject)
             repo_root = workspace_root / str(repo_spec["path"])
             cache_path = repo_cache_path(workspace_root, str(repo_spec["name"]))
             first_materialize = clone_repo(str(repo_spec["url"]), repo_root, reference_repo_root=cache_path)
-            _run_materialize_hooks(
+            hook_payload = _run_materialize_hooks(
                 workspace_root,
                 repo_root,
                 str(repo_spec["name"]),
                 first_materialize,
                 manual_hooks=manual_hooks,
             )
+            for projection in hook_payload["projected_files"]:
+                append_outbox_event(
+                    workspace_root,
+                    {
+                        "type": "workspace.file_projected",
+                        "workspace": workspace_root.name,
+                        "actor": "system",
+                        "owner_unit": "workspace",
+                        "repo": str(repo_spec["name"]),
+                        "kind": projection["kind"],
+                        "src": projection["src"],
+                        "dest": projection["dest"],
+                    },
+                )
+            materialized_repos.append({"repo": str(repo_spec["name"]), "first_materialize": first_materialize})
             applied.append(f"cloned repo '{op.subject}' into {repo_root}")
         elif op.kind == "seed_repo_cache":
             repo_spec = _find_repo(spec, op.subject)
@@ -302,6 +320,17 @@ def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -
 
     if applied:
         _record_apply_state(workspace_root, applied)
+    if materialized_repos:
+        append_outbox_event(
+            workspace_root,
+            {
+                "type": "workspace.materialized",
+                "workspace": workspace_root.name,
+                "actor": "system",
+                "owner_unit": "workspace",
+                "repos": materialized_repos,
+            },
+        )
 
     return {
         "workspace_root": str(workspace_root),
@@ -342,10 +371,10 @@ def _run_materialize_hooks(
     first_materialize: bool,
     *,
     manual_hooks: bool = False,
-) -> None:
+) -> dict[str, list[dict[str, object]]]:
     hooks = load_repo_hooks(repo_root)
     if not hooks:
-        return
+        return {"projected_files": []}
     ctx = HookContext(
         workspace_root=workspace_root,
         lane_root=repo_root,
@@ -355,7 +384,7 @@ def _run_materialize_hooks(
         lane_subject=repo_name,
         lane_name="workspace",
     )
-    apply_file_projections(hooks, ctx)
+    projections = apply_file_projections(hooks, ctx)
     run_lifecycle_stage(
         hooks,
         "on_materialize",
@@ -364,6 +393,22 @@ def _run_materialize_hooks(
         first_materialize=first_materialize,
         allow_manual=manual_hooks,
     )
+    projected_files: list[dict[str, object]] = []
+    for result in projections:
+        if result.status != "applied" or not result.src or not result.dest:
+            continue
+        projected_files.append(
+            {
+                "kind": result.name.split(":", 1)[0],
+                "src": _relative_workspace_path(workspace_root, Path(result.src)),
+                "dest": _relative_workspace_path(workspace_root, Path(result.dest)),
+            }
+        )
+    return {"projected_files": projected_files}
+
+
+def _relative_workspace_path(workspace_root: Path, path: Path) -> str:
+    return os.path.relpath(path, workspace_root)
 
 
 def render_unit_toml(unit_spec: dict[str, object]) -> str:

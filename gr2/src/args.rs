@@ -32,12 +32,6 @@ pub enum Commands {
     /// Verify the gr2 bootstrap binary is wired correctly
     Doctor,
 
-    /// Team workspace operations
-    Team {
-        #[command(subcommand)]
-        command: TeamCommands,
-    },
-
     /// Repo registry operations
     Repo {
         #[command(subcommand)]
@@ -84,24 +78,6 @@ pub enum Commands {
         /// Automatically stash and restore uncommitted changes in dirty repos
         #[arg(long)]
         autostash: bool,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum TeamCommands {
-    /// Register an agent workspace under agents/
-    Add {
-        /// Agent workspace name
-        name: String,
-    },
-
-    /// List registered agent workspaces
-    List,
-
-    /// Remove a registered agent workspace
-    Remove {
-        /// Agent workspace name
-        name: String,
     },
 }
 

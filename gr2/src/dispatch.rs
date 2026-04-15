@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::args::{
-    Commands, ExecCommands, LaneCommands, RepoCommands, SpecCommands, TeamCommands, UnitCommands,
+    Commands, ExecCommands, LaneCommands, RepoCommands, SpecCommands, UnitCommands,
 };
 use crate::exec::{ExecStatusFilter, ExecStatusReport};
 use crate::lane::{
@@ -59,62 +59,6 @@ pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
             }
             Ok(())
         }
-        Commands::Team { command } => match command {
-            TeamCommands::Add { name } => {
-                let workspace_root = require_workspace_root()?;
-
-                let agent_root = workspace_root.join("agents").join(&name);
-                if agent_root.exists() {
-                    anyhow::bail!("agent '{}' already exists", name);
-                }
-
-                fs::create_dir_all(&agent_root)?;
-                fs::write(
-                    agent_root.join("agent.toml"),
-                    format!("name = \"{}\"\nkind = \"agent-workspace\"\n", name),
-                )?;
-
-                println!("Added gr2 agent workspace '{}'", name);
-                Ok(())
-            }
-            TeamCommands::List => {
-                let workspace_root = require_workspace_root()?;
-                let agents_root = workspace_root.join("agents");
-
-                let mut names = Vec::new();
-                for entry in fs::read_dir(&agents_root)? {
-                    let entry = entry?;
-                    if entry.file_type()?.is_dir() && entry.path().join("agent.toml").exists() {
-                        names.push(entry.file_name().to_string_lossy().into_owned());
-                    }
-                }
-
-                names.sort();
-
-                if names.is_empty() {
-                    println!("No gr2 agent workspaces registered.");
-                } else {
-                    println!("Agent workspaces");
-                    for name in names {
-                        println!("- {}", name);
-                    }
-                }
-
-                Ok(())
-            }
-            TeamCommands::Remove { name } => {
-                let workspace_root = require_workspace_root()?;
-                let agent_root = workspace_root.join("agents").join(&name);
-
-                if !agent_root.join("agent.toml").exists() {
-                    anyhow::bail!("agent '{}' not found", name);
-                }
-
-                fs::remove_dir_all(&agent_root)?;
-                println!("Removed gr2 agent workspace '{}'", name);
-                Ok(())
-            }
-        },
         Commands::Repo { command } => match command {
             RepoCommands::Add { name, url } => {
                 let workspace_root = require_workspace_root()?;

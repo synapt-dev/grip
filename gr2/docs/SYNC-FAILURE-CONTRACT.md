@@ -81,9 +81,9 @@ If `sync run` partially succeeds:
   - failed operations
   - unaffected operations, if known
 - event outbox must include:
-  - `sync_started`
+  - `sync.started`
   - one event per completed mutation
-  - `sync_failed`
+  - terminal `sync.completed` with a `status` field describing the outcome
 
 Consumers must be able to reconstruct:
 - what changed

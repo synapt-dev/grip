@@ -767,7 +767,7 @@ def run_sync(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncResult:
         for op in plan.operations:
             try:
                 applied.append(_execute_operation(workspace_root, spec, op))
-            except BaseException as exc:
+            except Exception as exc:
                 failures.append(_issue_from_exception(op, exc))
                 break
 

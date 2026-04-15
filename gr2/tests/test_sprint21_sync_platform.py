@@ -52,6 +52,42 @@ def _init_bare_remote(tmp_path: Path, name: str) -> tuple[Path, str]:
     return remote, remote.as_uri()
 
 
+def _init_bare_remote_with_projection_hook(tmp_path: Path, name: str) -> tuple[Path, str]:
+    source = tmp_path / f"{name}-src"
+    source.mkdir(parents=True, exist_ok=True)
+    assert _git(source, "init", "-b", "main").returncode == 0
+    assert _git(source, "config", "user.name", "Atlas").returncode == 0
+    assert _git(source, "config", "user.email", "atlas@example.com").returncode == 0
+    (source / "README.md").write_text(f"# {name}\n")
+    (source / "shared").mkdir(parents=True, exist_ok=True)
+    (source / "shared" / "CLAUDE.shared.md").write_text("shared claude\n")
+    (source / ".gr2").mkdir(parents=True, exist_ok=True)
+    (source / ".gr2" / "hooks.toml").write_text(
+        textwrap.dedent(
+            """
+            [repo]
+            name = "app"
+
+            [[files.copy]]
+            src = "shared/CLAUDE.shared.md"
+            dest = "{repo_root}/CLAUDE.md"
+            """
+        ).strip()
+        + "\n"
+    )
+    assert _git(source, "add", "README.md", "shared/CLAUDE.shared.md", ".gr2/hooks.toml").returncode == 0
+    assert _git(source, "commit", "-m", "initial").returncode == 0
+
+    remote = tmp_path / f"{name}.git"
+    assert subprocess.run(
+        ["git", "clone", "--bare", str(source), str(remote)],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).returncode == 0
+    return remote, remote.as_uri()
+
+
 def _write_workspace_spec(workspace_root: Path, repo_name: str, repo_url: str) -> None:
     spec_path = workspace_root / ".grip" / "workspace_spec.toml"
     spec_path.parent.mkdir(parents=True, exist_ok=True)
@@ -237,6 +273,46 @@ def test_sync_run_emits_cache_refresh_event_when_cache_exists(tmp_path: Path) ->
     outbox = _read_outbox(workspace_root)[before_count:]
     event_types = [str(row["type"]) for row in outbox]
     assert "sync.cache_refreshed" in event_types
+
+
+def test_workspace_materialize_emits_workspace_materialized_event(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    _, repo_url = _init_bare_remote(tmp_path, "app")
+    _write_workspace_spec(workspace_root, "app", repo_url)
+
+    result = runner.invoke(app, ["workspace", "materialize", str(workspace_root), "--json", "--yes"])
+    assert result.exit_code == 0
+
+    outbox = _read_outbox(workspace_root)
+    materialized = next(row for row in outbox if row["type"] == "workspace.materialized")
+    assert materialized["workspace"] == workspace_root.name
+    assert materialized["actor"] == "system"
+    assert materialized["owner_unit"] == "workspace"
+    assert materialized["repos"] == [{"repo": "app", "first_materialize": True}]
+
+
+def test_workspace_materialize_emits_file_projected_event(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    _, repo_url = _init_bare_remote_with_projection_hook(tmp_path, "app")
+    _write_workspace_spec(workspace_root, "app", repo_url)
+
+    result = runner.invoke(app, ["workspace", "materialize", str(workspace_root), "--json", "--yes"])
+    assert result.exit_code == 0
+
+    projected_path = workspace_root / "repos" / "app" / "CLAUDE.md"
+    assert projected_path.exists()
+
+    outbox = _read_outbox(workspace_root)
+    projected = next(row for row in outbox if row["type"] == "workspace.file_projected")
+    assert projected["workspace"] == workspace_root.name
+    assert projected["actor"] == "system"
+    assert projected["owner_unit"] == "workspace"
+    assert projected["repo"] == "app"
+    assert projected["kind"] == "copy"
+    assert projected["src"] == "repos/app/shared/CLAUDE.shared.md"
+    assert projected["dest"] == "repos/app/CLAUDE.md"
 
 
 def test_pr_command_group_exists_in_python_cli() -> None:

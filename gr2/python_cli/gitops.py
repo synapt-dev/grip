@@ -145,6 +145,13 @@ def checkout_branch(repo_root: Path, branch: str) -> None:
         raise SystemExit(f"failed to checkout {branch} in {repo_root}:\n{proc.stderr or proc.stdout}")
 
 
+def current_branch(repo_root: Path) -> str:
+    proc = git(repo_root, "branch", "--show-current")
+    if proc.returncode != 0:
+        raise SystemExit(f"failed to determine current branch in {repo_root}:\n{proc.stderr or proc.stdout}")
+    return proc.stdout.strip()
+
+
 def stash_if_dirty(repo_root: Path, message: str) -> bool:
     if not repo_dirty(repo_root):
         return False

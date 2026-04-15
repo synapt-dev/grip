@@ -6,14 +6,23 @@ from pathlib import Path
 
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 
-from .gitops import is_git_dir, is_git_repo, repo_dirty
+from .gitops import current_branch, ensure_lane_checkout, ensure_repo_cache, is_git_dir, is_git_repo, repo_dirty, clone_repo
 from .hooks import load_repo_hooks
 from .spec_apply import (
     ValidationIssue,
+    _run_materialize_hooks,
+    _find_repo,
+    _record_apply_state,
     load_workspace_spec_doc,
     repo_cache_path,
     validate_spec,
     workspace_spec_path,
+)
+
+
+SYNC_ROLLBACK_CONTRACT = (
+    "sync preserves completed operations, stops on blocking failure, and reports partial state explicitly; "
+    "it does not attempt automatic cross-repo rollback"
 )
 
 
@@ -354,3 +363,138 @@ def sync_status_payload(workspace_root: Path) -> dict[str, object]:
 
 def sync_status_json(workspace_root: Path) -> str:
     return json.dumps(sync_status_payload(workspace_root), indent=2)
+
+
+def _issue_from_exception(op: SyncOperation, exc: BaseException) -> SyncIssue:
+    message = str(exc).strip() or f"sync operation failed: {op.kind}"
+    return SyncIssue(
+        level="error",
+        code=f"{op.kind}_failed",
+        scope=op.scope,
+        subject=op.subject,
+        message=message,
+        blocks=True,
+        path=op.target_path,
+        details={"operation": op.kind},
+    )
+
+
+def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOperation) -> str:
+    if op.kind in {"seed_repo_cache", "refresh_repo_cache"}:
+        repo_spec = _find_repo(spec, op.subject)
+        cache_path = repo_cache_path(workspace_root, str(repo_spec["name"]))
+        created = ensure_repo_cache(str(repo_spec["url"]), cache_path)
+        if op.kind == "seed_repo_cache":
+            return f"seeded repo cache for '{op.subject}' at {cache_path}"
+        if created:
+            return f"seeded repo cache for '{op.subject}' at {cache_path}"
+        return f"refreshed repo cache for '{op.subject}' at {cache_path}"
+
+    if op.kind == "clone_shared_repo":
+        repo_spec = _find_repo(spec, op.subject)
+        repo_root = workspace_root / str(repo_spec["path"])
+        cache_path = repo_cache_path(workspace_root, str(repo_spec["name"]))
+        first_materialize = clone_repo(str(repo_spec["url"]), repo_root, reference_repo_root=cache_path)
+        _run_materialize_hooks(workspace_root, repo_root, str(repo_spec["name"]), first_materialize, manual_hooks=False)
+        return f"cloned shared repo '{op.subject}' into {repo_root}"
+
+    if op.kind == "evaluate_repo_hooks":
+        repo_root = Path(op.target_path)
+        hooks = load_repo_hooks(repo_root)
+        if hooks:
+            return f"validated repo hooks for '{op.subject}'"
+        return f"no repo hooks for '{op.subject}'"
+
+    if op.kind == "materialize_lane_repo":
+        owner_and_lane, repo_name = op.subject.split(":", 1)
+        owner_unit, lane_name = owner_and_lane.split("/", 1)
+        repo_spec = _find_repo(spec, repo_name)
+        source_repo_root = workspace_root / str(repo_spec["path"])
+        target_repo_root = Path(op.target_path)
+        expected_branch = str(op.details.get("expected_branch", ""))
+        first_materialize = ensure_lane_checkout(
+            source_repo_root=source_repo_root,
+            target_repo_root=target_repo_root,
+            branch=expected_branch,
+        )
+        _run_materialize_hooks(workspace_root, target_repo_root, repo_name, first_materialize, manual_hooks=False)
+        return f"materialized lane repo '{op.subject}' at {target_repo_root}"
+
+    if op.kind == "inspect_lane_repo_branch":
+        expected_branch = str(op.details.get("expected_branch", "")).strip()
+        repo_root = Path(op.target_path)
+        actual_branch = current_branch(repo_root)
+        if expected_branch and actual_branch != expected_branch:
+            raise SystemExit(
+                f"lane repo branch mismatch for {op.subject}: expected {expected_branch}, found {actual_branch}"
+            )
+        return f"verified lane branch for '{op.subject}' ({actual_branch or '-'})"
+
+    raise SystemExit(f"unsupported sync operation kind: {op.kind}")
+
+
+def run_sync(workspace_root: Path) -> SyncResult:
+    workspace_root = workspace_root.resolve()
+    plan = build_sync_plan(workspace_root)
+    blocked = [issue for issue in plan.issues if issue.blocks]
+    if blocked:
+        return SyncResult(
+            workspace_root=str(workspace_root),
+            status="blocked",
+            plan_status=plan.status,
+            applied=[],
+            blocked=blocked,
+            failures=[],
+            rollback_contract=SYNC_ROLLBACK_CONTRACT,
+        )
+
+    spec = load_workspace_spec_doc(workspace_root)
+    applied: list[str] = []
+    failures: list[SyncIssue] = []
+    for op in plan.operations:
+        try:
+            applied.append(_execute_operation(workspace_root, spec, op))
+        except BaseException as exc:
+            failures.append(_issue_from_exception(op, exc))
+            break
+
+    if applied:
+        _record_apply_state(workspace_root, applied)
+
+    status = "success"
+    if failures and applied:
+        status = "partial_failure"
+    elif failures:
+        status = "failed"
+
+    return SyncResult(
+        workspace_root=str(workspace_root),
+        status=status,
+        plan_status=plan.status,
+        applied=applied,
+        blocked=[],
+        failures=failures,
+        rollback_contract=SYNC_ROLLBACK_CONTRACT,
+    )
+
+
+def render_sync_result(result: SyncResult) -> str:
+    lines = [
+        "SyncResult",
+        f"workspace_root = {result.workspace_root}",
+        f"status = {result.status}",
+        f"plan_status = {result.plan_status}",
+        f"applied_count = {len(result.applied)}",
+        f"failure_count = {len(result.failures)}",
+    ]
+    if result.applied:
+        lines.append("APPLIED")
+        lines.extend(f"- {item}" for item in result.applied)
+    if result.blocked:
+        lines.append("BLOCKED")
+        lines.extend(f"- {item.code}: {item.message}" for item in result.blocked)
+    if result.failures:
+        lines.append("FAILURES")
+        lines.extend(f"- {item.code}: {item.message}" for item in result.failures)
+    lines.append(f"rollback_contract = {result.rollback_contract}")
+    return "\n".join(lines)

@@ -266,6 +266,22 @@ def sync_status(
     typer.echo(syncops.render_sync_plan(plan))
 
 
+@sync_app.command("run")
+def sync_run(
+    workspace_root: Path,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Execute the current sync plan, stopping on the first blocking runtime failure."""
+    workspace_root = workspace_root.resolve()
+    result = syncops.run_sync(workspace_root)
+    if json_output:
+        typer.echo(json.dumps(result.as_dict(), indent=2))
+    else:
+        typer.echo(syncops.render_sync_result(result))
+    if result.status in {"blocked", "failed", "partial_failure"}:
+        raise typer.Exit(code=1)
+
+
 @workspace_app.command("init")
 def workspace_init(
     workspace_root: Path,

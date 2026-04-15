@@ -23,7 +23,7 @@ def _outbox_lock_file(workspace_root: Path) -> Path:
     return _events_dir(workspace_root) / "outbox.lock"
 
 
-def append_outbox_event(workspace_root: Path, payload: dict[str, object]) -> None:
+def append_outbox_event(workspace_root: Path, payload: dict[str, object]) -> dict[str, object] | None:
     outbox_path = _outbox_file(workspace_root)
     lock_path = _outbox_lock_file(workspace_root)
     outbox_path.parent.mkdir(parents=True, exist_ok=True)
@@ -55,5 +55,6 @@ def append_outbox_event(workspace_root: Path, payload: dict[str, object]) -> Non
             with outbox_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(event) + "\n")
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            return event
     except OSError:
-        return
+        return None

@@ -11,6 +11,7 @@ from typing import Optional
 import typer
 
 from . import execops
+from . import failures
 from . import migration
 from . import syncops
 from .gitops import (
@@ -25,8 +26,8 @@ from .gitops import (
     stash_if_dirty,
 )
 from .events import emit, EventType
-from .hooks import HookContext, apply_file_projections, load_repo_hooks, run_lifecycle_stage
-from .platform import CreatePRRequest, PRRef, get_platform_adapter
+from .hooks import HookContext, HookRuntimeError, apply_file_projections, load_repo_hooks, run_lifecycle_stage
+from .platform import PRRef, get_platform_adapter
 from . import spec_apply
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 from gr2.prototypes import repo_maintenance_prototype as repo_proto
@@ -706,7 +707,38 @@ def lane_enter(
 ) -> None:
     """Enter a lane and optionally emit channel/recall-compatible events."""
     workspace_root = workspace_root.resolve()
-    _run_lane_stage(workspace_root, owner_unit, lane_name, "on_enter", manual_hooks=manual_hooks)
+    unresolved = failures.unresolved_lane_failure(workspace_root, owner_unit, lane_name)
+    if unresolved:
+        typer.echo(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "code": "unresolved_failure_marker",
+                    "operation_id": unresolved["operation_id"],
+                    "lane_name": lane_name,
+                },
+                indent=2,
+            )
+        )
+        raise typer.Exit(code=1)
+    try:
+        _run_lane_stage(workspace_root, owner_unit, lane_name, "on_enter", manual_hooks=manual_hooks)
+    except HookRuntimeError as exc:
+        payload = exc.payload
+        repo_name = Path(str(payload.get("cwd", ""))).name or lane_name
+        event = failures.write_failure_marker(
+            workspace_root,
+            operation="lane.enter",
+            stage=str(payload.get("stage", "on_enter")),
+            hook_name=str(payload.get("hook", payload.get("name", "unknown"))),
+            repo=repo_name,
+            owner_unit=owner_unit,
+            lane_name=lane_name,
+            partial_state={},
+            event_id=None,
+        )
+        typer.echo(json.dumps(event, indent=2))
+        raise typer.Exit(code=1)
     ns = SimpleNamespace(
         workspace_root=workspace_root,
         owner_unit=owner_unit,
@@ -728,6 +760,30 @@ def lane_enter(
             "repos": lane_doc.get("repos", []),
         },
     )
+
+
+@lane_app.command("resolve")
+def lane_resolve(
+    workspace_root: Path,
+    owner_unit: str,
+    operation_id: str,
+    actor: str = typer.Option(..., help="Actor label, e.g. agent:atlas"),
+    resolution: str = typer.Option(..., help="Resolution note: retry | skip | escalate"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Resolve a blocking failure marker for a lane-scoped operation."""
+    workspace_root = workspace_root.resolve()
+    payload = failures.resolve_failure_marker(
+        workspace_root,
+        operation_id=operation_id,
+        resolved_by=actor,
+        resolution=resolution,
+        owner_unit=owner_unit,
+    )
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        typer.echo(json.dumps(payload, indent=2))
 
 
 @lane_app.command("exit")

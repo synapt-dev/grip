@@ -55,6 +55,13 @@ def commits_between(path: Path, old_sha: str | None, new_sha: str | None) -> int
         return 0
 
 
+def conflicting_files(path: Path) -> list[str]:
+    proc = git(path, "diff", "--name-only", "--diff-filter=U")
+    if proc.returncode != 0:
+        return []
+    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+
+
 def ensure_repo_cache(url: str, cache_repo_root: Path) -> bool:
     """Ensure a local bare mirror exists for a repo URL.
 

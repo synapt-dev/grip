@@ -13,6 +13,7 @@ from gr2.prototypes import lane_workspace_prototype as lane_proto
 from .gitops import (
     clone_repo,
     commits_between,
+    conflicting_files,
     current_branch,
     current_head_sha,
     discard_if_dirty,
@@ -318,6 +319,7 @@ def build_sync_plan(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncP
             )
         else:
             if repo_dirty(repo_root):
+                repo_conflicts = conflicting_files(repo_root)
                 if dirty_mode == "block":
                     issues.append(
                         SyncIssue(
@@ -328,7 +330,7 @@ def build_sync_plan(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncP
                             message=f"shared repo has uncommitted changes and blocks sync: {repo_root}",
                             blocks=True,
                             path=str(repo_root),
-                            details={"dirty_mode": dirty_mode},
+                            details={"dirty_mode": dirty_mode, "conflicting_files": repo_conflicts},
                         )
                     )
                 else:
@@ -424,6 +426,7 @@ def build_sync_plan(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncP
                 )
                 continue
             if repo_dirty(lane_repo_root):
+                repo_conflicts = conflicting_files(lane_repo_root)
                 if dirty_mode == "block":
                     issues.append(
                         SyncIssue(
@@ -434,7 +437,11 @@ def build_sync_plan(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncP
                             message=f"lane repo has uncommitted changes and blocks sync: {lane_repo_root}",
                             blocks=True,
                             path=str(lane_repo_root),
-                            details={"expected_branch": expected_branch, "dirty_mode": dirty_mode},
+                            details={
+                                "expected_branch": expected_branch,
+                                "dirty_mode": dirty_mode,
+                                "conflicting_files": repo_conflicts,
+                            },
                         )
                     )
                 else:
@@ -730,6 +737,20 @@ def run_sync(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncResult:
                         "reason": "active_lease",
                         "repo": issue.subject,
                         "conflicting_files": [],
+                    },
+                )
+            elif issue.code in {"dirty_shared_repo", "dirty_lane_repo"} and issue.details.get("conflicting_files"):
+                repo_name = issue.subject.split(":")[-1]
+                _emit_sync_event(
+                    workspace_root,
+                    {
+                        "type": "sync.conflict",
+                        **_sync_context(
+                            workspace_root,
+                            owner_unit=issue.subject.split("/", 1)[0] if issue.scope == "lane" else "workspace",
+                        ),
+                        "repo": repo_name,
+                        "conflicting_files": list(issue.details.get("conflicting_files", [])),
                     },
                 )
         _emit_sync_event(

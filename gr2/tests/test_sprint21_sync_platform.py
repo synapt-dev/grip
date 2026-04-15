@@ -88,6 +88,42 @@ def _init_bare_remote_with_projection_hook(tmp_path: Path, name: str) -> tuple[P
     return remote, remote.as_uri()
 
 
+def _init_bare_remote_with_failing_on_enter_hook(tmp_path: Path, name: str) -> tuple[Path, str]:
+    source = tmp_path / f"{name}-src"
+    source.mkdir(parents=True, exist_ok=True)
+    assert _git(source, "init", "-b", "main").returncode == 0
+    assert _git(source, "config", "user.name", "Atlas").returncode == 0
+    assert _git(source, "config", "user.email", "atlas@example.com").returncode == 0
+    (source / "README.md").write_text(f"# {name}\n")
+    (source / ".gr2").mkdir(parents=True, exist_ok=True)
+    (source / ".gr2" / "hooks.toml").write_text(
+        textwrap.dedent(
+            """
+            [repo]
+            name = "app"
+
+            [[lifecycle.on_enter]]
+            name = "boom"
+            command = "sh -c 'echo hook boom >&2; exit 7'"
+            when = "always"
+            on_failure = "block"
+            """
+        ).strip()
+        + "\n"
+    )
+    assert _git(source, "add", "README.md", ".gr2/hooks.toml").returncode == 0
+    assert _git(source, "commit", "-m", "initial").returncode == 0
+
+    remote = tmp_path / f"{name}.git"
+    assert subprocess.run(
+        ["git", "clone", "--bare", str(source), str(remote)],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).returncode == 0
+    return remote, remote.as_uri()
+
+
 def _write_workspace_spec(workspace_root: Path, repo_name: str, repo_url: str) -> None:
     spec_path = workspace_root / ".grip" / "workspace_spec.toml"
     spec_path.parent.mkdir(parents=True, exist_ok=True)
@@ -313,6 +349,118 @@ def test_workspace_materialize_emits_file_projected_event(tmp_path: Path) -> Non
     assert projected["kind"] == "copy"
     assert projected["src"] == "repos/app/shared/CLAUDE.shared.md"
     assert projected["dest"] == "repos/app/CLAUDE.md"
+
+
+def test_lane_enter_hook_failure_writes_marker_and_resolve_emits_event(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    _, repo_url = _init_bare_remote_with_failing_on_enter_hook(tmp_path, "app")
+    _write_workspace_spec(workspace_root, "app", repo_url)
+
+    materialize = runner.invoke(app, ["workspace", "materialize", str(workspace_root), "--yes", "--json"])
+    assert materialize.exit_code == 0
+
+    create = runner.invoke(
+        app,
+        [
+            "lane",
+            "create",
+            str(workspace_root),
+            "atlas",
+            "feat-auth",
+            "--repos",
+            "app",
+            "--branch",
+            "feat/auth",
+        ],
+    )
+    assert create.exit_code == 0
+
+    enter = runner.invoke(
+        app,
+        ["lane", "enter", str(workspace_root), "atlas", "feat-auth", "--actor", "agent:atlas"],
+    )
+    assert enter.exit_code != 0
+
+    failures_root = workspace_root / ".grip" / "state" / "failures"
+    markers = sorted(failures_root.glob("*.json"))
+    assert len(markers) == 1
+    marker = json.loads(markers[0].read_text())
+    assert marker["operation"] == "lane.enter"
+    assert marker["stage"] == "on_enter"
+    assert marker["hook_name"] == "boom"
+    assert marker["repo"] == "app"
+    assert marker["owner_unit"] == "atlas"
+    assert marker["lane_name"] == "feat-auth"
+    assert marker["resolved"] is False
+
+    blocked = runner.invoke(
+        app,
+        ["lane", "enter", str(workspace_root), "atlas", "feat-auth", "--actor", "agent:atlas"],
+    )
+    assert blocked.exit_code != 0
+    assert marker["operation_id"] in blocked.stdout
+
+    resolve = runner.invoke(
+        app,
+        [
+            "lane",
+            "resolve",
+            str(workspace_root),
+            "atlas",
+            marker["operation_id"],
+            "--actor",
+            "agent:atlas",
+            "--resolution",
+            "retry",
+            "--json",
+        ],
+    )
+    assert resolve.exit_code == 0
+    resolved_payload = json.loads(resolve.stdout)
+    assert resolved_payload["operation_id"] == marker["operation_id"]
+    assert not markers[0].exists()
+
+    outbox = _read_outbox(workspace_root)
+    resolved = next(row for row in outbox if row["type"] == "failure.resolved")
+    assert resolved["operation_id"] == marker["operation_id"]
+    assert resolved["resolved_by"] == "agent:atlas"
+    assert resolved["resolution"] == "retry"
+    assert resolved["lane_name"] == "feat-auth"
+
+
+def test_sync_conflict_emits_conflicting_files_for_unmerged_repo(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    _, repo_url = _init_bare_remote(tmp_path, "app")
+    _write_workspace_spec(workspace_root, "app", repo_url)
+    run_sync(workspace_root)
+
+    repo_root = workspace_root / "repos" / "app"
+    assert _git(repo_root, "config", "user.name", "Atlas").returncode == 0
+    assert _git(repo_root, "config", "user.email", "atlas@example.com").returncode == 0
+
+    (repo_root / "README.md").write_text("left\n")
+    assert _git(repo_root, "commit", "-am", "left").returncode == 0
+    assert _git(repo_root, "checkout", "-b", "other", "HEAD~1").returncode == 0
+    (repo_root / "README.md").write_text("right\n")
+    assert _git(repo_root, "commit", "-am", "right").returncode == 0
+    assert _git(repo_root, "checkout", "main").returncode == 0
+
+    merge = _git(repo_root, "merge", "other")
+    assert merge.returncode != 0
+    assert str(repo_root / "README.md").endswith("README.md")
+
+    result = runner.invoke(app, ["sync", "run", str(workspace_root), "--dirty", "block", "--json"])
+    assert result.exit_code == 1
+
+    outbox = _read_outbox(workspace_root)
+    conflict = next(
+        row
+        for row in outbox
+        if row["type"] == "sync.conflict" and row.get("repo") == "app" and row.get("conflicting_files")
+    )
+    assert conflict["conflicting_files"] == ["README.md"]
 
 
 def test_pr_command_group_exists_in_python_cli() -> None:

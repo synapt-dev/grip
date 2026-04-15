@@ -11,6 +11,7 @@ import typer
 
 from . import execops
 from . import migration
+from . import syncops
 from .gitops import (
     branch_exists,
     checkout_branch,
@@ -38,6 +39,7 @@ review_app = typer.Typer(help="Review and reviewer requirement operations")
 workspace_app = typer.Typer(help="Workspace bootstrap and materialization")
 spec_app = typer.Typer(help="Declarative workspace spec operations")
 exec_app = typer.Typer(help="Lane-aware execution planning and execution")
+sync_app = typer.Typer(help="Workspace-wide sync inspection and execution")
 
 app.add_typer(repo_app, name="repo")
 app.add_typer(lane_app, name="lane")
@@ -46,6 +48,7 @@ app.add_typer(review_app, name="review")
 app.add_typer(workspace_app, name="workspace")
 app.add_typer(spec_app, name="spec")
 app.add_typer(exec_app, name="exec")
+app.add_typer(sync_app, name="sync")
 
 
 def _workspace_repo_spec(workspace_root: Path, repo_name: str) -> dict[str, object]:
@@ -247,6 +250,20 @@ def _scan_existing_repos(workspace_root: Path) -> list[dict[str, str]]:
 def _exit(code: int) -> None:
     if code != 0:
         raise typer.Exit(code=code)
+
+
+@sync_app.command("status")
+def sync_status(
+    workspace_root: Path,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Inspect workspace-wide sync readiness without mutating any repo state."""
+    workspace_root = workspace_root.resolve()
+    plan = syncops.build_sync_plan(workspace_root)
+    if json_output:
+        typer.echo(syncops.sync_status_json(workspace_root))
+        return
+    typer.echo(syncops.render_sync_plan(plan))
 
 
 @workspace_app.command("init")

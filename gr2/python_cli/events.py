@@ -66,6 +66,11 @@ class EventType(str, Enum):
     SYNC_CONFLICT = "sync.conflict"
     SYNC_COMPLETED = "sync.completed"
 
+    # Execution
+    EXEC_STARTED = "exec.started"
+    EXEC_COMPLETED = "exec.completed"
+    EXEC_FAILED = "exec.failed"
+
     FAILURE_RESOLVED = "failure.resolved"
     LEASE_RECLAIMED = "lease.reclaimed"
 

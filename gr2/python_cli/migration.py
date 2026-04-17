@@ -133,7 +133,6 @@ def compile_gr1_to_workspace_spec(
                 "name": unit_name,
                 "path": f"agents/{unit_name}/home",
                 "repos": writable_repo_names,
-                "agent_id": f"gr1:{unit_name}",
                 "migration_source": {
                     "worktree": unit_doc.get("worktree"),
                     "channel": unit_doc.get("channel"),
@@ -199,9 +198,6 @@ def render_workspace_spec(compiled: dict[str, object]) -> str:
                 "repos = [" + ", ".join(f'"{repo}"' for repo in unit["repos"]) + "]",
             ]
         )
-        agent_id = str(unit.get("agent_id", "")).strip()
-        if agent_id:
-            lines.append(f'agent_id = "{agent_id}"')
         lines.append("")
 
     return "\n".join(lines)

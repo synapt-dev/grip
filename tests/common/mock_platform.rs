@@ -194,7 +194,7 @@ fn github_pr_json(
     body: &str,
 ) -> Value {
     let repo = github_repo_json("owner", "repo");
-    let api_base = format!("https://api.github.com/repos/owner/repo");
+    let api_base = "https://api.github.com/repos/owner/repo".to_string();
 
     let mut m = Map::new();
     m.insert("id".into(), json!(number));

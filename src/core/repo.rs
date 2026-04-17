@@ -432,6 +432,22 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_github_org_ssh() {
+        // Regression test for grip#429: org URLs must extract owner correctly
+        let parsed = parse_git_url("git@github.com:synapt-dev/grip.git").unwrap();
+        assert_eq!(parsed.owner, "synapt-dev");
+        assert_eq!(parsed.repo, "grip");
+    }
+
+    #[test]
+    fn test_parse_github_org_https() {
+        // Regression test for grip#429: org URLs must extract owner correctly
+        let parsed = parse_git_url("https://github.com/synapt-dev/recall.git").unwrap();
+        assert_eq!(parsed.owner, "synapt-dev");
+        assert_eq!(parsed.repo, "recall");
+    }
+
+    #[test]
     fn test_detect_github() {
         assert_eq!(
             detect_platform("git@github.com:user/repo.git"),
@@ -664,13 +680,7 @@ mod tests {
         };
 
         let filter = vec!["app".to_string()];
-        let result = filter_repos(
-            &manifest,
-            &temp.path().to_path_buf(),
-            Some(&filter),
-            None,
-            false,
-        );
+        let result = filter_repos(&manifest, temp.path(), Some(&filter), None, false);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "app");
     }
@@ -732,12 +742,12 @@ mod tests {
             workspace: None,
         };
 
-        let result = filter_repos(&manifest, &temp.path().to_path_buf(), None, None, false);
+        let result = filter_repos(&manifest, temp.path(), None, None, false);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "normal");
 
         // With include_reference = true
-        let result = filter_repos(&manifest, &temp.path().to_path_buf(), None, None, true);
+        let result = filter_repos(&manifest, temp.path(), None, None, true);
         assert_eq!(result.len(), 2);
     }
 
@@ -799,13 +809,7 @@ mod tests {
         };
 
         let groups = vec!["web".to_string()];
-        let result = filter_repos(
-            &manifest,
-            &temp.path().to_path_buf(),
-            None,
-            Some(&groups),
-            false,
-        );
+        let result = filter_repos(&manifest, temp.path(), None, Some(&groups), false);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "frontend");
     }
@@ -835,9 +839,7 @@ mod tests {
             clone_strategy: None,
         };
         let settings = ManifestSettings::default();
-        let info =
-            RepoInfo::from_config("app", &config, &temp.path().to_path_buf(), &settings, None)
-                .unwrap();
+        let info = RepoInfo::from_config("app", &config, temp.path(), &settings, None).unwrap();
         assert_eq!(info.revision, "develop");
 
         // repo omits revision, inherits from settings
@@ -861,16 +863,12 @@ mod tests {
             revision: Some("master".to_string()),
             ..Default::default()
         };
-        let info =
-            RepoInfo::from_config("app", &config, &temp.path().to_path_buf(), &settings, None)
-                .unwrap();
+        let info = RepoInfo::from_config("app", &config, temp.path(), &settings, None).unwrap();
         assert_eq!(info.revision, "master");
 
         // both omit → falls back to "main"
         let settings = ManifestSettings::default();
-        let info =
-            RepoInfo::from_config("app", &config, &temp.path().to_path_buf(), &settings, None)
-                .unwrap();
+        let info = RepoInfo::from_config("app", &config, temp.path(), &settings, None).unwrap();
         assert_eq!(info.revision, "main");
     }
 
@@ -899,14 +897,8 @@ mod tests {
 
         // No target → falls back to revision
         let settings = ManifestSettings::default();
-        let info = RepoInfo::from_config(
-            "app",
-            &base_config,
-            &temp.path().to_path_buf(),
-            &settings,
-            None,
-        )
-        .unwrap();
+        let info =
+            RepoInfo::from_config("app", &base_config, temp.path(), &settings, None).unwrap();
         assert_eq!(info.target, "main");
         assert_eq!(info.target_branch(), "main");
         assert_eq!(info.sync_ref(), "origin/main");
@@ -916,14 +908,8 @@ mod tests {
             target: Some("develop".to_string()),
             ..Default::default()
         };
-        let info = RepoInfo::from_config(
-            "app",
-            &base_config,
-            &temp.path().to_path_buf(),
-            &settings,
-            None,
-        )
-        .unwrap();
+        let info =
+            RepoInfo::from_config("app", &base_config, temp.path(), &settings, None).unwrap();
         assert_eq!(info.target, "develop");
         assert_eq!(info.target_branch(), "develop");
 
@@ -936,9 +922,7 @@ mod tests {
             target: Some("develop".to_string()),
             ..Default::default()
         };
-        let info =
-            RepoInfo::from_config("app", &config, &temp.path().to_path_buf(), &settings, None)
-                .unwrap();
+        let info = RepoInfo::from_config("app", &config, temp.path(), &settings, None).unwrap();
         assert_eq!(info.target, "staging");
         assert_eq!(info.target_branch(), "staging");
     }
@@ -968,14 +952,8 @@ mod tests {
 
         // Defaults to "origin"
         let settings = ManifestSettings::default();
-        let info = RepoInfo::from_config(
-            "app",
-            &base_config,
-            &temp.path().to_path_buf(),
-            &settings,
-            None,
-        )
-        .unwrap();
+        let info =
+            RepoInfo::from_config("app", &base_config, temp.path(), &settings, None).unwrap();
         assert_eq!(info.sync_remote, "origin");
         assert_eq!(info.push_remote, "origin");
 
@@ -985,14 +963,8 @@ mod tests {
             push_remote: Some("myfork".to_string()),
             ..Default::default()
         };
-        let info = RepoInfo::from_config(
-            "app",
-            &base_config,
-            &temp.path().to_path_buf(),
-            &settings,
-            None,
-        )
-        .unwrap();
+        let info =
+            RepoInfo::from_config("app", &base_config, temp.path(), &settings, None).unwrap();
         assert_eq!(info.sync_remote, "upstream");
         assert_eq!(info.push_remote, "myfork");
 
@@ -1002,9 +974,7 @@ mod tests {
             push_remote: Some("origin".to_string()),
             ..base_config.clone()
         };
-        let info =
-            RepoInfo::from_config("app", &config, &temp.path().to_path_buf(), &settings, None)
-                .unwrap();
+        let info = RepoInfo::from_config("app", &config, temp.path(), &settings, None).unwrap();
         assert_eq!(info.sync_remote, "other");
         assert_eq!(info.push_remote, "origin");
     }
@@ -1041,14 +1011,8 @@ mod tests {
             clone_strategy: None,
         };
         let settings = ManifestSettings::default();
-        let info = RepoInfo::from_config(
-            "myrepo",
-            &config,
-            &temp.path().to_path_buf(),
-            &settings,
-            Some(&remotes),
-        )
-        .unwrap();
+        let info = RepoInfo::from_config("myrepo", &config, temp.path(), &settings, Some(&remotes))
+            .unwrap();
         assert_eq!(info.url, "git@github.com:org/myrepo.git");
     }
 
@@ -1144,7 +1108,7 @@ repos:
         let info = RepoInfo::from_config(
             "app",
             &manifest.repos["app"],
-            &temp.path().to_path_buf(),
+            temp.path(),
             &manifest.settings,
             manifest.remotes.as_ref(),
         )

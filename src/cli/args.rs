@@ -126,10 +126,16 @@ pub enum Commands {
         #[arg(long, value_delimiter = ',')]
         group: Option<Vec<String>>,
     },
-    /// Checkout a branch across repos
+    #[command(
+        after_help = "Examples:\n  gr checkout feat/login\n  gr checkout --base\n  gr checkout add sandbox\n  gr checkout add docs-only --group docs\n  gr checkout add app-only --repo app\n  gr checkout list\n  gr checkout remove sandbox"
+    )]
+    /// Checkout a branch across repos or manage independent child checkouts
     Checkout {
-        /// Branch name
+        /// Branch name, or `add`/`list`/`remove` for child checkout lifecycle
         name: Option<String>,
+        /// Additional checkout action args (e.g. `add <name>`)
+        #[arg(hide = true)]
+        extra: Vec<String>,
         /// Create branch if it doesn't exist
         #[arg(short = 'b', long)]
         create: bool,
@@ -349,7 +355,7 @@ pub enum Commands {
         #[command(subcommand)]
         action: TargetCommands,
     },
-    /// Manage workspace repo caches (.grip/cache/)
+    /// Manage machine-level repo caches (~/.grip/cache/ by default)
     Cache {
         #[command(subcommand)]
         action: CacheCommands,
@@ -521,7 +527,11 @@ pub enum SpawnCommands {
     /// Stop all agents (or a specific agent)
     Down {
         /// Stop only this agent
+        #[arg(long)]
         agent: Option<String>,
+        /// Seconds to wait for graceful exit before force-killing (default: 10)
+        #[arg(long, default_value = "10")]
+        timeout: u64,
     },
     /// List configured agents
     List,

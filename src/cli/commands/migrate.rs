@@ -99,19 +99,9 @@ pub async fn run_migrate_from_repos(
         Vec::new()
     };
 
-    let premium = if interactive {
-        let theme = ColorfulTheme::default();
-        Confirm::with_theme(&theme)
-            .with_prompt("Enable premium features (persistent agents, team sharing)?")
-            .default(false)
-            .interact()?
-    } else {
-        false
-    };
-
     // Generate all files
     let manifest_yaml = generate_manifest_yaml(&parsed_repos, org_str, prefix_str);
-    let claude_md = generate_claude_md(&parsed_repos, prefix_str, &agents, premium);
+    let claude_md = generate_claude_md(&parsed_repos, prefix_str, &agents);
     let agents_toml = generate_agents_toml(prefix_str, &agents);
     let prompts: Vec<(String, String)> = agents
         .iter()
@@ -157,7 +147,6 @@ pub async fn run_migrate_from_repos(
             "target_dir": target_dir.display().to_string(),
             "repos": repos,
             "agents": agents.iter().map(|a| &a.name).collect::<Vec<_>>(),
-            "premium": premium,
             "manifest": ".gitgrip/spaces/main/gripspace.yml",
             "config": "config/",
         });
@@ -277,12 +266,7 @@ fn generate_manifest_yaml(repos: &[(String, String)], org: &str, prefix: &str) -
 }
 
 /// Generate CLAUDE.md with repo table and agent context.
-fn generate_claude_md(
-    repos: &[(String, String)],
-    prefix: &str,
-    agents: &[AgentSpec],
-    premium: bool,
-) -> String {
+fn generate_claude_md(repos: &[(String, String)], prefix: &str, agents: &[AgentSpec]) -> String {
     let mut md = String::new();
     md.push_str(&format!("# {}\n\n", prefix));
     md.push_str("Multi-repo workspace managed by **gitgrip** (`gr`). Always use `gr` — never raw `git` or `gh`.\n\n");
@@ -316,16 +300,6 @@ fn generate_claude_md(
     md.push_str("gr pr create -t \"feat: title\" --push\n");
     md.push_str("gr pr merge              # Merge linked PRs\n");
     md.push_str("```\n");
-
-    if premium {
-        md.push_str("\n## Premium Features\n\n");
-        md.push_str("This workspace has premium features enabled:\n");
-        md.push_str("- `recall_identity` — persistent agent identity\n");
-        md.push_str("- `recall_career` — cross-project career memory\n");
-        md.push_str("- `recall_promote` — share knowledge across team\n");
-        md.push_str("- `recall_approve` — approve promoted knowledge\n\n");
-        md.push_str("Use `recall_promote` after learning something reusable across projects.\n");
-    }
 
     md
 }
@@ -1068,12 +1042,12 @@ mod tests {
             model: "claude-opus-4-6".to_string(),
             tool: "claude".to_string(),
         }];
-        let md = generate_claude_md(&repos, "myproject", &agents, true);
+        let md = generate_claude_md(&repos, "myproject", &agents);
         assert!(md.contains("# myproject"));
         assert!(md.contains("| **myrepo**"));
         assert!(md.contains("| **atlas**"));
-        assert!(md.contains("Premium Features"));
-        assert!(md.contains("recall_identity"));
+        assert!(!md.contains("Premium Features"));
+        assert!(!md.contains("recall_identity"));
     }
 
     #[test]

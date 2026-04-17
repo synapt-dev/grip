@@ -725,7 +725,7 @@ mod tests {
 
     #[test]
     fn test_set_remote_url() {
-        let (temp, repo) = setup_test_repo();
+        let (_temp, repo) = setup_test_repo();
 
         // Create new remote
         set_remote_url(&repo, "origin", "https://github.com/test/repo1.git").unwrap();

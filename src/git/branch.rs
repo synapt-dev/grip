@@ -374,7 +374,7 @@ mod tests {
 
     #[test]
     fn test_create_and_checkout_branch() {
-        let (temp, repo) = setup_test_repo();
+        let (_temp, repo) = setup_test_repo();
 
         create_and_checkout_branch(&repo, "feature").unwrap();
 
@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn test_branch_exists() {
-        let (temp, repo) = setup_test_repo();
+        let (_temp, repo) = setup_test_repo();
 
         assert!(!branch_exists(&repo, "feature"));
 
@@ -394,7 +394,7 @@ mod tests {
 
     #[test]
     fn test_checkout_branch() {
-        let (temp, repo) = setup_test_repo();
+        let (_temp, repo) = setup_test_repo();
 
         // Create a feature branch
         create_and_checkout_branch(&repo, "feature").unwrap();
@@ -413,7 +413,7 @@ mod tests {
 
     #[test]
     fn test_list_local_branches() {
-        let (temp, repo) = setup_test_repo();
+        let (_temp, repo) = setup_test_repo();
 
         create_and_checkout_branch(&repo, "feature1").unwrap();
         create_and_checkout_branch(&repo, "feature2").unwrap();

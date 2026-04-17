@@ -19,6 +19,7 @@ from .gitops import (
     discard_if_dirty,
     ensure_lane_checkout,
     ensure_repo_cache,
+    fetch_repo,
     is_git_dir,
     is_git_repo,
     repo_dirty,
@@ -350,6 +351,15 @@ def build_sync_plan(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncP
                             details={"dirty_mode": dirty_mode},
                         )
                     )
+            operations.append(
+                SyncOperation(
+                    kind="fetch_shared_repo",
+                    scope="shared_repo",
+                    subject=repo_name,
+                    target_path=str(repo_root),
+                    reason="fetch remote refs into existing shared repo checkout",
+                )
+            )
             hooks = load_repo_hooks(repo_root)
             if hooks:
                 operations.append(
@@ -572,6 +582,28 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
             },
         )
         return f"cloned shared repo '{op.subject}' into {repo_root}"
+
+    if op.kind == "fetch_shared_repo":
+        repo_root = Path(op.target_path)
+        branch = current_branch(repo_root) or "main"
+        tracking_ref = f"origin/{branch}"
+        from .gitops import git as _git_cmd
+        proc = _git_cmd(repo_root, "rev-parse", "--verify", tracking_ref)
+        old_ref = proc.stdout.strip() if proc.returncode == 0 else None
+        fetch_repo(repo_root)
+        proc = _git_cmd(repo_root, "rev-parse", "--verify", tracking_ref)
+        new_ref = proc.stdout.strip() if proc.returncode == 0 else None
+        _emit_sync_event(
+            workspace_root,
+            {
+                "type": "sync.repo_fetched",
+                **_sync_context(workspace_root),
+                "repo": op.subject,
+                "old_ref": old_ref,
+                "new_ref": new_ref,
+            },
+        )
+        return f"fetched remote refs for shared repo '{op.subject}'"
 
     if op.kind == "evaluate_repo_hooks":
         repo_root = Path(op.target_path)

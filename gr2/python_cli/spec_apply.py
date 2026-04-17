@@ -448,9 +448,6 @@ def render_unit_toml(unit_spec: dict[str, object]) -> str:
         'kind = "unit"',
         f"repos = {repos_str}",
     ]
-    agent_id = str(unit_spec.get("agent_id", "")).strip()
-    if agent_id:
-        lines.append(f'agent_id = "{agent_id}"')
     return "\n".join(lines) + "\n"
 
 

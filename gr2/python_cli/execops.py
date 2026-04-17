@@ -216,11 +216,9 @@ def _emit_lease_event(
     ttl_seconds: int | None = None,
 ) -> None:
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
-    unit_spec = lane_proto.find_unit_spec(workspace_root, owner_unit)
     payload = {
         "type": event_type,
         "agent": actor,
-        "agent_id": unit_spec.get("agent_id"),
         "owner_unit": owner_unit,
         "lane": lane_name,
         "lane_type": lane_doc["lane_type"],

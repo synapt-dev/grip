@@ -25,6 +25,7 @@ def _make_ctx(workspace: Path) -> HookContext:
     repo_root.mkdir(parents=True, exist_ok=True)
     return HookContext(
         workspace_root=workspace,
+        unit_root=workspace / "agents" / "apollo",
         lane_root=workspace / "lanes" / "apollo" / "feat-test",
         repo_root=repo_root,
         repo_name="grip",

@@ -405,6 +405,7 @@ def _run_materialize_hooks(
         return {"projected_files": []}
     ctx = HookContext(
         workspace_root=workspace_root,
+        unit_root=workspace_root,
         lane_root=repo_root,
         repo_root=repo_root,
         repo_name=repo_name,

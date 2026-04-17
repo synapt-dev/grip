@@ -2,6 +2,10 @@
 
 Brief description of changes.
 
+## Premium Boundary
+
+Premium boundary: grip is OSS because <reason>.
+
 ## Changes
 
 - Change 1
@@ -11,9 +15,16 @@ Brief description of changes.
 
 How were these changes tested?
 
-## Checklist
+## Boundary Checklist
 
-- [ ] Code compiles (`pnpm build`)
-- [ ] Linting passes (`pnpm lint`)
-- [ ] Tests pass (`pnpm test`)
+- [ ] Premium boundary declaration present
+- [ ] Identity test passed (no "who is this agent?" code in OSS)
+- [ ] Plugin seam built before premium extension
+- [ ] No workspace metadata parsing, identity derivation, or premium prefixes
+
+## General Checklist
+
+- [ ] Code compiles
+- [ ] Linting passes
+- [ ] Tests pass
 - [ ] Documentation updated (if applicable)

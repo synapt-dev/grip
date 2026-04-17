@@ -3,9 +3,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::args::{
-    Commands, ExecCommands, LaneCommands, RepoCommands, SpecCommands, UnitCommands,
-};
+use crate::args::{Commands, ExecCommands, LaneCommands, RepoCommands, SpecCommands, UnitCommands};
 use crate::exec::{ExecStatusFilter, ExecStatusReport};
 use crate::lane::{
     create_lane, list_lanes, remove_lane, render_lane_table, show_lane, validate_lane_name,

@@ -131,6 +131,14 @@ def refresh_existing_branch(repo_root: Path, remote: str, source_ref: str, local
         )
 
 
+def fetch_repo(repo_root: Path, remote: str = "origin") -> None:
+    proc = git(repo_root, "fetch", remote)
+    if proc.returncode != 0:
+        raise SystemExit(
+            f"failed to fetch from {remote} in {repo_root}:\n{proc.stderr or proc.stdout}"
+        )
+
+
 def is_git_dir(path: Path) -> bool:
     proc = subprocess.run(
         ["git", "--git-dir", str(path), "rev-parse", "--is-bare-repository"],

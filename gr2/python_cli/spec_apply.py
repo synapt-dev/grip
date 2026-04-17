@@ -248,6 +248,20 @@ def build_plan(workspace_root: Path) -> tuple[dict[str, object], list[PlanOperat
                 )
             )
 
+        if unit_root.exists() and unit_toml.exists():
+            declared_repos = [str(r) for r in unit.get("repos", [])]
+            missing_repos = [r for r in declared_repos if not (unit_root / r).exists()]
+            if missing_repos:
+                operations.append(
+                    PlanOperation(
+                        kind="converge_unit_repos",
+                        subject=unit_name,
+                        target_path=str(unit_root),
+                        reason=f"missing repo checkouts: {', '.join(missing_repos)}",
+                        details={"missing_repos": missing_repos, "all_repos": declared_repos},
+                    )
+                )
+
     return spec, operations
 
 
@@ -314,6 +328,24 @@ def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -
             unit_toml = unit_root / "unit.toml"
             unit_toml.write_text(render_unit_toml(unit_spec))
             applied.append(f"wrote unit metadata for '{op.subject}'")
+        elif op.kind == "converge_unit_repos":
+            unit_spec = _find_unit(spec, op.subject)
+            unit_root = workspace_root / str(unit_spec["path"])
+            missing = [str(r) for r in op.details.get("missing_repos", [])]
+            converged: list[str] = []
+            for repo_name in missing:
+                repo_spec = _find_repo(spec, repo_name)
+                clone_dest = unit_root / repo_name
+                cache_path = repo_cache_path(workspace_root, str(repo_spec["name"]))
+                first_materialize = clone_repo(
+                    str(repo_spec["url"]), clone_dest, reference_repo_root=cache_path,
+                )
+                if first_materialize:
+                    converged.append(repo_name)
+                    materialized_repos.append({"repo": repo_name, "first_materialize": True})
+            unit_toml = unit_root / "unit.toml"
+            unit_toml.write_text(render_unit_toml(unit_spec))
+            applied.append(f"converged unit '{op.subject}': cloned {', '.join(converged)}")
         else:
             raise SystemExit(f"unknown plan operation kind: {op.kind}")
 

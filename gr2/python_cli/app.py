@@ -95,6 +95,7 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
             continue
         ctx = HookContext(
             workspace_root=workspace_root,
+            unit_root=workspace_root / "agents" / owner_unit,
             lane_root=lane_root,
             repo_root=target_repo_root,
             repo_name=repo_name,
@@ -128,6 +129,7 @@ def _run_lane_stage(workspace_root: Path, owner_unit: str, lane_name: str, stage
             continue
         ctx = HookContext(
             workspace_root=workspace_root,
+            unit_root=workspace_root / "agents" / owner_unit,
             lane_root=lane_root,
             repo_root=repo_root,
             repo_name=repo_name,
@@ -193,6 +195,7 @@ def _create_review_lane_metadata(
 def _repo_hook_context(workspace_root: Path, repo_root: Path) -> HookContext:
     return HookContext(
         workspace_root=workspace_root,
+        unit_root=workspace_root,
         lane_root=repo_root,
         repo_root=repo_root,
         repo_name=repo_root.name,

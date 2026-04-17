@@ -65,6 +65,7 @@ class RepoHooks:
 @dataclasses.dataclass(frozen=True)
 class HookContext:
     workspace_root: Path
+    unit_root: Path
     lane_root: Path
     repo_root: Path
     repo_name: str
@@ -86,6 +87,7 @@ class HookResult:
     stderr: str | None = None
     src: str | None = None
     dest: str | None = None
+    if_exists: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         return dataclasses.asdict(self)
@@ -166,8 +168,11 @@ def render_path(template: str, ctx: HookContext) -> Path:
 
 
 def render_text(template: str, ctx: HookContext) -> str:
-    return (
+    import re
+
+    result = (
         template.replace("{workspace_root}", str(ctx.workspace_root))
+        .replace("{unit_root}", str(ctx.unit_root))
         .replace("{lane_root}", str(ctx.lane_root))
         .replace("{repo_root}", str(ctx.repo_root))
         .replace("{repo_name}", ctx.repo_name)
@@ -175,6 +180,12 @@ def render_text(template: str, ctx: HookContext) -> str:
         .replace("{lane_subject}", ctx.lane_subject)
         .replace("{lane_name}", ctx.lane_name)
     )
+    remaining = re.findall(r"\{(\w+)\}", result)
+    if remaining:
+        raise ValueError(
+            f"undefined template variable(s): {', '.join('{' + v + '}' for v in remaining)}"
+        )
+    return result
 
 
 def apply_file_projections(hooks: RepoHooks, ctx: HookContext) -> list[HookResult]:
@@ -210,6 +221,7 @@ def apply_file_projections(hooks: RepoHooks, ctx: HookContext) -> list[HookResul
                         detail=f"destination already exists and if_exists=skip: {dest}",
                         src=str(src),
                         dest=str(dest),
+                        if_exists=item.if_exists,
                     )
                 )
                 continue
@@ -264,6 +276,7 @@ def apply_file_projections(hooks: RepoHooks, ctx: HookContext) -> list[HookResul
                 detail=f"{item.kind} {src} -> {dest}",
                 src=str(src),
                 dest=str(dest),
+                if_exists=item.if_exists,
             )
         )
     return results

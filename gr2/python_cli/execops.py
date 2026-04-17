@@ -2,9 +2,72 @@ from __future__ import annotations
 
 import json
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 
 from gr2.prototypes import lane_workspace_prototype as lane_proto
+from gr2.python_cli.events import emit, EventType
+
+
+@dataclass
+class ExecResult:
+    repo: str
+    cwd: str
+    status: str
+    returncode: int | None
+    stdout: str
+    stderr: str
+
+    @property
+    def succeeded(self) -> bool:
+        return self.status == "ok"
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "repo": self.repo,
+            "cwd": self.cwd,
+            "status": self.status,
+            "returncode": self.returncode,
+            "stdout": self.stdout,
+            "stderr": self.stderr,
+        }
+
+
+def _exec_one(command: list[str], repo: str, cwd: str) -> ExecResult:
+    cwd_path = Path(cwd)
+    if not cwd_path.exists():
+        return ExecResult(
+            repo=repo, cwd=cwd, status="missing",
+            returncode=None, stdout="",
+            stderr=f"lane repo checkout missing: {cwd}",
+        )
+    proc = subprocess.run(command, cwd=cwd_path, capture_output=True, text=True, check=False)
+    return ExecResult(
+        repo=repo, cwd=cwd,
+        status="ok" if proc.returncode == 0 else "failed",
+        returncode=proc.returncode,
+        stdout=proc.stdout, stderr=proc.stderr,
+    )
+
+
+def run_exec_parallel(
+    command: list[str],
+    repo_rows: list[dict[str, str]],
+    max_workers: int = 4,
+) -> list[ExecResult]:
+    futures_map: dict[int, object] = {}
+    results: list[ExecResult | None] = [None] * len(repo_rows)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        for idx, row in enumerate(repo_rows):
+            future = pool.submit(_exec_one, command, row["repo"], row["cwd"])
+            futures_map[id(future)] = (idx, future)
+
+        for _, (idx, future) in futures_map.items():
+            results[idx] = future.result()
+
+    return [r for r in results if r is not None]
 
 
 def _resolve_lane_name(workspace_root: Path, owner_unit: str, lane_name: str | None) -> str:
@@ -231,51 +294,79 @@ def run_exec(
     resolved_lane = str(status["lane"])
     rows = list(status["rows"])
     fail_fast = bool(rows[0]["fail_fast"]) if rows else True
+    parallelism = str(rows[0]["parallelism"]) if rows else "sequential"
     acquire_exec_lease(workspace_root, owner_unit, resolved_lane, actor, ttl_seconds)
-    results: list[dict[str, object]] = []
+
+    emit(
+        event_type=EventType.EXEC_STARTED,
+        workspace_root=workspace_root,
+        actor=actor,
+        owner_unit=owner_unit,
+        payload={
+            "lane": resolved_lane,
+            "command": command,
+            "repos": [r["repo"] for r in rows],
+            "parallelism": parallelism,
+        },
+    )
+
+    exec_results: list[ExecResult] = []
     overall = "success"
 
     try:
-        for row in rows:
-            cwd = Path(str(row["cwd"]))
-            if not cwd.exists():
-                result = {
-                    "repo": row["repo"],
-                    "cwd": str(cwd),
-                    "status": "missing",
-                    "returncode": None,
-                    "stdout": "",
-                    "stderr": f"lane repo checkout missing: {cwd}",
-                }
-                results.append(result)
+        if parallelism == "parallel":
+            repo_rows = [{"repo": r["repo"], "cwd": str(r["cwd"])} for r in rows]
+            exec_results = run_exec_parallel(command, repo_rows)
+            if any(not r.succeeded for r in exec_results):
                 overall = "failed"
-                if fail_fast:
-                    break
-                continue
-
-            proc = subprocess.run(command, cwd=cwd, capture_output=True, text=True, check=False)
-            result = {
-                "repo": row["repo"],
-                "cwd": str(cwd),
-                "status": "ok" if proc.returncode == 0 else "failed",
-                "returncode": proc.returncode,
-                "stdout": proc.stdout,
-                "stderr": proc.stderr,
-            }
-            results.append(result)
-            if proc.returncode != 0:
-                overall = "failed"
-                if fail_fast:
-                    break
+        else:
+            for row in rows:
+                r = _exec_one(command, str(row["repo"]), str(row["cwd"]))
+                exec_results.append(r)
+                if not r.succeeded:
+                    overall = "failed"
+                    if fail_fast:
+                        break
     finally:
         release_exec_lease(workspace_root, owner_unit, resolved_lane, actor)
+
+    result_dicts = [r.to_dict() for r in exec_results]
+    failed_repos = [r.repo for r in exec_results if not r.succeeded]
+
+    if overall == "success":
+        emit(
+            event_type=EventType.EXEC_COMPLETED,
+            workspace_root=workspace_root,
+            actor=actor,
+            owner_unit=owner_unit,
+            payload={
+                "lane": resolved_lane,
+                "command": command,
+                "overall_status": "success",
+                "repo_count": len(exec_results),
+            },
+        )
+    else:
+        emit(
+            event_type=EventType.EXEC_FAILED,
+            workspace_root=workspace_root,
+            actor=actor,
+            owner_unit=owner_unit,
+            payload={
+                "lane": resolved_lane,
+                "command": command,
+                "overall_status": "failed",
+                "failed_repos": failed_repos,
+                "repo_count": len(exec_results),
+            },
+        )
 
     return {
         "status": overall,
         "owner_unit": owner_unit,
         "lane": resolved_lane,
         "command": command,
-        "results": results,
+        "results": result_dicts,
     }
 
 

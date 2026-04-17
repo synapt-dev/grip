@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-04-17
+
+gr1 reaches stable. This release marks the feature-complete gr1 CLI before gr2 takes over as the primary workspace management system.
+
+### Summary
+
+gr1 ships as a production-ready multi-repo workspace tool with:
+
+- **Manifest-based configuration**: declarative YAML workspace definitions with composable gripspace inheritance, named remotes, and fork workflow support
+- **Synchronized operations**: branch, checkout, add, commit, push, pull, rebase, sync, and diff across all repos in parallel
+- **Linked PR workflow**: create, review, merge, and track pull requests that span multiple repos with all-or-nothing merge strategy and auto-merge support
+- **Griptrees**: worktree-based parallel workspaces for simultaneous multi-branch development with per-repo upstream tracking
+- **Multi-platform support**: GitHub, GitLab, Azure DevOps, and Bitbucket with platform-specific adapters and rate limiting
+- **Agent orchestration**: `gr spawn` for multi-agent session management with tmux, graceful shutdown, and configurable restart policies
+- **Developer tooling**: grep, prune, gc, cherry-pick, verify, release, benchmarks, shell completions, MCP server, and agent context generation
+- **Security hardening**: path traversal protection, credential sanitization, mutex poison recovery, thread panic propagation
+
+27 releases. 60+ commands. 4 hosting platforms. Production-tested across the synapt multi-agent team since January 2026.
+
+### Deprecation Notice
+
+**gr1 is now in maintenance mode.** gr2 (Python-first workspace orchestration) is the active development target. gr2 introduces declarative workspace specs, execution plans, lane-aware commands, and a migration path from gr1 gripspaces.
+
+See `gr2/docs/GR2-MVP.md` for the gr2 feature set and `gr2/docs/GR1-GR2-MIGRATION-PLAYBOOK.md` for migration instructions.
+
+New features will land in gr2. gr1 will receive only critical bug fixes.
+
 ## [0.20.0] - 2026-04-14
 
 ### Added

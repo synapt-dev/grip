@@ -1,30 +1,22 @@
 ## Summary
 
-Brief description of changes.
+<!-- What does this PR do? 1-3 sentences. -->
+
+## Closes
+
+<!-- Link issues this PR resolves. Use "Closes #N" for auto-close on merge. -->
+<!-- Example: Closes #123, Closes #456 -->
 
 ## Premium Boundary
 
-Premium boundary: grip is OSS because <reason>.
+**Premium boundary**: <!-- e.g. "grip is OSS. This PR adds workspace orchestration, not identity or org." -->
 
-## Changes
+### Boundary Checklist
 
-- Change 1
-- Change 2
+- [ ] **Boundary declaration** present above (one-line: what repo, OSS or premium, why)
+- [ ] **Identity test**: does this PR answer "who is this agent?" or "what workspace is this?" If yes, it must go in `synapt-private`.
+- [ ] **Plugin seam**: if this extends OSS for a premium feature, is the extension seam built in OSS first, with the implementation in `synapt-private`?
 
-## Testing
+## Test Plan
 
-How were these changes tested?
-
-## Boundary Checklist
-
-- [ ] Premium boundary declaration present
-- [ ] Identity test passed (no "who is this agent?" code in OSS)
-- [ ] Plugin seam built before premium extension
-- [ ] No workspace metadata parsing, identity derivation, or premium prefixes
-
-## General Checklist
-
-- [ ] Code compiles
-- [ ] Linting passes
-- [ ] Tests pass
-- [ ] Documentation updated (if applicable)
+<!-- How was this tested? What should reviewers verify? -->

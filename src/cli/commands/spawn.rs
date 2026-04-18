@@ -485,7 +485,7 @@ fn has_claude_session(worktree_path: &Path) -> bool {
     match std::fs::read_dir(&session_dir) {
         Ok(entries) => entries
             .filter_map(|e| e.ok())
-            .any(|e| e.path().extension().map_or(false, |ext| ext == "jsonl")),
+            .any(|e| e.path().extension().is_some_and(|ext| ext == "jsonl")),
         Err(_) => false,
     }
 }
@@ -1345,13 +1345,17 @@ mod tests {
     /// has_claude_session returns true when .jsonl files exist
     #[test]
     fn test_session_detected_with_jsonl() {
+        let home = match std::env::var("HOME") {
+            Ok(h) => h,
+            Err(_) => return, // HOME not set (e.g. Windows); production code returns false
+        };
         let tmp = tempfile::tempdir().unwrap();
         let worktree = tmp.path().join("agent-worktree");
         std::fs::create_dir_all(&worktree).unwrap();
 
         let abs = worktree.canonicalize().unwrap();
         let slug = abs.display().to_string().replace('/', "-");
-        let session_dir = PathBuf::from(std::env::var("HOME").unwrap())
+        let session_dir = PathBuf::from(home)
             .join(".claude")
             .join("projects")
             .join(&slug);
@@ -1367,13 +1371,17 @@ mod tests {
     /// has_claude_session returns false when directory exists but no .jsonl
     #[test]
     fn test_no_session_without_jsonl() {
+        let home = match std::env::var("HOME") {
+            Ok(h) => h,
+            Err(_) => return,
+        };
         let tmp = tempfile::tempdir().unwrap();
         let worktree = tmp.path().join("agent-no-jsonl");
         std::fs::create_dir_all(&worktree).unwrap();
 
         let abs = worktree.canonicalize().unwrap();
         let slug = abs.display().to_string().replace('/', "-");
-        let session_dir = PathBuf::from(std::env::var("HOME").unwrap())
+        let session_dir = PathBuf::from(home)
             .join(".claude")
             .join("projects")
             .join(&slug);
@@ -1409,13 +1417,17 @@ mod tests {
     /// --resume is kept in default_args when session exists (#579)
     #[test]
     fn test_resume_kept_when_session_exists() {
+        let home = match std::env::var("HOME") {
+            Ok(h) => h,
+            Err(_) => return,
+        };
         let tmp = tempfile::tempdir().unwrap();
         let worktree = tmp.path().join("agent-with-session");
         std::fs::create_dir_all(&worktree).unwrap();
 
         let abs = worktree.canonicalize().unwrap();
         let slug = abs.display().to_string().replace('/', "-");
-        let session_dir = PathBuf::from(std::env::var("HOME").unwrap())
+        let session_dir = PathBuf::from(home)
             .join(".claude")
             .join("projects")
             .join(&slug);

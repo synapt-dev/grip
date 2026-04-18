@@ -95,6 +95,7 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
             continue
         ctx = HookContext(
             workspace_root=workspace_root,
+            unit_root=workspace_root / "agents" / owner_unit,
             lane_root=lane_root,
             repo_root=target_repo_root,
             repo_name=repo_name,
@@ -128,6 +129,7 @@ def _run_lane_stage(workspace_root: Path, owner_unit: str, lane_name: str, stage
             continue
         ctx = HookContext(
             workspace_root=workspace_root,
+            unit_root=workspace_root / "agents" / owner_unit,
             lane_root=lane_root,
             repo_root=repo_root,
             repo_name=repo_name,
@@ -193,6 +195,7 @@ def _create_review_lane_metadata(
 def _repo_hook_context(workspace_root: Path, repo_root: Path) -> HookContext:
     return HookContext(
         workspace_root=workspace_root,
+        unit_root=workspace_root,
         lane_root=repo_root,
         repo_root=repo_root,
         repo_name=repo_root.name,
@@ -383,6 +386,20 @@ def workspace_materialize(
         typer.echo(spec_apply.render_apply_result(payload))
 
 
+@workspace_app.command("status")
+def workspace_status_cmd(
+    workspace_root: Path,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Show workspace state: gr1-only, gr2-only, coexistence, or none."""
+    workspace_root = workspace_root.resolve()
+    payload = migration.workspace_status(workspace_root)
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        typer.echo(migration.render_status(payload))
+
+
 @workspace_app.command("detect-gr1")
 def workspace_detect_gr1(
     workspace_root: Path,
@@ -403,15 +420,30 @@ def workspace_detect_gr1(
 def workspace_migrate_gr1(
     workspace_root: Path,
     force: bool = typer.Option(False, "--force", help="Allow overwrite of an existing .grip/workspace_spec.toml"),
+    apply: bool = typer.Option(False, "--apply", help="After migration, validate and apply the spec in one step"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Convert an existing gr1 (.gitgrip) workspace into parallel gr2 (.grip) layout."""
     workspace_root = workspace_root.resolve()
     payload = migration.migrate_gr1_workspace(workspace_root, force=force)
+    if apply:
+        issues = spec_apply.validate_spec(workspace_root)
+        errors = [i for i in issues if i.level == "error"]
+        if errors:
+            payload["apply_status"] = "validation_failed"
+            payload["validation_errors"] = [i.as_dict() for i in errors]
+        else:
+            apply_result = spec_apply.apply_plan(workspace_root, yes=True)
+            payload["apply_status"] = "applied"
+            payload["apply_result"] = apply_result
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
     else:
         typer.echo(migration.render_migration(payload))
+        if apply and payload.get("apply_status") == "applied":
+            typer.echo("\nWorkspace materialized successfully.")
+        elif apply and payload.get("apply_status") == "validation_failed":
+            typer.echo(f"\nSpec validation failed: {len(payload.get('validation_errors', []))} error(s).")
 
 
 @spec_app.command("show")

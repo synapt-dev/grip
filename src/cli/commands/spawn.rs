@@ -354,6 +354,32 @@ pub fn run_spawn_up(
             let resolved_defaults: Vec<String> = default_args.iter().map(|s| resolve(s)).collect();
             let resolved_args: Vec<String> = agent.args.iter().map(|s| resolve(s)).collect();
 
+            // Strip --resume when no prior session exists (#579)
+            let has_resume = resolved_defaults.iter().any(|a| a == "--resume")
+                || resolved_args.iter().any(|a| a == "--resume");
+            let resolved_defaults: Vec<String> =
+                if has_resume && !has_claude_session(&worktree_path) {
+                    Output::info(&format!(
+                        "  {} stripping --resume (no prior session for {})",
+                        name,
+                        worktree_path.display()
+                    ));
+                    resolved_defaults
+                        .into_iter()
+                        .filter(|a| a != "--resume")
+                        .collect()
+                } else {
+                    resolved_defaults
+                };
+            let resolved_args: Vec<String> = if has_resume && !has_claude_session(&worktree_path) {
+                resolved_args
+                    .into_iter()
+                    .filter(|a| a != "--resume")
+                    .collect()
+            } else {
+                resolved_args
+            };
+
             // Inject --model from agent.model if not already in args (#472)
             let has_model_flag = resolved_args.iter().any(|a| a == "--model")
                 || resolved_defaults.iter().any(|a| a == "--model");
@@ -437,6 +463,33 @@ pub fn run_spawn_up(
 }
 
 /// Resolve a worktree identifier to an absolute path.
+/// Check if a Claude Code session exists for the given worktree path.
+///
+/// Claude Code stores sessions at `~/.claude/projects/<slug>/` where the
+/// slug is the absolute path with `/` replaced by `-`. A session exists
+/// if any `.jsonl` file is present in that directory.
+fn has_claude_session(worktree_path: &Path) -> bool {
+    let home = match std::env::var("HOME") {
+        Ok(h) => PathBuf::from(h),
+        Err(_) => return false,
+    };
+    let abs = match worktree_path.canonicalize() {
+        Ok(p) => p,
+        Err(_) => worktree_path.to_path_buf(),
+    };
+    let slug = abs.display().to_string().replace('/', "-");
+    let session_dir = home.join(".claude").join("projects").join(&slug);
+    if !session_dir.is_dir() {
+        return false;
+    }
+    match std::fs::read_dir(&session_dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .any(|e| e.path().extension().is_some_and(|ext| ext == "jsonl")),
+        Err(_) => false,
+    }
+}
+
 fn resolve_worktree_path(workspace_root: &Path, worktree: &str) -> PathBuf {
     if worktree == "main" {
         workspace_root.to_path_buf()
@@ -1277,5 +1330,122 @@ mod tests {
         };
 
         assert!(model_inject.is_empty());
+    }
+
+    // -- Resume detection tests (#579) ------------------------------------
+
+    /// has_claude_session returns false for nonexistent directory
+    #[test]
+    fn test_no_session_for_missing_dir() {
+        let tmp = std::env::temp_dir().join("grip_test_no_session_579");
+        let _ = std::fs::remove_dir_all(&tmp);
+        assert!(!has_claude_session(&tmp));
+    }
+
+    /// has_claude_session returns true when .jsonl files exist
+    #[test]
+    fn test_session_detected_with_jsonl() {
+        let home = match std::env::var("HOME") {
+            Ok(h) => h,
+            Err(_) => return, // HOME not set (e.g. Windows); production code returns false
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree = tmp.path().join("agent-worktree");
+        std::fs::create_dir_all(&worktree).unwrap();
+
+        let abs = worktree.canonicalize().unwrap();
+        let slug = abs.display().to_string().replace('/', "-");
+        let session_dir = PathBuf::from(home)
+            .join(".claude")
+            .join("projects")
+            .join(&slug);
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::write(session_dir.join("abc123.jsonl"), "{}").unwrap();
+
+        assert!(has_claude_session(&worktree));
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&session_dir);
+    }
+
+    /// has_claude_session returns false when directory exists but no .jsonl
+    #[test]
+    fn test_no_session_without_jsonl() {
+        let home = match std::env::var("HOME") {
+            Ok(h) => h,
+            Err(_) => return,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree = tmp.path().join("agent-no-jsonl");
+        std::fs::create_dir_all(&worktree).unwrap();
+
+        let abs = worktree.canonicalize().unwrap();
+        let slug = abs.display().to_string().replace('/', "-");
+        let session_dir = PathBuf::from(home)
+            .join(".claude")
+            .join("projects")
+            .join(&slug);
+        std::fs::create_dir_all(&session_dir).unwrap();
+        // Only a non-jsonl file
+        std::fs::write(session_dir.join("notes.txt"), "hello").unwrap();
+
+        assert!(!has_claude_session(&worktree));
+
+        let _ = std::fs::remove_dir_all(&session_dir);
+    }
+
+    /// --resume is stripped from default_args when no session exists (#579)
+    #[test]
+    fn test_resume_stripped_when_no_session() {
+        let defaults: Vec<String> = vec![
+            "--resume".into(),
+            "--permission-mode".into(),
+            "bypassPermissions".into(),
+        ];
+        let worktree = std::env::temp_dir().join("grip_test_strip_resume_579");
+        let _ = std::fs::remove_dir_all(&worktree);
+
+        let has_resume = defaults.iter().any(|a| a == "--resume");
+        assert!(has_resume);
+        assert!(!has_claude_session(&worktree));
+
+        let filtered: Vec<String> = defaults.into_iter().filter(|a| a != "--resume").collect();
+
+        assert_eq!(filtered, vec!["--permission-mode", "bypassPermissions"]);
+    }
+
+    /// --resume is kept in default_args when session exists (#579)
+    #[test]
+    fn test_resume_kept_when_session_exists() {
+        let home = match std::env::var("HOME") {
+            Ok(h) => h,
+            Err(_) => return,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree = tmp.path().join("agent-with-session");
+        std::fs::create_dir_all(&worktree).unwrap();
+
+        let abs = worktree.canonicalize().unwrap();
+        let slug = abs.display().to_string().replace('/', "-");
+        let session_dir = PathBuf::from(home)
+            .join(".claude")
+            .join("projects")
+            .join(&slug);
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::write(session_dir.join("session.jsonl"), "{}").unwrap();
+
+        let defaults: Vec<String> = vec![
+            "--resume".into(),
+            "--permission-mode".into(),
+            "bypassPermissions".into(),
+        ];
+
+        assert!(has_claude_session(&worktree));
+
+        // When session exists, --resume should be kept (no filtering)
+        let kept: Vec<String> = defaults.clone();
+        assert!(kept.contains(&"--resume".to_string()));
+
+        let _ = std::fs::remove_dir_all(&session_dir);
     }
 }

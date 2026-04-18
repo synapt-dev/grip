@@ -133,7 +133,6 @@ def compile_gr1_to_workspace_spec(
                 "name": unit_name,
                 "path": f"agents/{unit_name}/home",
                 "repos": writable_repo_names,
-                "agent_id": f"gr1:{unit_name}",
                 "migration_source": {
                     "worktree": unit_doc.get("worktree"),
                     "channel": unit_doc.get("channel"),
@@ -199,9 +198,6 @@ def render_workspace_spec(compiled: dict[str, object]) -> str:
                 "repos = [" + ", ".join(f'"{repo}"' for repo in unit["repos"]) + "]",
             ]
         )
-        agent_id = str(unit.get("agent_id", "")).strip()
-        if agent_id:
-            lines.append(f'agent_id = "{agent_id}"')
         lines.append("")
 
     return "\n".join(lines)
@@ -238,6 +234,69 @@ def render_migration(payload: dict[str, object]) -> str:
     lines.extend(f"- {unit}" for unit in payload["units"])
     lines.append("SNAPSHOTS")
     lines.extend(f"- {name}\t{path}" for name, path in payload["snapshots"].items())
+    return "\n".join(lines)
+
+
+def workspace_status(workspace_root: Path) -> dict[str, object]:
+    """Report workspace state: gr1-only, gr2-only, coexistence, or none."""
+    has_gr1 = gr1_manifest_path(workspace_root).exists()
+    gr2_spec_path = workspace_root / ".grip" / "workspace_spec.toml"
+    has_gr2 = gr2_spec_path.exists()
+    migration_dir = workspace_root / ".grip" / "migrations" / "gr1"
+    has_migration = migration_dir.exists() and (migration_dir / "migration-summary.json").exists()
+
+    if has_gr1 and has_gr2:
+        phase = "coexistence"
+    elif has_gr1:
+        phase = "gr1-only"
+    elif has_gr2:
+        phase = "gr2-only"
+    else:
+        phase = "none"
+
+    result: dict[str, object] = {
+        "workspace_root": str(workspace_root),
+        "gr1": has_gr1,
+        "gr2": has_gr2,
+        "coexistence": has_gr1 and has_gr2,
+        "migration_snapshot": has_migration,
+        "phase": phase,
+    }
+
+    if has_gr1:
+        detection = detect_gr1_workspace(workspace_root)
+        result["gr1_repo_count"] = detection.get("repo_count", 0)
+        result["gr1_agents"] = detection.get("agents", [])
+
+    if has_gr2:
+        import tomllib
+        with gr2_spec_path.open("rb") as fh:
+            spec = tomllib.load(fh)
+        repos = spec.get("repos", [])
+        units = spec.get("units", [])
+        result["gr2_repo_count"] = len(repos)
+        result["gr2_unit_count"] = len(units)
+        result["gr2_spec_path"] = str(gr2_spec_path)
+
+    return result
+
+
+def render_status(payload: dict[str, object]) -> str:
+    lines = [
+        "WorkspaceStatus",
+        f"phase = {payload['phase']}",
+        f"workspace_root = {payload['workspace_root']}",
+    ]
+    if payload["gr1"]:
+        lines.append(f"gr1 = true (repos: {payload.get('gr1_repo_count', '?')})")
+    if payload["gr2"]:
+        lines.append(f"gr2 = true (repos: {payload.get('gr2_repo_count', '?')}, units: {payload.get('gr2_unit_count', '?')})")
+    if payload["coexistence"]:
+        lines.append("coexistence = true (both .gitgrip and .grip present)")
+    if payload.get("migration_snapshot"):
+        lines.append("migration_snapshot = true (.grip/migrations/gr1/ present)")
+    if not payload["gr1"] and not payload["gr2"]:
+        lines.append("No workspace detected. Run `gr2 workspace init` or `gr2 workspace migrate-gr1`.")
     return "\n".join(lines)
 
 

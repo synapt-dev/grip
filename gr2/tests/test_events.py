@@ -7,10 +7,13 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 
 # ---------------------------------------------------------------------------
@@ -78,8 +81,8 @@ class TestEventTypeEnum:
 
     def test_total_count(self):
         from gr2.python_cli.events import EventType
-        # 5 lane + 4 lease + 4 hook + 7 PR + 7 sync + 3 exec + 2 recovery + 2 workspace = 34
-        assert len(EventType) == 34
+        # 5 lane + 4 lease + 4 hook + 7 PR + 8 sync + 3 exec + 2 recovery + 2 workspace = 35
+        assert len(EventType) == 35
 
 
 # ---------------------------------------------------------------------------

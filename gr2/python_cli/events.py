@@ -62,6 +62,7 @@ class EventType(str, Enum):
     SYNC_CACHE_SEEDED = "sync.cache_seeded"
     SYNC_CACHE_REFRESHED = "sync.cache_refreshed"
     SYNC_REPO_UPDATED = "sync.repo_updated"
+    SYNC_REPO_FETCHED = "sync.repo_fetched"
     SYNC_REPO_SKIPPED = "sync.repo_skipped"
     SYNC_CONFLICT = "sync.conflict"
     SYNC_COMPLETED = "sync.completed"

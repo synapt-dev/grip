@@ -357,23 +357,21 @@ pub fn run_spawn_up(
             // Strip --resume when no prior session exists (#579)
             let has_resume = resolved_defaults.iter().any(|a| a == "--resume")
                 || resolved_args.iter().any(|a| a == "--resume");
-            let resolved_defaults: Vec<String> = if has_resume
-                && !has_claude_session(&worktree_path)
-            {
-                Output::info(&format!(
-                    "  {} stripping --resume (no prior session for {})",
-                    name, worktree_path.display()
-                ));
-                resolved_defaults
-                    .into_iter()
-                    .filter(|a| a != "--resume")
-                    .collect()
-            } else {
-                resolved_defaults
-            };
-            let resolved_args: Vec<String> = if has_resume
-                && !has_claude_session(&worktree_path)
-            {
+            let resolved_defaults: Vec<String> =
+                if has_resume && !has_claude_session(&worktree_path) {
+                    Output::info(&format!(
+                        "  {} stripping --resume (no prior session for {})",
+                        name,
+                        worktree_path.display()
+                    ));
+                    resolved_defaults
+                        .into_iter()
+                        .filter(|a| a != "--resume")
+                        .collect()
+                } else {
+                    resolved_defaults
+                };
+            let resolved_args: Vec<String> = if has_resume && !has_claude_session(&worktree_path) {
                 resolved_args
                     .into_iter()
                     .filter(|a| a != "--resume")
@@ -487,11 +485,7 @@ fn has_claude_session(worktree_path: &Path) -> bool {
     match std::fs::read_dir(&session_dir) {
         Ok(entries) => entries
             .filter_map(|e| e.ok())
-            .any(|e| {
-                e.path()
-                    .extension()
-                    .map_or(false, |ext| ext == "jsonl")
-            }),
+            .any(|e| e.path().extension().map_or(false, |ext| ext == "jsonl")),
         Err(_) => false,
     }
 }
@@ -1407,15 +1401,9 @@ mod tests {
         assert!(has_resume);
         assert!(!has_claude_session(&worktree));
 
-        let filtered: Vec<String> = defaults
-            .into_iter()
-            .filter(|a| a != "--resume")
-            .collect();
+        let filtered: Vec<String> = defaults.into_iter().filter(|a| a != "--resume").collect();
 
-        assert_eq!(
-            filtered,
-            vec!["--permission-mode", "bypassPermissions"]
-        );
+        assert_eq!(filtered, vec!["--permission-mode", "bypassPermissions"]);
     }
 
     /// --resume is kept in default_args when session exists (#579)

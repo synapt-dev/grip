@@ -6,7 +6,7 @@
 use crate::cli::output::Output;
 use colored::Colorize;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -287,31 +287,29 @@ pub fn run_spawn_up(
             }
         };
 
-        // Send environment variables — GRIPSPACE_ROOT + SYNAPT_AGENT_ID first (#418, #510)
+        // Consolidate env vars into one export. Priority: agent.env > spawn.env > hardcoded.
         let grip_root = workspace_root.display();
-        let env_cmd = format!(
-            "export GRIPSPACE_ROOT=\"{}\" SYNAPT_AGENT_ID=\"{}\" AGENT_NAME={} AGENT_ROLE=\"{}\" SYNAPT_CHANNELS={} SYNAPT_LOOP_INTERVAL={}",
-            grip_root, agent_id, name, agent.role, channel, agent.loop_interval
-        );
+        let mut env_vars: BTreeMap<String, String> = BTreeMap::new();
+        env_vars.insert("GRIPSPACE_ROOT".into(), grip_root.to_string());
+        env_vars.insert("SYNAPT_AGENT_ID".into(), agent_id.clone());
+        env_vars.insert("AGENT_NAME".into(), name.to_string());
+        env_vars.insert("AGENT_ROLE".into(), agent.role.clone());
+        env_vars.insert("SYNAPT_CHANNELS".into(), channel.to_string());
+        env_vars.insert("SYNAPT_LOOP_INTERVAL".into(), agent.loop_interval.clone());
+        for (key, val) in &config.spawn.env {
+            env_vars.insert(key.clone(), val.clone());
+        }
+        for (key, val) in &agent.env {
+            env_vars.insert(key.clone(), val.clone());
+        }
+        let pairs: Vec<String> = env_vars
+            .iter()
+            .map(|(k, v)| format!("{}=\"{}\"", k, v))
+            .collect();
+        let env_cmd = format!("export {}", pairs.join(" "));
         let _ = Command::new("tmux")
             .args(["send-keys", "-t", &target, &env_cmd, "Enter"])
             .status();
-
-        // Send global spawn env vars from [spawn] config
-        for (key, val) in &config.spawn.env {
-            let global_env = format!("export {}=\"{}\"", key, val);
-            let _ = Command::new("tmux")
-                .args(["send-keys", "-t", &target, &global_env, "Enter"])
-                .status();
-        }
-
-        // Send per-agent custom env vars
-        for (key, val) in &agent.env {
-            let custom_env = format!("export {}=\"{}\"", key, val);
-            let _ = Command::new("tmux")
-                .args(["send-keys", "-t", &target, &custom_env, "Enter"])
-                .status();
-        }
 
         // Build and send launch command
         let launch_cmd = if mock_mode {

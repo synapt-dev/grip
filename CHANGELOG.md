@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-04-20
+
+### Fixed
+
+- `gr spawn up` no longer sends duplicate env vars. Hardcoded defaults, `spawn.env`, and `agent.env` are now consolidated into a single `export` command. Agent env wins over spawn env wins over hardcoded defaults.
+
 ## [1.0.0] - 2026-04-17
 
 gr1 reaches stable. This release marks the feature-complete gr1 CLI before gr2 takes over as the primary workspace management system.

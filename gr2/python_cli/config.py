@@ -27,6 +27,10 @@ class BaseStaleError(Exception):
     """Raised when overlay's _base_sha doesn't match current base content."""
 
 
+class OverlayCorruptError(Exception):
+    """Raised when an overlay JSON file contains invalid JSON."""
+
+
 class PolicyViolationError(Exception):
     """Raised when a write is blocked by the active policy."""
 
@@ -108,6 +112,19 @@ def _overlay_stem(base_path: Path) -> str:
     return base_path.stem
 
 
+def _safe_json_load(path: Path) -> dict:
+    """Load JSON from path. On corrupt JSON, quarantine the file and raise OverlayCorruptError."""
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, ValueError):
+        corrupt_path = path.with_suffix(path.suffix + ".corrupt")
+        path.rename(corrupt_path)
+        raise OverlayCorruptError(
+            f"Corrupt overlay JSON at {path.name}. "
+            f"Quarantined to {corrupt_path.name}."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -127,7 +144,7 @@ def config_apply(base_path: Path, overlay_dir: Path) -> dict:
     overlay_path = overlay_dir / f"{_overlay_stem(base_path)}.json"
 
     if overlay_path.exists():
-        existing = json.loads(overlay_path.read_text())
+        existing = _safe_json_load(overlay_path)
         existing.pop("_base_sha", None)
         merged = _deep_merge(base_data, existing)
     else:
@@ -158,7 +175,7 @@ def config_show(
     overlay_data: dict = {}
 
     if overlay_path.exists():
-        overlay_data = json.loads(overlay_path.read_text())
+        overlay_data = _safe_json_load(overlay_path)
         if strict:
             stored_sha = overlay_data.get("_base_sha", "")
             current_sha = _base_sha(base_content)
@@ -177,7 +194,7 @@ def config_show(
         prompts: dict[str, Any] = merged.get("prompts", {})
         for pf in sorted(prompts_dir.glob("*.json")):
             agent_name = pf.stem
-            agent_prompts = json.loads(pf.read_text())
+            agent_prompts = _safe_json_load(pf)
             if agent_name in prompts and isinstance(prompts[agent_name], dict):
                 prompts[agent_name] = _deep_merge(prompts[agent_name], agent_prompts)
             else:
@@ -239,34 +256,74 @@ def overlay_write(
 
 
 def config_restore(workspace: Path, ref: str, overlay_dir: Path) -> dict:
-    """Restore overlay files from a grip commit's config/ subtree."""
+    """Restore overlay files from a grip commit's config/ subtree.
+
+    This is an exact restore: files in the overlay directory that are not in
+    the snapshot are deleted (JSON files only; non-JSON files are preserved).
+    """
     from python_cli.grip import _grip_git
 
     proc = _grip_git(workspace, "ls-tree", f"{ref}:config")
-    if proc.returncode != 0:
-        return {}
+    has_config = proc.returncode == 0
 
     overlay_dir.mkdir(parents=True, exist_ok=True)
     restored: dict[str, str] = {}
+    snapshot_names: set[str] = set()
+    has_prompts_tree = False
 
+    if has_config:
+        for line in proc.stdout.strip().splitlines():
+            if not line.strip():
+                continue
+            parts = line.split("\t")
+            if len(parts) < 2:
+                continue
+            meta, name = parts[0], parts[1]
+            obj_type = meta.split()[1]
+
+            if obj_type == "blob":
+                snapshot_names.add(name)
+                blob = _grip_git(workspace, "show", f"{ref}:config/{name}")
+                if blob.returncode == 0:
+                    (overlay_dir / name).write_text(blob.stdout)
+                    restored[name] = "restored"
+            elif obj_type == "tree" and name == "prompts":
+                has_prompts_tree = True
+                _restore_prompts(workspace, ref, overlay_dir)
+
+    for f in overlay_dir.glob("*.json"):
+        if f.name not in snapshot_names:
+            f.unlink()
+
+    prompts_dir = overlay_dir / "prompts"
+    if prompts_dir.is_dir():
+        if not has_prompts_tree:
+            for pf in prompts_dir.glob("*.json"):
+                pf.unlink()
+        else:
+            snapshot_prompts = _snapshot_prompt_names(workspace, ref)
+            for pf in prompts_dir.glob("*.json"):
+                if pf.name not in snapshot_prompts:
+                    pf.unlink()
+
+    return restored
+
+
+def _snapshot_prompt_names(workspace: Path, ref: str) -> set[str]:
+    """Get the set of prompt filenames in a grip commit's config/prompts/ subtree."""
+    from python_cli.grip import _grip_git
+
+    proc = _grip_git(workspace, "ls-tree", f"{ref}:config/prompts")
+    if proc.returncode != 0:
+        return set()
+    names: set[str] = set()
     for line in proc.stdout.strip().splitlines():
         if not line.strip():
             continue
         parts = line.split("\t")
-        if len(parts) < 2:
-            continue
-        meta, name = parts[0], parts[1]
-        obj_type = meta.split()[1]
-
-        if obj_type == "blob":
-            blob = _grip_git(workspace, "show", f"{ref}:config/{name}")
-            if blob.returncode == 0:
-                (overlay_dir / name).write_text(blob.stdout)
-                restored[name] = "restored"
-        elif obj_type == "tree" and name == "prompts":
-            _restore_prompts(workspace, ref, overlay_dir)
-
-    return restored
+        if len(parts) >= 2:
+            names.add(parts[1])
+    return names
 
 
 def _restore_prompts(workspace: Path, ref: str, overlay_dir: Path) -> None:

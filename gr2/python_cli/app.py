@@ -30,6 +30,7 @@ from .events import emit, EventType
 from .hooks import HookContext, HookRuntimeError, apply_file_projections, load_repo_hooks, run_lifecycle_stage
 from .platform import PRRef, get_platform_adapter
 from . import spec_apply
+from .grip_cli import config_cli_app, grip_app
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 from gr2.prototypes import repo_maintenance_prototype as repo_proto
 
@@ -56,6 +57,8 @@ app.add_typer(workspace_app, name="workspace")
 app.add_typer(spec_app, name="spec")
 app.add_typer(exec_app, name="exec")
 app.add_typer(sync_app, name="sync")
+app.add_typer(grip_app, name="grip")
+app.add_typer(config_cli_app, name="config")
 
 
 def _workspace_repo_spec(workspace_root: Path, repo_name: str) -> dict[str, object]:

@@ -13,6 +13,19 @@ from python_cli.gitops import git
 
 
 # ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+
+class GripInitError(Exception):
+    """Raised when .grip/ repo is missing or not properly initialized."""
+
+
+class GripCorruptError(Exception):
+    """Raised when .grip/ repo state is corrupt (bad HEAD, missing objects)."""
+
+
+# ---------------------------------------------------------------------------
 # Data types
 # ---------------------------------------------------------------------------
 
@@ -39,6 +52,25 @@ class GripDiff:
 
 def _grip_git(workspace: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return git(workspace / ".grip", *args)
+
+
+def _validate_grip_repo(workspace: Path) -> None:
+    """Verify .grip/ is a valid git repo. Raises GripInitError if not."""
+    grip_dir = workspace / ".grip"
+    if not grip_dir.exists():
+        raise GripInitError(
+            f"No .grip/ directory at {workspace}. Run grip_init first."
+        )
+    git_dir = grip_dir / ".git"
+    if not git_dir.exists():
+        raise GripInitError(
+            f".grip/ exists but has no .git/ at {workspace}. Run grip_init to repair."
+        )
+    if git_dir.is_file():
+        raise GripInitError(
+            f".grip/.git is a file, not a directory (corrupt). "
+            f"Remove {git_dir} and run grip_init to repair."
+        )
 
 
 def _hash_blob(workspace: Path, content: str) -> str:
@@ -101,15 +133,35 @@ def _git_env() -> dict[str, str]:
     return env
 
 
-def _current_head(workspace: Path) -> str | None:
+def _current_head(workspace: Path, *, strict: bool = False) -> str | None:
+    """Get current HEAD of .grip/ repo.
+
+    Returns None if no commits yet. Raises GripCorruptError if HEAD exists
+    but points to invalid state (when strict=True or when HEAD file is missing/corrupt).
+    """
+    head_path = workspace / ".grip" / ".git" / "HEAD"
+    if not head_path.exists():
+        raise GripCorruptError(
+            f".grip/.git/HEAD is missing at {workspace}. "
+            "The grip repo may be corrupt."
+        )
+
     proc = _grip_git(workspace, "rev-parse", "HEAD")
     if proc.returncode != 0:
-        return None
+        head_content = head_path.read_text().strip()
+        if head_content.startswith("ref: "):
+            return None
+        raise GripCorruptError(
+            f".grip/HEAD points to invalid ref: {head_content!r}. "
+            "The grip repo may be corrupt."
+        )
     return proc.stdout.strip() or None
 
 
 def _repo_tree_entries(workspace: Path, name: str, repo_path: Path) -> str:
     """Build a tree for one repo and return an mktree entry line."""
+    from python_cli.gitops import repo_dirty
+
     blobs: list[str] = []
 
     head = git(repo_path, "rev-parse", "HEAD")
@@ -126,6 +178,10 @@ def _repo_tree_entries(workspace: Path, name: str, repo_path: Path) -> str:
     if remote.returncode == 0 and remote.stdout.strip():
         sha = _hash_blob(workspace, remote.stdout.strip())
         blobs.append(f"100644 blob {sha}\tremote")
+
+    is_dirty = repo_dirty(repo_path)
+    dirty_sha = _hash_blob(workspace, "true" if is_dirty else "false")
+    blobs.append(f"100644 blob {dirty_sha}\tdirty")
 
     tree_sha = _mktree(workspace, blobs)
     return f"040000 tree {tree_sha}\t{name}"
@@ -189,6 +245,11 @@ def grip_init(workspace: Path) -> Path:
     if not grip_dir.exists():
         grip_dir.mkdir(parents=True)
     git_dir = grip_dir / ".git"
+    if git_dir.is_file():
+        raise GripInitError(
+            f".grip/.git is a file, not a directory (corrupt). "
+            f"Remove {git_dir} and run grip_init again."
+        )
     if not git_dir.exists():
         git(grip_dir, "init")
         git(grip_dir, "config", "user.email", "grip@synapt.dev")
@@ -206,6 +267,7 @@ def grip_snapshot(
     overlay_dir: Path | None = None,
 ) -> str:
     """Create a grip commit from current repo states. Returns commit SHA."""
+    _validate_grip_repo(workspace)
     repo_entries: list[str] = []
     for name in sorted(repos):
         entry = _repo_tree_entries(workspace, name, repos[name])
@@ -236,6 +298,7 @@ def grip_snapshot(
 
 def grip_log(workspace: Path, *, max_count: int = 10) -> list[GripCommitInfo]:
     """List grip commit history, most recent first."""
+    _validate_grip_repo(workspace)
     head = _current_head(workspace)
     if not head:
         return []
@@ -282,6 +345,7 @@ def _read_repo_names(workspace: Path, commit_sha: str) -> list[str]:
 
 def grip_diff(workspace: Path, ref_a: str, ref_b: str) -> GripDiff:
     """Compare two grip commits and return changed/added/removed repos."""
+    _validate_grip_repo(workspace)
     repos_a = _read_repo_state(workspace, ref_a)
     repos_b = _read_repo_state(workspace, ref_b)
 
@@ -336,6 +400,15 @@ def grip_checkout(workspace: Path, ref: str) -> dict[str, str]:
 
     Returns dict mapping repo name to commit SHA.
     """
+    _validate_grip_repo(workspace)
+
+    # Verify the ref resolves to a valid object
+    verify = _grip_git(workspace, "cat-file", "-t", ref)
+    if verify.returncode != 0:
+        raise GripCorruptError(
+            f"Ref '{ref}' does not resolve to a valid object in .grip/ repo."
+        )
+
     repo_states = _read_repo_state(workspace, ref)
     result: dict[str, str] = {}
 

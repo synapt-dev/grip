@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+const AGENT_HISTORY_LIMIT: &str = "50000";
+
 // ---------------------------------------------------------------------------
 // Config types
 // ---------------------------------------------------------------------------
@@ -196,6 +198,10 @@ fn sorted_agent_names(agents: &HashMap<String, AgentConfig>) -> Vec<String> {
     names
 }
 
+fn agent_window_tmux_options() -> [(&'static str, &'static str); 2] {
+    [("remain-on-exit", "on"), ("history-limit", AGENT_HISTORY_LIMIT)]
+}
+
 // ---------------------------------------------------------------------------
 // Subcommand: up
 // ---------------------------------------------------------------------------
@@ -256,10 +262,12 @@ pub fn run_spawn_up(
             continue;
         }
 
-        // Set remain-on-exit so dead panes stay visible
-        let _ = Command::new("tmux")
-            .args(["set-option", "-t", &target, "remain-on-exit", "on"])
-            .status();
+        // Keep exited panes visible and retain enough scrollback for dashboard review.
+        for (option, value) in agent_window_tmux_options() {
+            let _ = Command::new("tmux")
+                .args(["set-option", "-t", &target, option, value])
+                .status();
+        }
 
         // Register agent in org registry and get stable ID (#510)
         let org_id = config
@@ -1330,6 +1338,19 @@ mod tests {
         };
 
         assert!(model_inject.is_empty());
+    }
+
+    #[test]
+    fn test_agent_window_options_keep_panes_visible() {
+        let options = agent_window_tmux_options();
+        assert!(options.contains(&("remain-on-exit", "on")));
+    }
+
+    #[test]
+    fn test_agent_window_options_raise_history_limit_for_dashboard_scrollback() {
+        let options = agent_window_tmux_options();
+        assert!(options.contains(&("history-limit", AGENT_HISTORY_LIMIT)));
+        assert_eq!(AGENT_HISTORY_LIMIT, "50000");
     }
 
     // -- Resume detection tests (#579) ------------------------------------

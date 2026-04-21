@@ -153,6 +153,31 @@ def _changeset_tree(
     return _mktree(workspace, blobs)
 
 
+def _config_overlay_tree(workspace: Path, overlay_dir: Path) -> str | None:
+    """Build a config/ tree from overlay JSON files for inclusion in grip commit."""
+    entries: list[str] = []
+
+    for f in sorted(overlay_dir.glob("*.json")):
+        content = f.read_text()
+        sha = _hash_blob(workspace, content)
+        entries.append(f"100644 blob {sha}\t{f.name}")
+
+    prompts_dir = overlay_dir / "prompts"
+    if prompts_dir.is_dir():
+        prompt_entries: list[str] = []
+        for pf in sorted(prompts_dir.glob("*.json")):
+            content = pf.read_text()
+            sha = _hash_blob(workspace, content)
+            prompt_entries.append(f"100644 blob {sha}\t{pf.name}")
+        if prompt_entries:
+            prompts_tree = _mktree(workspace, prompt_entries)
+            entries.append(f"040000 tree {prompts_tree}\tprompts")
+
+    if not entries:
+        return None
+    return _mktree(workspace, entries)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -178,6 +203,7 @@ def grip_snapshot(
     changeset_type: str = "",
     sprint: str = "",
     message: str = "",
+    overlay_dir: Path | None = None,
 ) -> str:
     """Create a grip commit from current repo states. Returns commit SHA."""
     repo_entries: list[str] = []
@@ -191,6 +217,11 @@ def grip_snapshot(
     cs_tree = _changeset_tree(workspace, changeset_type=changeset_type, sprint=sprint)
     if cs_tree:
         root_entries.append(f"040000 tree {cs_tree}\t.grip")
+
+    if overlay_dir and overlay_dir.is_dir():
+        config_tree = _config_overlay_tree(workspace, overlay_dir)
+        if config_tree:
+            root_entries.append(f"040000 tree {config_tree}\tconfig")
 
     root_tree = _mktree(workspace, root_entries)
 

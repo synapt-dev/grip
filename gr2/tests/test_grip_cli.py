@@ -22,6 +22,7 @@ app.add_typer(grip_app, name="grip")
 app.add_typer(config_cli_app, name="config")
 
 runner = CliRunner()
+runner_stderr = CliRunner(mix_stderr=False)
 
 SAMPLE_TOML = """\
 [spawn]
@@ -370,3 +371,115 @@ class TestConfigRestoreCLI:
             "--overlay-dir", str(workspace / "config_files" / "overlay"),
         ])
         assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# --verbose flag
+# ---------------------------------------------------------------------------
+
+
+class TestVerboseFlag:
+    def test_snapshot_verbose_prints_debug(self, workspace: Path) -> None:
+        runner.invoke(app, ["grip", "init", str(workspace)])
+        result = runner_stderr.invoke(app, [
+            "grip", "snapshot", str(workspace),
+            "--repos", "recall", "--verbose",
+        ])
+        assert result.exit_code == 0
+        assert "[debug]" in result.stderr
+
+    def test_log_verbose_prints_debug(self, workspace: Path) -> None:
+        runner.invoke(app, ["grip", "init", str(workspace)])
+        result = runner_stderr.invoke(app, [
+            "grip", "log", str(workspace), "--verbose",
+        ])
+        assert result.exit_code == 0
+        assert "[debug]" in result.stderr
+
+    def test_config_show_verbose_prints_debug(self, workspace: Path) -> None:
+        runner.invoke(app, [
+            "config", "apply",
+            str(workspace / "config_files" / "agents.toml"),
+            "--overlay-dir", str(workspace / "config_files" / "overlay"),
+        ])
+        result = runner_stderr.invoke(app, [
+            "config", "show",
+            str(workspace / "config_files" / "agents.toml"),
+            "--overlay-dir", str(workspace / "config_files" / "overlay"),
+            "--verbose",
+        ])
+        assert result.exit_code == 0
+        assert "[debug]" in result.stderr
+
+    def test_no_debug_without_verbose(self, workspace: Path) -> None:
+        runner.invoke(app, ["grip", "init", str(workspace)])
+        result = runner_stderr.invoke(app, [
+            "grip", "snapshot", str(workspace), "--repos", "recall",
+        ])
+        assert result.exit_code == 0
+        assert "[debug]" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Improved error messages
+# ---------------------------------------------------------------------------
+
+
+class TestErrorHints:
+    def test_checkout_bad_ref_suggests_grip_log(self, workspace: Path) -> None:
+        runner.invoke(app, ["grip", "init", str(workspace)])
+        runner.invoke(app, [
+            "grip", "snapshot", str(workspace), "--repos", "recall",
+        ])
+        result = runner_stderr.invoke(app, [
+            "grip", "checkout", str(workspace), "deadbeef1234deadbeef1234deadbeef1234dead",
+        ])
+        assert result.exit_code != 0
+        assert "grip log" in result.stderr
+
+    def test_diff_bad_ref_suggests_grip_log(self, workspace: Path) -> None:
+        runner.invoke(app, ["grip", "init", str(workspace)])
+        runner.invoke(app, [
+            "grip", "snapshot", str(workspace), "--repos", "recall",
+        ])
+        result = runner_stderr.invoke(app, [
+            "grip", "diff", str(workspace),
+            "deadbeef1234deadbeef1234deadbeef1234dead",
+            "deadbeef1234deadbeef1234deadbeef1234dead",
+        ])
+        assert result.exit_code != 0
+        assert "grip log" in result.stderr
+
+    def test_config_show_corrupt_overlay_suggests_apply(self, workspace: Path) -> None:
+        runner.invoke(app, [
+            "config", "apply",
+            str(workspace / "config_files" / "agents.toml"),
+            "--overlay-dir", str(workspace / "config_files" / "overlay"),
+        ])
+        overlay_file = workspace / "config_files" / "overlay" / "agents.json"
+        overlay_file.write_text("{{{corrupt json")
+        result = runner_stderr.invoke(app, [
+            "config", "show",
+            str(workspace / "config_files" / "agents.toml"),
+            "--overlay-dir", str(workspace / "config_files" / "overlay"),
+        ])
+        assert result.exit_code != 0
+        assert "quarantined" in result.stderr.lower()
+        assert "config apply" in result.stderr
+
+    def test_config_show_stale_suggests_apply(self, workspace: Path) -> None:
+        runner.invoke(app, [
+            "config", "apply",
+            str(workspace / "config_files" / "agents.toml"),
+            "--overlay-dir", str(workspace / "config_files" / "overlay"),
+        ])
+        base = workspace / "config_files" / "agents.toml"
+        base.write_text(SAMPLE_TOML + '\n[agents.new]\nrole = "new"\n')
+        result = runner_stderr.invoke(app, [
+            "config", "show",
+            str(base),
+            "--overlay-dir", str(workspace / "config_files" / "overlay"),
+            "--strict",
+        ])
+        assert result.exit_code != 0
+        assert "config apply" in result.stderr

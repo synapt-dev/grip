@@ -343,9 +343,20 @@ def _read_repo_names(workspace: Path, commit_sha: str) -> list[str]:
     ]
 
 
+def _validate_ref(workspace: Path, ref: str) -> None:
+    """Verify a ref resolves to a valid object in .grip/."""
+    verify = _grip_git(workspace, "cat-file", "-t", ref)
+    if verify.returncode != 0:
+        raise GripCorruptError(
+            f"Ref '{ref}' does not resolve to a valid object in .grip/ repo."
+        )
+
+
 def grip_diff(workspace: Path, ref_a: str, ref_b: str) -> GripDiff:
     """Compare two grip commits and return changed/added/removed repos."""
     _validate_grip_repo(workspace)
+    _validate_ref(workspace, ref_a)
+    _validate_ref(workspace, ref_b)
     repos_a = _read_repo_state(workspace, ref_a)
     repos_b = _read_repo_state(workspace, ref_b)
 
@@ -401,13 +412,7 @@ def grip_checkout(workspace: Path, ref: str) -> dict[str, str]:
     Returns dict mapping repo name to commit SHA.
     """
     _validate_grip_repo(workspace)
-
-    # Verify the ref resolves to a valid object
-    verify = _grip_git(workspace, "cat-file", "-t", ref)
-    if verify.returncode != 0:
-        raise GripCorruptError(
-            f"Ref '{ref}' does not resolve to a valid object in .grip/ repo."
-        )
+    _validate_ref(workspace, ref)
 
     repo_states = _read_repo_state(workspace, ref)
     result: dict[str, str] = {}

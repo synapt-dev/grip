@@ -27,6 +27,10 @@ class BaseStaleError(Exception):
     """Raised when overlay's _base_sha doesn't match current base content."""
 
 
+class OverlayCorruptError(Exception):
+    """Raised when an overlay JSON file contains invalid JSON."""
+
+
 class PolicyViolationError(Exception):
     """Raised when a write is blocked by the active policy."""
 
@@ -108,6 +112,19 @@ def _overlay_stem(base_path: Path) -> str:
     return base_path.stem
 
 
+def _safe_json_load(path: Path) -> dict:
+    """Load JSON from path. On corrupt JSON, quarantine the file and raise."""
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, ValueError):
+        corrupt_path = path.with_suffix(path.suffix + ".corrupt")
+        path.rename(corrupt_path)
+        raise OverlayCorruptError(
+            f"Corrupt overlay JSON at {path.name}. "
+            f"Quarantined to {corrupt_path.name}."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -127,7 +144,7 @@ def config_apply(base_path: Path, overlay_dir: Path) -> dict:
     overlay_path = overlay_dir / f"{_overlay_stem(base_path)}.json"
 
     if overlay_path.exists():
-        existing = json.loads(overlay_path.read_text())
+        existing = _safe_json_load(overlay_path)
         existing.pop("_base_sha", None)
         merged = _deep_merge(base_data, existing)
     else:
@@ -158,7 +175,7 @@ def config_show(
     overlay_data: dict = {}
 
     if overlay_path.exists():
-        overlay_data = json.loads(overlay_path.read_text())
+        overlay_data = _safe_json_load(overlay_path)
         if strict:
             stored_sha = overlay_data.get("_base_sha", "")
             current_sha = _base_sha(base_content)
@@ -171,13 +188,12 @@ def config_show(
     clean_overlay = {k: v for k, v in overlay_data.items() if k != "_base_sha"}
     merged = _deep_merge(base_data, clean_overlay)
 
-    # Include prompt overlays in the merged view
     prompts_dir = overlay_dir / "prompts"
     if prompts_dir.is_dir():
         prompts: dict[str, Any] = merged.get("prompts", {})
         for pf in sorted(prompts_dir.glob("*.json")):
             agent_name = pf.stem
-            agent_prompts = json.loads(pf.read_text())
+            agent_prompts = _safe_json_load(pf)
             if agent_name in prompts and isinstance(prompts[agent_name], dict):
                 prompts[agent_name] = _deep_merge(prompts[agent_name], agent_prompts)
             else:

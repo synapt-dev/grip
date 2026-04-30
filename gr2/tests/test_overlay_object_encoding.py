@@ -3,9 +3,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-import pytest
-
 from gr2_overlay.objects import apply_overlay_object, capture_overlay_object
+
 from gr2_overlay.types import OverlayMeta, OverlayRef, OverlayTier, TrustLevel
 
 

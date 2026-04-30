@@ -199,6 +199,8 @@ def evaluate_cross_repo_perf_gate(
         raise ValueError(f"repo_count must be positive, got {repo_count}")
     if not baseline_command:
         raise ValueError("baseline_command must not be empty")
+    if sample_count < 2:
+        raise ValueError(f"sample_count must be >= 2 for statistical validity, got {sample_count}")
 
     all_lists = [apply_samples_ms, baseline_samples_ms]
     if any(not s for s in all_lists):

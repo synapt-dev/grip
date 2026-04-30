@@ -259,7 +259,7 @@ def _build_targets(
             RepoOverlayTarget(
                 repo_name=src.repo_name,
                 checkout_root=repo_root,
-                overlay_store=repo_root / ".grip" / "overlays",
+                overlay_store=repo_root / ".gr2-overlays",
                 overlay_ref=src.overlay_ref,
                 overlay_source_kind=src.overlay_source_kind,
                 overlay_source_value=src.overlay_source_value,

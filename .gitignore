@@ -28,3 +28,14 @@ typescript-legacy/dist/
 typescript-legacy/coverage/
 typescript-legacy/*.log
 typescript-legacy/npm-debug.log*
+
+# Python (gr2)
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+.pytest_cache/
+.ruff_cache/

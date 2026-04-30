@@ -93,15 +93,15 @@ def activate_overlays_atomically(
     )
 
 
-def _snapshot(root: Path) -> dict[str, str]:
-    result: dict[str, str] = {}
+def _snapshot(root: Path) -> dict[str, bytes]:
+    result: dict[str, bytes] = {}
     for path in sorted(root.rglob("*")):
         if path.is_file():
-            result[str(path.relative_to(root))] = path.read_text()
+            result[str(path.relative_to(root))] = path.read_bytes()
     return result
 
 
-def _restore_snapshot(root: Path, snapshot: dict[str, str]) -> None:
+def _restore_snapshot(root: Path, snapshot: dict[str, bytes | str]) -> None:
     current_files = set()
     for path in root.rglob("*"):
         if path.is_file():
@@ -114,7 +114,10 @@ def _restore_snapshot(root: Path, snapshot: dict[str, str]) -> None:
     for rel_path, content in snapshot.items():
         target = root / rel_path
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content)
+        if isinstance(content, str):
+            target.write_text(content)
+        else:
+            target.write_bytes(content)
 
     for dirpath in sorted(root.rglob("*"), reverse=True):
         if dirpath.is_dir() and not any(dirpath.iterdir()):

@@ -23,6 +23,13 @@ class OverlayRef:
     author: str
     name: str
 
+    @classmethod
+    def parse(cls, ref_str: str) -> OverlayRef:
+        parts = ref_str.strip().split("/")
+        if len(parts) != 2 or not all(parts):
+            raise ValueError(f"Invalid overlay ref '{ref_str}': expected '<author>/<name>'")
+        return cls(author=parts[0], name=parts[1])
+
     @property
     def ref_path(self) -> str:
         return f"refs/overlays/{self.author}/{self.name}"
@@ -35,6 +42,10 @@ class OverlayMeta:
     ref: OverlayRef
     tier: OverlayTier
     trust: TrustLevel
+    author: str = ""
+    signature: str = "unsigned"
+    timestamp: str = ""
+    parent_overlay_refs: list[str] = field(default_factory=list)
     files: list[str] = field(default_factory=list)
 
 

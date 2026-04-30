@@ -4,7 +4,6 @@ mod common;
 
 use common::assertions::assert_repo_clean;
 use common::fixtures::WorkspaceBuilder;
-use common::git_helpers;
 
 #[test]
 fn test_commit_across_repos() {

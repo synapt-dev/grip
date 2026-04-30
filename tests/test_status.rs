@@ -2,9 +2,7 @@
 
 mod common;
 
-use common::assertions;
 use common::fixtures::WorkspaceBuilder;
-use common::git_helpers;
 
 #[test]
 fn test_status_clean_workspace() {

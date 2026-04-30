@@ -1075,7 +1075,7 @@ fn stash_pop_repo(repo_path: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+
     use tempfile::TempDir;
 
     #[test]

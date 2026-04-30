@@ -6,7 +6,6 @@
 //! Conversa migration test in CI.
 
 use std::fs;
-use std::path::PathBuf;
 use tempfile::TempDir;
 
 // Re-export the registry functions we're testing

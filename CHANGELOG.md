@@ -5,6 +5,85 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-04-17
+
+gr1 reaches stable. This release marks the feature-complete gr1 CLI before gr2 takes over as the primary workspace management system.
+
+### Summary
+
+gr1 ships as a production-ready multi-repo workspace tool with:
+
+- **Manifest-based configuration**: declarative YAML workspace definitions with composable gripspace inheritance, named remotes, and fork workflow support
+- **Synchronized operations**: branch, checkout, add, commit, push, pull, rebase, sync, and diff across all repos in parallel
+- **Linked PR workflow**: create, review, merge, and track pull requests that span multiple repos with all-or-nothing merge strategy and auto-merge support
+- **Griptrees**: worktree-based parallel workspaces for simultaneous multi-branch development with per-repo upstream tracking
+- **Multi-platform support**: GitHub, GitLab, Azure DevOps, and Bitbucket with platform-specific adapters and rate limiting
+- **Agent orchestration**: `gr spawn` for multi-agent session management with tmux, graceful shutdown, and configurable restart policies
+- **Developer tooling**: grep, prune, gc, cherry-pick, verify, release, benchmarks, shell completions, MCP server, and agent context generation
+- **Security hardening**: path traversal protection, credential sanitization, mutex poison recovery, thread panic propagation
+
+27 releases. 60+ commands. 4 hosting platforms. Production-tested across the synapt multi-agent team since January 2026.
+
+### Deprecation Notice
+
+**gr1 is now in maintenance mode.** gr2 (Python-first workspace orchestration) is the active development target. gr2 introduces declarative workspace specs, execution plans, lane-aware commands, and a migration path from gr1 gripspaces.
+
+See `gr2/docs/GR2-MVP.md` for the gr2 feature set and `gr2/docs/GR1-GR2-MIGRATION-PLAYBOOK.md` for migration instructions.
+
+New features will land in gr2. gr1 will receive only critical bug fixes.
+
+## [0.20.0] - 2026-04-14
+
+### Added
+- **`gr spawn down` graceful shutdown** (#567)
+  - Three-phase shutdown: send `/exit` to agents, poll `pane_dead`, force-kill remaining
+  - `pane_exit_state()` with tri-state return (`Option<bool>`) for proper tmux error handling
+  - Per-agent shutdown via `--agent <name>` flag
+  - Configurable timeout via `--timeout` flag (default 10s)
+  - Full error reporting on all tmux operations
+
+- **Python-first gr2 workspace orchestration** (#566)
+  - Complete Python gr2 CLI with typer: spec, plan, apply, exec, review, workspace, repo, lane, lease commands
+  - Cache-backed materialization for workspace apply
+  - Structured hook runtime with dataclasses and lifecycle stages
+  - Review checkout-pr with remote refetch on existing branches
+  - gr1 detect and migration commands
+
+## [0.19.0] - 2026-04-14
+
+### Added
+- **gr2 team-workspace model** — declarative spec, plan, and apply lifecycle
+  - `gr2 init` creates team workspace structure (agents/, repos/, .grip/)
+  - `gr2 spec show/validate` for workspace spec management
+  - `gr2 plan` diffs workspace spec into an execution plan
+  - `gr2 apply` materializes repos via git clone into unit workspaces (#514)
+  - `gr2 apply --autostash` automatically stashes and restores dirty repos (#534)
+  - Partial unit convergence: detects and clones missing repos in existing units (#539)
+  - `gr2 team add/list/remove` for agent workspace management
+  - `gr2 repo add/list/remove` for repo registry
+  - `gr2 unit add/list/remove` for unit registry
+  - Guard checks with dirty state detection via `git status --porcelain`
+  - Stash state audit trail in `.grip/state/stash.toml`
+- **Checkout lifecycle commands** (#489) — `gr checkout --create`, `--orphan`
+- **Cache-backed checkout creation** (#485) — checkout creates from local cache when available
+- **Machine-level manifest repo caches** (#484) — shared manifest caches across workspaces
+- **`gr migrate in-place`** (#458) — upgrade existing workspaces without re-cloning
+- **E2E demo script** (#454) — automated release verification
+
+### Changed
+- **gr2 binary removed from main crate** — gr2 development continues as a standalone Python CLI; Rust gr2 code retained as library
+- CI: Windows tests run in non-blocking lane (#487)
+- Stripped premium prompts from migrate flow (#510)
+
+### Fixed
+- Spawn model passthrough from agents.toml (#474)
+- Root manifest creation during migrate in-place (#467)
+- Auto-reclone spaces/main when not a git repo (#470)
+- Migrate linked worktrees into griptrees (#466)
+- Preserve .env at gripspace root during worktree repair
+- Stable pane IDs for dashboard targeting (#453)
+- Benchmark CI fixture literals
+
 ## [0.17.1] - 2026-03-12
 
 ### Added

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,6 +12,15 @@ from gr2_overlay.types import OverlayRef
 _REFS_OVERLAYS_PREFIX = "refs/overlays/"
 _VALID_SCOPES = {"workspace", "repo"}
 _VALID_ON_FAILURE = {"rollback"}
+
+
+@dataclass
+class RepoUnitSource:
+    repo_name: str
+    repo_root: Path
+    overlay_source_kind: str
+    overlay_source_value: str
+    overlay_signer: str | None = None
 
 
 @dataclass
@@ -85,3 +95,82 @@ def validate_unit_manifest(manifest: UnitManifest) -> None:
         raise ValueError(
             f"Invalid on_failure '{manifest.on_failure}': must be one of {_VALID_ON_FAILURE}"
         )
+
+
+def propose_unit_manifest(
+    *,
+    workspace_root: Path,
+    unit_name: str,
+    scope: str,
+    target_base_ref: str,
+    source_repos: list[RepoUnitSource],
+    depends_on: list[str],
+    on_failure: str,
+) -> UnitManifest:
+    source_overlays: list[UnitOverlaySource] = []
+
+    for repo_src in source_repos:
+        stack_path = repo_src.repo_root / ".grip" / "overlay-stack.json"
+        if not stack_path.exists():
+            raise ValueError(f"'{repo_src.repo_name}' has no active overlay")
+
+        stack: list[str] = json.loads(stack_path.read_text())
+        if not stack:
+            raise ValueError(f"'{repo_src.repo_name}' has no active overlay")
+        if len(stack) != 1:
+            raise ValueError(
+                f"'{repo_src.repo_name}' must have exactly one active overlay, "
+                f"got {len(stack)}"
+            )
+
+        ref_str = stack[0]
+        if ref_str.startswith(_REFS_OVERLAYS_PREFIX):
+            ref_str = ref_str[len(_REFS_OVERLAYS_PREFIX) :]
+        overlay_ref = OverlayRef.parse(ref_str)
+
+        source_overlays.append(
+            UnitOverlaySource(
+                repo_name=repo_src.repo_name,
+                overlay_ref=overlay_ref,
+                overlay_source_kind=repo_src.overlay_source_kind,
+                overlay_source_value=repo_src.overlay_source_value,
+                overlay_signer=repo_src.overlay_signer,
+            )
+        )
+
+    manifest = UnitManifest(
+        version=1,
+        scope=scope,
+        source_overlays=source_overlays,
+        target_base_ref=target_base_ref,
+        depends_on=depends_on,
+        on_failure=on_failure,
+    )
+
+    path = unit_manifest_path(workspace_root, unit_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_serialize_manifest(manifest))
+
+    return manifest
+
+
+def _serialize_manifest(manifest: UnitManifest) -> str:
+    depends_on_items = ", ".join(f'"{d}"' for d in manifest.depends_on)
+    lines = [
+        f"version = {manifest.version}",
+        f'scope = "{manifest.scope}"',
+        f'target_base_ref = "{manifest.target_base_ref}"',
+        f'on_failure = "{manifest.on_failure}"',
+        f"depends_on = [{depends_on_items}]",
+    ]
+    for src in manifest.source_overlays:
+        lines.append("")
+        lines.append("[[source_overlays]]")
+        lines.append(f'repo_name = "{src.repo_name}"')
+        lines.append(f'overlay_ref = "{src.overlay_ref.ref_path}"')
+        lines.append(f'overlay_source_kind = "{src.overlay_source_kind}"')
+        lines.append(f'overlay_source_value = "{src.overlay_source_value}"')
+        if src.overlay_signer is not None:
+            lines.append(f'overlay_signer = "{src.overlay_signer}"')
+    lines.append("")
+    return "\n".join(lines)

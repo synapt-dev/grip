@@ -18,6 +18,7 @@ def test_capture_writes_annotated_tag_pointing_at_structured_tree(tmp_path: Path
     _write_file(source_root / "agents.toml", 'name = "atlas"\n')
     _write_file(source_root / "pipelines" / "ci.yml", "name: ci\n")
     _write_file(source_root / "prompts" / "review.json", '{\n  "name": "review"\n}\n')
+    _write_file(source_root / "README.md", "generic markdown should stay out of Tier A\n")
     _write_file(source_root / "ignored.py", "print('not tier a')\n")
 
     ref = OverlayRef(author="atlas", name="theme-dark")
@@ -63,6 +64,7 @@ def test_capture_writes_annotated_tag_pointing_at_structured_tree(tmp_path: Path
 
     working_tree_oid = _tree_entry_oid(overlay_store, structured_tree_oid, "working_tree_tree")
     staged_tree_oid = _tree_entry_oid(overlay_store, structured_tree_oid, "staged_index_tree")
+    untracked_tree_oid = _tree_entry_oid(overlay_store, structured_tree_oid, "untracked_blobs")
     expected_files = [
         "COMPOSE.md",
         "agents.toml",
@@ -72,6 +74,10 @@ def test_capture_writes_annotated_tag_pointing_at_structured_tree(tmp_path: Path
     assert _flatten_tree(overlay_store, working_tree_oid) == expected_files
     assert _flatten_tree(overlay_store, staged_tree_oid) == expected_files
     assert "ignored.py" not in _flatten_tree(overlay_store, working_tree_oid)
+    assert "README.md" not in _flatten_tree(overlay_store, working_tree_oid)
+    assert "ignored.py" not in _flatten_tree(overlay_store, staged_tree_oid)
+    assert "README.md" not in _flatten_tree(overlay_store, staged_tree_oid)
+    assert _flatten_tree(overlay_store, untracked_tree_oid) == []
 
 
 def test_apply_round_trips_tier_a_overlay_and_is_idempotent(tmp_path: Path) -> None:
@@ -85,7 +91,9 @@ def test_apply_round_trips_tier_a_overlay_and_is_idempotent(tmp_path: Path) -> N
     _write_file(source_root / "settings.toml", 'theme = "owl"\n')
     _write_file(source_root / "skills" / "ci.yml", "steps:\n  - lint\n")
     _write_file(source_root / "prompts" / "review.json", '{\n  "prompt": "be precise"\n}\n')
+    _write_file(source_root / "README.md", "generic markdown should stay out of Tier A\n")
     _write_file(source_root / "ignored.rs", "fn main() {}\n")
+    _write_file(target_root / "notes.txt", "keep me\n")
 
     ref = OverlayRef(author="atlas", name="review-defaults")
     meta = OverlayMeta(
@@ -112,11 +120,13 @@ def test_apply_round_trips_tier_a_overlay_and_is_idempotent(tmp_path: Path) -> N
     first_snapshot = _snapshot_files(target_root)
     assert first_snapshot == {
         "COMPOSE.md": "overlay compose\n",
+        "notes.txt": "keep me\n",
         "prompts/review.json": '{\n  "prompt": "be precise"\n}\n',
         "settings.toml": 'theme = "owl"\n',
         "skills/ci.yml": "steps:\n  - lint\n",
     }
     assert not (target_root / "ignored.rs").exists()
+    assert not (target_root / "README.md").exists()
 
     apply_overlay_object(
         overlay_store=overlay_store,

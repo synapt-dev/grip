@@ -199,7 +199,10 @@ fn sorted_agent_names(agents: &HashMap<String, AgentConfig>) -> Vec<String> {
 }
 
 fn agent_window_tmux_options() -> [(&'static str, &'static str); 2] {
-    [("remain-on-exit", "on"), ("history-limit", AGENT_HISTORY_LIMIT)]
+    [
+        ("remain-on-exit", "on"),
+        ("history-limit", AGENT_HISTORY_LIMIT),
+    ]
 }
 
 // ---------------------------------------------------------------------------

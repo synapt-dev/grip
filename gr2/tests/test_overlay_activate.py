@@ -25,7 +25,10 @@ def test_activate_materializes_overlay_eagerly_into_working_tree(tmp_path: Path)
     _write_file(source_root / "settings.toml", 'theme = "owl"\n')
 
     capture_overlay_object(overlay_store, source_root, metadata)
-    write_workspace_allowlist(workspace_root, [{"kind": "path", "pattern": "atlas/*", "trust_class": "local"}])
+    write_workspace_allowlist(
+        workspace_root,
+        [{"kind": "path", "pattern": "atlas/*", "trust_class": "local"}],
+    )
 
     result = activate_overlay(
         workspace_root=workspace_root,
@@ -51,7 +54,10 @@ def test_activate_twice_is_idempotent_and_reversible_via_deactivate(tmp_path: Pa
     _write_file(source_root / "settings.toml", 'theme = "owl"\n')
 
     capture_overlay_object(overlay_store, source_root, _overlay_meta(overlay_ref))
-    write_workspace_allowlist(workspace_root, [{"kind": "path", "pattern": "atlas/*", "trust_class": "local"}])
+    write_workspace_allowlist(
+        workspace_root,
+        [{"kind": "path", "pattern": "atlas/*", "trust_class": "local"}],
+    )
 
     first = activate_overlay(
         workspace_root=workspace_root,
@@ -104,7 +110,10 @@ def test_activate_and_deactivate_mutate_workspace_overlay_stack(tmp_path: Path) 
     _write_file(source_root / "COMPOSE.md", "overlay compose\n")
 
     capture_overlay_object(overlay_store, source_root, _overlay_meta(overlay_ref))
-    write_workspace_allowlist(workspace_root, [{"kind": "path", "pattern": "atlas/*", "trust_class": "local"}])
+    write_workspace_allowlist(
+        workspace_root,
+        [{"kind": "path", "pattern": "atlas/*", "trust_class": "local"}],
+    )
 
     assert read_active_overlay_stack(workspace_root) == []
 
@@ -154,8 +163,11 @@ def test_activate_fails_when_base_has_advanced_since_capture(tmp_path: Path) -> 
     _write_file(source_root / "settings.toml", 'theme = "owl"\n')
 
     capture_overlay_object(overlay_store, source_root, _overlay_meta(overlay_ref))
-    write_workspace_allowlist(workspace_root, [{"kind": "path", "pattern": "atlas/*", "trust_class": "local"}])
-    _write_file(workspace_root / ".grip" / "overlay-base-state.toml", 'advanced = true\n')
+    write_workspace_allowlist(
+        workspace_root,
+        [{"kind": "path", "pattern": "atlas/*", "trust_class": "local"}],
+    )
+    _write_file(workspace_root / ".grip" / "overlay-base-state.toml", "advanced = true\n")
 
     with pytest.raises(OverlayActivationError) as exc:
         activate_overlay(
@@ -178,10 +190,13 @@ def test_activate_reports_composition_conflict_when_curated_merge_cannot_resolve
     _write_file(source_root / "settings.toml", 'theme = "overlay"\n')
     _write_file(workspace_root / "settings.toml", 'theme = "base"\n')
     _write_file(workspace_root / ".gitattributes", "*.toml merge=overlay-deep\n")
-    _write_file(workspace_root / ".grip" / "force-conflict.toml", 'enabled = true\n')
+    _write_file(workspace_root / ".grip" / "force-conflict.toml", "enabled = true\n")
 
     capture_overlay_object(overlay_store, source_root, _overlay_meta(overlay_ref))
-    write_workspace_allowlist(workspace_root, [{"kind": "path", "pattern": "atlas/*", "trust_class": "local"}])
+    write_workspace_allowlist(
+        workspace_root,
+        [{"kind": "path", "pattern": "atlas/*", "trust_class": "local"}],
+    )
 
     with pytest.raises(OverlayActivationError) as exc:
         activate_overlay(
@@ -217,7 +232,10 @@ def test_roundtrip_activate_on_peer_workspace_after_push_and_pull(tmp_path: Path
     capture_overlay_object(local_store, source_root, _overlay_meta(overlay_ref))
     push_overlay_ref(local_store, remote_store, overlay_ref)
     fetch_overlay_ref(peer_store, remote_store, overlay_ref)
-    write_workspace_allowlist(peer_workspace, [{"kind": "path", "pattern": "atlas/*", "trust_class": "local"}])
+    write_workspace_allowlist(
+        peer_workspace,
+        [{"kind": "path", "pattern": "atlas/*", "trust_class": "local"}],
+    )
 
     result = activate_overlay(
         workspace_root=peer_workspace,

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -141,8 +140,8 @@ def test_driver_invocation_refuses_unallowlisted_overlay_source(tmp_path: Path) 
     current = tmp_path / "current"
     other = tmp_path / "other"
     ancestor.write_text("")
-    current.write_text("theme = \"base\"\n")
-    other.write_text("theme = \"overlay\"\n")
+    current.write_text('theme = "base"\n')
+    other.write_text('theme = "overlay"\n')
 
     with pytest.raises(PermissionError):
         invoke_driver(

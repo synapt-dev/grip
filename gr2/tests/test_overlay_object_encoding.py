@@ -4,7 +4,6 @@ import subprocess
 from pathlib import Path
 
 from gr2_overlay.objects import apply_overlay_object, capture_overlay_object
-
 from gr2_overlay.types import OverlayMeta, OverlayRef, OverlayTier, TrustLevel
 
 

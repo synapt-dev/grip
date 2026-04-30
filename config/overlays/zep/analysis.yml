@@ -1,0 +1,44 @@
+modules:
+  - path: integrations/python/
+    role: python-sdk
+    patterns:
+      - cloud-api-transport
+      - session-and-user-management
+      - memory-search-api
+
+  - path: ontology/default_ontology.py
+    role: knowledge-graph-schema
+    patterns:
+      - entity-type-definitions
+      - relationship-extraction-rules
+
+  - path: zep-eval-harness/zep_evaluate.py
+    role: eval-runner
+    patterns:
+      - locomo-conversation-ingestion
+      - question-answer-scoring
+
+  - path: benchmarks/locomo/
+    role: locomo-benchmark-config
+    patterns:
+      - conversation-dataset-loading
+      - score-aggregation
+
+evaluation:
+  locomo:
+    conversations: 10
+    questions_per_conv: 154
+    categories:
+      - single-hop
+      - multi-hop
+      - temporal
+      - open-domain
+      - adversarial
+    gate_conversation: 3
+  longmemeval:
+    enabled: true
+    categories:
+      - information-extraction
+      - temporal-reasoning
+      - knowledge-update
+      - abstention

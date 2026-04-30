@@ -1,0 +1,27 @@
+[overlay]
+name = "zep"
+author = "synapt"
+version = "0.1.0"
+repo = "getzep/zep"
+
+[analysis]
+focus = ["cloud-api-pattern", "knowledge-graph-ontology", "eval-harness"]
+entry_points = ["integrations/python/", "ontology/default_ontology.py"]
+eval_root = "zep-eval-harness/"
+benchmark_root = "benchmarks/"
+
+[analysis.benchmark]
+dataset = "LOCOMO"
+baseline_score = 65.99
+judge_model = "gpt-4o-mini"
+secondary_dataset = "LongMemEval"
+
+[workspace]
+python_version = ">=3.12"
+package_manager = "uv"
+install_command = "uv sync"
+test_command = "pytest"
+
+[comparison]
+competitors = ["mem0", "langmem", "hindsight", "memobase"]
+primary_metric = "locomo_j_score"

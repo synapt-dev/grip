@@ -1,0 +1,47 @@
+modules:
+  - path: hindsight-api-slim/hindsight_api/engine/memory_engine.py
+    role: core-memory-engine
+    patterns:
+      - retain-and-recall-lifecycle
+      - memory-bank-management
+      - query-routing
+
+  - path: hindsight-api-slim/hindsight_api/engine/reflect/
+    role: reflect-pipeline
+    patterns:
+      - conversation-to-reflection-extraction
+      - structured-knowledge-output
+      - llm-driven-fact-extraction
+
+  - path: hindsight-api-slim/hindsight_api/engine/consolidation/
+    role: memory-consolidation
+    patterns:
+      - deduplication-and-merging
+      - temporal-decay
+      - contradiction-resolution
+
+  - path: hindsight-embed/hindsight_embed/
+    role: embedding-service
+    patterns:
+      - provider-abstraction
+      - local-mlx-reranker
+      - cross-encoder-scoring
+
+evaluation:
+  locomo:
+    conversations: 10
+    questions_per_conv: 154
+    categories:
+      - single-hop
+      - multi-hop
+      - temporal
+      - open-domain
+      - adversarial
+    gate_conversation: 3
+  longmemeval:
+    enabled: true
+    categories:
+      - information-extraction
+      - temporal-reasoning
+      - knowledge-update
+      - abstention

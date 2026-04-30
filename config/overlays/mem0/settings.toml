@@ -1,0 +1,26 @@
+[overlay]
+name = "mem0"
+author = "synapt"
+version = "0.1.0"
+repo = "mem0ai/mem0"
+
+[analysis]
+focus = ["memory-lifecycle", "vector-store-abstraction", "embedding-pipeline"]
+entry_points = ["mem0/memory/main.py", "mem0/memory/graph_memory.py"]
+config_root = "mem0/configs/"
+test_root = "tests/"
+
+[analysis.benchmark]
+dataset = "LOCOMO"
+baseline_score = 66.88
+judge_model = "gpt-4o-mini"
+
+[workspace]
+python_version = ">=3.10"
+package_manager = "hatch"
+install_command = "pip install -e '.[dev]'"
+test_command = "pytest tests/"
+
+[comparison]
+competitors = ["zep", "langmem", "hindsight", "memobase"]
+primary_metric = "locomo_j_score"

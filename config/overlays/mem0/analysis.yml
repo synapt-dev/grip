@@ -1,0 +1,37 @@
+modules:
+  - path: mem0/memory/main.py
+    role: core-memory-class
+    patterns:
+      - fact-extraction-from-conversation
+      - vector-similarity-search
+      - memory-deduplication
+
+  - path: mem0/memory/graph_memory.py
+    role: graph-memory-extension
+    patterns:
+      - neo4j-entity-extraction
+      - relationship-graph-construction
+
+  - path: mem0/vector_stores/qdrant.py
+    role: default-vector-backend
+    patterns:
+      - collection-management
+      - metadata-filtering
+
+  - path: mem0/configs/base.py
+    role: config-schema
+    patterns:
+      - pydantic-model-hierarchy
+      - provider-selection-enum
+
+evaluation:
+  locomo:
+    conversations: 10
+    questions_per_conv: 154
+    categories:
+      - single-hop
+      - multi-hop
+      - temporal
+      - open-domain
+      - adversarial
+    gate_conversation: 3

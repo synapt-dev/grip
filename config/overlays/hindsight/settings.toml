@@ -1,0 +1,28 @@
+[overlay]
+name = "hindsight"
+author = "synapt"
+version = "0.1.0"
+repo = "vectorize-io/hindsight"
+
+[analysis]
+focus = ["reflect-pipeline", "memory-consolidation", "cross-encoder-reranking", "eval-harness"]
+entry_points = ["hindsight-api-slim/hindsight_api/engine/memory_engine.py", "hindsight-api-slim/hindsight_api/engine/reflect/"]
+config_root = "hindsight-api-slim/hindsight_api/"
+test_root = "hindsight-api-slim/tests/"
+eval_root = "hindsight-integration-tests/"
+
+[analysis.benchmark]
+dataset = "LOCOMO"
+baseline_score = 72.0
+judge_model = "gpt-4o-mini"
+secondary_dataset = "LongMemEval"
+
+[workspace]
+python_version = ">=3.11"
+package_manager = "uv"
+install_command = "uv sync"
+test_command = "pytest"
+
+[comparison]
+competitors = ["mem0", "zep", "langmem", "memobase"]
+primary_metric = "locomo_j_score"

@@ -82,7 +82,7 @@ fn test_griptree_pointer_new_fields() {
     assert_eq!(pointer.repos.len(), 1);
     assert_eq!(pointer.repos[0].name, "codi");
     assert_eq!(pointer.repos[0].original_branch, "main");
-    assert_eq!(pointer.repos[0].is_reference, false);
+    assert!(!pointer.repos[0].is_reference);
     assert_eq!(
         pointer.manifest_branch,
         Some("griptree-feat-test".to_string())
@@ -206,5 +206,5 @@ fn test_griptree_repo_info_camel_case() {
 
     let deserialized: GriptreeRepoInfo = serde_json::from_str(&json).unwrap();
     assert_eq!(deserialized.original_branch, "develop");
-    assert_eq!(deserialized.is_reference, false);
+    assert!(!deserialized.is_reference);
 }

@@ -1,13 +1,13 @@
 [package]
 name = "gitgrip"
-version = "0.18.0"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.80"
 description = "Multi-repo workflow tool - manage multiple git repositories as one"
 license = "MIT"
 authors = ["Layne Penney"]
-repository = "https://github.com/laynepenney/grip"
-homepage = "https://github.com/laynepenney/grip"
+repository = "https://github.com/synapt-dev/grip"
+homepage = "https://github.com/synapt-dev/grip"
 documentation = "https://docs.rs/gitgrip"
 readme = "README.md"
 keywords = ["git", "monorepo", "workflow", "multi-repo", "cli"]
@@ -92,6 +92,9 @@ quick-xml = { version = "0.37", features = ["serialize"] }
 
 # TOML parsing
 toml = "0.8"
+
+# Glob patterns (for linkfile/copyfile glob expansion)
+glob = "0.3"
 
 # Misc
 once_cell = "1"

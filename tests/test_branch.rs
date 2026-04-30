@@ -2,9 +2,7 @@
 
 mod common;
 
-use common::assertions::{
-    assert_all_on_branch, assert_branch_exists, assert_branch_not_exists, assert_on_branch,
-};
+use common::assertions::{assert_branch_exists, assert_branch_not_exists, assert_on_branch};
 use common::fixtures::WorkspaceBuilder;
 use common::git_helpers;
 
@@ -299,4 +297,52 @@ fn test_branch_create_then_verify_branches_exist() {
     // main should still exist too
     assert_branch_exists(&ws.repo_path("alpha"), "main");
     assert_branch_exists(&ws.repo_path("beta"), "main");
+}
+
+/// Regression test for grip#401: `gr branch` on an existing branch must
+/// switch to it so subsequent commits land on the correct branch.
+#[test]
+fn test_branch_switches_to_existing_branch() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let manifest = ws.load_manifest();
+
+    // Create feat/target and then switch back to main
+    gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+        workspace_root: &ws.workspace_root,
+        manifest: &manifest,
+        name: Some("feat/target"),
+        delete: false,
+        move_commits: false,
+        repos_filter: None,
+        group_filter: None,
+        json: false,
+    })
+    .unwrap();
+
+    gitgrip::cli::commands::checkout::run_checkout(
+        &ws.workspace_root,
+        &manifest,
+        "main",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
+    assert_on_branch(&ws.repo_path("app"), "main");
+
+    // Run `gr branch feat/target` again — should switch to it
+    gitgrip::cli::commands::branch::run_branch(gitgrip::cli::commands::branch::BranchOptions {
+        workspace_root: &ws.workspace_root,
+        manifest: &manifest,
+        name: Some("feat/target"),
+        delete: false,
+        move_commits: false,
+        repos_filter: None,
+        group_filter: None,
+        json: false,
+    })
+    .unwrap();
+
+    // Must be on feat/target, not main
+    assert_on_branch(&ws.repo_path("app"), "feat/target");
 }

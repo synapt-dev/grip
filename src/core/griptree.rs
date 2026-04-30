@@ -355,7 +355,7 @@ mod tests {
     #[test]
     fn test_load_from_workspace_none_when_missing() {
         let temp = tempfile::TempDir::new().unwrap();
-        let result = GriptreeConfig::load_from_workspace(&temp.path().to_path_buf()).unwrap();
+        let result = GriptreeConfig::load_from_workspace(temp.path()).unwrap();
         assert!(result.is_none());
     }
 
@@ -369,7 +369,7 @@ mod tests {
         let config_path = gitgrip_dir.join("griptree.json");
         config.save(&config_path).unwrap();
 
-        let loaded = GriptreeConfig::load_from_workspace(&temp.path().to_path_buf())
+        let loaded = GriptreeConfig::load_from_workspace(temp.path())
             .unwrap()
             .expect("should find config");
         assert_eq!(loaded.branch, "feat/ws");

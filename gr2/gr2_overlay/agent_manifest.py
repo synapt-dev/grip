@@ -61,7 +61,7 @@ def read_workspace_repo_agent_manifest(
     repo_name: str,
     overlays_root: Path,
 ) -> AgentManifest:
-    repo_root = workspace_root / "reference" / repo_name
+    repo_root = _resolve_repo_root(workspace_root, repo_name)
     overlay_root = overlays_root / repo_name
 
     manifest = read_effective_agent_manifest(
@@ -80,6 +80,22 @@ def read_workspace_repo_agent_manifest(
         source_kind=manifest.source_kind,
         repo_name=repo_name,
     )
+
+
+def _resolve_repo_root(workspace_root: Path, repo_name: str) -> Path:
+    """Resolve repo root from gripspace.yml manifest, falling back to reference/<name>."""
+    manifest_path = workspace_root / ".gitgrip" / "spaces" / "main" / "gripspace.yml"
+    if manifest_path.exists():
+        manifest = yaml.safe_load(manifest_path.read_text()) or {}
+        repos = manifest.get("repos", {}) or {}
+        repo_entry = repos.get(repo_name, {}) or {}
+        repo_path = str(repo_entry.get("path", "")).strip()
+        if repo_path:
+            normalized = repo_path[2:] if repo_path.startswith("./") else repo_path
+            resolved = workspace_root / normalized
+            if resolved.is_dir():
+                return resolved
+    return workspace_root / "reference" / repo_name
 
 
 def _extract_agent_block(compose_path: Path) -> dict[str, Any] | None:

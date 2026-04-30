@@ -200,7 +200,13 @@ def _flatten_tree(git_dir: Path, tree_oid: str) -> list[str]:
 
 
 def _git_show(git_dir: Path, object_spec: str) -> str:
-    return _git_output(git_dir, "show", object_spec)
+    result = subprocess.run(
+        ["git", f"--git-dir={git_dir}", "show", object_spec],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout
 
 
 def _git_index_blob(repo: Path, rel_path: str) -> str:

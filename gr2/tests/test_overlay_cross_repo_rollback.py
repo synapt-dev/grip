@@ -146,6 +146,30 @@ def test_rollback_does_not_leave_cross_repo_transaction_artifacts_behind(
     assert not any(docs_workspace.rglob("cross-repo-transaction.json"))
 
 
+def test_snapshot_handles_binary_files_without_crashing(tmp_path: Path) -> None:
+    from gr2_overlay.cross_repo import _restore_snapshot, _snapshot
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "readme.txt").write_text("hello")
+    binary_dir = root / ".grip" / "overlays"
+    binary_dir.mkdir(parents=True)
+    (binary_dir / "pack.idx").write_bytes(b"\x00\xff\xfe\x80\x90")
+
+    snap = _snapshot(root)
+    assert snap["readme.txt"] == b"hello"
+    assert snap[".grip/overlays/pack.idx"] == b"\x00\xff\xfe\x80\x90"
+
+    (root / "readme.txt").write_text("mutated")
+    (root / "extra.txt").write_text("added")
+
+    _restore_snapshot(root, snap)
+
+    assert (root / "readme.txt").read_bytes() == b"hello"
+    assert not (root / "extra.txt").exists()
+    assert (binary_dir / "pack.idx").read_bytes() == b"\x00\xff\xfe\x80\x90"
+
+
 def _triplet(tmp_path: Path, repo_name: str) -> tuple[Path, Path, Path]:
     overlay_store = _init_bare_git_repo(tmp_path / f"{repo_name}-overlay-store.git")
     checkout_root = tmp_path / repo_name

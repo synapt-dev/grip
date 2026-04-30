@@ -232,8 +232,19 @@ def propose_unit_manifest(
     )
 
     path = unit_manifest_path(workspace_root, unit_name)
+    new_content = _serialize_manifest(manifest)
+
+    if path.exists():
+        existing_content = path.read_text()
+        if existing_content == new_content:
+            return manifest
+        raise ValueError(
+            f"Unit manifest '{unit_name}' already exists with different content. "
+            f"Remove the existing manifest before proposing a new one."
+        )
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_serialize_manifest(manifest))
+    path.write_text(new_content)
 
     return manifest
 

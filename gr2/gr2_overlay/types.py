@@ -9,6 +9,7 @@ from pathlib import Path
 
 class OverlayTier(StrEnum):
     A = "config"
+    B = "source"
 
 
 class TrustLevel(StrEnum):

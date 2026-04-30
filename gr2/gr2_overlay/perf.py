@@ -113,6 +113,69 @@ def assert_perf_gates(results: list[PerfGateResult]) -> None:
             )
 
 
+@dataclass
+class TierBPerfGateResult:
+    status: str
+    error_code: str
+    capture_ratio: float
+    apply_ratio: float
+    sample_count: int
+    capture_baseline_command: str
+    apply_baseline_command: str
+
+
+def evaluate_tier_b_perf_gate(
+    *,
+    capture_samples_ms: list[float],
+    capture_baseline_samples_ms: list[float],
+    apply_samples_ms: list[float],
+    apply_baseline_samples_ms: list[float],
+    capture_baseline_command: str,
+    apply_baseline_command: str,
+    ratio_gate: float,
+    sample_count: int,
+) -> TierBPerfGateResult:
+    all_lists = [
+        capture_samples_ms,
+        capture_baseline_samples_ms,
+        apply_samples_ms,
+        apply_baseline_samples_ms,
+    ]
+    if any(not s for s in all_lists):
+        raise ValueError(f"sample_count {sample_count}: all sample lists must be non-empty")
+    if any(len(s) != sample_count for s in all_lists):
+        raise ValueError(
+            f"sample_count {sample_count}: all sample lists must match, "
+            f"got lengths {[len(s) for s in all_lists]}"
+        )
+    for samples in all_lists:
+        for v in samples:
+            if v <= 0:
+                raise ValueError(f"All durations must be positive, got {v}")
+
+    capture_ratio = statistics.median(capture_samples_ms) / statistics.median(
+        capture_baseline_samples_ms
+    )
+    apply_ratio = statistics.median(apply_samples_ms) / statistics.median(apply_baseline_samples_ms)
+
+    if capture_ratio >= ratio_gate or apply_ratio >= ratio_gate:
+        status = "degraded"
+        error_code = "tier_b_perf_gate_failed"
+    else:
+        status = "ok"
+        error_code = ""
+
+    return TierBPerfGateResult(
+        status=status,
+        error_code=error_code,
+        capture_ratio=capture_ratio,
+        apply_ratio=apply_ratio,
+        sample_count=sample_count,
+        capture_baseline_command=capture_baseline_command,
+        apply_baseline_command=apply_baseline_command,
+    )
+
+
 def _collect_samples(
     op: Callable[[], None] | list[float],
     count: int,

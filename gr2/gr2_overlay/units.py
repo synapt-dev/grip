@@ -9,6 +9,7 @@ from pathlib import Path
 
 from gr2_overlay.cross_repo import (
     RepoOverlayTarget,
+    _restore_snapshot,
     activate_overlays_atomically,
 )
 from gr2_overlay.types import OverlayRef
@@ -163,7 +164,21 @@ def abort_unit(
 def rollback_inflight_unit(
     *, workspace_root: Path, state: dict[str, object]
 ) -> dict[str, object]:
-    raise NotImplementedError("rollback_inflight_unit not yet implemented")
+    snapshots: dict[str, dict[str, str]] = state.get("snapshots", {})
+    rolled_back: list[str] = []
+
+    repos_to_rollback = list(state.get("completed_repos", []))
+    failing = state.get("failing_repo")
+    if failing and failing not in repos_to_rollback:
+        repos_to_rollback.append(failing)
+
+    for repo_name in repos_to_rollback:
+        if repo_name in snapshots:
+            repo_root = workspace_root / "repos" / repo_name
+            _restore_snapshot(repo_root, snapshots[repo_name])
+            rolled_back.append(repo_name)
+
+    return {"status": "rolled_back", "rolled_back_repos": rolled_back}
 
 
 def propose_unit_manifest(

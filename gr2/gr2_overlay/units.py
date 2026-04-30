@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from gr2_overlay.cross_repo import (
+    RepoOverlayTarget,
+    activate_overlays_atomically,
+)
 from gr2_overlay.types import OverlayRef
 
 _REFS_OVERLAYS_PREFIX = "refs/overlays/"
@@ -30,6 +35,18 @@ class UnitManifest:
     target_base_ref: str
     depends_on: list[str] = field(default_factory=list)
     on_failure: str = "rollback"
+
+
+@dataclass
+class UnitApplyPreview:
+    status: str
+    unit_name: str
+    scope: str
+    target_base_ref: str
+    on_failure: str
+    depends_on: list[str]
+    repo_order: list[str]
+    overlay_refs: list[str]
 
 
 def unit_manifest_path(workspace_root: Path, name: str) -> Path:
@@ -85,3 +102,98 @@ def validate_unit_manifest(manifest: UnitManifest) -> None:
         raise ValueError(
             f"Invalid on_failure '{manifest.on_failure}': must be one of {_VALID_ON_FAILURE}"
         )
+
+
+def preview_unit_apply(*, workspace_root: Path, unit_name: str) -> UnitApplyPreview:
+    manifest = load_unit_manifest(workspace_root, unit_name)
+    validate_unit_manifest(manifest)
+    return UnitApplyPreview(
+        status="ok",
+        unit_name=unit_name,
+        scope=manifest.scope,
+        target_base_ref=manifest.target_base_ref,
+        on_failure=manifest.on_failure,
+        depends_on=manifest.depends_on,
+        repo_order=[s.repo_name for s in manifest.source_overlays],
+        overlay_refs=[s.overlay_ref.ref_path for s in manifest.source_overlays],
+    )
+
+
+def apply_unit(
+    *, workspace_root: Path, unit_name: str
+) -> dict[str, object]:
+    order = _resolve_dependency_order(workspace_root, unit_name)
+    applied: list[str] = []
+    for name in order:
+        _apply_single_unit(workspace_root=workspace_root, unit_name=name)
+        applied.append(name)
+    return {"applied_units": applied, "status": "ok"}
+
+
+def _apply_single_unit(
+    *, workspace_root: Path, unit_name: str
+) -> object:
+    manifest = load_unit_manifest(workspace_root, unit_name)
+    validate_unit_manifest(manifest)
+    targets = _build_targets(workspace_root, manifest)
+    return activate_overlays_atomically(targets=targets)
+
+
+def abort_unit(
+    *, workspace_root: Path, unit_name: str
+) -> dict[str, object]:
+    state_path = (
+        workspace_root / ".grip" / "unit-transactions" / f"{unit_name}.json"
+    )
+    state: dict[str, object] = json.loads(state_path.read_text())
+    result = rollback_inflight_unit(workspace_root=workspace_root, state=state)
+    state_path.unlink()
+    return result
+
+
+def rollback_inflight_unit(
+    *, workspace_root: Path, state: dict[str, object]
+) -> dict[str, object]:
+    raise NotImplementedError("rollback_inflight_unit not yet implemented")
+
+
+def _build_targets(
+    workspace_root: Path, manifest: UnitManifest
+) -> list[RepoOverlayTarget]:
+    targets: list[RepoOverlayTarget] = []
+    for src in manifest.source_overlays:
+        repo_root = workspace_root / "repos" / src.repo_name
+        targets.append(
+            RepoOverlayTarget(
+                repo_name=src.repo_name,
+                checkout_root=repo_root,
+                overlay_store=repo_root / ".grip" / "overlays",
+                overlay_ref=src.overlay_ref,
+                overlay_source_kind=src.overlay_source_kind,
+                overlay_source_value=src.overlay_source_value,
+                overlay_signer=src.overlay_signer,
+            )
+        )
+    return targets
+
+
+def _resolve_dependency_order(workspace_root: Path, unit_name: str) -> list[str]:
+    order: list[str] = []
+    visited: set[str] = set()
+    in_progress: set[str] = set()
+
+    def visit(name: str) -> None:
+        if name in in_progress:
+            raise ValueError(f"dependency cycle detected involving '{name}'")
+        if name in visited:
+            return
+        in_progress.add(name)
+        manifest = load_unit_manifest(workspace_root, name)
+        for dep in manifest.depends_on:
+            visit(dep)
+        in_progress.remove(name)
+        visited.add(name)
+        order.append(name)
+
+    visit(unit_name)
+    return order

@@ -176,6 +176,62 @@ def evaluate_tier_b_perf_gate(
     )
 
 
+@dataclass
+class CrossRepoPerfGateResult:
+    status: str
+    error_code: str
+    apply_ratio: float
+    sample_count: int
+    repo_count: int
+    baseline_command: str
+
+
+def evaluate_cross_repo_perf_gate(
+    *,
+    apply_samples_ms: list[float],
+    baseline_samples_ms: list[float],
+    baseline_command: str,
+    ratio_gate: float,
+    sample_count: int,
+    repo_count: int,
+) -> CrossRepoPerfGateResult:
+    if repo_count <= 0:
+        raise ValueError(f"repo_count must be positive, got {repo_count}")
+    if not baseline_command:
+        raise ValueError("baseline_command must not be empty")
+
+    all_lists = [apply_samples_ms, baseline_samples_ms]
+    if any(not s for s in all_lists):
+        raise ValueError(f"sample_count {sample_count}: all sample lists must be non-empty")
+    if any(len(s) != sample_count for s in all_lists):
+        raise ValueError(
+            f"sample_count {sample_count}: all sample lists must match, "
+            f"got lengths {[len(s) for s in all_lists]}"
+        )
+    for samples in all_lists:
+        for v in samples:
+            if v <= 0:
+                raise ValueError(f"All durations must be positive, got {v}")
+
+    apply_ratio = statistics.median(apply_samples_ms) / statistics.median(baseline_samples_ms)
+
+    if apply_ratio >= ratio_gate:
+        status = "degraded"
+        error_code = "cross_repo_perf_gate_failed"
+    else:
+        status = "ok"
+        error_code = ""
+
+    return CrossRepoPerfGateResult(
+        status=status,
+        error_code=error_code,
+        apply_ratio=apply_ratio,
+        sample_count=sample_count,
+        repo_count=repo_count,
+        baseline_command=baseline_command,
+    )
+
+
 def _collect_samples(
     op: Callable[[], None] | list[float],
     count: int,

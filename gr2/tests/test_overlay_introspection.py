@@ -27,11 +27,20 @@ def test_overlay_stack_reports_active_stack_with_metadata_in_human_and_json(tmp_
     _capture_compose_overlay(overlay_store, source_root, available_ref)
     _write_file(
         workspace_root / ".grip" / "overlay-stack.toml",
-        'active = ["refs/overlays/atlas/theme-dark"]\navailable = ["refs/overlays/team/shared-base"]\n',
+        'active = ["refs/overlays/atlas/theme-dark"]\n'
+        'available = ["refs/overlays/team/shared-base"]\n',
     )
 
-    human = overlay_stack(workspace_root=workspace_root, overlay_store=overlay_store, json_output=False)
-    machine = overlay_stack(workspace_root=workspace_root, overlay_store=overlay_store, json_output=True)
+    human = overlay_stack(
+        workspace_root=workspace_root,
+        overlay_store=overlay_store,
+        json_output=False,
+    )
+    machine = overlay_stack(
+        workspace_root=workspace_root,
+        overlay_store=overlay_store,
+        json_output=True,
+    )
 
     assert "atlas/theme-dark" in human
     assert "active" in human.lower()
@@ -53,7 +62,8 @@ def test_overlay_trace_attributes_lines_to_overlay_regions(tmp_path: Path) -> No
     _write_file(workspace_root / "settings.toml", 'theme = "owl"\naccent = "teal"\n')
     _write_file(
         workspace_root / ".grip" / "overlay-attribution.toml",
-        '[files."settings.toml"]\nlines = [{start = 1, end = 2, ref = "refs/overlays/atlas/theme-dark"}]\n',
+        '[files."settings.toml"]\n'
+        'lines = [{start = 1, end = 2, ref = "refs/overlays/atlas/theme-dark"}]\n',
     )
 
     human = overlay_trace(
@@ -90,7 +100,10 @@ def test_overlay_why_reports_winning_merge_rule_and_reason(tmp_path: Path) -> No
     _capture_compose_overlay(overlay_store, source_root, overlay_ref)
     _write_file(
         workspace_root / ".grip" / "overlay-why.toml",
-        '[files."settings.toml"]\nrule = "overlay-deep"\nreason = "matched *.toml via curated driver registry"\nref = "refs/overlays/atlas/theme-dark"\n',
+        '[files."settings.toml"]\n'
+        'rule = "overlay-deep"\n'
+        'reason = "matched *.toml via curated driver registry"\n'
+        'ref = "refs/overlays/atlas/theme-dark"\n',
     )
 
     human = overlay_why(
@@ -150,7 +163,9 @@ def test_overlay_status_reports_active_available_and_applied_sets(tmp_path: Path
 
     _write_file(
         workspace_root / ".grip" / "overlay-status.toml",
-        'active = ["refs/overlays/atlas/theme-dark"]\navailable = ["refs/overlays/team/shared-base"]\napplied = ["refs/overlays/atlas/already-applied"]\n',
+        'active = ["refs/overlays/atlas/theme-dark"]\n'
+        'available = ["refs/overlays/team/shared-base"]\n'
+        'applied = ["refs/overlays/atlas/already-applied"]\n',
     )
 
     human = overlay_status(
@@ -172,7 +187,9 @@ def test_overlay_status_reports_active_available_and_applied_sets(tmp_path: Path
     assert machine["applied"] == ["refs/overlays/atlas/already-applied"]
 
 
-def _capture_compose_overlay(overlay_store: Path, source_root: Path, overlay_ref: OverlayRef) -> None:
+def _capture_compose_overlay(
+    overlay_store: Path, source_root: Path, overlay_ref: OverlayRef
+) -> None:
     _write_file(source_root / "COMPOSE.md", "compose\n")
     capture_overlay_object(overlay_store, source_root, _overlay_meta(overlay_ref))
 

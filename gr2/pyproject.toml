@@ -21,7 +21,7 @@ dev = [
 include = ["gr2_overlay*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "gr2_overlay/tests"]
 
 [tool.ruff]
 target-version = "py311"

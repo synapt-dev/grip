@@ -13,6 +13,23 @@ def test_apply_unit_delegates_manifest_targets_to_atomic_overlay_activation(
     from gr2_overlay.cross_repo import CrossRepoActivationResult
 
     workspace_root = tmp_path / "workspace"
+    _write_named_manifest(
+        workspace_root,
+        "base-theme",
+        """
+version = 1
+scope = "workspace"
+target_base_ref = "refs/heads/main"
+depends_on = []
+on_failure = "rollback"
+
+[[source_overlays]]
+repo_name = "app"
+overlay_ref = "refs/overlays/team/base-theme"
+overlay_source_kind = "path"
+overlay_source_value = "team/base-theme"
+""",
+    )
     _write_manifest(
         workspace_root,
         """
@@ -50,10 +67,10 @@ overlay_source_value = "team/feature-auth"
         unit_name="feature-auth",
     )
 
-    assert result.status == "ok"
-    assert result.completed_repos == ["app", "api"]
-    assert len(calls) == 1
-    delegated = calls[0]
+    assert result["status"] == "ok"
+    assert result["applied_units"] == ["base-theme", "feature-auth"]
+    assert len(calls) == 2
+    delegated = calls[1]
     assert [target.repo_name for target in delegated] == ["app", "api"]
     assert delegated[0].overlay_ref.ref_path == "refs/overlays/team/feature-auth"
     assert delegated[0].overlay_source_kind == "path"
@@ -116,6 +133,10 @@ def test_apply_unit_rejects_missing_manifest(tmp_path: Path) -> None:
 
 
 def _write_manifest(workspace_root: Path, body: str) -> None:
-    path = workspace_root / ".grip" / "units" / "feature-auth.toml"
+    _write_named_manifest(workspace_root, "feature-auth", body)
+
+
+def _write_named_manifest(workspace_root: Path, name: str, body: str) -> None:
+    path = workspace_root / ".grip" / "units" / f"{name}.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body.lstrip())

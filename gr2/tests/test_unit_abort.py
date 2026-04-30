@@ -79,6 +79,33 @@ def test_abort_unit_preserves_state_file_when_rollback_fails(
     assert state_path.exists()
 
 
+def test_rollback_inflight_unit_restores_repo_snapshots(tmp_path: Path) -> None:
+    from gr2_overlay.units import rollback_inflight_unit
+
+    workspace_root = tmp_path / "workspace"
+    app_root = workspace_root / "repos" / "app"
+    app_root.mkdir(parents=True)
+    (app_root / "main.py").write_text("mutated by apply")
+    (app_root / "extra.py").write_text("added by apply")
+
+    state: dict[str, object] = {
+        "unit_name": "feature-auth",
+        "repo_order": ["app"],
+        "completed_repos": ["app"],
+        "failing_repo": None,
+        "snapshots": {
+            "app": {"main.py": "original content"},
+        },
+    }
+
+    result = rollback_inflight_unit(workspace_root=workspace_root, state=state)
+
+    assert result["status"] == "rolled_back"
+    assert result["rolled_back_repos"] == ["app"]
+    assert (app_root / "main.py").read_text() == "original content"
+    assert not (app_root / "extra.py").exists()
+
+
 def _write_inflight_state(
     workspace_root: Path,
     unit_name: str,

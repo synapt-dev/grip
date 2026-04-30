@@ -32,7 +32,11 @@ fn test_grip_snapshot_bootstraps_dedicated_repo_and_commits_repo_state() {
     );
 
     assert!(
-        playground.workspace_root.join(".grip").join(".git").exists(),
+        playground
+            .workspace_root
+            .join(".grip")
+            .join(".git")
+            .exists(),
         "gr grip should bootstrap a dedicated .grip git repo"
     );
 }
@@ -132,7 +136,10 @@ fn test_grip_checkout_restores_prior_snapshot_repo_heads() {
         "Add later change",
     );
     let after_sha = git_helpers::get_head_sha(&playground.repo_path("recall"));
-    assert_ne!(before_sha, after_sha, "test setup requires a changed repo head");
+    assert_ne!(
+        before_sha, after_sha,
+        "test setup requires a changed repo head"
+    );
 
     let output = playground.run_in_workspace_output(["checkout", "HEAD~1"]);
     assert!(

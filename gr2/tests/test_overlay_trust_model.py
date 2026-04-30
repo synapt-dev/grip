@@ -118,6 +118,35 @@ trust_class = "team"
     assert "allowlist" in str(exc.value)
 
 
+def test_path_pattern_allowlist_rejects_traversal_style_source_values(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    trust_path = workspace_root / ".grip" / "trust.toml"
+    trust_path.parent.mkdir(parents=True)
+    trust_path.write_text(
+        """
+[[source]]
+kind = "path"
+pattern = "team/*"
+trust_class = "team"
+"""
+    )
+
+    allowlist = load_workspace_allowlist(workspace_root)
+    source_overlay = OverlayRef(author="team", name="evil-pack")
+
+    with pytest.raises(OverlayTrustError) as exc:
+        authorize_overlay_driver(
+            driver_name="overlay-union",
+            overlay_ref=source_overlay,
+            overlay_source_kind="path",
+            overlay_source_value="team/../vendor/evil",
+            overlay_signer=None,
+            allowlist=allowlist,
+        )
+
+    assert exc.value.error_code == "overlay_untrusted"
+
+
 def test_unallowlisted_source_still_allows_diff_and_inspect(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     trust_path = workspace_root / ".grip" / "trust.toml"

@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gr2-overlay"
+version = "0.1.0"
+description = "gr2 overlay substrate: config-overlay capture, composition, and materialization"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.9",
+    "tomli_w>=1.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
+
+[tool.setuptools.packages.find]
+include = ["gr2_overlay*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "gr2_overlay/tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]

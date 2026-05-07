@@ -619,7 +619,7 @@ impl HostingPlatform for GitHubAdapter {
             .get_pull_request_reviews(owner, repo, pull_number)
             .await?;
 
-        // Check for at least one approval and no changes requested.
+        // Check for approval via formal APPROVE or sufficient comment reviews.
         // State comes from Debug formatting of octocrab's ReviewState enum,
         // which gives title case without underscores (e.g. "Approved", "ChangesRequested").
         let state_matches = |state: &str, target: &str| -> bool {
@@ -631,7 +631,15 @@ impl HostingPlatform for GitHubAdapter {
             .iter()
             .any(|r| state_matches(&r.state, "ChangesRequested"));
 
-        Ok(has_approval && !has_changes_requested)
+        // Teams sharing one GitHub account can't issue formal approvals.
+        // Accept 2+ COMMENTED reviews as equivalent to one APPROVE.
+        let comment_review_count = reviews
+            .iter()
+            .filter(|r| state_matches(&r.state, "Commented"))
+            .count();
+        let has_comment_reviews = comment_review_count >= 2;
+
+        Ok((has_approval || has_comment_reviews) && !has_changes_requested)
     }
 
     async fn get_pull_request_reviews(

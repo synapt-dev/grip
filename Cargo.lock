@@ -830,6 +830,7 @@ dependencies = [
  "git2",
  "gix",
  "glob",
+ "gr2-cli",
  "indicatif",
  "octocrab",
  "once_cell",

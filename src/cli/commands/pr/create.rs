@@ -9,6 +9,7 @@ use crate::cli::output::Output;
 use crate::core::manifest::{Manifest, PlatformType};
 use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
 use crate::core::state::StateFile;
+use crate::git::remote::set_remote_url;
 use crate::git::status::has_uncommitted_changes;
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::platform::get_platform_adapter;
@@ -249,8 +250,63 @@ pub async fn run_pr_create(
                     ));
                 }
                 Err(e) => {
-                    spinner.finish_with_message(format!("{}: failed - {}", repo.name, e));
-                    all_failed_repos.push((repo.name.clone(), e.to_string()));
+                    if let Ok(Some((new_owner, new_repo))) =
+                        platform.resolve_repo(&repo.owner, &repo.repo).await
+                    {
+                        spinner.finish_with_message(format!(
+                            "{}: repo renamed {}/{} → {}/{}, retrying...",
+                            repo.name, repo.owner, repo.repo, new_owner, new_repo
+                        ));
+                        if let Ok(git_repo) = open_repo(&repo.absolute_path) {
+                            let new_url =
+                                format!("https://github.com/{}/{}.git", new_owner, new_repo);
+                            if set_remote_url(&git_repo, &repo.push_remote, &new_url).is_ok() {
+                                Output::success(&format!(
+                                    "{}: updated remote '{}' → {}",
+                                    repo.name, repo.push_remote, new_url
+                                ));
+                            }
+                        }
+                        match platform
+                            .create_pull_request(
+                                &new_owner,
+                                &new_repo,
+                                &group.branch,
+                                repo.target_branch(),
+                                &pr_title,
+                                body,
+                                draft,
+                            )
+                            .await
+                        {
+                            Ok(pr) => {
+                                Output::success(&format!(
+                                    "{}: created PR #{} - {}",
+                                    repo.name, pr.number, pr.url
+                                ));
+                                all_created_prs.push((
+                                    group.branch.clone(),
+                                    repo.name.clone(),
+                                    pr.number,
+                                    pr.url.clone(),
+                                ));
+                                Output::warning(&format!(
+                                    "Update gripspace.yml: change {} URL to {}/{}.git",
+                                    repo.name, new_owner, new_repo
+                                ));
+                            }
+                            Err(e2) => {
+                                spinner.finish_with_message(format!(
+                                    "{}: retry failed - {}",
+                                    repo.name, e2
+                                ));
+                                all_failed_repos.push((repo.name.clone(), e2.to_string()));
+                            }
+                        }
+                    } else {
+                        spinner.finish_with_message(format!("{}: failed - {}", repo.name, e));
+                        all_failed_repos.push((repo.name.clone(), e.to_string()));
+                    }
                 }
             }
         }

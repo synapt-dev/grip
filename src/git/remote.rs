@@ -358,6 +358,7 @@ fn interpret_push_error(stderr: &str) -> String {
     if lower.contains("could not read from remote") || lower.contains("repository not found") {
         return format!(
             "Cannot reach remote. Check your network connection and repository URL.\n\
+             If the repo was renamed on GitHub, `gr pr create` will auto-detect and update the remote.\n\
              (Original: {})",
             stderr.trim()
         );

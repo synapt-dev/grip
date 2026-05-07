@@ -32,6 +32,14 @@ pub enum PlatformError {
 
     #[error("Branch protection prevents merge: {0}")]
     BranchProtected(String),
+
+    #[error("Repository renamed: {old_owner}/{old_repo} → {new_owner}/{new_repo}")]
+    RepoRenamed {
+        old_owner: String,
+        old_repo: String,
+        new_owner: String,
+        new_repo: String,
+    },
 }
 
 /// Linked PR reference for cross-repo tracking
@@ -185,6 +193,19 @@ pub trait HostingPlatform: Send + Sync {
         repo: &str,
         pull_number: u64,
     ) -> Result<String, PlatformError>;
+
+    /// Check if a repository has been renamed by querying the platform API.
+    ///
+    /// Returns `Some((new_owner, new_repo))` if the canonical name differs
+    /// from the requested owner/repo (indicating a rename). Returns `None`
+    /// if the repo exists at the expected location or cannot be resolved.
+    async fn resolve_repo(
+        &self,
+        _owner: &str,
+        _repo: &str,
+    ) -> Result<Option<(String, String)>, PlatformError> {
+        Ok(None)
+    }
 
     /// Parse a git URL to extract owner/repo information
     fn parse_repo_url(&self, url: &str) -> Option<ParsedRepoInfo>;

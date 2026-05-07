@@ -207,6 +207,34 @@ impl HostingPlatform for GitHubAdapter {
         })
     }
 
+    async fn resolve_repo(
+        &self,
+        owner: &str,
+        repo: &str,
+    ) -> Result<Option<(String, String)>, PlatformError> {
+        let client = self.get_client().await?;
+
+        match client.repos(owner, repo).get().await {
+            Ok(repo_info) => {
+                let canonical = repo_info.full_name.unwrap_or_default();
+                let parts: Vec<&str> = canonical.splitn(2, '/').collect();
+                if parts.len() == 2 && (parts[0] != owner || parts[1] != repo) {
+                    debug!(
+                        old_owner = owner,
+                        old_repo = repo,
+                        new_owner = parts[0],
+                        new_repo = parts[1],
+                        "Detected repository rename"
+                    );
+                    Ok(Some((parts[0].to_string(), parts[1].to_string())))
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(_) => Ok(None),
+        }
+    }
+
     async fn get_pull_request(
         &self,
         owner: &str,

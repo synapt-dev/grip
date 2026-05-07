@@ -96,7 +96,6 @@ fn stage_files(repo: &Repository, _repo_path: &Path, files: &[String]) -> anyhow
     let before_output = cmd.output()?;
     let before_count = String::from_utf8_lossy(&before_output.stdout)
         .lines()
-        .filter(|l| !l.starts_with("??") || files.contains(&".".to_string()))
         .count();
 
     if before_count == 0 {

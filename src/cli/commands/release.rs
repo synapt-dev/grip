@@ -629,6 +629,8 @@ pub async fn run_release(opts: ReleaseOptions<'_>) -> anyhow::Result<()> {
                     wait: true,
                     timeout: opts.timeout,
                     delete_branch: true,
+                    repo_filter: None,
+                    yes: false,
                 },
             )
             .await?;

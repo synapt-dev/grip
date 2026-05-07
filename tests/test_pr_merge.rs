@@ -41,6 +41,8 @@ async fn test_pr_merge_no_open_prs() {
             wait: false,
             timeout: 600,
             delete_branch: true,
+            repo_filter: None,
+            yes: true,
         },
     )
     .await;
@@ -90,6 +92,8 @@ async fn test_pr_merge_skip_default_branch() {
             wait: false,
             timeout: 600,
             delete_branch: true,
+            repo_filter: None,
+            yes: true,
         },
     )
     .await;
@@ -133,6 +137,8 @@ async fn test_pr_merge_skip_reference_repos() {
             wait: false,
             timeout: 600,
             delete_branch: true,
+            repo_filter: None,
+            yes: true,
         },
     )
     .await;
@@ -175,6 +181,8 @@ async fn test_pr_merge_mixed_repos_all_skipped() {
             wait: false,
             timeout: 600,
             delete_branch: true,
+            repo_filter: None,
+            yes: true,
         },
     )
     .await;
@@ -236,6 +244,8 @@ async fn test_pr_merge_force_bypasses_checks() {
             wait: false,
             timeout: 600,
             delete_branch: true,
+            repo_filter: None,
+            yes: true,
         },
     )
     .await;
@@ -303,6 +313,8 @@ async fn test_pr_merge_branch_behind_suggests_update() {
             wait: false,
             timeout: 600,
             delete_branch: true,
+            repo_filter: None,
+            yes: true,
         },
     )
     .await;
@@ -324,6 +336,180 @@ async fn test_pr_merge_branch_behind_suggests_update() {
 
 // ── AllOrNothing Stops on Failure ───────────────────────────────
 // With AllOrNothing merge strategy, first failure should stop all merges.
+
+// ── Repo Filter Scopes Merge ───────────────────────────────────
+// --repo filter should only merge PRs for the named repos.
+
+#[tokio::test]
+async fn test_pr_merge_repo_filter_excludes_non_target() {
+    let (server, _adapter) = setup_github_mock().await;
+
+    let ws = WorkspaceBuilder::new()
+        .add_repo("frontend")
+        .add_repo("backend")
+        .build();
+    let mut manifest = ws.load_manifest();
+
+    // Put both repos on feature branches
+    git_helpers::create_branch(&ws.repo_path("frontend"), "feat/shared");
+    git_helpers::commit_file(&ws.repo_path("frontend"), "f.txt", "f", "Frontend change");
+    git_helpers::create_branch(&ws.repo_path("backend"), "feat/shared");
+    git_helpers::commit_file(&ws.repo_path("backend"), "b.txt", "b", "Backend change");
+
+    // Point both repos at mock GitHub
+    for name in ["frontend", "backend"] {
+        let repo_config = manifest.repos.get_mut(name).unwrap();
+        repo_config.url = Some("https://github.com/owner/repo.git".to_string());
+        repo_config.platform = Some(PlatformConfig {
+            platform_type: PlatformType::GitHub,
+            base_url: Some(server.uri()),
+        });
+    }
+
+    // Only mock PR for frontend (PR #10). Backend should never be queried.
+    mock_list_prs(&server, vec![(10, "feat/shared")]).await;
+    mock_get_pr(&server, 10, "open", true).await;
+    mock_pr_reviews(&server, 10, vec![("APPROVED", "alice")]).await;
+    mock_check_runs(
+        &server,
+        "feat/shared",
+        vec![("CI", "completed", Some("success"))],
+    )
+    .await;
+    mock_merge_pr(&server, 10, true).await;
+
+    // Filter to frontend only, force to bypass readiness checks
+    let result = gitgrip::cli::commands::pr::run_pr_merge(
+        &ws.workspace_root,
+        &manifest,
+        &gitgrip::cli::commands::pr::MergeOptions {
+            method: None,
+            force: true,
+            update: false,
+            auto: false,
+            json: false,
+            wait: false,
+            timeout: 600,
+            delete_branch: true,
+            repo_filter: Some(vec!["frontend".to_string()]),
+            yes: true,
+        },
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "repo-filtered merge should succeed: {:?}",
+        result.err()
+    );
+
+    // Verify merge was called (for frontend)
+    let requests = server.received_requests().await.unwrap();
+    let merge_requests: Vec<_> = requests
+        .iter()
+        .filter(|r| r.method == Method::PUT && r.url.path().ends_with("/merge"))
+        .collect();
+    assert_eq!(
+        merge_requests.len(),
+        1,
+        "exactly one merge request should be sent (frontend only, not backend)"
+    );
+}
+
+// ── Repo Filter: No Matching Repos ────────────────────────────
+// When --repo names a repo that doesn't exist, all repos are filtered out.
+
+#[tokio::test]
+async fn test_pr_merge_repo_filter_no_match_finds_no_prs() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+
+    let manifest = ws.load_manifest();
+
+    git_helpers::create_branch(&ws.repo_path("app"), "feat/test");
+    git_helpers::commit_file(&ws.repo_path("app"), "t.txt", "t", "Test");
+
+    // Filter to nonexistent repo — app should be excluded
+    let result = gitgrip::cli::commands::pr::run_pr_merge(
+        &ws.workspace_root,
+        &manifest,
+        &gitgrip::cli::commands::pr::MergeOptions {
+            method: None,
+            force: false,
+            update: false,
+            auto: false,
+            json: false,
+            wait: false,
+            timeout: 600,
+            delete_branch: true,
+            repo_filter: Some(vec!["nonexistent".to_string()]),
+            yes: true,
+        },
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "repo filter with no matches should succeed with 'no PRs found': {:?}",
+        result.err()
+    );
+}
+
+// ── Force + Yes Skips Confirmation ─────────────────────────────
+// --force --yes merges multiple repos without prompting.
+
+#[tokio::test]
+async fn test_pr_merge_force_yes_merges_without_prompt() {
+    let (server, _adapter) = setup_github_mock().await;
+
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let mut manifest = ws.load_manifest();
+
+    git_helpers::create_branch(&ws.repo_path("app"), "feat/test");
+    git_helpers::commit_file(
+        &ws.repo_path("app"),
+        "feature.txt",
+        "feature",
+        "Add feature",
+    );
+
+    let repo_config = manifest.repos.get_mut("app").unwrap();
+    repo_config.url = Some("https://github.com/owner/repo.git".to_string());
+    repo_config.platform = Some(PlatformConfig {
+        platform_type: PlatformType::GitHub,
+        base_url: Some(server.uri()),
+    });
+
+    mock_list_prs(&server, vec![(42, "feat/test")]).await;
+    mock_get_pr(&server, 42, "open", false).await;
+    mock_pr_reviews(&server, 42, vec![]).await;
+    mock_check_runs(&server, "feat/test", vec![("CI", "in_progress", None)]).await;
+    mock_merge_pr(&server, 42, true).await;
+
+    // --force --yes should merge without stdin prompt
+    let result = gitgrip::cli::commands::pr::run_pr_merge(
+        &ws.workspace_root,
+        &manifest,
+        &gitgrip::cli::commands::pr::MergeOptions {
+            method: None,
+            force: true,
+            update: false,
+            auto: false,
+            json: false,
+            wait: false,
+            timeout: 600,
+            delete_branch: true,
+            repo_filter: None,
+            yes: true,
+        },
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "force+yes merge should succeed: {:?}",
+        result.err()
+    );
+}
 
 #[tokio::test]
 #[ignore = "requires platform injection for API mocking"]

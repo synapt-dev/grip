@@ -283,10 +283,62 @@ pub fn push_branch(
 
     if !success {
         let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if is_ssh_auth_error(&stderr) {
+            if let Ok(Some(url)) = get_remote_url(repo, remote) {
+                if let Some(https_url) = ssh_url_to_https(&url) {
+                    let mut retry_args = vec!["push", &https_url, branch_name];
+                    if set_upstream {
+                        retry_args.insert(1, "-u");
+                    }
+
+                    let mut retry_cmd = Command::new("git");
+                    retry_cmd.args(&retry_args).current_dir(repo_path);
+                    log_cmd(&retry_cmd);
+                    let retry_output = retry_cmd
+                        .output()
+                        .map_err(|e| GitError::OperationFailed(e.to_string()))?;
+
+                    if retry_output.status.success() {
+                        return Ok(());
+                    }
+                    let retry_stderr = String::from_utf8_lossy(&retry_output.stderr);
+                    return Err(GitError::OperationFailed(interpret_push_error(
+                        &retry_stderr,
+                    )));
+                }
+            }
+        }
+
         return Err(GitError::OperationFailed(interpret_push_error(&stderr)));
     }
 
     Ok(())
+}
+
+/// Check if a git error is an SSH authentication failure.
+fn is_ssh_auth_error(stderr: &str) -> bool {
+    let lower = stderr.to_lowercase();
+    lower.contains("permission denied")
+        || lower.contains("authentication failed")
+        || lower.contains("sign_and_send_pubkey")
+        || lower.contains("signing failed")
+}
+
+/// Convert an SSH git URL to HTTPS.
+///
+/// `git@github.com:org/repo.git` -> `https://github.com/org/repo.git`
+/// `ssh://git@github.com/org/repo.git` -> `https://github.com/org/repo.git`
+pub fn ssh_url_to_https(url: &str) -> Option<String> {
+    if let Some(rest) = url.strip_prefix("git@") {
+        if let Some((host, path)) = rest.split_once(':') {
+            return Some(format!("https://{}/{}", host, path));
+        }
+    }
+    if let Some(rest) = url.strip_prefix("ssh://git@") {
+        return Some(format!("https://{}", rest));
+    }
+    None
 }
 
 /// Interpret common git push/fetch errors into user-friendly messages
@@ -334,6 +386,30 @@ pub fn force_push_branch(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if is_ssh_auth_error(&stderr) {
+            if let Ok(Some(url)) = get_remote_url(repo, remote) {
+                if let Some(https_url) = ssh_url_to_https(&url) {
+                    let mut retry_cmd = Command::new("git");
+                    retry_cmd
+                        .args(["push", "--force", &https_url, branch_name])
+                        .current_dir(repo_path);
+                    log_cmd(&retry_cmd);
+                    let retry_output = retry_cmd
+                        .output()
+                        .map_err(|e| GitError::OperationFailed(e.to_string()))?;
+
+                    if retry_output.status.success() {
+                        return Ok(());
+                    }
+                    let retry_stderr = String::from_utf8_lossy(&retry_output.stderr);
+                    return Err(GitError::OperationFailed(interpret_push_error(
+                        &retry_stderr,
+                    )));
+                }
+            }
+        }
+
         return Err(GitError::OperationFailed(interpret_push_error(&stderr)));
     }
 
@@ -816,5 +892,62 @@ mod tests {
     fn test_interpret_push_error_unknown() {
         let msg = interpret_push_error("some other error");
         assert_eq!(msg, "some other error");
+    }
+
+    #[test]
+    fn test_ssh_url_to_https_scp_style() {
+        assert_eq!(
+            ssh_url_to_https("git@github.com:synapt-dev/grip.git"),
+            Some("https://github.com/synapt-dev/grip.git".to_string())
+        );
+    }
+
+    #[test]
+    fn test_ssh_url_to_https_ssh_scheme() {
+        assert_eq!(
+            ssh_url_to_https("ssh://git@github.com/synapt-dev/grip.git"),
+            Some("https://github.com/synapt-dev/grip.git".to_string())
+        );
+    }
+
+    #[test]
+    fn test_ssh_url_to_https_already_https() {
+        assert_eq!(
+            ssh_url_to_https("https://github.com/synapt-dev/grip.git"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_ssh_url_to_https_gitlab() {
+        assert_eq!(
+            ssh_url_to_https("git@gitlab.com:org/project.git"),
+            Some("https://gitlab.com/org/project.git".to_string())
+        );
+    }
+
+    #[test]
+    fn test_is_ssh_auth_error_permission_denied() {
+        assert!(is_ssh_auth_error("Permission denied (publickey)."));
+    }
+
+    #[test]
+    fn test_is_ssh_auth_error_sign_and_send() {
+        assert!(is_ssh_auth_error(
+            "sign_and_send_pubkey: signing failed for ED25519"
+        ));
+    }
+
+    #[test]
+    fn test_is_ssh_auth_error_authentication_failed() {
+        assert!(is_ssh_auth_error(
+            "Authentication failed for 'git@github.com'"
+        ));
+    }
+
+    #[test]
+    fn test_is_ssh_auth_error_not_auth() {
+        assert!(!is_ssh_auth_error("non-fast-forward"));
+        assert!(!is_ssh_auth_error("repository not found"));
     }
 }

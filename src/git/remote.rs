@@ -329,6 +329,7 @@ fn is_ssh_auth_error(stderr: &str) -> bool {
 ///
 /// `git@github.com:org/repo.git` -> `https://github.com/org/repo.git`
 /// `ssh://git@github.com/org/repo.git` -> `https://github.com/org/repo.git`
+/// `ssh://git@github.com:22/org/repo.git` -> `https://github.com/org/repo.git`
 pub fn ssh_url_to_https(url: &str) -> Option<String> {
     if let Some(rest) = url.strip_prefix("git@") {
         if let Some((host, path)) = rest.split_once(':') {
@@ -336,7 +337,10 @@ pub fn ssh_url_to_https(url: &str) -> Option<String> {
         }
     }
     if let Some(rest) = url.strip_prefix("ssh://git@") {
-        return Some(format!("https://{}", rest));
+        if let Some((host_port, path)) = rest.split_once('/') {
+            let host = host_port.split(':').next().unwrap_or(host_port);
+            return Some(format!("https://{}/{}", host, path));
+        }
     }
     None
 }
@@ -907,6 +911,22 @@ mod tests {
         assert_eq!(
             ssh_url_to_https("ssh://git@github.com/synapt-dev/grip.git"),
             Some("https://github.com/synapt-dev/grip.git".to_string())
+        );
+    }
+
+    #[test]
+    fn test_ssh_url_to_https_ssh_scheme_with_default_port() {
+        assert_eq!(
+            ssh_url_to_https("ssh://git@github.com:22/synapt-dev/grip.git"),
+            Some("https://github.com/synapt-dev/grip.git".to_string())
+        );
+    }
+
+    #[test]
+    fn test_ssh_url_to_https_ssh_scheme_with_custom_port() {
+        assert_eq!(
+            ssh_url_to_https("ssh://git@host.example.com:2222/org/repo.git"),
+            Some("https://host.example.com/org/repo.git".to_string())
         );
     }
 

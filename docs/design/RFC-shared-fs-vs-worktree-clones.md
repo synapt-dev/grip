@@ -118,6 +118,40 @@ This is the control-plane-vs-data-plane split:
 
 The puddle-orchestra model is correct for code: isolation prevents state contamination. But config is not a puddle; it's the water table that all puddles draw from. Treating it as a puddle (Option B) adds latency to coordination. Treating everything as a shared pool (Option A) reintroduces contamination. The semantic split (Option D) gives each category the model that fits its actual usage pattern.
 
+### Section 5: Branch Policy for Shared Repos
+
+A shared clone's working tree can only be on one branch at a time. Without explicit branch policy, Option D inherits a different shape of shared-state contamination: two agents on different branches can't both have their changes visible simultaneously. This section makes branch management a first-class design decision, not an implementation footnote.
+
+**Default branch**: shared repos stay on `main`. All edits land via PR, never direct commits to main.
+
+**Sprint branches**: when prompts, process docs, or eval artifacts need sprint-local evolution, config participates in the sprint branch. This requires coordinator-level signoff (Opus or sprint lead) and short-lived branching. The sprint branch merges back to main at ceremony, same as code repos.
+
+**Concurrent branch conflicts**: if two agents need incompatible config-branch state at the same time (e.g., one agent testing new prompts on `feat/x` while another needs current main prompts), the requesting agent creates a temporary per-agent config worktree (`gr tree add feat/x` on config only). This is the escape hatch, not the default.
+
+**Claim-before-edit convention**: the Sprint 29 retro item ("coordinate shared file edits in #dev before starting") becomes load-bearing for shared repos. Before modifying any file in a shared clone, claim it in #dev. This was advisory before; under Option D it is mandatory.
+
+**Rollback path**: if the shared clone gets into a conflicted state, any agent can `git stash` + `git checkout main` to restore clean state. The stashed changes are not lost; they go through the PR path after the conflict is resolved.
+
+### Repo Classification
+
+Based on review feedback, the binary control-plane/data-plane distinction holds with one edge case:
+
+| Repo | Classification | Rationale |
+|------|---------------|-----------|
+| **config** | Control-plane (shared) | Coordination state: prompts, process, sprint plans |
+| **recall** | Data-plane (per-agent) | Code with high write concurrency |
+| **premium** | Data-plane (per-agent) | Code with high write concurrency |
+| **grip** | Data-plane (per-agent) | Code with high write concurrency |
+| **site** | Data-plane (per-agent) | Mixed (blog content + Eleventy build). Lean code due to build/dev workflow |
+| **codememo-benchmark** | Control-plane (shared) | Low edit frequency, pinned versions |
+| **homebrew-tap** | Control-plane (shared) | Low edit frequency, multi-agent |
+
+`site` is the only edge case. It has coordination content (blog posts, brand assets) but also a real build system and PR workflow. Classification as data-plane keeps the line clean; Option C helper tooling can address the occasional shared-content-edit friction for blog posts.
+
+### Manifest Flag Design
+
+Per review consensus: use an explicit `shared: true` manifest flag for now, not semantic derivation. Premature taxonomy locks in abstractions before the team has empirical signal on edge cases. The flag gives evolutionary flexibility; semantic role enrichment can come in a future sprint after we've seen which repos genuinely sit in the gray zone.
+
 ### Implementation Sketch (Future Sprint)
 
 If this RFC is accepted, implementation would involve:
@@ -132,11 +166,18 @@ If this RFC is accepted, implementation would involve:
 
 This RFC is a design decision, not a mandate for immediate implementation. The current friction (copy step) is real but low-frequency. If the team decides the implementation cost exceeds the friction cost, Option C (helper tooling) is an acceptable intermediate step that can coexist with a future Option D migration.
 
+## Review Status
+
+**Sentinel**: directionally green. Tightened with branch-policy addition (Section 5). Site = data-plane. Manifest flag should be tied to explicit semantic role.
+
+**Opus**: directionally green. Echoed Sentinel's branch-policy tightening. Answered all 4 original questions. Manifest flag now, semantic role later.
+
 ## Decision Requested
 
-Review from Opus and Sentinel. Questions to answer:
+Questions resolved and open:
 
-1. Does the control-plane-vs-data-plane distinction hold for all repos, or are there edge cases? (e.g., site repo: is that coordination or code?)
-2. Is the config write-contention truly low enough for a shared clone? Sprint 29's shared-file-coordination retro item suggests it has caused conflicts before
-3. Should `shared: true` be a manifest-level flag, or should it be derived from repo semantics (e.g., any repo with `role: config` is automatically shared)?
-4. Timeline: is this Sprint 34 work, or backlog until the friction frequency increases?
+1. **Repo classification**: resolved. Control-plane/data-plane holds. Site = data-plane (edge case, handled with helper tooling). See Repo Classification table above.
+2. **Config write-contention**: reframed per Opus review. Low *conflict rate*, moderate *write concurrency*. Viable with explicit branch policy (Section 5).
+3. **Manifest flag vs semantic role**: author decision: **manifest flag for now**. Sentinel argued for semantic role from the start (prevents unbounded boolean drift). Opus argued for flag now, role later (avoid premature taxonomy). Both defensible. Choosing flag because empirical signal on edge cases (which repos are genuinely gray-zone) is insufficient to design a stable taxonomy today. If the flag proliferates beyond 2-3 repos, revisit with semantic role enrichment. Noting the disagreement here so the team can revisit if needed.
+4. **Timeline**: Sprint 34 candidate, not blocking. Friction is real (hit Sentinel on B2, hit Opus earlier the same session). Implementation cost is medium (~1 week). Gate on competing priorities.
+5. **Branch policy for shared repos** (added per Sentinel review): see Section 5 above. Default = main, edits via PR, sprint branches with coordinator signoff, claim-before-edit mandatory.

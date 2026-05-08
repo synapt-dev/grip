@@ -12,6 +12,7 @@ use crate::core::state::StateFile;
 use crate::git::status::has_uncommitted_changes;
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::platform::get_platform_adapter;
+use tracing::debug;
 
 /// A group of repos all on the same feature branch
 struct BranchGroup {
@@ -223,6 +224,36 @@ pub async fn run_pr_create(
                 get_platform_adapter(repo.platform_type, repo.platform_base_url.as_deref());
 
             let spinner = Output::spinner(&format!("Creating PR for {}...", repo.name));
+
+            match platform
+                .check_branch_exists(&repo.owner, &repo.repo, repo.target_branch())
+                .await
+            {
+                Ok(false) => {
+                    spinner.finish_with_message(format!(
+                        "{}: skipped — base branch '{}' does not exist on remote",
+                        repo.name,
+                        repo.target_branch()
+                    ));
+                    all_failed_repos.push((
+                        repo.name.clone(),
+                        format!(
+                            "base branch '{}' not found on remote",
+                            repo.target_branch()
+                        ),
+                    ));
+                    continue;
+                }
+                Err(e) => {
+                    debug!(
+                        repo = repo.name.as_str(),
+                        base = repo.target_branch(),
+                        error = %e,
+                        "Could not verify base branch; proceeding to API call"
+                    );
+                }
+                Ok(true) => {}
+            }
 
             match platform
                 .create_pull_request(

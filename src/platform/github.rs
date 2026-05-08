@@ -198,8 +198,27 @@ impl HostingPlatform for GitHubAdapter {
             );
         }
 
-        let pr =
-            result.map_err(|e| PlatformError::ApiError(format!("Failed to create PR: {}", e)))?;
+        let pr = result.map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("Validation Failed") || msg.contains("422") {
+                if msg.contains("head sha") || msg.contains("Head sha") {
+                    return PlatformError::HeadBranchNotFound {
+                        repo: format!("{}/{}", owner, repo),
+                        head: head.to_string(),
+                    };
+                }
+                if msg.contains("No commits between") {
+                    return PlatformError::ApiError(format!(
+                        "No commits between '{}' and '{}' in {}/{}",
+                        base, head, owner, repo
+                    ));
+                }
+            }
+            PlatformError::ApiError(format!(
+                "Failed to create PR in {}/{}: {}",
+                owner, repo, msg
+            ))
+        })?;
 
         Ok(PRCreateResult {
             number: pr.number,
@@ -1226,6 +1245,44 @@ impl HostingPlatform for GitHubAdapter {
         }
 
         Ok(())
+    }
+
+    async fn check_branch_exists(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+    ) -> Result<bool, PlatformError> {
+        let token = self.get_token().await?;
+        let base_url = self.base_url.as_deref().unwrap_or("https://api.github.com");
+        let url = format!(
+            "{}/repos/{}/{}/branches/{}",
+            base_url, owner, repo, branch
+        );
+
+        let http_client = Self::http_client();
+        let response = http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github.v3+json")
+            .header("User-Agent", "gitgrip")
+            .send()
+            .await
+            .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+
+        check_response_rate_limit(response.headers(), "GitHub").await;
+
+        match response.status().as_u16() {
+            200 => Ok(true),
+            404 => Ok(false),
+            status => {
+                let body = response.text().await.unwrap_or_default();
+                Err(PlatformError::ApiError(format!(
+                    "Failed to check branch '{}' on {}/{} (HTTP {}): {}",
+                    branch, owner, repo, status, body
+                )))
+            }
+        }
     }
 
     fn parse_repo_url(&self, url: &str) -> Option<ParsedRepoInfo> {

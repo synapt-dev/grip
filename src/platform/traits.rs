@@ -32,6 +32,12 @@ pub enum PlatformError {
 
     #[error("Branch protection prevents merge: {0}")]
     BranchProtected(String),
+
+    #[error("Base branch '{base}' does not exist on remote for {repo}")]
+    BaseBranchNotFound { repo: String, base: String },
+
+    #[error("Head branch '{head}' does not exist on remote for {repo}")]
+    HeadBranchNotFound { repo: String, head: String },
 }
 
 /// Linked PR reference for cross-repo tracking
@@ -331,6 +337,20 @@ pub trait HostingPlatform: Send + Sync {
         Err(PlatformError::ApiError(
             "Issue reopening not supported on this platform".to_string(),
         ))
+    }
+
+    /// Check if a branch exists on the remote
+    ///
+    /// Returns Ok(true) if the branch exists, Ok(false) if not.
+    /// Default: returns Ok(true) (optimistic; platforms that support
+    /// branch checks should override).
+    async fn check_branch_exists(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _branch: &str,
+    ) -> Result<bool, PlatformError> {
+        Ok(true)
     }
 
     /// Generate HTML comment for linked PR tracking

@@ -44,6 +44,12 @@ pub enum Commands {
         command: UnitCommands,
     },
 
+    /// Agent workspace management
+    Team {
+        #[command(subcommand)]
+        command: TeamCommands,
+    },
+
     /// Lane metadata operations
     Lane {
         #[command(subcommand)]
@@ -127,6 +133,24 @@ pub enum UnitCommands {
     /// Remove a registered unit
     Remove {
         /// Unit name
+        name: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TeamCommands {
+    /// Register a new agent workspace
+    Add {
+        /// Agent name
+        name: String,
+    },
+
+    /// List registered agent workspaces
+    List,
+
+    /// Remove an agent workspace
+    Remove {
+        /// Agent name
         name: String,
     },
 }

@@ -479,8 +479,7 @@ pub fn run_spawn_up(
             } else {
                 String::new()
             };
-            if let Some(prompt) =
-                build_codex_initial_prompt(name, &startup_prompt, &recall_context)
+            if let Some(prompt) = build_codex_initial_prompt(name, &startup_prompt, &recall_context)
             {
                 if let Err(e) = send_codex_initial_prompt(&target, &prompt) {
                     Output::warning(&format!(
@@ -549,10 +548,7 @@ fn resolve_startup_prompt_path(workspace_root: &Path, prompt_path: &str) -> Path
     }
 }
 
-fn read_agent_startup_prompt(
-    workspace_root: &Path,
-    agent: &AgentConfig,
-) -> anyhow::Result<String> {
+fn read_agent_startup_prompt(workspace_root: &Path, agent: &AgentConfig) -> anyhow::Result<String> {
     let Some(prompt_path) = agent.startup_prompt.as_deref() else {
         return Ok(String::new());
     };
@@ -627,8 +623,7 @@ fn build_codex_initial_prompt(
         ));
     }
     sections.push(
-        "Use this context to choose the next action. Do not summarize it unless asked."
-            .to_string(),
+        "Use this context to choose the next action. Do not summarize it unless asked.".to_string(),
     );
 
     Some(sections.join("\n\n"))
@@ -1589,10 +1584,7 @@ mod tests {
     fn test_codex_initial_prompt_wraps_long_recall_lines() {
         let recall = "x".repeat(CODEX_STARTUP_MAX_LINE_CHARS + 1);
         let prompt = build_codex_initial_prompt("opus", "", &recall).unwrap();
-        assert!(prompt.contains(&format!(
-            "{}\nx",
-            "x".repeat(CODEX_STARTUP_MAX_LINE_CHARS)
-        )));
+        assert!(prompt.contains(&format!("{}\nx", "x".repeat(CODEX_STARTUP_MAX_LINE_CHARS))));
     }
 
     #[test]

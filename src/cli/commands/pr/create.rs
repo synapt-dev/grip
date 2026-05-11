@@ -238,10 +238,7 @@ pub async fn run_pr_create(
                     ));
                     all_failed_repos.push((
                         repo.name.clone(),
-                        format!(
-                            "base branch '{}' not found on remote",
-                            repo.target_branch()
-                        ),
+                        format!("base branch '{}' not found on remote", repo.target_branch()),
                     ));
                     continue;
                 }

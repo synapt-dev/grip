@@ -1291,10 +1291,7 @@ impl HostingPlatform for GitHubAdapter {
     ) -> Result<bool, PlatformError> {
         let token = self.get_token().await?;
         let base_url = self.base_url.as_deref().unwrap_or("https://api.github.com");
-        let url = format!(
-            "{}/repos/{}/{}/branches/{}",
-            base_url, owner, repo, branch
-        );
+        let url = format!("{}/repos/{}/{}/branches/{}", base_url, owner, repo, branch);
 
         let http_client = Self::http_client();
         let response = http_client

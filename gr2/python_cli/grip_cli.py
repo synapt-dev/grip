@@ -3,6 +3,7 @@
 Separate module so tests can import without pulling in all of app.py's
 dependencies (gr2.prototypes, lane_workspace_prototype, etc.).
 """
+
 from __future__ import annotations
 
 import json
@@ -34,8 +35,7 @@ def _discover_repos(workspace: Path) -> dict[str, Path]:
     spec_path = workspace / ".grip" / "workspace_spec.toml"
     if not spec_path.exists():
         typer.echo(
-            f"No .grip/workspace_spec.toml at {workspace}. "
-            "Use --repos or create a workspace spec."
+            f"No .grip/workspace_spec.toml at {workspace}. Use --repos or create a workspace spec."
         )
         raise typer.Exit(code=1)
     with spec_path.open("rb") as fh:
@@ -78,8 +78,10 @@ def _repo_head_state(repo_path: Path) -> dict[str, object]:
 
     if branch_name:
         return {
-            "head": head_sha, "is_empty": False,
-            "head_state": "attached", "branch": branch_name,
+            "head": head_sha,
+            "is_empty": False,
+            "head_state": "attached",
+            "branch": branch_name,
         }
     return {"head": head_sha, "is_empty": False, "head_state": "detached"}
 
@@ -99,7 +101,8 @@ def _write_snapshot_index(workspace: Path, index: list[dict[str, object]]) -> No
 
 
 def _find_snapshot_by_id(
-    index: list[dict[str, object]], snapshot_id: str,
+    index: list[dict[str, object]],
+    snapshot_id: str,
 ) -> dict[str, object] | None:
     for entry in index:
         if entry.get("id") == snapshot_id:
@@ -134,18 +137,26 @@ def grip_init_cmd(
 def grip_snapshot_cmd(
     workspace_root: Path,
     repos: str = typer.Option(
-        "", "--repos",
+        "",
+        "--repos",
         help="Comma-separated repo names (auto from spec if omitted)",
     ),
     message: str = typer.Option(
-        "", "--message", "-m", help="Snapshot message",
+        "",
+        "--message",
+        "-m",
+        help="Snapshot message",
     ),
     changeset_type: str = typer.Option(
-        "", "--type", help="Changeset type (e.g. ceremony, feature)",
+        "",
+        "--type",
+        help="Changeset type (e.g. ceremony, feature)",
     ),
     sprint: str = typer.Option("", "--sprint", help="Sprint number"),
     overlay_dir: str = typer.Option(
-        "", "--overlay-dir", help="Config overlay directory",
+        "",
+        "--overlay-dir",
+        help="Config overlay directory",
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
@@ -235,10 +246,10 @@ def grip_log_cmd(
 
     display = list(reversed(index[-max_count:]))
     for entry in display:
-            sid = entry.get("id", "?")
-            msg = entry.get("message", "")
-            repos = entry.get("repos", [])
-            typer.echo(f"{msg}  [{', '.join(repos)}]  ({sid[:12]})")
+        sid = entry.get("id", "?")
+        msg = entry.get("message", "")
+        repos = entry.get("repos", [])
+        typer.echo(f"{msg}  [{', '.join(repos)}]  ({sid[:12]})")
 
 
 @grip_app.command("diff")
@@ -356,7 +367,8 @@ def grip_checkout_cmd(
 def config_apply_cmd(
     base_path: Path = typer.Argument(..., help="Path to base TOML config file"),
     overlay_dir: str = typer.Option(
-        "", "--overlay-dir",
+        "",
+        "--overlay-dir",
         help="Overlay directory (default: sibling overlay/)",
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
@@ -384,7 +396,8 @@ def config_show_cmd(
     overlay = Path(overlay_dir).resolve() if overlay_dir else base_path.parent / "overlay"
     try:
         result = config_mod.config_show(
-            base_path, overlay,
+            base_path,
+            overlay,
             key=key or None,
             strict=strict,
         )

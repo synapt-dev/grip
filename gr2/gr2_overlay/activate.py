@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -64,8 +63,7 @@ def activate_overlay(
             "Composition conflict detected", error_code="composition_conflict"
         )
 
-    if grip_dir.exists():
-        shutil.rmtree(grip_dir)
+    _remove_managed_files_for(workspace_root, overlay_ref)
 
     apply_overlay_object(overlay_store, overlay_ref, workspace_root)
 
@@ -92,8 +90,19 @@ def deactivate_overlay(
             parent.rmdir()
             parent = parent.parent
 
-    if grip_dir.exists():
-        shutil.rmtree(grip_dir)
+    managed.pop(overlay_ref.ref_path, None)
+    stack = read_active_overlay_stack(workspace_root)
+    stack = [ref for ref in stack if ref != overlay_ref.ref_path]
+
+    grip_dir.mkdir(parents=True, exist_ok=True)
+    if stack:
+        (grip_dir / STACK_FILE).write_text(json.dumps(stack))
+        (grip_dir / MANAGED_FILE).write_text(json.dumps(managed))
+    else:
+        (grip_dir / STACK_FILE).unlink(missing_ok=True)
+        (grip_dir / MANAGED_FILE).unlink(missing_ok=True)
+        if not any(grip_dir.iterdir()):
+            grip_dir.rmdir()
 
     return DeactivationResult(completed=["overlay.deactivated"])
 
@@ -146,12 +155,28 @@ def _write_state(workspace_root: Path, overlay_ref: OverlayRef, managed_files: l
     grip_dir.mkdir(parents=True, exist_ok=True)
 
     stack_file = grip_dir / STACK_FILE
-    stack = [overlay_ref.ref_path]
+    stack = read_active_overlay_stack(workspace_root)
+    if overlay_ref.ref_path not in stack:
+        stack.append(overlay_ref.ref_path)
     stack_file.write_text(json.dumps(stack))
 
     managed_file = grip_dir / MANAGED_FILE
-    managed = {overlay_ref.ref_path: managed_files}
+    managed = _load_managed_files(workspace_root)
+    managed[overlay_ref.ref_path] = managed_files
     managed_file.write_text(json.dumps(managed))
+
+
+def _remove_managed_files_for(workspace_root: Path, overlay_ref: OverlayRef) -> None:
+    managed = _load_managed_files(workspace_root)
+    file_list = managed.get(overlay_ref.ref_path, [])
+    for rel_path in file_list:
+        target = workspace_root / rel_path
+        if target.exists():
+            target.unlink()
+        parent = target.parent
+        while parent != workspace_root and parent.exists() and not any(parent.iterdir()):
+            parent.rmdir()
+            parent = parent.parent
 
 
 def _load_managed_files(workspace_root: Path) -> dict[str, list[str]]:

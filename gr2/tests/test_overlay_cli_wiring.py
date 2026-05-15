@@ -11,10 +11,9 @@ from __future__ import annotations
 
 import json
 import subprocess
-import tomli_w
 from pathlib import Path
 
-import pytest
+import tomli_w
 from typer.testing import CliRunner
 
 from gr2_overlay.cli import overlay_app
@@ -44,7 +43,11 @@ def _write_overlay_spec(workspace_root: Path, entries: list[dict]) -> None:
     spec_path.write_bytes(tomli_w.dumps(data).encode())
 
 
-def _write_overlay_stack_toml(workspace_root: Path, active: list[str], available: list[str]) -> None:
+def _write_overlay_stack_toml(
+    workspace_root: Path,
+    active: list[str],
+    available: list[str],
+) -> None:
     stack_path = workspace_root / ".grip" / "overlay-stack.toml"
     stack_path.parent.mkdir(parents=True, exist_ok=True)
     data = {"active": active, "available": available}
@@ -150,10 +153,23 @@ class TestStatusCommand:
 class TestListCommand:
     def test_list_shows_declared_overlays(self, tmp_path: Path):
         workspace_root, _ = _workspace_with_overlay_store(tmp_path)
-        _write_overlay_spec(workspace_root, [
-            {"name": "kanonic-root", "path": "../config-root", "applies_to": ["config"], "priority": 0},
-            {"name": "synapt-core", "path": "../config", "applies_to": ["config"], "priority": 10},
-        ])
+        _write_overlay_spec(
+            workspace_root,
+            [
+                {
+                    "name": "kanonic-root",
+                    "path": "../config-root",
+                    "applies_to": ["config"],
+                    "priority": 0,
+                },
+                {
+                    "name": "synapt-core",
+                    "path": "../config",
+                    "applies_to": ["config"],
+                    "priority": 10,
+                },
+            ],
+        )
 
         result = runner.invoke(overlay_app, ["list", str(workspace_root)])
 
@@ -163,9 +179,17 @@ class TestListCommand:
 
     def test_list_json_output(self, tmp_path: Path):
         workspace_root, _ = _workspace_with_overlay_store(tmp_path)
-        _write_overlay_spec(workspace_root, [
-            {"name": "kanonic-root", "path": "../config-root", "applies_to": ["config"], "priority": 0},
-        ])
+        _write_overlay_spec(
+            workspace_root,
+            [
+                {
+                    "name": "kanonic-root",
+                    "path": "../config-root",
+                    "applies_to": ["config"],
+                    "priority": 0,
+                },
+            ],
+        )
 
         result = runner.invoke(overlay_app, ["list", str(workspace_root), "--json"])
 

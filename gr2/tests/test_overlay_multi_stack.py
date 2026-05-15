@@ -13,15 +13,12 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-import pytest
-
 from gr2_overlay.activate import (
     ActivationResult,
-    DeactivationResult,
+    _load_managed_files,
     activate_overlay,
     deactivate_overlay,
     read_active_overlay_stack,
-    _load_managed_files,
 )
 from gr2_overlay.objects import capture_overlay_object
 from gr2_overlay.trust import write_workspace_allowlist
@@ -120,7 +117,9 @@ class TestMultiOverlayActivation:
         assert (workspace_root / "agents.toml").exists()
 
         _activate(workspace_root, overlay_store, ref_b)
-        assert (workspace_root / "agents.toml").exists(), "First overlay's files destroyed by second activation"
+        assert (workspace_root / "agents.toml").exists(), (
+            "First overlay's files destroyed by second activation"
+        )
         assert (workspace_root / "theme.toml").exists()
 
     def test_second_activation_returns_ok(self, tmp_path: Path) -> None:
@@ -172,7 +171,9 @@ class TestPartialDeactivation:
         _activate(workspace_root, overlay_store, ref_b)
         deactivate_overlay(workspace_root=workspace_root, overlay_ref=ref_b)
 
-        assert (workspace_root / "agents.toml").exists(), "Overlay A's files removed during B's deactivation"
+        assert (workspace_root / "agents.toml").exists(), (
+            "Overlay A's files removed during B's deactivation"
+        )
         assert not (workspace_root / "theme.toml").exists(), "Overlay B's files not removed"
 
     def test_deactivate_one_preserves_other_managed_files(self, tmp_path: Path) -> None:

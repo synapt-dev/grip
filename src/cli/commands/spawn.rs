@@ -899,8 +899,20 @@ pub fn run_spawn_down(
     // Phase 3: Report per-agent status and clean up tmux windows.
     // Agents that exited gracefully still need their dead pane/window removed.
     // Agents that timed out get force-killed via kill-window.
+    //
+    // For agents still marked Running after Phase 2, recheck before reporting:
+    // the agent may have exited between the polling deadline and now.
     let mut any_error = false;
     for (i, name) in targets.iter().enumerate() {
+        let final_state = if states[i] == PaneState::Running {
+            match pane_exit_state(session, name) {
+                Some(true) => PaneState::Exited,
+                _ => PaneState::Running,
+            }
+        } else {
+            states[i]
+        };
+
         let target = format!("{}:{}", session, name);
         let kill_result = Command::new("tmux")
             .args(["kill-window", "-t", &target])
@@ -909,7 +921,6 @@ pub fn run_spawn_down(
             Ok(o) if o.status.success() => true,
             Ok(o) => {
                 let stderr = String::from_utf8_lossy(&o.stderr);
-                // Window already gone is fine (agent cleaned up fully)
                 stderr.contains("can't find") || stderr.contains("no server running")
             }
             Err(e) => {
@@ -918,7 +929,7 @@ pub fn run_spawn_down(
             }
         };
 
-        match states[i] {
+        match final_state {
             PaneState::Exited => {
                 println!("  {} {} exited gracefully", "✓".green(), name.bold());
             }

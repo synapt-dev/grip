@@ -198,13 +198,60 @@ impl HostingPlatform for GitHubAdapter {
             );
         }
 
-        let pr =
-            result.map_err(|e| PlatformError::ApiError(format!("Failed to create PR: {}", e)))?;
+        let pr = result.map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("Validation Failed") || msg.contains("422") {
+                if msg.contains("head sha") || msg.contains("Head sha") {
+                    return PlatformError::HeadBranchNotFound {
+                        repo: format!("{}/{}", owner, repo),
+                        head: head.to_string(),
+                    };
+                }
+                if msg.contains("No commits between") {
+                    return PlatformError::ApiError(format!(
+                        "No commits between '{}' and '{}' in {}/{}",
+                        base, head, owner, repo
+                    ));
+                }
+            }
+            PlatformError::ApiError(format!(
+                "Failed to create PR in {}/{}: {}",
+                owner, repo, msg
+            ))
+        })?;
 
         Ok(PRCreateResult {
             number: pr.number,
             url: pr.html_url.map(|u| u.to_string()).unwrap_or_default(),
         })
+    }
+
+    async fn resolve_repo(
+        &self,
+        owner: &str,
+        repo: &str,
+    ) -> Result<Option<(String, String)>, PlatformError> {
+        let client = self.get_client().await?;
+
+        match client.repos(owner, repo).get().await {
+            Ok(repo_info) => {
+                let canonical = repo_info.full_name.unwrap_or_default();
+                let parts: Vec<&str> = canonical.splitn(2, '/').collect();
+                if parts.len() == 2 && (parts[0] != owner || parts[1] != repo) {
+                    debug!(
+                        old_owner = owner,
+                        old_repo = repo,
+                        new_owner = parts[0],
+                        new_repo = parts[1],
+                        "Detected repository rename"
+                    );
+                    Ok(Some((parts[0].to_string(), parts[1].to_string())))
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(_) => Ok(None),
+        }
     }
 
     async fn get_pull_request(
@@ -619,7 +666,7 @@ impl HostingPlatform for GitHubAdapter {
             .get_pull_request_reviews(owner, repo, pull_number)
             .await?;
 
-        // Check for at least one approval and no changes requested.
+        // Check for approval via formal APPROVE or sufficient comment reviews.
         // State comes from Debug formatting of octocrab's ReviewState enum,
         // which gives title case without underscores (e.g. "Approved", "ChangesRequested").
         let state_matches = |state: &str, target: &str| -> bool {
@@ -631,7 +678,15 @@ impl HostingPlatform for GitHubAdapter {
             .iter()
             .any(|r| state_matches(&r.state, "ChangesRequested"));
 
-        Ok(has_approval && !has_changes_requested)
+        // Teams sharing one GitHub account can't issue formal approvals.
+        // Accept 2+ COMMENTED reviews as equivalent to one APPROVE.
+        let comment_review_count = reviews
+            .iter()
+            .filter(|r| state_matches(&r.state, "Commented"))
+            .count();
+        let has_comment_reviews = comment_review_count >= 2;
+
+        Ok((has_approval || has_comment_reviews) && !has_changes_requested)
     }
 
     async fn get_pull_request_reviews(
@@ -1226,6 +1281,41 @@ impl HostingPlatform for GitHubAdapter {
         }
 
         Ok(())
+    }
+
+    async fn check_branch_exists(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+    ) -> Result<bool, PlatformError> {
+        let token = self.get_token().await?;
+        let base_url = self.base_url.as_deref().unwrap_or("https://api.github.com");
+        let url = format!("{}/repos/{}/{}/branches/{}", base_url, owner, repo, branch);
+
+        let http_client = Self::http_client();
+        let response = http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github.v3+json")
+            .header("User-Agent", "gitgrip")
+            .send()
+            .await
+            .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
+
+        check_response_rate_limit(response.headers(), "GitHub").await;
+
+        match response.status().as_u16() {
+            200 => Ok(true),
+            404 => Ok(false),
+            status => {
+                let body = response.text().await.unwrap_or_default();
+                Err(PlatformError::ApiError(format!(
+                    "Failed to check branch '{}' on {}/{} (HTTP {}): {}",
+                    branch, owner, repo, status, body
+                )))
+            }
+        }
     }
 
     fn parse_repo_url(&self, url: &str) -> Option<ParsedRepoInfo> {

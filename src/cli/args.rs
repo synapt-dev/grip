@@ -733,6 +733,12 @@ pub enum PrCommands {
         /// Don't delete the source branch after merging
         #[arg(long)]
         no_delete_branch: bool,
+        /// Only merge PRs for specific repos (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        repo: Option<Vec<String>>,
+        /// Skip confirmation prompt (used with --force)
+        #[arg(short = 'y', long)]
+        yes: bool,
     },
     /// Edit pull request title/body
     Edit {

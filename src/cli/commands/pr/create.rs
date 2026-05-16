@@ -9,9 +9,11 @@ use crate::cli::output::Output;
 use crate::core::manifest::{Manifest, PlatformType};
 use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
 use crate::core::state::StateFile;
+use crate::git::remote::{get_remote_url, set_remote_url};
 use crate::git::status::has_uncommitted_changes;
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::platform::get_platform_adapter;
+use tracing::debug;
 
 /// A group of repos all on the same feature branch
 struct BranchGroup {
@@ -225,6 +227,33 @@ pub async fn run_pr_create(
             let spinner = Output::spinner(&format!("Creating PR for {}...", repo.name));
 
             match platform
+                .check_branch_exists(&repo.owner, &repo.repo, repo.target_branch())
+                .await
+            {
+                Ok(false) => {
+                    spinner.finish_with_message(format!(
+                        "{}: skipped — base branch '{}' does not exist on remote",
+                        repo.name,
+                        repo.target_branch()
+                    ));
+                    all_failed_repos.push((
+                        repo.name.clone(),
+                        format!("base branch '{}' not found on remote", repo.target_branch()),
+                    ));
+                    continue;
+                }
+                Err(e) => {
+                    debug!(
+                        repo = repo.name.as_str(),
+                        base = repo.target_branch(),
+                        error = %e,
+                        "Could not verify base branch; proceeding to API call"
+                    );
+                }
+                Ok(true) => {}
+            }
+
+            match platform
                 .create_pull_request(
                     &repo.owner,
                     &repo.repo,
@@ -249,8 +278,71 @@ pub async fn run_pr_create(
                     ));
                 }
                 Err(e) => {
-                    spinner.finish_with_message(format!("{}: failed - {}", repo.name, e));
-                    all_failed_repos.push((repo.name.clone(), e.to_string()));
+                    if let Ok(Some((new_owner, new_repo))) =
+                        platform.resolve_repo(&repo.owner, &repo.repo).await
+                    {
+                        spinner.finish_with_message(format!(
+                            "{}: repo renamed {}/{} → {}/{}, retrying...",
+                            repo.name, repo.owner, repo.repo, new_owner, new_repo
+                        ));
+                        if let Ok(git_repo) = open_repo(&repo.absolute_path) {
+                            let new_url = rewrite_remote_url(
+                                &git_repo,
+                                &repo.push_remote,
+                                &repo.owner,
+                                &repo.repo,
+                                &new_owner,
+                                &new_repo,
+                            );
+                            if let Some(url) = &new_url {
+                                if set_remote_url(&git_repo, &repo.push_remote, url).is_ok() {
+                                    Output::success(&format!(
+                                        "{}: updated remote '{}' → {}",
+                                        repo.name, repo.push_remote, url
+                                    ));
+                                }
+                            }
+                        }
+                        match platform
+                            .create_pull_request(
+                                &new_owner,
+                                &new_repo,
+                                &group.branch,
+                                repo.target_branch(),
+                                &pr_title,
+                                body,
+                                draft,
+                            )
+                            .await
+                        {
+                            Ok(pr) => {
+                                Output::success(&format!(
+                                    "{}: created PR #{} - {}",
+                                    repo.name, pr.number, pr.url
+                                ));
+                                all_created_prs.push((
+                                    group.branch.clone(),
+                                    repo.name.clone(),
+                                    pr.number,
+                                    pr.url.clone(),
+                                ));
+                                Output::warning(&format!(
+                                    "Update gripspace.yml: change {} URL to {}/{}.git",
+                                    repo.name, new_owner, new_repo
+                                ));
+                            }
+                            Err(e2) => {
+                                spinner.finish_with_message(format!(
+                                    "{}: retry failed - {}",
+                                    repo.name, e2
+                                ));
+                                all_failed_repos.push((repo.name.clone(), e2.to_string()));
+                            }
+                        }
+                    } else {
+                        spinner.finish_with_message(format!("{}: failed - {}", repo.name, e));
+                        all_failed_repos.push((repo.name.clone(), e.to_string()));
+                    }
                 }
             }
         }
@@ -444,6 +536,36 @@ pub fn get_token_for_platform(platform: &PlatformType) -> Option<String> {
     }
 }
 
+/// Rewrite a remote URL to reflect a renamed repository.
+///
+/// Preserves the original scheme (SSH/HTTPS) and host by replacing
+/// `old_owner/old_repo` with `new_owner/new_repo` in the existing URL.
+fn rewrite_remote_url(
+    repo: &Repository,
+    remote_name: &str,
+    old_owner: &str,
+    old_repo: &str,
+    new_owner: &str,
+    new_repo: &str,
+) -> Option<String> {
+    let current = get_remote_url(repo, remote_name).ok()??;
+
+    // SSH URLs use ":" as separator (git@host:owner/repo.git)
+    // HTTPS URLs use "/" as separator (https://host/owner/repo.git)
+    let old_ssh = format!(":{}/{}", old_owner, old_repo);
+    let new_ssh = format!(":{}/{}", new_owner, new_repo);
+    let old_https = format!("/{}/{}", old_owner, old_repo);
+    let new_https = format!("/{}/{}", new_owner, new_repo);
+
+    if current.contains(&old_ssh) {
+        Some(current.replace(&old_ssh, &new_ssh))
+    } else if current.contains(&old_https) {
+        Some(current.replace(&old_https, &new_https))
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -587,5 +709,107 @@ mod tests {
         assert_eq!(branch_to_title("fix/bug-fix"), "Bug fix");
         assert_eq!(branch_to_title("chore/cleanup_task"), "Cleanup task");
         assert_eq!(branch_to_title("custom-branch"), "Custom branch");
+    }
+
+    #[test]
+    fn test_rewrite_remote_url_https() {
+        let (temp, repo) = setup_test_repo();
+        Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/oldorg/oldrepo.git",
+            ])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        let result = rewrite_remote_url(&repo, "origin", "oldorg", "oldrepo", "neworg", "newrepo");
+        assert_eq!(
+            result,
+            Some("https://github.com/neworg/newrepo.git".to_string())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_remote_url_ssh() {
+        let (temp, repo) = setup_test_repo();
+        Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "git@github.com:oldorg/oldrepo.git",
+            ])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        let result = rewrite_remote_url(&repo, "origin", "oldorg", "oldrepo", "neworg", "newrepo");
+        assert_eq!(
+            result,
+            Some("git@github.com:neworg/newrepo.git".to_string())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_remote_url_ghe() {
+        let (temp, repo) = setup_test_repo();
+        Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://github.example.com/oldorg/oldrepo.git",
+            ])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        let result = rewrite_remote_url(&repo, "origin", "oldorg", "oldrepo", "neworg", "newrepo");
+        assert_eq!(
+            result,
+            Some("https://github.example.com/neworg/newrepo.git".to_string())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_remote_url_ghe_ssh() {
+        let (temp, repo) = setup_test_repo();
+        Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "git@ghe.corp.net:oldorg/oldrepo.git",
+            ])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        let result = rewrite_remote_url(&repo, "origin", "oldorg", "oldrepo", "neworg", "newrepo");
+        assert_eq!(
+            result,
+            Some("git@ghe.corp.net:neworg/newrepo.git".to_string())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_remote_url_no_match() {
+        let (temp, repo) = setup_test_repo();
+        Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/different/repo.git",
+            ])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        let result = rewrite_remote_url(&repo, "origin", "oldorg", "oldrepo", "neworg", "newrepo");
+        assert_eq!(result, None);
     }
 }

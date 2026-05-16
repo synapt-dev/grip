@@ -296,6 +296,8 @@ pub async fn dispatch_command(
                     wait,
                     timeout,
                     no_delete_branch,
+                    repo,
+                    yes,
                 } => {
                     crate::cli::commands::pr::run_pr_merge(
                         &ctx.workspace_root,
@@ -309,6 +311,8 @@ pub async fn dispatch_command(
                             wait,
                             timeout,
                             delete_branch: !no_delete_branch,
+                            repo_filter: repo,
+                            yes,
                         },
                     )
                     .await?;

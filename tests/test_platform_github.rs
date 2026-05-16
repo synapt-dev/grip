@@ -282,6 +282,62 @@ async fn test_github_pr_no_reviews() {
 }
 
 #[tokio::test]
+async fn test_github_pr_two_comment_reviews_accepted() {
+    let (server, adapter) = setup_github_mock().await;
+    mock_pr_reviews(
+        &server,
+        42,
+        vec![("COMMENTED", "agent1"), ("COMMENTED", "agent2")],
+    )
+    .await;
+
+    let result = adapter.is_pull_request_approved("owner", "repo", 42).await;
+
+    assert!(result.is_ok());
+    assert!(
+        result.unwrap(),
+        "PR with 2+ comment reviews should be approved"
+    );
+}
+
+#[tokio::test]
+async fn test_github_pr_one_comment_review_not_enough() {
+    let (server, adapter) = setup_github_mock().await;
+    mock_pr_reviews(&server, 42, vec![("COMMENTED", "agent1")]).await;
+
+    let result = adapter.is_pull_request_approved("owner", "repo", 42).await;
+
+    assert!(result.is_ok());
+    assert!(
+        !result.unwrap(),
+        "PR with only 1 comment review should not be approved"
+    );
+}
+
+#[tokio::test]
+async fn test_github_pr_comment_reviews_blocked_by_changes_requested() {
+    let (server, adapter) = setup_github_mock().await;
+    mock_pr_reviews(
+        &server,
+        42,
+        vec![
+            ("COMMENTED", "agent1"),
+            ("COMMENTED", "agent2"),
+            ("CHANGES_REQUESTED", "agent3"),
+        ],
+    )
+    .await;
+
+    let result = adapter.is_pull_request_approved("owner", "repo", 42).await;
+
+    assert!(result.is_ok());
+    assert!(
+        !result.unwrap(),
+        "Comment reviews should not override changes requested"
+    );
+}
+
+#[tokio::test]
 async fn test_github_get_reviews() {
     let (server, adapter) = setup_github_mock().await;
     mock_pr_reviews(

@@ -29,6 +29,7 @@ checkout
 - blocks on dirty repos unless forced semantics are added explicitly later
 - fails cleanly when `.grip/` is missing
 """
+
 from __future__ import annotations
 
 import json
@@ -100,7 +101,7 @@ def _write_workspace_spec(workspace_root: Path, repos: list[tuple[str, str]]) ->
             f"""
             workspace_name = "{workspace_root.name}"
 
-            {'\n\n'.join(repo_blocks)}
+            {"\n\n".join(repo_blocks)}
             """
         ).strip()
         + "\n"
@@ -126,7 +127,9 @@ class TestGripSnapshot:
         """snapshot must capture one entry per repo with current HEAD metadata."""
         workspace_root, app_repo, docs_repo = _workspace_with_repos(tmp_path)
 
-        result = runner.invoke(app, ["grip", "snapshot", str(workspace_root), "--message", "baseline"])
+        result = runner.invoke(
+            app, ["grip", "snapshot", str(workspace_root), "--message", "baseline"]
+        )
 
         assert result.exit_code == 0, result.stdout
         index = _read_snapshot_index(workspace_root)
@@ -134,8 +137,14 @@ class TestGripSnapshot:
         snapshot = index[0]
         assert snapshot["message"] == "baseline"
         assert set(snapshot["repos"]) == {"app", "docs"}
-        assert snapshot["repo_states"]["app"]["head"] == _git(app_repo, "rev-parse", "HEAD").stdout.strip()
-        assert snapshot["repo_states"]["docs"]["head"] == _git(docs_repo, "rev-parse", "HEAD").stdout.strip()
+        assert (
+            snapshot["repo_states"]["app"]["head"]
+            == _git(app_repo, "rev-parse", "HEAD").stdout.strip()
+        )
+        assert (
+            snapshot["repo_states"]["docs"]["head"]
+            == _git(docs_repo, "rev-parse", "HEAD").stdout.strip()
+        )
 
     def test_snapshot_accepts_empty_repo_without_commits(self, tmp_path: Path) -> None:
         """snapshot must classify an initialized-but-empty repo without crashing."""
@@ -157,7 +166,9 @@ class TestGripSnapshot:
         detached_sha = _git(app_repo, "rev-parse", "HEAD").stdout.strip()
         assert _git(app_repo, "checkout", detached_sha).returncode == 0
 
-        result = runner.invoke(app, ["grip", "snapshot", str(workspace_root), "--message", "detached"])
+        result = runner.invoke(
+            app, ["grip", "snapshot", str(workspace_root), "--message", "detached"]
+        )
 
         assert result.exit_code == 0, result.stdout
         snapshot = _read_snapshot_index(workspace_root)[0]
@@ -190,10 +201,14 @@ class TestGripLog:
     def test_log_lists_snapshots_newest_first_with_summary(self, tmp_path: Path) -> None:
         """log must return reverse-chronological snapshots with id and message."""
         workspace_root, app_repo, _docs_repo = _workspace_with_repos(tmp_path)
-        first = runner.invoke(app, ["grip", "snapshot", str(workspace_root), "--message", "baseline"])
+        first = runner.invoke(
+            app, ["grip", "snapshot", str(workspace_root), "--message", "baseline"]
+        )
         assert first.exit_code == 0, first.stdout
         _commit_file(app_repo, "CHANGELOG.md", "v2\n", "update")
-        second = runner.invoke(app, ["grip", "snapshot", str(workspace_root), "--message", "after-update"])
+        second = runner.invoke(
+            app, ["grip", "snapshot", str(workspace_root), "--message", "after-update"]
+        )
         assert second.exit_code == 0, second.stdout
 
         result = runner.invoke(app, ["grip", "log", str(workspace_root)])
@@ -218,11 +233,15 @@ class TestGripDiff:
     def test_diff_reports_per_repo_head_changes_between_snapshots(self, tmp_path: Path) -> None:
         """diff must report changed repos between two snapshots."""
         workspace_root, app_repo, docs_repo = _workspace_with_repos(tmp_path)
-        first = runner.invoke(app, ["grip", "snapshot", str(workspace_root), "--message", "baseline"])
+        first = runner.invoke(
+            app, ["grip", "snapshot", str(workspace_root), "--message", "baseline"]
+        )
         assert first.exit_code == 0, first.stdout
         _commit_file(app_repo, "CHANGELOG.md", "v2\n", "app update")
         _commit_file(docs_repo, "guide.md", "hello\n", "docs update")
-        second = runner.invoke(app, ["grip", "snapshot", str(workspace_root), "--message", "changed"])
+        second = runner.invoke(
+            app, ["grip", "snapshot", str(workspace_root), "--message", "changed"]
+        )
         assert second.exit_code == 0, second.stdout
 
         index = _read_snapshot_index(workspace_root)
@@ -240,7 +259,9 @@ class TestGripDiff:
         workspace_root, _app_repo, _docs_repo = _workspace_with_repos(tmp_path)
         first = runner.invoke(app, ["grip", "snapshot", str(workspace_root), "--message", "first"])
         assert first.exit_code == 0, first.stdout
-        second = runner.invoke(app, ["grip", "snapshot", str(workspace_root), "--message", "second"])
+        second = runner.invoke(
+            app, ["grip", "snapshot", str(workspace_root), "--message", "second"]
+        )
         assert second.exit_code == 0, second.stdout
 
         index = _read_snapshot_index(workspace_root)
@@ -258,7 +279,9 @@ class TestGripDiff:
         assert created.exit_code == 0, created.stdout
         existing_id = _read_snapshot_index(workspace_root)[0]["id"]
 
-        result = runner.invoke(app, ["grip", "diff", str(workspace_root), existing_id, "missing-snapshot"])
+        result = runner.invoke(
+            app, ["grip", "diff", str(workspace_root), existing_id, "missing-snapshot"]
+        )
 
         assert result.exit_code != 0
         assert "missing" in result.stdout.lower()
@@ -268,7 +291,9 @@ class TestGripCheckout:
     def test_checkout_restores_all_repo_heads_to_snapshot(self, tmp_path: Path) -> None:
         """checkout must restore repo HEADs across the whole workspace."""
         workspace_root, app_repo, docs_repo = _workspace_with_repos(tmp_path)
-        baseline = runner.invoke(app, ["grip", "snapshot", str(workspace_root), "--message", "baseline"])
+        baseline = runner.invoke(
+            app, ["grip", "snapshot", str(workspace_root), "--message", "baseline"]
+        )
         assert baseline.exit_code == 0, baseline.stdout
         baseline_id = _read_snapshot_index(workspace_root)[0]["id"]
         baseline_app_head = _git(app_repo, "rev-parse", "HEAD").stdout.strip()
@@ -288,7 +313,9 @@ class TestGripCheckout:
         workspace_root, app_repo, _docs_repo = _workspace_with_repos(tmp_path)
         detached_sha = _git(app_repo, "rev-parse", "HEAD").stdout.strip()
         assert _git(app_repo, "checkout", detached_sha).returncode == 0
-        created = runner.invoke(app, ["grip", "snapshot", str(workspace_root), "--message", "detached"])
+        created = runner.invoke(
+            app, ["grip", "snapshot", str(workspace_root), "--message", "detached"]
+        )
         assert created.exit_code == 0, created.stdout
         snapshot_id = _read_snapshot_index(workspace_root)[0]["id"]
 
@@ -305,7 +332,9 @@ class TestGripCheckout:
     def test_checkout_blocks_when_target_repo_is_dirty(self, tmp_path: Path) -> None:
         """checkout must fail cleanly rather than overwrite uncommitted changes."""
         workspace_root, app_repo, _docs_repo = _workspace_with_repos(tmp_path)
-        created = runner.invoke(app, ["grip", "snapshot", str(workspace_root), "--message", "baseline"])
+        created = runner.invoke(
+            app, ["grip", "snapshot", str(workspace_root), "--message", "baseline"]
+        )
         assert created.exit_code == 0, created.stdout
         snapshot_id = _read_snapshot_index(workspace_root)[0]["id"]
         _commit_file(app_repo, "CHANGELOG.md", "v2\n", "update")

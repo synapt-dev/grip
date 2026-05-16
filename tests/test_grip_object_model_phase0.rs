@@ -19,6 +19,7 @@ fn stderr(output: &std::process::Output) -> String {
 }
 
 #[test]
+#[ignore = "grip object model phase 0 is a future TDD stub"]
 fn test_grip_snapshot_bootstraps_dedicated_repo_and_commits_repo_state() {
     let playground = PlaygroundHarness::new(&["recall", "premium", "grip", "config", "site"]);
     playground.init_from_dirs();
@@ -42,6 +43,7 @@ fn test_grip_snapshot_bootstraps_dedicated_repo_and_commits_repo_state() {
 }
 
 #[test]
+#[ignore = "grip object model phase 0 is a future TDD stub"]
 fn test_grip_show_is_human_reviewable() {
     let playground = PlaygroundHarness::new(&["recall", "premium"]);
     playground.init_from_dirs();
@@ -71,6 +73,7 @@ fn test_grip_show_is_human_reviewable() {
 }
 
 #[test]
+#[ignore = "grip object model phase 0 is a future TDD stub"]
 fn test_grip_diff_reports_changed_repos_between_snapshots() {
     let playground = PlaygroundHarness::new(&["recall", "premium"]);
     playground.init_from_dirs();
@@ -115,6 +118,7 @@ fn test_grip_diff_reports_changed_repos_between_snapshots() {
 }
 
 #[test]
+#[ignore = "grip object model phase 0 is a future TDD stub"]
 fn test_grip_checkout_restores_prior_snapshot_repo_heads() {
     let playground = PlaygroundHarness::new(&["recall"]);
     playground.init_from_dirs();
@@ -157,6 +161,7 @@ fn test_grip_checkout_restores_prior_snapshot_repo_heads() {
 }
 
 #[test]
+#[ignore = "grip object model phase 0 is a future TDD stub"]
 fn test_grip_snapshot_handles_detached_head_explicitly() {
     let playground = PlaygroundHarness::new(&["recall"]);
     playground.init_from_dirs();

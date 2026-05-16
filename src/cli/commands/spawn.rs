@@ -7,10 +7,12 @@ use crate::cli::output::Output;
 use colored::Colorize;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 const AGENT_HISTORY_LIMIT: &str = "50000";
+const CODEX_STARTUP_MAX_LINE_CHARS: usize = 500;
 
 // ---------------------------------------------------------------------------
 // Config types
@@ -324,6 +326,8 @@ pub fn run_spawn_up(
                 .status();
         }
 
+        let worktree_path = resolve_worktree_path(&workspace_root, &agent.worktree);
+
         // Build and send launch command
         let launch_cmd = if mock_mode {
             format!(
@@ -331,8 +335,6 @@ pub fn run_spawn_up(
                 name, agent.role, agent.model
             )
         } else {
-            let worktree_path = resolve_worktree_path(&workspace_root, &agent.worktree);
-
             // Resolve tool config
             let tool_config = config.tools.get(&agent.tool);
             let binary = tool_config
@@ -451,6 +453,43 @@ pub fn run_spawn_up(
             ));
         }
 
+        if !mock_mode && agent.tool == "codex" {
+            let startup_prompt = match read_agent_startup_prompt(&workspace_root, agent) {
+                Ok(prompt) => prompt,
+                Err(e) => {
+                    Output::warning(&format!(
+                        "Failed to read Codex startup prompt for {}: {}",
+                        name, e
+                    ));
+                    String::new()
+                }
+            };
+            let recall_context = if config.spawn.auto_journal {
+                generate_synapt_startup_context(
+                    &worktree_path,
+                    name,
+                    &agent_id,
+                    &agent.role,
+                    channel,
+                    &agent.loop_interval,
+                    &config.spawn.env,
+                    &agent.env,
+                )
+                .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            if let Some(prompt) = build_codex_initial_prompt(name, &startup_prompt, &recall_context)
+            {
+                if let Err(e) = send_codex_initial_prompt(&target, &prompt) {
+                    Output::warning(&format!(
+                        "Failed to inject Codex startup context for {}: {}",
+                        name, e
+                    ));
+                }
+            }
+        }
+
         // Print status
         let mode_tag = if mock_mode {
             " [mock]".dimmed().to_string()
@@ -473,7 +512,6 @@ pub fn run_spawn_up(
     Ok(())
 }
 
-/// Resolve a worktree identifier to an absolute path.
 /// Check if a Claude Code session exists for the given worktree path.
 ///
 /// Claude Code stores sessions at `~/.claude/projects/<slug>/` where the
@@ -501,6 +539,166 @@ fn has_claude_session(worktree_path: &Path) -> bool {
     }
 }
 
+fn resolve_startup_prompt_path(workspace_root: &Path, prompt_path: &str) -> PathBuf {
+    let path = Path::new(prompt_path);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        workspace_root.join(path)
+    }
+}
+
+fn read_agent_startup_prompt(workspace_root: &Path, agent: &AgentConfig) -> anyhow::Result<String> {
+    let Some(prompt_path) = agent.startup_prompt.as_deref() else {
+        return Ok(String::new());
+    };
+    let path = resolve_startup_prompt_path(workspace_root, prompt_path);
+    std::fs::read_to_string(&path)
+        .map_err(|e| anyhow::anyhow!("failed to read {}: {}", path.display(), e))
+}
+
+fn generate_synapt_startup_context(
+    worktree_path: &Path,
+    agent_name: &str,
+    agent_id: &str,
+    agent_role: &str,
+    channel: &str,
+    loop_interval: &str,
+    global_env: &HashMap<String, String>,
+    agent_env: &HashMap<String, String>,
+) -> Option<String> {
+    let mut cmd = Command::new("synapt");
+    cmd.args(["recall", "startup", "--compact"])
+        .current_dir(worktree_path)
+        .env("AGENT_NAME", agent_name)
+        .env("SYNAPT_AGENT_ID", agent_id)
+        .env("AGENT_ROLE", agent_role)
+        .env("SYNAPT_CHANNELS", channel)
+        .env("SYNAPT_LOOP_INTERVAL", loop_interval);
+    for (key, value) in global_env {
+        cmd.env(key, value);
+    }
+    for (key, value) in agent_env {
+        cmd.env(key, value);
+    }
+
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+fn build_codex_initial_prompt(
+    agent_name: &str,
+    startup_prompt: &str,
+    recall_context: &str,
+) -> Option<String> {
+    let startup_prompt = startup_prompt.trim();
+    let recall_context = recall_context.trim();
+    if startup_prompt.is_empty() && recall_context.is_empty() {
+        return None;
+    }
+
+    let mut sections = vec![format!(
+        "Load this startup context for agent `{}` before doing any work.",
+        agent_name
+    )];
+    if !startup_prompt.is_empty() {
+        sections.push(format!(
+            "<agent_startup_prompt>\n{}\n</agent_startup_prompt>",
+            startup_prompt
+        ));
+    }
+    if !recall_context.is_empty() {
+        let recall_context = wrap_long_lines(recall_context, CODEX_STARTUP_MAX_LINE_CHARS);
+        sections.push(format!(
+            "<synapt_recall_startup_context>\n{}\n</synapt_recall_startup_context>",
+            recall_context
+        ));
+    }
+    sections.push(
+        "Use this context to choose the next action. Do not summarize it unless asked.".to_string(),
+    );
+
+    Some(sections.join("\n\n"))
+}
+
+fn wrap_long_lines(text: &str, max_chars: usize) -> String {
+    let mut wrapped = Vec::new();
+    for line in text.lines() {
+        if line.chars().count() <= max_chars {
+            wrapped.push(line.to_string());
+            continue;
+        }
+
+        let mut current = String::new();
+        let mut current_len = 0;
+        for ch in line.chars() {
+            if current_len >= max_chars {
+                wrapped.push(current);
+                current = String::new();
+                current_len = 0;
+            }
+            current.push(ch);
+            current_len += 1;
+        }
+        if !current.is_empty() {
+            wrapped.push(current);
+        }
+    }
+    wrapped.join("\n")
+}
+
+fn send_codex_initial_prompt(target: &str, prompt: &str) -> anyhow::Result<()> {
+    let mut child = Command::new("tmux")
+        .args(["load-buffer", "-"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("tmux load-buffer failed to start: {}", e))?;
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("tmux load-buffer stdin unavailable"))?;
+        stdin.write_all(prompt.as_bytes())?;
+    }
+    let status = child.wait()?;
+    if !status.success() {
+        anyhow::bail!("tmux load-buffer exited with {}", status);
+    }
+
+    let status = Command::new("tmux")
+        .args(["paste-buffer", "-d", "-t", target])
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("tmux paste-buffer exited with {}", status);
+    }
+
+    let status = Command::new("tmux")
+        .args(["send-keys", "-t", target, "Enter"])
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("tmux send-keys Enter exited with {}", status);
+    }
+
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let status = Command::new("tmux")
+        .args(["send-keys", "-t", target, "Enter"])
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("tmux send-keys confirm Enter exited with {}", status);
+    }
+
+    Ok(())
+}
+
+/// Resolve a worktree identifier to an absolute path.
 fn resolve_worktree_path(workspace_root: &Path, worktree: &str) -> PathBuf {
     if worktree == "main" {
         workspace_root.to_path_buf()
@@ -1354,6 +1552,52 @@ mod tests {
         let options = agent_window_tmux_options();
         assert!(options.contains(&("history-limit", AGENT_HISTORY_LIMIT)));
         assert_eq!(AGENT_HISTORY_LIMIT, "50000");
+    }
+
+    #[test]
+    fn test_codex_initial_prompt_combines_agent_prompt_and_recall_context() {
+        let prompt = build_codex_initial_prompt(
+            "opus",
+            "You are Opus.",
+            "Last session: shipped recall startup injection.",
+        )
+        .unwrap();
+
+        assert!(prompt.contains("agent `opus`"));
+        assert!(prompt.contains("<agent_startup_prompt>"));
+        assert!(prompt.contains("You are Opus."));
+        assert!(prompt.contains("<synapt_recall_startup_context>"));
+        assert!(prompt.contains("Last session: shipped recall startup injection."));
+        assert!(prompt.contains("Do not summarize it unless asked."));
+    }
+
+    #[test]
+    fn test_codex_initial_prompt_skips_empty_context() {
+        assert!(build_codex_initial_prompt("opus", "", "").is_none());
+
+        let prompt = build_codex_initial_prompt("opus", "", "Recall context").unwrap();
+        assert!(!prompt.contains("<agent_startup_prompt>"));
+        assert!(prompt.contains("<synapt_recall_startup_context>"));
+    }
+
+    #[test]
+    fn test_codex_initial_prompt_wraps_long_recall_lines() {
+        let recall = "x".repeat(CODEX_STARTUP_MAX_LINE_CHARS + 1);
+        let prompt = build_codex_initial_prompt("opus", "", &recall).unwrap();
+        assert!(prompt.contains(&format!("{}\nx", "x".repeat(CODEX_STARTUP_MAX_LINE_CHARS))));
+    }
+
+    #[test]
+    fn test_resolve_startup_prompt_path_uses_workspace_for_relative_paths() {
+        let root = PathBuf::from("/tmp/gripspace");
+        assert_eq!(
+            resolve_startup_prompt_path(&root, ".gitgrip/prompts/opus.md"),
+            PathBuf::from("/tmp/gripspace/.gitgrip/prompts/opus.md")
+        );
+        assert_eq!(
+            resolve_startup_prompt_path(&root, "/abs/prompt.md"),
+            PathBuf::from("/abs/prompt.md")
+        );
     }
 
     // -- Resume detection tests (#579) ------------------------------------

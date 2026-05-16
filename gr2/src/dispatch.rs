@@ -3,7 +3,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::args::{Commands, ExecCommands, LaneCommands, RepoCommands, SpecCommands, UnitCommands};
+use crate::args::{
+    Commands, ExecCommands, LaneCommands, RepoCommands, SpecCommands, TeamCommands, UnitCommands,
+};
 use crate::exec::{ExecStatusFilter, ExecStatusReport};
 use crate::lane::{
     create_lane, list_lanes, remove_lane, render_lane_table, show_lane, validate_lane_name,
@@ -288,6 +290,114 @@ pub async fn dispatch_command(command: Commands, verbose: bool) -> Result<()> {
                 }
 
                 println!("Removed gr2 unit '{}'", name);
+                Ok(())
+            }
+        },
+        Commands::Team { command } => match command {
+            TeamCommands::Add { name } => {
+                let workspace_root = require_workspace_root()?;
+                validate_unit_name(&name)?;
+                let agents_root = workspace_root.join("agents");
+                let registry_path = workspace_root.join(".grip/agents.toml");
+                let agent_root = agents_root.join(&name);
+
+                if agent_root.exists() {
+                    anyhow::bail!("agent '{}' already exists", name);
+                }
+
+                fs::create_dir_all(&agent_root)?;
+                fs::write(
+                    agent_root.join("agent.toml"),
+                    format!("name = \"{}\"\nkind = \"agent-workspace\"\n", name),
+                )?;
+
+                let mut entries = Vec::new();
+                if registry_path.exists() {
+                    entries.push(fs::read_to_string(&registry_path)?);
+                }
+                entries.push(format!(
+                    "[[agent]]\nname = \"{}\"\nkind = \"agent-workspace\"\n",
+                    name
+                ));
+                fs::write(&registry_path, entries.join("\n"))?;
+
+                println!("Added gr2 agent workspace '{}'", name);
+                Ok(())
+            }
+            TeamCommands::List => {
+                let workspace_root = require_workspace_root()?;
+                let agents_root = workspace_root.join("agents");
+
+                let mut names = Vec::new();
+                for entry in fs::read_dir(&agents_root)? {
+                    let entry = entry?;
+                    if entry.file_type()?.is_dir() && entry.path().join("agent.toml").exists() {
+                        names.push(entry.file_name().to_string_lossy().into_owned());
+                    }
+                }
+
+                names.sort();
+
+                if names.is_empty() {
+                    println!("No gr2 agent workspaces registered.");
+                } else {
+                    println!("Agent workspaces");
+                    for name in names {
+                        println!("- {}", name);
+                    }
+                }
+
+                Ok(())
+            }
+            TeamCommands::Remove { name } => {
+                let workspace_root = require_workspace_root()?;
+                let agents_root = workspace_root.join("agents");
+                let agent_root = agents_root.join(&name);
+                let agent_toml = agent_root.join("agent.toml");
+
+                if !agent_toml.exists() {
+                    anyhow::bail!("agent '{}' not found", name);
+                }
+
+                fs::remove_dir_all(&agent_root)?;
+
+                let registry_path = workspace_root.join(".grip/agents.toml");
+                if registry_path.exists() {
+                    let registry = fs::read_to_string(&registry_path)?;
+                    let kept_entries = registry
+                        .split("\n[[agent]]\n")
+                        .filter_map(|chunk| {
+                            let chunk = chunk.trim();
+                            if chunk.is_empty() {
+                                return None;
+                            }
+                            let normalized = if chunk.starts_with("[[agent]]") {
+                                chunk.to_string()
+                            } else {
+                                format!("[[agent]]\n{}", chunk)
+                            };
+                            let matches_name = normalized
+                                .lines()
+                                .find_map(|line| line.strip_prefix("name = \""))
+                                .and_then(|line| line.strip_suffix('"'))
+                                .map(|entry_name| entry_name == name)
+                                .unwrap_or(false);
+                            if matches_name {
+                                None
+                            } else {
+                                Some(normalized)
+                            }
+                        })
+                        .collect::<Vec<_>>();
+
+                    if kept_entries.is_empty() {
+                        fs::remove_file(&registry_path)?;
+                    } else {
+                        fs::write(&registry_path, kept_entries.join("\n\n"))?;
+                    }
+                }
+
+                println!("Removed gr2 agent workspace '{}'", name);
                 Ok(())
             }
         },

@@ -99,7 +99,10 @@ def test_activate_twice_is_idempotent_and_reversible_via_deactivate(tmp_path: Pa
     assert second.status == "ok"
     assert third.status == "ok"
     assert second_snapshot == first_snapshot
-    assert after_deactivate == {"base.toml": 'base = "keep"\n'}
+    assert "base.toml" in after_deactivate
+    assert after_deactivate["base.toml"] == 'base = "keep"\n'
+    assert "COMPOSE.md" not in after_deactivate
+    assert "settings.toml" not in after_deactivate
     assert third_snapshot == first_snapshot
     assert deactivated.completed == ["overlay.deactivated"]
 

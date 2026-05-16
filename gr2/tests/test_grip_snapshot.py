@@ -7,6 +7,7 @@ Tests define the interface contract for:
   - gr grip checkout: restore workspace repo HEADs from a grip commit
   - round-trip: snapshot → checkout → verify state matches
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -266,15 +267,11 @@ class TestGripLog:
         assert len(entries) == 3
 
     def test_most_recent_first(self, grip_repo: Path) -> None:
-        sha1 = grip_snapshot(
-            grip_repo, repos={"recall": grip_repo / "recall"}, message="first"
-        )
+        sha1 = grip_snapshot(grip_repo, repos={"recall": grip_repo / "recall"}, message="first")
         (grip_repo / "recall" / "change.txt").write_text("x")
         git(grip_repo / "recall", "add", ".")
         git(grip_repo / "recall", "commit", "-m", "second recall commit")
-        sha2 = grip_snapshot(
-            grip_repo, repos={"recall": grip_repo / "recall"}, message="second"
-        )
+        sha2 = grip_snapshot(grip_repo, repos={"recall": grip_repo / "recall"}, message="second")
         entries = grip_log(grip_repo)
         assert entries[0].sha == sha2
         assert entries[1].sha == sha1
@@ -439,8 +436,7 @@ class TestRoundTrip:
             "config": grip_repo / "config",
         }
         original_heads = {
-            name: git(path, "rev-parse", "HEAD").stdout.strip()
-            for name, path in repos.items()
+            name: git(path, "rev-parse", "HEAD").stdout.strip() for name, path in repos.items()
         }
         snap_sha = grip_snapshot(grip_repo, repos=repos, message="round-trip base")
 

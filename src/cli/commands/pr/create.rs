@@ -46,6 +46,7 @@ pub async fn run_pr_create(
     push_first: bool,
     dry_run: bool,
     repo_filter: Option<&[String]>,
+    base_override: Option<&str>,
     json: bool,
 ) -> anyhow::Result<()> {
     if !json {
@@ -85,13 +86,15 @@ pub async fn run_pr_create(
                     Err(_) => continue,
                 };
 
+                let target = base_override.unwrap_or_else(|| repo.target_branch());
+
                 // Skip if on target branch
-                if current == repo.target_branch() {
+                if current == target {
                     continue;
                 }
 
                 // Check for changes ahead of target branch
-                if has_commits_ahead(&git_repo, &current, repo.target_branch())? {
+                if has_commits_ahead(&git_repo, &current, target)? {
                     branch_groups.entry(current).or_default().push(repo.clone());
                 }
             }
@@ -106,7 +109,7 @@ pub async fn run_pr_create(
 
     if include_manifest {
         if let Some(manifest_repo) = get_manifest_repo_info(manifest, workspace_root) {
-            match check_manifest_repo_branch(&manifest_repo) {
+            match check_manifest_repo_branch(&manifest_repo, base_override) {
                 Ok(Some((branch, repo_info))) => {
                     branch_groups.entry(branch).or_default().push(repo_info);
                 }
@@ -141,7 +144,8 @@ pub async fn run_pr_create(
         .collect();
 
     // Warn if PRs target main/master — may want a sprint branch (#418)
-    if !json {
+    // Skip warning when --base is explicit (the user knows what they're targeting)
+    if !json && base_override.is_none() {
         let default_targets: Vec<&str> = groups
             .iter()
             .flat_map(|g| g.repos.iter())
@@ -207,12 +211,10 @@ pub async fn run_pr_create(
 
             Output::subheader("Repositories that would create PRs:");
             for repo in &group.repos {
+                let target = base_override.unwrap_or_else(|| repo.target_branch());
                 println!(
                     "  - {} ({}/{}) → {}",
-                    repo.name,
-                    repo.owner,
-                    repo.repo,
-                    repo.target_branch()
+                    repo.name, repo.owner, repo.repo, target
                 );
             }
             println!();
@@ -221,6 +223,7 @@ pub async fn run_pr_create(
 
         // Create PRs for each repo in this branch group
         for repo in &group.repos {
+            let target = base_override.unwrap_or_else(|| repo.target_branch());
             let platform =
                 get_platform_adapter(repo.platform_type, repo.platform_base_url.as_deref());
 
@@ -258,7 +261,7 @@ pub async fn run_pr_create(
                     &repo.owner,
                     &repo.repo,
                     &group.branch,
-                    repo.target_branch(),
+                    target,
                     &pr_title,
                     body,
                     draft,
@@ -308,7 +311,7 @@ pub async fn run_pr_create(
                                 &new_owner,
                                 &new_repo,
                                 &group.branch,
-                                repo.target_branch(),
+                                target,
                                 &pr_title,
                                 body,
                                 draft,
@@ -498,19 +501,24 @@ pub(crate) fn has_commits_ahead(
 }
 
 /// Check if the manifest repo has changes and return its branch name
-fn check_manifest_repo_branch(repo: &RepoInfo) -> anyhow::Result<Option<(String, RepoInfo)>> {
+fn check_manifest_repo_branch(
+    repo: &RepoInfo,
+    base_override: Option<&str>,
+) -> anyhow::Result<Option<(String, RepoInfo)>> {
     let git_repo = open_repo(&repo.absolute_path)
         .map_err(|e| anyhow::anyhow!("Failed to open repo: {}", e))?;
 
     let current = get_current_branch(&git_repo)
         .map_err(|e| anyhow::anyhow!("Failed to get current branch: {}", e))?;
 
+    let target = base_override.unwrap_or_else(|| repo.target_branch());
+
     // Skip if on target branch
-    if current == repo.target_branch() {
+    if current == target {
         return Ok(None);
     }
 
-    let has_commits = has_commits_ahead(&git_repo, &current, repo.target_branch())
+    let has_commits = has_commits_ahead(&git_repo, &current, target)
         .map_err(|e| anyhow::anyhow!("Failed to check commits: {}", e))?;
 
     let has_uncommitted = has_uncommitted_changes(&git_repo)

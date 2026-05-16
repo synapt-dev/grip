@@ -48,6 +48,7 @@ async fn test_sync_clones_missing_repos() {
         false,
         false,
         false,
+        false,
     )
     .await;
     assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
@@ -76,6 +77,7 @@ async fn test_sync_pulls_existing_repos() {
         false,
         None,
         None,
+        false,
         false,
         false,
         false,
@@ -114,6 +116,7 @@ async fn test_sync_uses_griptree_upstream_mapping() {
         false,
         false,
         false,
+        false,
     )
     .await;
     assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
@@ -145,6 +148,7 @@ async fn test_sync_sets_tracking_upstream_for_griptree_base_branch() {
         false,
         false,
         false,
+        false,
     )
     .await;
     assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
@@ -169,6 +173,7 @@ async fn test_sync_handles_up_to_date() {
         false,
         None,
         None,
+        false,
         false,
         false,
         false,
@@ -213,6 +218,7 @@ async fn test_sync_skips_griptree_base_with_local_commits_ahead() {
         false,
         false,
         false,
+        false,
     )
     .await;
     assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
@@ -253,6 +259,7 @@ async fn test_sync_reset_refs_hard_resets_reference_repo() {
         true,
         false,
         false,
+        false,
     )
     .await;
     assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
@@ -290,6 +297,7 @@ async fn test_sync_reset_refs_checks_out_upstream_branch() {
         None,
         false,
         true,
+        false,
         false,
         false,
     )
@@ -333,6 +341,7 @@ async fn test_sync_reset_refs_falls_back_to_detached_when_branch_locked_in_workt
         None,
         false,
         true,
+        false,
         false,
         false,
     )
@@ -389,6 +398,7 @@ async fn test_sync_multiple_repos() {
         false,
         false,
         false,
+        false,
     )
     .await;
     assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
@@ -416,6 +426,7 @@ async fn test_sync_quiet_mode() {
         true,
         None,
         None,
+        false,
         false,
         false,
         false,
@@ -450,6 +461,7 @@ async fn test_sync_sequential_mode() {
         false,
         false,
         false,
+        false,
     )
     .await;
     assert!(
@@ -481,6 +493,7 @@ async fn test_sync_clone_failure_invalid_url() {
         false,
         false,
         false,
+        false,
     )
     .await;
     assert!(result.is_ok(), "sync should not crash: {:?}", result.err());
@@ -508,6 +521,7 @@ async fn test_sync_existing_repo_missing_git_dir() {
         false,
         None,
         None,
+        false,
         false,
         false,
         false,
@@ -566,6 +580,7 @@ workspace:
         false,
         false,
         false,
+        false,
     )
     .await;
     assert!(result.is_ok(), "sync should succeed: {:?}", result.err());
@@ -595,6 +610,7 @@ workspace:
         true,
         None,
         None,
+        false,
         false,
         false,
         false,
@@ -636,6 +652,7 @@ workspace:
         true,
         None,
         None,
+        false,
         false,
         false,
         false,
@@ -712,6 +729,7 @@ async fn test_sync_reclones_non_git_manifest_dir() {
         true, // quiet
         None,
         None,
+        false,
         false,
         false,
         false,

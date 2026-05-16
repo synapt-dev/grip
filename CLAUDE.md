@@ -306,6 +306,7 @@ All commands use `gr` (or `gitgrip`):
 - `gr init --from-dirs` - Initialize workspace from existing local directories
 - `gr init --from-repo` - Initialize from existing `.repo/` directory (git-repo coexistence)
 - `gr sync` - Pull all repos in parallel + process links + run hooks (includes manifest)
+  - `gr sync --rebase` - Use rebase instead of merge when pulling (keeps linear history)
   - `gr sync --sequential` - Sync repos sequentially (slower but ordered output)
   - `gr sync --group <name>` - Sync only repos in a group
   - `gr sync --repo <names>` - Sync only specific repos (use "manifest" to target manifest repo)

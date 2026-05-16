@@ -665,6 +665,7 @@ pub async fn run_release(opts: ReleaseOptions<'_>) -> anyhow::Result<()> {
                 None,  // group
                 false, // sequential
                 false, // reset_refs
+                false, // rebase
                 opts.json,
                 false, // no_hooks
             )

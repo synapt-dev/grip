@@ -39,6 +39,7 @@ pub async fn dispatch_command(
         Some(Commands::Sync {
             force,
             reset_refs,
+            rebase,
             group,
             repo,
             sequential,
@@ -64,6 +65,7 @@ pub async fn dispatch_command(
                     group.as_deref(),
                     sequential,
                     reset_refs,
+                    rebase,
                     ctx.json,
                     no_hooks,
                 )

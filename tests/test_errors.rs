@@ -248,6 +248,7 @@ async fn test_sync_with_deleted_remote() {
         false,
         false,
         false,
+        false,
     )
     .await;
     // Whether it returns Ok (with per-repo error reports) or Err is acceptable,

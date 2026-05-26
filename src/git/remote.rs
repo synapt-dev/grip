@@ -173,6 +173,15 @@ fn pull_latest_with_mode(repo: &Repository, remote: &str, mode: PullMode) -> Res
     instrument(skip(repo), fields(upstream, success))
 )]
 pub fn pull_latest_from_upstream(repo: &Repository, upstream: &str) -> Result<(), GitError> {
+    pull_latest_from_upstream_with_mode(repo, upstream, PullMode::Merge)
+}
+
+/// Pull latest changes from a specific upstream ref with configurable pull mode
+pub fn pull_latest_from_upstream_with_mode(
+    repo: &Repository,
+    upstream: &str,
+    mode: PullMode,
+) -> Result<(), GitError> {
     let repo_path = super::get_workdir(repo);
     let (remote, branch) = split_upstream_ref(upstream)?;
 
@@ -180,7 +189,11 @@ pub fn pull_latest_from_upstream(repo: &Repository, upstream: &str) -> Result<()
     let start = Instant::now();
 
     let mut cmd = Command::new("git");
-    cmd.args(["pull", &remote, &branch]).current_dir(repo_path);
+    cmd.arg("pull");
+    if matches!(mode, PullMode::Rebase) {
+        cmd.arg("--rebase");
+    }
+    cmd.args([&remote, &branch]).current_dir(repo_path);
     log_cmd(&cmd);
     let output = cmd
         .output()

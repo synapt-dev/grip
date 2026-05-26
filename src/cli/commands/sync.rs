@@ -13,7 +13,8 @@ use crate::core::sync_state::SyncSnapshot;
 use crate::files::process_composefiles;
 use crate::git::branch::{checkout_branch_at_upstream, checkout_detached, has_commits_ahead};
 use crate::git::remote::{
-    fetch_remote, pull_latest_from_upstream, reset_hard, safe_pull_latest, set_branch_upstream_ref,
+    fetch_remote, pull_latest_from_upstream_with_mode, reset_hard, safe_pull_latest_with_mode,
+    set_branch_upstream_ref, PullMode,
 };
 use crate::git::status::has_uncommitted_changes;
 use crate::git::{clone_repo, get_current_branch, open_repo, path_exists};
@@ -150,6 +151,7 @@ pub async fn run_sync(
     group_filter: Option<&[String]>,
     sequential: bool,
     reset_refs: bool,
+    rebase: bool,
     json: bool,
     no_hooks: bool,
 ) -> anyhow::Result<()> {
@@ -199,6 +201,7 @@ pub async fn run_sync(
             griptree_config.as_ref(),
             griptree_branch.as_deref(),
             reset_refs,
+            rebase,
             manifest.remotes.as_ref(),
         )?
     } else {
@@ -209,6 +212,7 @@ pub async fn run_sync(
             griptree_config.clone(),
             griptree_branch.clone(),
             reset_refs,
+            rebase,
             manifest.remotes.clone(),
         )
         .await?
@@ -474,6 +478,7 @@ fn sync_sequential(
     griptree_config: Option<&GriptreeConfig>,
     griptree_branch: Option<&str>,
     reset_refs: bool,
+    rebase: bool,
     manifest_remotes: Option<
         &std::collections::HashMap<String, crate::core::manifest::RemoteConfig>,
     >,
@@ -490,6 +495,7 @@ fn sync_sequential(
                 griptree_config,
                 griptree_branch,
                 reset_refs,
+                rebase,
                 manifest_remotes,
             },
         )?;
@@ -508,6 +514,7 @@ async fn sync_parallel(
     griptree_config: Option<GriptreeConfig>,
     griptree_branch: Option<String>,
     reset_refs: bool,
+    rebase: bool,
     manifest_remotes: Option<
         std::collections::HashMap<String, crate::core::manifest::RemoteConfig>,
     >,
@@ -535,6 +542,7 @@ async fn sync_parallel(
                     griptree_config: griptree_config.as_ref(),
                     griptree_branch: griptree_branch.as_deref(),
                     reset_refs,
+                    rebase,
                     manifest_remotes: manifest_remotes.as_ref().as_ref(),
                 },
             )?;
@@ -577,6 +585,7 @@ fn sync_griptree_upstream(
     griptree_config: Option<&GriptreeConfig>,
     spinner: Option<&ProgressBar>,
     quiet: bool,
+    rebase: bool,
 ) -> SyncResult {
     let upstream = match griptree_config {
         Some(cfg) => match cfg.upstream_for_repo(&repo.name, &repo.revision) {
@@ -659,9 +668,18 @@ fn sync_griptree_upstream(
         }
     }
 
-    match pull_latest_from_upstream(git_repo, &upstream) {
+    let pull_mode = if rebase {
+        PullMode::Rebase
+    } else {
+        PullMode::Merge
+    };
+    match pull_latest_from_upstream_with_mode(git_repo, &upstream, pull_mode) {
         Ok(()) => {
-            let mut msg = format!("pulled ({})", upstream);
+            let mut msg = if rebase {
+                format!("rebased ({})", upstream)
+            } else {
+                format!("pulled ({})", upstream)
+            };
             if let Some(warning) = upstream_set_warning.as_ref() {
                 msg.push_str(&format!(" ({})", warning));
             }
@@ -845,6 +863,7 @@ struct SyncOptions<'a> {
     griptree_config: Option<&'a GriptreeConfig>,
     griptree_branch: Option<&'a str>,
     reset_refs: bool,
+    rebase: bool,
     manifest_remotes:
         Option<&'a std::collections::HashMap<String, crate::core::manifest::RemoteConfig>>,
 }
@@ -980,10 +999,21 @@ fn sync_single_repo(repo: &RepoInfo, opts: &SyncOptions<'_>) -> anyhow::Result<S
                     opts.griptree_config,
                     spinner.as_ref(),
                     opts.quiet,
+                    opts.rebase,
                 );
                 Ok(result)
             } else {
-                let result = safe_pull_latest(&git_repo, repo.target_branch(), &repo.sync_remote);
+                let pull_mode = if opts.rebase {
+                    PullMode::Rebase
+                } else {
+                    PullMode::Merge
+                };
+                let result = safe_pull_latest_with_mode(
+                    &git_repo,
+                    repo.target_branch(),
+                    &repo.sync_remote,
+                    pull_mode,
+                );
 
                 match result {
                     Ok(pull_result) => {

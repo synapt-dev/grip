@@ -81,6 +81,9 @@ pub enum Commands {
         /// Hard reset reference repos to upstream (discard local changes)
         #[arg(long, alias = "reset-ref")]
         reset_refs: bool,
+        /// Use rebase instead of merge when pulling (keeps linear history)
+        #[arg(long)]
+        rebase: bool,
         /// Only sync repos in these groups
         #[arg(long, value_delimiter = ',')]
         group: Option<Vec<String>>,
@@ -94,7 +97,7 @@ pub enum Commands {
         #[arg(long)]
         no_hooks: bool,
         /// Rollback repos to their state before the last sync
-        #[arg(long, conflicts_with_all = ["force", "reset_refs", "group", "repo", "sequential", "no_hooks"])]
+        #[arg(long, conflicts_with_all = ["force", "reset_refs", "rebase", "group", "repo", "sequential", "no_hooks"])]
         rollback: bool,
     },
     /// Show status of all repositories

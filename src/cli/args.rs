@@ -710,6 +710,9 @@ pub enum PrCommands {
         /// Only create PRs for specific repos (comma-separated)
         #[arg(long, value_delimiter = ',')]
         repo: Option<Vec<String>>,
+        /// Base branch for the PR (overrides grip target)
+        #[arg(long)]
+        base: Option<String>,
     },
     /// Show PR status
     Status,

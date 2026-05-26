@@ -596,6 +596,7 @@ pub async fn run_release(opts: ReleaseOptions<'_>) -> anyhow::Result<()> {
                 false, // push (already pushed)
                 false, // dry_run
                 None,  // repo_filter
+                None,  // base_override
                 opts.json,
             )
             .await?;

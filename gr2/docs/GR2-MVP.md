@@ -172,8 +172,8 @@ that the replacement workflow works end-to-end.
 
 gr2 workspace orchestration is OSS. All features in this MVP definition live in
 the grip repo. Identity resolution, org routing, agent identity, and workspace
-policy enforcement live in premium (synapt-private) and connect through the
-plugin seam.
+policy enforcement live in premium (`synapt-dev/premium`; local worktree
+`synapt-private/`) and connect through the plugin seam.
 
 The exec surface, sync engine, and materialization pipeline are neutral
 infrastructure. They do not answer "who is this agent" or "what workspace owns

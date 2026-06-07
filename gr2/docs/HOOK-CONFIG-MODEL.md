@@ -63,7 +63,7 @@ url = "git@github.com:synapt-dev/synapt.git"
 [[repos]]
 name = "synapt-private"
 path = "repos/synapt-private"
-url = "git@github.com:synapt-dev/synapt-private.git"
+url = "git@github.com:synapt-dev/premium.git"
 
 [[units]]
 name = "atlas"
@@ -369,7 +369,8 @@ Why:
 
 ### 5.3 `synapt-private`
 
-`synapt-private` already carries private config and has stronger review needs.
+`synapt-private` is the local worktree alias for the premium repo and already
+carries private config and stronger review needs.
 
 Example:
 

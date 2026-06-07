@@ -442,6 +442,9 @@ threshold.
 When `gr2 pr create` creates linked PRs, it appends a standard section to each
 PR body:
 
+The repo column uses the workspace-local repo name. The PR target must use the
+canonical GitHub repository name.
+
 ```markdown
 ---
 
@@ -451,7 +454,7 @@ PR body:
 |------|----|
 | grip | synapt-dev/grip#570 |
 | synapt | synapt-dev/synapt#583 |
-| synapt-private | synapt-dev/synapt-private#291 |
+| synapt-private | synapt-dev/premium#291 |
 
 Lane: `apollo/design/hook-event-contract`
 Base: `sprint-20`

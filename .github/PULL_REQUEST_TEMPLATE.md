@@ -14,7 +14,7 @@
 ### Boundary Checklist
 
 - [ ] **Boundary declaration** present above
-- [ ] **Identity test**: does this PR answer "who is this agent?" or "what workspace is this?" If yes, it must go in `synapt-private`.
+- [ ] **Identity test**: does this PR answer "who is this agent?" or "what workspace is this?" If yes, it must go in premium (`synapt-dev/premium`; local worktree `synapt-private/`).
 - [ ] **Plugin seam**: if this extends OSS for a premium feature, is the extension seam built in OSS first?
 
 ## Test Plan

@@ -13,6 +13,7 @@ import typer
 from . import add as add_ops
 from . import branch as branch_ops
 from . import commit as commit_ops
+from . import push as push_ops
 from . import execops
 from . import failures
 from . import migration
@@ -582,6 +583,28 @@ def commit_cmd(
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(f"Committed {commit_hash[:8]}: {message}")
+
+
+@app.command("push")
+def push_cmd(
+    set_upstream: bool = typer.Option(
+        False, "--set-upstream", "-u", help="Set the upstream tracking branch on push"
+    ),
+    force: bool = typer.Option(False, "--force", help="Force push, overwriting the remote"),
+    repo_path: Path | None = typer.Option(
+        None,
+        "--repo-path",
+        help="Repo to operate on (defaults to cwd; gr2 verbs are single-repo, not gripspace-wide)",
+    ),
+) -> None:
+    """Push the current branch, natively -- no gr1 dependency."""
+    target = (repo_path or Path.cwd()).resolve()
+    try:
+        result = push_ops.push(target, set_upstream=set_upstream, force=force)
+    except push_ops.PushError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo("Pushed." if result.pushed else (result.reason or "nothing to push"))
 
 
 @exec_app.command("status")

@@ -12,6 +12,7 @@ import typer
 
 from . import add as add_ops
 from . import branch as branch_ops
+from . import commit as commit_ops
 from . import execops
 from . import failures
 from . import migration
@@ -559,6 +560,28 @@ def add_cmd(
     if result.missing:
         typer.echo(f"Missing (not staged): {', '.join(result.missing)}", err=True)
         raise typer.Exit(code=1)
+
+
+@app.command("commit")
+def commit_cmd(
+    message: str = typer.Option(..., "-m", "--message", help="Commit message"),
+    amend: bool = typer.Option(
+        False, "--amend", help="Amend the previous commit instead of creating a new one"
+    ),
+    repo_path: Path | None = typer.Option(
+        None,
+        "--repo-path",
+        help="Repo to operate on (defaults to cwd; gr2 verbs are single-repo, not gripspace-wide)",
+    ),
+) -> None:
+    """Commit staged changes, natively -- no gr1 dependency."""
+    target = (repo_path or Path.cwd()).resolve()
+    try:
+        commit_hash = commit_ops.create_commit(target, message, amend=amend)
+    except commit_ops.CommitError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Committed {commit_hash[:8]}: {message}")
 
 
 @exec_app.command("status")

@@ -10,6 +10,7 @@ from typing import Optional
 
 import typer
 
+from . import add as add_ops
 from . import branch as branch_ops
 from . import execops
 from . import failures
@@ -535,6 +536,29 @@ def branch_cmd(
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(f"Switched to branch '{name}'")
+
+
+@app.command("add")
+def add_cmd(
+    paths: list[str] = typer.Argument(..., help="Paths to stage (relative to the repo, or '.')"),
+    repo_path: Path | None = typer.Option(
+        None,
+        "--repo-path",
+        help="Repo to operate on (defaults to cwd; gr2 verbs are single-repo, not gripspace-wide)",
+    ),
+) -> None:
+    """Stage files, natively -- no gr1 dependency."""
+    target = (repo_path or Path.cwd()).resolve()
+    try:
+        result = add_ops.stage_files(target, paths)
+    except add_ops.AddError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    if result.staged:
+        typer.echo(f"Staged {len(result.staged)} file(s): {', '.join(result.staged)}")
+    if result.missing:
+        typer.echo(f"Missing (not staged): {', '.join(result.missing)}", err=True)
+        raise typer.Exit(code=1)
 
 
 @exec_app.command("status")

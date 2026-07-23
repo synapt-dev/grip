@@ -2,7 +2,9 @@
 
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
-use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
+use crate::core::repo::{
+    filter_repos, get_manifest_repo_info, validate_repo_filters_known, RepoInfo,
+};
 use crate::core::workspace_checkout;
 use crate::git::{
     branch::{branch_exists, checkout_branch, create_and_checkout_branch},
@@ -24,6 +26,8 @@ pub fn run_checkout(
     } else {
         "Checking out"
     };
+
+    validate_repo_filters_known(manifest, repos_filter)?;
 
     let mut repos: Vec<RepoInfo> =
         filter_repos(manifest, workspace_root, repos_filter, group_filter, false);
@@ -126,6 +130,8 @@ pub fn run_checkout_add(
     repos_filter: Option<&[String]>,
     group_filter: Option<&[String]>,
 ) -> anyhow::Result<()> {
+    validate_repo_filters_known(manifest, repos_filter)?;
+
     let mut repos: Vec<RepoInfo> =
         filter_repos(manifest, workspace_root, repos_filter, group_filter, false);
 
@@ -143,17 +149,8 @@ pub fn run_checkout_add(
         anyhow::bail!("no repos matched checkout filters");
     }
 
-    let repo_specs: Vec<(&str, &str, &str)> = repos
-        .iter()
-        .map(|repo| (repo.name.as_str(), repo.url.as_str(), repo.path.as_str()))
-        .collect();
-
-    let info = workspace_checkout::create_checkout(
-        workspace_root,
-        checkout_name,
-        repo_specs.into_iter(),
-        None,
-    )?;
+    let info =
+        workspace_checkout::create_checkout(workspace_root, checkout_name, manifest, &repos, None)?;
 
     Output::success(&format!(
         "Created checkout '{}' with {} repo(s)",

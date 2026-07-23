@@ -181,6 +181,13 @@ pub struct StatusCheckResult {
     pub state: CheckState,
     /// Individual statuses
     pub statuses: Vec<StatusCheck>,
+    /// Whether any CI checks are actually configured for this ref. `false`
+    /// means `state` is a platform-API artifact (e.g. GitHub's legacy combined-
+    /// status endpoint reports "pending" for a commit with zero posted
+    /// statuses, indistinguishable from "checks are running" by `state` alone)
+    /// rather than a real pending/passing/failing signal -- callers must not
+    /// wait on it (grip#772).
+    pub checks_configured: bool,
 }
 
 /// Detailed check status information
@@ -552,6 +559,7 @@ mod tests {
                     state: "success".to_string(),
                 },
             ],
+            checks_configured: true,
         };
 
         let json = serde_json::to_string(&result).unwrap();

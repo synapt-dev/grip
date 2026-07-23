@@ -188,6 +188,41 @@ async fn test_sync_handles_up_to_date() {
 }
 
 #[tokio::test]
+async fn test_sync_repo_filter_unknown_fails_loudly() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let manifest = ws.load_manifest();
+    let filter = vec!["newrepo".to_string()];
+
+    let result = gitgrip::cli::commands::sync::run_sync(
+        &ws.workspace_root,
+        &manifest,
+        false,
+        true,
+        Some(&filter),
+        None,
+        false,
+        false,
+        false,
+        false,
+        true,
+    )
+    .await;
+
+    let err = result.expect_err("unknown --repo filter should fail loudly");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("newrepo"),
+        "missing repo name in error: {}",
+        msg
+    );
+    assert!(
+        msg.contains("local manifest") && msg.contains("gr sync --repo manifest"),
+        "missing manifest-refresh guidance: {}",
+        msg
+    );
+}
+
+#[tokio::test]
 async fn test_sync_skips_griptree_base_with_local_commits_ahead() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
 

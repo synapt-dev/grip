@@ -632,6 +632,7 @@ pub async fn run_release(opts: ReleaseOptions<'_>) -> anyhow::Result<()> {
                     delete_branch: true,
                     repo_filter: None,
                     yes: false,
+                    allow_all: false,
                 },
             )
             .await?;

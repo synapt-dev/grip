@@ -507,6 +507,48 @@ pub async fn mock_check_runs(
         .await;
 }
 
+/// GitHub API response for the legacy combined-status endpoint (GET
+/// /repos/:owner/:repo/commits/:ref/status). This is the fallback the real
+/// adapter code hits when the check-runs API reports zero runs. With zero
+/// posted statuses, GitHub's own API returns `state: "pending"` -- the exact
+/// ambiguity grip#772's fix disambiguates via the empty `statuses` array.
+pub async fn mock_legacy_combined_status(
+    server: &MockServer,
+    ref_name: &str,
+    state: &str,
+    statuses: Vec<(&str, &str)>,
+) {
+    let entries: Vec<Value> = statuses
+        .iter()
+        .map(|(context, entry_state)| json!({"context": context, "state": entry_state}))
+        .collect();
+
+    let body = json!({
+        "state": state,
+        "statuses": entries
+    });
+
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/repos/owner/repo/commits/{}/status",
+            ref_name
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+/// GitHub API response for updating a PR (PATCH /repos/:owner/:repo/pulls/:number).
+pub async fn mock_update_pull_request(server: &MockServer, number: u64) {
+    let body = github_pr_json(number, "open", "feat/test", "main", false, "");
+
+    Mock::given(method("PATCH"))
+        .and(path(format!("/repos/owner/repo/pulls/{}", number)))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
 /// GitHub API response for PR diff (GET /repos/:owner/:repo/pulls/:number with Accept: diff).
 pub async fn mock_pr_diff(server: &MockServer, number: u64, diff_content: &str) {
     Mock::given(method("GET"))
@@ -603,6 +645,24 @@ pub async fn mock_server_error_put(server: &MockServer, path_str: &str) {
         .respond_with(ResponseTemplate::new(500).set_body_json(body))
         .mount(server)
         .await;
+}
+
+/// Point one repo in a loaded manifest at the mock GitHub server, using the
+/// fake "owner/repo" identity every mock helper in this file is hardcoded to
+/// (see the module doc comment). Shared across the pr-command test files
+/// (edit/review/merge) since each needs this same rewrite for every repo
+/// they add to a `WorkspaceBuilder` workspace.
+pub fn point_repo_at_mock(
+    manifest: &mut gitgrip::core::manifest::Manifest,
+    repo_name: &str,
+    server: &MockServer,
+) {
+    let repo_config = manifest.repos.get_mut(repo_name).unwrap();
+    repo_config.url = Some("https://github.com/owner/repo.git".to_string());
+    repo_config.platform = Some(gitgrip::core::manifest::PlatformConfig {
+        platform_type: gitgrip::core::manifest::PlatformType::GitHub,
+        base_url: Some(server.uri()),
+    });
 }
 
 /// Mock a GitHub repo info response (GET /repos/:owner/:repo).

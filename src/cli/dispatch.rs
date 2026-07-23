@@ -302,6 +302,7 @@ pub async fn dispatch_command(
                     no_delete_branch,
                     repo,
                     yes,
+                    all,
                 } => {
                     crate::cli::commands::pr::run_pr_merge(
                         &ctx.workspace_root,
@@ -317,16 +318,24 @@ pub async fn dispatch_command(
                             delete_branch: !no_delete_branch,
                             repo_filter: repo,
                             yes,
+                            allow_all: all,
                         },
                     )
                     .await?;
                 }
-                PrCommands::Edit { title, body } => {
+                PrCommands::Edit {
+                    title,
+                    body,
+                    repo,
+                    all,
+                } => {
                     crate::cli::commands::pr::run_pr_edit(
                         &ctx.workspace_root,
                         &ctx.manifest,
                         title.as_deref(),
                         body.as_deref(),
+                        repo.as_deref(),
+                        all,
                         ctx.json,
                     )
                     .await?;
@@ -367,12 +376,19 @@ pub async fn dispatch_command(
                     )
                     .await?;
                 }
-                PrCommands::Review { event, body } => {
+                PrCommands::Review {
+                    event,
+                    body,
+                    repo,
+                    all,
+                } => {
                     crate::cli::commands::pr::run_pr_review(
                         &ctx.workspace_root,
                         &ctx.manifest,
                         event,
                         body.as_deref(),
+                        repo.as_deref(),
+                        all,
                         ctx.json,
                     )
                     .await?;
@@ -1007,19 +1023,87 @@ pub async fn dispatch_command(
     Ok(())
 }
 
-/// Load the gripspace manifest
+/// Load the gripspace manifest.
+///
+/// One unified ancestor walk checking every marker type (griptree pointer,
+/// checkout metadata, gitgrip workspace, legacy manifest, repo-tool manifest)
+/// at each directory level before climbing to the parent. The NEAREST marker
+/// wins, whichever type it is (grip#775: two independent all-ancestors passes
+/// -- griptree-check-everything, then workspace-check-everything -- let a
+/// `.griptree` many levels up eclipse a `.gitgrip` or checkout one level
+/// down, because the griptree pass never stopped climbing to give the nearer
+/// marker a chance).
 fn load_gripspace() -> anyhow::Result<(std::path::PathBuf, crate::core::manifest::Manifest)> {
     let current = std::env::current_dir()?;
+    let mut search_path = current;
+    loop {
+        let griptree_pointer_path = search_path.join(".griptree");
+        if griptree_pointer_path.exists() {
+            if let Ok(pointer) =
+                crate::core::griptree::GriptreePointer::load(&griptree_pointer_path)
+            {
+                return load_from_griptree(&search_path, &pointer);
+            }
+        }
 
-    // First, check if we're in a griptree (has .griptree pointer file)
-    if let Some((griptree_path, pointer)) =
-        crate::core::griptree::GriptreePointer::find_in_ancestors(&current)
-    {
-        return load_from_griptree(&griptree_path, &pointer);
+        // Fail CLOSED, not open: once `.checkout.json` exists at the nearest
+        // boundary, an unreadable/malformed/incomplete marker must stop the
+        // walk here with a clear error, never silently continue climbing to
+        // the parent gripspace (grip#775 round 3 -- that silent continue was
+        // the same cross-scope hazard this PR exists to close, reintroduced
+        // through a corrupted marker instead of a missing one).
+        match crate::core::workspace_checkout::load_checkout_metadata(&search_path) {
+            Ok(Some(checkout_info)) => {
+                let manifest =
+                    crate::core::workspace_checkout::manifest_from_checkout(&checkout_info)?;
+                return Ok((search_path, manifest));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                return Err(e.context(format!(
+                    "found checkout metadata at {} but it is invalid",
+                    search_path.display()
+                )));
+            }
+        }
+
+        let gitgrip_dir = search_path.join(".gitgrip");
+        if gitgrip_dir.exists() {
+            if let Some(manifest_path) =
+                crate::core::manifest_paths::resolve_gripspace_manifest_path(&search_path)
+            {
+                let content = std::fs::read_to_string(&manifest_path)?;
+                let mut manifest = crate::core::manifest::Manifest::parse(&content)?;
+                resolve_gripspace_includes(&mut manifest, &search_path);
+                return Ok((search_path, manifest));
+            }
+        }
+
+        if let Some(repo_yaml) =
+            crate::core::manifest_paths::resolve_repo_manifest_path(&search_path)
+        {
+            let content = std::fs::read_to_string(repo_yaml)?;
+            let mut manifest = crate::core::manifest::Manifest::parse(&content)?;
+            resolve_gripspace_includes(&mut manifest, &search_path);
+            return Ok((search_path, manifest));
+        }
+
+        let repo_xml = search_path.join(".repo").join("manifest.xml");
+        if repo_xml.exists() {
+            let xml_manifest = crate::core::repo_manifest::XmlManifest::parse_file(&repo_xml)?;
+            let result = xml_manifest.to_manifest()?;
+            return Ok((search_path, result.manifest));
+        }
+
+        match search_path.parent() {
+            Some(parent) => search_path = parent.to_path_buf(),
+            None => {
+                anyhow::bail!(
+                    "Not in a gitgrip workspace (no .gitgrip, checkout, griptree, or .repo directory found)"
+                );
+            }
+        }
     }
-
-    // Not in a griptree - search parent directories for workspace root
-    load_from_workspace(&current)
 }
 
 /// Load the gripspace manifest and return a WorkspaceContext with global CLI flags.
@@ -1065,52 +1149,6 @@ fn load_from_griptree(
     let mut manifest = crate::core::manifest::Manifest::parse(&content)?;
     resolve_gripspace_includes(&mut manifest, griptree_path);
     Ok((griptree_path.to_path_buf(), manifest))
-}
-
-/// Search parent directories for a workspace root and load its manifest.
-fn load_from_workspace(
-    start: &std::path::Path,
-) -> anyhow::Result<(std::path::PathBuf, crate::core::manifest::Manifest)> {
-    let mut search_path = start.to_path_buf();
-    loop {
-        // Check for .gitgrip directory with gripspace manifest
-        let gitgrip_dir = search_path.join(".gitgrip");
-        if gitgrip_dir.exists() {
-            if let Some(manifest_path) =
-                crate::core::manifest_paths::resolve_gripspace_manifest_path(&search_path)
-            {
-                let content = std::fs::read_to_string(&manifest_path)?;
-                let mut manifest = crate::core::manifest::Manifest::parse(&content)?;
-                resolve_gripspace_includes(&mut manifest, &search_path);
-                return Ok((search_path, manifest));
-            }
-        }
-
-        // Check for legacy repo.yaml
-        if let Some(repo_yaml) =
-            crate::core::manifest_paths::resolve_repo_manifest_path(&search_path)
-        {
-            let content = std::fs::read_to_string(repo_yaml)?;
-            let mut manifest = crate::core::manifest::Manifest::parse(&content)?;
-            resolve_gripspace_includes(&mut manifest, &search_path);
-            return Ok((search_path, manifest));
-        }
-
-        // Fallback: parse .repo/manifest.xml directly (zero-config — just works)
-        let repo_xml = search_path.join(".repo").join("manifest.xml");
-        if repo_xml.exists() {
-            let xml_manifest = crate::core::repo_manifest::XmlManifest::parse_file(&repo_xml)?;
-            let result = xml_manifest.to_manifest()?;
-            return Ok((search_path, result.manifest));
-        }
-
-        match search_path.parent() {
-            Some(parent) => search_path = parent.to_path_buf(),
-            None => {
-                anyhow::bail!("Not in a gitgrip workspace (no .gitgrip or .repo directory found)");
-            }
-        }
-    }
 }
 
 /// Resolve gripspace includes (merge inherited repos/scripts/env/hooks) if spaces dir exists.

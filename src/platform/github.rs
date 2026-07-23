@@ -173,6 +173,11 @@ impl HostingPlatform for GitHubAdapter {
 
         let client = self.get_client().await?;
 
+        debug!(
+            owner,
+            repo, head, base, title, draft, "GitHub create PR request"
+        );
+
         let result = client
             .pulls(owner, repo)
             .create(title, head, base)
@@ -199,7 +204,7 @@ impl HostingPlatform for GitHubAdapter {
         }
 
         let pr = result.map_err(|e| {
-            let msg = e.to_string();
+            let msg = format_octocrab_error(&e);
             if msg.contains("Validation Failed") || msg.contains("422") {
                 if msg.contains("head sha") || msg.contains("Head sha") {
                     return PlatformError::HeadBranchNotFound {
@@ -789,6 +794,14 @@ impl HostingPlatform for GitHubAdapter {
 
         check_response_rate_limit(response.headers(), "GitHub").await;
 
+        // Whether the Check Runs API positively confirmed zero runs exist
+        // (success + total_count == 0), as opposed to failing to answer at
+        // all (non-success HTTP). Only a positive confirmation licenses the
+        // legacy fallback's ambiguous pending+empty reading to mean
+        // "confirmed absent" -- a Check Runs outage must not be conflated
+        // with "nothing is configured" (grip#776 finding 1).
+        let mut check_runs_confirmed_empty = false;
+
         if response.status().is_success() {
             #[derive(serde::Deserialize)]
             struct CheckRunsResponse {
@@ -843,8 +856,10 @@ impl HostingPlatform for GitHubAdapter {
                 return Ok(StatusCheckResult {
                     state: aggregate_state,
                     statuses,
+                    checks_configured: true,
                 });
             }
+            check_runs_confirmed_empty = true;
         }
 
         // Fallback to legacy status checks API
@@ -894,7 +909,7 @@ impl HostingPlatform for GitHubAdapter {
             _ => CheckState::Pending,
         };
 
-        let statuses = status
+        let statuses: Vec<StatusCheck> = status
             .statuses
             .iter()
             .map(|s| StatusCheck {
@@ -903,7 +918,24 @@ impl HostingPlatform for GitHubAdapter {
             })
             .collect();
 
-        Ok(StatusCheckResult { state, statuses })
+        // GitHub's legacy combined-status endpoint reports state="pending" for
+        // a commit with zero posted statuses -- the same string it uses for
+        // "checks are running." That ambiguous reading only means "nothing is
+        // configured" when the modern Check Runs API POSITIVELY confirmed
+        // zero runs (check_runs_confirmed_empty); if Check Runs instead
+        // failed to answer at all, an equally-ambiguous legacy reading must
+        // not be promoted to confirmed-absence, or `--wait` would silently
+        // proceed past checks whose status simply could not be determined
+        // (grip#776 finding 1). A definitive legacy signal -- real statuses,
+        // or a non-pending state -- is trusted either way.
+        let legacy_ambiguous = state == CheckState::Pending && statuses.is_empty();
+        let checks_configured = !(check_runs_confirmed_empty && legacy_ambiguous);
+
+        Ok(StatusCheckResult {
+            state,
+            statuses,
+            checks_configured,
+        })
     }
 
     async fn get_allowed_merge_methods(
@@ -1557,6 +1589,33 @@ impl HostingPlatform for GitHubAdapter {
             tag: release.tag_name,
             url: release.html_url,
         })
+    }
+}
+
+fn format_octocrab_error(error: &octocrab::Error) -> String {
+    match error {
+        octocrab::Error::GitHub { source, .. } => {
+            let mut message = format!(
+                "GitHub API {}: {}",
+                source.status_code.as_u16(),
+                source.message
+            );
+            if let Some(errors) = source.errors.as_ref().filter(|errors| !errors.is_empty()) {
+                let details = errors
+                    .iter()
+                    .map(|error| error.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                message.push_str("; errors: ");
+                message.push_str(&details);
+            }
+            if let Some(url) = &source.documentation_url {
+                message.push_str("; documentation: ");
+                message.push_str(url);
+            }
+            message
+        }
+        other => other.to_string(),
     }
 }
 

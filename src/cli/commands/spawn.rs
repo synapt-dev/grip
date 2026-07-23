@@ -13,6 +13,21 @@ use std::process::{Command, Stdio};
 
 const AGENT_HISTORY_LIMIT: &str = "50000";
 const CODEX_STARTUP_MAX_LINE_CHARS: usize = 500;
+const LAUNCH_VERIFY_TIMEOUT_SECS: u64 = 8;
+const LAUNCH_VERIFY_POLL_MS: u64 = 250;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PaneState {
+    Running,
+    Exited,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LaunchTimeoutKind {
+    CodexSelfUpdate,
+    PendingOrShell,
+}
 
 // ---------------------------------------------------------------------------
 // Config types
@@ -207,6 +222,197 @@ fn agent_window_tmux_options() -> [(&'static str, &'static str); 2] {
     ]
 }
 
+fn shell_quote(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn shell_join(parts: &[String]) -> String {
+    parts
+        .iter()
+        .map(|part| shell_quote(part))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn build_launch_script_content(
+    env: &HashMap<String, String>,
+    worktree_path: &Path,
+    launch_cmd: &str,
+) -> String {
+    let mut keys: Vec<&String> = env.keys().collect();
+    keys.sort();
+
+    let mut lines = vec!["#!/usr/bin/env bash".to_string(), "set -e".to_string()];
+    for key in keys {
+        if let Some(value) = env.get(key) {
+            lines.push(format!("export {}={}", key, shell_quote(value)));
+        }
+    }
+    lines.push(format!(
+        "cd {}",
+        shell_quote(&worktree_path.display().to_string())
+    ));
+    lines.push(format!("exec {}", launch_cmd));
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn write_launch_script(
+    workspace_root: &Path,
+    agent_name: &str,
+    env: &HashMap<String, String>,
+    worktree_path: &Path,
+    launch_cmd: &str,
+) -> anyhow::Result<PathBuf> {
+    let script_dir = workspace_root.join(".gitgrip").join("spawn");
+    std::fs::create_dir_all(&script_dir)?;
+    let safe_name = agent_name.replace(['/', '\\', ':'], "-");
+    let script_path = script_dir.join(format!("{}-launch.sh", safe_name));
+    let content = build_launch_script_content(env, worktree_path, launch_cmd);
+    std::fs::write(&script_path, content)?;
+    Ok(script_path)
+}
+
+fn tmux_send_launch_script(target: &str, script_path: &Path) -> anyhow::Result<()> {
+    let command = format!("bash {}", shell_quote(&script_path.display().to_string()));
+    let status = Command::new("tmux")
+        .args(["send-keys", "-t", target, &command, "Enter"])
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("tmux send-keys launch exited with {}", status);
+    }
+    Ok(())
+}
+
+fn expected_process_name(binary: &str) -> String {
+    Path::new(binary)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(binary)
+        .to_string()
+}
+
+fn launch_process_matches(expected: &str, current: &str) -> bool {
+    let expected = expected.to_ascii_lowercase();
+    let current = current.trim().to_ascii_lowercase();
+    if matches!(current.as_str(), "" | "sh" | "bash" | "zsh" | "fish") {
+        return false;
+    }
+    if expected.contains("codex") {
+        return current.contains("codex");
+    }
+    if expected.contains("claude") {
+        // Claude Code's foreground process name can be version-like in tmux.
+        // The failure class we need to reject is a returned shell prompt.
+        return true;
+    }
+    current == expected || current.contains(&expected)
+}
+
+fn current_pane_command(target: &str) -> anyhow::Result<String> {
+    let output = Command::new("tmux")
+        .args([
+            "display-message",
+            "-t",
+            target,
+            "-p",
+            "#{pane_current_command}",
+        ])
+        .output()?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "tmux display-message failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn capture_pane_tail(target: &str, lines: usize) -> String {
+    let start = format!("-{}", lines);
+    Command::new("tmux")
+        .args(["capture-pane", "-t", target, "-p", "-S", &start])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
+        .unwrap_or_default()
+}
+
+fn wait_for_launch_process(
+    target: &str,
+    expected_process: &str,
+    timeout: std::time::Duration,
+) -> anyhow::Result<Option<String>> {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut last = None;
+    while std::time::Instant::now() < deadline {
+        let current = current_pane_command(target)?;
+        if launch_process_matches(expected_process, &current) {
+            return Ok(Some(current));
+        }
+        last = Some(current);
+        std::thread::sleep(std::time::Duration::from_millis(LAUNCH_VERIFY_POLL_MS));
+    }
+    Ok(last)
+}
+
+fn classify_launch_timeout(pane_tail: &str) -> LaunchTimeoutKind {
+    if pane_tail.contains("Please restart Codex")
+        || pane_tail.contains("Update ran successfully")
+        || pane_tail.contains("restart Codex")
+    {
+        LaunchTimeoutKind::CodexSelfUpdate
+    } else {
+        LaunchTimeoutKind::PendingOrShell
+    }
+}
+
+fn verify_launch_started(
+    target: &str,
+    expected_process: &str,
+    script_path: &Path,
+) -> anyhow::Result<()> {
+    let timeout = std::time::Duration::from_secs(LAUNCH_VERIFY_TIMEOUT_SECS);
+    if wait_for_launch_process(target, expected_process, timeout)?.is_some() {
+        return Ok(());
+    }
+
+    let tail = capture_pane_tail(target, 30);
+    match classify_launch_timeout(&tail) {
+        LaunchTimeoutKind::CodexSelfUpdate => {
+            Output::warning("Codex self-update exited during spawn; relaunching once");
+            tmux_send_launch_script(target, script_path)?;
+        }
+        LaunchTimeoutKind::PendingOrShell => {
+            Output::warning(
+                "spawn launch did not reach agent process; clearing pane and retrying once",
+            );
+            let _ = Command::new("tmux")
+                .args(["send-keys", "-t", target, "C-c"])
+                .status();
+            tmux_send_launch_script(target, script_path)?;
+        }
+    }
+
+    if wait_for_launch_process(target, expected_process, timeout)?.is_some() {
+        return Ok(());
+    }
+
+    let current = current_pane_command(target).unwrap_or_else(|_| "unknown".to_string());
+    let tail = capture_pane_tail(target, 30);
+    anyhow::bail!(
+        "spawn launch for {} did not reach expected process '{}' (pane_current_command='{}'). Pane tail:\n{}",
+        target,
+        expected_process,
+        current,
+        tail.trim()
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Subcommand: up
 // ---------------------------------------------------------------------------
@@ -300,39 +506,34 @@ pub fn run_spawn_up(
             }
         };
 
-        // Send environment variables — GRIPSPACE_ROOT + SYNAPT_AGENT_ID first (#418, #510)
+        // Build environment variables for the launch script — GRIPSPACE_ROOT +
+        // SYNAPT_AGENT_ID first (#418, #510), then config/env overrides.
         let grip_root = workspace_root.display();
-        let env_cmd = format!(
-            "export GRIPSPACE_ROOT=\"{}\" SYNAPT_AGENT_ID=\"{}\" AGENT_NAME={} AGENT_ROLE=\"{}\" SYNAPT_CHANNELS={} SYNAPT_LOOP_INTERVAL={}",
-            grip_root, agent_id, name, agent.role, channel, agent.loop_interval
+        let mut launch_env = HashMap::new();
+        launch_env.insert("GRIPSPACE_ROOT".to_string(), grip_root.to_string());
+        launch_env.insert("SYNAPT_AGENT_ID".to_string(), agent_id.clone());
+        launch_env.insert("AGENT_NAME".to_string(), name.to_string());
+        launch_env.insert("AGENT_ROLE".to_string(), agent.role.clone());
+        launch_env.insert("SYNAPT_CHANNELS".to_string(), channel.to_string());
+        launch_env.insert(
+            "SYNAPT_LOOP_INTERVAL".to_string(),
+            agent.loop_interval.clone(),
         );
-        let _ = Command::new("tmux")
-            .args(["send-keys", "-t", &target, &env_cmd, "Enter"])
-            .status();
-
-        // Send global spawn env vars from [spawn] config
-        for (key, val) in &config.spawn.env {
-            let global_env = format!("export {}=\"{}\"", key, val);
-            let _ = Command::new("tmux")
-                .args(["send-keys", "-t", &target, &global_env, "Enter"])
-                .status();
-        }
-
-        // Send per-agent custom env vars
-        for (key, val) in &agent.env {
-            let custom_env = format!("export {}=\"{}\"", key, val);
-            let _ = Command::new("tmux")
-                .args(["send-keys", "-t", &target, &custom_env, "Enter"])
-                .status();
-        }
+        launch_env.extend(config.spawn.env.clone());
+        launch_env.extend(agent.env.clone());
 
         let worktree_path = resolve_worktree_path(&workspace_root, &agent.worktree);
 
         // Build and send launch command
-        let launch_cmd = if mock_mode {
-            format!(
-                "echo \"Agent {} would launch here (role: {}, model: {})\" && sleep 86400",
+        let (launch_cmd, expected_process) = if mock_mode {
+            let message = format!(
+                "Agent {} would launch here (role: {}, model: {})",
                 name, agent.role, agent.model
+            );
+            let inner = format!("printf '%s\\n' {}; exec sleep 86400", shell_quote(&message));
+            (
+                shell_join(&["bash".to_string(), "-lc".to_string(), inner]),
+                None,
             )
         } else {
             // Resolve tool config
@@ -402,19 +603,26 @@ pub fn run_spawn_up(
                 vec![]
             };
 
-            let mut parts: Vec<&str> = vec![binary];
-            parts.extend(cmd_parts.iter().map(|s| s.as_str()));
-            parts.extend(resolved_defaults.iter().map(|s| s.as_str()));
-            parts.extend(model_inject.iter().map(|s| s.as_str()));
-            parts.extend(resolved_args.iter().map(|s| s.as_str()));
+            let mut parts: Vec<String> = vec![binary.to_string()];
+            parts.extend(cmd_parts.iter().cloned());
+            parts.extend(resolved_defaults.iter().cloned());
+            parts.extend(model_inject.iter().cloned());
+            parts.extend(resolved_args.iter().cloned());
 
-            let launch = parts.join(" ");
-            format!("cd {} && {}", worktree_path.display(), launch)
+            (shell_join(&parts), Some(expected_process_name(binary)))
         };
 
-        let _ = Command::new("tmux")
-            .args(["send-keys", "-t", &target, &launch_cmd, "Enter"])
-            .status();
+        let launch_script = write_launch_script(
+            &workspace_root,
+            name,
+            &launch_env,
+            &worktree_path,
+            &launch_cmd,
+        )?;
+        tmux_send_launch_script(&target, &launch_script)?;
+        if let Some(expected_process) = expected_process.as_deref() {
+            verify_launch_started(&target, expected_process, &launch_script)?;
+        }
 
         // Set up pipe-pane for output streaming (#443 Mission Control)
         let log_dir = workspace_root.join(".synapt").join("logs").join(&agent_id);
@@ -871,12 +1079,6 @@ pub fn run_spawn_down(
     let poll_interval = std::time::Duration::from_millis(500);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
 
-    #[derive(Clone, Copy, PartialEq)]
-    enum PaneState {
-        Running,
-        Exited,
-        Unknown, // tmux error; state could not be determined
-    }
     let mut states: Vec<PaneState> = vec![PaneState::Running; targets.len()];
 
     while std::time::Instant::now() < deadline && states.contains(&PaneState::Running) {
@@ -902,6 +1104,14 @@ pub fn run_spawn_down(
     let mut any_error = false;
     for (i, name) in targets.iter().enumerate() {
         let target = format!("{}:{}", session, name);
+        let final_state = match states[i] {
+            PaneState::Running => match pane_exit_state(session, name) {
+                Some(true) => PaneState::Exited,
+                Some(false) => PaneState::Running,
+                None => PaneState::Unknown,
+            },
+            other => other,
+        };
         let kill_result = Command::new("tmux")
             .args(["kill-window", "-t", &target])
             .output();
@@ -918,7 +1128,7 @@ pub fn run_spawn_down(
             }
         };
 
-        match states[i] {
+        match final_state {
             PaneState::Exited => {
                 println!("  {} {} exited gracefully", "✓".green(), name.bold());
             }
@@ -1552,6 +1762,48 @@ mod tests {
         let options = agent_window_tmux_options();
         assert!(options.contains(&("history-limit", AGENT_HISTORY_LIMIT)));
         assert_eq!(AGENT_HISTORY_LIMIT, "50000");
+    }
+
+    #[test]
+    fn test_launch_process_match_accepts_codex_runtime_wrappers() {
+        assert!(launch_process_matches(
+            "codex",
+            "codex-aarch64-apple-darwin"
+        ));
+        assert!(!launch_process_matches("codex", "zsh"));
+    }
+
+    #[test]
+    fn test_launch_process_match_for_claude_rejects_shell_prompt() {
+        assert!(launch_process_matches("claude", "2.1.198"));
+        assert!(!launch_process_matches("claude", "zsh"));
+    }
+
+    #[test]
+    fn test_launch_timeout_classifies_codex_self_update() {
+        let tail = "Update ran successfully! Please restart Codex.";
+        assert_eq!(
+            classify_launch_timeout(tail),
+            LaunchTimeoutKind::CodexSelfUpdate
+        );
+    }
+
+    #[test]
+    fn test_launch_script_quotes_env_and_execs_launch() {
+        let mut env = HashMap::new();
+        env.insert("AGENT_NAME".to_string(), "sentinel".to_string());
+        env.insert("ODD".to_string(), "value with ' quote".to_string());
+
+        let script = build_launch_script_content(
+            &env,
+            &PathBuf::from("/tmp/grip space"),
+            "'codex' 'resume'",
+        );
+
+        assert!(script.contains("export AGENT_NAME='sentinel'"));
+        assert!(script.contains("export ODD='value with '\\'' quote'"));
+        assert!(script.contains("cd '/tmp/grip space'"));
+        assert!(script.contains("exec 'codex' 'resume'"));
     }
 
     #[test]

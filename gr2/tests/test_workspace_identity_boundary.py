@@ -147,3 +147,33 @@ def test_exec_lease_event_does_not_emit_agent_id_from_workspace_spec(tmp_path: P
     assert lease_rows
     assert all("agent_id" not in row for row in lease_rows)
     assert all(row["owner_unit"] == "atlas" for row in lease_rows)
+
+
+def test_lane_records_remain_in_oss_agent_lane_namespace(tmp_path: Path) -> None:
+    from gr2.prototypes import lane_workspace_prototype as lane_proto
+
+    lane_path = lane_proto.lane_dir(tmp_path, "unit-alpha", "feat-auth")
+
+    assert lane_path == tmp_path / "agents" / "unit-alpha" / "lanes" / "feat-auth"
+    assert ".grip/lanes" not in lane_path.as_posix()
+
+
+def test_oss_gr2_has_no_premium_lane_envelope_reader() -> None:
+    gr2_root = Path(__file__).resolve().parents[1]
+    forbidden_fragments = (
+        '".grip" / "lanes"',
+        "'.grip' / 'lanes'",
+        '".grip/lanes"',
+        "'.grip/lanes'",
+        'joinpath(".grip", "lanes")',
+        "joinpath('.grip', 'lanes')",
+    )
+
+    offenders: list[str] = []
+    for source_root in (gr2_root / "python_cli", gr2_root / "prototypes"):
+        for path in sorted(source_root.rglob("*.py")):
+            text = path.read_text()
+            if any(fragment in text for fragment in forbidden_fragments):
+                offenders.append(path.relative_to(gr2_root).as_posix())
+
+    assert offenders == []

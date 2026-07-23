@@ -5,7 +5,7 @@
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
 use crate::core::manifest_paths;
-use crate::core::repo::{filter_repos, RepoInfo};
+use crate::core::repo::{filter_repos, validate_repo_filters_known, RepoInfo};
 use crate::git::cache::invalidate_status_cache;
 use crate::git::{get_workdir, open_repo, path_exists};
 use crate::util::log_cmd;
@@ -28,6 +28,8 @@ pub fn run_restore(
         action
     ));
     println!();
+
+    validate_repo_filters_known(manifest, repos_filter)?;
 
     let repos: Vec<RepoInfo> =
         filter_repos(manifest, workspace_root, repos_filter, group_filter, false);

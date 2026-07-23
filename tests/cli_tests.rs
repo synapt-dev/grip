@@ -760,7 +760,7 @@ fn test_checkout_add_errors_when_filters_match_no_repos() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "no repos matched checkout filters",
+            "repo filter 'missing' not found in local manifest",
         ));
 }
 

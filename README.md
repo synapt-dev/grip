@@ -16,6 +16,8 @@
 
 > **gr1 has reached 1.0 and is now in maintenance mode.** [gr2](gr2/docs/GR2-MVP.md) is the active development target, bringing declarative workspace specs, lane-aware execution, and a migration path from gr1. See the [migration playbook](gr2/docs/GR1-GR2-MIGRATION-PLAYBOOK.md) for details. gr1 will receive critical bug fixes only.
 
+> The Rust gr2 prototype is frozen as reference material; active gr2 work is Python-first and governed by the [core-engine seam](gr2/docs/CORE-ENGINE-SEAM.md).
+
 Manage multiple related repositories as a single workspace with synchronized branches, linked pull requests, and atomic merges.
 
 Inspired by Android's [repo tool](https://source.android.com/docs/setup/create/repo), gitgrip brings manifest-based multi-repo management to any project.

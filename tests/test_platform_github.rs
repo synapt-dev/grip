@@ -378,6 +378,92 @@ async fn test_github_status_checks_all_pass() {
     let checks = result.unwrap();
     assert_eq!(checks.state, CheckState::Success);
     assert_eq!(checks.statuses.len(), 2);
+    assert!(
+        checks.checks_configured,
+        "real check runs must set checks_configured=true (grip#776 finding 2: \
+         this was previously unasserted, so a mutant flipping the true case \
+         to false went unnoticed)"
+    );
+}
+
+#[tokio::test]
+async fn test_github_status_checks_legacy_signal_trusted_despite_empty_check_runs() {
+    // Check Runs API succeeds but reports zero runs (a repo whose CI posts
+    // only to the legacy status API, never registering as a GitHub Actions
+    // Check Run). The legacy endpoint DOES have a real signal -- it must be
+    // trusted, not discarded just because Check Runs saw nothing.
+    let (server, adapter) = setup_github_mock().await;
+    mock_check_runs(&server, "abc123", vec![]).await;
+    mock_legacy_combined_status(&server, "abc123", "success", vec![("legacy-ci", "success")]).await;
+
+    let result = adapter.get_status_checks("owner", "repo", "abc123").await;
+
+    assert!(
+        result.is_ok(),
+        "should fall through to legacy: {:?}",
+        result
+    );
+    let checks = result.unwrap();
+    assert_eq!(checks.state, CheckState::Success);
+    assert!(
+        checks.checks_configured,
+        "a real legacy signal must set checks_configured=true even when \
+         Check Runs independently confirmed zero runs"
+    );
+}
+
+#[tokio::test]
+async fn test_github_status_checks_both_apis_confirm_nothing_configured() {
+    // The base case grip#772 exists for: Check Runs positively confirms zero
+    // runs AND the legacy endpoint is equally empty (pending + no statuses).
+    // Both APIs agreeing on absence is the only case where checks_configured
+    // should be false.
+    let (server, adapter) = setup_github_mock().await;
+    mock_check_runs(&server, "abc123", vec![]).await;
+    mock_legacy_combined_status(&server, "abc123", "pending", vec![]).await;
+
+    let result = adapter.get_status_checks("owner", "repo", "abc123").await;
+
+    assert!(
+        result.is_ok(),
+        "should fall through to legacy: {:?}",
+        result
+    );
+    let checks = result.unwrap();
+    assert!(
+        !checks.checks_configured,
+        "both APIs agreeing on zero checks must set checks_configured=false, \
+         or `--wait` burns its full timeout on a ref with nothing to wait for \
+         (grip#772)"
+    );
+}
+
+#[tokio::test]
+async fn test_github_status_checks_check_runs_500_with_ambiguous_legacy_is_not_confirmed_absent() {
+    // grip#776 finding 1: Check Runs fails outright (500, not "succeeded
+    // with zero"). The legacy endpoint's pending+empty reading is exactly as
+    // ambiguous here as it is in the confirmed-empty case above -- but
+    // reaching this fallback via a Check Runs FAILURE must not be conflated
+    // with reaching it via a Check Runs CONFIRMATION of zero runs. An API
+    // outage is not evidence of absence.
+    let (server, adapter) = setup_github_mock().await;
+    mock_server_error(&server, "/repos/owner/repo/commits/abc123/check-runs").await;
+    mock_legacy_combined_status(&server, "abc123", "pending", vec![]).await;
+
+    let result = adapter.get_status_checks("owner", "repo", "abc123").await;
+
+    assert!(
+        result.is_ok(),
+        "should fall through to legacy: {:?}",
+        result
+    );
+    let checks = result.unwrap();
+    assert!(
+        checks.checks_configured,
+        "Check Runs 500 + ambiguous legacy pending/empty must NOT be treated \
+         as confirmed-absent -- that would let `--wait` silently proceed past \
+         checks whose status could not actually be determined"
+    );
 }
 
 #[tokio::test]
@@ -515,6 +601,16 @@ async fn test_github_create_pr_validation_error() {
     assert!(
         err_str.contains("Failed to create PR"),
         "error should mention create failure: {}",
+        err_str
+    );
+    assert!(
+        err_str.contains("422"),
+        "error should include upstream status code: {}",
+        err_str
+    );
+    assert!(
+        err_str.contains("A pull request already exists for owner:feat/test."),
+        "error should include upstream validation detail: {}",
         err_str
     );
 }

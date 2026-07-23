@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-07-23
+
+### Fixed
+- **`gr pr edit`/`review`/`merge` refuse unscoped multi-repo actions** (#773) — when a caller doesn't pass `--repo` and more than one repo has a matching open PR for its checked-out branch, gr now fails closed and lists exactly what would have been touched instead of silently fanning out. A repo's checked-out branch can be a stale, forgotten one from unrelated past work, so "N repos matched" was never the same thing as "the user meant N repos" — this closed two real incidents (grip#770, grip#771) where a body meant for one PR landed on someone else's unrelated one.
+- **`gr checkout add` produces a self-discoverable child workspace** (#775) — unified the workspace discovery walk so a child checkout's manifest is found the same way regardless of nesting, removed a checkout/manifest-repo collision, and made malformed or reconstructed checkout metadata fail closed rather than silently carrying authority it shouldn't have.
+- **`gr pr merge --wait` detects no-checks-configured and returns immediately** (#776) — previously could hang waiting on checks that were never going to run; now closes the false-absence and mutation-silence gaps in the re-poll guard.
+
 ## [1.0.0] - 2026-04-17
 
 gr1 reaches stable. This release marks the feature-complete gr1 CLI before gr2 takes over as the primary workspace management system.

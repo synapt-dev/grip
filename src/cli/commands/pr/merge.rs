@@ -3,13 +3,43 @@
 use super::create::has_commits_ahead;
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
-use crate::core::repo::{get_manifest_repo_info, RepoInfo};
+use crate::core::repo::{get_manifest_repo_info, require_explicit_multi_repo_scope, RepoInfo};
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::platform::traits::{HostingPlatform, PlatformError};
-use crate::platform::{get_platform_adapter, CheckState, MergeMethod};
+use crate::platform::{get_platform_adapter, CheckState, MergeMethod, StatusCheckResult};
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
+
+/// This command's internal readiness classification for a PR's checks,
+/// derived from a platform's [`StatusCheckResult`] via [`resolve_check_status`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckStatus {
+    Passing,
+    Failing,
+    Pending,
+    Unknown,
+}
+
+/// Resolve a platform's status-check result into this command's internal
+/// [`CheckStatus`]. Pure and synchronous so it can be pinned directly against
+/// synthetic [`StatusCheckResult`] values, without exercising the HTTP or
+/// sleep/retry machinery around either call site. Both the initial fetch and
+/// the `--wait` re-poll loop call this exact function so the decision can
+/// never diverge between them (grip#776 finding 3).
+fn resolve_check_status(status: &StatusCheckResult) -> CheckStatus {
+    if !status.checks_configured {
+        // No CI is configured for this ref at all -- not a real
+        // pending/passing signal, nothing to wait on (grip#772).
+        CheckStatus::Passing
+    } else {
+        match status.state {
+            CheckState::Failure => CheckStatus::Failing,
+            CheckState::Pending => CheckStatus::Pending,
+            CheckState::Success => CheckStatus::Passing,
+        }
+    }
+}
 
 /// Auto-detect the best merge method for a repo when none is specified.
 ///
@@ -49,6 +79,7 @@ pub struct MergeOptions<'a> {
     pub delete_branch: bool,
     pub repo_filter: Option<Vec<String>>,
     pub yes: bool,
+    pub allow_all: bool,
 }
 
 /// Run the PR merge command
@@ -111,14 +142,6 @@ pub async fn run_pr_merge(
     }
 
     // Collect PRs to merge
-    #[derive(Debug, Clone, Copy)]
-    enum CheckStatus {
-        Passing,
-        Failing,
-        Pending,
-        Unknown,
-    }
-
     struct PRToMerge {
         repo_name: String,
         owner: String,
@@ -183,15 +206,13 @@ pub async fn run_pr_merge(
                 {
                     Ok(status) => {
                         // Successfully got check status
-                        if status.state == CheckState::Failure {
-                            // Checks are actually failing
-                            CheckStatus::Failing
-                        } else if status.state == CheckState::Pending {
-                            // Checks still running - don't block but warn
-                            CheckStatus::Pending
-                        } else {
-                            CheckStatus::Passing
+                        if !status.checks_configured {
+                            Output::info(&format!(
+                                "{}: no CI checks configured for branch '{}', proceeding",
+                                repo.name, branch
+                            ));
                         }
+                        resolve_check_status(&status)
                     }
                     Err(e) => {
                         // Could not determine check status
@@ -235,6 +256,22 @@ pub async fn run_pr_merge(
         println!("Repositories checked: {}", all_repos.len());
         return Ok(());
     }
+
+    // Same guard as `gr pr edit`/`gr pr review`: an unscoped multi-repo match is
+    // ambiguous, not consent. --repo already narrows opts.repo_filter above; --all
+    // is the explicit opt-in when the caller genuinely wants every matched repo.
+    require_explicit_multi_repo_scope(
+        &prs_to_merge,
+        opts.repo_filter.is_some(),
+        opts.allow_all,
+        "gr pr merge",
+        |pr| {
+            format!(
+                "{} PR #{} on {}/{}",
+                pr.repo_name, pr.pr_number, pr.owner, pr.repo
+            )
+        },
+    )?;
 
     // Show which repos have PRs and which don't
     let repos_with_prs: Vec<String> = prs_to_merge.iter().map(|p| p.repo_name.clone()).collect();
@@ -314,11 +351,7 @@ pub async fn run_pr_merge(
                         .await
                     {
                         Ok(status) => {
-                            pr.check_status = match status.state {
-                                CheckState::Failure => CheckStatus::Failing,
-                                CheckState::Pending => CheckStatus::Pending,
-                                _ => CheckStatus::Passing,
-                            };
+                            pr.check_status = resolve_check_status(&status);
 
                             match pr.check_status {
                                 CheckStatus::Passing => {
@@ -832,4 +865,55 @@ fn check_repo_for_changes(repo: &RepoInfo) -> anyhow::Result<bool> {
 
     // Check for commits ahead of target branch using shared helper
     has_commits_ahead(&git_repo, &current, repo.target_branch())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(checks_configured: bool, state: CheckState) -> StatusCheckResult {
+        StatusCheckResult {
+            state,
+            statuses: Vec::new(),
+            checks_configured,
+        }
+    }
+
+    // ── resolve_check_status: the single seam both the initial fetch and the
+    // ── --wait re-poll loop call (grip#776 finding 3). Pure and synchronous,
+    // ── so these pin the decision directly with no HTTP or sleep involved.
+
+    #[test]
+    fn test_resolve_check_status_not_configured_is_passing() {
+        // grip#772: a ref with no CI configured at all has nothing to wait
+        // on, regardless of what `state` the platform reports alongside it.
+        assert_eq!(
+            resolve_check_status(&status(false, CheckState::Pending)),
+            CheckStatus::Passing
+        );
+    }
+
+    #[test]
+    fn test_resolve_check_status_configured_success_is_passing() {
+        assert_eq!(
+            resolve_check_status(&status(true, CheckState::Success)),
+            CheckStatus::Passing
+        );
+    }
+
+    #[test]
+    fn test_resolve_check_status_configured_failure_is_failing() {
+        assert_eq!(
+            resolve_check_status(&status(true, CheckState::Failure)),
+            CheckStatus::Failing
+        );
+    }
+
+    #[test]
+    fn test_resolve_check_status_configured_pending_is_pending() {
+        assert_eq!(
+            resolve_check_status(&status(true, CheckState::Pending)),
+            CheckStatus::Pending
+        );
+    }
 }

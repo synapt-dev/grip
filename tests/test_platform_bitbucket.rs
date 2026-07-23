@@ -120,6 +120,33 @@ async fn test_bb_status_checks() {
     let checks = result.unwrap();
     assert_eq!(checks.state, CheckState::Success);
     assert_eq!(checks.statuses.len(), 2);
+    assert!(
+        checks.checks_configured,
+        "real posted statuses must set checks_configured=true (grip#776 \
+         finding 2: this was previously unasserted, so a mutant flipping the \
+         true case to false went unnoticed)"
+    );
+}
+
+#[tokio::test]
+async fn test_bb_status_checks_empty_sets_checks_configured_false() {
+    // grip#776 finding 2 (Bitbucket's empty side): zero posted statuses
+    // means nothing is configured for this ref, not "checks are running" --
+    // the same false-absence risk grip#772 fixed for GitHub. Never
+    // independently pinned for the Bitbucket adapter until now.
+    let (server, adapter) = setup_bitbucket_mock().await;
+    mock_bb_status_checks(&server, "abc123", vec![]).await;
+
+    let result = adapter.get_status_checks("owner", "repo", "abc123").await;
+
+    assert!(result.is_ok(), "should get checks: {:?}", result);
+    let checks = result.unwrap();
+    assert_eq!(checks.state, CheckState::Pending);
+    assert!(
+        !checks.checks_configured,
+        "zero posted statuses must set checks_configured=false, or `--wait` \
+         burns its full timeout on a ref with nothing to wait for"
+    );
 }
 
 // ── Approval ──────────────────────────────────────────────────────

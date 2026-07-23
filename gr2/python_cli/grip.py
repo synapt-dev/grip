@@ -9,7 +9,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from python_cli.gitops import git
+from .gitops import git
 
 
 # ---------------------------------------------------------------------------

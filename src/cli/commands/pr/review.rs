@@ -2,11 +2,23 @@
 
 use crate::cli::output::Output;
 use crate::core::manifest::Manifest;
-use crate::core::repo::{get_manifest_repo_info, RepoInfo};
+use crate::core::repo::{
+    filter_repos, get_manifest_repo_info, require_explicit_multi_repo_scope,
+    validate_repo_filters_known,
+};
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::platform::get_platform_adapter;
 use crate::platform::ReviewEvent;
 use std::path::Path;
+use std::sync::Arc;
+
+struct PRToReview {
+    repo_name: String,
+    owner: String,
+    repo: String,
+    pr_number: u64,
+    platform: Arc<dyn crate::platform::HostingPlatform>,
+}
 
 /// Run the PR review command — post a review on PRs across linked repos
 pub async fn run_pr_review(
@@ -14,11 +26,15 @@ pub async fn run_pr_review(
     manifest: &Manifest,
     event: ReviewEvent,
     body: Option<&str>,
+    repo_filter: Option<&[String]>,
+    allow_all: bool,
     json: bool,
 ) -> anyhow::Result<()> {
     if matches!(event, ReviewEvent::RequestChanges | ReviewEvent::Comment) && body.is_none() {
         anyhow::bail!("--body is required for comment and request-changes reviews");
     }
+
+    validate_repo_filters_known(manifest, repo_filter)?;
 
     if !json {
         let action = match event {
@@ -30,29 +46,24 @@ pub async fn run_pr_review(
         println!();
     }
 
-    let repos: Vec<RepoInfo> = manifest
-        .repos
-        .iter()
-        .filter_map(|(name, config)| {
-            RepoInfo::from_config(
-                name,
-                config,
-                workspace_root,
-                &manifest.settings,
-                manifest.remotes.as_ref(),
-            )
-        })
-        .filter(|r| !r.reference)
-        .collect();
+    let repos = filter_repos(manifest, workspace_root, repo_filter, None, false);
 
     let mut all_repos = repos;
-    if let Some(manifest_repo) = get_manifest_repo_info(manifest, workspace_root) {
-        all_repos.push(manifest_repo);
+    let manifest_included = match repo_filter {
+        Some(filter) => filter.iter().any(|f| f == "manifest"),
+        None => true,
+    };
+    if manifest_included {
+        if let Some(manifest_repo) = get_manifest_repo_info(manifest, workspace_root) {
+            all_repos.push(manifest_repo);
+        }
     }
 
-    let mut reviewed = 0u32;
+    // First pass: find which repos actually have a matching open PR, without
+    // reviewing anything yet -- same reasoning as run_pr_edit's find/act split.
+    let mut prs_to_review: Vec<PRToReview> = Vec::new();
     let mut skipped = 0u32;
-    let mut errors = Vec::new();
+    let mut find_errors = Vec::new();
 
     for repo in &all_repos {
         if !path_exists(&repo.absolute_path) {
@@ -81,27 +92,13 @@ pub async fn run_pr_review(
             .await
         {
             Ok(Some(pr)) => {
-                let spinner =
-                    Output::spinner(&format!("Reviewing {} PR #{}...", repo.name, pr.number));
-                match platform
-                    .create_pull_request_review(&repo.owner, &repo.repo, pr.number, event, body)
-                    .await
-                {
-                    Ok(()) => {
-                        spinner.finish_with_message(format!(
-                            "{}: reviewed PR #{} on {}/{}",
-                            repo.name, pr.number, repo.owner, repo.repo
-                        ));
-                        reviewed += 1;
-                    }
-                    Err(e) => {
-                        spinner.finish_with_message(format!(
-                            "{}: failed to review PR #{}: {}",
-                            repo.name, pr.number, e
-                        ));
-                        errors.push(format!("{}: {}", repo.name, e));
-                    }
-                }
+                prs_to_review.push(PRToReview {
+                    repo_name: repo.name.clone(),
+                    owner: repo.owner.clone(),
+                    repo: repo.repo.clone(),
+                    pr_number: pr.number,
+                    platform,
+                });
             }
             Ok(None) => {
                 if !json {
@@ -116,7 +113,50 @@ pub async fn run_pr_review(
                 if !json {
                     Output::error(&format!("{}: {}", repo.name, e));
                 }
-                errors.push(format!("{}: {}", repo.name, e));
+                find_errors.push(format!("{}: {}", repo.name, e));
+            }
+        }
+    }
+
+    require_explicit_multi_repo_scope(
+        &prs_to_review,
+        repo_filter.is_some(),
+        allow_all,
+        "gr pr review",
+        |pr| {
+            format!(
+                "{} PR #{} on {}/{}",
+                pr.repo_name, pr.pr_number, pr.owner, pr.repo
+            )
+        },
+    )?;
+
+    let mut reviewed = 0u32;
+    let mut errors = find_errors;
+
+    for pr in &prs_to_review {
+        let spinner = Output::spinner(&format!(
+            "Reviewing {} PR #{}...",
+            pr.repo_name, pr.pr_number
+        ));
+        match pr
+            .platform
+            .create_pull_request_review(&pr.owner, &pr.repo, pr.pr_number, event, body)
+            .await
+        {
+            Ok(()) => {
+                spinner.finish_with_message(format!(
+                    "{}: reviewed PR #{} on {}/{}",
+                    pr.repo_name, pr.pr_number, pr.owner, pr.repo
+                ));
+                reviewed += 1;
+            }
+            Err(e) => {
+                spinner.finish_with_message(format!(
+                    "{}: failed to review PR #{}: {}",
+                    pr.repo_name, pr.pr_number, e
+                ));
+                errors.push(format!("{}: {}", pr.repo_name, e));
             }
         }
     }

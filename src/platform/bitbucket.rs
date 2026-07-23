@@ -407,9 +407,13 @@ impl HostingPlatform for BitbucketAdapter {
             .map_err(|e| PlatformError::NetworkError(e.to_string()))?;
 
         if !response.status().is_success() {
+            // Couldn't reach the API -- unknown, not confirmed-absent. Keep
+            // the existing pending/retry behavior, but don't claim to know
+            // checks aren't configured when the query itself failed.
             return Ok(StatusCheckResult {
                 state: CheckState::Pending,
                 statuses: vec![],
+                checks_configured: true,
             });
         }
 
@@ -447,6 +451,12 @@ impl HostingPlatform for BitbucketAdapter {
             })
             .collect();
 
+        // grip#772: zero posted statuses means nothing is configured for this
+        // ref, not "checks are running" -- same root cause discovered and
+        // fixed in the GitHub adapter, found here while touching this exact
+        // function for the checks_configured field addition, not separately
+        // reported/repro'd against a real Bitbucket instance.
+        let checks_configured = !checks.is_empty();
         let overall_state = if checks.is_empty() {
             CheckState::Pending
         } else if checks.iter().all(|c| c.state == "success") {
@@ -458,6 +468,7 @@ impl HostingPlatform for BitbucketAdapter {
         Ok(StatusCheckResult {
             state: overall_state,
             statuses: checks,
+            checks_configured,
         })
     }
 

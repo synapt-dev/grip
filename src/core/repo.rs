@@ -301,6 +301,75 @@ pub fn filter_repos(
         .collect()
 }
 
+/// Validate repo filters before command execution so repo-scoped commands do not
+/// silently no-op when the local manifest is stale.
+pub fn validate_repo_filters_known(
+    manifest: &Manifest,
+    repos_filter: Option<&[String]>,
+) -> anyhow::Result<()> {
+    let Some(filters) = repos_filter else {
+        return Ok(());
+    };
+
+    let missing: Vec<&String> = filters
+        .iter()
+        .filter(|name| name.as_str() != "manifest" && !manifest.repos.contains_key(*name))
+        .collect();
+
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    let names = missing
+        .iter()
+        .map(|name| format!("'{}'", name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    anyhow::bail!(
+        "repo filter {} not found in local manifest. If it was added upstream, run `gr sync --repo manifest` or plain `gr sync` first, then retry.",
+        names
+    );
+}
+
+/// Refuse an unscoped multi-repo `gr pr <verb>` action rather than silently fan out.
+///
+/// `gr pr edit`/`review`/`merge` act on whichever repos currently have a matching open
+/// PR for their checked-out branch — a much weaker signal of intent than the
+/// diff/status-driven scoping the rest of `gr` uses. A repo's checked-out branch can be
+/// a stale, forgotten one from unrelated past work, so "N repos matched" is not the
+/// same thing as "the user meant N repos." When the caller did not explicitly scope
+/// via `--repo` and more than one repo matched, this is the ambiguous case that has
+/// twice caused real incidents (grip#770, grip#771): a body meant for one PR landing on
+/// someone else's unrelated one. Fail closed and list exactly what would have been
+/// touched, so the caller can either scope precisely with `--repo` or opt into the
+/// full list explicitly with `--all` — never guess silently.
+pub fn require_explicit_multi_repo_scope<T>(
+    matched: &[T],
+    repo_filter_given: bool,
+    allow_all: bool,
+    verb: &str,
+    describe: impl Fn(&T) -> String,
+) -> anyhow::Result<()> {
+    if matched.len() <= 1 || repo_filter_given || allow_all {
+        return Ok(());
+    }
+
+    let listing = matched
+        .iter()
+        .map(|m| format!("  - {}", describe(m)))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    anyhow::bail!(
+        "{} would touch {} repos with a matching branch/PR, but no --repo was given:\n{}\n\n\
+         Pass --repo <name>[,<name>...] to scope this explicitly, or --all to proceed \
+         with every repo listed above.",
+        verb,
+        matched.len(),
+        listing
+    );
+}
+
 /// Get RepoInfo for the manifest repo if it exists.
 ///
 /// This provides a standardized way to include the manifest repository
@@ -1118,5 +1187,56 @@ repos:
         assert_eq!(info.target_branch(), "main");
         assert_eq!(info.sync_remote, "origin");
         assert_eq!(info.push_remote, "origin");
+    }
+
+    #[test]
+    fn test_multi_repo_scope_guard_allows_zero_or_one_match_unconditionally() {
+        let none: Vec<&str> = vec![];
+        assert!(
+            require_explicit_multi_repo_scope(&none, false, false, "edit", |s| s.to_string())
+                .is_ok()
+        );
+
+        let one = vec!["repo-a"];
+        assert!(
+            require_explicit_multi_repo_scope(&one, false, false, "edit", |s| s.to_string())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_multi_repo_scope_guard_bails_on_unscoped_multi_match() {
+        // Mutation-intent guard: grip#770/grip#771 were both an unscoped multi-repo
+        // action silently succeeding. This must go RED under the pre-fix condition
+        // (no --repo, no --all, >1 match) and lists every affected repo by name so
+        // the caller can actually act on the guidance.
+        let matched = vec!["research", "recall"];
+        let err =
+            require_explicit_multi_repo_scope(&matched, false, false, "edit", |s| s.to_string())
+                .unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("research"));
+        assert!(message.contains("recall"));
+        assert!(message.contains("--repo"));
+        assert!(message.contains("--all"));
+        assert!(message.contains("edit"));
+    }
+
+    #[test]
+    fn test_multi_repo_scope_guard_allows_explicit_repo_filter() {
+        let matched = vec!["research", "recall"];
+        assert!(
+            require_explicit_multi_repo_scope(&matched, true, false, "edit", |s| s.to_string())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_multi_repo_scope_guard_allows_explicit_all_flag() {
+        let matched = vec!["research", "recall"];
+        assert!(
+            require_explicit_multi_repo_scope(&matched, false, true, "edit", |s| s.to_string())
+                .is_ok()
+        );
     }
 }

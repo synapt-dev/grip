@@ -300,6 +300,55 @@ fn checkout_rev(path: &Path, rev: &str) -> Result<(), ManifestError> {
         )));
     }
 
+    // If `rev` names a fetched remote branch, advance the local branch to it.
+    // A plain `git checkout rev` leaves an existing local branch stale after
+    // `git fetch`, which made `gr sync` report "updated" without seeing new
+    // gripspace manifest content.
+    let remote_ref = format!("refs/remotes/origin/{}", rev);
+    let output = Command::new("git")
+        .args(["rev-parse", "--verify", &remote_ref])
+        .current_dir(path)
+        .output()
+        .map_err(|e| {
+            ManifestError::GripspaceError(format!("Failed to inspect rev '{}': {}", rev, e))
+        })?;
+    if output.status.success() {
+        let status = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(path)
+            .output()
+            .map_err(|e| {
+                ManifestError::GripspaceError(format!("Failed to inspect gripspace status: {}", e))
+            })?;
+        if !status.status.success() {
+            return Err(ManifestError::GripspaceError(format!(
+                "Failed to inspect gripspace status: {}",
+                String::from_utf8_lossy(&status.stderr).trim()
+            )));
+        }
+        if !String::from_utf8_lossy(&status.stdout).trim().is_empty() {
+            return Err(ManifestError::GripspaceError(
+                "Cannot advance gripspace: working tree has local changes".to_string(),
+            ));
+        }
+
+        let output = Command::new("git")
+            .args(["checkout", "-B", rev, &format!("origin/{}", rev)])
+            .current_dir(path)
+            .output()
+            .map_err(|e| {
+                ManifestError::GripspaceError(format!("Failed to checkout rev '{}': {}", rev, e))
+            })?;
+        if !output.status.success() {
+            return Err(ManifestError::GripspaceError(format!(
+                "Failed to checkout rev '{}': {}",
+                rev,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        return Ok(());
+    }
+
     let output = Command::new("git")
         .args(["checkout", rev])
         .current_dir(path)
@@ -805,6 +854,31 @@ mod tests {
             .unwrap();
     }
 
+    fn git(repo_dir: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo_dir)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run git {:?}: {}", args, e));
+        assert!(
+            output.status.success(),
+            "git {:?} failed in {}: {}",
+            args,
+            repo_dir.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn commit_file(repo_dir: &Path, relpath: &str, content: &str, message: &str) {
+        let path = repo_dir.join(relpath);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&path, content).unwrap();
+        git(repo_dir, &["add", relpath]);
+        git(repo_dir, &["commit", "-m", message]);
+    }
+
     #[test]
     fn test_gripspace_name_https() {
         assert_eq!(
@@ -834,6 +908,59 @@ mod tests {
         assert_eq!(
             gripspace_name("https://github.com/user/my-space/"),
             "my-space"
+        );
+    }
+
+    #[test]
+    fn test_update_gripspace_advances_configured_remote_branch() {
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("base.git");
+        git(
+            temp.path(),
+            &["init", "--bare", "-b", "main", remote.to_str().unwrap()],
+        );
+
+        let staging = temp.path().join("staging");
+        git(
+            temp.path(),
+            &["clone", remote.to_str().unwrap(), staging.to_str().unwrap()],
+        );
+        git(&staging, &["config", "user.email", "test@example.com"]);
+        git(&staging, &["config", "user.name", "Test User"]);
+        commit_file(
+            &staging,
+            "manifest.yaml",
+            "version: 1\n",
+            "initial manifest",
+        );
+        git(&staging, &["push", "origin", "main"]);
+
+        let spaces = temp.path().join("spaces");
+        let config = GripspaceConfig {
+            url: format!("file://{}", remote.display()),
+            rev: Some("main".to_string()),
+        };
+        let gripspace_path = ensure_gripspace(&spaces, &config).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(gripspace_path.join("manifest.yaml")).unwrap(),
+            "version: 1\n"
+        );
+
+        commit_file(
+            &staging,
+            "manifest.yaml",
+            "version: 1\nrepos:\n  app:\n    url: file:///tmp/app.git\n",
+            "add app repo",
+        );
+        git(&staging, &["push", "origin", "main"]);
+
+        update_gripspace(&gripspace_path, &config).unwrap();
+
+        let manifest = std::fs::read_to_string(gripspace_path.join("manifest.yaml")).unwrap();
+        assert!(
+            manifest.contains("app:"),
+            "gripspace did not advance to fetched origin/main: {}",
+            manifest
         );
     }
 

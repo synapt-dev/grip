@@ -603,6 +603,7 @@ impl HostingPlatform for AzureDevOpsAdapter {
                     return Ok(StatusCheckResult {
                         state: CheckState::Success,
                         statuses: vec![],
+                        checks_configured: true,
                     });
                 }
 
@@ -629,13 +630,18 @@ impl HostingPlatform for AzureDevOpsAdapter {
                     })
                     .collect();
 
-                Ok(StatusCheckResult { state, statuses })
+                Ok(StatusCheckResult {
+                    state,
+                    statuses,
+                    checks_configured: true,
+                })
             }
             Err(_) => {
                 // No builds or API error - assume success
                 Ok(StatusCheckResult {
                     state: CheckState::Success,
                     statuses: vec![],
+                    checks_configured: true,
                 })
             }
         }

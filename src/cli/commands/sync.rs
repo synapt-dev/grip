@@ -8,7 +8,9 @@ use crate::core::gripspace::{
 use crate::core::griptree::GriptreeConfig;
 use crate::core::manifest::{HookCondition, Manifest};
 use crate::core::manifest_paths;
-use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
+use crate::core::repo::{
+    filter_repos, get_manifest_repo_info, validate_repo_filters_known, RepoInfo,
+};
 use crate::core::sync_state::SyncSnapshot;
 use crate::files::process_composefiles;
 use crate::git::branch::{checkout_branch_at_upstream, checkout_detached, has_commits_ahead};
@@ -162,6 +164,8 @@ pub async fn run_sync(
     // Re-load and resolve gripspaces before syncing repos
     let manifest = sync_gripspaces(workspace_root, manifest, quiet)?;
     let manifest = &manifest;
+
+    validate_repo_filters_known(manifest, repos_filter)?;
 
     let mut repos: Vec<RepoInfo> =
         filter_repos(manifest, workspace_root, repos_filter, group_filter, true);

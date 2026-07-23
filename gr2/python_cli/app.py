@@ -10,6 +10,7 @@ from typing import Optional
 
 import typer
 
+from . import branch as branch_ops
 from . import execops
 from . import failures
 from . import migration
@@ -508,6 +509,32 @@ def workspace_apply(
         typer.echo(json.dumps(payload, indent=2))
     else:
         typer.echo(spec_apply.render_apply_result(payload))
+
+
+@app.command("branch")
+def branch_cmd(
+    name: str,
+    base: str | None = typer.Option(
+        None,
+        "--base",
+        "--from",
+        "--start-point",
+        help="Create (or reset) the branch off this ref instead of current HEAD",
+    ),
+    repo_path: Path | None = typer.Option(
+        None,
+        "--repo-path",
+        help="Repo to operate on (defaults to cwd; gr2 verbs are single-repo, not gripspace-wide)",
+    ),
+) -> None:
+    """Create or switch to a branch, natively -- no gr1 dependency."""
+    target = (repo_path or Path.cwd()).resolve()
+    try:
+        branch_ops.create_branch(target, name, base=base)
+    except branch_ops.BranchError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Switched to branch '{name}'")
 
 
 @exec_app.command("status")
@@ -1193,6 +1220,10 @@ def pr_merge(
         typer.echo(json.dumps(payload, indent=2))
     else:
         typer.echo(json.dumps(payload, indent=2))
+
+
+def main() -> None:
+    app()
 
 
 if __name__ == "__main__":

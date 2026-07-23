@@ -11,7 +11,11 @@ dependencies = [
     "typer>=0.9",
     "tomli_w>=1.0",
     "pyyaml>=6.0",
+    "toml>=0.10",
 ]
+
+[project.scripts]
+gr2 = "gr2.python_cli.app:main"
 
 [project.optional-dependencies]
 dev = [
@@ -19,8 +23,11 @@ dev = [
     "ruff>=0.4",
 ]
 
-[tool.setuptools.packages.find]
-include = ["gr2_overlay*"]
+[tool.setuptools]
+packages = ["gr2_overlay", "gr2", "gr2.python_cli", "gr2.prototypes"]
+
+[tool.setuptools.package-dir]
+gr2 = "."
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "gr2_overlay/tests"]

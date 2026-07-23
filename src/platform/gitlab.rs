@@ -514,6 +514,7 @@ impl HostingPlatform for GitLabAdapter {
                     return Ok(StatusCheckResult {
                         state: CheckState::Success,
                         statuses: vec![],
+                        checks_configured: true,
                     });
                 }
 
@@ -531,11 +532,13 @@ impl HostingPlatform for GitLabAdapter {
                         context: "gitlab-pipeline".to_string(),
                         state: pipeline.status.clone(),
                     }],
+                    checks_configured: true,
                 })
             }
             Err(_) => Ok(StatusCheckResult {
                 state: CheckState::Success,
                 statuses: vec![],
+                checks_configured: true,
             }),
         }
     }

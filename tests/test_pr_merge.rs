@@ -9,8 +9,8 @@ mod common;
 use common::fixtures::WorkspaceBuilder;
 use common::git_helpers;
 use common::mock_platform::{
-    mock_check_runs, mock_get_pr, mock_list_prs, mock_merge_pr, mock_merge_pr_behind,
-    mock_pr_reviews, setup_github_mock,
+    mock_check_runs, mock_get_pr, mock_legacy_combined_status, mock_list_prs, mock_merge_pr,
+    mock_merge_pr_behind, mock_pr_reviews, point_repo_at_mock, setup_github_mock,
 };
 use gitgrip::core::manifest::{PlatformConfig, PlatformType};
 use wiremock::http::Method;
@@ -43,6 +43,7 @@ async fn test_pr_merge_no_open_prs() {
             delete_branch: true,
             repo_filter: None,
             yes: true,
+            allow_all: false,
         },
     )
     .await;
@@ -94,6 +95,7 @@ async fn test_pr_merge_skip_default_branch() {
             delete_branch: true,
             repo_filter: None,
             yes: true,
+            allow_all: false,
         },
     )
     .await;
@@ -139,6 +141,7 @@ async fn test_pr_merge_skip_reference_repos() {
             delete_branch: true,
             repo_filter: None,
             yes: true,
+            allow_all: false,
         },
     )
     .await;
@@ -183,6 +186,7 @@ async fn test_pr_merge_mixed_repos_all_skipped() {
             delete_branch: true,
             repo_filter: None,
             yes: true,
+            allow_all: false,
         },
     )
     .await;
@@ -246,6 +250,7 @@ async fn test_pr_merge_force_bypasses_checks() {
             delete_branch: true,
             repo_filter: None,
             yes: true,
+            allow_all: false,
         },
     )
     .await;
@@ -315,6 +320,7 @@ async fn test_pr_merge_branch_behind_suggests_update() {
             delete_branch: true,
             repo_filter: None,
             yes: true,
+            allow_all: false,
         },
     )
     .await;
@@ -393,6 +399,7 @@ async fn test_pr_merge_repo_filter_excludes_non_target() {
             delete_branch: true,
             repo_filter: Some(vec!["frontend".to_string()]),
             yes: true,
+            allow_all: false,
         },
     )
     .await;
@@ -443,6 +450,7 @@ async fn test_pr_merge_repo_filter_no_match_finds_no_prs() {
             delete_branch: true,
             repo_filter: Some(vec!["nonexistent".to_string()]),
             yes: true,
+            allow_all: false,
         },
     )
     .await;
@@ -500,6 +508,7 @@ async fn test_pr_merge_force_yes_merges_without_prompt() {
             delete_branch: true,
             repo_filter: None,
             yes: true,
+            allow_all: false,
         },
     )
     .await;
@@ -520,4 +529,223 @@ async fn test_pr_merge_all_or_nothing_stops_on_failure() {
     // 3. Mock first repo's merge to fail
     // 4. Verify second repo's merge is never called
     // 5. Verify error message mentions all-or-nothing
+}
+
+// ── Command-orchestration regression for the multi-repo scope guard ────────
+// (grip#770/grip#771/grip#773, Sentinel reviewer-2 finding on c650a85): the
+// committed guard-unit tests all call require_explicit_multi_repo_scope
+// directly, so nothing in the original suite would notice the guard's
+// call-site being removed from run_pr_merge's own body. This exercises
+// run_pr_merge end to end and asserts on the wiremock server's received-
+// request log -- the guard must fire before any merge PUT is sent.
+
+#[tokio::test]
+async fn test_pr_merge_unscoped_multi_match_sends_zero_merge_puts() {
+    let (server, _adapter) = setup_github_mock().await;
+
+    let ws = WorkspaceBuilder::new()
+        .add_repo("frontend")
+        .add_repo("backend")
+        .build();
+    let mut manifest = ws.load_manifest();
+
+    for repo_name in ["frontend", "backend"] {
+        git_helpers::create_branch(&ws.repo_path(repo_name), "feat/shared-name");
+        git_helpers::commit_file(&ws.repo_path(repo_name), "f.txt", "x", "Add f");
+        point_repo_at_mock(&mut manifest, repo_name, &server);
+    }
+
+    mock_list_prs(&server, vec![(1, "feat/shared-name")]).await;
+    mock_get_pr(&server, 1, "open", false).await;
+    mock_pr_reviews(&server, 1, vec![("APPROVED", "alice")]).await;
+    mock_check_runs(
+        &server,
+        "feat/shared-name",
+        vec![("CI", "completed", Some("success"))],
+    )
+    .await;
+    mock_merge_pr(&server, 1, true).await;
+
+    let result = gitgrip::cli::commands::pr::run_pr_merge(
+        &ws.workspace_root,
+        &manifest,
+        &gitgrip::cli::commands::pr::MergeOptions {
+            method: None,
+            force: false,
+            update: false,
+            auto: false,
+            json: false,
+            wait: false,
+            timeout: 600,
+            delete_branch: true,
+            repo_filter: None, // no --repo
+            yes: true,
+            allow_all: false, // no --all
+        },
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "unscoped 2-repo match must be refused, not silently merged"
+    );
+
+    let requests = server.received_requests().await.unwrap();
+    let merge_puts: Vec<_> = requests
+        .iter()
+        .filter(|r| r.method == Method::PUT && r.url.path().ends_with("/merge"))
+        .collect();
+    assert!(
+        merge_puts.is_empty(),
+        "expected zero merge PUTs, got {}: {:?}",
+        merge_puts.len(),
+        merge_puts.iter().map(|r| r.url.path()).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn test_pr_merge_all_flag_proceeds_and_merges_every_match() {
+    let (server, _adapter) = setup_github_mock().await;
+
+    let ws = WorkspaceBuilder::new()
+        .add_repo("frontend")
+        .add_repo("backend")
+        .build();
+    let mut manifest = ws.load_manifest();
+
+    for repo_name in ["frontend", "backend"] {
+        git_helpers::create_branch(&ws.repo_path(repo_name), "feat/shared-name");
+        git_helpers::commit_file(&ws.repo_path(repo_name), "f.txt", "x", "Add f");
+        point_repo_at_mock(&mut manifest, repo_name, &server);
+    }
+
+    mock_list_prs(&server, vec![(1, "feat/shared-name")]).await;
+    mock_get_pr(&server, 1, "open", false).await;
+    mock_pr_reviews(&server, 1, vec![("APPROVED", "alice")]).await;
+    mock_check_runs(
+        &server,
+        "feat/shared-name",
+        vec![("CI", "completed", Some("success"))],
+    )
+    .await;
+    mock_merge_pr(&server, 1, true).await;
+
+    let result = gitgrip::cli::commands::pr::run_pr_merge(
+        &ws.workspace_root,
+        &manifest,
+        &gitgrip::cli::commands::pr::MergeOptions {
+            method: None,
+            force: false,
+            update: false,
+            auto: false,
+            json: false,
+            wait: false,
+            timeout: 600,
+            delete_branch: true,
+            repo_filter: None,
+            yes: true,
+            allow_all: true, // explicit opt-in
+        },
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "--all should proceed past the guard on a genuine multi-match: {:?}",
+        result.err()
+    );
+
+    let requests = server.received_requests().await.unwrap();
+    let merge_puts = requests
+        .iter()
+        .filter(|r| r.method == Method::PUT && r.url.path().ends_with("/merge"))
+        .count();
+    assert_eq!(
+        merge_puts, 2,
+        "expected a merge PUT for each of the two --all-confirmed repos"
+    );
+}
+
+// ── grip#772: --wait must not block on a branch with no CI configured ──────
+//
+// Reproduces the exact incident: `gr pr merge --wait --timeout 600` on
+// premium#745 (2026-07-17) ran the full 600s timeout even though the branch
+// had zero CI checks configured at all -- GitHub's check-runs API reported
+// total_count=0, and its legacy combined-status fallback reports
+// state="pending" for a commit with zero posted statuses, the same string it
+// uses for "checks are running." `--wait` must treat "confirmed zero checks"
+// as immediately resolved, not enter the poll loop at all.
+
+#[tokio::test]
+async fn test_pr_merge_wait_does_not_block_when_no_checks_are_configured() {
+    let (server, _adapter) = setup_github_mock().await;
+
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let mut manifest = ws.load_manifest();
+
+    git_helpers::create_branch(&ws.repo_path("app"), "feat/no-ci");
+    git_helpers::commit_file(
+        &ws.repo_path("app"),
+        "feature.txt",
+        "feature",
+        "Add feature",
+    );
+
+    let repo_config = manifest.repos.get_mut("app").unwrap();
+    repo_config.url = Some("https://github.com/owner/repo.git".to_string());
+    repo_config.platform = Some(PlatformConfig {
+        platform_type: PlatformType::GitHub,
+        base_url: Some(server.uri()),
+    });
+
+    mock_list_prs(&server, vec![(42, "feat/no-ci")]).await;
+    mock_get_pr(&server, 42, "open", false).await;
+    mock_pr_reviews(&server, 42, vec![("APPROVED", "alice")]).await;
+    // Exact GitHub shape for a ref with no CI configured: check-runs reports
+    // zero runs, and the legacy fallback reports "pending" with zero statuses.
+    mock_check_runs(&server, "feat/no-ci", vec![]).await;
+    mock_legacy_combined_status(&server, "feat/no-ci", "pending", vec![]).await;
+    mock_merge_pr(&server, 42, true).await;
+
+    let start = std::time::Instant::now();
+    let result = gitgrip::cli::commands::pr::run_pr_merge(
+        &ws.workspace_root,
+        &manifest,
+        &gitgrip::cli::commands::pr::MergeOptions {
+            method: None,
+            force: false,
+            update: false,
+            auto: false,
+            json: false,
+            wait: true,
+            timeout: 5,
+            delete_branch: true,
+            repo_filter: None,
+            yes: true,
+            allow_all: false,
+        },
+    )
+    .await;
+    let elapsed = start.elapsed();
+
+    assert!(
+        result.is_ok(),
+        "merge with --wait on a no-CI-configured branch should succeed, not time out: {:?}",
+        result.err()
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "expected --wait to resolve immediately (no checks configured means nothing to poll \
+         for), took {:?} instead -- this is grip#772's exact symptom if it regresses \
+         (the loop's own re-poll sleep is 15s, so a regression would take at least that long)",
+        elapsed
+    );
+
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests
+            .iter()
+            .any(|r| r.method == Method::PUT && r.url.path().ends_with("/merge")),
+        "expected the merge to actually proceed, not just avoid timing out"
+    );
 }

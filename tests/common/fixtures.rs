@@ -192,10 +192,23 @@ impl WorkspaceBuilder {
         }
 
         // Generate manifest YAML
-        let manifest_yaml = generate_manifest(&self.repos, &remotes_dir);
+        let mut manifest_yaml = generate_manifest(&self.repos, &remotes_dir);
+
+        let manifest_dir = workspace_root.join(".gitgrip").join("spaces").join("main");
+
+        // Self-tracking `manifest:` block (core::manifest::ManifestRepoConfig),
+        // required by get_manifest_repo_info -- without it, `manifest.manifest`
+        // stays None and any operation that includes the "manifest" pseudo-repo
+        // (e.g. `gr checkout add --repo <x>,manifest`) silently drops it, even
+        // though `with_manifest_repo` already made it a real git repo on disk.
+        if self.with_manifest_repo {
+            manifest_yaml.push_str(&format!(
+                "manifest:\n  url: file://{}\n",
+                manifest_dir.display()
+            ));
+        }
 
         // Write canonical manifest layout.
-        let manifest_dir = workspace_root.join(".gitgrip").join("spaces").join("main");
         fs::create_dir_all(&manifest_dir).unwrap();
         fs::write(manifest_dir.join("gripspace.yml"), &manifest_yaml).unwrap();
 

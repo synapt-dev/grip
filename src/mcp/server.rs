@@ -1034,39 +1034,14 @@ fn jsonrpc_error(id: Value, code: i64, message: &str) -> Value {
 }
 
 fn read_frame<R: BufRead>(reader: &mut R) -> anyhow::Result<Option<Vec<u8>>> {
-    let mut content_length: Option<usize> = None;
-
-    loop {
-        let mut line = String::new();
-        let bytes_read = reader.read_line(&mut line)?;
-        if bytes_read == 0 {
-            if content_length.is_none() {
-                return Ok(None);
-            }
-            anyhow::bail!("Unexpected EOF while reading MCP headers");
-        }
-
-        let line = line.trim_end_matches(['\r', '\n']);
-        if line.is_empty() {
-            break;
-        }
-
-        if let Some((name, value)) = line.split_once(':') {
-            if name.trim().eq_ignore_ascii_case("content-length") {
-                content_length = Some(
-                    value
-                        .trim()
-                        .parse::<usize>()
-                        .context("Invalid Content-Length header value")?,
-                );
-            }
-        }
+    let mut line = String::new();
+    let bytes_read = reader.read_line(&mut line)?;
+    if bytes_read == 0 {
+        return Ok(None);
     }
 
-    let len = content_length.context("Missing Content-Length header")?;
-    let mut payload = vec![0u8; len];
-    reader.read_exact(&mut payload)?;
-    Ok(Some(payload))
+    let line = line.trim_end_matches(['\r', '\n']);
+    Ok(Some(line.as_bytes().to_vec()))
 }
 
 fn resources_definition() -> Vec<Value> {
@@ -1192,8 +1167,8 @@ fn jsonrpc_error_value(code: i64, message: &str) -> Value {
 
 fn write_frame<W: Write>(writer: &mut W, message: &Value) -> anyhow::Result<()> {
     let body = serde_json::to_vec(message)?;
-    write!(writer, "Content-Length: {}\r\n\r\n", body.len())?;
     writer.write_all(&body)?;
+    writer.write_all(b"\n")?;
     writer.flush()?;
     Ok(())
 }
@@ -1223,17 +1198,55 @@ mod tests {
     }
 
     #[test]
-    fn test_read_frame_parses_valid_message() {
+    fn test_read_frame_parses_newline_delimited_message() {
         let payload = br#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
-        let input = format!(
-            "Content-Length: {}\r\nContent-Type: application/json\r\n\r\n{}",
-            payload.len(),
-            String::from_utf8_lossy(payload)
-        );
+        let mut input = payload.to_vec();
+        input.push(b'\n');
 
-        let mut reader = BufReader::new(input.as_bytes());
+        let mut reader = BufReader::new(input.as_slice());
         let read = read_frame(&mut reader).unwrap().unwrap();
         assert_eq!(read, payload);
+    }
+
+    #[test]
+    fn test_read_frame_returns_each_newline_delimited_message() {
+        let first = br#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+        let second = br#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#;
+        let input = format!(
+            "{}\n{}\n",
+            String::from_utf8_lossy(first),
+            String::from_utf8_lossy(second)
+        );
+        let mut reader = BufReader::new(input.as_bytes());
+
+        assert_eq!(read_frame(&mut reader).unwrap().unwrap(), first);
+        assert_eq!(read_frame(&mut reader).unwrap().unwrap(), second);
+        assert!(read_frame(&mut reader).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_write_frame_writes_newline_delimited_json() {
+        let mut output = Vec::new();
+        write_frame(&mut output, &jsonrpc_result(json!(1), json!({}))).unwrap();
+
+        assert_eq!(output.last(), Some(&b'\n'));
+        let body = &output[..output.len() - 1];
+        let parsed: Value = serde_json::from_slice(body).unwrap();
+        assert_eq!(parsed["id"], json!(1));
+    }
+
+    #[test]
+    fn test_unknown_method_returns_visible_jsonrpc_error() {
+        let response = handle_request(RpcRequest {
+            jsonrpc: Some("2.0".to_string()),
+            id: Some(json!(1)),
+            method: "unsupported/method".to_string(),
+            params: json!({}),
+        })
+        .expect("unsupported requests should receive a response");
+
+        assert_eq!(response["error"]["code"], json!(-32601));
+        assert_eq!(response["id"], json!(1));
     }
 
     #[test]

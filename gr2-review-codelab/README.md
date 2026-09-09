@@ -9,21 +9,26 @@ This walkthrough teaches the five-verb frozen-range review workflow by running i
 Create an isolated Python environment outside any agent workspace:
 
 ```bash
-python3 -m venv /tmp/gr2-learn-venv
-source /tmp/gr2-learn-venv/bin/activate
+VENV="$(mktemp -d)/venv"
+python3 -m venv "$VENV"
+source "$VENV/bin/activate"
 pip install -U pip
 pip install gitgrip==1.5.0
 ```
+
+The `VENV` and `TEST_ROOT` variables live in the current shell only, so the entire walkthrough runs in one terminal session without reopening it.
 
 Verify the install:
 
 ```bash
 which gr2
-/tmp/gr2-learn-venv/bin/gr2
+/var/folders/XX/XXXXXXX/T/tmp.XXXXXX/venv/bin/gr2
 
 python3 -c "import gr2; print(gr2.__file__)"
-/tmp/gr2-learn-venv/lib/python3.13/site-packages/gr2/__init__.py
+/var/folders/XX/XXXXXXX/T/tmp.XXXXXX/venv/lib/python3.13/site-packages/gr2/__init__.py
 ```
+
+(Your `mktemp` path will differ; shown here as an example under `/var/folders`.)
 
 **A note on deprecation**: The wheel includes a `gr2_overlay` shim for backward compatibility. On import, you may see:
 
@@ -38,7 +43,7 @@ This is expected. Use `import gr2.overlay` directly; `gr2_overlay` is the deprec
 Set up a test workspace with two bare git repositories (the remotes) and two working clones (where you'll make changes):
 
 ```bash
-TEST_ROOT="/tmp/gr2-test-workspace"
+TEST_ROOT="$(mktemp -d)/gr2-test-workspace"
 mkdir -p "$TEST_ROOT/remotes"
 
 # Create bare repos
@@ -111,23 +116,25 @@ Now run the five verbs:
 Initialize the workspace for review:
 
 ```bash
-gr2 grip init /tmp/gr2-test-workspace
+gr2 grip init "$TEST_ROOT"
 ```
 
 **Output**:
 ```
-Initialized .grip/ at /private/tmp/gr2-test-workspace
+Initialized .grip/ at <TEST_ROOT>
 ```
+
+(Your mktemp path differs; the output shows your TEST_ROOT's expanded path.)
 
 ### Verb 2: review bind
 
 Bind a review commit from the frozen range. **Critical**: specify `--ref refs/heads/main` to match your remote's branch (the default is `refs/heads/dev`; if your remote carries `main`, you must say so or bind will refuse with "base_not_live_head: expected '<sha>', observed ''").
 
 ```bash
-gr2 review bind /tmp/gr2-test-workspace \
-  --from-range /tmp/gr2-test-workspace/frozen-range/range.patch \
+gr2 review bind "$TEST_ROOT" \
+  --from-range "$TEST_ROOT/frozen-range/range.patch" \
   --repo repo1 \
-  --remote /tmp/gr2-test-workspace/remotes/repo1.git \
+  --remote "$TEST_ROOT/remotes/repo1.git" \
   --base "$BASE" \
   --head "$HEAD" \
   --ref refs/heads/main
@@ -147,29 +154,30 @@ gr:66e685d19dbb7f93e1441cbf2ad88155114acc96
 Reconstruct the review lane from the bind commit. This clones the remote at the base, applies the frozen range, and asserts the tree matches the head:
 
 ```bash
-BIND_COMMIT="gr:66e685d19dbb7f93e1441cbf2ad88155114acc96"
-LANE_DIR="/tmp/gr2-test-workspace/review-lane"
+# paste the bind commit printed by Verb 2
+BIND_COMMIT="gr:<paste-yours>"
+LANE_DIR="$TEST_ROOT/review-lane"
 
-gr2 review open-gr /tmp/gr2-test-workspace "$BIND_COMMIT" \
+gr2 review open-gr "$TEST_ROOT" "$BIND_COMMIT" \
   --lane-dir "$LANE_DIR" --enter
 ```
 
 **Output**:
 ```
-lane: /private/tmp/gr2-test-workspace/review-lane
+lane: <TEST_ROOT>/review-lane
 bound_head: b0cb66aa83066775e1eb733859d48735eafc21c6
 reconstructed_head: f80c0ebeaba66b19ad0d6c3a903c0fcb42cd84c7
 tree_match: True
 ```
 
-(The reconstructed_head differs from bound_head because git apply re-creates the commit; the tree is what matters, and tree_match: True means the content is correct.)
+(Your mktemp path differs; the output shows your TEST_ROOT's expanded path. The reconstructed_head differs from bound_head because git apply re-creates the commit; the tree is what matters, and tree_match: True means the content is correct.)
 
 ### Verb 4: review run
 
 Run tests inside the lane with the package installed. Both `--install` (the command to install the package into the lane) and `--package` (the module name to verify) are required:
 
 ```bash
-LANE_DIR="/tmp/gr2-test-workspace/review-lane"
+LANE_DIR="$TEST_ROOT/review-lane"
 
 gr2 review run "$LANE_DIR" --install "{venv} -m pip install -e {lane} pytest" --package gr2_test
 ```
@@ -178,7 +186,7 @@ gr2 review run "$LANE_DIR" --install "{venv} -m pip install -e {lane} pytest" --
 ```
 green: selected=1 passed=1 failed=0 skipped=0 xfailed=0 errors=0
 bound_head_tree: 69f816abccb137ede7dbcaf8e53956c96105e0ae
-install resolved: /private/tmp/gr2-test-workspace/review-lane/gr2_test/__init__.py
+install resolved: <TEST_ROOT>/review-lane/gr2_test/__init__.py
 ```
 
 The `--install` command is executed in the lane's venv (use `{venv}` and `{lane}` substitution tokens as shown). The `--package` flag names the module that must be importable. Pytest must be included in the install command for the test run to proceed.
@@ -193,7 +201,7 @@ gr2 review close-gr "$LANE_DIR"
 
 **Output**:
 ```
-reclaimed /private/tmp/gr2-test-workspace/review-lane (gr:66e685d19dbb7f93e1441cbf2ad88155114acc96)
+reclaimed <TEST_ROOT>/review-lane (gr:66e685d19dbb7f93e1441cbf2ad88155114acc96)
 ```
 
 (The bind commit is the same as Verb 2's output because this is one continuous run: the package was set up before binding, so all five verbs operate on the same review artifact.)
@@ -214,4 +222,3 @@ The stranger's walk executed **9 shell commands** of setup (counting for-loops a
 - 2 commands to freeze the range
 
 Then, **zero commands outside the five gr2 verbs** to complete the review workflow.
-

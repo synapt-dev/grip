@@ -42,7 +42,7 @@ from pathlib import Path
 _HINT_NAME = ".review-install"
 
 
-_HINT_KEYS = frozenset({"install", "package"})
+_HINT_KEYS = frozenset({"install", "package", "runner", "test"})
 
 
 def _apply_install_placeholders(tokens: list[str], venv_python: Path, repo_dir: Path) -> list[str]:
@@ -160,10 +160,15 @@ _UNTRACKED_ALLOW_TOP = (_VENV_DIRNAME + "/",)
 _UNTRACKED_ALLOW_SEGMENTS = frozenset({"__pycache__", ".pytest_cache", ".mypy_cache"})
 
 
-def _is_allowlisted_untracked(rel_path: str) -> bool:
-    if rel_path in _UNTRACKED_ALLOW_NAMES:
+def _is_allowlisted_untracked(
+    rel_path: str,
+    extra_names: frozenset[str] = frozenset(),
+    extra_tops: tuple[str, ...] = (),
+) -> bool:
+    if rel_path in _UNTRACKED_ALLOW_NAMES or rel_path in extra_names:
         return True
-    if any(rel_path == pre.rstrip("/") or rel_path.startswith(pre) for pre in _UNTRACKED_ALLOW_TOP):
+    tops = _UNTRACKED_ALLOW_TOP + tuple(extra_tops)
+    if any(rel_path == pre.rstrip("/") or rel_path.startswith(pre) for pre in tops):
         return True
     segments = rel_path.strip("/").split("/")
     if any(seg in _UNTRACKED_ALLOW_SEGMENTS or seg.endswith(".egg-info") for seg in segments):
@@ -171,17 +176,28 @@ def _is_allowlisted_untracked(rel_path: str) -> bool:
     return False
 
 
-def assert_no_untracked_drift(repo_dir: Path) -> None:
+def assert_no_untracked_drift(
+    repo_dir: Path,
+    *,
+    extra_allow_names: frozenset[str] = frozenset(),
+    extra_allow_tops: tuple[str, ...] = (),
+) -> None:
     """Refuse if the lane holds any untracked path the run did not create. Without
     this an untracked `conftest.py` (or shadow module) that patches the package turns
     a failing tree green while the tracked-tree comparison passes. The complement of
-    `assert_lane_tree_bound`: dropping either reds only its own drift witness."""
+    `assert_lane_tree_bound`: dropping either reds only its own drift witness.
+
+    ``extra_allow_names``/``extra_allow_tops`` are a runner's OWN created outputs (a
+    cargo run writes `target/` and `Cargo.lock`, a jest run `node_modules/`/`coverage/`),
+    the language-specific analogue of the pytest path's `.venv`/receipt exemptions — so a
+    second `review run` on an un-gitignored lane does not refuse the first run's outputs as
+    drift."""
     out = _git(repo_dir, "status", "--porcelain")
     offending = []
     for line in out.splitlines():
         if line.startswith("?? "):
             rel = line[3:].strip().strip('"')
-            if not _is_allowlisted_untracked(rel):
+            if not _is_allowlisted_untracked(rel, extra_allow_names, extra_allow_tops):
                 offending.append(rel)
     if offending:
         raise ReviewRunRefused(
@@ -712,3 +728,113 @@ def _run_review_lane(
     }
     (lane_dir / _RECEIPT_NAME).write_text(json.dumps(receipt, indent=2) + "\n")
     return receipt
+
+
+# ---- the runner contract: `review run --test "<cmd>"` for any runner -----------
+#
+# The pytest path above is venv + pip + import-under-lane + pytest, and stays exactly
+# as it is. This path is for a NON-Python runner (cargo, jest, …): it keeps the two
+# language-agnostic trust checks — the tracked-tree comparison and the untracked-drift
+# refusal, so a green is still about the bound tree — then runs the declared test
+# command in the lane and takes the counts from THAT runner's own summary line (never
+# the exit code). A summary the parser cannot read is a refusal with the raw tail, not
+# a zero-green. No venv, no install, no import check: those are Python-specific and a
+# cargo/jest tree neither has nor needs them.
+
+def run_test_command_in_lane(
+    lane_dir: Path,
+    *,
+    runner: str,
+    test_command: list[str],
+) -> dict:
+    """Run a non-Python runner's test command in a bound lane and build a receipt.
+    ``runner`` selects the summary parser (review_runners.RUNNERS). Raises
+    ReviewRunRefused for a structural problem (no marker, tree drift, unknown runner,
+    unparseable summary, zero tests)."""
+    from .review_runners import RUNNERS, RUNNER_CREATED_PATHS, parse_runner_summary
+
+    lane_dir = Path(lane_dir).resolve()
+    try:
+        if runner not in RUNNERS:
+            raise ReviewRunRefused(
+                "unknown_runner",
+                f"runner {runner!r} has no summary parser; known runners: "
+                f"{sorted(RUNNERS)}",
+            )
+        marker = _read_marker(lane_dir)
+        repos = marker.get("repos", [])
+        if len(repos) != 1:
+            raise ReviewRunRefused(
+                "multi_repo_lane",
+                f"v1 review run handles a single-repo lane; marker binds {len(repos)} repos",
+            )
+        repo = repos[0]
+        repo_dir = lane_dir
+
+        # The two language-agnostic trust checks (same as the pytest path). The drift
+        # check exempts this runner's OWN created outputs (cargo: target/, Cargo.lock;
+        # jest: node_modules/, coverage/) so a second run on an un-gitignored lane does
+        # not refuse the first run's artifacts — the analogue of the pytest .venv/receipt
+        # exemptions.
+        created = RUNNER_CREATED_PATHS.get(runner, {"names": frozenset(), "tops": ()})
+        assert_lane_tree_bound(repo_dir, repo.get("bound_head_tree", ""))
+        assert_no_untracked_drift(
+            repo_dir,
+            extra_allow_names=created["names"],
+            extra_allow_tops=created["tops"],
+        )
+
+        try:
+            proc = subprocess.run(
+                test_command, text=True, capture_output=True, cwd=str(repo_dir)
+            )
+        except OSError as exc:
+            raise ReviewRunRefused(
+                "test_command_failed",
+                f"test command `{' '.join(test_command)}` could not run: {exc}",
+            )
+        output = proc.stdout + "\n" + proc.stderr
+        (lane_dir / _OUTPUT_LOG_NAME).write_text(output)
+
+        summary = parse_runner_summary(runner, output)
+        if summary is None:
+            tail = "\n".join(output.strip().splitlines()[-15:])
+            raise ReviewRunRefused(
+                "unparseable_summary",
+                f"no {runner} summary line found; refusing to call this a green "
+                f"(exit was {proc.returncode}). raw tail:\n{tail}",
+            )
+        if not summary.get("selected"):
+            raise ReviewRunRefused(
+                "zero_collected",
+                f"{runner} ran 0 tests (selected={summary.get('selected')}); "
+                "a zero-test run is not a green",
+            )
+
+        result = (
+            "green"
+            if (summary["passed"] >= 1 and summary["failed"] == 0 and summary["errors"] == 0)
+            else "red"
+        )
+        receipt = {
+            "kind": "review-run",
+            "created": datetime.now(timezone.utc).isoformat(),
+            "gr_commit": marker.get("gr_commit", ""),
+            "bound_head": repo.get("bound_head", ""),
+            "bound_head_tree": repo.get("bound_head_tree", ""),
+            "runner": runner,
+            "test_command": test_command,
+            "selected": summary["selected"],
+            "passed": summary["passed"],
+            "failed": summary["failed"],
+            "skipped": summary["skipped"],
+            "errors": summary["errors"],
+            "output_log": _OUTPUT_LOG_NAME,
+            "result": result,
+        }
+        (lane_dir / _RECEIPT_NAME).write_text(json.dumps(receipt, indent=2) + "\n")
+        return receipt
+    except ReviewRunRefused as exc:
+        if exc.code not in _NOT_A_LANE_CODES:
+            _write_refusal_receipt(lane_dir, exc)
+        raise

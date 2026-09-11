@@ -80,13 +80,26 @@ def test_base_unchanged_is_noop(tmp_path):
     assert not (tmp_path / "frozen-v2").exists()
 
 
-def test_unrelated_base_move_rebases_patch_id_identical(tmp_path):
+def test_unrelated_base_move_rebases_patch_id_identical(tmp_path, monkeypatch):
     origin, base = _origin_with_base(tmp_path)
     frozen = _frozen_range(tmp_path, origin, base)
     _move_base_unrelated(origin)
     author = tmp_path / "author"
     _git(author, "fetch", "-q", "origin")
     out = tmp_path / "frozen-v2"
+    # rebind's internal `git am` writes a commit, so it needs a committer identity.
+    # A CI runner has no global git config AND a domainless hostname, so git's
+    # auto-detected email is rejected there; rebind must set its own identity on the
+    # clone. Reproduce the no-global-config half here (GIT_CONFIG_GLOBAL=/dev/null,
+    # GIT_CONFIG_NOSYSTEM=1, identity env unset) so this run does not silently depend
+    # on the developer host's ~/.gitconfig. The hostname half is not reproducible off
+    # a runner, so a green here does not fully witness the fix — CI on the pushed head
+    # is the only complete witness (Stromus + Apollo, 2026-09-11).
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    for var in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+                "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.delenv(var, raising=False)
     res = rb.rebind(frozen, author, "refs/remotes/origin/dev", out)
     assert res.outcome == "rebased"
     assert res.patch_id_held is True

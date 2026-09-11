@@ -1,6 +1,0 @@
-# VERSION is generated at build time from ../Cargo.toml; carry it into the sdist
-# so a wheel built FROM the sdist (where Cargo.toml is absent) can read it.
-include VERSION
-# The in-tree build backend must travel in the sdist, or `build_wheel` from an
-# unpacked sdist cannot find backend-path=["_build"].
-graft _build

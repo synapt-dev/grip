@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import importlib.metadata
 import io
 import json
 import os
@@ -49,6 +50,30 @@ from .platform import PRRef, get_platform_adapter
 app = typer.Typer(
     help="Python-first gr2 CLI. This is the production UX proving layer before Rust."
 )
+
+
+def _version_callback(value: bool) -> None:
+    """`gr2 --version`: print the installed distribution version and exit. The
+    version is read from the package metadata (the static number in
+    gr2/pyproject.toml), the single source of truth — not a literal in code."""
+    if value:
+        typer.echo(importlib.metadata.version("gitgrip"))
+        raise typer.Exit()
+
+
+@app.callback()
+def _root(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show the gr2 version and exit.",
+    ),
+) -> None:
+    """gr2 workspace CLI."""
+
+
 repo_app = typer.Typer(help="Repo maintenance and inspection")
 lane_app = typer.Typer(help="Lane creation and navigation")
 lease_app = typer.Typer(help="Lane lease operations")

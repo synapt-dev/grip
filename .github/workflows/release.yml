@@ -1,9 +1,17 @@
 name: Release
 
+# Two release lines share this one workflow, keyed by tag pattern (one file so the
+# PyPI trusted-publisher binding — repo + workflow filename + environment — stays
+# intact; a second workflow file would break it):
+#   * gr1 (the Rust crate)   — tags  v1.x.y     -> GitHub binaries + crates.io only
+#   * gr2 (the Python dist)  — tags  gr2/v2.x.y -> GitHub wheel + PyPI only
+# `v*` matches only names beginning with `v`, so it never matches `gr2/v*`; the two
+# halves are disjoint. Every job carries `needs: ci`, so no publish runs on red CI.
 on:
   push:
     tags:
       - 'v*'
+      - 'gr2/v*'
 
 env:
   CARGO_TERM_COLOR: always
@@ -13,9 +21,11 @@ jobs:
     name: CI
     uses: ./.github/workflows/ci.yml
 
+  # ---- gr1 (Rust crate): v1.x.y -> binaries + crates.io ----------------------
   build:
     name: Build (${{ matrix.target }})
     needs: ci
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -79,51 +89,10 @@ jobs:
           name: gitgrip-${{ matrix.name }}
           path: gitgrip-${{ matrix.name }}.*
 
-  build-wheel:
-    name: Build Python wheel (gr2)
-    needs: ci
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      # The gr2 wheel's version is single-sourced from the repo-root Cargo.toml by
-      # the in-tree build backend, so it always equals the crate/tag version. Both
-      # sdist and wheel are built; the sdist carries the backend and VERSION.
-      - name: Build sdist + wheel
-        run: |
-          python -m pip install --upgrade build
-          python -m build --outdir dist gr2
-
-      - name: Assert wheel version equals the tag (PEP 440 normalized)
-        run: |
-          python -m pip install --quiet packaging
-          TAG="${GITHUB_REF#refs/tags/v}"
-          python - "$TAG" <<'PY'
-          import glob, re, sys
-          from packaging.version import Version
-          tag = Version(sys.argv[1])
-          whls = glob.glob("dist/gitgrip-*-py3-none-any.whl")
-          assert len(whls) == 1, f"expected one wheel, got {whls}"
-          built = Version(re.match(r"dist/gitgrip-(.+?)-py3-none-any\.whl", whls[0]).group(1))
-          # Version equality is PEP 440 normalized, so a pre-release tag (v1.5.0-rc1)
-          # matches the wheel's normalized form (1.5.0rc1) rather than the raw tag text.
-          assert built == tag, f"wheel {built} != tag {tag}"
-          print(f"wheel {built} == tag {tag}")
-          PY
-
-      - name: Upload Python dist artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: python-dist
-          path: dist/*
-
-  release:
-    name: Create Release
-    needs: [ci, build, build-wheel]
+  release-gr1:
+    name: Create Release (gr1)
+    needs: [ci, build]
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -171,13 +140,8 @@ jobs:
             cargo install gitgrip
             ```
 
-            ### From PyPI (the gr2 workspace CLI)
-
-            ```bash
-            pipx install gitgrip   # or: pip install gitgrip
-            ```
-
-            `cargo install gitgrip` provides `gr`; `pip install gitgrip` provides `gr2`. Same version, one product name.
+            `cargo install gitgrip` provides the `gr` CLI. The Python workspace CLI
+            (`gr2`) ships separately on PyPI under the `gr2/vX.Y.Z` tags.
 
             ### Verify Checksums
 
@@ -187,15 +151,15 @@ jobs:
           files: |
             artifacts/**/*.tar.gz
             artifacts/**/*.zip
-            artifacts/**/*.whl
             artifacts/**/*.sha256
           generate_release_notes: true
 
   publish-crates:
     name: Publish to crates.io
-    # Needs `release` so a failed release cannot leave an irreversible crates.io
+    # Needs `release-gr1` so a failed release cannot leave an irreversible crates.io
     # publish behind it (they ran in parallel before this line).
-    needs: [ci, build, release]
+    needs: [ci, build, release-gr1]
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -208,11 +172,110 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish --locked
 
+  # ---- gr2 (Python dist): gr2/v2.x.y -> wheel + PyPI -------------------------
+  build-wheel:
+    name: Build Python wheel (gr2)
+    needs: ci
+    if: startsWith(github.ref, 'refs/tags/gr2/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # The gr2 distribution owns its version (static in gr2/pyproject.toml), so the
+      # wheel version is independent of the Rust crate. Both sdist and wheel are built.
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build --outdir dist gr2
+
+      - name: Assert wheel version equals the tag (PEP 440 normalized)
+        run: |
+          python -m pip install --quiet packaging
+          # gr2 tags are gr2/vX.Y.Z, so strip the gr2/v prefix to get the version.
+          TAG="${GITHUB_REF#refs/tags/gr2/v}"
+          python - "$TAG" <<'PY'
+          import glob, re, sys
+          from packaging.version import Version
+          tag = Version(sys.argv[1])
+          whls = glob.glob("dist/gitgrip-*-py3-none-any.whl")
+          assert len(whls) == 1, f"expected one wheel, got {whls}"
+          built = Version(re.match(r"dist/gitgrip-(.+?)-py3-none-any\.whl", whls[0]).group(1))
+          # Version equality is PEP 440 normalized, so a pre-release tag (gr2/v2.0.0a1)
+          # matches the wheel's normalized form (2.0.0a1) rather than the raw tag text.
+          assert built == tag, f"wheel {built} != tag {tag}"
+          print(f"wheel {built} == tag {tag}")
+          PY
+
+      - name: Upload Python dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-dist
+          path: dist/*
+
+  release-gr2:
+    name: Create Release (gr2)
+    needs: [ci, build-wheel]
+    if: startsWith(github.ref, 'refs/tags/gr2/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Python dist
+        uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/gr2/v}" >> $GITHUB_OUTPUT
+
+      - name: Create checksums
+        run: |
+          cd artifacts
+          find . -type f \( -name "*.whl" -o -name "*.tar.gz" \) -exec sh -c 'sha256sum "$1" > "$1.sha256"' _ {} \;
+          cat *.sha256
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: gitgrip (gr2) v${{ steps.version.outputs.version }}
+          body: |
+            ## gr2 — the Python workspace CLI
+
+            ### From PyPI
+
+            ```bash
+            pipx install gitgrip   # or: pip install gitgrip
+            ```
+
+            `pip install gitgrip` provides the `gr2` CLI. The Rust CLI (`gr`) ships
+            separately on crates.io and GitHub under the `vX.Y.Z` tags.
+
+            ### Verify Checksums
+
+            ```bash
+            sha256sum -c gitgrip-*.sha256
+            ```
+          files: |
+            artifacts/**/*.whl
+            artifacts/**/*.tar.gz
+            artifacts/**/*.sha256
+          generate_release_notes: true
+
   publish-pypi:
     name: Publish to PyPI
-    # Needs `release` too: a PyPI upload is irreversible (a version can never be
+    # Needs `release-gr2` too: a PyPI upload is irreversible (a version can never be
     # re-uploaded), so it must not run if the release job failed.
-    needs: [ci, build-wheel, release]
+    needs: [ci, build-wheel, release-gr2]
+    if: startsWith(github.ref, 'refs/tags/gr2/v')
     runs-on: ubuntu-latest
     # Trusted publishing (OIDC): no token secret. Requires a one-time PyPI
     # trusted-publisher configuration for the `gitgrip` project bound to this

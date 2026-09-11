@@ -520,7 +520,7 @@ def _consume_lane_transition(outcome: lane_proto.LaneTransitionOutcome | int) ->
 @sync_app.command("status")
 def sync_status(
     workspace_root: Path,
-    dirty_mode: str = typer.Option("stash", "--dirty", help="Dirty-state handling: stash, block, or discard"),
+    dirty_mode: str = typer.Option("block", "--dirty", help="Dirty-state handling: block (stop, the default), stash, or discard"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Inspect workspace-wide sync readiness without mutating any repo state."""
@@ -535,7 +535,7 @@ def sync_status(
 @sync_app.command("run")
 def sync_run(
     workspace_root: Path,
-    dirty_mode: str = typer.Option("stash", "--dirty", help="Dirty-state handling: stash, block, or discard"),
+    dirty_mode: str = typer.Option("block", "--dirty", help="Dirty-state handling: block (stop, the default), stash, or discard"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Execute the current sync plan, stopping on the first blocking runtime failure."""

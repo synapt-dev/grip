@@ -200,6 +200,16 @@ fn require_tmux() -> anyhow::Result<()> {
     }
 }
 
+/// Whether `tmux -V` runs successfully. Unlike [`require_tmux`], returns a bool
+/// so the caller can fall back to a foreground launch instead of refusing.
+fn tmux_available() -> bool {
+    Command::new("tmux")
+        .arg("-V")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// Check if a tmux session exists.
 fn session_exists(session_name: &str) -> bool {
     Command::new("tmux")
@@ -601,15 +611,235 @@ fn verify_launch_started(
 // Subcommand: up
 // ---------------------------------------------------------------------------
 
+/// Build the launch inputs for one agent: its worktree path, the environment the
+/// launch script exports, the exact command a pane would `exec`, and the process
+/// name to verify (None in mock mode). Shared by the tmux path and the foreground
+/// fallback so both run a byte-identical command.
+#[allow(clippy::too_many_arguments)]
+fn build_agent_launch(
+    config: &SpawnConfig,
+    workspace_root: &Path,
+    agent: &AgentConfig,
+    name: &str,
+    agent_id: &str,
+    channel: &str,
+    mock_mode: bool,
+) -> anyhow::Result<(PathBuf, HashMap<String, String>, String, Option<String>)> {
+    let worktree_path = resolve_worktree_path(workspace_root, &agent.worktree);
+
+    // Build environment variables for the launch script — GRIPSPACE_ROOT +
+    // stable identity/recall namespace first, then config/env overrides.
+    // The namespace describes the agent's desk, not whichever child
+    // repository the runtime enters during a turn.
+    let grip_root = workspace_root.display();
+    let mut launch_env = HashMap::new();
+    launch_env.insert("GRIPSPACE_ROOT".to_string(), grip_root.to_string());
+    launch_env.insert("SYNAPT_AGENT_ID".to_string(), agent_id.to_string());
+    launch_env.insert("SYNAPT_AGENT_NAME".to_string(), name.to_string());
+    launch_env.insert(
+        "SYNAPT_RECALL_WORKTREE".to_string(),
+        worktree_path
+            .file_name()
+            .and_then(|part| part.to_str())
+            .unwrap_or(name)
+            .to_string(),
+    );
+    launch_env.insert("AGENT_NAME".to_string(), name.to_string());
+    launch_env.insert("AGENT_ROLE".to_string(), agent.role.clone());
+    launch_env.insert("SYNAPT_CHANNELS".to_string(), channel.to_string());
+    launch_env.insert(
+        "SYNAPT_LOOP_INTERVAL".to_string(),
+        agent.loop_interval.clone(),
+    );
+    launch_env.extend(config.spawn.env.clone());
+    launch_env.extend(agent.env.clone());
+
+    let codex_startup_prompt = if !mock_mode && agent.tool == "codex" {
+        read_agent_startup_prompt(workspace_root, agent).map_err(|e| {
+            anyhow::anyhow!("failed to load Codex startup prompt for {}: {}", name, e)
+        })?
+    } else {
+        String::new()
+    };
+
+    // Build the launch command
+    let (launch_cmd, expected_process) = if mock_mode {
+        let message = format!(
+            "Agent {} would launch here (role: {}, model: {})",
+            name, agent.role, agent.model
+        );
+        let inner = format!("printf '%s\\n' {}; exec sleep 86400", shell_quote(&message));
+        (
+            shell_join(&["bash".to_string(), "-lc".to_string(), inner]),
+            None,
+        )
+    } else {
+        // Resolve tool config
+        let tool_config = config.tools.get(&agent.tool);
+        let binary = tool_config
+            .map(|t| t.binary.as_str())
+            .unwrap_or(&agent.tool);
+
+        // Build: binary + cmd + tool args + agent args
+        // cmd: agent cmd overrides tool cmd (if agent has it)
+        let cmd_parts: &[String] = if !agent.cmd.is_empty() {
+            &agent.cmd
+        } else {
+            tool_config.map(|t| t.cmd.as_slice()).unwrap_or(&[])
+        };
+
+        // Tool-level args, composed before the agent's own args (agent overrides)
+        let tool_args: &[String] = tool_config.map(|t| t.args.as_slice()).unwrap_or(&[]);
+
+        // Resolve relative paths against gripspace root
+        // (griptrees don't have .gitgrip/, so paths need to be absolute)
+        let resolve = |arg: &str| -> String {
+            if arg.starts_with(".gitgrip/") || arg.starts_with("prompts/") {
+                workspace_root.join(arg).display().to_string()
+            } else {
+                arg.to_string()
+            }
+        };
+
+        let resolved_defaults: Vec<String> = tool_args.iter().map(|s| resolve(s)).collect();
+        let resolved_args: Vec<String> = agent.args.iter().map(|s| resolve(s)).collect();
+
+        // Strip --resume when no prior session exists (#579)
+        let has_resume = resolved_defaults.iter().any(|a| a == "--resume")
+            || resolved_args.iter().any(|a| a == "--resume");
+        let resolved_defaults: Vec<String> = if has_resume && !has_claude_session(&worktree_path) {
+            Output::info(&format!(
+                "  {} stripping --resume (no prior session for {})",
+                name,
+                worktree_path.display()
+            ));
+            resolved_defaults
+                .into_iter()
+                .filter(|a| a != "--resume")
+                .collect()
+        } else {
+            resolved_defaults
+        };
+        let resolved_args: Vec<String> = if has_resume && !has_claude_session(&worktree_path) {
+            resolved_args
+                .into_iter()
+                .filter(|a| a != "--resume")
+                .collect()
+        } else {
+            resolved_args
+        };
+
+        // Inject --model from agent.model if not already in args (#472)
+        let has_model_flag = resolved_args.iter().any(|a| a == "--model")
+            || resolved_defaults.iter().any(|a| a == "--model");
+        let model_inject: Vec<String> = if !has_model_flag && !agent.model.is_empty() {
+            vec!["--model".into(), agent.model.clone()]
+        } else {
+            vec![]
+        };
+
+        let parts = assemble_launch_parts(
+            binary,
+            cmd_parts,
+            &resolved_defaults,
+            &model_inject,
+            &resolved_args,
+        );
+        (
+            finalize_launch_command(parts, &agent.tool, &codex_startup_prompt, &launch_env),
+            Some(expected_process_name(binary)),
+        )
+    };
+
+    Ok((worktree_path, launch_env, launch_cmd, expected_process))
+}
+
+/// Run one named agent in the foreground of the current terminal — the fallback
+/// when no multiplexer is available (native Windows, a bare container) or when
+/// `--interactive` is passed. Interactive mode is one agent only; a fleet with no
+/// multiplexer refuses and names the single-agent form.
+fn run_spawn_up_foreground(
+    config: &SpawnConfig,
+    workspace_root: &Path,
+    targets: &[&str],
+    agent_ids: &HashMap<String, String>,
+    mock_mode: bool,
+    tmux_ok: bool,
+) -> anyhow::Result<()> {
+    if targets.len() != 1 {
+        anyhow::bail!(
+            "interactive launch runs a single agent in this terminal{}.\n\
+             Name one agent:\n    gr spawn up <agent> --interactive\n\
+             Launching the whole fleet without a multiplexer is not yet supported.",
+            if tmux_ok {
+                ""
+            } else {
+                ", and tmux was not found"
+            }
+        );
+    }
+
+    let name = targets[0];
+    let agent = &config.agents[name];
+    let channel = agent.channel.as_deref().unwrap_or(&config.spawn.channel);
+    let agent_id = agent_ids[name].clone();
+
+    let (worktree_path, launch_env, launch_cmd, _expected_process) = build_agent_launch(
+        config,
+        workspace_root,
+        agent,
+        name,
+        &agent_id,
+        channel,
+        mock_mode,
+    )?;
+
+    let launch_script = write_launch_script(
+        workspace_root,
+        name,
+        &launch_env,
+        &worktree_path,
+        &launch_cmd,
+    )?;
+
+    println!();
+    Output::header(&format!(
+        "Launching {} in this terminal (cwd {})...",
+        name,
+        worktree_path.display()
+    ));
+    println!();
+
+    // The launch script exports the env, cds into the worktree and execs the
+    // same command a pane would run; run it in the foreground and inherit stdio.
+    let status = Command::new("bash").arg(&launch_script).status()?;
+    if !status.success() {
+        anyhow::bail!(
+            "agent '{}' exited with {}",
+            name,
+            status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "a signal".to_string())
+        );
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn run_spawn_up(
     agent_filter: Option<String>,
     config_path: Option<String>,
     force_mock: bool,
+    interactive: bool,
     verbose: bool,
     _quiet: bool,
     _json: bool,
 ) -> anyhow::Result<()> {
-    require_tmux()?;
+    // When tmux is absent (native Windows, a bare container) or --interactive is
+    // passed, fall back to a single-agent foreground launch instead of refusing.
+    let tmux_ok = tmux_available();
+    let interactive_mode = interactive || !tmux_ok;
     let (config, workspace_root) = load_config(config_path.as_deref())?;
     let session = &config.spawn.session_name;
     let mock_mode = force_mock || config.spawn.mock_launch;
@@ -660,6 +890,24 @@ pub fn run_spawn_up(
         })?;
     }
 
+    // Interactive / no-multiplexer fallback: run one named agent in the
+    // foreground of this terminal. Everything above (id registration, routing
+    // file) has already run, so the foreground agent has the same identity a
+    // pane would.
+    if interactive_mode {
+        return run_spawn_up_foreground(
+            &config,
+            &workspace_root,
+            &targets,
+            &agent_ids,
+            mock_mode,
+            tmux_ok,
+        );
+    }
+    // The tmux path. Keep the original guard so a no-tmux box that reached here
+    // (only possible if tmux disappeared mid-run) gets a clear message.
+    require_tmux()?;
+
     // Ensure tmux session exists
     if !session_exists(session) {
         create_session(session)?;
@@ -699,132 +947,15 @@ pub fn run_spawn_up(
         // Stable IDs were resolved before any pane or routing-file mutation.
         let agent_id = agent_ids[*name].clone();
 
-        let worktree_path = resolve_worktree_path(&workspace_root, &agent.worktree);
-
-        // Build environment variables for the launch script — GRIPSPACE_ROOT +
-        // stable identity/recall namespace first, then config/env overrides.
-        // The namespace describes the agent's desk, not whichever child
-        // repository the runtime enters during a turn.
-        let grip_root = workspace_root.display();
-        let mut launch_env = HashMap::new();
-        launch_env.insert("GRIPSPACE_ROOT".to_string(), grip_root.to_string());
-        launch_env.insert("SYNAPT_AGENT_ID".to_string(), agent_id.clone());
-        launch_env.insert("SYNAPT_AGENT_NAME".to_string(), name.to_string());
-        launch_env.insert(
-            "SYNAPT_RECALL_WORKTREE".to_string(),
-            worktree_path
-                .file_name()
-                .and_then(|part| part.to_str())
-                .unwrap_or(name)
-                .to_string(),
-        );
-        launch_env.insert("AGENT_NAME".to_string(), name.to_string());
-        launch_env.insert("AGENT_ROLE".to_string(), agent.role.clone());
-        launch_env.insert("SYNAPT_CHANNELS".to_string(), channel.to_string());
-        launch_env.insert(
-            "SYNAPT_LOOP_INTERVAL".to_string(),
-            agent.loop_interval.clone(),
-        );
-        launch_env.extend(config.spawn.env.clone());
-        launch_env.extend(agent.env.clone());
-
-        let codex_startup_prompt = if !mock_mode && agent.tool == "codex" {
-            read_agent_startup_prompt(&workspace_root, agent).map_err(|e| {
-                anyhow::anyhow!("failed to load Codex startup prompt for {}: {}", name, e)
-            })?
-        } else {
-            String::new()
-        };
-
-        // Build and send launch command
-        let (launch_cmd, expected_process) = if mock_mode {
-            let message = format!(
-                "Agent {} would launch here (role: {}, model: {})",
-                name, agent.role, agent.model
-            );
-            let inner = format!("printf '%s\\n' {}; exec sleep 86400", shell_quote(&message));
-            (
-                shell_join(&["bash".to_string(), "-lc".to_string(), inner]),
-                None,
-            )
-        } else {
-            // Resolve tool config
-            let tool_config = config.tools.get(&agent.tool);
-            let binary = tool_config
-                .map(|t| t.binary.as_str())
-                .unwrap_or(&agent.tool);
-
-            // Build: binary + cmd + tool args + agent args
-            // cmd: agent cmd overrides tool cmd (if agent has it)
-            let cmd_parts: &[String] = if !agent.cmd.is_empty() {
-                &agent.cmd
-            } else {
-                tool_config.map(|t| t.cmd.as_slice()).unwrap_or(&[])
-            };
-
-            // Tool-level args, composed before the agent's own args (agent overrides)
-            let tool_args: &[String] = tool_config.map(|t| t.args.as_slice()).unwrap_or(&[]);
-
-            // Resolve relative paths against gripspace root
-            // (griptrees don't have .gitgrip/, so paths need to be absolute)
-            let resolve = |arg: &str| -> String {
-                if arg.starts_with(".gitgrip/") || arg.starts_with("prompts/") {
-                    workspace_root.join(arg).display().to_string()
-                } else {
-                    arg.to_string()
-                }
-            };
-
-            let resolved_defaults: Vec<String> = tool_args.iter().map(|s| resolve(s)).collect();
-            let resolved_args: Vec<String> = agent.args.iter().map(|s| resolve(s)).collect();
-
-            // Strip --resume when no prior session exists (#579)
-            let has_resume = resolved_defaults.iter().any(|a| a == "--resume")
-                || resolved_args.iter().any(|a| a == "--resume");
-            let resolved_defaults: Vec<String> =
-                if has_resume && !has_claude_session(&worktree_path) {
-                    Output::info(&format!(
-                        "  {} stripping --resume (no prior session for {})",
-                        name,
-                        worktree_path.display()
-                    ));
-                    resolved_defaults
-                        .into_iter()
-                        .filter(|a| a != "--resume")
-                        .collect()
-                } else {
-                    resolved_defaults
-                };
-            let resolved_args: Vec<String> = if has_resume && !has_claude_session(&worktree_path) {
-                resolved_args
-                    .into_iter()
-                    .filter(|a| a != "--resume")
-                    .collect()
-            } else {
-                resolved_args
-            };
-
-            // Inject --model from agent.model if not already in args (#472)
-            let has_model_flag = resolved_args.iter().any(|a| a == "--model")
-                || resolved_defaults.iter().any(|a| a == "--model");
-            let model_inject: Vec<String> = if !has_model_flag && !agent.model.is_empty() {
-                vec!["--model".into(), agent.model.clone()]
-            } else {
-                vec![]
-            };
-
-            let parts = assemble_launch_parts(
-                binary,
-                cmd_parts,
-                &resolved_defaults,
-                &model_inject,
-                &resolved_args,
-            );
-            (
-                finalize_launch_command(parts, &agent.tool, &codex_startup_prompt, &launch_env),
-                Some(expected_process_name(binary)),
-            )
-        };
+        let (worktree_path, launch_env, launch_cmd, expected_process) = build_agent_launch(
+            &config,
+            &workspace_root,
+            agent,
+            name,
+            &agent_id,
+            channel,
+            mock_mode,
+        )?;
 
         if verbose {
             Output::info(&format!("  {name} launch command: {launch_cmd}"));

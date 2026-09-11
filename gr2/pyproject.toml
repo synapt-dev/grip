@@ -29,6 +29,7 @@ dependencies = [
 
 [project.scripts]
 gr2 = "gr2.python_cli.app:main"
+git-review = "gr2.python_cli.git_review:main"
 
 [project.optional-dependencies]
 dev = [

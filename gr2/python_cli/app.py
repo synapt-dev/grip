@@ -2324,33 +2324,67 @@ def review_run(
     python: Optional[str] = typer.Option(None, "--python", help="Interpreter to build the lane venv from; defaults to the running interpreter. Recorded in the receipt."),
     system_site_packages: bool = typer.Option(False, "--system-site-packages", help="Create the lane venv with --system-site-packages (host tools visible)"),
     install: Optional[str] = typer.Option(None, "--install", help="Install command (shell-split); `{venv}` and `{lane}` are substituted per token, same as the .review-install hint. Defaults to the lane's .review-install hint, else `<venv python> -m pip install -e <lane>`"),
+    runner: Optional[str] = typer.Option(None, "--runner", help="Test runner: pytest (default), cargo, or jest. With a non-pytest runner the venv/install/import steps are skipped; counts come from that runner's summary line. Defaults to the lane's .review-install `runner`."),
+    test: Optional[str] = typer.Option(None, "--test", help="Test command (shell-split) for a non-pytest runner, e.g. `cargo test` or `npx jest`. Defaults to the lane's .review-install `test` line, so a stranger types nothing."),
     json_output: bool = typer.Option(False, "--json", help="Emit the receipt as JSON"),
     pytest_args: Optional[List[str]] = typer.Argument(None, help="Args passed to pytest after `--` (every -k/-p/path filter is recorded)"),
 ) -> None:
-    """The review-owned in-lane test run: create `<lane>/.venv`, install the
-    reconstructed tree, and run pytest — but only after the lane's tree is proven to
-    equal the bound head-tree and the import resolves under the lane. Counts come
-    from pytest's summary line, never the exit code; a zero-test or unparseable run
-    is a refusal, not a green."""
+    """The review-owned in-lane test run. For the default pytest runner: create
+    `<lane>/.venv`, install the reconstructed tree, and run pytest — only after the
+    lane's tree is proven to equal the bound head-tree and the import resolves under the
+    lane. For a non-pytest runner (`--runner cargo|jest`, or the lane's `.review-install`
+    declares one), the language-agnostic tree checks still run, then the declared test
+    command runs in the lane. Counts always come from the runner's own summary line,
+    never the exit code; a zero-test or unparseable run is a refusal, not a green."""
     import shlex
 
     from . import review_run as rr
 
-    install_cmd = shlex.split(install) if install else None
+    # Resolve runner + test command from the flags, else the lane's .review-install hint,
+    # so a stranger who cloned a repo that declares itself types nothing.
     try:
-        receipt = rr.run_review_lane(
-            lane_dir.resolve(),
-            package=package,
-            pytest_args=list(pytest_args or []),
-            python=python,
-            install=install_cmd,
-            system_site_packages=system_site_packages,
-        )
+        hint = rr.read_install_hint(lane_dir.resolve()) or {}
+    except rr.ReviewRunRefused as exc:
+        typer.echo(f"refused: {exc}", err=True)
+        raise typer.Exit(code=2)
+    eff_runner = runner or hint.get("runner") or "pytest"
+    eff_test = test or hint.get("test")
+
+    try:
+        if eff_runner == "pytest" and test is not None:
+            # Refuse rather than silently ignore: a --test command with the pytest
+            # runner means the caller expected that command to run, and dropping it would
+            # run pytest instead and call the result a green about the wrong thing.
+            raise rr.ReviewRunRefused(
+                "test_with_pytest",
+                "--test is for a non-pytest runner; the pytest runner builds its own "
+                "pytest invocation. Pass --runner cargo|jest with --test, or drop --test.",
+            )
+        if eff_runner != "pytest":
+            if not eff_test:
+                raise rr.ReviewRunRefused(
+                    "no_test_command",
+                    f"runner {eff_runner!r} needs a test command; pass --test "
+                    "or declare `test = …` in the lane's .review-install",
+                )
+            receipt = rr.run_test_command_in_lane(
+                lane_dir.resolve(), runner=eff_runner, test_command=shlex.split(eff_test)
+            )
+        else:
+            install_cmd = shlex.split(install) if install else None
+            receipt = rr.run_review_lane(
+                lane_dir.resolve(),
+                package=package,
+                pytest_args=list(pytest_args or []),
+                python=python,
+                install=install_cmd,
+                system_site_packages=system_site_packages,
+            )
     except rr.ReviewRunRefused as exc:
         typer.echo(f"refused: {exc}", err=True)
         if json_output:
             # review-run door 2: a refusal is machine-readable too, mirroring the
-            # refusal receipt run_review_lane wrote into the lane. Exit stays 2.
+            # refusal receipt the run wrote into the lane. Exit stays 2.
             typer.echo(json.dumps({
                 "kind": "review-run",
                 "result": "refused",
@@ -2360,6 +2394,13 @@ def review_run(
         raise typer.Exit(code=2)
     if json_output:
         typer.echo(json.dumps(receipt, indent=2))
+    elif receipt.get("runner"):  # non-pytest runner receipt (no venv/import fields)
+        typer.echo(
+            f"{receipt['result']} ({receipt['runner']}): selected={receipt['selected']} "
+            f"passed={receipt['passed']} failed={receipt['failed']} "
+            f"skipped={receipt['skipped']} errors={receipt['errors']}"
+        )
+        typer.echo(f"bound_head_tree: {receipt['bound_head_tree']}")
     else:
         typer.echo(
             f"{receipt['result']}: selected={receipt['selected']} "

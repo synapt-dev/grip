@@ -64,7 +64,7 @@ def make_spec(
 
 def pins_from_lane(workspace_root: Path, owner_unit: str, lane_name: str) -> list[ProjectReviewPin]:
     """Build project-review pins for a materialized lane, reading each repo's base
-    from the RECORDED fork base (the fork-base ruling), never from HEAD^.
+    from the RECORDED fork base, never from HEAD^.
 
     A review is measured from the point the lane forked from its integration
     branch; that coordinate is recorded at lane create and read here through the
@@ -238,8 +238,8 @@ def open_project_review(*, workspace: Path, owner_unit: str, lane_name: str, spe
     # label on the author's own worktree — its bytes live in a tree the author
     # keeps editing, so it cannot give the exact-reconstruction guarantee across
     # rows. Refuse it here with a specific message rather than letting the later
-    # create_lane emit a generic "refusing to replace" (gr2-lane-author-shape
-    # ruling: bound lanes are single-repo `pr` only).
+    # create_lane emit a generic "refusing to replace" (bound lanes are
+    # single-repo `pr` only).
     lane_path = lanes.lane_file(workspace, owner_unit, lane_name)
     if lane_path.exists():
         try:

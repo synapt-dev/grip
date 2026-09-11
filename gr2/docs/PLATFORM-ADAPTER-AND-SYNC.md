@@ -161,7 +161,7 @@ These are the surfaces consumers and QA read.
 
 1. Dirty state is explicit, not implicit.
    `sync` accepts `--dirty=stash|block|discard`.
-   Default is `stash`, per Sprint 20 ruling.
+   Default is `stash`.
 
 2. Lanes are first-class.
    `sync` must treat shared repos and lane checkouts differently.

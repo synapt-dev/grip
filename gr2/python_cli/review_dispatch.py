@@ -20,7 +20,7 @@ _HEX_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
 
 def classify_open_target(target: str) -> str:
-    """Which open the argument names, per the ruling:
+    """Which open the argument names:
 
     - ``"gr"``      a ``gr:<sha>`` bind id, or a bare 7-40 hex sha (open-gr reconstruction)
     - ``"pr"``      an all-digits PR number (PR-head review lane)

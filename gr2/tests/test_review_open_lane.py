@@ -226,7 +226,7 @@ def test_run_in_review_lane_refuses_an_escaping_cwd_before_spawning(review_world
 # 5. the review record is EXACTLY the (repo, base, head) triple
 # --------------------------------------------------------------------------- #
 def test_review_record_is_the_pin_delta_triple_plus_lane_kind(review_world):
-    # Per the gr2-lane-author-shape ruling (2026-09-03), a receipt carries the
+    # By design, a receipt carries the
     # (repo, base, head) triple PLUS a required lane_kind stamp so a reader never
     # infers the reconstruction guarantee. open_review_lane always materializes
     # an isolated clone, so its receipt is stamped "materialized".

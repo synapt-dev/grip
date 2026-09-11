@@ -1708,20 +1708,56 @@ def review_checkout_pr(
 @review_app.command("open")
 def review_open(
     workspace_root: Path,
-    owner_unit: str,
-    repo: str,
-    pr_number: int,
+    target: str = typer.Argument(..., help="What to open: a PR number (PR-head lane), a gr:<sha> bind id (reconstruction), or a project-review id"),
+    repo: Optional[str] = typer.Argument(None, help="PR-head only: the repository key (with an owner_unit-shaped target)"),
+    pr_number: Optional[int] = typer.Argument(None, help="PR-head only: the PR number (legacy positional form)"),
     lane_name: Optional[str] = typer.Option(None, "--lane", help="Override the review lane name"),
     platform: str = typer.Option("github", "--platform", help="Platform adapter name"),
     run: Optional[str] = typer.Option(None, "--run", help="After opening, dispatch this command inside the lane (cwd-contained)"),
+    lane_dir: Optional[Path] = typer.Option(None, "--lane-dir", help="gr:<sha> only: directory to reconstruct into"),
+    enter: bool = typer.Option(False, "--enter", help="gr:<sha> only: materialize the reconstruction (the only open mode)"),
+    repo_key: Optional[str] = typer.Option(None, "--repo", help="gr:<sha> only: repository key to materialize; omit for every bound row"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Open an isolated review lane at a PR head over the grip#807 clone seam.
+    """Open a review lane. ``open`` decides on its POSITIONALS first, then its argument:
+
+    - the PR-head form is ``OWNER_UNIT REPO PR_NUMBER`` (three positionals): the
+      owner_unit is any word, so when both REPO and PR_NUMBER are present the target
+      is taken as the owner_unit and NOT classified;
+    - with only a lone target, ``open`` dispatches on its shape: a ``gr:<sha>`` bind id
+      (or bare sha) reconstructs from a review-bind commit (the former ``open-gr``,
+      now a hidden alias) -- needs ``--lane-dir`` and ``--enter``; anything else is a
+      project-review id (``open-project``, hidden alias). A lone PR number is refused
+      because a PR-head lane needs the OWNER_UNIT and REPO positionals too.
 
     A wrong head REFUSES (never warns); import resolution is printed so the run
-    cannot silently import a machine-wide install; the review is recorded as the
-    (repo, base pin, review head) triple. ``gr2 review close`` drops the lane.
+    cannot silently import a machine-wide install. ``gr2 review close`` drops the lane.
     """
+    from . import review_dispatch
+
+    # Positionals decide first. The PR-head form's first positional is an owner_unit
+    # (an arbitrary word that classifies as "project"), so classifying the target
+    # before reading REPO/PR_NUMBER would refuse every legacy PR-head open.
+    pr_head_positional = repo is not None and pr_number is not None
+    if not pr_head_positional:
+        kind = review_dispatch.classify_open_target(target)
+        if kind == "gr":
+            # dispatch to the reconstruction path (open-gr); target is the bind commit
+            if lane_dir is None:
+                raise typer.BadParameter("--lane-dir is required to open a gr:<sha> reconstruction")
+            return review_open_gr(
+                workspace_root, target, key=repo_key, lane_dir=lane_dir, enter=enter, json_output=json_output
+            )
+        if kind == "project":
+            raise typer.BadParameter(
+                "project-review open is not yet wired into the collapsed `open` (use the hidden `open-project` alias for now)"
+            )
+        # kind == "pr": a lone PR number cannot open a PR-head lane by itself.
+        raise typer.BadParameter("a PR-head open needs OWNER_UNIT REPO PR_NUMBER (target is the owner_unit)")
+
+    # PR-head path: the collapsed target IS the owner_unit; repo and pr_number follow.
+    owner_unit = target
+
     from . import review as review_mod
 
     workspace_root = workspace_root.resolve()
@@ -1790,13 +1826,29 @@ def review_open(
 
 @review_app.command("close")
 def review_close(
-    workspace_root: Path,
-    owner_unit: str,
-    repo: str,
-    pr_number: int,
+    target: Path = typer.Argument(..., help="What to close: a reconstruction lane dir (gr, read from its marker), or the WORKSPACE_ROOT of a PR-head lane"),
+    owner_unit: Optional[str] = typer.Argument(None, help="PR-head only: owner unit"),
+    repo: Optional[str] = typer.Argument(None, help="PR-head only: repository key"),
+    pr_number: Optional[int] = typer.Argument(None, help="PR-head only: PR number"),
     lane_name: Optional[str] = typer.Option(None, "--lane", help="Override the review lane name"),
+    json_output: bool = typer.Option(False, "--json", help="gr reconstruction only: machine-readable JSON"),
 ) -> None:
-    """Drop a review lane opened by ``gr2 review open``; the base workspace is untouched."""
+    """Drop a review lane. ``close`` reads the lane's marker to tell a reconstruction
+    lane from a PR lane: a directory carrying open-gr's
+    reconstruct marker is reclaimed via the former ``close-gr`` (hidden alias); anything
+    else is treated as a PR-head lane (target is the WORKSPACE_ROOT, then owner/repo/pr).
+    The base workspace is untouched.
+    """
+    from . import review_dispatch
+
+    if review_dispatch.classify_close_lane(target) == "reconstruction":
+        return review_close_gr(target, json_output=json_output)
+
+    # PR-head path: target is the WORKSPACE_ROOT.
+    workspace_root = target
+    if owner_unit is None or repo is None or pr_number is None:
+        raise typer.BadParameter("a PR-head close needs WORKSPACE_ROOT OWNER_UNIT REPO PR_NUMBER (target is the workspace_root)")
+
     from . import review as review_mod
 
     workspace_root = workspace_root.resolve()
@@ -1937,7 +1989,7 @@ def review_create_project(
             typer.echo(f"  {p.key}: {p.base[:12]}..{p.head[:12]} {p.repo}")
 
 
-@review_app.command("open-project")
+@review_app.command("open-project", hidden=True)  # hidden alias for one release, dropped at 2.0 GA
 def review_open_project(
     workspace_root: Path,
     commit: str = typer.Argument(..., help="The project-review-KIND gr commit (gr:<sha> or bare sha); create one with `review create-project`"),
@@ -2000,7 +2052,7 @@ def review_open_project(
         raise typer.Exit(code=1)
 
 
-@review_app.command("exit-gr")
+@review_app.command("exit-gr", hidden=True)  # hidden alias for one release, dropped at 2.0 GA
 def review_exit_gr(
     workspace_root: Path,
     owner_unit: str = typer.Argument(..., help="Owner unit whose review lane to exit"),
@@ -2162,7 +2214,7 @@ def review_bind(
     typer.echo(f"gr:{commit}")
 
 
-@review_app.command("open-gr")
+@review_app.command("open-gr", hidden=True)  # hidden alias for one release, dropped at 2.0 GA
 def review_open_gr(
     workspace_root: Path,
     commit: str = typer.Argument(..., help="The review bind commit, as gr:<sha> or a bare sha"),
@@ -2234,7 +2286,7 @@ def review_open_gr(
         typer.echo(f"tree_match: {result['bound_head_tree'] == result['reconstructed_tree']}")
 
 
-@review_app.command("close-gr")
+@review_app.command("close-gr", hidden=True)  # hidden alias for one release, dropped at 2.0 GA
 def review_close_gr(
     lane_dir: Path = typer.Argument(..., help="The open-gr reconstruction lane (the --lane-dir from `review open-gr --enter`) to reclaim"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),

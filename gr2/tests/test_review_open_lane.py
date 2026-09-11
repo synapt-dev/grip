@@ -297,7 +297,12 @@ def test_review_open_and_close_are_runtime_registered_verbs():
         cb = by_name[verb].callback
         assert callable(cb)
         params = inspect.signature(cb).parameters
-        assert "workspace_root" in params and "pr_number" in params
+        # the review-verb collapse: open/close dispatch on a
+        # `target` argument, and both retain `pr_number` for the PR-head path.
+        assert "target" in params and "pr_number" in params
+    # open still takes the workspace_root (it always operates within a workspace);
+    # close's target IS the thing to close (a reconstruction lane dir or a workspace).
+    assert "workspace_root" in inspect.signature(by_name["open"].callback).parameters
 
 
 # --------------------------------------------------------------------------- #

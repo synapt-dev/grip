@@ -244,7 +244,7 @@ def _plan_repo_names(plan: SyncPlan) -> list[str]:
 
 
 def build_sync_plan(
-    workspace_root: Path, *, dirty_mode: str = "stash", probe_remotes: bool = False
+    workspace_root: Path, *, dirty_mode: str = "block", probe_remotes: bool = False
 ) -> SyncPlan:
     """Build the sync plan. ``probe_remotes`` (step 4 of this fix, default OFF)
     runs one ``git ls-remote`` per DISTINCT remote url among the spec's repos
@@ -771,7 +771,7 @@ def _release_sync_lock(lock_fh) -> None:
     lock_fh.close()
 
 
-def run_sync(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncResult:
+def run_sync(workspace_root: Path, *, dirty_mode: str = "block") -> SyncResult:
     workspace_root = workspace_root.resolve()
     dirty_mode = _normalize_dirty_mode(dirty_mode)
     operation_id = _operation_id()

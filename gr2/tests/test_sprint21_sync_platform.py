@@ -1042,6 +1042,33 @@ def test_sync_run_dirty_block_reports_blocked_without_mutation(tmp_path: Path) -
     assert _stash_list(repo_root) == []
 
 
+def test_sync_run_default_dirty_mode_blocks_without_a_flag(tmp_path: Path) -> None:
+    """`gr2 repo status` describes a dirty repo's default policy as "stop by
+    default" (block_dirty); `sync run` now matches those words instead of
+    defaulting to stash-then-proceed. This is the same scenario as
+    test_sync_run_dirty_block_reports_blocked_without_mutation, with the
+    --dirty flag OMITTED, so the assertion is entirely about the DEFAULT
+    rather than an explicitly requested mode."""
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    _, repo_url = _init_bare_remote(tmp_path, "app")
+    _write_workspace_spec(workspace_root, "app", repo_url)
+    run_sync(workspace_root)
+
+    repo_root = workspace_root / "repos" / "app"
+    (repo_root / "README.md").write_text("dirty by default\n")
+
+    result = runner.invoke(app, ["sync", "run", str(workspace_root), "--json"])  # no --dirty
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "blocked"
+    assert payload["dirty_mode"] == "block"
+    assert "app" in payload["dirty_targets"]
+    assert any(item["code"] == "dirty_shared_repo" for item in payload["blocked"])
+    assert repo_root.joinpath("README.md").read_text() == "dirty by default\n"
+    assert _stash_list(repo_root) == []
+
+
 def test_sync_run_dirty_stash_stashes_changes_and_continues(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()

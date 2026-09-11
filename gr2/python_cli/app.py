@@ -70,7 +70,11 @@ app.add_typer(spec_app, name="spec")
 app.add_typer(exec_app, name="exec")
 app.add_typer(sync_app, name="sync")
 app.add_typer(target_app, name="target")
-app.add_typer(grip_app, name="grip")
+# The snapshot store over .grip/.git. Its verb is `store` (init/snapshot/log/diff/
+# checkout); `grip` stays as a hidden alias for one release so existing callers keep
+# working. Both names resolve to the same grip_app callbacks.
+app.add_typer(grip_app, name="store")
+app.add_typer(grip_app, name="grip", hidden=True)
 app.add_typer(config_cli_app, name="config")
 
 

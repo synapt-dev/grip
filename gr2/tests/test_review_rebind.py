@@ -188,5 +188,11 @@ def test_range_that_would_change_refuses(tmp_path):
     _git(origin, "commit", "-q", "-m", "touch b", "--no-gpg-sign")
     author = tmp_path / "author"
     _git(author, "fetch", "-q", "origin")
-    with pytest.raises(rb.RebindRefused):
+    with pytest.raises(rb.RebindRefused) as exc:
         rb.rebind(frozen, author, "refs/remotes/origin/dev", tmp_path / "frozen-v2")
+    # A non-zero `git am` is not always a content conflict (an unusable committer
+    # identity, a missing blob, a corrupt patch all land here), so the refusal must
+    # carry `git am`'s own stderr rather than a bare "conflict". On a real content
+    # collision `am` always writes to stderr, so the message names it. Blanking
+    # `detail` in review_rebind.rebind() reds this assertion.
+    assert "git am said:" in str(exc.value), str(exc.value)

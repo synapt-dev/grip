@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 
 from .gitops import (
+    ahead_behind,
     clone_repo,
     commits_between,
     conflicting_files,
@@ -19,9 +20,11 @@ from .gitops import (
     discard_if_dirty,
     ensure_lane_checkout,
     ensure_repo_cache,
+    fast_forward_to,
     fetch_repo,
     is_git_dir,
     is_git_repo,
+    probe_remote,
     repo_dirty,
     stash_if_dirty,
 )
@@ -240,7 +243,16 @@ def _plan_repo_names(plan: SyncPlan) -> list[str]:
     return sorted(dict.fromkeys(repo_names))
 
 
-def build_sync_plan(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncPlan:
+def build_sync_plan(
+    workspace_root: Path, *, dirty_mode: str = "stash", probe_remotes: bool = False
+) -> SyncPlan:
+    """Build the sync plan. ``probe_remotes`` (step 4 of this fix, default OFF)
+    runs one ``git ls-remote`` per DISTINCT remote url among the spec's repos
+    and turns a refusal into a non-blocking ``remote_unreachable`` issue --
+    surfacing it in ``sync status`` before ``sync run`` would hit it mid-way
+    through an operation. ``sync run``'s own internal plan-building never
+    passes this (it dials the network for real via seed/fetch anyway; a
+    second network round trip ahead of that would add nothing)."""
     workspace_root = workspace_root.resolve()
     dirty_mode = _normalize_dirty_mode(dirty_mode)
     spec_path = workspace_spec_path(workspace_root)
@@ -266,6 +278,28 @@ def build_sync_plan(workspace_root: Path, *, dirty_mode: str = "stash") -> SyncP
         )
 
     spec = load_workspace_spec_doc(workspace_root)
+
+    if probe_remotes:
+        repos_by_url: dict[str, list[str]] = {}
+        for repo in spec.get("repos", []):
+            repos_by_url.setdefault(str(repo["url"]), []).append(str(repo["name"]))
+        for url, repo_names in repos_by_url.items():
+            reachable, detail = probe_remote(url)
+            if reachable:
+                continue
+            for repo_name in repo_names:
+                issues.append(
+                    SyncIssue(
+                        level="warning",
+                        code="remote_unreachable",
+                        scope="shared_repo",
+                        subject=repo_name,
+                        message=f"remote unreachable for '{repo_name}': {detail or 'ls-remote failed'}",
+                        blocks=False,
+                        details={"url": url},
+                    )
+                )
+
     for repo in spec.get("repos", []):
         repo_name = str(repo["name"])
         repo_root = workspace_root / str(repo["path"])
@@ -523,7 +557,7 @@ def render_sync_plan(plan: SyncPlan) -> str:
 
 
 def sync_status_payload(workspace_root: Path) -> dict[str, object]:
-    return build_sync_plan(workspace_root).as_dict()
+    return build_sync_plan(workspace_root, probe_remotes=True).as_dict()
 
 
 def sync_status_json(workspace_root: Path) -> str:
@@ -550,7 +584,9 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
     if op.kind in {"seed_repo_cache", "refresh_repo_cache"}:
         repo_spec = _find_repo(spec, op.subject)
         cache_path = repo_cache_path(workspace_root, str(repo_spec["name"]))
-        created = ensure_repo_cache(str(repo_spec["url"]), cache_path)
+        repo_root = workspace_root / str(repo_spec["path"])
+        local_source = repo_root if is_git_repo(repo_root) else None
+        created = ensure_repo_cache(str(repo_spec["url"]), cache_path, local_source=local_source)
         _emit_sync_event(
             workspace_root,
             {
@@ -600,6 +636,17 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
         fetch_repo(repo_root)
         proc = _git_cmd(repo_root, "rev-parse", "--verify", tracking_ref)
         new_ref = proc.stdout.strip() if proc.returncode == 0 else None
+
+        # A CLEAN, non-diverged checkout fast-forwards to the
+        # tracking ref -- fetch alone leaves a "green sync" desk stale on
+        # code. Divergence (ahead>0, local commits origin lacks) is reported
+        # and the checkout is NEVER force-moved; dirty is a defensive guard
+        # only (stash_dirty_repo already ran ahead of this op in the plan).
+        ahead, behind = ahead_behind(repo_root, tracking_ref) if new_ref else (0, 0)
+        fast_forwarded = False
+        if new_ref and ahead == 0 and behind > 0 and not repo_dirty(repo_root):
+            fast_forwarded = fast_forward_to(repo_root, tracking_ref)
+
         _emit_sync_event(
             workspace_root,
             {
@@ -608,9 +655,19 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
                 "repo": op.subject,
                 "old_ref": old_ref,
                 "new_ref": new_ref,
+                "ahead": ahead,
+                "behind": behind,
+                "fast_forwarded": fast_forwarded,
             },
             after_outcome=True,
         )
+        if fast_forwarded:
+            return f"fetched and fast-forwarded shared repo '{op.subject}' ({behind} commit(s))"
+        if ahead > 0:
+            return (
+                f"fetched remote refs for shared repo '{op.subject}'; "
+                f"local branch diverged (ahead {ahead}, behind {behind}), left untouched"
+            )
         return f"fetched remote refs for shared repo '{op.subject}'"
 
     if op.kind == "evaluate_repo_hooks":

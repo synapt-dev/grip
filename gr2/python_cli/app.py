@@ -521,7 +521,7 @@ def sync_status(
 ) -> None:
     """Inspect workspace-wide sync readiness without mutating any repo state."""
     workspace_root = workspace_root.resolve()
-    plan = syncops.build_sync_plan(workspace_root, dirty_mode=dirty_mode)
+    plan = syncops.build_sync_plan(workspace_root, dirty_mode=dirty_mode, probe_remotes=True)
     if json_output:
         typer.echo(json.dumps(plan.as_dict(), indent=2))
         return

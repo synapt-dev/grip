@@ -7,6 +7,7 @@ import argparse
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -99,7 +100,7 @@ def create_lane(
 ) -> None:
     run(
         [
-            "python3",
+            sys.executable,
             str(lane_proto(root)),
             "create-lane",
             str(workspace_root),
@@ -118,7 +119,7 @@ def plan_exec_json(
 ) -> list[dict]:
     proc = run(
         [
-            "python3",
+            sys.executable,
             str(lane_proto(root)),
             "plan-exec",
             str(workspace_root),

@@ -8,6 +8,7 @@ import json
 import multiprocessing
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -65,7 +66,7 @@ repos = ["app"]
 def create_lane(root: Path, workspace_root: Path) -> None:
     run(
         [
-            "python3",
+            sys.executable,
             str(lane_proto(root)),
             "create-lane",
             str(workspace_root),
@@ -88,7 +89,7 @@ def worker(workspace_root: str, actor: str, queue, disable_locking: bool) -> Non
         env["GR2_LEASE_TEST_DELAY"] = "0.02"
     proc = run(
         [
-            "python3",
+            sys.executable,
             str(lane_proto(root)),
             "acquire-lane-lease",
             workspace_root,
@@ -154,7 +155,7 @@ def release_all(root: Path, workspace_root: Path, disable_locking: bool) -> None
     for actor in ("worker:a", "worker:b"):
         run(
             [
-                "python3",
+                sys.executable,
                 str(lane_proto(root)),
                 "release-lane-lease",
                 str(workspace_root),

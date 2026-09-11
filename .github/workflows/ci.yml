@@ -3,9 +3,9 @@ name: CI
 on:
   workflow_call:
   push:
-    branches: [main, dev]
+    branches: [main, dev, "release/*"]
   pull_request:
-    branches: [main, dev]
+    branches: [main, dev, "release/*"]
 
 env:
   CARGO_TERM_COLOR: always

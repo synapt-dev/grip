@@ -2456,6 +2456,49 @@ def review_verify(
         raise typer.Exit(code=1)
 
 
+@review_app.command("rebind")
+def review_rebind_cmd(
+    frozen_dir: Path = typer.Argument(..., help="A frozen gate directory (freeze-public-range.sh output) to rebase onto the moved base"),
+    repo: Path = typer.Option(..., "--repo", help="A clone whose origin remote hosts the target branch (used to read the live base head)"),
+    out_dir: Path = typer.Option(..., "--out-dir", help="The NEW frozen directory to write when a refreeze is needed (must not already exist)"),
+    target_ref: str = typer.Option("refs/heads/dev", "--ref", help="Target ref whose live head the frozen range is rebound onto"),
+    allow_public_ref: bool = typer.Option(False, "--allow-public-ref", help="Proceed even though the intended ref is already on the remote — the sanctioned fix-forward on a branch already ratified and pushed"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Rebase a FROZEN range onto the live tip of its target ref when the base has moved.
+
+    Reads the frozen base from ``<frozen_dir>/REQUEST.md`` and the live base by
+    ls-remote. If the base is unchanged, prints ``base_unchanged`` and writes
+    nothing. If it moved, applies the range on the new base in a throwaway clone
+    and — only when the patch-ids are identical — writes a fresh frozen dir at
+    ``--out-dir``. Already-landed work prints ``already_applied``. REFUSES (exit 2)
+    on a conflict, a patch-id divergence, or an intended ref already public (a
+    force-push question; ``--allow-public-ref`` is the fix-forward)."""
+    from . import review_rebind
+    try:
+        result = review_rebind.rebind(
+            frozen_dir.resolve(), repo.resolve(), target_ref,
+            out_dir.resolve(), allow_public_ref=allow_public_ref,
+        )
+    except review_rebind.RebindRefused as exc:
+        typer.echo(f"refused: {exc}", err=True)
+        raise typer.Exit(code=2)
+    if json_output:
+        typer.echo(json.dumps({
+            "outcome": result.outcome,
+            "patch_id_held": result.patch_id_held,
+            "landing_sha": result.landing_sha,
+            "out_dir": str(result.out_dir) if result.out_dir else None,
+        }, indent=2))
+        return
+    if result.outcome == "base_unchanged":
+        typer.echo("base_unchanged: target ref still at the frozen base; no refreeze needed")
+    elif result.outcome == "already_applied":
+        typer.echo("already_applied: the frozen range is already contained in the moved base")
+    else:
+        typer.echo(f"rebased: patch-ids held; new frozen dir at {result.out_dir}")
+
+
 @pr_app.command("status")
 def pr_status(
     workspace_root: Path,

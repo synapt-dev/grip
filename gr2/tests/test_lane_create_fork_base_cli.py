@@ -1,8 +1,8 @@
 """The CLI `lane create` records a fork base, so `review create-project` works for a
 stranger.
 
-`create_lane` records only the fork base the caller supplies (the fork-base ruling:
-record, do not derive). The CLI `lane create` clones each repo AFTER the doc is
+`create_lane` records only the fork base the caller supplies (record, do not
+derive). The CLI `lane create` clones each repo AFTER the doc is
 written, so nothing supplied a fork base and every CLI-created lane had none — which
 made `review create-project` refuse with "no recorded fork base" for anyone who did
 not set it by hand (Fathom, driving the R2 producer verb from help text). The CLI now

@@ -49,7 +49,7 @@ _SHA40 = re.compile(r"\A[0-9a-f]{40}\Z")
 # clone pinned at the recorded head, reconstructible independently of anything
 # else on disk. ``bound``: derived from an author's own worktree at bind time,
 # honest only under the clean-tree/HEAD-matches guard the bind imposes. The
-# field is REQUIRED on every receipt (gr2-lane-author-shape ruling 2026-09-03).
+# field is REQUIRED on every receipt (by design).
 LANE_KINDS = ("materialized", "bound", "review-ephemeral")
 
 Echo = Callable[[str], None]

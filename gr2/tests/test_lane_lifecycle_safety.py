@@ -199,7 +199,7 @@ def test_blocked_plan_reports_nonzero_and_damaged_audit_keeps_healthy_rows(tmp_p
 
 
 # --------------------------------------------------------------------------- #
-# lane_kind + --bind (gr2-lane-author-shape ruling, 2026-09-03)
+# lane_kind + --bind
 # --------------------------------------------------------------------------- #
 import subprocess
 
@@ -354,7 +354,7 @@ def test_create_bound_lane_refuses_multi_repo(tmp_path: Path) -> None:
 
 def test_app_lane_create_bind_skips_materialization(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # End-to-end wiring: `lane create --bind` writes a bound lane.toml AND does
-    # not materialize a clone (the ~95s/1.78GB tax the ruling exists to avoid).
+    # not materialize a clone (the ~95s/1.78GB tax a bound lane avoids).
     workspace = _workspace(tmp_path)
     (workspace / ".grip" / "events").mkdir(parents=True, exist_ok=True)
     wt = _real_worktree(workspace, branch="feat/app-bind")
@@ -402,7 +402,7 @@ def test_app_lane_create_requires_branch_without_bind(tmp_path: Path) -> None:
 
 # --------------------------------------------------------------------------- #
 # bind_bound_lane (verb #2): review bind on a bound lane, sourced live from the
-# worktree, refusing on drift (gr2-lane-author-shape ruling)
+# worktree, refusing on drift
 # --------------------------------------------------------------------------- #
 import json as _json
 
@@ -522,7 +522,7 @@ def test_app_lane_bind_refuses_materialized_with_exit_2(tmp_path: Path) -> None:
 
 # --------------------------------------------------------------------------- #
 # pr_create_bound_lane (verb #4): pr create pushes from the bound worktree,
-# refusing an empty range (gr2-lane-author-shape ruling)
+# refusing an empty range
 # --------------------------------------------------------------------------- #
 def _bound_lane_with_remote(tmp_path: Path, *, empty_range: bool = False):
     """A bound lane whose worktree has a LOCAL bare remote as origin and a bind
@@ -604,7 +604,7 @@ def test_open_project_review_refuses_a_bound_lane(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# bind base from the recorded fork base (fork-base ruling): --base omitted reads
+# bind base from the recorded fork base: --base omitted reads
 # the lane's recorded fork base, an explicit --base wins, no-fork-base refuses.
 # --------------------------------------------------------------------------- #
 def _bound_lane_with_fork_base(tmp_path: Path):

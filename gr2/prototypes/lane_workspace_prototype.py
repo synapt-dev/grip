@@ -88,7 +88,7 @@ class LaneMetadata:
     creation_source: str
     shared_with: list[str]
     handoff_source: dict[str, str] | None
-    # gr2-lane-author-shape ruling (2026-09-03): lane_kind is required on every
+    # By design, lane_kind is required on every
     # lane document so a reader never infers the reconstruction guarantee. A
     # "materialized" lane holds an isolated clone pinned at a head; a "bound"
     # lane is a label on the author's own existing worktree (single-repo only),
@@ -99,7 +99,7 @@ class LaneMetadata:
     lane_kind: str = "materialized"
     bound_worktree: str | None = None
     bound_head: str | None = None
-    # fork-base ruling (2026-09-04): the per-repo coordinate the lane
+    # The fork base: the per-repo coordinate the lane
     # forked from on its integration branch, recorded ONCE at create and never
     # recomputed. Each entry is {branch: <integration branch, e.g. dev>, sha: <its
     # tip when the lane was cut>}. The reproduction paths (workspace snapshot,
@@ -527,8 +527,8 @@ def record_fork_base(
 ) -> None:
     """Record the fork base (the materialization point) into an existing lane doc.
 
-    ``create_lane`` records ONLY the fork base the caller supplies (the fork-base
-    ruling: record, do not derive). The CLI `lane create` clones each repo at its
+    ``create_lane`` records ONLY the fork base the caller supplies
+    (record, do not derive). The CLI `lane create` clones each repo at its
     branch AFTER the doc is written, so the materialization point — the branch the
     lane forked from and the sha it started at — is not known until then; this writes
     it back. Without it a CLI-created lane has no fork base and `review create-project`
@@ -888,7 +888,7 @@ def _validate_bound_worktree(bind_path: Path, workspace_root: Path) -> tuple[str
 
     Containment: the resolved worktree must live UNDER ``workspace_root`` (a plain
     filesystem containment, same shape as ``close_review_lane``'s strict-descendant
-    gate). This is the ruling's "a path outside the author's own gripspace"
+    gate). This is the "path outside the author's own gripspace"
     refusal, implemented as a path check rather than via identity resolution — so
     it needs no owner-unit -> gripspace mapping and stays clear of the premium
     boundary."""
@@ -934,7 +934,7 @@ def create_lane(args: argparse.Namespace) -> int:
     if missing:
         raise SystemExit(f"unknown repos for lane: {', '.join(missing)}")
 
-    # gr2-lane-author-shape ruling (2026-09-03): --bind makes the lane a LABEL on
+    # By design, --bind makes the lane a LABEL on
     # an existing worktree instead of a fresh materialization. A bound lane is
     # single-repo only, and its head/branch come from the worktree under the
     # clean-tree/HEAD guard; no clone is materialized (no repos/ subdir).
@@ -949,7 +949,7 @@ def create_lane(args: argparse.Namespace) -> int:
         # missing-mapping error for a repo a bound lane would never carry).
         if len(repos) != 1:
             raise SystemExit(
-                "a bound lane is single-repo only (gr2-lane-author-shape ruling): pass exactly "
+                "a bound lane is single-repo only: pass exactly "
                 f"one repo to --repos, got {repos or '[]'}"
             )
         head, branch = _validate_bound_worktree(Path(bind), workspace_root)
@@ -962,7 +962,7 @@ def create_lane(args: argparse.Namespace) -> int:
     else:
         branch_map = parse_branch_arg(args.branch, repos)
 
-    # fork-base ruling: record what the caller supplies, do not derive.
+    # Fork base: record what the caller supplies, do not derive.
     # Each entry names a repo IN the lane and carries a 40-hex integration-branch tip.
     raw_fork_base = getattr(args, "fork_base", None) or {}
     fork_base: dict[str, dict[str, str]] = {}
@@ -1045,7 +1045,7 @@ def bind_bound_lane(
     workspace_root: Path, owner_unit: str, lane_name: str, *, base: str | None = None, allow_local: bool = False
 ) -> "_review.ReviewRecord":
     """Bind a review receipt for a BOUND lane, sourced LIVE from the author's
-    worktree (gr2-lane-author-shape ruling verb #2).
+    worktree.
 
     A bound lane has no materialized clone and no carried range: its reviewed
     bytes are the author's own worktree, so reconstruction is "read the local
@@ -1076,7 +1076,7 @@ def bind_bound_lane(
             f"bind_bound_lane: lane {owner_unit}/{lane_name} is not a bound lane "
             f"(lane_kind={lane_doc.get('lane_kind')!r}); use the materialized review path"
         )
-    # Base resolution (fork-base ruling): an explicit base wins; when omitted, read
+    # Base resolution: an explicit base wins; when omitted, read
     # the recorded fork base for this bound lane's single repo. A lane with neither
     # is refused with the unknown message — the review base is never HEAD^.
     if base is None:
@@ -1152,7 +1152,7 @@ def pr_create_bound_lane(
     set_upstream: bool = True,
 ) -> "_push.PushReceipt":
     """`pr create` for a BOUND lane: push the reviewed head from the author's own
-    worktree (gr2-lane-author-shape ruling verb #4).
+    worktree.
 
     A bound lane's PR is opened FROM the worktree, not from a materialized clone,
     so this reuses the ordinary push seam (``push_current_branch``, which verifies

@@ -833,11 +833,20 @@ pub async fn dispatch_command(
         Some(Commands::Spawn { action }) => match action {
             SpawnCommands::Up {
                 agent,
+                agent_flag,
                 config,
                 mock,
+                interactive,
             } => {
+                let agent = agent.or(agent_flag);
                 crate::cli::commands::spawn::run_spawn_up(
-                    agent, config, mock, verbose, quiet, json,
+                    agent,
+                    config,
+                    mock,
+                    interactive,
+                    verbose,
+                    quiet,
+                    json,
                 )?;
             }
             SpawnCommands::Status => {

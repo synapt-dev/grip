@@ -91,8 +91,25 @@ gr spawn --mock               # force mock mode (overrides config)
 ### Launch a single agent
 
 ```bash
-gr spawn --agent opus         # launch only the "opus" agent
+gr spawn up opus              # launch only the "opus" agent (positional)
+gr spawn up --agent opus      # same, flag form
 ```
+
+### Interactive launch (no tmux)
+
+`gr spawn up` normally runs each agent in its own tmux pane. When tmux is not
+installed, or you pass `--interactive`, one named agent runs in the foreground of
+the current terminal instead — the same command, cwd, env and prompt a pane would
+have used:
+
+```bash
+gr spawn up opus --interactive   # run "opus" in this terminal
+gr spawn up opus                 # same, automatic when tmux is absent
+```
+
+Interactive mode is one agent at a time. Launching the whole fleet needs a
+multiplexer; with none available, `gr spawn up` (no agent named) refuses and
+points you at the single-agent form.
 
 ### Check status
 

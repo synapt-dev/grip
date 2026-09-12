@@ -515,15 +515,21 @@ pub enum AgentCommands {
 pub enum SpawnCommands {
     /// Launch all agents (or a specific agent)
     Up {
-        /// Launch only this agent
-        #[arg(long)]
+        /// Launch only this agent (also accepts --agent)
         agent: Option<String>,
+        /// Launch only this agent (alias for the positional name)
+        #[arg(long = "agent", value_name = "AGENT")]
+        agent_flag: Option<String>,
         /// Path to agents.toml (default: .gitgrip/agents.toml)
         #[arg(long)]
         config: Option<String>,
         /// Force mock mode regardless of config
         #[arg(long)]
         mock: bool,
+        /// Run one named agent in the foreground of this terminal instead of a
+        /// tmux pane (automatic when tmux is not installed)
+        #[arg(long)]
+        interactive: bool,
     },
     /// Show agent status (tmux + heartbeat)
     Status,

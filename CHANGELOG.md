@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.2] - 2026-09-12
+
+**Scope.** This release tags the `release/1.x` patch branch tip. The promoted range is
+`v1.5.1..bf080578` (the immutable `release/1.x` tip at freeze, not the moving ref) —
+**5 commits, 2 merge commits, and 2 first-parent units**, measured with `git rev-list
+--count`, `git rev-list --merges --count`, and `git rev-list --first-parent --count` over
+that exact range, with the empty range `origin/release/1.x..v1.5.1` returning 0 as the
+control (tag `v1.5.1` = annotated `cabe3c6f`, dereferencing to commit `f24fab47`). The
+release-prep commit carrying this entry sits one beyond that range and is excluded. Rust
+source changed since 1.5.1 — `src/cli/commands/spawn.rs`, `src/cli/args.rs`,
+`src/cli/dispatch.rs`, and a new `tests/spawn_interactive.rs` — so this is a substantive
+patch release, not a metadata-only bump.
+
+**At the tag.** `v1.5.2` sits on this PR's merge into `release/1.x`, two commits beyond
+`bf080578` (the bump commit and its merge), so a reader measuring `v1.5.1..v1.5.2` gets
+**7 commits / 3 merges**: the promoted range plus this bump and its merge. The
+promoted-range counts above are the substantive figure.
+
+**gr spawn interactive foreground fallback (#1067).** `gr spawn up` now falls back to an
+interactive foreground launch when no multiplexer (tmux) is present, instead of failing.
+The fallback is documented in `docs/gr-spawn.md`, and `tests/spawn_interactive.rs` pins the
+behavior; a `build_agent_launch` return type is named for the Clippy lint.
+
+**CI/release for the patch branch (#1063).** The tag-pattern-split `release.yml` is carried
+onto the `release/1.x` branch so a `v1.x.y` tag runs ci → build → release-gr1 →
+publish-crates, and `release/*` self-hosts CI so a PR onto this branch reports the required
+context.
+
 ## [1.5.1] - 2026-09-10
 
 **Scope.** This release promotes `v1.5.0..<dev tip>` — **15 commits, 7 merge commits, and 7

@@ -824,7 +824,7 @@ dependencies = [
 
 [[package]]
 name = "gitgrip"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "anyhow",
  "assert_cmd",

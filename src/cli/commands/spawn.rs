@@ -611,10 +611,13 @@ fn verify_launch_started(
 // Subcommand: up
 // ---------------------------------------------------------------------------
 
-/// Build the launch inputs for one agent: its worktree path, the environment the
-/// launch script exports, the exact command a pane would `exec`, and the process
-/// name to verify (None in mock mode). Shared by the tmux path and the foreground
-/// fallback so both run a byte-identical command.
+/// Launch inputs for one agent: worktree path, the environment the launch script
+/// exports, the exact command a pane would `exec`, and the process name to verify
+/// (None in mock mode).
+type AgentLaunch = (PathBuf, HashMap<String, String>, String, Option<String>);
+
+/// Build the launch inputs for one agent. Shared by the tmux path and the
+/// foreground fallback so both run a byte-identical command.
 #[allow(clippy::too_many_arguments)]
 fn build_agent_launch(
     config: &SpawnConfig,
@@ -624,7 +627,7 @@ fn build_agent_launch(
     agent_id: &str,
     channel: &str,
     mock_mode: bool,
-) -> anyhow::Result<(PathBuf, HashMap<String, String>, String, Option<String>)> {
+) -> anyhow::Result<AgentLaunch> {
     let worktree_path = resolve_worktree_path(workspace_root, &agent.worktree);
 
     // Build environment variables for the launch script — GRIPSPACE_ROOT +

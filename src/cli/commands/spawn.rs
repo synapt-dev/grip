@@ -78,6 +78,12 @@ pub struct ToolConfig {
     /// the tool level never reached the process.
     #[serde(default, alias = "default_args")]
     pub args: Vec<String>,
+    /// Tool-level launch env, merged between `[spawn].env` (global) and the
+    /// agent's own `env` so an agent can override. Before this field existed
+    /// the tool-level `env` key was an unknown key and dropped silently —
+    /// same class as the tool-level `args` key.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
 }
 
 fn default_session() -> String {
@@ -725,8 +731,11 @@ pub fn run_spawn_up(
             "SYNAPT_LOOP_INTERVAL".to_string(),
             agent.loop_interval.clone(),
         );
-        launch_env.extend(config.spawn.env.clone());
-        launch_env.extend(agent.env.clone());
+        launch_env.extend(compose_launch_env(
+            &config.spawn.env,
+            config.tools.get(&agent.tool).map(|tool| &tool.env),
+            &agent.env,
+        ));
 
         let codex_startup_prompt = if !mock_mode && agent.tool == "codex" {
             read_agent_startup_prompt(&workspace_root, agent).map_err(|e| {
@@ -1029,6 +1038,23 @@ fn assemble_launch_parts(
     parts.extend(model_inject.iter().cloned());
     parts.extend(agent_args.iter().cloned());
     parts
+}
+
+/// Compose the launch env map, in order: `[spawn].env` (global), the agent's
+/// tool block env, then the agent's own env — later sources overwrite earlier
+/// ones, so the agent wins a collision (same precedence rule as args). The
+/// tool layer is `None` when the agent's tool has no `[tools.<t>]` entry.
+fn compose_launch_env(
+    global: &HashMap<String, String>,
+    tool_env: Option<&HashMap<String, String>>,
+    agent_env: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut launch_env = global.clone();
+    if let Some(env) = tool_env {
+        launch_env.extend(env.iter().map(|(k, v)| (k.clone(), v.clone())));
+    }
+    launch_env.extend(agent_env.iter().map(|(k, v)| (k.clone(), v.clone())));
+    launch_env
 }
 
 fn finalize_launch_command(
@@ -2715,5 +2741,100 @@ tool = "mock"
         let ti = parts.iter().position(|a| a == "--tool-flag").unwrap();
         let ai = parts.iter().position(|a| a == "--agent-flag").unwrap();
         assert!(ti < ai, "tool-level args must precede agent-level args");
+    }
+
+    // A tool-level `env` map must reach ToolConfig. Before the fix the struct
+    // had no env field at all, so `[tools.<t>] env = {...}` was an unknown key
+    // and dropped silently — a tool's declared env pair never reached the
+    // spawned process. Same class the `args` key hit before it got its field.
+    #[test]
+    fn tool_level_env_key_is_deserialized() {
+        let toml = r#"
+[spawn]
+[tools.mock]
+binary = "mockbin"
+env = { TOOL_VAR = "from-tool" }
+[agents.x]
+role = "worker"
+tool = "mock"
+"#;
+        let cfg: SpawnConfig = toml::from_str(toml).unwrap();
+        assert_eq!(
+            cfg.tools["mock"].env.get("TOOL_VAR").map(String::as_str),
+            Some("from-tool"),
+            "tool-level `env` key must populate ToolConfig.env"
+        );
+    }
+
+    // Launch env merge order: global ([spawn].env) -> tool -> agent, with the
+    // agent winning a collision (same precedence rule as args). The global
+    // entry must still apply to every agent.
+    #[test]
+    fn launch_env_merges_global_then_tool_then_agent() {
+        let mut global = HashMap::new();
+        global.insert("GLOBAL_VAR".to_string(), "from-global".to_string());
+        global.insert("SHARED".to_string(), "from-global".to_string());
+        let mut tool = HashMap::new();
+        tool.insert("TOOL_VAR".to_string(), "from-tool".to_string());
+        tool.insert("SHARED".to_string(), "from-tool".to_string());
+        let mut agent = HashMap::new();
+        agent.insert("SHARED".to_string(), "from-agent".to_string());
+
+        let merged = compose_launch_env(&global, Some(&tool), &agent);
+        assert_eq!(
+            merged.get("GLOBAL_VAR").map(String::as_str),
+            Some("from-global"),
+            "[spawn].env must still apply"
+        );
+        assert_eq!(
+            merged.get("TOOL_VAR").map(String::as_str),
+            Some("from-tool"),
+            "tool env must reach the launch env"
+        );
+        assert_eq!(
+            merged.get("SHARED").map(String::as_str),
+            Some("from-agent"),
+            "agent env must win the collision"
+        );
+    }
+
+    // An agent with no per-agent env still receives its tool block's env.
+    #[test]
+    fn launch_env_tool_applies_when_agent_env_absent() {
+        let mut global = HashMap::new();
+        global.insert("GLOBAL_VAR".to_string(), "from-global".to_string());
+        let mut tool = HashMap::new();
+        tool.insert("TOOL_VAR".to_string(), "from-tool".to_string());
+
+        let merged = compose_launch_env(&global, Some(&tool), &HashMap::new());
+        assert_eq!(
+            merged.get("TOOL_VAR").map(String::as_str),
+            Some("from-tool"),
+            "tool env must reach the launch env when the agent declares none"
+        );
+        assert_eq!(
+            merged.get("GLOBAL_VAR").map(String::as_str),
+            Some("from-global"),
+            "[spawn].env must still apply"
+        );
+    }
+
+    // An agent whose tool is not in [tools] merges without tool env.
+    #[test]
+    fn launch_env_without_tool_block_merges_global_then_agent() {
+        let mut global = HashMap::new();
+        global.insert("GLOBAL_VAR".to_string(), "from-global".to_string());
+        let mut agent = HashMap::new();
+        agent.insert("AGENT_VAR".to_string(), "from-agent".to_string());
+
+        let merged = compose_launch_env(&global, None, &agent);
+        assert_eq!(
+            merged.get("GLOBAL_VAR").map(String::as_str),
+            Some("from-global")
+        );
+        assert_eq!(
+            merged.get("AGENT_VAR").map(String::as_str),
+            Some("from-agent")
+        );
     }
 }

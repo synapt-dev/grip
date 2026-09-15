@@ -243,6 +243,77 @@ class DirectProcessRuntime:
         )
 
 
+@dataclasses.dataclass(frozen=True)
+class ForegroundProcessRuntime:
+    """Interactive mode without a multiplexer: ONE agent, in this terminal.
+
+    The ruling this implements (tracked privately): interactive means ONE named agent
+    runs in the foreground with its configured cwd, environment, prompt and
+    argv; a fleet with no multiplexer is refused, never approximated. The
+    child's stdin/stdout/stderr are inherited, so the prompt runs against the
+    caller's terminal, and "launched" here means the run HAPPENED: the runtime
+    waits on the child and returns its exit code as evidence. That is a
+    different contract from the headless settle check -- an interactive prompt
+    that exits instantly is a failure the operator watched, not one launch
+    must guess about afterwards -- so `settle_seconds` is accepted to keep the
+    LaunchRuntime signature uniform and is not applied.
+
+    The transport boundary is the LaunchRuntime Protocol, not this class: a
+    Windows/WSL or remote transport attaches as one more runtime implementing
+    the same signature, selected by the same explicit `runtime` argument.
+    Nothing here is what that transport attaches to."""
+
+    def launch_team(
+        self,
+        entries: Sequence[LaunchEntry],
+        *,
+        workspace_root: Path,
+        env_values_by_unit: Mapping[str, Mapping[str, str]],
+        settle_seconds: float,
+    ) -> list[dict[str, object]]:
+        if len(entries) != 1:
+            raise LaunchExecutionError(
+                f"foreground launch runs ONE agent and was handed {len(entries)} -- "
+                "interactive mode without a multiplexer attaches exactly one prompt "
+                "to this terminal; a fleet needs a multiplexer runtime, and refusing "
+                "is what keeps a half-launched team from presenting as a session"
+            )
+        entry = entries[0]
+        values = env_values_by_unit.get(entry.unit_key)
+        if values is None:
+            raise LaunchExecutionError(f"no environment supplied for unit {entry.unit_key}")
+        workdir = _prepared_workdir(entry, workspace_root)
+        env = _child_environment(entry, values)
+        try:
+            # No shell. argv is a list, and a plan's contents are never handed to
+            # a shell for interpretation. Streams inherited, no new session: the
+            # child is attached to this terminal for the length of the run.
+            proc = subprocess.Popen(  # noqa: S603
+                list(entry.argv),
+                cwd=str(workdir),
+                env=env,
+            )
+        except FileNotFoundError as exc:
+            raise LaunchExecutionError(
+                f"unit {entry.unit_key}: {entry.argv[0]!r} not found on PATH"
+            ) from exc
+        except OSError as exc:
+            raise LaunchExecutionError(f"unit {entry.unit_key}: launch failed: {exc}") from exc
+
+        code = proc.wait()
+        return [
+            {
+                "kind": "launch",
+                "mode": "foreground",
+                "unit_key": entry.unit_key,
+                "workdir": entry.workdir,
+                "pid": proc.pid,
+                "env_keys": list(entry.env_allowlist_keys),  # NAMES only, never values
+                "exit_code": code,
+            }
+        ]
+
+
 def _tmux_client_environment() -> dict[str, str]:
     """Build the tmux client's complete environment from a closed allowlist.
 
@@ -663,6 +734,21 @@ class TmuxPaneRuntime:
             raise
 
 
+def _prepared_workdir(entry: LaunchEntry, workspace_root: Path) -> Path:
+    """Resolve and validate one entry's workdir against the workspace root."""
+    workspace_root = Path(os.fspath(workspace_root))
+    workdir = canonicalize_workspace_path(
+        workspace_root, entry.workdir, field_name=f"launch[{entry.unit_key}].workdir"
+    )
+    if not workdir.is_dir():
+        raise LaunchExecutionError(
+            f"unit {entry.unit_key}: workdir {entry.workdir} does not exist -- "
+            "materialization runs before launch, so a missing workspace means the "
+            "unit was never materialized rather than that launch should create it"
+        )
+    return workdir
+
+
 def launch_unit(
     entry: LaunchEntry,
     *,
@@ -674,17 +760,7 @@ def launch_unit(
 
     `env_values` is consumed in memory and never written anywhere. Returns
     neutral evidence -- no argv values, no env, nothing identity-bearing."""
-    workspace_root = Path(os.fspath(workspace_root))
-    workdir = canonicalize_workspace_path(
-        workspace_root, entry.workdir, field_name=f"launch[{entry.unit_key}].workdir"
-    )
-    if not workdir.is_dir():
-        raise LaunchExecutionError(
-            f"unit {entry.unit_key}: workdir {entry.workdir} does not exist -- "
-            "materialization runs before launch, so a missing workspace means the "
-            "unit was never materialized rather than that launch should create it"
-        )
-
+    workdir = _prepared_workdir(entry, workspace_root)
     env = _child_environment(entry, env_values)
 
     try:

@@ -624,7 +624,10 @@ async fn test_tree_return_prunes_current_branch() {
 
 #[test]
 fn test_tree_add_creates_independent_clones() {
-    let ws = WorkspaceBuilder::new().add_repo("app").add_repo("lib").build();
+    let ws = WorkspaceBuilder::new()
+        .add_repo("app")
+        .add_repo("lib")
+        .build();
     let manifest = ws.load_manifest();
 
     gitgrip::cli::commands::tree::run_tree_add(&ws.workspace_root, &manifest, "feat/clones")
@@ -646,7 +649,13 @@ fn test_tree_add_creates_independent_clones() {
 
     // The parent has no registered worktrees of the tree's names.
     let out = Command::new("git")
-        .args(["-C", ws.repo_path("app").to_str().unwrap(), "worktree", "list", "--porcelain"])
+        .args([
+            "-C",
+            ws.repo_path("app").to_str().unwrap(),
+            "worktree",
+            "list",
+            "--porcelain",
+        ])
         .output()
         .expect("git worktree list should run");
     let text = String::from_utf8_lossy(&out.stdout);
@@ -659,7 +668,10 @@ fn test_tree_add_creates_independent_clones() {
 
 #[test]
 fn test_tree_branch_is_isolated_from_parent_and_other_trees() {
-    let ws = WorkspaceBuilder::new().add_repo("app").add_repo("lib").build();
+    let ws = WorkspaceBuilder::new()
+        .add_repo("app")
+        .add_repo("lib")
+        .build();
     let manifest = ws.load_manifest();
 
     gitgrip::cli::commands::tree::run_tree_add(&ws.workspace_root, &manifest, "feat/one")
@@ -744,11 +756,7 @@ fn test_tree_survives_parent_rename() {
     let out = Command::new("git")
         .args([
             "-C",
-            temp.path()
-                .join("feat-moved")
-                .join("app")
-                .to_str()
-                .unwrap(),
+            temp.path().join("feat-moved").join("app").to_str().unwrap(),
             "rev-parse",
             "--is-inside-work-tree",
         ])

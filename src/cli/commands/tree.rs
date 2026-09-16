@@ -1,6 +1,9 @@
 //! Tree command implementation
 //!
-//! Manages griptrees (worktree-based parallel workspaces).
+//! Manages griptrees: independent-clone parallel workspaces (grip#861). A
+//! tree's copy of each repo is a full clone with its own `.git` and refs,
+//! materialized through the same clone path the checkout mechanism uses,
+//! with the machine cache as an accelerator only.
 
 use crate::cli::commands::link::run_link;
 use crate::cli::output::Output;
@@ -8,6 +11,7 @@ use crate::core::griptree::{GriptreeConfig, GriptreePointer, GriptreeRepoInfo};
 use crate::core::manifest::Manifest;
 use crate::core::manifest_paths;
 use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
+use crate::core::workspace_cache;
 use crate::git::branch::{
     branch_exists, checkout_branch, delete_local_branch, remote_branch_exists,
 };
@@ -15,6 +19,7 @@ use crate::git::remote::{delete_remote_branch, get_upstream_branch, set_branch_u
 use crate::git::status::get_cached_status;
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::util::log_cmd;
+use anyhow::Context;
 use chrono::Utc;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -186,14 +191,10 @@ pub fn run_tree_add(
             None
         };
 
-        // Create worktree on the griptree branch (creates branch if needed)
-        // Base the new branch off the repo's default branch, not current HEAD
-        match create_worktree(
-            &repo.absolute_path,
-            &worktree_path,
-            branch,
-            Some(&repo.revision),
-        ) {
+        // Materialize the tree's copy as an independent clone (grip#861):
+        // full clone from the canonical remote, own refs, branch created
+        // in the clone only. The machine cache is an accelerator only.
+        match create_tree_clone(repo, &worktree_path, branch, workspace_root) {
             Ok(_) => {
                 let expected_upstream = format!("origin/{}", repo.revision);
                 let upstream_warning = match open_repo(&worktree_path) {
@@ -929,18 +930,58 @@ fn create_manifest_worktree(
     tree_manifests_dir: &Path,
     branch: &str,
 ) -> anyhow::Result<String> {
-    let repo = open_repo(main_manifests_dir)?;
-
-    // Get current branch from main manifests (unused but kept for context)
-    let _current_branch = get_current_branch(&repo)?;
-
-    // Create worktree at griptree's .gitgrip/spaces/main/
-    // Use the griptree branch name for the manifest worktree
-    // Manifest worktrees create from HEAD since there's no "default branch" concept
+    // Create the manifest's tree copy as an independent clone (grip#861),
+    // from HEAD since there's no "default branch" concept for the manifest.
     let worktree_name = format!("griptree-{}", branch.replace('/', "-"));
-    create_worktree(main_manifests_dir, tree_manifests_dir, &worktree_name, None)?;
+    if tree_manifests_dir.join(".git").exists() {
+        // Already materialized
+        return Ok(worktree_name);
+    }
 
-    // Ensure a supported workspace manifest file exists in the new worktree.
+    // Canonicalize the clone's origin: the parent manifest repo's origin URL
+    // when it has one, else the local manifests dir (which IS the canonical
+    // source for a local-only manifest).
+    let source = main_manifests_dir.to_string_lossy().to_string();
+    let parent_origin = canonical_remote_url(main_manifests_dir);
+
+    if let Some(parent) = tree_manifests_dir.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut cmd = Command::new("git");
+    cmd.arg("clone").arg(&source).arg(tree_manifests_dir);
+    log_cmd(&cmd);
+    let output = cmd.output()?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "failed to clone manifests into griptree: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    if let Some(origin) = parent_origin {
+        let mut cmd = Command::new("git");
+        cmd.args(["remote", "set-url", "origin"])
+            .arg(&origin)
+            .current_dir(tree_manifests_dir);
+        log_cmd(&cmd);
+        let output = cmd.output()?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "failed to set canonical origin on manifests clone: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+    }
+
+    // Branch in the clone only, from HEAD.
+    run_git_in(
+        tree_manifests_dir,
+        ["checkout", "-B", &worktree_name],
+        "checking out manifests branch",
+    )?;
+
+    // Ensure a supported workspace manifest file exists in the new clone.
     if manifest_paths::resolve_manifest_file_in_dir(tree_manifests_dir).is_none() {
         if let Some(main_manifest) =
             manifest_paths::resolve_manifest_file_in_dir(main_manifests_dir)
@@ -952,77 +993,135 @@ fn create_manifest_worktree(
 
     Ok(worktree_name)
 }
-/// Create a git worktree using git2
-///
-/// When creating a new branch, bases it off `base_branch` (e.g., "main") instead of HEAD.
-/// This ensures griptrees start from the default branch, not whatever branch the workspace is on.
-fn create_worktree(
-    repo_path: &Path,
-    worktree_path: &Path,
-    branch: &str,
-    base_branch: Option<&str>,
-) -> anyhow::Result<()> {
-    let repo = open_repo(repo_path)?;
 
-    // Create parent directory if needed
-    if let Some(parent) = worktree_path.parent() {
-        std::fs::create_dir_all(parent)?;
+/// Materialize one griptree repo as an independent clone (grip#861).
+///
+/// Clones `repo.url` (the canonical remote) into the tree path, with the
+/// machine cache as a `--reference` accelerator when present. Creates the
+/// griptree branch in the clone only: at `origin/<revision>` when the
+/// canonical remote carries it (upstream satisfied in the same step), else
+/// at the parent's local `<revision>` when the clone carries it, else at
+/// HEAD.
+fn create_tree_clone(
+    repo: &RepoInfo,
+    target: &Path,
+    branch: &str,
+    workspace_root: &Path,
+) -> anyhow::Result<()> {
+    if target.join(".git").exists() {
+        // Already materialized
+        return Ok(());
     }
 
-    // Sanitize worktree name: git2 uses this as a directory name under
-    // .git/worktrees/<name>, so slashes would create nested directories
-    // that don't exist. Replace them with dashes.
-    let worktree_name = branch.replace('/', "-");
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating griptree repo dir: {}", parent.display()))?;
+    }
 
-    // Check if branch exists, create if not
-    let branch_exists = repo.find_branch(branch, git2::BranchType::Local).is_ok();
+    let has_cache = workspace_cache::cache_exists(workspace_root, &repo.name, &repo.url)?;
+    let mut cmd = Command::new("git");
+    cmd.arg("clone");
+    if has_cache {
+        let cache = workspace_cache::resolve_cache_path(workspace_root, &repo.name, &repo.url)?;
+        cmd.args(["--reference", &cache.to_string_lossy()]);
+    }
+    cmd.arg(&repo.url).arg(target);
+    log_cmd(&cmd);
+    let output = cmd
+        .output()
+        .with_context(|| format!("cloning {} into griptree", repo.name))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "failed to clone {} into griptree: {}",
+            repo.name,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
 
-    if branch_exists {
-        // Add worktree with existing branch
-        repo.worktree(
-            &worktree_name,
-            worktree_path,
-            Some(
-                git2::WorktreeAddOptions::new().reference(Some(
-                    &repo
-                        .find_branch(branch, git2::BranchType::Local)?
-                        .into_reference(),
-                )),
-            ),
+    // Create the griptree branch in the clone only, based off the repo's
+    // base revision, not HEAD.
+    let remote_base = format!("refs/remotes/origin/{}", repo.revision);
+    if Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", &remote_base])
+        .current_dir(target)
+        .status()?
+        .success()
+    {
+        // Tracks origin/<revision> upstream in the same step.
+        run_git_in(
+            target,
+            [
+                "checkout",
+                "-b",
+                branch,
+                &format!("origin/{}", repo.revision),
+            ],
+            "checking out griptree branch from origin base",
+        )?;
+    } else if branch_exists_from_ref(target, &repo.revision) {
+        run_git_in(
+            target,
+            ["checkout", "-b", branch, &repo.revision],
+            "checking out griptree branch from local base",
         )?;
     } else {
-        // Create branch from base_branch (default branch) rather than HEAD
-        // This ensures griptrees start from a clean state, not from a feature branch
-        let base_commit = if let Some(base) = base_branch {
-            // Try local branch first, then remote tracking branch
-            if let Ok(local_branch) = repo.find_branch(base, git2::BranchType::Local) {
-                local_branch.get().peel_to_commit()?
-            } else {
-                // Try origin/<base>
-                let remote_ref = format!("refs/remotes/origin/{}", base);
-                repo.revparse_single(&remote_ref)?.peel_to_commit()?
-            }
-        } else {
-            // Fall back to HEAD if no base branch specified
-            repo.head()?.peel_to_commit()?
-        };
-
-        repo.branch(branch, &base_commit, false)?;
-
-        repo.worktree(
-            &worktree_name,
-            worktree_path,
-            Some(
-                git2::WorktreeAddOptions::new().reference(Some(
-                    &repo
-                        .find_branch(branch, git2::BranchType::Local)?
-                        .into_reference(),
-                )),
-            ),
+        run_git_in(
+            target,
+            ["checkout", "-b", branch],
+            "checking out griptree branch",
         )?;
     }
 
     Ok(())
+}
+
+/// Run git with args in a directory, failing with captured stderr.
+fn run_git_in<const N: usize>(dir: &Path, args: [&str; N], what: &str) -> anyhow::Result<()> {
+    let mut cmd = Command::new("git");
+    cmd.args(args).current_dir(dir);
+    log_cmd(&cmd);
+    let output = cmd.output()?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "{} failed: {}",
+            what,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// The repo at `dir`'s canonical remote URL, when it carries an `origin`.
+fn canonical_remote_url(dir: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if url.is_empty() {
+        None
+    } else {
+        Some(url)
+    }
+}
+
+/// Whether the repo at `dir` has a local branch or tag named `name`.
+fn branch_exists_from_ref(dir: &Path, name: &str) -> bool {
+    Command::new("git")
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{}", name),
+        ])
+        .current_dir(dir)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// Sync reference repo with upstream revision

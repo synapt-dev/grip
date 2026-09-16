@@ -38,6 +38,18 @@ import subprocess
 
 def _track(repo_root: Path, *relpaths: str) -> None:
     subprocess.run(["git", "init", "-q"], cwd=repo_root, check=True)
+    # CI runners have no git identity configured; without this the commit
+    # exits 128 ("Please tell me who you are") and the test fails on
+    # environment, not on the guard under test.
+    subprocess.run(
+        ["git", "-C", str(repo_root), "config", "user.name", "test"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo_root), "config", "user.email",
+         "test@example.invalid"],
+        check=True,
+    )
     subprocess.run(
         ["git", "-C", str(repo_root), "add", *relpaths], check=True
     )

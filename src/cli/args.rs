@@ -524,6 +524,10 @@ pub enum SpawnCommands {
         /// Force mock mode regardless of config
         #[arg(long)]
         mock: bool,
+        /// Relaunch agents whose windows are already running (default:
+        /// missing-agents-only — live windows are never touched)
+        #[arg(long)]
+        force: bool,
     },
     /// Show agent status (tmux + heartbeat)
     Status,

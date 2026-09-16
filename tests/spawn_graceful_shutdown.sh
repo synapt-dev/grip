@@ -79,6 +79,17 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
     exit 1
 fi
 
+# Create the sibling worktree directories the config references (everything
+# except "main", which is the workspace root itself). The spawn-up pre-flight
+# refuses any agent whose worktree is missing — a fixture dir that does not
+# exist is a fixture-setup gap, not a reason to bypass the guard.
+WS_ROOT="$(dirname "$(dirname "$AGENTS_TOML")")"
+grep -E '^[[:space:]]*worktree[[:space:]]*=' "$AGENTS_TOML" \
+    | sed -E 's/.*=[[:space:]]*"([^"]*)".*/\1/' | sort -u | while read -r wt; do
+    [ "$wt" = "main" ] && continue
+    mkdir -p "$(dirname "$WS_ROOT")/$(printf '%s' "$wt" | tr '/' '-')"
+done
+
 # 1. Launch agents in mock mode
 echo "[1/4] Launching agents..."
 $GR spawn up --mock >/dev/null 2>&1

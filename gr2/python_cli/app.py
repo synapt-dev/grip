@@ -2360,7 +2360,21 @@ def review_run(
     lane. For a non-pytest runner (`--runner cargo|jest`, or the lane's `.review-install`
     declares one), the language-agnostic tree checks still run, then the declared test
     command runs in the lane. Counts always come from the runner's own summary line,
-    never the exit code; a zero-test or unparseable run is a refusal, not a green."""
+    never the exit code; a zero-test or unparseable run is a refusal, not a green.
+
+    Install instructions come from the reviewed repo itself, in a tracked
+    `.review-install` file at the repo root, read whenever --install/--package are
+    omitted. Four `key = value` lines are recognised: `install` (the command that
+    installs the lane tree; `{venv}` and `{lane}` are substituted per token after
+    shell-splitting, so a lane path containing a space stays one token), `package`
+    (the importable module name run must prove resolves inside the lane), and
+    `runner`/`test` (a non-pytest test command). Comments (`#`) and blank lines are
+    skipped; an unrecognised key is a refusal (`bad_hint`), not a silent skip. A
+    repo with no `.review-install` must pass `--install` and/or `--package` on the
+    command line; with neither, run refuses (`no_package`). The tree must be
+    pip-installable (a `pyproject.toml` or `setup.py` declaring an importable
+    package); a directory of loose scripts fails at the install step.
+    """
     import shlex
 
     from . import review_run as rr

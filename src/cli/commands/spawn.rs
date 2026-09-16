@@ -611,6 +611,7 @@ pub fn run_spawn_up(
     agent_filter: Option<String>,
     config_path: Option<String>,
     force_mock: bool,
+    relaunch_running: bool,
     verbose: bool,
     _quiet: bool,
     _json: bool,
@@ -626,7 +627,7 @@ pub fn run_spawn_up(
         .unwrap_or(&config.spawn.session_name);
     let org_dir = crate::core::agent_registry::org_dir(gripspace);
     let names = sorted_agent_names(&config.agents);
-    let targets: Vec<&str> = match &agent_filter {
+    let mut targets: Vec<&str> = match &agent_filter {
         Some(name) => {
             if !config.agents.contains_key(name) {
                 anyhow::bail!(
@@ -639,6 +640,57 @@ pub fn run_spawn_up(
         }
         None => names.iter().map(|name| name.as_str()).collect(),
     };
+
+    // The 2026-09-16 spawn-up incidents (tracked on the private
+    // tracker; named generically here): a bare `spawn up` relaunched
+    // every agent (clobbering a live window), a respawned pane sat in the
+    // caller's cwd until the launch script's cd took effect, and the error
+    // path left a half-spawned duplicate behind. Guard order:
+    //   1. Pre-flight every target's worktree BEFORE any window mutation, so
+    //      an unlaunchable agent aborts the run with nothing half-spawned.
+    //   2. Default to missing-agents-only: a window that is already running
+    //      is skipped unless --force (the explicit full relaunch).
+    //   3. Every window is born in its row's worktree (`new-window -c`), so
+    //      the pane is never at the caller's cwd, not even for a moment.
+    let mut target_worktrees: HashMap<String, PathBuf> = HashMap::new();
+    for name in &targets {
+        let agent = &config.agents[*name];
+        let worktree_path = resolve_worktree_path(&workspace_root, &agent.worktree);
+        if !worktree_path.is_dir() {
+            anyhow::bail!(
+                "refusing to launch {}: worktree '{}' does not exist (resolved to {}); \
+                 no windows were created or replaced",
+                name,
+                agent.worktree,
+                worktree_path.display()
+            );
+        }
+        target_worktrees.insert(name.to_string(), worktree_path);
+    }
+
+    if session_exists(session) && !relaunch_running {
+        let existing: std::collections::HashSet<String> = Command::new("tmux")
+            .args(["list-windows", "-t", session, "-F", "#W"])
+            .output()
+            .ok()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !existing.is_empty() {
+            targets.retain(|name| !existing.contains(*name));
+        }
+    }
+
+    let skipped: Vec<&str> = names
+        .iter()
+        .map(|name| name.as_str())
+        .filter(|name| !targets.contains(name))
+        .collect();
+
     let mut agent_ids = HashMap::new();
     for name in &names {
         let agent = &config.agents[name];
@@ -673,6 +725,24 @@ pub fn run_spawn_up(
     }
 
     println!();
+    if !skipped.is_empty() {
+        Output::info(&format!(
+            "Already running (skipped{}): {}",
+            if relaunch_running {
+                ""
+            } else {
+                "; use --force to relaunch"
+            },
+            skipped.join(", ")
+        ));
+        println!();
+    }
+    if targets.is_empty() {
+        Output::info("Nothing to launch — every configured agent already has a window.");
+        println!();
+        Output::info(&format!("Attach with: tmux attach -t {}", session));
+        return Ok(());
+    }
     Output::header(&format!(
         "Launching {} agent{}{}...",
         targets.len(),
@@ -685,10 +755,27 @@ pub fn run_spawn_up(
         let agent = &config.agents[*name];
         let channel = agent.channel.as_deref().unwrap_or(&config.spawn.channel);
 
-        // Create window
+        // Create window — born in the row's worktree (the private-tracker spawn-up finding class,
+        // incident 2: a pane created without -c sits in the caller's cwd
+        // until the launch script's cd takes effect). Under --force an
+        // existing window is replaced, never duplicated.
         let target = format!("{}:{}", session, name);
+        if relaunch_running {
+            let _ = Command::new("tmux")
+                .args(["kill-window", "-t", &target])
+                .status();
+        }
+        let worktree_path = target_worktrees[*name].clone();
         let status = Command::new("tmux")
-            .args(["new-window", "-t", session, "-n", name])
+            .args([
+                "new-window",
+                "-c",
+                &worktree_path.display().to_string(),
+                "-t",
+                session,
+                "-n",
+                name,
+            ])
             .status()?;
         if !status.success() {
             Output::error(&format!("Failed to create window for {}", name));
@@ -705,7 +792,9 @@ pub fn run_spawn_up(
         // Stable IDs were resolved before any pane or routing-file mutation.
         let agent_id = agent_ids[*name].clone();
 
-        let worktree_path = resolve_worktree_path(&workspace_root, &agent.worktree);
+        // Worktrees were pre-flighted before any window mutation; reuse the
+        // resolved path so the guard and the launch see the same directory.
+        let worktree_path = target_worktrees[*name].clone();
 
         // Build environment variables for the launch script — GRIPSPACE_ROOT +
         // stable identity/recall namespace first, then config/env overrides.
@@ -848,7 +937,16 @@ pub fn run_spawn_up(
         )?;
         tmux_send_launch_script(&target, &launch_script)?;
         if let Some(expected_process) = expected_process.as_deref() {
-            verify_launch_started(&target, expected_process, &launch_script)?;
+            // The same tracker's incident 3: a launch that never reached the
+            // expected process used to leave the just-created window behind
+            // (a half-spawned duplicate) and abort the remaining agents.
+            // Kill the window we created before surfacing the failure.
+            if let Err(e) = verify_launch_started(&target, expected_process, &launch_script) {
+                let _ = Command::new("tmux")
+                    .args(["kill-window", "-t", &target])
+                    .status();
+                anyhow::bail!("{} (window removed; remaining agents not launched)", e);
+            }
         }
 
         // Set up pipe-pane for output streaming (#443 Mission Control)

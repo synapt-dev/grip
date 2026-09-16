@@ -198,6 +198,35 @@ def apply_file_projections(hooks: RepoHooks, ctx: HookContext) -> list[HookResul
         dest = render_path(item.dest, ctx)
         dest.parent.mkdir(parents=True, exist_ok=True)
 
+        # A projection writes untracked space only. A tracked destination is
+        # the repo's own content — silently replacing it (any if_exists) type-
+        # dirties the clone and breaks every tree-exactness assertion (freezes,
+        # reviews, status gates). A repo whose hooks.toml projects over its own
+        # tracked file hits this on every materialization. The skip is a named
+        # result so the receipt says why nothing was written.
+        if dest.is_relative_to(ctx.repo_root):
+            tracked = subprocess.run(
+                ["git", "-C", str(ctx.repo_root), "ls-files",
+                 "--error-unmatch", str(dest.relative_to(ctx.repo_root))],
+                capture_output=True,
+            )
+            if tracked.returncode == 0:
+                results.append(
+                    HookResult(
+                        kind="projection",
+                        name=f"{item.kind}:{dest.name}",
+                        status="skipped",
+                        detail=(
+                            "destination is tracked by the repo; "
+                            "projections never modify tracked paths"
+                        ),
+                        src=str(src),
+                        dest=str(dest),
+                        if_exists=item.if_exists,
+                    )
+                )
+                continue
+
         if not src.exists():
             raise HookRuntimeError(
                 {

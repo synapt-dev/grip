@@ -34,6 +34,12 @@ pub fn init_repo(path: &Path) {
 /// Create a file, stage, and commit it. Returns the commit hash.
 pub fn commit_file(repo_path: &Path, filename: &str, content: &str, message: &str) -> String {
     fs::write(repo_path.join(filename), content).unwrap();
+    // The repo may be one the helper did not create (a griptree clone, say),
+    // so configure_identity never ran on it — and CI runners have no git
+    // identity to fall back on ("Author identity unknown", measured on the
+    // #861 CI run's ubuntu/windows legs; macos auto-detects and masks it).
+    // Repo-local config is idempotent and scoped to the throwaway repo.
+    configure_identity(repo_path);
     git(repo_path, &["add", filename]);
     git(repo_path, &["commit", "-m", message]);
     get_head_sha(repo_path)

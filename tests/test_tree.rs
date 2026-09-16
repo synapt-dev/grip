@@ -613,3 +613,206 @@ async fn test_tree_return_prunes_current_branch() {
     ));
     assertions::assert_on_branch(&ws.repo_path("app"), "griptree-base");
 }
+
+// ── Tree Add: independent clones (grip#861 spec) ───────────────────
+//
+// The tree's per-repo directories are independent clones (their own .git,
+// their own refs, origin pointing at the canonical remote), materialized
+// through the checkout mechanism's clone path with the machine cache as an
+// accelerator. Worktrees are gone: no registration in the parent, no
+// shared branch namespace, no back-reference that a parent move breaks.
+
+#[test]
+fn test_tree_add_creates_independent_clones() {
+    let ws = WorkspaceBuilder::new()
+        .add_repo("app")
+        .add_repo("lib")
+        .build();
+    let manifest = ws.load_manifest();
+
+    gitgrip::cli::commands::tree::run_tree_add(&ws.workspace_root, &manifest, "feat/clones")
+        .expect("tree add should succeed");
+
+    let tree_path = ws.workspace_root.parent().unwrap().join("feat-clones");
+
+    // Each tree repo is a real clone: .git is a DIRECTORY (a worktree's .git
+    // is a file pointing back at the parent's .git/worktrees/<name>).
+    for name in ["app", "lib"] {
+        let dotgit = tree_path.join(name).join(".git");
+        assert!(
+            dotgit.is_dir(),
+            "tree repo {} must be an independent clone (.git dir), got {:?}",
+            name,
+            dotgit
+        );
+    }
+
+    // The parent has no registered worktrees of the tree's names.
+    let out = Command::new("git")
+        .args([
+            "-C",
+            ws.repo_path("app").to_str().unwrap(),
+            "worktree",
+            "list",
+            "--porcelain",
+        ])
+        .output()
+        .expect("git worktree list should run");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !text.contains("feat-clones"),
+        "parent must hold no worktree registration for the tree: {}",
+        text
+    );
+}
+
+#[test]
+fn test_tree_branch_is_isolated_from_parent_and_other_trees() {
+    let ws = WorkspaceBuilder::new()
+        .add_repo("app")
+        .add_repo("lib")
+        .build();
+    let manifest = ws.load_manifest();
+
+    gitgrip::cli::commands::tree::run_tree_add(&ws.workspace_root, &manifest, "feat/one")
+        .expect("first tree add should succeed");
+    gitgrip::cli::commands::tree::run_tree_add(&ws.workspace_root, &manifest, "feat/two")
+        .expect("second tree add should succeed");
+
+    let root = ws.workspace_root.parent().unwrap();
+    let one = root.join("feat-one").join("app");
+    let two = root.join("feat-two").join("app");
+
+    // Commit on a branch that exists only in tree one.
+    git_helpers::create_branch(&one, "feat/one-exclusive");
+    git_helpers::commit_file(&one, "one.txt", "one", "Add one.txt");
+
+    // Not visible in the parent.
+    assert!(
+        !git_helpers::branch_exists(&ws.repo_path("app"), "feat/one-exclusive"),
+        "parent must not see a branch created inside a tree clone"
+    );
+    // Not visible in the other tree.
+    assert!(
+        !git_helpers::branch_exists(&two, "feat/one-exclusive"),
+        "tree two must not see tree one's branch"
+    );
+    // The parent's HEAD is untouched by tree commits.
+    assertions::assert_on_branch(&ws.repo_path("app"), "main");
+}
+
+#[test]
+fn test_tree_clone_origin_points_at_canonical_remote() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let manifest = ws.load_manifest();
+
+    gitgrip::cli::commands::tree::run_tree_add(&ws.workspace_root, &manifest, "feat/origin")
+        .expect("tree add should succeed");
+
+    let tree_app = ws
+        .workspace_root
+        .parent()
+        .unwrap()
+        .join("feat-origin")
+        .join("app");
+
+    // The clone's origin must be the CANONICAL remote (the same bare the
+    // parent was cloned from), not a path into the parent workspace.
+    let out = Command::new("git")
+        .args([
+            "-C",
+            tree_app.to_str().unwrap(),
+            "remote",
+            "get-url",
+            "origin",
+        ])
+        .output()
+        .expect("git remote get-url should run");
+    let origin = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert_eq!(
+        origin,
+        ws.remote_url("app"),
+        "tree clone origin must point at the canonical remote"
+    );
+}
+
+#[test]
+fn test_tree_survives_parent_rename() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let manifest = ws.load_manifest();
+
+    gitgrip::cli::commands::tree::run_tree_add(&ws.workspace_root, &manifest, "feat/moved")
+        .expect("tree add should succeed");
+
+    // Rename the parent workspace directory (the worktree failure mode:
+    // .git/worktrees back-references die with the move).
+    let temp = &ws._temp;
+    let old_ws = temp.path().join("workspace");
+    let new_ws = temp.path().join("workspace-moved");
+    fs::rename(&old_ws, &new_ws).expect("renaming parent workspace should work");
+
+    // The tree's clone is an independent repo: HEAD, branches, and status
+    // all work with the parent gone from its old address.
+    let out = Command::new("git")
+        .args([
+            "-C",
+            temp.path().join("feat-moved").join("app").to_str().unwrap(),
+            "rev-parse",
+            "--is-inside-work-tree",
+        ])
+        .output()
+        .expect("git status should run in the tree clone after parent rename");
+    assert!(
+        out.status.success(),
+        "tree clone must survive parent rename; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = Command::new("git")
+        .args([
+            "-C",
+            temp.path().join("feat-moved").join("app").to_str().unwrap(),
+            "rev-parse",
+            "--abbrev-ref",
+            "HEAD",
+        ])
+        .output()
+        .expect("git rev-parse should run");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "feat/moved",
+        "tree clone must still be on the griptree branch after parent rename"
+    );
+}
+
+#[test]
+fn test_tree_remove_leaves_the_cache() {
+    let ws = WorkspaceBuilder::new().add_repo("app").build();
+    let manifest = ws.load_manifest();
+
+    // The cache is an accelerator populated by `gr cache bootstrap`, never
+    // by tree add; populate it first, then add the tree on top of it.
+    let cache = gitgrip::core::workspace_cache::resolve_cache_path(
+        &ws.workspace_root,
+        "app",
+        &ws.remote_url("app"),
+    )
+    .expect("cache path should resolve");
+    gitgrip::core::workspace_cache::bootstrap_cache(
+        &ws.workspace_root,
+        "app",
+        &ws.remote_url("app"),
+    )
+    .expect("cache bootstrap should succeed");
+    assert!(cache.exists(), "cache should exist after bootstrap");
+
+    gitgrip::cli::commands::tree::run_tree_add(&ws.workspace_root, &manifest, "feat/cached")
+        .expect("tree add should succeed");
+
+    gitgrip::cli::commands::tree::run_tree_remove(&ws.workspace_root, "feat/cached", false)
+        .expect("tree remove should succeed");
+
+    assert!(
+        cache.exists(),
+        "removing a tree must not remove the machine cache"
+    );
+}

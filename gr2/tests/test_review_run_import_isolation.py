@@ -143,12 +143,18 @@ def test_scrubbed_python_env_drops_every_python_star_var(monkeypatch):
 def test_run_env_is_built_by_the_scrub_and_flows_to_pytest():
     """A structural pin so a refactor cannot rebuild run_env from a raw os.environ and
     silently reintroduce the PYTHONPATH-shadows-the-run defect: the run's env is the
-    scrub's output, and pytest is invoked under that same run_env."""
+    scrub's output, and pytest is invoked under that same run_env.
+
+    A follow-up widened the call to `scrubbed_python_env(venv_dir=venv_dir)` (the
+    scrub now also shapes PATH/VIRTUAL_ENV to look like the lane venv was
+    activated, so a repo's own tests can shell out to their own console scripts);
+    the pin follows that shape rather than the bare no-arg call it used to name."""
     import inspect
 
     src = inspect.getsource(rr._run_review_lane)
-    assert "run_env = scrubbed_python_env()" in src, (
-        "the review run must build run_env via scrubbed_python_env(), not {**os.environ}"
+    assert "run_env = scrubbed_python_env(venv_dir=venv_dir)" in src, (
+        "the review run must build run_env via scrubbed_python_env(venv_dir=...), "
+        "not {**os.environ} and not the bare no-arg call"
     )
     # the pytest subprocess must run under run_env (not a fresh/raw env)
     assert "env=run_env" in src, "pytest must run under the scrubbed run_env"

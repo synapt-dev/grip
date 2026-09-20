@@ -191,8 +191,20 @@ def assert_no_untracked_drift(
     cargo run writes `target/` and `Cargo.lock`, a jest run `node_modules/`/`coverage/`),
     the language-specific analogue of the pytest path's `.venv`/receipt exemptions — so a
     second `review run` on an un-gitignored lane does not refuse the first run's outputs as
-    drift."""
-    out = _git(repo_dir, "status", "--porcelain")
+    drift.
+
+    The status call neutralizes the HOST's own ignore rules (`-c core.excludesFile=`,
+    which git treats as case-insensitively the same key whichever spelling a host's
+    config used, and which suppresses BOTH an explicit `core.excludesFile` and git's
+    own `$XDG_CONFIG_HOME/git/ignore` fallback when neither is set). Without this, a
+    host whose global config ignores a directory name — measured on one host in this
+    fleet: `__pycache__/` — makes `git status` blind to anything planted inside a
+    directory with that name, so an injected module the trust boundary exists to
+    catch passes through it silently instead of refusing. Repo-local `.gitignore`
+    and `.git/info/exclude` are deliberately left in force: those belong to the
+    repository under review, not to whatever the reviewing machine happens to
+    ignore."""
+    out = _git(repo_dir, "-c", "core.excludesFile=", "status", "--porcelain")
     offending = []
     for line in out.splitlines():
         if line.startswith("?? "):

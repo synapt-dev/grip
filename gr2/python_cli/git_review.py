@@ -504,7 +504,7 @@ def _run_pytest(
     version = subprocess.run(
         [str(venv_python), "--version"], text=True, capture_output=True
     ).stdout.strip()
-    removed_build_dirs = _remove_new_egg_info(repo_root, untracked_before)
+    removed_build_dirs = _remove_new_run_artifacts(repo_root, untracked_before)
     receipt = _base_receipt(record, bound_tree)
     receipt.update({
         "runner": "pytest",
@@ -534,7 +534,41 @@ def _run_pytest(
 
 
 def _untracked_paths(repo_root: Path) -> set[str]:
-    out = _git(repo_root, "status", "--porcelain")
+    """Every untracked path git can see, with the HOST's ignore rules neutralized.
+
+    `git status` honours `core.excludesFile`, so on a machine whose global gitignore
+    lists `__pycache__/` this returns nothing for a directory the run itself just
+    created -- and the cleanup below, which can only remove what it sees, leaves the
+    clone dirtier than it found it while every assertion stays green. Not
+    hypothetical: that is the condition CI hit, and ignoring `__pycache__` globally is
+    common enough advice that a stranger's laptop is likely to be in it too.
+
+    Measured as a discriminating pair on one repo holding one `__pycache__/`: with a
+    global excludes file ignoring it, `status --porcelain` reports it 0 times; with
+    `core.excludesFile` emptied, once.
+
+    The empty value rather than `/dev/null`: git config names are case-insensitive, so
+    `core.excludesFile` and `core.excludesfile` are one key and a second `-c` merely
+    overrides the first -- and an empty value carries no filesystem path, so it means
+    the same thing on Windows, where `/dev/null` would be a path question.
+
+    It also covers the OTHER way a host ignores paths everywhere, which is easy to miss
+    because it is configured somewhere else entirely: when `core.excludesFile` is UNSET
+    git falls back to `$XDG_CONFIG_HOME/git/ignore`. Measured -- with that file
+    ignoring `__pycache__/` and no `core.excludesFile` anywhere, `status --porcelain`
+    hides the directory, and setting the key empty on the command line reveals it. Both
+    mechanisms are witnessed.
+
+    Repo-local `.gitignore` and `.git/info/exclude` are deliberately left alone: they
+    belong to the repository under review, and a path the repo itself ignores is not
+    this run's business (verified -- a repo-local ignore still hides its path here).
+
+    Both cleanup call sites go through this function, the pre-install capture and the
+    post-pytest sweep, so the two sets are computed under identical rules and their
+    difference stays exactly "what this run created". The drift guard is a separate
+    path (`review_run.assert_no_untracked_drift`) and is unaffected.
+    """
+    out = _git(repo_root, "-c", "core.excludesFile=", "status", "--porcelain")
     return {
         line[3:].strip().strip('"')
         for line in out.splitlines()
@@ -542,21 +576,45 @@ def _untracked_paths(repo_root: Path) -> set[str]:
     }
 
 
-def _remove_new_egg_info(repo_root: Path, before: set[str]) -> list[str]:
-    """Delete the `*.egg-info` directories this run's install created, and only those.
+# The directory kinds a run creates in the source tree as a side effect of doing its
+# job: the install writes `*.egg-info`, importing the package under test writes
+# `__pycache__`, pytest writes `.pytest_cache`. Matched on the directory NAME only,
+# and only for directories the run itself created (see the scoping below).
+#
+# This list is deliberately NOT the drift allowlist. The drift check answers "may this
+# path be PRESENT without refusing"; this answers "did the run CREATE this, so must it
+# clean it up". `.venv/` is on the first list and must never be on this one -- a
+# reviewer's own virtualenv is not ours to delete.
+def _is_run_artifact_dir(rel: str) -> bool:
+    name = rel.rstrip("/").rsplit("/", 1)[-1]
+    return name.endswith(".egg-info") or name in ("__pycache__", ".pytest_cache")
 
-    An editable install writes one into the SOURCE tree, so without this the run leaves
-    a directory behind in a clone it promised to leave as it found it. Scoped three ways
-    so it can never remove a reviewer's own file: only paths absent from `before`, only
-    ones ending in `.egg-info`, and only untracked ones (a tracked egg-info never
-    appears in this set). Measured, not assumed: the first end-to-end run through the
-    installed console script left `src/<pkg>.egg-info/` behind, while the test fixture's
-    offline `.pth` install could not produce one -- so the witness had been green about
-    a case it could not reach.
+
+def _remove_new_run_artifacts(repo_root: Path, before: set[str]) -> list[str]:
+    """Delete the artifact directories THIS run created in the source tree, and only
+    those.
+
+    A run that promises to leave the clone as it found it has to clean up after itself,
+    and it creates droppings in more than one place: an editable install writes
+    `<pkg>.egg-info/`, importing the package under test writes `__pycache__/`, pytest
+    writes `.pytest_cache/`.
+
+    Scoped three ways so it can never remove a reviewer's own file: only paths ABSENT
+    from `before` (captured before the install), only directories whose NAME is a known
+    run-artifact kind, and only untracked ones (a tracked directory never appears in
+    this set). A collapsed untracked parent is never matched, because the name test is
+    on the directory git actually reported.
+
+    Measured twice, and the second one is why this is a list rather than one suffix:
+    the first end-to-end run through the installed console script left
+    `src/<pkg>.egg-info/` behind while the fixture's offline `.pth` install could not
+    produce one; then CI on Linux failed on `src/<pkg>/__pycache__/` while the same
+    assertion passed locally. Both times the claim was "leaves the clone as found" and
+    both times the witness was green about a case it could not reach.
     """
     removed = []
     for rel in sorted(_untracked_paths(repo_root) - before):
-        if not rel.rstrip("/").endswith(".egg-info"):
+        if not _is_run_artifact_dir(rel):
             continue
         target = repo_root / rel
         if target.is_dir():
@@ -565,8 +623,8 @@ def _remove_new_egg_info(repo_root: Path, before: set[str]) -> list[str]:
             except IncompleteRemoval:
                 # Not listed as removed, because it was not: the receipt must not
                 # claim a cleanup that did not happen. The leftover is allowlisted
-                # by the drift check (any `*.egg-info` segment), so the next run
-                # still proceeds rather than refusing on this run's residue.
+                # by the drift check, so the next run still proceeds rather than
+                # refusing on this run's residue.
                 continue
             removed.append(rel)
     return removed

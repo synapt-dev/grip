@@ -5,6 +5,7 @@ refuses. The console script is registered as `git-review` so git resolves `git r
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -176,7 +177,13 @@ def test_dash_h_prints_usage_and_exits_zero(capsys):
 from python_cli import review_run as rr  # noqa: E402  (grouped with the run tests)
 
 
-def _pkg_repo(tmp_path: Path, *, test_body: str, name: str = "r2") -> Path:
+def _pkg_repo(
+    tmp_path: Path,
+    *,
+    test_body: str,
+    name: str = "r2",
+    neutralize_excludes: bool = True,
+) -> Path:
     """A git repo holding a trivial installable package `demo_pkg` and one test file,
     declaring itself through `.review-install` the way a stranger's fixture does."""
     repo = tmp_path / name
@@ -193,6 +200,15 @@ def _pkg_repo(tmp_path: Path, *, test_body: str, name: str = "r2") -> Path:
     _run(repo, "init", "-q", "-b", "main")
     _run(repo, "config", "user.email", "a@e.invalid")
     _run(repo, "config", "user.name", "a")
+    # Belt for the OTHER tests: neutralize the host's global gitignore repo-locally so
+    # a developer machine that ignores `__pycache__/` globally (this one does) cannot
+    # blind the fixture. It is NOT what makes the cleanup work -- the product
+    # neutralizes excludes itself on every status call, which is the thing
+    # `test_the_run_cleans_up_on_a_host_whose_global_gitignore_hides_the_artifact`
+    # witnesses with this switched off. Left on elsewhere so an unrelated failure
+    # cannot be caused by whatever the running machine happens to ignore.
+    if neutralize_excludes:
+        _run(repo, "config", "core.excludesFile", "/dev/null")
     _run(repo, "add", "-A")
     _run(repo, "commit", "-q", "-m", "pkg", "--no-gpg-sign")
     return repo
@@ -453,18 +469,176 @@ def _egg_info_install(repo: Path) -> str:
     return shlex.join([str(venv_python), "-c", script, str(repo), *paths])
 
 
+def _artifact_install(repo: Path) -> str:
+    """An install that drops BOTH artifact kinds a real run leaves in the source tree:
+    an `<pkg>.egg-info/` (every editable install) and a `__pycache__/` (importing the
+    package, on the platforms that write bytecode there). Deterministic on every OS,
+    so the cleanup witness does not depend on which platform the suite runs on."""
+    venv_python = repo / ".git" / "grip" / git_review.VENV_DIRNAME / "bin" / "python"
+    paths = [str(repo / "src"), *[p for p in sys.path if p]]
+    script = (
+        "import site,sys,pathlib;"
+        "sp=pathlib.Path(site.getsitepackages()[0]);"
+        "sp.mkdir(parents=True,exist_ok=True);"
+        "(sp/'zz_review.pth').write_text('\\n'.join(sys.argv[2:])+'\\n');"
+        "root=pathlib.Path(sys.argv[1]);"
+        "egg=root/'src'/'demo_pkg.egg-info';"
+        "egg.mkdir(parents=True,exist_ok=True);"
+        "(egg/'PKG-INFO').write_text('Name: demo_pkg\\n');"
+        "pyc=root/'src'/'demo_pkg'/'__pycache__';"
+        "pyc.mkdir(parents=True,exist_ok=True);"
+        "(pyc/'__init__.cpython-000.pyc').write_bytes(b'\\x00')"
+    )
+    return shlex.join([str(venv_python), "-c", script, str(repo), *paths])
+
+
 def test_the_run_removes_the_build_dir_its_install_created(tmp_path):
     r = _pkg_repo(tmp_path, test_body=PASS_BODY)
     git_review.open_review(r)
     receipt = git_review.run_review(r, install=_egg_info_install(r))
     assert receipt["result"] == "green"
-    assert receipt["removed_build_dirs"] == ["src/demo_pkg.egg-info/"]
+    # Membership, not list equality: what else the run cleans up is platform-dependent
+    # (a `__pycache__` appears where the runtime writes bytecode into the source tree
+    # and not where it does not). An exact-list assertion here passed on one platform
+    # and failed on another for a reason that has nothing to do with what it is
+    # testing, which is this install's egg-info being removed.
+    assert "src/demo_pkg.egg-info/" in receipt["removed_build_dirs"]
     assert not (r / "src" / "demo_pkg.egg-info").exists()
     porcelain = subprocess.run(
         ["git", "-C", str(r), "status", "--porcelain"],
         capture_output=True, text=True, check=True,
     ).stdout
     assert porcelain == ""
+
+
+def test_the_run_removes_every_artifact_kind_its_own_run_created(tmp_path):
+    """`__pycache__` as well as `*.egg-info`.
+
+    CI on Linux failed here while the same assertion passed on macOS: importing the
+    package under test writes bytecode into the SOURCE tree on one platform and not
+    the other, so a witness that WAITS for the runtime to drop a `__pycache__` asserts
+    nothing wherever the runtime does not. The fixture therefore CREATES both artifact
+    kinds itself, exactly as the platform-dependent install would, so the cleanup is
+    exercised identically everywhere. Same correction as the egg-info fixture one
+    commit earlier: do not let the fixture decide whether the case under test occurs."""
+    r = _pkg_repo(tmp_path, test_body=PASS_BODY)
+    git_review.open_review(r)
+    receipt = git_review.run_review(r, install=_artifact_install(r))
+    assert receipt["result"] == "green"
+    removed = set(receipt["removed_build_dirs"])
+    assert any(d.rstrip("/").endswith(".egg-info") for d in removed), removed
+    assert any(d.rstrip("/").endswith("__pycache__") for d in removed), removed
+    porcelain = subprocess.run(
+        ["git", "-C", str(r), "status", "--porcelain"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert porcelain == "", f"clone not left as found: {porcelain!r}"
+
+
+@pytest.mark.parametrize("host_mechanism", ["core.excludesFile", "xdg-ignore"])
+def test_the_run_cleans_up_on_a_host_whose_global_gitignore_hides_the_artifact(
+    tmp_path, monkeypatch, host_mechanism
+):
+    """The one a reviewer's own machine is most likely to be: a global gitignore
+    listing `__pycache__/`.
+
+    `git status --porcelain` honours `core.excludesFile`, so on such a host git never
+    REPORTS the `__pycache__` the run just created, a cleanup that removes only what
+    it sees removes nothing, and the clone is left dirtier than it was found while
+    every assertion in the suite stays green. That is the condition CI hit, and
+    ignoring `__pycache__` globally is common enough advice that a stranger is likely
+    to be in it. So the product neutralizes excludes on its own status calls, and this
+    is the witness for that -- `neutralize_excludes=False` keeps the repo-local
+    `/dev/null` OFF, leaving the host config as the only thing in play.
+
+    The assertion is on the FILESYSTEM, deliberately. A `git status` check here would
+    be blinded by the very config under test and could not fail -- the same shape of
+    mistake this test exists to close. The porcelain check that follows re-neutralizes
+    excludes for the same reason.
+    """
+    # Both of the ways a host hides paths from every repo it owns, because a stranger
+    # may be in either and they are configured in different places: an explicit
+    # `core.excludesFile` in the global config, and git's own XDG fallback at
+    # `$XDG_CONFIG_HOME/git/ignore`, which applies when `core.excludesFile` is UNSET.
+    # Measured: an empty `core.excludesFile` on the command line suppresses both.
+    home = tmp_path / "fakehome"
+    (home / ".config" / "git").mkdir(parents=True)
+    gitconfig = home / ".gitconfig"
+    if host_mechanism == "core.excludesFile":
+        excludes = home / "global_gitignore"
+        excludes.write_text("__pycache__/\n")
+        gitconfig.write_text(f"[core]\n\texcludesfile = {excludes}\n")
+    else:
+        (home / ".config" / "git" / "ignore").write_text("__pycache__/\n")
+        gitconfig.write_text("")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+
+    r = _pkg_repo(tmp_path, test_body=PASS_BODY, neutralize_excludes=False)
+
+    # Control: the host config really is in force and really does hide the artifact,
+    # so a pass below is the product working rather than the setup failing to bite.
+    decoy = r / "src" / "demo_pkg" / "__pycache__"
+    decoy.mkdir(parents=True)
+    (decoy / "probe.pyc").write_bytes(b"\x00")
+    blinded = subprocess.run(
+        ["git", "-C", str(r), "status", "--porcelain"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert "__pycache__" not in blinded, (
+        "setup failed to bite: the host excludes are not hiding the artifact, so this "
+        f"test cannot witness anything. porcelain={blinded!r}"
+    )
+    shutil.rmtree(decoy)
+
+    # The adversarial case for the fix itself. Neutralizing excludes WIDENS what the
+    # cleanup can see, so the paths newly in view must still be protected by the
+    # "absent before the install" scoping rather than by having been invisible. A
+    # host-ignored artifact-named directory the reviewer already had is exactly the
+    # thing that was safe by accident before this change and must be safe on purpose
+    # after it.
+    reviewers_own = r / "tests" / "__pycache__"
+    reviewers_own.mkdir(parents=True)
+    (reviewers_own / "mine.txt").write_text("not yours\n")
+
+    git_review.open_review(r)
+    receipt = git_review.run_review(r, install=_artifact_install(r))
+    assert receipt["result"] == "green"
+
+    assert reviewers_own.is_dir(), "a pre-existing host-ignored __pycache__ was deleted"
+    assert (reviewers_own / "mine.txt").is_file()
+    assert "tests/__pycache__/" not in set(receipt["removed_build_dirs"])
+
+    left_behind = r / "src" / "demo_pkg" / "__pycache__"
+    assert not left_behind.exists(), (
+        "the run left a __pycache__ behind on a host whose global gitignore hides it"
+    )
+    removed = set(receipt["removed_build_dirs"])
+    assert any(d.rstrip("/").endswith("__pycache__") for d in removed), removed
+
+    porcelain = subprocess.run(
+        ["git", "-C", str(r), "-c", "core.excludesFile=", "status", "--porcelain"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    # "as found" includes the reviewer's own pre-existing directory, which was there
+    # before and must still be: it is the only thing allowed in this output.
+    assert porcelain == "?? tests/__pycache__/\n", (
+        f"clone not left as found: {porcelain!r}"
+    )
+
+
+def test_a_pycache_the_reviewer_already_had_is_never_removed(tmp_path):
+    """The cleanup is scoped to what THIS run created, for every artifact kind — not
+    just the egg-info. A `__pycache__` present before the run must survive it."""
+    r = _pkg_repo(tmp_path, test_body=PASS_BODY)
+    pre_existing = r / "src" / "demo_pkg" / "__pycache__"
+    pre_existing.mkdir(parents=True)
+    (pre_existing / "marker.txt").write_text("mine\n")
+    git_review.open_review(r)
+    git_review.run_review(r, install=_artifact_install(r))
+    assert pre_existing.is_dir(), "a pre-existing __pycache__ was deleted"
+    assert (pre_existing / "marker.txt").is_file()
 
 
 def test_an_untracked_path_the_reviewer_already_had_is_never_removed(tmp_path):
@@ -477,7 +651,10 @@ def test_an_untracked_path_the_reviewer_already_had_is_never_removed(tmp_path):
     (pre_existing / "PKG-INFO").write_text("mine\n")
     git_review.open_review(r)
     receipt = git_review.run_review(r, install=_egg_info_install(r))
-    assert receipt["removed_build_dirs"] == ["src/demo_pkg.egg-info/"]
+    assert "src/demo_pkg.egg-info/" in receipt["removed_build_dirs"]
+    # The property under test is the NEGATIVE one: the pre-existing path is absent
+    # from what was removed, and still on disk.
+    assert "src/preexisting.egg-info/" not in receipt["removed_build_dirs"]
     assert pre_existing.is_dir(), "a pre-existing untracked path was deleted"
 
 

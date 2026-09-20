@@ -437,74 +437,87 @@ def _run_pytest(
         install_cmd_tokens = [str(venv_python), "-m", "pip", "install", "-e", str(repo_root)]
         install_source = "default"
     # What was untracked BEFORE the install, so the cleanup below can tell this
-    # run's build droppings from a file the reviewer already had.
+    # run's build droppings from a file the reviewer already had. Captured once,
+    # here, and consumed once, in the `finally` below -- on EVERY exit from that
+    # block, not only the green path. The install writes `*.egg-info` into
+    # `repo_root` (the reviewer's own working tree, not a throwaway clone) as its
+    # very first act; a refusal on any later step (pytest missing, unparseable
+    # summary, zero collected) used to skip the cleanup entirely, because it ran
+    # as the last line of the green path only. The dropped egg-info then reads as
+    # untracked drift to the reviewer's own `git status`, and to the NEXT run's
+    # `untracked_before` snapshot it reads as pre-existing, so a later green run
+    # neither removes it nor names it as removed either.
     untracked_before = _untracked_paths(repo_root)
+    removed_build_dirs: list[str] = []
     try:
+        try:
+            proc = subprocess.run(
+                install_cmd_tokens, text=True, capture_output=True, cwd=str(repo_root)
+            )
+        except OSError as exc:
+            raise rr.ReviewRunRefused(
+                "install_failed",
+                f"install `{' '.join(install_cmd_tokens)}` could not run: {exc}",
+            )
+        if proc.returncode != 0:
+            raise rr.ReviewRunRefused(
+                "install_failed",
+                f"install `{' '.join(install_cmd_tokens)}` failed: {proc.stderr.strip()[-800:]}",
+            )
+        undeclared = rr.detect_undeclared_extras(proc.stdout + "\n" + proc.stderr)
+        if undeclared:
+            raise rr.ReviewRunRefused(
+                "undeclared_extra",
+                "the install requested extra(s) the package does not declare: "
+                f"{', '.join(undeclared)}. pip exits 0 on an undeclared extra and installs "
+                "nothing for it, so the test dependencies it was meant to bring are "
+                "silently absent.",
+            )
+
+        run_env = rr.scrubbed_python_env(venv_dir=venv_dir)
+        resolved_file = rr.resolve_import_file(venv_python, package, run_env)
+        # The clone is the tree here, so "under the lane" is "under the clone".
+        rr.assert_import_under_lane(resolved_file, repo_root)
+
         proc = subprocess.run(
-            install_cmd_tokens, text=True, capture_output=True, cwd=str(repo_root)
+            [str(venv_python), "-I", "-c", "import pytest"],
+            text=True, capture_output=True, env=run_env,
         )
-    except OSError as exc:
-        raise rr.ReviewRunRefused(
-            "install_failed",
-            f"install `{' '.join(install_cmd_tokens)}` could not run: {exc}",
-        )
-    if proc.returncode != 0:
-        raise rr.ReviewRunRefused(
-            "install_failed",
-            f"install `{' '.join(install_cmd_tokens)}` failed: {proc.stderr.strip()[-800:]}",
-        )
-    undeclared = rr.detect_undeclared_extras(proc.stdout + "\n" + proc.stderr)
-    if undeclared:
-        raise rr.ReviewRunRefused(
-            "undeclared_extra",
-            "the install requested extra(s) the package does not declare: "
-            f"{', '.join(undeclared)}. pip exits 0 on an undeclared extra and installs "
-            "nothing for it, so the test dependencies it was meant to bring are "
-            "silently absent.",
-        )
+        if proc.returncode != 0:
+            raise rr.ReviewRunRefused(
+                "pytest_not_installed",
+                "pytest is not importable in the review venv; a plain editable install "
+                "does not bring it. Add pytest to --install or this repo's .review-install "
+                f"(it is a test-time dependency). stderr: {proc.stderr.strip()[-300:]}",
+            )
 
-    run_env = rr.scrubbed_python_env(venv_dir=venv_dir)
-    resolved_file = rr.resolve_import_file(venv_python, package, run_env)
-    # The clone is the tree here, so "under the lane" is "under the clone".
-    rr.assert_import_under_lane(resolved_file, repo_root)
-
-    proc = subprocess.run(
-        [str(venv_python), "-I", "-c", "import pytest"],
-        text=True, capture_output=True, env=run_env,
-    )
-    if proc.returncode != 0:
-        raise rr.ReviewRunRefused(
-            "pytest_not_installed",
-            "pytest is not importable in the review venv; a plain editable install "
-            "does not bring it. Add pytest to --install or this repo's .review-install "
-            f"(it is a test-time dependency). stderr: {proc.stderr.strip()[-300:]}",
+        test_command = [str(venv_python), "-m", "pytest", *rr.merge_report_flags(list(test_args))]
+        proc = subprocess.run(
+            test_command, text=True, capture_output=True, cwd=str(repo_root), env=run_env
         )
+        output = proc.stdout + "\n" + proc.stderr
+        _output_log_path(repo_root).write_text(output)
+        failed_ids = rr.parse_failed_ids(output)
+        summary = rr.parse_pytest_summary(output)
+        if summary is None:
+            raise rr.ReviewRunRefused(
+                "unparseable_summary",
+                "no pytest summary line found; refusing to call this a green "
+                f"(pytest exit was {proc.returncode})",
+            )
+        if not summary.get("selected"):
+            raise rr.ReviewRunRefused(
+                "zero_collected",
+                f"pytest selected 0 tests (collected={summary.get('collected')}, "
+                f"deselected={summary.get('deselected')}); a zero-test run is not a green",
+            )
 
-    test_command = [str(venv_python), "-m", "pytest", *rr.merge_report_flags(list(test_args))]
-    proc = subprocess.run(
-        test_command, text=True, capture_output=True, cwd=str(repo_root), env=run_env
-    )
-    output = proc.stdout + "\n" + proc.stderr
-    _output_log_path(repo_root).write_text(output)
-    failed_ids = rr.parse_failed_ids(output)
-    summary = rr.parse_pytest_summary(output)
-    if summary is None:
-        raise rr.ReviewRunRefused(
-            "unparseable_summary",
-            "no pytest summary line found; refusing to call this a green "
-            f"(pytest exit was {proc.returncode})",
-        )
-    if not summary.get("selected"):
-        raise rr.ReviewRunRefused(
-            "zero_collected",
-            f"pytest selected 0 tests (collected={summary.get('collected')}, "
-            f"deselected={summary.get('deselected')}); a zero-test run is not a green",
-        )
+        version = subprocess.run(
+            [str(venv_python), "--version"], text=True, capture_output=True
+        ).stdout.strip()
+    finally:
+        removed_build_dirs = _remove_new_run_artifacts(repo_root, untracked_before)
 
-    version = subprocess.run(
-        [str(venv_python), "--version"], text=True, capture_output=True
-    ).stdout.strip()
-    removed_build_dirs = _remove_new_run_artifacts(repo_root, untracked_before)
     receipt = _base_receipt(record, bound_tree)
     receipt.update({
         "runner": "pytest",

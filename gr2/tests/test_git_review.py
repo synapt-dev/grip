@@ -710,6 +710,62 @@ def test_an_untracked_path_the_reviewer_already_had_is_never_removed(tmp_path):
     assert pre_existing.is_dir(), "a pre-existing untracked path was deleted"
 
 
+def _egg_info_install_without_pytest(repo: Path) -> str:
+    """Like `_egg_info_install`, but the `.pth` names only `repo/src` -- never the
+    host's own `sys.path` the way `_egg_info_install` and `_offline_install` do -- so
+    `import demo_pkg` resolves under `-I` (the import-under-lane check passes) while
+    `import pytest` does not (nothing on the venv's site puts it there). This is the
+    ordinary shape of a package that only declares pytest in an optional extra the
+    reviewer did not ask to install: a ten-minutes-in stranger, not a contrived one.
+    The egg-info is written exactly like every real editable install, and the run
+    reaches `pytest_not_installed` AFTER it exists on disk."""
+    venv_python = repo / ".git" / "grip" / git_review.VENV_DIRNAME / "bin" / "python"
+    script = (
+        "import site,sys,pathlib;"
+        "sp=pathlib.Path(site.getsitepackages()[0]);"
+        "sp.mkdir(parents=True,exist_ok=True);"
+        "(sp/'zz_review.pth').write_text(sys.argv[2]+'\\n');"
+        "egg=pathlib.Path(sys.argv[1])/'src'/'demo_pkg.egg-info';"
+        "egg.mkdir(parents=True,exist_ok=True);"
+        "(egg/'PKG-INFO').write_text('Name: demo_pkg\\n')"
+    )
+    return shlex.join([str(venv_python), "-c", script, str(repo), str(repo / "src")])
+
+
+def test_a_refusal_after_the_install_still_cleans_up_the_egg_info(tmp_path):
+    """The install writes `<pkg>.egg-info/` into the reviewer's own working tree (this
+    is NOT a throwaway clone) as its very first act, unconditionally. Before the
+    `finally` fix, `_remove_new_run_artifacts` ran only as the last line of the green
+    path, so any refusal AFTER the install (pytest missing, unparseable summary, zero
+    collected) skipped it and left the egg-info behind as untracked drift.
+
+    Reproduced directly, in sequence, exactly as the report described it: a refused
+    run first (`pytest_not_installed`, the most common ten-minutes-in stranger --
+    pytest declared only in an optional extra the reviewer did not install), then a
+    real green run with a real install. Both must leave the clone exactly as found.
+    """
+    r = _pkg_repo(tmp_path, test_body=PASS_BODY)
+    git_review.open_review(r)
+
+    with pytest.raises(rr.ReviewRunRefused) as exc:
+        git_review.run_review(r, install=_egg_info_install_without_pytest(r))
+    assert exc.value.code == "pytest_not_installed"
+    porcelain = subprocess.run(
+        ["git", "-C", str(r), "status", "--porcelain"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert porcelain == "", f"a refused run left the egg-info behind: {porcelain!r}"
+
+    receipt = git_review.run_review(r, install=_egg_info_install(r))
+    assert receipt["result"] == "green"
+    assert "src/demo_pkg.egg-info/" in receipt["removed_build_dirs"]
+    porcelain = subprocess.run(
+        ["git", "-C", str(r), "status", "--porcelain"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert porcelain == "", f"clone not left as found: {porcelain!r}"
+
+
 def test_run_help_prints_usage_instead_of_an_argparse_error(tmp_path, capsys):
     """`git review run -h` used to fall through to `unrecognized arguments: -h`."""
     r = _pkg_repo(tmp_path, test_body=PASS_BODY)

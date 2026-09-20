@@ -260,6 +260,57 @@ def test_untracked_drift_refuses_an_injected_conftest(tmp_path: Path):
         rr.assert_no_untracked_drift(repo)
 
 
+def test_untracked_drift_still_refuses_when_the_host_globally_ignores_the_injected_dirname(
+    tmp_path: Path, monkeypatch
+):
+    """`assert_no_untracked_drift`'s own `git status` call used to be a plain,
+    unneutralized one: on a host whose global git config ignores a directory name,
+    an untracked path inside a directory with that name is invisible to `git
+    status` and the drift check cannot refuse what it cannot see -- a green that
+    means less than it claims, on exactly the surface this check exists to guard.
+    Measured directly on a real developer machine in this fleet, whose global
+    ignore lists `.benchmarks/` among other build-noise directories.
+
+    The injected directory name here is deliberately NOT on
+    `_UNTRACKED_ALLOW_SEGMENTS`/`_UNTRACKED_ALLOW_TOP` (unlike `__pycache__`,
+    which is exempt by NAME regardless of contents and would confound this
+    witness with a different, already-known allowance): this failure is about
+    host-config blindness specifically, not about the allowlist being broad.
+
+    The autouse suite-wide isolation fixture (conftest.py) removes ambient host
+    config from every gr2 test by default, so this test explicitly OPTS IN to a
+    simulated host config that hides the injected name -- the correct shape per
+    that fixture's own contract."""
+    home = tmp_path / "fakehome"
+    home.mkdir()
+    excludes = home / "global_gitignore"
+    excludes.write_text(".benchmarks/\n")
+    gitconfig = home / ".gitconfig"
+    gitconfig.write_text(f"[core]\n\texcludesfile = {excludes}\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
+
+    repo, head_tree = _pkg_repo(tmp_path, test_body=PASS_TEST)
+    _write_marker(repo, _git(repo, "rev-parse", "HEAD"), head_tree)
+
+    # Control: the simulated host config really does hide the directory from a
+    # plain `git status`, so a refusal below is the product working, not the
+    # setup failing to bite.
+    injected = repo / ".benchmarks"
+    injected.mkdir()
+    (injected / "sneaky_conftest.py").write_text("# injected, host-ignored dirname\n")
+    blinded = subprocess.run(
+        ["git", "-C", str(repo), "status", "--porcelain"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert ".benchmarks" not in blinded, (
+        "setup failed to bite: the simulated host config is not hiding the "
+        f"injected directory, so this test cannot witness anything. porcelain={blinded!r}"
+    )
+
+    with pytest.raises(rr.ReviewRunRefused, match="untracked_drift"):
+        rr.assert_no_untracked_drift(repo)
+
+
 # ----------------------------------------------------------- import under the lane
 
 def test_import_under_the_lane_accepts_a_path_inside(tmp_path: Path):

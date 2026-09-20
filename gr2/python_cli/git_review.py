@@ -463,7 +463,7 @@ def _run_pytest(
             "silently absent.",
         )
 
-    run_env = rr.scrubbed_python_env()
+    run_env = rr.scrubbed_python_env(venv_dir=venv_dir)
     resolved_file = rr.resolve_import_file(venv_python, package, run_env)
     # The clone is the tree here, so "under the lane" is "under the clone".
     rr.assert_import_under_lane(resolved_file, repo_root)

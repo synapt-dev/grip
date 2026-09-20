@@ -210,8 +210,9 @@ def assert_no_untracked_drift(
 
 # ---- import resolves under the lane -----------------------------------------
 
-def scrubbed_python_env(base: dict | None = None) -> dict:
-    """Return a copy of the environment with every ``PYTHON*`` variable removed.
+def scrubbed_python_env(base: dict | None = None, *, venv_dir: Path | None = None) -> dict:
+    """Return a copy of the environment with every ``PYTHON*`` variable removed, and
+    (when ``venv_dir`` is given) shaped to look like that venv was ACTIVATED.
 
     ``-I`` isolates the CHECK subprocesses (it drops cwd and, via ``-E``, ignores
     ``PYTHON*`` env), so the import resolves under the lane no matter what the caller
@@ -224,10 +225,33 @@ def scrubbed_python_env(base: dict | None = None) -> dict:
     environment, so ``PYTHONPATH``/``PYTHONHOME``/``PYTHONSAFEPATH``/
     ``PYTHONNOUSERSITE``/``PYTHONSTARTUP`` and any other ``PYTHON*`` var can no longer
     redirect the import the check just proved. ``-I`` still guards the CHECK against
-    the cwd shadow (the scrub does not touch cwd; ``-I`` does not touch the run)."""
+    the cwd shadow (the scrub does not touch cwd; ``-I`` does not touch the run).
+
+    ``venv_dir`` closes a SEPARATE gap: the venv's interpreter is invoked
+    by absolute path, which needs no PATH entry for itself, but a repository's OWN
+    tests can shell out to ITS OWN installed console scripts (an editable install of
+    `gr2` puts `gr2`/`git-review` in ``<venv>/bin``, and grip's own packaging test does
+    exactly this) -- and without an activation-shaped env, that lookup fails with
+    `FileNotFoundError`, RED, in a repo whose own developers would never see it,
+    because their shell has that venv's `bin/` on PATH. Fathom's stranger dogfood hit
+    this on grip's OWN suite the first time anyone ran `git review run` from a fresh
+    venv and an ordinary clone -- neither the author's nor either
+    reviewer's suite run caught it, because all three of us activated the venv by hand
+    before running, which is exactly the ambient shell state a lane's own tests cannot
+    assume when the run's *subprocess* env is built fresh here rather than inherited.
+    Matches what `python -m venv --prompt` activation actually does: the venv's
+    `bin/` is PREPENDED to PATH (so its console scripts and its own `python`/`pytest`
+    resolve first) and ``VIRTUAL_ENV`` is set to the venv root. ``PYTHONHOME`` is
+    already gone via the PYTHON* scrub above, which is the other half real
+    activation does."""
     env = dict(os.environ if base is None else base)
     for key in [k for k in env if k.startswith("PYTHON")]:
         del env[key]
+    if venv_dir is not None:
+        venv_bin = venv_dir / "bin"
+        existing_path = env.get("PATH", "")
+        env["PATH"] = str(venv_bin) + (os.pathsep + existing_path if existing_path else "")
+        env["VIRTUAL_ENV"] = str(venv_dir)
     return env
 
 
@@ -632,7 +656,7 @@ def _run_review_lane(
     #     below, so "resolves under the lane" is a fact about the run and not just the
     #     check (the review-run env-isolation fix: -I isolates the check, not the run;
     #     the check and the run must see one environment).
-    run_env = scrubbed_python_env()
+    run_env = scrubbed_python_env(venv_dir=venv_dir)
     resolved_file = resolve_import_file(venv_python, package, run_env)
     assert_import_under_lane(resolved_file, lane_dir)
 

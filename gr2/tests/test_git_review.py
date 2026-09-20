@@ -349,6 +349,58 @@ def test_non_pytest_runner_green(tmp_path):
     assert git_review.read_run_receipt(r)["result"] == "green"
 
 
+# Like _offline_install, but ALSO writes a console-script SHIM into the
+# review venv's own bin/ -- an offline stand-in for what a real editable install's
+# `entry_points.txt` -> console_scripts machinery would write there (this venv has
+# neither network nor host-bundled setuptools). Exactly the shape grip's own
+# `test_gr2_console_script_resolves` shells out to, and exactly the test Fathom's
+# stranger dogfood found RED on a fresh outer venv + ordinary clone.
+def _offline_install_with_console_script(repo: Path) -> str:
+    venv_python = repo / ".git" / "grip" / git_review.VENV_DIRNAME / "bin" / "python"
+    paths = [str(repo / "src"), *[p for p in sys.path if p]]
+    script = (
+        "import site,stat,sys,pathlib;"
+        "sp=pathlib.Path(site.getsitepackages()[0]);"
+        "sp.mkdir(parents=True,exist_ok=True);"
+        "(sp/'zz_review.pth').write_text('\\n'.join(sys.argv[1:])+'\\n');"
+        "binf=pathlib.Path(sys.executable).parent/'demo_pkg_cli';"
+        "binf.write_text('#!'+sys.executable+'\\nprint(\"demo_pkg_cli ok\")\\n');"
+        "binf.chmod(binf.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)"
+    )
+    return shlex.join([str(venv_python), "-c", script, *paths])
+
+
+CONSOLE_SCRIPT_BODY = (
+    "import shutil, subprocess\n\n"
+    "def test_console_script_resolves_on_path():\n"
+    "    found = shutil.which('demo_pkg_cli')\n"
+    "    assert found is not None, 'demo_pkg_cli not found on PATH'\n"
+    "    result = subprocess.run(['demo_pkg_cli'], capture_output=True, text=True)\n"
+    "    assert result.returncode == 0 and 'demo_pkg_cli ok' in result.stdout, result\n"
+)
+
+
+def test_the_run_puts_the_review_venvs_bin_on_the_pytest_subprocess_path(tmp_path):
+    """On the ACTUAL path Fathom's stranger dogfood exercised: `git
+    review run` against an ordinary clone. A repository's own tests can shell out
+    to its OWN installed console script -- grip's own packaging test does exactly
+    this -- and without an activation-shaped subprocess env the lookup fails
+    `FileNotFoundError`, RED, in a repo whose own developers would never see it,
+    because their shell has that venv's `bin/` on PATH before they ever run pytest
+    by hand. Measured: a fresh outer venv, an ordinary clone of grip at merge
+    commit 0b8ef1278fb5be3d139ce55ba27853223cb431bb, the four documented verbs,
+    RED on `gr2/tests/test_gr2_packaging.py::test_gr2_console_script_resolves`.
+
+    The review venv is created fresh under `.git/grip/venv` every run, so it is
+    never on this TEST process's own PATH to begin with -- "the parent PATH does
+    not contain the venv" is the ambient default, not something this test
+    constructs."""
+    r = _pkg_repo(tmp_path, test_body=CONSOLE_SCRIPT_BODY)
+    git_review.open_review(r)
+    receipt = git_review.run_review(r, install=_offline_install_with_console_script(r))
+    assert receipt["result"] == "green", receipt
+
+
 def test_non_pytest_runner_with_no_summary_refuses_rather_than_reporting_zero(tmp_path):
     r = _pkg_repo(tmp_path, test_body=PASS_BODY)
     git_review.open_review(r)

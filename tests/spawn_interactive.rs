@@ -108,6 +108,90 @@ fn interactive_fleet_refuses_and_names_single_agent_form() {
     );
 }
 
+/// The texts promise the no-agent interactive form refuses — not "launches
+/// whichever agent happens to lack a window". This is that promise's witness on
+/// a box WITH tmux: `gr spawn up --interactive` (no agent) must refuse before
+/// any registry or routing mutation, not fall through to launching the one
+/// missing window in the foreground.
+#[test]
+fn interactive_without_agent_refuses_even_when_tmux_is_present() {
+    let ws = write_gripspace(
+        "[agents.probe]\nrole = \"worker\"\ntool = \"echotool\"\nmodel = \"\"\nworktree = \".\"\n",
+    );
+
+    let out = Command::cargo_bin("gr")
+        .unwrap()
+        .args(["spawn", "up", "--interactive"])
+        .current_dir(ws.path())
+        .env("HOME", ws.path())
+        .output()
+        .expect("run gr spawn up --interactive with tmux present");
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success(),
+        "interactive with no agent named must refuse even when tmux exists; output:\n{combined}"
+    );
+    assert!(
+        combined.contains("gr spawn up <agent> --interactive"),
+        "the refusal must name the single-agent form; output:\n{combined}"
+    );
+    assert!(
+        !combined.contains("in this terminal (cwd"),
+        "the launch header must not print for a refusal; output:\n{combined}"
+    );
+}
+
+/// Witness for the bash requirement the three texts must name: with NEITHER tmux
+/// nor bash on PATH, `gr spawn up <agent>` refuses with a message naming bash —
+/// and does not print the launch header first. This is the mutant witness for the
+/// resolve-before-header check: dropping the mapping (so the header prints and
+/// the bare `bash` spawn fails) leaves the marker absent and the header present,
+/// which reds this test on the header assertion.
+#[test]
+fn no_bash_refuses_and_names_it_before_the_header() {
+    let bin = TempDir::new().unwrap(); // empty: no bash, no tmux
+    let ws = write_gripspace(
+        "[agents.probe]\nrole = \"worker\"\ntool = \"echotool\"\nmodel = \"\"\n\
+         worktree = \".\"\nargs = [\"SHOULD_NOT_RUN\"]\n",
+    );
+
+    let out = Command::cargo_bin("gr")
+        .unwrap()
+        .args(["spawn", "up", "probe"])
+        .current_dir(ws.path())
+        .env("PATH", bin.path())
+        .env("HOME", ws.path())
+        .output()
+        .expect("run gr spawn up probe with an empty PATH");
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success(),
+        "no bash on PATH must refuse, not launch; output:\n{combined}"
+    );
+    assert!(
+        combined.contains("needs bash on PATH"),
+        "the refusal must name bash; output:\n{combined}"
+    );
+    assert!(
+        !combined.contains("in this terminal (cwd"),
+        "the refusal must come BEFORE the launch header; output:\n{combined}"
+    );
+    assert!(
+        !combined.contains("SHOULD_NOT_RUN"),
+        "the agent's command must not have run; output:\n{combined}"
+    );
+}
+
 /// Resolve an executable by name from the ambient test PATH.
 fn resolve_on_path(name: &str) -> std::path::PathBuf {
     let path = std::env::var_os("PATH").expect("PATH is set in the test environment");

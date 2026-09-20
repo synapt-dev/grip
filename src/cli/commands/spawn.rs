@@ -216,6 +216,43 @@ fn tmux_available() -> bool {
         .unwrap_or(false)
 }
 
+/// Resolve `bash` on PATH the way the foreground launch will run it, before the
+/// launch header is printed: the foreground path execs the agent through
+/// `bash <launch-script>`, so a box with neither tmux nor bash (a native Windows
+/// PowerShell user) must get a refusal that names bash, not the launch banner
+/// followed by a raw "No such file or directory". Returns the resolved path so
+/// the exec runs the same binary the check found.
+fn resolve_bash_on_path() -> Option<PathBuf> {
+    let path_env = std::env::var_os("PATH")?;
+    #[cfg(windows)]
+    let names = ["bash.exe", "bash.bat", "bash.cmd", "bash"];
+    #[cfg(not(windows))]
+    let names = ["bash"];
+    for dir in std::env::split_paths(&path_env) {
+        for name in names {
+            let candidate = dir.join(name);
+            #[cfg(unix)]
+            {
+                if let Ok(meta) = std::fs::metadata(&candidate) {
+                    use std::os::unix::fs::PermissionsExt;
+                    if meta.is_file() && meta.permissions().mode() & 0o111 != 0 {
+                        return Some(candidate);
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                if let Ok(meta) = std::fs::metadata(&candidate) {
+                    if meta.is_file() {
+                        return Some(candidate);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Check if a tmux session exists.
 fn session_exists(session_name: &str) -> bool {
     Command::new("tmux")
@@ -796,6 +833,15 @@ fn run_spawn_up_foreground(
     let channel = agent.channel.as_deref().unwrap_or(&config.spawn.channel);
     let agent_id = agent_ids[name].clone();
 
+    // Resolve bash BEFORE printing the launch header: with neither tmux nor bash
+    // on PATH the old path printed the banner and then died on a raw
+    // "No such file or directory (os error 2)". The refusal names the fix.
+    let bash_path = resolve_bash_on_path().ok_or_else(|| {
+        anyhow::anyhow!(
+            "interactive launch needs bash on PATH (on Windows: run from Git Bash or WSL)"
+        )
+    })?;
+
     let (worktree_path, launch_env, launch_cmd, _expected_process) = build_agent_launch(
         config,
         workspace_root,
@@ -824,7 +870,7 @@ fn run_spawn_up_foreground(
 
     // The launch script exports the env, cds into the worktree and execs the
     // same command a pane would run; run it in the foreground and inherit stdio.
-    let status = Command::new("bash").arg(&launch_script).status()?;
+    let status = Command::new(&bash_path).arg(&launch_script).status()?;
     if !status.success() {
         anyhow::bail!(
             "agent '{}' exited with {}",
@@ -876,6 +922,23 @@ pub fn run_spawn_up(
         }
         None => names.iter().map(|name| name.as_str()).collect(),
     };
+
+    // Interactive mode is one agent, by name. A whole-fleet interactive call
+    // (no agent named) refuses before any registry or routing mutation, whether
+    // or not tmux exists and whether or not some agent happens to lack a
+    // window — the texts promise the no-agent form refuses, so it does.
+    if interactive_mode && agent_filter.is_none() {
+        anyhow::bail!(
+            "interactive launch runs a single agent in this terminal{}.\n\
+             Name one agent:\n    gr spawn up <agent> --interactive\n\
+             Launching the whole fleet without a multiplexer is not yet supported.",
+            if tmux_ok {
+                ""
+            } else {
+                ", and tmux was not found"
+            }
+        );
+    }
 
     // The 2026-09-16 spawn-up incidents (tracked on the private
     // tracker; named generically here): a bare `spawn up` relaunched

@@ -13,7 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Windows, a bare container) or `--interactive` is passed, one named agent runs
   in the foreground of the current terminal with the same command, cwd, env, and
   startup prompt a tmux pane would use. `gr spawn up <agent>` also accepts the
-  agent name positionally. A whole-fleet `gr spawn up` without a multiplexer
+  agent name positionally. The foreground launch runs the agent through `bash`,
+  so bash must be on PATH (on Windows: run from Git Bash or WSL); with neither
+  tmux nor bash available the verb refuses and names bash. A whole-fleet
+  `gr spawn up` without a multiplexer — and `--interactive` with no agent named —
   refuses and names the single-agent form. Unix tmux behaviour is unchanged: the
   launch command is now built by one shared path used by both the pane and the
   foreground launch.

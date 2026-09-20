@@ -516,9 +516,10 @@ pub enum SpawnCommands {
     /// Launch all agents (or a specific agent)
     Up {
         /// Launch only this agent (also accepts --agent)
+        #[arg(conflicts_with = "agent_flag")]
         agent: Option<String>,
         /// Launch only this agent (alias for the positional name)
-        #[arg(long = "agent", value_name = "AGENT")]
+        #[arg(long = "agent", value_name = "AGENT", conflicts_with = "agent")]
         agent_flag: Option<String>,
         /// Path to agents.toml (default: .gitgrip/agents.toml)
         #[arg(long)]

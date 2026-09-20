@@ -107,9 +107,11 @@ gr spawn up opus --interactive   # run "opus" in this terminal
 gr spawn up opus                 # same, automatic when tmux is absent
 ```
 
-Interactive mode is one agent at a time. Launching the whole fleet needs a
-multiplexer; with none available, `gr spawn up` (no agent named) refuses and
-points you at the single-agent form.
+Interactive mode is one agent at a time. The foreground launch runs the agent
+through `bash`, so bash must be on PATH (on Windows: run from Git Bash or WSL);
+with neither tmux nor bash available the verb refuses and names bash. Launching
+the whole fleet needs a multiplexer; with none available, `gr spawn up` (no agent
+named) refuses and points you at the single-agent form.
 
 ### Check status
 

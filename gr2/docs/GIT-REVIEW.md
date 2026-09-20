@@ -43,11 +43,19 @@ verb. Four keys are recognised; an unrecognised key is a refusal, not a silent s
 ```ini
 package = demo_pkg                              # import name proven to resolve in the clone
 install = {venv} -m pip install -e {lane} pytest  # {venv} = the review venv's python, {lane} = the clone
-runner  = cargo                                 # optional: pytest (default), cargo, or jest
+runner  = cargo                                 # optional: pytest (default), cargo, jest, or junit-xml
 test    = cargo test                            # required when runner is not pytest
+reports = **/build/test-results/**/*.xml        # optional: JUnit XML glob for junit-xml
 ```
 
 With no `.review-install`, pass `--package` and/or `--install` on the command line.
+
+For Gradle, Maven, and other tools that write JUnit XML, set `runner = junit-xml`
+and make `test` run the project's test command. The default report glob is
+`**/build/test-results/**/*.xml`; override it with `reports = ...` or `--reports`.
+Only reports written during this run count. If Gradle skips an up-to-date task and
+writes no fresh report, the run refuses and tells you to use `cleanTest` or
+`--rerun-tasks` rather than reporting a stale result as green.
 
 ## Where things are written
 

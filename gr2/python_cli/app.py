@@ -2349,8 +2349,9 @@ def review_run(
     python: Optional[str] = typer.Option(None, "--python", help="Interpreter to build the lane venv from; defaults to the running interpreter. Recorded in the receipt."),
     system_site_packages: bool = typer.Option(False, "--system-site-packages", help="Create the lane venv with --system-site-packages (host tools visible)"),
     install: Optional[str] = typer.Option(None, "--install", help="Install command (shell-split); `{venv}` and `{lane}` are substituted per token, same as the .review-install hint. Defaults to the lane's .review-install hint, else `<venv python> -m pip install -e <lane>`"),
-    runner: Optional[str] = typer.Option(None, "--runner", help="Test runner: pytest (default), cargo, or jest. With a non-pytest runner the venv/install/import steps are skipped; counts come from that runner's summary line. Defaults to the lane's .review-install `runner`."),
+    runner: Optional[str] = typer.Option(None, "--runner", help="Test runner: pytest (default), cargo, jest, or junit-xml. With a non-pytest runner the venv/install/import steps are skipped; counts come from the runner's summary line or fresh JUnit XML reports. Defaults to the lane's .review-install `runner`."),
     test: Optional[str] = typer.Option(None, "--test", help="Test command (shell-split) for a non-pytest runner, e.g. `cargo test` or `npx jest`. Defaults to the lane's .review-install `test` line, so a stranger types nothing."),
+    reports: Optional[str] = typer.Option(None, "--reports", help="JUnit XML report glob for `--runner junit-xml`. Defaults to `**/build/test-results/**/*.xml`; only reports written during this run count."),
     json_output: bool = typer.Option(False, "--json", help="Emit the receipt as JSON"),
     pytest_args: Optional[List[str]] = typer.Argument(None, help="Args passed to pytest after `--` (every -k/-p/path filter is recorded)"),
 ) -> None:
@@ -2363,12 +2364,13 @@ def review_run(
     never the exit code; a zero-test or unparseable run is a refusal, not a green.
 
     Install instructions come from the reviewed repo itself, in a tracked
-    `.review-install` file at the repo root, read whenever --install/--package are
+    `.review-install` file at the repo root, read whenever flags are
     omitted. Four `key = value` lines are recognised: `install` (the command that
     installs the lane tree; `{venv}` and `{lane}` are substituted per token after
     shell-splitting, so a lane path containing a space stays one token), `package`
     (the importable module name run must prove resolves inside the lane), and
-    `runner`/`test` (a non-pytest test command). Comments (`#`) and blank lines are
+    `runner`/`test` (a non-pytest test command), and `reports` (the JUnit XML glob
+    for `junit-xml`). Comments (`#`) and blank lines are
     skipped; an unrecognised key is a refusal (`bad_hint`), not a silent skip. A
     repo with no `.review-install` must pass `--install` and/or `--package` on the
     command line; with neither, run refuses (`no_package`). The tree must be
@@ -2388,6 +2390,7 @@ def review_run(
         raise typer.Exit(code=2)
     eff_runner = runner or hint.get("runner") or "pytest"
     eff_test = test or hint.get("test")
+    eff_reports = reports or hint.get("reports")
 
     try:
         if eff_runner == "pytest" and test is not None:
@@ -2400,6 +2403,11 @@ def review_run(
                 "pytest invocation. Pass --runner cargo|jest with --test, or drop --test.",
             )
         if eff_runner != "pytest":
+            if eff_reports and eff_runner != "junit-xml":
+                raise rr.ReviewRunRefused(
+                    "reports_for_runner",
+                    "--reports is only for the junit-xml runner",
+                )
             if not eff_test:
                 raise rr.ReviewRunRefused(
                     "no_test_command",
@@ -2407,7 +2415,10 @@ def review_run(
                     "or declare `test = …` in the lane's .review-install",
                 )
             receipt = rr.run_test_command_in_lane(
-                lane_dir.resolve(), runner=eff_runner, test_command=shlex.split(eff_test)
+                lane_dir.resolve(),
+                runner=eff_runner,
+                test_command=shlex.split(eff_test),
+                reports=eff_reports,
             )
         else:
             install_cmd = shlex.split(install) if install else None

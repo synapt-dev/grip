@@ -18,6 +18,8 @@ Parsers are written against real runner output:
 from __future__ import annotations
 
 import re
+import xml.etree.ElementTree as ET
+from pathlib import Path
 
 # cargo: one summary line per test binary; sum across all of them.
 _CARGO_RESULT_RE = re.compile(
@@ -26,6 +28,86 @@ _CARGO_RESULT_RE = re.compile(
 # jest: the "Tests:" tally line; each outcome is "<n> <word>", total is separate.
 _JEST_TESTS_RE = re.compile(r"^Tests:\s+(.+)$", re.MULTILINE)
 _JEST_COUNT_RE = re.compile(r"(\d+) (passed|failed|skipped|todo|total)")
+
+JUNIT_XML_DEFAULT_REPORTS = "**/build/test-results/**/*.xml"
+
+
+class JunitXmlReportError(ValueError):
+    """A report file cannot safely provide a test result."""
+
+
+def find_fresh_junit_xml_reports(
+    repo_dir: Path, reports: str, run_started_at: float
+) -> list[Path]:
+    """Return only report files written after this run started.
+
+    A Gradle test task may be up-to-date and leave yesterday's XML behind. Those
+    files cannot certify the command we just ran, so freshness is part of the
+    runner contract rather than a best-effort filter in the parser.
+    """
+    return sorted(
+        path for path in repo_dir.glob(reports)
+        if path.is_file() and path.stat().st_mtime >= run_started_at
+    )
+
+
+def _junit_count(suite: ET.Element, name: str, report: Path) -> int:
+    raw = suite.get(name, "0")
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise JunitXmlReportError(
+            f"malformed JUnit XML in {report}: testsuite {name}={raw!r} is not an integer"
+        ) from exc
+    if value < 0:
+        raise JunitXmlReportError(
+            f"malformed JUnit XML in {report}: testsuite {name}={raw!r} is negative"
+        )
+    return value
+
+
+def parse_junit_xml_reports(reports: list[Path]) -> dict:
+    """Sum every JUnit ``testsuite`` element across fresh report files.
+
+    Reports may have a single ``testsuite`` root or a ``testsuites`` wrapper. A
+    malformed file or impossible outcome count is an error, never a partial sum.
+    """
+    totals = {"selected": 0, "failed": 0, "errors": 0, "skipped": 0}
+    for report in reports:
+        try:
+            root = ET.parse(report).getroot()
+        except (ET.ParseError, OSError) as exc:
+            raise JunitXmlReportError(
+                f"malformed JUnit XML in {report}: {exc}"
+            ) from exc
+        suites = list(root.iter("testsuite"))
+        if not suites:
+            raise JunitXmlReportError(
+                f"malformed JUnit XML in {report}: no testsuite elements"
+            )
+        for suite in suites:
+            tests = _junit_count(suite, "tests", report)
+            failures = _junit_count(suite, "failures", report)
+            errors = _junit_count(suite, "errors", report)
+            skipped = _junit_count(suite, "skipped", report)
+            if failures + errors + skipped > tests:
+                raise JunitXmlReportError(
+                    f"malformed JUnit XML in {report}: outcomes exceed tests in a testsuite"
+                )
+            totals["selected"] += tests
+            totals["failed"] += failures
+            totals["errors"] += errors
+            totals["skipped"] += skipped
+    totals["passed"] = (
+        totals["selected"] - totals["failed"] - totals["errors"] - totals["skipped"]
+    )
+    return {
+        "passed": totals["passed"],
+        "failed": totals["failed"],
+        "errors": totals["errors"],
+        "skipped": totals["skipped"],
+        "selected": totals["selected"],
+    }
 
 
 def parse_cargo_summary(output: str) -> dict | None:
@@ -115,6 +197,9 @@ RUNNERS = {
     "pytest": _normalize_pytest,
     "cargo": parse_cargo_summary,
     "jest": parse_jest_summary,
+    # junit-xml reads files written by the command, so review_run dispatches it
+    # directly instead of treating stdout as a summary source.
+    "junit-xml": lambda _output: None,
 }
 
 # Each runner's OWN created outputs, so a second `review run` on an un-gitignored lane
@@ -124,6 +209,14 @@ RUNNERS = {
 RUNNER_CREATED_PATHS = {
     "cargo": {"names": frozenset({"Cargo.lock"}), "tops": ("target/",)},
     "jest": {"names": frozenset(), "tops": ("node_modules/", "coverage/")},
+    # Gradle can create build/ below every module. `tops` only permits a root prefix,
+    # so this runner alone gets the narrower segment allowance. .gradle and .kotlin
+    # are root directories written by Gradle/Kotlin tooling.
+    "junit-xml": {
+        "names": frozenset(),
+        "tops": (".gradle/", ".kotlin/"),
+        "segments": frozenset({"build"}),
+    },
 }
 
 

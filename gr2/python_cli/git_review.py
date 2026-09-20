@@ -34,11 +34,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+
+from .clone_exec import IncompleteRemoval, rmtree_or_refuse
 
 STORE_DIRNAME = "grip"
 RECORD_FILENAME = "review.json"
@@ -181,7 +182,18 @@ def close_review(repo_root: Path) -> bool:
             pass
     venv = _store_dir(repo_root) / VENV_DIRNAME
     if venv.is_dir():
-        shutil.rmtree(venv, ignore_errors=True)
+        # Through the shared helper, never raw `rmtree(ignore_errors=True)`: it drops
+        # a locked or permission-denied entry silently, so "closed" would be reported
+        # over a venv still sitting in the git directory, and the NEXT review's first
+        # run would install into it. The repo closes that class repo-wide and a guard
+        # test enforces it.
+        try:
+            rmtree_or_refuse(venv)
+        except IncompleteRemoval as exc:
+            raise GitReviewError(
+                f"the review record is gone but its venv could not be fully removed: "
+                f"{exc}. Remove {venv} by hand before opening the next review."
+            ) from exc
     try:
         _store_dir(repo_root).rmdir()  # leave no trace when empty
     except OSError:
@@ -424,6 +436,9 @@ def _run_pytest(
     if install_cmd_tokens is None:
         install_cmd_tokens = [str(venv_python), "-m", "pip", "install", "-e", str(repo_root)]
         install_source = "default"
+    # What was untracked BEFORE the install, so the cleanup below can tell this
+    # run's build droppings from a file the reviewer already had.
+    untracked_before = _untracked_paths(repo_root)
     try:
         proc = subprocess.run(
             install_cmd_tokens, text=True, capture_output=True, cwd=str(repo_root)
@@ -489,6 +504,7 @@ def _run_pytest(
     version = subprocess.run(
         [str(venv_python), "--version"], text=True, capture_output=True
     ).stdout.strip()
+    removed_build_dirs = _remove_new_egg_info(repo_root, untracked_before)
     receipt = _base_receipt(record, bound_tree)
     receipt.update({
         "runner": "pytest",
@@ -508,10 +524,52 @@ def _run_pytest(
         "errors": summary["errors"],
         "failed_ids": failed_ids,
         "output_log": OUTPUT_LOG_FILENAME,
+        # Named in the receipt rather than done silently: a run that deletes
+        # something says what it deleted.
+        "removed_build_dirs": removed_build_dirs,
         "result": _verdict(summary),
     })
     _write_run_receipt(repo_root, receipt)
     return receipt
+
+
+def _untracked_paths(repo_root: Path) -> set[str]:
+    out = _git(repo_root, "status", "--porcelain")
+    return {
+        line[3:].strip().strip('"')
+        for line in out.splitlines()
+        if line.startswith("?? ")
+    }
+
+
+def _remove_new_egg_info(repo_root: Path, before: set[str]) -> list[str]:
+    """Delete the `*.egg-info` directories this run's install created, and only those.
+
+    An editable install writes one into the SOURCE tree, so without this the run leaves
+    a directory behind in a clone it promised to leave as it found it. Scoped three ways
+    so it can never remove a reviewer's own file: only paths absent from `before`, only
+    ones ending in `.egg-info`, and only untracked ones (a tracked egg-info never
+    appears in this set). Measured, not assumed: the first end-to-end run through the
+    installed console script left `src/<pkg>.egg-info/` behind, while the test fixture's
+    offline `.pth` install could not produce one -- so the witness had been green about
+    a case it could not reach.
+    """
+    removed = []
+    for rel in sorted(_untracked_paths(repo_root) - before):
+        if not rel.rstrip("/").endswith(".egg-info"):
+            continue
+        target = repo_root / rel
+        if target.is_dir():
+            try:
+                rmtree_or_refuse(target)
+            except IncompleteRemoval:
+                # Not listed as removed, because it was not: the receipt must not
+                # claim a cleanup that did not happen. The leftover is allowlisted
+                # by the drift check (any `*.egg-info` segment), so the next run
+                # still proceeds rather than refusing on this run's residue.
+                continue
+            removed.append(rel)
+    return removed
 
 
 def _base_receipt(record: dict, bound_tree: str) -> dict:
@@ -547,6 +605,12 @@ _USAGE = """usage: git review <command>
   close           drop the review and everything run created."""
 
 
+class _RunHelpRequested(Exception):
+    """`git review run -h` — print the usage and exit 0, rather than argparse's own
+    text. (`git review run --help` never reaches here on some gits, which hand
+    `--help` to `man git-review` before the script runs; `-h` and `help` always do.)"""
+
+
 def _parse_run_args(rest: list[str]) -> tuple[argparse.Namespace, list[str]]:
     """Split `git review run`'s own options from the args meant for pytest. Everything
     after a bare `--` goes to the runner untouched, so a `-k` or a path selector reaches
@@ -555,6 +619,13 @@ def _parse_run_args(rest: list[str]) -> tuple[argparse.Namespace, list[str]]:
     if "--" in rest:
         cut = rest.index("--")
         rest, passthrough = rest[:cut], rest[cut + 1:]
+    # `add_help=False` and an explicit -h/--help below, rather than argparse's own:
+    # argparse would print ITS usage and exit the process, which is the wrong text
+    # (it omits the `--` passthrough and the .review-install defaults) and the wrong
+    # control flow for a dispatcher that owns its own exit codes. Without this the
+    # help flags fell through to "unrecognized arguments: --help" -- measured.
+    if any(a in ("-h", "--help", "help") for a in rest):
+        raise _RunHelpRequested
     ap = argparse.ArgumentParser(prog="git review run", add_help=False)
     ap.add_argument("--runner")
     ap.add_argument("--test")
@@ -619,7 +690,11 @@ def main(argv: list[str] | None = None) -> int:
         if cmd == "run":
             from .review_run import ReviewRunRefused
 
-            opts, passthrough = _parse_run_args(rest)
+            try:
+                opts, passthrough = _parse_run_args(rest)
+            except _RunHelpRequested:
+                print(_USAGE)
+                return 0
             try:
                 receipt = run_review(
                     repo_root,

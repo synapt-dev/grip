@@ -431,3 +431,65 @@ def test_status_reports_the_last_run(tmp_path, capsys):
         assert "last run GREEN" in out and "passed=1" in out
     finally:
         os.chdir(cwd)
+
+
+def _egg_info_install(repo: Path) -> str:
+    """An install that behaves like a real editable install in the one way that
+    matters here: besides seeding the `.pth`, it drops an `<pkg>.egg-info/` into the
+    SOURCE tree. The offline `.pth`-only fixture above cannot produce one, so without
+    this the "leaves the clone as it was found" witness was green about a case it could
+    not reach — the run through the installed console script left the directory behind."""
+    venv_python = repo / ".git" / "grip" / git_review.VENV_DIRNAME / "bin" / "python"
+    paths = [str(repo / "src"), *[p for p in sys.path if p]]
+    script = (
+        "import site,sys,pathlib;"
+        "sp=pathlib.Path(site.getsitepackages()[0]);"
+        "sp.mkdir(parents=True,exist_ok=True);"
+        "(sp/'zz_review.pth').write_text('\\n'.join(sys.argv[2:])+'\\n');"
+        "egg=pathlib.Path(sys.argv[1])/'src'/'demo_pkg.egg-info';"
+        "egg.mkdir(parents=True,exist_ok=True);"
+        "(egg/'PKG-INFO').write_text('Name: demo_pkg\\n')"
+    )
+    return shlex.join([str(venv_python), "-c", script, str(repo), *paths])
+
+
+def test_the_run_removes_the_build_dir_its_install_created(tmp_path):
+    r = _pkg_repo(tmp_path, test_body=PASS_BODY)
+    git_review.open_review(r)
+    receipt = git_review.run_review(r, install=_egg_info_install(r))
+    assert receipt["result"] == "green"
+    assert receipt["removed_build_dirs"] == ["src/demo_pkg.egg-info/"]
+    assert not (r / "src" / "demo_pkg.egg-info").exists()
+    porcelain = subprocess.run(
+        ["git", "-C", str(r), "status", "--porcelain"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert porcelain == ""
+
+
+def test_an_untracked_path_the_reviewer_already_had_is_never_removed(tmp_path):
+    """The cleanup is scoped to what THIS run created. A reviewer's own untracked
+    `.egg-info` (present before the run) must survive it — deleting a file the tool
+    did not create is the failure mode a cleanup must not have."""
+    r = _pkg_repo(tmp_path, test_body=PASS_BODY)
+    pre_existing = r / "src" / "preexisting.egg-info"
+    pre_existing.mkdir(parents=True)
+    (pre_existing / "PKG-INFO").write_text("mine\n")
+    git_review.open_review(r)
+    receipt = git_review.run_review(r, install=_egg_info_install(r))
+    assert receipt["removed_build_dirs"] == ["src/demo_pkg.egg-info/"]
+    assert pre_existing.is_dir(), "a pre-existing untracked path was deleted"
+
+
+def test_run_help_prints_usage_instead_of_an_argparse_error(tmp_path, capsys):
+    """`git review run -h` used to fall through to `unrecognized arguments: -h`."""
+    r = _pkg_repo(tmp_path, test_body=PASS_BODY)
+    git_review.open_review(r)
+    cwd = Path.cwd()
+    try:
+        os.chdir(r)
+        assert git_review.main(["run", "-h"]) == 0
+        out = capsys.readouterr().out
+        assert "usage: git review" in out and "unrecognized" not in out
+    finally:
+        os.chdir(cwd)

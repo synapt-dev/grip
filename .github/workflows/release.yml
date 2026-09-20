@@ -178,6 +178,9 @@ jobs:
     needs: ci
     if: startsWith(github.ref, 'refs/tags/gr2/v')
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
 
@@ -192,12 +195,19 @@ jobs:
           python -m pip install --upgrade build
           python -m build --outdir dist gr2
 
-      - name: Assert wheel version equals the tag (PEP 440 normalized)
+      - name: Assert wheel version equals the tag (PEP 440 normalized), and compute prerelease
+        id: version
+        # `prerelease` (PEP 440: a/b/rc/dev segments; a `.post` release is NOT a
+        # pre-release -- measured: Version("2.0.0.post1").is_prerelease is False)
+        # is computed HERE, not in release-gr2, because this step already has
+        # setup-python + packaging installed on this job's runner; release-gr2 has
+        # neither, and would otherwise be the only job in these workflows pip-
+        # installing onto bare system Python for a value that gates the release.
         run: |
           python -m pip install --quiet packaging
           # gr2 tags are gr2/vX.Y.Z, so strip the gr2/v prefix to get the version.
           TAG="${GITHUB_REF#refs/tags/gr2/v}"
-          python - "$TAG" <<'PY'
+          python - "$TAG" <<'PY' >> "$GITHUB_OUTPUT"
           import glob, re, sys
           from packaging.version import Version
           tag = Version(sys.argv[1])
@@ -207,7 +217,9 @@ jobs:
           # Version equality is PEP 440 normalized, so a pre-release tag (gr2/v2.0.0a1)
           # matches the wheel's normalized form (2.0.0a1) rather than the raw tag text.
           assert built == tag, f"wheel {built} != tag {tag}"
-          print(f"wheel {built} == tag {tag}")
+          print(f"wheel {built} == tag {tag}", file=sys.stderr)
+          print(f"version={built}")
+          print(f"prerelease={'true' if built.is_prerelease else 'false'}")
           PY
 
       - name: Upload Python dist artifact
@@ -233,10 +245,6 @@ jobs:
       - name: List artifacts
         run: find artifacts -type f
 
-      - name: Extract version
-        id: version
-        run: echo "version=${GITHUB_REF#refs/tags/gr2/v}" >> $GITHUB_OUTPUT
-
       - name: Create checksums
         run: |
           cd artifacts
@@ -246,18 +254,27 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          name: gitgrip (gr2) v${{ steps.version.outputs.version }}
+          name: gitgrip (gr2) v${{ needs.build-wheel.outputs.version }}
+          # A pre-release tag must not silently become "Latest" ahead of an actual
+          # final release. `make_latest` is a v2-only input of this action (v1's
+          # action.yml has no such input; measured, not assumed) -- `prerelease:
+          # true` alone is sufficient here: GitHub's own "Latest" designation
+          # already skips any release marked prerelease.
+          prerelease: ${{ needs.build-wheel.outputs.prerelease }}
           body: |
             ## gr2 — the Python workspace CLI
 
             ### From PyPI
 
             ```bash
-            pipx install gitgrip   # or: pip install gitgrip
+            pipx install gitgrip==${{ needs.build-wheel.outputs.version }}
+            # or: pip install gitgrip==${{ needs.build-wheel.outputs.version }}
             ```
 
             `pip install gitgrip` provides the `gr2` CLI. The Rust CLI (`gr`) ships
             separately on crates.io and GitHub under the `vX.Y.Z` tags.
+
+            Learn more: [gr2/docs/GR2-MVP.md](https://github.com/${{ github.repository }}/blob/${{ github.sha }}/gr2/docs/GR2-MVP.md)
 
             ### Verify Checksums
 
@@ -268,7 +285,6 @@ jobs:
             artifacts/**/*.whl
             artifacts/**/*.tar.gz
             artifacts/**/*.sha256
-          generate_release_notes: true
 
   publish-pypi:
     name: Publish to PyPI

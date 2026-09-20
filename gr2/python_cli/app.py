@@ -2445,11 +2445,15 @@ def review_run(
     if json_output:
         typer.echo(json.dumps(receipt, indent=2))
     elif receipt.get("runner"):  # non-pytest runner receipt (no venv/import fields)
-        typer.echo(
+        result_line = (
             f"{receipt['result']} ({receipt['runner']}): selected={receipt['selected']} "
             f"passed={receipt['passed']} failed={receipt['failed']} "
             f"skipped={receipt['skipped']} errors={receipt['errors']}"
         )
+        stale_reports = receipt.get("stale_reports_ignored", [])
+        if stale_reports:
+            result_line += f" ({len(stale_reports)} stale report(s) ignored; see receipt)"
+        typer.echo(result_line)
         typer.echo(f"bound_head_tree: {receipt['bound_head_tree']}")
     else:
         typer.echo(

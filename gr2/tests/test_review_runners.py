@@ -8,7 +8,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -99,19 +98,20 @@ def test_junit_xml_parser_sums_hand_written_fixture_reports():
     }
 
 
-def test_junit_xml_freshness_excludes_stale_reports(tmp_path):
+def test_junit_xml_snapshot_counts_only_new_or_changed_reports(tmp_path):
     reports = tmp_path / "build" / "test-results" / "test"
     reports.mkdir(parents=True)
     stale = reports / "stale.xml"
     fresh = reports / "fresh.xml"
     stale.write_text('<testsuite tests="1" />')
     fresh.write_text('<testsuite tests="1" />')
-    started = time.time()
-    os.utime(stale, (started - 5, started - 5))
-    os.utime(fresh, (started + 1, started + 1))
-    assert R.find_fresh_junit_xml_reports(
-        tmp_path, R.JUNIT_XML_DEFAULT_REPORTS, started
-    ) == [fresh]
+    before = R.snapshot_junit_xml_reports(tmp_path, R.JUNIT_XML_DEFAULT_REPORTS)
+    fresh.write_text('<testsuite tests="2" />')
+    got_fresh, got_stale = R.split_junit_xml_reports(
+        tmp_path, R.JUNIT_XML_DEFAULT_REPORTS, before
+    )
+    assert got_fresh == [fresh]
+    assert got_stale == ["build/test-results/test/stale.xml"]
 
 
 # ---- end-to-end: cargo in a bound lane --------------------------------------

@@ -26,7 +26,6 @@ import shlex
 import subprocess
 import sys
 import tempfile
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -799,8 +798,10 @@ def run_test_command_in_lane(
     unparseable summary, zero tests)."""
     from .review_runners import (
         VALID_RUNNERS,
+        JUNIT_XML_DEFAULT_REPORTS,
         RUNNER_CREATED_PATHS,
         RunnerSummaryRefusal,
+        snapshot_junit_xml_reports,
         summarize_runner,
     )
 
@@ -837,8 +838,11 @@ def run_test_command_in_lane(
             extra_allow_segments=created.get("segments", frozenset()),
         )
 
+        report_pattern = reports or JUNIT_XML_DEFAULT_REPORTS if runner == "junit-xml" else None
+        report_snapshot = (
+            snapshot_junit_xml_reports(repo_dir, report_pattern) if report_pattern is not None else None
+        )
         try:
-            run_started_at = time.time()
             proc = subprocess.run(
                 test_command, text=True, capture_output=True, cwd=str(repo_dir)
             )
@@ -851,8 +855,8 @@ def run_test_command_in_lane(
         (lane_dir / _OUTPUT_LOG_NAME).write_text(output)
 
         try:
-            summary, report_pattern, report_files = summarize_runner(
-                runner, output, repo_dir, reports, run_started_at
+            summary, report_pattern, report_files, stale_reports = summarize_runner(
+                runner, output, repo_dir, reports, report_snapshot
             )
         except RunnerSummaryRefusal as exc:
             raise ReviewRunRefused(exc.code, exc.detail) from exc
@@ -894,6 +898,7 @@ def run_test_command_in_lane(
         if report_pattern is not None:
             receipt["reports"] = report_pattern
             receipt["report_files"] = [str(path.relative_to(repo_dir)) for path in report_files]
+            receipt["stale_reports_ignored"] = stale_reports
         (lane_dir / _RECEIPT_NAME).write_text(json.dumps(receipt, indent=2) + "\n")
         return receipt
     except ReviewRunRefused as exc:

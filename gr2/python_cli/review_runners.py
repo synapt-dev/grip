@@ -36,19 +36,35 @@ class JunitXmlReportError(ValueError):
     """A report file cannot safely provide a test result."""
 
 
-def find_fresh_junit_xml_reports(
-    repo_dir: Path, reports: str, run_started_at: float
-) -> list[Path]:
-    """Return only report files written after this run started.
+def snapshot_junit_xml_reports(repo_dir: Path, reports: str) -> dict[str, tuple[int, int]]:
+    """Capture report identities before the test command can write them.
 
-    A Gradle test task may be up-to-date and leave yesterday's XML behind. Those
-    files cannot certify the command we just ran, so freshness is part of the
-    runner contract rather than a best-effort filter in the parser.
+    The clock is not evidence. A report can carry a future mtime, and an up-to-date
+    Gradle module can leave a real-looking old report. The pre-command shape records
+    the two cheap facts we can compare after the command: mtime at nanosecond
+    precision and byte size.
     """
-    return sorted(
-        path for path in repo_dir.glob(reports)
-        if path.is_file() and path.stat().st_mtime >= run_started_at
-    )
+    return {
+        str(path.relative_to(repo_dir)): (path.stat().st_mtime_ns, path.stat().st_size)
+        for path in repo_dir.glob(reports)
+        if path.is_file()
+    }
+
+
+def split_junit_xml_reports(
+    repo_dir: Path, reports: str, before: dict[str, tuple[int, int]]
+) -> tuple[list[Path], list[str]]:
+    """Return reports created or changed by this command, plus ignored stale paths."""
+    fresh: list[Path] = []
+    stale: list[str] = []
+    for path in sorted(path for path in repo_dir.glob(reports) if path.is_file()):
+        rel = str(path.relative_to(repo_dir))
+        identity = (path.stat().st_mtime_ns, path.stat().st_size)
+        if before.get(rel) == identity:
+            stale.append(rel)
+        else:
+            fresh.append(path)
+    return fresh, stale
 
 
 def _junit_count(suite: ET.Element, name: str, report: Path) -> int:
@@ -209,13 +225,17 @@ class RunnerSummaryRefusal(ValueError):
 
 
 def summarize_runner(
-    runner: str, output: str, repo_dir: Path, reports: str | None, run_started_at: float
-) -> tuple[dict | None, str | None, list[Path]]:
+    runner: str,
+    output: str,
+    repo_dir: Path,
+    reports: str | None,
+    report_snapshot: dict[str, tuple[int, int]] | None = None,
+) -> tuple[dict | None, str | None, list[Path], list[str]]:
     """One summary seam shared by `gr2 review run` and `git review run`."""
     if runner != JUNIT_XML_RUNNER:
-        return parse_runner_summary(runner, output), None, []
+        return parse_runner_summary(runner, output), None, [], []
     pattern = reports or JUNIT_XML_DEFAULT_REPORTS
-    files = find_fresh_junit_xml_reports(repo_dir, pattern, run_started_at)
+    files, stale_reports = split_junit_xml_reports(repo_dir, pattern, report_snapshot or {})
     if not files:
         raise RunnerSummaryRefusal(
             "no_fresh_reports",
@@ -223,7 +243,7 @@ def summarize_runner(
             "stale reports are not trusted. For Gradle, run with cleanTest or --rerun-tasks, then retry.",
         )
     try:
-        return parse_junit_xml_reports(files), pattern, files
+        return parse_junit_xml_reports(files), pattern, files, stale_reports
     except JunitXmlReportError as exc:
         raise RunnerSummaryRefusal("malformed_junit_xml", str(exc)) from exc
 

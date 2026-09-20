@@ -36,7 +36,6 @@ import argparse
 import json
 import subprocess
 import sys
-import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -339,7 +338,14 @@ def _run_non_pytest(repo_root, record, bound_tree, runner, test, reports, rr, sh
     """A declared non-Python runner (cargo, jest, ...). The two language-agnostic trust
     checks still hold; there is no venv, install or import check, because a cargo or
     jest tree neither has nor needs them. Counts come from that runner's own summary."""
-    from .review_runners import RUNNER_CREATED_PATHS, VALID_RUNNERS, RunnerSummaryRefusal, summarize_runner
+    from .review_runners import (
+        JUNIT_XML_DEFAULT_REPORTS,
+        RUNNER_CREATED_PATHS,
+        VALID_RUNNERS,
+        RunnerSummaryRefusal,
+        snapshot_junit_xml_reports,
+        summarize_runner,
+    )
 
     if runner not in VALID_RUNNERS:
         raise rr.ReviewRunRefused(
@@ -358,8 +364,11 @@ def _run_non_pytest(repo_root, record, bound_tree, runner, test, reports, rr, sh
     )
 
     test_command = shlex.split(test)
+    report_pattern = reports or JUNIT_XML_DEFAULT_REPORTS if runner == "junit-xml" else None
+    report_snapshot = (
+        snapshot_junit_xml_reports(repo_root, report_pattern) if report_pattern is not None else None
+    )
     try:
-        run_started_at = time.time()
         proc = subprocess.run(test_command, text=True, capture_output=True, cwd=str(repo_root))
     except OSError as exc:
         raise rr.ReviewRunRefused(
@@ -371,7 +380,9 @@ def _run_non_pytest(repo_root, record, bound_tree, runner, test, reports, rr, sh
     _output_log_path(repo_root).write_text(output)
 
     try:
-        summary, report_pattern, report_files = summarize_runner(runner, output, repo_root, reports, run_started_at)
+        summary, report_pattern, report_files, stale_reports = summarize_runner(
+            runner, output, repo_root, reports, report_snapshot
+        )
     except RunnerSummaryRefusal as exc:
         raise rr.ReviewRunRefused(exc.code, exc.detail) from exc
     if summary is None:
@@ -401,6 +412,7 @@ def _run_non_pytest(repo_root, record, bound_tree, runner, test, reports, rr, sh
     if report_pattern is not None:
         receipt["reports"] = report_pattern
         receipt["report_files"] = [str(p.relative_to(repo_root)) for p in report_files]
+        receipt["stale_reports_ignored"] = stale_reports
     _write_run_receipt(repo_root, receipt)
     return receipt
 
@@ -728,6 +740,9 @@ def _print_receipt(receipt: dict) -> None:
         if receipt.get(k) is not None
     )
     print(f"{receipt['result'].upper()}: {counts}")
+    stale_reports = receipt.get("stale_reports_ignored", [])
+    if stale_reports:
+        print(f"  ({len(stale_reports)} stale report(s) ignored; see receipt)")
     for node_id in receipt.get("failed_ids", [])[:20]:
         print(f"  {node_id}")
 

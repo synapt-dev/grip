@@ -197,10 +197,35 @@ RUNNERS = {
     "pytest": _normalize_pytest,
     "cargo": parse_cargo_summary,
     "jest": parse_jest_summary,
-    # junit-xml reads files written by the command, so review_run dispatches it
-    # directly instead of treating stdout as a summary source.
-    "junit-xml": lambda _output: None,
 }
+JUNIT_XML_RUNNER = "junit-xml"
+VALID_RUNNERS = frozenset((*RUNNERS, JUNIT_XML_RUNNER))
+
+
+class RunnerSummaryRefusal(ValueError):
+    def __init__(self, code: str, detail: str) -> None:
+        self.code, self.detail = code, detail
+        super().__init__(detail)
+
+
+def summarize_runner(
+    runner: str, output: str, repo_dir: Path, reports: str | None, run_started_at: float
+) -> tuple[dict | None, str | None, list[Path]]:
+    """One summary seam shared by `gr2 review run` and `git review run`."""
+    if runner != JUNIT_XML_RUNNER:
+        return parse_runner_summary(runner, output), None, []
+    pattern = reports or JUNIT_XML_DEFAULT_REPORTS
+    files = find_fresh_junit_xml_reports(repo_dir, pattern, run_started_at)
+    if not files:
+        raise RunnerSummaryRefusal(
+            "no_fresh_reports",
+            f"junit-xml found no reports matching {pattern!r} written during this run; "
+            "stale reports are not trusted. For Gradle, run with cleanTest or --rerun-tasks, then retry.",
+        )
+    try:
+        return parse_junit_xml_reports(files), pattern, files
+    except JunitXmlReportError as exc:
+        raise RunnerSummaryRefusal("malformed_junit_xml", str(exc)) from exc
 
 # Each runner's OWN created outputs, so a second `review run` on an un-gitignored lane
 # does not refuse the first run's artifacts as untracked drift (the language-specific

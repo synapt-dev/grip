@@ -36,6 +36,7 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -261,6 +262,7 @@ def run_review(
     test: str | None = None,
     install: str | None = None,
     package: str | None = None,
+    reports: str | None = None,
     python: str | None = None,
     test_args: list[str] | None = None,
 ) -> dict:
@@ -289,6 +291,7 @@ def run_review(
             test=test,
             install=install,
             package=package,
+            reports=reports,
             python=python,
             test_args=list(test_args or []),
             rr=rr,
@@ -299,7 +302,7 @@ def run_review(
         raise
 
 
-def _run_review(repo_root, record, *, runner, test, install, package, python, test_args, rr, shlex):
+def _run_review(repo_root, record, *, runner, test, install, package, reports, python, test_args, rr, shlex):
     bound_tree = _bound_head_tree(record)
 
     # (1) THE TREE COMPARISON, both halves, before anything is created -- so nothing
@@ -312,6 +315,7 @@ def _run_review(repo_root, record, *, runner, test, install, package, python, te
     hint = rr.read_install_hint(repo_root) or {}
     eff_runner = runner or hint.get("runner") or "pytest"
     eff_test = test or hint.get("test")
+    eff_reports = reports or hint.get("reports")
 
     if eff_runner == "pytest" and test is not None:
         # The same refusal `gr2 review run` gives: silently ignoring --test would run
@@ -323,22 +327,24 @@ def _run_review(repo_root, record, *, runner, test, install, package, python, te
         )
 
     if eff_runner != "pytest":
-        return _run_non_pytest(repo_root, record, bound_tree, eff_runner, eff_test, rr, shlex)
+        if eff_reports and eff_runner != "junit-xml":
+            raise rr.ReviewRunRefused("reports_for_runner", "--reports is only for the junit-xml runner")
+        return _run_non_pytest(repo_root, record, bound_tree, eff_runner, eff_test, eff_reports, rr, shlex)
     return _run_pytest(
         repo_root, record, bound_tree, install, package, python, test_args, hint, rr, shlex
     )
 
 
-def _run_non_pytest(repo_root, record, bound_tree, runner, test, rr, shlex):
+def _run_non_pytest(repo_root, record, bound_tree, runner, test, reports, rr, shlex):
     """A declared non-Python runner (cargo, jest, ...). The two language-agnostic trust
     checks still hold; there is no venv, install or import check, because a cargo or
     jest tree neither has nor needs them. Counts come from that runner's own summary."""
-    from .review_runners import RUNNER_CREATED_PATHS, RUNNERS, parse_runner_summary
+    from .review_runners import RUNNER_CREATED_PATHS, VALID_RUNNERS, RunnerSummaryRefusal, summarize_runner
 
-    if runner not in RUNNERS:
+    if runner not in VALID_RUNNERS:
         raise rr.ReviewRunRefused(
             "unknown_runner",
-            f"runner {runner!r} has no summary parser; known runners: {sorted(RUNNERS)}",
+            f"runner {runner!r} has no summary parser; known runners: {sorted(VALID_RUNNERS)}",
         )
     if not test:
         raise rr.ReviewRunRefused(
@@ -346,13 +352,14 @@ def _run_non_pytest(repo_root, record, bound_tree, runner, test, rr, shlex):
             f"runner {runner!r} needs a test command: pass --test \"<cmd>\" or declare "
             "`test = <cmd>` in the repo's .review-install",
         )
-    created = RUNNER_CREATED_PATHS.get(runner, {"names": frozenset(), "tops": ()})
+    created = RUNNER_CREATED_PATHS.get(runner, {"names": frozenset(), "tops": (), "segments": frozenset()})
     rr.assert_no_untracked_drift(
-        repo_root, extra_allow_names=created["names"], extra_allow_tops=created["tops"]
+        repo_root, extra_allow_names=created["names"], extra_allow_tops=created["tops"], extra_allow_segments=created.get("segments", frozenset())
     )
 
     test_command = shlex.split(test)
     try:
+        run_started_at = time.time()
         proc = subprocess.run(test_command, text=True, capture_output=True, cwd=str(repo_root))
     except OSError as exc:
         raise rr.ReviewRunRefused(
@@ -363,7 +370,10 @@ def _run_non_pytest(repo_root, record, bound_tree, runner, test, rr, shlex):
     _store_dir(repo_root).mkdir(parents=True, exist_ok=True)
     _output_log_path(repo_root).write_text(output)
 
-    summary = parse_runner_summary(runner, output)
+    try:
+        summary, report_pattern, report_files = summarize_runner(runner, output, repo_root, reports, run_started_at)
+    except RunnerSummaryRefusal as exc:
+        raise rr.ReviewRunRefused(exc.code, exc.detail) from exc
     if summary is None:
         tail = "\n".join(output.strip().splitlines()[-15:])
         raise rr.ReviewRunRefused(
@@ -388,6 +398,9 @@ def _run_non_pytest(repo_root, record, bound_tree, runner, test, rr, shlex):
         "output_log": OUTPUT_LOG_FILENAME,
         "result": _verdict(summary),
     })
+    if report_pattern is not None:
+        receipt["reports"] = report_pattern
+        receipt["report_files"] = [str(p.relative_to(repo_root)) for p in report_files]
     _write_run_receipt(repo_root, receipt)
     return receipt
 
@@ -668,7 +681,7 @@ _USAGE = """usage: git review <command>
   open [<base>]   bind this clone's HEAD (and its tree) as the code under review.
                   <base> defaults to the merge-base with the default branch.
   run [options]   run the reviewed repo's own tests in this clone and record a
-                  receipt. Options: --runner pytest|cargo|jest, --test "<cmd>",
+                  receipt. Options: --runner pytest|cargo|jest|junit-xml, --test "<cmd>", --reports "<glob>",
                   --install "<cmd>", --package <name>, --python <interpreter>,
                   --json, and anything after `--` is passed to pytest.
                   Defaults come from the repo's .review-install file.
@@ -703,6 +716,7 @@ def _parse_run_args(rest: list[str]) -> tuple[argparse.Namespace, list[str]]:
     ap.add_argument("--install")
     ap.add_argument("--package")
     ap.add_argument("--python")
+    ap.add_argument("--reports")
     ap.add_argument("--json", action="store_true", dest="json_output")
     return ap.parse_args(rest), passthrough
 
@@ -773,6 +787,7 @@ def main(argv: list[str] | None = None) -> int:
                     test=opts.test,
                     install=opts.install,
                     package=opts.package,
+                    reports=opts.reports,
                     python=opts.python,
                     test_args=passthrough,
                 )

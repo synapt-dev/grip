@@ -798,22 +798,18 @@ def run_test_command_in_lane(
     ReviewRunRefused for a structural problem (no marker, tree drift, unknown runner,
     unparseable summary, zero tests)."""
     from .review_runners import (
-        JUNIT_XML_DEFAULT_REPORTS,
-        JunitXmlReportError,
-        RUNNERS,
+        VALID_RUNNERS,
         RUNNER_CREATED_PATHS,
-        find_fresh_junit_xml_reports,
-        parse_junit_xml_reports,
-        parse_runner_summary,
+        RunnerSummaryRefusal,
+        summarize_runner,
     )
 
     lane_dir = Path(lane_dir).resolve()
     try:
-        if runner not in RUNNERS:
+        if runner not in VALID_RUNNERS:
             raise ReviewRunRefused(
                 "unknown_runner",
-                f"runner {runner!r} has no summary parser; known runners: "
-                f"{sorted(RUNNERS)}",
+                f"runner {runner!r} has no summary parser; known runners: {sorted(VALID_RUNNERS)}",
             )
         marker = _read_marker(lane_dir)
         repos = marker.get("repos", [])
@@ -854,26 +850,12 @@ def run_test_command_in_lane(
         output = proc.stdout + "\n" + proc.stderr
         (lane_dir / _OUTPUT_LOG_NAME).write_text(output)
 
-        report_files: list[Path] = []
-        report_pattern = None
-        if runner == "junit-xml":
-            report_pattern = reports or JUNIT_XML_DEFAULT_REPORTS
-            report_files = find_fresh_junit_xml_reports(
-                repo_dir, report_pattern, run_started_at
+        try:
+            summary, report_pattern, report_files = summarize_runner(
+                runner, output, repo_dir, reports, run_started_at
             )
-            if not report_files:
-                raise ReviewRunRefused(
-                    "no_fresh_reports",
-                    f"junit-xml found no reports matching {report_pattern!r} written during "
-                    "this run; stale reports are not trusted. For Gradle, run with "
-                    "cleanTest or --rerun-tasks, then retry.",
-                )
-            try:
-                summary = parse_junit_xml_reports(report_files)
-            except JunitXmlReportError as exc:
-                raise ReviewRunRefused("malformed_junit_xml", str(exc)) from exc
-        else:
-            summary = parse_runner_summary(runner, output)
+        except RunnerSummaryRefusal as exc:
+            raise ReviewRunRefused(exc.code, exc.detail) from exc
         if summary is None:
             tail = "\n".join(output.strip().splitlines()[-15:])
             raise ReviewRunRefused(

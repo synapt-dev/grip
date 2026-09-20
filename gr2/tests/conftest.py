@@ -1,4 +1,10 @@
-"""Shared fixtures for gr2 tests."""
+"""Shared fixtures for gr2 tests.
+
+The suite-wide `_isolated_git_config` autouse fixture lives in the ROOT
+conftest (`gr2/conftest.py`), not here -- it must be an ancestor of both
+`tests/` and the sibling `gr2/overlay/tests/` tree, and this directory is
+not.
+"""
 from __future__ import annotations
 
 import pytest

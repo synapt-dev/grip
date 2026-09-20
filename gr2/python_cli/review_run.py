@@ -42,7 +42,7 @@ from pathlib import Path
 _HINT_NAME = ".review-install"
 
 
-_HINT_KEYS = frozenset({"install", "package"})
+_HINT_KEYS = frozenset({"install", "package", "runner", "test"})
 
 
 def _apply_install_placeholders(tokens: list[str], venv_python: Path, repo_dir: Path) -> list[str]:
@@ -160,10 +160,15 @@ _UNTRACKED_ALLOW_TOP = (_VENV_DIRNAME + "/",)
 _UNTRACKED_ALLOW_SEGMENTS = frozenset({"__pycache__", ".pytest_cache", ".mypy_cache"})
 
 
-def _is_allowlisted_untracked(rel_path: str) -> bool:
-    if rel_path in _UNTRACKED_ALLOW_NAMES:
+def _is_allowlisted_untracked(
+    rel_path: str,
+    extra_names: frozenset[str] = frozenset(),
+    extra_tops: tuple[str, ...] = (),
+) -> bool:
+    if rel_path in _UNTRACKED_ALLOW_NAMES or rel_path in extra_names:
         return True
-    if any(rel_path == pre.rstrip("/") or rel_path.startswith(pre) for pre in _UNTRACKED_ALLOW_TOP):
+    tops = _UNTRACKED_ALLOW_TOP + tuple(extra_tops)
+    if any(rel_path == pre.rstrip("/") or rel_path.startswith(pre) for pre in tops):
         return True
     segments = rel_path.strip("/").split("/")
     if any(seg in _UNTRACKED_ALLOW_SEGMENTS or seg.endswith(".egg-info") for seg in segments):
@@ -171,17 +176,40 @@ def _is_allowlisted_untracked(rel_path: str) -> bool:
     return False
 
 
-def assert_no_untracked_drift(repo_dir: Path) -> None:
+def assert_no_untracked_drift(
+    repo_dir: Path,
+    *,
+    extra_allow_names: frozenset[str] = frozenset(),
+    extra_allow_tops: tuple[str, ...] = (),
+) -> None:
     """Refuse if the lane holds any untracked path the run did not create. Without
     this an untracked `conftest.py` (or shadow module) that patches the package turns
     a failing tree green while the tracked-tree comparison passes. The complement of
-    `assert_lane_tree_bound`: dropping either reds only its own drift witness."""
-    out = _git(repo_dir, "status", "--porcelain")
+    `assert_lane_tree_bound`: dropping either reds only its own drift witness.
+
+    ``extra_allow_names``/``extra_allow_tops`` are a runner's OWN created outputs (a
+    cargo run writes `target/` and `Cargo.lock`, a jest run `node_modules/`/`coverage/`),
+    the language-specific analogue of the pytest path's `.venv`/receipt exemptions — so a
+    second `review run` on an un-gitignored lane does not refuse the first run's outputs as
+    drift.
+
+    The status call neutralizes the HOST's own ignore rules (`-c core.excludesFile=`,
+    which git treats as case-insensitively the same key whichever spelling a host's
+    config used, and which suppresses BOTH an explicit `core.excludesFile` and git's
+    own `$XDG_CONFIG_HOME/git/ignore` fallback when neither is set). Without this, a
+    host whose global config ignores a directory name — measured on one host in this
+    fleet: `__pycache__/` — makes `git status` blind to anything planted inside a
+    directory with that name, so an injected module the trust boundary exists to
+    catch passes through it silently instead of refusing. Repo-local `.gitignore`
+    and `.git/info/exclude` are deliberately left in force: those belong to the
+    repository under review, not to whatever the reviewing machine happens to
+    ignore."""
+    out = _git(repo_dir, "-c", "core.excludesFile=", "status", "--porcelain")
     offending = []
     for line in out.splitlines():
         if line.startswith("?? "):
             rel = line[3:].strip().strip('"')
-            if not _is_allowlisted_untracked(rel):
+            if not _is_allowlisted_untracked(rel, extra_allow_names, extra_allow_tops):
                 offending.append(rel)
     if offending:
         raise ReviewRunRefused(
@@ -194,8 +222,9 @@ def assert_no_untracked_drift(repo_dir: Path) -> None:
 
 # ---- import resolves under the lane -----------------------------------------
 
-def scrubbed_python_env(base: dict | None = None) -> dict:
-    """Return a copy of the environment with every ``PYTHON*`` variable removed.
+def scrubbed_python_env(base: dict | None = None, *, venv_dir: Path | None = None) -> dict:
+    """Return a copy of the environment with every ``PYTHON*`` variable removed, and
+    (when ``venv_dir`` is given) shaped to look like that venv was ACTIVATED.
 
     ``-I`` isolates the CHECK subprocesses (it drops cwd and, via ``-E``, ignores
     ``PYTHON*`` env), so the import resolves under the lane no matter what the caller
@@ -208,10 +237,33 @@ def scrubbed_python_env(base: dict | None = None) -> dict:
     environment, so ``PYTHONPATH``/``PYTHONHOME``/``PYTHONSAFEPATH``/
     ``PYTHONNOUSERSITE``/``PYTHONSTARTUP`` and any other ``PYTHON*`` var can no longer
     redirect the import the check just proved. ``-I`` still guards the CHECK against
-    the cwd shadow (the scrub does not touch cwd; ``-I`` does not touch the run)."""
+    the cwd shadow (the scrub does not touch cwd; ``-I`` does not touch the run).
+
+    ``venv_dir`` closes a SEPARATE gap: the venv's interpreter is invoked
+    by absolute path, which needs no PATH entry for itself, but a repository's OWN
+    tests can shell out to ITS OWN installed console scripts (an editable install of
+    `gr2` puts `gr2`/`git-review` in ``<venv>/bin``, and grip's own packaging test does
+    exactly this) -- and without an activation-shaped env, that lookup fails with
+    `FileNotFoundError`, RED, in a repo whose own developers would never see it,
+    because their shell has that venv's `bin/` on PATH. Fathom's stranger dogfood hit
+    this on grip's OWN suite the first time anyone ran `git review run` from a fresh
+    venv and an ordinary clone -- neither the author's nor either
+    reviewer's suite run caught it, because all three of us activated the venv by hand
+    before running, which is exactly the ambient shell state a lane's own tests cannot
+    assume when the run's *subprocess* env is built fresh here rather than inherited.
+    Matches what `python -m venv --prompt` activation actually does: the venv's
+    `bin/` is PREPENDED to PATH (so its console scripts and its own `python`/`pytest`
+    resolve first) and ``VIRTUAL_ENV`` is set to the venv root. ``PYTHONHOME`` is
+    already gone via the PYTHON* scrub above, which is the other half real
+    activation does."""
     env = dict(os.environ if base is None else base)
     for key in [k for k in env if k.startswith("PYTHON")]:
         del env[key]
+    if venv_dir is not None:
+        venv_bin = venv_dir / "bin"
+        existing_path = env.get("PATH", "")
+        env["PATH"] = str(venv_bin) + (os.pathsep + existing_path if existing_path else "")
+        env["VIRTUAL_ENV"] = str(venv_dir)
     return env
 
 
@@ -616,7 +668,7 @@ def _run_review_lane(
     #     below, so "resolves under the lane" is a fact about the run and not just the
     #     check (the review-run env-isolation fix: -I isolates the check, not the run;
     #     the check and the run must see one environment).
-    run_env = scrubbed_python_env()
+    run_env = scrubbed_python_env(venv_dir=venv_dir)
     resolved_file = resolve_import_file(venv_python, package, run_env)
     assert_import_under_lane(resolved_file, lane_dir)
 
@@ -712,3 +764,113 @@ def _run_review_lane(
     }
     (lane_dir / _RECEIPT_NAME).write_text(json.dumps(receipt, indent=2) + "\n")
     return receipt
+
+
+# ---- the runner contract: `review run --test "<cmd>"` for any runner -----------
+#
+# The pytest path above is venv + pip + import-under-lane + pytest, and stays exactly
+# as it is. This path is for a NON-Python runner (cargo, jest, …): it keeps the two
+# language-agnostic trust checks — the tracked-tree comparison and the untracked-drift
+# refusal, so a green is still about the bound tree — then runs the declared test
+# command in the lane and takes the counts from THAT runner's own summary line (never
+# the exit code). A summary the parser cannot read is a refusal with the raw tail, not
+# a zero-green. No venv, no install, no import check: those are Python-specific and a
+# cargo/jest tree neither has nor needs them.
+
+def run_test_command_in_lane(
+    lane_dir: Path,
+    *,
+    runner: str,
+    test_command: list[str],
+) -> dict:
+    """Run a non-Python runner's test command in a bound lane and build a receipt.
+    ``runner`` selects the summary parser (review_runners.RUNNERS). Raises
+    ReviewRunRefused for a structural problem (no marker, tree drift, unknown runner,
+    unparseable summary, zero tests)."""
+    from .review_runners import RUNNERS, RUNNER_CREATED_PATHS, parse_runner_summary
+
+    lane_dir = Path(lane_dir).resolve()
+    try:
+        if runner not in RUNNERS:
+            raise ReviewRunRefused(
+                "unknown_runner",
+                f"runner {runner!r} has no summary parser; known runners: "
+                f"{sorted(RUNNERS)}",
+            )
+        marker = _read_marker(lane_dir)
+        repos = marker.get("repos", [])
+        if len(repos) != 1:
+            raise ReviewRunRefused(
+                "multi_repo_lane",
+                f"v1 review run handles a single-repo lane; marker binds {len(repos)} repos",
+            )
+        repo = repos[0]
+        repo_dir = lane_dir
+
+        # The two language-agnostic trust checks (same as the pytest path). The drift
+        # check exempts this runner's OWN created outputs (cargo: target/, Cargo.lock;
+        # jest: node_modules/, coverage/) so a second run on an un-gitignored lane does
+        # not refuse the first run's artifacts — the analogue of the pytest .venv/receipt
+        # exemptions.
+        created = RUNNER_CREATED_PATHS.get(runner, {"names": frozenset(), "tops": ()})
+        assert_lane_tree_bound(repo_dir, repo.get("bound_head_tree", ""))
+        assert_no_untracked_drift(
+            repo_dir,
+            extra_allow_names=created["names"],
+            extra_allow_tops=created["tops"],
+        )
+
+        try:
+            proc = subprocess.run(
+                test_command, text=True, capture_output=True, cwd=str(repo_dir)
+            )
+        except OSError as exc:
+            raise ReviewRunRefused(
+                "test_command_failed",
+                f"test command `{' '.join(test_command)}` could not run: {exc}",
+            )
+        output = proc.stdout + "\n" + proc.stderr
+        (lane_dir / _OUTPUT_LOG_NAME).write_text(output)
+
+        summary = parse_runner_summary(runner, output)
+        if summary is None:
+            tail = "\n".join(output.strip().splitlines()[-15:])
+            raise ReviewRunRefused(
+                "unparseable_summary",
+                f"no {runner} summary line found; refusing to call this a green "
+                f"(exit was {proc.returncode}). raw tail:\n{tail}",
+            )
+        if not summary.get("selected"):
+            raise ReviewRunRefused(
+                "zero_collected",
+                f"{runner} ran 0 tests (selected={summary.get('selected')}); "
+                "a zero-test run is not a green",
+            )
+
+        result = (
+            "green"
+            if (summary["passed"] >= 1 and summary["failed"] == 0 and summary["errors"] == 0)
+            else "red"
+        )
+        receipt = {
+            "kind": "review-run",
+            "created": datetime.now(timezone.utc).isoformat(),
+            "gr_commit": marker.get("gr_commit", ""),
+            "bound_head": repo.get("bound_head", ""),
+            "bound_head_tree": repo.get("bound_head_tree", ""),
+            "runner": runner,
+            "test_command": test_command,
+            "selected": summary["selected"],
+            "passed": summary["passed"],
+            "failed": summary["failed"],
+            "skipped": summary["skipped"],
+            "errors": summary["errors"],
+            "output_log": _OUTPUT_LOG_NAME,
+            "result": result,
+        }
+        (lane_dir / _RECEIPT_NAME).write_text(json.dumps(receipt, indent=2) + "\n")
+        return receipt
+    except ReviewRunRefused as exc:
+        if exc.code not in _NOT_A_LANE_CODES:
+            _write_refusal_receipt(lane_dir, exc)
+        raise

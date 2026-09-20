@@ -366,12 +366,12 @@ All commands use `gr` (or `gitgrip`):
 - `gr env` - Show workspace environment variables
 - `gr bench` - Run benchmarks
 - `gr forall -c "cmd"` - Run command in each repo
-- `gr tree add/list/remove` - Manage griptrees (worktree-based multi-branch workspaces)
+- `gr tree add/list/remove` - Manage griptrees (independent-clone multi-branch workspaces)
 - `gr completions <shell>` - Generate shell completions (bash, zsh, fish, elvish, powershell)
 
 ### Griptrees (Multi-Branch Workspaces)
 
-Griptrees allow you to work on multiple branches simultaneously without switching branches. Each griptree is a parallel workspace using git worktrees.
+Griptrees allow you to work on multiple branches simultaneously without switching branches. Each griptree is a parallel workspace of independent clones (grip#861): every repo copy in the tree is a full clone with its own `.git` and refs, with `origin` pointing at the canonical remote, materialized through the checkout mechanism with the machine cache as an accelerator.
 
 ```bash
 # Create a griptree for a feature branch
@@ -379,9 +379,9 @@ gr tree add feat/auth
 
 # This creates a directory structure:
 # ../feat-auth/
-#   ├── codi/           # worktree of main/codi on feat/auth
-#   ├── codi-private/   # worktree of main/codi-private on feat/auth
-#   └── .gitgrip/spaces/main/  # worktree of manifest on feat/auth
+#   ├── codi/           # independent clone of codi on feat/auth
+#   ├── codi-private/   # independent clone of codi-private on feat/auth
+#   └── .gitgrip/spaces/main/  # clone of the manifest
 
 # List all griptrees
 gr tree list
@@ -392,7 +392,7 @@ gr tree lock feat/auth
 # Return to griptree base branch
 gr checkout --base
 
-# Remove a griptree (removes worktrees, not branches)
+# Remove a griptree (removes the tree's clones, not the branches in the parent)
 gr tree remove feat/auth
 ```
 
@@ -400,20 +400,21 @@ gr tree remove feat/auth
 
 Each griptree records per-repo upstream defaults in `.gitgrip/griptree.json`. This allows repos in the same workspace to track different upstream branches (e.g., one repo tracks `origin/main`, another tracks `origin/dev`).
 
-- `gr tree add` auto-detects upstream for each repo
+- `gr tree add` auto-detects upstream for each repo (the tree branch is created at `origin/<default_branch>`, so upstream is satisfied at creation)
 - `gr sync` uses per-repo upstream when on the griptree base branch
 - `gr rebase --upstream` rebases each repo onto its configured upstream
 - Falls back to `origin/<default_branch>` when no upstream is configured
 
-**Benefits:**
+**Properties of the clone mechanism:**
 - No branch switching - work on multiple features in parallel
-- Shared git objects - worktrees share `.git/objects` with main
-- Faster than cloning - worktree creation is nearly instant
+- Branch isolation by design - branches created in one tree are invisible to the parent and to other trees
+- No shared `.git` - two agents can hold the same branch in two workspaces without collision
+- Moving or renaming the parent workspace does not break existing trees (no back-references)
+- The machine cache (`gr cache bootstrap`) is an accelerator only; removing a tree never removes it
 - Per-repo upstream tracking - different repos can track different branches
 
 **Limitations:**
-- Branch exclusivity - can't checkout same branch in two worktrees
-- Separate dependencies - each worktree needs own dependencies
+- Each tree clone re-materializes dependencies - each workspace needs own dependencies
 
 ### File Linking
 - `copyfile`: Copy file from repo to workspace

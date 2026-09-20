@@ -1,4 +1,4 @@
-"""Step 3 of the worktree-refactor ruling: ``convert_worktree_to_clone``
+"""Step 3 of the worktree refactor: ``convert_worktree_to_clone``
 converts a linked worktree into an own clone, in place, replacing the
 by-hand proof (config main, worktree-refactor design note) with real code.
 

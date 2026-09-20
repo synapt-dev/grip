@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import importlib.metadata
 import io
 import json
 import os
@@ -49,6 +50,30 @@ from .platform import PRRef, get_platform_adapter
 app = typer.Typer(
     help="Python-first gr2 CLI. This is the production UX proving layer before Rust."
 )
+
+
+def _version_callback(value: bool) -> None:
+    """`gr2 --version`: print the installed distribution version and exit. The
+    version is read from the package metadata (the static number in
+    gr2/pyproject.toml), the single source of truth — not a literal in code."""
+    if value:
+        typer.echo(importlib.metadata.version("gitgrip"))
+        raise typer.Exit()
+
+
+@app.callback()
+def _root(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show the gr2 version and exit.",
+    ),
+) -> None:
+    """gr2 workspace CLI."""
+
+
 repo_app = typer.Typer(help="Repo maintenance and inspection")
 lane_app = typer.Typer(help="Lane creation and navigation")
 lease_app = typer.Typer(help="Lane lease operations")
@@ -70,7 +95,11 @@ app.add_typer(spec_app, name="spec")
 app.add_typer(exec_app, name="exec")
 app.add_typer(sync_app, name="sync")
 app.add_typer(target_app, name="target")
-app.add_typer(grip_app, name="grip")
+# The snapshot store over .grip/.git. Its verb is `store` (init/snapshot/log/diff/
+# checkout); `grip` stays as a hidden alias for one release so existing callers keep
+# working. Both names resolve to the same grip_app callbacks.
+app.add_typer(grip_app, name="store")
+app.add_typer(grip_app, name="grip", hidden=True)
 app.add_typer(config_cli_app, name="config")
 
 
@@ -516,12 +545,12 @@ def _consume_lane_transition(outcome: lane_proto.LaneTransitionOutcome | int) ->
 @sync_app.command("status")
 def sync_status(
     workspace_root: Path,
-    dirty_mode: str = typer.Option("stash", "--dirty", help="Dirty-state handling: stash, block, or discard"),
+    dirty_mode: str = typer.Option("block", "--dirty", help="Dirty-state handling: block (stop, the default), stash, or discard"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Inspect workspace-wide sync readiness without mutating any repo state."""
     workspace_root = workspace_root.resolve()
-    plan = syncops.build_sync_plan(workspace_root, dirty_mode=dirty_mode)
+    plan = syncops.build_sync_plan(workspace_root, dirty_mode=dirty_mode, probe_remotes=True)
     if json_output:
         typer.echo(json.dumps(plan.as_dict(), indent=2))
         return
@@ -531,7 +560,7 @@ def sync_status(
 @sync_app.command("run")
 def sync_run(
     workspace_root: Path,
-    dirty_mode: str = typer.Option("stash", "--dirty", help="Dirty-state handling: stash, block, or discard"),
+    dirty_mode: str = typer.Option("block", "--dirty", help="Dirty-state handling: block (stop, the default), stash, or discard"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Execute the current sync plan, stopping on the first blocking runtime failure."""
@@ -1299,7 +1328,7 @@ def lane_create(
     source: str = typer.Option("manual", help="Creation source label"),
     command: list[str] = typer.Option(None, "--command", help="Default command for the lane"),
     manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual during lane materialization"),
-    bind: Optional[Path] = typer.Option(None, "--bind", help="Bind the lane to an EXISTING clean, non-detached single-repo worktree instead of materializing a fresh clone (gr2-lane-author-shape ruling). The receipt is stamped lane_kind=bound."),
+    bind: Optional[Path] = typer.Option(None, "--bind", help="Bind the lane to an EXISTING clean, non-detached single-repo worktree instead of materializing a fresh clone. The receipt is stamped lane_kind=bound."),
 ) -> None:
     """Create a lane and materialize its repos.
 
@@ -1708,20 +1737,56 @@ def review_checkout_pr(
 @review_app.command("open")
 def review_open(
     workspace_root: Path,
-    owner_unit: str,
-    repo: str,
-    pr_number: int,
+    target: str = typer.Argument(..., help="What to open: a PR number (PR-head lane), a gr:<sha> bind id (reconstruction), or a project-review id"),
+    repo: Optional[str] = typer.Argument(None, help="PR-head only: the repository key (with an owner_unit-shaped target)"),
+    pr_number: Optional[int] = typer.Argument(None, help="PR-head only: the PR number (legacy positional form)"),
     lane_name: Optional[str] = typer.Option(None, "--lane", help="Override the review lane name"),
     platform: str = typer.Option("github", "--platform", help="Platform adapter name"),
     run: Optional[str] = typer.Option(None, "--run", help="After opening, dispatch this command inside the lane (cwd-contained)"),
+    lane_dir: Optional[Path] = typer.Option(None, "--lane-dir", help="gr:<sha> only: directory to reconstruct into"),
+    enter: bool = typer.Option(False, "--enter", help="gr:<sha> only: materialize the reconstruction (the only open mode)"),
+    repo_key: Optional[str] = typer.Option(None, "--repo", help="gr:<sha> only: repository key to materialize; omit for every bound row"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Open an isolated review lane at a PR head over the grip#807 clone seam.
+    """Open a review lane. ``open`` decides on its POSITIONALS first, then its argument:
+
+    - the PR-head form is ``OWNER_UNIT REPO PR_NUMBER`` (three positionals): the
+      owner_unit is any word, so when both REPO and PR_NUMBER are present the target
+      is taken as the owner_unit and NOT classified;
+    - with only a lone target, ``open`` dispatches on its shape: a ``gr:<sha>`` bind id
+      (or bare sha) reconstructs from a review-bind commit (the former ``open-gr``,
+      now a hidden alias) -- needs ``--lane-dir`` and ``--enter``; anything else is a
+      project-review id (``open-project``, hidden alias). A lone PR number is refused
+      because a PR-head lane needs the OWNER_UNIT and REPO positionals too.
 
     A wrong head REFUSES (never warns); import resolution is printed so the run
-    cannot silently import a machine-wide install; the review is recorded as the
-    (repo, base pin, review head) triple. ``gr2 review close`` drops the lane.
+    cannot silently import a machine-wide install. ``gr2 review close`` drops the lane.
     """
+    from . import review_dispatch
+
+    # Positionals decide first. The PR-head form's first positional is an owner_unit
+    # (an arbitrary word that classifies as "project"), so classifying the target
+    # before reading REPO/PR_NUMBER would refuse every legacy PR-head open.
+    pr_head_positional = repo is not None and pr_number is not None
+    if not pr_head_positional:
+        kind = review_dispatch.classify_open_target(target)
+        if kind == "gr":
+            # dispatch to the reconstruction path (open-gr); target is the bind commit
+            if lane_dir is None:
+                raise typer.BadParameter("--lane-dir is required to open a gr:<sha> reconstruction")
+            return review_open_gr(
+                workspace_root, target, key=repo_key, lane_dir=lane_dir, enter=enter, json_output=json_output
+            )
+        if kind == "project":
+            raise typer.BadParameter(
+                "project-review open is not yet wired into the collapsed `open` (use the hidden `open-project` alias for now)"
+            )
+        # kind == "pr": a lone PR number cannot open a PR-head lane by itself.
+        raise typer.BadParameter("a PR-head open needs OWNER_UNIT REPO PR_NUMBER (target is the owner_unit)")
+
+    # PR-head path: the collapsed target IS the owner_unit; repo and pr_number follow.
+    owner_unit = target
+
     from . import review as review_mod
 
     workspace_root = workspace_root.resolve()
@@ -1790,13 +1855,29 @@ def review_open(
 
 @review_app.command("close")
 def review_close(
-    workspace_root: Path,
-    owner_unit: str,
-    repo: str,
-    pr_number: int,
+    target: Path = typer.Argument(..., help="What to close: a reconstruction lane dir (gr, read from its marker), or the WORKSPACE_ROOT of a PR-head lane"),
+    owner_unit: Optional[str] = typer.Argument(None, help="PR-head only: owner unit"),
+    repo: Optional[str] = typer.Argument(None, help="PR-head only: repository key"),
+    pr_number: Optional[int] = typer.Argument(None, help="PR-head only: PR number"),
     lane_name: Optional[str] = typer.Option(None, "--lane", help="Override the review lane name"),
+    json_output: bool = typer.Option(False, "--json", help="gr reconstruction only: machine-readable JSON"),
 ) -> None:
-    """Drop a review lane opened by ``gr2 review open``; the base workspace is untouched."""
+    """Drop a review lane. ``close`` reads the lane's marker to tell a reconstruction
+    lane from a PR lane: a directory carrying open-gr's
+    reconstruct marker is reclaimed via the former ``close-gr`` (hidden alias); anything
+    else is treated as a PR-head lane (target is the WORKSPACE_ROOT, then owner/repo/pr).
+    The base workspace is untouched.
+    """
+    from . import review_dispatch
+
+    if review_dispatch.classify_close_lane(target) == "reconstruction":
+        return review_close_gr(target, json_output=json_output)
+
+    # PR-head path: target is the WORKSPACE_ROOT.
+    workspace_root = target
+    if owner_unit is None or repo is None or pr_number is None:
+        raise typer.BadParameter("a PR-head close needs WORKSPACE_ROOT OWNER_UNIT REPO PR_NUMBER (target is the workspace_root)")
+
     from . import review as review_mod
 
     workspace_root = workspace_root.resolve()
@@ -1882,8 +1963,8 @@ def review_create_project(
 
     This is the producer half of "one gr commit opens one exact multi-repo review":
     each repo of the materialized lane (see `lane create`, which records the fork
-    base) is pinned at its RECORDED fork base .. current head (the fork-base ruling,
-    never HEAD^), so the review measures exactly what the lane changed. Then open it:
+    base) is pinned at its RECORDED fork base .. current head (the recorded fork
+    base, never HEAD^), so the review measures exactly what the lane changed. Then open it:
 
         gr2 review open-project <workspace> gr:<sha> <owner> <review-lane> --enter
 
@@ -1937,7 +2018,7 @@ def review_create_project(
             typer.echo(f"  {p.key}: {p.base[:12]}..{p.head[:12]} {p.repo}")
 
 
-@review_app.command("open-project")
+@review_app.command("open-project", hidden=True)  # hidden alias for one release, dropped at 2.0 GA
 def review_open_project(
     workspace_root: Path,
     commit: str = typer.Argument(..., help="The project-review-KIND gr commit (gr:<sha> or bare sha); create one with `review create-project`"),
@@ -2000,7 +2081,7 @@ def review_open_project(
         raise typer.Exit(code=1)
 
 
-@review_app.command("exit-gr")
+@review_app.command("exit-gr", hidden=True)  # hidden alias for one release, dropped at 2.0 GA
 def review_exit_gr(
     workspace_root: Path,
     owner_unit: str = typer.Argument(..., help="Owner unit whose review lane to exit"),
@@ -2162,7 +2243,7 @@ def review_bind(
     typer.echo(f"gr:{commit}")
 
 
-@review_app.command("open-gr")
+@review_app.command("open-gr", hidden=True)  # hidden alias for one release, dropped at 2.0 GA
 def review_open_gr(
     workspace_root: Path,
     commit: str = typer.Argument(..., help="The review bind commit, as gr:<sha> or a bare sha"),
@@ -2234,7 +2315,7 @@ def review_open_gr(
         typer.echo(f"tree_match: {result['bound_head_tree'] == result['reconstructed_tree']}")
 
 
-@review_app.command("close-gr")
+@review_app.command("close-gr", hidden=True)  # hidden alias for one release, dropped at 2.0 GA
 def review_close_gr(
     lane_dir: Path = typer.Argument(..., help="The open-gr reconstruction lane (the --lane-dir from `review open-gr --enter`) to reclaim"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
@@ -2268,33 +2349,81 @@ def review_run(
     python: Optional[str] = typer.Option(None, "--python", help="Interpreter to build the lane venv from; defaults to the running interpreter. Recorded in the receipt."),
     system_site_packages: bool = typer.Option(False, "--system-site-packages", help="Create the lane venv with --system-site-packages (host tools visible)"),
     install: Optional[str] = typer.Option(None, "--install", help="Install command (shell-split); `{venv}` and `{lane}` are substituted per token, same as the .review-install hint. Defaults to the lane's .review-install hint, else `<venv python> -m pip install -e <lane>`"),
+    runner: Optional[str] = typer.Option(None, "--runner", help="Test runner: pytest (default), cargo, or jest. With a non-pytest runner the venv/install/import steps are skipped; counts come from that runner's summary line. Defaults to the lane's .review-install `runner`."),
+    test: Optional[str] = typer.Option(None, "--test", help="Test command (shell-split) for a non-pytest runner, e.g. `cargo test` or `npx jest`. Defaults to the lane's .review-install `test` line, so a stranger types nothing."),
     json_output: bool = typer.Option(False, "--json", help="Emit the receipt as JSON"),
     pytest_args: Optional[List[str]] = typer.Argument(None, help="Args passed to pytest after `--` (every -k/-p/path filter is recorded)"),
 ) -> None:
-    """The review-owned in-lane test run: create `<lane>/.venv`, install the
-    reconstructed tree, and run pytest — but only after the lane's tree is proven to
-    equal the bound head-tree and the import resolves under the lane. Counts come
-    from pytest's summary line, never the exit code; a zero-test or unparseable run
-    is a refusal, not a green."""
+    """The review-owned in-lane test run. For the default pytest runner: create
+    `<lane>/.venv`, install the reconstructed tree, and run pytest — only after the
+    lane's tree is proven to equal the bound head-tree and the import resolves under the
+    lane. For a non-pytest runner (`--runner cargo|jest`, or the lane's `.review-install`
+    declares one), the language-agnostic tree checks still run, then the declared test
+    command runs in the lane. Counts always come from the runner's own summary line,
+    never the exit code; a zero-test or unparseable run is a refusal, not a green.
+
+    Install instructions come from the reviewed repo itself, in a tracked
+    `.review-install` file at the repo root, read whenever --install/--package are
+    omitted. Four `key = value` lines are recognised: `install` (the command that
+    installs the lane tree; `{venv}` and `{lane}` are substituted per token after
+    shell-splitting, so a lane path containing a space stays one token), `package`
+    (the importable module name run must prove resolves inside the lane), and
+    `runner`/`test` (a non-pytest test command). Comments (`#`) and blank lines are
+    skipped; an unrecognised key is a refusal (`bad_hint`), not a silent skip. A
+    repo with no `.review-install` must pass `--install` and/or `--package` on the
+    command line; with neither, run refuses (`no_package`). The tree must be
+    pip-installable (a `pyproject.toml` or `setup.py` declaring an importable
+    package); a directory of loose scripts fails at the install step.
+    """
     import shlex
 
     from . import review_run as rr
 
-    install_cmd = shlex.split(install) if install else None
+    # Resolve runner + test command from the flags, else the lane's .review-install hint,
+    # so a stranger who cloned a repo that declares itself types nothing.
     try:
-        receipt = rr.run_review_lane(
-            lane_dir.resolve(),
-            package=package,
-            pytest_args=list(pytest_args or []),
-            python=python,
-            install=install_cmd,
-            system_site_packages=system_site_packages,
-        )
+        hint = rr.read_install_hint(lane_dir.resolve()) or {}
+    except rr.ReviewRunRefused as exc:
+        typer.echo(f"refused: {exc}", err=True)
+        raise typer.Exit(code=2)
+    eff_runner = runner or hint.get("runner") or "pytest"
+    eff_test = test or hint.get("test")
+
+    try:
+        if eff_runner == "pytest" and test is not None:
+            # Refuse rather than silently ignore: a --test command with the pytest
+            # runner means the caller expected that command to run, and dropping it would
+            # run pytest instead and call the result a green about the wrong thing.
+            raise rr.ReviewRunRefused(
+                "test_with_pytest",
+                "--test is for a non-pytest runner; the pytest runner builds its own "
+                "pytest invocation. Pass --runner cargo|jest with --test, or drop --test.",
+            )
+        if eff_runner != "pytest":
+            if not eff_test:
+                raise rr.ReviewRunRefused(
+                    "no_test_command",
+                    f"runner {eff_runner!r} needs a test command; pass --test "
+                    "or declare `test = …` in the lane's .review-install",
+                )
+            receipt = rr.run_test_command_in_lane(
+                lane_dir.resolve(), runner=eff_runner, test_command=shlex.split(eff_test)
+            )
+        else:
+            install_cmd = shlex.split(install) if install else None
+            receipt = rr.run_review_lane(
+                lane_dir.resolve(),
+                package=package,
+                pytest_args=list(pytest_args or []),
+                python=python,
+                install=install_cmd,
+                system_site_packages=system_site_packages,
+            )
     except rr.ReviewRunRefused as exc:
         typer.echo(f"refused: {exc}", err=True)
         if json_output:
             # review-run door 2: a refusal is machine-readable too, mirroring the
-            # refusal receipt run_review_lane wrote into the lane. Exit stays 2.
+            # refusal receipt the run wrote into the lane. Exit stays 2.
             typer.echo(json.dumps({
                 "kind": "review-run",
                 "result": "refused",
@@ -2304,6 +2433,13 @@ def review_run(
         raise typer.Exit(code=2)
     if json_output:
         typer.echo(json.dumps(receipt, indent=2))
+    elif receipt.get("runner"):  # non-pytest runner receipt (no venv/import fields)
+        typer.echo(
+            f"{receipt['result']} ({receipt['runner']}): selected={receipt['selected']} "
+            f"passed={receipt['passed']} failed={receipt['failed']} "
+            f"skipped={receipt['skipped']} errors={receipt['errors']}"
+        )
+        typer.echo(f"bound_head_tree: {receipt['bound_head_tree']}")
     else:
         typer.echo(
             f"{receipt['result']}: selected={receipt['selected']} "
@@ -2332,6 +2468,49 @@ def review_verify(
         typer.echo(f"tree_matches: {result['tree_matches']}")
     if not result.get("tree_matches"):
         raise typer.Exit(code=1)
+
+
+@review_app.command("rebind")
+def review_rebind_cmd(
+    frozen_dir: Path = typer.Argument(..., help="A frozen gate directory (freeze-public-range.sh output) to rebase onto the moved base"),
+    repo: Path = typer.Option(..., "--repo", help="A clone whose origin remote hosts the target branch (used to read the live base head)"),
+    out_dir: Path = typer.Option(..., "--out-dir", help="The NEW frozen directory to write when a refreeze is needed (must not already exist)"),
+    target_ref: str = typer.Option("refs/heads/dev", "--ref", help="Target ref whose live head the frozen range is rebound onto"),
+    allow_public_ref: bool = typer.Option(False, "--allow-public-ref", help="Proceed even though the intended ref is already on the remote — the sanctioned fix-forward on a branch already ratified and pushed"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Rebase a FROZEN range onto the live tip of its target ref when the base has moved.
+
+    Reads the frozen base from ``<frozen_dir>/REQUEST.md`` and the live base by
+    ls-remote. If the base is unchanged, prints ``base_unchanged`` and writes
+    nothing. If it moved, applies the range on the new base in a throwaway clone
+    and — only when the patch-ids are identical — writes a fresh frozen dir at
+    ``--out-dir``. Already-landed work prints ``already_applied``. REFUSES (exit 2)
+    on a conflict, a patch-id divergence, or an intended ref already public (a
+    force-push question; ``--allow-public-ref`` is the fix-forward)."""
+    from . import review_rebind
+    try:
+        result = review_rebind.rebind(
+            frozen_dir.resolve(), repo.resolve(), target_ref,
+            out_dir.resolve(), allow_public_ref=allow_public_ref,
+        )
+    except review_rebind.RebindRefused as exc:
+        typer.echo(f"refused: {exc}", err=True)
+        raise typer.Exit(code=2)
+    if json_output:
+        typer.echo(json.dumps({
+            "outcome": result.outcome,
+            "patch_id_held": result.patch_id_held,
+            "landing_sha": result.landing_sha,
+            "out_dir": str(result.out_dir) if result.out_dir else None,
+        }, indent=2))
+        return
+    if result.outcome == "base_unchanged":
+        typer.echo("base_unchanged: target ref still at the frozen base; no refreeze needed")
+    elif result.outcome == "already_applied":
+        typer.echo("already_applied: the frozen range is already contained in the moved base")
+    else:
+        typer.echo(f"rebased: patch-ids held; new frozen dir at {result.out_dir}")
 
 
 @pr_app.command("status")

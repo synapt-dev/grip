@@ -1,4 +1,4 @@
-"""review-bind reads base from the recorded fork base (the fork-base ruling).
+"""review-bind reads base from the recorded fork base.
 
 A project review's per-repo base is the point the lane forked from its
 integration branch, recorded at lane create and read through the same resolver

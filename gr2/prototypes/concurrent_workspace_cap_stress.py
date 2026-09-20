@@ -8,6 +8,7 @@ import json
 import multiprocessing
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -65,7 +66,7 @@ repos = ["app"]
     for unit, lane in (("atlas", "lane-a"), ("apollo", "lane-b")):
         result = _run(
             [
-                "python3",
+                sys.executable,
                 str(lane_proto(root)),
                 "create-lane",
                 str(workspace_root),
@@ -100,7 +101,7 @@ def _acquire_worker(
         env["GR2_LEASE_TEST_DELAY"] = "0.04"
     result = _run(
         [
-            "python3",
+            sys.executable,
             str(lane_proto(repo_root())),
             "acquire-lane-lease",
             workspace_root,
@@ -190,7 +191,7 @@ def sequential_control() -> dict[str, object]:
             outcomes.append(
                 _run(
                     [
-                        "python3",
+                        sys.executable,
                         str(lane_proto(repo_root())),
                         "acquire-lane-lease",
                         str(workspace_root),

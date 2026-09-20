@@ -78,7 +78,35 @@ def _offline_install(lane: Path) -> list[str]:
     return [str(vpy), "-c", script, *paths]
 
 
+# Like _offline_install, but ALSO writes a console-script SHIM into the
+# lane venv's own bin/ -- an offline stand-in for what a real editable install's
+# `entry_points.txt` -> console_scripts machinery would write there, so the witness
+# below needs no network and no host-bundled setuptools (this venv has neither).
+def _offline_install_with_console_script(lane: Path) -> list[str]:
+    vpy = lane / rr._VENV_DIRNAME / "bin" / "python"
+    paths = [str(lane / "src"), *[p for p in sys.path if p]]
+    script = (
+        "import site,stat,sys,pathlib;"
+        "sp=pathlib.Path(site.getsitepackages()[0]);"
+        "sp.mkdir(parents=True,exist_ok=True);"
+        "(sp/'zz_lane.pth').write_text('\\n'.join(sys.argv[1:])+'\\n');"
+        "binf=pathlib.Path(sys.executable).parent/'demo_pkg_cli';"
+        "binf.write_text('#!'+sys.executable+'\\nprint(\"demo_pkg_cli ok\")\\n');"
+        "binf.chmod(binf.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)"
+    )
+    return [str(vpy), "-c", script, *paths]
+
+
 PASS_TEST = "from demo_pkg import VALUE\n\ndef test_ok():\n    assert VALUE == 1\n"
+
+CONSOLE_SCRIPT_TEST = (
+    "import shutil, subprocess\n\n"
+    "def test_console_script_resolves_on_path():\n"
+    "    found = shutil.which('demo_pkg_cli')\n"
+    "    assert found is not None, 'demo_pkg_cli not found on PATH'\n"
+    "    result = subprocess.run(['demo_pkg_cli'], capture_output=True, text=True)\n"
+    "    assert result.returncode == 0 and 'demo_pkg_cli ok' in result.stdout, result\n"
+)
 
 
 # ---------------------------------------------------------------- summary parse
@@ -228,6 +256,57 @@ def test_untracked_drift_refuses_an_injected_conftest(tmp_path: Path):
     _write_marker(repo, _git(repo, "rev-parse", "HEAD"), head_tree)
     (repo / "conftest.py").write_text("# injected, not tracked\n")
     assert rr.assert_lane_tree_bound(repo, head_tree) == head_tree  # tracked tree still 'clean'
+    with pytest.raises(rr.ReviewRunRefused, match="untracked_drift"):
+        rr.assert_no_untracked_drift(repo)
+
+
+def test_untracked_drift_still_refuses_when_the_host_globally_ignores_the_injected_dirname(
+    tmp_path: Path, monkeypatch
+):
+    """`assert_no_untracked_drift`'s own `git status` call used to be a plain,
+    unneutralized one: on a host whose global git config ignores a directory name,
+    an untracked path inside a directory with that name is invisible to `git
+    status` and the drift check cannot refuse what it cannot see -- a green that
+    means less than it claims, on exactly the surface this check exists to guard.
+    Measured directly on a real developer machine in this fleet, whose global
+    ignore lists `.benchmarks/` among other build-noise directories.
+
+    The injected directory name here is deliberately NOT on
+    `_UNTRACKED_ALLOW_SEGMENTS`/`_UNTRACKED_ALLOW_TOP` (unlike `__pycache__`,
+    which is exempt by NAME regardless of contents and would confound this
+    witness with a different, already-known allowance): this failure is about
+    host-config blindness specifically, not about the allowlist being broad.
+
+    The autouse suite-wide isolation fixture (conftest.py) removes ambient host
+    config from every gr2 test by default, so this test explicitly OPTS IN to a
+    simulated host config that hides the injected name -- the correct shape per
+    that fixture's own contract."""
+    home = tmp_path / "fakehome"
+    home.mkdir()
+    excludes = home / "global_gitignore"
+    excludes.write_text(".benchmarks/\n")
+    gitconfig = home / ".gitconfig"
+    gitconfig.write_text(f"[core]\n\texcludesfile = {excludes}\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
+
+    repo, head_tree = _pkg_repo(tmp_path, test_body=PASS_TEST)
+    _write_marker(repo, _git(repo, "rev-parse", "HEAD"), head_tree)
+
+    # Control: the simulated host config really does hide the directory from a
+    # plain `git status`, so a refusal below is the product working, not the
+    # setup failing to bite.
+    injected = repo / ".benchmarks"
+    injected.mkdir()
+    (injected / "sneaky_conftest.py").write_text("# injected, host-ignored dirname\n")
+    blinded = subprocess.run(
+        ["git", "-C", str(repo), "status", "--porcelain"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert ".benchmarks" not in blinded, (
+        "setup failed to bite: the simulated host config is not hiding the "
+        f"injected directory, so this test cannot witness anything. porcelain={blinded!r}"
+    )
+
     with pytest.raises(rr.ReviewRunRefused, match="untracked_drift"):
         rr.assert_no_untracked_drift(repo)
 
@@ -449,6 +528,37 @@ def test_run_a_pythonpath_rogue_does_not_change_the_run(tmp_path: Path, monkeypa
     assert receipt["passed"] >= 1 and receipt["failed"] == 0
     # and the receipt's install path is the lane, matching what the run actually ran.
     assert str(repo.resolve()) in receipt["resolved_install_path"]
+
+
+def test_run_puts_the_lanes_venv_bin_on_the_pytest_subprocess_path(tmp_path: Path):
+    """A repository's own tests can shell out to ITS OWN installed
+    console script -- grip's own packaging test does exactly this
+    (`gr2/tests/test_gr2_packaging.py::test_gr2_console_script_resolves`, run
+    through `gr2`/`git review run` on grip's own clone). Without an
+    activation-shaped subprocess env the lookup fails `FileNotFoundError`, RED, in a
+    repo whose own developers would never see it: their shell has that venv's
+    `bin/` on PATH before they ever run pytest by hand.
+
+    Not hypothetical: Fathom's stranger dogfood hit this on grip's
+    OWN suite -- a fresh outer venv, an ordinary clone, the four documented verbs,
+    RED. Neither the author's nor either reviewer's own suite run had caught it,
+    because all three of us activated a venv by hand before running -- exactly the
+    ambient shell state a lane's own tests cannot assume when `run_review_lane`
+    builds the subprocess env FRESH here rather than inheriting an activated shell's.
+
+    The lane venv is a brand-new tmp_path-scoped directory every run, so it is
+    never on this TEST process's own PATH to begin with -- "the parent PATH does
+    not contain the venv" is the ambient default here, not something this test has
+    to construct.
+    """
+    repo, head_tree = _pkg_repo(tmp_path, test_body=CONSOLE_SCRIPT_TEST)
+    _write_marker(repo, _git(repo, "rev-parse", "HEAD"), head_tree)
+    receipt = rr.run_review_lane(
+        repo, package="demo_pkg", pytest_args=["-q"],
+        install=_offline_install_with_console_script(repo),
+    )
+    assert receipt["result"] == "green", receipt
+    assert receipt["passed"] >= 1 and receipt["failed"] == 0
 
 
 # ------------------------------------------ install hint + pytest-absent cause

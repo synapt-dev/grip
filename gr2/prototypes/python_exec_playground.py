@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -21,7 +22,7 @@ def run(args: list[str], *, cwd: Path | None = None, check: bool = True) -> subp
 
 
 def pygr2(*args: str, cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return run(["python3", "-m", "gr2.python_cli", *args], cwd=cwd, check=check)
+    return run([sys.executable, "-m", "gr2.python_cli", *args], cwd=cwd, check=check)
 
 
 def git(*args: str, cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:

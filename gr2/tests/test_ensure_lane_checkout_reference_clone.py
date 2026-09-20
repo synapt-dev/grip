@@ -1,4 +1,4 @@
-"""Contract (grip#807 ruling, 2026-08-31): ``ensure_lane_checkout`` materializes
+"""Contract (grip#807, 2026-08-31): ``ensure_lane_checkout`` materializes
 every lane repo as an INDEPENDENT reference clone, never a ``git worktree add``.
 
 Two agents (or two lanes) must be able to check out the same branch without

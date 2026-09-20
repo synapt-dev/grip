@@ -354,8 +354,14 @@ class TestSyncFetchEndToEnd:
         assert new_origin_main == new_sha
         assert new_origin_main != old_origin_main
 
-    def test_sync_fetch_does_not_auto_merge(self, tmp_path: Path):
-        """Sync fetches but does NOT auto-merge into the current branch."""
+    def test_sync_fetch_fast_forwards_a_clean_checkout(self, tmp_path: Path):
+        """SUPERSEDES the old `test_sync_fetch_does_not_auto_merge` (a
+        deliberate, disclosed change): a clean checkout on its tracked branch WAS left
+        stale by design ("only fetch"), which is exactly the defect the
+        coordinator's desk measured -- a "sync ready, 0 issues" report over a
+        checkout 18 commits behind its target. A clean, non-diverged checkout
+        now fast-forwards; a checkout carrying local commits the remote lacks
+        is still never touched (see tests/test_sync_fast_forward.py)."""
         workspace_root = tmp_path / "workspace"
         workspace_root.mkdir()
         remote, repo_url = _init_bare_remote(tmp_path, "app")
@@ -363,13 +369,12 @@ class TestSyncFetchEndToEnd:
         run_sync(workspace_root)
 
         repo_root = workspace_root / "repos" / "app"
-        head_before = current_head_sha(repo_root)
 
-        _push_new_commit(remote, "app")
+        new_sha = _push_new_commit(remote, "app")
         run_sync(workspace_root)
 
         head_after = current_head_sha(repo_root)
-        assert head_before == head_after, "sync must not auto-merge; only fetch"
+        assert head_after == new_sha, "a clean, behind-only checkout must fast-forward"
 
     def test_sync_fetch_with_no_new_commits(self, tmp_path: Path):
         """Re-sync with no new remote commits should still succeed."""

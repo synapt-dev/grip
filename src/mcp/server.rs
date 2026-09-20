@@ -728,7 +728,10 @@ fn run_gitgrip_command(
         };
     cancel_status.done.store(true, Ordering::SeqCst);
     let _ = cancel_status.join.join();
-    let cancelled = cancel_status.kill_sent.load(Ordering::SeqCst);
+    let cancelled = compose_cancelled(
+        cancel_status.kill_sent.load(Ordering::SeqCst),
+        cancel_flag.as_ref(),
+    );
 
     // Bounded reader joins: kill/T on the child cannot release a pipe held by a
     // sibling OUTSIDE its tree, so the reader could hang even after the child is
@@ -802,7 +805,7 @@ fn run_context_command(
         serde_json::from_reader::<_, Value>(&mut reader)
     });
 
-    let cancel_status = start_cancel_controller(child.id(), cancel_flag);
+    let cancel_status = start_cancel_controller(child.id(), cancel_flag.clone());
 
     // Bounded wait (backstop; the spawn-lock root fix prevents the concurrent-spawn
     // hang). Reader joins below stay unbounded: ratified step-2 scope bounds
@@ -823,7 +826,10 @@ fn run_context_command(
     };
     cancel_status.done.store(true, Ordering::SeqCst);
     let _ = cancel_status.join.join();
-    let cancelled = cancel_status.kill_sent.load(Ordering::SeqCst);
+    let cancelled = compose_cancelled(
+        cancel_status.kill_sent.load(Ordering::SeqCst),
+        cancel_flag.as_ref(),
+    );
 
     let context_json = parse_thread
         .join()
@@ -864,6 +870,18 @@ struct CancelController {
     done: Arc<AtomicBool>,
     kill_sent: Arc<AtomicBool>,
     join: thread::JoinHandle<()>,
+}
+
+fn compose_cancelled(kill_sent: bool, cancel_flag: Option<&Arc<AtomicBool>>) -> bool {
+    // A client cancel that landed while the request was still in the map is
+    // honoured in the receipt even when the kill lost the race to the child's
+    // own exit (grip#931 class-3, Windows: the kill on an already-dead pid
+    // fails, and reporting a clean success for a cancelled call was the
+    // left==right mismatch on the gate).
+    kill_sent
+        || cancel_flag
+            .map(|f| f.load(Ordering::SeqCst))
+            .unwrap_or(false)
 }
 
 fn start_cancel_controller(pid: u32, cancel_flag: Option<Arc<AtomicBool>>) -> CancelController {
@@ -1671,5 +1689,23 @@ mod tests {
             let _g = spawn_lock().lock().unwrap_or_else(|e| e.into_inner());
         });
         handle.join().expect("second acquirer completes");
+    }
+
+    #[test]
+    fn test_cancel_flag_set_before_spawn_reports_cancelled_even_when_child_exits_first() {
+        // grip#931 class-3 de-flake: the client's cancel landed while the
+        // request was in the map, and the child exits before the cancel
+        // controller can kill it. The receipt must say cancelled -- a clean
+        // success for a call the client cancelled is the left==right mismatch
+        // the Windows gate hit. `--version` makes the child-exits-first leg
+        // deterministic end to end.
+        let flag = Arc::new(AtomicBool::new(true));
+        let out = run_gitgrip_command(&["--version".to_string()], Some(Arc::clone(&flag)))
+            .expect("run --version with a pre-set cancel flag");
+        assert!(
+            out.cancelled,
+            "a client cancel that landed mid-request must be honoured in the receipt even when the kill lost the race to the child's own exit"
+        );
+        assert!(!out.success, "a cancelled run must not report success");
     }
 }

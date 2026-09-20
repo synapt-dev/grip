@@ -931,8 +931,7 @@ def workspace_status(workspace_root: Path) -> dict[str, object]:
         result["gr2_unit_count"] = len(units)
         result["gr2_spec_path"] = str(gr2_spec_path)
 
-        # gr does not support worktree-backed repos (design/worktree-refactor
-        # ruling). `repo status` already flags a hand-made linked worktree
+        # gr does not support worktree-backed repos (by design). `repo status` already flags a hand-made linked worktree
         # per-repo; this reuses the SAME check (repo_maintenance_prototype's
         # is_linked_worktree, via derive_targets so shared repos and per-unit
         # repos are both covered) so `workspace status` reports it too --

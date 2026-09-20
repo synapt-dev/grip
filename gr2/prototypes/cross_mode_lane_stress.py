@@ -155,7 +155,7 @@ repos = ["app", "api", "web", "billing"]
 def create_lane(root: Path, workspace_root: Path, owner_unit: str, lane_name: str, repos: str, branch: str, lane_type: str = "feature") -> None:
     run(
         [
-            "python3",
+            sys.executable,
             str(lane_proto(root)),
             "create-lane",
             str(workspace_root),
@@ -174,7 +174,7 @@ def create_lane(root: Path, workspace_root: Path, owner_unit: str, lane_name: st
 def create_review_lane(root: Path, workspace_root: Path, owner_unit: str, repo: str, pr_number: int) -> None:
     run(
         [
-            "python3",
+            sys.executable,
             str(lane_proto(root)),
             "create-review-lane",
             str(workspace_root),
@@ -188,7 +188,7 @@ def create_review_lane(root: Path, workspace_root: Path, owner_unit: str, repo: 
 def plan_exec_json(root: Path, workspace_root: Path, owner_unit: str, lane_name: str, command_text: str) -> list[dict]:
     proc = run(
         [
-            "python3",
+            sys.executable,
             str(lane_proto(root)),
             "plan-exec",
             str(workspace_root),
@@ -204,7 +204,7 @@ def plan_exec_json(root: Path, workspace_root: Path, owner_unit: str, lane_name:
 
 def acquire_lease(root: Path, workspace_root: Path, owner_unit: str, lane_name: str, actor: str, mode: str, ttl_seconds: int = 900, force: bool = False, expect_ok: bool = True) -> subprocess.CompletedProcess[str]:
     argv = [
-        "python3",
+        sys.executable,
         str(lane_proto(root)),
         "acquire-lane-lease",
         str(workspace_root),
@@ -228,7 +228,7 @@ def acquire_lease(root: Path, workspace_root: Path, owner_unit: str, lane_name: 
 def show_leases_json(root: Path, workspace_root: Path, owner_unit: str, lane_name: str) -> list[dict]:
     proc = run(
         [
-            "python3",
+            sys.executable,
             str(lane_proto(root)),
             "show-lane-leases",
             str(workspace_root),
@@ -244,7 +244,7 @@ def show_leases_json(root: Path, workspace_root: Path, owner_unit: str, lane_nam
 def check_review_requirements_json(root: Path, workspace_root: Path, repo: str, pr_number: int) -> dict:
     proc = run(
         [
-            "python3",
+            sys.executable,
             str(lane_proto(root)),
             "check-review-requirements",
             str(workspace_root),
@@ -259,7 +259,7 @@ def check_review_requirements_json(root: Path, workspace_root: Path, repo: str, 
 
 def list_lanes_text(root: Path, workspace_root: Path, owner_unit: str | None = None) -> str:
     argv = [
-        "python3",
+        sys.executable,
         str(lane_proto(root)),
         "list-lanes",
         str(workspace_root),
@@ -280,7 +280,7 @@ def plan_handoff_json(
     target_lane_name: str | None = None,
 ) -> dict:
     argv = [
-        "python3",
+        sys.executable,
         str(lane_proto(root)),
         "plan-handoff",
         str(workspace_root),
@@ -339,7 +339,7 @@ def scenario_agent_handoff_relay(root: Path, workspace_root: Path) -> ScenarioRe
     create_lane(root, workspace_root, "atlas", "feat-router", "app,api", "feat/router")
     run(
         [
-            "python3",
+            sys.executable,
             str(lane_proto(root)),
             "share-lane",
             str(workspace_root),
@@ -358,7 +358,7 @@ def scenario_agent_handoff_relay(root: Path, workspace_root: Path) -> ScenarioRe
     )
     run(
         [
-            "python3",
+            sys.executable,
             str(lane_proto(root)),
             "create-continuation-lane",
             str(workspace_root),
@@ -457,7 +457,7 @@ def scenario_single_agent_interrupt_recovery(root: Path, workspace_root: Path) -
     create_review_lane(root, workspace_root, "atlas", "app", 123)
     run(
         [
-            "python3",
+            sys.executable,
             str(lane_proto(root)),
             "enter-lane",
             str(workspace_root),
@@ -469,7 +469,7 @@ def scenario_single_agent_interrupt_recovery(root: Path, workspace_root: Path) -
     )
     run(
         [
-            "python3",
+            sys.executable,
             str(lane_proto(root)),
             "enter-lane",
             str(workspace_root),
@@ -482,7 +482,7 @@ def scenario_single_agent_interrupt_recovery(root: Path, workspace_root: Path) -
     lane_listing = list_lanes_text(root, workspace_root, "atlas")
     current_lane_proc = run(
         [
-            "python3",
+            sys.executable,
             str(lane_proto(root)),
             "current-lane",
             str(workspace_root),
@@ -591,7 +591,7 @@ def scenario_synapt_lane_events(root: Path, workspace_root: Path) -> ScenarioRes
     create_lane(root, workspace_root, "atlas", "feat-events", "app,api", "feat/events")
     run(
         [
-            "python3",
+            sys.executable,
             str(lane_proto(root)),
             "enter-lane",
             str(workspace_root),
@@ -606,7 +606,7 @@ def scenario_synapt_lane_events(root: Path, workspace_root: Path) -> ScenarioRes
     acquire_lease(root, workspace_root, "atlas", "feat-events", "agent:atlas", "exec")
     run(
         [
-            "python3",
+            sys.executable,
             str(lane_proto(root)),
             "release-lane-lease",
             str(workspace_root),
@@ -618,7 +618,7 @@ def scenario_synapt_lane_events(root: Path, workspace_root: Path) -> ScenarioRes
     )
     run(
         [
-            "python3",
+            sys.executable,
             str(lane_proto(root)),
             "exit-lane",
             str(workspace_root),
@@ -631,7 +631,7 @@ def scenario_synapt_lane_events(root: Path, workspace_root: Path) -> ScenarioRes
     )
     history_proc = run(
         [
-            "python3",
+            sys.executable,
             str(lane_proto(root)),
             "lane-history",
             str(workspace_root),
@@ -734,7 +734,7 @@ def scenario_solo_human_forgets_lane(root: Path, workspace_root: Path) -> Scenar
     create_lane(root, workspace_root, "layne", "feat-release", "app,web", "feat/release")
     run(
         [
-            "python3",
+            sys.executable,
             str(lane_proto(root)),
             "enter-lane",
             str(workspace_root),
@@ -747,7 +747,7 @@ def scenario_solo_human_forgets_lane(root: Path, workspace_root: Path) -> Scenar
     create_review_lane(root, workspace_root, "layne", "app", 456)
     run(
         [
-            "python3",
+            sys.executable,
             str(lane_proto(root)),
             "enter-lane",
             str(workspace_root),
@@ -761,7 +761,7 @@ def scenario_solo_human_forgets_lane(root: Path, workspace_root: Path) -> Scenar
     lane_listing = list_lanes_text(root, workspace_root, "layne")
     current_lane_proc = run(
         [
-            "python3",
+            sys.executable,
             str(lane_proto(root)),
             "current-lane",
             str(workspace_root),
@@ -850,7 +850,7 @@ def scenario_global_edit_lease_cap(root: Path, workspace_root: Path) -> Scenario
     ]:
         run(
             [
-                "python3",
+                sys.executable,
                 str(lane_proto(root)),
                 "release-lane-lease",
                 str(workspace_root),

@@ -329,6 +329,35 @@ def _fake_runner(repo: Path, name: str, output: str, exit_code: int = 0) -> str:
     return str(script)
 
 
+def _fake_junit_runner(repo: Path, name: str, xml: str, report: str) -> str:
+    """Write a fresh JUnit report while standing in for Gradle or Maven.
+
+    The script lives beside the repository, as the existing cargo/jest stand-ins do,
+    but writes its report inside the reviewed clone. That makes this an end-to-end
+    witness of the ``git review`` entry point's report-file contract, rather than a
+    parser-only test.
+    """
+    script = repo.parent / name
+    script.write_text(
+        "#!/bin/sh\n"
+        f"mkdir -p {shlex.quote(str(Path(report).parent))}\n"
+        f"cat > {shlex.quote(report)} <<'XML'\n{xml}\nXML\n"
+        "printf 'BUILD SUCCESSFUL\\n'\n"
+    )
+    script.chmod(0o755)
+    return str(script)
+
+
+def _git_review_main_in(repo: Path, args: list[str]) -> int:
+    """Run the installed-command entry function from a reviewer's clone."""
+    cwd = Path.cwd()
+    try:
+        os.chdir(repo)
+        return git_review.main(args)
+    finally:
+        os.chdir(cwd)
+
+
 def test_non_pytest_runner_takes_its_counts_from_the_summary_not_the_exit_code(tmp_path):
     """A cargo run that exits 0 while its summary reports a failure is a RED. Reading
     the exit code instead would call it green."""
@@ -347,6 +376,57 @@ def test_non_pytest_runner_green(tmp_path):
     receipt = git_review.run_review(r, runner="cargo", test=cmd)
     assert receipt["result"] == "green" and receipt["selected"] == 3
     assert git_review.read_run_receipt(r)["result"] == "green"
+
+
+def test_git_review_junit_xml_runner_counts_fresh_and_names_ignored_stale_reports(tmp_path, capsys):
+    """The stranger-facing entry point, not just ``gr2 review run``, shares the
+    JUnit report seam. Replacing it with the old output parser makes this refuse
+    ``unparseable_summary`` because the command prints no JUnit counts."""
+    r = _pkg_repo(tmp_path, test_body=PASS_BODY)
+    stale = r / "build" / "test-results" / "TEST-stale.xml"
+    stale.parent.mkdir(parents=True)
+    stale.write_text('<testsuite tests="9" />')
+    git_review.open_review(r)
+    command = _fake_junit_runner(
+        r,
+        "fake-gradle-junit",
+        '<testsuite tests="3" failures="0" errors="0" skipped="0" />',
+        "build/test-results/TEST-demo.xml",
+    )
+    assert _git_review_main_in(
+        r,
+        ["run", "--runner", "junit-xml", "--test", command],
+    ) == 0
+    receipt = git_review.read_run_receipt(r)
+    assert receipt["reports"] == "**/build/test-results/**/*.xml"
+    assert receipt["report_files"] == ["build/test-results/TEST-demo.xml"]
+    assert receipt["stale_reports_ignored"] == ["build/test-results/TEST-stale.xml"]
+    assert (receipt["selected"], receipt["passed"], receipt["failed"], receipt["skipped"]) == (3, 3, 0, 0)
+    assert "1 stale report(s) ignored; see receipt" in capsys.readouterr().out
+
+
+def test_git_review_junit_xml_runner_refuses_stale_reports_via_entry_point(tmp_path):
+    r = _pkg_repo(tmp_path, test_body=PASS_BODY)
+    stale = r / "build" / "test-results" / "TEST-stale.xml"
+    stale.parent.mkdir(parents=True)
+    stale.write_text('<testsuite tests="1" />')
+    future_ns = 1_893_456_000_000_000_000
+    os.utime(stale, ns=(future_ns, future_ns))
+    git_review.open_review(r)
+    assert _git_review_main_in(r, ["run", "--runner", "junit-xml", "--test", "true"]) == 2
+    receipt = git_review.read_run_receipt(r)
+    assert receipt["refusal_code"] == "no_fresh_reports"
+    assert "stale reports are not trusted" in receipt["refusal_detail"]
+
+
+def test_git_review_junit_xml_runner_refuses_malformed_fresh_report_via_entry_point(tmp_path):
+    r = _pkg_repo(tmp_path, test_body=PASS_BODY)
+    git_review.open_review(r)
+    command = _fake_junit_runner(r, "fake-malformed-junit", "<testsuite>", "build/test-results/TEST-bad.xml")
+    assert _git_review_main_in(r, ["run", "--runner", "junit-xml", "--test", command]) == 2
+    receipt = git_review.read_run_receipt(r)
+    assert receipt["refusal_code"] == "malformed_junit_xml"
+    assert "TEST-bad.xml" in receipt["refusal_detail"]
 
 
 # Like _offline_install, but ALSO writes a console-script SHIM into the

@@ -101,11 +101,18 @@ def parse_junit_xml_reports(reports: list[Path]) -> dict:
             raise JunitXmlReportError(
                 f"malformed JUnit XML in {report}: {exc}"
             ) from exc
-        suites = [
-            suite
-            for suite in root.iter("testsuite")
-            if not any(child.tag == "testsuite" for child in suite)
-        ]
+        suites = []
+        for suite in root.iter("testsuite"):
+            children = list(suite)
+            has_child_suite = any(child.tag == "testsuite" for child in children)
+            has_direct_testcase = any(child.tag == "testcase" for child in children)
+            if has_child_suite and has_direct_testcase:
+                raise JunitXmlReportError(
+                    f"malformed JUnit XML in {report}: a testsuite with both testcase "
+                    "and testsuite children cannot be counted without hiding or double-counting tests"
+                )
+            if not has_child_suite:
+                suites.append(suite)
         if not suites:
             raise JunitXmlReportError(
                 f"malformed JUnit XML in {report}: no testsuite elements"

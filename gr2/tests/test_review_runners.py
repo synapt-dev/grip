@@ -106,6 +106,14 @@ def test_junit_xml_parser_counts_nested_suites_once_at_the_leaf():
     }
 
 
+def test_junit_xml_refuses_a_parent_with_direct_testcases_and_child_suites():
+    """Dropping the aggregate parent would hide its direct failing testcase, while
+    counting it would double-count the child suite. Refuse rather than green."""
+    fixture = Path(__file__).parent / "fixtures" / "junit_xml" / "mixed-parent.xml"
+    with pytest.raises(R.JunitXmlReportError, match="both testcase and testsuite children"):
+        R.parse_junit_xml_reports([fixture])
+
+
 def test_junit_xml_requires_a_snapshot_but_accepts_an_empty_one(tmp_path):
     report = tmp_path / "build" / "test-results" / "TEST.xml"
     report.parent.mkdir(parents=True)

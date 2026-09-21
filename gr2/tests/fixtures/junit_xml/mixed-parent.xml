@@ -1,0 +1,9 @@
+<testsuites>
+  <testsuite tests="3" failures="1" errors="0" skipped="0">
+    <testcase name="parent-failure"><failure /></testcase>
+    <testsuite tests="2" failures="0" errors="0" skipped="0">
+      <testcase name="child-one" />
+      <testcase name="child-two" />
+    </testsuite>
+  </testsuite>
+</testsuites>

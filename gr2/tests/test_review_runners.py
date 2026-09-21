@@ -98,6 +98,35 @@ def test_junit_xml_parser_sums_hand_written_fixture_reports():
     }
 
 
+def test_junit_xml_parser_counts_nested_suites_once_at_the_leaf():
+    """The outer suite is an aggregate (99); the leaf's true total is two."""
+    fixture = Path(__file__).parent / "fixtures" / "junit_xml" / "nested.xml"
+    assert R.parse_junit_xml_reports([fixture]) == {
+        "selected": 2, "passed": 1, "failed": 0, "errors": 0, "skipped": 1,
+    }
+
+
+def test_junit_xml_refuses_a_parent_with_direct_testcases_and_child_suites():
+    """Dropping the aggregate parent would hide its direct failing testcase, while
+    counting it would double-count the child suite. Refuse rather than green."""
+    fixture = Path(__file__).parent / "fixtures" / "junit_xml" / "mixed-parent.xml"
+    with pytest.raises(R.JunitXmlReportError, match="both testcase and testsuite children"):
+        R.parse_junit_xml_reports([fixture])
+
+
+def test_junit_xml_requires_a_snapshot_but_accepts_an_empty_one(tmp_path):
+    report = tmp_path / "build" / "test-results" / "TEST.xml"
+    report.parent.mkdir(parents=True)
+    report.write_text('<testsuite tests="1" />')
+    with pytest.raises(R.RunnerSummaryRefusal) as missing:
+        R.summarize_runner("junit-xml", "", tmp_path, R.JUNIT_XML_DEFAULT_REPORTS)
+    assert missing.value.code == "missing_report_snapshot"
+    summary, _, files, stale = R.summarize_runner(
+        "junit-xml", "", tmp_path, R.JUNIT_XML_DEFAULT_REPORTS, {}
+    )
+    assert summary["selected"] == 1 and files == [report] and stale == []
+
+
 def test_junit_xml_snapshot_counts_only_new_or_changed_reports(tmp_path):
     reports = tmp_path / "build" / "test-results" / "test"
     reports.mkdir(parents=True)

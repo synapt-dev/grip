@@ -450,6 +450,11 @@ def _write_workspace_spec(
             "",
         ]
     )
+    # ``workspace init`` is the public bootstrap boundary.  Its spec is read by
+    # lane creation and its object store is consumed by ``review create-project``;
+    # leave both ready together so an adopted workspace never reaches a later,
+    # undocumented ``grip init`` requirement.
+    grip.grip_init(workspace_root)
     spec_path.parent.mkdir(parents=True, exist_ok=True)
     spec_path.write_text("\n".join(lines))
     return spec_path

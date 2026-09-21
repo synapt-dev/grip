@@ -9,6 +9,13 @@ _SSH_GITHUB_PREFIX = "git@github.com:"
 _HTTPS_GITHUB_PREFIX = "https://github.com/"
 
 
+class GitMissingError(Exception):
+    """The git executable is not on PATH (a fresh container without git). One
+    sentence naming git replaces a traceback — or worse, a False answer that
+    reads as 'this is not a git repository' on a machine that simply has no
+    git."""
+
+
 def rewrite_ssh_github_url(url: str) -> str:
     """``git@github.com:OWNER/REPO(.git)`` -> ``https://github.com/OWNER/REPO.git``.
 
@@ -39,23 +46,125 @@ def _effective_remote_url(url: str) -> str:
 
 
 def git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        # The spawn itself failed because the git EXECUTABLE is absent
+        # (exc.filename == "git"). A nonexistent cwd raises FileNotFoundError
+        # naming the cwd, which is a different state and stays untouched.
+        if exc.filename == "git":
+            raise GitMissingError(
+                "git is not on PATH; install git, then run the verb again"
+            ) from None
+        raise
 
 
 def is_git_repo(path: Path) -> bool:
-    if not path.exists():
-        # subprocess.run(cwd=...) raises FileNotFoundError uncontrolled for an
-        # absent cwd rather than returning a failed CompletedProcess; a missing
-        # path is not a git repo, so this is the answer, not an exception.
+    if not path.is_dir():
+        # A FILE as cwd raises NotADirectoryError out of subprocess.run rather
+        # than returning a failed CompletedProcess (measured: a unit home
+        # holding a plain `unit.toml` crashed every single-repo verb through
+        # repos_under). A non-directory is not a git repo, so this is the
+        # answer, not an exception.
         return False
-    proc = git(path, "rev-parse", "--is-inside-work-tree")
+    try:
+        proc = git(path, "rev-parse", "--is-inside-work-tree")
+    except PermissionError:
+        # A directory the caller cannot enter (chmod 000) raises
+        # PermissionError out of the subprocess cwd; a directory that cannot
+        # be probed is not answerable as a repository, so False is the
+        # answer, not a traceback. OSError would be wider: it would swallow
+        # the FileNotFoundError for a missing git EXECUTABLE and turn a
+        # no-git machine into a false 'not a git repository' sentence
+        # (Stromus, m_9341d8d1); GitMissingError propagates instead.
+        return False
     return proc.returncode == 0 and proc.stdout.strip() == "true"
+
+
+def is_bare_git_repo(path: Path) -> bool:
+    """A bare repository (HEAD + a valid git dir, no work tree). The shape a
+    stranger uses as a local upstream; the repo scanner skipped it before."""
+    if not path.is_dir():
+        # Same non-directory guard as is_git_repo (B1 of the alpha-2 gate).
+        return False
+    try:
+        proc = git(path, "rev-parse", "--is-bare-repository")
+    except PermissionError:
+        # Same unenterable-directory answer as is_git_repo.
+        return False
+    return proc.returncode == 0 and proc.stdout.strip() == "true"
+
+
+def is_git_repository(path: Path) -> bool:
+    """A repository of either shape: a work tree or a bare repo."""
+    return is_git_repo(path) or is_bare_git_repo(path)
+
+
+class OutsideRepoError(Exception):
+    """A single-repo verb was run from a path that is not a git work tree."""
+
+
+def repos_under(path: Path, limit: int = 5) -> list[Path]:
+    """Git WORK TREE repositories directly under `path` (and `path` itself),
+    nearest name order, capped so a refusal line stays a line. Only
+    directories are probed: a regular file as cwd raises NotADirectoryError
+    out of the git probes. Work trees only: the consumers of this listing
+    (the single-repo refusals) name repos the verb can run inside, and those
+    verbs need a work tree — a bare repository would be an unusable
+    suggestion. An unenterable child (chmod 000) is skipped: the helpers
+    answer False for it."""
+    found: list[Path] = []
+    if is_git_repo(path):
+        found.append(path)
+    if not path.is_dir():
+        return found
+    for child in sorted(path.iterdir()):
+        if len(found) >= limit:
+            break
+        if not child.is_dir():
+            continue
+        if child.name.startswith("."):
+            continue
+        if is_git_repo(child):
+            found.append(child)
+    return found
+
+
+def require_git_repo(path: Path, verb: str) -> None:
+    """One-sentence refusal for a single-repo verb run from outside a git work
+    tree, naming what the verb needs and listing the repos found under the
+    cwd. Measured failures being replaced: git's own raw text ("fatal: not a
+    git repository"), git's full usage dump from the commit path, and, inside
+    a bare repository, git's "this operation must be run in a work tree".
+    These verbs need a WORK TREE, not any repository."""
+    if is_git_repo(path):
+        return
+    if is_bare_git_repo(path):
+        found = repos_under(path)
+        listing = f" Repositories found under it: {', '.join(item.name for item in found)}." if found else ""
+        raise OutsideRepoError(
+            f"gr2 {verb} runs inside one repository of the workspace; "
+            f"{path} is a bare repository, and this verb needs a work tree."
+            f"{listing} Run inside a work tree, or pass --repo-path"
+        )
+    found = repos_under(path)
+    if found:
+        listing = ", ".join(item.name for item in found)
+        raise OutsideRepoError(
+            f"gr2 {verb} runs inside one repository of the workspace; "
+            f"{path} is not a git repository (repositories found under it: "
+            f"{listing}; run inside one, or pass --repo-path)"
+        )
+    raise OutsideRepoError(
+        f"gr2 {verb} runs inside one repository of the workspace; "
+        f"{path} is not a git repository (no repositories found under it)"
+    )
 
 
 def repo_dirty(path: Path) -> bool:

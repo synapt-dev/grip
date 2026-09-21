@@ -3,8 +3,11 @@ exit code; an unreadable summary is a refusal with the raw tail, not a zero-gree
 Parsers are pinned to REAL runner output shapes; the end-to-end path runs cargo in a
 bound lane and keeps the language-agnostic tree checks."""
 import json
+import os
+import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -83,6 +86,63 @@ def test_dispatch_unknown_runner_raises():
         R.parse_runner_summary("nosuch", "whatever")
 
 
+def test_junit_xml_parser_sums_hand_written_fixture_reports():
+    fixtures = Path(__file__).parent / "fixtures" / "junit_xml"
+    got = R.parse_junit_xml_reports([
+        fixtures / "green.xml",
+        fixtures / "failure-and-skip.xml",
+        fixtures / "wrapper.xml",
+    ])
+    assert got == {
+        "selected": 10, "passed": 6, "failed": 1, "errors": 1, "skipped": 2,
+    }
+
+
+def test_junit_xml_parser_counts_nested_suites_once_at_the_leaf():
+    """The outer suite is an aggregate (99); the leaf's true total is two."""
+    fixture = Path(__file__).parent / "fixtures" / "junit_xml" / "nested.xml"
+    assert R.parse_junit_xml_reports([fixture]) == {
+        "selected": 2, "passed": 1, "failed": 0, "errors": 0, "skipped": 1,
+    }
+
+
+def test_junit_xml_refuses_a_parent_with_direct_testcases_and_child_suites():
+    """Dropping the aggregate parent would hide its direct failing testcase, while
+    counting it would double-count the child suite. Refuse rather than green."""
+    fixture = Path(__file__).parent / "fixtures" / "junit_xml" / "mixed-parent.xml"
+    with pytest.raises(R.JunitXmlReportError, match="both testcase and testsuite children"):
+        R.parse_junit_xml_reports([fixture])
+
+
+def test_junit_xml_requires_a_snapshot_but_accepts_an_empty_one(tmp_path):
+    report = tmp_path / "build" / "test-results" / "TEST.xml"
+    report.parent.mkdir(parents=True)
+    report.write_text('<testsuite tests="1" />')
+    with pytest.raises(R.RunnerSummaryRefusal) as missing:
+        R.summarize_runner("junit-xml", "", tmp_path, R.JUNIT_XML_DEFAULT_REPORTS)
+    assert missing.value.code == "missing_report_snapshot"
+    summary, _, files, stale = R.summarize_runner(
+        "junit-xml", "", tmp_path, R.JUNIT_XML_DEFAULT_REPORTS, {}
+    )
+    assert summary["selected"] == 1 and files == [report] and stale == []
+
+
+def test_junit_xml_snapshot_counts_only_new_or_changed_reports(tmp_path):
+    reports = tmp_path / "build" / "test-results" / "test"
+    reports.mkdir(parents=True)
+    stale = reports / "stale.xml"
+    fresh = reports / "fresh.xml"
+    stale.write_text('<testsuite tests="1" />')
+    fresh.write_text('<testsuite tests="1" />')
+    before = R.snapshot_junit_xml_reports(tmp_path, R.JUNIT_XML_DEFAULT_REPORTS)
+    fresh.write_text('<testsuite tests="2" />')
+    got_fresh, got_stale = R.split_junit_xml_reports(
+        tmp_path, R.JUNIT_XML_DEFAULT_REPORTS, before
+    )
+    assert got_fresh == [fresh]
+    assert got_stale == ["build/test-results/test/stale.xml"]
+
+
 # ---- end-to-end: cargo in a bound lane --------------------------------------
 
 def _git(r: Path, *a: str) -> str:
@@ -121,6 +181,38 @@ def _cargo_lane(tmp_path: Path, review_install: str | None = None, gitignore: bo
     return lane
 
 
+def _junit_lane(tmp_path: Path, review_install: str | None = None) -> Path:
+    lane = tmp_path / "junit-lane"
+    lane.mkdir()
+    (lane / "README.md").write_text("junit test lane\n")
+    if review_install is not None:
+        (lane / ".review-install").write_text(review_install)
+    _git(lane, "init", "-q")
+    _git(lane, "config", "user.email", "a@b")
+    _git(lane, "config", "user.name", "a")
+    _git(lane, "add", ".")
+    _git(lane, "commit", "-q", "-m", "c1", "--no-gpg-sign")
+    tree = rr.compute_working_tree(lane)
+    marker = {
+        "kind": "open-gr-reconstruct",
+        "gr_commit": "gr:test",
+        "repos": [{"key": "r", "bound_head": _git(lane, "rev-parse", "HEAD"), "bound_head_tree": tree}],
+    }
+    (lane / rr._MARKER_NAME).write_text(json.dumps(marker) + "\n")
+    return lane
+
+
+def _write_junit_report_command(
+    xml: str, report_path: str = "build/test-results/test/TEST-demo.xml"
+) -> list[str]:
+    script = (
+        "from pathlib import Path; "
+        f"p=Path({report_path!r}); p.parent.mkdir(parents=True); "
+        f"p.write_text({xml!r})"
+    )
+    return [sys.executable, "-c", script]
+
+
 @pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo not on this host")
 def test_cargo_lane_runs_green_with_counts_from_summary(tmp_path):
     lane = _cargo_lane(tmp_path)
@@ -153,6 +245,42 @@ def test_unknown_runner_refuses(tmp_path):
     with pytest.raises(rr.ReviewRunRefused) as ei:
         rr.run_test_command_in_lane(lane, runner="nosuch", test_command=["true"])
     assert ei.value.code == "unknown_runner"
+
+
+def test_junit_xml_runner_reads_only_a_fresh_report(tmp_path):
+    lane = _junit_lane(tmp_path)
+    rec = rr.run_test_command_in_lane(
+        lane,
+        runner="junit-xml",
+        test_command=_write_junit_report_command('<testsuite tests="2" />'),
+    )
+    assert rec["result"] == "green"
+    assert rec["selected"] == 2 and rec["passed"] == 2
+    assert rec["report_files"] == ["build/test-results/test/TEST-demo.xml"]
+
+
+def test_junit_xml_runner_refuses_stale_reports(tmp_path):
+    lane = _junit_lane(tmp_path)
+    report = lane / "build" / "test-results" / "test" / "TEST-stale.xml"
+    report.parent.mkdir(parents=True)
+    report.write_text('<testsuite tests="1" />')
+    os.utime(report, (1, 1))
+    with pytest.raises(rr.ReviewRunRefused) as ei:
+        rr.run_test_command_in_lane(lane, runner="junit-xml", test_command=["true"])
+    assert ei.value.code == "no_fresh_reports"
+    assert "cleanTest or --rerun-tasks" in ei.value.detail
+
+
+def test_junit_xml_runner_refuses_a_malformed_fresh_report_with_its_name(tmp_path):
+    lane = _junit_lane(tmp_path)
+    with pytest.raises(rr.ReviewRunRefused) as ei:
+        rr.run_test_command_in_lane(
+            lane,
+            runner="junit-xml",
+            test_command=_write_junit_report_command("<testsuite>"),
+        )
+    assert ei.value.code == "malformed_junit_xml"
+    assert "TEST-demo.xml" in ei.value.detail
 
 
 # ---- CLI wiring: `gr2 review run --runner cargo --test`, and the hint form --------
@@ -190,6 +318,45 @@ def test_cli_non_pytest_runner_without_test_command_refuses(tmp_path):
     assert "no_test_command" in r.stdout or "needs a test command" in (r.stdout + (r.stderr or ""))
 
 
+def test_cli_review_run_junit_xml_flags(tmp_path):
+    from typer.testing import CliRunner
+    from python_cli.app import app
+
+    lane = _junit_lane(tmp_path)
+    command = shlex.join(_write_junit_report_command(
+        '<testsuite tests="1" />', "reports/TEST-demo.xml"
+    ))
+    r = CliRunner().invoke(
+        app,
+        [
+            "review", "run", str(lane), "--runner", "junit-xml", "--test", command,
+            "--reports", "reports/*.xml",
+        ],
+    )
+    assert r.exit_code == 0
+    assert "green (junit-xml)" in r.stdout and "passed=1" in r.stdout
+
+
+def test_cli_review_run_junit_xml_from_review_install_hint(tmp_path):
+    from typer.testing import CliRunner
+    from python_cli.app import app
+
+    command = shlex.join(_write_junit_report_command(
+        '<testsuite tests="1" />', "reports/TEST-demo.xml"
+    ))
+    lane = _junit_lane(
+        tmp_path,
+        review_install=(
+            "runner = junit-xml\n"
+            f"test = {command}\n"
+            "reports = reports/*.xml\n"
+        ),
+    )
+    r = CliRunner().invoke(app, ["review", "run", str(lane)])
+    assert r.exit_code == 0
+    assert "green (junit-xml)" in r.stdout and "passed=1" in r.stdout
+
+
 @pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo not on this host")
 def test_two_consecutive_runs_both_green_on_un_gitignored_lane(tmp_path):
     """A library crate with no .gitignore: `cargo test` creates target/ and Cargo.lock.
@@ -214,4 +381,4 @@ def test_pytest_runner_with_test_flag_refuses(tmp_path):
     lane = _cargo_lane(tmp_path)
     r = CliRunner().invoke(app, ["review", "run", str(lane), "--test", "cargo test"])
     assert r.exit_code == 2
-    assert "test_with_pytest" in (r.stdout + (r.stderr or "")) or "for a non-pytest runner" in (r.stdout + (r.stderr or ""))
+    assert "test_with_pytest" in r.output or "for a non-pytest runner" in r.output

@@ -11,8 +11,9 @@ name = "gitgrip"
 # number and it is not derived from Cargo.toml. gr1 releases as crates.io/GitHub
 # `v1.x.y`; gr2 releases as PyPI `gr2/v2.x.y`. Runtime reads it via
 # importlib.metadata.version("gitgrip"), never a checked-in file.
-version = "2.0.0a1"
-description = "gr2 overlay substrate: config-overlay capture, composition, and materialization"
+version = "2.0.0a2"
+description = "Workspace layer for multi-repo work: workspaces, isolated lanes, and one grouped review per slice"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "typer>=0.9",

@@ -42,7 +42,7 @@ from pathlib import Path
 _HINT_NAME = ".review-install"
 
 
-_HINT_KEYS = frozenset({"install", "package", "runner", "test"})
+_HINT_KEYS = frozenset({"install", "package", "runner", "test", "reports"})
 
 
 def _apply_install_placeholders(tokens: list[str], venv_python: Path, repo_dir: Path) -> list[str]:
@@ -57,8 +57,9 @@ def _apply_install_placeholders(tokens: list[str], venv_python: Path, repo_dir: 
 
 
 def read_install_hint(repo_dir: Path) -> dict | None:
-    """Parse `<repo_dir>/.review-install`; return {'install': str, 'package': str}
-    (both optional keys) or None when the file is absent. An unrecognised key is a
+    """Parse `<repo_dir>/.review-install`; return optional runner settings or None
+    when the file is absent. `reports` is the JUnit XML glob for the `junit-xml`
+    runner. An unrecognised key is a
     REFUSAL (`bad_hint`), not a silent skip: a typo like `instal = ...` would
     otherwise fall through to the default install and refuse under a cause the repo
     never declared."""
@@ -164,6 +165,7 @@ def _is_allowlisted_untracked(
     rel_path: str,
     extra_names: frozenset[str] = frozenset(),
     extra_tops: tuple[str, ...] = (),
+    extra_segments: frozenset[str] = frozenset(),
 ) -> bool:
     if rel_path in _UNTRACKED_ALLOW_NAMES or rel_path in extra_names:
         return True
@@ -171,7 +173,10 @@ def _is_allowlisted_untracked(
     if any(rel_path == pre.rstrip("/") or rel_path.startswith(pre) for pre in tops):
         return True
     segments = rel_path.strip("/").split("/")
-    if any(seg in _UNTRACKED_ALLOW_SEGMENTS or seg.endswith(".egg-info") for seg in segments):
+    if any(
+        seg in _UNTRACKED_ALLOW_SEGMENTS or seg in extra_segments or seg.endswith(".egg-info")
+        for seg in segments
+    ):
         return True
     return False
 
@@ -181,6 +186,7 @@ def assert_no_untracked_drift(
     *,
     extra_allow_names: frozenset[str] = frozenset(),
     extra_allow_tops: tuple[str, ...] = (),
+    extra_allow_segments: frozenset[str] = frozenset(),
 ) -> None:
     """Refuse if the lane holds any untracked path the run did not create. Without
     this an untracked `conftest.py` (or shadow module) that patches the package turns
@@ -209,7 +215,9 @@ def assert_no_untracked_drift(
     for line in out.splitlines():
         if line.startswith("?? "):
             rel = line[3:].strip().strip('"')
-            if not _is_allowlisted_untracked(rel, extra_allow_names, extra_allow_tops):
+            if not _is_allowlisted_untracked(
+                rel, extra_allow_names, extra_allow_tops, extra_allow_segments
+            ):
                 offending.append(rel)
     if offending:
         raise ReviewRunRefused(
@@ -782,20 +790,27 @@ def run_test_command_in_lane(
     *,
     runner: str,
     test_command: list[str],
+    reports: str | None = None,
 ) -> dict:
     """Run a non-Python runner's test command in a bound lane and build a receipt.
     ``runner`` selects the summary parser (review_runners.RUNNERS). Raises
     ReviewRunRefused for a structural problem (no marker, tree drift, unknown runner,
     unparseable summary, zero tests)."""
-    from .review_runners import RUNNERS, RUNNER_CREATED_PATHS, parse_runner_summary
+    from .review_runners import (
+        VALID_RUNNERS,
+        JUNIT_XML_DEFAULT_REPORTS,
+        RUNNER_CREATED_PATHS,
+        RunnerSummaryRefusal,
+        snapshot_junit_xml_reports,
+        summarize_runner,
+    )
 
     lane_dir = Path(lane_dir).resolve()
     try:
-        if runner not in RUNNERS:
+        if runner not in VALID_RUNNERS:
             raise ReviewRunRefused(
                 "unknown_runner",
-                f"runner {runner!r} has no summary parser; known runners: "
-                f"{sorted(RUNNERS)}",
+                f"runner {runner!r} has no summary parser; known runners: {sorted(VALID_RUNNERS)}",
             )
         marker = _read_marker(lane_dir)
         repos = marker.get("repos", [])
@@ -812,14 +827,24 @@ def run_test_command_in_lane(
         # jest: node_modules/, coverage/) so a second run on an un-gitignored lane does
         # not refuse the first run's artifacts — the analogue of the pytest .venv/receipt
         # exemptions.
-        created = RUNNER_CREATED_PATHS.get(runner, {"names": frozenset(), "tops": ()})
+        created = RUNNER_CREATED_PATHS.get(
+            runner, {"names": frozenset(), "tops": (), "segments": frozenset()}
+        )
         assert_lane_tree_bound(repo_dir, repo.get("bound_head_tree", ""))
         assert_no_untracked_drift(
             repo_dir,
             extra_allow_names=created["names"],
             extra_allow_tops=created["tops"],
+            extra_allow_segments=created.get("segments", frozenset()),
         )
 
+        report_pattern = reports or JUNIT_XML_DEFAULT_REPORTS if runner == "junit-xml" else None
+        try:
+            report_snapshot = (
+                snapshot_junit_xml_reports(repo_dir, report_pattern) if report_pattern is not None else None
+            )
+        except RunnerSummaryRefusal as exc:
+            raise ReviewRunRefused(exc.code, exc.detail) from exc
         try:
             proc = subprocess.run(
                 test_command, text=True, capture_output=True, cwd=str(repo_dir)
@@ -832,7 +857,12 @@ def run_test_command_in_lane(
         output = proc.stdout + "\n" + proc.stderr
         (lane_dir / _OUTPUT_LOG_NAME).write_text(output)
 
-        summary = parse_runner_summary(runner, output)
+        try:
+            summary, report_pattern, report_files, stale_reports = summarize_runner(
+                runner, output, repo_dir, reports, report_snapshot
+            )
+        except RunnerSummaryRefusal as exc:
+            raise ReviewRunRefused(exc.code, exc.detail) from exc
         if summary is None:
             tail = "\n".join(output.strip().splitlines()[-15:])
             raise ReviewRunRefused(
@@ -868,6 +898,10 @@ def run_test_command_in_lane(
             "output_log": _OUTPUT_LOG_NAME,
             "result": result,
         }
+        if report_pattern is not None:
+            receipt["reports"] = report_pattern
+            receipt["report_files"] = [str(path.relative_to(repo_dir)) for path in report_files]
+            receipt["stale_reports_ignored"] = stale_reports
         (lane_dir / _RECEIPT_NAME).write_text(json.dumps(receipt, indent=2) + "\n")
         return receipt
     except ReviewRunRefused as exc:

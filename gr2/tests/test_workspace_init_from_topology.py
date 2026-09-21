@@ -77,7 +77,8 @@ def test_workspace_init_from_topology_writes_declared_repos_in_an_empty_director
     ]
     assert payload["default_unit"] == "team"
     assert payload["source"] == "workspace.toml"
-    assert not list(workspace_root.glob("*/.git"))
+    assert (workspace_root / ".grip" / ".git").is_dir()
+    assert not [path for path in workspace_root.glob("*/.git") if path.parent.name != ".grip"]
     assert not (workspace_root / "repos" / "product").exists()
     assert not (workspace_root / "config").exists()
 

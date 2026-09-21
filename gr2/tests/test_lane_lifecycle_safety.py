@@ -138,6 +138,7 @@ def test_python_cli_renders_the_transition_writer_outcome(tmp_path: Path, capsys
     app_module.lane_enter(workspace, "atlas", "feature", "agent:atlas", False, False, False)
 
     payload = json.loads(capsys.readouterr().out)
+    lane_root = lanes.lane_dir(workspace, "atlas", "feature")
     assert payload == {
         "status": "ok",
         "action": "enter",
@@ -145,6 +146,10 @@ def test_python_cli_renders_the_transition_writer_outcome(tmp_path: Path, capsys
         "previous_lane": None,
         "current_lane": "feature",
         "state_path": str(lanes.current_lane_file(workspace, "atlas")),
+        # The enter outcome names where the actor works, per repo, absolute
+        # (the alpha-2 stranger-commit finding: enter used to name lane.toml
+        # only, never the repos the actor works in).
+        "repo_paths": {"app": str(lane_root / "repos" / "app")},
     }
 
 

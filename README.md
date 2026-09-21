@@ -43,6 +43,19 @@ Inspired by Android's [repo tool](https://source.android.com/docs/setup/create/r
 
 ## Installation
 
+### gr2 (Python CLI, alpha)
+
+gr2 is the workspace layer for multi-repo work: a workspace over your repos,
+isolated lanes to work in, and one grouped review per slice. Install the alpha
+from PyPI (the package is `gitgrip`; the command is `gr2`):
+
+```bash
+pip install --pre gitgrip
+```
+
+Start with [gr2/README.md](gr2/README.md) for the five-minute walk. Everything
+below installs the Rust gr1 `gr`.
+
 ### Homebrew (macOS/Linux)
 
 ```bash

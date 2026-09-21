@@ -18,6 +18,7 @@ from . import add as add_ops
 from . import branch as branch_ops
 from . import commit as commit_ops
 from . import execops, failures, grip, migration, spec_apply, syncops
+from . import gitops
 from . import pr as pr_ops
 from . import prune as prune_ops
 from . import target as target_ops
@@ -30,7 +31,9 @@ from .gitops import (
     ensure_lane_checkout,
     fetch_ref,
     git,
+    is_bare_git_repo,
     is_git_repo,
+    is_git_repository,
     refresh_existing_branch,
     remote_origin_url,
     repo_dirty,
@@ -48,7 +51,10 @@ from .merge_verification import MergeVerificationTarget
 from .platform import PRRef, get_platform_adapter
 
 app = typer.Typer(
-    help="Python-first gr2 CLI. This is the production UX proving layer before Rust."
+    help=(
+        "The workspace layer for multi-repo work: a workspace over your repos, "
+        "isolated lanes to work in, and one grouped review per slice."
+    )
 )
 
 
@@ -447,6 +453,11 @@ def _write_workspace_spec(
             "",
         ]
     )
+    # ``workspace init`` is the public bootstrap boundary.  Its spec is read by
+    # lane creation and its object store is consumed by ``review create-project``;
+    # leave both ready together so an adopted workspace never reaches a later,
+    # undocumented ``grip init`` requirement.
+    grip.grip_init(workspace_root)
     spec_path.parent.mkdir(parents=True, exist_ok=True)
     spec_path.write_text("\n".join(lines))
     return spec_path
@@ -461,6 +472,11 @@ def _scan_existing_repos(workspace_root: Path) -> list[dict[str, str]]:
             continue
         if not child.is_dir():
             continue
+        # Bare repositories are DETECTED but NOT ADDED: materialize's validator
+        # rejects a bare path as a repo, and a bare upstream beside its clone
+        # is a working dev layout that a bare-as-repo scan turns into a refused
+        # spec. The init verb names them in its output instead (see
+        # workspace_init).
         if not is_git_repo(child):
             continue
         url = remote_origin_url(child)
@@ -472,6 +488,31 @@ def _scan_existing_repos(workspace_root: Path) -> list[dict[str, str]]:
             }
         )
     return repos
+
+
+def _scan_bare_repos(workspace_root: Path) -> list[Path]:
+    """Bare repositories directly under the root — named in the init output so
+    the stranger knows the dir was seen, but never written into the spec."""
+    return [
+        child
+        for child in sorted(workspace_root.iterdir())
+        if child.is_dir()
+        and not child.name.startswith(".")
+        and child.name != "agents"
+        and is_bare_git_repo(child)
+    ]
+
+
+def _bare_note_lines(workspace_root: Path, bare: list[Path]) -> list[str]:
+    """One line per bare directory: seen, not added, and what to do instead."""
+    if not bare:
+        return []
+    lines = ["bare repositories detected (not added to the spec):"]
+    lines.extend(
+        f"- {item.name} is a bare repository; not added. Clone it, or reference it as a url"
+        for item in bare
+    )
+    return lines
 
 
 def _declared_workspace_topology(
@@ -583,8 +624,16 @@ def workspace_init(
     """Create a bare workspace_spec.toml by scanning an existing directory of repos."""
     workspace_root = workspace_root.resolve()
     repos = _scan_existing_repos(workspace_root)
-    if not repos:
+    bare = _scan_bare_repos(workspace_root)
+    if not repos and not bare:
         raise SystemExit(f"no git repos found to initialize workspace spec under: {workspace_root}")
+    if not repos:
+        # Bare is all there is: the spec is refused as before, but the output
+        # names what the directories are, so "no git repos found" is not a
+        # silent non-answer about dirs the stranger can see.
+        lines = [f"no git repos found to initialize workspace spec under: {workspace_root}"]
+        lines.extend(_bare_note_lines(workspace_root, bare))
+        raise SystemExit("\n".join(lines))
     spec_path = _write_workspace_spec(workspace_root, repos, default_unit)
     payload = {
         "workspace_root": str(workspace_root),
@@ -592,6 +641,8 @@ def workspace_init(
         "repo_count": len(repos),
         "repos": repos,
         "default_unit": default_unit,
+        "repos_without_url": [repo["name"] for repo in repos if not repo["url"]],
+        "bare_repos_not_added": [item.name for item in bare],
     }
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
@@ -605,6 +656,15 @@ def workspace_init(
             "REPOS",
         ]
         lines.extend(f"- {repo['name']}\t{repo['path']}\t{repo['url'] or '-'}" for repo in repos)
+        lines.extend(_bare_note_lines(workspace_root, bare))
+        without_url = [repo for repo in repos if not repo["url"]]
+        if without_url:
+            lines.append("no origin: materialize refuses these repos until a url is set:")
+            for repo in without_url:
+                lines.append(
+                    f"- {repo['name']}: git -C {workspace_root / repo['path']} "
+                    "remote add origin <url>"
+                )
         typer.echo("\n".join(lines))
 
 
@@ -892,8 +952,9 @@ def branch_cmd(
     """Create or switch to a branch, natively -- no gr1 dependency."""
     target = (repo_path or Path.cwd()).resolve()
     try:
+        gitops.require_git_repo(target, "branch")
         branch_ops.create_branch(target, name, base=base)
-    except branch_ops.BranchError as exc:
+    except (branch_ops.BranchError, gitops.OutsideRepoError, gitops.GitMissingError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(f"Switched to branch '{name}'")
@@ -911,8 +972,9 @@ def add_cmd(
     """Stage paths in one repository, including tracked deletions."""
     target = (repo_path or Path.cwd()).resolve()
     try:
+        gitops.require_git_repo(target, "add")
         result = add_ops.stage_files(target, paths)
-    except add_ops.AddError as exc:
+    except (add_ops.AddError, gitops.OutsideRepoError, gitops.GitMissingError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     if result.staged_files:
@@ -973,11 +1035,26 @@ def commit_cmd(
                 typer.echo(f"{row.repo}: FAILED — {row.error}")
         if report.any_failed:
             raise typer.Exit(code=1)
+        if report.all_skipped:
+            # A lane commit that committed NOTHING anywhere must not exit 0:
+            # the work is somewhere else, and the sentence says where.
+            looked = report.lane_repo_dir or "the lane's repositories"
+            message = (
+                f"committed nothing: every lane repo was skipped (empty index) in {looked}"
+            )
+            for repo, paths in sorted(report.staged_elsewhere.items()):
+                message += (
+                    f"; staged changes found in {' and '.join(paths)}, "
+                    "which is not the lane's repo"
+                )
+            typer.echo(message, err=True)
+            raise typer.Exit(code=1)
         return
     target = (repo_path or Path.cwd()).resolve()
     try:
+        gitops.require_git_repo(target, "commit")
         receipt = commit_ops.create_commit(target, message, amend=amend)
-    except commit_ops.CommitError as exc:
+    except (commit_ops.CommitError, gitops.OutsideRepoError, gitops.GitMissingError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     action = "Amended" if receipt.amended else "Committed"
@@ -1180,6 +1257,80 @@ def exec_status(
         typer.echo(execops.render_exec_status(payload))
 
 
+_SHELL_OPERATORS = ("&&", "||", "|", ";", ">", "<", "`", "$", "&")
+
+
+def normalize_single_command_arg(full_command: list[str]) -> list[str]:
+    """Normalize `gr2 exec run … <command>`'s command arguments.
+
+    A single QUOTED string ('git rev-parse --show-toplevel') is what people
+    type; without a split it reached subprocess as one executable name and
+    died in a FileNotFoundError traceback. The single argument is tokenized
+    with a punctuation-aware lexer, so a glued operator ('echo a>b') separates
+    into tokens the operator check can see, while an operator inside a
+    quotation span ("git commit -m 'fix: a|b'") stays inside one token and
+    carries no shell intent. The split is KEPT only when the first token
+    names something runnable: a relative executable with spaces
+    ('./rel tool.sh') lives in each repo's cwd, not the caller's, and a
+    Windows-style token's backslashes must reach subprocess intact — when the
+    first token is not runnable the argument is returned untouched, which is
+    the released behaviour. The multi-argument form is returned untouched.
+
+    Known and fine for alpha: exec runs no shell, so '$HOME' and backticks
+    stay literal tokens (the lexer does not expand them); a command that
+    wants expansion should be a script, not a one-liner here.
+
+    An unbalanced quote raises ValueError from the lexer; it is caught and
+    refused in one sentence (an uncaught ValueError is a traceback). An empty
+    or whitespace-only string is a missing command (the raw-argument guard in
+    exec_run cannot catch it — the list holds one element).
+    """
+    if len(full_command) != 1:
+        return full_command
+    import shlex
+    import shutil
+
+    single = full_command[0]
+    if not single.strip():
+        raise typer.BadParameter("missing command to run")
+    try:
+        lexer = shlex.shlex(single, posix=(os.name != "nt"), punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        # An unbalanced quote, or a file name carrying a quote character the
+        # lexer reads as a quote (`-- "./it's.sh"`, the file present in each
+        # lane repo). The released wheel runs the whole argument as one
+        # executable name, so refusing here would break a working spelling.
+        # Refuse only when the first whitespace-delimited token names
+        # something the caller could actually run: then the quote is
+        # genuinely unbalanced and one sentence beats the wheel's
+        # FileNotFoundError traceback. Otherwise return untouched.
+        if shutil.which(single.split()[0]) is not None:
+            raise typer.BadParameter(
+                "the command has an unbalanced quote; close the quote, or pass "
+                "the tokens after `--`"
+            ) from None
+        return full_command
+    if not tokens:
+        raise typer.BadParameter("missing command to run")
+    # Keep the split only when the first token names something runnable —
+    # resolved by which(), which searches PATH (and, for an absolute or
+    # ./-prefixed token, nothing else): a relative path with spaces exists in
+    # each REPO's cwd where the command runs, not in the caller's, so
+    # existence is checked per-repo by the run itself, not here.
+    if shutil.which(tokens[0]) is None:
+        return full_command
+    if any(token in _SHELL_OPERATORS for token in tokens):
+        raise typer.BadParameter(
+            "the command arrived as one quoted string containing shell "
+            "operators, and gr2 exec runs no shell. Pass the command as "
+            "tokens after `--`, e.g. `gr2 exec run <ws> <unit> --actor "
+            "<actor> -- git rev-parse --show-toplevel`"
+        )
+    return tokens
+
+
 @exec_app.command("run", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def exec_run(
     ctx: typer.Context,
@@ -1197,6 +1348,20 @@ def exec_run(
     full_command = list(command or []) + list(ctx.args)
     if not full_command:
         raise typer.BadParameter("missing command to run")
+    # A single QUOTED string ('git rev-parse --show-toplevel') is what people
+    # type. Without a split it reached subprocess as one executable name and
+    # died in a FileNotFoundError traceback (Fathom's lane sounding). The
+    # intent of the one-argument form is unambiguous, so split it and let the
+    # natural spelling work on the first try. Two measured cases the split must
+    # NOT touch: one legitimate token is also exactly one argument (an
+    # executable path with spaces runs today), and a Windows-style token whose
+    # backslashes POSIX-mode shlex would eat. So the split happens only when
+    # the single argument has whitespace AND does not already name something
+    # runnable; a no-whitespace token is never touched and gets no operator
+    # check. When that string carries shell operators the caller expects shell
+    # semantics exec does not provide (it runs no shell), so that case refuses
+    # and names the `--` token form. The multi-argument form is untouched.
+    full_command = normalize_single_command_arg(full_command)
     payload = execops.run_exec(
         workspace_root,
         owner_unit,
@@ -1224,6 +1389,20 @@ def repo_status(
     """Show repo maintenance status without mutating workspace state."""
     workspace_root = workspace_root.resolve()
     spec_path = (spec or workspace_root / ".grip" / "workspace_spec.toml").resolve()
+    if not spec_path.exists():
+        # A single-repo path used to traceback FileNotFoundError out of
+        # read_workspace_spec; refuse in one sentence instead.
+        hint = ""
+        try:
+            if gitops.is_git_repo(workspace_root) or gitops.is_bare_git_repo(workspace_root):
+                hint = " (it is itself a git repository, not a workspace root)"
+        except gitops.GitMissingError:
+            pass
+        raise typer.BadParameter(
+            "gr2 repo status wants a workspace root (a directory holding "
+            f".grip/workspace_spec.toml), and {workspace_root} has none{hint} "
+            "— run it on the workspace, not a repo"
+        )
     spec_doc = repo_proto.read_workspace_spec(spec_path)
     policy_doc = repo_proto.read_policy(policy.resolve() if policy else None)
 
@@ -2349,8 +2528,9 @@ def review_run(
     python: Optional[str] = typer.Option(None, "--python", help="Interpreter to build the lane venv from; defaults to the running interpreter. Recorded in the receipt."),
     system_site_packages: bool = typer.Option(False, "--system-site-packages", help="Create the lane venv with --system-site-packages (host tools visible)"),
     install: Optional[str] = typer.Option(None, "--install", help="Install command (shell-split); `{venv}` and `{lane}` are substituted per token, same as the .review-install hint. Defaults to the lane's .review-install hint, else `<venv python> -m pip install -e <lane>`"),
-    runner: Optional[str] = typer.Option(None, "--runner", help="Test runner: pytest (default), cargo, or jest. With a non-pytest runner the venv/install/import steps are skipped; counts come from that runner's summary line. Defaults to the lane's .review-install `runner`."),
+    runner: Optional[str] = typer.Option(None, "--runner", help="Test runner: pytest (default), cargo, jest, or junit-xml. With a non-pytest runner the venv/install/import steps are skipped; counts come from the runner's summary line or fresh JUnit XML reports. Defaults to the lane's .review-install `runner`."),
     test: Optional[str] = typer.Option(None, "--test", help="Test command (shell-split) for a non-pytest runner, e.g. `cargo test` or `npx jest`. Defaults to the lane's .review-install `test` line, so a stranger types nothing."),
+    reports: Optional[str] = typer.Option(None, "--reports", help="JUnit XML report glob for `--runner junit-xml`. Defaults to `**/build/test-results/**/*.xml`; only reports written during this run count."),
     json_output: bool = typer.Option(False, "--json", help="Emit the receipt as JSON"),
     pytest_args: Optional[List[str]] = typer.Argument(None, help="Args passed to pytest after `--` (every -k/-p/path filter is recorded)"),
 ) -> None:
@@ -2363,12 +2543,13 @@ def review_run(
     never the exit code; a zero-test or unparseable run is a refusal, not a green.
 
     Install instructions come from the reviewed repo itself, in a tracked
-    `.review-install` file at the repo root, read whenever --install/--package are
+    `.review-install` file at the repo root, read whenever flags are
     omitted. Four `key = value` lines are recognised: `install` (the command that
     installs the lane tree; `{venv}` and `{lane}` are substituted per token after
     shell-splitting, so a lane path containing a space stays one token), `package`
     (the importable module name run must prove resolves inside the lane), and
-    `runner`/`test` (a non-pytest test command). Comments (`#`) and blank lines are
+    `runner`/`test` (a non-pytest test command), and `reports` (the JUnit XML glob
+    for `junit-xml`). Comments (`#`) and blank lines are
     skipped; an unrecognised key is a refusal (`bad_hint`), not a silent skip. A
     repo with no `.review-install` must pass `--install` and/or `--package` on the
     command line; with neither, run refuses (`no_package`). The tree must be
@@ -2388,6 +2569,7 @@ def review_run(
         raise typer.Exit(code=2)
     eff_runner = runner or hint.get("runner") or "pytest"
     eff_test = test or hint.get("test")
+    eff_reports = reports or hint.get("reports")
 
     try:
         if eff_runner == "pytest" and test is not None:
@@ -2400,6 +2582,11 @@ def review_run(
                 "pytest invocation. Pass --runner cargo|jest with --test, or drop --test.",
             )
         if eff_runner != "pytest":
+            if eff_reports and eff_runner != "junit-xml":
+                raise rr.ReviewRunRefused(
+                    "reports_for_runner",
+                    "--reports is only for the junit-xml runner",
+                )
             if not eff_test:
                 raise rr.ReviewRunRefused(
                     "no_test_command",
@@ -2407,7 +2594,10 @@ def review_run(
                     "or declare `test = …` in the lane's .review-install",
                 )
             receipt = rr.run_test_command_in_lane(
-                lane_dir.resolve(), runner=eff_runner, test_command=shlex.split(eff_test)
+                lane_dir.resolve(),
+                runner=eff_runner,
+                test_command=shlex.split(eff_test),
+                reports=eff_reports,
             )
         else:
             install_cmd = shlex.split(install) if install else None
@@ -2434,11 +2624,15 @@ def review_run(
     if json_output:
         typer.echo(json.dumps(receipt, indent=2))
     elif receipt.get("runner"):  # non-pytest runner receipt (no venv/import fields)
-        typer.echo(
+        result_line = (
             f"{receipt['result']} ({receipt['runner']}): selected={receipt['selected']} "
             f"passed={receipt['passed']} failed={receipt['failed']} "
             f"skipped={receipt['skipped']} errors={receipt['errors']}"
         )
+        stale_reports = receipt.get("stale_reports_ignored", [])
+        if stale_reports:
+            result_line += f" ({len(stale_reports)} stale report(s) ignored; see receipt)"
+        typer.echo(result_line)
         typer.echo(f"bound_head_tree: {receipt['bound_head_tree']}")
     else:
         typer.echo(

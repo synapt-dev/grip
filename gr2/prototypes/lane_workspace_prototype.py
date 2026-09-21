@@ -195,6 +195,7 @@ class LaneTransitionOutcome:
     current_lane: str | None
     state_path: Path
     status: str = "ok"
+    repo_paths: dict[str, str] = dataclasses.field(default_factory=dict)
 
     @property
     def exit_code(self) -> int:
@@ -208,6 +209,7 @@ class LaneTransitionOutcome:
             "previous_lane": self.previous_lane,
             "current_lane": self.current_lane,
             "state_path": str(self.state_path),
+            "repo_paths": dict(self.repo_paths),
         }
 
 
@@ -1038,6 +1040,18 @@ def create_lane(args: argparse.Namespace) -> int:
         (lane_root / "context").mkdir()
         atomic_replace_text(metadata_path, expected)
     print(metadata_path)
+    # The human line names where the actor works, per repo, absolute: a
+    # materialized lane's repos live under its lane tree, a bound lane's one
+    # repo IS the bound worktree. (The stranger's F2 finding: enter/create
+    # used to point at lane.toml only, so the actor never learned where the
+    # lane's repos are.)
+    if lane_kind == "bound" and bound_worktree:
+        for repo in repos:
+            print(f"{repo}: {bound_worktree}")
+    else:
+        lane_root = lane_dir(workspace_root, args.owner_unit, args.lane_name)
+        for repo in repos:
+            print(f"{repo}: {lane_root / 'repos' / repo}")
     return 0
 
 
@@ -1222,6 +1236,17 @@ def enter_lane(args: argparse.Namespace) -> LaneTransitionOutcome:
                 previous_lane = current.get("lane_name")
                 previous.insert(0, current)
 
+        lane_kind = lane_doc.get("lane_kind", "materialized")
+        if lane_kind == "bound" and lane_doc.get("bound_worktree"):
+            repo_paths = {
+                r: str(lane_doc["bound_worktree"]) for r in lane_doc.get("repos", [])
+            }
+        else:
+            lane_root = lane_dir(workspace_root, args.owner_unit, args.lane_name)
+            repo_paths = {
+                r: str(lane_root / "repos" / r) for r in lane_doc.get("repos", [])
+            }
+
         deduped: list[dict] = []
         seen: set[tuple[str, str]] = set()
         for item in previous:
@@ -1237,6 +1262,7 @@ def enter_lane(args: argparse.Namespace) -> LaneTransitionOutcome:
                 "lane_name": args.lane_name,
                 "lane_type": lane_doc["lane_type"],
                 "repos": lane_doc.get("repos", []),
+                "repo_paths": repo_paths,
                 "actor": args.actor,
                 "entered_at": now_utc(),
             },
@@ -1270,7 +1296,10 @@ def enter_lane(args: argparse.Namespace) -> LaneTransitionOutcome:
                 "timestamp": event["timestamp"],
             },
         )
-    return LaneTransitionOutcome("enter", args.owner_unit, previous_lane, args.lane_name, path)
+    return LaneTransitionOutcome(
+        "enter", args.owner_unit, previous_lane, args.lane_name, path,
+        repo_paths=repo_paths,
+    )
 
 
 def exit_lane(args: argparse.Namespace) -> LaneTransitionOutcome:

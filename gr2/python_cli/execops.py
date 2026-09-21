@@ -42,7 +42,18 @@ def _exec_one(command: list[str], repo: str, cwd: str) -> ExecResult:
             returncode=None, stdout="",
             stderr=f"lane repo checkout missing: {cwd}",
         )
-    proc = subprocess.run(command, cwd=cwd_path, capture_output=True, text=True, check=False)
+    try:
+        proc = subprocess.run(command, cwd=cwd_path, capture_output=True, text=True, check=False)
+    except OSError as exc:
+        # A command whose executable does not exist (FileNotFoundError) — or
+        # whose cwd became unenterable between the exists() check and the
+        # run (PermissionError) — is one repo's failure, not a crash of the
+        # whole run.
+        return ExecResult(
+            repo=repo, cwd=cwd, status="failed",
+            returncode=None, stdout="",
+            stderr=f"could not run: {exc}",
+        )
     return ExecResult(
         repo=repo, cwd=cwd,
         status="ok" if proc.returncode == 0 else "failed",

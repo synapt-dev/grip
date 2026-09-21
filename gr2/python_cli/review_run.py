@@ -839,9 +839,12 @@ def run_test_command_in_lane(
         )
 
         report_pattern = reports or JUNIT_XML_DEFAULT_REPORTS if runner == "junit-xml" else None
-        report_snapshot = (
-            snapshot_junit_xml_reports(repo_dir, report_pattern) if report_pattern is not None else None
-        )
+        try:
+            report_snapshot = (
+                snapshot_junit_xml_reports(repo_dir, report_pattern) if report_pattern is not None else None
+            )
+        except RunnerSummaryRefusal as exc:
+            raise ReviewRunRefused(exc.code, exc.detail) from exc
         try:
             proc = subprocess.run(
                 test_command, text=True, capture_output=True, cwd=str(repo_dir)

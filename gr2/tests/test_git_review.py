@@ -403,6 +403,19 @@ def test_git_review_junit_xml_runner_counts_fresh_and_names_ignored_stale_report
     assert receipt["stale_reports_ignored"] == ["build/test-results/TEST-stale.xml"]
     assert (receipt["selected"], receipt["passed"], receipt["failed"], receipt["skipped"]) == (3, 3, 0, 0)
     assert "1 stale report(s) ignored; see receipt" in capsys.readouterr().out
+    assert _git_review_main_in(r, ["status"]) == 0
+    assert "1 stale report(s) ignored; see receipt" in capsys.readouterr().out
+
+
+def test_git_review_junit_xml_runner_refuses_a_reports_glob_outside_the_repo(tmp_path):
+    r = _pkg_repo(tmp_path, test_body=PASS_BODY)
+    git_review.open_review(r)
+    assert _git_review_main_in(
+        r, ["run", "--runner", "junit-xml", "--test", "true", "--reports", "../reports/*.xml"]
+    ) == 2
+    receipt = git_review.read_run_receipt(r)
+    assert receipt["refusal_code"] == "reports_outside_repo"
+    assert "../reports/*.xml" in receipt["refusal_detail"]
 
 
 def test_git_review_junit_xml_runner_refuses_stale_reports_via_entry_point(tmp_path):

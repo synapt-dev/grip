@@ -44,6 +44,11 @@ def snapshot_junit_xml_reports(repo_dir: Path, reports: str) -> dict[str, tuple[
     the two cheap facts we can compare after the command: mtime at nanosecond
     precision and byte size.
     """
+    if Path(reports).is_absolute() or ".." in Path(reports).parts:
+        raise RunnerSummaryRefusal(
+            "reports_outside_repo",
+            f"junit-xml reports glob {reports!r} must stay inside the repository",
+        )
     return {
         str(path.relative_to(repo_dir)): (path.stat().st_mtime_ns, path.stat().st_size)
         for path in repo_dir.glob(reports)
@@ -96,7 +101,11 @@ def parse_junit_xml_reports(reports: list[Path]) -> dict:
             raise JunitXmlReportError(
                 f"malformed JUnit XML in {report}: {exc}"
             ) from exc
-        suites = list(root.iter("testsuite"))
+        suites = [
+            suite
+            for suite in root.iter("testsuite")
+            if not any(child.tag == "testsuite" for child in suite)
+        ]
         if not suites:
             raise JunitXmlReportError(
                 f"malformed JUnit XML in {report}: no testsuite elements"
@@ -235,7 +244,12 @@ def summarize_runner(
     if runner != JUNIT_XML_RUNNER:
         return parse_runner_summary(runner, output), None, [], []
     pattern = reports or JUNIT_XML_DEFAULT_REPORTS
-    files, stale_reports = split_junit_xml_reports(repo_dir, pattern, report_snapshot or {})
+    if report_snapshot is None:
+        raise RunnerSummaryRefusal(
+            "missing_report_snapshot",
+            "junit-xml requires a report snapshot before the test command runs",
+        )
+    files, stale_reports = split_junit_xml_reports(repo_dir, pattern, report_snapshot)
     if not files:
         raise RunnerSummaryRefusal(
             "no_fresh_reports",

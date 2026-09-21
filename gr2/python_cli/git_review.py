@@ -365,9 +365,12 @@ def _run_non_pytest(repo_root, record, bound_tree, runner, test, reports, rr, sh
 
     test_command = shlex.split(test)
     report_pattern = reports or JUNIT_XML_DEFAULT_REPORTS if runner == "junit-xml" else None
-    report_snapshot = (
-        snapshot_junit_xml_reports(repo_root, report_pattern) if report_pattern is not None else None
-    )
+    try:
+        report_snapshot = (
+            snapshot_junit_xml_reports(repo_root, report_pattern) if report_pattern is not None else None
+        )
+    except RunnerSummaryRefusal as exc:
+        raise rr.ReviewRunRefused(exc.code, exc.detail) from exc
     try:
         proc = subprocess.run(test_command, text=True, capture_output=True, cwd=str(repo_root))
     except OSError as exc:
@@ -781,11 +784,15 @@ def main(argv: list[str] | None = None) -> int:
             elif last.get("result") == "refused":
                 print(f"  last run REFUSED ({last.get('refusal_code')}) at {last.get('created')}")
             else:
-                print(
+                result_line = (
                     f"  last run {str(last.get('result')).upper()} at {last.get('created')}: "
                     f"selected={last.get('selected')} passed={last.get('passed')} "
                     f"failed={last.get('failed')} errors={last.get('errors')}"
                 )
+                stale_reports = last.get("stale_reports_ignored", [])
+                if stale_reports:
+                    result_line += f" ({len(stale_reports)} stale report(s) ignored; see receipt)"
+                print(result_line)
             return 0
         if cmd == "run":
             from .review_run import ReviewRunRefused

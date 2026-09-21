@@ -51,7 +51,10 @@ from .merge_verification import MergeVerificationTarget
 from .platform import PRRef, get_platform_adapter
 
 app = typer.Typer(
-    help="Python-first gr2 CLI. This is the production UX proving layer before Rust."
+    help=(
+        "The workspace layer for multi-repo work: a workspace over your repos, "
+        "isolated lanes to work in, and one grouped review per slice."
+    )
 )
 
 

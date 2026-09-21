@@ -18,6 +18,7 @@ from . import add as add_ops
 from . import branch as branch_ops
 from . import commit as commit_ops
 from . import execops, failures, grip, migration, spec_apply, syncops
+from . import gitops
 from . import pr as pr_ops
 from . import prune as prune_ops
 from . import target as target_ops
@@ -31,6 +32,7 @@ from .gitops import (
     fetch_ref,
     git,
     is_git_repo,
+    is_git_repository,
     refresh_existing_branch,
     remote_origin_url,
     repo_dirty,
@@ -461,7 +463,7 @@ def _scan_existing_repos(workspace_root: Path) -> list[dict[str, str]]:
             continue
         if not child.is_dir():
             continue
-        if not is_git_repo(child):
+        if not is_git_repository(child):
             continue
         url = remote_origin_url(child)
         repos.append(
@@ -592,6 +594,7 @@ def workspace_init(
         "repo_count": len(repos),
         "repos": repos,
         "default_unit": default_unit,
+        "repos_without_url": [repo["name"] for repo in repos if not repo["url"]],
     }
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
@@ -605,6 +608,14 @@ def workspace_init(
             "REPOS",
         ]
         lines.extend(f"- {repo['name']}\t{repo['path']}\t{repo['url'] or '-'}" for repo in repos)
+        without_url = [repo for repo in repos if not repo["url"]]
+        if without_url:
+            lines.append("no origin — materialize refuses these repos until a url is set:")
+            for repo in without_url:
+                lines.append(
+                    f"- {repo['name']}: git -C {workspace_root / repo['path']} "
+                    "remote add origin <url>"
+                )
         typer.echo("\n".join(lines))
 
 
@@ -892,8 +903,9 @@ def branch_cmd(
     """Create or switch to a branch, natively -- no gr1 dependency."""
     target = (repo_path or Path.cwd()).resolve()
     try:
+        gitops.require_git_repo(target, "branch")
         branch_ops.create_branch(target, name, base=base)
-    except branch_ops.BranchError as exc:
+    except (branch_ops.BranchError, gitops.OutsideRepoError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(f"Switched to branch '{name}'")
@@ -911,8 +923,9 @@ def add_cmd(
     """Stage paths in one repository, including tracked deletions."""
     target = (repo_path or Path.cwd()).resolve()
     try:
+        gitops.require_git_repo(target, "add")
         result = add_ops.stage_files(target, paths)
-    except add_ops.AddError as exc:
+    except (add_ops.AddError, gitops.OutsideRepoError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     if result.staged_files:
@@ -976,8 +989,9 @@ def commit_cmd(
         return
     target = (repo_path or Path.cwd()).resolve()
     try:
+        gitops.require_git_repo(target, "commit")
         receipt = commit_ops.create_commit(target, message, amend=amend)
-    except commit_ops.CommitError as exc:
+    except (commit_ops.CommitError, gitops.OutsideRepoError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     action = "Amended" if receipt.amended else "Committed"

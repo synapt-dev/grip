@@ -58,6 +58,62 @@ def is_git_repo(path: Path) -> bool:
     return proc.returncode == 0 and proc.stdout.strip() == "true"
 
 
+def is_bare_git_repo(path: Path) -> bool:
+    """A bare repository (HEAD + a valid git dir, no work tree). The shape a
+    stranger uses as a local upstream; the repo scanner skipped it before."""
+    if not path.exists():
+        return False
+    proc = git(path, "rev-parse", "--is-bare-repository")
+    return proc.returncode == 0 and proc.stdout.strip() == "true"
+
+
+def is_git_repository(path: Path) -> bool:
+    """A repository of either shape: a work tree or a bare repo."""
+    return is_git_repo(path) or is_bare_git_repo(path)
+
+
+class OutsideRepoError(Exception):
+    """A single-repo verb was run from a path that is not a git repository."""
+
+
+def repos_under(path: Path, limit: int = 5) -> list[Path]:
+    """Git repositories directly under `path` (and `path` itself), nearest name
+    order, capped so a refusal line stays a line."""
+    found: list[Path] = []
+    if is_git_repository(path):
+        found.append(path)
+    if path.is_dir():
+        for child in sorted(path.iterdir()):
+            if len(found) >= limit:
+                break
+            if child.name.startswith("."):
+                continue
+            if is_git_repository(child):
+                found.append(child)
+    return found
+
+
+def require_git_repo(path: Path, verb: str) -> None:
+    """One-sentence refusal for a single-repo verb run from outside a
+    repository, naming what the verb needs and listing the repos found under
+    the cwd. Measured failure being replaced: git's own raw text
+    ("fatal: not a git repository") or, for `add`, git's full usage dump."""
+    if is_git_repository(path):
+        return
+    found = repos_under(path)
+    if found:
+        listing = ", ".join(item.name for item in found)
+        raise OutsideRepoError(
+            f"gr2 {verb} runs inside one repository of the workspace; "
+            f"{path} is not a git repository (repositories found under it: "
+            f"{listing}; run inside one, or pass --repo-path)"
+        )
+    raise OutsideRepoError(
+        f"gr2 {verb} runs inside one repository of the workspace; "
+        f"{path} is not a git repository (no repositories found under it)"
+    )
+
+
 def repo_dirty(path: Path) -> bool:
     proc = git(path, "status", "--porcelain")
     return proc.returncode == 0 and bool(proc.stdout.strip())

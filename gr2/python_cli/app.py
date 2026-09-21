@@ -1032,6 +1032,17 @@ def commit_cmd(
                 typer.echo(f"{row.repo}: FAILED — {row.error}")
         if report.any_failed:
             raise typer.Exit(code=1)
+        if report.all_skipped:
+            # A lane commit that committed NOTHING anywhere must not exit 0:
+            # the work is somewhere else, and the sentence says where.
+            looked = report.lane_repo_dir or "the lane's repositories"
+            message = (
+                f"committed nothing: every lane repo was skipped (empty index) in {looked}"
+            )
+            for repo, path in sorted(report.staged_elsewhere.items()):
+                message += f"; staged changes found in {path}, which is not the lane's repo"
+            typer.echo(message, err=True)
+            raise typer.Exit(code=1)
         return
     target = (repo_path or Path.cwd()).resolve()
     try:
@@ -1372,6 +1383,20 @@ def repo_status(
     """Show repo maintenance status without mutating workspace state."""
     workspace_root = workspace_root.resolve()
     spec_path = (spec or workspace_root / ".grip" / "workspace_spec.toml").resolve()
+    if not spec_path.exists():
+        # A single-repo path used to traceback FileNotFoundError out of
+        # read_workspace_spec; refuse in one sentence instead.
+        hint = ""
+        try:
+            if gitops.is_git_repo(workspace_root) or gitops.is_bare_git_repo(workspace_root):
+                hint = " (it is itself a git repository, not a workspace root)"
+        except gitops.GitMissingError:
+            pass
+        raise typer.BadParameter(
+            "gr2 repo status wants a workspace root (a directory holding "
+            f".grip/workspace_spec.toml), and {workspace_root} has none{hint} "
+            "— run it on the workspace, not a repo"
+        )
     spec_doc = repo_proto.read_workspace_spec(spec_path)
     policy_doc = repo_proto.read_policy(policy.resolve() if policy else None)
 

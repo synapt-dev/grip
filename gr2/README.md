@@ -15,6 +15,20 @@ When activated, an overlay eagerly materializes its files into the
 workspace. When deactivated, those files are removed and the workspace
 returns to its pre-overlay state.
 
+## Install
+
+From a gitgrip checkout, gr2 is the Python package under `gr2/`; install it
+from the checkout root:
+
+```bash
+pip install -e gr2/          # editable, runnable as `gr2`
+pip install -e "gr2[dev]"     # with dev/test extras (see Development)
+```
+
+`pip install gitgrip` on PyPI installs the `gr2` command (a pre-release needs
+`pip install --pre gitgrip`); the checkout install is for running unreleased
+dev from the repo. The brew and cargo packages are the Rust gr1 `gr`.
+
 ## Quick start
 
 Create your first overlay in under 3 minutes.

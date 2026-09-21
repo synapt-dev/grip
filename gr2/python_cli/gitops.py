@@ -49,13 +49,86 @@ def git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def is_git_repo(path: Path) -> bool:
-    if not path.exists():
-        # subprocess.run(cwd=...) raises FileNotFoundError uncontrolled for an
-        # absent cwd rather than returning a failed CompletedProcess; a missing
-        # path is not a git repo, so this is the answer, not an exception.
+    if not path.is_dir():
+        # A FILE as cwd raises NotADirectoryError out of subprocess.run rather
+        # than returning a failed CompletedProcess (measured: a unit home
+        # holding a plain `unit.toml` crashed every single-repo verb through
+        # repos_under). A non-directory is not a git repo, so this is the
+        # answer, not an exception.
         return False
     proc = git(path, "rev-parse", "--is-inside-work-tree")
     return proc.returncode == 0 and proc.stdout.strip() == "true"
+
+
+def is_bare_git_repo(path: Path) -> bool:
+    """A bare repository (HEAD + a valid git dir, no work tree). The shape a
+    stranger uses as a local upstream; the repo scanner skipped it before."""
+    if not path.is_dir():
+        # Same non-directory guard as is_git_repo (B1 of the alpha-2 gate).
+        return False
+    proc = git(path, "rev-parse", "--is-bare-repository")
+    return proc.returncode == 0 and proc.stdout.strip() == "true"
+
+
+def is_git_repository(path: Path) -> bool:
+    """A repository of either shape: a work tree or a bare repo."""
+    return is_git_repo(path) or is_bare_git_repo(path)
+
+
+class OutsideRepoError(Exception):
+    """A single-repo verb was run from a path that is not a git work tree."""
+
+
+def repos_under(path: Path, limit: int = 5) -> list[Path]:
+    """Git repositories directly under `path` (and `path` itself), nearest name
+    order, capped so a refusal line stays a line. Only directories are probed:
+    a regular file as cwd raises NotADirectoryError out of the git probes."""
+    found: list[Path] = []
+    if is_git_repo(path):
+        found.append(path)
+    if not path.is_dir():
+        return found
+    for child in sorted(path.iterdir()):
+        if len(found) >= limit:
+            break
+        if not child.is_dir():
+            continue
+        if child.name.startswith("."):
+            continue
+        if is_git_repository(child):
+            found.append(child)
+    return found
+
+
+def require_git_repo(path: Path, verb: str) -> None:
+    """One-sentence refusal for a single-repo verb run from outside a git work
+    tree, naming what the verb needs and listing the repos found under the
+    cwd. Measured failures being replaced: git's own raw text ("fatal: not a
+    git repository"), git's full usage dump from the commit path, and, inside
+    a bare repository, git's "this operation must be run in a work tree".
+    These verbs need a WORK TREE, not any repository."""
+    if is_git_repo(path):
+        return
+    if is_bare_git_repo(path):
+        found = repos_under(path)
+        listing = f" Repositories found under it: {', '.join(item.name for item in found)}." if found else ""
+        raise OutsideRepoError(
+            f"gr2 {verb} runs inside one repository of the workspace; "
+            f"{path} is a bare repository, and this verb needs a work tree."
+            f"{listing} Run inside a work tree, or pass --repo-path"
+        )
+    found = repos_under(path)
+    if found:
+        listing = ", ".join(item.name for item in found)
+        raise OutsideRepoError(
+            f"gr2 {verb} runs inside one repository of the workspace; "
+            f"{path} is not a git repository (repositories found under it: "
+            f"{listing}; run inside one, or pass --repo-path)"
+        )
+    raise OutsideRepoError(
+        f"gr2 {verb} runs inside one repository of the workspace; "
+        f"{path} is not a git repository (no repositories found under it)"
+    )
 
 
 def repo_dirty(path: Path) -> bool:

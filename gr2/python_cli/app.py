@@ -18,6 +18,7 @@ from . import add as add_ops
 from . import branch as branch_ops
 from . import commit as commit_ops
 from . import execops, failures, grip, migration, spec_apply, syncops
+from . import gitops
 from . import pr as pr_ops
 from . import prune as prune_ops
 from . import target as target_ops
@@ -30,7 +31,9 @@ from .gitops import (
     ensure_lane_checkout,
     fetch_ref,
     git,
+    is_bare_git_repo,
     is_git_repo,
+    is_git_repository,
     refresh_existing_branch,
     remote_origin_url,
     repo_dirty,
@@ -461,6 +464,11 @@ def _scan_existing_repos(workspace_root: Path) -> list[dict[str, str]]:
             continue
         if not child.is_dir():
             continue
+        # Bare repositories are DETECTED but NOT ADDED: materialize's validator
+        # rejects a bare path as a repo, and a bare upstream beside its clone
+        # is a working dev layout that a bare-as-repo scan turns into a refused
+        # spec. The init verb names them in its output instead (see
+        # workspace_init).
         if not is_git_repo(child):
             continue
         url = remote_origin_url(child)
@@ -472,6 +480,31 @@ def _scan_existing_repos(workspace_root: Path) -> list[dict[str, str]]:
             }
         )
     return repos
+
+
+def _scan_bare_repos(workspace_root: Path) -> list[Path]:
+    """Bare repositories directly under the root — named in the init output so
+    the stranger knows the dir was seen, but never written into the spec."""
+    return [
+        child
+        for child in sorted(workspace_root.iterdir())
+        if child.is_dir()
+        and not child.name.startswith(".")
+        and child.name != "agents"
+        and is_bare_git_repo(child)
+    ]
+
+
+def _bare_note_lines(workspace_root: Path, bare: list[Path]) -> list[str]:
+    """One line per bare directory: seen, not added, and what to do instead."""
+    if not bare:
+        return []
+    lines = ["bare repositories detected (not added to the spec):"]
+    lines.extend(
+        f"- {item.name} is a bare repository; not added. Clone it, or reference it as a url"
+        for item in bare
+    )
+    return lines
 
 
 def _declared_workspace_topology(
@@ -583,8 +616,16 @@ def workspace_init(
     """Create a bare workspace_spec.toml by scanning an existing directory of repos."""
     workspace_root = workspace_root.resolve()
     repos = _scan_existing_repos(workspace_root)
-    if not repos:
+    bare = _scan_bare_repos(workspace_root)
+    if not repos and not bare:
         raise SystemExit(f"no git repos found to initialize workspace spec under: {workspace_root}")
+    if not repos:
+        # Bare is all there is: the spec is refused as before, but the output
+        # names what the directories are, so "no git repos found" is not a
+        # silent non-answer about dirs the stranger can see.
+        lines = [f"no git repos found to initialize workspace spec under: {workspace_root}"]
+        lines.extend(_bare_note_lines(workspace_root, bare))
+        raise SystemExit("\n".join(lines))
     spec_path = _write_workspace_spec(workspace_root, repos, default_unit)
     payload = {
         "workspace_root": str(workspace_root),
@@ -592,6 +633,8 @@ def workspace_init(
         "repo_count": len(repos),
         "repos": repos,
         "default_unit": default_unit,
+        "repos_without_url": [repo["name"] for repo in repos if not repo["url"]],
+        "bare_repos_not_added": [item.name for item in bare],
     }
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
@@ -605,6 +648,15 @@ def workspace_init(
             "REPOS",
         ]
         lines.extend(f"- {repo['name']}\t{repo['path']}\t{repo['url'] or '-'}" for repo in repos)
+        lines.extend(_bare_note_lines(workspace_root, bare))
+        without_url = [repo for repo in repos if not repo["url"]]
+        if without_url:
+            lines.append("no origin: materialize refuses these repos until a url is set:")
+            for repo in without_url:
+                lines.append(
+                    f"- {repo['name']}: git -C {workspace_root / repo['path']} "
+                    "remote add origin <url>"
+                )
         typer.echo("\n".join(lines))
 
 
@@ -892,8 +944,9 @@ def branch_cmd(
     """Create or switch to a branch, natively -- no gr1 dependency."""
     target = (repo_path or Path.cwd()).resolve()
     try:
+        gitops.require_git_repo(target, "branch")
         branch_ops.create_branch(target, name, base=base)
-    except branch_ops.BranchError as exc:
+    except (branch_ops.BranchError, gitops.OutsideRepoError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(f"Switched to branch '{name}'")
@@ -911,8 +964,9 @@ def add_cmd(
     """Stage paths in one repository, including tracked deletions."""
     target = (repo_path or Path.cwd()).resolve()
     try:
+        gitops.require_git_repo(target, "add")
         result = add_ops.stage_files(target, paths)
-    except add_ops.AddError as exc:
+    except (add_ops.AddError, gitops.OutsideRepoError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     if result.staged_files:
@@ -976,8 +1030,9 @@ def commit_cmd(
         return
     target = (repo_path or Path.cwd()).resolve()
     try:
+        gitops.require_git_repo(target, "commit")
         receipt = commit_ops.create_commit(target, message, amend=amend)
-    except commit_ops.CommitError as exc:
+    except (commit_ops.CommitError, gitops.OutsideRepoError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     action = "Amended" if receipt.amended else "Committed"

@@ -172,6 +172,28 @@ def test_all_skipped_commit_names_staged_changes_in_unit_home(tmp_path: Path) ->
     assert str(staged) in result.output, result.output
 
 
+def test_all_skipped_commit_names_staged_changes_in_workspace_root_copy(tmp_path: Path) -> None:
+    # The third place a first-time user might work: the workspace-root copy at
+    # the spec repo path (ws/repos/a here). The all-skipped sentence must name
+    # it, not only the unit-home copy.
+    ws, lane_root = _create_materialized_lane_ws(tmp_path)
+    root_repo = ws / "repos" / "a"
+    root_repo.parent.mkdir(parents=True, exist_ok=True)
+    _init_repo(root_repo)
+    (root_repo / "new.txt").write_text("x\n")
+    _git(root_repo, "add", "new.txt")
+
+    result = runner.invoke(
+        app,
+        ["commit", "-m", "m", "--workspace-root", str(ws),
+         "--owner-unit", "atlas", "--lane", "feature"],
+    )
+    assert result.exit_code != 0, result.output
+    assert str(lane_root / "repos") in result.output, result.output
+    assert "staged changes found in" in result.output, result.output
+    assert str(root_repo) in result.output, result.output
+
+
 def test_partial_skip_stays_exit_zero_and_names_skipped(tmp_path: Path) -> None:
     # Control, unchanged contract: one committed, one skipped → exit 0, the
     # skipped repo still named, no "committed nothing" sentence.

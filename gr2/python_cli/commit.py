@@ -125,10 +125,10 @@ class LaneCommitReport:
     lane_kind: str
     results: list[LaneRepoCommit] = field(default_factory=list)
     # Set only for an all-skipped commit: where the verb looked (the lane's
-    # repos directory, or the bound worktree), and any unit-home copies of the
-    # skipped repos that hold staged changes (repo → absolute path).
+    # repos directory, or the bound worktree), and any OTHER copies of the
+    # skipped repos that hold staged changes (repo → ordered list of paths).
     lane_repo_dir: str | None = None
-    staged_elsewhere: dict[str, str] = field(default_factory=dict)
+    staged_elsewhere: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def any_committed(self) -> bool:
@@ -225,10 +225,15 @@ def commit_lane(
             lane_repo_dir = str(
                 lane_proto.lane_dir(workspace_root, owner_unit, lane_name) / "repos"
             )
-        # A first-time user's layout: unit repos live at the unit's home path,
-        # not under the lane tree. If a skipped repo has staged changes there,
-        # the one sentence says so (cheaply: the same index probe as the skip
-        # check).
+        # A first-time user's layout: work can be staged in the unit-home
+        # copy (agents/<unit>/home/<repo>) or the workspace-root copy (the
+        # spec repo path), neither of which is the lane's own clone. If a
+        # skipped repo has staged changes somewhere the verb did not commit,
+        # the one sentence says where (cheaply: the same index probe as the
+        # skip check).
+        lane_targets = dict(
+            _lane_repo_targets(workspace_root, owner_unit, lane_name, doc)
+        )
         try:
             unit = lane_proto.find_unit_spec(workspace_root, owner_unit)
         except SystemExit:
@@ -236,14 +241,39 @@ def commit_lane(
         unit_home = Path(str(unit.get("path", "")))
         if not unit_home.is_absolute():
             unit_home = workspace_root / unit_home
+        spec_repo_paths: dict[str, Path] = {}
+        try:
+            spec = lane_proto.load_workspace_spec(workspace_root)
+            spec_repo_paths = {
+                str(repo.get("name")): Path(str(repo.get("path", "")))
+                for repo in spec.get("repos", [])
+            }
+        except SystemExit:
+            pass
         for row in results:
+            candidates: list[Path] = []
             home_repo = unit_home / row.repo
-            if home_repo.is_dir():
+            if home_repo != lane_targets.get(row.repo) and home_repo.is_dir():
+                candidates.append(home_repo)
+            root_repo = spec_repo_paths.get(row.repo)
+            if root_repo is not None:
+                if not root_repo.is_absolute():
+                    root_repo = workspace_root / root_repo
+                if (
+                    root_repo != lane_targets.get(row.repo)
+                    and root_repo != home_repo
+                    and root_repo.is_dir()
+                ):
+                    candidates.append(root_repo)
+            with_staged: list[str] = []
+            for cand in candidates:
                 try:
-                    if _staged_changes_exist(home_repo):
-                        staged_elsewhere[row.repo] = str(home_repo)
+                    if _staged_changes_exist(cand):
+                        with_staged.append(str(cand))
                 except (CommitError, GitMissingError):
-                    pass  # an unprobeable home copy is not a finding
+                    pass  # an unprobeable copy is not a finding
+            if with_staged:
+                staged_elsewhere[row.repo] = with_staged
 
     return LaneCommitReport(
         owner_unit=owner_unit,

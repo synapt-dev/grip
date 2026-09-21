@@ -1039,8 +1039,11 @@ def commit_cmd(
             message = (
                 f"committed nothing: every lane repo was skipped (empty index) in {looked}"
             )
-            for repo, path in sorted(report.staged_elsewhere.items()):
-                message += f"; staged changes found in {path}, which is not the lane's repo"
+            for repo, paths in sorted(report.staged_elsewhere.items()):
+                message += (
+                    f"; staged changes found in {' and '.join(paths)}, "
+                    "which is not the lane's repo"
+                )
             typer.echo(message, err=True)
             raise typer.Exit(code=1)
         return

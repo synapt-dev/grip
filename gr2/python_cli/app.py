@@ -951,7 +951,7 @@ def branch_cmd(
     try:
         gitops.require_git_repo(target, "branch")
         branch_ops.create_branch(target, name, base=base)
-    except (branch_ops.BranchError, gitops.OutsideRepoError) as exc:
+    except (branch_ops.BranchError, gitops.OutsideRepoError, gitops.GitMissingError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(f"Switched to branch '{name}'")
@@ -971,7 +971,7 @@ def add_cmd(
     try:
         gitops.require_git_repo(target, "add")
         result = add_ops.stage_files(target, paths)
-    except (add_ops.AddError, gitops.OutsideRepoError) as exc:
+    except (add_ops.AddError, gitops.OutsideRepoError, gitops.GitMissingError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     if result.staged_files:
@@ -1037,7 +1037,7 @@ def commit_cmd(
     try:
         gitops.require_git_repo(target, "commit")
         receipt = commit_ops.create_commit(target, message, amend=amend)
-    except (commit_ops.CommitError, gitops.OutsideRepoError) as exc:
+    except (commit_ops.CommitError, gitops.OutsideRepoError, gitops.GitMissingError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     action = "Amended" if receipt.amended else "Committed"
@@ -1281,10 +1281,20 @@ def normalize_single_command_arg(full_command: list[str]) -> list[str]:
         lexer.whitespace_split = True
         tokens = list(lexer)
     except ValueError:
-        raise typer.BadParameter(
-            "the command has an unbalanced quote; close the quote, or pass "
-            "the tokens after `--`"
-        ) from None
+        # An unbalanced quote, or a file name carrying a quote character the
+        # lexer reads as a quote (`-- "./it's.sh"`, the file present in each
+        # lane repo). The released wheel runs the whole argument as one
+        # executable name, so refusing here would break a working spelling.
+        # Refuse only when the first whitespace-delimited token names
+        # something the caller could actually run: then the quote is
+        # genuinely unbalanced and one sentence beats the wheel's
+        # FileNotFoundError traceback. Otherwise return untouched.
+        if shutil.which(single.split()[0]) is not None:
+            raise typer.BadParameter(
+                "the command has an unbalanced quote; close the quote, or pass "
+                "the tokens after `--`"
+            ) from None
+        return full_command
     if not tokens:
         raise typer.BadParameter("missing command to run")
     # Keep the split only when the first token names something runnable —

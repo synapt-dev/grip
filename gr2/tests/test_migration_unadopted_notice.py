@@ -92,3 +92,31 @@ def test_whitespace_only_worktree_is_not_reported(tmp_path: Path) -> None:
     _write_gr1_workspace(tmp_path, _ONE_EMPTY_WORKTREE)
     payload = migrate_gr1_workspace(tmp_path)
     assert payload["not_adopted"] == [{"unit": "apollo", "worktree": "desk-b"}]
+
+
+def test_non_string_worktree_value_is_not_reported_as_a_worktree(tmp_path: Path) -> None:
+    """A malformed value is not a worktree.
+
+    The field is a name in gr1's manifest. Anything else -- a list, a mapping,
+    a number -- is malformed input, and reporting its repr as a worktree would
+    put a line in a receipt that names nothing.
+    """
+    _write_gr1_workspace(
+        tmp_path,
+        '[agents.atlas]\nworktree = ["desk-a", "desk-b"]\nchannel = "dev"\n\n'
+        '[agents.apollo]\nworktree = 7\nchannel = "dev"\n',
+    )
+    payload = migrate_gr1_workspace(tmp_path)
+    assert payload["not_adopted"] == []
+    assert "NOT ADOPTED" not in render_migration(payload)
+
+
+def test_sentence_claims_only_what_the_migration_does(tmp_path: Path) -> None:
+    """The rendered sentence is a claim about the migration, so it may only say
+    what the migration did: the worktree was not adopted INTO this workspace.
+    It must not assert where those trees are, which nothing here checks.
+    """
+    _write_gr1_workspace(tmp_path, _TWO_WORKTREES)
+    rendered = render_migration(migrate_gr1_workspace(tmp_path))
+    assert "were not adopted into this workspace" in rendered
+    assert "outside this workspace" not in rendered

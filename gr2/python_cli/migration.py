@@ -104,9 +104,12 @@ def migrate_gr1_workspace(workspace_root: Path, *, force: bool = False) -> dict[
         source = unit.get("migration_source") or {}
         if not isinstance(source, dict):
             continue
-        worktree = str(source.get("worktree") or "").strip()
-        if worktree:
-            not_adopted.append({"unit": str(unit["name"]), "worktree": worktree})
+        # The field is a NAME in gr1's manifest. A list, mapping or number is
+        # malformed input: its repr is not a worktree, and a receipt line that
+        # names nothing is worse than no line.
+        worktree = source.get("worktree")
+        if isinstance(worktree, str) and worktree.strip():
+            not_adopted.append({"unit": str(unit["name"]), "worktree": worktree.strip()})
     not_adopted.sort(key=lambda row: (row["unit"], row["worktree"]))
     summary = {
         "source": "gr1",
@@ -904,9 +907,9 @@ def render_migration(payload: dict[str, object]) -> str:
         lines.append("NOT ADOPTED")
         lines.extend(f"- {row['unit']}: {row['worktree']}" for row in not_adopted)
         lines.append(
-            f"{len(not_adopted)} gr1 worktree(s) recorded in the gr1 agents manifest were not adopted:"
-            " these are the units' gr1 working trees, they are outside this workspace, and their"
-            " contents were not inspected. Units are declared at agents/<unit>/home."
+            f"{len(not_adopted)} gr1 worktree(s) recorded in the gr1 agents manifest were not adopted"
+            " into this workspace: their contents were not inspected. Units are declared at"
+            " agents/<unit>/home."
         )
     lines.append("SNAPSHOTS")
     lines.extend(f"- {name}\t{path}" for name, path in payload["snapshots"].items())

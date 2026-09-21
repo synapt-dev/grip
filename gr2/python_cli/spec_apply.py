@@ -296,7 +296,12 @@ def render_plan(operations: list[PlanOperation]) -> str:
 def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -> dict[str, object]:
     spec, operations = build_plan(workspace_root)
     if len(operations) > 3 and not yes:
-        raise SystemExit("plan contains more than 3 operations; rerun with --yes to apply it")
+        # The refusal carries the plan it is refusing: a stranger without
+        # --yes saw only the operation count and had to guess what would run.
+        raise SystemExit(
+            "plan contains more than 3 operations; rerun with --yes to apply it.\n"
+            + render_plan(operations)
+        )
 
     applied: list[str] = []
     materialized_repos: list[dict[str, object]] = []

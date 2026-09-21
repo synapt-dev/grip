@@ -1240,6 +1240,70 @@ def exec_status(
         typer.echo(execops.render_exec_status(payload))
 
 
+_SHELL_OPERATORS = ("&&", "||", "|", ";", ">", "<", "`", "$", "&")
+
+
+def normalize_single_command_arg(full_command: list[str]) -> list[str]:
+    """Normalize `gr2 exec run … <command>`'s command arguments.
+
+    A single QUOTED string ('git rev-parse --show-toplevel') is what people
+    type; without a split it reached subprocess as one executable name and
+    died in a FileNotFoundError traceback. The single argument is tokenized
+    with a punctuation-aware lexer, so a glued operator ('echo a>b') separates
+    into tokens the operator check can see, while an operator inside a
+    quotation span ("git commit -m 'fix: a|b'") stays inside one token and
+    carries no shell intent. The split is KEPT only when the first token
+    names something runnable: a relative executable with spaces
+    ('./rel tool.sh') lives in each repo's cwd, not the caller's, and a
+    Windows-style token's backslashes must reach subprocess intact — when the
+    first token is not runnable the argument is returned untouched, which is
+    the released behaviour. The multi-argument form is returned untouched.
+
+    Known and fine for alpha: exec runs no shell, so '$HOME' and backticks
+    stay literal tokens (the lexer does not expand them); a command that
+    wants expansion should be a script, not a one-liner here.
+
+    An unbalanced quote raises ValueError from the lexer; it is caught and
+    refused in one sentence (an uncaught ValueError is a traceback). An empty
+    or whitespace-only string is a missing command (the raw-argument guard in
+    exec_run cannot catch it — the list holds one element).
+    """
+    if len(full_command) != 1:
+        return full_command
+    import shlex
+    import shutil
+
+    single = full_command[0]
+    if not single.strip():
+        raise typer.BadParameter("missing command to run")
+    try:
+        lexer = shlex.shlex(single, posix=(os.name != "nt"), punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        raise typer.BadParameter(
+            "the command has an unbalanced quote; close the quote, or pass "
+            "the tokens after `--`"
+        ) from None
+    if not tokens:
+        raise typer.BadParameter("missing command to run")
+    # Keep the split only when the first token names something runnable —
+    # resolved by which(), which searches PATH (and, for an absolute or
+    # ./-prefixed token, nothing else): a relative path with spaces exists in
+    # each REPO's cwd where the command runs, not in the caller's, so
+    # existence is checked per-repo by the run itself, not here.
+    if shutil.which(tokens[0]) is None:
+        return full_command
+    if any(token in _SHELL_OPERATORS for token in tokens):
+        raise typer.BadParameter(
+            "the command arrived as one quoted string containing shell "
+            "operators, and gr2 exec runs no shell. Pass the command as "
+            "tokens after `--`, e.g. `gr2 exec run <ws> <unit> --actor "
+            "<actor> -- git rev-parse --show-toplevel`"
+        )
+    return tokens
+
+
 @exec_app.command("run", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def exec_run(
     ctx: typer.Context,
@@ -1257,6 +1321,20 @@ def exec_run(
     full_command = list(command or []) + list(ctx.args)
     if not full_command:
         raise typer.BadParameter("missing command to run")
+    # A single QUOTED string ('git rev-parse --show-toplevel') is what people
+    # type. Without a split it reached subprocess as one executable name and
+    # died in a FileNotFoundError traceback (Fathom's lane sounding). The
+    # intent of the one-argument form is unambiguous, so split it and let the
+    # natural spelling work on the first try. Two measured cases the split must
+    # NOT touch: one legitimate token is also exactly one argument (an
+    # executable path with spaces runs today), and a Windows-style token whose
+    # backslashes POSIX-mode shlex would eat. So the split happens only when
+    # the single argument has whitespace AND does not already name something
+    # runnable; a no-whitespace token is never touched and gets no operator
+    # check. When that string carries shell operators the caller expects shell
+    # semantics exec does not provide (it runs no shell), so that case refuses
+    # and names the `--` token form. The multi-argument form is untouched.
+    full_command = normalize_single_command_arg(full_command)
     payload = execops.run_exec(
         workspace_root,
         owner_unit,

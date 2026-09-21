@@ -98,3 +98,61 @@ def test_verbs_still_work_inside_a_repo(tmp_path: Path) -> None:
     )
     assert inside.exit_code == 0, inside.output
     assert "Switched to branch 'feat/slice'" in inside.output
+
+# CHDIR TRAP, keep for the next author: every test below chdirs into the
+# fixture BEFORE invoking the app. A cwd-resolving gr2 verb without the chdir
+# runs against THIS REPO (the pytest process cwd is a git clone) — measured on
+# v1 of this lane: an un-chdir'd refusal test created a real branch and two
+# real commits in the developer's checkout. Check `git branch --show-current`
+# in the clone after touching these tests.
+
+
+def test_refusal_holds_when_the_cwd_holds_a_regular_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The unit-home shape: two repos AND a plain file (unit.toml). Measured on
+    v1: repos_under probed the file as a git cwd and every verb ended in a
+    NotADirectoryError traceback instead of the one sentence. The refusal must
+    be gr2's sentence, never a traceback, and the file is not a repo to list."""
+    _init_repo(tmp_path / "alpha")
+    _init_repo(tmp_path / "beta")
+    (tmp_path / "unit.toml").write_text("# unit metadata\n")
+    monkeypatch.chdir(tmp_path)
+
+    for args in (["branch", "feat/x"], ["add", "."], ["commit", "-m", "x"]):
+        result = runner.invoke(app, args, catch_exceptions=False)
+        assert result.exit_code == 1, f"{args[0]}: {result.output}"
+        assert "inside one repository" in result.output, f"{args[0]}: {result.output}"
+        assert "Traceback" not in result.output, f"{args[0]} leaked a traceback:\n{result.output}"
+        assert "unit.toml" not in result.output, (
+            f"a regular file must not be listed as a repo:\n{result.output}"
+        )
+    # And the listed repos are still the two real ones.
+    branch_refusal = runner.invoke(app, ["branch", "feat/x"], catch_exceptions=False)
+    assert "alpha" in branch_refusal.output and "beta" in branch_refusal.output
+
+
+def test_commit_inside_the_git_dir_refuses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Inside a repo's .git directory the verb needs the work tree, not the git
+    dir (measured on dev: a clean 'no staged changes' refusal; the v1 guard
+    treated .git as a bare repository and let the verb through to a traceback
+    on COMMIT_EDITMSG)."""
+    repo = tmp_path / "alpha"
+    _init_repo(repo)
+    monkeypatch.chdir(repo / ".git")
+
+    result = runner.invoke(app, ["commit", "-m", "x"], catch_exceptions=False)
+    assert result.exit_code == 1, result.output
+    assert "inside one repository" in result.output, result.output
+    assert "Traceback" not in result.output, result.output
+
+
+def test_commit_inside_a_bare_repo_refuses_naming_the_work_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """These three verbs need a WORK TREE: inside a bare repository the refusal
+    says so, instead of leaking git's raw 'this operation must be run in a
+    work tree' (the dev behaviour, non-blocking in the R2, taken)."""
+    _git(["init", "--bare", "-b", "main", str(tmp_path / "upstream.git")], tmp_path)
+    monkeypatch.chdir(tmp_path / "upstream.git")
+
+    result = runner.invoke(app, ["commit", "-m", "x"], catch_exceptions=False)
+    assert result.exit_code == 1, result.output
+    assert "needs a work tree" in result.output, result.output
+    assert "must be run in a work tree" not in result.output, result.output

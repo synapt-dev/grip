@@ -14,8 +14,9 @@ mechanical, local fix (the decision Stromus asked to be stated in the PR body).
 
 Bare repos: the scanner's `is_git_repo` answers only for work trees, so a bare
 dir (exactly what a stranger uses as a local upstream) was silently invisible.
-The call made here: DETECT bare repos and scan them like any other repo —
-they materialize fine from their own path.
+The call made here (v2): DETECT bare repos and NAME them in the output, but
+never add them to the spec — materialize's validator rejects a bare path as a
+repo, and bare-upstream-beside-clone is a working layout the old scan broke.
 """
 
 from __future__ import annotations
@@ -77,13 +78,43 @@ def test_init_without_remotes_succeeds_and_names_the_missing_url(tmp_path: Path)
     )
 
 
-def test_init_detects_bare_repo_as_a_repo(tmp_path: Path) -> None:
-    """A bare repo dir (the local-upstream shape) is scanned, not skipped."""
-    _init_repo(tmp_path / "work")
-    _git(["clone", "--bare", str(tmp_path / "work"), str(tmp_path / "upstream.git")], tmp_path)
+def test_init_detects_bare_repos_without_adding_them(tmp_path: Path) -> None:
+    """Bare dirs beside their clones are a working dev layout: init must find
+    the 2 work-tree repos and materialize must succeed on the written spec.
+    Bare dirs are NAMED in the output, never added to the spec (R2 B2,
+    m_0e288205: a bare-as-repo scan wrote url "-" for the upstreams and
+    materialize's validator refused the whole spec)."""
+    _init_repo(tmp_path / "alpha")
+    _init_repo(tmp_path / "beta")
+    _git(["clone", "--bare", str(tmp_path / "alpha"), str(tmp_path / "alpha.git")], tmp_path)
+    _git(["clone", "--bare", str(tmp_path / "beta"), str(tmp_path / "beta.git")], tmp_path)
+    _git(["remote", "add", "origin", str(tmp_path / "alpha.git")], tmp_path / "alpha")
+    _git(["remote", "add", "origin", str(tmp_path / "beta.git")], tmp_path / "beta")
 
     result = runner.invoke(app, ["workspace", "init", str(tmp_path)])
     assert result.exit_code == 0, result.output
-    assert "upstream.git" in result.output, (
-        f"bare repo must appear in the scan output:\n{result.output}"
+    assert "repo_count = 2" in result.output, (
+        f"bare upstreams must not count as repos:\n{result.output}"
+    )
+    assert "alpha.git is a bare repository; not added" in result.output, (
+        f"bare dirs must be named with the not-added reason:\n{result.output}"
+    )
+    assert "beta.git is a bare repository; not added" in result.output
+    assert (tmp_path / ".grip" / "workspace_spec.toml").is_file()
+
+    # The layout materializes: the spec holds the two clones only.
+    mat = runner.invoke(app, ["workspace", "materialize", str(tmp_path), "--yes"])
+    assert mat.exit_code == 0, f"materialize must succeed on the clone-only spec:\n{mat.output}"
+
+
+def test_init_with_only_bare_repos_names_them_and_refuses(tmp_path: Path) -> None:
+    """Bare is all there is: still 'no git repos found' (the spec is refused as
+    before), but the output names the bare dirs instead of a silent miss."""
+    _git(["init", "--bare", "-b", "main", str(tmp_path / "upstream.git")], tmp_path)
+
+    result = runner.invoke(app, ["workspace", "init", str(tmp_path)])
+    assert result.exit_code != 0, result.output
+    assert "no git repos found" in result.output, result.output
+    assert "upstream.git is a bare repository; not added" in result.output, (
+        f"the bare dir must be named even in the refusal:\n{result.output}"
     )

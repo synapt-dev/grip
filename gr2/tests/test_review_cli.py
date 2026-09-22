@@ -256,7 +256,7 @@ def test_workspace_init_leaves_a_store_ready_for_project_review(tmp_path: Path) 
         app,
         [
             "lane", "create", str(workspace), "default", "review",
-            "--repos", "adopted", "--branch", "dev",
+            "--repos", "adopted", "--branch", "feat/review",
         ],
     )
     assert created.exit_code == 0, created.output

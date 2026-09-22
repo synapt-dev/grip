@@ -923,6 +923,97 @@ def _validate_bound_worktree(bind_path: Path, workspace_root: Path) -> tuple[str
     return head, branch
 
 
+#: How long the origin may take to report its default branch before the answer is
+#: "cannot tell". Generous for a symref read, and short enough that an origin which
+#: accepts and never replies cannot block `lane create` with no output. Without it,
+#: an offline laptop or a blackholed origin hangs the verb where it used to create a
+#: lane without any network call at all.
+_LS_REMOTE_TIMEOUT_SECONDS = 5.0
+
+
+def _origin_default_branch(repo_path: Path, url: str | None = None) -> str | None:
+    """The repo's integration branch, or None when it cannot be determined.
+
+    A clone records it as `origin/HEAD`. That symref is ABSENT in a clone made
+    before the remote had any refs — which is the normal state of a repo cloned
+    empty and pushed later, and it is exactly the state in which a lane created on
+    the default branch looks harmless. So when the local record is missing, ask the
+    origin itself (`ls-remote --symref`), which is the same remote the lane is about
+    to clone from anyway. A remote that cannot be reached gives None: "cannot tell"
+    is never allowed to become a refusal. Unreachable includes UNANSWERED — the call
+    is bounded, and an expiry is None on the same channel as any other git failure
+    rather than an exception the caller has to remember to catch separately.
+    """
+    proc = gitops.git(repo_path, "rev-parse", "--abbrev-ref", "origin/HEAD")
+    if proc.returncode == 0:
+        ref = proc.stdout.strip()
+        if ref.startswith("origin/"):
+            return ref.split("/", 1)[1]
+    if not url:
+        return None
+    remote = gitops.git(
+        repo_path, "ls-remote", "--symref", url, "HEAD", timeout=_LS_REMOTE_TIMEOUT_SECONDS
+    )
+    if remote.returncode != 0:
+        # A git that never returned is the same answer as a git that refused:
+        # "cannot tell". The bound above is what makes that reachable at all — an
+        # origin that accepts and says nothing used to block the verb outright.
+        return None
+    for line in remote.stdout.splitlines():
+        if line.startswith("ref:") and line.rstrip().endswith("HEAD"):
+            ref = line.split()[1]
+            # Strip the PREFIX, never split on every slash: a default branch whose
+            # name contains one (`release/1.x`) came back as its last segment, so the
+            # guard compared the requested branch against a string the origin never
+            # reported and the no-isolation lane was created in silence.
+            if not ref.startswith("refs/heads/"):
+                return None
+            return ref.removeprefix("refs/heads/")
+    return None
+
+
+def _lane_branch_refusal(workspace_root: Path, spec: dict, repo: str, branch: str) -> str | None:
+    """The one sentence that refuses a lane branch with no isolation, or None.
+
+    A lane is the isolation primitive. A lane whose branch IS the repository's own
+    branch has no isolation at all: work committed there and pushed with `gr2 push`
+    lands on the branch the lane was supposed to be forked from, and the first
+    refusal arrived at `pr create` — after the remote had already been written
+    (measured on the released 2.0.0a2: `lane create --branch main`, push exit 0
+    "Pushed main", then `pr create` exit 1 "head branch main is the same as base
+    branch main"). Nothing refused at the point the choice was made.
+
+    The comparison is against what is CHECKED OUT here and what the origin says its
+    default is. A repo with no local checkout, or one whose origin cannot be
+    reached, is skipped rather than refused: this guard may not invent a conflict it
+    cannot see.
+    """
+    entry = next((row for row in spec.get("repos", []) if row.get("name") == repo), None)
+    if entry is None:
+        return None
+    rel = entry.get("path")
+    if not rel:
+        return None
+    checkout = workspace_root / str(rel)
+    if not gitops.is_git_repo(checkout):
+        return None
+    matched: str | None = None
+    if branch == gitops.current_branch(checkout):
+        matched = f"the branch checked out at {rel}"
+    else:
+        default = _origin_default_branch(checkout, str(entry.get("url") or "") or None)
+        if default and branch == default:
+            matched = f"the repo's integration branch ({default})"
+    if matched is None:
+        return None
+    return (
+        f"lane branch '{branch}' for repo '{repo}' is {matched}: a lane forked from the branch it will "
+        f"land on has no isolation, and a push would go straight to '{branch}'. Pass a lane branch that is "
+        f"neither the repo's checked-out nor its integration branch (e.g. feat/<name>), or use --bind to "
+        f"label an existing worktree."
+    )
+
+
 def create_lane(args: argparse.Namespace) -> int:
     workspace_root = args.workspace_root.resolve()
     validate_lane_path_component(args.owner_unit, "owner_unit")
@@ -963,6 +1054,14 @@ def create_lane(args: argparse.Namespace) -> int:
         branch_map = {repos[0]: branch}
     else:
         branch_map = parse_branch_arg(args.branch, repos)
+        # A materialized lane's branch may not be the repo's own branch: the lane
+        # would have no isolation and its push would land on the integration
+        # branch. Refused HERE, where the choice is made, rather than at the first
+        # `pr create` after the remote had been written.
+        for _repo in repos:
+            refusal = _lane_branch_refusal(workspace_root, spec, _repo, branch_map[_repo])
+            if refusal:
+                raise SystemExit(refusal)
 
     # Fork base: record what the caller supplies, do not derive.
     # Each entry names a repo IN the lane and carries a 40-hex integration-branch tip.

@@ -110,13 +110,13 @@ def test_cli_lane_create_records_fork_base_before_a_blocked_hook_exits(tmp_path:
     # not a half lane that `review create-project` refuses for a missing fork base.
     ws, tip = _workspace_with_blocked_projection(tmp_path)
     res = runner.invoke(gr2_app.app, ["lane", "create", str(ws), "atlas", "feature",
-                                      "--repos", "app", "--branch", "main"])
+                                      "--repos", "app", "--branch", "feat/lane"])
     # the hook block still surfaces as a non-zero exit (kept, not swallowed)
     assert res.exit_code == 1, res.output
     # ...but the fork base was recorded as soon as the checkout existed
     doc = lanes.load_lane_doc(ws, "atlas", "feature")
     assert "fork_base" in doc, "a blocked hook must not leave a lane without a fork base"
-    assert doc["fork_base"]["app"]["branch"] == "main"
+    assert doc["fork_base"]["app"]["branch"] == "feat/lane"
     assert doc["fork_base"]["app"]["sha"] == tip
     # ...and the R2 producer verb succeeds on the recovered lane rather than refusing
     created = runner.invoke(gr2_app.app, ["review", "create-project", str(ws), "atlas", "feature"])
@@ -126,12 +126,12 @@ def test_cli_lane_create_records_fork_base_before_a_blocked_hook_exits(tmp_path:
 def test_cli_lane_create_records_fork_base_for_each_repo(tmp_path: Path) -> None:
     ws, tips = _workspace(tmp_path, ["app", "lib"])
     res = runner.invoke(gr2_app.app, ["lane", "create", str(ws), "atlas", "feature",
-                                      "--repos", "app,lib", "--branch", "main"])
+                                      "--repos", "app,lib", "--branch", "feat/lane"])
     assert res.exit_code == 0, res.output
     doc = lanes.load_lane_doc(ws, "atlas", "feature")
     assert "fork_base" in doc, "CLI-created lane must record a fork base"
     for r in ("app", "lib"):
-        assert doc["fork_base"][r]["branch"] == "main"
+        assert doc["fork_base"][r]["branch"] == "feat/lane"
         assert doc["fork_base"][r]["sha"] == tips[r]  # the materialization point
 
 
@@ -140,7 +140,7 @@ def test_cli_created_lane_then_create_project_succeeds(tmp_path: Path) -> None:
     # verb pins base..head instead of refusing on a missing fork base.
     ws, _ = _workspace(tmp_path, ["app", "lib"])
     assert runner.invoke(gr2_app.app, ["lane", "create", str(ws), "atlas", "feature",
-                                       "--repos", "app,lib", "--branch", "main"]).exit_code == 0
+                                       "--repos", "app,lib", "--branch", "feat/lane"]).exit_code == 0
     res = runner.invoke(gr2_app.app, ["review", "create-project", str(ws), "atlas", "feature"])
     assert res.exit_code == 0, res.output
     sha = next(l for l in res.output.splitlines() if l.startswith("gr:"))[3:].strip()
@@ -155,7 +155,7 @@ def test_cli_create_project_carry_range_records_the_range(tmp_path: Path) -> Non
     # commit carries no range.
     ws, _tips = _workspace(tmp_path, ["app"])
     assert runner.invoke(gr2_app.app, ["lane", "create", str(ws), "atlas", "feature",
-                                       "--repos", "app", "--branch", "main"]).exit_code == 0
+                                       "--repos", "app", "--branch", "feat/lane"]).exit_code == 0
     lane_repo = lanes.lane_dir(ws, "atlas", "feature") / "repos" / "app"
     (lane_repo / "change.txt").write_text("lane change\n")
     _git(lane_repo, "config", "user.email", "t@e.invalid")
@@ -182,7 +182,7 @@ def test_cli_carry_range_reconstructs_the_exact_pinned_sha(tmp_path: Path) -> No
     # the committer re-stamped, would give a different sha.)
     ws, _tips = _workspace(tmp_path, ["app"])
     assert runner.invoke(gr2_app.app, ["lane", "create", str(ws), "atlas", "feature",
-                                       "--repos", "app", "--branch", "main"]).exit_code == 0
+                                       "--repos", "app", "--branch", "feat/lane"]).exit_code == 0
     lane_repo = lanes.lane_dir(ws, "atlas", "feature") / "repos" / "app"
     _git(lane_repo, "config", "user.email", "dev@layne.pro")
     _git(lane_repo, "config", "user.name", "Layne Penney")

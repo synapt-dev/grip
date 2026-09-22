@@ -20,6 +20,7 @@ from . import commit as commit_ops
 from . import execops, failures, grip, migration, spec_apply, syncops
 from . import gitops
 from . import pr as pr_ops
+from .platform import AdapterError
 from . import prune as prune_ops
 from . import target as target_ops
 from . import project_review
@@ -2891,8 +2892,22 @@ def pr_merge(
 
 
 def main() -> None:
-    app()
+    """Console-script entry point, and the ONE place an AdapterError becomes a sentence.
+
+    An adapter's failure arrives as an exception that already carries the forge's own
+    message — a remote that is not a forge URL, a head branch equal to its base.
+    Uncaught, it reaches the user as a Python traceback in place of the refusal it
+    already is, which is what a stranger met on the first-run path. Catching it here,
+    once, covers every adapter a user may plug in rather than one check per trigger:
+    adapters are exactly the part of this CLI the team does not write.
+    """
+    try:
+        app()
+    except AdapterError as exc:
+        typer.echo(f"gr2: {exc}", err=True)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":
-    app()
+    # Same reason as __main__.py: one boundary, and every way in goes through it.
+    main()

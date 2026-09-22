@@ -9,6 +9,7 @@ real directory) at the SAME path, plus the canonical repo's own
 
 from __future__ import annotations
 
+import os
 import stat
 import subprocess
 from pathlib import Path
@@ -455,3 +456,119 @@ def test_work_written_during_the_clone_window_is_not_silently_destroyed(
     assert (linked / "written-during-window.txt").read_text() == "my work\n", (
         "work written during the clone window was destroyed"
     )
+
+
+def test_the_aside_question_is_asked_before_the_prune_kills_its_answerer(
+    tmp_path, monkeypatch
+):
+    """The ORDER is half the fix, so the order is what this witness measures.
+
+    The success path used to ask `git -C <aside> status --porcelain` two lines AFTER the
+    deregistration dance's prune. The prune deletes the registration the aside's `.git`
+    pointer names, so by then git answers rc 128 with an EMPTY stdout -- which the narrow
+    form read as a clean tree and then `shutil.rmtree`'d, on every conversion, making the
+    `.keep` branch unreachable.
+
+    So this witness does not test the disposition's answer. It asks whether the answerer
+    was ALIVE when the question was asked, by probing the aside from inside the call.
+    Reorder the call back under the prune and this goes red on rc 128.
+    """
+    _canonical, linked = _make_linked(tmp_path)
+    real = repo_proto.aside_disposition
+    seen: dict[str, object] = {}
+
+    def probe_then_decide(aside):
+        alive = subprocess.run(
+            ["git", "-C", str(aside), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+        )
+        seen["rc"] = alive.returncode
+        seen["stdout"] = alive.stdout.strip()
+        return real(aside)
+
+    monkeypatch.setattr(repo_proto, "aside_disposition", probe_then_decide)
+    repo_proto.convert_worktree_to_clone(linked)
+
+    assert seen["rc"] == 0, (
+        "the aside was interrogated while git could no longer answer for it "
+        f"(rc {seen['rc']}); the disposition must be taken BEFORE the prune"
+    )
+    assert seen["stdout"] == "true"
+
+
+def test_aside_disposition_never_drops_a_tree_git_cannot_read(tmp_path):
+    """A dead repo and a clean tree print the same number, and 0 meant 'clean'.
+
+    Control first: prove the prune really did kill the pointer, so a passing verdict here
+    cannot be an aside that happened to be readable.
+    """
+    canonical, linked = _make_linked(tmp_path)
+    aside = tmp_path / "aside"
+    os.rename(linked, aside)
+    subprocess.run(["git", "worktree", "prune"], cwd=canonical, capture_output=True)
+
+    probe = subprocess.run(
+        ["git", "-C", str(aside), "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+    )
+    assert probe.returncode != 0, "control: the prune must have killed the pointer"
+    assert probe.stdout.strip() == "", "control: and it fails EMPTY, which read as clean"
+
+    verdict, _n, detail = repo_proto.aside_disposition(aside)
+    assert verdict == repo_proto.ASIDE_UNREADABLE, f"got {verdict}: {detail}"
+
+
+def test_aside_disposition_never_drops_a_tree_whose_index_mutes_the_comparison(
+    tmp_path,
+):
+    """The bypass that ends the widening strategy: assume-unchanged turns the comparison
+    off, so no flag can reach it and `--ignored -uall` is still empty over a real edit."""
+    aside = tmp_path / "aside"
+    _init_repo(aside)
+    (aside / "README.md").write_text("edited after the bit was set\n")
+    subprocess.run(
+        ["git", "update-index", "--assume-unchanged", "README.md"], cwd=aside, check=True
+    )
+
+    for flags in (["--porcelain"], ["--porcelain", "--ignored", "-uall"]):
+        seen = subprocess.run(
+            ["git", "status", *flags], cwd=aside, capture_output=True, text=True
+        )
+        assert seen.stdout.strip() == "", f"control: {flags} cannot see the edit"
+
+    verdict, n, detail = repo_proto.aside_disposition(aside)
+    assert verdict == repo_proto.ASIDE_SUSPECT, f"got {verdict}: {detail}"
+    assert n == 1
+
+
+def test_convert_keeps_the_aside_that_holds_ignored_work(tmp_path, capsys):
+    """End to end for the ignored class: the narrow gate reads clean, the conversion
+    proceeds, and the only copy of the file must not go with the aside."""
+    _canonical, linked = _make_linked(tmp_path)
+    (linked / ".gitignore").write_text("*.env\n")
+    (linked / ".env").write_text("SECRET_SHAPED_BUT_NOT_A_SECRET\n")
+    subprocess.run(["git", "add", ".gitignore"], cwd=linked, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=d@l.p", "-c", "user.name=t", "commit", "-qm", "ignore"],
+        cwd=linked,
+        check=True,
+    )
+
+    narrow = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=linked, capture_output=True, text=True
+    )
+    assert narrow.stdout.strip() == "", "control: the ignored file is invisible when narrow"
+
+    repo_proto.convert_worktree_to_clone(linked)
+    err = capsys.readouterr().err
+
+    kept = sorted(tmp_path.glob(".convert-aside-*.keep"))
+    assert kept, "the aside holding ignored work was deleted"
+    assert (kept[0] / ".env").read_text() == "SECRET_SHAPED_BUT_NOT_A_SECRET\n"
+    # And it must be kept because the WIDE instrument SAW the file -- not because the
+    # pointer was already dead when the question was asked, which also keeps the tree and
+    # would make this witness green under the very defect it exists to catch. Both
+    # outcomes preserve the work; only one of them is the fix, so the reason is asserted.
+    assert "carried uncommitted work" in err, f"kept for the wrong reason; stderr={err!r}"

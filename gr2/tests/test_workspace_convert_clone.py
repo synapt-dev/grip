@@ -572,3 +572,32 @@ def test_convert_keeps_the_aside_that_holds_ignored_work(tmp_path, capsys):
     # would make this witness green under the very defect it exists to catch. Both
     # outcomes preserve the work; only one of them is the fix, so the reason is asserted.
     assert "carried uncommitted work" in err, f"kept for the wrong reason; stderr={err!r}"
+
+
+def test_aside_disposition_returns_unreadable_when_it_cannot_enter_the_tree(tmp_path):
+    """P4, Sentinel's r2 finding against the previous version.
+
+    An aside that EXISTS but cannot be entered made `subprocess.run(cwd=...)` raise from
+    the cwd resolution itself, before git existed -- so the function propagated
+    PermissionError instead of returning its own UNREADABLE verdict, and the bare call site
+    had no handler. The contract promised this case and the witness only reached the
+    dead-pointer class, where git runs and fails with rc != 0. A raised exception is not a
+    verdict, and a tree we cannot interrogate is the one we must not destroy.
+
+    The mode-000 directory is the subject; the control proves it is genuinely unenterable,
+    so this cannot pass vacuously on a host where the mode does not bite (root, or a
+    filesystem that ignores it).
+    """
+    aside = tmp_path / "aside"
+    _init_repo(aside)
+    (aside / "work.txt").write_text("uncommitted work\n")
+    os.chmod(aside, 0o000)
+    try:
+        with pytest.raises(PermissionError):
+            subprocess.run(
+                ["git", "status", "--porcelain"], cwd=aside, capture_output=True
+            )
+        verdict, _n, detail = repo_proto.aside_disposition(aside)
+        assert verdict == repo_proto.ASIDE_UNREADABLE, f"got {verdict}: {detail}"
+    finally:
+        os.chmod(aside, 0o700)

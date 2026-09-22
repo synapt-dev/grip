@@ -245,16 +245,31 @@ def _git_scrubbed(repo_path: Path, *args: str) -> subprocess.CompletedProcess[st
     `run_git` is right for every other caller, where the subject is the caller's own cwd.
     Here the subject is a directory git has to be told about explicitly, and an inherited
     `GIT_DIR`/`GIT_WORK_TREE` pair silently redirects the question somewhere else.
+
+    An unenterable cwd is reported as a failed run rather than raised. `subprocess.run`
+    resolves `cwd` before git exists, so a directory that exists with mode 000 -- or one
+    that vanishes between the caller's check and this call -- raises `PermissionError` or
+    `NotADirectoryError` from the resolution itself. That is the same answer as git failing:
+    we could not interrogate the tree. Returning it as a non-zero result keeps ONE path to
+    UNREADABLE instead of an exception that `aside_disposition`'s contract does not mention
+    and its call site does not handle. Found by Sentinel's r2 on the previous version, whose
+    P4 probe caught the function propagating PermissionError where its own docstring promised
+    a verdict.
     """
     env = {k: v for k, v in os.environ.items() if k not in _REPO_IDENTITY_ENV}
-    return subprocess.run(
-        ["git", *args],
-        cwd=repo_path,
-        check=False,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=repo_path,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+    except OSError as exc:
+        return subprocess.CompletedProcess(
+            ["git", *args], returncode=1, stdout="", stderr=f"{type(exc).__name__}: {exc}"
+        )
 
 
 def aside_disposition(aside: Path) -> tuple[str, int, str]:

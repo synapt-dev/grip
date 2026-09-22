@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import os
 import shutil
 import stat
 import subprocess
@@ -278,6 +279,68 @@ def _lstat_summary(git_path: Path) -> dict[str, object]:
     }
 
 
+def _origin_url(path: Path) -> str | None:
+    """The repo's ``origin`` URL, or None when it has no origin."""
+    proc = run_git(path, "remote", "get-url", "origin")
+    if proc.returncode != 0:
+        return None
+    url = proc.stdout.strip()
+    return url or None
+
+
+def restore_original(target: Path, aside: Path) -> bool:
+    """Put the moved-aside original back at ``target``. Destroys nothing.
+
+    PARAMETERISED ON PURPOSE, so the witness runs the same bytes the caller
+    does rather than a copy free to drift.
+
+    An occupant at ``target`` is MOVED ASIDE AND NAMED, never deleted: this is
+    the recovery path, so by definition it runs once something has already
+    gone wrong, and the first version of the hand-built equivalent did an
+    unguarded ``rm -rf`` here and then printed "(nothing lost)". A recovery
+    path carrying the defect its forward path was fixed for is the worst
+    place for it to live.
+    """
+    target = Path(target)
+    aside = Path(aside)
+    if target.exists():
+        keep = target.with_name(f"{target.name}.interloper.{os.getpid()}")
+        try:
+            os.rename(target, keep)
+        except OSError:
+            return False
+        print(
+            f"  NOTE: something occupied {target} during recovery; moved to {keep} (NOT deleted)",
+            file=sys.stderr,
+        )
+    try:
+        os.rename(aside, target)
+    except OSError:
+        print(
+            f"  CANNOT RESTORE. Your original tree is at: {aside}",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+def swap_in_place(staged: Path, target: Path) -> None:
+    """Move ``staged`` onto ``target``, refusing to nest.
+
+    ``mv src dst`` with dst PRESENT nests src inside it, leaving the path a
+    non-git directory and reporting the failure only after the damage
+   . If anything recreated the target inside the
+    window -- gr1's materializer, a hook, a peer -- refuse and leave both
+    copies findable.
+    """
+    if Path(target).exists():
+        raise ConvertCloneError(
+            f"{target} was recreated during the conversion; refusing to move "
+            f"onto it (the replacement is at {staged})"
+        )
+    shutil.move(str(staged), str(target))
+
+
 def convert_worktree_to_clone(path: Path) -> dict[str, object]:
     """Convert a linked worktree into an own clone, in place.
 
@@ -339,6 +402,31 @@ def convert_worktree_to_clone(path: Path) -> dict[str, object]:
 
     head_sha = run_git(path, "rev-parse", "HEAD").stdout.strip()
 
+    # A worktree's commits live in the OWNER'S object store, which
+    # has been acting as an accidental backup nobody designed. Converting to a
+    # clone removes that fallback, so this is the last moment at which
+    # "unpushed" is cheap to say.
+    # HEAD is explicit on purpose: `git log --not --remotes` with no positive
+    # ref yields NOTHING -- git has only exclusions to walk -- so the check
+    # could never fire. Measured: a desk with one commit on no remote
+    # reported 0 until HEAD was named.
+    unmerged = run_git(path, "log", "--oneline", "HEAD", "--not", "--remotes")
+    unpushed_commits = len([ln for ln in unmerged.stdout.splitlines() if ln.strip()])
+    if unpushed_commits:
+        print(
+            f"  WARNING: {path} carries {unpushed_commits} commit(s) on no "
+            "remote. After conversion this clone is their only copy -- push "
+            "before relying on it.",
+            file=sys.stderr,
+        )
+
+    # Read the ORIGINAL's origin before anything is mutated. The
+    # staging clone's own origin will point at the owner's directory, because
+    # that is what `git clone <path>` sets, so leaving it is a .git coupling
+    # traded for an origin coupling -- the lane doing the opposite of its
+    # purpose while reporting success.
+    original_origin = _origin_url(path)
+
     staging_path = path.parent / f".convert-staging-{path.name}"
     if staging_path.exists():
         raise ConvertCloneError(f"{staging_path}: staging path already exists")
@@ -361,6 +449,19 @@ def convert_worktree_to_clone(path: Path) -> dict[str, object]:
             f"checkout of {branch} in the staging clone failed: {checkout_proc.stderr.strip()}"
         )
 
+    # The clone's origin is the owner's directory. Restore the
+    # original's origin, or REMOVE it when the original had none -- inventing
+    # a coupling is worse than having no remote.
+    if original_origin is not None:
+        set_proc = run_git(staging_path, "remote", "set-url", "origin", original_origin)
+        if set_proc.returncode != 0:
+            shutil.rmtree(staging_path)
+            raise ConvertCloneError(
+                f"could not restore origin {original_origin}: {set_proc.stderr.strip()}"
+            )
+    else:
+        run_git(staging_path, "remote", "remove", "origin")
+
     staging_git = staging_path / ".git"
     staging_summary = _lstat_summary(staging_git)
     if not staging_summary["is_dir"]:
@@ -376,15 +477,111 @@ def convert_worktree_to_clone(path: Path) -> dict[str, object]:
             f"staging clone HEAD {staging_head} != original {head_sha} -- refusing to proceed"
         )
 
-    remove_proc = run_git(canonical_repo_root, "worktree", "remove", "--force", str(path))
-    if remove_proc.returncode != 0:
-        shutil.rmtree(staging_path)
-        raise ConvertCloneError(f"git worktree remove failed: {remove_proc.stderr.strip()}")
-    run_git(canonical_repo_root, "worktree", "prune")
+    # RENAME ASIDE, THEN SWAP -- never destroy before the
+    # replacement is in place. The previous order was `worktree remove
+    # --force` (which deletes the original working tree) followed by an
+    # UNGUARDED move, so any failure between them -- an mv error, a read-only
+    # parent, SIGKILL, power loss -- left this path EMPTY with the
+    # replacement stranded at a staging path no message named. Witnessed by
+    # fault injection before this fix. A rename is instant and the worktree's
+    # .git pointer is ABSOLUTE, so relocating it does not break it.
+    # RE-CHECK DIRTY, immediately before the irreversible step. The check far
+    # above runs BEFORE the clone, and the clone is the long part -- minutes on
+    # a real repo. Anything written into the worktree during that window is
+    # invisible to the earlier gate, captured by the rename below, and then
+    # deleted by the success-path cleanup, with "converted" reported. Same
+    # verify-then-act-over-a-mutating-world family as the nest guard, opposite
+    # victim: not an interloper, the user, on the happy path.
+    status_now = run_git(path, "status", "--porcelain")
+    if status_now.stdout.strip():
+        shutil.rmtree(staging_path, ignore_errors=True)
+        raise ConvertCloneError(
+            f"{path}: working tree became dirty during the conversion, "
+            f"refusing to continue:\n{status_now.stdout.strip()}"
+        )
 
-    shutil.move(str(staging_path), str(path))
+    aside_path = path.with_name(f".convert-aside-{path.name}.{os.getpid()}")
+    if aside_path.exists():
+        shutil.rmtree(staging_path)
+        raise ConvertCloneError(f"{aside_path}: aside path already exists")
+    try:
+        os.rename(path, aside_path)
+    except OSError as exc:
+        shutil.rmtree(staging_path)
+        raise ConvertCloneError(f"could not move the original aside: {exc}") from exc
+
+    try:
+        swap_in_place(staging_path, path)
+    except ConvertCloneError:
+        restore_original(path, aside_path)
+        raise
+    except Exception as exc:
+        # Every branch that leaves a copy behind NAMES it. The first version
+        # let a raw OSError propagate, so the operator was told the swap
+        # failed and never told where the replacement went.
+        restore_original(path, aside_path)
+        raise ConvertCloneError(
+            f"the swap onto {path} failed: {exc}. Your original has been "
+            f"restored at {path}; the replacement clone is at {staging_path} "
+            "(neither deleted)."
+        ) from exc
 
     after = _lstat_summary(path / ".git")
+    if not after["is_dir"]:
+        shutil.rmtree(path, ignore_errors=True)
+        restore_original(path, aside_path)
+        raise ConvertCloneError(
+            f"{path}: verification failed after the swap -- the original has been restored"
+        )
+
+    # DEREGISTER, in porcelain only, and only now that the conversion is
+    # verified. `git worktree prune` reaps a registration whose path is
+    # MISSING, and the path is now occupied by the new clone, so prune alone
+    # is a no-op here -- the existing witness (the canonical repo's own
+    # `worktree list`) is what caught that. `git worktree remove` refuses a
+    # path that is no longer a worktree, and `git worktree repair` cannot
+    # undo a prune (measured: the admin dir is gone and the tree is left
+    # unusable), so pruning earlier -- while the original sits aside -- would
+    # make the restore path return a tree that is no longer a git repository.
+    #
+    # So: move the new clone aside for the length of one prune and move it
+    # back. Both steps are instant renames, and every failure leaves both
+    # copies at named paths with the original still intact at aside_path,
+    # which is not deleted until this completes.
+    dereg_path = path.with_name(f".convert-dereg-{path.name}.{os.getpid()}")
+    try:
+        os.rename(path, dereg_path)
+        run_git(canonical_repo_root, "worktree", "prune")
+        os.rename(dereg_path, path)
+    except OSError as exc:
+        raise ConvertCloneError(
+            f"deregistration failed: {exc}. The converted clone is at "
+            f"{dereg_path if dereg_path.exists() else path}; your original is "
+            f"at {aside_path}. Neither has been deleted."
+        ) from exc
+
+    still_registered = run_git(canonical_repo_root, "worktree", "list", "--porcelain")
+    if f"worktree {path}\n" in still_registered.stdout + "\n":
+        raise ConvertCloneError(
+            f"{path} is still registered as a worktree of {canonical_repo_root} "
+            f"after conversion; original preserved at {aside_path}"
+        )
+
+    # Only now is the original expendable -- and only if it is EMPTY of work
+    # the replacement does not carry. A residual window is survivable when the
+    # leftover is moved to a named path and printed, and unrecoverable when it
+    # is deleted.
+    residual = run_git(aside_path, "status", "--porcelain")
+    if residual.stdout.strip():
+        keep = aside_path.with_name(f"{aside_path.name}.keep")
+        os.rename(aside_path, keep)
+        print(
+            f"  NOTE: the original carried uncommitted work at cleanup time; "
+            f"kept at {keep} (NOT deleted):\n{residual.stdout.strip()}",
+            file=sys.stderr,
+        )
+    else:
+        shutil.rmtree(aside_path, ignore_errors=True)
 
     return {
         "converted_at": datetime.now(UTC).isoformat(),
@@ -394,6 +591,9 @@ def convert_worktree_to_clone(path: Path) -> dict[str, object]:
         "head_sha": head_sha,
         "before_git_lstat": before,
         "after_git_lstat": after,
+        "unpushed_commits": unpushed_commits,
+        "origin_before": original_origin,
+        "origin_after": _origin_url(path),
     }
 
 
@@ -432,7 +632,9 @@ def inspect_repo(path: Path) -> RepoStatus:
     detached = branch_proc.returncode != 0
     branch = None if detached else branch_proc.stdout.strip()
 
-    upstream_proc = run_git(path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+    upstream_proc = run_git(
+        path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"
+    )
     upstream = upstream_proc.stdout.strip() if upstream_proc.returncode == 0 else None
 
     dirty_proc = run_git(path, "status", "--porcelain")

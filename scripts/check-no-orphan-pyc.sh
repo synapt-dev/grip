@@ -32,6 +32,17 @@
 #           the directory IS the root, so a root-level __pycache__ read as outside
 #           the root it is inside. Anchor the full path as a case pattern instead.
 #
+#       A NAMED COVERAGE HOLE, so the next person does not meet it as a surprise:
+#       the scan uses `find` WITHOUT `-L`, so it does not descend into a SYMLINKED
+#       directory. A source-less .pyc reachable only through one is never visited,
+#       and the guard reports "0 orphans" and exits 0. That is SILENCE, not a wrong
+#       answer, and it is a real hole: measured 2026-09-22 with a symlinked
+#       directory inside the repo holding an orphan .pyc -- invisible to this scan
+#       (with `-L` it is found immediately). Not fixed here because following
+#       symlinks would also walk out of the tree and change what the scan can reach;
+#       the honest half is saying so. If a tree has symlinked dirs, scan their
+#       targets separately.
+#
 # Why: the release feasibility read found two review tests existing ONLY as stale .pyc
 # with no source; the sources have since landed, so this guard keeps the class from
 # returning rather than fixing an instance. Wire it into CI AFTER pytest so (2) has a
@@ -70,12 +81,14 @@ fi
 # is the wrong one.
 #
 # The question asked of each branch is "does this PATH exist at that branch's
-# tip", answered with `cat-file -e <branch>:<path>`. That is NOT commit
-# containment and must not be "fixed" into `git branch --contains`: containment
-# answers "is this commit OBJECT present", a different question that is wrong in
-# both directions here (see the containment clause in config's claude.md). The
-# path need not be committed on any branch we did NOT check, which is why an
-# unanswerable check says so instead of implying "no branch has it".
+# tip AND is a blob", answered with `cat-file -t <branch>:<path>`. That is NOT
+# commit containment and must not be "fixed" into `git branch --contains`.
+# Containment answers "is this commit OBJECT present", a different question, and it
+# is wrong in BOTH directions here: a rebased or squash-merged commit is ABSENT as
+# an object while its content is present, so "not contained" reads as "did not land"
+# about work that landed. Ask for the PATH at the tip instead. That path need not be
+# committed on any branch we did NOT check, which is why an unanswerable check says
+# so instead of implying "no branch has it".
 
 GITROOT=$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null || true)
 # BOTH SIDES OF THE PREFIX STRIP MUST BE CANONICAL, and this is not theoretical:

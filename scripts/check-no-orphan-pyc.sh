@@ -18,6 +18,20 @@
 #       cannot be answered (scan-root outside a git work tree, or a source path
 #       outside the repo root) the message says UNANSWERED rather than implying no.
 #
+#       Two ways this half was wrong before 2026-09-22, both found by a reviewer's
+#       probes rather than by reading it, and both worth keeping in mind because
+#       they are classes and not instances:
+#         * an existence check that succeeds for the WRONG OBJECT TYPE. `cat-file -e`
+#           answers "is there something at this path", so a DIRECTORY named like the
+#           source satisfied it and a real orphan was excused at exit 0 with a
+#           recovery instruction that would check out a directory. This is the same
+#           family as a control that cannot fail: it is incapable of the one
+#           distinction that matters. We ask `cat-file -t` and require `blob`.
+#         * a boundary computed by whether a STRING CHANGED under a strip, rather
+#           than by path semantics. A trailing-slash prefix has nothing to strip when
+#           the directory IS the root, so a root-level __pycache__ read as outside
+#           the root it is inside. Anchor the full path as a case pattern instead.
+#
 # Why: the release feasibility read found two review tests existing ONLY as stale .pyc
 # with no source; the sources have since landed, so this guard keeps the class from
 # returning rather than fixing an instance. Wire it into CI AFTER pytest so (2) has a
@@ -78,7 +92,14 @@ _branches_carrying() {
   git -C "$GITROOT" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null |
     while IFS= read -r _br; do
       [ -n "$_br" ] || continue
-      git -C "$GITROOT" cat-file -e "$_br:$_rel" 2>/dev/null && printf '%s\n' "$_br"
+      # `cat-file -t` and require blob, NOT `cat-file -e`. `-e` answers "is
+      # there SOMETHING at this path", so a TREE (or a gitlink) named like the
+      # source satisfies it and a real orphan is excused at exit 0 with a
+      # recovery instruction that would check out a directory. An existence
+      # check that succeeds for the wrong object type is the same family as a
+      # control that cannot fail.
+      [ "$(git -C "$GITROOT" cat-file -t "$_br:$_rel" 2>/dev/null)" = blob ] &&
+        printf '%s\n' "$_br"
     done
 }
 
@@ -93,9 +114,19 @@ while IFS= read -r pyc; do
 
   # path relative to the repo root, for <branch>:<path>, canonical on both sides
   srcdir_real=$(_gsp_real "$srcdir")
-  rel=${srcdir_real#"$GITROOT_REAL"/}/$stem.py
-  inside=yes
-  [ -n "$GITROOT_REAL" ] && [ "$rel" != "$srcdir_real/$stem.py" ] || inside=no
+  # The boundary is computed by PATH SEMANTICS, not by whether a string
+  # happened to change under a strip. Two ways the strip form goes wrong: a
+  # trailing-slash prefix fails when srcdir IS the root (nothing to strip, so a
+  # root-level __pycache__ read as outside the root it is inside), and a strip
+  # with no slash boundary accepts a SIBLING that merely shares the root's
+  # prefix. Anchoring the full path as a case pattern settles both.
+  inside=no
+  rel="$srcdir_real/$stem.py"
+  case "$srcdir_real" in
+    "$GITROOT_REAL")   inside=yes; rel="$stem.py" ;;
+    "$GITROOT_REAL"/*) inside=yes; rel="${srcdir_real#"$GITROOT_REAL"/}/$stem.py" ;;
+  esac
+  [ -n "$GITROOT_REAL" ] || { inside=no; rel="$srcdir_real/$stem.py"; }
 
   on_branches=""
   [ "$inside" = yes ] && on_branches=$(_branches_carrying "$rel" | paste -sd, - 2>/dev/null || true)

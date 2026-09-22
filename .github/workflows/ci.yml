@@ -277,6 +277,14 @@ jobs:
       - name: No source-less .pyc
         run: ./scripts/check-no-orphan-pyc.sh
 
+      # The guard's witness. It shipped without one (its own commit added the
+      # script and the step above, and no test), so every branch in it was
+      # asserted only by someone having run it by hand. Runs unconditionally and
+      # before nothing in particular: it builds its own fixture in a temp dir, so
+      # it neither needs pytest nor a populated __pycache__ in this tree.
+      - name: No source-less .pyc (witness)
+        run: ./scripts/check-no-orphan-pyc-selftest.sh
+
   # Summary job for branch protection - requires all jobs except Windows to pass.
   # test-windows runs separately (it is significantly slower) but DOES gate:
   # the aggregate runs under `if: always()`, so a job only fails this check if

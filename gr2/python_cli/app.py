@@ -694,8 +694,8 @@ def workspace_init_from_topology(
     default_unit: str = typer.Option("default", help="Default owner unit for declared repos"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    workspace_root = (workspace_root or Path.cwd()).resolve()
     """Create WorkspaceSpec from neutral ``workspace.toml`` repo declarations."""
+    workspace_root = (workspace_root or Path.cwd()).resolve()
     workspace_root = workspace_root.resolve()
     workspace_name, repos = _declared_workspace_topology(workspace_root)
     spec_path = _write_workspace_spec(
@@ -1950,7 +1950,7 @@ def review_checkout_pr(
 
 @review_app.command("open")
 def review_open(
-    workspace_root: Optional[Path] = typer.Argument(None),
+    workspace_root: Path,
     target: str = typer.Argument(..., help="What to open: a PR number (PR-head lane), a gr:<sha> bind id (reconstruction), or a project-review id"),
     repo: Optional[str] = typer.Argument(None, help="PR-head only: the repository key (with an owner_unit-shaped target)"),
     pr_number: Optional[int] = typer.Argument(None, help="PR-head only: the PR number (legacy positional form)"),
@@ -2003,7 +2003,7 @@ def review_open(
 
     from . import review as review_mod
 
-    workspace_root = _resolve_workspace_root(workspace_root)
+    workspace_root = workspace_root.resolve()
     resolved_lane = lane_name or f"review-{pr_number}"
     # Portable-component validation before any path is composed from these values
     # (they build the lane directory that `close` later deletes).
@@ -2045,7 +2045,7 @@ def review_open(
         expected_head_sha=expected_head,
         base_sha=base_sha,
         lane_repo_root=lane_repo_root,
-        workspace_root=_resolve_workspace_root(workspace_root),
+        workspace_root=workspace_root,
         echo=typer.echo,
     )
 
@@ -2166,7 +2166,7 @@ def pr_create(
 
 @review_app.command("create-project")
 def review_create_project(
-    workspace_root: Optional[Path] = typer.Argument(None),
+    workspace_root: Path,
     owner_unit: str = typer.Argument(..., help="Owner unit whose materialized lane to pin"),
     lane_name: str = typer.Argument(..., help="Materialized lane whose repos to pin at base..head"),
     carry_range: bool = typer.Option(False, "--carry-range", help="Also record each repo's base..head range INSIDE the gr commit, so a pre-push head reconstructs from the commit alone (self-describing). open-project then rebuilds it blobless+sparse without the head on any remote."),
@@ -2191,7 +2191,7 @@ def review_create_project(
     silently pinned against a guessed base).
     """
     from . import workspace_snapshot as ws_snap
-    ws = _resolve_workspace_root(workspace_root)
+    ws = workspace_root.resolve()
     try:
         pins = project_review.pins_from_lane(ws, owner_unit, lane_name)
         ranges: Optional[dict[str, str]] = None
@@ -2234,7 +2234,7 @@ def review_create_project(
 
 @review_app.command("open-project", hidden=True)  # hidden alias for one release, dropped at 2.0 GA
 def review_open_project(
-    workspace_root: Optional[Path] = typer.Argument(None),
+    workspace_root: Path,
     commit: str = typer.Argument(..., help="The project-review-KIND gr commit (gr:<sha> or bare sha); create one with `review create-project`"),
     owner_unit: str = typer.Argument(..., help="Owner unit whose lane the review enters"),
     lane_name: str = typer.Argument(..., help="Review lane name to materialize into and enter"),
@@ -2278,7 +2278,7 @@ def review_open_project(
             local_sources[key.strip()] = Path(path.strip())
     outcome = _review_call(
         open_gr_review.open_gr_enter,
-        _resolve_workspace_root(workspace_root), owner_unit, lane_name, sha, sources,
+        workspace_root.resolve(), owner_unit, lane_name, sha, sources,
         prior_cwd=(prior_cwd.resolve() if prior_cwd is not None else Path.cwd()),
         allow_local=allow_local,
         local_sources=local_sources,
@@ -2297,7 +2297,7 @@ def review_open_project(
 
 @review_app.command("exit-gr", hidden=True)  # hidden alias for one release, dropped at 2.0 GA
 def review_exit_gr(
-    workspace_root: Optional[Path] = typer.Argument(None),
+    workspace_root: Path,
     owner_unit: str = typer.Argument(..., help="Owner unit whose review lane to exit"),
     review_root: Path = typer.Argument(..., help="The review lane root written by `open-project --enter` (holds .grip-open-gr.json)"),
     actor: str = typer.Option("agent:cli", "--actor", help="Actor recorded for the lane exit"),
@@ -2309,7 +2309,7 @@ def review_exit_gr(
     """
     from . import open_gr_review
     result = open_gr_review.exit_gr_review(
-        _resolve_workspace_root(workspace_root), owner_unit, review_root.resolve(), actor=actor
+        workspace_root.resolve(), owner_unit, review_root.resolve(), actor=actor
     )
     if json_output:
         typer.echo(json.dumps({
@@ -2459,7 +2459,7 @@ def review_bind(
 
 @review_app.command("open-gr", hidden=True)  # hidden alias for one release, dropped at 2.0 GA
 def review_open_gr(
-    workspace_root: Optional[Path] = typer.Argument(None),
+    workspace_root: Path,
     commit: str = typer.Argument(..., help="The review bind commit, as gr:<sha> or a bare sha"),
     key: Optional[str] = typer.Option(None, "--repo", help="Repository key to materialize; omit to materialize every bound row into <lane-dir>/<key>"),
     lane_dir: Path = typer.Option(..., "--lane-dir", help="Directory to materialize into (the row's clone for one --repo, or a parent holding one subdir per row)"),
@@ -2487,7 +2487,7 @@ def review_open_gr(
         )
         raise typer.Exit(code=2)
     if key is None:
-        keys = _review_call(grip.review_row_keys, _resolve_workspace_root(workspace_root), sha)
+        keys = _review_call(grip.review_row_keys, workspace_root.resolve(), sha)
         if not keys:
             typer.echo("refused: no_rows: the gr commit binds no repository rows", err=True)
             raise typer.Exit(code=2)
@@ -2502,7 +2502,7 @@ def review_open_gr(
         else:
             results = {
                 row_key: _review_call(
-                    grip.reconstruct_review_lane, _resolve_workspace_root(workspace_root), sha, row_key, root / row_key
+                    grip.reconstruct_review_lane, workspace_root.resolve(), sha, row_key, root / row_key
                 )
                 for row_key in keys
             }
@@ -2516,7 +2516,7 @@ def review_open_gr(
                     typer.echo(f"{row_key}: lane={res['lane']} tree_match={match}")
             return
     result = _review_call(
-        grip.reconstruct_review_lane, _resolve_workspace_root(workspace_root), sha, key, root
+        grip.reconstruct_review_lane, workspace_root.resolve(), sha, key, root
     )
     from . import open_gr_review
     open_gr_review.write_open_gr_marker(root, sha, {key: result})
@@ -2684,13 +2684,13 @@ def review_run(
 
 @review_app.command("verify")
 def review_verify(
-    workspace_root: Optional[Path] = typer.Argument(None),
+    workspace_root: Path,
     commit: str = typer.Argument(..., help="The review bind commit, as gr:<sha> or a bare sha"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Recompute the review gr commit tree from its own objects; a mismatch is
     corruption, not drift."""
-    result = _review_call(grip.verify_review_commit, _resolve_workspace_root(workspace_root), _strip_gr_prefix(commit))
+    result = _review_call(grip.verify_review_commit, workspace_root.resolve(), _strip_gr_prefix(commit))
     if json_output:
         typer.echo(json.dumps(result, indent=2, default=str))
     else:

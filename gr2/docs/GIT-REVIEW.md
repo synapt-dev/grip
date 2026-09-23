@@ -9,7 +9,7 @@ It installs as the console script `git-review`, so git's own `git-<name>`
 convention resolves `git review …` inside any repository.
 
 ```bash
-pip install gitgrip      # brings both `gr2` and `git-review`
+uv tool install --pre gitgrip   # brings both `gr2` and `git-review` (or: pip install --pre gitgrip)
 cd some-clone
 git review open          # bind HEAD (and its tree) as the code under review
 git review run           # run this repo's own tests; record a receipt

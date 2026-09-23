@@ -118,6 +118,25 @@ def _workspace_repo_spec(workspace_root: Path, repo_name: str) -> dict[str, obje
     raise SystemExit(f"repo not found in workspace spec: {repo_name}")
 
 
+def _resolve_workspace_root(workspace_root: Optional[Path] = None) -> Path:
+    """The workspace root for a verb: the argument if given, else the nearest
+    ancestor of the current directory holding ``.grip/workspace_spec.toml``,
+    else the current directory.
+
+    Every verb took this as a REQUIRED bare positional until now, so a stranger
+    running ``gr2 spec validate`` from inside their own workspace got
+    "Missing argument 'workspace_root'" and read the tool as broken. The
+    explicit form is unchanged: a value passed in wins, and is still resolved.
+    """
+    if workspace_root is not None:
+        return workspace_root.resolve()
+    cwd = Path.cwd().resolve()
+    return next(
+        (path for path in (cwd, *cwd.parents) if (path / ".grip" / "workspace_spec.toml").is_file()),
+        cwd,
+    )
+
+
 def _workspace_spec_path(workspace_root: Path) -> Path:
     return workspace_root / ".grip" / "workspace_spec.toml"
 
@@ -591,7 +610,7 @@ def sync_status(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Inspect workspace-wide sync readiness without mutating any repo state."""
-    workspace_root = (workspace_root or Path.cwd()).resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     plan = syncops.build_sync_plan(workspace_root, dirty_mode=dirty_mode, probe_remotes=True)
     if json_output:
         typer.echo(json.dumps(plan.as_dict(), indent=2))
@@ -601,12 +620,12 @@ def sync_status(
 
 @sync_app.command("run")
 def sync_run(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     dirty_mode: str = typer.Option("block", "--dirty", help="Dirty-state handling: block (stop, the default), stash, or discard"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Execute the current sync plan, stopping on the first blocking runtime failure."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     result = syncops.run_sync(workspace_root, dirty_mode=dirty_mode)
     if json_output:
         typer.echo(json.dumps(result.as_dict(), indent=2))
@@ -671,11 +690,12 @@ def workspace_init(
 
 @workspace_app.command("init-from-topology")
 def workspace_init_from_topology(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     default_unit: str = typer.Option("default", help="Default owner unit for declared repos"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Create WorkspaceSpec from neutral ``workspace.toml`` repo declarations."""
+    workspace_root = (workspace_root or Path.cwd()).resolve()
     workspace_root = workspace_root.resolve()
     workspace_name, repos = _declared_workspace_topology(workspace_root)
     spec_path = _write_workspace_spec(
@@ -710,13 +730,13 @@ def workspace_init_from_topology(
 
 @workspace_app.command("materialize")
 def workspace_materialize(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     yes: bool = typer.Option(False, "--yes", help="Pre-approve plans with more than 3 operations"),
     manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Read workspace_spec.toml and apply the current workspace materialization plan."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     payload = spec_apply.apply_plan(workspace_root, yes=yes, manual_hooks=manual_hooks)
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
@@ -730,7 +750,7 @@ def workspace_status_cmd(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Show workspace state: gr1-only, gr2-only, coexistence, or none."""
-    workspace_root = (workspace_root or Path.cwd()).resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     payload = migration.workspace_status(workspace_root)
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
@@ -779,11 +799,11 @@ def workspace_convert_clone_cmd(
 
 @workspace_app.command("detect-gr1")
 def workspace_detect_gr1(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Detect gr1 layout and report repo, reference-repo, and agent counts."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     payload = migration.detect_gr1_workspace(workspace_root)
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
@@ -795,13 +815,13 @@ def workspace_detect_gr1(
 
 @workspace_app.command("migrate-gr1")
 def workspace_migrate_gr1(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     force: bool = typer.Option(False, "--force", help="Allow overwrite of an existing .grip/workspace_spec.toml"),
     apply: bool = typer.Option(False, "--apply", help="After migration, validate and apply the spec in one step"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Convert an existing gr1 (.gitgrip) workspace into parallel gr2 (.grip) layout."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     payload = migration.migrate_gr1_workspace(workspace_root, force=force)
     if apply:
         issues = spec_apply.validate_spec(workspace_root)
@@ -825,12 +845,12 @@ def workspace_migrate_gr1(
 
 @workspace_app.command("migrate-lane-state")
 def workspace_migrate_lane_state(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     receipt: Path = typer.Option(..., "--receipt", help="New receipt path naming every lane tree the migration moved"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Move legacy agents/<unit>/lanes/<lane>/ trees to .grip/state/lanes/<unit>/<lane>/ once, with a receipt."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     payload = migration.migrate_lane_state(workspace_root, receipt_path=receipt)
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
@@ -843,7 +863,7 @@ def workspace_migrate_lane_state(
 
 @workspace_app.command("bootstrap-gr1")
 def workspace_bootstrap_gr1(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     regenerate: bool = typer.Option(False, "--regenerate", help="Atomically regenerate an existing generated spec"),
     expected_spec_sha256: Optional[str] = typer.Option(None, "--expected-spec-sha256"),
@@ -852,7 +872,7 @@ def workspace_bootstrap_gr1(
     expected_current_spec_sha256: Optional[str] = typer.Option(None, "--expected-current-spec-sha256"),
 ) -> None:
     """Compile the canonical gr1 manifest and initialize the gr2 grip store."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     if rollback_receipt is not None:
         if regenerate or expected_spec_sha256 is not None:
             raise typer.BadParameter("--rollback-receipt is mutually exclusive with regeneration inputs")
@@ -889,21 +909,21 @@ def workspace_bootstrap_gr1(
 
 @spec_app.command("show")
 def spec_show(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Show the current workspace spec."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     typer.echo(spec_apply.show_spec(workspace_root, json_output=json_output))
 
 
 @spec_app.command("validate")
 def spec_validate(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Validate the current workspace spec."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     issues = spec_apply.validate_spec(workspace_root)
     payload = {
         "workspace_root": str(workspace_root),
@@ -920,11 +940,11 @@ def spec_validate(
 
 @app.command("plan")
 def workspace_plan(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Build a Python gr2 execution plan from the workspace spec."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     _, operations = spec_apply.build_plan(workspace_root)
     if json_output:
         typer.echo(json.dumps([item.as_dict() for item in operations], indent=2))
@@ -934,13 +954,13 @@ def workspace_plan(
 
 @app.command("apply")
 def workspace_apply(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     yes: bool = typer.Option(False, "--yes", help="Pre-approve plans with more than 3 operations"),
     manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Apply the Python gr2 execution plan."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     payload = spec_apply.apply_plan(workspace_root, yes=yes, manual_hooks=manual_hooks)
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
@@ -1396,13 +1416,13 @@ def exec_run(
 
 @repo_app.command("status")
 def repo_status(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     spec: Optional[Path] = typer.Option(None, help="Path to workspace_spec.toml"),
     policy: Optional[Path] = typer.Option(None, help="Optional repo maintenance policy TOML"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Show repo maintenance status without mutating workspace state."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     spec_path = (spec or workspace_root / ".grip" / "workspace_spec.toml").resolve()
     if not spec_path.exists():
         # A single-repo path used to traceback FileNotFoundError out of
@@ -2379,7 +2399,7 @@ def _normalize_review_row(raw: object) -> dict:
 
 @review_app.command("bind")
 def review_bind(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     key: Optional[str] = typer.Option(None, "--repo", help="Repository key for a single bound row"),
     remote: Optional[str] = typer.Option(None, "--remote", help="Remote URL or path of the row"),
     base: Optional[str] = typer.Option(None, "--base", help="Base SHA (must be the live remote head of --ref)"),
@@ -2433,7 +2453,7 @@ def review_bind(
             except OSError as exc:
                 raise typer.BadParameter(f"--from-range {from_range}: {exc.strerror or exc}")
         rows = [row]
-    commit = _review_call(grip.create_review_bind_commit, workspace_root.resolve(), rows, ratified=ratified)
+    commit = _review_call(grip.create_review_bind_commit, _resolve_workspace_root(workspace_root), rows, ratified=ratified)
     typer.echo(f"gr:{commit}")
 
 

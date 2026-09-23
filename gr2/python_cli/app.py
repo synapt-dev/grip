@@ -636,6 +636,44 @@ def sync_run(
         raise typer.Exit(code=1)
 
 
+def _superproject_report(
+    workspace_root: Path, repos: list[dict[str, object]]
+) -> dict[str, int] | None:
+    """Superproject facts about a root, or None when it is not one.
+
+    None and ``{"members": 0}`` are deliberately different answers: the first
+    says this root is not a superproject, the second would print a claim about
+    zero members on every workspace.
+
+    Membership comes from the predicate and the STATE is looked up beside it,
+    never the other way round. Reading the member list off the states meant a
+    state that could not be determined removed its member from the report --
+    a SHA-256 member's detached HEAD read as nothing under a 40-character test,
+    and the superproject line disappeared from a root that plainly has one.
+    """
+    members: list[str] = []
+    for repo in repos:
+        path = workspace_root / str(repo["path"])
+        if not repo_proto.is_submodule_member(path):
+            continue
+        members.append(repo_proto.submodule_member_state(path) or "unknown")
+    if not members:
+        return None
+    return {
+        "members": len(members),
+        "detached": sum(1 for state in members if state == "detached"),
+        "unknown": sum(1 for state in members if state == "unknown"),
+    }
+
+
+def _superproject_line(report: dict[str, int]) -> str:
+    return (
+        f"superproject = true (members: {report['members']} pinned, "
+        f"{report['detached']} detached) -- the root is adopted; "
+        "its branches and worktree are untouched"
+    )
+
+
 @workspace_app.command("init")
 def workspace_init(
     workspace_root: Optional[Path] = typer.Argument(None),
@@ -656,6 +694,10 @@ def workspace_init(
         lines.extend(_bare_note_lines(workspace_root, bare))
         raise SystemExit("\n".join(lines))
     spec_path = _write_workspace_spec(workspace_root, repos, default_unit)
+    # A root that is already a superproject is the entry the launch copy leads
+    # with ("point gr2 at your existing superproject"), and `repo_count` alone
+    # does not say it: the adopted root is the thing, not the member count.
+    superproject = _superproject_report(workspace_root, repos)
     payload = {
         "workspace_root": str(workspace_root),
         "spec_path": str(spec_path),
@@ -664,6 +706,7 @@ def workspace_init(
         "default_unit": default_unit,
         "repos_without_url": [repo["name"] for repo in repos if not repo["url"]],
         "bare_repos_not_added": [item.name for item in bare],
+        "superproject": superproject,
     }
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
@@ -674,8 +717,10 @@ def workspace_init(
             f"spec_path = {spec_path}",
             f"default_unit = {default_unit}",
             f"repo_count = {len(repos)}",
-            "REPOS",
         ]
+        if superproject is not None:
+            lines.append(_superproject_line(superproject))
+        lines.append("REPOS")
         lines.extend(f"- {repo['name']}\t{repo['path']}\t{repo['url'] or '-'}" for repo in repos)
         lines.extend(_bare_note_lines(workspace_root, bare))
         without_url = [repo for repo in repos if not repo["url"]]

@@ -346,26 +346,183 @@ def is_git_dir_symlink(path: Path) -> bool:
     return stat.S_ISLNK(mode)
 
 
-def is_linked_worktree(path: Path) -> bool:
-    """A repo path IS a linked worktree (``git worktree add``), not an own
-    clone and not a symlinked ``.git`` (see ``is_git_dir_symlink``).
+_HEX = frozenset("0123456789abcdef")
 
-    Deliberately does not consult ``git rev-parse --is-inside-work-tree`` --
-    that answers TRUE inside a linked worktree just as it does inside a real
-    clone (the same trap ``clone_exec.py``'s ``verify_clone_isolation``
-    docstring names for gr2's lane-clone path), so it can't distinguish the
-    two. A plain clone's ``.git`` is a directory; ``git worktree add``
-    replaces it with a text file (``gitdir: <path>``). lstat, not
-    ``Path.is_dir()``, which follows a symlink.
+
+def _git_pointer_target(path: Path) -> Path | None:
+    """The gitdir a repo path's ``.git`` POINTER FILE names.
+
+    None when ``.git`` is not a regular file -- absent, a directory (an own
+    clone), or a symlink (``is_git_dir_symlink``'s case, checked first by the
+    callers so it does not double-report).
+
+    The target comes back resolved against ``path``, because git records it
+    relative to the worktree (``gitdir: ../.git/modules/<name>``) as often as
+    absolutely (``gitdir: /abs/path/.git/worktrees/<id>``).
     """
     git_path = path / ".git"
     try:
         mode = git_path.lstat().st_mode
     except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(mode):
+        return None
+    try:
+        text = git_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith("gitdir:"):
+            raw = line[len("gitdir:") :].strip()
+            if not raw:
+                return None
+            target = Path(raw)
+            return target if target.is_absolute() else (path / target)
+    return None
+
+
+def is_linked_worktree(path: Path) -> bool:
+    """A repo path IS a linked worktree (``git worktree add``): not an own
+    clone, not a symlinked ``.git`` (see ``is_git_dir_symlink``), and NOT a
+    submodule member (see ``is_submodule_member``).
+
+    Deliberately does not consult ``git rev-parse --is-inside-work-tree`` --
+    that answers TRUE inside a linked worktree just as it does inside a real
+    clone (the same trap ``clone_exec.py``'s ``verify_clone_isolation``
+    docstring names for gr2's lane-clone path), so it can't distinguish the
+    two.
+
+    A pointer file alone is NOT the answer, and believing it was cost a user a
+    dead end: a SUBMODULE member's ``.git`` is a pointer file too, so every
+    member of a converted superproject was reported as a worktree and sent to
+    ``convert-clone``, which exits 1 there. The two are told apart by the
+    admin dir git leaves behind -- see ``_is_worktree_admin_dir``.
+    """
+    target = _git_pointer_target(path)
+    if target is None:
         return False
-    if stat.S_ISLNK(mode):
+    return _is_worktree_admin_dir(target)
+
+
+def _is_worktree_admin_dir(gitdir: Path) -> bool:
+    """Is ``gitdir`` a WORKTREE admin dir, rather than a repository git dir?
+
+    Measured on two real fixtures rather than read off git's documented layout,
+    and corroborated against git's own structural answer in the tests
+    (``rev-parse --git-dir`` differs from ``--git-common-dir`` for a worktree
+    and is identical for a submodule). ``git worktree add`` writes both a
+    ``gitdir`` back-pointer to the worktree's ``.git`` file and a ``commondir``
+    naming the shared dir; a submodule's module dir has neither, holding
+    ``config``/``objects``/``refs`` instead because it is a real git dir.
+
+    Both markers are required, so a directory carrying only one of them is not
+    claimed as a worktree: the false direction here is the one that advises a
+    conversion, and ``convert-clone`` refuses anything it cannot actually
+    convert.
+    """
+    try:
+        return (gitdir / "gitdir").is_file() and (gitdir / "commondir").is_file()
+    except OSError:
         return False
-    return not stat.S_ISDIR(mode)
+
+
+def _module_config_worktree(gitdir: Path) -> Path | None:
+    """The ``core.worktree`` a git dir's own config names, or None if it sets none.
+
+    Hand-parsed rather than run through ``configparser``: the file is INI, but
+    the one value needed here is a PATH, and a general parser would be a wider
+    surface than the single key this reads.
+    """
+    try:
+        text = (gitdir / "config").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    section = ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip().lower()
+            continue
+        if section != "core" or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        if key.strip().lower() != "worktree":
+            continue
+        value = value.strip()
+        if not value:
+            return None
+        target = Path(value)
+        return target if target.is_absolute() else (gitdir / target)
+    return None
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return False
+
+
+def is_submodule_member(path: Path) -> bool:
+    """A repo path is a SUBMODULE member: its ``.git`` file points at a module
+    dir whose own config says that dir's worktree is THIS path.
+
+    The test is git's own ``core.worktree``, not a path component. An earlier
+    form matched a directory named ``modules`` anywhere in the gitdir path, and
+    a ``--separate-git-dir`` clone whose git dir sits under such a directory was
+    then claimed as a member -- with git itself answering that there is no
+    superproject. Both shapes point outside a ``worktrees`` admin dir, so the
+    admin-dir test alone cannot separate them; what separates them is that
+    ``git submodule add`` writes ``worktree = <path back to the member>`` into
+    the module config and a ``--separate-git-dir`` clone writes no ``worktree``
+    key at all. Measured on both fixtures.
+
+    Claiming this shape matters because the claim is user-visible: a member is
+    reported as a superproject member and is never advised to convert.
+
+    A submodule created with ``absorbgitdirs`` disabled keeps a real ``.git``
+    directory inside the member and satisfies NEITHER this predicate nor
+    ``is_linked_worktree``; it reads as a plain repo, which is the safe answer
+    because nothing is then advised about it.
+    """
+    target = _git_pointer_target(path)
+    if target is None or _is_worktree_admin_dir(target):
+        return False
+    worktree = _module_config_worktree(target)
+    if worktree is None:
+        return False
+    return _same_path(worktree, path)
+
+
+def submodule_member_state(path: Path) -> str | None:
+    """``"detached"``, ``"branch"`` or ``"unknown"`` for a submodule member, and
+    None only when the path is not a member at all.
+
+    Read from the member's own ``HEAD``: git records a detached head as the bare
+    object id and an attached one as ``ref: refs/heads/<name>``. The object id
+    is 40 hex characters under SHA-1 and **64 under SHA-256**, and a reader that
+    accepted exactly 40 read a SHA-256 member as no state at all -- which
+    dropped it out of the member count and took the superproject line off
+    ``workspace init``'s output entirely. So any all-hex HEAD is detached, and
+    anything unrecognised is ``"unknown"`` rather than nothing: an unreadable
+    state must not silently remove a member from the report.
+    """
+    if not is_submodule_member(path):
+        return None
+    target = _git_pointer_target(path)
+    if target is None:
+        return None
+    try:
+        head = (target / "HEAD").read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return "unknown"
+    if head.startswith("ref:"):
+        return "branch"
+    if head and all(char in _HEX for char in head.lower()):
+        return "detached"
+    return "unknown"
 
 
 class ConvertCloneError(Exception):
@@ -480,6 +637,13 @@ def convert_worktree_to_clone(path: Path) -> dict[str, object]:
         raise ConvertCloneError(
             f"{path}: .git is a symlink into another clone's git state, not a "
             "linked worktree -- remove the symlink and re-clone instead"
+        )
+
+    if is_submodule_member(path):
+        raise ConvertCloneError(
+            f"{path}: a submodule member of a superproject, not a linked "
+            "worktree -- nothing to convert; gr2 moves member heads in its own "
+            "lane clones and leaves the superproject's members in place"
         )
 
     if not is_linked_worktree(path):

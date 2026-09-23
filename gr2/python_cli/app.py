@@ -586,12 +586,12 @@ def _consume_lane_transition(outcome: lane_proto.LaneTransitionOutcome | int) ->
 
 @sync_app.command("status")
 def sync_status(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     dirty_mode: str = typer.Option("block", "--dirty", help="Dirty-state handling: block (stop, the default), stash, or discard"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Inspect workspace-wide sync readiness without mutating any repo state."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = (workspace_root or Path.cwd()).resolve()
     plan = syncops.build_sync_plan(workspace_root, dirty_mode=dirty_mode, probe_remotes=True)
     if json_output:
         typer.echo(json.dumps(plan.as_dict(), indent=2))
@@ -726,11 +726,11 @@ def workspace_materialize(
 
 @workspace_app.command("status")
 def workspace_status_cmd(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Show workspace state: gr1-only, gr2-only, coexistence, or none."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = (workspace_root or Path.cwd()).resolve()
     payload = migration.workspace_status(workspace_root)
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
@@ -782,7 +782,7 @@ def workspace_detect_gr1(
     workspace_root: Path,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Detect whether a workspace is using the gr1 (.gitgrip) layout."""
+    """Detect gr1 layout and report repo, reference-repo, and agent counts."""
     workspace_root = workspace_root.resolve()
     payload = migration.detect_gr1_workspace(workspace_root)
     if json_output:

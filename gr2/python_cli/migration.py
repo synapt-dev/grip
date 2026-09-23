@@ -15,6 +15,7 @@ import yaml
 
 from . import grip
 from .gitops import git
+from .workspace_guidance import GR1_ONLY_NEXT_STEP
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 from gr2.prototypes import repo_maintenance_prototype as repo_proto
 
@@ -982,6 +983,8 @@ def render_status(payload: dict[str, object]) -> str:
     ]
     if payload["gr1"]:
         lines.append(f"gr1 = true (repos: {payload.get('gr1_repo_count', '?')})")
+        if payload["phase"] == "gr1-only":
+            lines.append(GR1_ONLY_NEXT_STEP)
     if payload["gr2"]:
         lines.append(f"gr2 = true (repos: {payload.get('gr2_repo_count', '?')}, units: {payload.get('gr2_unit_count', '?')})")
     if payload["coexistence"]:

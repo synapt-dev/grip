@@ -30,6 +30,7 @@ from .gitops import (
 )
 from .events import EventType, emit, emit_after_outcome
 from .hooks import load_repo_hooks
+from .workspace_guidance import missing_gr2_workspace_guidance
 from .spec_apply import (
     ValidationIssue,
     _run_materialize_hooks,
@@ -257,9 +258,13 @@ def build_sync_plan(
     dirty_mode = _normalize_dirty_mode(dirty_mode)
     spec_path = workspace_spec_path(workspace_root)
     if not spec_path.exists():
+        next_step = missing_gr2_workspace_guidance(
+            workspace_root,
+            "run `gr2 workspace init <path>` first or create .grip/workspace_spec.toml explicitly",
+        )
         raise SystemExit(
             f"workspace spec not found: {spec_path}\n"
-            "run `gr2 workspace init <path>` first or create .grip/workspace_spec.toml explicitly"
+            f"{next_step}"
         )
 
     issues: list[SyncIssue] = []

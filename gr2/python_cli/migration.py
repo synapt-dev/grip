@@ -15,6 +15,7 @@ import yaml
 
 from . import grip
 from .gitops import git
+from .workspace_guidance import GR1_ONLY_NEXT_STEP
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 from gr2.prototypes import repo_maintenance_prototype as repo_proto
 
@@ -95,6 +96,22 @@ def migrate_gr1_workspace(workspace_root: Path, *, force: bool = False) -> dict[
     migration_dir.mkdir(parents=True, exist_ok=True)
     snapshots = preserve_gr1_state(workspace_root, migration_dir)
     summary_path = migration_dir / "migration-summary.json"
+    # The spec declares every unit at agents/<unit>/home with the same writable-repo
+    # list; the unit's real gr1 working tree lives only in migration_source.worktree,
+    # which nothing else reads. Record the ones that were NOT adopted, so a migration
+    # that adopts nothing cannot print the same receipt as one that adopts everything.
+    not_adopted: list[dict[str, str]] = []
+    for unit in compiled["units"]:
+        source = unit.get("migration_source") or {}
+        if not isinstance(source, dict):
+            continue
+        # The field is a NAME in gr1's manifest. A list, mapping or number is
+        # malformed input: its repr is not a worktree, and a receipt line that
+        # names nothing is worse than no line.
+        worktree = source.get("worktree")
+        if isinstance(worktree, str) and worktree.strip():
+            not_adopted.append({"unit": str(unit["name"]), "worktree": worktree.strip()})
+    not_adopted.sort(key=lambda row: (row["unit"], row["worktree"]))
     summary = {
         "source": "gr1",
         "workspace_root": str(workspace_root),
@@ -102,6 +119,7 @@ def migrate_gr1_workspace(workspace_root: Path, *, force: bool = False) -> dict[
         "repo_count": len(compiled["repos"]),
         "unit_count": len(compiled["units"]),
         "snapshots": snapshots,
+        "not_adopted": not_adopted,
     }
     summary_path.write_text(json.dumps(summary, indent=2) + "\n")
 
@@ -885,6 +903,15 @@ def render_migration(payload: dict[str, object]) -> str:
         "UNITS",
     ]
     lines.extend(f"- {unit}" for unit in payload["units"])
+    not_adopted = payload.get("not_adopted") or []
+    if not_adopted:
+        lines.append("NOT ADOPTED")
+        lines.extend(f"- {row['unit']}: {row['worktree']}" for row in not_adopted)
+        lines.append(
+            f"{len(not_adopted)} gr1 worktree(s) recorded in the gr1 agents manifest were not adopted"
+            " into this workspace: their contents were not inspected. Units are declared at"
+            " agents/<unit>/home."
+        )
     lines.append("SNAPSHOTS")
     lines.extend(f"- {name}\t{path}" for name, path in payload["snapshots"].items())
     return "\n".join(lines)
@@ -956,6 +983,8 @@ def render_status(payload: dict[str, object]) -> str:
     ]
     if payload["gr1"]:
         lines.append(f"gr1 = true (repos: {payload.get('gr1_repo_count', '?')})")
+        if payload["phase"] == "gr1-only":
+            lines.append(GR1_ONLY_NEXT_STEP)
     if payload["gr2"]:
         lines.append(f"gr2 = true (repos: {payload.get('gr2_repo_count', '?')}, units: {payload.get('gr2_unit_count', '?')})")
     if payload["coexistence"]:

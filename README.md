@@ -50,7 +50,7 @@ isolated lanes to work in, and one grouped review per slice. Install the alpha
 from PyPI (the package is `gitgrip`; the command is `gr2`):
 
 ```bash
-pip install --pre gitgrip
+uv tool install --pre gitgrip     # or: pip install --pre gitgrip
 ```
 
 Start with [gr2/README.md](gr2/README.md) for the five-minute walk. Everything

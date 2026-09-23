@@ -25,8 +25,9 @@ pip install -e gr2/          # editable, runnable as `gr2`
 pip install -e "gr2[dev]"     # with dev/test extras (see Development)
 ```
 
-`pip install gitgrip` on PyPI installs the `gr2` command (a pre-release needs
-`pip install --pre gitgrip`); the checkout install is for running unreleased
+`uv tool install --pre gitgrip` (or `pip install --pre gitgrip`) installs the
+`gr2` command from PyPI; every release so far is a pre-release, so `--pre` is
+needed until 2.0.0. The checkout install is for running unreleased
 dev from the repo. The brew and cargo packages are the Rust gr1 `gr`.
 
 ## Quick start

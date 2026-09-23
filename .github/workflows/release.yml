@@ -267,11 +267,12 @@ jobs:
             ### From PyPI
 
             ```bash
-            pipx install gitgrip==${{ needs.build-wheel.outputs.version }}
+            uv tool install gitgrip==${{ needs.build-wheel.outputs.version }}
+            # or: pipx install gitgrip==${{ needs.build-wheel.outputs.version }}
             # or: pip install gitgrip==${{ needs.build-wheel.outputs.version }}
             ```
 
-            `pip install gitgrip` provides the `gr2` CLI. The Rust CLI (`gr`) ships
+            The `gitgrip` package on PyPI provides the `gr2` CLI. The Rust CLI (`gr`) ships
             separately on crates.io and GitHub under the `vX.Y.Z` tags.
 
             Learn more: [gr2/docs/GR2-MVP.md](https://github.com/${{ github.repository }}/blob/${{ github.sha }}/gr2/docs/GR2-MVP.md)

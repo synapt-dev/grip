@@ -45,7 +45,19 @@ def _effective_remote_url(url: str) -> str:
     return url
 
 
-def git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def git(
+    cwd: Path, *args: str, timeout: float | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run git. `timeout` bounds the call; an expiry is a FAILED result, not a raise.
+
+    A timeout is a way of not finding out, and callers here already have a shape for
+    that: a non-zero return code. Returning `returncode=124` (the conventional
+    timeout code) with an empty stdout keeps them total, and keeps an unanswered
+    remote on the same channel as a refused one instead of adding an exception every
+    caller must remember to catch. Measured need: `ls-remote` against a peer that
+    accepts and never replies blocks indefinitely, which is how a bound became
+    necessary rather than nice.
+    """
     try:
         return subprocess.run(
             ["git", *args],
@@ -53,6 +65,14 @@ def git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
             capture_output=True,
             text=True,
             check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            ["git", *args],
+            124,
+            stdout="",
+            stderr=f"git timed out after {timeout}s",
         )
     except FileNotFoundError as exc:
         # The spawn itself failed because the git EXECUTABLE is absent

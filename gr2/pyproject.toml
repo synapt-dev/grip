@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 # One product name across both indexes: `cargo install gitgrip` gives `gr`,
-# `pip install gitgrip` gives `gr2` (the console script below). The import
+# `uv tool install --pre gitgrip` gives `gr2` (the console script below). The import
 # package is `gr2`; `gr2_overlay` survives only as a deprecated compat shim.
 name = "gitgrip"
 # gr2 versions independently of the Rust crate: the Python distribution owns this
 # number and it is not derived from Cargo.toml. gr1 releases as crates.io/GitHub
 # `v1.x.y`; gr2 releases as PyPI `gr2/v2.x.y`. Runtime reads it via
 # importlib.metadata.version("gitgrip"), never a checked-in file.
-version = "2.0.0a2"
+version = "2.0.0a3"
 description = "Workspace layer for multi-repo work: workspaces, isolated lanes, and one grouped review per slice"
 readme = "README.md"
 requires-python = ">=3.11"

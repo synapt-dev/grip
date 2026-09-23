@@ -20,6 +20,7 @@ from . import commit as commit_ops
 from . import execops, failures, grip, migration, spec_apply, syncops
 from . import gitops
 from . import pr as pr_ops
+from .platform import AdapterError
 from . import prune as prune_ops
 from . import target as target_ops
 from . import project_review
@@ -585,12 +586,12 @@ def _consume_lane_transition(outcome: lane_proto.LaneTransitionOutcome | int) ->
 
 @sync_app.command("status")
 def sync_status(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     dirty_mode: str = typer.Option("block", "--dirty", help="Dirty-state handling: block (stop, the default), stash, or discard"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Inspect workspace-wide sync readiness without mutating any repo state."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = (workspace_root or Path.cwd()).resolve()
     plan = syncops.build_sync_plan(workspace_root, dirty_mode=dirty_mode, probe_remotes=True)
     if json_output:
         typer.echo(json.dumps(plan.as_dict(), indent=2))
@@ -617,12 +618,12 @@ def sync_run(
 
 @workspace_app.command("init")
 def workspace_init(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     default_unit: str = typer.Option("default", help="Default owner unit for scanned repos"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Create a bare workspace_spec.toml by scanning an existing directory of repos."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = (workspace_root or Path.cwd()).resolve()
     repos = _scan_existing_repos(workspace_root)
     bare = _scan_bare_repos(workspace_root)
     if not repos and not bare:
@@ -725,16 +726,30 @@ def workspace_materialize(
 
 @workspace_app.command("status")
 def workspace_status_cmd(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Show workspace state: gr1-only, gr2-only, coexistence, or none."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = (workspace_root or Path.cwd()).resolve()
     payload = migration.workspace_status(workspace_root)
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
     else:
         typer.echo(migration.render_status(payload))
+
+
+@app.command("status")
+def status_cmd() -> None:
+    """Show branch, upstream, and working-tree status for this workspace."""
+    # This is intentionally a route, not a second status implementation: the
+    # operational status table already belongs to `repo status`.  `workspace
+    # status` answers the different question of which workspace layout exists.
+    cwd = Path.cwd().resolve()
+    workspace_root = next(
+        (path for path in (cwd, *cwd.parents) if (path / ".grip" / "workspace_spec.toml").is_file()),
+        cwd,
+    )
+    repo_status(workspace_root, spec=None, policy=None, json_output=False)
 
 
 @workspace_app.command("convert-clone")
@@ -767,7 +782,7 @@ def workspace_detect_gr1(
     workspace_root: Path,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Detect whether a workspace is using the gr1 (.gitgrip) layout."""
+    """Detect gr1 layout and report repo, reference-repo, and agent counts."""
     workspace_root = workspace_root.resolve()
     payload = migration.detect_gr1_workspace(workspace_root)
     if json_output:
@@ -2891,8 +2906,22 @@ def pr_merge(
 
 
 def main() -> None:
-    app()
+    """Console-script entry point, and the ONE place an AdapterError becomes a sentence.
+
+    An adapter's failure arrives as an exception that already carries the forge's own
+    message — a remote that is not a forge URL, a head branch equal to its base.
+    Uncaught, it reaches the user as a Python traceback in place of the refusal it
+    already is, which is what a stranger met on the first-run path. Catching it here,
+    once, covers every adapter a user may plug in rather than one check per trigger:
+    adapters are exactly the part of this CLI the team does not write.
+    """
+    try:
+        app()
+    except AdapterError as exc:
+        typer.echo(f"gr2: {exc}", err=True)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":
-    app()
+    # Same reason as __main__.py: one boundary, and every way in goes through it.
+    main()

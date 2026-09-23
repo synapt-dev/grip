@@ -946,7 +946,6 @@ def classify(target: RepoTarget, status: RepoStatus, policy: RepoPolicy) -> Plan
 
 def render_table(actions: list[PlannedAction]) -> str:
     lines = [
-        "gr2 repo-maintenance prototype",
         "SCOPE\tTARGET\tREPO\tACTION\tBRANCH\tUPSTREAM\tSTATE\tREASON",
     ]
     for item in actions:

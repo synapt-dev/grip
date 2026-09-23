@@ -618,12 +618,12 @@ def sync_run(
 
 @workspace_app.command("init")
 def workspace_init(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     default_unit: str = typer.Option("default", help="Default owner unit for scanned repos"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Create a bare workspace_spec.toml by scanning an existing directory of repos."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = (workspace_root or Path.cwd()).resolve()
     repos = _scan_existing_repos(workspace_root)
     bare = _scan_bare_repos(workspace_root)
     if not repos and not bare:
@@ -736,6 +736,20 @@ def workspace_status_cmd(
         typer.echo(json.dumps(payload, indent=2))
     else:
         typer.echo(migration.render_status(payload))
+
+
+@app.command("status")
+def status_cmd() -> None:
+    """Show branch, upstream, and working-tree status for this workspace."""
+    # This is intentionally a route, not a second status implementation: the
+    # operational status table already belongs to `repo status`.  `workspace
+    # status` answers the different question of which workspace layout exists.
+    cwd = Path.cwd().resolve()
+    workspace_root = next(
+        (path for path in (cwd, *cwd.parents) if (path / ".grip" / "workspace_spec.toml").is_file()),
+        cwd,
+    )
+    repo_status(workspace_root, spec=None, policy=None, json_output=False)
 
 
 @workspace_app.command("convert-clone")

@@ -5,12 +5,21 @@
 ## Install
 
 ```bash
-python3 -m venv ~/gr2-venv && source ~/gr2-venv/bin/activate
-pip install --pre gitgrip        # the PyPI package is "gitgrip"; the command is "gr2"
+uv tool install --pre gitgrip    # the PyPI package is "gitgrip"; the command is "gr2"
 gr2 --version
 ```
 
-`--pre` is required while 2.x is an alpha — without it pip installs 1.5.1, which is gr1. To run unreleased development code instead, install from a checkout: `pip install -e gr2/` from the repository root.
+Without uv, a venv and pip do the same:
+
+```bash
+python3 -m venv ~/gr2-venv && source ~/gr2-venv/bin/activate
+pip install --pre gitgrip
+gr2 --version
+```
+
+`--pre` is required while every gr2 release is an alpha: 1.5.0 and 1.5.1 were pre-alpha builds and are yanked, so without `--pre` there is nothing to install.
+
+Already installed 1.5.0 or 1.5.1? The install commands above leave it in place, because an installed version already satisfies them. Upgrade explicitly: `uv tool upgrade --prerelease allow gitgrip`, or `pip install --pre -U gitgrip`. To run unreleased development code instead, install from a checkout: `pip install -e gr2/` from the repository root.
 
 The Rust `gr` (gr1, 1.x) installs with `brew install synapt-dev/tap/gitgrip` or `cargo install gitgrip`. The two do not collide; you can have both installed.
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 # One product name across both indexes: `cargo install gitgrip` gives `gr`,
-# `pip install gitgrip` gives `gr2` (the console script below). The import
+# `uv tool install --pre gitgrip` gives `gr2` (the console script below). The import
 # package is `gr2`; `gr2_overlay` survives only as a deprecated compat shim.
 name = "gitgrip"
 # gr2 versions independently of the Rust crate: the Python distribution owns this

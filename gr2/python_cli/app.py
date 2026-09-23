@@ -18,6 +18,7 @@ from . import add as add_ops
 from . import branch as branch_ops
 from . import commit as commit_ops
 from . import execops, failures, grip, migration, spec_apply, syncops
+from . import gitinclude
 from . import gitops
 from . import pr as pr_ops
 from .platform import AdapterError
@@ -742,6 +743,45 @@ def workspace_materialize(
         typer.echo(json.dumps(payload, indent=2))
     else:
         typer.echo(spec_apply.render_apply_result(payload))
+
+
+@workspace_app.command("gitinclude")
+def workspace_gitinclude(
+    workspace_root: Optional[Path] = typer.Argument(None),
+    check: bool = typer.Option(False, "--check", help="Report without writing .gitignore"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Compile .gitinclude into the root .gitignore, reporting every refused line.
+
+    Exits non-zero when any line was refused, in both modes. A refused line is
+    content the declaration asked to track and that will NOT be tracked, which is
+    the silent-drop class this verb exists to make loud, so a run with refusals
+    is not a success.
+    """
+    workspace_root = _resolve_workspace_root(workspace_root)
+    declaration_path = workspace_root / ".gitinclude"
+    if not declaration_path.is_file():
+        typer.echo(f"no .gitinclude at {declaration_path}; nothing to compile")
+        raise typer.Exit(code=1)
+    text, report = gitinclude.compile_gitignore(
+        declaration_path.read_text(encoding="utf-8")
+    )
+    target = workspace_root / ".gitignore"
+    if not check:
+        target.write_text(text, encoding="utf-8")
+    if json_output:
+        typer.echo(json.dumps({
+            "written": None if check else str(target),
+            "refused": [{"line": r.line, "reason": r.reason} for r in report],
+        }, indent=2))
+    else:
+        typer.echo(f"{'checked' if check else 'wrote'} {target}")
+        if report:
+            typer.echo("refused (nothing emitted for these):")
+            for r in report:
+                typer.echo(f"  {r.line}  --  {r.reason}")
+    if report:
+        raise typer.Exit(code=1)
 
 
 @workspace_app.command("status")

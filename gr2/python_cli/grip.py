@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 
 from .gitops import git
+from .workspace_guidance import missing_gr2_workspace_guidance
 
 
 # ---------------------------------------------------------------------------
@@ -954,7 +955,8 @@ def _validate_grip_repo(workspace: Path) -> None:
     grip_dir = workspace / ".grip"
     if not grip_dir.exists():
         raise GripInitError(
-            f"No .grip/ directory at {workspace}. Run grip_init first."
+            f"No .grip/ directory at {workspace}. "
+            f"{missing_gr2_workspace_guidance(workspace, 'Run `gr2 store init .` first.')}"
         )
     git_dir = grip_dir / ".git"
     if not git_dir.exists():

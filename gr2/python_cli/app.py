@@ -728,42 +728,112 @@ def sync_run(
         raise typer.Exit(code=1)
 
 
-def _superproject_report(
-    workspace_root: Path, repos: list[dict[str, object]]
-) -> dict[str, int] | None:
+def _require_superproject(workspace_root: Path) -> None:
+    """Refuse ``--from-superproject`` on a root whose tree pins no members.
+
+    The flag's value is that it is the DECLARED entry. The plain verb scans any
+    directory of repos and succeeds wherever it finds one, so a user who asked
+    for the superproject path and silently got the directory path would have no
+    signal that their root is not what they thought it was -- and the two paths
+    produce different member SETS, because a declared member that is not
+    materialized is still a member while a directory that is not there is not.
+
+    THE GITLINK IS THE DECLARATION, which is git's own rule and therefore ours.
+    An earlier version of this function also accepted a ``.gitmodules`` on its
+    own, and that was wrong in both directions of the same run: on a root whose
+    members are materialized the verb exited 0 and then printed no superproject
+    line at all, and on one whose members are not it failed with "no git repos
+    found", a message about the wrong problem. ``git submodule status`` and
+    ``git submodule init`` both report zero members on such a root -- measured,
+    not assumed -- because a ``.gitmodules`` is a lookup table that the tree's
+    160000 entries are what actually reference.
+    """
+    if repo_proto.root_gitlink_pins(workspace_root):
+        return
+    if repo_proto.root_submodule_declarations(workspace_root):
+        # Name this case when it applies: a user who has a .gitmodules has
+        # reason to believe the root declares members, and the sentence has to
+        # say why git disagrees rather than leaving them to find out.
+        detail = (
+            ", though it carries a .gitmodules: a .gitmodules alone declares nothing, "
+            "because git resolves members from the tree's 160000 gitlink entries -- "
+            "`git submodule status` and `git submodule init` both report none here"
+        )
+    else:
+        detail = " (no gitlink entries in its tree and no .gitmodules)"
+    raise SystemExit(
+        "workspace init --from-superproject wants a root whose tree pins members, and "
+        f"{workspace_root} pins none{detail}. Run `gr2 workspace init` for a plain "
+        "directory of repos, or point this verb at the root of a superproject"
+    )
+
+
+def _superproject_report(workspace_root: Path) -> dict[str, int] | None:
     """Superproject facts about a root, or None when it is not one.
 
     None and ``{"members": 0}`` are deliberately different answers: the first
     says this root is not a superproject, the second would print a claim about
     zero members on every workspace.
 
-    Membership comes from the predicate and the STATE is looked up beside it,
-    never the other way round. Reading the member list off the states meant a
-    state that could not be determined removed its member from the report --
-    a SHA-256 member's detached HEAD read as nothing under a 40-character test,
-    and the superproject line disappeared from a root that plainly has one.
+    MEMBERSHIP IS THE ROOT'S OWN DECLARATION -- the paths its tree pins with a
+    160000 gitlink -- and the STATE is looked up beside it, never the other way
+    round. Three earlier versions of this function each lost or invented members
+    by deriving membership from something else, and each one is worth naming
+    because the shape recurs:
+
+    - from the STATES: a SHA-256 member's detached HEAD read as nothing under a
+      40-character test, so the member left the count and the whole line left the
+      output; and
+    - from a MEMBERSHIP PREDICATE: a DECLARED member that is not MATERIALIZED --
+      the ordinary state after `git clone` without ``--recurse-submodules``,
+      where the member path is an empty directory -- satisfies no predicate at
+      all, because there is no member on disk to satisfy one. The line vanished
+      from exactly the root the launch copy leads with; and
+    - from the SCAN'S OWN ``pin`` FIELD: ``declared_repo_state`` sets ``pin``
+      from the member's HEAD whenever the root pins nothing, so every ordinary
+      repo carried a ``pin`` and a plain directory of two repos reported
+      ``superproject = true (members: 2 pinned)``. A control caught that one.
+
+    So the declaration is read HERE, from the root, and a declared member that
+    is not on disk is counted and named ``not_materialized``: the root declares
+    it, which is what makes it a member, and whether its working tree exists yet
+    is an observation about the moment.
     """
-    members: list[str] = []
-    for repo in repos:
-        path = workspace_root / str(repo["path"])
-        if not repo_proto.is_submodule_member(path):
-            continue
-        members.append(repo_proto.submodule_member_state(path) or "unknown")
-    if not members:
+    pinned = repo_proto.root_gitlink_pins(workspace_root)
+    if not pinned:
         return None
+
+    states: list[str] = []
+    for rel in sorted(pinned):
+        path = workspace_root / rel
+        if repo_proto.is_submodule_member(path):
+            states.append(repo_proto.submodule_member_state(path) or "unknown")
+        elif repo_proto.is_own_toplevel(path):
+            # Materialized, but as its own clone rather than as a submodule:
+            # there is no module directory to read a state from, and calling it
+            # "not materialized" would be false about a directory plainly there.
+            states.append("unknown")
+        else:
+            states.append("not_materialized")
     return {
-        "members": len(members),
-        "detached": sum(1 for state in members if state == "detached"),
-        "unknown": sum(1 for state in members if state == "unknown"),
+        "members": len(states),
+        "detached": sum(1 for state in states if state == "detached"),
+        "unknown": sum(1 for state in states if state == "unknown"),
+        "not_materialized": sum(1 for state in states if state == "not_materialized"),
     }
 
 
 def _superproject_line(report: dict[str, int]) -> str:
-    return (
+    line = (
         f"superproject = true (members: {report['members']} pinned, "
-        f"{report['detached']} detached) -- the root is adopted; "
-        "its branches and worktree are untouched"
+        f"{report['detached']} detached"
     )
+    # Named only when it applies, so the ordinary line is unchanged for every
+    # caller that already reads it; a root whose members are not checked out yet
+    # is the case the extra clause exists for.
+    if report.get("not_materialized"):
+        line += f", {report['not_materialized']} not materialized"
+    return line + ") -- the root is adopted; its branches and worktree are untouched"
 
 
 @workspace_app.command("init")
@@ -771,9 +841,19 @@ def workspace_init(
     workspace_root: Optional[Path] = typer.Argument(None),
     default_unit: str = typer.Option("default", help="Default owner unit for scanned repos"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    from_superproject: bool = typer.Option(
+        False,
+        "--from-superproject",
+        help=(
+            "Adopt an existing superproject: require that the root declares members, "
+            "then read them from .gitmodules and the root's gitlink pins"
+        ),
+    ),
 ) -> None:
     """Create a bare workspace_spec.toml by scanning an existing directory of repos."""
     workspace_root = (workspace_root or Path.cwd()).resolve()
+    if from_superproject:
+        _require_superproject(workspace_root)
     repos = _scan_existing_repos(workspace_root)
     bare = _scan_bare_repos(workspace_root)
     if not repos and not bare:
@@ -789,7 +869,7 @@ def workspace_init(
     # A root that is already a superproject is the entry the launch copy leads
     # with ("point gr2 at your existing superproject"), and `repo_count` alone
     # does not say it: the adopted root is the thing, not the member count.
-    superproject = _superproject_report(workspace_root, repos)
+    superproject = _superproject_report(workspace_root)
     payload = {
         "workspace_root": str(workspace_root),
         "spec_path": str(spec_path),

@@ -246,7 +246,7 @@ def test_a_member_with_an_unrecognised_head_is_still_counted(tmp_path: Path) -> 
     assert repo_proto.is_submodule_member(root / "member1") is True
     assert repo_proto.submodule_member_state(root / "member1") == "unknown"
 
-    report = _superproject_report(root, [{"name": "member1", "path": "member1"}])
+    report = _superproject_report(root)
     assert report is not None, "an unreadable state must not remove the report"
     assert report["members"] == 1
     assert report["detached"] == 0

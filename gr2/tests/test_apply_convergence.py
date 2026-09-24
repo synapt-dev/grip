@@ -207,7 +207,7 @@ class TestApplyConvergence(ConvergenceTestBase):
     @patch("gr2.python_cli.spec_apply.load_repo_hooks", return_value=None)
     @patch("gr2.python_cli.spec_apply.is_git_dir", return_value=True)
     @patch("gr2.python_cli.spec_apply.is_git_repo", return_value=True)
-    @patch("gr2.python_cli.spec_apply.clone_repo", return_value=True)
+    @patch("gr2.python_cli.clone_exec.clone_and_pin", return_value=True)
     def test_apply_clones_missing_repos_into_unit(self, mock_clone, _repo, _dir, _hooks, _proj, _lc):
         """Apply should clone missing repos into the unit directory."""
         for repo in self.repo_specs:
@@ -232,7 +232,7 @@ class TestApplyConvergence(ConvergenceTestBase):
     @patch("gr2.python_cli.spec_apply.load_repo_hooks", return_value=None)
     @patch("gr2.python_cli.spec_apply.is_git_dir", return_value=True)
     @patch("gr2.python_cli.spec_apply.is_git_repo", return_value=True)
-    @patch("gr2.python_cli.spec_apply.clone_repo", return_value=True)
+    @patch("gr2.python_cli.clone_exec.clone_and_pin", return_value=True)
     def test_apply_updates_stale_unit_toml(self, _clone, _repo, _dir, _hooks, _proj, _lc):
         """After convergence, unit.toml should reflect the full spec repo list."""
         for repo in self.repo_specs:
@@ -253,7 +253,7 @@ class TestApplyConvergence(ConvergenceTestBase):
     @patch("gr2.python_cli.spec_apply.load_repo_hooks", return_value=None)
     @patch("gr2.python_cli.spec_apply.is_git_dir", return_value=True)
     @patch("gr2.python_cli.spec_apply.is_git_repo", return_value=True)
-    @patch("gr2.python_cli.spec_apply.clone_repo", return_value=True)
+    @patch("gr2.python_cli.clone_exec.clone_and_pin", return_value=True)
     def test_convergence_is_idempotent(self, mock_clone, _repo, _dir, _hooks, _proj, _lc):
         """After apply, a second build_plan should show no converge operations."""
         self._fully_materialize()
@@ -268,7 +268,7 @@ class TestApplyConvergence(ConvergenceTestBase):
     @patch("gr2.python_cli.spec_apply.load_repo_hooks", return_value=None)
     @patch("gr2.python_cli.spec_apply.is_git_dir", return_value=True)
     @patch("gr2.python_cli.spec_apply.is_git_repo", return_value=True)
-    @patch("gr2.python_cli.spec_apply.clone_repo", return_value=True)
+    @patch("gr2.python_cli.clone_exec.clone_and_pin", return_value=True)
     def test_apply_reports_converged_repos(self, _clone, _repo, _dir, _hooks, _proj, _lc):
         """Apply result should list what was converged."""
         for repo in self.repo_specs:

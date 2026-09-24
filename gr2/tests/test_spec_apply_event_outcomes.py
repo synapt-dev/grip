@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from gr2.python_cli import events, spec_apply
+from gr2.python_cli import clone_exec, events, spec_apply
 from gr2.python_cli.events import EventEmitError
 from gr2.python_cli.spec_apply import PlanOperation
 
@@ -24,7 +24,10 @@ def test_sink_failure_cannot_replace_materialization_outcome(
         details={},
     )
     monkeypatch.setattr(spec_apply, "build_plan", lambda _root: (spec, [operation]))
-    monkeypatch.setattr(spec_apply, "clone_repo", lambda *_args, **_kwargs: True)
+    # apply_plan routes both clone sites through clone_exec.clone_and_pin,
+    # imported function-locally because clone_exec imports spec_apply at module
+    # scope -- so the seam to patch is the DEFINING module, not this one.
+    monkeypatch.setattr(clone_exec, "clone_and_pin", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
         spec_apply,
         "_run_materialize_hooks",

@@ -85,7 +85,12 @@ def clone_and_pin(
     # reason: dest sits under a unit root that is itself inside the workspace
     # superproject, so `is_git_repo(dest)` is True for a directory that merely
     # exists -- which would report a first materialization as a re-run.
-    first_materialize = not gitops.is_repo_root(dest)
+    # Already a clone: nothing to do. Staging here would clone, pin, and then
+    # fail at the rename with a raw OSError (ENOTEMPTY) instead of answering the
+    # caller's actual question, which is whether this was the first
+    # materialization.
+    if gitops.is_repo_root(dest):
+        return False
     dest.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(dir=dest.parent, prefix=f".{dest.name}.staging-"))
     try:
@@ -102,7 +107,7 @@ def clone_and_pin(
                 f"also left it behind: {cleanup_exc}"
             ) from exc
         raise
-    return first_materialize
+    return True
 
 
 @dataclasses.dataclass(frozen=True)

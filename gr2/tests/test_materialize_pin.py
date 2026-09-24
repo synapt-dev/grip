@@ -26,7 +26,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from gr2.python_cli import gitops
+from gr2.python_cli import clone_exec, gitops
 from gr2.python_cli.app import app
 
 from tests.conftest import make_cli_runner
@@ -372,3 +372,42 @@ def test_is_repo_root_answers_its_own_question(tmp_path: Path) -> None:
     )
     assert gitops.is_repo_root(inside) is False, "a directory inside one is not itself a repo root"
     assert gitops.is_repo_root(tmp_path / "absent") is False, "a path that does not exist is not"
+
+
+def test_PF_sync_clones_a_missing_root_member_at_its_pin(tmp_path: Path) -> None:
+    """The THIRD clone site. `sync run` re-creates a root member deleted from the
+    workspace, and it used to clone straight onto the default tip while exiting 0
+    -- the same defect as the other two sites, reached by the verb a user runs
+    most often. Its own witness because the sync path is coded separately."""
+    root, pins = _superproject_with_a_divergent_pair(tmp_path)
+    tip = _run("rev-parse", "HEAD", cwd=tmp_path / "diverging-src").stdout.strip()
+    rc, out = _cli("workspace", "init", str(root), "--from-superproject")
+    assert rc == 0, out
+    subprocess.run(["rm", "-rf", str(root / "diverging")], check=True)
+    assert not (root / "diverging").exists(), "precondition: root member absent"
+
+    rc, out = _cli("sync", "run", str(root))
+    assert rc == 0, out
+    assert (root / "diverging").exists(), "sync re-created the member"
+    got = _run("rev-parse", "HEAD", cwd=root / "diverging").stdout.strip()
+    assert got == pins["diverging"], f"sync landed the member on {got[:12]}, the tip is {tip[:12]}"
+
+
+def test_PH_clone_and_pin_onto_an_existing_clone_returns_false(tmp_path: Path) -> None:
+    """Second materialization must ANSWER, not raise. The helper stages beside
+    the destination, so without an early return the rename lands on a non-empty
+    directory and the caller gets a raw OSError (ENOTEMPTY) in place of the False
+    that means 'this was not the first materialization'."""
+    root, pins = _superproject_with_a_divergent_pair(tmp_path)
+    src = tmp_path / "diverging-src"
+    dest = tmp_path / "out" / "d"
+
+    assert clone_exec.clone_and_pin(str(src), dest, pin=pins["diverging"], member="d") is True
+    assert gitops.is_repo_root(dest), "precondition: the first call materialized it"
+
+    assert clone_exec.clone_and_pin(str(src), dest, pin=pins["diverging"], member="d") is False
+    leftovers = [p.name for p in dest.parent.iterdir() if "staging" in p.name]
+    assert leftovers == [], f"a second call left staging behind: {leftovers}"
+    assert _run("rev-parse", "HEAD", cwd=dest).stdout.strip() == pins["diverging"], (
+        "and it left the existing clone alone"
+    )

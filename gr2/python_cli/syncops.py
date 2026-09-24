@@ -10,9 +10,9 @@ from datetime import UTC, datetime
 
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 
+from .clone_exec import clone_and_pin
 from .gitops import (
     ahead_behind,
-    clone_repo,
     commits_between,
     conflicting_files,
     current_branch,
@@ -613,7 +613,16 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
         repo_spec = _find_repo(spec, op.subject)
         repo_root = workspace_root / str(repo_spec["path"])
         cache_path = repo_cache_path(workspace_root, str(repo_spec["name"]))
-        first_materialize = clone_repo(str(repo_spec["url"]), repo_root, reference_repo_root=cache_path)
+        # A root member deleted from the workspace is re-cloned HERE, and cloning
+        # straight onto the default tip left it on a commit the root never
+        # declared while sync exited 0.
+        first_materialize = clone_and_pin(
+            str(repo_spec["url"]),
+            repo_root,
+            pin=str(repo_spec.get("pin") or ""),
+            member=str(repo_spec["name"]),
+            reference_repo_root=cache_path,
+        )
         _run_materialize_hooks(workspace_root, repo_root, str(repo_spec["name"]), first_materialize, manual_hooks=False)
         after_sha = current_head_sha(repo_root)
         _emit_sync_event(

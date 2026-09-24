@@ -20,6 +20,7 @@ from jsonschema import Draft202012Validator
 
 from .events import EventType, emit_after_outcome
 from .gitops import clone_repo, ensure_repo_cache, is_git_dir, is_git_repo, repo_dirty
+from .consent import consent_state, member_key as consent_member_key, pending_members
 from .hooks import HookContext, apply_file_projections, load_repo_hooks, run_lifecycle_stage
 
 
@@ -293,6 +294,24 @@ def render_plan(operations: list[PlanOperation]) -> str:
     return "\n".join(lines)
 
 
+def _emit_projected(workspace_root: Path, repo: str, projection: dict[str, object]) -> None:
+    """The ONE emit site for workspace.file_projected: the clone-op pass and
+    the pending first-materialize pass both report through it, so the
+    outcome-policy counter sees a single classified call site."""
+    emit_after_outcome(
+        event_type=EventType.WORKSPACE_FILE_PROJECTED,
+        workspace_root=workspace_root,
+        actor="system",
+        owner_unit="workspace",
+        payload={
+            "repo": repo,
+            "kind": projection["kind"],
+            "src": projection["src"],
+            "dest": projection["dest"],
+        },
+    )
+
+
 def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -> dict[str, object]:
     spec, operations = build_plan(workspace_root)
     if len(operations) > 3 and not yes:
@@ -319,18 +338,7 @@ def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -
                 manual_hooks=manual_hooks,
             )
             for projection in hook_payload["projected_files"]:
-                emit_after_outcome(
-                    event_type=EventType.WORKSPACE_FILE_PROJECTED,
-                    workspace_root=workspace_root,
-                    actor="system",
-                    owner_unit="workspace",
-                    payload={
-                        "repo": str(repo_spec["name"]),
-                        "kind": projection["kind"],
-                        "src": projection["src"],
-                        "dest": projection["dest"],
-                    },
-                )
+                _emit_projected(workspace_root, str(repo_spec["name"]), projection)
             materialized_repos.append({"repo": str(repo_spec["name"]), "first_materialize": first_materialize})
             applied.append(f"cloned repo '{op.subject}' into {repo_root}")
         elif op.kind == "seed_repo_cache":
@@ -383,6 +391,41 @@ def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -
             owner_unit="workspace",
             payload={"repos": materialized_repos},
         )
+
+    # The pending first-materialize pass: a member
+    # whose hooks were skipped while unbound writes a pending marker; the
+    # NEXT materialize where the member is BOUND runs the member's hooks
+    # once here — first-materialize semantics preserved, never rm -rf. A
+    # clone op in THIS run already consumed its marker (the gate consumes it
+    # on the bound hook pass), so only still-pending members are served.
+    for member_key in pending_members(workspace_root):
+        # the pending key is the member's declared PATH; the spec names repos
+        # by name — resolve path -> spec row, then use the row's own name.
+        repo_spec = next(
+            (r for r in spec.get("repos", []) if str(r.get("path", "")).strip("/") == member_key),
+            None,
+        )
+        if repo_spec is None:
+            continue
+        repo_name = str(repo_spec["name"])
+        repo_root = workspace_root / str(repo_spec["path"])
+        if not repo_root.is_dir():
+            continue
+        # serve only BOUND members: while unbound the gate skips again and
+        # the marker stays pending; the applied-line must never claim a run
+        # that the consent gate refused.
+        if consent_state(workspace_root, consent_member_key(workspace_root, repo_root, repo_name), repo_root)[0] != "bound":
+            continue
+        hook_payload = _run_materialize_hooks(
+            workspace_root,
+            repo_root,
+            repo_name,
+            True,  # first-materialize semantics for the deferred hooks
+            manual_hooks=manual_hooks,
+        )
+        for projection in hook_payload["projected_files"]:
+            _emit_projected(workspace_root, repo_name, projection)
+        applied.append(f"ran pending hooks for '{repo_name}' (bound on a later materialize)")
 
     return {
         "workspace_root": str(workspace_root),

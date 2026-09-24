@@ -96,6 +96,12 @@ def _workspace_with_blocked_projection(tmp_path: Path) -> tuple[Path, str]:
     _git(src, "commit", "-q", "-m", "base with a blocked projection hook")
     _git(src, "push", "-q", "origin", "main")
     tip = _git(src, "rev-parse", "HEAD")
+    # the consent gate: bind the member so the projection block (missing source)
+    # is what exits 1, not the consent skip; the record needs the committed
+    # hooks table for its hash.
+    from gr2.python_cli.consent import write_consent
+
+    write_consent(ws, "repos/app", src)
     (ws / ".grip" / "workspace_spec.toml").write_text(
         f'schema_version = 1\nworkspace_name = "m"\n'
         f'[[repos]]\nname = "app"\npath = "repos/app"\nurl = "{origin}"\n'

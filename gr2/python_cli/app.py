@@ -18,6 +18,7 @@ from . import add as add_ops
 from . import branch as branch_ops
 from . import commit as commit_ops
 from . import execops, failures, grip, migration, spec_apply, syncops
+from . import gitinclude
 from . import gitops
 from . import pr as pr_ops
 from .platform import AdapterError
@@ -41,6 +42,16 @@ from .gitops import (
     stash_if_dirty,
 )
 from .grip_cli import config_cli_app, grip_app
+from .consent import (
+    consent_state,
+    describe_member,
+    hooks_sha,
+    load_consent,
+    member_key as consent_member_key,
+    remove_consent,
+    trust_refusal_rows,
+    write_consent,
+)
 from .hooks import (
     HookContext,
     HookRuntimeError,
@@ -102,6 +113,8 @@ app.add_typer(spec_app, name="spec")
 app.add_typer(exec_app, name="exec")
 app.add_typer(sync_app, name="sync")
 app.add_typer(target_app, name="target")
+hooks_app = typer.Typer(help="Bind (trust) or revoke member-hook consent records.")
+app.add_typer(hooks_app, name="hooks")
 # The snapshot store over .grip/.git. Its verb is `store` (init/snapshot/log/diff/
 # checkout); `grip` stays as a hidden alias for one release so existing callers keep
 # working. Both names resolve to the same grip_app callbacks.
@@ -116,6 +129,25 @@ def _workspace_repo_spec(workspace_root: Path, repo_name: str) -> dict[str, obje
         if repo.get("name") == repo_name:
             return repo
     raise SystemExit(f"repo not found in workspace spec: {repo_name}")
+
+
+def _resolve_workspace_root(workspace_root: Optional[Path] = None) -> Path:
+    """The workspace root for a verb: the argument if given, else the nearest
+    ancestor of the current directory holding ``.grip/workspace_spec.toml``,
+    else the current directory.
+
+    Every verb took this as a REQUIRED bare positional until now, so a stranger
+    running ``gr2 spec validate`` from inside their own workspace got
+    "Missing argument 'workspace_root'" and read the tool as broken. The
+    explicit form is unchanged: a value passed in wins, and is still resolved.
+    """
+    if workspace_root is not None:
+        return workspace_root.resolve()
+    cwd = Path.cwd().resolve()
+    return next(
+        (path for path in (cwd, *cwd.parents) if (path / ".grip" / "workspace_spec.toml").is_file()),
+        cwd,
+    )
 
 
 def _workspace_spec_path(workspace_root: Path) -> Path:
@@ -424,7 +456,7 @@ def _toml_basic_string(value: str) -> str:
 
 def _write_workspace_spec(
     workspace_root: Path,
-    repos: list[dict[str, str]],
+    repos: list[dict[str, object]],
     default_unit: str,
     *,
     workspace_name: str | None = None,
@@ -436,15 +468,23 @@ def _write_workspace_spec(
         "",
     ]
     for repo in repos:
-        lines.extend(
-            [
-                "[[repos]]",
-                f"name = {_toml_basic_string(repo['name'])}",
-                f"path = {_toml_basic_string(repo['path'])}",
-                f"url = {_toml_basic_string(repo['url'])}",
-                "",
-            ]
-        )
+        entry = [
+            "[[repos]]",
+            f"name = {_toml_basic_string(str(repo['name']))}",
+            f"path = {_toml_basic_string(str(repo['path']))}",
+            f"url = {_toml_basic_string(str(repo['url']))}",
+        ]
+        # The declaration's extra keys are written only when the repo answered.
+        # `detached` is written EXPLICITLY when known, so a reader never has to
+        # infer an attached head from a missing key.
+        if repo.get("ref"):
+            entry.append(f"ref = {_toml_basic_string(str(repo['ref']))}")
+        if repo.get("pin"):
+            entry.append(f"pin = {_toml_basic_string(str(repo['pin']))}")
+        if repo.get("detached") is not None:
+            entry.append(f"detached = {'true' if repo['detached'] else 'false'}")
+        entry.append("")
+        lines.extend(entry)
     lines.extend(
         [
             "[[units]]",
@@ -464,15 +504,71 @@ def _write_workspace_spec(
     return spec_path
 
 
-def _scan_existing_repos(workspace_root: Path) -> list[dict[str, str]]:
-    repos: list[dict[str, str]] = []
-    for child in sorted(workspace_root.iterdir()):
-        if child.name.startswith("."):
+def _is_scannable_child(child: Path) -> bool:
+    """A directory beside the workspace root that could be a member repo.
+
+    ``is_git_repo`` is not the question: when the root is itself a repo, every
+    plain directory under it answers ``--is-inside-work-tree`` true on the
+    enclosing repo's behalf. Its own toplevel is the question.
+    """
+    if not child.is_dir():
+        return False
+    if child.name.startswith(".") or child.name == "agents":
+        return False
+    return repo_proto.is_own_toplevel(child)
+
+
+def _scan_existing_repos(workspace_root: Path) -> list[dict[str, object]]:
+    repos: list[dict[str, object]] = []
+    # Read once, not per repo: the root's own declarations about its members.
+    pins = repo_proto.root_gitlink_pins(workspace_root)
+    declared_refs = repo_proto.root_submodule_branches(workspace_root)
+    modules = repo_proto.root_submodule_declarations(workspace_root)
+
+    if pins:
+        # A root that pins members has a KNOWN member set, at ANY depth: the
+        # pins ARE the members. A depth-1 directory walk cannot find one at
+        # `libs/c`, and the plain directory `libs` beside it answers git
+        # truthfully -- from the ENCLOSING repo -- so the walk reported the
+        # superproject's own branch, head and pin as though they were a
+        # member's, and never reported the member at all.
+        candidates = [(path, workspace_root / path) for path in sorted(pins)]
+    else:
+        candidates = [
+            (child.name, child)
+            for child in sorted(workspace_root.iterdir())
+            if _is_scannable_child(child)
+        ]
+
+    for name, child in candidates:
+        rel = child.relative_to(workspace_root).as_posix()
+        declared = modules.get(rel, {})
+        pinned = pins.get(rel)
+
+        if pinned is not None and not repo_proto.is_own_toplevel(child):
+            # A member that is NOT materialized -- the ordinary state after a
+            # plain `git clone` without --recurse-submodules, where the member
+            # path is an empty directory. Git answers every question asked from
+            # inside it about the ENCLOSING superproject, so reading it would
+            # record the superproject's own url, branch and head as the
+            # member's, and a materialize from that spec would clone the
+            # superproject into the member path.
+            #
+            # The member is still declared by the root, so it is described from
+            # `.gitmodules` and the gitlink. Its own state is left UNSAID rather
+            # than answered from the enclosing repo: there is no member here to
+            # have a state.
+            entry: dict[str, object] = {
+                "name": name,
+                "path": rel,
+                "url": repo_proto.resolve_member_url(declared.get("url", ""), workspace_root),
+                "pin": pinned,
+            }
+            if declared.get("branch"):
+                entry["ref"] = declared["branch"]
+            repos.append(entry)
             continue
-        if child.name == "agents":
-            continue
-        if not child.is_dir():
-            continue
+
         # Bare repositories are DETECTED but NOT ADDED: materialize's validator
         # rejects a bare path as a repo, and a bare upstream beside its clone
         # is a working dev layout that a bare-as-repo scan turns into a refused
@@ -481,13 +577,29 @@ def _scan_existing_repos(workspace_root: Path) -> list[dict[str, str]]:
         if not is_git_repo(child):
             continue
         url = remote_origin_url(child)
-        repos.append(
-            {
-                "name": child.name,
-                "path": child.relative_to(workspace_root).as_posix(),
-                "url": url or "",
-            }
+        repo: dict[str, object] = {
+            "name": name,
+            "path": rel,
+            # A member the root declares but that carries no origin of its own
+            # still has a url: the root's declaration. Falling back to it keeps
+            # init from advising a `remote add` for a url it already has.
+            "url": url or repo_proto.resolve_member_url(
+                declared.get("url", ""), workspace_root
+            ),
+        }
+        # What the repo declares: branch of record, pin, detached state. Absent
+        # when HEAD is unreadable, so a field the repo cannot answer is left out
+        # rather than guessed. The PIN comes from the root's tree when the root
+        # pins this path -- the gitlink is the declaration, and a member's own
+        # head is where the member is, which is drift and not a declaration.
+        repo.update(
+            repo_proto.declared_repo_state(
+                child,
+                pinned=pins.get(str(repo["path"])),
+                declared_ref=declared_refs.get(str(repo["path"])),
+            )
         )
+        repos.append(repo)
     return repos
 
 
@@ -591,7 +703,7 @@ def sync_status(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Inspect workspace-wide sync readiness without mutating any repo state."""
-    workspace_root = (workspace_root or Path.cwd()).resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     plan = syncops.build_sync_plan(workspace_root, dirty_mode=dirty_mode, probe_remotes=True)
     if json_output:
         typer.echo(json.dumps(plan.as_dict(), indent=2))
@@ -601,12 +713,12 @@ def sync_status(
 
 @sync_app.command("run")
 def sync_run(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     dirty_mode: str = typer.Option("block", "--dirty", help="Dirty-state handling: block (stop, the default), stash, or discard"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Execute the current sync plan, stopping on the first blocking runtime failure."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     result = syncops.run_sync(workspace_root, dirty_mode=dirty_mode)
     if json_output:
         typer.echo(json.dumps(result.as_dict(), indent=2))
@@ -614,6 +726,44 @@ def sync_run(
         typer.echo(syncops.render_sync_result(result))
     if result.status in {"blocked", "failed", "partial_failure"}:
         raise typer.Exit(code=1)
+
+
+def _superproject_report(
+    workspace_root: Path, repos: list[dict[str, object]]
+) -> dict[str, int] | None:
+    """Superproject facts about a root, or None when it is not one.
+
+    None and ``{"members": 0}`` are deliberately different answers: the first
+    says this root is not a superproject, the second would print a claim about
+    zero members on every workspace.
+
+    Membership comes from the predicate and the STATE is looked up beside it,
+    never the other way round. Reading the member list off the states meant a
+    state that could not be determined removed its member from the report --
+    a SHA-256 member's detached HEAD read as nothing under a 40-character test,
+    and the superproject line disappeared from a root that plainly has one.
+    """
+    members: list[str] = []
+    for repo in repos:
+        path = workspace_root / str(repo["path"])
+        if not repo_proto.is_submodule_member(path):
+            continue
+        members.append(repo_proto.submodule_member_state(path) or "unknown")
+    if not members:
+        return None
+    return {
+        "members": len(members),
+        "detached": sum(1 for state in members if state == "detached"),
+        "unknown": sum(1 for state in members if state == "unknown"),
+    }
+
+
+def _superproject_line(report: dict[str, int]) -> str:
+    return (
+        f"superproject = true (members: {report['members']} pinned, "
+        f"{report['detached']} detached) -- the root is adopted; "
+        "its branches and worktree are untouched"
+    )
 
 
 @workspace_app.command("init")
@@ -636,6 +786,10 @@ def workspace_init(
         lines.extend(_bare_note_lines(workspace_root, bare))
         raise SystemExit("\n".join(lines))
     spec_path = _write_workspace_spec(workspace_root, repos, default_unit)
+    # A root that is already a superproject is the entry the launch copy leads
+    # with ("point gr2 at your existing superproject"), and `repo_count` alone
+    # does not say it: the adopted root is the thing, not the member count.
+    superproject = _superproject_report(workspace_root, repos)
     payload = {
         "workspace_root": str(workspace_root),
         "spec_path": str(spec_path),
@@ -644,6 +798,7 @@ def workspace_init(
         "default_unit": default_unit,
         "repos_without_url": [repo["name"] for repo in repos if not repo["url"]],
         "bare_repos_not_added": [item.name for item in bare],
+        "superproject": superproject,
     }
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
@@ -654,8 +809,10 @@ def workspace_init(
             f"spec_path = {spec_path}",
             f"default_unit = {default_unit}",
             f"repo_count = {len(repos)}",
-            "REPOS",
         ]
+        if superproject is not None:
+            lines.append(_superproject_line(superproject))
+        lines.append("REPOS")
         lines.extend(f"- {repo['name']}\t{repo['path']}\t{repo['url'] or '-'}" for repo in repos)
         lines.extend(_bare_note_lines(workspace_root, bare))
         without_url = [repo for repo in repos if not repo["url"]]
@@ -671,11 +828,12 @@ def workspace_init(
 
 @workspace_app.command("init-from-topology")
 def workspace_init_from_topology(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     default_unit: str = typer.Option("default", help="Default owner unit for declared repos"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Create WorkspaceSpec from neutral ``workspace.toml`` repo declarations."""
+    workspace_root = (workspace_root or Path.cwd()).resolve()
     workspace_root = workspace_root.resolve()
     workspace_name, repos = _declared_workspace_topology(workspace_root)
     spec_path = _write_workspace_spec(
@@ -710,18 +868,57 @@ def workspace_init_from_topology(
 
 @workspace_app.command("materialize")
 def workspace_materialize(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     yes: bool = typer.Option(False, "--yes", help="Pre-approve plans with more than 3 operations"),
     manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Read workspace_spec.toml and apply the current workspace materialization plan."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     payload = spec_apply.apply_plan(workspace_root, yes=yes, manual_hooks=manual_hooks)
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
     else:
         typer.echo(spec_apply.render_apply_result(payload))
+
+
+@workspace_app.command("gitinclude")
+def workspace_gitinclude(
+    workspace_root: Optional[Path] = typer.Argument(None),
+    check: bool = typer.Option(False, "--check", help="Report without writing .gitignore"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Compile .gitinclude into the root .gitignore, reporting every refused line.
+
+    Exits non-zero when any line was refused, in both modes. A refused line is
+    content the declaration asked to track and that will NOT be tracked, which is
+    the silent-drop class this verb exists to make loud, so a run with refusals
+    is not a success.
+    """
+    workspace_root = _resolve_workspace_root(workspace_root)
+    declaration_path = workspace_root / ".gitinclude"
+    if not declaration_path.is_file():
+        typer.echo(f"no .gitinclude at {declaration_path}; nothing to compile")
+        raise typer.Exit(code=1)
+    text, report = gitinclude.compile_gitignore(
+        declaration_path.read_text(encoding="utf-8")
+    )
+    target = workspace_root / ".gitignore"
+    if not check:
+        target.write_text(text, encoding="utf-8")
+    if json_output:
+        typer.echo(json.dumps({
+            "written": None if check else str(target),
+            "refused": [{"line": r.line, "reason": r.reason} for r in report],
+        }, indent=2))
+    else:
+        typer.echo(f"{'checked' if check else 'wrote'} {target}")
+        if report:
+            typer.echo("refused (nothing emitted for these):")
+            for r in report:
+                typer.echo(f"  {r.line}  --  {r.reason}")
+    if report:
+        raise typer.Exit(code=1)
 
 
 @workspace_app.command("status")
@@ -730,7 +927,7 @@ def workspace_status_cmd(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Show workspace state: gr1-only, gr2-only, coexistence, or none."""
-    workspace_root = (workspace_root or Path.cwd()).resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     payload = migration.workspace_status(workspace_root)
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
@@ -779,11 +976,11 @@ def workspace_convert_clone_cmd(
 
 @workspace_app.command("detect-gr1")
 def workspace_detect_gr1(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Detect gr1 layout and report repo, reference-repo, and agent counts."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     payload = migration.detect_gr1_workspace(workspace_root)
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
@@ -795,13 +992,13 @@ def workspace_detect_gr1(
 
 @workspace_app.command("migrate-gr1")
 def workspace_migrate_gr1(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     force: bool = typer.Option(False, "--force", help="Allow overwrite of an existing .grip/workspace_spec.toml"),
     apply: bool = typer.Option(False, "--apply", help="After migration, validate and apply the spec in one step"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Convert an existing gr1 (.gitgrip) workspace into parallel gr2 (.grip) layout."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     payload = migration.migrate_gr1_workspace(workspace_root, force=force)
     if apply:
         issues = spec_apply.validate_spec(workspace_root)
@@ -825,12 +1022,12 @@ def workspace_migrate_gr1(
 
 @workspace_app.command("migrate-lane-state")
 def workspace_migrate_lane_state(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     receipt: Path = typer.Option(..., "--receipt", help="New receipt path naming every lane tree the migration moved"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Move legacy agents/<unit>/lanes/<lane>/ trees to .grip/state/lanes/<unit>/<lane>/ once, with a receipt."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     payload = migration.migrate_lane_state(workspace_root, receipt_path=receipt)
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
@@ -843,7 +1040,7 @@ def workspace_migrate_lane_state(
 
 @workspace_app.command("bootstrap-gr1")
 def workspace_bootstrap_gr1(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     regenerate: bool = typer.Option(False, "--regenerate", help="Atomically regenerate an existing generated spec"),
     expected_spec_sha256: Optional[str] = typer.Option(None, "--expected-spec-sha256"),
@@ -852,7 +1049,7 @@ def workspace_bootstrap_gr1(
     expected_current_spec_sha256: Optional[str] = typer.Option(None, "--expected-current-spec-sha256"),
 ) -> None:
     """Compile the canonical gr1 manifest and initialize the gr2 grip store."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     if rollback_receipt is not None:
         if regenerate or expected_spec_sha256 is not None:
             raise typer.BadParameter("--rollback-receipt is mutually exclusive with regeneration inputs")
@@ -889,21 +1086,21 @@ def workspace_bootstrap_gr1(
 
 @spec_app.command("show")
 def spec_show(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Show the current workspace spec."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     typer.echo(spec_apply.show_spec(workspace_root, json_output=json_output))
 
 
 @spec_app.command("validate")
 def spec_validate(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Validate the current workspace spec."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     issues = spec_apply.validate_spec(workspace_root)
     payload = {
         "workspace_root": str(workspace_root),
@@ -920,11 +1117,11 @@ def spec_validate(
 
 @app.command("plan")
 def workspace_plan(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Build a Python gr2 execution plan from the workspace spec."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     _, operations = spec_apply.build_plan(workspace_root)
     if json_output:
         typer.echo(json.dumps([item.as_dict() for item in operations], indent=2))
@@ -934,13 +1131,13 @@ def workspace_plan(
 
 @app.command("apply")
 def workspace_apply(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     yes: bool = typer.Option(False, "--yes", help="Pre-approve plans with more than 3 operations"),
     manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Apply the Python gr2 execution plan."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     payload = spec_apply.apply_plan(workspace_root, yes=yes, manual_hooks=manual_hooks)
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
@@ -1396,13 +1593,13 @@ def exec_run(
 
 @repo_app.command("status")
 def repo_status(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     spec: Optional[Path] = typer.Option(None, help="Path to workspace_spec.toml"),
     policy: Optional[Path] = typer.Option(None, help="Optional repo maintenance policy TOML"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Show repo maintenance status without mutating workspace state."""
-    workspace_root = workspace_root.resolve()
+    workspace_root = _resolve_workspace_root(workspace_root)
     spec_path = (spec or workspace_root / ".grip" / "workspace_spec.toml").resolve()
     if not spec_path.exists():
         # A single-repo path used to traceback FileNotFoundError out of
@@ -1427,10 +1624,175 @@ def repo_status(
         repo_policy = repo_proto.policy_for(target, policy_doc)
         actions.append(repo_proto.classify(target, status, repo_policy))
 
+    # the consent gate: status KEEPS printing the unbound state — unbound
+    # and clean never print the same nothing. Members with no hooks table
+    # print nothing (nothing is being consented to).
+    hook_lines: list[str] = []
+    for target in repo_proto.derive_targets(workspace_root, spec_doc):
+        if not load_repo_hooks(target.path):
+            continue
+        key = consent_member_key(workspace_root, target.path, getattr(target, "name", target.path.name))
+        state, _record = consent_state(workspace_root, key, target.path)
+        if state == "bound":
+            continue
+        if state == "changed":
+            hook_lines.append(
+                f"hooks changed since grant {getattr(target, 'name', target.path.name)} "
+                f"(sha {hooks_sha(target.path)[:12]}) — re-bind: gr2 hooks trust {getattr(target, 'name', target.path.name)}"
+            )
+        else:
+            hook_lines.append(
+                f"hooks unbound {getattr(target, 'name', target.path.name)} "
+                f"(sha {hooks_sha(target.path)[:12]}) — bind: gr2 hooks trust {getattr(target, 'name', target.path.name)}"
+            )
+
     if json_output:
         typer.echo(json.dumps([item.as_dict() for item in actions], indent=2))
     else:
         typer.echo(repo_proto.render_table(actions))
+        for line in hook_lines:
+            typer.echo(line)
+
+
+def _resolve_member_root(workspace_root: Path, member: str) -> tuple[Path, str]:
+    """A member argument is a repo NAME from the workspace spec or a
+    workspace-relative path. Returns (repo_root, consent_key)."""
+    spec_path = workspace_root / ".grip" / "workspace_spec.toml"
+    if spec_path.exists():
+        try:
+            doc = tomllib.loads(spec_path.read_text())
+        except (OSError, tomllib.TOMLDecodeError):
+            doc = {}
+        for repo in doc.get("repos", []):
+            if str(repo.get("name", "")) == member and repo.get("path"):
+                rel = str(repo["path"]).strip("/")
+                root = workspace_root / rel
+                if not root.is_dir():
+                    raise SystemExit(
+                        f"member '{member}' is declared at {rel} but the directory is missing; "
+                        "materialize the workspace first"
+                    )
+                return root, rel
+    root = workspace_root / member
+    if root.is_dir():
+        return root, member.strip("/")
+    raise SystemExit(
+        f"member '{member}' not found: it is neither a workspace spec repo name "
+        f"nor a directory under {workspace_root}"
+    )
+
+
+@hooks_app.command("trust")
+def hooks_trust(
+    member: str = typer.Argument(..., help="Member repo NAME or workspace-relative path"),
+    workspace_root: Optional[Path] = typer.Option(None, "--workspace-root", help="Workspace root (default: walk up from cwd)"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """BIND member-hook consent: shows everything being consented to first.
+
+    The show block carries the hooks hash, every lifecycle command, every
+    projection with its RESOLVED destination and its confinement flags (an
+    ESCAPE line names a dest that resolves outside the member tree, under
+    any .git, or at an absolute path), and any consent-shaped section the
+    table carries (ignored — consent is a local record, never in the table).
+    The record is written only when the command completes; a hooks table
+    that changes after binding lapses the record by hash.
+    """
+    ws = _resolve_workspace_root(workspace_root)
+    repo_root, key = _resolve_member_root(ws.resolve(), member)
+    hooks = load_repo_hooks(repo_root)
+    if hooks is None:
+        raise SystemExit(f"no .gr2/hooks.toml found in member: {repo_root}")
+    state, record = consent_state(ws, key, repo_root)
+    lines = describe_member(ws.resolve(), repo_root, key, hooks)
+    # the screen shows every RESOLVED
+    # destination; a row that cannot resolve at trust time is refused, not
+    # deferred, and the record does not exist (it binds the whole table by
+    # hash — there is no partial bind of unseen rows).
+    refusals = trust_refusal_rows(hooks, ws.resolve(), repo_root, key)
+    for line in lines:
+        typer.echo(line)
+    if refusals:
+        typer.echo("refused at trust time — these rows cannot be resolved for the screen:")
+        for row in refusals:
+            typer.echo(f"  {row}")
+        typer.echo("no consent record written; fix the rows (or make them workspace-deterministic) and re-run")
+        raise typer.Exit(code=1)
+    if state == "bound" and record is not None:
+        typer.echo(f"already bound (granted {record.get('granted_at')}); re-binding refreshes the record")
+    consent_rec = write_consent(ws, key, repo_root)
+    typer.echo(
+        f"bound: {key} sha {consent_rec['hooks_sha'][:12]} "
+        f"granted_by {consent_rec['granted_by']} at {consent_rec['granted_at']}"
+    )
+
+
+@hooks_app.command("revoke")
+def hooks_revoke(
+    member: str = typer.Argument(..., help="Member repo NAME or workspace-relative path"),
+    workspace_root: Optional[Path] = typer.Option(None, "--workspace-root", help="Workspace root (default: walk up from cwd)"),
+) -> None:
+    """Remove the member-hook consent record (the member's hooks stop running)."""
+    ws = _resolve_workspace_root(workspace_root)
+    repo_root, key = _resolve_member_root(ws.resolve(), member)
+    if remove_consent(ws, key):
+        typer.echo(f"revoked: {key} (hooks will skip and report until re-bound)")
+    else:
+        typer.echo(f"no consent record for {key}; nothing to revoke")
+
+
+@hooks_app.command("status")
+def hooks_status(
+    workspace_root: Optional[Path] = typer.Option(None, "--workspace-root", help="Workspace root (default: walk up from cwd)"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Per-member hook-consent state: bound / unbound / changed.
+
+    Unbound and clean never print the same nothing: every member whose
+    hooks table exists is listed, with its state and hash prefix.
+    """
+    ws = _resolve_workspace_root(workspace_root)
+    spec_path = ws / ".grip" / "workspace_spec.toml"
+    doc: dict = {}
+    if spec_path.exists():
+        try:
+            doc = tomllib.loads(spec_path.read_text())
+        except (OSError, tomllib.TOMLDecodeError):
+            doc = {}
+    rows = []
+    for repo in doc.get("repos", []):
+        name = str(repo.get("name", ""))
+        rel = str(repo.get("path", "")).strip("/")
+        if not name or not rel:
+            continue
+        root = ws / rel
+        hooks = load_repo_hooks(root) if root.is_dir() else None
+        if hooks is None:
+            continue
+        key = consent_member_key(ws, root, name)
+        state, record = consent_state(ws, key, root)
+        rows.append(
+            {
+                "member": name,
+                "key": key,
+                "state": state,
+                "hooks_sha": hooks_sha(root)[:12],
+                "granted_at": (record or {}).get("granted_at"),
+            }
+        )
+    if json_output:
+        typer.echo(json.dumps(rows, indent=2))
+        return
+    if not rows:
+        typer.echo("no members carry a .gr2/hooks.toml")
+        return
+    for row in rows:
+        if row["state"] == "bound":
+            typer.echo(f"hooks bound {row['member']} (sha {row['hooks_sha']}, granted {row['granted_at']})")
+        elif row["state"] == "changed":
+            typer.echo(f"hooks changed since grant {row['member']} (now sha {row['hooks_sha']}) — re-bind: gr2 hooks trust {row['member']}")
+        else:
+            typer.echo(f"hooks unbound {row['member']} (sha {row['hooks_sha']}) — bind: gr2 hooks trust {row['member']}")
 
 
 @repo_app.command("hooks")
@@ -2379,7 +2741,7 @@ def _normalize_review_row(raw: object) -> dict:
 
 @review_app.command("bind")
 def review_bind(
-    workspace_root: Path,
+    workspace_root: Optional[Path] = typer.Argument(None),
     key: Optional[str] = typer.Option(None, "--repo", help="Repository key for a single bound row"),
     remote: Optional[str] = typer.Option(None, "--remote", help="Remote URL or path of the row"),
     base: Optional[str] = typer.Option(None, "--base", help="Base SHA (must be the live remote head of --ref)"),
@@ -2433,7 +2795,7 @@ def review_bind(
             except OSError as exc:
                 raise typer.BadParameter(f"--from-range {from_range}: {exc.strerror or exc}")
         rows = [row]
-    commit = _review_call(grip.create_review_bind_commit, workspace_root.resolve(), rows, ratified=ratified)
+    commit = _review_call(grip.create_review_bind_commit, _resolve_workspace_root(workspace_root), rows, ratified=ratified)
     typer.echo(f"gr:{commit}")
 
 

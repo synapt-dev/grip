@@ -17,6 +17,7 @@ import argparse
 import dataclasses
 import json
 import os
+import posixpath
 import shutil
 import stat
 import subprocess
@@ -31,6 +32,13 @@ class RepoSpec:
     name: str
     path: str
     url: str
+    # Optional, and absent on every spec written before they existed: `ref` is
+    # the branch of record, `pin` the commit the root declares, `detached` the
+    # state rather than an invented branch. None means the spec says nothing,
+    # which is different from a repo whose head is attached.
+    ref: str | None = None
+    pin: str | None = None
+    detached: bool | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -55,6 +63,9 @@ class RepoTarget:
     repo_name: str
     path: Path
     url: str
+    ref: str | None = None
+    pin: str | None = None
+    detached: bool | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -125,7 +136,14 @@ def read_workspace_spec(spec_path: Path) -> WorkspaceSpec:
         raw = tomllib.load(fh)
 
     repos = [
-        RepoSpec(name=item["name"], path=item["path"], url=item["url"])
+        RepoSpec(
+            name=item["name"],
+            path=item["path"],
+            url=item["url"],
+            ref=item.get("ref"),
+            pin=item.get("pin"),
+            detached=item.get("detached"),
+        )
         for item in raw.get("repos", [])
     ]
     units = [
@@ -161,6 +179,9 @@ def derive_targets(workspace_root: Path, spec: WorkspaceSpec) -> list[RepoTarget
             repo_name=repo.name,
             path=workspace_root / repo.path,
             url=repo.url,
+            ref=repo.ref,
+            pin=repo.pin,
+            detached=repo.detached,
         )
         for repo in spec.repos
     ]
@@ -177,6 +198,9 @@ def derive_targets(workspace_root: Path, spec: WorkspaceSpec) -> list[RepoTarget
                     repo_name=repo_name,
                     path=workspace_root / unit.path / repo_name,
                     url=repo.url,
+                    ref=repo.ref,
+                    pin=repo.pin,
+                    detached=repo.detached,
                 )
             )
 
@@ -346,26 +370,360 @@ def is_git_dir_symlink(path: Path) -> bool:
     return stat.S_ISLNK(mode)
 
 
-def is_linked_worktree(path: Path) -> bool:
-    """A repo path IS a linked worktree (``git worktree add``), not an own
-    clone and not a symlinked ``.git`` (see ``is_git_dir_symlink``).
+_HEX = frozenset("0123456789abcdef")
+# A real HEAD is a full object id: 40 hex under SHA-1, 64 under SHA-256. Any
+# other all-hex value is something git does not write, so it must not be read as
+# a detached head.
+_OBJECT_ID_LENGTHS = frozenset({40, 64})
 
-    Deliberately does not consult ``git rev-parse --is-inside-work-tree`` --
-    that answers TRUE inside a linked worktree just as it does inside a real
-    clone (the same trap ``clone_exec.py``'s ``verify_clone_isolation``
-    docstring names for gr2's lane-clone path), so it can't distinguish the
-    two. A plain clone's ``.git`` is a directory; ``git worktree add``
-    replaces it with a text file (``gitdir: <path>``). lstat, not
-    ``Path.is_dir()``, which follows a symlink.
+
+def root_gitlink_pins(workspace_root: Path) -> dict[str, str]:
+    """The commit the ROOT's committed tree pins for each member path.
+
+    This is the declaration: the gitlink is what the root says its members are.
+    A member's own HEAD is a fact about the member, and using it as the pin
+    records drift as though the root had declared it -- measured by moving a
+    member with no root commit, where the two values differ silently.
+    """
+    out = run_git(workspace_root, "ls-tree", "-r", "HEAD")
+    pins: dict[str, str] = {}
+    for line in out.stdout.splitlines():
+        parts = line.split(None, 3)
+        if len(parts) == 4 and parts[0] == "160000" and parts[1] == "commit":
+            pins[parts[3]] = parts[2]
+    return pins
+
+
+def root_submodule_declarations(workspace_root: Path) -> dict[str, dict[str, str]]:
+    """What the root's ``.gitmodules`` declares per member PATH.
+
+    Keyed by path rather than by submodule name, since the two are different
+    strings and only the path is what a workspace uses.
+    """
+    gitmodules = workspace_root / ".gitmodules"
+    if not gitmodules.is_file():
+        return {}
+    keyed = run_git(
+        workspace_root, "config", "-f", str(gitmodules), "--get-regexp", r"^submodule\."
+    )
+    if keyed.returncode != 0:
+        return {}
+    fields: dict[str, dict[str, str]] = {}
+    for line in keyed.stdout.splitlines():
+        key, _, value = line.partition(" ")
+        value = value.strip()
+        if not key.startswith("submodule.") or not value:
+            continue
+        name, _, field = key[len("submodule.") :].rpartition(".")
+        if not name or field not in ("path", "url", "branch"):
+            continue
+        fields.setdefault(name, {})[field] = value
+    return {spec["path"]: spec for spec in fields.values() if spec.get("path")}
+
+
+def root_submodule_branches(workspace_root: Path) -> dict[str, str]:
+    """The branch each member's ``.gitmodules`` declares, keyed by PATH.
+
+    ``.gitmodules`` is the root's own declaration about a member, so it outranks
+    what the member's remote refs happen to name: a member declared to track
+    ``dev`` must not be recorded as ``main`` because ``origin/HEAD`` says so.
+    """
+    return {
+        path: spec["branch"]
+        for path, spec in root_submodule_declarations(workspace_root).items()
+        if spec.get("branch")
+    }
+
+
+def resolve_member_url(url: str, workspace_root: Path) -> str:
+    """A member url, with a RELATIVE one resolved as git resolves it.
+
+    TWO rules, both measured by letting git do it rather than reasoned from the
+    docs:
+
+    1. A url is relative ONLY when it begins with ``./`` or ``../``
+       (gitmodules(5)). Everything else is used as written -- a resolver that
+       treats "anything not obviously absolute" as relative rewrites
+       ``me@host:org/c.git``, ``example.com:org/c.git`` and a bare ``c.git``
+       onto the origin, each naming somewhere else afterwards.
+    2. A relative url resolves against the superproject's REMOTE URL treated as
+       a directory -- and against the ROOT'S OWN DIRECTORY when there is no
+       remote. Both verified by materializing a member: a plain clone whose
+       ``.gitmodules`` said ``../c`` against an origin of ``/tmp/empty/super``
+       fetched from ``/tmp/empty/c``; the same url on a root with no origin
+       fetched from the root's parent.
+
+    Resolving against the MEMBER's directory would be wrong twice over: the
+    member may not exist yet, and from inside it git answers about the enclosing
+    repo.
+    """
+    if not url:
+        return ""
+    if not (url.startswith("./") or url.startswith("../")):
+        return url
+    base = run_git(workspace_root, "remote", "get-url", "origin").stdout.strip()
+    if not base:
+        base = str(workspace_root)
+    if "://" in base:
+        scheme, _, rest = base.partition("://")
+        host, _, path = rest.partition("/")
+        return f"{scheme}://{host}{posixpath.normpath(f'/{path}/{url}')}"
+    if ":" in base and not base.startswith("/"):
+        host, _, path = base.partition(":")  # scp-like: host:path
+        return f"{host}:{posixpath.normpath(f'{path}/{url}')}"
+    return posixpath.normpath(f"{base}/{url}")
+
+
+def is_own_toplevel(path: Path) -> bool:
+    """True when git's toplevel for ``path`` IS ``path``.
+
+    ``is_git_repo`` is not this question. A plain directory inside another repo
+    answers ``rev-parse --is-inside-work-tree`` TRUE and reports the ENCLOSING
+    repo's toplevel, so a directory beside a nested member was scanned as a repo
+    and given the superproject's own branch, head and pin -- measured on a root
+    with its member at ``libs/c``, where the walk reported ``libs``.
+
+    An EMPTY member directory in a plain clone is the same shape, which is why
+    this is asked on both branches of the scan: there the enclosing repo is the
+    superproject itself, so its url, branch and head would be recorded as the
+    member's.
+    """
+    out = run_git(path, "rev-parse", "--show-toplevel")
+    if out.returncode != 0 or not out.stdout.strip():
+        return False
+    try:
+        return Path(out.stdout.strip()).resolve() == path.resolve()
+    except OSError:
+        return False
+
+
+def declared_repo_state(
+    path: Path, *, pinned: str | None = None, declared_ref: str | None = None
+) -> dict[str, object]:
+    """What a repo DECLARES about itself: its branch of record, the commit it
+    pins, and whether its head is detached.
+
+    Every value comes from local refs -- no ``ls-remote``, no network -- and the
+    branch of record is resolved in the order the ruling names:
+
+    1. ``declared_ref``, from the workspace's own ``.gitmodules`` when the
+       caller supplies it.
+    2. the branch the repo is on, when its head is attached.
+    3. the remote's default from ``refs/remotes/origin/HEAD``, which git sets
+       when it clones -- resolved rather than invented, and used for the
+       detached case so the detached state is recorded AS detached instead of as
+       an assumed branch.
+    4. nothing, which is a third answer and not the same as any of them.
+
+    ``pinned`` is the commit the ROOT pins for this path, when the root pins
+    one; without it the repo's own HEAD is the best answer available, and for a
+    superproject member the caller always has the gitlink.
+
+    Returns ``{}`` when the repo has no readable HEAD (an empty repo), because
+    an absent field and a wrong field are not the same answer and only one of
+    them is safe.
+    """
+    head = run_git(path, "rev-parse", "HEAD")
+    if head.returncode != 0 or not head.stdout.strip():
+        return {}
+    head_sha = head.stdout.strip()
+
+    attached = run_git(path, "symbolic-ref", "-q", "HEAD")
+    is_attached = attached.returncode == 0 and bool(attached.stdout.strip())
+
+    ref: str | None = None
+    if declared_ref:
+        ref = declared_ref
+    elif is_attached:
+        ref = attached.stdout.strip().removeprefix("refs/heads/")
+    else:
+        default = run_git(path, "symbolic-ref", "-q", "refs/remotes/origin/HEAD")
+        if default.returncode == 0 and default.stdout.strip():
+            ref = default.stdout.strip().removeprefix("refs/remotes/origin/")
+
+    state: dict[str, object] = {
+        "pin": pinned or head_sha,
+        "detached": not is_attached,
+    }
+    if ref:
+        state["ref"] = ref
+    return state
+
+
+def _git_pointer_target(path: Path) -> Path | None:
+    """The gitdir a repo path's ``.git`` POINTER FILE names.
+
+    None when ``.git`` is not a regular file -- absent, a directory (an own
+    clone), or a symlink (``is_git_dir_symlink``'s case, checked first by the
+    callers so it does not double-report).
+
+    The target comes back resolved against ``path``, because git records it
+    relative to the worktree (``gitdir: ../.git/modules/<name>``) as often as
+    absolutely (``gitdir: /abs/path/.git/worktrees/<id>``).
     """
     git_path = path / ".git"
     try:
         mode = git_path.lstat().st_mode
     except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(mode):
+        return None
+    try:
+        text = git_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith("gitdir:"):
+            raw = line[len("gitdir:") :].strip()
+            if not raw:
+                return None
+            target = Path(raw)
+            return target if target.is_absolute() else (path / target)
+    return None
+
+
+def is_linked_worktree(path: Path) -> bool:
+    """A repo path IS a linked worktree (``git worktree add``): not an own
+    clone, not a symlinked ``.git`` (see ``is_git_dir_symlink``), and NOT a
+    submodule member (see ``is_submodule_member``).
+
+    Deliberately does not consult ``git rev-parse --is-inside-work-tree`` --
+    that answers TRUE inside a linked worktree just as it does inside a real
+    clone (the same trap ``clone_exec.py``'s ``verify_clone_isolation``
+    docstring names for gr2's lane-clone path), so it can't distinguish the
+    two.
+
+    A pointer file alone is NOT the answer, and believing it was cost a user a
+    dead end: a SUBMODULE member's ``.git`` is a pointer file too, so every
+    member of a converted superproject was reported as a worktree and sent to
+    ``convert-clone``, which exits 1 there. The two are told apart by the
+    admin dir git leaves behind -- see ``_is_worktree_admin_dir``.
+    """
+    target = _git_pointer_target(path)
+    if target is None:
         return False
-    if stat.S_ISLNK(mode):
+    return _is_worktree_admin_dir(target)
+
+
+def _is_worktree_admin_dir(gitdir: Path) -> bool:
+    """Is ``gitdir`` a WORKTREE admin dir, rather than a repository git dir?
+
+    Measured on two real fixtures rather than read off git's documented layout,
+    and corroborated against git's own structural answer in the tests
+    (``rev-parse --git-dir`` differs from ``--git-common-dir`` for a worktree
+    and is identical for a submodule). ``git worktree add`` writes both a
+    ``gitdir`` back-pointer to the worktree's ``.git`` file and a ``commondir``
+    naming the shared dir; a submodule's module dir has neither, holding
+    ``config``/``objects``/``refs`` instead because it is a real git dir.
+
+    Both markers are required, so a directory carrying only one of them is not
+    claimed as a worktree: the false direction here is the one that advises a
+    conversion, and ``convert-clone`` refuses anything it cannot actually
+    convert.
+    """
+    try:
+        return (gitdir / "gitdir").is_file() and (gitdir / "commondir").is_file()
+    except OSError:
         return False
-    return not stat.S_ISDIR(mode)
+
+
+def _module_config_worktree(gitdir: Path) -> Path | None:
+    """The ``core.worktree`` a git dir's own config names, or None if it sets none.
+
+    Hand-parsed rather than run through ``configparser``: the file is INI, but
+    the one value needed here is a PATH, and a general parser would be a wider
+    surface than the single key this reads.
+    """
+    try:
+        text = (gitdir / "config").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    section = ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip().lower()
+            continue
+        if section != "core" or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        if key.strip().lower() != "worktree":
+            continue
+        value = value.strip()
+        if not value:
+            return None
+        target = Path(value)
+        return target if target.is_absolute() else (gitdir / target)
+    return None
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return False
+
+
+def is_submodule_member(path: Path) -> bool:
+    """A repo path is a SUBMODULE member: its ``.git`` file points at a module
+    dir whose own config says that dir's worktree is THIS path.
+
+    The test is git's own ``core.worktree``, not a path component. An earlier
+    form matched a directory named ``modules`` anywhere in the gitdir path, and
+    a ``--separate-git-dir`` clone whose git dir sits under such a directory was
+    then claimed as a member -- with git itself answering that there is no
+    superproject. Both shapes point outside a ``worktrees`` admin dir, so the
+    admin-dir test alone cannot separate them; what separates them is that
+    ``git submodule add`` writes ``worktree = <path back to the member>`` into
+    the module config and a ``--separate-git-dir`` clone writes no ``worktree``
+    key at all. Measured on both fixtures.
+
+    Claiming this shape matters because the claim is user-visible: a member is
+    reported as a superproject member and is never advised to convert.
+
+    A submodule created with ``absorbgitdirs`` disabled keeps a real ``.git``
+    directory inside the member and satisfies NEITHER this predicate nor
+    ``is_linked_worktree``; it reads as a plain repo, which is the safe answer
+    because nothing is then advised about it.
+    """
+    target = _git_pointer_target(path)
+    if target is None or _is_worktree_admin_dir(target):
+        return False
+    worktree = _module_config_worktree(target)
+    if worktree is None:
+        return False
+    return _same_path(worktree, path)
+
+
+def submodule_member_state(path: Path) -> str | None:
+    """``"detached"``, ``"branch"`` or ``"unknown"`` for a submodule member, and
+    None only when the path is not a member at all.
+
+    Read from the member's own ``HEAD``: git records a detached head as the bare
+    object id and an attached one as ``ref: refs/heads/<name>``. The object id
+    is 40 hex characters under SHA-1 and **64 under SHA-256**, and a reader that
+    accepted exactly 40 read a SHA-256 member as no state at all -- which
+    dropped it out of the member count and took the superproject line off
+    ``workspace init``'s output entirely. So any all-hex HEAD is detached, and
+    anything unrecognised is ``"unknown"`` rather than nothing: an unreadable
+    state must not silently remove a member from the report.
+    """
+    if not is_submodule_member(path):
+        return None
+    target = _git_pointer_target(path)
+    if target is None:
+        return None
+    try:
+        head = (target / "HEAD").read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return "unknown"
+    if head.startswith("ref:"):
+        return "branch"
+    if len(head) in _OBJECT_ID_LENGTHS and all(char in _HEX for char in head.lower()):
+        return "detached"
+    return "unknown"
 
 
 class ConvertCloneError(Exception):
@@ -480,6 +838,13 @@ def convert_worktree_to_clone(path: Path) -> dict[str, object]:
         raise ConvertCloneError(
             f"{path}: .git is a symlink into another clone's git state, not a "
             "linked worktree -- remove the symlink and re-clone instead"
+        )
+
+    if is_submodule_member(path):
+        raise ConvertCloneError(
+            f"{path}: a submodule member of a superproject, not a linked "
+            "worktree -- nothing to convert; gr2 moves member heads in its own "
+            "lane clones and leaves the superproject's members in place"
         )
 
     if not is_linked_worktree(path):

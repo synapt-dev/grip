@@ -58,6 +58,7 @@ from .hooks import (
     apply_file_projections,
     load_repo_hooks,
     run_lifecycle_stage,
+    run_materialize_hook_block,
 )
 from .merge_verification import MergeVerificationTarget
 from .platform import PRRef, get_platform_adapter
@@ -207,10 +208,8 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
                 lane_subject=repo_name,
                 lane_name=lane_name,
             )
-            apply_file_projections(hooks, ctx)
-            run_lifecycle_stage(
+            run_materialize_hook_block(
                 hooks,
-                "on_materialize",
                 ctx,
                 repo_dirty=repo_dirty(target_repo_root),
                 first_materialize=first_materialize,

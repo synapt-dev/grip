@@ -127,17 +127,12 @@ The two flags answer the two questions every project is different about:
   install -e` the repo and add pytest, which a plain project needs because pytest
   is only a test dependency.
 
-If your project carries a `.review-install` file at its root (two lines naming
-the same things), you type less: plain `git review run` and the file supplies
-both. grip's own repository does this, which is how its ~1,900-test suite runs
-as one bare command. If your package sits in a subdirectory (a `packages/python`
-layout, say), the same substitution handles it:
+A project without either flag stops on its first run, and the command that
+shows it is the bare one:
 
 ```bash
-git review run --package mypackage --install '{venv} -m pip install -e {lane}/packages/python pytest'
+git review run
 ```
-
-A project without any of this stops on the first unflagged run:
 
 ```text
 refused: no_package: no --package given and this repo's .review-install declares
@@ -147,6 +142,20 @@ the clone rather than in some other checkout on the path
 
 That refusal tells you which of the two flags to add. It stops instead of
 guessing because a green summary about the wrong import is worse than a stop.
+
+If your project carries a `.review-install` file at its root (two lines naming
+the same things), you type less: plain `git review run` and the file supplies
+both. grip's own repository does this, which is how its ~1,900-test suite runs
+as one bare command.
+
+The same substitutions also fit other layouts. This example is for a project
+whose package lives in a subdirectory (a `packages/python` layout); it is shown
+for that shape, not as a step of this demo, whose package sits at the
+repository root:
+
+```bash
+git review run --package mypackage --install '{venv} -m pip install -e {lane}/packages/python pytest'
+```
 
 ## 5. Read the result, close it out (measured: 0.5 s)
 

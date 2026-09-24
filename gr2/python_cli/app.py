@@ -59,6 +59,7 @@ from .hooks import (
     load_repo_hooks,
     run_lifecycle_stage,
     run_materialize_hook_block,
+    HookResult,
 )
 from .merge_verification import MergeVerificationTarget
 from .platform import PRRef, get_platform_adapter
@@ -244,9 +245,15 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
             lane_proto.record_fork_base(workspace_root, owner_unit, lane_name, fork_base)
 
 
-def _run_lane_stage(workspace_root: Path, owner_unit: str, lane_name: str, stage: str, *, manual_hooks: bool = False) -> None:
+def _run_lane_stage(
+    workspace_root: Path, owner_unit: str, lane_name: str, stage: str, *, manual_hooks: bool = False
+) -> list[HookResult]:
+    """Run one lifecycle stage across the lane's repos and return every hook
+    result, so a caller can record what did not run to completion instead of
+    absorbing it into a plain success."""
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
     lane_root = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
+    results: list[HookResult] = []
     for repo_name in lane_doc.get("repos", []):
         repo_root = _lane_repo_root(workspace_root, owner_unit, lane_name, repo_name)
         if not repo_root.exists():
@@ -267,14 +274,27 @@ def _run_lane_stage(workspace_root: Path, owner_unit: str, lane_name: str, stage
             lane_subject=repo_name,
             lane_name=lane_name,
         )
-        run_lifecycle_stage(
-            hooks,
-            stage,
-            ctx,
-            repo_dirty=repo_dirty(repo_root),
-            first_materialize=False,
-            allow_manual=manual_hooks,
+        results.extend(
+            run_lifecycle_stage(
+                hooks,
+                stage,
+                ctx,
+                repo_dirty=repo_dirty(repo_root),
+                first_materialize=False,
+                allow_manual=manual_hooks,
+            )
         )
+    return results
+
+
+def _hook_failures_from(results: list) -> list[dict]:
+    """The ruled failure record: one entry per hook that ran and exited
+    non-zero, naming the hook and its rc."""
+    return [
+        {"hook": r.name, "returncode": r.returncode}
+        for r in results
+        if r.returncode is not None and r.returncode != 0
+    ]
 
 
 def _prepare_review_branch(workspace_root: Path, repo: str, pr_number: int, branch: str | None) -> str:
@@ -712,10 +732,27 @@ def _exit(code: int) -> None:
         raise typer.Exit(code=code)
 
 
-def _consume_lane_transition(outcome: lane_proto.LaneTransitionOutcome | int) -> lane_proto.LaneTransitionOutcome | None:
-    """Render the state writer's one outcome instead of inferring one in the CLI."""
+def _consume_lane_transition(
+    outcome: lane_proto.LaneTransitionOutcome | int,
+    hook_failures: list[dict] | None = None,
+) -> lane_proto.LaneTransitionOutcome | None:
+    """Render the state writer's one outcome instead of inferring one in the CLI.
+
+    A failed warn-tier hook is recorded, not absorbed: when hook_failures is
+    non-empty the payload's status is "warned" (the string "ok" appears
+    nowhere), hook_failures names the hook and its rc, and the same text goes
+    to stderr. Exit code stays 0 — warn is the caller's own declaration."""
     if isinstance(outcome, lane_proto.LaneTransitionOutcome):
-        typer.echo(json.dumps(outcome.as_dict(), indent=2))
+        payload = outcome.as_dict()
+        if hook_failures:
+            payload["status"] = "warned"
+            payload["hook_failures"] = hook_failures
+            rendered = json.dumps(payload, indent=2)
+            typer.echo(rendered)
+            typer.echo(rendered, err=True)
+        else:
+            payload["hook_failures"] = []
+            typer.echo(json.dumps(payload, indent=2))
         _exit(outcome.exit_code)
         return outcome
     _exit(outcome)
@@ -2096,7 +2133,7 @@ def lane_enter(
         )
         raise typer.Exit(code=1)
     try:
-        _run_lane_stage(workspace_root, owner_unit, lane_name, "on_enter", manual_hooks=manual_hooks)
+        enter_results = _run_lane_stage(workspace_root, owner_unit, lane_name, "on_enter", manual_hooks=manual_hooks)
     except HookRuntimeError as exc:
         payload = exc.payload
         repo_name = Path(str(payload.get("cwd", ""))).name or lane_name
@@ -2121,7 +2158,9 @@ def lane_enter(
         notify_channel=notify_channel,
         recall=recall,
     )
-    outcome = _consume_lane_transition(lane_proto.enter_lane(ns))
+    outcome = _consume_lane_transition(
+        lane_proto.enter_lane(ns), _hook_failures_from(enter_results)
+    )
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
     emit_after_outcome(
         event_type=EventType.LANE_ENTERED,
@@ -2180,7 +2219,7 @@ def lane_exit(
         if repo_root.exists():
             if stash_if_dirty(repo_root, f"gr2 exit {owner_unit}/{lane_name}"):
                 stashed_repos.append(repo_name)
-    _run_lane_stage(workspace_root, owner_unit, lane_name, "on_exit", manual_hooks=manual_hooks)
+    exit_results = _run_lane_stage(workspace_root, owner_unit, lane_name, "on_exit", manual_hooks=manual_hooks)
     ns = SimpleNamespace(
         workspace_root=workspace_root,
         owner_unit=owner_unit,
@@ -2188,7 +2227,9 @@ def lane_exit(
         notify_channel=notify_channel,
         recall=recall,
     )
-    outcome = _consume_lane_transition(lane_proto.exit_lane(ns))
+    outcome = _consume_lane_transition(
+        lane_proto.exit_lane(ns), _hook_failures_from(exit_results)
+    )
     emit_after_outcome(
         event_type=EventType.LANE_EXITED,
         workspace_root=workspace_root,

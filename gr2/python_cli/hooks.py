@@ -14,6 +14,7 @@ from .events import EventType, emit, emit_after_outcome
 VALID_IF_EXISTS = {"skip", "overwrite", "merge", "error"}
 VALID_ON_FAILURE = {"block", "warn", "skip"}
 VALID_WHEN = {"first_materialize", "always", "dirty", "manual"}
+VALID_STAGES = {"on_materialize", "on_enter", "on_exit"}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -115,9 +116,19 @@ def load_repo_hooks(repo_root: Path) -> RepoHooks | None:
         return None
     with path.open("rb") as fh:
         raw = tomllib.load(fh)
-    # the consent gate: a consent-shaped section in the hooks table is data
-    # from the member's author, never a grant. Collect it, ignore it, and
-    # let the trust verb and the skip reports surface it.
+    # The wrong-shape guard: a hooks table whose stage keys are TOP-LEVEL
+    # ([[on_enter]] instead of [[lifecycle.on_enter]]) builds an empty RepoHooks,
+    # and every verb downstream succeeds while the author's hook intent has
+    # vanished without a trace (measured). Refuse at load, naming
+    # the expected shape. Consent is a LOCAL record on the host, never a grant
+    # inside the table: a consent-shaped section is collected and ignored.
+    stray = [key for key in raw if str(key).lower() in VALID_STAGES]
+    if stray:
+        raise SystemExit(
+            f"invalid hooks table {path}: lifecycle stage(s) {', '.join(sorted(stray))} "
+            f"are top-level; stages must live under [[lifecycle.on_materialize]] / "
+            "[[lifecycle.on_enter]] / [[lifecycle.on_exit]]"
+        )
     ignored = [key for key in raw if "consent" in str(key).lower()]
     nested_hooks = raw.get("hooks")
     if isinstance(nested_hooks, dict):

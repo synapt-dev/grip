@@ -20,12 +20,13 @@ from gr2.python_cli.hooks import (
     RepoHooks,
     run_lifecycle_stage,
 )
+from gr2.python_cli.consent import bind_ctx
 
 
 def _make_ctx(workspace: Path) -> HookContext:
     repo_root = workspace / "repos" / "grip"
     repo_root.mkdir(parents=True, exist_ok=True)
-    return HookContext(
+    ctx = HookContext(
         workspace_root=workspace,
         unit_root=workspace / "agents" / "apollo",
         lane_root=workspace / "lanes" / "apollo" / "feat-test",
@@ -35,6 +36,8 @@ def _make_ctx(workspace: Path) -> HookContext:
         lane_subject="grip",
         lane_name="feat/test",
     )
+    bind_ctx(ctx)  # the consent gate: the gate is real; runtime-semantics tests bind first
+    return ctx
 
 
 def _make_hooks(lifecycle_hooks: list[LifecycleHook], stage: str = "on_enter") -> RepoHooks:

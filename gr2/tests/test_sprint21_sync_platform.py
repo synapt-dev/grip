@@ -420,6 +420,15 @@ def test_workspace_materialize_emits_file_projected_event(tmp_path: Path) -> Non
 
     result = runner.invoke(app, ["workspace", "materialize", str(workspace_root), "--json", "--yes"])
     assert result.exit_code == 0
+    # the consent gate: the member's hooks table arrives WITH the clone, so the
+    # first materialization skips and reports (exit 0); bind, then
+    # re-materialize from a fresh clone so the projection actually runs.
+    bind = runner.invoke(app, ["hooks", "trust", "app", "--workspace-root", str(workspace_root)])
+    assert bind.exit_code == 0, bind.output
+    # the pending first-materialize marker: the skipped hooks run
+    # once on the next bound materialize — no rm -rf anywhere.
+    result = runner.invoke(app, ["workspace", "materialize", str(workspace_root), "--json", "--yes"])
+    assert result.exit_code == 0
 
     projected_path = workspace_root / "repos" / "app" / "CLAUDE.md"
     assert projected_path.exists()
@@ -443,6 +452,10 @@ def test_lane_enter_hook_failure_writes_marker_and_resolve_emits_event(tmp_path:
 
     materialize = runner.invoke(app, ["workspace", "materialize", str(workspace_root), "--yes", "--json"])
     assert materialize.exit_code == 0
+    # the consent gate: bind after the first materialization (the hooks table
+    # arrives with the clone); the on_enter failure under test then fires.
+    bind = runner.invoke(app, ["hooks", "trust", "app", "--workspace-root", str(workspace_root)])
+    assert bind.exit_code == 0, bind.output
 
     create = runner.invoke(
         app,

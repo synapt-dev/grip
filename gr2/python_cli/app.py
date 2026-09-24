@@ -42,6 +42,16 @@ from .gitops import (
     stash_if_dirty,
 )
 from .grip_cli import config_cli_app, grip_app
+from .consent import (
+    consent_state,
+    describe_member,
+    hooks_sha,
+    load_consent,
+    member_key as consent_member_key,
+    remove_consent,
+    trust_refusal_rows,
+    write_consent,
+)
 from .hooks import (
     HookContext,
     HookRuntimeError,
@@ -103,6 +113,8 @@ app.add_typer(spec_app, name="spec")
 app.add_typer(exec_app, name="exec")
 app.add_typer(sync_app, name="sync")
 app.add_typer(target_app, name="target")
+hooks_app = typer.Typer(help="Bind (trust) or revoke member-hook consent records.")
+app.add_typer(hooks_app, name="hooks")
 # The snapshot store over .grip/.git. Its verb is `store` (init/snapshot/log/diff/
 # checkout); `grip` stays as a hidden alias for one release so existing callers keep
 # working. Both names resolve to the same grip_app callbacks.
@@ -1612,10 +1624,175 @@ def repo_status(
         repo_policy = repo_proto.policy_for(target, policy_doc)
         actions.append(repo_proto.classify(target, status, repo_policy))
 
+    # the consent gate: status KEEPS printing the unbound state — unbound
+    # and clean never print the same nothing. Members with no hooks table
+    # print nothing (nothing is being consented to).
+    hook_lines: list[str] = []
+    for target in repo_proto.derive_targets(workspace_root, spec_doc):
+        if not load_repo_hooks(target.path):
+            continue
+        key = consent_member_key(workspace_root, target.path, getattr(target, "name", target.path.name))
+        state, _record = consent_state(workspace_root, key, target.path)
+        if state == "bound":
+            continue
+        if state == "changed":
+            hook_lines.append(
+                f"hooks changed since grant {getattr(target, 'name', target.path.name)} "
+                f"(sha {hooks_sha(target.path)[:12]}) — re-bind: gr2 hooks trust {getattr(target, 'name', target.path.name)}"
+            )
+        else:
+            hook_lines.append(
+                f"hooks unbound {getattr(target, 'name', target.path.name)} "
+                f"(sha {hooks_sha(target.path)[:12]}) — bind: gr2 hooks trust {getattr(target, 'name', target.path.name)}"
+            )
+
     if json_output:
         typer.echo(json.dumps([item.as_dict() for item in actions], indent=2))
     else:
         typer.echo(repo_proto.render_table(actions))
+        for line in hook_lines:
+            typer.echo(line)
+
+
+def _resolve_member_root(workspace_root: Path, member: str) -> tuple[Path, str]:
+    """A member argument is a repo NAME from the workspace spec or a
+    workspace-relative path. Returns (repo_root, consent_key)."""
+    spec_path = workspace_root / ".grip" / "workspace_spec.toml"
+    if spec_path.exists():
+        try:
+            doc = tomllib.loads(spec_path.read_text())
+        except (OSError, tomllib.TOMLDecodeError):
+            doc = {}
+        for repo in doc.get("repos", []):
+            if str(repo.get("name", "")) == member and repo.get("path"):
+                rel = str(repo["path"]).strip("/")
+                root = workspace_root / rel
+                if not root.is_dir():
+                    raise SystemExit(
+                        f"member '{member}' is declared at {rel} but the directory is missing; "
+                        "materialize the workspace first"
+                    )
+                return root, rel
+    root = workspace_root / member
+    if root.is_dir():
+        return root, member.strip("/")
+    raise SystemExit(
+        f"member '{member}' not found: it is neither a workspace spec repo name "
+        f"nor a directory under {workspace_root}"
+    )
+
+
+@hooks_app.command("trust")
+def hooks_trust(
+    member: str = typer.Argument(..., help="Member repo NAME or workspace-relative path"),
+    workspace_root: Optional[Path] = typer.Option(None, "--workspace-root", help="Workspace root (default: walk up from cwd)"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """BIND member-hook consent: shows everything being consented to first.
+
+    The show block carries the hooks hash, every lifecycle command, every
+    projection with its RESOLVED destination and its confinement flags (an
+    ESCAPE line names a dest that resolves outside the member tree, under
+    any .git, or at an absolute path), and any consent-shaped section the
+    table carries (ignored — consent is a local record, never in the table).
+    The record is written only when the command completes; a hooks table
+    that changes after binding lapses the record by hash.
+    """
+    ws = _resolve_workspace_root(workspace_root)
+    repo_root, key = _resolve_member_root(ws.resolve(), member)
+    hooks = load_repo_hooks(repo_root)
+    if hooks is None:
+        raise SystemExit(f"no .gr2/hooks.toml found in member: {repo_root}")
+    state, record = consent_state(ws, key, repo_root)
+    lines = describe_member(ws.resolve(), repo_root, key, hooks)
+    # the screen shows every RESOLVED
+    # destination; a row that cannot resolve at trust time is refused, not
+    # deferred, and the record does not exist (it binds the whole table by
+    # hash — there is no partial bind of unseen rows).
+    refusals = trust_refusal_rows(hooks, ws.resolve(), repo_root, key)
+    for line in lines:
+        typer.echo(line)
+    if refusals:
+        typer.echo("refused at trust time — these rows cannot be resolved for the screen:")
+        for row in refusals:
+            typer.echo(f"  {row}")
+        typer.echo("no consent record written; fix the rows (or make them workspace-deterministic) and re-run")
+        raise typer.Exit(code=1)
+    if state == "bound" and record is not None:
+        typer.echo(f"already bound (granted {record.get('granted_at')}); re-binding refreshes the record")
+    consent_rec = write_consent(ws, key, repo_root)
+    typer.echo(
+        f"bound: {key} sha {consent_rec['hooks_sha'][:12]} "
+        f"granted_by {consent_rec['granted_by']} at {consent_rec['granted_at']}"
+    )
+
+
+@hooks_app.command("revoke")
+def hooks_revoke(
+    member: str = typer.Argument(..., help="Member repo NAME or workspace-relative path"),
+    workspace_root: Optional[Path] = typer.Option(None, "--workspace-root", help="Workspace root (default: walk up from cwd)"),
+) -> None:
+    """Remove the member-hook consent record (the member's hooks stop running)."""
+    ws = _resolve_workspace_root(workspace_root)
+    repo_root, key = _resolve_member_root(ws.resolve(), member)
+    if remove_consent(ws, key):
+        typer.echo(f"revoked: {key} (hooks will skip and report until re-bound)")
+    else:
+        typer.echo(f"no consent record for {key}; nothing to revoke")
+
+
+@hooks_app.command("status")
+def hooks_status(
+    workspace_root: Optional[Path] = typer.Option(None, "--workspace-root", help="Workspace root (default: walk up from cwd)"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Per-member hook-consent state: bound / unbound / changed.
+
+    Unbound and clean never print the same nothing: every member whose
+    hooks table exists is listed, with its state and hash prefix.
+    """
+    ws = _resolve_workspace_root(workspace_root)
+    spec_path = ws / ".grip" / "workspace_spec.toml"
+    doc: dict = {}
+    if spec_path.exists():
+        try:
+            doc = tomllib.loads(spec_path.read_text())
+        except (OSError, tomllib.TOMLDecodeError):
+            doc = {}
+    rows = []
+    for repo in doc.get("repos", []):
+        name = str(repo.get("name", ""))
+        rel = str(repo.get("path", "")).strip("/")
+        if not name or not rel:
+            continue
+        root = ws / rel
+        hooks = load_repo_hooks(root) if root.is_dir() else None
+        if hooks is None:
+            continue
+        key = consent_member_key(ws, root, name)
+        state, record = consent_state(ws, key, root)
+        rows.append(
+            {
+                "member": name,
+                "key": key,
+                "state": state,
+                "hooks_sha": hooks_sha(root)[:12],
+                "granted_at": (record or {}).get("granted_at"),
+            }
+        )
+    if json_output:
+        typer.echo(json.dumps(rows, indent=2))
+        return
+    if not rows:
+        typer.echo("no members carry a .gr2/hooks.toml")
+        return
+    for row in rows:
+        if row["state"] == "bound":
+            typer.echo(f"hooks bound {row['member']} (sha {row['hooks_sha']}, granted {row['granted_at']})")
+        elif row["state"] == "changed":
+            typer.echo(f"hooks changed since grant {row['member']} (now sha {row['hooks_sha']}) — re-bind: gr2 hooks trust {row['member']}")
+        else:
+            typer.echo(f"hooks unbound {row['member']} (sha {row['hooks_sha']}) — bind: gr2 hooks trust {row['member']}")
 
 
 @repo_app.command("hooks")

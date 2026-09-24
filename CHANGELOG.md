@@ -21,6 +21,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   launch command is now built by one shared path used by both the pane and the
   foreground launch.
 
+## [gr2 2.0.0a4] - 2026-09-24
+
+### Member repo hooks: consent before they run, and where they may write
+
+A member repo's `.gr2/hooks.toml` can carry two kinds of things gr2 executes for
+you: lifecycle commands (they run when the workspace materializes and when
+lanes are cut, entered, or exited) and file projections (copy or link a file
+from the member into the workspace). Through 2.0.0a3 both ran with no prompt:
+cutting a lane executed commands written by whoever authored the member repo,
+and a projection could write outside that repo entirely — into the workspace
+root, inside the workspace's `.git`, or through a symlink to anywhere on the
+machine. (Plain `git clone` never runs repository code, so a superproject user
+moving to gr2 had gone from "cloning is safe" to "cutting a lane executes the
+repo".)
+
+2.0.0a4 gates both behind two local mechanisms:
+
+**Consent.** A member's hooks run only after an explicit local record exists.
+`gr2 hooks trust <member>` shows everything being consented to before anything
+is written: the hash of the member's hooks table, every lifecycle command, and
+every projection with its RESOLVED destination (symlinks followed) and any
+escape flags. The record — `<workspace>/.grip/consent/<member-path>.json`,
+naming the host user and the exact hash — lapses the moment the hook text
+changes, so a repo cannot change its commands under a standing yes. Unbound
+members skip and report: the verb completes, prints the commands that did not
+run, and names the bind command; `gr2 hooks status` and `gr2 status` (the
+same table as `gr2 repo status`) keep printing the unbound state. `gr2 hooks
+revoke` removes the record. A row
+whose destination cannot be resolved while you are reviewing the hooks is
+refused at bind time — the record only ever binds rows the screen showed you.
+
+**Confinement.** Consent answers whether a repo may act; confinement answers
+where. Four rules, checked before a projection's parent directory exists and
+refused-and-reported even when consent is granted:
+
+1. every projection destination resolves (symlinks followed) inside the
+   workspace root;
+2. never under any `.git` component, anywhere in the workspace, and never
+   under the workspace's own `.grip` directory (gr2's consent records and
+   workspace spec live there);
+3. never inside another member repo's tree;
+4. a `[[files.link]]` target and a `[[files.copy]]` source must resolve inside
+   the member's own tree.
+
+Every boundary comparison is NFC-normalized and casefolded on both sides,
+because macOS volumes treat `.GRIP`, `.Grip` and `.grip` as one directory by
+default (APFS can be formatted case-sensitive).
+
+**First materialization.** A member's hooks table arrives with the clone, so
+the first materialization of a not-yet-consented member skips and records the
+fact; the next materialize where that member is bound runs its hooks once. No
+re-clone is ever needed.
+
+Limitations, carried openly:
+
+- a `{unit_root}` destination is refused at trust time: it renders differently
+  per lane and per unit, so the trust screen cannot show you the value you
+  would be consenting to. Until a follow-up renders it per declared unit, the
+  bindable destination forms are the workspace-deterministic ones
+  (`{workspace_root}`, `{repo_root}`).
+- the trust screen resolves and shows every projection's destination, but it
+  does not yet flag a copy **source** outside the member's own tree. Sources
+  are still confined — a projection whose source escapes the member is refused
+  at runtime — the screen simply does not yet show that row as an escape.
+- git's wider rules for alternate spellings of `.git` — ignorable code points
+  on HFS+, and trailing dots, spaces and 8.3 short names on NTFS — are open
+  follow-ups beyond the casefold normalization above.
+
 ## [1.5.1] - 2026-09-10
 
 **Scope.** This release promotes `v1.5.0..<dev tip>` — **15 commits, 7 merge commits, and 7

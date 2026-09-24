@@ -1059,6 +1059,14 @@ def _repo_tree_entries(workspace: Path, name: str, repo_path: Path) -> str:
     """Build a tree for one repo and return an mktree entry line."""
     from gr2.python_cli.gitops import repo_dirty
 
+    if not repo_path.exists():
+        # a missing path is nothing to read: record the empty state (no head,
+        # no branch, no remote, not dirty) without invoking git, which would
+        # raise on the first call; the index's repo_states record says the same
+        dirty_sha = _hash_blob(workspace, "false")
+        tree_sha = _mktree(workspace, [f"100644 blob {dirty_sha}\tdirty"])
+        return f"040000 tree {tree_sha}\t{name}"
+
     blobs: list[str] = []
 
     head = git(repo_path, "rev-parse", "HEAD")

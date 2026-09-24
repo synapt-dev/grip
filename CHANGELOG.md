@@ -46,8 +46,9 @@ escape flags. The record — `<workspace>/.grip/consent/<member-path>.json`,
 naming the host user and the exact hash — lapses the moment the hook text
 changes, so a repo cannot change its commands under a standing yes. Unbound
 members skip and report: the verb completes, prints the commands that did not
-run, and names the bind command; `gr2 hooks status` and `workspace status`
-keep printing the unbound state. `gr2 hooks revoke` removes the record. A row
+run, and names the bind command; `gr2 hooks status` and `gr2 status` (the
+same table as `gr2 repo status`) keep printing the unbound state. `gr2 hooks
+revoke` removes the record. A row
 whose destination cannot be resolved while you are reviewing the hooks is
 refused at bind time — the record only ever binds rows the screen showed you.
 

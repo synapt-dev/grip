@@ -19,7 +19,14 @@ from types import MappingProxyType
 from jsonschema import Draft202012Validator
 
 from .events import EventType, emit_after_outcome
-from .gitops import clone_repo, ensure_repo_cache, is_git_dir, is_git_repo, repo_dirty
+from .gitops import (
+    checkout_declared_pin,
+    clone_repo,
+    ensure_repo_cache,
+    is_git_dir,
+    is_git_repo,
+    repo_dirty,
+)
 from .consent import consent_state, member_key as consent_member_key, pending_members
 from .hooks import (
     HookContext,
@@ -378,8 +385,14 @@ def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -
                 first_materialize = clone_repo(
                     str(repo_spec["url"]), clone_dest, reference_repo_root=cache_path,
                 )
+                pin = str(repo_spec.get("pin") or "")
+                if pin:
+                    # A clone lands on the remote's default tip; the root declares
+                    # a commit. Put it where the root says, or refuse loudly --
+                    # never leave it on the tip and call the unit converged.
+                    checkout_declared_pin(clone_dest, pin, member=repo_name)
                 if first_materialize:
-                    converged.append(repo_name)
+                    converged.append(f"{repo_name}@{pin[:12]}" if pin else repo_name)
                     materialized_repos.append({"repo": repo_name, "first_materialize": True})
             unit_toml = unit_root / "unit.toml"
             unit_toml.write_text(render_unit_toml(unit_spec))

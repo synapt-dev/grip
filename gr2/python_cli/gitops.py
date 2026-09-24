@@ -324,6 +324,57 @@ def clone_repo(url: str, target_repo_root: Path, *, reference_repo_root: Path | 
     return True
 
 
+def checkout_declared_pin(repo_root: Path, pin: str, *, member: str) -> None:
+    """Put a member at the commit the root declares, after a clone.
+
+    A clone lands on the REMOTE'S DEFAULT BRANCH TIP, which for a superproject
+    member is not where the root says it is: the gitlink pins a commit, and that
+    pin is the declaration the whole feature exists to record. Measured on
+    ``git-training-open/submodule-example``: after ``workspace init
+    --from-superproject`` and ``materialize``, ``example1`` sat on ``master`` at
+    ``ceed35b970e2`` while the root pinned ``065be099e95a`` -- and
+    ``jabberwocky`` looked correct only because that repo's master tip happens
+    to equal its pin. So a fixture built on the second member passes while doing
+    the wrong thing, which is why the test uses the pair.
+
+    TWO EDGES, decided rather than assumed:
+
+    - **A pin the clone cannot reach** (a shallow or depth-limited clone). Fetch
+      that one object by sha. If the server refuses, REFUSE with an error naming
+      the pin, the member and the command to try by hand. **Never fall back to
+      the default tip**: a silent fallback is exactly the defect being fixed, so
+      the failure mode here is loud on purpose.
+    - **An empty pin** is not this function's business; the caller skips it. A
+      member with no pin stays on its default branch and the status calls it
+      UNPINNED rather than at-pin.
+    """
+    # A caller SHOULD skip an unpinned member, and this no-op is what makes the
+    # contract safe when one does not: without it an empty pin falls into the
+    # unreachable-pin path below and refuses with a message naming an empty pin,
+    # which is a worse answer than doing nothing. The test that pins the contract
+    # is what found this -- the docstring promised a no-op the code did not do.
+    if not pin:
+        return
+
+    have = lambda: git(repo_root, "cat-file", "-e", f"{pin}^{{commit}}").returncode == 0
+    if not have():
+        git(repo_root, "fetch", "--depth", "1", "origin", pin)
+        if not have():
+            raise SystemExit(
+                f"member '{member}' declares pin {pin}, the clone cannot reach that commit, and "
+                f"fetching it by sha from origin did not provide it. Try "
+                f"`git -C {repo_root} fetch --depth 1 origin {pin}` by hand to see why. This verb "
+                "will not leave the member on its default branch instead: that is a commit the "
+                "root never declared."
+            )
+    checked = git(repo_root, "checkout", "--detach", pin)
+    if checked.returncode != 0:
+        raise SystemExit(
+            f"member '{member}' declares pin {pin} but checking it out failed:\n"
+            f"{checked.stderr or checked.stdout}"
+        )
+
+
 def branch_exists(repo_root: Path, branch: str) -> bool:
     return git(repo_root, "show-ref", "--verify", f"refs/heads/{branch}").returncode == 0
 

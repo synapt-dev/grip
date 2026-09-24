@@ -49,6 +49,13 @@ class FakeAdapter:
             title=request.title,
         )
 
+    def edit_pr_body(self, repo: str, number: int, body: str) -> None:
+        """Recording no-op. This double is not about the sibling pass, but the
+        adapter Protocol now declares the call, so a double that omits it fails the
+        moment a group has more than one PR."""
+        self.edited = getattr(self, "edited", [])
+        self.edited.append((repo, number, body))
+
     def merge_pr(
         self,
         repo: str,

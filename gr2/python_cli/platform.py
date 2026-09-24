@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import shutil
 import subprocess
+import tempfile
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -22,6 +25,21 @@ class PRRef:
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
+
+
+def pr_number_from_url(url: str) -> int:
+    """The PR number, parsed out of the URL that ``gh pr create`` prints.
+
+    ``gh pr create`` prints only the URL, so the number has to be read from it. This
+    REFUSES rather than returning None, because ``PRRef.number`` defaults to None: a
+    silent None is what put ``pr_number: null`` into a PR group's JSON while the
+    ``url`` beside it carried the number, and a caller linking a set of PRs cannot
+    tell "this PR has no number" from "nobody parsed it".
+    """
+    match = re.search(r"/pull/(\d+)/?$", (url or "").strip())
+    if match is None:
+        raise AdapterError(f"gh pr create returned a URL carrying no PR number: {url!r}")
+    return int(match.group(1))
 
 
 class MergeMethod(StrEnum):
@@ -122,6 +140,8 @@ class PlatformAdapter(Protocol):
 
     def pr_checks(self, repo: str, number: int) -> list[PRCheck]: ...
 
+    def edit_pr_body(self, repo: str, number: int, body: str) -> None: ...
+
 
 class AdapterError(RuntimeError):
     pass
@@ -150,6 +170,23 @@ class MergeEvidenceError(AdapterError):
             f"merge command succeeded for {requested.repo}#{requested.number}, "
             f"but its immutable receipt is unavailable: {reason}"
         )
+
+
+@contextlib.contextmanager
+def body_file(body: str) -> Iterator[str]:
+    """Write ``body`` to a temp file and yield its path, removing it on the way out.
+
+    Every gh call that carries a body goes through a file: a PR body holds other
+    PRs' URLs and arbitrary caller text, and argv is a world-readable, length-limited
+    surface. Returns the path so the caller can pass ``--body-file <path>``.
+    """
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as handle:
+        handle.write(body)
+        path = handle.name
+    try:
+        yield path
+    finally:
+        Path(path).unlink(missing_ok=True)
 
 
 def _run_json(command: list[str], *, cwd: Path | None = None) -> object:
@@ -191,8 +228,6 @@ class GitHubAdapter:
             request.repo,
             "--title",
             request.title,
-            "--body",
-            request.body,
             "--head",
             request.head_branch,
             "--base",
@@ -200,17 +235,38 @@ class GitHubAdapter:
         ]
         if request.draft:
             cmd.append("--draft")
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        with body_file(request.body) as body_path:
+            proc = subprocess.run(
+                [*cmd, "--body-file", body_path],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
         if proc.returncode != 0:
             raise AdapterError(proc.stderr.strip() or proc.stdout.strip() or "gh pr create failed")
         url = proc.stdout.strip()
         return PRRef(
             repo=request.repo,
+            number=pr_number_from_url(url),
             url=url or None,
             head_branch=request.head_branch,
             base_branch=request.base_branch,
             title=request.title,
         )
+
+    def edit_pr_body(self, repo: str, number: int, body: str) -> None:
+        """Replace one PR's body, through the same file path ``create_pr`` uses."""
+        with body_file(body) as body_path:
+            proc = subprocess.run(
+                [self.gh_binary, "pr", "edit", str(number), "--repo", repo, "--body-file", body_path],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        if proc.returncode != 0:
+            raise AdapterError(
+                proc.stderr.strip() or proc.stdout.strip() or f"gh pr edit failed for {repo}#{number}"
+            )
 
     def merge_pr(
         self,

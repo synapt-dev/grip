@@ -16,6 +16,7 @@ from gr2.prototypes import lane_workspace_prototype as lane_proto
 from gr2.python_cli import app as app_module
 from gr2.python_cli.app import app
 from gr2.python_cli.platform import (
+    AdapterError,
     CreatePRRequest,
     MergeMethod,
     MergeReceipt,
@@ -24,6 +25,7 @@ from gr2.python_cli.platform import (
     PRStatus,
 )
 from gr2.python_cli.syncops import run_sync
+
 from tests.conftest import make_cli_runner
 
 runner = make_cli_runner()
@@ -606,6 +608,13 @@ def test_pr_commands_route_through_platform_adapter(tmp_path: Path, monkeypatch)
                 title=request.title,
             )
 
+        def edit_pr_body(self, repo: str, number: int, body: str) -> None:
+            """Recording no-op. This double is not about the sibling pass, but the
+            adapter Protocol declares the call, so a double that omits it fails the
+            moment a group has more than one PR."""
+            self.edited = getattr(self, "edited", [])
+            self.edited.append((repo, number, body))
+
         def merge_pr(
             self,
             repo: str,
@@ -823,6 +832,13 @@ def test_pr_create_persists_group_state_by_pr_group_id(tmp_path: Path, monkeypat
                 title=request.title,
             )
 
+        def edit_pr_body(self, repo: str, number: int, body: str) -> None:
+            """Recording no-op. This double is not about the sibling pass, but the
+            adapter Protocol declares the call, so a double that omits it fails the
+            moment a group has more than one PR."""
+            self.edited = getattr(self, "edited", [])
+            self.edited.append((repo, number, body))
+
         def merge_pr(
             self,
             repo: str,
@@ -887,6 +903,13 @@ def test_pr_status_aggregates_group_state(tmp_path: Path, monkeypatch) -> None:
 
         def create_pr(self, request: CreatePRRequest) -> PRRef:  # pragma: no cover
             raise AssertionError("create_pr should not be called")
+
+        def edit_pr_body(self, repo: str, number: int, body: str) -> None:
+            """Recording no-op. This double is not about the sibling pass, but the
+            adapter Protocol declares the call, so a double that omits it fails the
+            moment a group has more than one PR."""
+            self.edited = getattr(self, "edited", [])
+            self.edited.append((repo, number, body))
 
         def merge_pr(
             self,
@@ -955,6 +978,13 @@ def test_pr_merge_reports_partial_failure_and_preserves_state(tmp_path: Path, mo
 
         def create_pr(self, request: CreatePRRequest) -> PRRef:  # pragma: no cover
             raise AssertionError("create_pr should not be called")
+
+        def edit_pr_body(self, repo: str, number: int, body: str) -> None:
+            """Recording no-op. This double is not about the sibling pass, but the
+            adapter Protocol declares the call, so a double that omits it fails the
+            moment a group has more than one PR."""
+            self.edited = getattr(self, "edited", [])
+            self.edited.append((repo, number, body))
 
         def merge_pr(
             self,
@@ -1132,3 +1162,197 @@ def test_sync_run_dirty_discard_discards_changes_without_stash(tmp_path: Path) -
         row["type"] == "sync.repo_skipped" and row.get("repo") == "app" and row.get("reason") == "dirty_discarded"
         for row in outbox
     )
+
+
+def test_pr_create_exits_non_zero_when_a_sibling_edit_fails(tmp_path: Path, monkeypatch) -> None:
+    """A half-linked set must FAIL the command and NAME the repo it could not link.
+
+    The sibling block is the only thing that lets a reviewer on one PR reach the
+    others, so a set with a failed edit reads as navigable and is not. This drives the
+    CLI rather than the library because the EXIT CODE is the half a caller depends on:
+    a library exception nobody checks is not a gate.
+
+    The failure is a PR closed between create and edit, which is the shape the adapter
+    actually reports when `gh pr edit` is pointed at a closed PR.
+    """
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    _, app_url = _init_bare_remote(tmp_path, "app")
+    _, api_url = _init_bare_remote(tmp_path, "api")
+    _write_workspace_spec_multi(workspace_root, [("app", app_url), ("api", api_url)])
+    run_sync(workspace_root)
+
+    ns = SimpleNamespace(
+        workspace_root=workspace_root,
+        owner_unit="atlas",
+        lane_name="feat-router",
+        type="feature",
+        repos="app,api",
+        branch="feat/router",
+        default_commands=[],
+        source="pytest",
+    )
+    lane_proto.create_lane(ns)
+
+    class HalfLinkedAdapter:
+        name = "fake"
+
+        def create_pr(self, request: CreatePRRequest) -> PRRef:
+            number = 41 if request.repo == "app" else 42
+            return PRRef(
+                repo=request.repo,
+                number=number,
+                url=f"https://example.test/{request.repo}/pull/{number}",
+                head_branch=request.head_branch,
+                base_branch=request.base_branch,
+                title=request.title,
+            )
+
+        def edit_pr_body(self, repo: str, number: int, body: str) -> None:
+            if repo.endswith("api"):
+                raise AdapterError(
+                    f"gh pr edit failed for {repo}#{number}: pull request is closed"
+                )
+
+        def merge_pr(self, *args: object, **kwargs: object) -> MergeReceipt:  # pragma: no cover
+            raise AssertionError("merge_pr should not be called")
+
+        def pr_status(self, *args: object, **kwargs: object) -> PRStatus:  # pragma: no cover
+            raise AssertionError("pr_status should not be called")
+
+        def list_prs(self, *args: object, **kwargs: object) -> list[PRRef]:  # pragma: no cover
+            return []
+
+        def pr_checks(self, *args: object, **kwargs: object) -> list[PRCheck]:  # pragma: no cover
+            return []
+
+    monkeypatch.setattr(app_module, "get_platform_adapter", lambda name="github": HalfLinkedAdapter())
+
+    result = runner.invoke(app, ["pr", "create", str(workspace_root), "atlas", "feat-router", "--json"])
+
+    assert result.exit_code != 0, "a half-linked set must NOT exit 0"
+    # AND IT MUST FAIL DELIBERATELY. `exit_code != 0` alone is satisfied by a crash:
+    # with the handler's `raise typer.Exit(code=1)` removed, execution falls through to
+    # a name that was never assigned and the command dies of an UnboundLocalError, which
+    # is also non-zero. This assertion is what makes the witness discriminate, and it is
+    # here because the mutation PASSED without it.
+    assert result.exception is None or isinstance(result.exception, SystemExit), (
+        f"the command must fail deliberately, not crash; got {result.exception!r}"
+    )
+    assert "api#42" in (result.stderr + result.stdout), (
+        f"the unlinked PR must be named; stderr={result.stderr!r}"
+    )
+    payload = json.loads(result.stdout)
+    # The recorded reason must be the ADAPTER's own message, not merely the word
+    # "FAILED". A double that raises for an unintended reason (a name it never
+    # imported, say) also records FAILED -- the caller catches Exception -- so the
+    # weaker assertion passes while the mechanism under test never ran. Static
+    # analysis caught that here; this assertion is what stops a later one.
+    assert "pull request is closed" in payload["sibling_edits"]["api"], (
+        f"the recorded failure must be the adapter's reason; got {payload['sibling_edits']['api']!r}"
+    )
+    assert payload["sibling_edits"]["app"] == "linked", "the repo that DID link must report linked"
+
+
+class _NeverCreateAdapter:
+    """An adapter that records creations, so a refusal can be proven to precede them."""
+
+    name = "fake"
+
+    def __init__(self) -> None:
+        self.created: list[CreatePRRequest] = []
+
+    def create_pr(self, request: CreatePRRequest) -> PRRef:  # pragma: no cover - must not run
+        self.created.append(request)
+        raise AssertionError("the adapter must not be reached when the options are refused")
+
+    def edit_pr_body(self, *args: object, **kwargs: object) -> None:  # pragma: no cover
+        raise AssertionError("edit_pr_body must not be reached")
+
+    def merge_pr(self, *args: object, **kwargs: object) -> MergeReceipt:  # pragma: no cover
+        raise AssertionError("merge_pr must not be reached")
+
+    def pr_status(self, *args: object, **kwargs: object) -> PRStatus:  # pragma: no cover
+        raise AssertionError("pr_status must not be reached")
+
+    def list_prs(self, *args: object, **kwargs: object) -> list[PRRef]:  # pragma: no cover
+        return []
+
+    def pr_checks(self, *args: object, **kwargs: object) -> list[PRCheck]:  # pragma: no cover
+        return []
+
+
+def _pr_create_lane(tmp_path: Path) -> Path:
+    """A synced two-repo workspace holding one lane, ready for `pr create`."""
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    _, app_url = _init_bare_remote(tmp_path, "app")
+    _, api_url = _init_bare_remote(tmp_path, "api")
+    _write_workspace_spec_multi(workspace_root, [("app", app_url), ("api", api_url)])
+    run_sync(workspace_root)
+    lane_proto.create_lane(
+        SimpleNamespace(
+            workspace_root=workspace_root,
+            owner_unit="atlas",
+            lane_name="feat-router",
+            type="feature",
+            repos="app,api",
+            branch="feat/router",
+            default_commands=[],
+            source="pytest",
+        )
+    )
+    return workspace_root
+
+
+def test_pr_create_refuses_body_and_body_file_together(tmp_path: Path, monkeypatch) -> None:
+    """Both options say the same thing, so passing both is an ambiguity rather than a
+    precedence question: the caller is told, instead of one silently winning."""
+    workspace_root = _pr_create_lane(tmp_path)
+    adapter = _NeverCreateAdapter()
+    monkeypatch.setattr(app_module, "get_platform_adapter", lambda name="github": adapter)
+    body_file = tmp_path / "body.md"
+    body_file.write_text("from a file\n")
+
+    result = runner.invoke(
+        app,
+        [
+            "pr", "create", str(workspace_root), "atlas", "feat-router",
+            "--body", "inline", "--body-file", str(body_file),
+        ],
+    )
+
+    assert result.exit_code == 2, (
+        f"expected the usage refusal, got {result.exit_code}: {result.output}"
+    )
+    assert "not both" in (result.stderr + result.stdout), (
+        f"the refusal must say which pair is ambiguous; stderr={result.stderr!r}"
+    )
+    assert adapter.created == [], "the refusal must land before any PR is created"
+
+
+def test_pr_create_refuses_a_body_file_it_cannot_read(tmp_path: Path, monkeypatch) -> None:
+    """A body file that cannot be read is refused rather than falling back to the
+    default body: a silent fallback sends a PR out carrying text the caller did not
+    write, and the caller has no way to notice."""
+    workspace_root = _pr_create_lane(tmp_path)
+    adapter = _NeverCreateAdapter()
+    monkeypatch.setattr(app_module, "get_platform_adapter", lambda name="github": adapter)
+    unreadable = tmp_path / "a-directory"
+    unreadable.mkdir()  # exists, but is not readable as text
+
+    result = runner.invoke(
+        app,
+        [
+            "pr", "create", str(workspace_root), "atlas", "feat-router",
+            "--body-file", str(unreadable),
+        ],
+    )
+
+    assert result.exit_code == 2, (
+        f"expected the read refusal, got {result.exit_code}: {result.output}"
+    )
+    assert str(unreadable) in (result.stderr + result.stdout), (
+        f"the refusal must name the file; stderr={result.stderr!r}"
+    )
+    assert adapter.created == [], "the refusal must land before any PR is created"

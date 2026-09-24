@@ -150,6 +150,10 @@ def test_python_cli_renders_the_transition_writer_outcome(tmp_path: Path, capsys
         # (the alpha-2 stranger-commit finding: enter used to name lane.toml
         # only, never the repos the actor works in).
         "repo_paths": {"app": str(lane_root / "repos" / "app")},
+        # the payload always carries hook_failures, empty here --
+        # a lane whose members run no hooks has none to record, and the key
+        # stays present so a --json consumer reads one shape either way.
+        "hook_failures": [],
     }
 
 

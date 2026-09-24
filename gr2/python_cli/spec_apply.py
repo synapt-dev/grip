@@ -21,7 +21,13 @@ from jsonschema import Draft202012Validator
 from .events import EventType, emit_after_outcome
 from .gitops import clone_repo, ensure_repo_cache, is_git_dir, is_git_repo, repo_dirty
 from .consent import consent_state, member_key as consent_member_key, pending_members
-from .hooks import HookContext, apply_file_projections, load_repo_hooks, run_lifecycle_stage
+from .hooks import (
+    HookContext,
+    apply_file_projections,
+    load_repo_hooks,
+    run_lifecycle_stage,
+    run_materialize_hook_block,
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -480,10 +486,8 @@ def _run_materialize_hooks(
         lane_subject=repo_name,
         lane_name="workspace",
     )
-    projections = apply_file_projections(hooks, ctx)
-    run_lifecycle_stage(
+    projections = run_materialize_hook_block(
         hooks,
-        "on_materialize",
         ctx,
         repo_dirty=repo_dirty(repo_root),
         first_materialize=first_materialize,

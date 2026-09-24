@@ -964,13 +964,27 @@ def workspace_status(workspace_root: Path) -> dict[str, object]:
         # repos are both covered) so `workspace status` reports it too --
         # the playbook has always claimed both commands do this, and until
         # now only one actually did.
+        #
+        # Submodule members are a THIRD shape and are reported separately,
+        # because the worktree advice is wrong for them: a member of a
+        # converted superproject also has a `.git` file, and `convert-clone`
+        # exits 1 on one, resolving its clone source to the modules store.
         parsed_spec = repo_proto.read_workspace_spec(gr2_spec_path)
-        linked_worktrees = [
-            str(target.path)
+        targets = [
+            target
             for target in repo_proto.derive_targets(workspace_root, parsed_spec)
-            if target.path.exists() and repo_proto.is_linked_worktree(target.path)
+            if target.path.exists()
         ]
-        result["linked_worktrees"] = linked_worktrees
+        result["linked_worktrees"] = [
+            str(target.path)
+            for target in targets
+            if repo_proto.is_linked_worktree(target.path)
+        ]
+        result["submodule_members"] = [
+            str(target.path)
+            for target in targets
+            if repo_proto.is_submodule_member(target.path)
+        ]
 
     return result
 
@@ -997,6 +1011,13 @@ def render_status(payload: dict[str, object]) -> str:
             "linked_worktrees = " + ", ".join(linked)
             + " -- gr does not support worktree-backed repos; "
             "run `gr2 workspace convert-clone <path>` on each"
+        )
+    members = payload.get("submodule_members") or []
+    if members:
+        lines.append(
+            "submodule_members = " + ", ".join(members)
+            + " -- superproject members, not linked worktrees; they are the "
+            "superproject's own materialization, so nothing is converted"
         )
     if not payload["gr1"] and not payload["gr2"]:
         lines.append("No workspace detected. Run `gr2 workspace init` or `gr2 workspace migrate-gr1`.")

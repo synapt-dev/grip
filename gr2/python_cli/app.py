@@ -2743,7 +2743,7 @@ def _normalize_review_row(raw: object) -> dict:
 def review_bind(
     workspace_root: Optional[Path] = typer.Argument(None),
     key: Optional[str] = typer.Option(None, "--repo", help="Repository key for a single bound row"),
-    remote: Optional[str] = typer.Option(None, "--remote", help="Remote URL or path of the row"),
+    remote: Optional[str] = typer.Option(None, "--remote", help="Remote URL or absolute path of the row (relative paths and remote names are not resolved from your shell's directory)"),
     base: Optional[str] = typer.Option(None, "--base", help="Base SHA (must be the live remote head of --ref)"),
     head: Optional[str] = typer.Option(None, "--head", help="Reviewed head SHA (the pre-push head under review)"),
     ref: str = typer.Option("refs/heads/dev", "--ref", help="Target ref whose live head must equal --base"),

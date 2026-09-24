@@ -1,4 +1,4 @@
-# Review a project's tests with `git review` — the ten-minute codelab
+# Review a project's tests with `git review`: the ten-minute codelab
 
 **Date: 2026-09-24. Written from a measured cold run, not composed backwards.** The
 commands below were executed in order on a fresh, empty home directory (a scratch
@@ -90,7 +90,9 @@ opened review: plain_review_demo base 1dbccd40d83a head 1dbccd40d83a
 ```
 
 Read that warning without alarm: on a single-branch repository this is the
-ordinary shape, not a failure. `open` looks for a branch that has diverged from
+ordinary shape, not a failure. The two short hashes in the `open` line are
+the demo commit's own; yours will differ, and that is expected. `open` looks
+for a branch that has diverged from
 your default branch to use as the review's base; finding none, it reviews the
 current commit against itself, which is exactly what you asked for when you
 opened a review on a branch you just wrote. If your repository does have a
@@ -157,9 +159,14 @@ Measured (an excerpt; `status` also prints the review's name, base and head,
 plus the empty-diff warning when there is no diverging branch):
 
 ```text
-last run GREEN at 2026-09-24T14:12:23Z: selected=1 passed=1 failed=0 errors=0
+last run GREEN at <timestamp>: selected=1 passed=1 failed=0 errors=0
 closed review
 ```
+
+The timestamp is elided rather than shown: the tool prints it with
+microseconds and a UTC offset, and every reader's value differs, so a
+verbatim example would read as pasted while being the one string you
+cannot have.
 
 `status` shows the open review and the last run's counts. `close` removes the
 review state, the separate environment it created, and the receipt; today

@@ -26,6 +26,7 @@ from . import prune as prune_ops
 from . import target as target_ops
 from . import project_review
 from . import push as push_ops
+from .clone_exec import rmtree_or_refuse
 from .events import EventType, emit_after_outcome
 from .gitops import (
     branch_exists,
@@ -2027,6 +2028,54 @@ def repo_projection_run(
         typer.echo(json.dumps(payload, indent=2))
 
 
+def _lane_carries_a_fork_base(workspace_root: Path, owner_unit: str, lane_name: str) -> bool:
+    """True when the lane already carries a recorded fork base.
+
+    The fork base is what separates the two kinds of refusal, and therefore what the
+    removal keys on:
+
+    * A refusal that lands BEFORE it is recorded leaves an ORPHAN. Measured on the
+      refusal path: a missing source made ``lane create`` exit 1 after writing
+      ``lane.toml``, and ``lane enter``, ``lane exit`` and ``exec run`` all accepted the
+      leftover; the failure then surfaced at ``exec run`` as "repos missing", two steps
+      away from the create that refused, with nothing in between pointing back at it.
+    * A refusal that lands AFTER it -- a projection hook that blocks, say -- leaves
+      a RECOVERABLE lane, which must survive WITH its fork base so
+      ``review create-project`` still succeeds on it.
+
+    The fork base is recorded PER REPO, in the materialization loop, so EXISTENCE is not
+    the discriminator: a lane whose later repos never materialized carries a fork base
+    for the repos that did, and it is exactly as unusable as one carrying none --
+    ``lane enter`` accepts it while ``review create-project`` refuses it as not
+    materialized. COVERAGE is the discriminator: every repo the lane document names must
+    have a fork base entry.
+
+    Both refuse and both exit non-zero; only the covered lane is something a verb can use.
+    """
+    try:
+        doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
+    except SystemExit:
+        # load_lane_doc refuses a lane that is not on disk; there is nothing to keep,
+        # and nothing to remove either.
+        return False
+    fork_base = doc.get("fork_base") or {}
+    repos = doc.get("repos") or []
+    return bool(fork_base) and set(repos) <= set(fork_base)
+
+
+def _remove_lane_artifacts(workspace_root: Path, owner_unit: str, lane_name: str) -> None:
+    """Remove the lane directory a REFUSED create wrote, when nothing in it is usable.
+
+    A refusal that never reached a fork base must leave no lane that any verb accepts,
+    and the caller checks that precondition before calling this. Removal goes through
+    ``rmtree_or_refuse`` so a partial cleanup raises instead of reporting success: a lane
+    half-removed is the same defect as a lane never removed.
+    """
+    lane_root = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
+    if lane_root.exists():
+        rmtree_or_refuse(lane_root)
+
+
 @lane_app.command("create")
 def lane_create(
     workspace_root: Path,
@@ -2067,7 +2116,36 @@ def lane_create(
     # event comes from the lane document create_lane just wrote (derived from the
     # bound worktree), not from the --branch arg, which --bind ignores.
     if bind is None:
-        _materialize_lane_repos(workspace_root, owner_unit, lane_name, manual_hooks=manual_hooks)
+        try:
+            _materialize_lane_repos(workspace_root, owner_unit, lane_name, manual_hooks=manual_hooks)
+        except BaseException:
+            # BaseException and not Exception, deliberately: the refusal this guards
+            # against is a SystemExit, which is not an Exception and would sail past a
+            # narrower clause, leaving exactly the orphan this exists to prevent.
+            #
+            # ...but only when the refusal left nothing usable. A blocked projection hook
+            # refuses AFTER the fork base is recorded, and that lane is recoverable by
+            # design -- `review create-project` must still succeed on it -- so the fork
+            # base, not the position of the raise, decides.
+            if not _lane_carries_a_fork_base(workspace_root, owner_unit, lane_name):
+                _remove_lane_artifacts(workspace_root, owner_unit, lane_name)
+            else:
+                # The kept path must be LEGIBLE, not silent. A user who sees "create
+                # failed" and later finds the lane on disk would otherwise read it as the
+                # very orphan this change exists to prevent. So the message says the lane
+                # was KEPT, why it is recoverable, and both ways forward. It names no
+                # removal verb because none exists: `lane` has create/enter/resolve/exit/
+                # current/bind and nothing that removes one, and a message that names a
+                # command a user cannot run is worse than one that names the path.
+                lane_root = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
+                typer.echo(
+                    f"lane create: the lane {owner_unit}/{lane_name} was KEPT because its fork "
+                    f"base is recorded, so it is recoverable.\n"
+                    f"  continue with it: gr2 review create-project {workspace_root} {owner_unit} {lane_name}\n"
+                    f"  remove it:        delete {lane_root}  (no lane-removal verb exists yet)",
+                    err=True,
+                )
+            raise
     repo_list = [r.strip() for r in repos.split(",")]
     # The event payload carries lane_kind (and bound_worktree for a bound lane)
     # so an event-stream consumer can tell a bound lane from a materialized one

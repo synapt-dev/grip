@@ -444,7 +444,7 @@ def _toml_basic_string(value: str) -> str:
 
 def _write_workspace_spec(
     workspace_root: Path,
-    repos: list[dict[str, str]],
+    repos: list[dict[str, object]],
     default_unit: str,
     *,
     workspace_name: str | None = None,
@@ -456,15 +456,23 @@ def _write_workspace_spec(
         "",
     ]
     for repo in repos:
-        lines.extend(
-            [
-                "[[repos]]",
-                f"name = {_toml_basic_string(repo['name'])}",
-                f"path = {_toml_basic_string(repo['path'])}",
-                f"url = {_toml_basic_string(repo['url'])}",
-                "",
-            ]
-        )
+        entry = [
+            "[[repos]]",
+            f"name = {_toml_basic_string(str(repo['name']))}",
+            f"path = {_toml_basic_string(str(repo['path']))}",
+            f"url = {_toml_basic_string(str(repo['url']))}",
+        ]
+        # The declaration's extra keys are written only when the repo answered.
+        # `detached` is written EXPLICITLY when known, so a reader never has to
+        # infer an attached head from a missing key.
+        if repo.get("ref"):
+            entry.append(f"ref = {_toml_basic_string(str(repo['ref']))}")
+        if repo.get("pin"):
+            entry.append(f"pin = {_toml_basic_string(str(repo['pin']))}")
+        if repo.get("detached") is not None:
+            entry.append(f"detached = {'true' if repo['detached'] else 'false'}")
+        entry.append("")
+        lines.extend(entry)
     lines.extend(
         [
             "[[units]]",
@@ -484,15 +492,71 @@ def _write_workspace_spec(
     return spec_path
 
 
-def _scan_existing_repos(workspace_root: Path) -> list[dict[str, str]]:
-    repos: list[dict[str, str]] = []
-    for child in sorted(workspace_root.iterdir()):
-        if child.name.startswith("."):
+def _is_scannable_child(child: Path) -> bool:
+    """A directory beside the workspace root that could be a member repo.
+
+    ``is_git_repo`` is not the question: when the root is itself a repo, every
+    plain directory under it answers ``--is-inside-work-tree`` true on the
+    enclosing repo's behalf. Its own toplevel is the question.
+    """
+    if not child.is_dir():
+        return False
+    if child.name.startswith(".") or child.name == "agents":
+        return False
+    return repo_proto.is_own_toplevel(child)
+
+
+def _scan_existing_repos(workspace_root: Path) -> list[dict[str, object]]:
+    repos: list[dict[str, object]] = []
+    # Read once, not per repo: the root's own declarations about its members.
+    pins = repo_proto.root_gitlink_pins(workspace_root)
+    declared_refs = repo_proto.root_submodule_branches(workspace_root)
+    modules = repo_proto.root_submodule_declarations(workspace_root)
+
+    if pins:
+        # A root that pins members has a KNOWN member set, at ANY depth: the
+        # pins ARE the members. A depth-1 directory walk cannot find one at
+        # `libs/c`, and the plain directory `libs` beside it answers git
+        # truthfully -- from the ENCLOSING repo -- so the walk reported the
+        # superproject's own branch, head and pin as though they were a
+        # member's, and never reported the member at all.
+        candidates = [(path, workspace_root / path) for path in sorted(pins)]
+    else:
+        candidates = [
+            (child.name, child)
+            for child in sorted(workspace_root.iterdir())
+            if _is_scannable_child(child)
+        ]
+
+    for name, child in candidates:
+        rel = child.relative_to(workspace_root).as_posix()
+        declared = modules.get(rel, {})
+        pinned = pins.get(rel)
+
+        if pinned is not None and not repo_proto.is_own_toplevel(child):
+            # A member that is NOT materialized -- the ordinary state after a
+            # plain `git clone` without --recurse-submodules, where the member
+            # path is an empty directory. Git answers every question asked from
+            # inside it about the ENCLOSING superproject, so reading it would
+            # record the superproject's own url, branch and head as the
+            # member's, and a materialize from that spec would clone the
+            # superproject into the member path.
+            #
+            # The member is still declared by the root, so it is described from
+            # `.gitmodules` and the gitlink. Its own state is left UNSAID rather
+            # than answered from the enclosing repo: there is no member here to
+            # have a state.
+            entry: dict[str, object] = {
+                "name": name,
+                "path": rel,
+                "url": repo_proto.resolve_member_url(declared.get("url", ""), workspace_root),
+                "pin": pinned,
+            }
+            if declared.get("branch"):
+                entry["ref"] = declared["branch"]
+            repos.append(entry)
             continue
-        if child.name == "agents":
-            continue
-        if not child.is_dir():
-            continue
+
         # Bare repositories are DETECTED but NOT ADDED: materialize's validator
         # rejects a bare path as a repo, and a bare upstream beside its clone
         # is a working dev layout that a bare-as-repo scan turns into a refused
@@ -501,13 +565,29 @@ def _scan_existing_repos(workspace_root: Path) -> list[dict[str, str]]:
         if not is_git_repo(child):
             continue
         url = remote_origin_url(child)
-        repos.append(
-            {
-                "name": child.name,
-                "path": child.relative_to(workspace_root).as_posix(),
-                "url": url or "",
-            }
+        repo: dict[str, object] = {
+            "name": name,
+            "path": rel,
+            # A member the root declares but that carries no origin of its own
+            # still has a url: the root's declaration. Falling back to it keeps
+            # init from advising a `remote add` for a url it already has.
+            "url": url or repo_proto.resolve_member_url(
+                declared.get("url", ""), workspace_root
+            ),
+        }
+        # What the repo declares: branch of record, pin, detached state. Absent
+        # when HEAD is unreadable, so a field the repo cannot answer is left out
+        # rather than guessed. The PIN comes from the root's tree when the root
+        # pins this path -- the gitlink is the declaration, and a member's own
+        # head is where the member is, which is drift and not a declaration.
+        repo.update(
+            repo_proto.declared_repo_state(
+                child,
+                pinned=pins.get(str(repo["path"])),
+                declared_ref=declared_refs.get(str(repo["path"])),
+            )
         )
+        repos.append(repo)
     return repos
 
 

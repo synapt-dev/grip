@@ -19,6 +19,7 @@ same fixture with a REAL checkout at that path must report no
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -140,3 +141,29 @@ def test_an_empty_placeholder_is_not_a_conflict_and_the_first_run_works(tmp_path
     for member, want in pins.items():
         got = _run("rev-parse", "HEAD", cwd=unit / member).stdout.strip()
         assert got == want, f"{member} landed on {got[:12]}, the root pins {want[:12]}"
+
+
+def test_an_unreadable_member_directory_is_reported_not_a_crash(tmp_path: Path) -> None:
+    """An unreadable directory at a declared repo path must ANSWER, not raise.
+
+    The exemption asks whether the directory is EMPTY, and `iterdir()` on a
+    chmod-000 directory raises PermissionError. Unguarded, that turned the
+    answer the old code gave here (`is_git_repo` catches PermissionError and
+    says False, so a conflict is reported) into a traceback, and the CLI exited
+    1 with NO output at all -- which is worse than a wrong answer, because a
+    reader cannot tell the command never ran.
+
+    An unreadable directory is not an empty one: we cannot know, so it is not
+    exempt and the conflict is reported.
+    """
+    root = _workspace_with_a_declared_repo(tmp_path, checkout=False)
+    member = root / "repos" / "m"
+    (member / "a-file.txt").unlink()
+    assert not any(member.iterdir()), "precondition: the member holds nothing"
+    os.chmod(member, 0)
+    try:
+        issues = spec_apply.validate_spec(root)  # must not raise
+        conflicts = [i for i in issues if i.code == "repo_path_conflict"]
+        assert conflicts, f"an unreadable member directory must be reported, got {issues}"
+    finally:
+        os.chmod(member, 0o755)

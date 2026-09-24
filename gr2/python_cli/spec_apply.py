@@ -88,6 +88,22 @@ def show_spec(workspace_root: Path, *, json_output: bool) -> str:
     return spec_path.read_text()
 
 
+def _is_empty_directory(path: Path) -> bool:
+    """True only for a directory that can be READ and holds nothing.
+
+    An unreadable directory is not an empty one: we cannot know, and the answer
+    this function would replace (`is_git_repo`) catches PermissionError and
+    answers False, so the old code reported a conflict there. Calling
+    `iterdir()` unguarded turned that answer into a traceback and left the CLI
+    at rc 1 with NO output at all -- which is worse than a wrong answer, because
+    a reader cannot tell that the command never ran.
+    """
+    try:
+        return path.is_dir() and not any(path.iterdir())
+    except OSError:
+        return False
+
+
 def validate_spec(workspace_root: Path) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     spec = load_workspace_spec_doc(workspace_root)
@@ -139,7 +155,7 @@ def validate_spec(workspace_root: Path) -> list[ValidationIssue]:
         # `materialize` aborted on the first run of a freshly cloned
         # superproject -- the exact path the from-superproject entry exists to
         # serve.
-        empty_placeholder = repo_root.is_dir() and not any(repo_root.iterdir())
+        empty_placeholder = _is_empty_directory(repo_root)
         if repo_root.exists() and not is_repo_root(repo_root) and not empty_placeholder:
             issues.append(
                 ValidationIssue(

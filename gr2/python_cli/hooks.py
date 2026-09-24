@@ -44,11 +44,17 @@ class RepoHooks:
     on_exit: list[LifecycleHook]
     policy: dict[str, object]
     path: Path
+    # the consent gate: consent-shaped sections found in the hooks table.
+    # Consent is a LOCAL record on the host (consent.py); a section inside
+    # the table arrives pre-consented from whoever authored it and must
+    # never bind — it is collected here, ignored, and REPORTED.
+    ignored_consent_keys: list[str] = dataclasses.field(default_factory=list)
 
     def as_dict(self) -> dict[str, object]:
         return {
             "repo_name": self.repo_name,
             "path": str(self.path),
+            "ignored_consent_keys": list(self.ignored_consent_keys),
             "files": {
                 "link": [dataclasses.asdict(item) for item in self.file_links],
                 "copy": [dataclasses.asdict(item) for item in self.file_copies],
@@ -109,6 +115,15 @@ def load_repo_hooks(repo_root: Path) -> RepoHooks | None:
         return None
     with path.open("rb") as fh:
         raw = tomllib.load(fh)
+    # the consent gate: a consent-shaped section in the hooks table is data
+    # from the member's author, never a grant. Collect it, ignore it, and
+    # let the trust verb and the skip reports surface it.
+    ignored = [key for key in raw if "consent" in str(key).lower()]
+    nested_hooks = raw.get("hooks")
+    if isinstance(nested_hooks, dict):
+        ignored.extend(
+            "hooks." + key for key in nested_hooks if "consent" in str(key).lower()
+        )
     return RepoHooks(
         repo_name=raw.get("repo", {}).get("name"),
         file_links=_parse_projections(raw, "link"),
@@ -118,6 +133,7 @@ def load_repo_hooks(repo_root: Path) -> RepoHooks | None:
         on_exit=_parse_lifecycle(raw, "on_exit", default_on_failure="warn"),
         policy=dict(raw.get("policy", {})),
         path=path,
+        ignored_consent_keys=ignored,
     )
 
 
@@ -188,14 +204,107 @@ def render_text(template: str, ctx: HookContext) -> str:
     return result
 
 
+def _consent_violations(
+    dest_template: str, ctx: HookContext, *, rendered: str, kind: str | None = None, link_target: str | None = None
+) -> list[str]:
+    """The confinement check for one projection dest (the consent gate scope
+    measured 2026-09-24): the boundary is the workspace
+    root (the root and {unit_root} are inside), never under any .git,
+    never inside another member's tree, and a link's TARGET must resolve
+    inside the member's own tree. Nothing is invented."""
+    from . import consent as _consent
+
+    return _consent.confinement_violations(
+        dest_template,
+        ctx.repo_root,
+        ctx.workspace_root,
+        rendered=rendered,
+        sibling_member_roots=_consent.declared_member_roots(ctx.workspace_root, exclude=ctx.repo_root),
+        kind=kind,
+        link_target=link_target,
+    )
+
+
 def apply_file_projections(hooks: RepoHooks, ctx: HookContext) -> list[HookResult]:
+    gate = _consent_gate(ctx)
+    if gate is not None and gate[1] != "bound":
+        # the consent gate: projections are gated by the SAME consent record
+        # (the measurement showed they escape the member tree and land under
+        # .git, inside gr2's state area, and at arbitrary absolute paths).
+        # SKIP AND REPORT, like the lifecycle gate; nothing is written. A
+        # bound-with-pending gate falls through and runs.
+        key, state, record = gate[0], gate[1], gate[2]
+        items = [*hooks.file_links, *hooks.file_copies]
+        results: list[HookResult] = [
+            HookResult(
+                kind="projection",
+                name=f"{item.kind}:{item.dest}",
+                status=state,
+                detail=f"member hooks {state}; projection not written: {item.dest}",
+                dest=item.dest,
+                if_exists=item.if_exists,
+            )
+            for item in items
+        ]
+        _report_unbound(
+            ctx,
+            key,
+            state,
+            record,
+            [(f"projection {item.kind}", item.dest) for item in items],
+            list(hooks.ignored_consent_keys),
+        )
+        return results
     results: list[HookResult] = []
     for item in [*hooks.file_links, *hooks.file_copies]:
         rendered_src = render_text(item.src, ctx)
         src = Path(rendered_src)
         if not src.is_absolute():
             src = ctx.repo_root / src
+        # the projection SOURCE resolves inside the
+        # member's own tree, like a link target — a symlinked src pointing
+        # outside must not smuggle outside bytes into the workspace.
+        if not src.resolve().is_relative_to(ctx.repo_root.resolve()):
+            raise HookRuntimeError(
+                {
+                    "kind": "projection",
+                    "projection": item.kind,
+                    "status": "refused",
+                    "detail": "confinement: projection source resolves outside the member's own tree",
+                    "repo_hooks_path": str(hooks.path),
+                    "src": str(src),
+                    "dest": item.dest,
+                    "if_exists": item.if_exists,
+                }
+            )
         dest = render_path(item.dest, ctx)
+        # consent answers whether this repo may act; confinement answers
+        # where. Every dest RESOLVES (symlinks included) inside the
+        # workspace root, never under any .git, never inside another
+        # member's tree; for a link, the TARGET must resolve inside the
+        # member's own tree. A violating row is REFUSED and REPORTED even
+        # when consent is GRANTED — checked BEFORE the dest parent is
+        # created, so a violation writes nothing.
+        violations = _consent_violations(
+            item.dest,
+            ctx,
+            rendered=str(dest),
+            kind=item.kind,
+            link_target=str(src.resolve()) if item.kind == "link" else None,
+        )
+        if violations:
+            raise HookRuntimeError(
+                {
+                    "kind": "projection",
+                    "projection": item.kind,
+                    "status": "refused",
+                    "detail": "confinement: " + "; ".join(violations),
+                    "repo_hooks_path": str(hooks.path),
+                    "src": str(src),
+                    "dest": str(dest),
+                    "if_exists": item.if_exists,
+                }
+            )
         dest.parent.mkdir(parents=True, exist_ok=True)
 
         # A projection writes untracked space only. A tracked destination is
@@ -311,6 +420,61 @@ def apply_file_projections(hooks: RepoHooks, ctx: HookContext) -> list[HookResul
     return results
 
 
+def _consent_gate(
+    ctx: HookContext,
+) -> tuple[str, str, dict | None, bool] | None:
+    """the consent gate: the consent check shared by both hook classes.
+
+    Returns None when the member's hooks are BOUND and no pending
+    first-materialize marker exists. The bool is True when a pending marker
+    was consumed (hooks skipped on the unbound first materialize
+    run once on the next bound materialize). Otherwise returns
+    (member_key, state, record, False) — the caller skips and reports, and
+    the skip writes a pending marker. The member key resolves through the
+    workspace spec so a lane's materialized copy of a member maps back to
+    the member's declared path: consent is granted once per member, never
+    per lane copy.
+    """
+    from . import consent as _consent
+
+    key = _consent.member_key(ctx.workspace_root, ctx.repo_root, ctx.repo_name)
+    state, record = _consent.consent_state(ctx.workspace_root, key, ctx.repo_root)
+    if state == "bound":
+        if not _consent.take_pending_marker(ctx.workspace_root, key):
+            return None
+        return (key, "bound", record, True)
+    _consent.write_pending_marker(ctx.workspace_root, key)
+    return (key, state, record, False)
+
+
+def _report_unbound(
+    ctx: HookContext, key: str, state: str, record: dict | None, items: list[tuple[str, str]], ignored: list[str]
+) -> None:
+    """SKIP AND REPORT: the verb completes with exit
+    0 and prints what did NOT run plus the bind command. Refusing was ruled
+    out — it breaks the stranger's README walk."""
+    from . import consent as _consent
+
+    sha = _consent.hooks_sha(ctx.repo_root)
+    if state == "changed":
+        old = str((record or {}).get("hooks_sha", "?"))[:12]
+        print(
+            f"gr2: member '{key}' hooks changed since grant "
+            f"(granted sha {old}, now {sha[:12]}) — the following did NOT run:"
+        )
+    else:
+        print(f"gr2: member '{key}' hooks unbound (sha {sha[:12]}) — the following did NOT run:")
+    for name, what in items:
+        print(f"  {name}: {what}")
+    if ignored:
+        print(
+            "  ignored consent-shaped section(s) in the hooks table: "
+            + ", ".join(ignored)
+            + " — consent is a local record on the host, never inside the hooks table"
+        )
+    print(f"bind: gr2 hooks trust {ctx.repo_name}")
+
+
 def run_lifecycle_stage(
     hooks: RepoHooks,
     stage: str,
@@ -325,14 +489,40 @@ def run_lifecycle_stage(
         "on_enter": hooks.on_enter,
         "on_exit": hooks.on_exit,
     }[stage]
+    # the consent gate: consent is the OUTER gate. An unbound or changed
+    # member's commands do not run; the verb completes and reports. The
+    # gate is folded into the loop below so there is ONE HOOK_SKIPPED emit
+    # site (the outcome-policy counter counts them per call site) and the
+    # --manual-hooks axis stays subordinate: consent blocks first, and
+    # allow_manual never resurrects a consent-skipped hook.
+    gate = _consent_gate(ctx)
+    gate_key, gate_state, gate_record, gate_pending = gate if gate is not None else (None, None, None, False)
+    if gate_state == "bound":
+        # bound: proceed. A consumed pending first-materialize marker ORs the
+        # first-materialize semantics — the hooks skipped on the
+        # unbound first materialize run once on this bound run.
+        first_materialize = first_materialize or gate_pending
+        gate_key = None
     results: list[HookResult] = []
     for hook in hooks_for_stage:
-        if not _should_run(
+        if gate_key is not None:
+            skip_reason = f"member hooks {gate_state} (consent record missing or hash changed)"
+            skip_status = gate_state
+            skip_detail = f"member hooks {gate_state}; command not run: {hook.command}"
+        elif not _should_run(
             hook.when,
             repo_dirty=repo_dirty,
             first_materialize=first_materialize,
             allow_manual=allow_manual,
         ):
+            skip_reason = f"when={hook.when} did not match current invocation"
+            skip_status = "skipped"
+            skip_detail = f"hook when={hook.when} did not match current invocation"
+        else:
+            skip_reason = None
+        if skip_reason is not None:
+            # The ONE HOOK_SKIPPED emit site for this stage: consent-blocked
+            # hooks and when-mismatched hooks both land here.
             emit(
                 event_type=EventType.HOOK_SKIPPED,
                 workspace_root=ctx.workspace_root,
@@ -342,15 +532,15 @@ def run_lifecycle_stage(
                     "stage": stage,
                     "hook_name": hook.name,
                     "repo": ctx.repo_name,
-                    "reason": f"when={hook.when} did not match current invocation",
+                    "reason": skip_reason,
                 },
             )
             results.append(
                 HookResult(
                     kind="lifecycle",
                     name=hook.name,
-                    status="skipped",
-                    detail=f"hook when={hook.when} did not match current invocation",
+                    status=skip_status,
+                    detail=skip_detail,
                 )
             )
             continue
@@ -463,6 +653,17 @@ def run_lifecycle_stage(
                 stdout=proc.stdout,
                 stderr=proc.stderr,
             )
+        )
+    if gate_key is not None:
+        # SKIP AND REPORT: the verb completes with exit 0 and
+        # prints what did NOT run plus the bind command.
+        _report_unbound(
+            ctx,
+            gate_key,
+            gate_state,
+            gate_record,
+            [(h.name, h.command if h.command is not None else h.detail) for h in results],
+            list(hooks.ignored_consent_keys),
         )
     return results
 

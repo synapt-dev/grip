@@ -72,7 +72,7 @@ def test_every_direct_site_has_the_classified_policy() -> None:
             ("run_lifecycle_stage", "emit", "HOOK_STARTED", False): 1,
             ("run_lifecycle_stage", "emit_after_outcome", "HOOK_COMPLETED", False): 1,
             ("run_lifecycle_stage", "emit_after_outcome", "HOOK_FAILED", False): 1,
-            ("apply_plan", "emit_after_outcome", "WORKSPACE_FILE_PROJECTED", False): 1,
+            ("_emit_projected", "emit_after_outcome", "WORKSPACE_FILE_PROJECTED", False): 1,
             ("apply_plan", "emit_after_outcome", "WORKSPACE_MATERIALIZED", False): 1,
             ("run_exec", "emit_after_outcome", "EXEC_STARTED", False): 1,
             ("run_exec", "emit_after_outcome", "EXEC_COMPLETED", False): 1,

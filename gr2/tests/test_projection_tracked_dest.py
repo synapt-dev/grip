@@ -72,7 +72,7 @@ class TestProjectionNeverModifiesTrackedDest:
         dest.write_bytes(tracked_bytes)
         _track(ctx.repo_root, "CLAUDE.md")
 
-        src = workspace / "config" / "claude.md"
+        src = ctx.repo_root / "config-src" / "claude.md"  # the consent gate: a link target must resolve inside the member's own tree
         src.parent.mkdir(parents=True, exist_ok=True)
         src.write_bytes(b"gripspace instructions\n")
 
@@ -104,7 +104,7 @@ class TestProjectionNeverModifiesTrackedDest:
         dest = ctx.repo_root / "CLAUDE.md"
         dest.write_bytes(b"tracked\n")
         _track(ctx.repo_root, "CLAUDE.md")
-        src = workspace / "config" / "claude.md"
+        src = ctx.repo_root / "config-src" / "claude.md"  # the consent gate: a link target must resolve inside the member's own tree
         src.parent.mkdir(parents=True, exist_ok=True)
         src.write_bytes(b"other\n")
 
@@ -134,7 +134,7 @@ class TestProjectionNeverModifiesTrackedDest:
         dest.write_bytes(b"local\n")
         (ctx.repo_root / "README.md").write_bytes(b"tracked other\n")
         _track(ctx.repo_root, "README.md")  # repo exists, other file tracked
-        src = workspace / "config" / "claude.md"
+        src = ctx.repo_root / "config-src" / "claude.md"  # the consent gate: a link target must resolve inside the member's own tree
         src.parent.mkdir(parents=True, exist_ok=True)
         src.write_bytes(b"gripspace\n")
 
@@ -162,7 +162,7 @@ class TestProjectionNeverModifiesTrackedDest:
         dest = ctx.repo_root / "CLAUDE.md"
         dest.write_bytes(b"tracked\n")
         _track(ctx.repo_root, "CLAUDE.md")
-        src = workspace / "config" / "claude.md"
+        src = ctx.repo_root / "config-src" / "claude.md"  # the consent gate: a link target must resolve inside the member's own tree
         src.parent.mkdir(parents=True, exist_ok=True)
         src.write_bytes(b"other\n")
 

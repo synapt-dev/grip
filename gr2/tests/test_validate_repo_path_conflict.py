@@ -12,7 +12,7 @@ temp directory the read-through helper answers False, the conflict IS reported,
 and the defect does not reproduce at all. The root being a repository is the
 precondition for the test to have anything to say.
 
-The PAIR is here for the same reason it was in the materialize-pin range: the
+The PAIR is here for the same reason the #1116 tests carry one: the
 same fixture with a REAL checkout at that path must report no
 ``repo_path_conflict``, or the check is noise a reader learns to skip.
 """
@@ -112,9 +112,9 @@ def test_an_empty_placeholder_is_not_a_conflict_and_the_first_run_works(tmp_path
     so an empty directory at a declared repo path is the ordinary state of a
     freshly cloned workspace, not a conflict.
 
-    This case exists because v1 of this range called it a conflict: `spec
-    validate` went to rc 1 and `materialize` aborted with nothing materialized,
-    on the exact path the from-superproject entry exists to serve. The assertions
+    Without the exemption this shape is called a conflict: `spec validate` goes
+    to rc 1 and `materialize` aborts with nothing materialized, on the exact path
+    the from-superproject entry exists to serve. The assertions
     run the whole first run, not just the validator, because that is where the
     damage landed.
     """

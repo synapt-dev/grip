@@ -648,3 +648,19 @@ def test_both_review_verbs_help_names_commit_kind_and_path() -> None:
     # each verb points at the other so the fork is legible from --help alone
     assert "open-gr" in op and "open-project" in og
     assert "exit-gr" in _review_help("exit-gr").lower() or "exit" in _review_help("exit-gr").lower()
+
+
+def test_bind_help_names_accepted_remote_path_forms() -> None:
+    # bind reads --remote with git inside the workspace's .grip store, and the
+    # reconstruction clone cannot resolve a user-repo remote name either, so
+    # only a URL or an absolute path works end to end; the help must say that,
+    # and the earlier help text's false claims must stay gone
+    cmd = next(c for c in gr2_app.review_app.registered_commands if c.name == "bind")
+    remote = next(d for d in cmd.callback.__defaults__ if (d.help or "").startswith("Remote URL"))
+    text = remote.help or ""
+    assert "URL" in text
+    assert "absolute" in text
+    # the earlier help text's false claims, asserted absent (not the words the
+    # true text uses)
+    assert "cwd-relative" not in text
+    assert "configured remote name" not in text

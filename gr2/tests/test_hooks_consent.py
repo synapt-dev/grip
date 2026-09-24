@@ -730,6 +730,80 @@ class TestTrustVerb:
         )
         assert result.exit_code != 0
 
+    def test_trust_warns_when_binding_past_an_escape_row(self, workspace: Path, tmp_path: Path):
+        # the screen shows the ESCAPE line and binds — by design (the screen
+        # shows, the runtime refuses) — but the bind output must say that the
+        # escaped row will never apply, so a user does not consent to
+        # something that can never happen.
+        toml = (
+            HOOKS_TOML
+            + "\n[[files.copy]]\nname = \"escape\"\nsrc = \"payload.txt\"\n"
+            + f'dest = "{tmp_path}/abs-escape.txt"\nif_exists = "overwrite"\n'
+        )
+        repo_root = _seed_member(workspace, hooks_toml=toml)
+        (repo_root / "payload.txt").write_text("payload\n")
+        self._spec(workspace)
+        result = CliRunner().invoke(
+            app,
+            ["hooks", "trust", "stranger", "--workspace-root", str(workspace)],
+        )
+        assert result.exit_code == 0, result.output
+        assert "will be refused at run time" in result.output
+        record = load_consent(workspace, "stranger")
+        assert record is not None  # the record still binds (the screen showed)
+
+    def test_trust_does_not_warn_without_an_escape_row(self, workspace: Path):
+        repo_root = _seed_member(workspace, hooks_toml=HOOKS_TOML)
+        self._spec(workspace)
+        result = CliRunner().invoke(
+            app,
+            ["hooks", "trust", "stranger", "--workspace-root", str(workspace)],
+        )
+        assert result.exit_code == 0, result.output
+        assert "will be refused at run time" not in result.output
+
+    def test_warning_counts_rows_not_member_text(self, workspace: Path):
+        # E1: a lifecycle command whose TEXT contains the escape marker, with
+        # no projection rows, must not print a row warning — the count comes
+        # from the screen's per-row flags, never from a string match over
+        # lines the member authored.
+        toml = HOOKS_TOML.replace(
+            'command = "touch {repo_root}/marker"',
+            'command = "echo \' ESCAPE: not a row\'"',
+        )
+        repo_root = _seed_member(workspace, hooks_toml=toml)
+        self._spec(workspace)
+        result = CliRunner().invoke(
+            app,
+            ["hooks", "trust", "stranger", "--workspace-root", str(workspace)],
+        )
+        assert result.exit_code == 0, result.output
+        assert "will be refused at run time" not in result.output
+
+    def test_warning_covers_a_source_escape(self, workspace: Path, tmp_path: Path):
+        # E2: a copy whose SOURCE resolves outside the member's tree is
+        # refused by the runtime's source confinement — the screen flags it
+        # (the same rule as the runtime's first raise), so the count covers
+        # what the runtime refuses; the bind still succeeds and the hook
+        # block still refuses the row.
+        toml = (
+            HOOKS_TOML
+            + f'\n[[files.copy]]\nname = "outside"\nsrc = "{tmp_path}/outside-src.txt"\n'
+            + 'dest = "{repo_root}/copied.txt"\nif_exists = "overwrite"\n'
+        )
+        (tmp_path / "outside-src.txt").write_text("outside\n")
+        repo_root = _seed_member(workspace, hooks_toml=toml)
+        self._spec(workspace)
+        result = CliRunner().invoke(
+            app,
+            ["hooks", "trust", "stranger", "--workspace-root", str(workspace)],
+        )
+        assert result.exit_code == 0, result.output
+        assert "ESCPE" not in result.output  # no misspelled marker noise
+        assert "ESCAPE" in result.output  # the source escape is flagged
+        assert "1 projection row(s) will be refused at run time" in result.output
+        assert load_consent(workspace, "stranger") is not None  # the bind still succeeds
+
     def test_revoke_removes_the_record(self, workspace: Path):
         repo_root = _seed_member(workspace, hooks_toml=HOOKS_TOML)
         self._spec(workspace)

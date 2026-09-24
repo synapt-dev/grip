@@ -1783,7 +1783,7 @@ def hooks_trust(
     if hooks is None:
         raise SystemExit(f"no .gr2/hooks.toml found in member: {repo_root}")
     state, record = consent_state(ws, key, repo_root)
-    lines = describe_member(ws.resolve(), repo_root, key, hooks)
+    lines, escaped_rows = describe_member(ws.resolve(), repo_root, key, hooks)
     # the screen shows every RESOLVED
     # destination; a row that cannot resolve at trust time is refused, not
     # deferred, and the record does not exist (it binds the whole table by
@@ -1804,6 +1804,17 @@ def hooks_trust(
         f"bound: {key} sha {consent_rec['hooks_sha'][:12]} "
         f"granted_by {consent_rec['granted_by']} at {consent_rec['granted_at']}"
     )
+    # the screen shows, the runtime refuses — a row that carries an ESCAPE
+    # flag will be refused when the hook block runs, even though the record
+    # binds. Saying so here stops a user consenting to a row that can
+    # never apply. The count is per-row (from the screen's flag results),
+    # never a string match over lines the member authored.
+    if escaped_rows:
+        typer.echo(
+            f"warning: {len(escaped_rows)} projection row(s) will be refused at run time "
+            "(escape flags above); fix or remove the row(s) and re-trust "
+            "(the record lapses by hash)"
+        )
 
 
 @hooks_app.command("revoke")

@@ -267,8 +267,11 @@ def describe_member(
 ) -> list[str]:
     """The `gr2 hooks trust` SHOW block: what is being consented to. Every
     lifecycle command, every projection with its resolved destination and
-    confinement flags, and any consent-shaped section found in the table."""
+    confinement flags (a row with flags is an ESCAPE row, counted once no
+    matter how many flags it carries), and any consent-shaped section found
+    in the table. Returns (lines, escaped_rows)."""
     lines: list[str] = []
+    escaped_rows: list[str] = []
     sha = hooks_sha(repo_root)
     lines.append(f"member {key} ({repo_root})")
     lines.append(f"hooks_sha {sha} ({sha[:12]})")
@@ -317,9 +320,31 @@ def describe_member(
             kind=item.kind,
             link_target=link_target,
         )
+        # the SOURCE carries the same confinement as the runtime's first
+        # raise: a resolved src outside the member's own tree is refused
+        # when the hook block runs, so the screen flags it here — the
+        # warning's count must cover what the runtime refuses.
+        if "{" in item.src and "}" in item.src:
+            try:
+                from .hooks import render_text as _rt
+
+                src_rendered = _rt(item.src, _trust_ctx(workspace_root, repo_root, hooks, key))
+            except ValueError:
+                src_rendered = None
+            else:
+                src_rendered = src_rendered  # noqa: F841 - name set for clarity
+        else:
+            src_rendered = item.src
+        if src_rendered is not None:
+            src_path = Path(src_rendered)
+            src_abs = str(src_path if src_path.is_absolute() else repo_root / src_path)
+            if not Path(src_abs).resolve().is_relative_to(repo_root.resolve()):
+                flags = [*flags, "the projection source resolves outside the member's own tree"]
         marker = " ESCAPE: " + "; ".join(flags) if flags else ""
         lines.append(f"projection {item.kind} dest {rendered}{marker}")
-    return lines
+        if flags:
+            escaped_rows.append(item.kind)
+    return lines, escaped_rows
 
 
 LANE_DEPENDENT_TOKENS = (

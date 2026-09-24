@@ -20,8 +20,6 @@ from jsonschema import Draft202012Validator
 
 from .events import EventType, emit_after_outcome
 from .gitops import (
-    checkout_declared_pin,
-    clone_repo,
     ensure_repo_cache,
     is_git_dir,
     is_git_repo,
@@ -335,6 +333,14 @@ def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -
             + render_plan(operations)
         )
 
+    # Local import: clone_exec imports THIS module, so the dependency runs the
+    # other way at module scope. The helper lives there because rmtree_or_refuse
+    # does, and a second cleanup implementation is what its own structural test
+    # forbids. It is bound ONCE, here, because both branch arms below use it --
+    # importing it inside the first arm left `converge_unit_repos` reading an
+    # unbound name, and the failure surfaced as an exit 1 with empty stdout.
+    from .clone_exec import clone_and_pin
+
     applied: list[str] = []
     materialized_repos: list[dict[str, object]] = []
     for op in operations:
@@ -342,7 +348,13 @@ def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -
             repo_spec = _find_repo(spec, op.subject)
             repo_root = workspace_root / str(repo_spec["path"])
             cache_path = repo_cache_path(workspace_root, str(repo_spec["name"]))
-            first_materialize = clone_repo(str(repo_spec["url"]), repo_root, reference_repo_root=cache_path)
+            first_materialize = clone_and_pin(
+                str(repo_spec["url"]),
+                repo_root,
+                pin=str(repo_spec.get("pin") or ""),
+                member=str(repo_spec["name"]),
+                reference_repo_root=cache_path,
+            )
             hook_payload = _run_materialize_hooks(
                 workspace_root,
                 repo_root,
@@ -382,15 +394,18 @@ def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -
                 repo_spec = _find_repo(spec, repo_name)
                 clone_dest = unit_root / repo_name
                 cache_path = repo_cache_path(workspace_root, str(repo_spec["name"]))
-                first_materialize = clone_repo(
-                    str(repo_spec["url"]), clone_dest, reference_repo_root=cache_path,
-                )
                 pin = str(repo_spec.get("pin") or "")
-                if pin:
-                    # A clone lands on the remote's default tip; the root declares
-                    # a commit. Put it where the root says, or refuse loudly --
-                    # never leave it on the tip and call the unit converged.
-                    checkout_declared_pin(clone_dest, pin, member=repo_name)
+                # A clone lands on the remote's default tip; the root declares a
+                # commit. The helper stages, pins, then renames, so a refusal
+                # cannot leave a clone behind at the tip for the next run to
+                # accept as converged.
+                first_materialize = clone_and_pin(
+                    str(repo_spec["url"]),
+                    clone_dest,
+                    pin=pin,
+                    member=repo_name,
+                    reference_repo_root=cache_path,
+                )
                 if first_materialize:
                     converged.append(f"{repo_name}@{pin[:12]}" if pin else repo_name)
                     materialized_repos.append({"repo": repo_name, "first_materialize": True})

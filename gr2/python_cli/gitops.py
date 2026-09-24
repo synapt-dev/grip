@@ -121,6 +121,35 @@ def is_bare_git_repo(path: Path) -> bool:
     return proc.returncode == 0 and proc.stdout.strip() == "true"
 
 
+def is_repo_root(path: Path) -> bool:
+    """This path ITSELF is the top of a work tree -- not merely inside one.
+
+    `is_git_repo` above answers the second question, and answers it
+    truthfully, from the ENCLOSING repository. The two diverge for any plain
+    directory that happens to sit inside a checkout, which is exactly what a
+    staging directory or a unit member path is, so a caller meaning "is there
+    already a clone HERE" got True for an empty directory and skipped its work.
+    `--show-toplevel` is the discriminator: it names the root the path resolves
+    into, and comparing it to the path is the question this answers. Both sides
+    are resolved so a symlinked temp root (/var -> /private/var) does not read
+    as a mismatch.
+    """
+    if not path.is_dir():
+        return False
+    try:
+        proc = git(path, "rev-parse", "--show-toplevel")
+    except PermissionError:
+        # Same unenterable-directory answer as is_git_repo: a directory that
+        # cannot be probed is not answerable as a repository.
+        return False
+    if proc.returncode != 0:
+        return False
+    try:
+        return Path(proc.stdout.strip()).resolve() == path.resolve()
+    except OSError:
+        return False
+
+
 def is_git_repository(path: Path) -> bool:
     """A repository of either shape: a work tree or a bare repo."""
     return is_git_repo(path) or is_bare_git_repo(path)
@@ -311,7 +340,15 @@ def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | N
 
 
 def clone_repo(url: str, target_repo_root: Path, *, reference_repo_root: Path | None = None) -> bool:
-    if target_repo_root.exists() and is_git_repo(target_repo_root):
+    # "Is there already a clone AT this path", not "is this path inside a
+    # repository". `is_git_repo` answers the second question -- truthfully, from
+    # the ENCLOSING repository -- so a directory merely inside a workspace root
+    # read as an existing clone and this function returned False WITHOUT
+    # cloning. Measured: a staging directory created inside a superproject came
+    # back "already a repo", the clone was skipped, and the pin check then ran
+    # against a repository that was never created, refusing over an empty
+    # directory.
+    if target_repo_root.exists() and is_repo_root(target_repo_root):
         return False
     target_repo_root.parent.mkdir(parents=True, exist_ok=True)
     command = ["git", "clone"]
@@ -358,7 +395,16 @@ def checkout_declared_pin(repo_root: Path, pin: str, *, member: str) -> None:
 
     have = lambda: git(repo_root, "cat-file", "-e", f"{pin}^{{commit}}").returncode == 0
     if not have():
-        git(repo_root, "fetch", "--depth", "1", "origin", pin)
+        # `--depth 1` ONLY when the clone is already shallow. Passing it
+        # unconditionally re-shallowed a FULL clone, which throws away history
+        # the caller never asked to lose and is a worse outcome than the missing
+        # object it was meant to fetch.
+        fetch_args = ["fetch"]
+        shallow = git(repo_root, "rev-parse", "--is-shallow-repository").stdout.strip() == "true"
+        if shallow:
+            fetch_args.extend(["--depth", "1"])
+        fetch_args.extend(["origin", pin])
+        git(repo_root, *fetch_args)
         if not have():
             raise SystemExit(
                 f"member '{member}' declares pin {pin}, the clone cannot reach that commit, and "

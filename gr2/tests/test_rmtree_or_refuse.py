@@ -504,9 +504,18 @@ class RmtreeIgnoreErrorsClassClosedTest(unittest.TestCase):
             f"shutil.rmtree(..., ignore_errors=True) found outside rmtree_or_refuse: "
             f"{unexpected} -- route it through rmtree_or_refuse instead",
         )
-        # Control: the scan itself must find the ONE call inside the helper,
-        # or a broken AST walk would report a false-clean empty list.
-        self.assertIn(("clone_exec.py", "rmtree_or_refuse", 103), offenders)
+        # Control: the scan itself must find the ONE call inside the helper, or a
+        # broken AST walk would report a false-clean empty list. Asserted on
+        # (file, function) plus the count, NOT on the call's line number: the
+        # number moves for any unrelated insertion above the helper, which turns
+        # a working control into a false red about the code that was inserted.
+        helper_hits = [
+            o for o in offenders if o[0] == "clone_exec.py" and o[1] == "rmtree_or_refuse"
+        ]
+        self.assertEqual(
+            len(helper_hits), 1,
+            f"the control must find exactly one call inside the helper; got {offenders}",
+        )
 
 
 if __name__ == "__main__":

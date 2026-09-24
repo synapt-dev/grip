@@ -101,6 +101,34 @@ common ancestor.
 
 ## 4. Run the tests (measured: 7.9 s on this demo)
 
+The run verb is the one that needs to know about your project, and it says so
+rather than guessing. Run bare on a project that declares nothing:
+
+```bash
+git review run
+```
+
+```text
+refused: no_package: no --package given and this repo's .review-install declares
+none; a package name is required so the install can be proven to resolve inside
+the clone rather than in some other checkout on the path
+```
+
+That refusal introduces the two flags every project is different about, and it
+stops instead of guessing because a green summary about the wrong import is
+worse than a stop:
+
+- `--package` is the **import name** of the code under review. The review
+  environment installs the project and then proves it can import this name;
+  refusing to guess keeps a green receipt from describing someone else's
+  install.
+- `--install` is the command that builds the review environment. `{venv}` means
+  that environment's Python and `{lane}` means your repository; here, `pip
+  install -e` the repo and add pytest, which a plain project needs because pytest
+  is only a test dependency.
+
+With the flags, the demo's run is green:
+
 ```bash
 git review run --package plain_review_demo --install '{venv} -m pip install -e {lane} pytest'
 ```
@@ -116,46 +144,10 @@ GREEN: selected=1 passed=1 failed=0 errors=0 skipped=0
 working tree has drifted from what was opened, so the counts describe the code
 you think they describe.
 
-The two flags answer the two questions every project is different about:
-
-- `--package` is the **import name** of the code under review. The review
-  environment installs the project and then proves it can import this name;
-  refusing to guess keeps a green receipt from describing someone else's
-  install.
-- `--install` is the command that builds the review environment. `{venv}` means
-  that environment's Python and `{lane}` means your repository; here, `pip
-  install -e` the repo and add pytest, which a plain project needs because pytest
-  is only a test dependency.
-
-A project without either flag stops on its first run, and the command that
-shows it is the bare one:
-
-```bash
-git review run
-```
-
-```text
-refused: no_package: no --package given and this repo's .review-install declares
-none; a package name is required so the install can be proven to resolve inside
-the clone rather than in some other checkout on the path
-```
-
-That refusal tells you which of the two flags to add. It stops instead of
-guessing because a green summary about the wrong import is worse than a stop.
-
 If your project carries a `.review-install` file at its root (two lines naming
 the same things), you type less: plain `git review run` and the file supplies
 both. grip's own repository does this, which is how its ~1,900-test suite runs
 as one bare command.
-
-The same substitutions also fit other layouts. This example is for a project
-whose package lives in a subdirectory (a `packages/python` layout); it is shown
-for that shape, not as a step of this demo, whose package sits at the
-repository root:
-
-```bash
-git review run --package mypackage --install '{venv} -m pip install -e {lane}/packages/python pytest'
-```
 
 ## 5. Read the result, close it out (measured: 0.5 s)
 
@@ -182,6 +174,17 @@ review state, the separate environment it created, and the receipt; today
 nothing of the run survives the close (keeping a receipt past close is a known
 open item), so capture anything you want to keep before you close. Your
 repository is left exactly as it was.
+
+## 6. Other layouts (an example, not a step)
+
+The two substitutions also fit projects whose package lives in a subdirectory
+(a `packages/python` layout). Shown as text rather than a runnable step: this
+demo's package sits at the repository root, so on it this command is the wrong
+one.
+
+```text
+git review run --package mypackage --install '{venv} -m pip install -e {lane}/packages/python pytest'
+```
 
 ## What just happened, in one paragraph
 

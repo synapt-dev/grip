@@ -217,3 +217,4 @@ def test_isolated_git_config_hides_a_count_key_value_env_injection(tmp_path):
             os.unlink(stale_pyc)
     leftover = glob.glob(pycache_glob)
     assert not leftover, f"orphan .pyc left behind for the unlinked probe source: {leftover}"
+    assert not probe_path.exists(), f"probe .py left behind in the real gr2/tests/ tree: {probe_path}"

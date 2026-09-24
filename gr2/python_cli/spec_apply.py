@@ -19,6 +19,7 @@ from types import MappingProxyType
 from jsonschema import Draft202012Validator
 
 from .events import EventType, emit_after_outcome
+from . import gitops
 from .gitops import (
     ensure_repo_cache,
     is_git_dir,
@@ -88,22 +89,6 @@ def show_spec(workspace_root: Path, *, json_output: bool) -> str:
     return spec_path.read_text()
 
 
-def _is_empty_directory(path: Path) -> bool:
-    """True only for a directory that can be READ and holds nothing.
-
-    An unreadable directory is not an empty one: we cannot know, and the answer
-    this function would replace (`is_git_repo`) catches PermissionError and
-    answers False, so the old code reported a conflict there. Calling
-    `iterdir()` unguarded turned that answer into a traceback and left the CLI
-    at rc 1 with NO output at all -- which is worse than a wrong answer, because
-    a reader cannot tell that the command never ran.
-    """
-    try:
-        return path.is_dir() and not any(path.iterdir())
-    except OSError:
-        return False
-
-
 def validate_spec(workspace_root: Path) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     spec = load_workspace_spec_doc(workspace_root)
@@ -148,15 +133,17 @@ def validate_spec(workspace_root: Path) -> list[ValidationIssue]:
         # checkout, and a workspace root IS one -- so a plain directory at a
         # declared repo path was read as a repo and this conflict never fired.
         #
-        # An EMPTY directory is exempt, and that exemption is load-bearing: it is
-        # the ordinary state of a freshly cloned superproject, where `git clone`
-        # creates the submodule mount points and leaves them empty until
-        # `submodule update --init`. Without it, `spec validate` refused and
-        # `materialize` aborted on the first run of a freshly cloned
-        # superproject -- the exact path the from-superproject entry exists to
-        # serve.
-        empty_placeholder = _is_empty_directory(repo_root)
-        if repo_root.exists() and not is_repo_root(repo_root) and not empty_placeholder:
+        # The state helper answers the same question the inline exemption used
+        # to: a present path holds exactly one of repo_root,
+        # empty_placeholder, or neither. An EMPTY directory is not a conflict
+        # (the ordinary state of a freshly cloned superproject, where `git
+        # clone` creates the submodule mount points and leaves them empty
+        # until `submodule update --init` -- without the exemption `spec
+        # validate` refused and `materialize` aborted on the first run of a
+        # freshly cloned superproject, the exact path the from-superproject
+        # entry exists to serve). The helper's one definition is what every
+        # call site that uses the helper reads, so the three answers cannot drift apart.
+        if repo_root.exists() and gitops.repo_path_state(repo_root) == "neither":
             issues.append(
                 ValidationIssue(
                     level="error",

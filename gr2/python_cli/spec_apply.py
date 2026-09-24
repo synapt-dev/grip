@@ -22,7 +22,7 @@ from .events import EventType, emit_after_outcome
 from .gitops import (
     ensure_repo_cache,
     is_git_dir,
-    is_git_repo,
+    is_repo_root,
     repo_dirty,
 )
 from .consent import consent_state, member_key as consent_member_key, pending_members
@@ -127,7 +127,11 @@ def validate_spec(workspace_root: Path) -> list[ValidationIssue]:
                 ValidationIssue("error", "missing_repo_url", f"repo '{name}' url must not be empty", f"repos[{idx}].url")
             )
         repo_root = workspace_root / path
-        if repo_root.exists() and not is_git_repo(repo_root):
+        # `is_repo_root`, not `is_git_repo`: the latter answers
+        # --is-inside-work-tree, which is true for any directory inside a
+        # checkout, and a workspace root IS one -- so a plain directory at a
+        # declared repo path was read as a repo and this conflict never fired.
+        if repo_root.exists() and not is_repo_root(repo_root):
             issues.append(
                 ValidationIssue(
                     level="error",
@@ -146,7 +150,9 @@ def validate_spec(workspace_root: Path) -> list[ValidationIssue]:
                     path=f"repos[{idx}].name",
                 )
             )
-        if repo_root.exists() and is_git_repo(repo_root):
+        # Same distinction: hooks are read from a repo root, never from a
+        # directory that merely sits inside one.
+        if repo_root.exists() and is_repo_root(repo_root):
             try:
                 load_repo_hooks(repo_root)
             except SystemExit as exc:

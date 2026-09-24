@@ -985,8 +985,67 @@ def workspace_status(workspace_root: Path) -> dict[str, object]:
             for target in targets
             if repo_proto.is_submodule_member(target.path)
         ]
+        # The declaration's own record of each repo: the pin the root declares
+        # and the branch its work lands on. Reported from the SPEC, not
+        # re-derived, which is the point of having written it -- a declared value
+        # nothing reads would drift away from the spec.
+        #
+        # DRIFT is the one thing here that IS re-derived, because it is an
+        # observation and not a declaration: the declared pin against where the
+        # repo actually is. It belongs in the status, where it is dated and
+        # visibly a remark about a moment, and never in the spec, which holds
+        # declared state only.
+        declared = []
+        for target in targets:
+            if not target.pin:
+                continue
+            # Only a repo that IS its own toplevel can be at a commit. Inside an
+            # unmaterialized member -- an empty directory in a plain clone --
+            # git answers HEAD from the ENCLOSING root, so the comparison
+            # reported the ROOT's own commit as the member's drift. That is the
+            # same read-through the scan was fixed for, on the other arm.
+            head_sha = ""
+            materialized = repo_proto.is_own_toplevel(target.path)
+            if materialized:
+                head = repo_proto.run_git(target.path, "rev-parse", "HEAD")
+                head_sha = head.stdout.strip() if head.returncode == 0 else ""
+            declared.append(
+                {
+                    "name": target.repo_name,
+                    "pin": target.pin,
+                    "ref": target.ref,
+                    "detached": bool(target.detached),
+                    "head": head_sha,
+                    "materialized": materialized,
+                    "drift": bool(head_sha) and head_sha != target.pin,
+                }
+            )
+        result["declared"] = declared
 
     return result
+
+
+def _declared_line(entry: dict[str, object]) -> str:
+    """One repo's declared pin and branch of record, with the detached case
+    named rather than left to be inferred from the branch it is not on, and the
+    drift named rather than left to be discovered from the tree."""
+    parts = [str(entry.get("name") or "?")]
+    if entry.get("pin"):
+        parts.append(str(entry["pin"]))
+    notes = []
+    if entry.get("ref"):
+        notes.append(str(entry["ref"]))
+    if entry.get("detached"):
+        notes.append("detached")
+    line = " ".join(parts) + (f" ({', '.join(notes)})" if notes else "")
+    if not entry.get("materialized", True):
+        # The member is declared and NOT there, which is a different state from
+        # clean and must not print the same nothing -- and it is never drift,
+        # because there is no repo here to be at another commit.
+        return line + " -- not materialized"
+    if entry.get("drift"):
+        line += f" -- drift: the repo is at {entry.get('head')}, not the pinned commit"
+    return line
 
 
 def render_status(payload: dict[str, object]) -> str:
@@ -1019,6 +1078,9 @@ def render_status(payload: dict[str, object]) -> str:
             + " -- superproject members, not linked worktrees; they are the "
             "superproject's own materialization, so nothing is converted"
         )
+    for entry in payload.get("declared") or []:
+        if isinstance(entry, dict):
+            lines.append("declared = " + _declared_line(entry))
     if not payload["gr1"] and not payload["gr2"]:
         lines.append("No workspace detected. Run `gr2 workspace init` or `gr2 workspace migrate-gr1`.")
     return "\n".join(lines)

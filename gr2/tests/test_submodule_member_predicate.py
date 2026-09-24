@@ -285,6 +285,34 @@ def test_a_git_dir_pointing_its_worktree_elsewhere_is_not_a_member(
     assert "superproject" not in result.stdout
 
 
+def test_only_an_object_id_length_reads_detached(tmp_path: Path) -> None:
+    """A real ``HEAD`` is 40 hex under SHA-1 or 64 under SHA-256, so "any
+    all-hex string" accepts values git never writes: an 8-hex value read as a
+    detached head. The boundary is walked here rather than stated, and the
+    instrument is required to produce more than one answer across the cases --
+    a reader that answered the same thing every time would satisfy any single
+    assertion in the loop."""
+    root, member = _superproject_with_member(tmp_path, detached=True)
+    head_file = root / ".git" / "modules" / "member1" / "HEAD"
+
+    cases = [
+        ("a" * 40, "detached"),
+        ("a" * 64, "detached"),
+        ("deadbeef", "unknown"),
+        ("a" * 39, "unknown"),
+        ("a" * 65, "unknown"),
+    ]
+    answers = []
+    for value, expected in cases:
+        head_file.write_text(value + "\n")
+        got = repo_proto.submodule_member_state(member)
+        answers.append(got)
+        assert got == expected, (
+            f"a HEAD of {len(value)} hex characters read {got!r}, expected {expected!r}"
+        )
+    assert len(set(answers)) > 1, "control: the reader must be able to answer differently"
+
+
 def test_gits_own_answer_agrees_with_the_predicate(tmp_path: Path) -> None:
     """The oracle: ``rev-parse --show-superproject-working-tree`` is non-empty
     exactly when the repo is a submodule, and empty for a linked worktree. The

@@ -194,6 +194,25 @@ def _save_group(workspace_root: Path, group: dict) -> Path:
     return path
 
 
+class SiblingLinkError(RuntimeError):
+    """One or more PRs in a set could not be linked to their siblings.
+
+    The group is attached because it is already persisted by the time this is raised:
+    the record carries per-repo ``sibling_edits`` status, so a caller can print the
+    set it created AND fail. Anything less reports success for a set a reader cannot
+    navigate.
+    """
+
+    def __init__(self, group: dict, unlinked: list[str]) -> None:
+        self.group = group
+        self.unlinked = list(unlinked)
+        super().__init__(
+            "unlinked PR(s) after the sibling pass: "
+            + ", ".join(self.unlinked)
+            + " (each named in sibling_edits with its failure)"
+        )
+
+
 def create_pr_group(
     workspace_root: Path,
     owner_unit: str,
@@ -224,6 +243,33 @@ def create_pr_group(
         ref = adapter.create_pr(request)
         prs.append({"repo": repo, "pr_number": ref.number, "url": ref.url})
 
+    # THE SIBLING BLOCK. A reviewer who lands on one PR of a set has no way to reach
+    # the others from it: measured on a4, both bodies read `gr2 PR group for
+    # default/set-lane` and neither named the other. The links can only be added AFTER
+    # every PR exists, because a number does not exist until its PR is created, so
+    # this is a second pass over the set rather than part of the create call.
+    #
+    # Every failure is REPORTED and any failure is FATAL to the command: a half-linked
+    # set that prints success is worse than no links, because the reader believes the
+    # set is navigable.
+    sibling_edits: dict[str, str] = {}
+    unlinked: list[str] = []
+    if len(prs) > 1:
+        members = "\n".join(f"- {item['repo']}: {item['url']}" for item in prs)
+        block = f"\n\n---\nPart of a set of {len(prs)} PRs for this slice:\n{members}\n"
+        for item in prs:
+            repo_name = str(item["repo"])
+            number = item.get("pr_number")
+            try:
+                if number is None:
+                    raise AdapterError(f"{repo_name} carries no PR number, so it cannot be linked")
+                adapter.edit_pr_body(repo_name, int(number), body + block)
+            except Exception as exc:  # every failure must be reported, none swallowed
+                sibling_edits[repo_name] = f"FAILED: {exc}"
+                unlinked.append(f"{repo_name}#{number}")
+            else:
+                sibling_edits[repo_name] = "linked"
+
     group = {
         "pr_group_id": pr_group_id,
         "owner_unit": owner_unit,
@@ -234,6 +280,7 @@ def create_pr_group(
         "platform": getattr(adapter, "name", "github"),
         "prs": prs,
         "status": {repo: "OPEN" for repo in repos},
+        "sibling_edits": sibling_edits,
     }
     path = _save_group(workspace_root, group)
 
@@ -246,6 +293,8 @@ def create_pr_group(
     )
 
     group["state_path"] = str(path)
+    if unlinked:
+        raise SiblingLinkError(group, unlinked)
     return group
 
 

@@ -2608,6 +2608,17 @@ def review_close(
     )
 
 
+def _default_pr_group_body(owner_unit: str, lane_name: str, repos: list[str]) -> str:
+    """The body every PR in a group gets when the caller passes none.
+
+    It names the group AND lists its member repos, so a reviewer who lands on one PR
+    can see the set it belongs to. A body naming only the lane is invisible in exactly
+    that way: every PR in the set reads identically, and none points at another.
+    """
+    members = "\n".join(f"- {repo}" for repo in repos)
+    return f"gr2 PR group for {owner_unit}/{lane_name}\n\nRepos in this group:\n{members}\n"
+
+
 @pr_app.command("create")
 def pr_create(
     workspace_root: Path,
@@ -2616,6 +2627,9 @@ def pr_create(
     platform: str = typer.Option("github", "--platform", help="Platform adapter name"),
     base_branch: str = typer.Option("main", "--base", help="Base branch for created PRs"),
     draft: bool = typer.Option(False, "--draft", help="Create PRs as drafts"),
+    title: Optional[str] = typer.Option(None, "--title", help="Title for every PR in the group. Defaults to the lane name, which makes every PR in a set read identically; pass one when a reviewer must be able to tell the PRs apart."),
+    body: Optional[str] = typer.Option(None, "--body", help="Body for every PR in the group. Defaults to a line naming the group and listing its repos."),
+    body_file: Optional[Path] = typer.Option(None, "--body-file", help="Read the group body from a file. Use this for anything long or shell-sensitive: the body is passed to gh through a file, so quoting is not the caller's problem."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Create a grouped set of per-repo PRs for a lane."""
@@ -2645,19 +2659,36 @@ def pr_create(
     for repo_name in lane_doc.get("repos", []):
         repo_spec = next(repo for repo in spec.get("repos", []) if repo.get("name") == repo_name)
         repos.append(_repo_slug_from_url(str(repo_spec.get("url", "")), repo_name))
-    payload = pr_ops.create_pr_group(
-        workspace_root=workspace_root,
-        owner_unit=owner_unit,
-        lane_name=resolved_lane,
-        title=resolved_lane,
-        base_branch=base_branch,
-        head_branch=str(branch_map.get(next(iter(lane_doc.get("repos", [])), resolved_lane), resolved_lane)),
-        repos=repos,
-        adapter=adapter,
-        actor=f"agent:{owner_unit}",
-        body=f"gr2 PR group for {owner_unit}/{resolved_lane}",
-        draft=draft,
-    )
+    if body is not None and body_file is not None:
+        typer.echo("pass one of --body or --body-file, not both", err=True)
+        raise typer.Exit(code=2)
+    group_body = body
+    if body_file is not None:
+        try:
+            group_body = body_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            typer.echo(f"cannot read --body-file {body_file}: {exc}", err=True)
+            raise typer.Exit(code=2)
+    try:
+        payload = pr_ops.create_pr_group(
+            workspace_root=workspace_root,
+            owner_unit=owner_unit,
+            lane_name=resolved_lane,
+            title=title or resolved_lane,
+            base_branch=base_branch,
+            head_branch=str(branch_map.get(next(iter(lane_doc.get("repos", [])), resolved_lane), resolved_lane)),
+            repos=repos,
+            adapter=adapter,
+            actor=f"agent:{owner_unit}",
+            body=group_body or _default_pr_group_body(owner_unit, resolved_lane, repos),
+            draft=draft,
+        )
+    except pr_ops.SiblingLinkError as exc:
+        # The group is already persisted, so print it and fail: a half-linked set that
+        # exits 0 is the failure mode this whole path exists to stop.
+        typer.echo(json.dumps(exc.group, indent=2))
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1)
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
     else:

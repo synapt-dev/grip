@@ -131,7 +131,16 @@ def validate_spec(workspace_root: Path) -> list[ValidationIssue]:
         # --is-inside-work-tree, which is true for any directory inside a
         # checkout, and a workspace root IS one -- so a plain directory at a
         # declared repo path was read as a repo and this conflict never fired.
-        if repo_root.exists() and not is_repo_root(repo_root):
+        #
+        # An EMPTY directory is exempt, and that exemption is load-bearing: it is
+        # the ordinary state of a freshly cloned superproject, where `git clone`
+        # creates the submodule mount points and leaves them empty until
+        # `submodule update --init`. Without it, `spec validate` refused and
+        # `materialize` aborted on the first run of a freshly cloned
+        # superproject -- the exact path the from-superproject entry exists to
+        # serve.
+        empty_placeholder = repo_root.is_dir() and not any(repo_root.iterdir())
+        if repo_root.exists() and not is_repo_root(repo_root) and not empty_placeholder:
             issues.append(
                 ValidationIssue(
                     level="error",

@@ -23,6 +23,10 @@ import subprocess
 from pathlib import Path
 
 from gr2.python_cli import gitops, spec_apply
+from gr2.python_cli.app import app
+
+from tests.conftest import make_cli_runner
+from tests.test_materialize_pin import _superproject_with_a_divergent_pair
 
 
 def _run(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -94,3 +98,45 @@ def test_a_real_checkout_at_the_same_path_is_not_reported(tmp_path: Path) -> Non
 
     conflicts = [i for i in issues if i.code == "repo_path_conflict"]
     assert conflicts == [], f"a real checkout must not be reported as a conflict, got {conflicts}"
+
+
+def _cli(*args: str) -> tuple[int, str]:
+    result = make_cli_runner().invoke(app, list(args))
+    return result.exit_code, result.stdout
+
+
+def test_an_empty_placeholder_is_not_a_conflict_and_the_first_run_works(tmp_path: Path) -> None:
+    """THE REGRESSION WITNESS. A plain `git clone` of a superproject creates the
+    submodule mount points and leaves them EMPTY until `submodule update --init`,
+    so an empty directory at a declared repo path is the ordinary state of a
+    freshly cloned workspace, not a conflict.
+
+    This case exists because v1 of this range called it a conflict: `spec
+    validate` went to rc 1 and `materialize` aborted with nothing materialized,
+    on the exact path the from-superproject entry exists to serve. The assertions
+    run the whole first run, not just the validator, because that is where the
+    damage landed.
+    """
+    root, pins = _superproject_with_a_divergent_pair(tmp_path)
+    plain = tmp_path / "plain"
+    subprocess.run(["git", "clone", "-q", str(root), str(plain)], check=True)
+    for member in ("diverging", "converging"):
+        placeholder = plain / member
+        assert placeholder.is_dir() and not any(placeholder.iterdir()), (
+            f"precondition: {member} is an EMPTY placeholder after a plain clone"
+        )
+
+    rc, out = _cli("workspace", "init", str(plain), "--from-superproject")
+    assert rc == 0, out
+    assert [i for i in spec_apply.validate_spec(plain) if i.code == "repo_path_conflict"] == [], (
+        "an empty placeholder is not a repo_path_conflict"
+    )
+    rc, out = _cli("spec", "validate", str(plain))
+    assert rc == 0, f"spec validate must not refuse a freshly cloned workspace: {out}"
+
+    rc, out = _cli("workspace", "materialize", str(plain), "--yes")
+    assert rc == 0, f"materialize must run on a freshly cloned workspace: {out}"
+    unit = plain / "agents" / "default" / "home"
+    for member, want in pins.items():
+        got = _run("rev-parse", "HEAD", cwd=unit / member).stdout.strip()
+        assert got == want, f"{member} landed on {got[:12]}, the root pins {want[:12]}"

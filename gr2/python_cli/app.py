@@ -179,8 +179,29 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
         for repo_name in lane_doc.get("repos", []):
             repo_spec = _workspace_repo_spec(workspace_root, repo_name)
             source_repo_root = (workspace_root / str(repo_spec["path"])).resolve()
-            if not source_repo_root.exists():
-                raise SystemExit(f"source repo path does not exist for lane materialization: {source_repo_root}")
+            # The state helper decides what the declared path holds, because
+            # asking only `.exists()` was the read-through's fifth site: on an
+            # adopted superproject the declared path is the EMPTY placeholder,
+            # so `materialize_lane_clone` asked the PLACEHOLDER for its origin,
+            # git answered for the workspace root, and the provenance check
+            # refused the lane ("seeded from <root>, not the declared
+            # upstream"). The three answers decide here: a repo root is used
+            # as-is; a placeholder is replaced by the unit's materialized copy
+            # of that member (the clone materialize placed at its pin); a
+            # present path that is neither is refused with the verb that fixes
+            # it.
+            state = gitops.repo_path_state(source_repo_root)
+            if state == "empty_placeholder":
+                unit = lane_proto.find_unit_spec(workspace_root, owner_unit)
+                unit_member = (workspace_root / str(unit.get("path", "")) / repo_name).resolve()
+                if gitops.repo_path_state(unit_member) != "repo_root":
+                    raise SystemExit(
+                        f"run gr2 workspace materialize first: the unit's copy of {repo_name} "
+                        f"is not a repository at {unit_member}"
+                    )
+                source_repo_root = unit_member
+            elif state == "neither":
+                raise SystemExit(f"run gr2 workspace materialize first: {source_repo_root} is not a repository")
             target_repo_root = _lane_repo_root(workspace_root, owner_unit, lane_name, repo_name)
             first_materialize = ensure_lane_checkout(
                 source_repo_root=source_repo_root,
@@ -373,7 +394,13 @@ def _merge_verification_targets(
         if host_repo in targets:
             raise SystemExit(f"duplicate host repo in merge verification targets: {host_repo}")
         repo_root = (workspace_root / str(repo_spec.get("path", ""))).resolve()
-        if not repo_root.is_dir() or not is_git_repo(repo_root):
+        # The state helper, not is_git_repo: the read-through let a plain
+        # directory at a declared repo path pass this guard as a live
+        # merge-verification target (and an empty placeholder through with
+        # it), and the DAG collection then operated on a directory that is
+        # not a repository. Neither shape is a live target: the DAG is
+        # unavailable for both, which is this guard's whole contract.
+        if gitops.repo_path_state(repo_root) != "repo_root":
             raise SystemExit(f"local merge-verification DAG is unavailable: {repo_root}")
         targets[host_repo] = MergeVerificationTarget(repo_root=repo_root, remote=remote)
     return targets

@@ -23,9 +23,9 @@ from .gitops import (
     fast_forward_to,
     fetch_repo,
     is_git_dir,
-    is_git_repo,
     probe_remote,
     repo_dirty,
+    repo_path_state,
     stash_if_dirty,
 )
 from .events import EventType, emit, emit_after_outcome
@@ -345,18 +345,32 @@ def build_sync_plan(
                 )
             )
 
-        if not repo_root.exists():
+        if not repo_root.exists() or repo_path_state(repo_root) == "empty_placeholder":
+            # An empty placeholder is a member NOT materialized yet: the
+            # ordinary state of a freshly cloned superproject, planned as a
+            # clone exactly like a missing path, not a conflict and not a
+            # fetch into a directory that is not a repository.
             operations.append(
                 SyncOperation(
                     kind="clone_shared_repo",
                     scope="shared_repo",
                     subject=repo_name,
                     target_path=str(repo_root),
-                    reason="shared repo checkout missing",
+                    reason="shared repo checkout missing"
+                    if not repo_root.exists()
+                    else "shared repo path holds an unmaterialized placeholder",
                     details={"url": str(repo["url"])},
                 )
             )
-        elif not is_git_repo(repo_root):
+        elif repo_path_state(repo_root) != "repo_root":
+            # The state helper, not is_git_repo: the read-through let a plain
+            # directory at the declared shared repo path skip this conflict,
+            # and the plan then scheduled a fetch INTO the directory (or,
+            # whenever the enclosing repository was dirty, answered a FALSE
+            # dirty_shared_repo block, because repo_dirty walked up and read
+            # the enclosing repo's state). With the placeholder answered by
+            # the branch above, this branch is exactly a present path that is
+            # not a repo root and holds something.
             issues.append(
                 SyncIssue(
                     level="error",
@@ -460,19 +474,31 @@ def build_sync_plan(
         for repo_name in lane_doc.get("repos", []):
             lane_repo_root = lane_root / "repos" / str(repo_name)
             expected_branch = str(dict(lane_doc.get("branch_map", {})).get(repo_name, ""))
-            if not lane_repo_root.exists():
+            if not lane_repo_root.exists() or repo_path_state(lane_repo_root) == "empty_placeholder":
+                # An empty placeholder is a lane checkout NOT materialized
+                # yet: planned exactly like a missing checkout, not a
+                # conflict and not a dirty read of a directory that is not a
+                # repository.
                 operations.append(
                     SyncOperation(
                         kind="materialize_lane_repo",
                         scope="lane",
                         subject=f"{owner_unit}/{lane_name}:{repo_name}",
                         target_path=str(lane_repo_root),
-                        reason="lane checkout missing",
+                        reason="lane checkout missing"
+                        if not lane_repo_root.exists()
+                        else "lane path holds an unmaterialized placeholder",
                         details={"expected_branch": expected_branch},
                     )
                 )
                 continue
-            if not is_git_repo(lane_repo_root):
+            if repo_path_state(lane_repo_root) != "repo_root":
+                # The state helper, not is_git_repo: the read-through let a
+                # plain directory at the lane repo path skip this conflict
+                # and answered a FALSE dirty_lane_repo block instead
+                # (repo_dirty read the enclosing repo's state). With the
+                # placeholder answered above, this branch is exactly a
+                # present path that is not a repo root and holds something.
                 issues.append(
                     SyncIssue(
                         level="error",
@@ -590,7 +616,13 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
         repo_spec = _find_repo(spec, op.subject)
         cache_path = repo_cache_path(workspace_root, str(repo_spec["name"]))
         repo_root = workspace_root / str(repo_spec["path"])
-        local_source = repo_root if is_git_repo(repo_root) else None
+        # The state helper, not is_git_repo: a plain directory at the
+        # declared repo path read as a repository (the enclosing checkout's
+        # answer) and was handed to the seed as a local source, which then
+        # failed with git's misleading "repository does not exist". Only a
+        # real repo root is a usable local source; a placeholder and a plain
+        # directory both mean "seed from the url".
+        local_source = repo_root if repo_path_state(repo_root) == "repo_root" else None
         created = ensure_repo_cache(str(repo_spec["url"]), cache_path, local_source=local_source)
         _emit_sync_event(
             workspace_root,

@@ -20,7 +20,7 @@ _GR2_ROOT = Path(__file__).resolve().parents[1]  # gr2/ (the packaging root)
 _REPO_ROOT = _GR2_ROOT.parent
 _PYPROJECT = tomllib.loads((_GR2_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-_EXPECTED = "2.0.0a4"
+_EXPECTED = "2.0.0a5"
 
 
 def _cargo_version() -> str:
@@ -59,7 +59,7 @@ def test_gr2_version_is_decoupled_from_the_crate() -> None:
 
 
 def test_version_is_the_expected_prerelease() -> None:
-    """gr2 opens at the 2.0.0a4 pre-release."""
+    """gr2 opens at the 2.0.0a5 pre-release."""
     assert _PYPROJECT["project"]["version"] == _EXPECTED
 
 

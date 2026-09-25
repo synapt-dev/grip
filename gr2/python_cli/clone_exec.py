@@ -58,6 +58,58 @@ from .spec_apply import (
 )
 
 
+def clone_and_pin(
+    repo_url: str,
+    dest: Path,
+    *,
+    pin: str = "",
+    member: str = "",
+    reference_repo_root: Path | None = None,
+) -> bool:
+    """Clone a member into a STAGING sibling, put it on its declared pin, then
+    rename it into place. Returns whether this is the first materialization.
+
+    Cloning straight into ``dest`` and then refusing left a real repository
+    behind at the remote's tip, and the refusal was only half the damage: the
+    NEXT run found a clone already present, printed success and converged
+    nothing, so the member stayed on a commit its root never declared and
+    nothing said so. Measured by a probe built on a remote whose pinned commit
+    was pushed and then its branch deleted, the reflog expired and the objects
+    gc'd -- the strongest form of that case, and it is what caught this.
+
+    Publication is INSIDE the cleanup boundary, the same shape as the S4 clone
+    path below: nothing follows the rename, so on success there is no staging
+    left for the handler to remove.
+    """
+    # Same distinction as clone_repo's guard, and it matters for the same
+    # reason: dest sits under a unit root that is itself inside the workspace
+    # superproject, so `is_git_repo(dest)` is True for a directory that merely
+    # exists -- which would report a first materialization as a re-run.
+    # Already a clone: nothing to do. Staging here would clone, pin, and then
+    # fail at the rename with a raw OSError (ENOTEMPTY) instead of answering the
+    # caller's actual question, which is whether this was the first
+    # materialization.
+    if gitops.is_repo_root(dest):
+        return False
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(dir=dest.parent, prefix=f".{dest.name}.staging-"))
+    try:
+        gitops.clone_repo(repo_url, staging, reference_repo_root=reference_repo_root)
+        if pin:
+            gitops.checkout_declared_pin(staging, pin, member=member or dest.name)
+        os.replace(staging, dest)
+    except BaseException as exc:
+        try:
+            rmtree_or_refuse(staging)
+        except IncompleteRemoval as cleanup_exc:
+            raise CloneExecutionError(
+                f"materializing '{member or dest.name}' failed ({exc}) and staging cleanup "
+                f"also left it behind: {cleanup_exc}"
+            ) from exc
+        raise
+    return True
+
+
 @dataclasses.dataclass(frozen=True)
 class _CloneBinding:
     """One immutable reading of a clone operation, taken from A's frozen plan

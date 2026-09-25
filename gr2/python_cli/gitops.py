@@ -121,9 +121,78 @@ def is_bare_git_repo(path: Path) -> bool:
     return proc.returncode == 0 and proc.stdout.strip() == "true"
 
 
+def is_repo_root(path: Path) -> bool:
+    """This path ITSELF is the top of a work tree -- not merely inside one.
+
+    `is_git_repo` above answers the second question, and answers it
+    truthfully, from the ENCLOSING repository. The two diverge for any plain
+    directory that happens to sit inside a checkout, which is exactly what a
+    staging directory or a unit member path is, so a caller meaning "is there
+    already a clone HERE" got True for an empty directory and skipped its work.
+    `--show-toplevel` is the discriminator: it names the root the path resolves
+    into, and comparing it to the path is the question this answers. Both sides
+    are resolved so a symlinked temp root (/var -> /private/var) does not read
+    as a mismatch.
+    """
+    if not path.is_dir():
+        return False
+    try:
+        proc = git(path, "rev-parse", "--show-toplevel")
+    except PermissionError:
+        # Same unenterable-directory answer as is_git_repo: a directory that
+        # cannot be probed is not answerable as a repository.
+        return False
+    if proc.returncode != 0:
+        return False
+    try:
+        return Path(proc.stdout.strip()).resolve() == path.resolve()
+    except OSError:
+        return False
+
+
 def is_git_repository(path: Path) -> bool:
     """A repository of either shape: a work tree or a bare repo."""
     return is_git_repo(path) or is_bare_git_repo(path)
+
+
+def repo_path_state(path: Path) -> str:
+    """What a member path actually holds: ``repo_root``, ``empty_placeholder``, or ``neither``.
+
+    Three answers, because callers decide differently on each one, and collapsing
+    them into a boolean is how the read-through survived four sites: the
+    validator skips a placeholder and reports ``neither``; the sync planner
+    plans a clone into a placeholder and reports ``neither``; the cache seed
+    treats both non-repo answers as "no local source"; merge verification
+    refuses both, because the DAG is unavailable for either. Asking
+    `is_git_repo` here was the defect: it answers --is-inside-work-tree, which
+    is true for any directory inside a checkout, so a plain directory at a
+    member path read as the enclosing repository and every site above skipped
+    its work.
+
+    ``empty_placeholder`` is a directory that can be READ and holds nothing:
+    the ordinary state of a freshly cloned superproject's member paths, where
+    `git clone` creates the submodule mount points and leaves them empty until
+    `submodule update --init`. An UNREADABLE directory is ``neither``, not an
+    empty one: we cannot know what it holds, and the code this helper replaces
+    (`is_git_repo`, which catches PermissionError and answers False) reported a
+    conflict there, so the conflict is what must keep firing. A path that does
+    not exist at all is ``neither`` too; callers that must distinguish missing
+    from present-and-wrong ask `exists()` first, exactly as they do today --
+    this helper answers the question about what a PRESENT path holds.
+    """
+    if not path.is_dir():
+        # A file at a member path, or a path that does not exist at all:
+        # neither is a repository nor an unfilled placeholder. The sites keep
+        # their own exists() branches for the plan-the-work decisions.
+        return "neither"
+    try:
+        empty = not any(path.iterdir())
+    except OSError:
+        # Unreadable: not an empty one, and not answerable as a repository.
+        return "neither"
+    if is_repo_root(path):
+        return "repo_root"
+    return "empty_placeholder" if empty else "neither"
 
 
 class OutsideRepoError(Exception):
@@ -278,7 +347,16 @@ def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | N
             raise SystemExit(f"failed to refresh repo cache {cache_repo_root}:\n{proc.stderr or proc.stdout}")
         return False
 
-    seed_from_local = local_source is not None and is_git_repo(local_source)
+    # SEAM DEFENSE, not just the callers' fix: the state helper decides
+    # whether a caller-supplied source is a repository, because this function
+    # is the one that clones from it. The read-through let a plain directory
+    # be passed as ``local_source`` (is_git_repo answered for the ENCLOSING
+    # checkout) and the seed then failed with git's misleading
+    # "repository '<plain dir>' does not exist". A plain directory and an
+    # empty placeholder are both "no local source": the seed falls back to
+    # the effective url, which is the one thing here that can actually
+    # resolve.
+    seed_from_local = local_source is not None and repo_path_state(local_source) == "repo_root"
     seed_source = str(local_source) if seed_from_local else effective_url
 
     cache_repo_root.parent.mkdir(parents=True, exist_ok=True)
@@ -311,7 +389,15 @@ def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | N
 
 
 def clone_repo(url: str, target_repo_root: Path, *, reference_repo_root: Path | None = None) -> bool:
-    if target_repo_root.exists() and is_git_repo(target_repo_root):
+    # "Is there already a clone AT this path", not "is this path inside a
+    # repository". `is_git_repo` answers the second question -- truthfully, from
+    # the ENCLOSING repository -- so a directory merely inside a workspace root
+    # read as an existing clone and this function returned False WITHOUT
+    # cloning. Measured: a staging directory created inside a superproject came
+    # back "already a repo", the clone was skipped, and the pin check then ran
+    # against a repository that was never created, refusing over an empty
+    # directory.
+    if target_repo_root.exists() and is_repo_root(target_repo_root):
         return False
     target_repo_root.parent.mkdir(parents=True, exist_ok=True)
     command = ["git", "clone"]
@@ -322,6 +408,66 @@ def clone_repo(url: str, target_repo_root: Path, *, reference_repo_root: Path | 
     if proc.returncode != 0:
         raise SystemExit(f"failed to clone {url} -> {target_repo_root}:\n{proc.stderr or proc.stdout}")
     return True
+
+
+def checkout_declared_pin(repo_root: Path, pin: str, *, member: str) -> None:
+    """Put a member at the commit the root declares, after a clone.
+
+    A clone lands on the REMOTE'S DEFAULT BRANCH TIP, which for a superproject
+    member is not where the root says it is: the gitlink pins a commit, and that
+    pin is the declaration the whole feature exists to record. Measured on
+    ``git-training-open/submodule-example``: after ``workspace init
+    --from-superproject`` and ``materialize``, ``example1`` sat on ``master`` at
+    ``ceed35b970e2`` while the root pinned ``065be099e95a`` -- and
+    ``jabberwocky`` looked correct only because that repo's master tip happens
+    to equal its pin. So a fixture built on the second member passes while doing
+    the wrong thing, which is why the test uses the pair.
+
+    TWO EDGES, decided rather than assumed:
+
+    - **A pin the clone cannot reach** (a shallow or depth-limited clone). Fetch
+      that one object by sha. If the server refuses, REFUSE with an error naming
+      the pin, the member and the command to try by hand. **Never fall back to
+      the default tip**: a silent fallback is exactly the defect being fixed, so
+      the failure mode here is loud on purpose.
+    - **An empty pin** is not this function's business; the caller skips it. A
+      member with no pin stays on its default branch and the status calls it
+      UNPINNED rather than at-pin.
+    """
+    # A caller SHOULD skip an unpinned member, and this no-op is what makes the
+    # contract safe when one does not: without it an empty pin falls into the
+    # unreachable-pin path below and refuses with a message naming an empty pin,
+    # which is a worse answer than doing nothing. The test that pins the contract
+    # is what found this -- the docstring promised a no-op the code did not do.
+    if not pin:
+        return
+
+    have = lambda: git(repo_root, "cat-file", "-e", f"{pin}^{{commit}}").returncode == 0
+    if not have():
+        # `--depth 1` ONLY when the clone is already shallow. Passing it
+        # unconditionally re-shallowed a FULL clone, which throws away history
+        # the caller never asked to lose and is a worse outcome than the missing
+        # object it was meant to fetch.
+        fetch_args = ["fetch"]
+        shallow = git(repo_root, "rev-parse", "--is-shallow-repository").stdout.strip() == "true"
+        if shallow:
+            fetch_args.extend(["--depth", "1"])
+        fetch_args.extend(["origin", pin])
+        git(repo_root, *fetch_args)
+        if not have():
+            raise SystemExit(
+                f"member '{member}' declares pin {pin}, the clone cannot reach that commit, and "
+                f"fetching it by sha from origin did not provide it. Try "
+                f"`git -C {repo_root} fetch --depth 1 origin {pin}` by hand to see why. This verb "
+                "will not leave the member on its default branch instead: that is a commit the "
+                "root never declared."
+            )
+    checked = git(repo_root, "checkout", "--detach", pin)
+    if checked.returncode != 0:
+        raise SystemExit(
+            f"member '{member}' declares pin {pin} but checking it out failed:\n"
+            f"{checked.stderr or checked.stdout}"
+        )
 
 
 def branch_exists(repo_root: Path, branch: str) -> bool:

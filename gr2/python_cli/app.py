@@ -26,6 +26,7 @@ from . import prune as prune_ops
 from . import target as target_ops
 from . import project_review
 from . import push as push_ops
+from .clone_exec import rmtree_or_refuse
 from .events import EventType, emit_after_outcome
 from .gitops import (
     branch_exists,
@@ -58,6 +59,8 @@ from .hooks import (
     apply_file_projections,
     load_repo_hooks,
     run_lifecycle_stage,
+    run_materialize_hook_block,
+    HookResult,
 )
 from .merge_verification import MergeVerificationTarget
 from .platform import PRRef, get_platform_adapter
@@ -178,8 +181,29 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
         for repo_name in lane_doc.get("repos", []):
             repo_spec = _workspace_repo_spec(workspace_root, repo_name)
             source_repo_root = (workspace_root / str(repo_spec["path"])).resolve()
-            if not source_repo_root.exists():
-                raise SystemExit(f"source repo path does not exist for lane materialization: {source_repo_root}")
+            # The state helper decides what the declared path holds, because
+            # asking only `.exists()` was the read-through's fifth site: on an
+            # adopted superproject the declared path is the EMPTY placeholder,
+            # so `materialize_lane_clone` asked the PLACEHOLDER for its origin,
+            # git answered for the workspace root, and the provenance check
+            # refused the lane ("seeded from <root>, not the declared
+            # upstream"). The three answers decide here: a repo root is used
+            # as-is; a placeholder is replaced by the unit's materialized copy
+            # of that member (the clone materialize placed at its pin); a
+            # present path that is neither is refused with the verb that fixes
+            # it.
+            state = gitops.repo_path_state(source_repo_root)
+            if state == "empty_placeholder":
+                unit = lane_proto.find_unit_spec(workspace_root, owner_unit)
+                unit_member = (workspace_root / str(unit.get("path", "")) / repo_name).resolve()
+                if gitops.repo_path_state(unit_member) != "repo_root":
+                    raise SystemExit(
+                        f"run gr2 workspace materialize first: the unit's copy of {repo_name} "
+                        f"is not a repository at {unit_member}"
+                    )
+                source_repo_root = unit_member
+            elif state == "neither":
+                raise SystemExit(f"run gr2 workspace materialize first: {source_repo_root} is not a repository")
             target_repo_root = _lane_repo_root(workspace_root, owner_unit, lane_name, repo_name)
             first_materialize = ensure_lane_checkout(
                 source_repo_root=source_repo_root,
@@ -207,10 +231,8 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
                 lane_subject=repo_name,
                 lane_name=lane_name,
             )
-            apply_file_projections(hooks, ctx)
-            run_lifecycle_stage(
+            run_materialize_hook_block(
                 hooks,
-                "on_materialize",
                 ctx,
                 repo_dirty=repo_dirty(target_repo_root),
                 first_materialize=first_materialize,
@@ -224,9 +246,15 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
             lane_proto.record_fork_base(workspace_root, owner_unit, lane_name, fork_base)
 
 
-def _run_lane_stage(workspace_root: Path, owner_unit: str, lane_name: str, stage: str, *, manual_hooks: bool = False) -> None:
+def _run_lane_stage(
+    workspace_root: Path, owner_unit: str, lane_name: str, stage: str, *, manual_hooks: bool = False
+) -> list[HookResult]:
+    """Run one lifecycle stage across the lane's repos and return every hook
+    result, so a caller can record what did not run to completion instead of
+    absorbing it into a plain success."""
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
     lane_root = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
+    results: list[HookResult] = []
     for repo_name in lane_doc.get("repos", []):
         repo_root = _lane_repo_root(workspace_root, owner_unit, lane_name, repo_name)
         if not repo_root.exists():
@@ -247,14 +275,27 @@ def _run_lane_stage(workspace_root: Path, owner_unit: str, lane_name: str, stage
             lane_subject=repo_name,
             lane_name=lane_name,
         )
-        run_lifecycle_stage(
-            hooks,
-            stage,
-            ctx,
-            repo_dirty=repo_dirty(repo_root),
-            first_materialize=False,
-            allow_manual=manual_hooks,
+        results.extend(
+            run_lifecycle_stage(
+                hooks,
+                stage,
+                ctx,
+                repo_dirty=repo_dirty(repo_root),
+                first_materialize=False,
+                allow_manual=manual_hooks,
+            )
         )
+    return results
+
+
+def _hook_failures_from(results: list) -> list[dict]:
+    """The ruled failure record: one entry per hook that ran and exited
+    non-zero, naming the hook and its rc."""
+    return [
+        {"hook": r.name, "returncode": r.returncode}
+        for r in results
+        if r.returncode is not None and r.returncode != 0
+    ]
 
 
 def _prepare_review_branch(workspace_root: Path, repo: str, pr_number: int, branch: str | None) -> str:
@@ -374,7 +415,13 @@ def _merge_verification_targets(
         if host_repo in targets:
             raise SystemExit(f"duplicate host repo in merge verification targets: {host_repo}")
         repo_root = (workspace_root / str(repo_spec.get("path", ""))).resolve()
-        if not repo_root.is_dir() or not is_git_repo(repo_root):
+        # The state helper, not is_git_repo: the read-through let a plain
+        # directory at a declared repo path pass this guard as a live
+        # merge-verification target (and an empty placeholder through with
+        # it), and the DAG collection then operated on a directory that is
+        # not a repository. Neither shape is a live target: the DAG is
+        # unavailable for both, which is this guard's whole contract.
+        if gitops.repo_path_state(repo_root) != "repo_root":
             raise SystemExit(f"local merge-verification DAG is unavailable: {repo_root}")
         targets[host_repo] = MergeVerificationTarget(repo_root=repo_root, remote=remote)
     return targets
@@ -686,10 +733,27 @@ def _exit(code: int) -> None:
         raise typer.Exit(code=code)
 
 
-def _consume_lane_transition(outcome: lane_proto.LaneTransitionOutcome | int) -> lane_proto.LaneTransitionOutcome | None:
-    """Render the state writer's one outcome instead of inferring one in the CLI."""
+def _consume_lane_transition(
+    outcome: lane_proto.LaneTransitionOutcome | int,
+    hook_failures: list[dict] | None = None,
+) -> lane_proto.LaneTransitionOutcome | None:
+    """Render the state writer's one outcome instead of inferring one in the CLI.
+
+    A failed warn-tier hook is recorded, not absorbed: when hook_failures is
+    non-empty the payload's status is "warned" (the string "ok" appears
+    nowhere), hook_failures names the hook and its rc, and the same text goes
+    to stderr. Exit code stays 0 — warn is the caller's own declaration."""
     if isinstance(outcome, lane_proto.LaneTransitionOutcome):
-        typer.echo(json.dumps(outcome.as_dict(), indent=2))
+        payload = outcome.as_dict()
+        if hook_failures:
+            payload["status"] = "warned"
+            payload["hook_failures"] = hook_failures
+            rendered = json.dumps(payload, indent=2)
+            typer.echo(rendered)
+            typer.echo(rendered, err=True)
+        else:
+            payload["hook_failures"] = []
+            typer.echo(json.dumps(payload, indent=2))
         _exit(outcome.exit_code)
         return outcome
     _exit(outcome)
@@ -728,42 +792,112 @@ def sync_run(
         raise typer.Exit(code=1)
 
 
-def _superproject_report(
-    workspace_root: Path, repos: list[dict[str, object]]
-) -> dict[str, int] | None:
+def _require_superproject(workspace_root: Path) -> None:
+    """Refuse ``--from-superproject`` on a root whose tree pins no members.
+
+    The flag's value is that it is the DECLARED entry. The plain verb scans any
+    directory of repos and succeeds wherever it finds one, so a user who asked
+    for the superproject path and silently got the directory path would have no
+    signal that their root is not what they thought it was -- and the two paths
+    produce different member SETS, because a declared member that is not
+    materialized is still a member while a directory that is not there is not.
+
+    THE GITLINK IS THE DECLARATION, which is git's own rule and therefore ours.
+    An earlier version of this function also accepted a ``.gitmodules`` on its
+    own, and that was wrong in both directions of the same run: on a root whose
+    members are materialized the verb exited 0 and then printed no superproject
+    line at all, and on one whose members are not it failed with "no git repos
+    found", a message about the wrong problem. ``git submodule status`` and
+    ``git submodule init`` both report zero members on such a root -- measured,
+    not assumed -- because a ``.gitmodules`` is a lookup table that the tree's
+    160000 entries are what actually reference.
+    """
+    if repo_proto.root_gitlink_pins(workspace_root):
+        return
+    if repo_proto.root_submodule_declarations(workspace_root):
+        # Name this case when it applies: a user who has a .gitmodules has
+        # reason to believe the root declares members, and the sentence has to
+        # say why git disagrees rather than leaving them to find out.
+        detail = (
+            ", though it carries a .gitmodules: a .gitmodules alone declares nothing, "
+            "because git resolves members from the tree's 160000 gitlink entries -- "
+            "`git submodule status` and `git submodule init` both report none here"
+        )
+    else:
+        detail = " (no gitlink entries in its tree and no .gitmodules)"
+    raise SystemExit(
+        "workspace init --from-superproject wants a root whose tree pins members, and "
+        f"{workspace_root} pins none{detail}. Run `gr2 workspace init` for a plain "
+        "directory of repos, or point this verb at the root of a superproject"
+    )
+
+
+def _superproject_report(workspace_root: Path) -> dict[str, int] | None:
     """Superproject facts about a root, or None when it is not one.
 
     None and ``{"members": 0}`` are deliberately different answers: the first
     says this root is not a superproject, the second would print a claim about
     zero members on every workspace.
 
-    Membership comes from the predicate and the STATE is looked up beside it,
-    never the other way round. Reading the member list off the states meant a
-    state that could not be determined removed its member from the report --
-    a SHA-256 member's detached HEAD read as nothing under a 40-character test,
-    and the superproject line disappeared from a root that plainly has one.
+    MEMBERSHIP IS THE ROOT'S OWN DECLARATION -- the paths its tree pins with a
+    160000 gitlink -- and the STATE is looked up beside it, never the other way
+    round. Three earlier versions of this function each lost or invented members
+    by deriving membership from something else, and each one is worth naming
+    because the shape recurs:
+
+    - from the STATES: a SHA-256 member's detached HEAD read as nothing under a
+      40-character test, so the member left the count and the whole line left the
+      output; and
+    - from a MEMBERSHIP PREDICATE: a DECLARED member that is not MATERIALIZED --
+      the ordinary state after `git clone` without ``--recurse-submodules``,
+      where the member path is an empty directory -- satisfies no predicate at
+      all, because there is no member on disk to satisfy one. The line vanished
+      from exactly the root the launch copy leads with; and
+    - from the SCAN'S OWN ``pin`` FIELD: ``declared_repo_state`` sets ``pin``
+      from the member's HEAD whenever the root pins nothing, so every ordinary
+      repo carried a ``pin`` and a plain directory of two repos reported
+      ``superproject = true (members: 2 pinned)``. A control caught that one.
+
+    So the declaration is read HERE, from the root, and a declared member that
+    is not on disk is counted and named ``not_materialized``: the root declares
+    it, which is what makes it a member, and whether its working tree exists yet
+    is an observation about the moment.
     """
-    members: list[str] = []
-    for repo in repos:
-        path = workspace_root / str(repo["path"])
-        if not repo_proto.is_submodule_member(path):
-            continue
-        members.append(repo_proto.submodule_member_state(path) or "unknown")
-    if not members:
+    pinned = repo_proto.root_gitlink_pins(workspace_root)
+    if not pinned:
         return None
+
+    states: list[str] = []
+    for rel in sorted(pinned):
+        path = workspace_root / rel
+        if repo_proto.is_submodule_member(path):
+            states.append(repo_proto.submodule_member_state(path) or "unknown")
+        elif repo_proto.is_own_toplevel(path):
+            # Materialized, but as its own clone rather than as a submodule:
+            # there is no module directory to read a state from, and calling it
+            # "not materialized" would be false about a directory plainly there.
+            states.append("unknown")
+        else:
+            states.append("not_materialized")
     return {
-        "members": len(members),
-        "detached": sum(1 for state in members if state == "detached"),
-        "unknown": sum(1 for state in members if state == "unknown"),
+        "members": len(states),
+        "detached": sum(1 for state in states if state == "detached"),
+        "unknown": sum(1 for state in states if state == "unknown"),
+        "not_materialized": sum(1 for state in states if state == "not_materialized"),
     }
 
 
 def _superproject_line(report: dict[str, int]) -> str:
-    return (
+    line = (
         f"superproject = true (members: {report['members']} pinned, "
-        f"{report['detached']} detached) -- the root is adopted; "
-        "its branches and worktree are untouched"
+        f"{report['detached']} detached"
     )
+    # Named only when it applies, so the ordinary line is unchanged for every
+    # caller that already reads it; a root whose members are not checked out yet
+    # is the case the extra clause exists for.
+    if report.get("not_materialized"):
+        line += f", {report['not_materialized']} not materialized"
+    return line + ") -- the root is adopted; its branches and worktree are untouched"
 
 
 @workspace_app.command("init")
@@ -771,9 +905,19 @@ def workspace_init(
     workspace_root: Optional[Path] = typer.Argument(None),
     default_unit: str = typer.Option("default", help="Default owner unit for scanned repos"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    from_superproject: bool = typer.Option(
+        False,
+        "--from-superproject",
+        help=(
+            "Adopt an existing superproject: require that the root declares members, "
+            "then read them from .gitmodules and the root's gitlink pins"
+        ),
+    ),
 ) -> None:
     """Create a bare workspace_spec.toml by scanning an existing directory of repos."""
     workspace_root = (workspace_root or Path.cwd()).resolve()
+    if from_superproject:
+        _require_superproject(workspace_root)
     repos = _scan_existing_repos(workspace_root)
     bare = _scan_bare_repos(workspace_root)
     if not repos and not bare:
@@ -789,7 +933,7 @@ def workspace_init(
     # A root that is already a superproject is the entry the launch copy leads
     # with ("point gr2 at your existing superproject"), and `repo_count` alone
     # does not say it: the adopted root is the thing, not the member count.
-    superproject = _superproject_report(workspace_root, repos)
+    superproject = _superproject_report(workspace_root)
     payload = {
         "workspace_root": str(workspace_root),
         "spec_path": str(spec_path),
@@ -1704,7 +1848,7 @@ def hooks_trust(
     if hooks is None:
         raise SystemExit(f"no .gr2/hooks.toml found in member: {repo_root}")
     state, record = consent_state(ws, key, repo_root)
-    lines = describe_member(ws.resolve(), repo_root, key, hooks)
+    lines, escaped_rows = describe_member(ws.resolve(), repo_root, key, hooks)
     # the screen shows every RESOLVED
     # destination; a row that cannot resolve at trust time is refused, not
     # deferred, and the record does not exist (it binds the whole table by
@@ -1725,6 +1869,17 @@ def hooks_trust(
         f"bound: {key} sha {consent_rec['hooks_sha'][:12]} "
         f"granted_by {consent_rec['granted_by']} at {consent_rec['granted_at']}"
     )
+    # the screen shows, the runtime refuses — a row that carries an ESCAPE
+    # flag will be refused when the hook block runs, even though the record
+    # binds. Saying so here stops a user consenting to a row that can
+    # never apply. The count is per-row (from the screen's flag results),
+    # never a string match over lines the member authored.
+    if escaped_rows:
+        typer.echo(
+            f"warning: {len(escaped_rows)} projection row(s) will be refused at run time "
+            "(escape flags above); fix or remove the row(s) and re-trust "
+            "(the record lapses by hash)"
+        )
 
 
 @hooks_app.command("revoke")
@@ -1873,6 +2028,54 @@ def repo_projection_run(
         typer.echo(json.dumps(payload, indent=2))
 
 
+def _lane_carries_a_fork_base(workspace_root: Path, owner_unit: str, lane_name: str) -> bool:
+    """True when the lane already carries a recorded fork base.
+
+    The fork base is what separates the two kinds of refusal, and therefore what the
+    removal keys on:
+
+    * A refusal that lands BEFORE it is recorded leaves an ORPHAN. Measured on the
+      refusal path: a missing source made ``lane create`` exit 1 after writing
+      ``lane.toml``, and ``lane enter``, ``lane exit`` and ``exec run`` all accepted the
+      leftover; the failure then surfaced at ``exec run`` as "repos missing", two steps
+      away from the create that refused, with nothing in between pointing back at it.
+    * A refusal that lands AFTER it -- a projection hook that blocks, say -- leaves
+      a RECOVERABLE lane, which must survive WITH its fork base so
+      ``review create-project`` still succeeds on it.
+
+    The fork base is recorded PER REPO, in the materialization loop, so EXISTENCE is not
+    the discriminator: a lane whose later repos never materialized carries a fork base
+    for the repos that did, and it is exactly as unusable as one carrying none --
+    ``lane enter`` accepts it while ``review create-project`` refuses it as not
+    materialized. COVERAGE is the discriminator: every repo the lane document names must
+    have a fork base entry.
+
+    Both refuse and both exit non-zero; only the covered lane is something a verb can use.
+    """
+    try:
+        doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
+    except SystemExit:
+        # load_lane_doc refuses a lane that is not on disk; there is nothing to keep,
+        # and nothing to remove either.
+        return False
+    fork_base = doc.get("fork_base") or {}
+    repos = doc.get("repos") or []
+    return bool(fork_base) and set(repos) <= set(fork_base)
+
+
+def _remove_lane_artifacts(workspace_root: Path, owner_unit: str, lane_name: str) -> None:
+    """Remove the lane directory a REFUSED create wrote, when nothing in it is usable.
+
+    A refusal that never reached a fork base must leave no lane that any verb accepts,
+    and the caller checks that precondition before calling this. Removal goes through
+    ``rmtree_or_refuse`` so a partial cleanup raises instead of reporting success: a lane
+    half-removed is the same defect as a lane never removed.
+    """
+    lane_root = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
+    if lane_root.exists():
+        rmtree_or_refuse(lane_root)
+
+
 @lane_app.command("create")
 def lane_create(
     workspace_root: Path,
@@ -1913,7 +2116,36 @@ def lane_create(
     # event comes from the lane document create_lane just wrote (derived from the
     # bound worktree), not from the --branch arg, which --bind ignores.
     if bind is None:
-        _materialize_lane_repos(workspace_root, owner_unit, lane_name, manual_hooks=manual_hooks)
+        try:
+            _materialize_lane_repos(workspace_root, owner_unit, lane_name, manual_hooks=manual_hooks)
+        except BaseException:
+            # BaseException and not Exception, deliberately: the refusal this guards
+            # against is a SystemExit, which is not an Exception and would sail past a
+            # narrower clause, leaving exactly the orphan this exists to prevent.
+            #
+            # ...but only when the refusal left nothing usable. A blocked projection hook
+            # refuses AFTER the fork base is recorded, and that lane is recoverable by
+            # design -- `review create-project` must still succeed on it -- so the fork
+            # base, not the position of the raise, decides.
+            if not _lane_carries_a_fork_base(workspace_root, owner_unit, lane_name):
+                _remove_lane_artifacts(workspace_root, owner_unit, lane_name)
+            else:
+                # The kept path must be LEGIBLE, not silent. A user who sees "create
+                # failed" and later finds the lane on disk would otherwise read it as the
+                # very orphan this change exists to prevent. So the message says the lane
+                # was KEPT, why it is recoverable, and both ways forward. It names no
+                # removal verb because none exists: `lane` has create/enter/resolve/exit/
+                # current/bind and nothing that removes one, and a message that names a
+                # command a user cannot run is worse than one that names the path.
+                lane_root = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
+                typer.echo(
+                    f"lane create: the lane {owner_unit}/{lane_name} was KEPT because its fork "
+                    f"base is recorded, so it is recoverable.\n"
+                    f"  continue with it: gr2 review create-project {workspace_root} {owner_unit} {lane_name}\n"
+                    f"  remove it:        delete {lane_root}  (no lane-removal verb exists yet)",
+                    err=True,
+                )
+            raise
     repo_list = [r.strip() for r in repos.split(",")]
     # The event payload carries lane_kind (and bound_worktree for a bound lane)
     # so an event-stream consumer can tell a bound lane from a materialized one
@@ -1979,7 +2211,7 @@ def lane_enter(
         )
         raise typer.Exit(code=1)
     try:
-        _run_lane_stage(workspace_root, owner_unit, lane_name, "on_enter", manual_hooks=manual_hooks)
+        enter_results = _run_lane_stage(workspace_root, owner_unit, lane_name, "on_enter", manual_hooks=manual_hooks)
     except HookRuntimeError as exc:
         payload = exc.payload
         repo_name = Path(str(payload.get("cwd", ""))).name or lane_name
@@ -2004,7 +2236,9 @@ def lane_enter(
         notify_channel=notify_channel,
         recall=recall,
     )
-    outcome = _consume_lane_transition(lane_proto.enter_lane(ns))
+    outcome = _consume_lane_transition(
+        lane_proto.enter_lane(ns), _hook_failures_from(enter_results)
+    )
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
     emit_after_outcome(
         event_type=EventType.LANE_ENTERED,
@@ -2063,7 +2297,7 @@ def lane_exit(
         if repo_root.exists():
             if stash_if_dirty(repo_root, f"gr2 exit {owner_unit}/{lane_name}"):
                 stashed_repos.append(repo_name)
-    _run_lane_stage(workspace_root, owner_unit, lane_name, "on_exit", manual_hooks=manual_hooks)
+    exit_results = _run_lane_stage(workspace_root, owner_unit, lane_name, "on_exit", manual_hooks=manual_hooks)
     ns = SimpleNamespace(
         workspace_root=workspace_root,
         owner_unit=owner_unit,
@@ -2071,7 +2305,9 @@ def lane_exit(
         notify_channel=notify_channel,
         recall=recall,
     )
-    outcome = _consume_lane_transition(lane_proto.exit_lane(ns))
+    outcome = _consume_lane_transition(
+        lane_proto.exit_lane(ns), _hook_failures_from(exit_results)
+    )
     emit_after_outcome(
         event_type=EventType.LANE_EXITED,
         workspace_root=workspace_root,
@@ -2450,6 +2686,17 @@ def review_close(
     )
 
 
+def _default_pr_group_body(owner_unit: str, lane_name: str, repos: list[str]) -> str:
+    """The body every PR in a group gets when the caller passes none.
+
+    It names the group AND lists its member repos, so a reviewer who lands on one PR
+    can see the set it belongs to. A body naming only the lane is invisible in exactly
+    that way: every PR in the set reads identically, and none points at another.
+    """
+    members = "\n".join(f"- {repo}" for repo in repos)
+    return f"gr2 PR group for {owner_unit}/{lane_name}\n\nRepos in this group:\n{members}\n"
+
+
 @pr_app.command("create")
 def pr_create(
     workspace_root: Path,
@@ -2458,6 +2705,9 @@ def pr_create(
     platform: str = typer.Option("github", "--platform", help="Platform adapter name"),
     base_branch: str = typer.Option("main", "--base", help="Base branch for created PRs"),
     draft: bool = typer.Option(False, "--draft", help="Create PRs as drafts"),
+    title: Optional[str] = typer.Option(None, "--title", help="Title for every PR in the group. Defaults to the lane name, which makes every PR in a set read identically; pass one when a reviewer must be able to tell the PRs apart."),
+    body: Optional[str] = typer.Option(None, "--body", help="Body for every PR in the group. Defaults to a line naming the group and listing its repos."),
+    body_file: Optional[Path] = typer.Option(None, "--body-file", help="Read the group body from a file. Use this for anything long or shell-sensitive: the body is passed to gh through a file, so quoting is not the caller's problem."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Create a grouped set of per-repo PRs for a lane."""
@@ -2487,19 +2737,36 @@ def pr_create(
     for repo_name in lane_doc.get("repos", []):
         repo_spec = next(repo for repo in spec.get("repos", []) if repo.get("name") == repo_name)
         repos.append(_repo_slug_from_url(str(repo_spec.get("url", "")), repo_name))
-    payload = pr_ops.create_pr_group(
-        workspace_root=workspace_root,
-        owner_unit=owner_unit,
-        lane_name=resolved_lane,
-        title=resolved_lane,
-        base_branch=base_branch,
-        head_branch=str(branch_map.get(next(iter(lane_doc.get("repos", [])), resolved_lane), resolved_lane)),
-        repos=repos,
-        adapter=adapter,
-        actor=f"agent:{owner_unit}",
-        body=f"gr2 PR group for {owner_unit}/{resolved_lane}",
-        draft=draft,
-    )
+    if body is not None and body_file is not None:
+        typer.echo("pass one of --body or --body-file, not both", err=True)
+        raise typer.Exit(code=2)
+    group_body = body
+    if body_file is not None:
+        try:
+            group_body = body_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            typer.echo(f"cannot read --body-file {body_file}: {exc}", err=True)
+            raise typer.Exit(code=2)
+    try:
+        payload = pr_ops.create_pr_group(
+            workspace_root=workspace_root,
+            owner_unit=owner_unit,
+            lane_name=resolved_lane,
+            title=title or resolved_lane,
+            base_branch=base_branch,
+            head_branch=str(branch_map.get(next(iter(lane_doc.get("repos", [])), resolved_lane), resolved_lane)),
+            repos=repos,
+            adapter=adapter,
+            actor=f"agent:{owner_unit}",
+            body=group_body or _default_pr_group_body(owner_unit, resolved_lane, repos),
+            draft=draft,
+        )
+    except pr_ops.SiblingLinkError as exc:
+        # The group is already persisted, so print it and fail: a half-linked set that
+        # exits 0 is the failure mode this whole path exists to stop.
+        typer.echo(json.dumps(exc.group, indent=2))
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1)
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
     else:
@@ -2743,7 +3010,7 @@ def _normalize_review_row(raw: object) -> dict:
 def review_bind(
     workspace_root: Optional[Path] = typer.Argument(None),
     key: Optional[str] = typer.Option(None, "--repo", help="Repository key for a single bound row"),
-    remote: Optional[str] = typer.Option(None, "--remote", help="Remote URL or path of the row"),
+    remote: Optional[str] = typer.Option(None, "--remote", help="Remote URL or absolute path of the row (relative paths and remote names are not resolved from your shell's directory)"),
     base: Optional[str] = typer.Option(None, "--base", help="Base SHA (must be the live remote head of --ref)"),
     head: Optional[str] = typer.Option(None, "--head", help="Reviewed head SHA (the pre-push head under review)"),
     ref: str = typer.Option("refs/heads/dev", "--ref", help="Target ref whose live head must equal --base"),

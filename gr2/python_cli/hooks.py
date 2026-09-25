@@ -14,6 +14,7 @@ from .events import EventType, emit, emit_after_outcome
 VALID_IF_EXISTS = {"skip", "overwrite", "merge", "error"}
 VALID_ON_FAILURE = {"block", "warn", "skip"}
 VALID_WHEN = {"first_materialize", "always", "dirty", "manual"}
+VALID_STAGES = {"on_materialize", "on_enter", "on_exit"}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -115,9 +116,19 @@ def load_repo_hooks(repo_root: Path) -> RepoHooks | None:
         return None
     with path.open("rb") as fh:
         raw = tomllib.load(fh)
-    # the consent gate: a consent-shaped section in the hooks table is data
-    # from the member's author, never a grant. Collect it, ignore it, and
-    # let the trust verb and the skip reports surface it.
+    # The wrong-shape guard: a hooks table whose stage keys are TOP-LEVEL
+    # ([[on_enter]] instead of [[lifecycle.on_enter]]) builds an empty RepoHooks,
+    # and every verb downstream succeeds while the author's hook intent has
+    # vanished without a trace (measured). Refuse at load, naming
+    # the expected shape. Consent is a LOCAL record on the host, never a grant
+    # inside the table: a consent-shaped section is collected and ignored.
+    stray = [key for key in raw if str(key).lower() in VALID_STAGES]
+    if stray:
+        raise SystemExit(
+            f"invalid hooks table {path}: lifecycle stage(s) {', '.join(sorted(stray))} "
+            f"are top-level; stages must live under [[lifecycle.on_materialize]] / "
+            "[[lifecycle.on_enter]] / [[lifecycle.on_exit]]"
+        )
     ignored = [key for key in raw if "consent" in str(key).lower()]
     nested_hooks = raw.get("hooks")
     if isinstance(nested_hooks, dict):
@@ -225,8 +236,16 @@ def _consent_violations(
     )
 
 
-def apply_file_projections(hooks: RepoHooks, ctx: HookContext) -> list[HookResult]:
-    gate = _consent_gate(ctx)
+# the kwarg default for gate=: "not supplied". A module sentinel, because
+# gate=None already means "the gate ran and found a bound member with no
+# pending marker" — an overloaded None would make both callees call the
+# gate again for that most common state.
+_GATE_UNSET = object()
+
+
+def apply_file_projections(hooks: RepoHooks, ctx: HookContext, *, gate: tuple[str, str, dict | None, bool] | object = _GATE_UNSET) -> list[HookResult]:
+    if gate is _GATE_UNSET:
+        gate = _consent_gate(ctx)
     if gate is not None and gate[1] != "bound":
         # the consent gate: projections are gated by the SAME consent record
         # (the measurement showed they escape the member tree and land under
@@ -420,6 +439,73 @@ def apply_file_projections(hooks: RepoHooks, ctx: HookContext) -> list[HookResul
     return results
 
 
+def run_materialize_hook_block(
+    hooks: RepoHooks,
+    ctx: HookContext,
+    *,
+    repo_dirty: bool,
+    first_materialize: bool,
+    allow_manual: bool = False,
+) -> list[HookResult]:
+    """The member's materialize hook block: projections, then on_materialize.
+    Shared by both doors (workspace materialize and lane create/enter).
+    The consent gate runs ONCE here and its result is passed to both halves,
+    so the pending first-materialize marker is consumed once and ORs the
+    first-materialize semantics for the run AND for the withheld filter.
+    A refused or blocked projection row aborts the block fail-closed —
+    nothing is written — and the refusal names the member's on_materialize
+    hooks that were withheld (filtered by the same when rules the run
+    itself applies), so a consented hook is never silently skipped. When a
+    pending marker was consumed before the row raised, the marker is put
+    back, so fixing the row and re-trusting still runs the deferred hook."""
+    from . import consent as _consent
+
+    gate = _consent_gate(ctx)
+    gate_key, gate_state, _record, gate_pending = gate if gate is not None else (None, None, None, False)
+    try:
+        projections = apply_file_projections(hooks, ctx, gate=gate)
+    except HookRuntimeError as exc:
+        payload = dict(exc.payload)
+        if gate_pending:
+            # the single gate call consumed the pending marker before the
+            # row raised: put it back so the deferred hook survives the
+            # refusal and runs once the row is fixed and re-trusted
+            _consent.write_pending_marker(ctx.workspace_root, gate_key)
+        due = [
+            f"{hook.name}: {hook.command}"
+            for hook in hooks.on_materialize
+            if _should_run(
+                hook.when,
+                repo_dirty=repo_dirty,
+                first_materialize=first_materialize or gate_pending,
+                allow_manual=allow_manual,
+            )
+        ]
+        payload["lifecycle_hooks_withheld"] = due
+        if str(payload.get("status")) == "refused":
+            payload["lifecycle_hooks_withheld_detail"] = (
+                "the member's on_materialize hooks did not run: a projection row in"
+                " this member's hooks table was refused; fix or remove the row and"
+                " re-trust (the record lapses by hash)"
+            )
+        else:
+            payload["lifecycle_hooks_withheld_detail"] = (
+                "the member's on_materialize hooks did not run: "
+                + str(payload.get("detail", "the hook block was aborted"))
+            )
+        raise HookRuntimeError(payload) from exc
+    run_lifecycle_stage(
+        hooks,
+        "on_materialize",
+        ctx,
+        repo_dirty=repo_dirty,
+        first_materialize=first_materialize,
+        allow_manual=allow_manual,
+        gate=gate,
+    )
+    return projections
+
+
 def _consent_gate(
     ctx: HookContext,
 ) -> tuple[str, str, dict | None, bool] | None:
@@ -483,6 +569,7 @@ def run_lifecycle_stage(
     repo_dirty: bool,
     first_materialize: bool,
     allow_manual: bool = False,
+    gate: tuple[str, str, dict | None, bool] | object = _GATE_UNSET,
 ) -> list[HookResult]:
     hooks_for_stage = {
         "on_materialize": hooks.on_materialize,
@@ -495,7 +582,8 @@ def run_lifecycle_stage(
     # site (the outcome-policy counter counts them per call site) and the
     # --manual-hooks axis stays subordinate: consent blocks first, and
     # allow_manual never resurrects a consent-skipped hook.
-    gate = _consent_gate(ctx)
+    if gate is _GATE_UNSET:
+        gate = _consent_gate(ctx)
     gate_key, gate_state, gate_record, gate_pending = gate if gate is not None else (None, None, None, False)
     if gate_state == "bound":
         # bound: proceed. A consumed pending first-materialize marker ORs the

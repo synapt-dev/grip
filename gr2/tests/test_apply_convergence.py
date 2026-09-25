@@ -110,7 +110,7 @@ class TestBuildPlanConvergence(ConvergenceTestBase):
 
     @patch("gr2.python_cli.spec_apply.load_repo_hooks", return_value=None)
     @patch("gr2.python_cli.spec_apply.is_git_dir", return_value=True)
-    @patch("gr2.python_cli.spec_apply.is_git_repo", return_value=True)
+    @patch("gr2.python_cli.gitops.repo_path_state", return_value="repo_root")
     def test_detects_missing_unit_repo_checkouts(self, _repo, _dir, _hooks):
         """Unit dir + unit.toml exist but repos inside unit missing -> converge_unit_repos."""
         for repo in self.repo_specs:
@@ -128,7 +128,7 @@ class TestBuildPlanConvergence(ConvergenceTestBase):
 
     @patch("gr2.python_cli.spec_apply.load_repo_hooks", return_value=None)
     @patch("gr2.python_cli.spec_apply.is_git_dir", return_value=True)
-    @patch("gr2.python_cli.spec_apply.is_git_repo", return_value=True)
+    @patch("gr2.python_cli.gitops.repo_path_state", return_value="repo_root")
     def test_detects_partial_missing_repos(self, _repo, _dir, _hooks):
         """Only some repos missing inside unit -> converge lists only the missing ones."""
         for repo in self.repo_specs:
@@ -144,7 +144,7 @@ class TestBuildPlanConvergence(ConvergenceTestBase):
 
     @patch("gr2.python_cli.spec_apply.load_repo_hooks", return_value=None)
     @patch("gr2.python_cli.spec_apply.is_git_dir", return_value=True)
-    @patch("gr2.python_cli.spec_apply.is_git_repo", return_value=True)
+    @patch("gr2.python_cli.gitops.repo_path_state", return_value="repo_root")
     def test_no_op_when_fully_materialized(self, _repo, _dir, _hooks):
         """All repos present inside unit -> no converge operation."""
         self._fully_materialize()
@@ -157,7 +157,7 @@ class TestBuildPlanConvergence(ConvergenceTestBase):
 
     @patch("gr2.python_cli.spec_apply.load_repo_hooks", return_value=None)
     @patch("gr2.python_cli.spec_apply.is_git_dir", return_value=True)
-    @patch("gr2.python_cli.spec_apply.is_git_repo", return_value=True)
+    @patch("gr2.python_cli.gitops.repo_path_state", return_value="repo_root")
     def test_new_unit_also_converges_repos_in_first_pass(self, _repo, _dir, _hooks):
         """grip#539: a brand-new unit (no dir, no toml) must schedule its repo
         checkouts in the SAME planning pass as create_unit_root/
@@ -183,7 +183,7 @@ class TestBuildPlanConvergence(ConvergenceTestBase):
 
     @patch("gr2.python_cli.spec_apply.load_repo_hooks", return_value=None)
     @patch("gr2.python_cli.spec_apply.is_git_dir", return_value=True)
-    @patch("gr2.python_cli.spec_apply.is_git_repo", return_value=True)
+    @patch("gr2.python_cli.gitops.repo_path_state", return_value="repo_root")
     def test_stale_unit_toml_triggers_converge(self, _repo, _dir, _hooks):
         """Unit.toml lists fewer repos than spec -> converge for the new repo."""
         for repo in self.repo_specs:
@@ -206,8 +206,8 @@ class TestApplyConvergence(ConvergenceTestBase):
     @patch("gr2.python_cli.spec_apply.apply_file_projections", return_value=[])
     @patch("gr2.python_cli.spec_apply.load_repo_hooks", return_value=None)
     @patch("gr2.python_cli.spec_apply.is_git_dir", return_value=True)
-    @patch("gr2.python_cli.spec_apply.is_git_repo", return_value=True)
-    @patch("gr2.python_cli.spec_apply.clone_repo", return_value=True)
+    @patch("gr2.python_cli.gitops.repo_path_state", return_value="repo_root")
+    @patch("gr2.python_cli.clone_exec.clone_and_pin", return_value=True)
     def test_apply_clones_missing_repos_into_unit(self, mock_clone, _repo, _dir, _hooks, _proj, _lc):
         """Apply should clone missing repos into the unit directory."""
         for repo in self.repo_specs:
@@ -231,8 +231,8 @@ class TestApplyConvergence(ConvergenceTestBase):
     @patch("gr2.python_cli.spec_apply.apply_file_projections", return_value=[])
     @patch("gr2.python_cli.spec_apply.load_repo_hooks", return_value=None)
     @patch("gr2.python_cli.spec_apply.is_git_dir", return_value=True)
-    @patch("gr2.python_cli.spec_apply.is_git_repo", return_value=True)
-    @patch("gr2.python_cli.spec_apply.clone_repo", return_value=True)
+    @patch("gr2.python_cli.gitops.repo_path_state", return_value="repo_root")
+    @patch("gr2.python_cli.clone_exec.clone_and_pin", return_value=True)
     def test_apply_updates_stale_unit_toml(self, _clone, _repo, _dir, _hooks, _proj, _lc):
         """After convergence, unit.toml should reflect the full spec repo list."""
         for repo in self.repo_specs:
@@ -252,8 +252,8 @@ class TestApplyConvergence(ConvergenceTestBase):
     @patch("gr2.python_cli.spec_apply.apply_file_projections", return_value=[])
     @patch("gr2.python_cli.spec_apply.load_repo_hooks", return_value=None)
     @patch("gr2.python_cli.spec_apply.is_git_dir", return_value=True)
-    @patch("gr2.python_cli.spec_apply.is_git_repo", return_value=True)
-    @patch("gr2.python_cli.spec_apply.clone_repo", return_value=True)
+    @patch("gr2.python_cli.gitops.repo_path_state", return_value="repo_root")
+    @patch("gr2.python_cli.clone_exec.clone_and_pin", return_value=True)
     def test_convergence_is_idempotent(self, mock_clone, _repo, _dir, _hooks, _proj, _lc):
         """After apply, a second build_plan should show no converge operations."""
         self._fully_materialize()
@@ -267,8 +267,8 @@ class TestApplyConvergence(ConvergenceTestBase):
     @patch("gr2.python_cli.spec_apply.apply_file_projections", return_value=[])
     @patch("gr2.python_cli.spec_apply.load_repo_hooks", return_value=None)
     @patch("gr2.python_cli.spec_apply.is_git_dir", return_value=True)
-    @patch("gr2.python_cli.spec_apply.is_git_repo", return_value=True)
-    @patch("gr2.python_cli.spec_apply.clone_repo", return_value=True)
+    @patch("gr2.python_cli.gitops.repo_path_state", return_value="repo_root")
+    @patch("gr2.python_cli.clone_exec.clone_and_pin", return_value=True)
     def test_apply_reports_converged_repos(self, _clone, _repo, _dir, _hooks, _proj, _lc):
         """Apply result should list what was converged."""
         for repo in self.repo_specs:

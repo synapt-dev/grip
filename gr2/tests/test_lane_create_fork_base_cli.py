@@ -129,6 +129,39 @@ def test_cli_lane_create_records_fork_base_before_a_blocked_hook_exits(tmp_path:
     assert created.exit_code == 0, created.output
 
 
+def test_cli_lane_create_reports_the_withheld_lifecycle_hooks(tmp_path: Path) -> None:
+    # the lane door had the identical silent-withhold shape: projections, then
+    # on_materialize, with no handling — a refused row aborted the block and the
+    # consented hook never ran, with no output about it (found 2026-09-24). The
+    # refusal must name what did not run and why.
+    import json
+
+    ws, _tip = _workspace_with_blocked_projection(tmp_path)
+    # give the member's hooks table a consented always hook next to the blocked row
+    src = ws / "repos" / "app"
+    (src / ".gr2" / "hooks.toml").write_text(
+        '[[lifecycle.on_materialize]]\nname = "run-marker"\n'
+        'command = "touch {repo_root}/hook-ran.txt"\nwhen = "always"\n\n'
+        '[[files.link]]\nsrc = "does/not/exist.md"\ndest = "PROJECTED.md"\n'
+    )
+    _git(src, "add", ".")
+    _git(src, "commit", "-q", "-m", "always hook beside the blocked projection")
+    _git(src, "push", "-q", "origin", "main")
+    from gr2.python_cli.consent import write_consent
+
+    write_consent(ws, "repos/app", src)  # re-bind the changed table
+    res = runner.invoke(gr2_app.app, ["lane", "create", str(ws), "atlas", "feature",
+                                      "--repos", "app", "--branch", "feat/lane"])
+    assert res.exit_code == 1, res.output
+    payload = json.loads(res.output[res.output.index("{"):])
+    assert payload["status"] == "refused"
+    assert payload["lifecycle_hooks_withheld"] == [
+        "run-marker: touch {repo_root}/hook-ran.txt"
+    ]
+    # the hooks are withheld, not run: no hook-ran.txt anywhere in the lane
+    assert not list((ws / ".grip" / "state" / "lanes").rglob("hook-ran.txt"))
+
+
 def test_cli_lane_create_records_fork_base_for_each_repo(tmp_path: Path) -> None:
     ws, tips = _workspace(tmp_path, ["app", "lib"])
     res = runner.invoke(gr2_app.app, ["lane", "create", str(ws), "atlas", "feature",

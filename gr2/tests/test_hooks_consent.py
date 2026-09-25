@@ -395,6 +395,208 @@ class TestConfinement:
             apply_file_projections(hooks, ctx)
         assert not (repo_root / "linked.md").exists()
 
+    def test_refused_projection_reports_the_withheld_lifecycle_hooks(self, workspace: Path):
+        # a bound member whose hooks table carries a refused projection row:
+        # the row is refused (nothing written), AND the member's on_materialize
+        # hooks do not run — the refusal must say that the hooks were withheld
+        # (measured 2026-09-24: the bound materialize printed only the refusal
+        # and said nothing about the consented hook it silently skipped).
+        (workspace / ".grip").mkdir(parents=True, exist_ok=True)
+        (workspace / ".grip" / "workspace_spec.toml").write_text(
+            'workspace_name = "ws"\n\n[[repos]]\nname = "stranger"\npath = "stranger"\nurl = "unused"\n'
+            '[[units]]\nname = "default"\npath = "default"\nrepos = ["stranger"]\n'
+        )
+        both_rows = (
+            '[[lifecycle.on_materialize]]\nname = "run-marker"\n'
+            'command = "touch {repo_root}/hook-ran.txt"\nwhen = "always"\n\n'
+            '[[files.copy]]\nsrc = "payload.txt"\n'
+            'dest = "{workspace_root}/.grip/consent/planted.json"\nif_exists = "overwrite"\n'
+        )
+        repo_root = _seed_member(workspace, hooks_toml=both_rows)
+        self._seed_payload(repo_root)
+        write_consent(workspace, "stranger", repo_root)  # binds the CURRENT table hash
+        from gr2.python_cli.spec_apply import _run_materialize_hooks
+
+        with pytest.raises(HookRuntimeError) as excinfo:
+            _run_materialize_hooks(workspace, repo_root, "stranger", first_materialize=False)
+        payload = json.loads(str(excinfo.value))
+        assert payload["status"] == "refused"
+        assert payload["lifecycle_hooks_withheld"] == [
+            "run-marker: touch {repo_root}/hook-ran.txt"
+        ]
+        assert not (workspace / ".grip" / "consent" / "planted.json").exists()
+        assert not (repo_root / "hook-ran.txt").exists()  # withheld, not run
+
+    def test_withheld_list_filters_by_the_when_rules(self, workspace: Path):
+        # a first_materialize hook on a later materialize was never due: the
+        # withheld list must not name hooks the run itself would have skipped
+        (workspace / ".grip").mkdir(parents=True, exist_ok=True)
+        (workspace / ".grip" / "workspace_spec.toml").write_text(
+            'workspace_name = "ws"\n\n[[repos]]\nname = "stranger"\npath = "stranger"\nurl = "unused"\n'
+            '[[units]]\nname = "default"\npath = "default"\nrepos = ["stranger"]\n'
+        )
+        first_only = (
+            '[[lifecycle.on_materialize]]\nname = "first-only"\n'
+            'command = "touch {repo_root}/hook-ran.txt"\nwhen = "first_materialize"\n\n'
+            '[[files.copy]]\nsrc = "payload.txt"\n'
+            'dest = "{workspace_root}/.grip/consent/planted.json"\nif_exists = "overwrite"\n'
+        )
+        repo_root = _seed_member(workspace, hooks_toml=first_only)
+        self._seed_payload(repo_root)
+        write_consent(workspace, "stranger", repo_root)
+        from gr2.python_cli.spec_apply import _run_materialize_hooks
+
+        with pytest.raises(HookRuntimeError) as excinfo:
+            _run_materialize_hooks(workspace, repo_root, "stranger", first_materialize=False)
+        payload = json.loads(str(excinfo.value))
+        assert payload["lifecycle_hooks_withheld"] == []  # not due here
+
+    def test_refused_path_puts_the_pending_marker_back(self, workspace: Path):
+        # the late-trust sequence (measured through the CLI 2026-09-24): a
+        # member owing a pending first_materialize hook whose table ALSO
+        # carries a refused row — the pending pass consumes the marker, the
+        # row raises, and until the put-back the user who fixed the row and
+        # re-trusted NEVER got the deferred hook (apply #2 said "no changes
+        # applied"). The refused path must put the marker back so the
+        # deferred hook survives the refusal.
+        (workspace / ".grip").mkdir(parents=True, exist_ok=True)
+        (workspace / ".grip" / "workspace_spec.toml").write_text(
+            'workspace_name = "ws"\n\n[[repos]]\nname = "stranger"\npath = "stranger"\nurl = "unused"\n'
+            '[[units]]\nname = "default"\npath = "default"\nrepos = ["stranger"]\n'
+        )
+        bad_table = (
+            '[[lifecycle.on_materialize]]\nname = "first-only"\n'
+            'command = "touch {repo_root}/hook-ran.txt"\nwhen = "first_materialize"\n\n'
+            '[[files.copy]]\nsrc = "payload.txt"\n'
+            'dest = "{workspace_root}/.grip/consent/planted.json"\nif_exists = "overwrite"\n'
+        )
+        repo_root = _seed_member(workspace, hooks_toml=bad_table)
+        self._seed_payload(repo_root)
+        from gr2.python_cli.spec_apply import _run_materialize_hooks
+        from gr2.python_cli import consent as _consent
+
+        # M1 unbound: the consent gate skips and writes the pending marker
+        _run_materialize_hooks(workspace, repo_root, "stranger", first_materialize=False)
+        assert _consent.pending_members(workspace) == ["stranger"]
+        write_consent(workspace, "stranger", repo_root)  # binds the BAD table
+
+        # apply #1: the pending pass consumes the marker, the row raises
+        with pytest.raises(HookRuntimeError) as excinfo:
+            _run_materialize_hooks(workspace, repo_root, "stranger", first_materialize=True)
+        payload = json.loads(str(excinfo.value))
+        assert payload["lifecycle_hooks_withheld"] == ["first-only: touch {repo_root}/hook-ran.txt"]
+        assert not (workspace / ".grip" / "consent" / "planted.json").exists()
+        # the refused path put the marker back
+        assert _consent.pending_members(workspace) == ["stranger"], (
+            "the deferred hook must survive the refusal"
+        )
+        # the user's path: fix the row, re-trust, apply again -> the hook runs
+        clean_table = (
+            '[[lifecycle.on_materialize]]\nname = "first-only"\n'
+            'command = "touch {repo_root}/hook-ran.txt"\nwhen = "first_materialize"\n'
+        )
+        (repo_root / ".gr2" / "hooks.toml").write_text(clean_table)
+        write_consent(workspace, "stranger", repo_root)
+        _run_materialize_hooks(workspace, repo_root, "stranger", first_materialize=False)
+        assert (repo_root / "hook-ran.txt").exists(), (
+            "the deferred hook runs once the row is fixed and the member is re-trusted"
+        )
+
+    def test_blocked_row_advice_says_nothing_about_retrust(self, workspace: Path):
+        # the same except also catches BLOCKED rows (missing source, an
+        # if_exists=error conflict, merge not implemented): for a conflict the
+        # table does not change, so the advice must not tell the user to
+        # re-trust — the row's own detail says what to fix.
+        repo_root, ctx = self._bound_ctx(workspace)
+        self._seed_payload(repo_root)
+        (repo_root / "already-there.txt").write_text("present\n")
+        hooks = _make_hooks(
+            stage="on_materialize",
+            command="touch {repo_root}/hook-ran.txt",
+            copies=[FileProjection(kind="copy", src="payload.txt", dest="{repo_root}/already-there.txt", if_exists="error")],
+        )
+        with pytest.raises(HookRuntimeError) as excinfo:
+            from gr2.python_cli.hooks import run_materialize_hook_block
+
+            run_materialize_hook_block(
+                hooks, ctx, repo_dirty=False, first_materialize=True, allow_manual=False
+            )
+        payload = json.loads(str(excinfo.value))
+        assert payload["status"] == "blocked"
+        assert "re-trust" not in payload["lifecycle_hooks_withheld_detail"]
+        assert "conflict at" in payload["lifecycle_hooks_withheld_detail"]
+        assert payload["lifecycle_hooks_withheld"] == ["marker: touch {repo_root}/hook-ran.txt"]
+
+    def test_gate_runs_once_for_a_bound_member_with_no_marker(self, workspace: Path):
+        # "runs the consent gate ONCE" is a claim about the most common state:
+        # a bound member with NO pending marker. gate=None means both
+        # "bound clean" and "not supplied", so an overloaded-None callee calls
+        # the gate again — three calls through the helper. The sentinel makes
+        # the single call true, not documented.
+        repo_root = _seed_member(workspace, hooks_toml=HOOKS_TOML)
+        write_consent(workspace, "stranger", repo_root)
+        from gr2.python_cli.spec_apply import _run_materialize_hooks
+        from gr2.python_cli import hooks as _hooks
+
+        calls: list[object] = []
+        real_gate = _hooks._consent_gate
+
+        def spy(ctx):
+            calls = spy.count = getattr(spy, "count", 0) + 1
+            return real_gate(ctx)
+
+        spy.count = 0
+        import inspect
+
+        def spying(ctx):
+            spy.count += 1
+            return real_gate(ctx)
+
+        _hooks._consent_gate = spying
+        try:
+            _run_materialize_hooks(workspace, repo_root, "stranger", first_materialize=False)
+        finally:
+            _hooks._consent_gate = real_gate
+        assert spy.count == 1, (
+            f"the consent gate ran {spy.count} times for a bound member with no marker"
+        )
+
+    def test_filter_names_a_pending_first_materialize_hook_on_a_refused_row(self, workspace: Path):
+        # the filter half of the pending claim needs its own witness: a bound
+        # member owing a pending first_materialize hook, with a refused row,
+        # entering through a first_materialize=False door — the withheld list
+        # must name the hook (the pending bool ORs the filter), even though
+        # today's CLI never reaches this state through a real door.
+        (workspace / ".grip").mkdir(parents=True, exist_ok=True)
+        (workspace / ".grip" / "workspace_spec.toml").write_text(
+            'workspace_name = "ws"\n\n[[repos]]\nname = "stranger"\npath = "stranger"\nurl = "unused"\n'
+            '[[units]]\nname = "default"\npath = "default"\nrepos = ["stranger"]\n'
+        )
+        bad_table = (
+            '[[lifecycle.on_materialize]]\nname = "first-only"\n'
+            'command = "touch {repo_root}/hook-ran.txt"\nwhen = "first_materialize"\n\n'
+            '[[files.copy]]\nsrc = "payload.txt"\n'
+            'dest = "{workspace_root}/.grip/consent/planted.json"\nif_exists = "overwrite"\n'
+        )
+        repo_root = _seed_member(workspace, hooks_toml=bad_table)
+        self._seed_payload(repo_root)
+        from gr2.python_cli.spec_apply import _run_materialize_hooks
+        from gr2.python_cli import consent as _consent
+
+        # M1 unbound: the gate writes the pending marker
+        _run_materialize_hooks(workspace, repo_root, "stranger", first_materialize=False)
+        assert _consent.pending_members(workspace) == ["stranger"]
+        write_consent(workspace, "stranger", repo_root)  # binds the BAD table
+        # a first_materialize=False door with a pending marker + a refused row
+        with pytest.raises(HookRuntimeError) as excinfo:
+            _run_materialize_hooks(workspace, repo_root, "stranger", first_materialize=False)
+        payload = json.loads(str(excinfo.value))
+        assert payload["lifecycle_hooks_withheld"] == [
+            "first-only: touch {repo_root}/hook-ran.txt"
+        ]
+        # the marker is kept: the deferred hook survives the refusal
+        assert _consent.pending_members(workspace) == ["stranger"]
+
     def test_declared_unit_dir_dest_allowed(self, workspace: Path):
         # {unit_root} and the spec's unit dirs are inside the boundary
         # (gr2 declares and owns it).
@@ -527,6 +729,80 @@ class TestTrustVerb:
             ["hooks", "trust", "nope", "--workspace-root", str(workspace)],
         )
         assert result.exit_code != 0
+
+    def test_trust_warns_when_binding_past_an_escape_row(self, workspace: Path, tmp_path: Path):
+        # the screen shows the ESCAPE line and binds — by design (the screen
+        # shows, the runtime refuses) — but the bind output must say that the
+        # escaped row will never apply, so a user does not consent to
+        # something that can never happen.
+        toml = (
+            HOOKS_TOML
+            + "\n[[files.copy]]\nname = \"escape\"\nsrc = \"payload.txt\"\n"
+            + f'dest = "{tmp_path}/abs-escape.txt"\nif_exists = "overwrite"\n'
+        )
+        repo_root = _seed_member(workspace, hooks_toml=toml)
+        (repo_root / "payload.txt").write_text("payload\n")
+        self._spec(workspace)
+        result = CliRunner().invoke(
+            app,
+            ["hooks", "trust", "stranger", "--workspace-root", str(workspace)],
+        )
+        assert result.exit_code == 0, result.output
+        assert "will be refused at run time" in result.output
+        record = load_consent(workspace, "stranger")
+        assert record is not None  # the record still binds (the screen showed)
+
+    def test_trust_does_not_warn_without_an_escape_row(self, workspace: Path):
+        repo_root = _seed_member(workspace, hooks_toml=HOOKS_TOML)
+        self._spec(workspace)
+        result = CliRunner().invoke(
+            app,
+            ["hooks", "trust", "stranger", "--workspace-root", str(workspace)],
+        )
+        assert result.exit_code == 0, result.output
+        assert "will be refused at run time" not in result.output
+
+    def test_warning_counts_rows_not_member_text(self, workspace: Path):
+        # E1: a lifecycle command whose TEXT contains the escape marker, with
+        # no projection rows, must not print a row warning — the count comes
+        # from the screen's per-row flags, never from a string match over
+        # lines the member authored.
+        toml = HOOKS_TOML.replace(
+            'command = "touch {repo_root}/marker"',
+            'command = "echo \' ESCAPE: not a row\'"',
+        )
+        repo_root = _seed_member(workspace, hooks_toml=toml)
+        self._spec(workspace)
+        result = CliRunner().invoke(
+            app,
+            ["hooks", "trust", "stranger", "--workspace-root", str(workspace)],
+        )
+        assert result.exit_code == 0, result.output
+        assert "will be refused at run time" not in result.output
+
+    def test_warning_covers_a_source_escape(self, workspace: Path, tmp_path: Path):
+        # E2: a copy whose SOURCE resolves outside the member's tree is
+        # refused by the runtime's source confinement — the screen flags it
+        # (the same rule as the runtime's first raise), so the count covers
+        # what the runtime refuses; the bind still succeeds and the hook
+        # block still refuses the row.
+        toml = (
+            HOOKS_TOML
+            + f'\n[[files.copy]]\nname = "outside"\nsrc = "{tmp_path}/outside-src.txt"\n'
+            + 'dest = "{repo_root}/copied.txt"\nif_exists = "overwrite"\n'
+        )
+        (tmp_path / "outside-src.txt").write_text("outside\n")
+        repo_root = _seed_member(workspace, hooks_toml=toml)
+        self._spec(workspace)
+        result = CliRunner().invoke(
+            app,
+            ["hooks", "trust", "stranger", "--workspace-root", str(workspace)],
+        )
+        assert result.exit_code == 0, result.output
+        assert "ESCPE" not in result.output  # no misspelled marker noise
+        assert "ESCAPE" in result.output  # the source escape is flagged
+        assert "1 projection row(s) will be refused at run time" in result.output
+        assert load_consent(workspace, "stranger") is not None  # the bind still succeeds
 
     def test_revoke_removes_the_record(self, workspace: Path):
         repo_root = _seed_member(workspace, hooks_toml=HOOKS_TOML)

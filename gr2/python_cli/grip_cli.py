@@ -13,6 +13,7 @@ from pathlib import Path
 import typer
 
 from . import config as config_mod
+from . import gitops
 from . import grip as grip_mod
 from .gitops import git, repo_dirty
 from .workspace_guidance import missing_gr2_workspace_guidance
@@ -50,6 +51,62 @@ def _discover_repos(workspace: Path) -> dict[str, Path]:
     return result
 
 
+def _member_working_root(workspace_root: Path, name: str, declared_path: Path) -> Path:
+    """The path a store verb reads and writes for one member.
+
+    The state helper answers what the declared path holds, because asking the
+    path directly let git answer for the ENCLOSING root: on a workspace
+    adopted from a superproject the declared path is the EMPTY placeholder,
+    git answered every question there for the ENCLOSING root, `store snapshot`
+    recorded the ROOT's HEAD as every member's head (rc 0), and the dirty
+    check refused with the ROOT's untracked files as the members' dirt. A
+    missing member keeps the old shape (skipped by the dirty check, recorded
+    empty) -- a missing member is nothing to read, not a conflict. A present
+    path that is a repo root is used as-is; an empty placeholder falls to the
+    unit's materialized copy of that member, which is the clone `workspace
+    materialize` placed at its pin; a present path that is neither refuses
+    with the verb that fixes it.
+    """
+    if not declared_path.exists():
+        return declared_path
+    state = gitops.repo_path_state(declared_path)
+    if state == "repo_root":
+        return declared_path
+    if state == "empty_placeholder":
+        try:
+            spec = tomllib.loads((workspace_root / ".grip" / "workspace_spec.toml").read_text())
+        except (OSError, tomllib.TOMLDecodeError):
+            raise SystemExit(
+                f"run gr2 workspace materialize first: {declared_path} is an empty placeholder "
+                "and the workspace spec cannot be read to find its materialized copy"
+            )
+        for unit in spec.get("units", []):
+            if name not in [str(item) for item in unit.get("repos", [])]:
+                continue
+            candidate = (workspace_root / str(unit.get("path", "")) / name).resolve()
+            if gitops.repo_path_state(candidate) == "repo_root":
+                return candidate
+        raise SystemExit(
+            f"run gr2 workspace materialize first: {name} is not materialized in any unit "
+            f"(the declared path {declared_path} is an empty placeholder)"
+        )
+    raise SystemExit(f"run gr2 workspace materialize first: {declared_path} is not a repository")
+
+
+def _member_map(workspace_root: Path, repos_csv: str) -> dict[str, Path]:
+    """The store verbs' member map, resolved to working roots.
+
+    The declared paths are what the spec says; what a store verb READS is the
+    working root of each member, which on an adopted superproject is the
+    unit's materialized copy, not the placeholder at the root.
+    """
+    if repos_csv:
+        declared = _resolve_repos(workspace_root, repos_csv)
+    else:
+        declared = _discover_repos(workspace_root)
+    return {name: _member_working_root(workspace_root, name, path) for name, path in declared.items()}
+
+
 def _validate_grip_dir(workspace: Path) -> None:
     """Check .grip/ directory exists."""
     grip_dir = workspace / ".grip"
@@ -72,6 +129,11 @@ def _check_dirty_repos(repos: dict[str, Path]) -> list[str]:
 
 def _repo_head_state(repo_path: Path) -> dict[str, object]:
     """Get head state for a single repo."""
+    if not repo_path.exists():
+        # a missing path is nothing to read, not a conflict: record it empty
+        # without invoking git, which would raise before the rc check below
+        # could answer (the declared path can hold no placeholder and no repo)
+        return {"head": None, "is_empty": True, "head_state": "empty"}
     head_proc = git(repo_path, "rev-parse", "HEAD")
     if head_proc.returncode != 0:
         return {"head": None, "is_empty": True, "head_state": "empty"}
@@ -226,10 +288,11 @@ def grip_snapshot_cmd(
 
     _validate_grip_dir(workspace_root)
 
-    if repos:
-        repo_map = _resolve_repos(workspace_root, repos)
-    else:
-        repo_map = _discover_repos(workspace_root)
+    # The member map resolves to working roots: on an adopted superproject
+    # the declared path is the placeholder and the member state lives in the
+    # unit's materialized copy, so the dirty check and the head record read
+    # the member, never the root.
+    repo_map = _member_map(workspace_root, repos)
 
     if not repo_map:
         typer.echo("No repos found in workspace spec.")
@@ -392,7 +455,10 @@ def grip_checkout_cmd(
 
     existing_repos: dict[str, Path] = {}
     for name in repo_states:
-        repo_path = workspace_root / name
+        # the same resolution as the map: the member's working root, not the
+        # bare name under the root (which on an adopted superproject is the
+        # placeholder git would answer for the root itself)
+        repo_path = _member_working_root(workspace_root, name, workspace_root / name)
         if repo_path.is_dir():
             existing_repos[name] = repo_path
 
@@ -406,7 +472,9 @@ def grip_checkout_cmd(
         head_sha = state.get("head")
         if not head_sha:
             continue
-        repo_path = workspace_root / name
+        # the same resolution as the map: the member's working root, not the
+        # bare name under the root
+        repo_path = _member_working_root(workspace_root, name, workspace_root / name)
         if not repo_path.is_dir():
             continue
         git(repo_path, "checkout", head_sha)

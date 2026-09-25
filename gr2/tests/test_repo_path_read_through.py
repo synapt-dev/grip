@@ -56,6 +56,9 @@ def _workspace_with_declared_repo(tmp_path: Path, *, member: str) -> tuple[Path,
         (member_path / "a-file.txt").write_text("not a repository\n")
         if member == "checkout":
             _init_repo(member_path)
+            # a materialized member is a COMMITTED checkout, not a scratch dir
+            subprocess.run(["git", "-C", str(member_path), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(member_path), "commit", "-qm", "member"], check=True)
 
     grip = root / ".grip"
     grip.mkdir(parents=True, exist_ok=True)

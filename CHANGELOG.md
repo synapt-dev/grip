@@ -21,6 +21,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   launch command is now built by one shared path used by both the pane and the
   foreground launch.
 
+## [gr2 2.0.0a5] - 2026-09-25
+
+### Adopting a superproject: `gr2 workspace init --from-superproject`
+
+A new entry point adopts an existing superproject rather than a directory of
+repos. `--from-superproject` requires that the root's tree pin members and refuses
+otherwise. The member set now comes from the root's declaration and nowhere else,
+so a member not on disk after a plain `git clone` without `--recurse-submodules`
+is counted and named `not materialized` instead of dropping the whole superproject
+line. The gate is the gitlink: a `.gitmodules` alone declares nothing, because git
+resolves members from the tree's 160000 entries.
+
+### Members land on the commit the root declares
+
+`gr2 workspace materialize` cloned a superproject member onto its default branch
+tip, not onto the commit the root's gitlink pins, so a member whose branch had
+moved sat on the wrong commit while the verb exited 0. A member is now checked out
+at its declared pin and the output names it (`cloned example1@065be099e95a`); a
+pin the clone cannot reach is refused with an error naming the pin, the member,
+and the command to try by hand, never falling back to the default tip. The clone
+stages in a sibling directory and renames into place, so a refusal cannot leave a
+repository at the tip. `gr2 sync run` now lands a re-created root member at its pin
+too.
+
+### A member path holds a repo, an empty placeholder, or neither
+
+Several verbs asked whether a member path was a repository by asking git whether
+the path was inside a work tree, which is true for any directory inside a
+checkout; on a superproject every member path is an empty placeholder inside the
+root, so the answer came from the enclosing repository. `gr2 spec validate` never
+fired `repo_path_conflict` and validated clean with a plain directory at a
+declared repo path, and `lane create` used the root's empty placeholder as its
+source. Each site now asks whether the path is ITSELF a repository root, and an
+empty directory at a declared repo path is exempt, because a plain `git clone` of
+a superproject leaves the mount points empty until `submodule update --init`.
+
+`gr2 store snapshot` and `gr2 store checkout` read through the same way, and the
+store verbs resolve each member to the state it actually holds. Snapshot used to
+record the ROOT's HEAD as every member's head, and to refuse with `Dirty repos
+detected` for clean members whenever the root carried its own untracked `.grip/`
+and `agents/`, the default state after adoption; checkout would have acted on the
+placeholder paths and could have moved the root repository. Now a repo root is
+read as-is, an empty placeholder falls to the unit's materialized copy of that
+member, and a path that is neither refuses with the verb that fixes it.
+
+### A refused `lane create` leaves no lane any verb accepts
+
+A `lane create` that refused at materialization wrote its lane document first and
+exited 1, leaving a lane that `lane enter`, `lane exit`, and `exec run` all
+accepted; `exec run` then reported the repos missing, two steps from the create
+that refused. That lane is now removed. A refusal landing after every repo's fork
+base is recorded is different: the checkout exists and `review create-project`
+succeeds on that lane, so it is KEPT, its stderr says so together with both ways
+forward (continue with `review create-project`, or remove the named path), and the
+command still exits non-zero. A two-repo lane whose second source never
+materialized carries a fork base for the first repo only, and is removed rather
+than promised as recoverable.
+
+### Hooks report what did not run
+
+`lane enter` ran a trusted lifecycle hook, printed its warn payload, and then
+reported `"status": "ok"` with exit 0, so the verb's success did not depend on the
+entry work having happened. The exit code stays 0 under the warn tier, and the
+failure is now recorded instead: the status reads `warned` and `hook_failures`
+names the hook and its rc. A hooks table whose stage keys are top-level
+(`[[on_enter]]` instead of `[[lifecycle.on_enter]]`) used to build an empty hook
+set and let every verb succeed while the author's hook intent vanished; the parser
+now refuses at load and names the expected shape. A refused or blocked projection
+row now carries `lifecycle_hooks_withheld`, naming the consented `on_materialize`
+hooks that never ran, plus `lifecycle_hooks_withheld_detail`. `gr2 hooks trust`
+shows an ESCAPE line for a row that resolves outside the member tree and binds it
+by design; the bind output now warns how many rows will be refused at run time.
+
+### A grouped PR set is legible on the forge
+
+`gr2 pr create` produced a set in which every PR carried the lane name as its title
+and the same one-line body naming no sibling, so a reviewer landing on one PR had
+no path to the others, and the recorded `pr_number` was null while the url on the
+same row carried the number. The number is now parsed from the URL `gh pr create`
+prints, and a URL carrying no `/pull/<digits>` is refused. `--title` overrides the
+lane-name default, which makes every PR in a set read identically; `--body` and
+`--body-file` set the group body, are mutually exclusive, and the pair is refused
+with exit 2. `--body-file` reads the body from a file, so the body reaches `gh`
+through a file rather than on argv. The default body now names the group and lists
+its member repos, and every body gets every sibling's URL; a failed sibling edit
+exits non-zero with the group printed.
+
+### Where `gr2 review bind --remote` resolves
+
+`review bind` reads `--remote` with git inside the workspace's store, and the
+reconstruction clone cannot resolve a user-repo remote name either, so only a URL
+or an absolute path works end to end. The `--remote` option help now says so, and
+the first refusal is no longer how you find out.
+
 ## [gr2 2.0.0a4] - 2026-09-24
 
 ### Member repo hooks: consent before they run, and where they may write

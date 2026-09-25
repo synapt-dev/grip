@@ -751,6 +751,53 @@ def test_an_ignore_of_the_declaration_is_refused(tmp_path):
     assert ".gitinclude" in _status(root), _status(root)
 
 
+def test_a_case_variant_of_the_declaration_ignore_is_refused_too(tmp_path):
+    """Measured on APFS: the refusal compared the exact
+    spelling, so `!.GITINCLUDE` was accepted as a literal path and emitted as
+    the IGNORE lines `/.GITINCLUDE` and `/.GITINCLUDE/**` (no `!`: ignores are
+    emitted last and bare) — which git CASE-FOLDS to the declaration on the host
+    most desks run, silently untracking the declaration with an empty report.
+    The refusal compares fold-cased paths, still pure text. Known limit, named:
+    str.casefold folds more than git does (a `ß` becomes `ss`), so a conflict
+    notice can fire where git would not fold — a report over-stating, never a
+    silent allow."""
+    root = _repo(tmp_path)
+    (root / "README.md").write_text("r\n")
+    report = _install(root, "README.md\n!.GITINCLUDE\n")
+
+    assert [(n.kind, n.line) for n in report] == [(REFUSED, "!.GITINCLUDE")], report
+    assert ".gitinclude" in _status(root), _status(root)
+
+
+def test_a_conflict_across_a_case_difference_is_reported(tmp_path):
+    """The same class in conflict detection: `!docs` and `Docs/x`
+    differ only in case, and on an ignorecase host the emitted ignore wins over
+    the emitted include, so the include will not do what it says — the exact
+    condition a conflict notice exists to name. Detection compares fold-cased
+    paths; the notice keeps naming the lines as written."""
+    root = _repo(tmp_path)
+    (root / "docs").mkdir()
+    (root / "docs" / "x.md").write_text("x\n")
+    report = _install(root, "Docs/x.md\n!docs\n")
+
+    assert any(
+        n.kind == CONFLICT and n.line == "Docs/x.md" and "`docs`" in n.reason
+        for n in report
+    ), report
+
+
+def test_a_fold_is_not_a_prefix_the_conflict_detection_still_requires_a_segment(tmp_path):
+    """The fold-cased conflict check must not widen into a prefix match:
+    `!docs` does not conflict with `docs2/x` under folding either — `docs2`
+    is a different name, exactly as `docs2` was before the fold."""
+    root = _repo(tmp_path)
+    (root / "docs2").mkdir()
+    (root / "docs2" / "y.md").write_text("y\n")
+    report = _install(root, "docs2/y.md\n!docs\n")
+
+    assert not [n for n in report if n.kind == CONFLICT], report
+
+
 def test_control_without_the_generated_file_a_global_excludes_file_drops_paths(tmp_path):
     """The control for the precedence pin above: with NO generated `.gitignore`,
     the same injected global file DOES hide declared paths, so the injection

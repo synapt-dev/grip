@@ -155,10 +155,15 @@ def compile_gitignore(text: str) -> tuple[str, list[Notice]]:
             continue
         path = _normalise(body)
         assert path is not None
-        if is_ignore and path == ".gitinclude":
+        if is_ignore and path.casefold() == ".gitinclude":
             # The declaration is always tracked, and this file emits that line
             # itself. An ignore for it would be emitted LAST and defeat it, with
             # an empty report, so it is refused instead of silently winning.
+            # The comparison is fold-cased (measured on APFS, where git folds paths):
+            # folds paths when the host's core.ignorecase is true, so a case
+            # variant of the declaration's name defeats the self line exactly
+            # like the exact spelling, and silently. Still pure text: casefold
+            # consults no filesystem.
             report.append(
                 Notice(
                     line=raw,
@@ -173,10 +178,17 @@ def compile_gitignore(text: str) -> tuple[str, list[Notice]]:
 
     # An include at or under an ignored path can never take effect: the ignore is
     # emitted last and git resolves by the last matching line. Report it rather
-    # than let it look tracked.
+    # than let it look tracked. The comparison is fold-cased (measured: on a
+    # case-insensitive host git folds the emitted lines too, so an include that
+    # differs from its ignore only by case is defeated exactly like one that
+    # matches exactly, and the report must say so. The notice names the lines as
+    # written, and `docs2` still does not conflict with `!docs` — the segment
+    # boundary survives the fold.
     for inc in includes:
+        inc_fold = inc.casefold()
         for ign in ignores:
-            if inc == ign or inc.startswith(ign + "/"):
+            ign_fold = ign.casefold()
+            if inc_fold == ign_fold or inc_fold.startswith(ign_fold + "/"):
                 report.append(
                     Notice(
                         line=inc,

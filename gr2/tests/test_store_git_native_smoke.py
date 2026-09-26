@@ -25,6 +25,12 @@ def git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProces
     return run(cwd, "git", *args, check=check)
 
 
+def configure_identity(repo: Path) -> None:
+    """Make fixture commits independent of a runner's global Git configuration."""
+    git(repo, "config", "user.name", "Smoke")
+    git(repo, "config", "user.email", "smoke@example.test")
+
+
 def gr2(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1])}
     result = subprocess.run(
@@ -41,8 +47,7 @@ def make_member(tmp_path: Path, name: str) -> tuple[Path, Path]:
     run(tmp_path, "git", "init", "--bare", str(remote))
     work = tmp_path / f"seed-{name}"
     run(tmp_path, "git", "clone", str(remote), str(work))
-    git(work, "config", "user.name", "Smoke")
-    git(work, "config", "user.email", "smoke@example.test")
+    configure_identity(work)
     (work / "README.md").write_text(f"{name}\n")
     git(work, "add", "README.md")
     git(work, "commit", "-m", "initial")
@@ -146,7 +151,13 @@ def test_break_14_materialize_refuses_hand_edited_remote_userinfo(tmp_path: Path
     assert not (root / "alpha").exists()
 
 
-def test_store_git_native_smoke(tmp_path: Path) -> None:
+def test_store_git_native_smoke(tmp_path: Path, monkeypatch) -> None:
+    # CI has no author identity. This proof must provide every identity its commits use.
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.useConfigOnly")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
     alpha_remote, _ = make_member(tmp_path, "alpha")
     beta_remote, _ = make_member(tmp_path, "beta")
     root = tmp_path / "workspace"
@@ -154,6 +165,8 @@ def test_store_git_native_smoke(tmp_path: Path) -> None:
     (root / ".gitgrip").mkdir()
     run(root, "git", "clone", str(alpha_remote), "alpha")
     run(root, "git", "clone", str(beta_remote), "beta")
+    configure_identity(root / "alpha")
+    configure_identity(root / "beta")
 
     # 1-3: two origins, sibling gr1 layout, then a root store.
     assert not (root / ".git").exists()

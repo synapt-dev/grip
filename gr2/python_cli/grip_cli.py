@@ -278,6 +278,22 @@ def _write_native_members(root: Path, members: list[dict[str, str]]) -> None:
     (root / "grip.toml").write_text("\n".join(lines))
 
 
+def _url_has_credentials(url: str) -> bool:
+    """Refuse URL userinfo except an SSH login, never by printing the URL."""
+    head = url.split("://", 1)[0]
+    address = url.split("::", 1)[1] if "::" in head else url
+    parsed = urlsplit(address)
+    if parsed.password is not None:
+        return True
+    return parsed.username is not None and parsed.scheme.lower() not in {"ssh", "git+ssh", "ssh+git"}
+
+
+def _credential_refusal(name: str) -> NativeStoreRefusal:
+    return NativeStoreRefusal(
+        f"{name} origin contains credentials; remove URL userinfo and use a credential helper", 4
+    )
+
+
 def _native_store_init(root: Path) -> None:
     if (root / ".git").exists():
         raise RuntimeError(f"store already initialized at {root}")
@@ -296,13 +312,8 @@ def _native_store_init(root: Path) -> None:
         if remote.returncode:
             raise RuntimeError(f"{path.name} has no origin remote")
         url = remote.stdout.strip()
-        parsed = urlsplit(url)
-        if parsed.password is not None or (
-            parsed.scheme in {"http", "https", "ftp", "ftps"} and parsed.username is not None
-        ):
-            raise NativeStoreRefusal(
-                f"{path.name} origin contains credentials; remove URL userinfo and use a credential helper", 4
-            )
+        if _url_has_credentials(url):
+            raise _credential_refusal(path.name)
         members.append({"name": path.name, "path": path.name, "remote": url, "pin": _store_git(path, "rev-parse", "HEAD").stdout.strip()})
     if not members:
         raise RuntimeError("no sibling git repositories found to store")
@@ -314,6 +325,8 @@ def _native_store_commit(root: Path, message: str) -> None:
     members = _native_members(root)
     changed: list[dict[str, str]] = []
     for member in members:
+        if _url_has_credentials(member["remote"]):
+            raise _credential_refusal(member["name"])
         path = root / member["path"]
         head = _store_git(path, "rev-parse", "HEAD").stdout.strip()
         if _store_git(path, "merge-base", "--is-ancestor", head, "origin/main", check=False).returncode:

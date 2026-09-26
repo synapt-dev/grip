@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from gr2.python_cli.grip_cli import _url_has_credentials
+
 
 def run(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(args, cwd=cwd, text=True, capture_output=True)
@@ -68,6 +70,7 @@ def test_store_init_refuses_unmarked_root_and_password_remote(tmp_path: Path) ->
         "https://ghp_FAKEFAKE@example.test/alpha.git",
         "https://layne@bitbucket.example.test/alpha.git",
         "ssh://user:pass@example.test/alpha.git",
+        "https::https://ghp_FAKEFAKE@example.test/alpha.git",
     ):
         git(marked / "alpha", "remote", "set-url", "origin", url)
         refused_password = gr2(marked, "init", check=False)
@@ -87,6 +90,43 @@ def test_store_init_accepts_scp_style_ssh_remote(tmp_path: Path) -> None:
         gr2(root, "init")
         assert (root / ".git").is_dir()
         assert url in (root / "grip.toml").read_text()
+
+
+def test_store_remote_credential_classifier_shapes() -> None:
+    refused = (
+        "https://ghp_FAKEFAKE@example.test/alpha.git",
+        "HTTPS://ghp_FAKEFAKE@example.test/alpha.git",
+        "git+https://ghp_FAKEFAKE@example.test/alpha.git",
+        "https::https://ghp_FAKEFAKE@example.test/alpha.git",
+        "https://user:pass@example.test/alpha.git",
+        "ssh://user:pass@example.test/alpha.git",
+    )
+    allowed = (
+        "ssh://git@example.test/alpha.git",
+        "git+ssh://git@example.test/alpha.git",
+        "git@example.test:alpha.git",
+        "https://example.test/alpha.git",
+        "file:///tmp/alpha.git",
+        "../alpha.git",
+        "https://example.test/a@b/alpha.git",
+    )
+    assert all(_url_has_credentials(url) for url in refused)
+    assert not any(_url_has_credentials(url) for url in allowed)
+
+
+def test_store_commit_refuses_hand_edited_credential_remote(tmp_path: Path) -> None:
+    remote, _ = make_member(tmp_path, "alpha")
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / ".gitgrip").mkdir()
+    run(root, "git", "clone", str(remote), "alpha")
+    gr2(root, "init")
+    spec = root / "grip.toml"
+    spec.write_text(spec.read_text().replace(str(remote), "https://ghp_FAKEFAKE@example.test/alpha.git"))
+    refused = gr2(root, "commit", "-m", "token", check=False)
+    assert refused.returncode == 4
+    assert "contains credentials" in (refused.stdout + refused.stderr)
+    assert git(root, "rev-parse", "--verify", "HEAD", check=False).returncode != 0
 
 
 def test_store_git_native_smoke(tmp_path: Path) -> None:

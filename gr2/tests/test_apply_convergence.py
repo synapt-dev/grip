@@ -219,7 +219,13 @@ class TestApplyConvergence(ConvergenceTestBase):
 
         self.assertGreater(result["operation_count"], 0)
         clone_calls = mock_clone.call_args_list
-        unit_root = self.workspace / "agents" / "test-unit"
+        # Resolved: the apply path now runs unit paths through
+        # spec_apply.unit_root, which delegates to canonicalize_workspace_path
+        # and returns the CANONICAL path — as every other spec path already did.
+        # The fixture's tempdir is reached through macOS's /var -> /private/var
+        # symlink, so an unresolved join here compares two spellings of one real
+        # directory and fails on the spelling rather than on the behaviour.
+        unit_root = (self.workspace / "agents" / "test-unit").resolve()
         expected_targets = {unit_root / "repo-a", unit_root / "repo-b"}
         actual_targets = set()
         for c in clone_calls:

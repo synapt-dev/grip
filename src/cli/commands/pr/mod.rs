@@ -13,7 +13,7 @@ mod status;
 mod view;
 
 pub use checks::run_pr_checks;
-pub use create::run_pr_create;
+pub use create::{run_pr_create, run_pr_create_in};
 pub use diff::run_pr_diff;
 pub use edit::run_pr_edit;
 pub use list::run_pr_list;

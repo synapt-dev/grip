@@ -21,6 +21,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   launch command is now built by one shared path used by both the pane and the
   foreground launch.
 
+### Fixed
+
+- **`gr pr create` opens PRs for the branch you are on, not for every branch
+  some repo happens to sit on.** It used to open one PR per branch group under
+  the single `-t` title, so a repo (the manifest included) parked on an old
+  branch with a commit ahead got a stray PR titled after an unrelated feature.
+  Run from inside a repo, it now opens PRs only for repos on that repo's branch
+  and lists the others (`not included: X is on 'B', not this branch; pass
+  --repo X to include it`). Run from the workspace root with repos on different
+  branches, it refuses and names each group. Repos named with `--repo` open
+  regardless of branch, and `--repo manifest` now selects the manifest. A
+  manifest with uncommitted changes but no commits ahead is no longer PR
+  content.
+
 ## [gr2 2.0.0a5] - 2026-09-25
 
 ### Adopting a superproject: `gr2 workspace init --from-superproject`

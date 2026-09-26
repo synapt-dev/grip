@@ -10,7 +10,6 @@ use crate::core::manifest::{Manifest, PlatformType};
 use crate::core::repo::{filter_repos, get_manifest_repo_info, RepoInfo};
 use crate::core::state::StateFile;
 use crate::git::remote::{get_remote_url, set_remote_url};
-use crate::git::status::has_uncommitted_changes;
 use crate::git::{get_current_branch, open_repo, path_exists};
 use crate::platform::get_platform_adapter;
 use tracing::debug;
@@ -19,6 +18,78 @@ use tracing::debug;
 struct BranchGroup {
     branch: String,
     repos: Vec<RepoInfo>,
+}
+
+/// What `gr pr create` opens, decided before anything touches a remote.
+#[derive(Debug)]
+pub(crate) enum PrScope {
+    /// Open these branch groups; `skipped` lists (repo, branch) left out.
+    Open {
+        open: BTreeMap<String, Vec<RepoInfo>>,
+        skipped: Vec<(String, String)>,
+    },
+    /// Run from outside any repo while the groups disagree.
+    Refuse { groups: Vec<(String, Vec<String>)> },
+}
+
+/// Scope branch groups to the branch the user means.
+///
+/// - `explicit_filter`: the user named repos with --repo, so every group
+///   among them opens (that is the escape hatch the skip line points at).
+/// - `invoked_branch = Some(b)`: run from inside a repo on branch `b`; only
+///   group `b` opens and the rest are skipped. If there is no group `b` (the
+///   invoking repo is on its target, or has nothing ahead) nothing opens.
+/// - `invoked_branch = None` (run from the gripspace root): one group opens;
+///   two or more refuse.
+pub(crate) fn scope_branch_groups(
+    groups: BTreeMap<String, Vec<RepoInfo>>,
+    invoked_branch: Option<&str>,
+    explicit_filter: bool,
+) -> PrScope {
+    if explicit_filter {
+        return PrScope::Open {
+            open: groups,
+            skipped: Vec::new(),
+        };
+    }
+    match invoked_branch {
+        Some(b) => {
+            let mut open = BTreeMap::new();
+            let mut skipped = Vec::new();
+            for (branch, repos) in groups {
+                if branch == b {
+                    open.insert(branch, repos);
+                } else {
+                    skipped.extend(repos.into_iter().map(|r| (r.name, branch.clone())));
+                }
+            }
+            PrScope::Open { open, skipped }
+        }
+        None if groups.len() > 1 => PrScope::Refuse {
+            groups: groups
+                .into_iter()
+                .map(|(b, rs)| (b, rs.into_iter().map(|r| r.name).collect()))
+                .collect(),
+        },
+        None => PrScope::Open {
+            open: groups,
+            skipped: Vec::new(),
+        },
+    }
+}
+
+/// The current branch of the repo containing `cwd` (the deepest match), or
+/// None when `cwd` is inside none of `candidates`.
+fn invoking_repo_branch(cwd: &Path, candidates: &[RepoInfo]) -> Option<String> {
+    let cwd = cwd.canonicalize().ok()?;
+    let repo = candidates
+        .iter()
+        .filter_map(|r| r.absolute_path.canonicalize().ok().map(|p| (p, r)))
+        .filter(|(p, _)| cwd.starts_with(p))
+        .max_by_key(|(p, _)| p.components().count())?
+        .1;
+    let git_repo = open_repo(&repo.absolute_path).ok()?;
+    get_current_branch(&git_repo).ok()
 }
 
 /// Convert a branch name to a PR title
@@ -119,6 +190,39 @@ pub async fn run_pr_create(
     base_override: Option<&str>,
     json: bool,
 ) -> anyhow::Result<()> {
+    let cwd = std::env::current_dir().ok();
+    run_pr_create_in(
+        workspace_root,
+        manifest,
+        title,
+        body,
+        draft,
+        push_first,
+        dry_run,
+        repo_filter,
+        base_override,
+        json,
+        cwd.as_deref(),
+    )
+    .await
+}
+
+/// `run_pr_create` with the invoking directory passed in rather than read
+/// from the process, so a test can say where the command was run from.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_pr_create_in(
+    workspace_root: &Path,
+    manifest: &Manifest,
+    title: Option<&str>,
+    body: Option<&str>,
+    draft: bool,
+    push_first: bool,
+    dry_run: bool,
+    repo_filter: Option<&[String]>,
+    base_override: Option<&str>,
+    json: bool,
+    invoked_from: Option<&Path>,
+) -> anyhow::Result<()> {
     if !json {
         if dry_run {
             Output::header("PR Preview");
@@ -134,7 +238,14 @@ pub async fn run_pr_create(
     // Validate repo filter
     if let Some(filter) = repo_filter {
         let repo_names: Vec<&str> = repos.iter().map(|r| r.name.as_str()).collect();
+        // "manifest" names the manifest repo, which filter_repos never lists.
+        // Rejecting it here made the include_manifest branch below dead code,
+        // so `--repo manifest` could never select the manifest.
+        let has_manifest_repo = get_manifest_repo_info(manifest, workspace_root).is_some();
         for name in filter {
+            if name == "manifest" && has_manifest_repo {
+                continue;
+            }
             if !repo_names.contains(&name.as_str()) {
                 anyhow::bail!("Repository '{}' not found in manifest", name);
             }
@@ -191,9 +302,58 @@ pub async fn run_pr_create(
         }
     }
 
+    // One `-t` title describes ONE branch. Every repo sitting on some other
+    // branch with commits ahead used to get a PR under that title too -- a
+    // manifest parked on an old WIP branch opened a stray PR at every
+    // `gr pr create`, titled after an unrelated feature. Scope to the branch
+    // of the repo the command was run from; list the rest.
+    let mut candidates: Vec<RepoInfo> = repos.clone();
+    if let Some(m) = get_manifest_repo_info(manifest, workspace_root) {
+        candidates.push(m);
+    }
+    let invoked_branch = invoked_from.and_then(|cwd| invoking_repo_branch(cwd, &candidates));
+    let mut skipped_any = false;
+    match scope_branch_groups(
+        branch_groups,
+        invoked_branch.as_deref(),
+        repo_filter.is_some(),
+    ) {
+        PrScope::Refuse { groups } => {
+            let listed: Vec<String> = groups
+                .iter()
+                .map(|(b, rs)| format!("{} ({})", b, rs.join(", ")))
+                .collect();
+            anyhow::bail!(
+                "refusing: repos with commits ahead are on different branches -- {} -- and this was run from outside any repo, so there is no branch to scope to. One -t title cannot describe two branches. Run it from the repo whose branch you mean, or name the repos with --repo.",
+                listed.join("; ")
+            );
+        }
+        PrScope::Open { open, skipped } => {
+            if !skipped.is_empty() {
+                skipped_any = true;
+                if !json {
+                    for (repo, branch) in &skipped {
+                        Output::info(&format!(
+                            "not included: {} is on '{}', not this branch; pass --repo {} to include it",
+                            repo, branch, repo
+                        ));
+                    }
+                }
+            }
+            branch_groups = open;
+        }
+    }
+
     if branch_groups.is_empty() {
         if !json {
-            println!("No repositories have changes to create PRs for.");
+            if skipped_any {
+                println!(
+                    "Nothing to open on branch '{}'.",
+                    invoked_branch.as_deref().unwrap_or("?")
+                );
+            } else {
+                println!("No repositories have changes to create PRs for.");
+            }
         } else {
             // Routed through the same helper as the terminal branch, because
             // production had TWO serialization sites and they disagreed about
@@ -604,10 +764,10 @@ fn check_manifest_repo_branch(
     let has_commits = has_commits_ahead(&git_repo, &current, target)
         .map_err(|e| anyhow::anyhow!("Failed to check commits: {}", e))?;
 
-    let has_uncommitted = has_uncommitted_changes(&git_repo)
-        .map_err(|e| anyhow::anyhow!("Failed to check uncommitted changes: {}", e))?;
-
-    if has_commits || has_uncommitted {
+    // Commits ahead only, like every other repo. Uncommitted changes are not
+    // PR content: a dirty manifest with nothing committed on the branch used
+    // to qualify here.
+    if has_commits {
         Ok(Some((current, repo.clone())))
     } else {
         Ok(None)

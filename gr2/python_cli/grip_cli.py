@@ -343,6 +343,8 @@ def _native_store_commit(root: Path, message: str) -> None:
 
 def _native_store_materialize(root: Path) -> None:
     for member in _native_members(root):
+        if _url_has_credentials(member["remote"]):
+            raise _credential_refusal(member["name"])
         path = root / member["path"]
         if not path.exists():
             result = subprocess.run(["git", "clone", member["remote"], str(path)], text=True, capture_output=True, check=False)
@@ -398,6 +400,9 @@ def grip_materialize_cmd() -> None:
     """Materialize each canonical pin from its declared origin."""
     try:
         _native_store_materialize(Path.cwd())
+    except NativeStoreRefusal as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=exc.code)
     except RuntimeError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1)

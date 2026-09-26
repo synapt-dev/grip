@@ -6,6 +6,7 @@ created from the gr1 sibling layout rather than a nested workspace fixture.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -51,7 +52,7 @@ def make_member(tmp_path: Path, name: str) -> tuple[Path, Path]:
     return remote, work
 
 
-def test_store_init_refuses_unmarked_root_and_password_remote(tmp_path: Path) -> None:
+def test_break_14_init_refuses_unmarked_root_and_remote_userinfo(tmp_path: Path) -> None:
     remote, _ = make_member(tmp_path, "alpha")
     unmarked = tmp_path / "unmarked"
     unmarked.mkdir()
@@ -114,7 +115,7 @@ def test_store_remote_credential_classifier_shapes() -> None:
     assert not any(_url_has_credentials(url) for url in allowed)
 
 
-def test_store_commit_refuses_hand_edited_credential_remote(tmp_path: Path) -> None:
+def test_break_14_commit_refuses_hand_edited_remote_userinfo(tmp_path: Path) -> None:
     remote, _ = make_member(tmp_path, "alpha")
     root = tmp_path / "workspace"
     root.mkdir()
@@ -127,6 +128,22 @@ def test_store_commit_refuses_hand_edited_credential_remote(tmp_path: Path) -> N
     assert refused.returncode == 4
     assert "contains credentials" in (refused.stdout + refused.stderr)
     assert git(root, "rev-parse", "--verify", "HEAD", check=False).returncode != 0
+
+
+def test_break_14_materialize_refuses_hand_edited_remote_userinfo(tmp_path: Path) -> None:
+    remote, _ = make_member(tmp_path, "alpha")
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / ".gitgrip").mkdir()
+    run(root, "git", "clone", str(remote), "alpha")
+    gr2(root, "init")
+    spec = root / "grip.toml"
+    spec.write_text(spec.read_text().replace(str(remote), "https://ghp_FAKEFAKE@example.test/alpha.git"))
+    shutil.rmtree(root / "alpha")
+    refused = gr2(root, "materialize", check=False)
+    assert refused.returncode == 4
+    assert "contains credentials" in (refused.stdout + refused.stderr)
+    assert not (root / "alpha").exists()
 
 
 def test_store_git_native_smoke(tmp_path: Path) -> None:

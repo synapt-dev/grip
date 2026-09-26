@@ -49,11 +49,45 @@ def make_member(tmp_path: Path, name: str) -> tuple[Path, Path]:
     return remote, work
 
 
+def test_store_init_refuses_unmarked_root_and_password_remote(tmp_path: Path) -> None:
+    remote, _ = make_member(tmp_path, "alpha")
+    unmarked = tmp_path / "unmarked"
+    unmarked.mkdir()
+    run(unmarked, "git", "clone", str(remote), "alpha")
+    refused_root = gr2(unmarked, "init", check=False)
+    assert refused_root.returncode == 1
+    assert "gripspace root" in (refused_root.stdout + refused_root.stderr)
+    assert not (unmarked / ".git").exists()
+
+    marked = tmp_path / "marked"
+    marked.mkdir()
+    (marked / ".gitgrip").mkdir()
+    run(marked, "git", "clone", str(remote), "alpha")
+    git(marked / "alpha", "remote", "set-url", "origin", "https://token:secret@example.test/alpha.git")
+    refused_password = gr2(marked, "init", check=False)
+    assert refused_password.returncode == 1
+    assert "contains credentials" in (refused_password.stdout + refused_password.stderr)
+    assert not (marked / ".git").exists()
+
+
+def test_store_init_accepts_scp_style_ssh_remote(tmp_path: Path) -> None:
+    remote, _ = make_member(tmp_path, "alpha")
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / ".gitgrip").mkdir()
+    run(root, "git", "clone", str(remote), "alpha")
+    git(root / "alpha", "remote", "set-url", "origin", "git@github.com:example/alpha.git")
+    gr2(root, "init")
+    assert (root / ".git").is_dir()
+    assert "git@github.com:example/alpha.git" in (root / "grip.toml").read_text()
+
+
 def test_store_git_native_smoke(tmp_path: Path) -> None:
     alpha_remote, _ = make_member(tmp_path, "alpha")
     beta_remote, _ = make_member(tmp_path, "beta")
     root = tmp_path / "workspace"
     root.mkdir()
+    (root / ".gitgrip").mkdir()
     run(root, "git", "clone", str(alpha_remote), "alpha")
     run(root, "git", "clone", str(beta_remote), "beta")
 

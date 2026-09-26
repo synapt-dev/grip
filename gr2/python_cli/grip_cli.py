@@ -10,6 +10,7 @@ import json
 import subprocess
 import tomllib
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import typer
 
@@ -280,6 +281,10 @@ def _write_native_members(root: Path, members: list[dict[str, str]]) -> None:
 def _native_store_init(root: Path) -> None:
     if (root / ".git").exists():
         raise RuntimeError(f"store already initialized at {root}")
+    if not ((root / ".gitgrip").is_dir() or (root / ".grip" / "workspace_spec.toml").is_file()):
+        raise RuntimeError(
+            f"{root} is not a gripspace root: expected .gitgrip/ or .grip/workspace_spec.toml"
+        )
     members: list[dict[str, str]] = []
     for path in sorted(root.iterdir()):
         if not path.is_dir() or path.name.startswith("."):
@@ -291,7 +296,7 @@ def _native_store_init(root: Path) -> None:
         if remote.returncode:
             raise RuntimeError(f"{path.name} has no origin remote")
         url = remote.stdout.strip()
-        if "@" in url.split("://", 1)[-1].split("/", 1)[0]:
+        if urlsplit(url).password is not None:
             raise RuntimeError(f"{path.name} origin contains credentials")
         members.append({"name": path.name, "path": path.name, "remote": url, "pin": _store_git(path, "rev-parse", "HEAD").stdout.strip()})
     if not members:

@@ -346,12 +346,20 @@ Create a new branch across all repositories, or list existing branches. Manifest
 
 Create linked PRs across repos with changes.
 
+Run from inside a repo, it opens PRs for the repos on that repo's branch and
+lists any other repo with commits ahead on a different branch. Run from the
+workspace root with repos on different branches, it refuses and names each
+group. `--repo` includes repos regardless of branch (`--repo manifest` selects
+the manifest).
+
 | Option | Description |
 |--------|-------------|
 | `-t, --title <title>` | PR title |
 | `-b, --body <body>` | PR body |
 | `-d, --draft` | Create as draft |
 | `--push` | Push branches first |
+| `--repo <repos>` | Only these repos, comma-separated, whatever branch they are on (`manifest` names the manifest) |
+| `--base <branch>` | Base branch for the PR (overrides the grip target) |
 
 #### `gr pr merge`
 

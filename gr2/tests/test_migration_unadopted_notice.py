@@ -1,13 +1,15 @@
 """TDD spec: migrate-gr1 must SAY which gr1 worktrees it did not adopt.
 
-Layne's finding from the 2026-09-21 walk of a real workspace: the generated spec declares every unit
-at `agents/<unit>/home` with the same writable-repo list, and the unit's real gr1 working tree is
-recorded only in `migration_source.worktree`, a field nothing reads. A migration that adopted nothing
-and one that adopted everything print the same receipt.
+Layne's finding from the 2026-09-21 walk of a real workspace: the generated spec declared every unit
+at `agents/<unit>/home` regardless of where the unit's desk actually was, and the unit's real gr1
+working tree was recorded only in `migration_source.worktree`, a field nothing read. A migration that
+adopted nothing and one that adopted everything printed the same receipt.
 
-This spec pins the disclosure, not an adoption: the payload, the rendered output and the summary
-JSON must each name the recorded-but-unadopted worktrees, and must say plainly that they were not
-adopted. Nothing here asserts a behaviour change beyond those three surfaces.
+The path half is since fixed: a unit is now declared at the location gr1 named for it. But this
+command still writes a spec and inspects no working tree, so the disclosure is still owed — the
+payload, the rendered output and the summary JSON must each name the recorded-but-unadopted
+worktrees, and must say plainly that they were not adopted. Nothing here asserts a behaviour change
+beyond those three surfaces.
 """
 from __future__ import annotations
 

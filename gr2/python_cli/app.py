@@ -195,7 +195,7 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
             state = gitops.repo_path_state(source_repo_root)
             if state == "empty_placeholder":
                 unit = lane_proto.find_unit_spec(workspace_root, owner_unit)
-                unit_member = (workspace_root / str(unit.get("path", "")) / repo_name).resolve()
+                unit_member = spec_apply.unit_member_path(workspace_root, unit, repo_name)
                 if gitops.repo_path_state(unit_member) != "repo_root":
                     raise SystemExit(
                         f"run gr2 workspace materialize first: the unit's copy of {repo_name} "

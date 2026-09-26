@@ -16,6 +16,7 @@ from . import config as config_mod
 from . import gitops
 from . import grip as grip_mod
 from .gitops import git, repo_dirty
+from .spec_apply import unit_member_path
 from .workspace_guidance import missing_gr2_workspace_guidance
 
 grip_app = typer.Typer(help="Grip object model: workspace snapshots and history")
@@ -83,7 +84,7 @@ def _member_working_root(workspace_root: Path, name: str, declared_path: Path) -
         for unit in spec.get("units", []):
             if name not in [str(item) for item in unit.get("repos", [])]:
                 continue
-            candidate = (workspace_root / str(unit.get("path", "")) / name).resolve()
+            candidate = unit_member_path(workspace_root, unit, name)
             if gitops.repo_path_state(candidate) == "repo_root":
                 return candidate
         raise SystemExit(

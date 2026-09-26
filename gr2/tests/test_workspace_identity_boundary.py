@@ -90,7 +90,17 @@ def test_compile_gr1_workspace_spec_omits_agent_id() -> None:
     assert compiled["units"] == [
         {
             "name": "atlas",
-            "path": "agents/atlas/home",
+            # The unit path is now the REAL location gr1 declared. `worktree =
+            # "atlas-tree"` is a sibling desk, so the emitted path is
+            # `../atlas-tree`; it used to be the hard-coded `agents/atlas/home`,
+            # which is the defect this change replaces — a user who applied it got a nested
+            # home while their actual desk sat untouched beside the root.
+            #
+            # THIS ASSERTION IS NOT THE POINT OF THIS TEST. The boundary claim
+            # is the `agent_id` assertion below: the compiler reads a directory
+            # name and must not turn it into an agent IDENTITY. Nothing here
+            # adds an identity field, which is why that assertion is untouched.
+            "path": "../atlas-tree",
             "repos": ["app"],
             "migration_source": {"worktree": "atlas-tree", "channel": "#dev"},
         }

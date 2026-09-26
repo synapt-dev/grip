@@ -63,23 +63,30 @@ def test_store_init_refuses_unmarked_root_and_password_remote(tmp_path: Path) ->
     marked.mkdir()
     (marked / ".gitgrip").mkdir()
     run(marked, "git", "clone", str(remote), "alpha")
-    git(marked / "alpha", "remote", "set-url", "origin", "https://token:secret@example.test/alpha.git")
-    refused_password = gr2(marked, "init", check=False)
-    assert refused_password.returncode == 1
-    assert "contains credentials" in (refused_password.stdout + refused_password.stderr)
-    assert not (marked / ".git").exists()
+    for url in (
+        "https://token:secret@example.test/alpha.git",
+        "https://ghp_FAKEFAKE@example.test/alpha.git",
+        "https://layne@bitbucket.example.test/alpha.git",
+        "ssh://user:pass@example.test/alpha.git",
+    ):
+        git(marked / "alpha", "remote", "set-url", "origin", url)
+        refused_password = gr2(marked, "init", check=False)
+        assert refused_password.returncode == 4
+        assert "contains credentials" in (refused_password.stdout + refused_password.stderr)
+        assert not (marked / ".git").exists()
 
 
 def test_store_init_accepts_scp_style_ssh_remote(tmp_path: Path) -> None:
     remote, _ = make_member(tmp_path, "alpha")
-    root = tmp_path / "workspace"
-    root.mkdir()
-    (root / ".gitgrip").mkdir()
-    run(root, "git", "clone", str(remote), "alpha")
-    git(root / "alpha", "remote", "set-url", "origin", "git@github.com:example/alpha.git")
-    gr2(root, "init")
-    assert (root / ".git").is_dir()
-    assert "git@github.com:example/alpha.git" in (root / "grip.toml").read_text()
+    for index, url in enumerate(("git@github.com:example/alpha.git", "ssh://git@example.test/alpha.git")):
+        root = tmp_path / f"workspace-{index}"
+        root.mkdir()
+        (root / ".gitgrip").mkdir()
+        run(root, "git", "clone", str(remote), "alpha")
+        git(root / "alpha", "remote", "set-url", "origin", url)
+        gr2(root, "init")
+        assert (root / ".git").is_dir()
+        assert url in (root / "grip.toml").read_text()
 
 
 def test_store_git_native_smoke(tmp_path: Path) -> None:

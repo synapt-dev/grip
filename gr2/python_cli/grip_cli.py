@@ -296,8 +296,13 @@ def _native_store_init(root: Path) -> None:
         if remote.returncode:
             raise RuntimeError(f"{path.name} has no origin remote")
         url = remote.stdout.strip()
-        if urlsplit(url).password is not None:
-            raise RuntimeError(f"{path.name} origin contains credentials")
+        parsed = urlsplit(url)
+        if parsed.password is not None or (
+            parsed.scheme in {"http", "https", "ftp", "ftps"} and parsed.username is not None
+        ):
+            raise NativeStoreRefusal(
+                f"{path.name} origin contains credentials; remove URL userinfo and use a credential helper", 4
+            )
         members.append({"name": path.name, "path": path.name, "remote": url, "pin": _store_git(path, "rev-parse", "HEAD").stdout.strip()})
     if not members:
         raise RuntimeError("no sibling git repositories found to store")
@@ -342,6 +347,9 @@ def grip_init_cmd(
     if workspace_root is None:
         try:
             _native_store_init(Path.cwd())
+        except NativeStoreRefusal as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=exc.code)
         except RuntimeError as exc:
             typer.echo(str(exc), err=True)
             raise typer.Exit(code=1)

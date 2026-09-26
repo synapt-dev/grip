@@ -7,6 +7,7 @@ dependencies (gr2.prototypes, lane_workspace_prototype, etc.).
 from __future__ import annotations
 
 import json
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -238,12 +239,109 @@ def _resolve_snapshot_or_exit(
         raise typer.Exit(code=1)
 
 
+def _store_git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(["git", "-C", str(root), *args], text=True, capture_output=True, check=False)
+    if check and result.returncode:
+        raise RuntimeError(result.stderr.strip() or "git command failed")
+    return result
+
+
+class NativeStoreRefusal(RuntimeError):
+    """A native-store refusal with a stable CLI status."""
+
+    def __init__(self, message: str, code: int) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _native_members(root: Path) -> list[dict[str, str]]:
+    path = root / "grip.toml"
+    if path.exists():
+        with path.open("rb") as handle:
+            data = tomllib.load(handle)
+    else:
+        # A root remote need not carry member objects.  Read the canonical spec
+        # directly so materialize can populate those members before checkout.
+        spec = _store_git(root, "show", "HEAD:grip.toml").stdout
+        data = tomllib.loads(spec)
+    members = data.get("member", [])
+    if not isinstance(members, list) or not members:
+        raise RuntimeError("grip.toml has no members")
+    return [dict(member) for member in members]
+
+
+def _write_native_members(root: Path, members: list[dict[str, str]]) -> None:
+    lines = ["version = 0", ""]
+    for member in members:
+        lines.extend(["[[member]]", f"name = {json.dumps(member['name'])}", f"path = {json.dumps(member['path'])}", f"remote = {json.dumps(member['remote'])}", f"pin = {json.dumps(member['pin'])}", ""])
+    (root / "grip.toml").write_text("\n".join(lines))
+
+
+def _native_store_init(root: Path) -> None:
+    if (root / ".git").exists():
+        raise RuntimeError(f"store already initialized at {root}")
+    members: list[dict[str, str]] = []
+    for path in sorted(root.iterdir()):
+        if not path.is_dir() or path.name.startswith("."):
+            continue
+        top = _store_git(path, "rev-parse", "--show-toplevel", check=False)
+        if top.returncode or Path(top.stdout.strip()).resolve() != path.resolve():
+            continue
+        remote = _store_git(path, "remote", "get-url", "origin", check=False)
+        if remote.returncode:
+            raise RuntimeError(f"{path.name} has no origin remote")
+        url = remote.stdout.strip()
+        if "@" in url.split("://", 1)[-1].split("/", 1)[0]:
+            raise RuntimeError(f"{path.name} origin contains credentials")
+        members.append({"name": path.name, "path": path.name, "remote": url, "pin": _store_git(path, "rev-parse", "HEAD").stdout.strip()})
+    if not members:
+        raise RuntimeError("no sibling git repositories found to store")
+    _store_git(root, "init")
+    _write_native_members(root, members)
+
+
+def _native_store_commit(root: Path, message: str) -> None:
+    members = _native_members(root)
+    changed: list[dict[str, str]] = []
+    for member in members:
+        path = root / member["path"]
+        head = _store_git(path, "rev-parse", "HEAD").stdout.strip()
+        if _store_git(path, "merge-base", "--is-ancestor", head, "origin/main", check=False).returncode:
+            raise NativeStoreRefusal(
+                f"{member['name']} pin {head} is not on origin/main; push it first", 3
+            )
+        changed.append({**member, "pin": head})
+    _write_native_members(root, changed)
+    _store_git(root, "add", "grip.toml")
+    for member in changed:
+        _store_git(root, "update-index", "--add", "--cacheinfo", f"160000,{member['pin']},{member['path']}")
+    _store_git(root, "-c", "user.name=gr2", "-c", "user.email=gr2@example.invalid", "commit", "-m", message)
+
+
+def _native_store_materialize(root: Path) -> None:
+    for member in _native_members(root):
+        path = root / member["path"]
+        if not path.exists():
+            result = subprocess.run(["git", "clone", member["remote"], str(path)], text=True, capture_output=True, check=False)
+            if result.returncode:
+                raise RuntimeError(result.stderr.strip())
+        _store_git(path, "checkout", "--detach", member["pin"])
+
+
 @grip_app.command("init")
 def grip_init_cmd(
-    workspace_root: Path,
+    workspace_root: Path | None = typer.Argument(None),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Initialize the .grip/ git repo at workspace root."""
+    """Initialize a native store in cwd, or the legacy .grip repo at a path."""
+    if workspace_root is None:
+        try:
+            _native_store_init(Path.cwd())
+        except RuntimeError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1)
+        typer.echo(f"Initialized git-native store at {Path.cwd()}")
+        return
     workspace_root = workspace_root.resolve()
     try:
         grip_mod.grip_init(workspace_root)
@@ -254,6 +352,29 @@ def grip_init_cmd(
         typer.echo(json.dumps({"status": "initialized", "path": str(workspace_root / ".grip")}))
     else:
         typer.echo(f"Initialized .grip/ at {workspace_root}")
+
+
+@grip_app.command("commit")
+def grip_commit_cmd(message: str = typer.Option(..., "--message", "-m")) -> None:
+    """Record origin-covered member pins in the root git tree."""
+    try:
+        _native_store_commit(Path.cwd(), message)
+    except NativeStoreRefusal as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=exc.code)
+    except RuntimeError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1)
+
+
+@grip_app.command("materialize")
+def grip_materialize_cmd() -> None:
+    """Materialize each canonical pin from its declared origin."""
+    try:
+        _native_store_materialize(Path.cwd())
+    except RuntimeError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1)
 
 
 @grip_app.command("snapshot")

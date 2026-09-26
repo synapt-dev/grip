@@ -283,7 +283,8 @@ class TestBootstrapGr1:
     def test_deleting_unit_name_guard_recreates_the_unsafe_store_side_effect(
         self, gr1_workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Mutation control: unit validation protects the generated agents/<unit>/home path."""
+        """Mutation control: unit validation protects the generated unit name and every
+        path derived from it."""
         (gr1_workspace / ".gitgrip" / "agents.toml").write_text('[agents."../unit"]\nworktree = "main"\n')
         monkeypatch.setattr(migration, "_safe_workspace_component", lambda value, _field: str(value))
 

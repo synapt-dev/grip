@@ -96,10 +96,10 @@ def migrate_gr1_workspace(workspace_root: Path, *, force: bool = False) -> dict[
     migration_dir.mkdir(parents=True, exist_ok=True)
     snapshots = preserve_gr1_state(workspace_root, migration_dir)
     summary_path = migration_dir / "migration-summary.json"
-    # The spec declares every unit at agents/<unit>/home with the same writable-repo
-    # list; the unit's real gr1 working tree lives only in migration_source.worktree,
-    # which nothing else reads. Record the ones that were NOT adopted, so a migration
-    # that adopts nothing cannot print the same receipt as one that adopts everything.
+    # The spec now declares each unit at the location gr1 named for it, so a unit
+    # whose desk is a sibling IS named there. Nothing in this command inspects a
+    # working tree, so every declared worktree is recorded: a migration that adopts
+    # nothing must not print the same receipt as one that adopts everything.
     not_adopted: list[dict[str, str]] = []
     for unit in compiled["units"]:
         source = unit.get("migration_source") or {}
@@ -773,7 +773,7 @@ def compile_gr1_to_workspace_spec(
         units.append(
             {
                 "name": safe_unit_name,
-                "path": f"agents/{safe_unit_name}/home",
+                "path": _gr1_unit_path(safe_unit_name, unit_doc),
                 "repos": writable_repo_names,
                 "migration_source": {
                     "worktree": unit_doc.get("worktree"),
@@ -790,6 +790,64 @@ def compile_gr1_to_workspace_spec(
             "migration_source": "gr1",
         },
     }
+
+
+def _gr1_unit_path(safe_unit_name: str, unit_doc: dict[str, object]) -> str:
+    """The unit's REAL location, taken from gr1's own `worktree`.
+
+    gr1 keeps an agent's workspace BESIDE the gripspace root
+    (`<parent>/<workspace>-<agent>/`, declared as `worktree = "<dir>"`), and the
+    desk whose worktree is `"main"` works IN the root. Declaring every unit at
+    `agents/<unit>/home` handed a user fresh nested homes while their real desks
+    sat untouched beside the root.
+
+    Three forms, matching the slice's unit-path grammar:
+      - `"."` for `worktree = "main"` — the root itself;
+      - `"../<component>"` for a sibling desk, exactly one component up;
+      - `"agents/<unit>/home"` only when gr1 declares no usable worktree.
+
+    A worktree carrying a SEPARATOR IS TRANSLATED, not refused. gr1's own
+    `resolve_worktree_path` replaces `/` with `-` and joins the PARENT, so
+    `worktree = "agents/nested"` puts that desk at `<parent>/agents-nested` — a
+    sibling, exactly the form above. Refusing it made this migration stricter
+    than gr1 and diverged LOUDLY on an input gr1 supports: a user with
+    `worktree = "feat/auth"` got a traceback and no spec written at all. Mirror
+    the codebase beside us.
+
+    ⚠ A WORKTREE GR1 CAN EXPRESS AND GR2 REFUSES IS A POLICY, NOT A GR1 LIMIT,
+    and the code says so rather than implying otherwise. `replace('/', '-')` is
+    gr1's ENTIRE sanitisation and it validates `agent.worktree` nowhere, so gr1
+    genuinely accepts a colon, a backslash or a control character and joins them.
+    gr2 refuses those in a path component on its own authority, and the refusal
+    is a SENTENCE rather than a traceback — a user must not be left mid-migration
+    with neither a result nor a reason.
+    """
+    worktree = unit_doc.get("worktree")
+    if not isinstance(worktree, str) or not worktree.strip():
+        # No worktree, or one gr1 could not have written as a name. Keep the
+        # nested default; the migration receipt applies the same rule.
+        return f"agents/{safe_unit_name}/home"
+    name = worktree.strip()
+    if name == "main":
+        return "."
+    # gr1's rule first: sanitise the separator, then one sibling component.
+    sanitised = name.replace("/", "-")
+    try:
+        component = _safe_workspace_component(
+            sanitised, f"agent unit {safe_unit_name!r} worktree"
+        )
+    except ValueError as exc:
+        # Translated here, not left to escape: `app.py` calls this with no
+        # handler, so an uncaught ValueError reaches the user as a traceback
+        # with no spec written — the exact failure this range exists to remove.
+        raise SystemExit(
+            f"cannot migrate agent unit {safe_unit_name!r}: {exc}. A worktree name "
+            "carrying a colon, a backslash or a control character is accepted by gr1 "
+            "(whose only sanitisation is `/` to `-`, and which validates the value "
+            "nowhere) but gr2 will not carry it as a unit path component. Rename the "
+            "worktree in the gr1 manifest to migrate this workspace."
+        ) from None
+    return f"../{component}"
 
 
 def _safe_workspace_component(value: object, field: str) -> str:
@@ -909,8 +967,8 @@ def render_migration(payload: dict[str, object]) -> str:
         lines.extend(f"- {row['unit']}: {row['worktree']}" for row in not_adopted)
         lines.append(
             f"{len(not_adopted)} gr1 worktree(s) recorded in the gr1 agents manifest were not adopted"
-            " into this workspace: their contents were not inspected. Units are declared at"
-            " agents/<unit>/home."
+            " into this workspace: their contents were not inspected. Each is named in the spec"
+            " at the location gr1 declared for it."
         )
     lines.append("SNAPSHOTS")
     lines.extend(f"- {name}\t{path}" for name, path in payload["snapshots"].items())

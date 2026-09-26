@@ -12,6 +12,7 @@ from pathlib import Path
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 
 from .gitops import GitMissingError, git
+from .spec_apply import MaterializationPlanError, unit_root
 
 
 class CommitError(Exception):
@@ -226,7 +227,7 @@ def commit_lane(
                 lane_proto.lane_dir(workspace_root, owner_unit, lane_name) / "repos"
             )
         # A first-time user's layout: work can be staged in the unit-home
-        # copy (agents/<unit>/home/<repo>) or the workspace-root copy (the
+        # copy (wherever the spec places that unit) or the workspace-root copy (the
         # spec repo path), neither of which is the lane's own clone. If a
         # skipped repo has staged changes somewhere the verb did not commit,
         # the one sentence says where (cheaply: the same index probe as the
@@ -238,9 +239,25 @@ def commit_lane(
             unit = lane_proto.find_unit_spec(workspace_root, owner_unit)
         except SystemExit:
             unit = {}
-        unit_home = Path(str(unit.get("path", "")))
-        if not unit_home.is_absolute():
-            unit_home = workspace_root / unit_home
+        # Was `Path(str(unit.get("path","")))`, joined to the root only `if not
+        # unit_home.is_absolute()` — which ACCEPTED an absolute unit path and
+        # used it as given. The same three-form grammar as everywhere else now
+        # applies: one resolver, so this site cannot disagree with the others.
+        # TWO different absences, and they must not be conflated. `unit == {}`
+        # means NO unit spec was found, and keeps the previous meaning (the root
+        # itself). A unit spec that IS found but carries no usable `path` is an
+        # INVALID spec — `validate_spec` reports `missing_unit_path` as an error —
+        # so it is refused with the same sentence the read paths give rather than
+        # silently resolving to the root. Before this, the SAME dict meant the
+        # root here and a refusal in `unit_member_path`; "one resolver, so no site
+        # can disagree" has to hold on this input too.
+        if unit:
+            try:
+                unit_home = unit_root(workspace_root, unit)
+            except MaterializationPlanError as exc:
+                raise SystemExit(f"the workspace spec is refused: {exc}") from None
+        else:
+            unit_home = workspace_root
         spec_repo_paths: dict[str, Path] = {}
         try:
             spec = lane_proto.load_workspace_spec(workspace_root)

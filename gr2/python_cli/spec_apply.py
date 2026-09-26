@@ -9,6 +9,7 @@ import json
 import os
 import secrets
 import stat
+import sys
 import tomllib
 import unicodedata
 import weakref
@@ -178,6 +179,13 @@ def validate_spec(workspace_root: Path) -> list[ValidationIssue]:
                 )
 
     unit_names: set[str] = set()
+    # TWO UNITS AT ONE PATH IS SILENT OTHERWISE, and the validator here checked
+    # only the NAME. Reached from the migration side: gr1 sanitises `/` to `-`,
+    # so worktrees `x/y` and `x-y` both emit `../x-y` — gr1 collides identically,
+    # so the translation is faithful, and this is the last place it can be
+    # surfaced. One unit's worktree landing on another's with nothing reported is
+    # a silent wrong ACTION, not a wrong answer.
+    resolved_paths: dict[Path, str] = {}
     for idx, unit in enumerate(spec.get("units", [])):
         name = str(unit.get("name", "")).strip()
         path = str(unit.get("path", "")).strip()
@@ -196,13 +204,83 @@ def validate_spec(workspace_root: Path) -> list[ValidationIssue]:
             issues.append(
                 ValidationIssue("error", "missing_unit_path", f"unit '{name}' path must not be empty", f"units[{idx}].path")
             )
-        unit_root = workspace_root / path
-        if unit_root.exists() and unit_root.is_file():
+        # The unit path was never contained: `workspace_root / path` accepted an
+        # absolute path, `../../x`, and a path through a symlink, and the apply
+        # path then mkdir'd and wrote `unit.toml` through it. validate is where a
+        # spec from a stranger is read, so the grammar is enforced HERE too.
+        # Reported, then fallen through, so the repo checks below still run and
+        # one pass names every problem instead of only the first.
+        try:
+            resolved_unit_root: Path | None = unit_root(workspace_root, unit)
+        except MaterializationPlanError as exc:
+            issues.append(
+                ValidationIssue(
+                    "error",
+                    "unit_path_outside_root",
+                    str(exc),
+                    f"units[{idx}].path",
+                )
+            )
+            resolved_unit_root = None
+
+        if resolved_unit_root is not None:
+            prior_unit = resolved_paths.get(resolved_unit_root)
+            if prior_unit is not None:
+                issues.append(
+                    ValidationIssue(
+                        "error",
+                        "duplicate_unit_path",
+                        (
+                            f"units '{prior_unit}' and '{name}' both resolve to "
+                            f"{resolved_unit_root} — two units at one path means one unit's "
+                            "worktree lands on the other's. Distinct unit names are not "
+                            "enough: gr1 sanitises `/` to `-`, so worktrees 'x/y' and 'x-y' "
+                            "both map to the same sibling."
+                        ),
+                        f"units[{idx}].path",
+                    )
+                )
+            else:
+                resolved_paths[resolved_unit_root] = name
+
+        # REFUSED UNTIL THE CONSUMER CATCHES UP, WITH THE REASON NAMED.
+        # `migrate-gr1` now legitimately declares a sibling desk or the root
+        # itself (slice items 1-2), but apply is NOT updated for that shape:
+        # member presence is checked by NAME, so it clones `grip` into
+        # `<desk>/grip` beside the desk's own `./gitgrip`, and it writes
+        # `unit.toml` INTO the desk. Both corrupt a layout, and a refusal costs
+        # a user a message where a wrong action costs them their workspace.
+        # Items 3/5/6 are what make the shape safe to apply: placement by the
+        # member's spec path, unit metadata under `.grip/state/units/<unit>/`,
+        # and adoption of an existing checkout instead of a re-clone.
+        if resolved_unit_root is not None and (path == "." or path.startswith("../")):
+            issues.append(
+                ValidationIssue(
+                    "error",
+                    "unit_path_not_yet_appliable",
+                    (
+                        f"unit '{name}' declares path {path!r} (a sibling desk or the root itself), "
+                        "and apply does not support that shape yet: it places members by NAME and "
+                        "writes unit metadata into the unit home, so for a sibling desk it would "
+                        "clone a member beside that desk's existing checkout and drop a gr2 file "
+                        "into it. Support lands with slice items 3, 5 and 6 (placement by the "
+                        "member's spec path, unit metadata under .grip/state/units/<unit>/, and "
+                        "adopt-not-re-clone). Declare this unit under the workspace root to apply "
+                        "it today."
+                    ),
+                    f"units[{idx}].path",
+                )
+            )
+        if (
+            resolved_unit_root is not None
+            and resolved_unit_root.exists()
+            and resolved_unit_root.is_file()
+        ):
             issues.append(
                 ValidationIssue(
                     "error",
                     "unit_path_conflict",
-                    f"unit path exists as a file: {unit_root}",
+                    f"unit path exists as a file: {resolved_unit_root}",
                     f"units[{idx}].path",
                 )
             )
@@ -234,7 +312,15 @@ def build_plan(workspace_root: Path) -> tuple[dict[str, object], list[PlanOperat
     errors = [issue for issue in issues if issue.level == "error"]
     if errors:
         rendered = "\n".join(f"- {issue.message}" for issue in errors)
-        raise SystemExit(f"workspace spec validation failed:\n{rendered}")
+        message = f"workspace spec validation failed:\n{rendered}"
+        # A DISTINGUISHABLE CODE for the not-yet-supported shape, so a caller can
+        # tell "this workspace needs slice items 3/5/6" from a generic spec error
+        # without parsing prose. Every other validation failure keeps the plain
+        # message and exit 1, which is what the rest of this CLI uses.
+        if any(issue.code == "unit_path_not_yet_appliable" for issue in errors):
+            print(message, file=sys.stderr)
+            raise SystemExit(4)
+        raise SystemExit(message)
 
     spec = load_workspace_spec_doc(workspace_root)
     operations: list[PlanOperation] = []
@@ -266,14 +352,16 @@ def build_plan(workspace_root: Path) -> tuple[dict[str, object], list[PlanOperat
 
     for unit in spec.get("units", []):
         unit_name = str(unit["name"])
-        unit_root = workspace_root / str(unit["path"])
-        unit_toml = unit_root / "unit.toml"
-        if not unit_root.exists():
+        # Resolved, not joined: an uncontained path here became a mkdir and a
+        # unit.toml write outside the root.
+        unit_home = unit_root(workspace_root, unit)
+        unit_toml = unit_home / "unit.toml"
+        if not unit_home.exists():
             operations.append(
                 PlanOperation(
                     kind="create_unit_root",
                     subject=unit_name,
-                    target_path=str(unit_root),
+                    target_path=str(unit_home),
                     reason="unit path missing",
                     details={"repos": [str(repo) for repo in unit.get("repos", [])]},
                 )
@@ -299,13 +387,13 @@ def build_plan(workspace_root: Path) -> tuple[dict[str, object], list[PlanOperat
         # processes operations in list order) creates the directory before
         # trying to clone into it.
         declared_repos = [str(r) for r in unit.get("repos", [])]
-        missing_repos = [r for r in declared_repos if not (unit_root / r).exists()]
+        missing_repos = [r for r in declared_repos if not (unit_home / r).exists()]
         if missing_repos:
             operations.append(
                 PlanOperation(
                     kind="converge_unit_repos",
                     subject=unit_name,
-                    target_path=str(unit_root),
+                    target_path=str(unit_home),
                     reason=f"missing repo checkouts: {', '.join(missing_repos)}",
                     details={"missing_repos": missing_repos, "all_repos": declared_repos},
                 )
@@ -393,24 +481,27 @@ def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -
             else:
                 applied.append(f"refreshed repo cache for '{op.subject}' at {cache_path}")
         elif op.kind == "create_unit_root":
-            unit_root = Path(op.target_path)
-            unit_root.mkdir(parents=True, exist_ok=True)
-            applied.append(f"created unit root for '{op.subject}' at {unit_root}")
+            # NOT named `unit_root`: that is the resolver, and rebinding it here
+            # made the name a local for this whole function, so the calls below
+            # hit a Path where a function was expected.
+            unit_home = Path(op.target_path)
+            unit_home.mkdir(parents=True, exist_ok=True)
+            applied.append(f"created unit root for '{op.subject}' at {unit_home}")
         elif op.kind == "write_unit_metadata":
             unit_spec = _find_unit(spec, op.subject)
-            unit_root = workspace_root / str(unit_spec["path"])
-            unit_root.mkdir(parents=True, exist_ok=True)
-            unit_toml = unit_root / "unit.toml"
+            unit_home = unit_root(workspace_root, unit_spec)
+            unit_home.mkdir(parents=True, exist_ok=True)
+            unit_toml = unit_home / "unit.toml"
             unit_toml.write_text(render_unit_toml(unit_spec))
             applied.append(f"wrote unit metadata for '{op.subject}'")
         elif op.kind == "converge_unit_repos":
             unit_spec = _find_unit(spec, op.subject)
-            unit_root = workspace_root / str(unit_spec["path"])
+            unit_home = unit_root(workspace_root, unit_spec)
             missing = [str(r) for r in op.details.get("missing_repos", [])]
             converged: list[str] = []
             for repo_name in missing:
                 repo_spec = _find_repo(spec, repo_name)
-                clone_dest = unit_root / repo_name
+                clone_dest = unit_home / repo_name
                 cache_path = repo_cache_path(workspace_root, str(repo_spec["name"]))
                 pin = str(repo_spec.get("pin") or "")
                 # A clone lands on the remote's default tip; the root declares a
@@ -427,7 +518,7 @@ def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -
                 if first_materialize:
                     converged.append(f"{repo_name}@{pin[:12]}" if pin else repo_name)
                     materialized_repos.append({"repo": repo_name, "first_materialize": True})
-            unit_toml = unit_root / "unit.toml"
+            unit_toml = unit_home / "unit.toml"
             unit_toml.write_text(render_unit_toml(unit_spec))
             applied.append(f"converged unit '{op.subject}': cloned {', '.join(converged)}")
         else:
@@ -937,6 +1028,69 @@ def _validate_path_safe_token(value: object, *, field_name: str) -> str:
     if "/" in value or "\\" in value or value in (".", "..") or "\x00" in value:
         raise MaterializationPlanError(f"{field_name} must be a path-safe token, got {value!r}")
     return value
+
+
+def unit_root(workspace_root: Path, unit: dict) -> Path:
+    """Resolve one unit's home from its spec `path`, one of exactly THREE forms.
+
+    A unit path is:
+      - a root-relative path INSIDE the root (the nested default);
+      - `"."` — the unit works in the root itself (gr1 `worktree = "main"`);
+      - exactly `"../<single-component>"` — a gr1 SIBLING desk, which gr1 keeps
+        beside the gripspace root as `<parent>/<workspace>-<agent>/`.
+
+    Everything else is refused: absolute paths, `~`, backslashes, NUL, `../../x`,
+    `../x/y`, an empty or `.`/`..` sibling component, and any path whose existing
+    prefix holds a symlink — so a link cannot walk the real bytes outside the
+    root while the textual path still reads as inside it.
+
+    This is deliberately NOT a call to `canonicalize_workspace_path` on
+    `workspace_root`: that helper refuses every `..` segment, and a sibling unit
+    path IS one `..` followed by a single name. The containment work is still
+    delegated to it — for the sibling form the base is the PARENT directory, so
+    the same per-component lstat walk applies and only the base differs.
+    """
+    raw = unit.get("path")
+    field = f"unit {unit.get('name')!r} path"
+    if not isinstance(raw, str) or not raw.strip():
+        raise MaterializationPlanError(f"{field} must be a non-empty string")
+    path = raw.strip()
+
+    if path == ".":
+        # The desk whose worktree IS the root. Resolved so comparison against
+        # other resolved paths cannot disagree on a symlinked spellings.
+        return workspace_root.resolve()
+
+    if path.startswith("../"):
+        component = path[len("../"):]
+        # Exactly one component, and not a second `..` — so `../../x` and
+        # `../x/y` are refused here rather than silently resolved.
+        if component in ("", ".", "..") or "/" in component:
+            raise MaterializationPlanError(
+                f"{field} may name at most one sibling (`../<component>`): {path!r}"
+            )
+        return canonicalize_workspace_path(
+            workspace_root.parent, component, field_name=field
+        )
+
+    # Root-relative: the nested default, and the only form with no `..` at all.
+    return canonicalize_workspace_path(workspace_root, path, field_name=field)
+
+
+def unit_member_path(workspace_root: Path, unit: dict, member: str) -> Path:
+    """One unit's copy of `member`, refusing an illegal unit path in a sentence.
+
+    The READ verbs (lane materialization, the store member map) walk a spec they
+    did not write, so they meet `unit_root`'s grammar as a refusal they cannot
+    see coming. Left untranslated that refusal reaches the user as a Python
+    traceback standing in the place of the sentence it already is — the one
+    thing this package refuses to do elsewhere.
+    """
+    try:
+        unit_home = unit_root(workspace_root, unit)
+    except MaterializationPlanError as exc:
+        raise SystemExit(f"the workspace spec is refused: {exc}") from None
+    return (unit_home / member).resolve()
 
 
 def canonicalize_workspace_path(workspace_root: Path, relative: str, *, field_name: str) -> Path:

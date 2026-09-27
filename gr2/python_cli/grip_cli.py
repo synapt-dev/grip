@@ -404,6 +404,24 @@ def _native_store_push(root: Path) -> dict[str, object]:
     }
 
 
+def _native_members_at(root: Path, revision: str) -> dict[str, str]:
+    text = _store_git(root, "show", f"{revision}:grip.toml").stdout
+    document = tomllib.loads(text)
+    return {str(member["name"]): str(member["pin"]) for member in document.get("members", [])}
+
+
+def _native_store_log(root: Path, max_count: int) -> list[dict[str, object]]:
+    commits = _store_git(root, "rev-list", "--reverse", f"--max-count={max_count}", "HEAD").stdout.splitlines()
+    prior: dict[str, str] = {}
+    entries: list[dict[str, object]] = []
+    for commit in commits:
+        current = _native_members_at(root, commit)
+        changes = [{"name": name, "before": prior.get(name), "after": pin} for name, pin in current.items() if prior.get(name) != pin]
+        entries.append({"commit": commit, "message": _store_git(root, "show", "-s", "--format=%s", commit).stdout.strip(), "pins": changes})
+        prior = current
+    return entries
+
+
 def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[str, object]]:
     """Render every member's working state without stopping at the first bad row."""
     rows: list[dict[str, str | None]] = []
@@ -687,11 +705,19 @@ def grip_snapshot_cmd(
 
 @grip_app.command("log")
 def grip_log_cmd(
-    workspace_root: Path,
+    workspace_root: Path | None = typer.Argument(None),
     max_count: int = typer.Option(10, "--max-count", "-n", help="Max entries to show"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Show grip commit history."""
+    if workspace_root is None:
+        entries = _native_store_log(Path.cwd(), max_count)
+        if json_output:
+            typer.echo(json.dumps({"entries": entries}))
+        else:
+            for entry in entries:
+                typer.echo(f"{entry['commit']} {entry['message']}")
+        return
     workspace_root = workspace_root.resolve()
 
     _validate_grip_dir(workspace_root)

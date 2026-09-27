@@ -369,7 +369,10 @@ def grip_init_cmd(
         except RuntimeError as exc:
             typer.echo(str(exc), err=True)
             raise typer.Exit(code=1)
-        typer.echo(f"Initialized git-native store at {Path.cwd()}")
+        if json_output:
+            typer.echo(json.dumps({"status": "initialized", "path": str(Path.cwd()), "store": "native"}))
+        else:
+            typer.echo(f"Initialized git-native store at {Path.cwd()}")
         return
     workspace_root = workspace_root.resolve()
     try:

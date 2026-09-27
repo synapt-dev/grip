@@ -428,6 +428,23 @@ def _native_store_diff(root: Path, ref_a: str, ref_b: str) -> list[dict[str, obj
     return [{"name": name, "old_pin": before.get(name), "new_pin": after.get(name), "changed": before.get(name) != after.get(name)} for name in sorted(set(before) | set(after))]
 
 
+def _native_store_checkout(root: Path, revision: str) -> list[dict[str, str]]:
+    members = _native_members(root)
+    for member in members:
+        path = root / member["path"]
+        if _store_git(path, "status", "--porcelain").stdout.strip():
+            raise NativeStoreRefusal(f"{member['name']} is dirty; commit or stash changes first", 3)
+    _store_git(root, "checkout", "--detach", revision)
+    pins = _native_members_at(root, revision)
+    restored: list[dict[str, str]] = []
+    for member in members:
+        path = root / member["path"]
+        pin = pins[member["name"]]
+        _store_git(path, "checkout", "--detach", pin)
+        restored.append({"name": member["name"], "pin": pin, "head": _store_git(path, "rev-parse", "HEAD").stdout.strip()})
+    return restored
+
+
 def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[str, object]]:
     """Render every member's working state without stopping at the first bad row."""
     rows: list[dict[str, str | None]] = []
@@ -822,6 +839,19 @@ def grip_checkout_cmd(
 ) -> None:
     """Restore workspace repo HEADs from a grip snapshot."""
     workspace_root = workspace_root.resolve()
+
+    if (workspace_root / "grip.toml").is_file():
+        try:
+            members = _native_store_checkout(workspace_root, ref)
+        except NativeStoreRefusal as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=exc.code)
+        if json_output:
+            typer.echo(json.dumps({"status": "checked-out", "root_commit": ref, "members": members}))
+        else:
+            for member in members:
+                typer.echo(f"{member['name']} -> {member['pin']}")
+        return
 
     _validate_grip_dir(workspace_root)
 

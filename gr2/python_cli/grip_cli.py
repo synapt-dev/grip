@@ -391,16 +391,36 @@ def _native_store_check(root: Path) -> list[dict[str, str]]:
     return checked
 
 
-def _native_store_materialize(root: Path) -> None:
+def _native_store_materialize(root: Path) -> list[dict[str, str]]:
+    materialized: list[dict[str, str]] = []
     for member in _native_members(root):
         if _url_has_credentials(member["remote"]):
             raise _credential_refusal(member["name"])
         path = root / member["path"]
-        if not path.exists():
+        top = _store_git(path, "rev-parse", "--show-toplevel", check=False)
+        is_checkout = top.returncode == 0 and Path(top.stdout.strip()).resolve() == path.resolve()
+        if not is_checkout:
+            if path.exists():
+                try:
+                    path.rmdir()
+                except OSError as exc:
+                    raise RuntimeError(f"{member['name']} path is not an empty checkout placeholder: {path}") from exc
             result = subprocess.run(["git", "clone", member["remote"], str(path)], text=True, capture_output=True, check=False)
             if result.returncode:
-                raise RuntimeError(result.stderr.strip())
-        _store_git(path, "checkout", "--detach", member["pin"])
+                done = ", ".join(item["name"] for item in materialized) or "none"
+                raise NativeStoreRefusal(
+                    f"{member['name']} pin {member['pin']} cannot be served by origin; done: {done}", 3
+                )
+        checkout = _store_git(path, "checkout", "--detach", member["pin"], check=False)
+        if checkout.returncode:
+            done = ", ".join(item["name"] for item in materialized) or "none"
+            raise NativeStoreRefusal(
+                f"{member['name']} pin {member['pin']} cannot be served by origin; done: {done}", 3
+            )
+        materialized.append(
+            {"name": member["name"], "pin": member["pin"], "head": _store_git(path, "rev-parse", "HEAD").stdout.strip()}
+        )
+    return materialized
 
 
 @grip_app.command("init")
@@ -473,16 +493,22 @@ def grip_check_cmd(
 
 
 @grip_app.command("materialize")
-def grip_materialize_cmd() -> None:
+def grip_materialize_cmd(
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
     """Materialize each canonical pin from its declared origin."""
     try:
-        _native_store_materialize(Path.cwd())
+        members = _native_store_materialize(Path.cwd())
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
     except RuntimeError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1)
+    if json_output:
+        typer.echo(json.dumps({"status": "materialized", "members": members}))
+    else:
+        typer.echo(f"Materialized {len(members)} member(s)")
 
 
 @grip_app.command("snapshot")

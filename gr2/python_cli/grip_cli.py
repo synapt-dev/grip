@@ -404,29 +404,36 @@ def _native_store_push(root: Path) -> dict[str, object]:
     }
 
 
-def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], int]:
+def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[str, object]]:
     """Render every member's working state without stopping at the first bad row."""
     rows: list[dict[str, str | None]] = []
-    result_code = 0
     for member in _native_members(root):
         path = root / member["path"]
         top = _store_git(path, "rev-parse", "--show-toplevel", check=False)
         is_checkout = top.returncode == 0 and Path(top.stdout.strip()).resolve() == path.resolve()
         if not is_checkout:
             rows.append({"name": member["name"], "pin": member["pin"], "head": None, "state": "cannot-measure"})
-            result_code = max(result_code, 5)
             continue
         head = _store_git(path, "rev-parse", "HEAD", check=False)
         if head.returncode:
             rows.append({"name": member["name"], "pin": member["pin"], "head": None, "state": "cannot-measure"})
-            result_code = max(result_code, 5)
             continue
         head_sha = head.stdout.strip()
-        state = "upstream" if head_sha == member["pin"] else "unpinned"
-        if state == "unpinned":
-            result_code = max(result_code, 4)
+        remote, separator, branch = member["upstream"].partition("/")
+        fetched = _store_git(path, "fetch", remote, check=False) if separator else None
+        if not separator or not remote or not branch or fetched is None or fetched.returncode:
+            state = "cannot-measure"
+        elif _store_git(path, "merge-base", "--is-ancestor", member["pin"], member["upstream"], check=False).returncode:
+            state = "missing"
+        elif head_sha != member["pin"]:
+            state = "unpinned"
+        elif _store_git(path, "rev-parse", member["upstream"], check=False).stdout.strip() != member["pin"]:
+            state = "stale"
+        else:
+            state = "upstream"
         rows.append({"name": member["name"], "pin": member["pin"], "head": head_sha, "state": state})
-    return rows, result_code
+    porcelain = _store_git(root, "status", "--porcelain").stdout.splitlines()
+    return rows, {"state": "dirty" if porcelain else "clean", "porcelain": porcelain}
 
 
 def _native_store_materialize(root: Path) -> list[dict[str, str]]:
@@ -555,7 +562,7 @@ def grip_status_cmd(
 ) -> None:
     """Show every member's pin and working HEAD."""
     try:
-        members, status_code = _native_store_status(Path.cwd())
+        members, root_status = _native_store_status(Path.cwd())
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
@@ -563,12 +570,10 @@ def grip_status_cmd(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1)
     if json_output:
-        typer.echo(json.dumps({"status": "status", "members": members}))
+        typer.echo(json.dumps({"status": "status", "members": members, "root": root_status}))
     else:
         for member in members:
             typer.echo(f"{member['name']} {member['state']} pin={member['pin']} head={member['head']}")
-    if status_code:
-        raise typer.Exit(code=status_code)
 
 
 @grip_app.command("materialize")

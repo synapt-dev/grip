@@ -108,6 +108,19 @@ def _bare_remote(tmp_path: Path, name: str) -> str:
     return remote.as_uri()
 
 
+def _set_root_origin(root: Path, url: str) -> None:
+    """Give the root an `origin`, whether or not one already exists.
+
+    `git remote add` fails with exit 128 when the name is taken OR when the directory is
+    not a repo yet, and either way the row dies inside its fixture rather than at a
+    contract assertion. Section 3 makes the root a git repo; this only sets the URL.
+    """
+    if _git(root, "remote", "get-url", "origin", check=False).returncode == 0:
+        _git(root, "remote", "set-url", "origin", url)
+    else:
+        _git(root, "remote", "add", "origin", url)
+
+
 def _clone_member(tmp_path: Path, name: str) -> Path:
     """An ordinary working clone of `name`'s remote, sibling-shaped (the gr1 layout)."""
     url = _bare_remote(tmp_path, name)
@@ -204,6 +217,20 @@ def two_member_ws(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return ws
 
 
+def _assert_init_ran(root: Path) -> None:
+    """Section 3: `store init` makes the root a git repo AND writes `grip.toml`.
+
+    Asserted BEFORE any row reads the manifest. Without it an incomplete `store init`
+    surfaces as a FileNotFoundError inside a fixture read -- which
+    `xfail(strict=True, raises=AssertionError)` would absorb as though the row had reached
+    its contract assertion. A precondition that fails loudly is the difference between
+    "the verb is unbuilt" and "this row could not build its fixture", and the two need
+    different responses.
+    """
+    assert (root / ".git").is_dir(), f"store init must make {root} a git repo (section 3)"
+    assert (root / "grip.toml").is_file(), f"store init must write grip.toml under {root} (section 3)"
+
+
 def _assert_flow_ran(root: Path) -> None:
     """The store verbs acted on `root`. Row 13's lesson, generalised: a row that measures
     a delta must first assert that the thing producing it actually happened, or a red row
@@ -241,11 +268,12 @@ def test_harness_control_bare_remote_round_trip(two_member_ws: Path, tmp_path: P
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
 def test_break_01_pin_a_sha_upstream_lacks(two_member_ws: Path) -> None:
     """`store commit` exit 3; the root HEAD does not move."""
     root = two_member_ws
     assert _cli("store", "init", str(root))[0] == 0
+    _assert_init_ran(root)
     rc, out = _cli("store", "commit", "-m", "first", "--json")
     assert rc == 0, out
     root_head_after_first = _head(root)
@@ -267,20 +295,19 @@ def test_break_01_pin_a_sha_upstream_lacks(two_member_ws: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
 def test_break_03_push_root_with_unpushed_member(two_member_ws: Path, tmp_path: Path) -> None:
     """`store push` exit 3, and the root ref is ABSENT on the root remote.
 
     The absent check needs a PRESENT CONTROL on the same instrument, or an `ls-remote`
     that cannot see refs at all reports the safe-looking answer.
 
-    ⚠ THE CONTRACT TENSION IS RESOLVED, and this row follows the contract rather than a
-    reading of its own (2026-09-27). Section 8 words the trigger
-    as "a member branch is unpushed"; section 5's check was "every pin covered against LIVE
-    upstream", which is not sensitive to a member HEAD ahead of its upstream. The resolution:
-    *"§5 says status never REFUSES TO RUN and always prints the full table; it does not say a
-    check must pass."* So a member whose HEAD is unreachable from its upstream now REFUSES,
-    naming the member, its HEAD and the reason -- and this row drives exactly that.
+    Section 2 (line 17): "a coverage check refuses to commit OR PUSH a pin that the
+    member's upstream does not have." Section 5: push refuses "when any member is dirty or
+    any HEAD snapshot pin is uncovered (the same 5a check)". Section 5a: the check is
+    `git merge-base --is-ancestor <pin> <upstream>`, whose input is the PIN. A member whose
+    HEAD has moved is `unpinned` -- a status observation beside `stale` and `missing`, per
+    section 5's status table, NOT a refusal. So the row drives an uncovered PIN.
     """
     root = two_member_ws
     root_remote = tmp_path / "root.git"
@@ -288,28 +315,44 @@ def test_break_03_push_root_with_unpushed_member(two_member_ws: Path, tmp_path: 
         ["git", "init", "-q", "--bare", str(root_remote)], capture_output=True, check=True
     )
     assert _cli("store", "init", str(root))[0] == 0
-    _git(root, "remote", "add", "origin", str(root_remote.as_uri()))
+    _assert_init_ran(root)
+    _set_root_origin(root, root_remote.as_uri())
     assert _cli("store", "commit", "-m", "first")[0] == 0
     _assert_flow_ran(root)
 
-    # THE UNPUSHED MEMBER BRANCH, which is what section 8 names. The pin is recorded and
-    # still covered; it is alpha's HEAD that now sits on a commit its upstream cannot reach.
+    # THE UNCOVERED PIN, INSIDE THE ROOT SNAPSHOT ITSELF. This is the input section 5a
+    # defines: `git merge-base --is-ancestor <pin> <upstream>`, where the input is the PIN.
+    # The first version moved alpha's working HEAD and expected `store push` to refuse --
+    # but section 5 runs `store check` over the pins already in `grip.toml`, and a member
+    # whose HEAD moved is `unpinned`, which section 5 lists as a STATUS OBSERVATION beside
+    # `stale` and `missing`, not a refusal. Moving HEAD tested a rule the note does not
+    # define; a test written to an undefined rule makes the test the spec.
+    #
+    # So the pin itself is made uncoverable: a real commit in alpha that is NEVER pushed,
+    # written as the pin AND as the gitlink (they AGREE, so this drives COVERAGE and not
+    # the 4-consistency refusal), committed into the root, and then pushed.
     alpha = root / "alpha"
-    pinned = _head(alpha)
-    (alpha / "unpushed.txt").write_text("local only, never pushed\n")
+    covered_pin = _git_out(root, "rev-parse", "HEAD:alpha")
+    (alpha / "uncovered.txt").write_text("local only, never pushed\n")
     _git(alpha, "add", ".")
-    _git(alpha, "commit", "-q", "-m", "unpushed member commit")
-    unpushed = _head(alpha)
-    assert unpushed != pinned, "the fixture must actually move alpha's HEAD off the pin"
-    # ASSERT THE MUTATION LANDED: the upstream must NOT have it, or the row tests nothing.
+    _git(alpha, "commit", "-q", "-m", "a commit its upstream will never have")
+    uncovered = _head(alpha)
     upstream_main = _ls_remote(_git_out(alpha, "remote", "get-url", "origin"), "refs/heads/main")
-    assert upstream_main != unpushed, "alpha's new HEAD must be unreachable from its upstream"
-    assert upstream_main == pinned, "the upstream should still be at the pin, with HEAD ahead"
+    # ASSERT BOTH HALVES OF THE MUTATION: the pin moved, AND it is not reachable.
+    assert uncovered != covered_pin, "the fixture must actually create a new pin value"
+    assert upstream_main != uncovered, "the uncovered pin must NOT be on the upstream"
+    assert upstream_main == covered_pin, "the upstream should still be at the covered pin"
+
+    text = (root / "grip.toml").read_text()
+    assert covered_pin in text, "the fixture must start from the pin store commit wrote"
+    (root / "grip.toml").write_text(text.replace(covered_pin, uncovered))
+    _git(root, "update-index", "--add", "--cacheinfo", f"160000,{uncovered},alpha")
+    _git(root, "commit", "-q", "-m", "malformed root: a pin its upstream does not have")
 
     rc, out = _cli("store", "push", "--json")
     assert rc == 3, (
-        f"a member whose HEAD is unreachable from its upstream must refuse the root push "
-        f"with exit 3, got {rc}: {out}"
+        f"a root snapshot carrying an uncovered pin must refuse the push with exit 3, "
+        f"got {rc}: {out}"
     )
     assert "alpha" in out, f"the refusal must name the member; got: {out}"
 
@@ -331,7 +374,7 @@ def test_break_03_push_root_with_unpushed_member(two_member_ws: Path, tmp_path: 
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
 def test_break_04_upstream_force_push_over_the_pin(
     two_member_ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -346,6 +389,7 @@ def test_break_04_upstream_force_push_over_the_pin(
     """
     root = two_member_ws
     assert _cli("store", "init", str(root))[0] == 0
+    _assert_init_ran(root)
     assert _cli("store", "commit", "-m", "first")[0] == 0
     _assert_flow_ran(root)
 
@@ -396,7 +440,7 @@ def test_break_04_upstream_force_push_over_the_pin(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
 def test_break_05_shallow_clone_of_the_root(
     two_member_ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -413,6 +457,7 @@ def test_break_05_shallow_clone_of_the_root(
         ["git", "init", "-q", "--bare", str(root_remote)], capture_output=True, check=True
     )
     assert _cli("store", "init", str(root))[0] == 0
+    _assert_init_ran(root)
     _git(root, "remote", "add", "origin", root_remote.as_uri())
     assert _cli("store", "commit", "-m", "first")[0] == 0
     assert _cli("store", "push")[0] == 0
@@ -443,7 +488,7 @@ def test_break_05_shallow_clone_of_the_root(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
 def test_break_07_gitlink_and_pin_disagree(two_member_ws: Path) -> None:
     """Every verb that reads the pin exits 4 and names BOTH values.
 
@@ -456,6 +501,7 @@ def test_break_07_gitlink_and_pin_disagree(two_member_ws: Path) -> None:
     """
     root = two_member_ws
     assert _cli("store", "init", str(root))[0] == 0
+    _assert_init_ran(root)
     assert _cli("store", "commit", "-m", "first")[0] == 0
     _assert_flow_ran(root)
 
@@ -492,7 +538,7 @@ def test_break_07_gitlink_and_pin_disagree(two_member_ws: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
 def test_break_08_check_runs_against_upstream_not_origin(two_member_ws: Path, tmp_path: Path) -> None:
     """exit 3: the check ran against the member's declared `upstream`, not the literal
     remote name `origin`. Section 4 makes `upstream` a grip.toml FIELD (default
@@ -519,6 +565,7 @@ def test_break_08_check_runs_against_upstream_not_origin(two_member_ws: Path, tm
     _git(alpha, "fetch", "-q", "other")
 
     assert _cli("store", "init", str(root))[0] == 0
+    _assert_init_ran(root)
     toml_path = root / "grip.toml"
     toml_path.write_text(_set_member_upstream(toml_path.read_text(), "alpha", "other/main"))
 
@@ -527,9 +574,15 @@ def test_break_08_check_runs_against_upstream_not_origin(two_member_ws: Path, tm
         "a pin reachable from origin but not from the DECLARED upstream must be refused "
         f"with exit 3, got {rc}: {out}"
     )
-    assert landed[:8] in out or "other/main" in out, (
-        f"the refusal must name the member, the pin and the upstream it compared; got: {out}"
-    )
+    # EVERY ONE OF THE THREE, not either of two: the message claims the refusal names the
+    # member, the pin AND the upstream. The first version asked `landed[:8] in out or
+    # "other/main" in out`, which passes when only the upstream string is present and never
+    # checks the member name at all -- a disjunction that cannot detect the failure it names.
+    for token in ("alpha", landed[:8], "other/main"):
+        assert token in out, (
+            f"the refusal must name the member, the pin and the upstream it compared; "
+            f"{token!r} is missing from: {out}"
+        )
     # section 8: every row fails CLOSED, so the root must still have no commit
     assert _git(root, "rev-parse", "--verify", "-q", "HEAD", check=False).returncode != 0, (
         "a refused first commit must leave the root without a commit"
@@ -541,7 +594,7 @@ def test_break_08_check_runs_against_upstream_not_origin(two_member_ws: Path, tm
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
 def test_break_10_two_root_branches_two_pins(
     two_member_ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -553,6 +606,7 @@ def test_break_10_two_root_branches_two_pins(
     """
     root = two_member_ws
     assert _cli("store", "init", str(root))[0] == 0
+    _assert_init_ran(root)
     alpha = root / "alpha"
 
     assert _cli("store", "commit", "-m", "lane one")[0] == 0
@@ -600,13 +654,14 @@ def test_break_10_two_root_branches_two_pins(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
 @pytest.mark.parametrize("field", ["overlay", "staged", "nested"])
 def test_break_11_beta_field_is_refused(two_member_ws: Path, field: str) -> None:
     """exit 4 naming the field; never ignored. A beta key silently accepted is a
     contract the reader cannot see."""
     root = two_member_ws
     assert _cli("store", "init", str(root))[0] == 0
+    _assert_init_ran(root)
     text = (root / "grip.toml").read_text()
     (root / "grip.toml").write_text(text + f'\n{field} = "beta-value"\n')
 
@@ -620,7 +675,7 @@ def test_break_11_beta_field_is_refused(two_member_ws: Path, field: str) -> None
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
 def test_break_12_adoption_tracks_gitlinks_and_leaves_gitignore_alone(two_member_ws: Path) -> None:
     """`store commit` tracks the gitlinks; `.gitignore` byte-identical before and after.
     The slice ADOPTS a root that already exists, and an adoption that rewrites canon
@@ -644,6 +699,7 @@ def test_break_12_adoption_tracks_gitlinks_and_leaves_gitignore_alone(two_member
     pre_head = _head(root)
 
     assert _cli("store", "init")[0] == 0
+    _assert_init_ran(root)
 
     # ADOPTION, not init: the pre-existing commit is still the root of the history
     assert _git_out(root, "rev-list", "--count", "HEAD") == "1", (
@@ -692,7 +748,7 @@ def _git_fetch_metadata_delta(members: list[Path]) -> dict[Path, set[str]]:
     return {m: _listing(m / ".git") - before[m] for m in members}
 
 
-@pytest.mark.xfail(strict=True, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
 def test_break_13_nothing_written_under_any_git_dir(two_member_ws: Path) -> None:
     """After the suite's flow, a scan of every member's `.git/` and the root's `.git/`
     finds no file gr2 created BEYOND what Git writes for the fetch section 5a requires.
@@ -724,14 +780,27 @@ def test_break_13_nothing_written_under_any_git_dir(two_member_ws: Path) -> None
     # on a later fetch (a ref it did not create the first time).
     git_meta = _git_fetch_metadata_delta(members)
 
-    before = {d: _listing(d) for d in gitdirs if d.exists()}
-
     assert _cli("store", "init", str(root))[0] == 0
-    # ASSERT THE FLOW RAN. Without this the row passes VACUOUSLY today: with the verbs
-    # unbuilt every call returns usage and writes nothing, so a clean .git scan proves
-    # only that nothing happened. That is the "witness that cannot fail" shape, and it is
-    # why these two lines come before the measurement rather than after it.
+    _assert_init_ran(root)
     assert _cli("store", "commit", "-m", "first")[0] == 0
+
+    # THE SNAPSHOT IS TAKEN AFTER init AND commit, and the ordering IS the fix. Taken
+    # before init, the root's `.git` does not exist yet, so `if d.exists()` DROPPED it out
+    # of `before` -- and `before.items()` is what the loop below scans. The row claimed to
+    # scan the root's own `.git` and structurally could never do it: no measurement of it
+    # could fail. ASSERTED here so the claim cannot silently come undone again.
+    before = {d: _listing(d) for d in gitdirs if d.exists()}
+    assert (root / ".git") in before, (
+        "the root's .git must exist AND be in the snapshot, or this row cannot scan it"
+    )
+
+    # `store check` is READ-ONLY by contract (design section 5), so the root's own `.git`
+    # needs no subtraction: after the snapshot, nothing may appear under it. The member
+    # `.git` axis keeps the fetch subtraction, because section 5a mandates a fetch whose
+    # metadata Git itself writes. BOUNDARY, named rather than implied: commit's own
+    # git-machinery writes under the root `.git` happen BEFORE this snapshot, so what is
+    # witnessed here is the read-only verb, plus any gr2-private file any verb writes after
+    # it -- not a gr2 write made during commit.
     assert _cli("store", "check")[0] == 0
 
     for d, files in before.items():
@@ -750,7 +819,7 @@ def test_break_13_nothing_written_under_any_git_dir(two_member_ws: Path) -> None
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
 def test_break_14_credentials_in_a_remote_url_are_refused(two_member_ws: Path) -> None:
     """exit 4, naming the member and the remote NAME — and NEVER printing the URL.
     The refusal must not leak the secret it is refusing.
@@ -763,6 +832,7 @@ def test_break_14_credentials_in_a_remote_url_are_refused(two_member_ws: Path) -
     """
     root = two_member_ws
     assert _cli("store", "init", str(root))[0] == 0
+    _assert_init_ran(root)
     secret = "DUMMY-USERINFO-NOT-A-TOKEN"
     toml_path = root / "grip.toml"
     text = toml_path.read_text()
@@ -787,7 +857,7 @@ def test_break_14_credentials_in_a_remote_url_are_refused(two_member_ws: Path) -
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
 def test_break_15_symlink_member_path_is_refused(two_member_ws: Path, tmp_path: Path) -> None:
     """exit 4, "link mode is beta". A gitlink needs a real checkout at its path;
     `update-index --cacheinfo 160000` over a symlink leaves the root reporting a type
@@ -796,6 +866,7 @@ def test_break_15_symlink_member_path_is_refused(two_member_ws: Path, tmp_path: 
     link = root / "gamma"
     link.symlink_to(root / "alpha")
     assert _cli("store", "init", str(root))[0] == 0
+    _assert_init_ran(root)
 
     rc, out = _cli("store", "commit", "-m", "first", "--json")
     assert rc == 4, f"a symlinked member path must be refused with 4, got {rc}: {out}"
@@ -817,6 +888,7 @@ def test_break_15_symlink_member_path_is_refused(two_member_ws: Path, tmp_path: 
 )
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason="the unit grammar is defined by gr2/gr2/schemas/gr2-workspace-spec-v1.schema.json "
            "(design section 4), which is a later builder step's deliverable and does not exist yet",
 )
@@ -864,6 +936,7 @@ def test_break_17_unit_path_outside_the_root(two_member_ws: Path, tmp_path: Path
         link.symlink_to(tmp_path, target_is_directory=True)
 
     assert _cli("store", "init", str(root))[0] == 0
+    _assert_init_ran(root)
     before_parent = {p.name for p in parent.iterdir()}
     assert "SENTINEL-PLANTED-CONTROL" in before_parent, "the fingerprint must see a planted file"
 
@@ -932,7 +1005,7 @@ def gr1_sibling_ws(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
-@pytest.mark.xfail(strict=True, reason="verb unbuilt: design section 6b (gr1 sibling layout), builder step 5")
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 6b (gr1 sibling layout), builder step 5")
 def test_break_18_migrate_gr1_adopts_existing_checkouts_by_path(gr1_sibling_ws: Path) -> None:
     """Section 6b: `workspace migrate-gr1` then `store init` then `store commit` is the
     whole path. migrate-gr1 emits `../synapt-dev`, `../synapt-codex`, `../synapt-fathom`,
@@ -970,6 +1043,7 @@ def test_break_18_migrate_gr1_adopts_existing_checkouts_by_path(gr1_sibling_ws: 
         )
 
     assert _cli("store", "init")[0] == 0
+    _assert_init_ran(root)
     _assert_flow_ran(root)
     assert _cli("store", "commit", "-m", "gr1 adoption")[0] == 0
 
@@ -987,6 +1061,7 @@ def test_break_18_migrate_gr1_adopts_existing_checkouts_by_path(gr1_sibling_ws: 
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason="the member-in-a-unit-home shape is defined by "
            "gr2/gr2/schemas/gr2-workspace-spec-v1.schema.json (design section 4), not yet delivered",
 )
@@ -1006,6 +1081,7 @@ def test_break_19_member_found_at_its_path_not_its_name(two_member_ws: Path, tmp
         f"until that file exists this row cannot build its fixture without guessing the format"
     )
     assert _cli("store", "init", str(root))[0] == 0
+    _assert_init_ran(root)
 
     # the member is renamed but keeps the OTHER member's path, INSIDE a unit home
     # (section 6c gap 2: 13 of 25 live repos have a name different from their path).
@@ -1037,7 +1113,7 @@ def test_break_19_member_found_at_its_path_not_its_name(two_member_ws: Path, tmp
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
 def test_break_21_tracked_non_member_root_folder_is_untouched(two_member_ws: Path) -> None:
     """Section 12: plant a tracked, non-member `config/` with files, run every store verb,
     and require it byte-identical with no refusal naming it. This is constraint 3 as a row,
@@ -1056,6 +1132,19 @@ def test_break_21_tracked_non_member_root_folder_is_untouched(two_member_ws: Pat
     (tracked / "nested" / "notes.md").write_text("notes, not a workspace spec\n")
 
     assert _cli("store", "init")[0] == 0
+    _assert_init_ran(root)
+    # AFTER init, never before: section 3 is what makes the root a git repo, so a git
+    # config against it earlier fails with exit 128 and the row dies in its own setup.
+    _git(root, "configure", "user.email", "t@e.invalid")
+    _git(root, "configure", "user.name", "t")
+    # MAKE IT TRACKED, or the row proves nothing. Section 3a's allow-list leaves `config/`
+    # IGNORED, so without this the folder the row calls "tracked" does not exist as a
+    # tracked path at all and the row can pass while nothing is exercised.
+    _git(root, "add", "-f", "config")
+    _git(root, "commit", "-q", "-m", "track config/ so the claim is real")
+    assert _git_out(root, "ls-files", "config"), (
+        "the fixture must actually track config/, or byte-identity proves nothing"
+    )
     assert _cli("store", "commit", "-m", "first")[0] == 0
     before = _listing(tracked)
     assert before, "the fixture must plant real files, or byte-identity proves nothing"
@@ -1078,7 +1167,7 @@ def test_break_21_tracked_non_member_root_folder_is_untouched(two_member_ws: Pat
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="beta: gc of covering refs")
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="beta: gc of covering refs")
 def test_break_02_gc_of_covering_refs(two_member_ws: Path) -> None:
     """A `git gc` that prunes a ref which was covering the pin. Beta: the slice does not
     implement the gc-refusal, so the outcome is unspecified today and the row is forced
@@ -1086,14 +1175,14 @@ def test_break_02_gc_of_covering_refs(two_member_ws: Path) -> None:
     raise AssertionError("beta: gc of covering refs is not implemented in the slice")
 
 
-@pytest.mark.xfail(strict=True, reason="beta: overlays")
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="beta: overlays")
 def test_break_06_overlays(two_member_ws: Path) -> None:
     """`overlay` in `grip.toml` is a beta field (see attempt 11, which asserts the
     REFUSAL). This row is about the behaviour once overlays exist."""
     raise AssertionError("beta: overlays are not implemented in the slice")
 
 
-@pytest.mark.xfail(strict=True, reason="beta: nested coverage")
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="beta: nested coverage")
 def test_break_09_nested_coverage(two_member_ws: Path) -> None:
     """A member whose coverage is satisfied only through another member's history.
     Beta: the slice checks coverage per member against its own upstream."""

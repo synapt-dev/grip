@@ -391,6 +391,19 @@ def _native_store_check(root: Path) -> list[dict[str, str]]:
     return checked
 
 
+def _native_store_push(root: Path) -> dict[str, object]:
+    """Push only the checked root record. Member publication is a prior verb."""
+    members = _native_store_check(root)
+    branch = _store_git(root, "symbolic-ref", "--short", "HEAD").stdout.strip()
+    _store_git(root, "push", "origin", branch)
+    return {
+        "status": "pushed",
+        "root_branch": branch,
+        "root_commit": _store_git(root, "rev-parse", "HEAD").stdout.strip(),
+        "members": members,
+    }
+
+
 def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], int]:
     """Render every member's working state without stopping at the first bad row."""
     rows: list[dict[str, str | None]] = []
@@ -515,6 +528,25 @@ def grip_check_cmd(
         typer.echo(json.dumps({"status": "checked", "members": members}))
     else:
         typer.echo(f"Checked {len(members)} member(s)")
+
+
+@grip_app.command("push")
+def grip_push_cmd(
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Check then push only the root branch, never member branches."""
+    try:
+        payload = _native_store_push(Path.cwd())
+    except NativeStoreRefusal as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=exc.code)
+    except RuntimeError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1)
+    if json_output:
+        typer.echo(json.dumps(payload))
+    else:
+        typer.echo(f"Pushed root {payload['root_branch']} at {payload['root_commit']}")
 
 
 @grip_app.command("status")

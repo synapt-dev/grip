@@ -191,6 +191,43 @@ def _set_member_remote(text: str, member_path: str, remote: str, url: str) -> st
     return "[[members]]".join(blocks)
 
 
+@pytest.fixture(autouse=True)
+def _commit_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every commit this file makes carries an identity that does not come from the host.
+
+    MODULE-WIDE RATHER THAN INSIDE `two_member_ws`, deliberately: `_clone_member` makes a
+    commit, is called by BOTH workspace fixtures, and `gr1_sibling_ws` is a second entry
+    point. A fix scoped to one fixture would leave the other path green here and red on a
+    CI runner, which is the worse outcome -- a green that means "this machine".
+
+    WHY IT IS NEEDED: the gr2 conftest points `GIT_CONFIG_GLOBAL` at a BLANK config and sets
+    `GIT_CONFIG_NOSYSTEM` (see `_isolated_git_config`), so a commit with no `user.name` set
+    anywhere falls back to git's host auto-detect -- the OS gecos. Measured on this host: the
+    same call with the env absent resolves to the developer's own global identity, and with
+    no global config and an empty gecos it fails as `empty ident name`, exit 128. The rows
+    that make a bare `git commit` in a workspace root set no local identity, so without this
+    those rows are green on a Mac and red on a CI runner for a reason that has nothing to do
+    with any contract they pin.
+
+    ENV, NOT `git config`: `GIT_AUTHOR_*`/`GIT_COMMITTER_*` take precedence over config, so
+    this holds for a command run in any directory without needing a repo to exist first.
+    """
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "gr2 suite")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "gr2-suite@example.invalid")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "gr2 suite")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "gr2-suite@example.invalid")
+    # ASSERTED, not assumed. A fixture that silently failed to set these would restore the
+    # exact host-dependence this closes, and nothing would say so. `git var` is the witness
+    # rather than `os.environ`: it proves git RESOLVES the env, not merely that it is set.
+    probe = subprocess.run(
+        ["git", "var", "GIT_AUTHOR_IDENT"], capture_output=True, text=True, check=False
+    )
+    assert probe.returncode == 0 and "gr2-suite@example.invalid" in probe.stdout, (
+        f"the fixture must pin commit identity; `git var GIT_AUTHOR_IDENT` said "
+        f"rc={probe.returncode} {probe.stdout.strip()!r}"
+    )
+
+
 @pytest.fixture
 def two_member_ws(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """The section 2 shape: a workspace root holding two member clones side by side,
@@ -231,13 +268,26 @@ def _assert_init_ran(root: Path) -> None:
     assert (root / "grip.toml").is_file(), f"store init must write grip.toml under {root} (section 3)"
 
 
-def _assert_flow_ran(root: Path) -> None:
+def _assert_flow_ran(root: Path, member: str | None = None) -> None:
     """The store verbs acted on `root`. Row 13's lesson, generalised: a row that measures
     a delta must first assert that the thing producing it actually happened, or a red row
-    and a broken harness are indistinguishable."""
+    and a broken harness are indistinguishable.
+
+    `member` names a gitlink the CALLING row is about to read with
+    `git rev-parse HEAD:<member>`. That read is SILENT when the entry is absent: it prints
+    nothing and exits non-zero. A row that follows it with `assert pin in text` then finds
+    `"" in text` TRUE of every possible string and passes, vacuously, on exactly the broken
+    fixture it exists to catch. Passing the name here is what makes that read loud.
+    """
     assert (root / "grip.toml").is_file(), f"store init must have written grip.toml under {root}"
     head = _git(root, "rev-parse", "HEAD", check=False).stdout.strip()
     assert head, f"store commit must have made a root commit in {root}"
+    if member is not None:
+        link = _git(root, "rev-parse", f"HEAD:{member}", check=False).stdout.strip()
+        assert link, (
+            f"store commit must have written a gitlink for {member!r} in {root}; without it "
+            f"the row's `HEAD:{member}` read is empty and its pin assertion passes vacuously"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +368,7 @@ def test_break_03_push_root_with_unpushed_member(two_member_ws: Path, tmp_path: 
     _assert_init_ran(root)
     _set_root_origin(root, root_remote.as_uri())
     assert _cli("store", "commit", "-m", "first")[0] == 0
-    _assert_flow_ran(root)
+    _assert_flow_ran(root, member="alpha")
 
     # THE UNCOVERED PIN, INSIDE THE ROOT SNAPSHOT ITSELF. This is the input section 5a
     # defines: `git merge-base --is-ancestor <pin> <upstream>`, where the input is the PIN.
@@ -458,7 +508,7 @@ def test_break_05_shallow_clone_of_the_root(
     )
     assert _cli("store", "init", str(root))[0] == 0
     _assert_init_ran(root)
-    _git(root, "remote", "add", "origin", root_remote.as_uri())
+    _set_root_origin(root, root_remote.as_uri())
     assert _cli("store", "commit", "-m", "first")[0] == 0
     assert _cli("store", "push")[0] == 0
     _assert_flow_ran(root)
@@ -503,7 +553,7 @@ def test_break_07_gitlink_and_pin_disagree(two_member_ws: Path) -> None:
     assert _cli("store", "init", str(root))[0] == 0
     _assert_init_ran(root)
     assert _cli("store", "commit", "-m", "first")[0] == 0
-    _assert_flow_ran(root)
+    _assert_flow_ran(root, member="alpha")
 
     real_pin = _git_out(root, "rev-parse", "HEAD:alpha")
     bogus = "0" * 40
@@ -1097,7 +1147,16 @@ def test_break_19_member_found_at_its_path_not_its_name(two_member_ws: Path, tmp
     assert rc == 0, out
     # PARSED, not a substring heuristic: the row asserts on the members list by PATH, and
     # separately that a lookup by NAME resolves to nothing.
-    data = json.loads(out)
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError as exc:
+        # ASSERTED FIRST. A JSONDecodeError is not an AssertionError, so it would
+        # surface as a harness defect rather than as "the verb is unbuilt" -- and the
+        # row's own subject is a PATH lookup, which it can only measure if the payload
+        # parsed. Failing here names the precondition instead of the parser.
+        raise AssertionError(
+            f"`store status --json` must emit JSON; got {out[:200]!r}"
+        ) from exc
     members = data.get("members") or data.get("member") or []
     paths = {m.get("path") for m in members if isinstance(m, dict)}
     names = {m.get("name") for m in members if isinstance(m, dict)}

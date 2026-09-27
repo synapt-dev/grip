@@ -18,7 +18,7 @@ from . import config as config_mod
 from . import gitops
 from . import grip as grip_mod
 from .gitops import git, repo_dirty
-from .spec_apply import unit_member_path
+from .spec_apply import unit_member_path, validate_grip_toml
 from .workspace_guidance import missing_gr2_workspace_guidance
 
 grip_app = typer.Typer(help="Grip object model: workspace snapshots and history")
@@ -266,16 +266,35 @@ def _native_members(root: Path) -> list[dict[str, str]]:
         # directly so materialize can populate those members before checkout.
         spec = _store_git(root, "show", "HEAD:grip.toml").stdout
         data = tomllib.loads(spec)
-    members = data.get("member", [])
+    members = data.get("members", [])
     if not isinstance(members, list) or not members:
         raise RuntimeError("grip.toml has no members")
-    return [dict(member) for member in members]
+    result: list[dict[str, str]] = []
+    for member in members:
+        item = dict(member)
+        remotes = item.pop("remotes", {})
+        if not isinstance(remotes, dict) or not isinstance(remotes.get("origin"), str):
+            raise NativeStoreRefusal(f"{item.get('name', 'member')} has no origin remote", 4)
+        item["remote"] = remotes["origin"]
+        result.append(item)
+    return result
 
 
 def _write_native_members(root: Path, members: list[dict[str, str]]) -> None:
-    lines = ["version = 0", ""]
+    lines = ["schema_version = 1", f"workspace_name = {json.dumps(root.name)}", ""]
     for member in members:
-        lines.extend(["[[member]]", f"name = {json.dumps(member['name'])}", f"path = {json.dumps(member['path'])}", f"remote = {json.dumps(member['remote'])}", f"pin = {json.dumps(member['pin'])}", ""])
+        lines.extend([
+            "[[members]]",
+            f"name = {json.dumps(member['name'])}",
+            f"path = {json.dumps(member['path'])}",
+            f"upstream = {json.dumps(member.get('upstream', 'origin/main'))}",
+            f"ref = {json.dumps(member.get('ref', 'main'))}",
+            f"pin = {json.dumps(member['pin'])}",
+            'mode = "full"',
+            "[members.remotes]",
+            f"origin = {json.dumps(member['remote'])}",
+            "",
+        ])
     (root / "grip.toml").write_text("\n".join(lines))
 
 
@@ -315,7 +334,7 @@ def _native_store_init(root: Path) -> None:
         url = remote.stdout.strip()
         if _url_has_credentials(url):
             raise _credential_refusal(path.name)
-        members.append({"name": path.name, "path": path.name, "remote": url, "pin": _store_git(path, "rev-parse", "HEAD").stdout.strip()})
+        members.append({"name": path.name, "path": path.name, "remote": url, "upstream": "origin/main", "ref": "main", "pin": _store_git(path, "rev-parse", "HEAD").stdout.strip()})
     if not members:
         raise RuntimeError("no sibling git repositories found to store")
     _store_git(root, "init")
@@ -340,6 +359,36 @@ def _native_store_commit(root: Path, message: str) -> None:
     for member in changed:
         _store_git(root, "update-index", "--add", "--cacheinfo", f"160000,{member['pin']},{member['path']}")
     _store_git(root, "-c", "user.name=gr2", "-c", "user.email=gr2@example.invalid", "commit", "-m", message)
+
+
+def _native_store_check(root: Path) -> list[dict[str, str]]:
+    """Verify the committed root pins against each live member upstream."""
+    issues = validate_grip_toml(root)
+    if issues:
+        raise NativeStoreRefusal(f"grip.toml schema invalid: {issues[0].message}", 4)
+    checked: list[dict[str, str]] = []
+    for member in _native_members(root):
+        path = root / member["path"]
+        upstream = member["upstream"]
+        remote, separator, branch = upstream.partition("/")
+        if not separator or not remote or not branch:
+            raise NativeStoreRefusal(f"{member['name']} has invalid upstream {upstream!r}", 4)
+        fetched = _store_git(path, "fetch", remote, check=False)
+        if fetched.returncode:
+            raise NativeStoreRefusal(f"{member['name']} cannot fetch {remote}", 5)
+        head = _store_git(path, "rev-parse", "HEAD").stdout.strip()
+        if _store_git(path, "merge-base", "--is-ancestor", head, upstream, check=False).returncode:
+            raise NativeStoreRefusal(
+                f"{member['name']} pin {head} is not on {upstream}; push it first", 3
+            )
+        tree = _store_git(root, "ls-tree", "HEAD", "--", member["path"]).stdout.strip().split()
+        gitlink = tree[2] if len(tree) >= 3 else ""
+        if gitlink != member["pin"]:
+            raise NativeStoreRefusal(
+                f"{member['name']} gitlink {gitlink or '<missing>'} disagrees with pin {member['pin']}", 4
+            )
+        checked.append({"name": member["name"], "pin": member["pin"], "upstream": upstream, "state": "upstream"})
+    return checked
 
 
 def _native_store_materialize(root: Path) -> None:
@@ -402,6 +451,25 @@ def grip_commit_cmd(
         raise typer.Exit(code=1)
     if json_output:
         typer.echo(json.dumps({"status": "committed", "root_commit": _store_git(Path.cwd(), "rev-parse", "HEAD").stdout.strip()}))
+
+
+@grip_app.command("check")
+def grip_check_cmd(
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Verify root gitlinks and member coverage against live upstreams."""
+    try:
+        members = _native_store_check(Path.cwd())
+    except NativeStoreRefusal as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=exc.code)
+    except RuntimeError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1)
+    if json_output:
+        typer.echo(json.dumps({"status": "checked", "members": members}))
+    else:
+        typer.echo(f"Checked {len(members)} member(s)")
 
 
 @grip_app.command("materialize")

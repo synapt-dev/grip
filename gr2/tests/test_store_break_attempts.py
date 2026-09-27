@@ -287,10 +287,24 @@ def _assert_flow_ran(root: Path, member: str | None = None) -> None:
     A truthiness test on `.stdout.strip()` is therefore TRUE on precisely the broken tree this
     asserts against, and cannot fail. The first version of this assertion was written that way
     and was inert; the probe in the commit that follows it caught that.
+
+    AND THE SAME RULE ONE LINE UP, which was the last place it had not been applied. `git
+    rev-parse HEAD` echoes its argument too: on a repo with NO commit it is `rc=128,
+    stdout='HEAD'`, so asserting the bare stdout passed on exactly the tree its own message
+    names -- `store init` writing grip.toml and creating the repo while
+    `store commit` never commits is the realistic half-built state, and it is reachable. The head
+    assertion now checks the exit status for the same reason the member assertion below does. A
+    sweep of every `check=False` site and every truthiness assertion in this file found this to
+    be the single remaining instance; the file already carried the correct idiom twice (the
+    section-8 control's `--verify -q HEAD`, and the rc check below), so this was a missed
+    application rather than an unknown technique.
     """
     assert (root / "grip.toml").is_file(), f"store init must have written grip.toml under {root}"
-    head = _git(root, "rev-parse", "HEAD", check=False).stdout.strip()
-    assert head, f"store commit must have made a root commit in {root}"
+    head = _git(root, "rev-parse", "HEAD", check=False)
+    assert head.returncode == 0, (
+        f"store commit must have made a root commit in {root}; "
+        f"`git rev-parse HEAD` exited {head.returncode}: {head.stderr.strip()}"
+    )
     if member is not None:
         link = _git(root, "rev-parse", f"HEAD:{member}", check=False)
         assert link.returncode == 0, (

@@ -387,7 +387,10 @@ def grip_init_cmd(
 
 
 @grip_app.command("commit")
-def grip_commit_cmd(message: str = typer.Option(..., "--message", "-m")) -> None:
+def grip_commit_cmd(
+    message: str = typer.Option(..., "--message", "-m"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
     """Record origin-covered member pins in the root git tree."""
     try:
         _native_store_commit(Path.cwd(), message)
@@ -397,6 +400,8 @@ def grip_commit_cmd(message: str = typer.Option(..., "--message", "-m")) -> None
     except RuntimeError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1)
+    if json_output:
+        typer.echo(json.dumps({"status": "committed", "root_commit": _store_git(Path.cwd(), "rev-parse", "HEAD").stdout.strip()}))
 
 
 @grip_app.command("materialize")

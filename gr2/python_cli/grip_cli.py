@@ -422,6 +422,12 @@ def _native_store_log(root: Path, max_count: int) -> list[dict[str, object]]:
     return entries
 
 
+def _native_store_diff(root: Path, ref_a: str, ref_b: str) -> list[dict[str, object]]:
+    before = _native_members_at(root, ref_a)
+    after = _native_members_at(root, ref_b)
+    return [{"name": name, "old_pin": before.get(name), "new_pin": after.get(name), "changed": before.get(name) != after.get(name)} for name in sorted(set(before) | set(after))]
+
+
 def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[str, object]]:
     """Render every member's working state without stopping at the first bad row."""
     rows: list[dict[str, str | None]] = []
@@ -750,6 +756,15 @@ def grip_diff_cmd(
 ) -> None:
     """Show changes between two grip snapshots."""
     workspace_root = workspace_root.resolve()
+
+    if (workspace_root / "grip.toml").is_file():
+        members = _native_store_diff(workspace_root, ref_a, ref_b)
+        if json_output:
+            typer.echo(json.dumps({"members": members}))
+        else:
+            for member in members:
+                typer.echo(f"{member['name']} {member['old_pin']} -> {member['new_pin']}")
+        return
 
     _validate_grip_dir(workspace_root)
 

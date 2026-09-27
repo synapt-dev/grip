@@ -1245,7 +1245,7 @@ def spec_validate(
 ) -> None:
     """Validate the current workspace spec."""
     workspace_root = _resolve_workspace_root(workspace_root)
-    issues = spec_apply.validate_spec(workspace_root)
+    issues = spec_apply.validate_grip_toml(workspace_root) if (workspace_root / "grip.toml").exists() else spec_apply.validate_spec(workspace_root)
     payload = {
         "workspace_root": str(workspace_root),
         "valid": not any(issue.level == "error" for issue in issues),

@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["schema_version", "workspace_name", "members"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "workspace_name": {"type": "string", "minLength": 1},
+    "members": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["name", "path", "upstream", "ref", "pin", "mode", "remotes"], "properties": {"name": {"type": "string"}, "path": {"type": "string"}, "upstream": {"type": "string"}, "ref": {"type": "string"}, "pin": {"type": "string", "pattern": "^[0-9a-f]{40}$"}, "mode": {"const": "full"}, "remotes": {"type": "object", "required": ["origin"], "properties": {"origin": {"type": "string"}}}}}}
+  }
+}

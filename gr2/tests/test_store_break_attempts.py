@@ -274,19 +274,28 @@ def _assert_flow_ran(root: Path, member: str | None = None) -> None:
     and a broken harness are indistinguishable.
 
     `member` names a gitlink the CALLING row is about to read with
-    `git rev-parse HEAD:<member>`. That read is SILENT when the entry is absent: it prints
-    nothing and exits non-zero. A row that follows it with `assert pin in text` then finds
-    `"" in text` TRUE of every possible string and passes, vacuously, on exactly the broken
-    fixture it exists to catch. Passing the name here is what makes that read loud.
+    `git rev-parse HEAD:<member>`. Asserting it here is what keeps that row's death at a
+    NAMED assertion rather than a foreign exception type: the read is made through
+    `_git_out`, which defaults to `check=True`, so on a root whose gitlink the verb never
+    wrote it raises `CalledProcessError` -- the exact class the file's `raises=AssertionError`
+    discipline exists to exclude.
+
+    THE CHECK IS THE EXIT STATUS, NOT TRUTHINESS, and that is load-bearing. Measured on this
+    host: `git rev-parse HEAD:<absent>` does NOT print nothing for an unresolvable path. It
+    ECHOES THE ARGUMENT to stdout and exits 128 --
+    `rc=128, stdout='HEAD:<member>', stderr="fatal: path '<member>' does not exist in 'HEAD'"`.
+    A truthiness test on `.stdout.strip()` is therefore TRUE on precisely the broken tree this
+    asserts against, and cannot fail. The first version of this assertion was written that way
+    and was inert; the probe in the commit that follows it caught that.
     """
     assert (root / "grip.toml").is_file(), f"store init must have written grip.toml under {root}"
     head = _git(root, "rev-parse", "HEAD", check=False).stdout.strip()
     assert head, f"store commit must have made a root commit in {root}"
     if member is not None:
-        link = _git(root, "rev-parse", f"HEAD:{member}", check=False).stdout.strip()
-        assert link, (
-            f"store commit must have written a gitlink for {member!r} in {root}; without it "
-            f"the row's `HEAD:{member}` read is empty and its pin assertion passes vacuously"
+        link = _git(root, "rev-parse", f"HEAD:{member}", check=False)
+        assert link.returncode == 0, (
+            f"store commit must have written a gitlink for {member!r} in {root}; "
+            f"`git rev-parse HEAD:{member}` exited {link.returncode}: {link.stderr.strip()}"
         )
 
 

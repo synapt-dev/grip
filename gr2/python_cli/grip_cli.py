@@ -391,6 +391,31 @@ def _native_store_check(root: Path) -> list[dict[str, str]]:
     return checked
 
 
+def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], int]:
+    """Render every member's working state without stopping at the first bad row."""
+    rows: list[dict[str, str | None]] = []
+    result_code = 0
+    for member in _native_members(root):
+        path = root / member["path"]
+        top = _store_git(path, "rev-parse", "--show-toplevel", check=False)
+        is_checkout = top.returncode == 0 and Path(top.stdout.strip()).resolve() == path.resolve()
+        if not is_checkout:
+            rows.append({"name": member["name"], "pin": member["pin"], "head": None, "state": "cannot-measure"})
+            result_code = max(result_code, 5)
+            continue
+        head = _store_git(path, "rev-parse", "HEAD", check=False)
+        if head.returncode:
+            rows.append({"name": member["name"], "pin": member["pin"], "head": None, "state": "cannot-measure"})
+            result_code = max(result_code, 5)
+            continue
+        head_sha = head.stdout.strip()
+        state = "upstream" if head_sha == member["pin"] else "unpinned"
+        if state == "unpinned":
+            result_code = max(result_code, 4)
+        rows.append({"name": member["name"], "pin": member["pin"], "head": head_sha, "state": state})
+    return rows, result_code
+
+
 def _native_store_materialize(root: Path) -> list[dict[str, str]]:
     materialized: list[dict[str, str]] = []
     for member in _native_members(root):
@@ -490,6 +515,28 @@ def grip_check_cmd(
         typer.echo(json.dumps({"status": "checked", "members": members}))
     else:
         typer.echo(f"Checked {len(members)} member(s)")
+
+
+@grip_app.command("status")
+def grip_status_cmd(
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Show every member's pin and working HEAD."""
+    try:
+        members, status_code = _native_store_status(Path.cwd())
+    except NativeStoreRefusal as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=exc.code)
+    except RuntimeError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1)
+    if json_output:
+        typer.echo(json.dumps({"status": "status", "members": members}))
+    else:
+        for member in members:
+            typer.echo(f"{member['name']} {member['state']} pin={member['pin']} head={member['head']}")
+    if status_code:
+        raise typer.Exit(code=status_code)
 
 
 @grip_app.command("materialize")

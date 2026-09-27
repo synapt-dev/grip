@@ -1135,8 +1135,8 @@ def test_break_21_tracked_non_member_root_folder_is_untouched(two_member_ws: Pat
     _assert_init_ran(root)
     # AFTER init, never before: section 3 is what makes the root a git repo, so a git
     # config against it earlier fails with exit 128 and the row dies in its own setup.
-    _git(root, "configure", "user.email", "t@e.invalid")
-    _git(root, "configure", "user.name", "t")
+    _git(root, "config", "user.email", "t@e.invalid")
+    _git(root, "config", "user.name", "t")
     # MAKE IT TRACKED, or the row proves nothing. Section 3a's allow-list leaves `config/`
     # IGNORED, so without this the folder the row calls "tracked" does not exist as a
     # tracked path at all and the row can pass while nothing is exercised.

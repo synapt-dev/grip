@@ -10,7 +10,7 @@ import json
 import shutil
 import subprocess
 import tomllib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
 import typer
@@ -410,24 +410,172 @@ def _credential_refusal(name: str) -> NativeStoreRefusal:
     )
 
 
-def _discover_members(root: Path) -> list[dict[str, str]]:
-    """The sibling clones `store init` derives its members from, gr1 layout."""
+def _member_from_path(root: Path, rel: str, name: str) -> dict[str, str]:
+    """The member record for one checkout, wherever its path came from.
+
+    One reader for all three sources (a declared spec, an explicit `--member`, direct-child
+    discovery), so the credential refusal, the origin requirement and the pin read cannot
+    drift between them.
+    """
+    path = root / rel
+    remote = _store_git(path, "remote", "get-url", "origin", check=False)
+    if remote.returncode:
+        raise NativeStoreRefusal(
+            f"{rel} has no origin remote; store init cannot pin a member it cannot fetch", 4
+        )
+    url = remote.stdout.strip()
+    if _url_has_credentials(url):
+        raise _credential_refusal(rel)
+    return {
+        "name": name,
+        "path": rel,
+        "remote": url,
+        "upstream": "origin/main",
+        "ref": "main",
+        "pin": _store_git(path, "rev-parse", "HEAD").stdout.strip(),
+    }
+
+
+def _declared_member_paths(root: Path) -> list[tuple[str, str]]:
+    """(name, path) for each member the root's OWN spec declares, or [] when it declares none.
+
+    The alpha spec (`.grip/workspace_spec.toml`, `[[repos]]`) is read because it is what a real
+    workspace carries BEFORE it is adopted: a real workspace declares its members' nested
+    paths (`core/config`, `team-b/config`) there. Section 3a's rule that init never edits an adopted root's own
+    files is untouched -- this only READS the declaration.
+    """
+    spec = root / ".grip" / "workspace_spec.toml"
+    if not spec.is_file():
+        return []
+    try:
+        doc = tomllib.loads(spec.read_text())
+    except tomllib.TOMLDecodeError as exc:
+        raise NativeStoreRefusal(f"the workspace spec at {spec} is not readable TOML: {exc}", 4)
+    declared: list[tuple[str, str]] = []
+    for entry in doc.get("repos", []):
+        rel = str(entry.get("path", "")).strip()
+        if not rel:
+            continue
+        declared.append((str(entry.get("name", "")).strip() or _name_for_path(rel), rel))
+    return declared
+
+
+def _name_for_path(rel: str) -> str:
+    """`core/config` -> `core-config`: the name the alpha spec in this workspace already uses."""
+    return rel.strip("/").replace("/", "-")
+
+
+def _normalise_member_path(root: Path, rel: str) -> str:
+    """The member path the store will record, or a refusal at 4 that names it.
+
+    A member path becomes a gitlink path, so it has to be one git can write: relative, inside
+    the root, and free of a `..` part. Measured 2026-09-28 -- `--member ../outside` inited rc 0
+    and then failed at `store commit` rc 5 with `update-index: --cacheinfo cannot add
+    ../outside`, i.e. the verb built a store that could never commit.
+    """
+    posix = PurePosixPath(rel.strip())
+    normalised = str(posix)
+    if posix.is_absolute() or normalised in ("", ".") or ".." in posix.parts:
+        raise NativeStoreRefusal(
+            f"member path {rel!r} is not usable: it must be a relative path inside the root",
+            4,
+        )
+    target = (root / normalised).resolve()
+    root_resolved = root.resolve()
+    if target != root_resolved and root_resolved not in target.parents:
+        raise NativeStoreRefusal(
+            f"member path {rel!r} resolves outside the root ({target})",
+            4,
+        )
+    return normalised
+
+
+def _is_member_checkout(root: Path, rel: str) -> bool:
+    path = root / rel
+    if not path.is_dir():
+        return False
+    top = _store_git(path, "rev-parse", "--show-toplevel", check=False)
+    return top.returncode == 0 and Path(top.stdout.strip()).resolve() == path.resolve()
+
+
+def _discover_members(root: Path, declared: list[str] | None = None) -> list[dict[str, str]]:
+    """The member checkouts `store init` records, in the order the sources are trusted.
+
+    ⚠ PATHS THE ROOT DECLARES COME BEFORE ANY GUESS (measured 2026-09-28 on a root whose
+    members sit one level down). This used to iterate `root.iterdir()` and nothing else, so a
+    root whose members sit one level down (`core/config`, `team-b/config`) refused with "no
+    sibling git repositories found to store" while its own spec named both paths. The depth-1/depth-2 control that found
+    it: the SAME member clone moved to depth 1 inited rc 0.
+
+    Order: explicit `--member` paths, then the root's declared spec, then direct children. A
+    source that names members is never silently answered with "nothing found" -- if a named
+    path is not a checkout, the refusal NAMES it, because that message is the only thing a
+    stranger has to go on.
+    """
+    if declared:
+        # ⚠ A NAMED PATH GETS THE SAME CHECKS AS A DECLARED ONE (found by two readers, 2026-09-28).
+        # Without the checkout check, `--member plain` on a plain folder exited 0 and recorded the
+        # ROOT's origin and HEAD as member "plain": `rev-parse --show-toplevel` inside a folder
+        # that is not a checkout resolves to the ENCLOSING root, so the answer looked like a
+        # member with an origin. And without the path checks, `--member ../outside` exited 0 and
+        # built a store that could never commit -- `update-index --cacheinfo cannot add
+        # ../outside` at rc 5, in git's own words. Every refusal here happens BEFORE a record is
+        # built, and every one NAMES the path: "no origin remote" or a raw git fatal describes a
+        # symptom the caller cannot act on.
+        entries = [(_name_for_path(rel), rel) for rel in declared]
+    else:
+        spec_members = _declared_member_paths(root)
+        if not spec_members:
+            members: list[dict[str, str]] = []
+            for path in sorted(root.iterdir()):
+                if not path.is_dir() or path.name.startswith("."):
+                    continue
+                if not _is_member_checkout(root, path.name):
+                    continue
+                members.append(_member_from_path(root, path.name, path.name))
+            return members
+        entries = [(name, rel) for name, rel in spec_members]
+
+    resolved: list[tuple[str, str]] = []
+    seen_paths: set[str] = set()
+    seen_names: dict[str, str] = {}
+    problems: list[str] = []
+    for name, rel in entries:
+        try:
+            normalised = _normalise_member_path(root, rel)
+        except NativeStoreRefusal as exc:
+            problems.append(str(exc))
+            continue
+        if normalised in seen_paths:
+            # The SAME path named twice is one member, not a refusal: the caller has said the
+            # same thing twice, which is a de-duplication and not a mistake to bounce.
+            continue
+        if name in seen_names:
+            problems.append(
+                f"{seen_names[name]!r} and {normalised!r} both resolve to the member name {name!r}"
+            )
+            continue
+        if not _is_member_checkout(root, normalised):
+            problems.append(
+                f"member path {normalised!r} is not a git checkout: a member is a checkout with "
+                f"its own origin, not a folder"
+            )
+            continue
+        seen_paths.add(normalised)
+        seen_names[name] = normalised
+        resolved.append((name, normalised))
+    # ONE refusal naming EVERY problem: a caller fixing paths one refusal at a time is the
+    # failure mode this replaces, and the paths are the only thing they can act on.
+    if problems:
+        raise NativeStoreRefusal("cannot use these member paths: " + "; ".join(problems), 4)
+    return [_member_from_path(root, rel, name) for name, rel in resolved]
     members: list[dict[str, str]] = []
     for path in sorted(root.iterdir()):
         if not path.is_dir() or path.name.startswith("."):
             continue
-        top = _store_git(path, "rev-parse", "--show-toplevel", check=False)
-        if top.returncode or Path(top.stdout.strip()).resolve() != path.resolve():
+        if not _is_member_checkout(root, path.name):
             continue
-        remote = _store_git(path, "remote", "get-url", "origin", check=False)
-        if remote.returncode:
-            raise NativeStoreRefusal(
-                f"{path.name} has no origin remote; store init cannot pin a member it cannot fetch", 4
-            )
-        url = remote.stdout.strip()
-        if _url_has_credentials(url):
-            raise _credential_refusal(path.name)
-        members.append({"name": path.name, "path": path.name, "remote": url, "upstream": "origin/main", "ref": "main", "pin": _store_git(path, "rev-parse", "HEAD").stdout.strip()})
+        members.append(_member_from_path(root, path.name, path.name))
     return members
 
 
@@ -518,7 +666,7 @@ def _write_gitignore(root: Path, members: list[dict[str, str]]) -> None:
     root.joinpath(".gitignore").write_text("\n".join(lines) + "\n")
 
 
-def _native_store_init(root: Path) -> None:
+def _native_store_init(root: Path, member_paths: list[str] | None = None) -> None:
     if (root / ".git").exists() and (root / "grip.toml").exists():
         _refuse_init_disagreement(root)
         return
@@ -537,7 +685,7 @@ def _native_store_init(root: Path) -> None:
                 f"its own repo -- clone or move the workspace out before store init",
                 4,
             )
-    members = _discover_members(root)
+    members = _discover_members(root, declared=member_paths)
     if not members:
         raise NativeStoreRefusal("no sibling git repositories found to store", 4)
     # Section 3a: the allow-list is written ONLY when init CREATES the root repo. An adopted
@@ -945,12 +1093,21 @@ def _native_store_migrate(root: Path, *, dry_run: bool = False) -> dict[str, obj
 @grip_app.command("init")
 def grip_init_cmd(
     workspace_root: Path | None = typer.Argument(None),
+    member_paths: list[str] | None = typer.Option(
+        None,
+        "--member",
+        help=(
+            "Declare a member checkout by its path relative to the root (repeatable). Named "
+            "paths win over the root's own spec and over sibling discovery; a named path that "
+            "is not a checkout refuses the verb."
+        ),
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Initialize a native store at cwd or the supplied root."""
     root = Path.cwd() if workspace_root is None else workspace_root.resolve()
     try:
-        _native_store_init(root)
+        _native_store_init(root, member_paths=member_paths)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)

@@ -522,7 +522,7 @@ def _discover_members(root: Path, declared: list[str] | None = None) -> list[dic
         # ../outside` at rc 5, in git's own words. Every refusal here happens BEFORE a record is
         # built, and every one NAMES the path: "no origin remote" or a raw git fatal describes a
         # symptom the caller cannot act on.
-        entries = [(_name_for_path(rel), rel) for rel in declared]
+        entries = [(None, rel) for rel in declared]
     else:
         spec_members = _declared_member_paths(root)
         if not spec_members:
@@ -539,13 +539,18 @@ def _discover_members(root: Path, declared: list[str] | None = None) -> list[dic
     resolved: list[tuple[str, str]] = []
     seen_paths: set[str] = set()
     seen_names: dict[str, str] = {}
+    seen_targets: dict[Path, str] = {}
     problems: list[str] = []
-    for name, rel in entries:
+    root_resolved = root.resolve()
+    for given_name, rel in entries:
         try:
             normalised = _normalise_member_path(root, rel)
         except NativeStoreRefusal as exc:
             problems.append(str(exc))
             continue
+        # ⚠ THE NAME COMES FROM THE NORMALISED PATH, not the caller's spelling: `./core/config`
+        # used to name a member `.-core-config`. A declared spec's own name wins where it gave one.
+        name = given_name or _name_for_path(normalised)
         if normalised in seen_paths:
             # The SAME path named twice is one member, not a refusal: the caller has said the
             # same thing twice, which is a de-duplication and not a mistake to bounce.
@@ -553,6 +558,21 @@ def _discover_members(root: Path, declared: list[str] | None = None) -> list[dic
         if name in seen_names:
             problems.append(
                 f"{seen_names[name]!r} and {normalised!r} both resolve to the member name {name!r}"
+            )
+            continue
+        target = (root / normalised).resolve()
+        # ⚠ A MEMBER PATH MUST NOT BE THE ROOT OR AN ALIAS OF ANOTHER MEMBER (found by the reads
+        # on the range that added the path checks; both cases are the base's behaviour too).
+        # `self -> .` resolved to the root and was recorded as a member carrying the ROOT's
+        # origin and HEAD; `alias -> core/config` is one checkout claiming two names. Both left
+        # init exiting 0 and `store commit` refusing them at 4 afterwards.
+        if target == root_resolved:
+            problems.append(f"member path {normalised!r} resolves to the ROOT itself, not a member")
+            continue
+        if target in seen_targets:
+            problems.append(
+                f"member path {normalised!r} resolves to the same checkout as "
+                f"{seen_targets[target]!r}: one checkout cannot be two members"
             )
             continue
         if not _is_member_checkout(root, normalised):
@@ -563,20 +583,13 @@ def _discover_members(root: Path, declared: list[str] | None = None) -> list[dic
             continue
         seen_paths.add(normalised)
         seen_names[name] = normalised
+        seen_targets[target] = normalised
         resolved.append((name, normalised))
     # ONE refusal naming EVERY problem: a caller fixing paths one refusal at a time is the
     # failure mode this replaces, and the paths are the only thing they can act on.
     if problems:
         raise NativeStoreRefusal("cannot use these member paths: " + "; ".join(problems), 4)
     return [_member_from_path(root, rel, name) for name, rel in resolved]
-    members: list[dict[str, str]] = []
-    for path in sorted(root.iterdir()):
-        if not path.is_dir() or path.name.startswith("."):
-            continue
-        if not _is_member_checkout(root, path.name):
-            continue
-        members.append(_member_from_path(root, path.name, path.name))
-    return members
 
 
 def _refuse_init_disagreement(root: Path, members: list[dict[str, str]] | None = None) -> None:

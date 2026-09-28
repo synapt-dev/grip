@@ -123,7 +123,7 @@ def test_D_guard_fires_on_the_project_review_lane_layout(tmp_path):
     ws = tmp_path / "ws"
     lane = ws / "reviews" / "atlas" / "review-7" / "repos" / "grip"
     lane.mkdir(parents=True)
-    receipt = ws / ".grip" / "state" / "reviews" / "atlas" / "review-7" / "grip.json"
+    receipt = review_record_paths(ws, "atlas", "review-7", "grip", lane).current
     receipt.parent.mkdir(parents=True)
     receipt.write_text(json.dumps({"repo": "whatever", "base": "0" * 40, "head": "0" * 40,
                                    "lane_kind": "review-ephemeral"}, indent=2) + "\n")
@@ -187,7 +187,7 @@ def test_C_control_the_guard_still_fires_on_a_canonical_lane(tmp_path):
     ws = tmp_path / "ws"
     lane = ws / ".grip" / "state" / "lanes" / "atlas" / "review-7" / "repos" / "grip"
     lane.mkdir(parents=True)
-    receipt = ws / ".grip" / "state" / "reviews" / "atlas" / "review-7" / "grip.json"
+    receipt = review_record_paths(ws, "atlas", "review-7", "grip", lane).current
     receipt.parent.mkdir(parents=True)
     receipt.write_text(json.dumps({"repo": "whatever", "base": "0" * 40, "head": "0" * 40,
                                    "lane_kind": "review-ephemeral"}, indent=2) + "\n")
@@ -212,8 +212,16 @@ def test_control_close_still_works_on_a_canonical_receipt(tmp_path):
 
 @pytest.mark.parametrize("receipt", [None, "{"])
 def test_pointer_without_a_readable_receipt_refuses_commit(tmp_path, receipt):
+    """A pointer naming the canonical coordinate with NO receipt there, and with a
+    CORRUPT one, must both refuse.
+
+    The target is DERIVED, not spelled. A literal coordinate silently changes what
+    this row proves the moment the receipts move: the pointer would then be rejected
+    as a non-canonical marker rather than as a missing or corrupt receipt, and the
+    row would keep PASSING for the wrong reason -- a degraded witness.
+    """
     repo = tmp_path / "repo"; _run(tmp_path, "init", "-q", str(repo))
-    target = tmp_path / "ws" / ".grip" / "state" / "reviews" / "atlas" / "review-7" / "grip.json"
+    target = review_record_paths(tmp_path / "ws", "atlas", "review-7", "grip", repo).current
     target.parent.mkdir(parents=True)
     if receipt is not None:
         target.write_text(receipt)

@@ -255,13 +255,58 @@ def test_review_record_is_the_pin_delta_triple_plus_lane_kind(review_world):
     assert str(review_world["lane"]) not in data["repo"]
 
 
+def _v6_receipt(world) -> Path:
+    """The v6 receipt coordinate: .grip/state/reviews/<owner>/<lane>/<member>.json
+
+    Written literally, not via the helper under test, so the helper and the spec
+    are two independent witnesses of the same coordinate.
+    """
+    return (world["workspace_root"] / ".grip" / "state" / "reviews"
+            / "atlas" / "review-7" / "grip.json")
+
+
+def test_reopen_the_same_lane_name_finds_the_receipt_at_the_new_coordinate(review_world):
+    """Open, exit, and RE-OPEN the same lane name: the second open succeeds and the
+    receipt is found at the new coordinate.
+
+    RED until the record coordinate moves. The re-open itself already works on the
+    base tree; what is absent is the receipt at .grip/state/reviews/<owner>/<lane>/
+    <member>.json, because the base keeps it under state/lanes/<owner>/<lane>/review/.
+    """
+    _open(review_world)                      # open, then let the handle go (exit)
+    receipt = _v6_receipt(review_world)
+    assert receipt.is_file(), f"receipt absent at the v6 coordinate: {receipt}"
+    assert _new_record(review_world) == receipt, (
+        "the record-path helper and the literal v6 coordinate disagree"
+    )
+
+    again = _open(review_world)              # RE-OPEN the same lane name
+    assert isinstance(again, ReviewRecord)
+    assert again.head == review_world["head_sha"]
+    assert receipt.is_file(), "re-open lost the receipt at the v6 coordinate"
+
+
 def test_open_writes_only_the_workspace_record_not_member_git(review_world):
+    """The member .git holds ONLY grip-review.pointer, and its content is exactly
+    the receipt path plus one newline -- never a copy of the receipt."""
     _open(review_world)
-    receipt = _new_record(review_world)
-    assert receipt.is_file()
-    pointers = list((review_world["lane"] / ".git").glob("grip-*"))
-    assert pointers == [review_record_pointer_path(review_world["lane"])]
-    assert pointers[0].read_text() == str(receipt) + "\n"
+    record = _new_record(review_world)
+    assert record.is_file()
+    assert record == _v6_receipt(review_world)
+
+    git_dir = review_world["lane"] / ".git"
+    strays = sorted(p.name for p in git_dir.glob("grip-*"))
+    assert strays == ["grip-review.pointer"], (
+        f"member .git must hold only grip-review.pointer, found {strays}"
+    )
+    body = (git_dir / "grip-review.pointer").read_text()
+    assert body == str(record) + "\n", (
+        f"pointer must be exactly the receipt path plus one newline, got {body!r}"
+    )
+    assert not body.lstrip().startswith("{"), "pointer must not carry receipt content"
+    assert not (git_dir / "grip-review.json").exists(), (
+        "no JSON receipt may live in the member .git"
+    )
 
 
 def test_open_refuses_missing_lane_coordinate_before_materializing(review_world):

@@ -1,0 +1,414 @@
+arg   add paths <str>                                                 stable
+arg   apply workspace_root <str>                                      stable
+arg   branch name <str>                                               stable
+arg   config apply base_path <str>                                    stable
+arg   config restore ref <str>                                        stable
+arg   config restore workspace_root <str>                             stable
+arg   config show base_path <str>                                     stable
+arg   exec run command <str>                                          stable
+arg   exec run owner_unit <str>                                       stable
+arg   exec run workspace_root <str>                                   stable
+arg   exec status lane_name <str>                                     stable
+arg   exec status owner_unit <str>                                    stable
+arg   exec status workspace_root <str>                                stable
+arg   grip checkout ref <str>                                         stable
+arg   grip diff ref_a <str>                                           stable
+arg   grip diff ref_b <str>                                           stable
+arg   grip init workspace_root <str>                                  stable
+arg   hooks revoke member <str>                                       stable
+arg   hooks trust member <str>                                        stable
+arg   lane bind lane_name <str>                                       stable
+arg   lane bind owner_unit <str>                                      stable
+arg   lane bind workspace_root <str>                                  stable
+arg   lane create lane_name <str>                                     stable
+arg   lane create owner_unit <str>                                    stable
+arg   lane create workspace_root <str>                                stable
+arg   lane current owner_unit <str>                                   stable
+arg   lane current workspace_root <str>                               stable
+arg   lane enter lane_name <str>                                      stable
+arg   lane enter owner_unit <str>                                     stable
+arg   lane enter workspace_root <str>                                 stable
+arg   lane exit owner_unit <str>                                      stable
+arg   lane exit workspace_root <str>                                  stable
+arg   lane lease acquire lane_name <str>                              stable
+arg   lane lease acquire owner_unit <str>                             stable
+arg   lane lease acquire workspace_root <str>                         stable
+arg   lane lease release lane_name <str>                              stable
+arg   lane lease release owner_unit <str>                             stable
+arg   lane lease release workspace_root <str>                         stable
+arg   lane lease show lane_name <str>                                 stable
+arg   lane lease show owner_unit <str>                                stable
+arg   lane lease show workspace_root <str>                            stable
+arg   lane resolve operation_id <str>                                 stable
+arg   lane resolve owner_unit <str>                                   stable
+arg   lane resolve workspace_root <str>                               stable
+arg   plan workspace_root <str>                                       stable
+arg   pr checks lane_name <str>                                       stable
+arg   pr checks owner_unit <str>                                      stable
+arg   pr checks workspace_root <str>                                  stable
+arg   pr create lane_name <str>                                       stable
+arg   pr create owner_unit <str>                                      stable
+arg   pr create workspace_root <str>                                  stable
+arg   pr merge lane_name <str>                                        stable
+arg   pr merge owner_unit <str>                                       stable
+arg   pr merge workspace_root <str>                                   stable
+arg   pr status lane_name <str>                                       stable
+arg   pr status owner_unit <str>                                      stable
+arg   pr status workspace_root <str>                                  stable
+arg   repo hook-run repo_root <str>                                   stable
+arg   repo hook-run stage <str>                                       stable
+arg   repo hook-run workspace_root <str>                              stable
+arg   repo hooks repo_root <str>                                      stable
+arg   repo projection-run repo_root <str>                             stable
+arg   repo projection-run workspace_root <str>                        stable
+arg   repo status workspace_root <str>                                stable
+arg   review bind workspace_root <str>                                stable
+arg   review checkout-pr owner_unit <str>                             stable
+arg   review checkout-pr pr_number <str>                              stable
+arg   review checkout-pr repo <str>                                   stable
+arg   review checkout-pr workspace_root <str>                         stable
+arg   review close owner_unit <str>                                   stable
+arg   review close pr_number <str>                                    stable
+arg   review close repo <str>                                         stable
+arg   review close target <str>                                       stable
+arg   review close-gr lane_dir <str> (hidden)                         stable
+arg   review create-project lane_name <str>                           stable
+arg   review create-project owner_unit <str>                          stable
+arg   review create-project workspace_root <str>                      stable
+arg   review exit-gr owner_unit <str> (hidden)                        stable
+arg   review exit-gr review_root <str> (hidden)                       stable
+arg   review exit-gr workspace_root <str> (hidden)                    stable
+arg   review open pr_number <str>                                     stable
+arg   review open repo <str>                                          stable
+arg   review open target <str>                                        stable
+arg   review open workspace_root <str>                                stable
+arg   review open-gr commit <str> (hidden)                            stable
+arg   review open-gr workspace_root <str> (hidden)                    stable
+arg   review open-project commit <str> (hidden)                       stable
+arg   review open-project lane_name <str> (hidden)                    stable
+arg   review open-project owner_unit <str> (hidden)                   stable
+arg   review open-project workspace_root <str> (hidden)               stable
+arg   review rebind frozen_dir <str>                                  stable
+arg   review requirements pr_number <str>                             stable
+arg   review requirements repo <str>                                  stable
+arg   review requirements workspace_root <str>                        stable
+arg   review run lane_dir <str>                                       stable
+arg   review run pytest_args <str>                                    stable
+arg   review verify commit <str>                                      stable
+arg   review verify workspace_root <str>                              stable
+arg   spec show workspace_root <str>                                  stable
+arg   spec validate workspace_root <str>                              stable
+arg   store checkout ref <str>                                        stable
+arg   store diff ref_a <str>                                          stable
+arg   store diff ref_b <str>                                          stable
+arg   store init workspace_root <str>                                 stable
+arg   sync run workspace_root <str>                                   stable
+arg   sync status workspace_root <str>                                stable
+arg   target set branch <str>                                         stable
+arg   workspace bootstrap-gr1 workspace_root <str>                    stable
+arg   workspace convert-clone path <str>                              stable
+arg   workspace detect-gr1 workspace_root <str>                       stable
+arg   workspace gitinclude workspace_root <str>                       stable
+arg   workspace init workspace_root <str>                             stable
+arg   workspace init-from-topology workspace_root <str>               stable
+arg   workspace materialize workspace_root <str>                      stable
+arg   workspace migrate-gr1 workspace_root <str>                      stable
+arg   workspace migrate-lane-state workspace_root <str>               stable
+arg   workspace status workspace_root <str>                           stable
+flag  add --repo-path <str>                                           stable
+flag  apply --json                                                    stable
+flag  apply --manual-hooks                                            stable
+flag  apply --yes                                                     stable
+flag  branch --base/--from/--start-point <str>                        stable
+flag  branch --repo-path <str>                                        stable
+flag  commit --amend                                                  stable
+flag  commit --lane <str>                                             stable
+flag  commit --message/-m <str>                                       stable
+flag  commit --owner-unit <str>                                       stable
+flag  commit --repo-path <str>                                        stable
+flag  commit --workspace-root <str>                                   stable
+flag  config apply --json                                             stable
+flag  config apply --overlay-dir <str>                                stable
+flag  config restore --json                                           stable
+flag  config restore --overlay-dir <str>                              stable
+flag  config show --json                                              stable
+flag  config show --key/-k <str>                                      stable
+flag  config show --overlay-dir <str>                                 stable
+flag  config show --strict                                            stable
+flag  exec run --actor <str>                                          stable
+flag  exec run --json                                                 stable
+flag  exec run --lane <str>                                           stable
+flag  exec run --repos <str>                                          stable
+flag  exec run --ttl-seconds <str>                                    stable
+flag  exec status --actor <str>                                       stable
+flag  exec status --json                                              stable
+flag  exec status --repos <str>                                       stable
+flag  grip check --json                                               stable
+flag  grip checkout --json                                            stable
+flag  grip commit --json                                              stable
+flag  grip commit --message/-m <str>                                  stable
+flag  grip diff --json                                                stable
+flag  grip init --json                                                stable
+flag  grip init --member <str>                                        stable
+flag  grip log --json                                                 stable
+flag  grip log --max-count/-n <str>                                   stable
+flag  grip materialize --json                                         stable
+flag  grip migrate --dry-run                                          stable
+flag  grip migrate --json                                             stable
+flag  grip push --json                                                stable
+flag  grip snapshot --json (hidden)                                   stable
+flag  grip snapshot --message/-m <str> (hidden)                       stable
+flag  grip status --json                                              stable
+flag  hooks revoke --workspace-root <str>                             stable
+flag  hooks status --json                                             stable
+flag  hooks status --workspace-root <str>                             stable
+flag  hooks trust --json                                              stable
+flag  hooks trust --workspace-root <str>                              stable
+flag  lane bind --allow-local                                         stable
+flag  lane bind --base <str>                                          stable
+flag  lane bind --json                                                stable
+flag  lane create --bind <str>                                        stable
+flag  lane create --branch <str>                                      stable
+flag  lane create --command <str>                                     stable
+flag  lane create --manual-hooks                                      stable
+flag  lane create --repos <str>                                       stable
+flag  lane create --source <str>                                      stable
+flag  lane create --type <str>                                        stable
+flag  lane current --json                                             stable
+flag  lane enter --actor <str>                                        stable
+flag  lane enter --manual-hooks                                       stable
+flag  lane enter --notify-channel                                     stable
+flag  lane enter --recall                                             stable
+flag  lane exit --actor <str>                                         stable
+flag  lane exit --manual-hooks                                        stable
+flag  lane exit --notify-channel                                      stable
+flag  lane exit --recall                                              stable
+flag  lane lease acquire --actor <str>                                stable
+flag  lane lease acquire --force                                      stable
+flag  lane lease acquire --mode <str>                                 stable
+flag  lane lease acquire --ttl-seconds <str>                          stable
+flag  lane lease release --actor <str>                                stable
+flag  lane lease show --json                                          stable
+flag  lane resolve --actor <str>                                      stable
+flag  lane resolve --json                                             stable
+flag  lane resolve --resolution <str>                                 stable
+flag  plan --json                                                     stable
+flag  pr checks --json                                                stable
+flag  pr create --base <str>                                          stable
+flag  pr create --body <str>                                          stable
+flag  pr create --body-file <str>                                     stable
+flag  pr create --draft                                               stable
+flag  pr create --json                                                stable
+flag  pr create --platform <str>                                      stable
+flag  pr create --title <str>                                         stable
+flag  pr merge --json                                                 stable
+flag  pr merge --method/-m <str>                                      stable
+flag  pr status --json                                                stable
+flag  prune --execute                                                 stable
+flag  prune --remote <str>                                            stable
+flag  prune --repo-path <str>                                         stable
+flag  prune --target <str>                                            stable
+flag  push --force-with-lease                                         stable
+flag  push --remote <str>                                             stable
+flag  push --repo-path <str>                                          stable
+flag  push --set-upstream/-u                                          stable
+flag  repo hook-run --first-materialize                               stable
+flag  repo hook-run --json                                            stable
+flag  repo hook-run --manual                                          stable
+flag  repo hooks --json                                               stable
+flag  repo projection-run --json                                      stable
+flag  repo status --json                                              stable
+flag  repo status --policy <str>                                      stable
+flag  repo status --spec <str>                                        stable
+flag  review bind --base <str>                                        stable
+flag  review bind --body <str>                                        stable
+flag  review bind --from-range <str>                                  stable
+flag  review bind --head <str>                                        stable
+flag  review bind --path <str>                                        stable
+flag  review bind --ratified <str>                                    stable
+flag  review bind --ref <str>                                         stable
+flag  review bind --remote <str>                                      stable
+flag  review bind --repo <str>                                        stable
+flag  review bind --rows-json <str>                                   stable
+flag  review bind --source <str>                                      stable
+flag  review bind --title <str>                                       stable
+flag  review checkout-pr --actor <str>                                stable
+flag  review checkout-pr --branch <str>                               stable
+flag  review checkout-pr --enter                                      stable
+flag  review checkout-pr --json                                       stable
+flag  review checkout-pr --lane <str>                                 stable
+flag  review checkout-pr --manual-hooks                               stable
+flag  review close --json                                             stable
+flag  review close --lane <str>                                       stable
+flag  review close-gr --json (hidden)                                 stable
+flag  review create-project --carry-range                             stable
+flag  review create-project --json                                    stable
+flag  review exit-gr --actor <str> (hidden)                           stable
+flag  review exit-gr --json (hidden)                                  stable
+flag  review open --enter                                             stable
+flag  review open --json                                              stable
+flag  review open --lane <str>                                        stable
+flag  review open --lane-dir <str>                                    stable
+flag  review open --platform <str>                                    stable
+flag  review open --repo <str>                                        stable
+flag  review open --run <str>                                         stable
+flag  review open-gr --enter (hidden)                                 stable
+flag  review open-gr --json (hidden)                                  stable
+flag  review open-gr --lane-dir <str> (hidden)                        stable
+flag  review open-gr --repo <str> (hidden)                            stable
+flag  review open-project --allow-local (hidden)                      stable
+flag  review open-project --enter (hidden)                            stable
+flag  review open-project --json (hidden)                             stable
+flag  review open-project --local-source <str> (hidden)               stable
+flag  review open-project --prior-cwd <str> (hidden)                  stable
+flag  review open-project --sources-json <str> (hidden)               stable
+flag  review rebind --allow-public-ref                                stable
+flag  review rebind --json                                            stable
+flag  review rebind --out-dir <str>                                   stable
+flag  review rebind --ref <str>                                       stable
+flag  review rebind --repo <str>                                      stable
+flag  review requirements --json                                      stable
+flag  review run --install <str>                                      stable
+flag  review run --json                                               stable
+flag  review run --package <str>                                      stable
+flag  review run --python <str>                                       stable
+flag  review run --reports <str>                                      stable
+flag  review run --runner <str>                                       stable
+flag  review run --system-site-packages                               stable
+flag  review run --test <str>                                         stable
+flag  review verify --json                                            stable
+flag  spec show --json                                                stable
+flag  spec validate --json                                            stable
+flag  store check --json                                              stable
+flag  store checkout --json                                           stable
+flag  store commit --json                                             stable
+flag  store commit --message/-m <str>                                 stable
+flag  store diff --json                                               stable
+flag  store init --json                                               stable
+flag  store init --member <str>                                       stable
+flag  store log --json                                                stable
+flag  store log --max-count/-n <str>                                  stable
+flag  store materialize --json                                        stable
+flag  store migrate --dry-run                                         stable
+flag  store migrate --json                                            stable
+flag  store push --json                                               stable
+flag  store snapshot --json (hidden)                                  stable
+flag  store snapshot --message/-m <str> (hidden)                      stable
+flag  store status --json                                             stable
+flag  sync run --dirty <str>                                          stable
+flag  sync run --json                                                 stable
+flag  sync status --dirty <str>                                       stable
+flag  sync status --json                                              stable
+flag  target set --remote <str>                                       stable
+flag  target set --repo-path <str>                                    stable
+flag  target show --repo-path <str>                                   stable
+flag  target unset --repo-path <str>                                  stable
+flag  workspace bootstrap-gr1 --expected-current-spec-sha256 <str>    stable
+flag  workspace bootstrap-gr1 --expected-spec-sha256 <str>            stable
+flag  workspace bootstrap-gr1 --json                                  stable
+flag  workspace bootstrap-gr1 --receipt <str>                         stable
+flag  workspace bootstrap-gr1 --regenerate                            stable
+flag  workspace bootstrap-gr1 --rollback-receipt <str>                stable
+flag  workspace convert-clone --json                                  stable
+flag  workspace detect-gr1 --json                                     stable
+flag  workspace gitinclude --check                                    stable
+flag  workspace gitinclude --json                                     stable
+flag  workspace init --default-unit <str>                             stable
+flag  workspace init --from-superproject                              stable
+flag  workspace init --json                                           stable
+flag  workspace init-from-topology --default-unit <str>               stable
+flag  workspace init-from-topology --json                             stable
+flag  workspace materialize --json                                    stable
+flag  workspace materialize --manual-hooks                            stable
+flag  workspace materialize --yes                                     stable
+flag  workspace migrate-gr1 --apply                                   stable
+flag  workspace migrate-gr1 --force                                   stable
+flag  workspace migrate-gr1 --json                                    stable
+flag  workspace migrate-lane-state --json                             stable
+flag  workspace migrate-lane-state --receipt <str>                    stable
+flag  workspace status --json                                         stable
+verb  add                                                             stable
+verb  apply                                                           stable
+verb  branch                                                          stable
+verb  commit                                                          stable
+verb  config apply                                                    stable
+verb  config restore                                                  stable
+verb  config show                                                     stable
+verb  exec run                                                        stable
+verb  exec status                                                     stable
+verb  grip check                                                      stable
+verb  grip checkout                                                   stable
+verb  grip commit                                                     stable
+verb  grip diff                                                       stable
+verb  grip init                                                       stable
+verb  grip log                                                        stable
+verb  grip materialize                                                stable
+verb  grip migrate                                                    stable
+verb  grip push                                                       stable
+verb  grip snapshot (hidden)                                          stable
+verb  grip status                                                     stable
+verb  hooks revoke                                                    stable
+verb  hooks status                                                    stable
+verb  hooks trust                                                     stable
+verb  lane bind                                                       stable
+verb  lane create                                                     stable
+verb  lane current                                                    stable
+verb  lane enter                                                      stable
+verb  lane exit                                                       stable
+verb  lane lease acquire                                              stable
+verb  lane lease release                                              stable
+verb  lane lease show                                                 stable
+verb  lane resolve                                                    stable
+verb  plan                                                            stable
+verb  pr checks                                                       stable
+verb  pr create                                                       stable
+verb  pr merge                                                        stable
+verb  pr status                                                       stable
+verb  prune                                                           stable
+verb  push                                                            stable
+verb  repo hook-run                                                   stable
+verb  repo hooks                                                      stable
+verb  repo projection-run                                             stable
+verb  repo status                                                     stable
+verb  review bind                                                     stable
+verb  review checkout-pr                                              stable
+verb  review close                                                    stable
+verb  review close-gr (hidden)                                        stable
+verb  review create-project                                           stable
+verb  review exit-gr (hidden)                                         stable
+verb  review open                                                     stable
+verb  review open-gr (hidden)                                         stable
+verb  review open-project (hidden)                                    stable
+verb  review rebind                                                   stable
+verb  review requirements                                             stable
+verb  review run                                                      stable
+verb  review verify                                                   stable
+verb  spec show                                                       stable
+verb  spec validate                                                   stable
+verb  status                                                          stable
+verb  store check                                                     stable
+verb  store checkout                                                  stable
+verb  store commit                                                    stable
+verb  store diff                                                      stable
+verb  store init                                                      stable
+verb  store log                                                       stable
+verb  store materialize                                               stable
+verb  store migrate                                                   stable
+verb  store push                                                      stable
+verb  store snapshot (hidden)                                         stable
+verb  store status                                                    stable
+verb  sync run                                                        stable
+verb  sync status                                                     stable
+verb  target set                                                      stable
+verb  target show                                                     stable
+verb  target unset                                                    stable
+verb  workspace bootstrap-gr1                                         stable
+verb  workspace convert-clone                                         stable
+verb  workspace detect-gr1                                            stable
+verb  workspace gitinclude                                            stable
+verb  workspace init                                                  stable
+verb  workspace init-from-topology                                    stable
+verb  workspace materialize                                           stable
+verb  workspace migrate-gr1                                           stable
+verb  workspace migrate-lane-state                                    stable
+verb  workspace status                                                stable

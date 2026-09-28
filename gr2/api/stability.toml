@@ -1,0 +1,17 @@
+# Stability markers for the public surface dumped into `api/cli.api`.
+#
+# Every item NOT named here is `stable` -- a new verb or flag is stable unless
+# someone says otherwise in review, which keeps the default honest rather than
+# optimistic.
+#
+# `may-change`  an item that is public but still moving (it counts against the
+#               90% target, which is the point of marking it)
+# `reserved`    a name held for a later slice (it is excluded from the 90%
+#               denominator entirely)
+#
+# Entries are "<kind> <spelling>", matching the first two columns of cli.api.
+# The kinds are `verb`, `flag`, `arg`, and later `json`, `exit`, `path`, `ref`.
+
+may-change = []
+
+reserved = []

@@ -167,12 +167,12 @@ def _repo_head_state(repo_path: Path) -> dict[str, object]:
 # Porting `store log` off `_read_snapshot_index` removed the LAST live caller of this group.
 # The functions below are the alpha `.grip` snapshot object model -- snapshot index, its
 # writes, snapshot-id resolution, the member map, the dirty check, the grip-dir guard. They
-# are KEPT rather than deleted for one measured reason: `store migrate` (design section 6a)
-# READS the alpha store to convert it, and `tests/test_grip_object_model.py` imports three of
-# these directly, so deleting them would break that file's collection before its own fate is
-# decided. Atlas's r2 BLOCK (m_ce3627a7) is what made this group dead by removing log's alpha
-# branch; the follow-on -- delete this group, or rewrite that test file to the native verbs --
-# is named in the freeze post and waits on the design call, not on a builder.
+# are KEPT rather than deleted for ONE reason now: `store migrate` (design section 6a) READS
+# the alpha store to convert it, so the readers stay until that step either adopts them or
+# replaces them. Atlas's r2 BLOCK (m_ce3627a7) made this group dead by removing log's alpha
+# branch. `tests/test_grip_object_model.py` used to import three of them and is now RETIRED,
+# so it is no longer a reason to keep anything -- corrected here because the first version of
+# this comment named it as one (Apollo, v2 r1).
 # ---------------------------------------------------------------------------
 
 
@@ -561,6 +561,36 @@ def _native_store_init(root: Path) -> None:
         _write_gitignore(root, members)
 
 
+def _git_detail(proc: subprocess.CompletedProcess[str]) -> str:
+    """git's own stderr as one line.
+
+    A resolution refusal that DISCARDS its diagnostic leaves the user with a bare "not a root
+    commit" and no way to proceed. For an ambiguous short sha git's stderr is exactly what
+    names the candidates ("hint: The candidates are:"), which is the half of the refusal a
+    user needs. Carried into the message rather than dropped (Atlas's sweep flagged the two
+    prefix-resolution rows on these verbs).
+    """
+    lines = [line.strip() for line in (proc.stderr or "").splitlines() if line.strip()]
+    return " | ".join(lines)
+
+
+def _require_root_commit(root: Path) -> None:
+    """Refuse at 5 when the root has no commit yet.
+
+    LIFTED OUT OF `status` AFTER APOLLO'S v2 r1 BLOCK (finding B's class), which found the
+    same unborn-HEAD read in three more verbs: `check` ran `ls-tree HEAD`, `log` ran
+    `rev-list HEAD`, and `push` inherits it from check. Each surfaced git's own "fatal: invalid
+    object name 'HEAD'" -- or "ambiguous argument" -- across the exit surface, which section
+    5's table has no room for. One guard, three callers, so the three cannot drift apart the
+    way commit and check did on section 5a.
+
+    It is placed AFTER the document read at every call site, so a root that is not a store at
+    all still gets its own message rather than this one.
+    """
+    if _store_git(root, "rev-parse", "--verify", "HEAD", check=False).returncode:
+        raise NativeStoreRefusal("no root commit yet; run store commit", 5)
+
+
 def _member_coverage(root: Path, member: dict[str, str], sha: str) -> None:
     """Section 5a, in ONE place, so two verbs cannot answer it with different refs.
 
@@ -643,6 +673,7 @@ def _native_store_check(root: Path) -> list[dict[str, str]]:
     issues = validate_grip_toml(root)
     if issues:
         raise NativeStoreRefusal(f"grip.toml schema invalid: {issues[0].message}", 4)
+    _require_root_commit(root)
     checked: list[dict[str, str]] = []
     for member in _native_members(root):
         # ORDER MATTERS AND THE DESIGN STATES IT: §5's check row reads "schema valid, gitlink
@@ -692,6 +723,7 @@ def _native_store_log(root: Path, max_count: int) -> list[dict[str, object]]:
     # `rev-list` was the first thing the verb touched. Same defect class as Apollo's r1
     # finding B on status, one verb over.
     _grip_document(root)
+    _require_root_commit(root)
     commits = _store_git(root, "rev-list", "--reverse", f"--max-count={max_count}", "HEAD").stdout.splitlines()
     prior: dict[str, str] = {}
     entries: list[dict[str, object]] = []
@@ -710,8 +742,11 @@ def _native_store_diff(root: Path, ref_a: str, ref_b: str) -> list[dict[str, obj
     # verb could not MEASURE the thing the caller named (Apollo, r1 ruling).
     _grip_document(root)  # the named refusal for a root that is not a store, first
     for ref in (ref_a, ref_b):
-        if _store_git(root, "rev-parse", "--verify", f"{ref}^{{commit}}", check=False).returncode:
-            raise NativeStoreRefusal(f"{ref} is not a root commit this store can resolve", 5)
+        resolved = _store_git(root, "rev-parse", "--verify", f"{ref}^{{commit}}", check=False)
+        if resolved.returncode:
+            raise NativeStoreRefusal(
+                f"{ref} is not a root commit this store can resolve; git says: {_git_detail(resolved)}", 5
+            )
     before = _native_members_at(root, ref_a)
     after = _native_members_at(root, ref_b)
     return [{"name": name, "old_pin": before.get(name), "new_pin": after.get(name), "changed": before.get(name) != after.get(name)} for name in sorted(set(before) | set(after))]
@@ -741,7 +776,7 @@ def _native_store_checkout(root: Path, revision: str) -> tuple[str, list[dict[st
     target = _store_git(root, "rev-parse", f"{revision}^{{commit}}", check=False)
     if target.returncode:
         raise NativeStoreRefusal(
-            f"{revision} is not a root commit this store can resolve", 5
+            f"{revision} is not a root commit this store can resolve; git says: {_git_detail(target)}", 5
         )
     sha = target.stdout.strip()
     _store_git(root, "checkout", "--detach", sha)
@@ -770,12 +805,8 @@ def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[
     """
     members = _native_members(root)
     # A ROOT WITH NO COMMIT YET IS A NAMED STATE, not a git error (Apollo, r1 m_227344fd
-    # finding B). `ls-tree HEAD` raises on an unborn HEAD, which surfaced as a 5 carrying
-    # git's own "fatal: invalid object name 'HEAD'". The guard runs AFTER the document read
-    # so a root that is not a store at all still gets its own message, and BEFORE any
-    # per-member row so the caller is told the one thing to run.
-    if _store_git(root, "rev-parse", "--verify", "HEAD", check=False).returncode:
-        raise NativeStoreRefusal("no root commit yet; run store commit", 5)
+    # finding B, now shared with check and log through _require_root_commit).
+    _require_root_commit(root)
     rows: list[dict[str, str | None]] = []
     for member in members:
         path = root / member["path"]

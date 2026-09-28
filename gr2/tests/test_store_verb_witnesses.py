@@ -487,6 +487,66 @@ def test_commit_and_check_read_the_members_upstream_not_the_literal_origin(
     assert "origin/main" in out, f"the refusal must name the upstream it compared: {out}"
 
 
+def test_check_and_push_refuse_an_init_root_that_has_no_commit_yet(
+    ws: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Finding B's class in CHECK and PUSH (Apollo, v2 r1).
+
+    The guard was lifted out of status into `_require_root_commit` because the same
+    unborn-HEAD read sat in check (`ls-tree HEAD`), in log (`rev-list HEAD`) and in push,
+    which inherits check. This row drives check and push; the log row is its sibling, so
+    Apollo's mutation -- drop the guard in check ONLY -- turns this one red and leaves the log
+    row green, which is what localizes the defect to the verb rather than to the helper.
+    """
+    assert _cli("store", "init", str(ws))[0] == 0
+
+    rc, out = _cli("store", "check", "--json")
+    assert rc == 5, f"an uncommitted root cannot be measured; expected 5, got {rc}: {out}"
+    assert "store commit" in out, f"the refusal must name the verb to run: {out}"
+    assert "fatal:" not in out, f"git's raw error is not a refusal: {out}"
+
+    # push inherits check's gate, so it must refuse the same way rather than reaching its own
+    # git call first
+    root_remote = tmp_path / "root.git"
+    subprocess.run(["git", "init", "-q", "-b", "main", "--bare", str(root_remote)], check=True)
+    _git(ws, "remote", "add", "origin", str(root_remote.as_uri()))
+    rc, out = _cli("store", "push", "--json")
+    assert rc == 5, f"push inherits check's refusal; expected 5, got {rc}: {out}"
+    assert "store commit" in out, out
+    assert _ls_remote(root_remote.as_uri(), "refs/heads/main") == "", (
+        "and it published nothing: the remote must still have no root ref"
+    )
+
+    # CONTROL: the same two verbs on the same root after a commit
+    assert _cli("store", "commit", "-m", "first")[0] == 0
+    rc, out = _cli("store", "check", "--json")
+    assert rc == 0, f"control: check after a commit must exit 0, got {rc}: {out}"
+    rc, out = _cli("store", "push", "--json")
+    assert rc == 0, f"control: push after a commit must exit 0, got {rc}: {out}"
+
+
+def test_log_refuses_an_init_root_that_has_no_commit_yet(
+    ws: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The third verb carrying finding B's class (Apollo, v2 r1).
+
+    `log` ran `rev-list HEAD`, which on an unborn HEAD is git's "ambiguous argument" wrapped
+    in a code. Its own row, so a mutation aimed at check leaves THIS one green and the reader
+    can see which verb was actually broken.
+    """
+    assert _cli("store", "init", str(ws))[0] == 0
+
+    rc, out = _cli("store", "log", "--json")
+    assert rc == 5, f"an uncommitted root has no history to report; expected 5, got {rc}: {out}"
+    assert "store commit" in out, f"the refusal must name the verb to run: {out}"
+    assert "fatal:" not in out, f"git's raw error is not a refusal: {out}"
+
+    assert _cli("store", "commit", "-m", "first")[0] == 0
+    rc, out = _cli("store", "log", "--json")
+    assert rc == 0, f"control: log after a commit must exit 0, got {rc}: {out}"
+    assert json.loads(out)["entries"], out
+
+
 def test_status_refuses_an_init_root_that_has_no_commit_yet(
     ws: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -517,7 +577,16 @@ def test_diff_refuses_a_ref_it_cannot_resolve(ws: Path) -> None:
     rc, out = _cli("store", "diff", "HEAD~5", "HEAD", "--json")
     assert rc == 5, f"an unresolvable ref cannot be measured; expected 5, got {rc}: {out}"
     assert "HEAD~5" in out, f"the refusal must name the ref it could not resolve: {out}"
-    assert "fatal:" not in out, f"git's raw error is not a refusal: {out}"
+    # OUR refusal leads and git's detail FOLLOWS it. This row used to assert `"fatal:" not in
+    # out`, which was right while the diagnostic was discarded and is wrong now that it is
+    # deliberately carried: git's detail is the half that names candidates for an ambiguous
+    # prefix. The property that matters is that the message is OURS first, not that git's
+    # words are absent.
+    first_line = out.strip().splitlines()[0]
+    assert first_line.startswith("HEAD~5 is not a root commit"), (
+        f"the named refusal must lead, not git's text: {first_line}"
+    )
+    assert "git says:" in out, f"git's diagnostic must be carried, not discarded: {out}"
 
     rc, out = _cli("store", "diff", "HEAD", "HEAD", "--json")
     assert rc == 0, f"control: two resolvable refs must succeed, got {rc}: {out}"

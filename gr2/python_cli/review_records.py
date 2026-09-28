@@ -91,10 +91,19 @@ def lane_paths_for_repo(repo: Path | str) -> ReviewRecordPaths | None:
     if pointer.is_file():
         try:
             target = Path(pointer.read_text().strip())
-            if target.is_absolute() and target.name.endswith(".json"):
-                return ReviewRecordPaths(target, legacy)
-        except OSError:
-            return None
+            parts = target.resolve().parts
+            marker = (".grip", "state", "lanes")
+            if not any(parts[i:i + 3] == marker for i in range(len(parts) - 2)):
+                raise ReviewRecordLocationError("review pointer is not a canonical workspace coordinate")
+            index = next(i for i in range(len(parts) - 2) if parts[i:i + 3] == marker)
+            owner, lane, review, filename = parts[index + 3:index + 7]
+            if review != "review" or not filename.endswith(".json"):
+                raise ReviewRecordLocationError("review pointer is not a canonical review receipt")
+            _component(owner, "owner unit"); _component(lane, "lane name")
+            _component(filename[:-5], "member")
+            return ReviewRecordPaths(target, legacy)
+        except (OSError, ValueError):
+            raise ReviewRecordLocationError("review pointer cannot be read safely")
     # Compatibility for project-review lanes created before the pointer. New
     # writers use the pointer above; this accepts the one established layout
     # without searching for receipts.

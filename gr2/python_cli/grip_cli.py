@@ -257,16 +257,80 @@ class NativeStoreRefusal(RuntimeError):
         self.code = code
 
 
-def _native_members(root: Path) -> list[dict[str, str]]:
+# The beta list of design section 4. These fields are PARSED and REFUSED, never silently
+# ignored: a later schema version must not discover that alpha users wrote them and nothing
+# happened.
+BETA_GRIP_KEYS = ("staged", "overlay", "nested", "files", "hooks", "target", "detached", "units")
+
+
+def _grip_document(root: Path) -> dict:
     path = root / "grip.toml"
     if path.exists():
         with path.open("rb") as handle:
-            data = tomllib.load(handle)
-    else:
-        # A root remote need not carry member objects.  Read the canonical spec
-        # directly so materialize can populate those members before checkout.
-        spec = _store_git(root, "show", "HEAD:grip.toml").stdout
-        data = tomllib.loads(spec)
+            return tomllib.load(handle)
+    # A root remote need not carry member objects.  Read the canonical spec
+    # directly so materialize can populate those members before checkout.
+    spec = _store_git(root, "show", "HEAD:grip.toml").stdout
+    return tomllib.loads(spec)
+
+
+def _beta_fields(node: object) -> list[str]:
+    """Every beta key name appearing ANYWHERE in the document, at any depth.
+
+    Depth matters and is not a nicety: TOML keeps the last table header active to the end
+    of the file, so a user who appends `staged = true` to a `grip.toml` written by
+    `store init` lands it INSIDE `[members.remotes]`, not at the top level. A top-level-only
+    scan reads that as an unknown sub-key of `remotes`, drops it, and reports success --
+    which is the silent-ignore section 4 forbids (measured on break_11's fixture, which
+    appends exactly that way).
+    """
+    found: list[str] = []
+
+    def walk(value: object) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key in BETA_GRIP_KEYS:
+                    found.append(key)
+                walk(child)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(node)
+    return found
+
+
+def _refuse_beta(root: Path) -> None:
+    """Exit 4 naming the beta field. A beta key accepted in silence is a contract the
+    reader cannot see (design section 4)."""
+    document = _grip_document(root)
+    for key in _beta_fields(document):
+        raise NativeStoreRefusal(f"{key} is beta and is not implemented in this slice", 4)
+    for member in document.get("members", []):
+        if not isinstance(member, dict):
+            continue
+        mode = str(member.get("mode", "full"))
+        if mode != "full":
+            raise NativeStoreRefusal(
+                f"{member.get('name', 'member')} mode {mode!r} is beta; link mode is beta", 4
+            )
+
+
+def _refuse_symlinked_members(root: Path, members: list[dict[str, str]]) -> None:
+    """Exit 4 naming the member. A gitlink needs a real checkout at its path, and
+    `update-index --cacheinfo 160000` over a symlink leaves the root reporting a type
+    change forever (design section 11.2)."""
+    for member in members:
+        if (root / member["path"]).is_symlink():
+            raise NativeStoreRefusal(
+                f"{member['name']} path {member['path']} is a symlink; link mode is beta "
+                f"-- a gitlink needs a real checkout at its path",
+                4,
+            )
+
+
+def _native_members(root: Path) -> list[dict[str, str]]:
+    data = _grip_document(root)
     members = data.get("members", [])
     if not isinstance(members, list) or not members:
         raise RuntimeError("grip.toml has no members")
@@ -351,7 +415,9 @@ def _native_store_init(root: Path) -> None:
 
 
 def _native_store_commit(root: Path, message: str) -> None:
+    _refuse_beta(root)
     members = _native_members(root)
+    _refuse_symlinked_members(root, members)
     changed: list[dict[str, str]] = []
     for member in members:
         if _url_has_credentials(member["remote"]):
@@ -373,6 +439,7 @@ def _native_store_commit(root: Path, message: str) -> None:
 
 def _native_store_check(root: Path) -> list[dict[str, str]]:
     """Verify the committed root pins against each live member upstream."""
+    _refuse_beta(root)
     issues = validate_grip_toml(root)
     if issues:
         raise NativeStoreRefusal(f"grip.toml schema invalid: {issues[0].message}", 4)

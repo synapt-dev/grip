@@ -762,7 +762,6 @@ def test_break_10_two_root_branches_two_pins(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
 @pytest.mark.parametrize("field", ["overlay", "staged", "nested"])
 def test_break_11_beta_field_is_refused(two_member_ws: Path, field: str) -> None:
     """exit 4 naming the field; never ignored. A beta key silently accepted is a
@@ -962,7 +961,6 @@ def test_break_14_credentials_in_a_remote_url_are_refused(two_member_ws: Path) -
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
 def test_break_15_symlink_member_path_is_refused(two_member_ws: Path, tmp_path: Path) -> None:
     """exit 4, "link mode is beta". A gitlink needs a real checkout at its path;
     `update-index --cacheinfo 160000` over a symlink leaves the root reporting a type

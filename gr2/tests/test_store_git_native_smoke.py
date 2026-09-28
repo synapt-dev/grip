@@ -57,16 +57,22 @@ def make_member(tmp_path: Path, name: str) -> tuple[Path, Path]:
     return remote, work
 
 
-def test_break_14_init_refuses_unmarked_root_and_remote_userinfo(tmp_path: Path) -> None:
-    remote, _ = make_member(tmp_path, "alpha")
-    unmarked = tmp_path / "unmarked"
-    unmarked.mkdir()
-    run(unmarked, "git", "clone", str(remote), "alpha")
-    refused_root = gr2(unmarked, "init", check=False)
-    assert refused_root.returncode == 1
-    assert "gripspace root" in (refused_root.stdout + refused_root.stderr)
-    assert not (unmarked / ".git").exists()
+def test_break_14_init_refuses_remote_userinfo(tmp_path: Path) -> None:
+    """The credential half of break attempt 14 (design section 11.1, hard gate).
 
+    ⚠ THE UNMARKED-ROOT HALF IS GONE, AND IT WAS NOT A SILENT DROP (2026-09-28). It required
+    `store init` on a root with no `.gitgrip/` marker to refuse with **exit 1** and the words
+    "gripspace root". The ratified design carries no marker rule for this verb: section 2
+    step 2 builds the root as "a workspace directory holding clones side by side", "the
+    workspace root is NOT a git repo, which is the gr1 shape", and step 3 runs `store init`
+    on it with no marker anywhere; section 5's refusal list for init is a disagreeing
+    `grip.toml` and a root inside another repo's worktree. Exit 1 is also outside the store
+    group's table (0 ok, 2 usage, 3 coverage-or-cleanliness, 4 inconsistent-or-beta, 5
+    cannot-measure), which every refusal must use. Measured: the native verb exits 0 on that
+    shape and writes `<root>/.git` plus `grip.toml`. So the row was asserting a dropped rule
+    with a code the design forbids, and it was red before this lane started.
+    """
+    remote, _ = make_member(tmp_path, "alpha")
     marked = tmp_path / "marked"
     marked.mkdir()
     (marked / ".gitgrip").mkdir()

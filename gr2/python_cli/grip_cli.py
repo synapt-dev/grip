@@ -7,6 +7,7 @@ dependencies (gr2.prototypes, lane_workspace_prototype, etc.).
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import tomllib
 from pathlib import Path
@@ -317,7 +318,11 @@ def _credential_refusal(name: str) -> NativeStoreRefusal:
 def _native_store_init(root: Path) -> None:
     if (root / ".git").exists():
         raise RuntimeError(f"store already initialized at {root}")
-    if not ((root / ".gitgrip").is_dir() or (root / ".grip" / "workspace_spec.toml").is_file()):
+    if not (
+        (root / ".gitgrip").is_dir()
+        or (root / ".grip" / "workspace_spec.toml").is_file()
+        or (root / ".grip" / ".git").is_dir()
+    ):
         raise RuntimeError(
             f"{root} is not a gripspace root: expected .gitgrip/ or .grip/workspace_spec.toml"
         )
@@ -509,6 +514,73 @@ def _native_store_materialize(root: Path) -> list[dict[str, str]]:
     return materialized
 
 
+def _native_store_migrate(root: Path, *, dry_run: bool = False) -> dict[str, object]:
+    """Move the alpha ``.grip/.git`` HEAD into one native root commit.
+
+    The alpha history is deliberately retained, not replayed: a migration is a
+    boundary between two store formats, and a copied history would claim that
+    its old tree objects were native workspace commits.  Read the alpha HEAD
+    before creating the root repository, then rename that store only after the
+    native commit is durable.
+    """
+    legacy = root / ".grip" / ".git"
+    if not legacy.is_dir():
+        raise NativeStoreRefusal("no alpha .grip/.git store to migrate", 4)
+    if (root / ".git").exists() or (root / "grip.toml").exists():
+        raise NativeStoreRefusal("native store already exists; refusing to overwrite it", 4)
+
+    alpha_head = _store_git(legacy.parent, "rev-parse", "HEAD", check=False)
+    if alpha_head.returncode:
+        raise NativeStoreRefusal("alpha store has no HEAD snapshot", 4)
+    alpha_sha = alpha_head.stdout.strip()
+    states = grip_mod._read_repo_state(root, alpha_sha)
+    if not states:
+        raise NativeStoreRefusal("alpha HEAD has no member pins", 4)
+
+    planned: dict[str, str] = {}
+    for name, state in sorted(states.items()):
+        pin = state.get("commit", "")
+        path = root / name
+        if not isinstance(pin, str) or len(pin) != 40:
+            raise NativeStoreRefusal(f"{name} alpha snapshot has no valid pin", 4)
+        if repo_dirty(path):
+            raise NativeStoreRefusal(f"{name} is dirty; commit or stash changes first", 3)
+        remote = _store_git(path, "remote", "get-url", "origin", check=False)
+        if remote.returncode:
+            raise NativeStoreRefusal(f"{name} has no origin remote", 4)
+        if _url_has_credentials(remote.stdout.strip()):
+            raise _credential_refusal(name)
+        fetched = _store_git(path, "fetch", "origin", check=False)
+        if fetched.returncode:
+            raise NativeStoreRefusal(f"{name} cannot fetch origin", 5)
+        if _store_git(path, "merge-base", "--is-ancestor", pin, "origin/main", check=False).returncode:
+            raise NativeStoreRefusal(f"{name} pin {pin} is not on origin/main; push it first", 3)
+        planned[name] = pin
+
+    if dry_run:
+        return {"status": "dry-run", "alpha_head": alpha_sha, "members": planned}
+
+    _native_store_init(root)
+    members = _native_members(root)
+    by_name = {member["name"]: member for member in members}
+    missing = sorted(set(planned) - set(by_name))
+    if missing:
+        raise NativeStoreRefusal(f"alpha member(s) not found at root: {', '.join(missing)}", 4)
+    migrated = [{**member, "pin": planned[member["name"]]} for member in members if member["name"] in planned]
+    _write_native_members(root, migrated)
+    _store_git(root, "add", "grip.toml")
+    for member in migrated:
+        _store_git(root, "update-index", "--add", "--cacheinfo", f"160000,{member['pin']},{member['path']}")
+    _store_git(root, "-c", "user.name=gr2", "-c", "user.email=gr2@example.invalid", "commit", "-m", f"grip: migrated from alpha store {alpha_sha}")
+    shutil.move(str(legacy), str(root / ".grip" / "legacy-store.git"))
+    return {
+        "status": "migrated",
+        "alpha_head": alpha_sha,
+        "root_commit": _store_git(root, "rev-parse", "HEAD").stdout.strip(),
+        "members": planned,
+    }
+
+
 @grip_app.command("init")
 def grip_init_cmd(
     workspace_root: Path | None = typer.Argument(None),
@@ -634,6 +706,28 @@ def grip_materialize_cmd(
         typer.echo(json.dumps({"status": "materialized", "members": members}))
     else:
         typer.echo(f"Materialized {len(members)} member(s)")
+
+
+@grip_app.command("migrate")
+def grip_migrate_cmd(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the alpha-to-native plan without writing"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Convert alpha .grip/.git HEAD into one native root commit."""
+    try:
+        payload = _native_store_migrate(Path.cwd(), dry_run=dry_run)
+    except NativeStoreRefusal as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=exc.code)
+    except RuntimeError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1)
+    if json_output:
+        typer.echo(json.dumps(payload))
+    elif dry_run:
+        typer.echo(f"Would migrate alpha {payload['alpha_head']} with {len(payload['members'])} member(s)")
+    else:
+        typer.echo(f"Migrated alpha {payload['alpha_head']} to root {payload['root_commit']}")
 
 
 @grip_app.command("snapshot")

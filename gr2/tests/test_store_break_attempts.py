@@ -56,6 +56,7 @@ from pathlib import Path
 import pytest
 
 from gr2.python_cli.app import app
+from gr2.python_cli import grip as grip_mod
 
 from tests.conftest import make_cli_runner
 
@@ -1026,6 +1027,35 @@ def test_break_17_unit_path_outside_the_root(two_member_ws: Path, tmp_path: Path
     assert after_parent == before_parent, (
         f"nothing may be created beside the root; got {sorted(after_parent - before_parent)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Store migration — alpha .grip/.git becomes one root commit and remains readable
+# ---------------------------------------------------------------------------
+
+
+def test_store_migrate_moves_alpha_head_to_native_root(two_member_ws: Path) -> None:
+    """Section 6a: migration preserves the alpha HEAD pins without replaying history."""
+    root = two_member_ws
+    grip_mod.grip_init(root)
+    alpha_head = grip_mod.grip_snapshot(
+        root,
+        {"alpha": root / "alpha", "beta": root / "beta"},
+        message="alpha snapshot",
+    )
+    pins = {name: _head(root / name) for name in ("alpha", "beta")}
+
+    rc, out = _cli("store", "migrate", "--json")
+    assert rc == 0, f"store migrate must succeed: {out}"
+    receipt = json.loads(out)
+    assert receipt["alpha_head"] == alpha_head
+    assert (root / ".grip" / "legacy-store.git").is_dir()
+    assert not (root / ".grip" / ".git").exists()
+    assert _git_out(root / ".grip" / "legacy-store.git", "log", "-1", "--format=%H") == alpha_head
+    assert "migrated from alpha store" in _git_out(root, "log", "-1", "--format=%s")
+    tree = _git_out(root, "ls-tree", "HEAD")
+    for name, pin in pins.items():
+        assert f"160000 commit {pin}\t{name}" in tree
 
 
 # ---------------------------------------------------------------------------

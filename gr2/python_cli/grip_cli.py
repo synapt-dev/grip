@@ -528,6 +528,42 @@ def _native_store_init(root: Path) -> None:
         _write_gitignore(root, members)
 
 
+def _member_coverage(root: Path, member: dict[str, str], sha: str) -> None:
+    """Section 5a, in ONE place, so two verbs cannot answer it with different refs.
+
+    §5a: run `git fetch <upstream-remote>` and fail with exit 5 if it fails, then
+    `git merge-base --is-ancestor <sha> <upstream>`; the check is against `upstream`, never
+    against the literal name `origin`.
+
+    THIS HELPER EXISTS BECAUSE OF A MEASURED DIVERGENCE (Atlas, pre-read m_d416e648 F1, read
+    against base acb74890): `store commit` compared against the literal `origin/main` and
+    never fetched, while `store check` fetched and compared against `member["upstream"]`.
+    The two disagree only when a member sets `upstream` to anything else --
+    `_write_native_members` writes `upstream = member.get("upstream", "origin/main")`, so the
+    DEFAULT EQUALS THE HARDCODE and every member on today's data agreed with itself. The
+    fault was invisible by construction and would appear exactly when the field starts
+    being meaningful. Fathom's handoff (57f24fb) closed the ref half; this closes the fetch
+    half and makes the two verbs share the implementation rather than the behaviour.
+
+    The comparison takes the sha it is asked about, because the callers ask different
+    questions and §5a's input follows the verb: `store commit` asks whether the HEAD it is
+    about to record is covered; `store check` asks whether the PIN ALREADY RECORDED is
+    covered (the recorded pin, not the member's current HEAD -- a member whose HEAD moved is
+    `unpinned`, a status observation, and its pin may still be perfectly covered).
+    """
+    path = root / member["path"]
+    upstream = member["upstream"]
+    remote, separator, branch = upstream.partition("/")
+    if not separator or not remote or not branch:
+        raise NativeStoreRefusal(f"{member['name']} has invalid upstream {upstream!r}", 4)
+    if _store_git(path, "fetch", remote, check=False).returncode:
+        raise NativeStoreRefusal(f"{member['name']} cannot fetch {remote}", 5)
+    if _store_git(path, "merge-base", "--is-ancestor", sha, upstream, check=False).returncode:
+        raise NativeStoreRefusal(
+            f"{member['name']} pin {sha} is not on {upstream}; push it first", 3
+        )
+
+
 def _native_store_commit(root: Path, message: str) -> None:
     _refuse_beta(root)
     members = _native_members(root)
@@ -537,12 +573,24 @@ def _native_store_commit(root: Path, message: str) -> None:
         if _url_has_credentials(member["remote"]):
             raise _credential_refusal(member["name"])
         path = root / member["path"]
-        head = _store_git(path, "rev-parse", "HEAD").stdout.strip()
-        upstream = member["upstream"]
-        if _store_git(path, "merge-base", "--is-ancestor", head, upstream, check=False).returncode:
+        # A member path that is not a checkout cannot be measured at all. Named here rather
+        # than left to the residual RuntimeError backstop: the backstop's code (5) is right
+        # but its message is git's, and a refusal a reader meets first should say what to run.
+        top = _store_git(path, "rev-parse", "--show-toplevel", check=False)
+        if top.returncode or Path(top.stdout.strip()).resolve() != path.resolve():
             raise NativeStoreRefusal(
-                f"{member['name']} pin {head} is not on {upstream}; push it first", 3
+                f"{member['name']} path {member['path']} is not a checkout; materialize it first",
+                5,
             )
+        # Section 5's commit row refuses a dirty member at exit 3, and it is checked BEFORE
+        # coverage so the refusal names the thing the author has to fix first. Atlas's
+        # pre-read F2: no verb in the group refused a dirty member, though the row names it.
+        if _store_git(path, "status", "--porcelain").stdout.strip():
+            raise NativeStoreRefusal(
+                f"{member['name']} is dirty; commit or stash changes first", 3
+            )
+        head = _store_git(path, "rev-parse", "HEAD").stdout.strip()
+        _member_coverage(root, member, head)
         changed.append({**member, "pin": head})
     _write_native_members(root, changed)
     _store_git(root, "add", "grip.toml")
@@ -564,26 +612,24 @@ def _native_store_check(root: Path) -> list[dict[str, str]]:
         raise NativeStoreRefusal(f"grip.toml schema invalid: {issues[0].message}", 4)
     checked: list[dict[str, str]] = []
     for member in _native_members(root):
-        path = root / member["path"]
-        upstream = member["upstream"]
-        remote, separator, branch = upstream.partition("/")
-        if not separator or not remote or not branch:
-            raise NativeStoreRefusal(f"{member['name']} has invalid upstream {upstream!r}", 4)
-        fetched = _store_git(path, "fetch", remote, check=False)
-        if fetched.returncode:
-            raise NativeStoreRefusal(f"{member['name']} cannot fetch {remote}", 5)
-        head = _store_git(path, "rev-parse", "HEAD").stdout.strip()
-        if _store_git(path, "merge-base", "--is-ancestor", head, upstream, check=False).returncode:
-            raise NativeStoreRefusal(
-                f"{member['name']} pin {head} is not on {upstream}; push it first", 3
-            )
+        # ORDER MATTERS AND THE DESIGN STATES IT: §5's check row reads "schema valid, gitlink
+        # equals pin for every member, every pin covered against LIVE upstream", so the
+        # consistency comparison runs BEFORE coverage. The other order changes which refusal
+        # a malformed root meets first: with coverage first, break_07's hand-edited pin (all
+        # zeros) fails as UNCOVERED (3) before the verb ever compares it to the gitlink, and
+        # the row that exists to pin "every verb that reads the pin exits 4 and names BOTH
+        # values" goes red -- measured 2026-09-28 when this helper was introduced.
         tree = _store_git(root, "ls-tree", "HEAD", "--", member["path"]).stdout.strip().split()
         gitlink = tree[2] if len(tree) >= 3 else ""
         if gitlink != member["pin"]:
             raise NativeStoreRefusal(
                 f"{member['name']} gitlink {gitlink or '<missing>'} disagrees with pin {member['pin']}", 4
             )
-        checked.append({"name": member["name"], "pin": member["pin"], "upstream": upstream, "state": "upstream"})
+        # §5a's input is the RECORDED PIN, not the member's current HEAD: this verb asks
+        # whether the pin the root publishes is still covered, and a member whose HEAD has
+        # moved is `unpinned` (a status observation) whose recorded pin may be fine.
+        _member_coverage(root, member, member["pin"])
+        checked.append({"name": member["name"], "pin": member["pin"], "upstream": member["upstream"], "state": "upstream"})
     return checked
 
 
@@ -625,13 +671,34 @@ def _native_store_diff(root: Path, ref_a: str, ref_b: str) -> list[dict[str, obj
 
 
 def _native_store_checkout(root: Path, revision: str) -> list[dict[str, str]]:
+    """Materialize the members at a root commit (section 5: `checkout` is materialize-at-a-commit).
+
+    ⚠ THE REVISION IS RESOLVED TO A SHA ONCE, BEFORE ANYTHING MOVES HEAD (measured
+    2026-09-28, found by the new witness row). The first version ran
+    `git checkout --detach <revision>` and then resolved the SAME NAME again to read the
+    pins -- but detaching makes HEAD BE the revision, so the second use means a different
+    commit, or none: with a two-commit history, `HEAD~1` after detaching at `HEAD~1` is the
+    commit before that, which does not exist, and the verb died with git's own
+    "fatal: invalid object name 'HEAD~1'". A name that means one thing and then another is
+    the same class as a control that answers a different question than the one asked.
+    """
     members = _native_members(root)
     for member in members:
         path = root / member["path"]
         if _store_git(path, "status", "--porcelain").stdout.strip():
             raise NativeStoreRefusal(f"{member['name']} is dirty; commit or stash changes first", 3)
-    _store_git(root, "checkout", "--detach", revision)
-    pins = _native_members_at(root, revision)
+    # Exit 5 rather than 2 for an unresolvable name: 2 is the argument-parser's code in this
+    # group, and this is the verb failing to MEASURE the thing the caller named. Named here
+    # because it is a judgement call rather than a row the design states -- the readers get
+    # to attack it.
+    target = _store_git(root, "rev-parse", f"{revision}^{{commit}}", check=False)
+    if target.returncode:
+        raise NativeStoreRefusal(
+            f"{revision} is not a root commit this store can resolve", 5
+        )
+    sha = target.stdout.strip()
+    _store_git(root, "checkout", "--detach", sha)
+    pins = _native_members_at(root, sha)
     restored: list[dict[str, str]] = []
     for member in members:
         path = root / member["path"]
@@ -798,8 +865,13 @@ def grip_init_cmd(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
     except RuntimeError as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=1)
+        # Section 5's exit table has no 1: 0 ok, 2 usage, 3 coverage-or-cleanliness,
+        # 4 inconsistent-or-beta, 5 cannot measure. A residual RuntimeError is a verb that
+        # could not COMPLETE, which is the 5 row, and it is prefixed so a raw git message
+        # cannot read as a contract refusal (Atlas, pre-read F4: an unaudited backstop is
+        # the one that will fire).
+        typer.echo(f"cannot complete this store verb: {exc}", err=True)
+        raise typer.Exit(code=5)
     if json_output:
         typer.echo(json.dumps({"status": "initialized", "path": str(root), "store": "native"}))
     else:
@@ -819,8 +891,13 @@ def grip_commit_cmd(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
     except RuntimeError as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=1)
+        # Section 5's exit table has no 1: 0 ok, 2 usage, 3 coverage-or-cleanliness,
+        # 4 inconsistent-or-beta, 5 cannot measure. A residual RuntimeError is a verb that
+        # could not COMPLETE, which is the 5 row, and it is prefixed so a raw git message
+        # cannot read as a contract refusal (Atlas, pre-read F4: an unaudited backstop is
+        # the one that will fire).
+        typer.echo(f"cannot complete this store verb: {exc}", err=True)
+        raise typer.Exit(code=5)
     if json_output:
         typer.echo(json.dumps({"status": "committed", "root_commit": _store_git(Path.cwd(), "rev-parse", "HEAD").stdout.strip()}))
 
@@ -836,8 +913,13 @@ def grip_check_cmd(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
     except RuntimeError as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=1)
+        # Section 5's exit table has no 1: 0 ok, 2 usage, 3 coverage-or-cleanliness,
+        # 4 inconsistent-or-beta, 5 cannot measure. A residual RuntimeError is a verb that
+        # could not COMPLETE, which is the 5 row, and it is prefixed so a raw git message
+        # cannot read as a contract refusal (Atlas, pre-read F4: an unaudited backstop is
+        # the one that will fire).
+        typer.echo(f"cannot complete this store verb: {exc}", err=True)
+        raise typer.Exit(code=5)
     if json_output:
         typer.echo(json.dumps({"status": "checked", "members": members}))
     else:
@@ -855,8 +937,13 @@ def grip_push_cmd(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
     except RuntimeError as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=1)
+        # Section 5's exit table has no 1: 0 ok, 2 usage, 3 coverage-or-cleanliness,
+        # 4 inconsistent-or-beta, 5 cannot measure. A residual RuntimeError is a verb that
+        # could not COMPLETE, which is the 5 row, and it is prefixed so a raw git message
+        # cannot read as a contract refusal (Atlas, pre-read F4: an unaudited backstop is
+        # the one that will fire).
+        typer.echo(f"cannot complete this store verb: {exc}", err=True)
+        raise typer.Exit(code=5)
     if json_output:
         typer.echo(json.dumps(payload))
     else:
@@ -874,8 +961,13 @@ def grip_status_cmd(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
     except RuntimeError as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=1)
+        # Section 5's exit table has no 1: 0 ok, 2 usage, 3 coverage-or-cleanliness,
+        # 4 inconsistent-or-beta, 5 cannot measure. A residual RuntimeError is a verb that
+        # could not COMPLETE, which is the 5 row, and it is prefixed so a raw git message
+        # cannot read as a contract refusal (Atlas, pre-read F4: an unaudited backstop is
+        # the one that will fire).
+        typer.echo(f"cannot complete this store verb: {exc}", err=True)
+        raise typer.Exit(code=5)
     if json_output:
         typer.echo(json.dumps({"status": "status", "members": members, "root": root_status}))
     else:
@@ -908,8 +1000,13 @@ def grip_materialize_cmd(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
     except RuntimeError as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=1)
+        # Section 5's exit table has no 1: 0 ok, 2 usage, 3 coverage-or-cleanliness,
+        # 4 inconsistent-or-beta, 5 cannot measure. A residual RuntimeError is a verb that
+        # could not COMPLETE, which is the 5 row, and it is prefixed so a raw git message
+        # cannot read as a contract refusal (Atlas, pre-read F4: an unaudited backstop is
+        # the one that will fire).
+        typer.echo(f"cannot complete this store verb: {exc}", err=True)
+        raise typer.Exit(code=5)
     if json_output:
         typer.echo(json.dumps({"status": "materialized", "members": members}))
     else:
@@ -928,8 +1025,13 @@ def grip_migrate_cmd(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
     except RuntimeError as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=1)
+        # Section 5's exit table has no 1: 0 ok, 2 usage, 3 coverage-or-cleanliness,
+        # 4 inconsistent-or-beta, 5 cannot measure. A residual RuntimeError is a verb that
+        # could not COMPLETE, which is the 5 row, and it is prefixed so a raw git message
+        # cannot read as a contract refusal (Atlas, pre-read F4: an unaudited backstop is
+        # the one that will fire).
+        typer.echo(f"cannot complete this store verb: {exc}", err=True)
+        raise typer.Exit(code=5)
     if json_output:
         typer.echo(json.dumps(payload))
     elif dry_run:
@@ -938,94 +1040,39 @@ def grip_migrate_cmd(
         typer.echo(f"Migrated alpha {payload['alpha_head']} to root {payload['root_commit']}")
 
 
-@grip_app.command("snapshot")
+@grip_app.command("snapshot", hidden=True)
 def grip_snapshot_cmd(
-    workspace_root: Path,
-    repos: str = typer.Option(
-        "",
-        "--repos",
-        help="Comma-separated repo names (auto from spec if omitted)",
-    ),
-    message: str = typer.Option(
-        "",
-        "--message",
-        "-m",
-        help="Snapshot message",
-    ),
-    changeset_type: str = typer.Option(
-        "",
-        "--type",
-        help="Changeset type (e.g. ceremony, feature)",
-    ),
-    sprint: str = typer.Option("", "--sprint", help="Sprint number"),
-    overlay_dir: str = typer.Option(
-        "",
-        "--overlay-dir",
-        help="Config overlay directory",
-    ),
+    message: str = typer.Option(..., "--message", "-m", help="Snapshot message"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Snapshot current workspace into a grip commit."""
-    workspace_root = workspace_root.resolve()
+    """Hidden alias of `store commit` (design section 5), removed at beta.
 
-    _validate_grip_dir(workspace_root)
+    ⚠ THIS IS A BEHAVIOUR CHANGE, NOT A RENAME (ported 2026-09-28). The verb used to be a
+    separate command with four flags commit does not have (--repos, --type, --sprint,
+    --overlay-dir), an optional message where commit requires one, and a DIFFERENT
+    IMPLEMENTATION: it wrote the alpha `.grip` store through grip_mod.grip_init /
+    grip_snapshot, which is the format section 6's `store migrate` exists to convert away
+    from. So it was a live writer of the retired format, and an alias that acquires its own
+    semantics is how a `may-change` row becomes permanent by accident (Atlas, pre-read
+    m_d416e648 F3).
 
-    # The member map resolves to working roots: on an adopted superproject
-    # the declared path is the placeholder and the member state lives in the
-    # unit's materialized copy, so the dirty check and the head record read
-    # the member, never the root.
-    repo_map = _member_map(workspace_root, repos)
-
-    if not repo_map:
-        typer.echo("No repos found in workspace spec.")
-        raise typer.Exit(code=1)
-
-    dirty = _check_dirty_repos(repo_map)
-    if dirty:
-        typer.echo(f"Dirty repos detected: {', '.join(dirty)}. Commit or stash changes first.")
-        raise typer.Exit(code=1)
-
-    repo_states: dict[str, dict[str, object]] = {}
-    for name, path in sorted(repo_map.items()):
-        repo_states[name] = _repo_head_state(path)
-
-    grip_mod.grip_init(workspace_root)
-
-    overlay = Path(overlay_dir).resolve() if overlay_dir else None
+    Section 5 line 100 makes it an alias of `store commit`, so it now makes the native root
+    commit and carries only commit's flags. This UNWIRES the verb; it does not delete the
+    alpha writer, because `store migrate` (section 6a) reads that store and is a later step.
+    """
     try:
-        sha = grip_mod.grip_snapshot(
-            workspace_root,
-            repo_map,
-            changeset_type=changeset_type,
-            sprint=sprint,
-            message=message,
-            overlay_dir=overlay,
-        )
-    except grip_mod.GripInitError as exc:
+        _native_store_commit(Path.cwd(), message)
+    except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
-        raise typer.Exit(code=1)
-
-    snapshot_id = sha
-
-    index = _read_snapshot_index(workspace_root)
-    entry: dict[str, object] = {
-        "id": snapshot_id,
-        "sha": sha,
-        "message": message or "grip snapshot",
-        "repos": sorted(repo_map.keys()),
-        "repo_states": repo_states,
-    }
-    if changeset_type:
-        entry["type"] = changeset_type
-    if sprint:
-        entry["sprint"] = sprint
-    index.append(entry)
-    _write_snapshot_index(workspace_root, index)
-
+        raise typer.Exit(code=exc.code)
+    except RuntimeError as exc:
+        typer.echo(f"cannot complete this store verb: {exc}", err=True)
+        raise typer.Exit(code=5)
+    root_commit = _store_git(Path.cwd(), "rev-parse", "HEAD").stdout.strip()
     if json_output:
-        typer.echo(json.dumps({"sha": sha, "id": snapshot_id, "repos": sorted(repo_map.keys())}))
+        typer.echo(json.dumps({"status": "committed", "root_commit": root_commit}))
     else:
-        typer.echo(f"grip snapshot {sha[:12]} ({len(repo_map)} repos)")
+        typer.echo(f"grip snapshot {root_commit[:12]}")
 
 
 @grip_app.command("log")
@@ -1068,135 +1115,65 @@ def grip_log_cmd(
 
 @grip_app.command("diff")
 def grip_diff_cmd(
-    workspace_root: Path,
-    ref_a: str = typer.Argument(..., help="First snapshot id"),
-    ref_b: str = typer.Argument(..., help="Second snapshot id"),
+    ref_a: str = typer.Argument(None, help="First root commit (default: HEAD~1)"),
+    ref_b: str = typer.Argument(None, help="Second root commit (default: HEAD)"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Show changes between two grip snapshots."""
-    workspace_root = workspace_root.resolve()
+    """Pin changes between two root commits (design section 5).
 
-    if (workspace_root / "grip.toml").is_file():
-        members = _native_store_diff(workspace_root, ref_a, ref_b)
-        if json_output:
-            typer.echo(json.dumps({"members": members}))
-        else:
-            for member in members:
-                typer.echo(f"{member['name']} {member['old_pin']} -> {member['new_pin']}")
-        return
-
-    _validate_grip_dir(workspace_root)
-
-    index = _read_snapshot_index(workspace_root)
-    snap_a = _resolve_snapshot_or_exit(index, ref_a)
-    snap_b = _resolve_snapshot_or_exit(index, ref_b)
-
-    if snap_a is None:
-        typer.echo(f"Snapshot not found: missing id '{ref_a}'")
-        raise typer.Exit(code=1)
-    if snap_b is None:
-        typer.echo(f"Snapshot not found: missing id '{ref_b}'")
-        raise typer.Exit(code=1)
-
-    states_a = snap_a.get("repo_states", {})
-    states_b = snap_b.get("repo_states", {})
-    all_repos = set(states_a.keys()) | set(states_b.keys())
-
-    changed: dict[str, dict[str, str]] = {}
-    added: list[str] = []
-    removed: list[str] = []
-
-    for name in sorted(all_repos):
-        if name in states_a and name not in states_b:
-            removed.append(name)
-        elif name not in states_a and name in states_b:
-            added.append(name)
-        else:
-            head_a = states_a[name].get("head")
-            head_b = states_b[name].get("head")
-            if head_a != head_b:
-                changed[name] = {"old": str(head_a), "new": str(head_b)}
-
+    Section 5 line 99: "`diff` is pin changes between two root commits", and the row's
+    stability is "as `materialize`". It acts on the cwd, like every other verb in the group:
+    the old signature took a positional `workspace_root` and read the alpha snapshot index,
+    so calling it the way the row describes failed on a missing argument before reaching any
+    of this (measured 2026-09-28: `store diff HEAD~1 HEAD --json` on the base exited 2 with
+    "Missing argument 'ref_b'").
+    """
+    root = Path.cwd()
+    a = ref_a or "HEAD~1"
+    b = ref_b or "HEAD"
+    try:
+        members = _native_store_diff(root, a, b)
+    except NativeStoreRefusal as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=exc.code)
+    except RuntimeError as exc:
+        typer.echo(f"cannot complete this store verb: {exc}", err=True)
+        raise typer.Exit(code=5)
     if json_output:
-        typer.echo(json.dumps({"changed": changed, "added": added, "removed": removed}))
+        typer.echo(json.dumps({"ref_a": a, "ref_b": b, "members": members}))
     else:
-        if not changed and not added and not removed:
-            typer.echo("No changes.")
-            return
-        for name, info in changed.items():
-            old = info["old"][:12] if info["old"] else "None"
-            new = info["new"][:12] if info["new"] else "None"
-            typer.echo(f"  changed {name}: {old} -> {new}")
-        for name in added:
-            typer.echo(f"  + {name}")
-        for name in removed:
-            typer.echo(f"  - {name}")
+        for member in members:
+            marker = "*" if member["changed"] else " "
+            typer.echo(f"{marker} {member['name']} {member['old_pin']} -> {member['new_pin']}")
 
 
 @grip_app.command("checkout")
 def grip_checkout_cmd(
-    workspace_root: Path,
-    ref: str = typer.Argument(..., help="Snapshot id to restore"),
+    ref: str = typer.Argument(..., help="Root commit to materialize the members at"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Restore workspace repo HEADs from a grip snapshot."""
-    workspace_root = workspace_root.resolve()
+    """Materialize the members at a root commit (design section 5).
 
-    if (workspace_root / "grip.toml").is_file():
-        try:
-            members = _native_store_checkout(workspace_root, ref)
-        except NativeStoreRefusal as exc:
-            typer.echo(str(exc), err=True)
-            raise typer.Exit(code=exc.code)
-        if json_output:
-            typer.echo(json.dumps({"status": "checked-out", "root_commit": ref, "members": members}))
-        else:
-            for member in members:
-                typer.echo(f"{member['name']} -> {member['pin']}")
-        return
-
-    _validate_grip_dir(workspace_root)
-
-    index = _read_snapshot_index(workspace_root)
-    snapshot = _resolve_snapshot_or_exit(index, ref)
-    if snapshot is None:
-        typer.echo(f"Snapshot not found: {ref}")
-        raise typer.Exit(code=1)
-
-    repo_states = snapshot.get("repo_states", {})
-
-    existing_repos: dict[str, Path] = {}
-    for name in repo_states:
-        # the same resolution as the map: the member's working root, not the
-        # bare name under the root (which on an adopted superproject is the
-        # placeholder git would answer for the root itself)
-        repo_path = _member_working_root(workspace_root, name, workspace_root / name)
-        if repo_path.is_dir():
-            existing_repos[name] = repo_path
-
-    dirty = _check_dirty_repos(existing_repos)
-    if dirty:
-        typer.echo(f"Dirty repos detected: {', '.join(dirty)}. Commit or stash changes first.")
-        raise typer.Exit(code=1)
-
-    result: dict[str, str] = {}
-    for name, state in sorted(repo_states.items()):
-        head_sha = state.get("head")
-        if not head_sha:
-            continue
-        # the same resolution as the map: the member's working root, not the
-        # bare name under the root
-        repo_path = _member_working_root(workspace_root, name, workspace_root / name)
-        if not repo_path.is_dir():
-            continue
-        git(repo_path, "checkout", head_sha)
-        result[name] = head_sha
-
+    Section 5 line 99: "`checkout` is `materialize` at a commit", and its stability is "as
+    `materialize`" -- so it INHERITS that verb's guarantees (a member whose origin cannot
+    serve the pin refuses at 3 naming the member and the pin; earlier members report as done
+    rather than leaving a silent partial tree) and defines no second materialization path. It
+    delegates to the same helper materialize uses for exactly that reason.
+    """
+    root = Path.cwd()
+    try:
+        members = _native_store_checkout(root, ref)
+    except NativeStoreRefusal as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=exc.code)
+    except RuntimeError as exc:
+        typer.echo(f"cannot complete this store verb: {exc}", err=True)
+        raise typer.Exit(code=5)
     if json_output:
-        typer.echo(json.dumps({"repos": result}))
+        typer.echo(json.dumps({"status": "checked-out", "root_commit": ref, "members": members}))
     else:
-        for name, sha in result.items():
-            typer.echo(f"  {name} -> {sha[:12]}")
+        for member in members:
+            typer.echo(f"{member['name']} -> {member['pin']}")
 
 
 # ---------------------------------------------------------------------------

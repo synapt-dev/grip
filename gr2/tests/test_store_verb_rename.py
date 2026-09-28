@@ -75,8 +75,53 @@ def test_root_help_shows_store_and_hides_grip():
 
 
 def test_both_names_enumerate_the_same_verbs():
-    expected = {"init", "snapshot", "log", "diff", "checkout"}
-    for verb in ("store", "grip"):
-        flat = _flat(runner.invoke(app, [verb, "--help"]))
-        got = {v for v in expected if v in flat}
-        assert got == expected, f"{verb} missing verbs: {expected - got}"
+    """⚠ REWRITTEN 2026-09-28, because the first version could not fail on a hidden verb.
+
+    It asked whether each expected name appears ANYWHERE in the help page, and the group's
+    own description -- "Grip object model: workspace snapshots and history" -- CONTAINS
+    "snapshot". So when the port made `store snapshot` a hidden alias (design section 5 line
+    100), the row kept passing while the verb had correctly left the command list. A
+    substring of the whole page is not a reading of the command list: an instrument that
+    cannot tell a listed command from a description word.
+
+    The reading now comes from the Commands block itself, with a chrome control so the
+    extraction cannot silently return option rows, and the hidden alias is asserted
+    INVOCABLE while unlisted -- hidden means unlisted, not removed.
+    """
+    expected = {
+        "init", "commit", "check", "push", "status", "materialize", "migrate",
+        "log", "diff", "checkout",
+    }
+    for group in ("store", "grip"):
+        raw = runner.invoke(app, [group, "--help"]).output or ""
+        lines = raw.splitlines()
+        # the Commands block ONLY: start at its header, stop at the first row without a box
+        # pipe. Reading the whole page is what made the first version blind to a hidden verb,
+        # and reading it loosely is what let option rows and wrapped descriptions in.
+        start = next(i for i, line in enumerate(lines) if "Commands" in line)
+        listed = set()
+        for line in lines[start + 1:]:
+            parts = line.split("│")
+            if len(parts) < 3:
+                break
+            cell = parts[1]
+            if not cell.startswith(" "):
+                continue
+            body = cell[1:]  # rich pads each cell with exactly one space
+            if not body.strip() or body.startswith(" "):
+                # a WRAPPED DESCRIPTION line: its name cell is blank, so the text sits
+                # indented. Reading it as a command is how "upstreams." got into the set.
+                continue
+            listed.add(body.split()[0])
+        assert expected <= listed, f"{group}: missing {sorted(expected - listed)} from {sorted(listed)}"
+        assert "snapshot" not in listed, (
+            f"{group}: the hidden alias must not be listed as its own command: {sorted(listed)}"
+        )
+        # chrome control: option rows and wrapped description fragments must not get in
+        assert all(name.replace("-", "").isalnum() for name in listed), (
+            f"{group}: extraction caught non-command text: {sorted(listed)}"
+        )
+
+    # hidden means UNLISTED, not removed: the alias still runs
+    r = runner.invoke(app, ["store", "snapshot", "--help"])
+    assert r.exit_code == 0, r.output

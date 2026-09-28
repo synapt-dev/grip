@@ -214,10 +214,33 @@ def test_push_publishes_the_root_ref_and_refuses_on_coverage(ws: Path, tmp_path:
         "the remote must hold the root commit the verb claimed to publish"
     )
 
-    # now break coverage: a local commit in a member the root has not recorded and cannot cover
+    # THE FIRST VERSION OF THIS ROW WAS WRONG, and the port is what exposed it. It made a
+    # local commit in a member and expected push to refuse; that passes only while
+    # `store check` measures the member's HEAD. Section 5a's input is the PIN, and section
+    # 5's status table makes a member whose HEAD has moved `unpinned` -- a status
+    # OBSERVATION, not a refusal (break_03's row draws the same distinction). So the two
+    # halves below are separate on purpose: a moved HEAD must NOT refuse, and an uncovered
+    # PIN must.
     (ws / "alpha" / "unpushed.txt").write_text("unpushed\n")
     _git(ws / "alpha", "add", ".")
     _git(ws / "alpha", "commit", "-q", "-m", "unpushed")
+    moved = _git_out(ws / "alpha", "rev-parse", "HEAD")
+    rc, out = _cli("store", "push", "--json")
+    assert rc == 0, (
+        f"an unpinned member -- HEAD moved, recorded pin still covered -- is a status "
+        f"observation, not a push refusal; got {rc}: {out}"
+    )
+
+    # Now make the PIN itself uncoverable, in both grip.toml and the root's gitlink (they
+    # AGREE, so this drives coverage and not the 4-consistency refusal).
+    text = (ws / "grip.toml").read_text()
+    pin = _git_out(ws, "rev-parse", "HEAD:alpha")
+    assert pin in text, f"the fixture must start from the pin store commit wrote: {pin}"
+    assert pin != moved, "the fixture must move the pin to a different value"
+    (ws / "grip.toml").write_text(text.replace(pin, moved))
+    _git(ws, "add", "grip.toml")
+    _git(ws, "update-index", "--add", "--cacheinfo", f"160000,{moved},alpha")
+    _git(ws, "commit", "-q", "-m", "malformed root: a pin its upstream does not have")
     root_before = _git_out(ws, "rev-parse", "HEAD")
     rc, out = _cli("store", "push", "--json")
     assert rc == 3, f"an uncovered pin must refuse the push with 3, got {rc}: {out}"
@@ -400,6 +423,70 @@ def test_status_and_check_refuse_a_root_that_is_not_a_store(
         assert "fatal:" not in out, f"git's raw error is not a refusal; got: {out}"
 
 
+def test_commit_and_check_read_the_members_upstream_not_the_literal_origin(
+    ws: Path, tmp_path: Path
+) -> None:
+    """F1'S WITNESS, and it only works because the field is set to a NON-DEFAULT value.
+
+    §5a: "The check is against `upstream`, never against the literal name `origin`". The
+    divergence was invisible by construction: `_write_native_members` writes
+    `upstream = member.get("upstream", "origin/main")`, so on any member that leaves the
+    field alone the literal and the field are the SAME STRING and a verb that hardcoded
+    `origin/main` would pass every other row in this file (Atlas, pre-read m_d416e648 F1).
+
+    So this row separates them: alpha's `upstream` is pointed at a SECOND remote that carries
+    the pin, and alpha's origin is force-pushed away from it. A verb reading the literal
+    refuses; a verb reading the member's field commits. The control is the second half, which
+    flips the field back and requires the same verb to refuse, naming the ref it compared.
+    """
+    assert _cli("store", "init", str(ws))[0] == 0
+    alpha = ws / "alpha"
+    pin = _git_out(alpha, "rev-parse", "HEAD")
+
+    fork = tmp_path / "fork.git"
+    subprocess.run(["git", "init", "-q", "-b", "main", "--bare", str(fork)], check=True)
+    _git(alpha, "remote", "add", "fork", str(fork))
+    _git(alpha, "push", "-q", "fork", "main")
+    assert _ls_remote(str(fork), "refs/heads/main") == pin, "the fork must carry the pin"
+
+    orphan = tmp_path / "orphan"
+    orphan.mkdir()
+    _git(orphan, "init", "-q", "-b", "main")
+    _git(orphan, "config", "user.email", "t@e.invalid")
+    _git(orphan, "config", "user.name", "t")
+    (orphan / "README.md").write_text("# rewritten\n")
+    _git(orphan, "add", ".")
+    _git(orphan, "commit", "-q", "-m", "rewrite")
+    _git(orphan, "push", "-q", "--force", str(ws.parent / "alpha.git"), "main")
+    assert _ls_remote(str(ws.parent / "alpha.git"), "refs/heads/main") != pin, (
+        "the fixture must move ORIGIN off the pin, or both refs would agree"
+    )
+
+    # alpha's upstream -> the fork. The partition keeps the edit on ALPHA's block: replacing
+    # the first occurrence in the file would silently hit whichever member is written first.
+    head, sep, tail = (ws / "grip.toml").read_text().partition('name = "alpha"')
+    assert sep, "the fixture must find alpha's block"
+    tail = tail.replace('upstream = "origin/main"', 'upstream = "fork/main"', 1)
+    (ws / "grip.toml").write_text(head + sep + tail)
+    assert 'upstream = "fork/main"' in (ws / "grip.toml").read_text()
+
+    rc, out = _cli("store", "commit", "-m", "fork covered", "--json")
+    assert rc == 0, (
+        f"the pin IS on fork/main, which is the member's DECLARED upstream; a refusal here "
+        f"means the verb read the literal origin/main instead: {out}"
+    )
+
+    # CONTROL: the same verb, the same pin, the field flipped back -- now it must refuse and
+    # name the ref it compared.
+    text = (ws / "grip.toml").read_text()
+    (ws / "grip.toml").write_text(
+        text.replace('upstream = "fork/main"', 'upstream = "origin/main"', 1)
+    )
+    rc, out = _cli("store", "check", "--json")
+    assert rc == 3, f"with the field back at origin/main the pin is uncovered; got {rc}: {out}"
+    assert "origin/main" in out, f"the refusal must name the upstream it compared: {out}"
+
+
 def test_log_reports_pin_changes_per_root_commit(ws: Path) -> None:
     assert _cli("store", "init", str(ws))[0] == 0
     assert _cli("store", "commit", "-m", "first")[0] == 0
@@ -423,13 +510,6 @@ def test_log_reports_pin_changes_per_root_commit(ws: Path) -> None:
     assert moved["alpha"]["after"] == _git_out(ws / "alpha", "rev-parse", "HEAD"), moved["alpha"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="section 5 makes snapshot a hidden alias of store commit; it is still the "
-           "alpha-store verb taking a positional workspace_root (measured: exit 2, "
-           "'Missing argument workspace_root')",
-)
 def test_snapshot_is_a_hidden_alias_of_commit(ws: Path) -> None:
     assert _cli("store", "init", str(ws))[0] == 0
     rc, out = _cli("store", "snapshot", "-m", "first", "--json")
@@ -440,13 +520,6 @@ def test_snapshot_is_a_hidden_alias_of_commit(ws: Path) -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="section 5 reimplements diff over the root repo; it is still the alpha verb "
-           "taking {workspace_root} {ref_a} {ref_b} (measured: exit 2, 'Missing argument "
-           "ref_b' when called as store diff HEAD~1 HEAD)",
-)
 def test_diff_reports_pin_changes_between_two_root_commits(ws: Path) -> None:
     assert _cli("store", "init", str(ws))[0] == 0
     assert _cli("store", "commit", "-m", "first")[0] == 0
@@ -458,18 +531,11 @@ def test_diff_reports_pin_changes_between_two_root_commits(ws: Path) -> None:
 
     rc, out = _cli("store", "diff", "HEAD~1", "HEAD", "--json")
     assert rc == 0, out
-    changes = {row["name"]: row for row in json.loads(out)}
+    changes = {row["name"]: row for row in json.loads(out)["members"]}
     assert changes["alpha"]["changed"] is True, out
     assert changes["beta"]["changed"] is False, out
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="section 5 makes checkout materialize-at-a-commit over the root; it is still the "
-           "alpha verb taking {workspace_root} {ref} (measured: exit 2, 'Missing argument "
-           "ref' when called as store checkout HEAD~1)",
-)
 def test_checkout_materializes_the_members_at_a_root_commit(ws: Path) -> None:
     assert _cli("store", "init", str(ws))[0] == 0
     assert _cli("store", "commit", "-m", "first")[0] == 0

@@ -53,9 +53,27 @@ def read_review_record(paths: ReviewRecordPaths, *, notice: Callable[[str], None
     return result[0] if result else None
 
 
+def read_review_records_for_guard(paths: ReviewRecordPaths) -> tuple[dict, ...]:
+    """Read every receipt present so a disposable mark cannot be masked.
+
+    ``read_review_record_at`` deliberately chooses one path for identity and
+    cleanup. The commit and push guard has a different question: whether any
+    extant receipt marks this checkout disposable.
+    """
+    records: list[dict] = []
+    for path in (paths.current, paths.legacy):
+        if not path.is_file():
+            continue
+        try:
+            records.append(json.loads(path.read_text()))
+        except (OSError, ValueError) as exc:
+            raise ReviewRecordLocationError(f"review receipt cannot be read: {path}") from exc
+    return tuple(records)
+
+
 def read_review_record_at(paths: ReviewRecordPaths, *, notice: Callable[[str], None] = print) -> tuple[dict, Path] | None:
     """Read a receipt and return the exact path that supplied it for cleanup."""
-    for path, legacy in ((paths.current, False), (paths.legacy, True)):
+    for path, legacy in ((paths.legacy, True), (paths.current, False)):
         if not path.is_file():
             continue
         try:
@@ -82,11 +100,6 @@ def lane_paths_for_repo(repo: Path | str) -> ReviewRecordPaths | None:
     """Locate only a repo structurally inside a materialized lane, never by scan."""
     repo_path = Path(repo).resolve()
     legacy = legacy_review_record_path(repo_path)
-    # A one-release legacy receipt is authoritative for a legacy-shaped lane.
-    # Prefer it even when a newer canonical receipt coexists, so the read-only
-    # guard cannot be bypassed by an older member-local marker.
-    if legacy.is_file():
-        return ReviewRecordPaths(legacy, legacy)
     pointer = review_record_pointer_path(repo_path)
     if pointer.is_file():
         try:
@@ -109,6 +122,10 @@ def lane_paths_for_repo(repo: Path | str) -> ReviewRecordPaths | None:
             return ReviewRecordPaths(resolved_target, legacy)
         except (OSError, ValueError):
             raise ReviewRecordLocationError("review pointer cannot be read safely")
+    # A one-release legacy receipt is enough only where no pointer supplies a
+    # canonical coordinate. When both exist, the safety guard receives both.
+    if legacy.is_file():
+        return ReviewRecordPaths(legacy, legacy)
     # Compatibility for project-review lanes created before the pointer.
     if repo_path.parent.name == "repos":
         lane_dir = repo_path.parent.parent

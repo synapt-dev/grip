@@ -39,11 +39,13 @@ from pathlib import Path
 import pytest
 
 from gr2.python_cli.commit import CommitError, _refuse_review_ephemeral_repo
+from gr2.python_cli.push import PushError, _refuse_review_ephemeral_repo as refuse_review_ephemeral_push
 from gr2.python_cli.review import ReviewError, close_review_lane, open_review_lane
 from gr2.python_cli.review_records import (
     lane_paths_for_repo,
     legacy_review_record_path,
     read_review_record,
+    read_review_record_at,
     review_record_pointer_path,
     review_record_paths,
 )
@@ -208,6 +210,39 @@ def test_control_close_still_works_on_a_canonical_receipt(tmp_path):
         "control: close must still remove a lane whose receipt is canonical -- if this "
         "fails, A is not measuring the legacy path"
     )
+
+
+@pytest.mark.parametrize(
+    ("canonical_kind", "legacy_kind"),
+    [("review-ephemeral", "materialized"), ("materialized", "review-ephemeral")],
+)
+def test_any_ephemeral_receipt_refuses_when_receipts_disagree(
+        tmp_path, canonical_kind, legacy_kind):
+    """A receipt preference selects cleanup identity, never the safety verdict.
+
+    Both directions matter. Preferring either canonical or legacy would leave one
+    row open to commit and push. Restoring either preference instead of the union
+    makes the corresponding row red.
+    """
+    w = _world(tmp_path)
+    _open(w)
+    paths = review_record_paths(w["ws"], "atlas", "review-7", "grip", w["lane"])
+    canonical = json.loads(paths.current.read_text())
+    canonical["lane_kind"] = canonical_kind
+    paths.current.write_text(json.dumps(canonical) + "\n")
+    legacy = dict(canonical)
+    legacy["lane_kind"] = legacy_kind
+    paths.legacy.parent.mkdir(parents=True, exist_ok=True)
+    paths.legacy.write_text(json.dumps(legacy) + "\n")
+    chosen = read_review_record_at(paths, notice=lambda _m: None)
+    assert chosen is not None and chosen[1] == paths.legacy, (
+        "the legacy receipt remains the selected identity and cleanup path"
+    )
+
+    with pytest.raises(CommitError, match="review-ephemeral"):
+        _refuse_review_ephemeral_repo(w["lane"])
+    with pytest.raises(PushError, match="review-ephemeral"):
+        refuse_review_ephemeral_push(w["lane"])
 
 
 @pytest.mark.parametrize("receipt", [None, "{"])

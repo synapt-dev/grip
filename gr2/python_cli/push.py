@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .gitops import git
-from .review_records import lane_paths_for_repo, read_review_record, review_record_pointer_path
+from .review_records import lane_paths_for_repo, read_review_records_for_guard, review_record_pointer_path
 
 
 class PushError(Exception):
@@ -120,13 +120,12 @@ def _refuse_review_ephemeral_repo(repo: Path) -> None:
     naming the kind, so a review lane never becomes a work lane."""
     try:
         paths = lane_paths_for_repo(repo)
-        record = read_review_record(paths) if paths else None
+        records = read_review_records_for_guard(paths) if paths else ()
     except Exception as exc:
         raise PushError(f"cannot safely resolve review receipt for {repo}: {exc}") from exc
-    if review_record_pointer_path(repo).is_file() and record is None:
+    if review_record_pointer_path(repo).is_file() and not records:
         raise PushError(f"{repo} has a review pointer but no readable receipt; refusing push")
-    kind = record.get("lane_kind") if record else None
-    if kind == "review-ephemeral":
+    if any(record.get("lane_kind") == "review-ephemeral" for record in records):
         raise PushError(
             f"{repo} is a review-ephemeral review lane (read-only, disposable): it "
             "cannot be pushed. A review lane never becomes a work lane."

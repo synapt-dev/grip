@@ -41,14 +41,28 @@ def test_sync_status_defaults_to_cwd_and_names_safe_gr1_migration(
     assert "workspace init" not in result.output
 
 
-def test_store_log_names_safe_gr1_migration(tmp_path: Path) -> None:
+def test_store_log_refuses_a_gr1_workspace_with_the_native_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """⚠ REWRITTEN 2026-09-28: `store log` no longer reads the alpha store.
+
+    This row asserted the ALPHA guard's message ("migrate-gr1 ... workspace init"), raised by
+    `_validate_grip_dir` -- the guard the section-5 port removed, because log acts on the cwd
+    over the root repo now and takes no positional. So a gr1 workspace with no `grip.toml`
+    meets the NATIVE refusal instead.
+
+    The gr1-specific guidance is NOT lost and is not this row's to keep: design section 9 step
+    5 names it as a deliverable (6b, "the gr1 path message"), and until that lands the message
+    is carried by `sync status` and by the library, whose rows above are untouched.
+    """
     workspace = _gr1_workspace(tmp_path)
+    monkeypatch.chdir(workspace)
 
-    result = runner.invoke(app, ["store", "log", str(workspace)])
+    result = runner.invoke(app, ["store", "log"])
 
-    assert result.exit_code == 1
-    assert EXPECTED_GR1_NEXT_STEP in result.output
-    assert "grip_init" not in result.output
+    assert result.exit_code == 5, result.output
+    assert "store init" in result.output
+    assert "fatal:" not in result.output
 
 
 def test_grip_library_refusal_names_safe_gr1_migration(tmp_path: Path) -> None:

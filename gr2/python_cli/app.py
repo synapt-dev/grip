@@ -2624,6 +2624,9 @@ def review_open(
         base_sha=base_sha,
         lane_repo_root=lane_repo_root,
         workspace_root=workspace_root,
+        owner_unit=owner_unit,
+        lane_name=resolved_lane,
+        member=repo,
         echo=typer.echo,
     )
 
@@ -2682,6 +2685,10 @@ def review_close(
     review_mod.close_review_lane(
         lane_repo_root=lane_repo_root,
         review_lane_root=review_lane_root,
+        workspace_root=workspace_root,
+        owner_unit=owner_unit,
+        lane_name=resolved_lane,
+        member=repo,
         echo=typer.echo,
     )
 

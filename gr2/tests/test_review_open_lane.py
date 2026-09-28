@@ -39,6 +39,7 @@ from gr2.python_cli.review import (
     review_record_path,
     run_in_review_lane,
 )
+from gr2.python_cli.review_records import read_review_record, review_record_paths
 
 _HEX40 = re.compile(r"\A[0-9a-f]{40}\Z")
 
@@ -106,10 +107,19 @@ def _open(world, **overrides):
         base_sha=world["base_sha"],
         lane_repo_root=world["lane"],
         workspace_root=world["workspace_root"],
+        owner_unit="atlas",
+        lane_name="review-7",
+        member="grip",
         allow_local=True,  # the test origin is a local bare repo, not a GitHub URL
     )
     kwargs.update(overrides)
     return open_review_lane(**kwargs)
+
+
+def _new_record(world, lane=None):
+    return review_record_path(
+        world["workspace_root"], "atlas", "review-7", "grip", lane or world["lane"]
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -231,7 +241,7 @@ def test_review_record_is_the_pin_delta_triple_plus_lane_kind(review_world):
     # infers the reconstruction guarantee. open_review_lane always materializes
     # an isolated clone, so its receipt is stamped "materialized".
     _open(review_world)
-    data = json.loads(review_record_path(review_world["lane"]).read_text())
+    data = json.loads(_new_record(review_world).read_text())
     assert set(data) == {"repo", "base", "head", "lane_kind"}  # nothing less, nothing more
     assert _HEX40.match(data["base"]) and _HEX40.match(data["head"])
     assert data["lane_kind"] == "materialized"
@@ -239,6 +249,35 @@ def test_review_record_is_the_pin_delta_triple_plus_lane_kind(review_world):
     origin = remote_origin_url(review_world["source"])
     assert data["repo"] == f"local:{Path(origin).resolve()}"
     assert str(review_world["lane"]) not in data["repo"]
+
+
+def test_open_writes_only_the_workspace_record_not_member_git(review_world):
+    _open(review_world)
+    assert _new_record(review_world).is_file()
+    assert list((review_world["lane"] / ".git").glob("grip-*")) == []
+
+
+def test_open_refuses_missing_lane_coordinate_before_materializing(review_world):
+    with pytest.raises(ReviewError, match="needs a safe owner unit"):
+        open_review_lane(
+            source_repo_root=review_world["source"], review_branch=review_world["review_branch"],
+            expected_head_sha=review_world["head_sha"], base_sha=review_world["base_sha"],
+            lane_repo_root=review_world["lane"], workspace_root=review_world["workspace_root"],
+            allow_local=True,
+        )
+    assert not review_world["lane"].exists()
+    assert not _new_record(review_world).exists()
+
+
+def test_legacy_record_is_read_with_a_notice(review_world):
+    paths = review_record_paths(
+        review_world["workspace_root"], "atlas", "review-7", "grip", review_world["lane"]
+    )
+    paths.legacy.parent.mkdir(parents=True)
+    paths.legacy.write_text(json.dumps({"lane_kind": "review-ephemeral"}))
+    notices: list[str] = []
+    assert read_review_record(paths, notice=notices.append) == {"lane_kind": "review-ephemeral"}
+    assert len(notices) == 1 and "legacy review record" in notices[0]
 
 
 def test_review_record_rejects_an_unknown_lane_kind():
@@ -259,11 +298,11 @@ def test_close_refuses_a_receipt_missing_lane_kind(review_world):
     and close would proceed."""
     _open(review_world)
     lane = review_world["lane"]
-    record = json.loads(review_record_path(lane).read_text())
+    record = json.loads(_new_record(review_world, lane).read_text())
     del record["lane_kind"]
-    review_record_path(lane).write_text(json.dumps(record))
+    _new_record(review_world, lane).write_text(json.dumps(record))
     with pytest.raises(ReviewError, match="not a well-formed"):
-        close_review_lane(lane_repo_root=lane, review_lane_root=review_world["lane_root"])
+        close_review_lane(lane_repo_root=lane, review_lane_root=review_world["lane_root"], workspace_root=review_world["workspace_root"], owner_unit="atlas", lane_name="review-7", member="grip")
     assert lane.exists()  # refused, not deleted
 
 
@@ -274,9 +313,9 @@ def test_close_drops_the_lane_and_record_and_leaves_the_source_intact(review_wor
     _open(review_world)
     lane = review_world["lane"]
     assert lane.exists()
-    close_review_lane(lane_repo_root=lane, review_lane_root=review_world["lane_root"])
+    close_review_lane(lane_repo_root=lane, review_lane_root=review_world["lane_root"], workspace_root=review_world["workspace_root"], owner_unit="atlas", lane_name="review-7", member="grip")
     assert not lane.exists()
-    assert not review_record_path(lane).exists()
+    assert not _new_record(review_world, lane).exists()
     # the base checkout and its PR ref survive
     assert review_world["source"].exists()
     ref_sha = _run(review_world["source"], "rev-parse", review_world["review_branch"])
@@ -470,8 +509,8 @@ def test_close_deletes_a_pristine_lane_inside_the_managed_root(review_world):
     both match its measured state is removed."""
     _open(review_world)
     lane = review_world["lane"]
-    assert lane.exists() and review_record_path(lane).is_file()
-    close_review_lane(lane_repo_root=lane, review_lane_root=review_world["lane_root"])
+    assert lane.exists() and _new_record(review_world, lane).is_file()
+    close_review_lane(lane_repo_root=lane, review_lane_root=review_world["lane_root"], workspace_root=review_world["workspace_root"], owner_unit="atlas", lane_name="review-7", member="grip")
     assert not lane.exists()
 
 
@@ -554,5 +593,5 @@ def test_close_refuses_a_lane_inside_the_root_whose_head_has_moved(review_world)
     note = lane / "still_uncommitted.txt"
     note.write_text("also uncommitted\n")
     with pytest.raises(ReviewError, match="has moved|not the recorded"):
-        close_review_lane(lane_repo_root=lane, review_lane_root=review_world["lane_root"])
+        close_review_lane(lane_repo_root=lane, review_lane_root=review_world["lane_root"], workspace_root=review_world["workspace_root"], owner_unit="atlas", lane_name="review-7", member="grip")
     assert lane.exists() and note.exists()

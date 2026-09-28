@@ -29,6 +29,7 @@ entitlement semantics.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -709,3 +710,56 @@ def test_checkout_materializes_the_members_at_a_root_commit(ws: Path) -> None:
     assert rc == 0, out
     assert _git_out(ws / "alpha", "rev-parse", "HEAD") == first["alpha"], out
     assert _git_out(ws / "beta", "rev-parse", "HEAD") == first["beta"], out
+
+
+# ---------------------------------------------------------------------------
+# The CLASS guard: no test may pass a WORKSPACE POSITIONAL to a ported verb
+# ---------------------------------------------------------------------------
+
+
+def test_no_test_passes_a_workspace_positional_to_a_ported_verb() -> None:
+    """The sweep step 3 v3 was BLOCKed with, kept as a row so it cannot rot.
+
+    Eleven test_grip_cli rows went red on v3's head for a reason that had nothing to do with
+    what they asserted: the signature port removed the workspace positional (the verbs act on
+    cwd), so typer refused the call at the PARSER -- exit 2 before any store code ran. The class
+    is "a test that passes a workspace positional to a ported verb", and it is detectable
+    statically, which is why it is a row rather than a note in a PR body.
+
+    WHITESPACE IS NORMALISED BEFORE MATCHING, and that is the instrument's whole point: most
+    alpha invocations were written across five lines, with the verb and its path argument on
+    separate lines of the list, so a per-line scan sees only the single-line minority. Measured
+    on the base: the per-line scan finds 3, the normalised scan finds 20 -- and 20 is what an
+    independent sweep counted (snapshot 12, log 4, diff 2, checkout 2). A query that undercounts
+    returns 0 and reads as a pass, which is exactly the failure this row exists to prevent.
+
+    SELF-MATCH IS THE REAL HAZARD HERE, and it bit this row on its first run: the docstring above
+    originally quoted the five-line invocation verbatim, whitespace-normalisation folded it into
+    the pattern, and the sweep matched ITS OWN FILE. The example is therefore described rather
+    than quoted, and the control below is BUILT FROM PARTS so that no contiguous match exists in
+    this file's source. The control assertion is what keeps a pattern that stopped matching from
+    reporting 0.
+    """
+    ported = {
+        "snapshot", "log", "diff", "checkout", "materialize",
+        "status", "check", "push", "commit", "migrate",
+    }
+    pattern = re.compile(r'\[\s*"grip"\s*,\s*"([a-z-]+)"\s*,\s*str\(')
+
+    control = 'runner.invoke(app, ["grip", ' + '"snapshot", str(' + 'workspace), "--json"])'
+    control_hits = [m.group(1) for m in pattern.finditer(control) if m.group(1) in ported]
+    assert control_hits == ["snapshot"], (
+        "the pattern can no longer match the class it guards, so a 0 below would mean nothing"
+    )
+
+    tests_dir = Path(__file__).resolve().parent
+    hits: list[str] = []
+    for path in sorted(tests_dir.rglob("*.py")):
+        for m in pattern.finditer(path.read_text()):
+            if m.group(1) in ported:
+                hits.append(f"{path.name}: {m.group(0)[:60]}")
+    assert hits == [], (
+        "a test still passes a workspace positional to a ported verb (the ported verbs act on "
+        "cwd and take no positional; typer refuses the call at the parser):\n  " + "\n  ".join(hits)
+    )
+

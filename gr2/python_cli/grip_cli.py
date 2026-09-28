@@ -334,7 +334,19 @@ def _native_store_init(root: Path) -> None:
         members.append({"name": path.name, "path": path.name, "remote": url, "upstream": "origin/main", "ref": "main", "pin": _store_git(path, "rev-parse", "HEAD").stdout.strip()})
     if not members:
         raise NativeStoreRefusal("no sibling git repositories found to store", 4)
-    _store_git(root, "init")
+    # ⚠ PIN THE ROOT BRANCH. A bare `git init` takes its initial branch from the ambient
+    # git configuration, so the same workspace produced `main` on a host whose system
+    # config sets init.defaultBranch and `master` on one that does not. That is not only a
+    # test-environment artifact: `store push` publishes "the ROOT branch", and `store
+    # commit` commits on "the root's current branch", so two machines would publish and
+    # record under different branch names for identical input. Found by break_10
+    # (test_store_break_attempts.py), which could never run: the root came out on `master`
+    # and its own `git checkout -q main` died in SETUP with "pathspec 'main' did not match
+    # any file(s) known to git", so the row had never once exercised the verb. The suite's
+    # `_isolated_git_config` fixture is what exposes it, by setting GIT_CONFIG_NOSYSTEM=1
+    # and pointing GIT_CONFIG_GLOBAL at an empty file -- exactly the blank-config host a
+    # stranger has. `-b` makes the branch a property of the verb, not of the machine.
+    _store_git(root, "init", "-b", "main")
     _write_native_members(root, members)
 
 
@@ -444,18 +456,27 @@ def _native_store_checkout(root: Path, revision: str) -> list[dict[str, str]]:
 
 
 def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[str, object]]:
-    """Render every member's working state without stopping at the first bad row."""
+    """Render every member's working state without stopping at the first bad row.
+
+    Each row carries the COMMITTED gitlink beside the pin, and the command exits 4 when any
+    row shows the two disagreeing -- both values are in that member's row, so a caller can
+    name them without a second read. The disagreement is read from HEAD's tree, not the
+    working index: the root snapshot is what a clone materializes from, so an index-only
+    edit is not a snapshot defect (measured 2026-09-28).
+    """
     rows: list[dict[str, str | None]] = []
     for member in _native_members(root):
         path = root / member["path"]
+        tree = _store_git(root, "ls-tree", "HEAD", "--", member["path"]).stdout.strip().split()
+        gitlink = tree[2] if len(tree) >= 3 else None
         top = _store_git(path, "rev-parse", "--show-toplevel", check=False)
         is_checkout = top.returncode == 0 and Path(top.stdout.strip()).resolve() == path.resolve()
         if not is_checkout:
-            rows.append({"name": member["name"], "pin": member["pin"], "head": None, "state": "cannot-measure"})
+            rows.append({"name": member["name"], "pin": member["pin"], "gitlink": gitlink, "head": None, "state": "cannot-measure"})
             continue
         head = _store_git(path, "rev-parse", "HEAD", check=False)
         if head.returncode:
-            rows.append({"name": member["name"], "pin": member["pin"], "head": None, "state": "cannot-measure"})
+            rows.append({"name": member["name"], "pin": member["pin"], "gitlink": gitlink, "head": None, "state": "cannot-measure"})
             continue
         head_sha = head.stdout.strip()
         remote, separator, branch = member["upstream"].partition("/")
@@ -470,7 +491,7 @@ def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[
             state = "stale"
         else:
             state = "upstream"
-        rows.append({"name": member["name"], "pin": member["pin"], "head": head_sha, "state": state})
+        rows.append({"name": member["name"], "pin": member["pin"], "gitlink": gitlink, "head": head_sha, "state": state})
     porcelain = _store_git(root, "status", "--porcelain").stdout.splitlines()
     return rows, {"state": "dirty" if porcelain else "clean", "porcelain": porcelain}
 
@@ -670,6 +691,20 @@ def grip_status_cmd(
     else:
         for member in members:
             typer.echo(f"{member['name']} {member['state']} pin={member['pin']} head={member['head']}")
+    # THE TABLE PRINTS IN EVERY CASE, and the code follows it. A diagnostic that exits 0 on
+    # an inconsistency is the silent-success class: the root snapshot a clone would
+    # materialize disagrees with its own pin, and a caller that only reads the exit code
+    # would take that snapshot as good. 4 outranks 5, and neither outranks the table.
+    disagreed = [member for member in members if member["gitlink"] != member["pin"]]
+    if disagreed:
+        for member in disagreed:
+            typer.echo(
+                f"{member['name']} gitlink {member['gitlink'] or '<missing>'} disagrees with pin {member['pin']}",
+                err=True,
+            )
+        raise typer.Exit(code=4)
+    if any(member["state"] == "cannot-measure" for member in members):
+        raise typer.Exit(code=5)
 
 
 @grip_app.command("materialize")

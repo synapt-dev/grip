@@ -342,7 +342,6 @@ def test_harness_control_bare_remote_round_trip(two_member_ws: Path, tmp_path: P
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
 def test_break_01_pin_a_sha_upstream_lacks(two_member_ws: Path) -> None:
     """`store commit` exit 3; the root HEAD does not move."""
     root = two_member_ws
@@ -369,7 +368,6 @@ def test_break_01_pin_a_sha_upstream_lacks(two_member_ws: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
 def test_break_03_push_root_with_unpushed_member(two_member_ws: Path, tmp_path: Path) -> None:
     """`store push` exit 3, and the root ref is ABSENT on the root remote.
 
@@ -385,8 +383,14 @@ def test_break_03_push_root_with_unpushed_member(two_member_ws: Path, tmp_path: 
     """
     root = two_member_ws
     root_remote = tmp_path / "root.git"
+    # -b main is load-bearing: the suite isolates git config (conftest._isolated_git_config),
+    # so a bare `git init -q --bare` takes its initial branch from nothing and lands on
+    # `master`, while `store push` publishes the ROOT branch. The clone then gets an unborn
+    # HEAD and `git rev-list --count HEAD` fails at 128. `_bare_remote` already pins it.
     subprocess.run(
-        ["git", "init", "-q", "--bare", str(root_remote)], capture_output=True, check=True
+        ["git", "init", "-q", "-b", "main", "--bare", str(root_remote)],
+        capture_output=True,
+        check=True,
     )
     assert _cli("store", "init", str(root))[0] == 0
     _assert_init_ran(root)
@@ -448,7 +452,6 @@ def test_break_03_push_root_with_unpushed_member(two_member_ws: Path, tmp_path: 
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
 def test_break_04_upstream_force_push_over_the_pin(
     two_member_ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -514,7 +517,6 @@ def test_break_04_upstream_force_push_over_the_pin(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
 def test_break_05_shallow_clone_of_the_root(
     two_member_ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -527,8 +529,14 @@ def test_break_05_shallow_clone_of_the_root(
     """
     root = two_member_ws
     root_remote = tmp_path / "root.git"
+    # -b main is load-bearing: the suite isolates git config (conftest._isolated_git_config),
+    # so a bare `git init -q --bare` takes its initial branch from nothing and lands on
+    # `master`, while `store push` publishes the ROOT branch. The clone then gets an unborn
+    # HEAD and `git rev-list --count HEAD` fails at 128. `_bare_remote` already pins it.
     subprocess.run(
-        ["git", "init", "-q", "--bare", str(root_remote)], capture_output=True, check=True
+        ["git", "init", "-q", "-b", "main", "--bare", str(root_remote)],
+        capture_output=True,
+        check=True,
     )
     assert _cli("store", "init", str(root))[0] == 0
     _assert_init_ran(root)
@@ -562,7 +570,6 @@ def test_break_05_shallow_clone_of_the_root(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
 def test_break_07_gitlink_and_pin_disagree(two_member_ws: Path) -> None:
     """Every verb that reads the pin exits 4 and names BOTH values.
 
@@ -593,6 +600,22 @@ def test_break_07_gitlink_and_pin_disagree(two_member_ws: Path) -> None:
     text = (root / "grip.toml").read_text()
     assert real_pin in text, "the fixture must start from a recorded pin"
     (root / "grip.toml").write_text(text.replace(real_pin, "0" * 40))
+    # ⚠ THE DISAGREEMENT MUST LAND IN THE SNAPSHOT, NOT ONLY IN THE WORKING INDEX
+    # (measured 2026-09-28). Reading HEAD's tree is the correct surface for a check whose
+    # failure mode is "a clone materializes the wrong sha": the root snapshot is what gets
+    # pushed and cloned, so a check reading the INDEX would pass a snapshot that breaks every
+    # clone -- the silent-success class. The row wrote its sentinel with `update-index` and
+    # stopped there, so `store check` correctly read the COMMITTED gitlink (6b6066e0 at the
+    # probe) against the pin and never printed the fixture's own two values; the assertion
+    # below could not hold however correct the verb was. Commit the edit so the tree carries
+    # it. Measured surfaces at the probe: `ls-files -s alpha` -> 1111... , `ls-tree HEAD
+    # alpha` -> 6b6066e0, verb output -> gitlink 6b6066e0 vs pin 0000....
+    _git(root, "add", "grip.toml")
+    _git(root, "commit", "-q", "-m", "malformed root: a gitlink its pin disagrees with")
+    assert _git_out(root, "rev-parse", "HEAD:alpha") == "1" * 40, (
+        "the fixture must put the sentinel gitlink in the COMMITTED tree, or the row "
+        "measures the index surface the verb does not read"
+    )
 
     for verb in (["store", "check"], ["store", "status"], ["store", "push"]):
         rc, out = _cli(*verb, "--json")
@@ -680,7 +703,6 @@ def test_break_08_check_runs_against_upstream_not_origin(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
 def test_break_10_two_root_branches_two_pins(
     two_member_ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

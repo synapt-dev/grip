@@ -64,6 +64,18 @@ def workspace_spec_path(workspace_root: Path) -> Path:
     return workspace_root / ".grip" / "workspace_spec.toml"
 
 
+def validate_grip_toml(workspace_root: Path) -> list[ValidationIssue]:
+    """Validate the Show HN v1 root spec when it is present."""
+    path = workspace_root / "grip.toml"
+    if not path.exists():
+        return []
+    with path.open("rb") as fh:
+        document = tomllib.load(fh)
+    schema = json.loads(importlib.resources.files("gr2.schemas").joinpath("gr2-workspace-spec-v1.schema.json").read_text())
+    return [ValidationIssue("error", "grip_toml_schema", error.message, ".".join(map(str, error.path)) or None)
+            for error in Draft202012Validator(schema).iter_errors(document)]
+
+
 def workspace_cache_root(workspace_root: Path) -> Path:
     return workspace_root / ".grip" / "cache" / "repos"
 

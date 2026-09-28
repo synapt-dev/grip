@@ -12,6 +12,7 @@ from pathlib import Path
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 
 from .gitops import GitMissingError, git
+from .review_records import lane_paths_for_repo, read_review_records_for_guard, review_record_pointer_path
 from .spec_apply import MaterializationPlanError, unit_root
 
 
@@ -58,13 +59,14 @@ def _refuse_review_ephemeral_repo(repo: Path) -> None:
     """A review-ephemeral lane repo carries a review record naming its kind. Refuse
     a commit into it directly (the reviewer's cwd is inside the review lane), so a
     review lane never becomes a work lane through the single-repo path."""
-    import json as _json
-    record = Path(repo) / ".git" / "grip-review.json"
     try:
-        kind = _json.loads(record.read_text()).get("lane_kind")
-    except (OSError, ValueError):
-        return
-    if kind == "review-ephemeral":
+        paths = lane_paths_for_repo(repo)
+        records = read_review_records_for_guard(paths) if paths else ()
+    except Exception as exc:
+        raise CommitError(f"cannot safely resolve review receipt for {repo}: {exc}") from exc
+    if review_record_pointer_path(repo).is_file() and not records:
+        raise CommitError(f"{repo} has a review pointer but no readable receipt; refusing commit")
+    if any(record.get("lane_kind") == "review-ephemeral" for record in records):
         raise CommitError(
             f"{repo} is a review-ephemeral review lane (read-only, disposable): it "
             "cannot be committed to. A review lane never becomes a work lane."

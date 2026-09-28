@@ -43,7 +43,7 @@ def _origin_with_base(tmp_path: Path) -> tuple[Path, str]:
     return origin, _git(origin, "rev-parse", "HEAD")
 
 
-def _frozen_range(tmp_path: Path, origin: Path, base_sha: str) -> Path:
+def _frozen_range(tmp_path: Path, origin: Path, base_sha: str, *, empty_commit: bool = False) -> Path:
     """Freeze a one-commit range (edit b.txt) against dev, into a frozen dir.
 
     Uses the real freeze via a clone so REQUEST.md/range.patch match production shape.
@@ -56,6 +56,8 @@ def _frozen_range(tmp_path: Path, origin: Path, base_sha: str) -> Path:
     (clone / "b.txt").write_text("feature\n")
     _git(clone, "add", "-A")
     _git(clone, "commit", "-q", "-m", "add b", "--no-gpg-sign")
+    if empty_commit:
+        _git(clone, "commit", "--allow-empty", "-q", "-m", "keep empty", "--no-gpg-sign")
     out = tmp_path / "frozen-v1"
     rb.freeze(clone, "refs/remotes/origin/dev", out,
               title="feat: add b", body="Body.\n\nPremium boundary: grip is OSS.\n")
@@ -106,6 +108,25 @@ def test_unrelated_base_move_rebases_patch_id_identical(tmp_path, monkeypatch):
     assert out.is_dir()
     # title/body NORM unchanged; range.patch moved (base sha in header changed)
     assert (out / "range.patch").read_text() != (frozen / "range.patch").read_text()
+
+
+def test_unrelated_base_move_rebinds_range_with_empty_commit(tmp_path):
+    """A range may intentionally preserve an empty commit and still rebind safely."""
+    origin, base = _origin_with_base(tmp_path)
+    frozen = _frozen_range(tmp_path, origin, base, empty_commit=True)
+    _move_base_unrelated(origin)
+    author = tmp_path / "author"
+    _git(author, "fetch", "-q", "origin")
+    out = tmp_path / "frozen-v2"
+
+    result = rb.rebind(frozen, author, "refs/remotes/origin/dev", out)
+
+    assert result.outcome == "rebased"
+    assert result.patch_id_held is True
+    commits = _git(out.parent / "author", "log", "--format=%s", "origin/dev..HEAD").splitlines()
+    # The author's range itself contains the explicit empty commit. The rebind's
+    # exported patch must preserve its mailbox entry rather than stopping at it.
+    assert "keep empty" in (out / "range.patch").read_text()
 
 
 def test_range_already_applied_reports_landing(tmp_path):

@@ -56,6 +56,7 @@ from pathlib import Path
 import pytest
 
 from gr2.python_cli.app import app
+from gr2.python_cli import grip as grip_mod
 
 from tests.conftest import make_cli_runner
 
@@ -1029,6 +1030,35 @@ def test_break_17_unit_path_outside_the_root(two_member_ws: Path, tmp_path: Path
 
 
 # ---------------------------------------------------------------------------
+# Store migration — alpha .grip/.git becomes one root commit and remains readable
+# ---------------------------------------------------------------------------
+
+
+def test_store_migrate_moves_alpha_head_to_native_root(two_member_ws: Path) -> None:
+    """Section 6a: migration preserves the alpha HEAD pins without replaying history."""
+    root = two_member_ws
+    grip_mod.grip_init(root)
+    alpha_head = grip_mod.grip_snapshot(
+        root,
+        {"alpha": root / "alpha", "beta": root / "beta"},
+        message="alpha snapshot",
+    )
+    pins = {name: _head(root / name) for name in ("alpha", "beta")}
+
+    rc, out = _cli("store", "migrate", "--json")
+    assert rc == 0, f"store migrate must succeed: {out}"
+    receipt = json.loads(out)
+    assert receipt["alpha_head"] == alpha_head
+    assert (root / ".grip" / "legacy-store.git").is_dir()
+    assert not (root / ".grip" / ".git").exists()
+    assert _git_out(root / ".grip" / "legacy-store.git", "log", "-1", "--format=%H") == alpha_head
+    assert "migrated from alpha store" in _git_out(root, "log", "-1", "--format=%s")
+    tree = _git_out(root, "ls-tree", "HEAD")
+    for name, pin in pins.items():
+        assert f"160000 commit {pin}\t{name}" in tree
+
+
+# ---------------------------------------------------------------------------
 # 18 — the multi-desk fixture: five agents with gr1 worktrees
 # ---------------------------------------------------------------------------
 
@@ -1067,18 +1097,29 @@ def gr1_sibling_ws(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "atlas": "synapt-codex",
         "fathom": "synapt-fathom",
     }
-    (root / "agents.toml").write_text(
+    gr1 = root / ".gitgrip"
+    (gr1 / "spaces" / "main").mkdir(parents=True)
+    (gr1 / "agents.toml").write_text(
         "".join(f'[agents.{u}]\nworktree = "{w}"\n\n' for u, w in units.items())
     )
     _checkout_at(root / "config", tmp_path, "root-config")
     for desk in ("synapt-dev", "synapt-global", "synapt-codex", "synapt-fathom"):
         _checkout_at(tmp_path / desk / "config", tmp_path, f"{desk}-config")
+    # migrate-gr1 reads gr1's canonical manifest and its agents file from
+    # .gitgrip.  Keeping the fixture's authority files in those locations is
+    # essential: a root-level agents.toml would exercise a layout gr1 never
+    # accepted, then mislabel its own refusal as a sibling-layout failure.
+    (gr1 / "spaces" / "main" / "gripspace.yml").write_text(
+        "repos:\n"
+        "  config:\n"
+        "    path: config\n"
+        f"    url: {_git_out(root / 'config', 'remote', 'get-url', 'origin')}\n"
+    )
     monkeypatch.chdir(root)
     assert Path.cwd() == root, f"the gr1 fixture must be the cwd, it is {Path.cwd()}"
     return root
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 6b (gr1 sibling layout), builder step 5")
 def test_break_18_migrate_gr1_adopts_existing_checkouts_by_path(gr1_sibling_ws: Path) -> None:
     """Section 6b: `workspace migrate-gr1` then `store init` then `store commit` is the
     whole path. migrate-gr1 emits `../synapt-dev`, `../synapt-codex`, `../synapt-fathom`,
@@ -1117,8 +1158,8 @@ def test_break_18_migrate_gr1_adopts_existing_checkouts_by_path(gr1_sibling_ws: 
 
     assert _cli("store", "init")[0] == 0
     _assert_init_ran(root)
-    _assert_flow_ran(root)
     assert _cli("store", "commit", "-m", "gr1 adoption")[0] == 0
+    _assert_flow_ran(root)
 
     for d, files in before.items():
         assert _listing(d) == files, (

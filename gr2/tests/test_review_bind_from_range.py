@@ -162,3 +162,87 @@ def test_cli_source_and_from_range_are_mutually_exclusive(tmp_path: Path) -> Non
     ])
     assert res.exit_code != 0
     assert "mutually exclusive" in res.output
+
+
+def _empty_commit_range(tmp_path: Path) -> tuple[str, str, str, str, str]:
+    """A bare origin at BASE, plus a range whose MIDDLE commit is EMPTY.
+
+    Shape: base -> empty commit -> real change. Returns
+    (remote_url, base_sha, head_sha, head_tree, range_patch_text).
+    """
+    origin = tmp_path / "emptyorigin.git"
+    _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    work = tmp_path / "emptywork"
+    _git(tmp_path, "clone", "-q", str(origin), str(work))
+    _git(work, "config", "user.email", "a@e.invalid")
+    _git(work, "config", "user.name", "a")
+    (work / "f.txt").write_text("base\n")
+    _git(work, "add", ".")
+    _git(work, "commit", "-q", "-m", "base")
+    _git(work, "push", "-q", "origin", "main")
+    base = _git(work, "rev-parse", "HEAD")
+
+    _git(work, "commit", "-q", "--allow-empty", "-m", "an intentionally empty commit")
+    empty = _git(work, "rev-parse", "HEAD")
+    (work / "f.txt").write_text("base\nreview change\n")
+    _git(work, "add", ".")
+    _git(work, "commit", "-q", "-m", "the real change")
+    head = _git(work, "rev-parse", "HEAD")
+    head_tree = _git(work, "rev-parse", "HEAD^{tree}")
+
+    # The fixture is only a witness if the empty commit is really there and the
+    # range really spans two commits -- assert the subject before the instrument.
+    assert len({base, empty, head}) == 3, "fixture did not create three distinct commits"
+    assert _git(work, "rev-list", "--count", f"{base}..{head}") == "2", (
+        "fixture range must be two commits, one of them empty"
+    )
+    range_patch = subprocess.run(
+        ["git", "format-patch", f"{base}..{head}", "--stdout"],
+        cwd=work, text=True, capture_output=True, check=True).stdout
+    return str(origin), base, head, head_tree, range_patch
+
+
+def test_an_empty_commit_range_applies_through_both_reconstruction_paths(tmp_path: Path) -> None:
+    """grip.py:92/114 -- both `git am --empty=keep` call sites in _apply_range_in_lane.
+
+    A frozen range may carry an EMPTY commit. Plain `git am` STOPS at one and
+    leaves a PARTIAL tree, so the reconstruction would silently record the wrong
+    head-tree while reporting success. Both paths must carry the whole range:
+    path 1 with no committer table, path 2 with one.
+    """
+    remote, base, head, head_tree, range_patch = _empty_commit_range(tmp_path)
+
+    # path 1 -- grip.py:92, no committer table
+    lane = tmp_path / "lane-no-committers"
+    _git(tmp_path, "clone", "-q", remote, str(lane))
+    _git(lane, "checkout", "-q", base)
+    grip._apply_range_in_lane(lane, range_patch, None)
+    assert _git(lane, "rev-list", "--count", f"{base}..HEAD") == "2", (
+        "the empty commit was dropped: --empty=keep at grip.py:92 did not hold"
+    )
+    # am rewrites the commit (committer identity/date), so the SHA legitimately
+    # differs. The empty commit SURVIVING is the claim under test, and the tree is
+    # the content witness that survives the rewrite.
+    assert "an intentionally empty commit" in _git(lane, "log", "--format=%s", f"{base}..HEAD"), (
+        "the empty commit did not survive the reconstruction"
+    )
+    assert _git(lane, "rev-parse", "HEAD^{tree}") == head_tree, (
+        "reconstruction stopped short: the tree is not the range terminal tree"
+    )
+
+    # path 2 -- grip.py:114, with a committer table (dates are rewritten, so the
+    # sha legitimately differs; the TREE and the commit count are what must hold)
+    lane2 = tmp_path / "lane-committers"
+    _git(tmp_path, "clone", "-q", remote, str(lane2))
+    _git(lane2, "checkout", "-q", base)
+    rows = "\n".join([
+        "T One\tt1@e.invalid\t2020-01-01T00:00:00+00:00",
+        "T Two\tt2@e.invalid\t2020-01-02T00:00:00+00:00",
+    ]) + "\n"
+    grip._apply_range_in_lane(lane2, range_patch, rows)
+    assert _git(lane2, "rev-list", "--count", f"{base}..HEAD") == "2", (
+        "the empty commit was dropped: --empty=keep at grip.py:114 did not hold"
+    )
+    assert _git(lane2, "rev-parse", "HEAD^{tree}") == head_tree, (
+        "committer-rewritten reconstruction produced a different tree"
+    )

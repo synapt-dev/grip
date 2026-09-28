@@ -252,6 +252,7 @@ class OpenReviewLaneCleanupTest(unittest.TestCase):
                 base_sha="a" * 40,
                 lane_repo_root=self.lane,
                 workspace_root=self.workspace_root,
+                owner_unit="atlas", lane_name="review-7", member="repo",
                 allow_local=True,
             )
 
@@ -310,6 +311,7 @@ class OpenReviewLaneEphemeralCleanupTest(unittest.TestCase):
                     base_sha="a" * 40,
                     lane_repo_root=self.lane,
                     workspace_root=self.workspace_root,
+                    owner_unit="atlas", lane_name="review-7", member="repo",
                     allow_local=True,
                     ephemeral=True,
                 )

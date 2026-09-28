@@ -580,11 +580,19 @@ def test_break_07_gitlink_and_pin_disagree(two_member_ws: Path) -> None:
     _assert_flow_ran(root, member="alpha")
 
     real_pin = _git_out(root, "rev-parse", "HEAD:alpha")
-    bogus = "0" * 40
-    _git(root, "update-index", "--add", "--cacheinfo", f"160000,{bogus},alpha")
+    # ⚠ WHICH SIDE TAKES THE ZEROS IS LOAD-BEARING, and this row never ran without knowing it.
+    # git 2.50.1 REFUSES to write a null (all-zero) sha into the index -- `update-index
+    # --cacheinfo 160000,000...0,alpha` dies with "cache entry has null sha1" and writes nothing,
+    # and `--index-info` refuses it the same way. All-ones IS accepted. So a gitlink of forty
+    # zeros cannot be built at all: this row was failing in its own SETUP, before `_cli` was ever
+    # called, and had never once exercised the verb it exists to test. The roles are swapped
+    # here instead -- the GITLINK takes the ones, and the PIN takes the zeros, which is safe
+    # because `pin` is a grip.toml field that git never validates. The disagreement is identical
+    # and the later assertion, which requires BOTH values in the output, still holds.
+    _git(root, "update-index", "--add", "--cacheinfo", f"160000,{'1' * 40},alpha")
     text = (root / "grip.toml").read_text()
     assert real_pin in text, "the fixture must start from a recorded pin"
-    (root / "grip.toml").write_text(text.replace(real_pin, "1" * 40))
+    (root / "grip.toml").write_text(text.replace(real_pin, "0" * 40))
 
     for verb in (["store", "check"], ["store", "status"], ["store", "push"]):
         rc, out = _cli(*verb, "--json")
@@ -753,7 +761,6 @@ def test_break_11_beta_field_is_refused(two_member_ws: Path, field: str) -> None
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
 def test_break_12_adoption_tracks_gitlinks_and_leaves_gitignore_alone(two_member_ws: Path) -> None:
     """`store commit` tracks the gitlinks; `.gitignore` byte-identical before and after.
     The slice ADOPTS a root that already exists, and an adoption that rewrites canon
@@ -826,7 +833,6 @@ def _git_fetch_metadata_delta(members: list[Path]) -> dict[Path, set[str]]:
     return {m: _listing(m / ".git") - before[m] for m in members}
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
 def test_break_13_nothing_written_under_any_git_dir(two_member_ws: Path) -> None:
     """After the suite's flow, a scan of every member's `.git/` and the root's `.git/`
     finds no file gr2 created BEYOND what Git writes for the fetch section 5a requires.
@@ -897,7 +903,6 @@ def test_break_13_nothing_written_under_any_git_dir(two_member_ws: Path) -> None
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
 def test_break_14_credentials_in_a_remote_url_are_refused(two_member_ws: Path) -> None:
     """exit 4, naming the member and the remote NAME — and NEVER printing the URL.
     The refusal must not leak the secret it is refusing.
@@ -1240,7 +1245,6 @@ def test_break_19_member_found_at_its_path_not_its_name(two_member_ws: Path, tmp
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
 def test_break_21_tracked_non_member_root_folder_is_untouched(two_member_ws: Path) -> None:
     """Section 12: plant a tracked, non-member `config/` with files, run every store verb,
     and require it byte-identical with no refusal naming it. This is constraint 3 as a row,

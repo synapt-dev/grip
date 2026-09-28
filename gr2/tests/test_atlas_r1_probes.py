@@ -45,7 +45,6 @@ from gr2.python_cli.review_records import (
     lane_paths_for_repo,
     legacy_review_record_path,
     read_review_record,
-    read_review_record_at,
     review_record_pointer_path,
     review_record_paths,
 )
@@ -234,11 +233,6 @@ def test_any_ephemeral_receipt_refuses_when_receipts_disagree(
     legacy["lane_kind"] = legacy_kind
     paths.legacy.parent.mkdir(parents=True, exist_ok=True)
     paths.legacy.write_text(json.dumps(legacy) + "\n")
-    chosen = read_review_record_at(paths, notice=lambda _m: None)
-    assert chosen is not None and chosen[1] == paths.legacy, (
-        "the legacy receipt remains the selected identity and cleanup path"
-    )
-
     with pytest.raises(CommitError, match="review-ephemeral"):
         _refuse_review_ephemeral_repo(w["lane"])
     with pytest.raises(PushError, match="review-ephemeral"):

@@ -73,7 +73,7 @@ def read_review_records_for_guard(paths: ReviewRecordPaths) -> tuple[dict, ...]:
 
 def read_review_record_at(paths: ReviewRecordPaths, *, notice: Callable[[str], None] = print) -> tuple[dict, Path] | None:
     """Read a receipt and return the exact path that supplied it for cleanup."""
-    for path, legacy in ((paths.legacy, True), (paths.current, False)):
+    for path, legacy in ((paths.current, False), (paths.legacy, True)):
         if not path.is_file():
             continue
         try:

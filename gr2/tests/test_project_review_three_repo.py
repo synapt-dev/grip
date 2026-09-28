@@ -249,7 +249,7 @@ def test_unsafe_review_root_components_refuse_before_transport(
     assert not (workspace / "escaped-owner").exists()
 
 
-def test_deleting_review_root_preflight_recreates_escaped_clone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_invalid_review_root_preflight_creates_no_escaped_clone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workspace, sources, _home, _current = _world(tmp_path, bootstrap_from_manifest=True)
     from gr2.python_cli import project_review
     pins = [project_review.ProjectReviewPin(name, f"local:{source[0]}", f"repos/{name}", source[1], source[2]) for name, source in sources.items()]
@@ -262,7 +262,7 @@ def test_deleting_review_root_preflight_recreates_escaped_clone(tmp_path: Path, 
             sources={name: (source[0], f"review/{name}") for name, source in sources.items()}, allow_local=True,
         )
 
-    assert (workspace / "escaped-owner" / "review" / "repos" / "alpha" / ".git").is_dir()
+    assert not (workspace / "escaped-owner").exists()
 
 
 def test_missing_pin_refuses_before_any_review_materialization(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

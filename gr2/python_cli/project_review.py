@@ -284,6 +284,12 @@ def open_project_review(*, workspace: Path, owner_unit: str, lane_name: str, spe
             if git(source, "cat-file", "-e", f"{sha}^{{commit}}").returncode != 0:
                 return ProjectReviewOutcome("refused", spec.grip_commit, (), (ProjectReviewFailure(pin.key, f"missing {label} pin {sha}"),), None, False)
     review_root = workspace / "reviews" / owner_unit / lane_name
+    # Keep the lane subsystem's pinned refusal ahead of materialization. This
+    # remains necessary even if an outer caller has already checked the names:
+    # clone destinations must never be created before the lane coordinate is
+    # known to be one portable component per dimension.
+    lanes.validate_lane_path_component(owner_unit, "owner_unit")
+    lanes.validate_lane_path_component(lane_name, "lane_name")
     observed: list[review.ReviewRecord] = []
     for pin in canonical_pins:
         source, branch = sources[pin.key]

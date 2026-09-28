@@ -484,11 +484,15 @@ def close_review_lane(
     if owner_unit is not None and lane_name is not None and member is not None:
         try:
             assert record_path is not None
-            record_path.unlink()
+            receipt_paths = tuple(dict.fromkeys(
+                path for path in (paths.current, paths.legacy) if path.is_file()
+            ))
+            for receipt_path in receipt_paths:
+                receipt_path.unlink()
         except OSError as exc:
             raise ReviewError(
-                f"{record_path} is the review record but could not be removed: {exc}; "
-                "refusing to delete the lane while its receipt would remain"
+                f"a review receipt could not be removed: {exc}; refusing to delete the lane "
+                "while its receipt would remain"
             ) from exc
 
     shutil.rmtree(lane)

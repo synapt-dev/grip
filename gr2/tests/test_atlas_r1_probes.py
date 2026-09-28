@@ -6,7 +6,7 @@ THREE OF THEM FAIL ON THE PRE-FIX RANGE and are the acceptance bar for v3:
 
   D  the review-ephemeral commit guard, on the layout project_review.py:286
      actually creates -- the receipt is written canonically to
-     .grip/state/lanes/<owner>/<lane>/review/<member>.json while the locator
+     .grip/state/reviews/<owner>/<lane>/<member>.json while the locator
      walks the repo's own path, and the walk cannot match that layout.
   B  the same guard on a legacy-shaped lane whose receipt is at the
      member-.git location.
@@ -123,7 +123,7 @@ def test_D_guard_fires_on_the_project_review_lane_layout(tmp_path):
     ws = tmp_path / "ws"
     lane = ws / "reviews" / "atlas" / "review-7" / "repos" / "grip"
     lane.mkdir(parents=True)
-    receipt = ws / ".grip" / "state" / "lanes" / "atlas" / "review-7" / "review" / "grip.json"
+    receipt = ws / ".grip" / "state" / "reviews" / "atlas" / "review-7" / "grip.json"
     receipt.parent.mkdir(parents=True)
     receipt.write_text(json.dumps({"repo": "whatever", "base": "0" * 40, "head": "0" * 40,
                                    "lane_kind": "review-ephemeral"}, indent=2) + "\n")
@@ -187,7 +187,7 @@ def test_C_control_the_guard_still_fires_on_a_canonical_lane(tmp_path):
     ws = tmp_path / "ws"
     lane = ws / ".grip" / "state" / "lanes" / "atlas" / "review-7" / "repos" / "grip"
     lane.mkdir(parents=True)
-    receipt = ws / ".grip" / "state" / "lanes" / "atlas" / "review-7" / "review" / "grip.json"
+    receipt = ws / ".grip" / "state" / "reviews" / "atlas" / "review-7" / "grip.json"
     receipt.parent.mkdir(parents=True)
     receipt.write_text(json.dumps({"repo": "whatever", "base": "0" * 40, "head": "0" * 40,
                                    "lane_kind": "review-ephemeral"}, indent=2) + "\n")
@@ -213,7 +213,7 @@ def test_control_close_still_works_on_a_canonical_receipt(tmp_path):
 @pytest.mark.parametrize("receipt", [None, "{"])
 def test_pointer_without_a_readable_receipt_refuses_commit(tmp_path, receipt):
     repo = tmp_path / "repo"; _run(tmp_path, "init", "-q", str(repo))
-    target = tmp_path / "ws" / ".grip" / "state" / "lanes" / "atlas" / "review-7" / "review" / "grip.json"
+    target = tmp_path / "ws" / ".grip" / "state" / "reviews" / "atlas" / "review-7" / "grip.json"
     target.parent.mkdir(parents=True)
     if receipt is not None:
         target.write_text(receipt)
@@ -224,6 +224,6 @@ def test_pointer_without_a_readable_receipt_refuses_commit(tmp_path, receipt):
 
 def test_pointer_with_unsafe_coordinate_refuses_commit(tmp_path):
     repo = tmp_path / "repo"; _run(tmp_path, "init", "-q", str(repo))
-    review_record_pointer_path(repo).write_text(str(tmp_path / "ws" / ".grip" / "state" / "lanes" / ".." / "x.json") + "\n")
+    review_record_pointer_path(repo).write_text(str(tmp_path / "ws" / ".grip" / "state" / "reviews" / ".." / "x.json") + "\n")
     with pytest.raises(CommitError, match="unsafe|safely"):
         _refuse_review_ephemeral_repo(repo)

@@ -39,7 +39,11 @@ from gr2.python_cli.review import (
     review_record_path,
     run_in_review_lane,
 )
-from gr2.python_cli.review_records import read_review_record, review_record_paths
+from gr2.python_cli.review_records import (
+    read_review_record,
+    review_record_pointer_path,
+    review_record_paths,
+)
 
 _HEX40 = re.compile(r"\A[0-9a-f]{40}\Z")
 
@@ -253,8 +257,11 @@ def test_review_record_is_the_pin_delta_triple_plus_lane_kind(review_world):
 
 def test_open_writes_only_the_workspace_record_not_member_git(review_world):
     _open(review_world)
-    assert _new_record(review_world).is_file()
-    assert list((review_world["lane"] / ".git").glob("grip-*")) == []
+    receipt = _new_record(review_world)
+    assert receipt.is_file()
+    pointers = list((review_world["lane"] / ".git").glob("grip-*"))
+    assert pointers == [review_record_pointer_path(review_world["lane"])]
+    assert pointers[0].read_text() == str(receipt) + "\n"
 
 
 def test_open_refuses_missing_lane_coordinate_before_materializing(review_world):

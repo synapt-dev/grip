@@ -43,7 +43,7 @@ def review_record_paths(workspace_root: Path | str, owner_unit: str | None,
     key = _component(member, "member")
     workspace = Path(workspace_root).resolve()
     return ReviewRecordPaths(
-        workspace / ".grip" / "state" / "lanes" / owner / lane / "review" / f"{key}.json",
+        workspace / ".grip" / "state" / "reviews" / owner / lane / f"{key}.json",
         legacy_review_record_path(lane_repo_root),
     )
 
@@ -71,7 +71,7 @@ def read_review_record_at(paths: ReviewRecordPaths, *, notice: Callable[[str], N
 def write_review_record(paths: ReviewRecordPaths, record: dict) -> Path:
     paths.current.parent.mkdir(parents=True, exist_ok=True)
     paths.current.write_text(json.dumps(record, indent=2) + "\n")
-    # A project review can materialize outside `.grip/state/lanes`; commit and
+    # A project review can materialize outside `.grip/state/reviews`; commit and
     # push run from that member checkout, so leave one coordinate pointer there.
     # It deliberately contains no receipt fields.
     review_record_pointer_path(paths.legacy.parent.parent).write_text(str(paths.current) + "\n")
@@ -91,24 +91,24 @@ def lane_paths_for_repo(repo: Path | str) -> ReviewRecordPaths | None:
     if pointer.is_file():
         try:
             target = Path(pointer.read_text().strip())
-            if ".." in target.parts:
+            if not target.is_absolute() or ".." in target.parts:
                 raise ReviewRecordLocationError("review pointer contains an unsafe coordinate")
             parts = target.resolve().parts
-            marker = (".grip", "state", "lanes")
+            marker = (".grip", "state", "reviews")
             if not any(parts[i:i + 3] == marker for i in range(len(parts) - 2)):
                 raise ReviewRecordLocationError("review pointer is not a canonical workspace coordinate")
             index = next(i for i in range(len(parts) - 2) if parts[i:i + 3] == marker)
-            owner, lane, review, filename = parts[index + 3:index + 7]
-            if review != "review" or not filename.endswith(".json"):
+            if len(parts) != index + 6:
+                raise ReviewRecordLocationError("review pointer is not a canonical review receipt")
+            owner, lane, filename = parts[index + 3:index + 6]
+            if not filename.endswith(".json"):
                 raise ReviewRecordLocationError("review pointer is not a canonical review receipt")
             _component(owner, "owner unit"); _component(lane, "lane name")
             _component(filename[:-5], "member")
             return ReviewRecordPaths(target, legacy)
         except (OSError, ValueError):
             raise ReviewRecordLocationError("review pointer cannot be read safely")
-    # Compatibility for project-review lanes created before the pointer. New
-    # writers use the pointer above; this accepts the one established layout
-    # without searching for receipts.
+    # Compatibility for project-review lanes created before the pointer.
     if repo_path.parent.name == "repos":
         lane_dir = repo_path.parent.parent
         owner_dir = lane_dir.parent

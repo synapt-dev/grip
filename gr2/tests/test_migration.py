@@ -1111,3 +1111,75 @@ class TestMigrateLaneState:
         payload = json.loads(result.output)
         assert payload["count"] == 1
         assert (tmp_path / ".grip" / "state" / "lanes" / "atlas" / "feature").is_dir()
+
+
+# ---------------------------------------------------------------------------
+# The ALPHA STORE the migration consumes -- moved here 2026-09-28
+# ---------------------------------------------------------------------------
+#
+# Apollo's ruling on the 1.1 step-3 BLOCK (m_227344fd): the thirteen rows in
+# tests/test_grip_object_model.py are RETIRED in this step, and any row asserting a property
+# `store migrate` RELIES ON moves here, with its fixture built through `grip_mod`.
+#
+# This is that property, and it is the only one the retired file held that migrate depends on:
+# `_native_store_migrate` reads the alpha store through `grip_mod._read_repo_state`, so the
+# thing that must keep working is that a store built by `grip_mod` carries member pins that
+# reader can find. Everything else in the retired file asserted the CLI surface of
+# `store snapshot/log/diff/checkout`, which section 5 removes -- and the properties worth
+# keeping from it are covered natively now, by test_store_status_values,
+# test_store_member_state and test_store_verb_witnesses.
+
+
+def test_grip_mod_alpha_store_carries_the_pins_the_migration_reads(tmp_path: Path) -> None:
+    """The alpha side of the migration boundary, built through grip_mod itself.
+
+    `_native_store_migrate` opens `<root>/.grip/.git`, reads its HEAD via
+    `grip_mod._read_repo_state`, and takes each member's `commit` field as the pin. So this
+    asserts exactly that: after `grip_init` + `grip_snapshot`, the state reader returns one
+    entry per member, each with a 40-hex `commit` -- the shape the migration's pin loop
+    validates before it will write a native root commit.
+
+    The control is the same reader against a root with no alpha store: an empty dict, not a
+    crash. Without it, a reader that returned a fixed non-empty shape would pass the first
+    half while telling the migration nothing.
+    """
+    from gr2.python_cli import grip as grip_mod
+
+    root = tmp_path / "alpha-ws"
+    root.mkdir()
+    members: dict[str, Path] = {}
+    for name in ("alpha", "beta"):
+        member = root / name
+        member.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main", str(member)], check=True)
+        subprocess.run(["git", "-C", str(member), "config", "user.email", "t@e.invalid"], check=True)
+        subprocess.run(["git", "-C", str(member), "config", "user.name", "t"], check=True)
+        (member / "README.md").write_text(f"# {name}\n")
+        subprocess.run(["git", "-C", str(member), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(member), "commit", "-q", "-m", "initial"], check=True)
+        members[name] = member
+
+    grip_mod.grip_init(root)
+    grip_mod.grip_snapshot(root, members, message="alpha snapshot")
+
+    states = grip_mod._read_repo_state(root, "HEAD")
+    assert sorted(states) == ["alpha", "beta"], f"one entry per member: {sorted(states)}"
+    for name, state in states.items():
+        pin = state.get("commit", "")
+        assert isinstance(pin, str) and len(pin) == 40, (name, state)
+        head = subprocess.run(
+            ["git", "-C", str(members[name]), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert pin == head, f"{name}'s recorded pin must be its HEAD: {pin} vs {head}"
+
+    # CONTROL: the same reader on an alpha store that has been INITIALISED but never
+    # snapshotted -- there is no HEAD to read, so it must return nothing rather than a fixed
+    # shape. (A root with no alpha store at all is not the control: the reader requires the
+    # store to exist and raises, which is a different and correct behaviour.)
+    bare = tmp_path / "alpha-store-no-snapshot"
+    bare.mkdir()
+    grip_mod.grip_init(bare)
+    assert grip_mod._read_repo_state(bare, "HEAD") == {}, (
+        "control: an alpha store with no snapshot has no pins to report"
+    )

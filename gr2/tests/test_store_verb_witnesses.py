@@ -487,6 +487,96 @@ def test_commit_and_check_read_the_members_upstream_not_the_literal_origin(
     assert "origin/main" in out, f"the refusal must name the upstream it compared: {out}"
 
 
+def test_status_refuses_an_init_root_that_has_no_commit_yet(
+    ws: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A named state, not a git error (Apollo, r1 m_227344fd finding B).
+
+    `ls-tree HEAD` raises on an unborn HEAD, which surfaced as a 5 carrying git's own
+    "fatal: invalid object name 'HEAD'". The row asserts the NAME and the ABSENCE of the raw
+    error, and carries its own control: the same verb on the same root after a commit exits 0,
+    so this cannot pass by refusing everything.
+    """
+    assert _cli("store", "init", str(ws))[0] == 0
+
+    rc, out = _cli("store", "status", "--json")
+    assert rc == 5, f"an uncommitted root cannot be measured; expected 5, got {rc}: {out}"
+    assert "store commit" in out, f"the refusal must name the verb to run: {out}"
+    assert "fatal:" not in out, f"git's raw error is not a refusal: {out}"
+
+    assert _cli("store", "commit", "-m", "first")[0] == 0
+    rc, out = _cli("store", "status", "--json")
+    assert rc == 0, f"control: the same root after a commit must exit 0, got {rc}: {out}"
+
+
+def test_diff_refuses_a_ref_it_cannot_resolve(ws: Path) -> None:
+    """Exit 5 naming the ref, never a wrapped git message (Apollo, r1 ruling)."""
+    assert _cli("store", "init", str(ws))[0] == 0
+    assert _cli("store", "commit", "-m", "first")[0] == 0
+
+    rc, out = _cli("store", "diff", "HEAD~5", "HEAD", "--json")
+    assert rc == 5, f"an unresolvable ref cannot be measured; expected 5, got {rc}: {out}"
+    assert "HEAD~5" in out, f"the refusal must name the ref it could not resolve: {out}"
+    assert "fatal:" not in out, f"git's raw error is not a refusal: {out}"
+
+    rc, out = _cli("store", "diff", "HEAD", "HEAD", "--json")
+    assert rc == 0, f"control: two resolvable refs must succeed, got {rc}: {out}"
+
+
+def test_checkout_json_reports_the_commit_it_resolved_not_the_ref_typed(ws: Path) -> None:
+    """The reported commit must be a COMMIT (Apollo, r1 m_227344fd finding A).
+
+    `--json` used to echo `root_commit: "HEAD~1"`, which names a commit only relative to a
+    HEAD the call itself just moved: a caller could not tell which commit it got, and the
+    value is meaningless to any later read.
+    """
+    assert _cli("store", "init", str(ws))[0] == 0
+    assert _cli("store", "commit", "-m", "first")[0] == 0
+    first = _git_out(ws, "rev-parse", "HEAD")
+    (ws / "alpha" / "next.txt").write_text("next\n")
+    _git(ws / "alpha", "add", ".")
+    _git(ws / "alpha", "commit", "-q", "-m", "next")
+    _git(ws / "alpha", "push", "-q", "origin", "main")
+    assert _cli("store", "commit", "-m", "second")[0] == 0
+
+    rc, out = _cli("store", "checkout", "HEAD~1", "--json")
+    assert rc == 0, out
+    reported = json.loads(out)["root_commit"]
+    assert reported == first, f"the resolved commit must be reported: {reported} vs {first}"
+    assert reported != "HEAD~1", "the typed ref is not a commit"
+    assert _git_out(ws, "rev-parse", "HEAD") == first, "and it is where the root actually is"
+
+
+def test_log_reports_the_root_shape_not_the_alpha_snapshot_index(ws: Path) -> None:
+    """The SHAPE, because both branches printed something.
+
+    Atlas's r2 BLOCK (m_ce3627a7) found `store log <root>` still reading
+    `.grip/snapshots/index.json` while the no-argument branch was already native. A row that
+    asserted "log printed entries" would have passed on EITHER branch, which is why this
+    asserts the entry KEYS: a native entry carries `commit`, `message` and `pins`; an alpha
+    snapshot-index row carried `id` and `repos`. And the positional root is gone, so the
+    alpha branch is not reachable by spelling it differently.
+    """
+    assert _cli("store", "init", str(ws))[0] == 0
+    assert _cli("store", "commit", "-m", "first")[0] == 0
+
+    rc, out = _cli("store", "log", "--json")
+    assert rc == 0, out
+    entries = json.loads(out)["entries"]
+    assert entries, "the root has one commit, so there is one entry"
+    entry = entries[0]
+    assert set(entry) >= {"commit", "message", "pins"}, f"native entry keys: {sorted(entry)}"
+    assert "id" not in entry and "repos" not in entry, (
+        f"an alpha snapshot-index row must not be what log prints: {sorted(entry)}"
+    )
+    assert entry["message"] == "first", entry
+
+    rc, out = _cli("store", "log", str(ws), "--json")
+    assert rc == 2, (
+        f"log takes no positional root any more, so this is a usage error; got {rc}: {out}"
+    )
+
+
 def test_log_reports_pin_changes_per_root_commit(ws: Path) -> None:
     assert _cli("store", "init", str(ws))[0] == 0
     assert _cli("store", "commit", "-m", "first")[0] == 0

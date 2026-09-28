@@ -22,7 +22,12 @@ from .gitops import git, repo_dirty
 from .spec_apply import unit_member_path, validate_grip_toml
 from .workspace_guidance import missing_gr2_workspace_guidance
 
-grip_app = typer.Typer(help="Grip object model: workspace snapshots and history")
+grip_app = typer.Typer(
+    help="Grip object model: workspace snapshots and history. Exit codes: 0 ok, "
+    "2 usage, 3 refused on coverage or cleanliness, 4 refused as inconsistent or "
+    "beta, 5 cannot measure (a verb that could not complete also reports 5 and "
+    'prefixes its message with "cannot complete this store verb:")'
+)
 config_cli_app = typer.Typer(help="Config base+overlay management")
 
 
@@ -154,6 +159,21 @@ def _repo_head_state(repo_path: Path) -> dict[str, object]:
             "branch": branch_name,
         }
     return {"head": head_sha, "is_empty": False, "head_state": "detached"}
+
+
+# ---------------------------------------------------------------------------
+# THE ALPHA OBJECT MODEL'S READERS, NOW UNREFERENCED BY THE CLI (2026-09-28).
+#
+# Porting `store log` off `_read_snapshot_index` removed the LAST live caller of this group.
+# The functions below are the alpha `.grip` snapshot object model -- snapshot index, its
+# writes, snapshot-id resolution, the member map, the dirty check, the grip-dir guard. They
+# are KEPT rather than deleted for one measured reason: `store migrate` (design section 6a)
+# READS the alpha store to convert it, and `tests/test_grip_object_model.py` imports three of
+# these directly, so deleting them would break that file's collection before its own fate is
+# decided. Atlas's r2 BLOCK (m_ce3627a7) is what made this group dead by removing log's alpha
+# branch; the follow-on -- delete this group, or rewrite that test file to the native verbs --
+# is named in the freeze post and waits on the design call, not on a builder.
+# ---------------------------------------------------------------------------
 
 
 def _read_snapshot_index(workspace: Path) -> list[dict[str, object]]:
@@ -455,6 +475,19 @@ def _refuse_init_disagreement(root: Path, members: list[dict[str, str]] | None =
 # a gr2-generated `.gitignore` from an adopted root's own file without guessing by content.
 # `store init` never edits an adopted root's `.gitignore` (section 3a), and commit must not
 # stage a file the owner wrote.
+STORE_INCOMPLETE_PREFIX = "cannot complete this store verb: "
+"""Section 5's exit table has no room for an internal error.
+
+For the whole `store` group the table is 0 ok, 2 usage, 3 refused on coverage or cleanliness,
+4 refused as inconsistent or beta, 5 cannot measure. A verb that could not COMPLETE -- an
+unexpected git failure, an unreadable root -- has no code of its own in that set, so it
+reports 5 and prefixes its message with this string. THE PREFIX IS PART OF THE SURFACE, not a
+style choice: it is what tells a measured "cannot measure" apart from a wrapped exception, and
+a caller reading the code alone cannot. Named as a constant so the ten handlers share one
+spelling, and named in the freeze post so the readers can hold the contract (Atlas, r2
+m_ce3627a7).
+"""
+
 GITIGNORE_MARKER = "# gr2 store allow-list (written by store init; an adopted root keeps its own)"
 
 
@@ -653,6 +686,12 @@ def _native_members_at(root: Path, revision: str) -> dict[str, str]:
 
 
 def _native_store_log(root: Path, max_count: int) -> list[dict[str, object]]:
+    # THE DOCUMENT IS READ FIRST, so a root that is not a store gets the NAMED refusal rather
+    # than git's own "not a git repository" wrapped in an exit code. Found by rewriting the
+    # gr1 guidance row after the log port: that row's workspace is not a git repo at all, and
+    # `rev-list` was the first thing the verb touched. Same defect class as Apollo's r1
+    # finding B on status, one verb over.
+    _grip_document(root)
     commits = _store_git(root, "rev-list", "--reverse", f"--max-count={max_count}", "HEAD").stdout.splitlines()
     prior: dict[str, str] = {}
     entries: list[dict[str, object]] = []
@@ -665,12 +704,20 @@ def _native_store_log(root: Path, max_count: int) -> list[dict[str, object]]:
 
 
 def _native_store_diff(root: Path, ref_a: str, ref_b: str) -> list[dict[str, object]]:
+    # Both refs are resolved FIRST and by name, so an unresolvable one is a NAMED refusal at
+    # 5 rather than a wrapped git message from whichever read happened to run first. Same
+    # judgement as checkout's unresolvable ref, and the same code for the same reason: the
+    # verb could not MEASURE the thing the caller named (Apollo, r1 ruling).
+    _grip_document(root)  # the named refusal for a root that is not a store, first
+    for ref in (ref_a, ref_b):
+        if _store_git(root, "rev-parse", "--verify", f"{ref}^{{commit}}", check=False).returncode:
+            raise NativeStoreRefusal(f"{ref} is not a root commit this store can resolve", 5)
     before = _native_members_at(root, ref_a)
     after = _native_members_at(root, ref_b)
     return [{"name": name, "old_pin": before.get(name), "new_pin": after.get(name), "changed": before.get(name) != after.get(name)} for name in sorted(set(before) | set(after))]
 
 
-def _native_store_checkout(root: Path, revision: str) -> list[dict[str, str]]:
+def _native_store_checkout(root: Path, revision: str) -> tuple[str, list[dict[str, str]]]:
     """Materialize the members at a root commit (section 5: `checkout` is materialize-at-a-commit).
 
     ⚠ THE REVISION IS RESOLVED TO A SHA ONCE, BEFORE ANYTHING MOVES HEAD (measured
@@ -705,7 +752,11 @@ def _native_store_checkout(root: Path, revision: str) -> list[dict[str, str]]:
         pin = pins[member["name"]]
         _store_git(path, "checkout", "--detach", pin)
         restored.append({"name": member["name"], "pin": pin, "head": _store_git(path, "rev-parse", "HEAD").stdout.strip()})
-    return restored
+    # THE RESOLVED SHA IS RETURNED, not the string the caller typed (Apollo, r1 m_227344fd
+    # finding A). `--json` reported `root_commit: "HEAD~1"`, which is not a commit: it names
+    # one only relative to a HEAD the call itself just moved, so a caller could not tell
+    # which commit it got, and the value is meaningless to any later read.
+    return sha, restored
 
 
 def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[str, object]]:
@@ -717,8 +768,16 @@ def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[
     working index: the root snapshot is what a clone materializes from, so an index-only
     edit is not a snapshot defect (measured 2026-09-28).
     """
+    members = _native_members(root)
+    # A ROOT WITH NO COMMIT YET IS A NAMED STATE, not a git error (Apollo, r1 m_227344fd
+    # finding B). `ls-tree HEAD` raises on an unborn HEAD, which surfaced as a 5 carrying
+    # git's own "fatal: invalid object name 'HEAD'". The guard runs AFTER the document read
+    # so a root that is not a store at all still gets its own message, and BEFORE any
+    # per-member row so the caller is told the one thing to run.
+    if _store_git(root, "rev-parse", "--verify", "HEAD", check=False).returncode:
+        raise NativeStoreRefusal("no root commit yet; run store commit", 5)
     rows: list[dict[str, str | None]] = []
-    for member in _native_members(root):
+    for member in members:
         path = root / member["path"]
         tree = _store_git(root, "ls-tree", "HEAD", "--", member["path"]).stdout.strip().split()
         gitlink = tree[2] if len(tree) >= 3 else None
@@ -870,7 +929,7 @@ def grip_init_cmd(
         # could not COMPLETE, which is the 5 row, and it is prefixed so a raw git message
         # cannot read as a contract refusal (Atlas, pre-read F4: an unaudited backstop is
         # the one that will fire).
-        typer.echo(f"cannot complete this store verb: {exc}", err=True)
+        typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
     if json_output:
         typer.echo(json.dumps({"status": "initialized", "path": str(root), "store": "native"}))
@@ -896,7 +955,7 @@ def grip_commit_cmd(
         # could not COMPLETE, which is the 5 row, and it is prefixed so a raw git message
         # cannot read as a contract refusal (Atlas, pre-read F4: an unaudited backstop is
         # the one that will fire).
-        typer.echo(f"cannot complete this store verb: {exc}", err=True)
+        typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
     if json_output:
         typer.echo(json.dumps({"status": "committed", "root_commit": _store_git(Path.cwd(), "rev-parse", "HEAD").stdout.strip()}))
@@ -918,7 +977,7 @@ def grip_check_cmd(
         # could not COMPLETE, which is the 5 row, and it is prefixed so a raw git message
         # cannot read as a contract refusal (Atlas, pre-read F4: an unaudited backstop is
         # the one that will fire).
-        typer.echo(f"cannot complete this store verb: {exc}", err=True)
+        typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
     if json_output:
         typer.echo(json.dumps({"status": "checked", "members": members}))
@@ -942,7 +1001,7 @@ def grip_push_cmd(
         # could not COMPLETE, which is the 5 row, and it is prefixed so a raw git message
         # cannot read as a contract refusal (Atlas, pre-read F4: an unaudited backstop is
         # the one that will fire).
-        typer.echo(f"cannot complete this store verb: {exc}", err=True)
+        typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
     if json_output:
         typer.echo(json.dumps(payload))
@@ -966,7 +1025,7 @@ def grip_status_cmd(
         # could not COMPLETE, which is the 5 row, and it is prefixed so a raw git message
         # cannot read as a contract refusal (Atlas, pre-read F4: an unaudited backstop is
         # the one that will fire).
-        typer.echo(f"cannot complete this store verb: {exc}", err=True)
+        typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
     if json_output:
         typer.echo(json.dumps({"status": "status", "members": members, "root": root_status}))
@@ -1005,7 +1064,7 @@ def grip_materialize_cmd(
         # could not COMPLETE, which is the 5 row, and it is prefixed so a raw git message
         # cannot read as a contract refusal (Atlas, pre-read F4: an unaudited backstop is
         # the one that will fire).
-        typer.echo(f"cannot complete this store verb: {exc}", err=True)
+        typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
     if json_output:
         typer.echo(json.dumps({"status": "materialized", "members": members}))
@@ -1030,7 +1089,7 @@ def grip_migrate_cmd(
         # could not COMPLETE, which is the 5 row, and it is prefixed so a raw git message
         # cannot read as a contract refusal (Atlas, pre-read F4: an unaudited backstop is
         # the one that will fire).
-        typer.echo(f"cannot complete this store verb: {exc}", err=True)
+        typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
     if json_output:
         typer.echo(json.dumps(payload))
@@ -1066,7 +1125,7 @@ def grip_snapshot_cmd(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
     except RuntimeError as exc:
-        typer.echo(f"cannot complete this store verb: {exc}", err=True)
+        typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
     root_commit = _store_git(Path.cwd(), "rev-parse", "HEAD").stdout.strip()
     if json_output:
@@ -1077,40 +1136,37 @@ def grip_snapshot_cmd(
 
 @grip_app.command("log")
 def grip_log_cmd(
-    workspace_root: Path | None = typer.Argument(None),
     max_count: int = typer.Option(10, "--max-count", "-n", help="Max entries to show"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Show grip commit history."""
-    if workspace_root is None:
+    """The root's commit history, with the pins each commit recorded (design section 5).
+
+    Section 5 line 99 puts `log` in the same row as diff and checkout -- "`log` is the root's
+    `git log` with pins per commit" -- so it acts on the cwd like every other verb in the
+    group, and its entries are native: a root `commit`, its `message`, and the `pins` that
+    changed.
+
+    ⚠ IT CARRIED A LIVE ALPHA READER UNTIL 2026-09-28, and Atlas's r2 BLOCK (m_ce3627a7)
+    caught it. A positional `workspace_root` sent the verb to `_read_snapshot_index`
+    (`.grip/snapshots/index.json`) and printed rows keyed `id`, the alpha shape, while the
+    no-argument branch was already native. `diff` had been ported off that same index in the
+    SAME RANGE, so this was F3's shape surviving in the one verb the port did not reach: a
+    verb with two branches that answer different questions presents as ported whenever a
+    caller happens to use the branch that was ported.
+    """
+    try:
         entries = _native_store_log(Path.cwd(), max_count)
-        if json_output:
-            typer.echo(json.dumps({"entries": entries}))
-        else:
-            for entry in entries:
-                typer.echo(f"{entry['commit']} {entry['message']}")
-        return
-    workspace_root = workspace_root.resolve()
-
-    _validate_grip_dir(workspace_root)
-
-    index = _read_snapshot_index(workspace_root)
-
+    except NativeStoreRefusal as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=exc.code)
+    except RuntimeError as exc:
+        typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
+        raise typer.Exit(code=5)
     if json_output:
-        display = list(reversed(index[-max_count:])) if index else []
-        typer.echo(json.dumps({"entries": display}))
+        typer.echo(json.dumps({"entries": entries}))
         return
-
-    if not index:
-        typer.echo("No grip snapshots yet.")
-        return
-
-    display = list(reversed(index[-max_count:]))
-    for entry in display:
-        sid = entry.get("id", "?")
-        msg = entry.get("message", "")
-        repos = entry.get("repos", [])
-        typer.echo(f"{msg}  [{', '.join(repos)}]  ({sid[:12]})")
+    for entry in entries:
+        typer.echo(f"{entry['commit']} {entry['message']}")
 
 
 @grip_app.command("diff")
@@ -1137,7 +1193,7 @@ def grip_diff_cmd(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
     except RuntimeError as exc:
-        typer.echo(f"cannot complete this store verb: {exc}", err=True)
+        typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
     if json_output:
         typer.echo(json.dumps({"ref_a": a, "ref_b": b, "members": members}))
@@ -1162,15 +1218,15 @@ def grip_checkout_cmd(
     """
     root = Path.cwd()
     try:
-        members = _native_store_checkout(root, ref)
+        resolved, members = _native_store_checkout(root, ref)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
     except RuntimeError as exc:
-        typer.echo(f"cannot complete this store verb: {exc}", err=True)
+        typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
     if json_output:
-        typer.echo(json.dumps({"status": "checked-out", "root_commit": ref, "members": members}))
+        typer.echo(json.dumps({"status": "checked-out", "root_commit": resolved, "members": members}))
     else:
         for member in members:
             typer.echo(f"{member['name']} -> {member['pin']}")

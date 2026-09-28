@@ -91,6 +91,8 @@ def lane_paths_for_repo(repo: Path | str) -> ReviewRecordPaths | None:
     if pointer.is_file():
         try:
             target = Path(pointer.read_text().strip())
+            if ".." in target.parts:
+                raise ReviewRecordLocationError("review pointer contains an unsafe coordinate")
             parts = target.resolve().parts
             marker = (".grip", "state", "lanes")
             if not any(parts[i:i + 3] == marker for i in range(len(parts) - 2)):

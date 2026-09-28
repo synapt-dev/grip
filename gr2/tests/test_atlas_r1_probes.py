@@ -44,6 +44,7 @@ from gr2.python_cli.review_records import (
     lane_paths_for_repo,
     legacy_review_record_path,
     read_review_record,
+    review_record_pointer_path,
     review_record_paths,
 )
 
@@ -207,3 +208,22 @@ def test_control_close_still_works_on_a_canonical_receipt(tmp_path):
         "control: close must still remove a lane whose receipt is canonical -- if this "
         "fails, A is not measuring the legacy path"
     )
+
+
+@pytest.mark.parametrize("receipt", [None, "{"])
+def test_pointer_without_a_readable_receipt_refuses_commit(tmp_path, receipt):
+    repo = tmp_path / "repo"; _run(tmp_path, "init", "-q", str(repo))
+    target = tmp_path / "ws" / ".grip" / "state" / "lanes" / "atlas" / "review-7" / "review" / "grip.json"
+    target.parent.mkdir(parents=True)
+    if receipt is not None:
+        target.write_text(receipt)
+    review_record_pointer_path(repo).write_text(str(target) + "\n")
+    with pytest.raises(CommitError, match="pointer|safely"):
+        _refuse_review_ephemeral_repo(repo)
+
+
+def test_pointer_with_unsafe_coordinate_refuses_commit(tmp_path):
+    repo = tmp_path / "repo"; _run(tmp_path, "init", "-q", str(repo))
+    review_record_pointer_path(repo).write_text(str(tmp_path / "ws" / ".grip" / "state" / "lanes" / ".." / "x.json") + "\n")
+    with pytest.raises(CommitError, match="unsafe|safely"):
+        _refuse_review_ephemeral_repo(repo)

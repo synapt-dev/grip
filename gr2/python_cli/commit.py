@@ -12,7 +12,7 @@ from pathlib import Path
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 
 from .gitops import GitMissingError, git
-from .review_records import lane_paths_for_repo, read_review_record
+from .review_records import lane_paths_for_repo, read_review_record, review_record_pointer_path
 from .spec_apply import MaterializationPlanError, unit_root
 
 
@@ -59,8 +59,13 @@ def _refuse_review_ephemeral_repo(repo: Path) -> None:
     """A review-ephemeral lane repo carries a review record naming its kind. Refuse
     a commit into it directly (the reviewer's cwd is inside the review lane), so a
     review lane never becomes a work lane through the single-repo path."""
-    paths = lane_paths_for_repo(repo)
-    record = read_review_record(paths) if paths else None
+    try:
+        paths = lane_paths_for_repo(repo)
+        record = read_review_record(paths) if paths else None
+    except Exception as exc:
+        raise CommitError(f"cannot safely resolve review receipt for {repo}: {exc}") from exc
+    if review_record_pointer_path(repo).is_file() and record is None:
+        raise CommitError(f"{repo} has a review pointer but no readable receipt; refusing commit")
     kind = record.get("lane_kind") if record else None
     if kind == "review-ephemeral":
         raise CommitError(

@@ -270,8 +270,19 @@ def _grip_document(root: Path) -> dict:
             return tomllib.load(handle)
     # A root remote need not carry member objects.  Read the canonical spec
     # directly so materialize can populate those members before checkout.
-    spec = _store_git(root, "show", "HEAD:grip.toml").stdout
-    return tomllib.loads(spec)
+    # ⚠ AND A ROOT WITH NEITHER IS A REFUSAL, NOT AN EXIT 1 (measured 2026-09-28). Asking
+    # git for `HEAD:grip.toml` where there is no HEAD and no document raised the generic
+    # RuntimeError, so `store status` and `store check` printed git's raw "fatal: invalid
+    # object name 'HEAD'" and exited 1 -- a named refusal on an internal code. The group's
+    # table has a code for this: 5, cannot measure.
+    spec = _store_git(root, "show", "HEAD:grip.toml", check=False)
+    if spec.returncode:
+        raise NativeStoreRefusal(
+            f"no grip.toml at {root} and no committed spec at HEAD; this root is not a "
+            f"store these verbs can measure -- run store init here",
+            5,
+        )
+    return tomllib.loads(spec.stdout)
 
 
 def _beta_fields(node: object) -> list[str]:

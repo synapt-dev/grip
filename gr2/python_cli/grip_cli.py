@@ -451,6 +451,40 @@ def _refuse_init_disagreement(root: Path, members: list[dict[str, str]] | None =
             )
 
 
+# Written as the first line of an allow-list THIS VERB generates, so `store commit` can tell
+# a gr2-generated `.gitignore` from an adopted root's own file without guessing by content.
+# `store init` never edits an adopted root's `.gitignore` (section 3a), and commit must not
+# stage a file the owner wrote.
+GITIGNORE_MARKER = "# gr2 store allow-list (written by store init; an adopted root keeps its own)"
+
+
+def _write_gitignore(root: Path, members: list[dict[str, str]]) -> None:
+    """Section 3a's allow-list, written ONLY when `store init` creates the root repo.
+
+    A gr1 root holds venvs, scratch and logs beside its members, so without this the root's
+    `git status` is noise and someone eventually commits a venv (measured 2026-09-28: a
+    fresh init left `?? alpha/` for the whole member checkout). An ADOPTED root is never
+    touched -- the caller decides, not this function.
+
+    The shape is `/*` (ignore everything), then the two files the root exists to carry, then
+    one un-ignore per member. A nested member path also needs each ancestor directory
+    un-ignored and its other contents re-ignored, or `/*` swallows the way down:
+
+        !/reference/
+        /reference/*
+        !/reference/mem0
+    """
+    lines = [GITIGNORE_MARKER, "/*", "!/.gitignore", "!/grip.toml"]
+    for member in members:
+        parts = [part for part in member["path"].split("/") if part]
+        for depth in range(1, len(parts)):
+            prefix = "/" + "/".join(parts[:depth]) + "/"
+            lines.append(f"!{prefix}")
+            lines.append(f"{prefix}*")
+        lines.append("!/" + "/".join(parts))
+    root.joinpath(".gitignore").write_text("\n".join(lines) + "\n")
+
+
 def _native_store_init(root: Path) -> None:
     if (root / ".git").exists() and (root / "grip.toml").exists():
         _refuse_init_disagreement(root)
@@ -473,6 +507,9 @@ def _native_store_init(root: Path) -> None:
     members = _discover_members(root)
     if not members:
         raise NativeStoreRefusal("no sibling git repositories found to store", 4)
+    # Section 3a: the allow-list is written ONLY when init CREATES the root repo. An adopted
+    # root keeps whatever rule its owner wrote (break_12 asserts byte-identical).
+    created_repo = not (root / ".git").exists()
     # ⚠ PIN THE ROOT BRANCH. A bare `git init` takes its initial branch from the ambient
     # git configuration, so the same workspace produced `main` on a host whose system
     # config sets init.defaultBranch and `master` on one that does not. That is not only a
@@ -487,6 +524,8 @@ def _native_store_init(root: Path) -> None:
     # stranger has. `-b` makes the branch a property of the verb, not of the machine.
     _store_git(root, "init", "-b", "main")
     _write_native_members(root, members)
+    if created_repo:
+        _write_gitignore(root, members)
 
 
 def _native_store_commit(root: Path, message: str) -> None:
@@ -507,6 +546,11 @@ def _native_store_commit(root: Path, message: str) -> None:
         changed.append({**member, "pin": head})
     _write_native_members(root, changed)
     _store_git(root, "add", "grip.toml")
+    # The generated allow-list is TRACKED (section 3: ".gitignore | tracked, only when init
+    # created the repo"). Staged only when it is ours, proved by the marker line.
+    allow_list = root / ".gitignore"
+    if allow_list.is_file() and allow_list.read_text().splitlines()[:1] == [GITIGNORE_MARKER]:
+        _store_git(root, "add", ".gitignore")
     for member in changed:
         _store_git(root, "update-index", "--add", "--cacheinfo", f"160000,{member['pin']},{member['path']}")
     _store_git(root, "-c", "user.name=gr2", "-c", "user.email=gr2@example.invalid", "commit", "-m", message)

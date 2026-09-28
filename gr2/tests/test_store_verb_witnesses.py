@@ -284,6 +284,102 @@ def test_materialize_reports_exactly_which_members_are_done(
 # ---------------------------------------------------------------------------
 
 
+def test_fresh_init_generates_the_allow_list_and_the_root_ends_clean(ws: Path) -> None:
+    """Section 3a's fruit: a root whose `git status` is not noise.
+
+    Without the allow-list a gr1 root reports its whole member checkout as untracked, and
+    someone eventually commits a venv. The assertion is the FRUIT (`git status --porcelain`
+    empty after init+commit), not the file's existence: a `.gitignore` that exists but does
+    not silence the member would pass a weaker row and fail the design's reason.
+    """
+    assert _cli("store", "init", str(ws))[0] == 0
+    allow_list = ws / ".gitignore"
+    assert allow_list.is_file(), "a fresh init writes the 3a allow-list"
+    text = allow_list.read_text()
+    for line in ("/*", "!/.gitignore", "!/grip.toml", "!/alpha", "!/beta"):
+        assert line in text.splitlines(), f"{line!r} missing from the allow-list:\n{text}"
+
+    assert _cli("store", "commit", "-m", "first")[0] == 0
+    tracked = _git_out(ws, "ls-tree", "HEAD", "--name-only").splitlines()
+    assert sorted(tracked) == [".gitignore", "alpha", "beta", "grip.toml"], tracked
+    assert _git_out(ws, "status", "--porcelain") == "", (
+        "the whole point of the allow-list: a committed root is clean, not venv-noise"
+    )
+
+
+def test_an_adopted_root_keeps_its_own_gitignore_and_never_commits_it(
+    ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Adoption is an adoption: the owner's rule survives byte-for-byte and is not staged.
+
+    The second half is the control the byte-identity check does not give: a verb that
+    rewrote the file and restored it, or that staged the owner's rule into OUR root commit,
+    would pass a bytes-only row. The marker line is what lets commit tell the two apart
+    without guessing.
+    """
+    root = ws.parent / "adopted"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+    owner_rule = "# the owner's own rule\nalpha/\nbeta/\n"
+    (root / ".gitignore").write_text(owner_rule)
+    subprocess.run(
+        ["git", "clone", "-q", str(ws.parent / "alpha.git"), str(root / "alpha")],
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "clone", "-q", str(ws.parent / "beta.git"), str(root / "beta")],
+        capture_output=True,
+        check=True,
+    )
+    monkeypatch.chdir(root)
+    # the root repo already exists, so this is the ADOPTION path
+    assert _cli("store", "init", "--json")[0] == 0
+    assert (root / ".gitignore").read_text() == owner_rule, "adoption must not edit the owner's rule"
+    assert _cli("store", "commit", "-m", "first")[0] == 0
+    assert (root / ".gitignore").read_text() == owner_rule, "and not after the commit either"
+    tracked = _git_out(root, "ls-tree", "HEAD", "--name-only").splitlines()
+    assert ".gitignore" not in tracked, f"the owner's rule is not ours to commit: {tracked}"
+    assert "alpha" in tracked and "beta" in tracked, tracked
+
+
+def test_write_gitignore_unignores_a_nested_member_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The nested shape, driven directly: a sibling-only discovery cannot reach it yet.
+
+    `store init` derives members from sibling clones, so a nested member path
+    (`reference/mem0`, the witness shape) needs the spec-driven form, which is not built.
+    The generator is the part section 3a specifies precisely, so it is driven directly here
+    rather than left unasserted behind a shape that does not exist yet.
+    """
+    from gr2.python_cli.grip_cli import _write_gitignore
+
+    root = tmp_path / "nested"
+    root.mkdir()
+    (root / "reference" / "mem0").mkdir(parents=True)
+    _write_gitignore(root, [{"name": "mem0", "path": "reference/mem0"}])
+    lines = (root / ".gitignore").read_text().splitlines()
+    assert lines[1:] == [
+        "/*",
+        "!/.gitignore",
+        "!/grip.toml",
+        "!/reference/",
+        "/reference/*",
+        "!/reference/mem0",
+    ], lines
+    monkeypatch.chdir(root)
+    _git(root, "init", "-q", "-b", "main")  # check-ignore needs a repo to read the rule
+    # `check-ignore` exits 1 and prints nothing when the path is NOT ignored, so both calls
+    # are read with check=False: the output is the instrument, not the exit code.
+    assert _git_out(root, "check-ignore", "reference/mem0/marker.txt", check=False) == "", (
+        "the nested member must not be ignored"
+    )
+    assert _git_out(root, "check-ignore", "reference/other.txt", check=False) != "", (
+        "control: a sibling of the nested member IS ignored, or the un-ignore proves nothing"
+    )
+
+
 def test_status_and_check_refuse_a_root_that_is_not_a_store(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

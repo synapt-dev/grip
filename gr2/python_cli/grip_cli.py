@@ -728,6 +728,27 @@ def _native_store_log(root: Path, max_count: int) -> list[dict[str, object]]:
     prior: dict[str, str] = {}
     entries: list[dict[str, object]] = []
     for commit in commits:
+        # THE ADOPTION BOUNDARY (story 54, 2026-09-28). A root that carried its own history
+        # BEFORE it became a store -- an ADOPTED root -- has commits that predate grip.toml.
+        # Reading the document at one of them is `fatal: path 'grip.toml' exists on disk, but
+        # not in '<sha>'`, and it took the WHOLE verb down: exit 5 with no rows, on a root whose
+        # store was otherwise working. The walk now STARTS AT THE BOUNDARY: a commit without the
+        # document is outside the store's scope and is skipped, and every commit after it is
+        # shown. `log` never fails whole on a pre-adoption commit again.
+        #
+        # ⚠ THIS COMMENT ONCE CLAIMED MORE THAN IT MEASURED. An earlier version said the same
+        # fatal also "poisoned the store forward -- the next `commit` exited 5 as well". That
+        # causal link is FALSE. Measured on the base arm with this guard disabled and a
+        # LEGITIMATE second commit (the member advanced AND pushed to its origin first):
+        # commit1 exit 0, commit2 exit 0, and only `log` exits 5. The second exit 5 I had seen
+        # was the no-change commit, which fails identically on an UNADOPTED root -- so it was
+        # never this boundary's doing, and `commit` was never blocked by it.
+        #
+        # AND THE SKIP IS NOT A STOP: a document DELETED mid-history and restored later is
+        # hidden rather than reported, because every commit without it is skipped. A gap is not
+        # a boundary. Named as a follow-on rather than fixed here.
+        if _store_git(root, "cat-file", "-e", f"{commit}:grip.toml", check=False).returncode:
+            continue
         current = _native_members_at(root, commit)
         changes = [{"name": name, "before": prior.get(name), "after": pin} for name, pin in current.items() if prior.get(name) != pin]
         entries.append({"commit": commit, "message": _store_git(root, "show", "-s", "--format=%s", commit).stdout.strip(), "pins": changes})

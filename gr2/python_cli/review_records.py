@@ -93,7 +93,8 @@ def lane_paths_for_repo(repo: Path | str) -> ReviewRecordPaths | None:
             target = Path(pointer.read_text().strip())
             if not target.is_absolute() or ".." in target.parts:
                 raise ReviewRecordLocationError("review pointer contains an unsafe coordinate")
-            parts = target.resolve().parts
+            resolved_target = target.resolve()
+            parts = resolved_target.parts
             marker = (".grip", "state", "reviews")
             if not any(parts[i:i + 3] == marker for i in range(len(parts) - 2)):
                 raise ReviewRecordLocationError("review pointer is not a canonical workspace coordinate")
@@ -105,7 +106,7 @@ def lane_paths_for_repo(repo: Path | str) -> ReviewRecordPaths | None:
                 raise ReviewRecordLocationError("review pointer is not a canonical review receipt")
             _component(owner, "owner unit"); _component(lane, "lane name")
             _component(filename[:-5], "member")
-            return ReviewRecordPaths(target, legacy)
+            return ReviewRecordPaths(resolved_target, legacy)
         except (OSError, ValueError):
             raise ReviewRecordLocationError("review pointer cannot be read safely")
     # Compatibility for project-review lanes created before the pointer.

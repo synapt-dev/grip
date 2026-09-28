@@ -333,7 +333,7 @@ def _native_members(root: Path) -> list[dict[str, str]]:
     data = _grip_document(root)
     members = data.get("members", [])
     if not isinstance(members, list) or not members:
-        raise RuntimeError("grip.toml has no members")
+        raise NativeStoreRefusal("grip.toml has no members; run store init against a root that has them", 4)
     result: list[dict[str, str]] = []
     for member in members:
         item = dict(member)
@@ -379,9 +379,8 @@ def _credential_refusal(name: str) -> NativeStoreRefusal:
     )
 
 
-def _native_store_init(root: Path) -> None:
-    if (root / ".git").exists() and (root / "grip.toml").exists():
-        return
+def _discover_members(root: Path) -> list[dict[str, str]]:
+    """The sibling clones `store init` derives its members from, gr1 layout."""
     members: list[dict[str, str]] = []
     for path in sorted(root.iterdir()):
         if not path.is_dir() or path.name.startswith("."):
@@ -391,11 +390,76 @@ def _native_store_init(root: Path) -> None:
             continue
         remote = _store_git(path, "remote", "get-url", "origin", check=False)
         if remote.returncode:
-            raise RuntimeError(f"{path.name} has no origin remote")
+            raise NativeStoreRefusal(
+                f"{path.name} has no origin remote; store init cannot pin a member it cannot fetch", 4
+            )
         url = remote.stdout.strip()
         if _url_has_credentials(url):
             raise _credential_refusal(path.name)
         members.append({"name": path.name, "path": path.name, "remote": url, "upstream": "origin/main", "ref": "main", "pin": _store_git(path, "rev-parse", "HEAD").stdout.strip()})
+    return members
+
+
+def _refuse_init_disagreement(root: Path, members: list[dict[str, str]] | None = None) -> None:
+    """Exit 4 when an existing `grip.toml` names a different root than this one is.
+
+    `store init` is idempotent, and this is what makes the word mean something: a second
+    init against a spec the root no longer matches is a disagreement, not a no-op
+    (design section 5). Before this, a root carrying another root's `grip.toml` returned 0
+    and said nothing (measured 2026-09-28).
+
+    Identity only -- name, path, origin. PINS ARE NOT COMPARED ON PURPOSE: the pin belongs
+    to `store commit`, so comparing it would make a re-init after any commit refuse, which
+    is not what idempotent means. And an empty discovery is not a disagreement: a root
+    whose members live at nested paths (the witness shape, `core/config`) is derived from
+    `.grip/workspace_spec.toml`, not from siblings, and the document is the authority there.
+    """
+    if members is None:
+        members = _discover_members(root)
+    if not members:
+        return
+    document = _grip_document(root)
+
+    def identity(entry: dict) -> str:
+        return f"path={entry.get('path')} origin={(entry.get('remotes') or {}).get('origin')}"
+
+    recorded = {
+        str(member.get("name")): identity(member)
+        for member in document.get("members", [])
+        if isinstance(member, dict)
+    }
+    actual = {member["name"]: f"path={member['path']} origin={member['remote']}" for member in members}
+    if recorded == actual:
+        return
+    for name in sorted(set(recorded) | set(actual)):
+        if recorded.get(name) != actual.get(name):
+            raise NativeStoreRefusal(
+                f"grip.toml disagrees with this root: {name} is recorded as "
+                f"{recorded.get(name, '<absent>')} but the root has {actual.get(name, '<absent>')}",
+                4,
+            )
+
+
+def _native_store_init(root: Path) -> None:
+    if (root / ".git").exists() and (root / "grip.toml").exists():
+        _refuse_init_disagreement(root)
+        return
+    # ⚠ A STORE ROOT MUST BE ITS OWN REPO. Measured 2026-09-28: before this check, `store
+    # init` inside another repo's worktree returned 0 and created a NESTED repo, so the
+    # root's commits lived inside a parent that would track them as ordinary files. Design
+    # section 5 names this refusal (exit 4). `rev-parse --show-toplevel` succeeding on a root
+    # that has no `.git` of its own is the measurement: the answer comes back as the
+    # enclosing repo, which is never the root.
+    enclosing = _store_git(root, "rev-parse", "--show-toplevel", check=False)
+    if enclosing.returncode == 0:
+        top = Path(enclosing.stdout.strip()).resolve()
+        if top != root.resolve():
+            raise NativeStoreRefusal(
+                f"{root} is inside another repository's worktree ({top}); a store root is "
+                f"its own repo -- clone or move the workspace out before store init",
+                4,
+            )
+    members = _discover_members(root)
     if not members:
         raise NativeStoreRefusal("no sibling git repositories found to store", 4)
     # ⚠ PIN THE ROOT BRANCH. A bare `git init` takes its initial branch from the ambient
@@ -576,7 +640,11 @@ def _native_store_materialize(root: Path) -> list[dict[str, str]]:
                 try:
                     path.rmdir()
                 except OSError as exc:
-                    raise RuntimeError(f"{member['name']} path is not an empty checkout placeholder: {path}") from exc
+                    raise NativeStoreRefusal(
+                        f"{member['name']} path {path} is not an empty checkout placeholder; "
+                        f"materialize will not clear it -- move or remove what is there",
+                        3,
+                    ) from exc
             result = subprocess.run(["git", "clone", member["remote"], str(path)], text=True, capture_output=True, check=False)
             if result.returncode:
                 done = ", ".join(item["name"] for item in materialized) or "none"

@@ -10,6 +10,7 @@ verbs landed. Measured: the native `store init` creates `<root>/.git` plus `grip
 never `.grip/.git`. The rows keep their real purpose (both spellings reach the same callback
 and the store is created) against the native home.
 """
+import re
 import subprocess
 import tempfile
 import pathlib
@@ -74,6 +75,10 @@ def test_root_help_shows_store_and_hides_grip():
     assert "grip" not in flat.replace("gitgrip", "").replace("grip_", "")
 
 
+# CSI sequences: ESC, then "[" , then parameters/intermediates, then a final byte.
+_ANSI_RE = re.compile("\x1b\\[[0-9;?]*[ -/]*[@-~]")
+
+
 def test_both_names_enumerate_the_same_verbs():
     """⚠ REWRITTEN 2026-09-28, because the first version could not fail on a hidden verb.
 
@@ -94,6 +99,14 @@ def test_both_names_enumerate_the_same_verbs():
     }
     for group in ("store", "grip"):
         raw = runner.invoke(app, [group, "--help"]).output or ""
+        # v5 — ANSI IS STRIPPED, NOT THE ENVIRONMENT CHANGED. typer/rich_utils forces a
+        # terminal when GITHUB_ACTIONS (or FORCE_COLOR / PY_COLORS) is set, so in CI the
+        # help text carries escape codes and the box-pipe parse below finds an EMPTY
+        # Commands block -- measured: this row is green on a desk and red in CI with
+        # "missing [...] from []". The row asserts WHICH VERBS ARE LISTED, not how they
+        # render, so it strips the codes and reads the output CI actually produces, rather
+        # than deleting the variable and testing a rendering CI never emits.
+        raw = _ANSI_RE.sub("", raw)
         lines = raw.splitlines()
         # the Commands block ONLY: start at its header, stop at the first row without a box
         # pipe. Reading the whole page is what made the first version blind to a hidden verb,

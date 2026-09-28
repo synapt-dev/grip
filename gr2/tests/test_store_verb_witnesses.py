@@ -241,7 +241,12 @@ def test_push_publishes_the_root_ref_and_refuses_on_coverage(ws: Path, tmp_path:
     (ws / "grip.toml").write_text(text.replace(pin, moved))
     _git(ws, "add", "grip.toml")
     _git(ws, "update-index", "--add", "--cacheinfo", f"160000,{moved},alpha")
-    _git(ws, "commit", "-q", "-m", "malformed root: a pin its upstream does not have")
+    # v5: the ROOT repo has no identity BY DESIGN -- production supplies one per commit
+    # (grip_cli.py:667 carries -c user.name=gr2 -c user.email=gr2@example.invalid). A bare
+    # commit here leaned on the AMBIENT identity, which exists on a desk and not in CI, so
+    # the row was green locally and exit-128 in CI. Give it the identity production gives.
+    _git(ws, "-c", "user.name=gr2", "-c", "user.email=gr2@example.invalid",
+         "commit", "-q", "-m", "malformed root: a pin its upstream does not have")
     root_before = _git_out(ws, "rev-parse", "HEAD")
     rc, out = _cli("store", "push", "--json")
     assert rc == 3, f"an uncovered pin must refuse the push with 3, got {rc}: {out}"

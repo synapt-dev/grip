@@ -425,7 +425,10 @@ def test_break_03_push_root_with_unpushed_member(two_member_ws: Path, tmp_path: 
     assert covered_pin in text, "the fixture must start from the pin store commit wrote"
     (root / "grip.toml").write_text(text.replace(covered_pin, uncovered))
     _git(root, "update-index", "--add", "--cacheinfo", f"160000,{uncovered},alpha")
-    _git(root, "commit", "-q", "-m", "malformed root: a pin its upstream does not have")
+    # v5, same class as the witnesses file: the root repo carries no identity by design, so
+    # the production -c identity is supplied explicitly rather than borrowed from the desk.
+    _git(root, "-c", "user.name=gr2", "-c", "user.email=gr2@example.invalid",
+         "commit", "-q", "-m", "malformed root: a pin its upstream does not have")
 
     rc, out = _cli("store", "push", "--json")
     assert rc == 3, (

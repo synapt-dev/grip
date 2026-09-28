@@ -45,6 +45,7 @@ from .review_records import (
     ReviewRecordLocationError,
     legacy_review_record_path,
     read_review_record,
+    read_review_record_at,
     review_record_paths,
     write_review_record,
 )
@@ -443,7 +444,8 @@ def close_review_lane(
             paths = review_record_paths(workspace_root, owner_unit, lane_name, member, lane)
         except ReviewRecordLocationError as exc:
             raise ReviewError(str(exc)) from exc
-        record = read_review_record(paths, notice=echo)
+        located = read_review_record_at(paths, notice=echo)
+        record, record_path = located if located is not None else (None, None)
     if not (git_dir.is_dir() and not git_dir.is_symlink()) or record is None:
         raise ReviewError(
             f"{lane} lacks an owned .git directory or the review record; refusing to "
@@ -481,10 +483,11 @@ def close_review_lane(
     # Remove it only after every provenance and HEAD gate above has passed.
     if owner_unit is not None and lane_name is not None and member is not None:
         try:
-            paths.current.unlink()
+            assert record_path is not None
+            record_path.unlink()
         except OSError as exc:
             raise ReviewError(
-                f"{paths.current} is the review record but could not be removed: {exc}; "
+                f"{record_path} is the review record but could not be removed: {exc}; "
                 "refusing to delete the lane while its receipt would remain"
             ) from exc
 

@@ -21,6 +21,11 @@ def legacy_review_record_path(lane_repo_root: Path | str) -> Path:
     return Path(lane_repo_root) / ".git" / "grip-review.json"
 
 
+def review_record_pointer_path(lane_repo_root: Path | str) -> Path:
+    """The local discovery pointer, never a second copy of receipt content."""
+    return Path(lane_repo_root) / ".git" / "grip-review.pointer"
+
+
 def _component(value: str | None, label: str) -> str:
     if not isinstance(value, str) or not value or value in {".", ".."} or "/" in value or "\\" in value:
         raise ReviewRecordLocationError(
@@ -44,6 +49,12 @@ def review_record_paths(workspace_root: Path | str, owner_unit: str | None,
 
 
 def read_review_record(paths: ReviewRecordPaths, *, notice: Callable[[str], None] = print) -> dict | None:
+    result = read_review_record_at(paths, notice=notice)
+    return result[0] if result else None
+
+
+def read_review_record_at(paths: ReviewRecordPaths, *, notice: Callable[[str], None] = print) -> tuple[dict, Path] | None:
+    """Read a receipt and return the exact path that supplied it for cleanup."""
     for path, legacy in ((paths.current, False), (paths.legacy, True)):
         if not path.is_file():
             continue
@@ -53,19 +64,47 @@ def read_review_record(paths: ReviewRecordPaths, *, notice: Callable[[str], None
             return None
         if legacy:
             notice(f"legacy review record read from {path}; re-open the review to migrate it")
-        return result
+        return result, path
     return None
 
 
 def write_review_record(paths: ReviewRecordPaths, record: dict) -> Path:
     paths.current.parent.mkdir(parents=True, exist_ok=True)
     paths.current.write_text(json.dumps(record, indent=2) + "\n")
+    # A project review can materialize outside `.grip/state/lanes`; commit and
+    # push run from that member checkout, so leave one coordinate pointer there.
+    # It deliberately contains no receipt fields.
+    review_record_pointer_path(paths.legacy.parent.parent).write_text(str(paths.current) + "\n")
     return paths.current
 
 
 def lane_paths_for_repo(repo: Path | str) -> ReviewRecordPaths | None:
     """Locate only a repo structurally inside a materialized lane, never by scan."""
-    for candidate in (Path(repo).resolve(), *Path(repo).resolve().parents):
+    repo_path = Path(repo).resolve()
+    legacy = legacy_review_record_path(repo_path)
+    # A one-release legacy receipt is authoritative for a legacy-shaped lane.
+    # Prefer it even when a newer canonical receipt coexists, so the read-only
+    # guard cannot be bypassed by an older member-local marker.
+    if legacy.is_file():
+        return ReviewRecordPaths(legacy, legacy)
+    pointer = review_record_pointer_path(repo_path)
+    if pointer.is_file():
+        try:
+            target = Path(pointer.read_text().strip())
+            if target.is_absolute() and target.name.endswith(".json"):
+                return ReviewRecordPaths(target, legacy)
+        except OSError:
+            return None
+    # Compatibility for project-review lanes created before the pointer. New
+    # writers use the pointer above; this accepts the one established layout
+    # without searching for receipts.
+    if repo_path.parent.name == "repos":
+        lane_dir = repo_path.parent.parent
+        owner_dir = lane_dir.parent
+        reviews_dir = owner_dir.parent
+        if reviews_dir.name == "reviews":
+            return review_record_paths(reviews_dir.parent, owner_dir.name, lane_dir.name, repo_path.name, repo_path)
+    for candidate in (repo_path, *repo_path.parents):
         if candidate.parent.name != "repos":
             continue
         lane_dir, owner_dir = candidate.parent.parent, candidate.parent.parent.parent

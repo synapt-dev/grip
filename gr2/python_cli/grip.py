@@ -89,7 +89,7 @@ def _apply_range_in_lane(lane: Path, range_patch: str, committers: str | None) -
         mbox = Path(td) / "range.patch"
         mbox.write_text(range_patch)
         if committers is None:
-            p = _run("am", str(mbox))
+            p = _run("am", "--empty=keep", str(mbox))
             if p.returncode != 0:
                 raise _RangeApplyError("am", p.stderr.strip()[:160])
             return
@@ -111,7 +111,7 @@ def _apply_range_in_lane(lane: Path, range_patch: str, committers: str | None) -
             cn, ce, cd = parts
             env = {**os.environ, "GIT_COMMITTER_NAME": cn,
                    "GIT_COMMITTER_EMAIL": ce, "GIT_COMMITTER_DATE": cd}
-            p = _run("am", str(patch), env=env)
+            p = _run("am", "--empty=keep", str(patch), env=env)
             if p.returncode != 0:
                 raise _RangeApplyError("am", p.stderr.strip()[:160])
 

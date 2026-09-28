@@ -229,7 +229,7 @@ def rebind(frozen_dir: Path, repo: Path, target_ref: str, out_dir: Path,
                 return RebindResult(
                     outcome="already_applied", patch_id_held=True, landing_sha=live_base
                 )
-        am = _git(clone, "am", "--3way", str(frozen_dir / "range.patch"), check=False)
+        am = _git(clone, "am", "--3way", "--empty=keep", str(frozen_dir / "range.patch"), check=False)
         if am.returncode != 0:
             # Carry `am`'s own stderr into the refusal. A non-zero `am` is not always
             # a content conflict (an unusable committer identity, a missing blob, a
@@ -267,7 +267,7 @@ def rebind(frozen_dir: Path, repo: Path, target_ref: str, out_dir: Path,
         if anc2.returncode == 0:
             scratch = f"_rebind_frozen_{os.getpid()}"
             _git(clone, "checkout", "--quiet", "-b", scratch, frozen_base, check=False)
-            am2 = _git(clone, "am", "--3way", str(frozen_dir / "range.patch"), check=False)
+            am2 = _git(clone, "am", "--3way", "--empty=keep", str(frozen_dir / "range.patch"), check=False)
             if am2.returncode == 0:
                 d_old = _norm_diff(
                     _git(clone, "diff", "--find-renames", f"{frozen_base}..HEAD").stdout

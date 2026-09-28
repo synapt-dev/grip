@@ -316,16 +316,8 @@ def _credential_refusal(name: str) -> NativeStoreRefusal:
 
 
 def _native_store_init(root: Path) -> None:
-    if (root / ".git").exists():
-        raise RuntimeError(f"store already initialized at {root}")
-    if not (
-        (root / ".gitgrip").is_dir()
-        or (root / ".grip" / "workspace_spec.toml").is_file()
-        or (root / ".grip" / ".git").is_dir()
-    ):
-        raise RuntimeError(
-            f"{root} is not a gripspace root: expected .gitgrip/ or .grip/workspace_spec.toml"
-        )
+    if (root / ".git").exists() and (root / "grip.toml").exists():
+        return
     members: list[dict[str, str]] = []
     for path in sorted(root.iterdir()):
         if not path.is_dir() or path.name.startswith("."):
@@ -341,7 +333,7 @@ def _native_store_init(root: Path) -> None:
             raise _credential_refusal(path.name)
         members.append({"name": path.name, "path": path.name, "remote": url, "upstream": "origin/main", "ref": "main", "pin": _store_git(path, "rev-parse", "HEAD").stdout.strip()})
     if not members:
-        raise RuntimeError("no sibling git repositories found to store")
+        raise NativeStoreRefusal("no sibling git repositories found to store", 4)
     _store_git(root, "init")
     _write_native_members(root, members)
 
@@ -354,9 +346,10 @@ def _native_store_commit(root: Path, message: str) -> None:
             raise _credential_refusal(member["name"])
         path = root / member["path"]
         head = _store_git(path, "rev-parse", "HEAD").stdout.strip()
-        if _store_git(path, "merge-base", "--is-ancestor", head, "origin/main", check=False).returncode:
+        upstream = member["upstream"]
+        if _store_git(path, "merge-base", "--is-ancestor", head, upstream, check=False).returncode:
             raise NativeStoreRefusal(
-                f"{member['name']} pin {head} is not on origin/main; push it first", 3
+                f"{member['name']} pin {head} is not on {upstream}; push it first", 3
             )
         changed.append({**member, "pin": head})
     _write_native_members(root, changed)
@@ -586,31 +579,21 @@ def grip_init_cmd(
     workspace_root: Path | None = typer.Argument(None),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Initialize a native store in cwd, or the legacy .grip repo at a path."""
-    if workspace_root is None:
-        try:
-            _native_store_init(Path.cwd())
-        except NativeStoreRefusal as exc:
-            typer.echo(str(exc), err=True)
-            raise typer.Exit(code=exc.code)
-        except RuntimeError as exc:
-            typer.echo(str(exc), err=True)
-            raise typer.Exit(code=1)
-        if json_output:
-            typer.echo(json.dumps({"status": "initialized", "path": str(Path.cwd()), "store": "native"}))
-        else:
-            typer.echo(f"Initialized git-native store at {Path.cwd()}")
-        return
-    workspace_root = workspace_root.resolve()
+    """Initialize a native store at cwd or the supplied root."""
+    root = Path.cwd() if workspace_root is None else workspace_root.resolve()
     try:
-        grip_mod.grip_init(workspace_root)
-    except grip_mod.GripInitError as exc:
+        _native_store_init(root)
+    except NativeStoreRefusal as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=exc.code)
+    except RuntimeError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1)
     if json_output:
-        typer.echo(json.dumps({"status": "initialized", "path": str(workspace_root / ".grip")}))
+        typer.echo(json.dumps({"status": "initialized", "path": str(root), "store": "native"}))
     else:
-        typer.echo(f"Initialized .grip/ at {workspace_root}")
+        typer.echo(f"Initialized git-native store at {root}")
+    return
 
 
 @grip_app.command("commit")

@@ -612,8 +612,9 @@ def test_break_07_gitlink_and_pin_disagree(two_member_ws: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="verb unbuilt: design section 5 (store verbs), builder step 3")
-def test_break_08_check_runs_against_upstream_not_origin(two_member_ws: Path, tmp_path: Path) -> None:
+def test_break_08_check_runs_against_upstream_not_origin(
+    two_member_ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """exit 3: the check ran against the member's declared `upstream`, not the literal
     remote name `origin`. Section 4 makes `upstream` a grip.toml FIELD (default
     "origin/main") and section 5a says coverage is checked against it, "never against the
@@ -626,6 +627,9 @@ def test_break_08_check_runs_against_upstream_not_origin(two_member_ws: Path, tm
     """
     root = two_member_ws
     alpha = root / "alpha"
+    # Native store verbs operate on cwd. Passing root as init's positional argument
+    # selects the legacy .grip initializer and returns a misleading success.
+    monkeypatch.chdir(root)
 
     # a commit that IS on alpha's origin ...
     (alpha / "README.md").write_text("# on origin\n")
@@ -638,7 +642,7 @@ def test_break_08_check_runs_against_upstream_not_origin(two_member_ws: Path, tm
     _git(alpha, "remote", "add", "other", _bare_remote(tmp_path, "alpha-other"))
     _git(alpha, "fetch", "-q", "other")
 
-    assert _cli("store", "init", str(root))[0] == 0
+    assert _cli("store", "init")[0] == 0
     _assert_init_ran(root)
     toml_path = root / "grip.toml"
     toml_path.write_text(_set_member_upstream(toml_path.read_text(), "alpha", "other/main"))

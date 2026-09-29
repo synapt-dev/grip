@@ -98,8 +98,16 @@ def test_api_stable_share_at_least_90() -> None:
     )
 
 
-def test_stability_entries_all_name_a_real_item() -> None:
-    """Every stability entry must match an item the dump actually carries.
+def _known_items() -> set[tuple[str, str]]:
+    """(kind, bare spelling) for every item the dump carries, hidden included."""
+    known = set()
+    for kind, label, _ in _rows(_generator().render()):
+        known.add((kind, label.split(" (hidden")[0].strip()))
+    return known
+
+
+def test_may_change_entries_all_name_a_real_item() -> None:
+    """Every may-change entry must match an item the dump actually carries.
 
     An entry that names nothing is SILENT: a typo, or one left behind by a
     renamed verb, marks no line, the regenerated file comes out byte-identical,
@@ -107,15 +115,58 @@ def test_stability_entries_all_name_a_real_item() -> None:
     Every other gate here passes on it, so this is the only place it can be
     caught.
     """
-    rows = _rows(_generator().render())
-    known = set()
-    for kind, label, _ in rows:
-        known.add((kind, label.split(" (hidden")[0].strip()))
+    known = _known_items()
     entries = _generator()._markers()
-    missing = sorted(f"{kind} {spelling}" for (kind, spelling) in entries if (kind, spelling) not in known)
+    missing = sorted(
+        f"{kind} {spelling}"
+        for (kind, spelling), marker in entries.items()
+        if marker == "may-change" and (kind, spelling) not in known
+    )
     assert not missing, (
-        "api/stability.toml entries naming no item in the dump (their marker is "
-        "silently never applied):\n  " + "\n  ".join(missing)
+        "api/stability.toml may-change entries naming no item in the dump (their "
+        "marker is silently never applied):\n  " + "\n  ".join(missing)
+    )
+
+
+def test_reserved_entries_name_no_item() -> None:
+    """Every reserved entry must match NO item -- the opposite direction.
+
+    Reserved holds a name for a later slice, so the entry asserts the spelling
+    is ABSENT. The day the slice lands it, this turns red and the entry moves
+    deliberately to stable or may-change instead of quietly becoming a marker
+    that means nothing. A reserved entry naming a live item is the failure this
+    exists to catch: it would read as reserved while the name is already taken.
+    """
+    known = _known_items()
+    entries = _generator()._markers()
+    already = sorted(
+        f"{kind} {spelling}"
+        for (kind, spelling), marker in entries.items()
+        if marker == "reserved" and (kind, spelling) in known
+    )
+    assert not already, (
+        "api/stability.toml reserved entries naming an item the dump ALREADY carries "
+        "(the reservation has been overtaken):\n  " + "\n  ".join(already)
+    )
+
+
+def test_may_change_and_reserved_lists_are_disjoint() -> None:
+    """No spelling may sit on both lists, because the lookup silently picks one.
+
+    `_markers()` builds ONE dict keyed by (kind, spelling) and reads the
+    reserved list last, so a duplicated entry makes its may-change marker vanish
+    with no error anywhere -- worse, the share gate then treats the item as
+    reserved and takes it out of the denominator, so a duplicate silently
+    INFLATES the number it is supposed to measure. The other two checks each
+    catch one duplicate shape by accident; this one names the cause.
+    """
+    import tomllib
+
+    data = tomllib.loads((GR2 / "api" / "stability.toml").read_text())
+    both = sorted(set(data.get("may-change", [])) & set(data.get("reserved", [])))
+    assert not both, (
+        "api/stability.toml entries on BOTH lists (the marker lookup keeps one and "
+        "silently drops the other):\n  " + "\n  ".join(both)
     )
 
 

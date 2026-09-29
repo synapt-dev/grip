@@ -11,11 +11,20 @@
 #               lowers it. Measured on the internal review machinery, 225
 #               visible items: marked may-change it reads 100/353, hidden
 #               100/128, against 325/353 with neither.
-# `reserved`    a name held for a later slice; it leaves the denominator the
-#               same way a hidden item does.
+# `reserved`    a name HELD for a later slice, and it must therefore be ABSENT
+#               from the dump. A hidden item already leaves the denominator, so
+#               reserving one would add nothing; reserving a name that exists
+#               would empty the word. Held, absent -- it cannot be in the
+#               denominator because it is not in the surface. When the later
+#               slice lands the name, this gate goes RED and the entry moves
+#               deliberately to stable or to may-change.
 #
 # Entries are "<kind> <spelling>", matching the first two columns of cli.api.
 # The kinds are `verb`, `flag`, `arg`, and later `json`, `exit`, `path`, `ref`.
+#
+# The two lists are checked in OPPOSITE directions: every may-change entry must
+# name an item the dump carries, and every reserved entry must name one it does
+# not. Both directions are pinned by mutation.
 #
 # MAY-CHANGE, and the reason, so it can be lifted deliberately: the `store`
 # group is the surface this thin slice is still finishing -- its own checklist
@@ -54,4 +63,10 @@ may-change = [
   "flag store status --json",
 ]
 
-reserved = []
+# A name a later slice will take, held so nobody defines it quietly in the
+# meantime. The spellings are STORE-SCOPED deliberately: the slice that takes
+# these names adds them inside the store group, so a top-level reservation would
+# stay green on the day the real one lands and would be guarding nothing.
+# Neither exists today, which is the point: the entry asserts their ABSENCE, and
+# the day one of them lands this gate reddens.
+reserved = ["verb store extract", "verb store absorb"]

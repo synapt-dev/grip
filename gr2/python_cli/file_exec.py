@@ -214,9 +214,9 @@ def execute_project_file_operation(
     kind = op.get("kind")
     if kind != "project_file":
         raise ProjectFileExecutionError(
-            f"operations[{index}] is kind {kind!r}, not 'project_file' -- its handler "
-            "lands with a different slice (clone with S4-B, venv/editable_install "
-            "with S4-D)"
+            f"operations[{index}] is kind {kind!r}, not 'project_file' -- this executor "
+            "applies project_file operations only; each other kind has its own "
+            "executor"
         )
 
     binding = _ProjectFileBinding(

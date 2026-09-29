@@ -11,8 +11,7 @@ is permitted, what makes a clone state-isolated, when an existing clone may be
 reused. Policy living in the primitive layer is policy that later callers
 bypass by reaching for the primitive directly.
 
-Design note carried from the S4-A review cycle, applied while designing rather
-than while testing: for every guard below, the question was what ELSE would
+Design note, applied while designing rather than while testing: for every guard below, the question was what ELSE would
 reject this input first, and whether the guard is therefore untested at its own
 level. Five masking pairs came out of that and are recorded in the test module;
 the two that shaped this code most:
@@ -471,8 +470,8 @@ def _require_workspace_binding(validated: ValidatedPlan, workspace_root: Path) -
     every relative path in the plan would then resolve somewhere else.
 
     Re-checking at USE rather than trusting the capability's field is the same
-    lesson the S4-A TOCTOU round ended on: verification belongs at the moment of
-    use, not only at the moment of construction."""
+    rule the plan validator follows: verification belongs at the moment of use,
+    not only at the moment of construction."""
     try:
         spec_bytes = _read_canonical_workspace_spec_bytes(workspace_root)
     except MaterializationPlanError as exc:
@@ -574,8 +573,8 @@ def execute_clone_operation(
     kind = op.get("kind")
     if kind != "clone":
         raise CloneExecutionError(
-            f"operations[{index}] is kind {kind!r}, not 'clone' -- its handler lands "
-            "with a later slice (venv/editable_install with S4-D, project_file with S4-C)"
+            f"operations[{index}] is kind {kind!r}, not 'clone' -- this executor "
+            "applies clone operations only; each other kind has its own executor"
         )
 
     # ONE immutable binding taken from A's frozen snapshot, before any path work

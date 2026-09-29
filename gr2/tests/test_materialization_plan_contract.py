@@ -10,7 +10,7 @@ S4-B (clone/cache/alternates), S4-C (staging/project_file), and S4-D
 (venv/editable + PEP 610), each with its own domain validation and
 mutation set -- see the grip#797 split.
 
-Testing discipline carried forward from that review cycle: assert WHICH
+Testing discipline: assert WHICH
 invariant fired, not merely that some MaterializationPlanError was
 raised. A fixture broken enough to trip the invariant under test is
 usually broken enough to trip its neighbours too, and a type-only
@@ -442,7 +442,7 @@ class TestReceiptPublication(PlanContractTestBase):
         self.assertEqual(receipt["plan_hash"], compute_plan_hash(validated.plan))
 
     def test_publication_requires_a_validated_plan_capability(self):
-        """Atlas P1: the writer used to accept the raw live plan. Holding a
+        """The writer used to accept the raw live plan. Holding a
         ValidatedPlan IS the proof the contract ran; a raw dict is not."""
         raw = self._plan([self._venv_op()], plan_id="mp_receipt")
         with self.assertRaises(MaterializationPlanError) as ctx:
@@ -474,7 +474,7 @@ class TestReceiptPublication(PlanContractTestBase):
         self.assertIn("not minted by", str(ctx.exception))
 
     def test_invalid_plan_id_cannot_reach_publication(self):
-        """Atlas P1 fruit: plan_id="../../escaped" published
+        """plan_id="../../escaped" published
         .grip/escaped.json outside the receipt directory. It can no longer
         be validated, so it can no longer be published."""
         with self.assertRaises(MaterializationPlanError) as ctx:
@@ -485,7 +485,7 @@ class TestReceiptPublication(PlanContractTestBase):
         self.assertFalse((self.workspace_root / ".grip" / "escaped.json").exists())
 
     def test_empty_evidence_cannot_claim_materialized(self):
-        """Atlas P1 fruit: a one-operation plan with op_results=[] published
+        """A one-operation plan with op_results=[] published
         stage=MATERIALIZED with no evidence at all."""
         with self.assertRaises(MaterializationPlanError) as ctx:
             write_materialization_receipt(self.workspace_root, self._validated(), [])
@@ -507,7 +507,7 @@ class TestReceiptPublication(PlanContractTestBase):
         self.assertIn("identity-bearing", str(ctx.exception))
 
     def test_nested_identity_field_in_evidence_rejected(self):
-        """Atlas P1 fruit, the real smuggling boundary: the plan's closed
+        """The real smuggling boundary: the plan's closed
         schema permits no nested object carrier, but the RESULT graph is
         open and is what gets persisted."""
         with self.assertRaises(MaterializationPlanError) as ctx:
@@ -630,7 +630,7 @@ class TestReceiptPublication(PlanContractTestBase):
 
 
 class TestDerivedPathHardening(PlanContractTestBase):
-    """Atlas P2: §6.2.1 #2 applies to the A-owned DERIVED paths (canonical
+    """§6.2.1 #2 applies to the A-owned DERIVED paths (canonical
     WorkspaceSpec, receipt directory, receipt temp file), not only to
     operation paths. All three probes succeeded before this closure."""
 

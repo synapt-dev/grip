@@ -90,10 +90,32 @@ def test_api_stable_share_at_least_90() -> None:
         f"    hidden     an internal verb goes hidden=True and leaves the denominator\n"
         f"    reserved   a reserved name leaves the denominator the same way\n"
         f"    may-change the item STAYS in the denominator and stops counting as stable\n"
-        f"  Use may-change only for surface that is public and genuinely still moving.\n"
-        f"  Parking a family you mean to hide does not work: the internal families are\n"
-        f"  hundreds of items and this lever would read far under the bar, while hiding\n"
-        f"  them meets it outright."
+        f"  Use may-change only for surface that is public and genuinely still moving,\n"
+        f"  and note the two are not interchangeable: taking a MAY-CHANGE item out of\n"
+        f"  the denominator raises this ratio, and taking a STABLE one out lowers it.\n"
+        f"  Hiding a family you would have marked may-change is what makes the surface\n"
+        f"  smaller in the direction this gate measures."
+    )
+
+
+def test_stability_entries_all_name_a_real_item() -> None:
+    """Every stability entry must match an item the dump actually carries.
+
+    An entry that names nothing is SILENT: a typo, or one left behind by a
+    renamed verb, marks no line, the regenerated file comes out byte-identical,
+    and the file reads as applied while the item it meant to mark is untouched.
+    Every other gate here passes on it, so this is the only place it can be
+    caught.
+    """
+    rows = _rows(_generator().render())
+    known = set()
+    for kind, label, _ in rows:
+        known.add((kind, label.split(" (hidden")[0].strip()))
+    entries = _generator()._markers()
+    missing = sorted(f"{kind} {spelling}" for (kind, spelling) in entries if (kind, spelling) not in known)
+    assert not missing, (
+        "api/stability.toml entries naming no item in the dump (their marker is "
+        "silently never applied):\n  " + "\n  ".join(missing)
     )
 
 

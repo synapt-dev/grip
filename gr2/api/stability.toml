@@ -5,10 +5,12 @@
 # optimistic.
 #
 # `may-change`  an item that is public but still moving. It STAYS in the 90
-#               percent denominator and stops counting as stable, so this lever
-#               is expensive and must not be used to park a family you mean to
-#               hide: the internal review machinery is 225 visible items and
-#               would read 0.36 here, against 1.00 once hidden.
+#               percent denominator and stops counting as stable. This lever is
+#               NOT interchangeable with hiding: taking a may-change item out
+#               of the denominator raises the ratio, taking a STABLE one out
+#               lowers it. Measured on the internal review machinery, 225
+#               visible items: marked may-change it reads 100/353, hidden
+#               100/128, against 325/353 with neither.
 # `reserved`    a name held for a later slice; it leaves the denominator the
 #               same way a hidden item does.
 #

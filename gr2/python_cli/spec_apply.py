@@ -711,7 +711,7 @@ class MaterializationPlanError(Exception):
 
 # Capability seal. A ValidatedPlan can only be minted by
 # validate_materialization_plan, so a receipt cannot be published from a
-# plan that was never validated -- Atlas P1: the writer previously accepted
+# plan that was never validated: the writer previously accepted
 # the raw live plan and an arbitrary result list, which let a schema-invalid
 # plan_id escape the receipt directory and let an unvalidated result graph
 # be persisted verbatim.
@@ -1244,7 +1244,7 @@ def validate_materialization_plan(workspace_root: Path, plan: dict[str, object])
 
     Returns a ValidatedPlan capability. Publication requires one, so a
     receipt cannot be written from a plan that never passed this function
-    (Atlas P1) -- validation becomes something the publisher HOLDS rather
+    -- validation becomes something the publisher HOLDS rather
     than something a caller is trusted to have remembered to do.
 
     The caller's object is snapshotted on entry and never consulted again.
@@ -1347,7 +1347,7 @@ _RECEIPT_DIR_RELATIVE = ".grip/state/materialization"
 
 def _read_canonical_workspace_spec_bytes(workspace_root: Path) -> bytes:
     """MaterializationPlan v1 invariant #2 applies to contract paths too, not only to
-    operation paths (Atlas P2): the canonical WorkspaceSpec must be reached
+    operation paths: the canonical WorkspaceSpec must be reached
     through a symlink-free prefix and be a regular non-symlink file.
 
     Otherwise a symlink at .grip/workspace_spec.toml pointing outside the
@@ -1372,7 +1372,7 @@ def _read_canonical_workspace_spec_bytes(workspace_root: Path) -> bytes:
 
 def _canonical_receipt_dir(workspace_root: Path) -> Path:
     """The receipt directory must be a real in-root directory reached
-    through a symlink-free prefix (Atlas P2): a symlinked
+    through a symlink-free prefix: a symlinked
     .grip/state/materialization otherwise publishes the terminal receipt
     outside the team root entirely."""
     receipt_dir = canonicalize_workspace_path(
@@ -1462,7 +1462,7 @@ def write_materialization_receipt(
 ) -> Path:
     """Publish the terminal neutral receipt for a VALIDATED plan.
 
-    Takes a ValidatedPlan capability rather than a raw dict (Atlas P1): the
+    Takes a ValidatedPlan capability rather than a raw dict: the
     writer previously accepted the live plan and an arbitrary result list,
     so a schema-invalid plan_id could escape the receipt directory and an
     unscreened result graph could be persisted verbatim. Holding the
@@ -1475,7 +1475,7 @@ def write_materialization_receipt(
     bytes do not. Callers performing destructive cleanup on the strength of
     a receipt must do it only after this returns.
 
-    The temp file is created O_EXCL|O_NOFOLLOW (Atlas P2): its name is
+    The temp file is created O_EXCL|O_NOFOLLOW: its name is
     predictable, so a plain open() would happily follow a pre-created
     symlink, overwrite whatever it points at, and then publish that symlink
     as the final receipt."""

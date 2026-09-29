@@ -5,7 +5,7 @@ consumed it. This is the first operation EXECUTOR: `kind == "clone"`.
 
 Contract: MaterializationPlan v1 clone contract and acceptance fruit 6/7/8/9.
 
-Testing discipline carried forward from the S4-A review cycle, and applied at
+Testing discipline, applied at
 DESIGN time rather than at test time: for every guard, ask what ELSE would
 reject this input first, and is the guard therefore untested at its own level.
 Five masking pairs came out of that question before any implementation existed,
@@ -591,8 +591,8 @@ class TestExecutorBinding(CloneExecTestBase):
         takes workspace_root as a separate argument, so nothing structurally
         stops a caller from validating against one workspace and executing
         against another -- every relative path in the plan would then resolve
-        somewhere else. Re-checking the spec at USE is the same lesson S4-A's
-        TOCTOU round ended on."""
+        somewhere else. Re-checking the spec at USE is the same rule the plan
+        validator follows."""
         validated = self._validated()
 
         other_root = self.tmp / "other-workspace"
@@ -673,6 +673,10 @@ class TestExecutorBinding(CloneExecTestBase):
         with self.assertRaises(CloneExecutionError) as ctx:
             execute_clone_operation(validated, 0, workspace_root=self.workspace_root)
         self.assertIn("is kind 'venv'", str(ctx.exception))
+        # The refusal is user-visible: it says what this executor does, and names no
+        # internal build slice a user cannot look up.
+        self.assertIn("applies clone operations only", str(ctx.exception))
+        self.assertNotRegex(str(ctx.exception), r"\bS4-[A-D]\b")
 
 
 class TestIsolationCompleteness(CloneExecTestBase):

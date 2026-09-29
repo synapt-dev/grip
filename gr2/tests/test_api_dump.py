@@ -150,6 +150,26 @@ def test_reserved_entries_name_no_item() -> None:
     )
 
 
+def test_may_change_and_reserved_lists_are_disjoint() -> None:
+    """No spelling may sit on both lists, because the lookup silently picks one.
+
+    `_markers()` builds ONE dict keyed by (kind, spelling) and reads the
+    reserved list last, so a duplicated entry makes its may-change marker vanish
+    with no error anywhere -- worse, the share gate then treats the item as
+    reserved and takes it out of the denominator, so a duplicate silently
+    INFLATES the number it is supposed to measure. The other two checks each
+    catch one duplicate shape by accident; this one names the cause.
+    """
+    import tomllib
+
+    data = tomllib.loads((GR2 / "api" / "stability.toml").read_text())
+    both = sorted(set(data.get("may-change", [])) & set(data.get("reserved", [])))
+    assert not both, (
+        "api/stability.toml entries on BOTH lists (the marker lookup keeps one and "
+        "silently drops the other):\n  " + "\n  ".join(both)
+    )
+
+
 def test_api_dump_has_a_population() -> None:
     """Each kind must still be populated, so a silent loss of one cannot pass.
 

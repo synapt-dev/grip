@@ -64,6 +64,9 @@ may-change = [
 ]
 
 # A name a later slice will take, held so nobody defines it quietly in the
-# meantime. Neither exists today, which is the point: the entry asserts their
-# ABSENCE, and the day one of them lands this gate reddens.
-reserved = ["verb extract", "verb absorb"]
+# meantime. The spellings are STORE-SCOPED deliberately: the slice that takes
+# these names adds them inside the store group, so a top-level reservation would
+# stay green on the day the real one lands and would be guarding nothing.
+# Neither exists today, which is the point: the entry asserts their ABSENCE, and
+# the day one of them lands this gate reddens.
+reserved = ["verb store extract", "verb store absorb"]

@@ -1097,13 +1097,66 @@ fn resolve_startup_prompt_path(workspace_root: &Path, prompt_path: &str) -> Path
     }
 }
 
+/// The ordered paths a `startup_prompt` is tried against. First match wins.
+///
+/// The AGENT's own worktree comes FIRST and the invoking gripspace second, because
+/// a prompt belongs to the agent: resolving it only against the gripspace made
+/// `spawn up` depend on WHICH desk invoked it rather than on the agent being
+/// spawned. Measured 2026-09-27 on the one codex agent whose prompt lives in its own
+/// worktree — the command failed from every gripspace that lacked the file.
+///
+/// The worktree is resolved with [`resolve_worktree_path`], the same helper the
+/// launch path uses, so the prompt is looked for where the agent actually runs: an
+/// agent worktree is a SIBLING of the gripspace root, not a child of it. Measured
+/// on this host, `<root>/synapt-fathom` does not exist while `../synapt-fathom/`
+/// holds the real prompt file.
+fn startup_prompt_candidates(
+    workspace_root: &Path,
+    agent: &AgentConfig,
+    prompt_path: &str,
+) -> Vec<PathBuf> {
+    let path = Path::new(prompt_path);
+    if path.is_absolute() {
+        return vec![path.to_path_buf()];
+    }
+    let in_agent_worktree = resolve_worktree_path(workspace_root, &agent.worktree).join(path);
+    let in_gripspace = resolve_startup_prompt_path(workspace_root, prompt_path);
+    if in_agent_worktree == in_gripspace {
+        // worktree "main" IS the gripspace root: one candidate, not the same path twice.
+        vec![in_agent_worktree]
+    } else {
+        vec![in_agent_worktree, in_gripspace]
+    }
+}
+
 fn read_agent_startup_prompt(workspace_root: &Path, agent: &AgentConfig) -> anyhow::Result<String> {
     let Some(prompt_path) = agent.startup_prompt.as_deref() else {
         return Ok(String::new());
     };
-    let path = resolve_startup_prompt_path(workspace_root, prompt_path);
-    std::fs::read_to_string(&path)
-        .map_err(|e| anyhow::anyhow!("failed to read {}: {}", path.display(), e))
+    let candidates = startup_prompt_candidates(workspace_root, agent, prompt_path);
+    let mut last_err: Option<std::io::Error> = None;
+    for path in &candidates {
+        match std::fs::read_to_string(path) {
+            Ok(content) => return Ok(content),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    // Name EVERY path tried: the caller cannot tell which root the agent's prompt was
+    // supposed to live under, and that ambiguity is what this function exists to end.
+    let tried = candidates
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let cause = last_err
+        .map(|e| e.to_string())
+        .unwrap_or_else(|| "no candidate path to read".to_string());
+    Err(anyhow::anyhow!(
+        "failed to read the startup prompt `{}`: tried {} ({})",
+        prompt_path,
+        tried,
+        cause
+    ))
 }
 
 fn codex_developer_instruction_args(startup_prompt: &str) -> Vec<String> {
@@ -2662,6 +2715,56 @@ mod tests {
         assert_eq!(
             resolve_startup_prompt_path(&root, "/abs/prompt.md"),
             PathBuf::from("/abs/prompt.md")
+        );
+    }
+
+    /// A relative startup_prompt must resolve against the AGENT's own worktree
+    /// BEFORE the invoking gripspace.
+    ///
+    /// Measured 2026-09-27: `spawn up` for an agent whose prompt lives in its own
+    /// worktree failed with "No such file or directory" when run from a gripspace
+    /// that lacks it, so whether the command worked depended on WHICH desk invoked
+    /// it rather than on the agent. The prompt is read only for codex agents, which
+    /// is why exactly one agent on this team was affected.
+    ///
+    /// ⚠ THE WORKTREE IS A SIBLING OF THE GRIPSPACE, NOT A CHILD OF IT, and the first
+    /// version of this test asserted the child shape (`<root>/synapt-fathom/...`).
+    /// Measured on this host before the fix was written: the gripspaces sit side by
+    /// side under `~/Development`, `<root>/synapt-fathom` does not exist, and the real
+    /// prompt is at `../synapt-fathom/.gitgrip/prompts/fathom.md` — the same path
+    /// `resolve_worktree_path` already produces for the launch itself. A test asserting
+    /// the child shape goes GREEN over an unfixed bug: the lookup would miss the file
+    /// in production exactly as before.
+    #[test]
+    fn test_startup_prompt_prefers_the_agents_own_worktree() {
+        let root = PathBuf::from("/tmp/dev/synapt-codex");
+        let mut agent = make_agent("codex", vec![]);
+        agent.worktree = "synapt-fathom".into();
+        agent.startup_prompt = Some(".gitgrip/prompts/fathom.md".into());
+
+        assert_eq!(
+            startup_prompt_candidates(&root, &agent, ".gitgrip/prompts/fathom.md"),
+            vec![
+                PathBuf::from("/tmp/dev/synapt-fathom/.gitgrip/prompts/fathom.md"),
+                PathBuf::from("/tmp/dev/synapt-codex/.gitgrip/prompts/fathom.md"),
+            ],
+            "the agent's own worktree is tried FIRST and the gripspace stays as the fallback"
+        );
+
+        assert_eq!(
+            startup_prompt_candidates(&root, &agent, "/abs/prompt.md"),
+            vec![PathBuf::from("/abs/prompt.md")],
+            "an absolute path has exactly one candidate and is joined onto nothing"
+        );
+
+        // worktree "main" IS the gripspace root, so both candidates are the same path
+        // and it must be reported once rather than twice.
+        let default_agent = make_agent("codex", vec![]);
+        assert_eq!(default_agent.worktree, "main");
+        assert_eq!(
+            startup_prompt_candidates(&root, &default_agent, ".gitgrip/prompts/x.md"),
+            vec![PathBuf::from("/tmp/dev/synapt-codex/.gitgrip/prompts/x.md")],
+            "worktree \"main\" resolves to the gripspace root: one candidate, not a duplicate"
         );
     }
 

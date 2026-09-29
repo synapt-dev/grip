@@ -31,6 +31,25 @@ use tempfile::TempDir;
 /// `register_agent` calls of a parallel `cargo test` run cannot collide on the
 /// `UNIQUE(org_id, display_name)` constraint (they did before this pin), and no
 /// test touches the developer's real `~/.synapt`.
+///
+/// ⚠ PINNING `HOME` IS NOT SUFFICIENT, and this doc claimed otherwise until
+/// this leak (fixed 2026-09-29). `SYNAPT_AGENT_PANES_FILE` is an
+/// ABSOLUTE path that every real agent shell exports pointing at the live
+/// `~/.synapt/agent-panes.json`, and the spawn path writes routing records
+/// through it (spawn.rs:1009) — so a `HOME`-pinned test still wrote the LIVE
+/// file. `speak_to_agent` then resolves by LAST-WRITE-WINS with no freshness or
+/// liveness tie-break, so a leaked fixture named like a real agent shadows it.
+/// EVERY gr-invoking `Command` in this file must therefore carry the panes-file removal -- all
+/// SIX, not the four that happen to pin `HOME` to the workspace path. A bulk edit matched on
+/// that one shape and missed the two using the single/fleet paths; the leak was caught by the
+/// live file's content digest moving 167 -> 168 across the run.
+///
+/// ⚠ A RE-AUDITOR'S GREP WILL OVERCOUNT, AND THIS PARAGRAPH IS WHY (BOTH readers of the first
+/// version reported it). A bare grep for the two code literals returned SEVEN on each, because
+/// this comment named them once. Classify before concluding: six code sites, one comment. The
+/// literals are deliberately NOT reproduced here now, so the count is honest for the next
+/// reader -- if you are re-auditing and see a mismatch, count the lines that construct a gr
+/// Command inside `#[test]` rather than the mentions in prose.
 fn write_gripspace(agents: &str) -> TempDir {
     let ws = TempDir::new().unwrap();
     let root = ws.path();
@@ -62,6 +81,7 @@ fn interactive_single_agent_runs_in_foreground() {
         .args(["spawn", "up", "probe", "--interactive"])
         .current_dir(ws.path())
         .env("HOME", ws.path())
+        .env_remove("SYNAPT_AGENT_PANES_FILE")
         .output()
         .expect("run gr spawn up probe --interactive");
 
@@ -94,6 +114,7 @@ fn interactive_fleet_refuses_and_names_single_agent_form() {
         .args(["spawn", "up", "--interactive"])
         .current_dir(ws.path())
         .env("HOME", ws.path())
+        .env_remove("SYNAPT_AGENT_PANES_FILE")
         .output()
         .expect("run gr spawn up --interactive");
 
@@ -124,6 +145,7 @@ fn interactive_without_agent_refuses_even_when_tmux_is_present() {
         .args(["spawn", "up", "--interactive"])
         .current_dir(ws.path())
         .env("HOME", ws.path())
+        .env_remove("SYNAPT_AGENT_PANES_FILE")
         .output()
         .expect("run gr spawn up --interactive with tmux present");
 
@@ -166,6 +188,7 @@ fn no_bash_refuses_and_names_it_before_the_header() {
         .current_dir(ws.path())
         .env("PATH", bin.path())
         .env("HOME", ws.path())
+        .env_remove("SYNAPT_AGENT_PANES_FILE")
         .output()
         .expect("run gr spawn up probe with an empty PATH");
 
@@ -259,6 +282,7 @@ fn no_flag_no_tmux_falls_back_and_fleet_names_tmux_absence() {
         .current_dir(single.path())
         .env("PATH", bin.path())
         .env("HOME", single.path())
+        .env_remove("SYNAPT_AGENT_PANES_FILE")
         .output()
         .expect("run gr spawn up probe (no flag, no tmux)");
     let combined = format!(
@@ -287,6 +311,7 @@ fn no_flag_no_tmux_falls_back_and_fleet_names_tmux_absence() {
         .current_dir(fleet.path())
         .env("PATH", bin.path())
         .env("HOME", fleet.path())
+        .env_remove("SYNAPT_AGENT_PANES_FILE")
         .output()
         .expect("run gr spawn up (no flag, no tmux, whole fleet)");
     let stderr = String::from_utf8_lossy(&out.stderr);

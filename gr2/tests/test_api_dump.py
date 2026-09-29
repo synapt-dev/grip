@@ -187,3 +187,89 @@ def test_api_dump_has_a_population() -> None:
     assert len(verbs) >= MIN_VERBS, f"only {len(verbs)} verbs (floor {MIN_VERBS})"
     assert len(flags) >= MIN_FLAGS, f"only {len(flags)} flags (floor {MIN_FLAGS})"
     assert len(args) >= MIN_ARGS, f"only {len(args)} positionals (floor {MIN_ARGS})"
+    # `exit` deliberately has no floor beside these three: it is the one kind
+    # whose POPULATION is pinned exactly, by
+    # `test_api_dump_carries_every_store_exit_code`, which asserts the whole set.
+    # A floor under an exact-set gate would be the weaker of the two.
+
+
+def test_a_label_at_or_past_column_keeps_its_separator() -> None:
+    """The two-column format must survive a label that reaches COLUMN.
+
+    `_rows` recovers the marker by splitting on the LAST space, and the render
+    pads the label to COLUMN. A label at or past COLUMN is emitted at its own
+    length, so the padding adds nothing and the marker runs straight into it --
+    and every label here contains spaces, so the split then lands INSIDE the
+    label and BOTH columns come back wrong.
+
+    THE SUBJECT IS SYNTHETIC ON PURPOSE. Every other label in the dump is under
+    COLUMN today, so a test that walked only the real lines would go vacuous the
+    moment that one long label changed, and would pass for the wrong reason.
+    Measured on the real label that exposed this -- the 65-char store exit line:
+    it rendered as `...store verb: "may-change`, the marker lookup missed, and
+    all five exit lines silently read `stable`.
+
+    The mutation that reddens this is dropping the `max(COLUMN, len(label) + 1)`
+    in `_line` and padding to COLUMN: the marker then comes back welded to the
+    label, and the precondition below keeps the fixture long enough to catch it.
+    """
+    label = 'store 5 cannot-measure prefix:"' + "x" * 40 + ': "'
+    assert len(label) > _generator().COLUMN, (
+        f"the fixture label is {len(label)} chars and must exceed COLUMN "
+        f"({_generator().COLUMN}) or this test cannot fail"
+    )
+    line = _generator()._line("exit", label, "may-change")
+    _, _, rest = line.partition(" ")
+    got_label, _, got_marker = rest.rstrip().rpartition(" ")
+    assert got_marker == "may-change", (
+        f"the marker did not survive a label at COLUMN -- it came back as "
+        f"{got_marker!r}, which means the separator was lost and the split "
+        f"landed inside the label"
+    )
+    assert got_label.strip() == label, (
+        f"the label did not round-trip through the column parse:\n"
+        f"  sent: {label!r}\n  got:  {got_label.strip()!r}"
+    )
+
+
+def test_api_dump_carries_every_store_exit_code() -> None:
+    """The `exit` kind: every code the `store` group can return is in the dump.
+
+    §5's table for the group is 0 ok, 2 usage, 3 refused on coverage or
+    cleanliness, 4 refused as inconsistent or beta, 5 cannot measure. A caller
+    reads these; a verb whose refusal code is not in the dump is a refusal the
+    dump does not promise.
+
+    CODE 5 CARRIES TWO SHAPES AT ONE CODE, and that is why the prefix is in
+    here. A MEASURED cannot-measure and a wrapped unexpected exception both
+    report 5 -- the group's table has no code of its own for an internal
+    failure -- and `STORE_INCOMPLETE_PREFIX` is the only thing that separates
+    them. `grip_cli.py` says so in as many words: "THE PREFIX IS PART OF THE
+    SURFACE, not a style choice: it is what tells a measured 'cannot measure'
+    apart from a wrapped exception, and a caller reading the code alone
+    cannot." So it rides the reason field rather than a kind of its own, since
+    it is the reason for the code's second shape that a caller matches on.
+    """
+    rows = _rows(_generator().render())
+    got = {label for kind, label, marker in rows if kind == "exit" and label.startswith("store ")}
+    want = {
+        "store 0 ok",
+        "store 2 usage",
+        "store 3 refused-coverage",
+        "store 4 refused-inconsistent",
+        'store 5 cannot-measure prefix:"cannot complete this store verb: "',
+    }
+    assert got == want, (
+        f"the store exit table in the dump is not §5's.\n"
+        f"  missing: {sorted(want - got)}\n"
+        f"  extra:   {sorted(got - want)}"
+    )
+    # The store group is still moving, so its exit table is may-change with its
+    # verbs rather than stable on its own. Marking it stable here would promise
+    # the codes while the verbs that return them are not yet promised.
+    store_markers = {marker for kind, label, marker in rows if kind == "exit" and label.startswith("store ")}
+    assert store_markers == {"may-change"}, (
+        f"the store exit table must travel with the store verbs' stability, "
+        f"found {sorted(store_markers)}"
+    )
+

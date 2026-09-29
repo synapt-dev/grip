@@ -61,6 +61,21 @@ may-change = [
   "flag store push --json",
   "verb store status",
   "flag store status --json",
+  # The group's exit table travels WITH its verbs rather than being promised on
+  # its own: marking it stable here would commit to the codes while the verbs
+  # that return them are still moving. LIFT THIS with the verbs above.
+  #
+  # ⚠ THE LAST ENTRY'S TRAILING SPACE IS LOAD-BEARING AND LIVES INSIDE THE
+  # QUOTES. `STORE_INCOMPLETE_PREFIX` ends in a space ("...store verb: "), and
+  # that space is half of what makes the code-5 message greppable -- so the
+  # entry uses a TOML LITERAL string (single quotes) to carry it verbatim. Do
+  # not reformat it to a basic string or trim the space: the marker lookup is an
+  # exact match, so either change makes the entry name nothing.
+  "exit store 0 ok",
+  "exit store 2 usage",
+  "exit store 3 refused-coverage",
+  "exit store 4 refused-inconsistent",
+  'exit store 5 cannot-measure prefix:"cannot complete this store verb: "',
 ]
 
 # A name a later slice will take, held so nobody defines it quietly in the

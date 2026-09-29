@@ -184,7 +184,7 @@ def test_parse_failed_ids_empty_when_all_pass():
 
 
 def test_merge_report_flags_puts_fE_last_and_drops_N():
-    # Sentinel R1 (v3, measured): pytest's -r is LAST-WINS across tokens AND its chars
+    # Measured: pytest's -r is LAST-WINS across tokens AND its chars
     # are processed IN ORDER, with N (none) CLEARING everything before it. So f/E must
     # (a) win over any later caller -r and (b) come AFTER any N, or a sorted union like
     # -rENf drops ERROR (E added, N clears, f added). Fix: drop N (the run requires
@@ -406,7 +406,7 @@ def test_run_red_receipt_names_the_failed_ids_and_keeps_the_output(tmp_path: Pat
 
 
 def test_run_red_ids_survive_a_caller_rN_with_a_setup_error(tmp_path: Path):
-    # Sentinel R1 (v3, measured): a caller -rN must not suppress EITHER FAILED or ERROR
+    # Measured: a caller -rN must not suppress EITHER FAILED or ERROR
     # ids. The v2 witness had only a plain failure, so a sorted union `-rENf` (where N
     # clears the E that precedes it) still PASSED it while silently dropping ERROR ids.
     # This fixture has BOTH a plain assertion failure AND an ERROR-at-setup (a fixture
@@ -445,7 +445,7 @@ def test_run_refuses_when_a_k_filter_selects_zero_tests(tmp_path: Path):
 
 
 def test_run_refuses_an_untracked_conftest_that_would_fake_a_pass(tmp_path: Path):
-    # The central-claim probe (Stromus R2): an untracked conftest.py that patches the
+    # The central-claim probe: an untracked conftest.py that patches the
     # package turns a red tree green. The run must REFUSE before it can run — the
     # tracked tree is unchanged, so only the untracked scan stops it.
     repo, head_tree = _pkg_repo(tmp_path, test_body="def test_ok():\n    assert False\n")
@@ -462,7 +462,7 @@ def test_run_refuses_an_untracked_conftest_that_would_fake_a_pass(tmp_path: Path
 
 
 def test_run_all_skipped_is_not_green(tmp_path: Path):
-    # Stromus R2: a green needs passed >= 1. An all-skipped run has no failure but
+    # A green needs passed >= 1. An all-skipped run has no failure but
     # proves nothing. Dropping the passed>=1 condition reds THIS witness.
     repo, head_tree = _pkg_repo(
         tmp_path, test_body="import pytest\n\ndef test_x():\n    pytest.skip('nope')\n"
@@ -649,7 +649,7 @@ def test_no_review_install_hint_still_needs_the_flags(tmp_path: Path):
     assert exc.value.code == "no_package", exc.value.code
 
 
-# ---------------------------------------------------- v3: R2 REQUEST-CHANGES items
+# ---------------------------------------------------- v3: requested changes
 
 def test_hint_bad_binary_refuses_install_failed(tmp_path: Path):
     # P3 (the block): a committed hint whose install names a binary that does not

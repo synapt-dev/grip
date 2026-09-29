@@ -185,7 +185,7 @@ def test_close_gr_with_no_review_run_has_nothing_to_keep(tmp_path: Path) -> None
 
 
 def test_close_gr_twice_same_lane_keeps_both_runs(tmp_path: Path) -> None:
-    # review-run door 1, R2 v2 probe: closing the SAME lane name twice must preserve
+    # review-run door 1, a probe on the second version: closing the SAME lane name twice must preserve
     # BOTH runs' receipt+log. v1 keyed the preserved dir by lane name alone
     # (<lane>.review-run, mkdir exist_ok + copy2), so the second close overwrote the
     # first's evidence in place -- door 1's promise held for one close per lane name.
@@ -245,7 +245,7 @@ def test_close_gr_twice_same_lane_keeps_both_runs(tmp_path: Path) -> None:
 
 
 def test_open_gr_enter_refuses_a_nonempty_lane_dir(tmp_path: Path) -> None:
-    # Probe C (Stromus R2 v1, RAN): open-gr --enter into a PRE-EXISTING dir that holds
+    # Probe C (run): open-gr --enter into a PRE-EXISTING dir that holds
     # a foreign file must REFUSE, because close-gr reclaims the WHOLE --lane-dir. The
     # marker proves open-gr WROTE there, not that it CREATED the dir; without this guard
     # close-gr removes the foreign file. open-gr owns the lane or does not write it.

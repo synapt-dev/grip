@@ -164,7 +164,7 @@ def _two_orderings():
 
 
 def test_an_ignore_wins_wherever_it_is_written(tmp_path):
-    """Finding 1 of the r1 read: the output was emitted in declaration order, so
+    """The output was emitted in declaration order, so
     `!docs/secret.txt` written above `docs/` lost to the include emitted after
     it and the file was TRACKED. The report was empty, which is what made it a
     silent failure."""
@@ -197,7 +197,7 @@ def test_a_shuffled_declaration_compiles_byte_identical(tmp_path):
 
 def test_control_an_order_dependent_compile_would_differ(tmp_path, monkeypatch):
     """The property above holds only while this control PASSES. The mutation is
-    the defect the r1 read found: emit the lines in the order the declaration
+    the original defect: emit the lines in the order the declaration
     gives them. If this ever goes green the witness above has stopped meaning
     anything."""
     import gr2.python_cli.gitinclude as gi
@@ -244,7 +244,7 @@ def test_control_an_order_dependent_compile_would_differ(tmp_path, monkeypatch):
 
 
 def test_an_include_under_an_ignored_path_is_reported_as_a_conflict(tmp_path):
-    """Finding 4 of the r1 read: the include is emitted, and the ignore emitted
+    """The include is emitted, and the ignore emitted
     after it wins, so it cannot do what it says. It used to say nothing."""
     root = _repo(tmp_path)
     (root / "docs" / "sub").mkdir(parents=True)

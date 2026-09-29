@@ -40,7 +40,7 @@ struct TeamDbEntry {
 #[should_panic(expected = "not yet implemented")]
 fn test_spawn_creates_tmux_session() {
     // gr spawn up should create a tmux session named after [spawn].session_name
-    // from agents.toml (e.g. "synapt" or "conversa").
+    // from agents.toml (e.g. "synapt" or "acme").
     let _session = create_tmux_session("synapt");
     // Verify: tmux has-session -t synapt returns 0
     unimplemented!("create_tmux_session not yet implemented")

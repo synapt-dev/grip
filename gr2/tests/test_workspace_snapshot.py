@@ -1,5 +1,5 @@
 """kind=workspace gr commit: a materialized lane's resolved heads captured as
-one gr commit and read back (R2 Milestone 1, section-5 workspace kind).
+one gr commit and read back (the section-5 workspace kind).
 
 Base is the RECORDED fork base, never derived from HEAD^: the lane
 records where its work forked from its integration branch at create time, and the

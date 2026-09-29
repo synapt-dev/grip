@@ -5,7 +5,7 @@ stranger.
 derive). The CLI `lane create` clones each repo AFTER the doc is
 written, so nothing supplied a fork base and every CLI-created lane had none — which
 made `review create-project` refuse with "no recorded fork base" for anyone who did
-not set it by hand (Fathom, driving the R2 producer verb from help text). The CLI now
+not set it by hand (met by driving the review producer verb from its help text). The CLI now
 records the materialization point (the branch each repo forked from and the sha it
 started at) after cloning. These tests drive the real CLI, not create_lane directly.
 """
@@ -124,7 +124,7 @@ def test_cli_lane_create_records_fork_base_before_a_blocked_hook_exits(tmp_path:
     assert "fork_base" in doc, "a blocked hook must not leave a lane without a fork base"
     assert doc["fork_base"]["app"]["branch"] == "feat/lane"
     assert doc["fork_base"]["app"]["sha"] == tip
-    # ...and the R2 producer verb succeeds on the recovered lane rather than refusing
+    # ...and the review producer verb succeeds on the recovered lane rather than refusing
     created = runner.invoke(gr2_app.app, ["review", "create-project", str(ws), "atlas", "feature"])
     assert created.exit_code == 0, created.output
 
@@ -175,7 +175,7 @@ def test_cli_lane_create_records_fork_base_for_each_repo(tmp_path: Path) -> None
 
 
 def test_cli_created_lane_then_create_project_succeeds(tmp_path: Path) -> None:
-    # The stranger path end to end: create a lane through the CLI, then the R2 producer
+    # The stranger path end to end: create a lane through the CLI, then the review producer
     # verb pins base..head instead of refusing on a missing fork base.
     ws, _ = _workspace(tmp_path, ["app", "lib"])
     assert runner.invoke(gr2_app.app, ["lane", "create", str(ws), "atlas", "feature",

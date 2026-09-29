@@ -1307,7 +1307,7 @@ def validate_materialization_plan(workspace_root: Path, plan: dict[str, object])
         _reject_identity_fields_recursive(op, path=f"operations[{idx}]")
         canonical_dest = _validate_operation_shape(op, idx=idx, workspace_root=workspace_root)
         if canonical_dest is not None:
-            # NFC-normalize BEFORE casefolding (Sentinel finding 7):
+            # NFC-normalize BEFORE casefolding:
             # "units/café/.venv" spelled NFC vs NFD are distinct Python
             # strings that casefold to distinct values, yet on a
             # normalization-insensitive filesystem they name ONE
@@ -1530,7 +1530,7 @@ def write_materialization_receipt(
         tmp_path.unlink(missing_ok=True)
         raise
 
-    # Sentinel finding 3: durability is a FAILURE-PATH contract, not only an
+    # Durability is a FAILURE-PATH contract, not only an
     # ordering one. If the parent-directory fsync fails, the rename may not
     # survive a crash -- yet the receipt is already visible at its published
     # path, so a caller that treats "the writer returned" or "a receipt

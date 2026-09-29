@@ -432,13 +432,13 @@ def test_status_and_check_refuse_a_root_that_is_not_a_store(
 def test_commit_and_check_read_the_members_upstream_not_the_literal_origin(
     ws: Path, tmp_path: Path
 ) -> None:
-    """F1'S WITNESS, and it only works because the field is set to a NON-DEFAULT value.
+    """THE WITNESS for the upstream check, and it only works because the field is set to a NON-DEFAULT value.
 
     §5a: "The check is against `upstream`, never against the literal name `origin`". The
     divergence was invisible by construction: `_write_native_members` writes
     `upstream = member.get("upstream", "origin/main")`, so on any member that leaves the
     field alone the literal and the field are the SAME STRING and a verb that hardcoded
-    `origin/main` would pass every other row in this file (Atlas, pre-read m_d416e648 F1).
+    `origin/main` would pass every other row in this file.
 
     So this row separates them: alpha's `upstream` is pointed at a SECOND remote that carries
     the pin, and alpha's origin is force-pushed away from it. A verb reading the literal
@@ -496,7 +496,7 @@ def test_commit_and_check_read_the_members_upstream_not_the_literal_origin(
 def test_check_and_push_refuse_an_init_root_that_has_no_commit_yet(
     ws: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Finding B's class in CHECK and PUSH (Apollo, v2 r1).
+    """The unborn-HEAD refusal in CHECK and PUSH.
 
     The guard was lifted out of status into `_require_root_commit` because the same
     unborn-HEAD read sat in check (`ls-tree HEAD`), in log (`rev-list HEAD`) and in push,
@@ -534,7 +534,7 @@ def test_check_and_push_refuse_an_init_root_that_has_no_commit_yet(
 def test_log_refuses_an_init_root_that_has_no_commit_yet(
     ws: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The third verb carrying finding B's class (Apollo, v2 r1).
+    """The third verb carrying the unborn-HEAD refusal.
 
     `log` ran `rev-list HEAD`, which on an unborn HEAD is git's "ambiguous argument" wrapped
     in a code. Its own row, so a mutation aimed at check leaves THIS one green and the reader
@@ -556,7 +556,7 @@ def test_log_refuses_an_init_root_that_has_no_commit_yet(
 def test_status_refuses_an_init_root_that_has_no_commit_yet(
     ws: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A named state, not a git error (Apollo, r1 m_227344fd finding B).
+    """A named state, not a git error.
 
     `ls-tree HEAD` raises on an unborn HEAD, which surfaced as a 5 carrying git's own
     "fatal: invalid object name 'HEAD'". The row asserts the NAME and the ABSENCE of the raw
@@ -576,7 +576,7 @@ def test_status_refuses_an_init_root_that_has_no_commit_yet(
 
 
 def test_diff_refuses_a_ref_it_cannot_resolve(ws: Path) -> None:
-    """Exit 5 naming the ref, never a wrapped git message (Apollo, r1 ruling)."""
+    """Exit 5 naming the ref, never a wrapped git message."""
     assert _cli("store", "init", str(ws))[0] == 0
     assert _cli("store", "commit", "-m", "first")[0] == 0
 
@@ -599,7 +599,7 @@ def test_diff_refuses_a_ref_it_cannot_resolve(ws: Path) -> None:
 
 
 def test_checkout_json_reports_the_commit_it_resolved_not_the_ref_typed(ws: Path) -> None:
-    """The reported commit must be a COMMIT (Apollo, r1 m_227344fd finding A).
+    """The reported commit must be a COMMIT.
 
     `--json` used to echo `root_commit: "HEAD~1"`, which names a commit only relative to a
     HEAD the call itself just moved: a caller could not tell which commit it got, and the
@@ -625,7 +625,7 @@ def test_checkout_json_reports_the_commit_it_resolved_not_the_ref_typed(ws: Path
 def test_log_reports_the_root_shape_not_the_alpha_snapshot_index(ws: Path) -> None:
     """The SHAPE, because both branches printed something.
 
-    Atlas's r2 BLOCK (m_ce3627a7) found `store log <root>` still reading
+    `store log <root>` was still reading
     `.grip/snapshots/index.json` while the no-argument branch was already native. A row that
     asserted "log printed entries" would have passed on EITHER branch, which is why this
     asserts the entry KEYS: a native entry carries `commit`, `message` and `pins`; an alpha

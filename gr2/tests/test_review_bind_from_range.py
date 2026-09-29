@@ -7,7 +7,7 @@ The producer (`review bind`) owns the reconstruction: it derives the head-tree b
 applying the range over base in a throwaway clone (grip._carry_objects_from_range,
 the primitive the project tier already uses), carries the range in the object, and
 `open-gr` reconstructs by `git am` and asserts TREE equality. This is the frozen-range
-git-am exit point removed from the gr2 review producer (the R2 closing-fruit lane).
+git-am exit point removed from the gr2 review producer.
 """
 from __future__ import annotations
 

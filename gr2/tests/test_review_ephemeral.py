@@ -1,4 +1,4 @@
-"""Stream 2 step 7 (A): review-ephemeral lane materialization — blobless + sparse
+"""Review-ephemeral lane materialization — blobless + sparse
 from the persistent mirror, separate from the strict work-lane clone seam."""
 from __future__ import annotations
 

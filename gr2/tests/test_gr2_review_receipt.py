@@ -3,7 +3,7 @@ review lane: the gr commit, create->exit wall time, per-repo and total lane size
 an optional SIZE comparison against a --full-ref reference (never a "sparse" claim),
 and the CLI-exit-point list.
 
-It is the instrument the R2 "Exact Work" closing fruit is MEASURED with (one gr
+It is the instrument the exact-work acceptance is MEASURED with (one gr
 commit opens one exact multi-repo review; the receipt is the fruit), so its fields
 are asserted from a fixture review lane here rather than trusted. The script is bash;
 these drive it exactly as a reviewer does — via subprocess against a constructed
@@ -127,7 +127,7 @@ def test_savings_says_NOT_smaller_when_tree_exceeds_reference(tmp_path: Path) ->
 
 
 def test_savings_equal_size_boundary_is_not_smaller(tmp_path: Path) -> None:
-    # Sentinel's R1 catch (m_0105755d): the equal-size
+    # The equal-size
     # boundary (total_kb == full_kb) was untested; -ge -> -gt would survive and print
     # a false "0.0% smaller" on identical-size trees. Shipped code uses -ge; pin it.
     # Point --full-ref at the review_root ITSELF, so total_kb == full_kb EXACTLY

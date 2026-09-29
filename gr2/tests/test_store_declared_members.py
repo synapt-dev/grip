@@ -180,7 +180,7 @@ def test_a_named_path_that_is_a_plain_folder_refuses_naming_it(
 ) -> None:
     """`--member plain` must NOT record the root's own origin and HEAD as a member.
 
-    Found by Apollo's r1 on this range: without the checkout check, this row's call exited 0
+    Without the checkout check, this row's call exited 0
     and grip.toml carried a member named "plain" whose origin and pin were the ROOT's.
     """
     root = _adopted_root(tmp_path, monkeypatch)
@@ -216,7 +216,7 @@ def test_a_named_path_that_escapes_the_root_refuses_naming_it(
 ) -> None:
     """A path outside the root must refuse at 4, not build a store that cannot commit.
 
-    Measured by Stromus's r2 on this range: without the containment check, `--member
+    Measured: without the containment check, `--member
     ../outside` inited rc 0 and recorded member `..-outside`, and then `store commit` failed
     rc 5 with git's own `update-index: --cacheinfo cannot add ../outside`.
     """
@@ -249,7 +249,7 @@ def test_two_member_paths_that_resolve_to_one_name_refuse_naming_both(
 ) -> None:
     """`a/b` and `a-b` both dash to the name `a-b`, and a name key keeps only one.
 
-    Measured by Stromus's r2: without this refusal, init recorded BOTH as `a-b` and
+    Measured: without this refusal, init recorded BOTH as `a-b` and
     `_native_members_at` builds `{name: pin}`, so any name-keyed read silently loses one.
     """
     root = _store_root(tmp_path, monkeypatch)

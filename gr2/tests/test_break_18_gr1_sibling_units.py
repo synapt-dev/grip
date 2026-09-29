@@ -252,7 +252,7 @@ class TestBreak18ApplyRefusesSiblingUnitsUntilConsumerLands:
     beside that desk's own `./gitgrip`, and dropping a gr2 file into the desk.
     Both corrupt a layout, so the shape is REFUSED with the reason named until
     slice items 3, 5 and 6 land. Measured with `build_plan` on this fixture and
-    no network — the same instrument the r1 block used.
+    no network — the same instrument the first measurement used.
     """
 
     def test_apply_refuses_a_sibling_unit_and_names_the_reason(

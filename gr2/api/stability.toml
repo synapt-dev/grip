@@ -4,14 +4,52 @@
 # someone says otherwise in review, which keeps the default honest rather than
 # optimistic.
 #
-# `may-change`  an item that is public but still moving (it counts against the
-#               90% target, which is the point of marking it)
-# `reserved`    a name held for a later slice (it is excluded from the 90%
-#               denominator entirely)
+# `may-change`  an item that is public but still moving. It STAYS in the 90
+#               percent denominator and stops counting as stable, so this lever
+#               is expensive and must not be used to park a family you mean to
+#               hide: the internal review machinery is 225 visible items and
+#               would read 0.36 here, against 1.00 once hidden.
+# `reserved`    a name held for a later slice; it leaves the denominator the
+#               same way a hidden item does.
 #
 # Entries are "<kind> <spelling>", matching the first two columns of cli.api.
 # The kinds are `verb`, `flag`, `arg`, and later `json`, `exit`, `path`, `ref`.
+#
+# MAY-CHANGE, and the reason, so it can be lifted deliberately: the `store`
+# group is the surface this thin slice is still finishing -- its own checklist
+# steps for the witness and the full-suite run are unlanded, and the exit table
+# it carries was introduced days ago. Marking it says the store verbs are
+# public today but not yet promised. LIFT THIS when the slice completes.
 
-may-change = []
+may-change = [
+  "verb store check",
+  "flag store check --json",
+  "verb store checkout",
+  "flag store checkout --json",
+  "arg store checkout ref <str>",
+  "verb store commit",
+  "flag store commit --json",
+  "flag store commit --message/-m <str>",
+  "verb store diff",
+  "flag store diff --json",
+  "arg store diff ref_a <str>",
+  "arg store diff ref_b <str>",
+  "verb store init",
+  "flag store init --json",
+  "flag store init --member <str>",
+  "arg store init workspace_root <str>",
+  "verb store log",
+  "flag store log --json",
+  "flag store log --max-count/-n <str>",
+  "verb store materialize",
+  "flag store materialize --json",
+  "verb store migrate",
+  "flag store migrate --dry-run",
+  "flag store migrate --json",
+  "verb store push",
+  "flag store push --json",
+  "verb store status",
+  "flag store status --json",
+]
 
 reserved = []

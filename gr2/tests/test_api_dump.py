@@ -86,8 +86,14 @@ def test_api_stable_share_at_least_90() -> None:
     print(f"stable share: {len(stable)}/{len(counted)} = {share:.4f}")
     assert share >= 0.90, (
         f"stable share {len(stable)}/{len(counted)} = {share:.4f} is under 0.90.\n"
-        f"  hide the internal verbs (hidden items leave the denominator) or mark the\n"
-        f"  moving ones may-change in api/stability.toml; do not mark them stable."
+        f"  There are levers here and they are not interchangeable:\n"
+        f"    hidden     an internal verb goes hidden=True and leaves the denominator\n"
+        f"    reserved   a reserved name leaves the denominator the same way\n"
+        f"    may-change the item STAYS in the denominator and stops counting as stable\n"
+        f"  Use may-change only for surface that is public and genuinely still moving.\n"
+        f"  Parking a family you mean to hide does not work: the internal families are\n"
+        f"  hundreds of items and this lever would read far under the bar, while hiding\n"
+        f"  them meets it outright."
     )
 
 

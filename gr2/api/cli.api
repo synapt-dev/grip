@@ -11,10 +11,10 @@ arg   exec run workspace_root <str>                                   stable
 arg   exec status lane_name <str>                                     stable
 arg   exec status owner_unit <str>                                    stable
 arg   exec status workspace_root <str>                                stable
-arg   grip checkout ref <str>                                         stable
-arg   grip diff ref_a <str>                                           stable
-arg   grip diff ref_b <str>                                           stable
-arg   grip init workspace_root <str>                                  stable
+arg   grip checkout ref <str> (hidden)                                stable
+arg   grip diff ref_a <str> (hidden)                                  stable
+arg   grip diff ref_b <str> (hidden)                                  stable
+arg   grip init workspace_root <str> (hidden)                         stable
 arg   hooks revoke member <str>                                       stable
 arg   hooks trust member <str>                                        stable
 arg   lane bind lane_name <str>                                       stable
@@ -98,10 +98,10 @@ arg   review verify commit <str>                                      stable
 arg   review verify workspace_root <str>                              stable
 arg   spec show workspace_root <str>                                  stable
 arg   spec validate workspace_root <str>                              stable
-arg   store checkout ref <str>                                        stable
-arg   store diff ref_a <str>                                          stable
-arg   store diff ref_b <str>                                          stable
-arg   store init workspace_root <str>                                 stable
+arg   store checkout ref <str>                                        may-change
+arg   store diff ref_a <str>                                          may-change
+arg   store diff ref_b <str>                                          may-change
+arg   store init workspace_root <str>                                 may-change
 arg   sync run workspace_root <str>                                   stable
 arg   sync status workspace_root <str>                                stable
 arg   target set branch <str>                                         stable
@@ -143,22 +143,22 @@ flag  exec run --ttl-seconds <str>                                    stable
 flag  exec status --actor <str>                                       stable
 flag  exec status --json                                              stable
 flag  exec status --repos <str>                                       stable
-flag  grip check --json                                               stable
-flag  grip checkout --json                                            stable
-flag  grip commit --json                                              stable
-flag  grip commit --message/-m <str>                                  stable
-flag  grip diff --json                                                stable
-flag  grip init --json                                                stable
-flag  grip init --member <str>                                        stable
-flag  grip log --json                                                 stable
-flag  grip log --max-count/-n <str>                                   stable
-flag  grip materialize --json                                         stable
-flag  grip migrate --dry-run                                          stable
-flag  grip migrate --json                                             stable
-flag  grip push --json                                                stable
+flag  grip check --json (hidden)                                      stable
+flag  grip checkout --json (hidden)                                   stable
+flag  grip commit --json (hidden)                                     stable
+flag  grip commit --message/-m <str> (hidden)                         stable
+flag  grip diff --json (hidden)                                       stable
+flag  grip init --json (hidden)                                       stable
+flag  grip init --member <str> (hidden)                               stable
+flag  grip log --json (hidden)                                        stable
+flag  grip log --max-count/-n <str> (hidden)                          stable
+flag  grip materialize --json (hidden)                                stable
+flag  grip migrate --dry-run (hidden)                                 stable
+flag  grip migrate --json (hidden)                                    stable
+flag  grip push --json (hidden)                                       stable
 flag  grip snapshot --json (hidden)                                   stable
 flag  grip snapshot --message/-m <str> (hidden)                       stable
-flag  grip status --json                                              stable
+flag  grip status --json (hidden)                                     stable
 flag  hooks revoke --workspace-root <str>                             stable
 flag  hooks status --json                                             stable
 flag  hooks status --workspace-root <str>                             stable
@@ -279,22 +279,22 @@ flag  review run --test <str>                                         stable
 flag  review verify --json                                            stable
 flag  spec show --json                                                stable
 flag  spec validate --json                                            stable
-flag  store check --json                                              stable
-flag  store checkout --json                                           stable
-flag  store commit --json                                             stable
-flag  store commit --message/-m <str>                                 stable
-flag  store diff --json                                               stable
-flag  store init --json                                               stable
-flag  store init --member <str>                                       stable
-flag  store log --json                                                stable
-flag  store log --max-count/-n <str>                                  stable
-flag  store materialize --json                                        stable
-flag  store migrate --dry-run                                         stable
-flag  store migrate --json                                            stable
-flag  store push --json                                               stable
+flag  store check --json                                              may-change
+flag  store checkout --json                                           may-change
+flag  store commit --json                                             may-change
+flag  store commit --message/-m <str>                                 may-change
+flag  store diff --json                                               may-change
+flag  store init --json                                               may-change
+flag  store init --member <str>                                       may-change
+flag  store log --json                                                may-change
+flag  store log --max-count/-n <str>                                  may-change
+flag  store materialize --json                                        may-change
+flag  store migrate --dry-run                                         may-change
+flag  store migrate --json                                            may-change
+flag  store push --json                                               may-change
 flag  store snapshot --json (hidden)                                  stable
 flag  store snapshot --message/-m <str> (hidden)                      stable
-flag  store status --json                                             stable
+flag  store status --json                                             may-change
 flag  sync run --dirty <str>                                          stable
 flag  sync run --json                                                 stable
 flag  sync status --dirty <str>                                       stable
@@ -336,17 +336,17 @@ verb  config restore                                                  stable
 verb  config show                                                     stable
 verb  exec run                                                        stable
 verb  exec status                                                     stable
-verb  grip check                                                      stable
-verb  grip checkout                                                   stable
-verb  grip commit                                                     stable
-verb  grip diff                                                       stable
-verb  grip init                                                       stable
-verb  grip log                                                        stable
-verb  grip materialize                                                stable
-verb  grip migrate                                                    stable
-verb  grip push                                                       stable
+verb  grip check (hidden)                                             stable
+verb  grip checkout (hidden)                                          stable
+verb  grip commit (hidden)                                            stable
+verb  grip diff (hidden)                                              stable
+verb  grip init (hidden)                                              stable
+verb  grip log (hidden)                                               stable
+verb  grip materialize (hidden)                                       stable
+verb  grip migrate (hidden)                                           stable
+verb  grip push (hidden)                                              stable
 verb  grip snapshot (hidden)                                          stable
-verb  grip status                                                     stable
+verb  grip status (hidden)                                            stable
 verb  hooks revoke                                                    stable
 verb  hooks status                                                    stable
 verb  hooks trust                                                     stable
@@ -386,17 +386,17 @@ verb  review verify                                                   stable
 verb  spec show                                                       stable
 verb  spec validate                                                   stable
 verb  status                                                          stable
-verb  store check                                                     stable
-verb  store checkout                                                  stable
-verb  store commit                                                    stable
-verb  store diff                                                      stable
-verb  store init                                                      stable
-verb  store log                                                       stable
-verb  store materialize                                               stable
-verb  store migrate                                                   stable
-verb  store push                                                      stable
+verb  store check                                                     may-change
+verb  store checkout                                                  may-change
+verb  store commit                                                    may-change
+verb  store diff                                                      may-change
+verb  store init                                                      may-change
+verb  store log                                                       may-change
+verb  store materialize                                               may-change
+verb  store migrate                                                   may-change
+verb  store push                                                      may-change
 verb  store snapshot (hidden)                                         stable
-verb  store status                                                    stable
+verb  store status                                                    may-change
 verb  sync run                                                        stable
 verb  sync status                                                     stable
 verb  target set                                                      stable

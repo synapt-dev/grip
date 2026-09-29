@@ -38,15 +38,24 @@ STABILITY = API_DIR / "stability.toml"
 COLUMN = 64
 
 
-def _walk(cmd, prefix: tuple[str, ...] = ()) -> list[tuple[tuple[str, ...], object]]:
-    """Every leaf command, as (path, command). Groups recurse; leaves are returned."""
+def _walk(cmd, prefix: tuple[str, ...] = (), inherited_hidden: bool = False):
+    """Every leaf command, as (path, command, hidden).
+
+    Hidden is INHERITED: a command is hidden when its own flag says so OR any
+    ancestor group is hidden. Typer marks a sub-app hidden at the GROUP level
+    (``add_typer(app, name="grip", hidden=True)``), and the group's children
+    keep ``hidden=False`` of their own -- so reading only the leaf reports a
+    hidden group's whole subtree as part of the visible surface. Measured: the
+    ``grip`` alias group is hidden and 28 of its items were dumped as visible.
+    """
     subs = getattr(cmd, "commands", None)
+    here_hidden = inherited_hidden or bool(getattr(cmd, "hidden", False))
     if subs:
-        out: list[tuple[tuple[str, ...], object]] = []
+        out: list[tuple[tuple[str, ...], object, bool]] = []
         for name, sub in subs.items():
-            out.extend(_walk(sub, prefix + (name,)))
+            out.extend(_walk(sub, prefix + (name,), here_hidden))
         return out
-    return [(prefix, cmd)]
+    return [(prefix, cmd, here_hidden)]
 
 
 def _items() -> list[tuple[str, str, bool]]:
@@ -55,9 +64,8 @@ def _items() -> list[tuple[str, str, bool]]:
 
     top = typer.main.get_command(app)
     rows: list[tuple[str, str, bool]] = []
-    for path, cmd in _walk(top):
+    for path, cmd, hidden in _walk(top):
         verb = " ".join(path)
-        hidden = bool(getattr(cmd, "hidden", False))
         rows.append(("verb", verb, hidden))
         for prm in getattr(cmd, "params", []):
             opts = list(getattr(prm, "opts", None) or [])

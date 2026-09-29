@@ -1,5 +1,5 @@
-"""TDD: two stranger findings from Fathom's lane sounding (r2-lane-stranger-
-sounding-2026-09-20) and the materialize plan gate.
+"""TDD: two stranger findings from Fathom's lane sounding (a stranger's first run
+of the lane verbs, 2026-09-20) and the materialize plan gate.
 
 1. `gr2 exec run <ws> <unit> --actor … 'git rev-parse --show-toplevel'` — the
    command as ONE quoted string, which is what people type — passed the whole
@@ -263,7 +263,7 @@ class TestSingleTokenIsNeverSplit(unittest.TestCase):
         ]
 
 class TestOperatorAndEmptinessSeams(unittest.TestCase):
-    """Sentinel's R1 on exec-plan v1, two seams: (1) the operator check ran on
+    """Two seams in the first exec plan: (1) the operator check ran on
     the RAW string, so an operator inside a quotation span ('fix: a|b') was
     refused with no shell intent — it is now judged on the split tokens, where
     a quoted span is part of a longer token; (2) an empty/whitespace-only

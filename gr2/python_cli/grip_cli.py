@@ -169,10 +169,10 @@ def _repo_head_state(repo_path: Path) -> dict[str, object]:
 # writes, snapshot-id resolution, the member map, the dirty check, the grip-dir guard. They
 # are KEPT rather than deleted for ONE reason now: `store migrate` (design section 6a) READS
 # the alpha store to convert it, so the readers stay until that step either adopts them or
-# replaces them. Atlas's r2 BLOCK (m_ce3627a7) made this group dead by removing log's alpha
-# branch. `tests/test_grip_object_model.py` used to import three of them and is now RETIRED,
+# replaces them. Removing log's alpha branch, which was still live, made
+# this group dead. `tests/test_grip_object_model.py` used to import three of them and is now RETIRED,
 # so it is no longer a reason to keep anything -- corrected here because the first version of
-# this comment named it as one (Apollo, v2 r1).
+# this comment named it as one.
 # ---------------------------------------------------------------------------
 
 
@@ -645,8 +645,7 @@ unexpected git failure, an unreadable root -- has no code of its own in that set
 reports 5 and prefixes its message with this string. THE PREFIX IS PART OF THE SURFACE, not a
 style choice: it is what tells a measured "cannot measure" apart from a wrapped exception, and
 a caller reading the code alone cannot. Named as a constant so the ten handlers share one
-spelling, and named in the freeze post so the readers can hold the contract (Atlas, r2
-m_ce3627a7).
+spelling, and named in the change description so a reader can hold the contract.
 """
 
 GITIGNORE_MARKER = "# gr2 store allow-list (written by store init; an adopted root keeps its own)"
@@ -738,8 +737,8 @@ def _git_detail(proc: subprocess.CompletedProcess[str]) -> str:
 def _require_root_commit(root: Path) -> None:
     """Refuse at 5 when the root has no commit yet.
 
-    LIFTED OUT OF `status` AFTER APOLLO'S v2 r1 BLOCK (finding B's class), which found the
-    same unborn-HEAD read in three more verbs: `check` ran `ls-tree HEAD`, `log` ran
+    LIFTED OUT OF `status` because the
+    same unborn-HEAD read was in three more verbs: `check` ran `ls-tree HEAD`, `log` ran
     `rev-list HEAD`, and `push` inherits it from check. Each surfaced git's own "fatal: invalid
     object name 'HEAD'" -- or "ambiguous argument" -- across the exit surface, which section
     5's table has no room for. One guard, three callers, so the three cannot drift apart the
@@ -759,7 +758,7 @@ def _member_coverage(root: Path, member: dict[str, str], sha: str) -> None:
     `git merge-base --is-ancestor <sha> <upstream>`; the check is against `upstream`, never
     against the literal name `origin`.
 
-    THIS HELPER EXISTS BECAUSE OF A MEASURED DIVERGENCE (Atlas, pre-read m_d416e648 F1, read
+    THIS HELPER EXISTS BECAUSE OF A MEASURED DIVERGENCE (measured
     against base acb74890): `store commit` compared against the literal `origin/main` and
     never fetched, while `store check` fetched and compared against `member["upstream"]`.
     The two disagree only when a member sets `upstream` to anything else --
@@ -807,8 +806,8 @@ def _native_store_commit(root: Path, message: str) -> None:
                 5,
             )
         # Section 5's commit row refuses a dirty member at exit 3, and it is checked BEFORE
-        # coverage so the refusal names the thing the author has to fix first. Atlas's
-        # pre-read F2: no verb in the group refused a dirty member, though the row names it.
+        # coverage so the refusal names the thing the author has to fix first. Before this,
+        # no verb in the group refused a dirty member, though the row names it.
         if _store_git(path, "status", "--porcelain").stdout.strip():
             raise NativeStoreRefusal(
                 f"{member['name']} is dirty; commit or stash changes first", 3
@@ -881,15 +880,15 @@ def _native_store_log(root: Path, max_count: int) -> list[dict[str, object]]:
     # THE DOCUMENT IS READ FIRST, so a root that is not a store gets the NAMED refusal rather
     # than git's own "not a git repository" wrapped in an exit code. Found by rewriting the
     # gr1 guidance row after the log port: that row's workspace is not a git repo at all, and
-    # `rev-list` was the first thing the verb touched. Same defect class as Apollo's r1
-    # finding B on status, one verb over.
+    # `rev-list` was the first thing the verb touched. Same defect class as the
+    # raw git message status once returned, one verb over.
     _grip_document(root)
     _require_root_commit(root)
     commits = _store_git(root, "rev-list", "--reverse", f"--max-count={max_count}", "HEAD").stdout.splitlines()
     prior: dict[str, str] = {}
     entries: list[dict[str, object]] = []
     for commit in commits:
-        # THE ADOPTION BOUNDARY (story 54, 2026-09-28). A root that carried its own history
+        # THE ADOPTION BOUNDARY (2026-09-28). A root that carried its own history
         # BEFORE it became a store -- an ADOPTED root -- has commits that predate grip.toml.
         # Reading the document at one of them is `fatal: path 'grip.toml' exists on disk, but
         # not in '<sha>'`, and it took the WHOLE verb down: exit 5 with no rows, on a root whose
@@ -921,7 +920,7 @@ def _native_store_diff(root: Path, ref_a: str, ref_b: str) -> list[dict[str, obj
     # Both refs are resolved FIRST and by name, so an unresolvable one is a NAMED refusal at
     # 5 rather than a wrapped git message from whichever read happened to run first. Same
     # judgement as checkout's unresolvable ref, and the same code for the same reason: the
-    # verb could not MEASURE the thing the caller named (Apollo, r1 ruling).
+    # verb could not MEASURE the thing the caller named.
     _grip_document(root)  # the named refusal for a root that is not a store, first
     for ref in (ref_a, ref_b):
         resolved = _store_git(root, "rev-parse", "--verify", f"{ref}^{{commit}}", check=False)
@@ -969,8 +968,8 @@ def _native_store_checkout(root: Path, revision: str) -> tuple[str, list[dict[st
         pin = pins[member["name"]]
         _store_git(path, "checkout", "--detach", pin)
         restored.append({"name": member["name"], "pin": pin, "head": _store_git(path, "rev-parse", "HEAD").stdout.strip()})
-    # THE RESOLVED SHA IS RETURNED, not the string the caller typed (Apollo, r1 m_227344fd
-    # finding A). `--json` reported `root_commit: "HEAD~1"`, which is not a commit: it names
+    # THE RESOLVED SHA IS RETURNED, not the string the caller typed.
+    # `--json` reported `root_commit: "HEAD~1"`, which is not a commit: it names
     # one only relative to a HEAD the call itself just moved, so a caller could not tell
     # which commit it got, and the value is meaningless to any later read.
     return sha, restored
@@ -986,8 +985,8 @@ def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[
     edit is not a snapshot defect (measured 2026-09-28).
     """
     members = _native_members(root)
-    # A ROOT WITH NO COMMIT YET IS A NAMED STATE, not a git error (Apollo, r1 m_227344fd
-    # finding B, now shared with check and log through _require_root_commit).
+    # A ROOT WITH NO COMMIT YET IS A NAMED STATE, not a git error (now
+    # shared with check and log through _require_root_commit).
     _require_root_commit(root)
     rows: list[dict[str, str | None]] = []
     for member in members:
@@ -1149,8 +1148,8 @@ def grip_init_cmd(
         # Section 5's exit table has no 1: 0 ok, 2 usage, 3 coverage-or-cleanliness,
         # 4 inconsistent-or-beta, 5 cannot measure. A residual RuntimeError is a verb that
         # could not COMPLETE, which is the 5 row, and it is prefixed so a raw git message
-        # cannot read as a contract refusal (Atlas, pre-read F4: an unaudited backstop is
-        # the one that will fire).
+        # cannot read as a contract refusal (an unaudited backstop is the one that will
+        # fire).
         typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
     if json_output:
@@ -1175,8 +1174,8 @@ def grip_commit_cmd(
         # Section 5's exit table has no 1: 0 ok, 2 usage, 3 coverage-or-cleanliness,
         # 4 inconsistent-or-beta, 5 cannot measure. A residual RuntimeError is a verb that
         # could not COMPLETE, which is the 5 row, and it is prefixed so a raw git message
-        # cannot read as a contract refusal (Atlas, pre-read F4: an unaudited backstop is
-        # the one that will fire).
+        # cannot read as a contract refusal (an unaudited backstop is the one that will
+        # fire).
         typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
     if json_output:
@@ -1197,8 +1196,8 @@ def grip_check_cmd(
         # Section 5's exit table has no 1: 0 ok, 2 usage, 3 coverage-or-cleanliness,
         # 4 inconsistent-or-beta, 5 cannot measure. A residual RuntimeError is a verb that
         # could not COMPLETE, which is the 5 row, and it is prefixed so a raw git message
-        # cannot read as a contract refusal (Atlas, pre-read F4: an unaudited backstop is
-        # the one that will fire).
+        # cannot read as a contract refusal (an unaudited backstop is the one that will
+        # fire).
         typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
     if json_output:
@@ -1221,8 +1220,8 @@ def grip_push_cmd(
         # Section 5's exit table has no 1: 0 ok, 2 usage, 3 coverage-or-cleanliness,
         # 4 inconsistent-or-beta, 5 cannot measure. A residual RuntimeError is a verb that
         # could not COMPLETE, which is the 5 row, and it is prefixed so a raw git message
-        # cannot read as a contract refusal (Atlas, pre-read F4: an unaudited backstop is
-        # the one that will fire).
+        # cannot read as a contract refusal (an unaudited backstop is the one that will
+        # fire).
         typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
     if json_output:
@@ -1245,8 +1244,8 @@ def grip_status_cmd(
         # Section 5's exit table has no 1: 0 ok, 2 usage, 3 coverage-or-cleanliness,
         # 4 inconsistent-or-beta, 5 cannot measure. A residual RuntimeError is a verb that
         # could not COMPLETE, which is the 5 row, and it is prefixed so a raw git message
-        # cannot read as a contract refusal (Atlas, pre-read F4: an unaudited backstop is
-        # the one that will fire).
+        # cannot read as a contract refusal (an unaudited backstop is the one that will
+        # fire).
         typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
     if json_output:
@@ -1284,8 +1283,8 @@ def grip_materialize_cmd(
         # Section 5's exit table has no 1: 0 ok, 2 usage, 3 coverage-or-cleanliness,
         # 4 inconsistent-or-beta, 5 cannot measure. A residual RuntimeError is a verb that
         # could not COMPLETE, which is the 5 row, and it is prefixed so a raw git message
-        # cannot read as a contract refusal (Atlas, pre-read F4: an unaudited backstop is
-        # the one that will fire).
+        # cannot read as a contract refusal (an unaudited backstop is the one that will
+        # fire).
         typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
     if json_output:
@@ -1309,8 +1308,8 @@ def grip_migrate_cmd(
         # Section 5's exit table has no 1: 0 ok, 2 usage, 3 coverage-or-cleanliness,
         # 4 inconsistent-or-beta, 5 cannot measure. A residual RuntimeError is a verb that
         # could not COMPLETE, which is the 5 row, and it is prefixed so a raw git message
-        # cannot read as a contract refusal (Atlas, pre-read F4: an unaudited backstop is
-        # the one that will fire).
+        # cannot read as a contract refusal (an unaudited backstop is the one that will
+        # fire).
         typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
     if json_output:
@@ -1334,8 +1333,7 @@ def grip_snapshot_cmd(
     IMPLEMENTATION: it wrote the alpha `.grip` store through grip_mod.grip_init /
     grip_snapshot, which is the format section 6's `store migrate` exists to convert away
     from. So it was a live writer of the retired format, and an alias that acquires its own
-    semantics is how a `may-change` row becomes permanent by accident (Atlas, pre-read
-    m_d416e648 F3).
+    semantics is how a `may-change` row becomes permanent by accident.
 
     Section 5 line 100 makes it an alias of `store commit`, so it now makes the native root
     commit and carries only commit's flags. This UNWIRES the verb; it does not delete the
@@ -1368,11 +1366,11 @@ def grip_log_cmd(
     group, and its entries are native: a root `commit`, its `message`, and the `pins` that
     changed.
 
-    ⚠ IT CARRIED A LIVE ALPHA READER UNTIL 2026-09-28, and Atlas's r2 BLOCK (m_ce3627a7)
-    caught it. A positional `workspace_root` sent the verb to `_read_snapshot_index`
+    ⚠ IT CARRIED A LIVE ALPHA READER UNTIL 2026-09-28.
+    A positional `workspace_root` sent the verb to `_read_snapshot_index`
     (`.grip/snapshots/index.json`) and printed rows keyed `id`, the alpha shape, while the
     no-argument branch was already native. `diff` had been ported off that same index in the
-    SAME RANGE, so this was F3's shape surviving in the one verb the port did not reach: a
+    SAME RANGE, so this was the same defect surviving in the one verb the port did not reach: a
     verb with two branches that answer different questions presents as ported whenever a
     caller happens to use the branch that was ported.
     """

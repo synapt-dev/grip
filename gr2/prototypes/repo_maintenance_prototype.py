@@ -276,7 +276,7 @@ def _git_scrubbed(repo_path: Path, *args: str) -> subprocess.CompletedProcess[st
     `NotADirectoryError` from the resolution itself. That is the same answer as git failing:
     we could not interrogate the tree. Returning it as a non-zero result keeps ONE path to
     UNREADABLE instead of an exception that `aside_disposition`'s contract does not mention
-    and its call site does not handle. Found by Sentinel's r2 on the previous version, whose
+    and its call site does not handle. Measured on the previous version, whose
     P4 probe caught the function propagating PermissionError where its own docstring promised
     a verdict.
     """

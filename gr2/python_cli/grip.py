@@ -337,7 +337,7 @@ def read_workspace_commit(workspace: Path, commit: str) -> list[dict[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# Milestone 1.2 — the gate on gr2: review bind + verify
+# The gate on gr2: review bind + verify
 #
 # A review gr commit is a project-review commit plus two subtrees: observed/
 # (the live remote head of each row's target ref at bind time) and texts/ (the

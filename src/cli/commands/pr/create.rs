@@ -1073,7 +1073,7 @@ mod json_payload_tests {
     ///
     /// `--json` keeps exit 0 on failure, and that is only defensible because
     /// the payload tells the truth. Before this, nothing pinned the payload:
-    /// r1 and r2 independently mutated `success` to unconditional `true` and
+    /// two independent mutations of `success` to unconditional `true` and
     /// all three integration tests still passed. A scripted caller would have
     /// received process success AND payload success after the platform
     /// rejected the creation.

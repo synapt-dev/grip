@@ -9,7 +9,7 @@ Python traceback, and never a swallowed exit 0. Glue is exactly where a caught
 exception becomes a silent success, so every adversarial case asserts BOTH the
 nonzero exit AND the absence of "Traceback" in the output.
 
-Fathom's three antagonist probes (m_b2708f8f) map here: base-not-on-remote is
+Three antagonist probes map here: base-not-on-remote is
 probe 3 (refuse at bind), tampered-range is probe 2 (open-gr must fail loud),
 verify-on-tampered is probe 1/2 (verify recomputes, does not trust the record).
 """
@@ -338,7 +338,7 @@ def test_verify_flags_structural_corruption_nonzero(tmp_path):
     assert '"tree_matches": false' in verified.stdout
 
 
-# --- multi-row bind from the CLI (the R2 fruit: N rows in ONE commit) -------
+# --- multi-row bind from the CLI (N rows in ONE commit) -------
 # `gr2 review bind --rows-json` is what lets the CLI express what previously
 # only grip.create_review_bind_commit could. Exclusive with the single-row
 # flags; an incomplete single-row invocation is a clean usage refusal.
@@ -408,7 +408,7 @@ def test_bind_rows_json_rejects_empty_list(tmp_path):
     assert "Traceback" not in out.output
 
 
-# --- rows-json glue through the REAL entry point (Stromus R2, m_8b084d88) ----
+# --- rows-json glue through the REAL entry point ----------------------------
 # CliRunner catches these as exit 1 with empty output, hiding the traceback the
 # glue used to raise. Run them through `python -m gr2.python_cli.app` so a raw
 # traceback would be visible: each must be a clean BadParameter (exit != 0, no
@@ -450,7 +450,7 @@ def test_bind_rows_json_non_dict_entry_is_clean_error(tmp_path):
     assert "must be a JSON object" in (r.stdout + r.stderr)
 
 
-# --- Fathom R1 (m_eb5f6948): a JSON number in a string field must refuse, not
+# --- A JSON number in a string field must refuse, not
 # traceback. _normalize_review_row checked presence, never type; a truthy int
 # passed the presence gate and hit a string op downstream. Type-check every
 # string field. Witnessed through the real entry point (int head, int remote).

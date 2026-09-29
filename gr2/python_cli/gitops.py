@@ -101,8 +101,8 @@ def is_git_repo(path: Path) -> bool:
         # be probed is not answerable as a repository, so False is the
         # answer, not a traceback. OSError would be wider: it would swallow
         # the FileNotFoundError for a missing git EXECUTABLE and turn a
-        # no-git machine into a false 'not a git repository' sentence
-        # (Stromus, m_9341d8d1); GitMissingError propagates instead.
+        # no-git machine into a false 'not a git repository' sentence;
+        # GitMissingError propagates instead.
         return False
     return proc.returncode == 0 and proc.stdout.strip() == "true"
 

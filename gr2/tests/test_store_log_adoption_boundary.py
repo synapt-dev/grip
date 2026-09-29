@@ -1,4 +1,4 @@
-"""Story 54 (2026-09-28): `store log` on an ADOPTED root stops at the adoption boundary.
+"""2026-09-28: `store log` on an ADOPTED root stops at the adoption boundary.
 
 THE DEFECT, measured on 984cbb0e before this range:
   A root that carried its own history BEFORE it became a store -- an ADOPTED root -- has
@@ -16,7 +16,7 @@ THE DEFECT, measured on 984cbb0e before this range:
   A no-change `store commit` never had a member change to record, so it runs `git commit`
   with nothing staged and git refuses: that is a separate defect, not this boundary's.
 
-THE SHAPE THE HEAD RULED: `log` stops at the adoption boundary (the first commit without
+THE SPECIFIED SHAPE: `log` stops at the adoption boundary (the first commit without
 `grip.toml`), shows everything after it, and never fails whole.
 
 FIXTURES ARE REAL GIT, no mocks and no network: each member has a bare local origin, and the
@@ -53,8 +53,8 @@ def git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProces
 
 
 def configure_identity(repo: Path) -> None:
-    git(repo, "config", "user.name", "Story54")
-    git(repo, "config", "user.email", "story54@example.test")
+    git(repo, "config", "user.name", "Adoption Test")
+    git(repo, "config", "user.email", "adoption@example.test")
 
 
 def gr2(cwd: Path, *args: str, pythonpath: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -117,7 +117,7 @@ def test_r1_adopted_root_log_stops_at_the_boundary_and_never_fails_whole(tmp_pat
 
 
 def test_r2_more_than_one_commit_after_adoption_is_shown(tmp_path: Path) -> None:
-    """R2: the head's shape -- 2+ commits, everything after the boundary shown.
+    """R2: the specified shape -- 2+ commits, everything after the boundary shown.
 
     The second commit is earned the way the design requires: a store commit records
     ORIGIN-COVERED pins, so the member's new commit is pushed to its origin first. (A

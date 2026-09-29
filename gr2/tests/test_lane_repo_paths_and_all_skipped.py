@@ -1,6 +1,6 @@
-"""TDD: the stranger's F2/F3 lane range (grip, from the alpha-2 stranger pass).
+"""TDD: two lane defects a first-time user of the gr2 alpha hit.
 
-The discriminating pair (2026-09-21, dev 4c074c4) settled F2 the clean way:
+The discriminating pair (2026-09-21, dev 4c074c4) settled the commit question the clean way:
 the lane-aware commit looks in the right place (the lane's own clones under
 ``.grip/state/lanes/<unit>/<lane>/repos/<repo>``) and commits there. The
 defects are upstream of it:
@@ -11,8 +11,8 @@ defects are upstream of it:
 2. A lane-aware commit whose every repo is skipped (work staged somewhere
    else, e.g. the unit home) exited 0 with no sentence about where it looked.
 
-F3 (same range): ``repo status`` on a single-repo path tracebacked
-FileNotFoundError instead of refusing in one sentence.
+3. ``repo status`` on a single-repo path tracebacked FileNotFoundError
+   instead of refusing in one sentence.
 """
 
 from __future__ import annotations

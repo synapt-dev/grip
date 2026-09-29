@@ -460,7 +460,7 @@ def test_deleting_identity_boundary_recreates_clone_side_effect(tmp_path: Path, 
 
 
 def test_canonical_repo_identity_local_prefix_honors_allow_local_false(tmp_path: Path) -> None:
-    """R1 (Fathom) BLOCK on v1: the ``local:`` branch of ``_canonical_repo_identity``
+    """The ``local:`` branch of ``_canonical_repo_identity``
     ignored ``allow_local`` in BOTH sub-cases, so a production review
     (allow_local=False) accepted a local: pin at the very boundary this commit
     exists to enforce. Both sub-cases must refuse with the same ReviewError as a

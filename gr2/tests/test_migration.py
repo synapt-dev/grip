@@ -988,7 +988,7 @@ def test_regeneration_guard_ignores_plumbing_store_head_deletions(tmp_path):
     """A .grip store is plumbing-only: HEAD is a real commit whose tree is never
     checked out, so `git status --porcelain` reports every HEAD path as a
     deletion. That is the store's normal state, not dirt -- the guard used to
-    refuse every store that had ever held a review commit (Stromus m_4a3fdd37).
+    refuse every store that had ever held a review commit.
     It must judge untracked files only; an untracked file it would clobber still
     refuses."""
     grip = tmp_path / "store"
@@ -1117,7 +1117,7 @@ class TestMigrateLaneState:
 # The ALPHA STORE the migration consumes -- moved here 2026-09-28
 # ---------------------------------------------------------------------------
 #
-# Apollo's ruling on the 1.1 step-3 BLOCK (m_227344fd): the thirteen rows in
+# Ruled when the native store port landed: the thirteen rows in
 # tests/test_grip_object_model.py are RETIRED in this step, and any row asserting a property
 # `store migrate` RELIES ON moves here, with its fixture built through `grip_mod`.
 #

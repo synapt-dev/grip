@@ -69,7 +69,7 @@ def _isolated_git_config(tmp_path_factory, monkeypatch):
     blindness this fixture exists to close.
 
     A FOURTH channel, added after the first three were measured closed
-    (Sentinel's R1 finding on the runner PATH lane): git also accepts config
+    (measured on the runner PATH change): git also accepts config
     injected purely through the environment, with precedence ABOVE the file
     sources above --
     ``GIT_CONFIG_COUNT``/``GIT_CONFIG_KEY_<n>``/``GIT_CONFIG_VALUE_<n>`` (a

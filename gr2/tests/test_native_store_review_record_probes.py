@@ -1,8 +1,8 @@
-"""R2 acceptance suite for the native-store review-record move.
+"""Acceptance suite for the native-store review-record move.
 
 Five cases, and they are deliberately split so a green means something.
 
-THREE OF THEM FAIL ON THE PRE-FIX RANGE and are the acceptance bar for v3:
+THREE OF THEM FAIL ON THE PRE-FIX RANGE and are the acceptance bar for the fix:
 
   D  the review-ephemeral commit guard, on the layout project_review.py:286
      actually creates -- the receipt is written canonically to
@@ -26,9 +26,9 @@ Without C and A-control, deleting the guard outright -- or making close always
 succeed -- would turn the suite green while destroying the behaviour it is
 supposed to protect. That is the whole reason they are here.
 
-F2 writes a one-line pointer in the member `.git` naming the workspace
-coordinate, keeping the canonical receipt and restoring a locator that cannot
-drift from it; F1 unlinks the path it actually reads.
+The fix for D and B writes a one-line pointer in the member `.git` naming the
+workspace coordinate, keeping the canonical receipt and restoring a locator that
+cannot drift from it; the fix for A unlinks the path it actually reads.
 """
 from __future__ import annotations
 
@@ -114,7 +114,7 @@ def _guard_refused(lane: Path) -> bool:
 # THE ACCEPTANCE CASES
 # --------------------------------------------------------------------------- #
 def test_D_guard_fires_on_the_project_review_lane_layout(tmp_path):
-    """F2, as project_review.py:286/:293 actually build a lane.
+    """D: the guard, as project_review.py:286/:293 actually build a lane.
 
     The receipt is written to the CANONICAL coordinate while the lane lives
     under <ws>/reviews/<owner>/<lane>/repos/<key>, so a locator that walks the
@@ -142,7 +142,7 @@ def test_D_guard_fires_on_the_project_review_lane_layout(tmp_path):
 
 
 def test_B_guard_fires_on_a_legacy_shaped_lane(tmp_path):
-    """F2, for a lane opened before the receipt moved: receipt in the member .git."""
+    """B: the guard, for a lane opened before the receipt moved: receipt in the member .git."""
     w = _world(tmp_path)
     _open(w)
     _ephemeral_receipt(w["lane"])
@@ -153,7 +153,7 @@ def test_B_guard_fires_on_a_legacy_shaped_lane(tmp_path):
 
 
 def test_A_close_succeeds_for_a_legacy_only_receipt(tmp_path):
-    """F1: a lane whose receipt is only at the legacy location must still close.
+    """A: a lane whose receipt is only at the legacy location must still close.
 
     Today this refuses: read_review_record falls back to the legacy path and
     returns the record, then cleanup unlinks `paths.current`, which does not

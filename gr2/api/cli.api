@@ -115,6 +115,11 @@ arg   workspace materialize workspace_root <str>                      stable
 arg   workspace migrate-gr1 workspace_root <str>                      stable
 arg   workspace migrate-lane-state workspace_root <str>               stable
 arg   workspace status workspace_root <str>                           stable
+exit  store 0 ok                                                      may-change
+exit  store 2 usage                                                   may-change
+exit  store 3 refused-coverage                                        may-change
+exit  store 4 refused-inconsistent                                    may-change
+exit  store 5 cannot-measure prefix:"cannot complete this store verb: " may-change
 flag  add --repo-path <str>                                           stable
 flag  apply --json                                                    stable
 flag  apply --manual-hooks                                            stable

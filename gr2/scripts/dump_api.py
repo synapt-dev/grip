@@ -5,10 +5,10 @@ The file is generated, sorted, one item per line, and carries a stability
 marker. A change to the public surface must change this file in the same PR;
 the gate that enforces that is ``tests/test_api_dump.py``.
 
-Item kinds emitted here: ``verb``, ``flag`` and ``arg``. A fuller dump also
-carries ``json``, ``exit``, ``path`` and ``ref`` items; those need the
-``JSON_SHAPES`` / ``EXIT_CODES`` / ``LAYOUT`` tables and append here when they
-exist rather than replacing anything.
+Item kinds emitted here: ``verb``, ``flag``, ``arg`` and ``exit``. A fuller dump
+also carries ``json``, ``path`` and ``ref`` items; those need the ``JSON_SHAPES``
+/ ``LAYOUT`` tables and append here when they exist rather than replacing
+anything.
 
 Stability comes from ``api/stability.toml``: an item named there as
 ``may-change`` or ``reserved`` carries that marker, and every other item is
@@ -89,6 +89,36 @@ def _items() -> list[tuple[str, str, bool, str | None]]:
             if takes_value:
                 spelling += " <str>"
             rows.append(("flag" if is_option else "arg", spelling, hidden, hidden_by))
+    rows.extend(_exit_items())
+    return rows
+
+
+def _exit_items() -> list[tuple[str, str, bool, str | None]]:
+    """The `exit` kind, from the group tables rather than from the app walk.
+
+    Exit codes are not discoverable by walking a Typer app -- they are chosen in
+    each verb's error path -- so the table is the only honest source, and having
+    one makes the contract diffable. Hidden is always False here: an exit code is
+    either part of the group's published contract or it is not in the table.
+
+    THE PREFIX IS READ FROM ITS OWN HOME, `grip_cli.STORE_INCOMPLETE_PREFIX`,
+    rather than copied, so there is one string and the dump cannot drift from
+    the message a caller actually matches on.
+    """
+    from gr2.python_cli import grip_cli
+    from gr2.python_cli.exit_codes import EXIT_CODES, PREFIXED_CODES
+
+    rows: list[tuple[str, str, bool, str | None]] = []
+    for group, codes in EXIT_CODES.items():
+        for code, reason in sorted(codes.items()):
+            # Code 5 carries two shapes at one code: a MEASURED cannot-measure
+            # and a wrapped exception. The prefix is the only thing separating
+            # them, so it rides the reason field -- it is the reason this code
+            # has two meanings, which is exactly what the reason field is for.
+            spelling = f"{group} {code} {reason}"
+            if (group, code) in PREFIXED_CODES:
+                spelling += f' prefix:"{grip_cli.STORE_INCOMPLETE_PREFIX}"'
+            rows.append(("exit", spelling, False, None))
     return rows
 
 
@@ -107,6 +137,29 @@ def _markers() -> dict[tuple[str, str], str]:
     return out
 
 
+def _line(kind: str, label: str, marker: str) -> str:
+    """One ``.api`` line: two fixed columns, with the separator GUARANTEED.
+
+    A label at or past ``COLUMN`` is emitted at its own length, so padding it to
+    ``COLUMN`` adds nothing and the marker runs straight into the label. Every
+    label in this dump contains spaces (a flag reads ``verb --flag <str>``), so a
+    reader splitting the two columns then takes a space INSIDE the label as the
+    separator and recovers neither column.
+
+    Measured before this rule existed: the 65-char ``exit`` label rendered as
+    ``...store verb: "may-change``, whose last space is the one inside the quoted
+    prefix. The columns came back as the label truncated at ``verb:`` and a marker
+    of ``"may-change``, the marker lookup then missed, and every exit line
+    silently read as ``stable``.
+
+    Pulled out of ``render`` so the width rule has ONE home and a synthetic long
+    label can be tested against it directly, rather than only through whichever
+    labels happen to reach ``COLUMN`` today.
+    """
+    width = max(COLUMN, len(label) + 1)
+    return f"{kind:<6}{label:<{width}}{marker}"
+
+
 def render() -> str:
     """The exact bytes of api/cli.api, terminated by one newline."""
     markers = _markers()
@@ -120,7 +173,7 @@ def render() -> str:
             label = f"{spelling} (hidden:{hidden_by})" if hidden_by else f"{spelling} (hidden)"
         else:
             label = spelling
-        lines.append(f"{kind:<6}{label:<{COLUMN}}{marker}")
+        lines.append(_line(kind, label, marker))
     lines.sort()
     return "\n".join(lines) + "\n"
 

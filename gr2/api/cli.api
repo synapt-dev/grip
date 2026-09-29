@@ -11,10 +11,10 @@ arg   exec run workspace_root <str>                                   stable
 arg   exec status lane_name <str>                                     stable
 arg   exec status owner_unit <str>                                    stable
 arg   exec status workspace_root <str>                                stable
-arg   grip checkout ref <str> (hidden)                                stable
-arg   grip diff ref_a <str> (hidden)                                  stable
-arg   grip diff ref_b <str> (hidden)                                  stable
-arg   grip init workspace_root <str> (hidden)                         stable
+arg   grip checkout ref <str> (hidden:grip)                           stable
+arg   grip diff ref_a <str> (hidden:grip)                             stable
+arg   grip diff ref_b <str> (hidden:grip)                             stable
+arg   grip init workspace_root <str> (hidden:grip)                    stable
 arg   hooks revoke member <str>                                       stable
 arg   hooks trust member <str>                                        stable
 arg   lane bind lane_name <str>                                       stable
@@ -143,22 +143,22 @@ flag  exec run --ttl-seconds <str>                                    stable
 flag  exec status --actor <str>                                       stable
 flag  exec status --json                                              stable
 flag  exec status --repos <str>                                       stable
-flag  grip check --json (hidden)                                      stable
-flag  grip checkout --json (hidden)                                   stable
-flag  grip commit --json (hidden)                                     stable
-flag  grip commit --message/-m <str> (hidden)                         stable
-flag  grip diff --json (hidden)                                       stable
-flag  grip init --json (hidden)                                       stable
-flag  grip init --member <str> (hidden)                               stable
-flag  grip log --json (hidden)                                        stable
-flag  grip log --max-count/-n <str> (hidden)                          stable
-flag  grip materialize --json (hidden)                                stable
-flag  grip migrate --dry-run (hidden)                                 stable
-flag  grip migrate --json (hidden)                                    stable
-flag  grip push --json (hidden)                                       stable
-flag  grip snapshot --json (hidden)                                   stable
-flag  grip snapshot --message/-m <str> (hidden)                       stable
-flag  grip status --json (hidden)                                     stable
+flag  grip check --json (hidden:grip)                                 stable
+flag  grip checkout --json (hidden:grip)                              stable
+flag  grip commit --json (hidden:grip)                                stable
+flag  grip commit --message/-m <str> (hidden:grip)                    stable
+flag  grip diff --json (hidden:grip)                                  stable
+flag  grip init --json (hidden:grip)                                  stable
+flag  grip init --member <str> (hidden:grip)                          stable
+flag  grip log --json (hidden:grip)                                   stable
+flag  grip log --max-count/-n <str> (hidden:grip)                     stable
+flag  grip materialize --json (hidden:grip)                           stable
+flag  grip migrate --dry-run (hidden:grip)                            stable
+flag  grip migrate --json (hidden:grip)                               stable
+flag  grip push --json (hidden:grip)                                  stable
+flag  grip snapshot --json (hidden:grip)                              stable
+flag  grip snapshot --message/-m <str> (hidden:grip)                  stable
+flag  grip status --json (hidden:grip)                                stable
 flag  hooks revoke --workspace-root <str>                             stable
 flag  hooks status --json                                             stable
 flag  hooks status --workspace-root <str>                             stable
@@ -336,17 +336,17 @@ verb  config restore                                                  stable
 verb  config show                                                     stable
 verb  exec run                                                        stable
 verb  exec status                                                     stable
-verb  grip check (hidden)                                             stable
-verb  grip checkout (hidden)                                          stable
-verb  grip commit (hidden)                                            stable
-verb  grip diff (hidden)                                              stable
-verb  grip init (hidden)                                              stable
-verb  grip log (hidden)                                               stable
-verb  grip materialize (hidden)                                       stable
-verb  grip migrate (hidden)                                           stable
-verb  grip push (hidden)                                              stable
-verb  grip snapshot (hidden)                                          stable
-verb  grip status (hidden)                                            stable
+verb  grip check (hidden:grip)                                        stable
+verb  grip checkout (hidden:grip)                                     stable
+verb  grip commit (hidden:grip)                                       stable
+verb  grip diff (hidden:grip)                                         stable
+verb  grip init (hidden:grip)                                         stable
+verb  grip log (hidden:grip)                                          stable
+verb  grip materialize (hidden:grip)                                  stable
+verb  grip migrate (hidden:grip)                                      stable
+verb  grip push (hidden:grip)                                         stable
+verb  grip snapshot (hidden:grip)                                     stable
+verb  grip status (hidden:grip)                                       stable
 verb  hooks revoke                                                    stable
 verb  hooks status                                                    stable
 verb  hooks trust                                                     stable

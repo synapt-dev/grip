@@ -38,8 +38,8 @@ STABILITY = API_DIR / "stability.toml"
 COLUMN = 64
 
 
-def _walk(cmd, prefix: tuple[str, ...] = (), inherited_hidden: bool = False):
-    """Every leaf command, as (path, command, hidden).
+def _walk(cmd, prefix: tuple[str, ...] = (), hidden_by: str | None = None):
+    """Every leaf command, as (path, command, hidden_by).
 
     Hidden is INHERITED: a command is hidden when its own flag says so OR any
     ancestor group is hidden. Typer marks a sub-app hidden at the GROUP level
@@ -47,26 +47,34 @@ def _walk(cmd, prefix: tuple[str, ...] = (), inherited_hidden: bool = False):
     keep ``hidden=False`` of their own -- so reading only the leaf reports a
     hidden group's whole subtree as part of the visible surface. Measured: the
     ``grip`` alias group is hidden and 28 of its items were dumped as visible.
+
+    ``hidden_by`` NAMES the ancestor group that did the hiding, because the dump
+    carries no group row of its own: without the name, one group flag reads as
+    dozens of identical lines and the cause is invisible to a reader.
     """
     subs = getattr(cmd, "commands", None)
-    here_hidden = inherited_hidden or bool(getattr(cmd, "hidden", False))
     if subs:
-        out: list[tuple[tuple[str, ...], object, bool]] = []
+        if getattr(cmd, "hidden", False) and prefix:
+            hidden_by = prefix[-1]
+        out: list[tuple[tuple[str, ...], object, str | None]] = []
         for name, sub in subs.items():
-            out.extend(_walk(sub, prefix + (name,), here_hidden))
+            out.extend(_walk(sub, prefix + (name,), hidden_by))
         return out
-    return [(prefix, cmd, here_hidden)]
+    return [(prefix, cmd, hidden_by)]
 
 
-def _items() -> list[tuple[str, str, bool]]:
-    """(kind, spelling, hidden) for every public-surface item, unsorted."""
+def _items() -> list[tuple[str, str, bool, str | None]]:
+    """(kind, spelling, hidden, hidden_by) for every surface item, unsorted."""
     from gr2.python_cli.app import app
 
     top = typer.main.get_command(app)
-    rows: list[tuple[str, str, bool]] = []
-    for path, cmd, hidden in _walk(top):
+    rows: list[tuple[str, str, bool, str | None]] = []
+    for path, cmd, hidden_by in _walk(top):
         verb = " ".join(path)
-        rows.append(("verb", verb, hidden))
+        # Hidden is the leaf's own flag OR an ancestor group's, which `_walk`
+        # reports as the name of the group that did it.
+        hidden = bool(getattr(cmd, "hidden", False)) or hidden_by is not None
+        rows.append(("verb", verb, hidden, hidden_by))
         for prm in getattr(cmd, "params", []):
             opts = list(getattr(prm, "opts", None) or [])
             if not opts:
@@ -80,7 +88,7 @@ def _items() -> list[tuple[str, str, bool]]:
             spelling = f"{verb} {'/'.join(opts)}"
             if takes_value:
                 spelling += " <str>"
-            rows.append(("flag" if is_option else "arg", spelling, hidden))
+            rows.append(("flag" if is_option else "arg", spelling, hidden, hidden_by))
     return rows
 
 
@@ -103,9 +111,15 @@ def render() -> str:
     """The exact bytes of api/cli.api, terminated by one newline."""
     markers = _markers()
     lines = []
-    for kind, spelling, hidden in _items():
+    for kind, spelling, hidden, hidden_by in _items():
         marker = markers.get((kind, spelling), "stable")
-        label = f"{spelling} (hidden)" if hidden else spelling
+        # An inherited hide names the group that did it; a command hidden in
+        # its own right is just `(hidden)`. The dump carries no group row, so
+        # the name is the only place the cause can live.
+        if hidden:
+            label = f"{spelling} (hidden:{hidden_by})" if hidden_by else f"{spelling} (hidden)"
+        else:
+            label = spelling
         lines.append(f"{kind:<6}{label:<{COLUMN}}{marker}")
     lines.sort()
     return "\n".join(lines) + "\n"

@@ -79,7 +79,7 @@ def test_api_stable_share_at_least_90() -> None:
     counted = [
         (kind, label, marker)
         for kind, label, marker in rows
-        if marker != "reserved" and not label.endswith("(hidden)")
+        if marker != "reserved" and "(hidden" not in label
     ]
     stable = [row for row in counted if row[2] == "stable"]
     share = len(stable) / len(counted) if counted else 1.0

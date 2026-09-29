@@ -23,6 +23,42 @@ unset TMUX
 TMUX_TMPDIR="$(mktemp -d)"
 export TMUX_TMPDIR
 
+# this leak: this test drives `gr spawn up --mock`, and that path writes agent routing
+# records through SYNAPT_AGENT_PANES_FILE, which every real agent shell exports pointing at the
+# LIVE ~/.synapt/agent-panes.json. Unisolated, this test's fixtures land in that file and
+# `speak_to_agent` resolves by LAST-WRITE-WINS with no freshness or liveness tie-break — so a
+# fixture named like a real agent can shadow it, which is the live pane-map leak measured exactly.
+# `unset` is sufficient and correct rather than a scratch path: spawn.rs:1009 is
+# `if let Some(path) = routing_file_path()`, and routing_file_path() (spawn.rs:293) returns None
+# for an unset or empty value, so the whole block is skipped — no write, no error.
+unset SYNAPT_AGENT_PANES_FILE
+
+# WITNESS: the live file must be unchanged across this test. A silent fixture write is exactly what
+# the live pane-map leak was, so the check is a CONTENT digest, not a line count.
+# WHY A DIGEST RATHER THAN A LINE COUNT (corrected: my first version gave a reason that does not
+# hold, and BOTH readers caught it independently). This file is 1338 lines of pretty-printed JSON,
+# so an added key DOES add a line and a line count would catch the leak's basic shape too. The real
+# discrimination is that a digest of sorted key->value pairs ignores FORMATTING AND ORDERING, which
+# a line count does not. My original clause -- "an upsert of an unchanged record moves no line
+# count" -- described a no-op, which does no harm by definition.
+# ⚠ AND IT MUST COVER VALUES, NOT ONLY KEYS (Sentinel, r1; confirmed by Atlas, r1). Hashing
+# sorted(json.load(f)) hashes only the KEYS, because iterating a dict yields keys -- so an upsert of
+# an EXISTING key with a DIFFERENT VALUE changes no key, leaves the digest identical and the
+# witness GREEN while a live agent's routing record is corrupted. That is the leak's actual harm
+# with nothing moving. The harmful upsert is precisely the value-changing one.
+# KNOWN LIMIT, named rather than implied: a content-identical rewrite is invisible here. So this is
+# exact for what it was built for and is not a general "was the file written" witness.
+PANES_FILE="$HOME/.synapt/agent-panes.json"
+panes_digest() {  # content digest of the live file, or a sentinel when it is absent
+    if [ -f "$PANES_FILE" ]; then
+        python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("\n".join(f"{k}\t{json.dumps(v, sort_keys=True)}" for k, v in sorted(d.items())))' \
+            "$PANES_FILE" 2>/dev/null | shasum -a 256 | cut -c1-16
+    else
+        echo "absent"
+    fi
+}
+PANES_DIGEST_BEFORE="$(panes_digest)"
+
 GR="${GR:-./target/debug/gr}"
 case "$GR" in /*) ;; *) GR="$(cd "$(dirname "$GR")" && pwd)/$(basename "$GR")" ;; esac
 SESSION="spawnfix-$$"
@@ -149,6 +185,24 @@ assert_contains "run 4 names the missing worktree" "$(cat "$TMUX_TMPDIR/run4.log
 assert_eq "no window left behind for gamma (incident 3)" "$(window_count gamma)" "0"
 
 echo
+# --- the live pane-map leak witness: the live routing file's CONTENT DIGEST is untouched -------
+# A silent fixture write is what the live pane-map leak was, so this compares a digest of sorted
+# key->value pairs, not a line count and not a key set. The digest is the right instrument because
+# it ignores FORMATTING AND ORDERING, which a line count does not; and it covers VALUES, which a
+# key set does not -- an upsert of an existing key with a changed value moves no key and would be
+# invisible to a key-set check. Both halves are stated here as well as above, deliberately: the
+# first version of this file carried the correction in the BEFORE block only, so the block that
+# RUNS the check still taught the retracted reasoning (Sentinel, r2).
+PANES_DIGEST_AFTER="$(panes_digest)"
+if [ "$PANES_DIGEST_BEFORE" != "$PANES_DIGEST_AFTER" ]; then
+    echo "FAIL [the live pane-map leak]: the live agent-panes CONTENT digest moved across this test"
+    echo "  before: $PANES_DIGEST_BEFORE"
+    echo "  after:  $PANES_DIGEST_AFTER"
+    echo "  (a moved digest means either a key or an existing key's value changed -- check both)"
+    echo "  this test must not write $PANES_FILE; confirm SYNAPT_AGENT_PANES_FILE is still unset"
+    FAILURES=$((FAILURES + 1))
+fi
+
 if [ "$FAILURES" -gt 0 ]; then
     echo "FAILED: $FAILURES assertion(s)"
     exit 1

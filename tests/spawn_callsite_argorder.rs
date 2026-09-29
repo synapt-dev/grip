@@ -23,6 +23,16 @@
 //! the same isolation on the kill command. `env_remove("TMUX")` is the
 //! load-bearing half — inside a pane $TMUX overrides TMUX_TMPDIR.
 //!
+//! SOCKET ISOLATION IS ALSO NOT ENOUGH (the live pane-map leak, fixed 2026-09-29):
+//! `SYNAPT_AGENT_PANES_FILE` is an ABSOLUTE path exported by every real agent
+//! shell at the live `~/.synapt/agent-panes.json`, and the spawn path writes
+//! routing records through it (spawn.rs:1009). Isolating the socket still let
+//! this test's fixtures land in the LIVE file, where `speak_to_agent` resolves by
+//! LAST-WRITE-WINS with no freshness or liveness tie-break. Every `Command` here
+//! carries the panes-file removal beside the TMUX removal. (The literal is deliberately not
+//! reproduced here: a re-auditor's grep for it would otherwise count this comment as a third
+//! site, which is a trap BOTH readers of the first version walked into.)
+//!
 //! Unix-only: the stub tool is a `#!/usr/bin/env bash` script made executable
 //! via `PermissionsExt::from_mode`, and the test drives a real tmux — none of
 //! which exists on Windows. `#![cfg(unix)]` excludes the whole file from the
@@ -79,6 +89,7 @@ fn spawn_up_composes_tool_args_before_agent_args_at_call_site() {
         .arg(&toml)
         .current_dir(root)
         .env_remove("TMUX")
+        .env_remove("SYNAPT_AGENT_PANES_FILE")
         .env("TMUX_TMPDIR", tmux_tmp.path())
         .output()
         .expect("run gr spawn up");
@@ -87,6 +98,7 @@ fn spawn_up_composes_tool_args_before_agent_args_at_call_site() {
     let _ = Command::new("tmux")
         .arg("kill-server")
         .env_remove("TMUX")
+        .env_remove("SYNAPT_AGENT_PANES_FILE")
         .env("TMUX_TMPDIR", tmux_tmp.path())
         .status();
 

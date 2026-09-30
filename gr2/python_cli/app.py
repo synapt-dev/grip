@@ -16,6 +16,7 @@ from gr2.prototypes import lane_workspace_prototype as lane_proto
 from gr2.prototypes import repo_maintenance_prototype as repo_proto
 
 from . import add as add_ops
+from .version import version_line
 from . import branch as branch_ops
 from . import commit as commit_ops
 from . import execops, failures, grip, migration, spec_apply, syncops
@@ -75,11 +76,13 @@ app = typer.Typer(
 
 
 def _version_callback(value: bool) -> None:
-    """`gr2 --version`: print the installed distribution version and exit. The
-    version is read from the package metadata (the static number in
-    gr2/pyproject.toml), the single source of truth — not a literal in code."""
+    """`gr2 --version`: print which code is running, and exit.
+
+    The line is built in `version.py`, which answers the question a reader actually has.
+    The version number alone does not: it is install-time metadata, so a checkout that is
+    months stale reports the number its virtualenv was built with."""
     if value:
-        typer.echo(importlib.metadata.version("gitgrip"))
+        typer.echo(version_line())
         raise typer.Exit()
 
 

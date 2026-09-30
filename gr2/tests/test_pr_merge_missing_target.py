@@ -429,6 +429,44 @@ def test_the_group_validator_refuses_every_document_shape_on_its_own() -> None:
         )
 
 
+def test_a_matching_group_whose_pr_group_id_is_unusable_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """THE FIELD EVERY CALLER READS, which the locator never proved.
+
+    `_find_pr_group` proves `owner_unit` and `lane_name` -- the FILTER -- and returns the
+    document. The call sites then SUBSCRIPT `pr_group_id` to find the group's merge state,
+    and it was never checked. Three shapes reached `main()` with NOTHING printed: a key
+    that is absent (KeyError), and null or a number, which do not raise where they are
+    read at all -- they become a PATH and raise two frames later as FileNotFoundError,
+    which is why checking it where it is used would not have been enough.
+
+    This REFUSES rather than skips, unlike a file that does not match: it matched on BOTH
+    filter keys, so it IS the group, and "pr group not found" would be false.
+    """
+    for label, value in [
+        ("absent", "<missing>"),
+        ("null", None),
+        ("a-number", 42),
+        ("empty-string", ""),
+    ]:
+        workspace = _workspace(tmp_path / f"gid-{label}", [])
+        payload: dict[str, object] = {
+            "owner_unit": OWNER_UNIT,
+            "lane_name": LANE_NAME,
+            "prs": [{"repo": "app", "pr_number": 1}],
+        }
+        if value != "<missing>":
+            payload["pr_group_id"] = value
+        (workspace / ".grip" / "pr_groups" / f"{GROUP_ID}.json").write_text(json.dumps(payload))
+
+        code = _run_main(["pr", "merge", str(workspace), OWNER_UNIT, LANE_NAME])
+        output = "".join(capsys.readouterr())
+        assert code is not None, f"{label}: main() exited carrying nothing: {output}"
+        assert "pr_group_id" in str(code), f"{label}: exit carried {code!r}"
+        assert "Traceback" not in output, f"{label}: the operator met a stack: {output}"
+
+
 class _RecordingAdapter:
     """Records a host status READ as well as a merge.
 

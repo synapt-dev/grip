@@ -405,6 +405,25 @@ def _find_pr_group(workspace_root: Path, owner_unit: str, lane_name: str) -> tup
         if not isinstance(doc, dict):
             continue
         if doc.get("owner_unit") == owner_unit and doc.get("lane_name") == lane_name:
+            # THE FIELD EVERY CALLER READS, PROVEN WHERE THE GROUP IS CHOSEN -- which is
+            # here, because this is the only place one is chosen. The two keys above are
+            # the FILTER; `pr_group_id` is what the call sites then SUBSCRIPT to find the
+            # group's merge state, and this function never proved it. Three shapes escaped
+            # `main()` printing nothing: missing (KeyError), null, and a number. The last
+            # two are the sharper half, because they do not raise where they are read --
+            # they become a PATH and raise two frames later in the loader.
+            #
+            # REFUSE here rather than skip, unlike the two skips above: those files did not
+            # match, so they could not be the group. This one matched on BOTH filter keys,
+            # so it IS the group, and "pr group not found" would be false.
+            group_id = doc.get("pr_group_id")
+            if not isinstance(group_id, str) or not group_id:
+                raise SystemExit(
+                    f"pr group file {path} matches {owner_unit}/{lane_name} but its "
+                    f"pr_group_id is {group_id!r}, which is not a usable name; every "
+                    "caller reads that field to find the group's merge state, so the "
+                    "group cannot be used."
+                )
             return path, doc
     raise SystemExit(f"pr group not found for {owner_unit}/{lane_name}: {root}")
 

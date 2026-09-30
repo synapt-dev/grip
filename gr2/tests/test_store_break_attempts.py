@@ -1526,18 +1526,16 @@ def test_break_21_tracked_non_member_root_folder_is_untouched(two_member_ws: Pat
 # side, and it is why row 19's re-aim could land green while this one cannot: 19 asks the verb
 # to prefer the PATH, and 20 asks it to have a second place to look.
 #
-# MARKED, not silently absent: the file's own doctrine is that every row here fails until the
-# verbs land, and `strict=True` makes the day it lands loud -- an xpass failure -- rather than
-# a quiet pass nobody reads.
+# LANDED -- the marker came off in the same change that made the row pass, which is what
+# `strict=True` forced: the day the verbs land the row XPASSes, and a strict xpass is a
+# FAILURE, so the marker could not be left on. `_native_member_working_root` in
+# `grip_cli` resolves a member by PATH first and falls back to the NAME only when nothing
+# is at the path, so every root whose two coordinates agree resolves exactly as before and
+# no verb can read a different member than it did. The PATH keeps the gitlink read: that
+# key is the root snapshot's, not the working copy's.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="no site looks at the member's NAME coordinate: all three verbs refuse with exit 5 "
-           "naming the declared path only, measured on the two-member name-placed shape",
-)
 def test_break_20_a_checkout_at_the_name_is_found_and_both_locations_are_named(
     two_member_ws: Path,
 ) -> None:
@@ -1573,6 +1571,361 @@ def test_break_20_a_checkout_at_the_name_is_found_and_both_locations_are_named(
     assert not (root / "alpha").exists(), "a checkout must not be materialized at the empty path"
     assert _listing(root / "renamed-member") == placed, (
         "the checkout found at the name must be byte-identical afterwards"
+    )
+
+
+def test_break_20b_a_checkout_at_both_coordinates_reads_the_PATH(
+    two_member_ws: Path,
+) -> None:
+    """The PRECEDENCE half of attempt 20, and the only shape that can see it.
+
+    Row 20 plants a checkout at the NAME with nothing at the path; row 19 plants one at the
+    PATH with nothing at the name. In BOTH, exactly one coordinate holds a checkout, so a
+    resolver that preferred either one would pass both rows. `_native_member_working_root`
+    claims PATH first with NAME only as a fallback, and that claim is observable only when
+    both coordinates hold a checkout at DIFFERENT commits. MEASURED, which is why this row
+    exists: removing the path preference entirely (`if _is_member_checkout(root,
+    member["path"]):` -> `if False:`) leaves rows 19 and 20 GREEN, so nothing in the file
+    could see the precedence at all.
+
+    The discriminator is the member's reported `head`. The two checkouts are at different
+    commits, so which one was read is visible in the payload, and the row asserts the FIXTURE
+    disagrees before it asserts the verb does -- a fixture whose two coordinates share a
+    commit would satisfy either answer and could not fail.
+    """
+    root = two_member_ws
+    assert _cli("store", "init", str(root))[0] == 0
+    _assert_init_ran(root)
+    manifest = root / "grip.toml"
+    manifest.write_text(_set_member_name(manifest.read_text(), "alpha", "renamed-member"))
+    assert _cli("store", "commit", "-m", "store the renamed fixture")[0] == 0
+
+    # THE BOTH-PRESENT SHAPE: a second real checkout at the NAME, at a DIFFERENT commit.
+    # `alpha` stays exactly where the manifest declares it, so the path is the live one and
+    # the name-placed copy is the thing a NAME-first resolver would read by mistake.
+    at_name = root / "renamed-member"
+    shutil.copytree(root / "alpha", at_name)
+    _git(at_name, "config", "user.email", "t@e.invalid")
+    _git(at_name, "config", "user.name", "t")
+    _git(at_name, "commit", "-q", "--allow-empty", "-m", "the name-placed copy moved on")
+
+    path_head = _head(root / "alpha")
+    name_head = _head(at_name)
+    # THE ROW'S OWN CONTROL, asserted FIRST: if both coordinates were at one commit then a
+    # report of either HEAD would satisfy the assertion below and this row could not fail.
+    # A fixture that cannot disagree is the defect here, not the verb.
+    assert path_head != name_head, (
+        f"the fixture must plant the two checkouts at DIFFERENT commits; both read {path_head}"
+    )
+
+    # STDOUT AND STDERR KEPT APART, and this is load-bearing rather than tidy. `_cli`
+    # concatenates the two channels, and the name-placed NOTE is written to stderr -- so
+    # under a NAME-first resolver the concatenated form raises JSONDecodeError and the row
+    # reddens on a parse error instead of on the precedence it exists to pin. MEASURED on
+    # the mutant: `JSONDecodeError: Extra data: line 2 column 1`, never reaching the assert
+    # below. A row that reddens for the wrong reason is a false red with a true-looking
+    # colour, so the assertion that is supposed to fail is the one that has to fail first.
+    result = make_cli_runner().invoke(app, ["store", "status", "--json"])
+    assert result.exit_code == 0, (result.stdout or "") + (result.stderr or "")
+    data = json.loads(result.stdout or "")
+    members = data.get("members") or data.get("member") or []
+    renamed = next(
+        (m for m in members if isinstance(m, dict) and m.get("name") == "renamed-member"), None
+    )
+    assert renamed is not None, f"the renamed member must be listed; got {members}"
+    assert renamed.get("head") == path_head, (
+        "the PATH holds a checkout, so the PATH is the one read: the NAME is a fallback, never "
+        f"a preference -- reported head {renamed.get('head')}, path {path_head}, name {name_head}"
+    )
+
+    # AND THE BRANCH TAKEN, pinned directly rather than only through its consequence: the
+    # note is emitted only where the NAME is read as a fallback, so its ABSENCE on this
+    # shape is the precedence restated in one line. Independent of `head`, which means a
+    # resolver that read the path but still announced a fallback cannot pass both.
+    assert "is checked out at" not in (result.stderr or ""), (
+        "the NAME fallback must not fire while the PATH holds a checkout; "
+        f"stderr was {result.stderr!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "escaping_name",
+    ["ABSOLUTE", "../outside"],
+    ids=["absolute", "dotdot"],
+)
+def test_break_20c_a_name_that_escapes_the_root_is_never_read(
+    two_member_ws: Path, tmp_path: Path, escaping_name: str
+) -> None:
+    """The NAME is a PATH COORDINATE, so it takes the SAME containment check the declared path takes.
+
+    THE ESCAPE THIS CLOSES, and the parent refuses it for `path`: with the declared path empty, a
+    member whose NAME is absolute or carries `..` made the fallback read a checkout OUTSIDE the
+    root -- its HEAD in `store status`, and `store commit` running git inside it. A fallback that
+    joined the name raw reintroduced, through the other coordinate, exactly the shape
+    `_normalise_member_path` exists to refuse.
+
+    TWO ARMS BECAUSE THEY FAIL DIFFERENTLY: the absolute form is caught by the `is_absolute` test,
+    the `..` form by the `parts` test. One arm would leave the other branch unwitnessed.
+    """
+    root = two_member_ws
+    assert _cli("store", "init", str(root))[0] == 0
+    _assert_init_ran(root)
+
+    # A REAL member-shaped checkout OUTSIDE the root, at a HEAD of its own, so that a read of it
+    # shows up in the payload rather than being merely plausible.
+    outside = tmp_path / "outside"
+    shutil.copytree(root / "alpha", outside)
+    _git(outside, "config", "user.email", "t@e.invalid")
+    _git(outside, "config", "user.name", "t")
+    _git(outside, "commit", "-q", "--allow-empty", "-m", "the outside checkout moved on")
+    outside_head = _head(outside)
+    assert outside_head != _head(root / "alpha"), (
+        "the fixture's outside checkout must differ from the in-root one, or a wrong read is invisible"
+    )
+
+    name_value = str(outside) if escaping_name == "ABSOLUTE" else "../outside"
+    manifest = root / "grip.toml"
+    manifest.write_text(_set_member_name(manifest.read_text(), "alpha", name_value))
+    assert _cli("store", "commit", "-m", "store the escaping-name fixture")[0] == 0
+
+    # EMPTY THE DECLARED PATH, so the NAME fallback is the only route that could be taken at all.
+    (root / "alpha").rename(root / "alpha-moved-away")
+    assert not (root / "alpha").exists(), "the declared path must be empty for this shape"
+
+    rc, out = _cli("store", "status", "--json")
+    assert outside_head not in out, (
+        "the NAME was joined raw, so the verb read a checkout OUTSIDE the root "
+        f"({name_value!r} -> {outside_head}): rc={rc} {out[:300]}"
+    )
+    # AND IT MUST NOT HAVE SUCCEEDED BY READING IT. A refusal is the expected outcome; a success
+    # that names the outside HEAD is the defect, and this catches the second route to it.
+    if rc == 0:
+        data = json.loads(out)
+        for row in data.get("members") or []:
+            assert row.get("head") != outside_head, row
+
+
+def test_break_20d_a_name_colliding_with_another_member_is_never_read_or_pinned(
+    two_member_ws: Path,
+) -> None:
+    """A NAME that resolves to ANOTHER member's checkout must not be read, and must not be PINNED.
+
+    THE SHAPE, from Apollo's r2 on this lane: member `alpha` is RENAMED to `beta` while a member
+    named `beta` exists, and alpha's own declared path is empty. The NAME fallback then resolves
+    alpha's name coordinate to `beta`'s checkout -- a directory belonging to a DIFFERENT member --
+    so alpha is measured, and pinned, from beta.
+
+    THE PARENT REFUSES THIS SHAPE, so the fallback INTRODUCED it, and the two consequences are not
+    equally bad. `store status` reported beta's HEAD on alpha's row (a wrong ANSWER), and
+    `store commit` rewrote alpha's gitlink pin to beta's sha at rc 0 (a wrong BYTE in the root
+    snapshot). That is why this row asserts the pin is byte-identical rather than asserting an exit
+    code: which code the verbs choose is the author's call, which bytes land is not.
+    """
+    root = two_member_ws
+    assert _cli("store", "init", str(root))[0] == 0
+    _assert_init_ran(root)
+
+    # MAKE THE TWO MEMBERS' HEADS DISAGREE ON PURPOSE, and push so coverage still holds. If they
+    # agreed, reading the wrong checkout would be invisible and this row would pass for exactly
+    # the reason it exists. Asserted rather than assumed.
+    _git(root / "beta", "commit", "-q", "--allow-empty", "-m", "beta moves on")
+    _git(root / "beta", "push", "-q", "origin", "main")
+    beta_head = _head(root / "beta")
+    assert beta_head != _head(root / "alpha"), (
+        "the fixture must make the two members' HEADs differ, or a wrong read is invisible"
+    )
+
+    manifest = root / "grip.toml"
+    manifest.write_text(_set_member_name(manifest.read_text(), "alpha", "beta"))
+    parsed = tomllib.loads(manifest.read_text())
+    assert [m["name"] for m in parsed["members"]] == ["beta", "beta"], (
+        f"the fixture's own document must carry the collision; got {parsed['members']}"
+    )
+    # This commit is taken BEFORE the declared path is emptied, so the PATH still wins and the
+    # pin recorded here is alpha's own. Only the second commit can reach the fallback.
+    assert _cli("store", "commit", "-m", "record the colliding name")[0] == 0
+
+    def alpha_pin() -> str | None:
+        fields = _git_out(root, "ls-tree", "HEAD", "--", "alpha").split()
+        return fields[2] if len(fields) >= 3 else None
+
+    (root / "alpha").rename(root / "alpha-moved-away")
+    assert not (root / "alpha").exists(), "the declared path must be empty for this shape"
+
+    pin_before = alpha_pin()
+    assert pin_before is not None, (
+        "alpha's gitlink must be in the root snapshot, or the byte comparison below is vacuous"
+    )
+
+    # STDOUT ONLY. `_cli` concatenates stdout and stderr, and the name-placed note goes to stderr,
+    # so the payload arrives followed by prose and `json.loads` on the concatenation raises. Row
+    # 20b hit this same trap; the runner is used directly so the two channels stay apart.
+    result = make_cli_runner().invoke(app, ["store", "status", "--json"])
+    rc = result.exit_code
+    try:
+        payload = json.loads(result.stdout or "")
+    except json.JSONDecodeError as exc:
+        # NOT a silent skip. My first version wrote `except JSONDecodeError: rows = []`, which let
+        # this whole arm become vacuous while the row still reached the PIN assertion below -- so
+        # the row reported a defect and its read-side arm had contributed nothing. A guard whose
+        # subject is absent must say so, not pass.
+        raise AssertionError(
+            f"`store status --json` must emit a payload on stdout for this shape: "
+            f"rc={rc} stdout={(result.stdout or '')[:300]!r} stderr={(result.stderr or '')[:200]!r}"
+        ) from exc
+    rows = payload.get("members") or []
+    assert rows, f"`store status --json` emitted no member rows: {(result.stdout or '')[:300]!r}"
+    heads = [row.get("head") for row in rows]
+    # SCOPED TO A COUNT, not `beta_head not in out`: beta's OWN row must report beta_head, so a
+    # whole-payload membership test would fail on the correct behaviour. Alpha's checkout is gone,
+    # so exactly one row may carry any head and exactly one must be unmeasurable.
+    assert heads.count(beta_head) == 1, (
+        f"beta's HEAD ({beta_head}) appears on {heads.count(beta_head)} row(s); alpha's "
+        f"checkout is gone, so only beta may report it: {heads}"
+    )
+    assert heads.count(None) == 1, (
+        f"alpha's checkout is gone, so exactly one row must be unmeasurable: {heads}"
+    )
+
+    rc, out = _cli("store", "commit", "-m", "must not rewrite alpha's pin")
+    pin_after = alpha_pin()
+    assert pin_after == pin_before, (
+        f"the fallback PINNED another member's sha onto alpha: {pin_before} -> {pin_after} "
+        f"(rc={rc} {out[:200]})"
+    )
+
+
+def test_break_20e_another_members_NAME_coordinate_is_claimed_without_any_rename(
+    two_member_ws: Path,
+) -> None:
+    """A member whose checkout sits at its NAME claims THAT directory, not merely its declared path.
+
+    THE HOLE THIS CLOSES, found by a third reader attacking the containment predicate itself, and
+    it is NOT the rename case: a member may sit at its NAME coordinate -- the alpha-era placement
+    this whole fallback exists for -- while its DECLARED path holds nothing. A claim set built from
+    declared paths alone then misses the directory that member actually occupies, so another member
+    whose name lands there finds it UNCLAIMED and reads it, with no rename of a declared path
+    anywhere in the picture. Measured before the fix: `beta` declaring `beta-declared` while its
+    checkout sits at `beta`, and `alpha` renamed to `beta`, put beta's HEAD on BOTH rows.
+
+    **THE OUTCOME IS A REFUSAL FOR BOTH MEMBERS, and that is the correct answer rather than a
+    harsh one.** With two members named `beta`, the directory `beta` cannot be attributed to
+    either; the fallback must not guess, so both fall back to a declared path that holds nothing
+    and both are unmeasurable. The row asserts the REFUSAL and the BYTES, because those are the two
+    things a containment fix owes: a wrong read cannot happen, and a pin cannot be rewritten.
+    """
+    root = two_member_ws
+    assert _cli("store", "init", str(root))[0] == 0
+    _assert_init_ran(root)
+
+    # The disagreement is forced, so a wrong read could not hide behind two members that agree.
+    _git(root / "beta", "commit", "-q", "--allow-empty", "-m", "beta moves on")
+    _git(root / "beta", "push", "-q", "origin", "main")
+    beta_head = _head(root / "beta")
+    assert beta_head != _head(root / "alpha"), (
+        "the fixture must make the two members' HEADs differ, or a wrong read is invisible"
+    )
+
+    # beta DECLARES a path with nothing at it and keeps its checkout at its NAME coordinate.
+    manifest = root / "grip.toml"
+    blocks = manifest.read_text().split("[[members]]")
+    for i, block in enumerate(blocks):
+        if i and 'path = "beta"' in block:
+            blocks[i] = block.replace('path = "beta"', 'path = "beta-declared"', 1)
+    manifest.write_text("[[members]]".join(blocks))
+    assert 'path = "beta-declared"' in manifest.read_text(), "fixture: beta's declared path must move"
+    assert (root / "beta").is_dir(), "fixture: beta's checkout must STAY at its NAME coordinate"
+
+    # Committed BEFORE the collision exists, so this step proves beta resolves through its NAME.
+    assert _cli("store", "commit", "-m", "record the name-placed fixture")[0] == 0
+
+    def pin_of(declared_path: str) -> str | None:
+        fields = _git_out(root, "ls-tree", "HEAD", "--", declared_path).split()
+        return fields[2] if len(fields) >= 3 else None
+
+    alpha_pin, beta_pin = pin_of("alpha"), pin_of("beta-declared")
+    assert alpha_pin is not None and beta_pin is not None, (
+        f"both gitlinks must be in the snapshot or the byte comparison is vacuous: "
+        f"alpha={alpha_pin} beta={beta_pin}"
+    )
+
+    # NOW the collision, and alpha's own declared path is emptied.
+    manifest.write_text(_set_member_name(manifest.read_text(), "alpha", "beta"))
+    (root / "alpha").rename(root / "alpha-moved-away")
+    assert not (root / "alpha").exists(), "alpha's declared path must be empty for this shape"
+
+    rc, out = _cli("store", "commit", "-m", "must refuse, not attribute")
+    assert rc != 0, (
+        f"the collision was ATTRIBUTED rather than refused: rc={rc} {out[:250]}"
+    )
+    assert pin_of("alpha") == alpha_pin, "alpha's pin moved under a refused commit"
+    assert pin_of("beta-declared") == beta_pin, "beta's pin moved under a refused commit"
+
+
+def test_break_20f_a_name_landing_INSIDE_another_members_tree_is_refused(
+    two_member_ws: Path, tmp_path: Path
+) -> None:
+    """A name landing INSIDE another member's tree is refused, not only one landing ON a coordinate.
+
+    THE SHAPE, from a reader's BLOCK on the two-coordinate fix: `alpha.name = "beta/nested"` with
+    `<root>/beta/nested` a real checkout. Exact membership closes "lands ON another member's
+    coordinate" and **cannot** close "lands INSIDE one", because `beta/nested` equals no member's
+    coordinate -- it is BELOW one. Measured before the fix: alpha's gitlink pin was rewritten to
+    the NESTED checkout's HEAD at **rc 0**, the same wrong-pin severity as the direct collision.
+
+    **⚠ THE NESTED CHECKOUT GETS A REAL ORIGIN, AND THAT IS THE LOAD-BEARING PART OF THE FIXTURE.**
+    With NO remote on it, the wrong read is stopped anyway -- by §5a's coverage fetch
+    (`cannot fetch origin`), **not** by containment. A refusal arriving from a DIFFERENT guard looks
+    exactly like this predicate working, so a fixture without an origin proves nothing about this
+    guard. A vendored clone has an origin by construction, and its own branch trivially covers its
+    own HEAD.
+    """
+    root = two_member_ws
+    assert _cli("store", "init", str(root))[0] == 0
+    _assert_init_ran(root)
+
+    url = _bare_remote(tmp_path, "nested")
+    nested = root / "beta" / "nested"
+    subprocess.run(["git", "clone", "-q", url, str(nested)], capture_output=True, check=True)
+    _git(nested, "config", "user.email", "t@e.invalid")
+    _git(nested, "config", "user.name", "t")
+    _git(nested, "commit", "-q", "--allow-empty", "-m", "nested moves on")
+    _git(nested, "push", "-q", "origin", "main")
+    nested_head = _head(nested)
+
+    # The vendored clone is UNTRACKED inside beta, and `store commit` refuses a dirty member (rc 3)
+    # before any resolver runs. Ignore it -- AND PUSH IT, or §5a refuses beta's own pin as
+    # uncovered (rc 3, "not on origin/main"), which is a third refusal that has nothing to do with
+    # the guard under test. Both were hit while building this row.
+    (root / "beta" / ".gitignore").write_text("nested/\n")
+    _git(root / "beta", "add", ".gitignore")
+    _git(root / "beta", "commit", "-q", "-m", "ignore the vendored clone")
+    _git(root / "beta", "push", "-q", "origin", "main")
+
+    manifest = root / "grip.toml"
+    manifest.write_text(_set_member_name(manifest.read_text(), "alpha", "beta/nested"))
+    assert _cli("store", "commit", "-m", "record the nested-name fixture")[0] == 0
+
+    def alpha_pin() -> str | None:
+        fields = _git_out(root, "ls-tree", "HEAD", "--", "alpha").split()
+        return fields[2] if len(fields) >= 3 else None
+
+    pin_before = alpha_pin()
+    assert pin_before is not None, (
+        "alpha's gitlink must be in the snapshot, or the byte comparison below is vacuous"
+    )
+    assert nested_head != pin_before, (
+        "the fixture must make the nested checkout's HEAD differ from alpha's pin, or adopting it "
+        "would be invisible"
+    )
+
+    (root / "alpha").rename(root / "alpha-moved-away")
+    assert not (root / "alpha").exists(), "alpha's declared path must be empty for this shape"
+
+    rc, out = _cli("store", "commit", "-m", "must not adopt the nested checkout")
+    assert alpha_pin() == pin_before, (
+        f"alpha's pin was rewritten to the NESTED checkout's HEAD ({nested_head}): "
+        f"{pin_before} -> {alpha_pin()} (rc={rc} {out[:200]})"
     )
 
 

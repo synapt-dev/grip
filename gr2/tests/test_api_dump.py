@@ -306,6 +306,42 @@ def test_a_label_at_or_past_column_keeps_its_separator() -> None:
     )
 
 
+def test_no_label_ends_in_a_space() -> None:
+    """The format cannot carry a label whose LAST character is a space.
+
+    `_line` guarantees the column separator, but the ambiguity here is on the
+    READER's side of the line and the separator cannot help: `_rows` recovers the
+    label by stripping padding, and a trailing space in the label is
+    indistinguishable from that padding. Such a label comes back one character
+    short -- which then reads as a WRONG LABEL IN THE DUMP when the dump is
+    right. A false red on a gate is not the safe direction of failure; it only
+    feels like one.
+
+    Measured on a synthetic probe, alongside the shapes that DO work: the real
+    65-char store exit label, a hidden label past COLUMN, and a label exactly
+    COLUMN long all round-trip; `'some verb --flag <str> '` comes back as
+    `'some verb --flag <str>'`.
+
+    NO LABEL ENDS IN A SPACE TODAY, which is why this is a GATE rather than a
+    fix. It costs nothing now, and it stops the next label that grows a trailing
+    space from failing an unrelated gate with a misleading red -- which is
+    exactly the failure mode this branch exists to remove.
+    """
+    # Labels are read from the generator's OWN `_label`, NOT through `_rows`:
+    # that parser strips the padding, and the trailing space this test is asking
+    # about is precisely what stripping removes -- so a version reading `_rows`
+    # could not fail for ANY input. Measured, and it is why `_label` exists.
+    gen = _generator()
+    labels = [gen._label(spelling, hidden, hidden_by) for _, spelling, hidden, hidden_by in gen._items()]
+    assert labels, "the dump rendered no labels, so this gate cannot fail"
+    bad = sorted({label for label in labels if label.endswith(" ")})
+    assert not bad, (
+        "labels ending in a space -- the two-column parse cannot round-trip "
+        "them, so each will surface later as a wrong label in a DIFFERENT "
+        "gate's failure:\n  " + "\n  ".join(repr(b) for b in bad)
+    )
+
+
 def test_api_dump_carries_every_store_exit_code() -> None:
     """The `exit` kind: every code the `store` group can return is in the dump.
 

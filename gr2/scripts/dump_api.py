@@ -285,6 +285,26 @@ def _markers() -> dict[tuple[str, str], str]:
     return out
 
 
+def _label(spelling: str, hidden: bool, hidden_by: str | None) -> str:
+    """The label column for one item -- the text BEFORE any parsing strips it.
+
+    One home for the rule, because a gate that wants to ask a question about the
+    label TEXT (does it end in a space? how long is it?) cannot use ``_rows``:
+    that parser strips the padding, and the trailing space it would be asking
+    about is exactly what stripping removes. Measured -- a first version of
+    ``test_no_label_ends_in_a_space`` read labels through ``_rows`` and could not
+    have failed for any input, because every label it saw had already been
+    stripped.
+
+    An inherited hide names the group that did it; a command hidden in its own
+    right is just ``(hidden)``. The dump carries no group row, so the name is the
+    only place the cause can live.
+    """
+    if not hidden:
+        return spelling
+    return f"{spelling} (hidden:{hidden_by})" if hidden_by else f"{spelling} (hidden)"
+
+
 def _line(kind: str, label: str, marker: str) -> str:
     """One ``.api`` line: two fixed columns, with the separator GUARANTEED.
 
@@ -303,6 +323,13 @@ def _line(kind: str, label: str, marker: str) -> str:
     Pulled out of ``render`` so the width rule has ONE home and a synthetic long
     label can be tested against it directly, rather than only through whichever
     labels happen to reach ``COLUMN`` today.
+
+    ONE SHAPE THIS CANNOT FIX, because the ambiguity is on the reader's side of
+    the line: a label whose LAST character is a space is indistinguishable from
+    the padding, so a reader stripping the padding returns it one character
+    short. Guaranteeing the separator does not help -- the space is inside the
+    label, before it. No label ends in a space today, and
+    ``test_no_label_ends_in_a_space`` keeps it that way.
     """
     width = max(COLUMN, len(label) + 1)
     return f"{kind:<6}{label:<{width}}{marker}"
@@ -314,13 +341,7 @@ def render() -> str:
     lines = []
     for kind, spelling, hidden, hidden_by in _items():
         marker = _marker(kind, spelling, markers)
-        # An inherited hide names the group that did it; a command hidden in
-        # its own right is just `(hidden)`. The dump carries no group row, so
-        # the name is the only place the cause can live.
-        if hidden:
-            label = f"{spelling} (hidden:{hidden_by})" if hidden_by else f"{spelling} (hidden)"
-        else:
-            label = spelling
+        label = _label(spelling, hidden, hidden_by)
         lines.append(_line(kind, label, marker))
     lines.sort()
     return "\n".join(lines) + "\n"

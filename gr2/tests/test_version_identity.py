@@ -598,3 +598,108 @@ def test_a_symlink_loop_in_the_record_answers_and_does_not_raise(fixture_path: P
     os.symlink(str(loop), str(di / "direct_url.json"))
 
     assert version_line(DIST) == "2.0.0a5 released"
+
+
+def test_a_record_under_a_non_traversable_directory_answers_and_does_not_raise(
+    fixture_path: Path, tmp_path: Path
+) -> None:
+    """ATLAS'S EIGHTH SEAM: the stat was the last unguarded probe in this module.
+
+    `pathlib._IGNORED_ERRNOS` is only `(2, 20, 9, 62)` -- ENOENT, ENOTDIR, EBADF, ELOOP --
+    so `is_dir()` swallows an ORDINARY MISSING PATH and re-raises everything else. That is
+    why the probe read as safe: the shape anyone checks by hand is the one it suppresses. A
+    recorded checkout under a directory the process cannot traverse raises `PermissionError`
+    out of `--version`, measured.
+
+    The answer is `<version>+unknown` rather than `released`, which is the design decision
+    this version took: the record SAYS editable, so asserting there is no checkout is false.
+    """
+    parent = tmp_path / "closed"
+    clone = parent / "clone"
+    clone.mkdir(parents=True)
+    _temp_repo(clone)
+    parent.chmod(0o000)
+    try:
+        _dist_info(fixture_path, version="2.0.0a5", editable=clone)
+        assert version_line(DIST) == "2.0.0a5+unknown"
+    finally:
+        parent.chmod(0o755)
+
+
+def test_a_record_with_an_over_long_component_answers_and_does_not_raise(
+    fixture_path: Path, tmp_path: Path
+) -> None:
+    """The other errno, and one row cannot stand for the other.
+
+    A component past `NAME_MAX` raises `OSError` ENAMETOOLONG -- which is 63, and NOT in
+    `is_dir()`'s ignored set, so it re-raised. A different failing class from the
+    permission row above, reached by a different syscall outcome.
+    """
+    unreachable = tmp_path / ("x" * 300)
+    _dist_info(fixture_path, version="2.0.0a5", editable=unreachable)
+
+    assert version_line(DIST) == "2.0.0a5+unknown"
+
+
+def test_a_recorded_path_that_is_gone_answers_unknown_rather_than_released(
+    fixture_path: Path, tmp_path: Path
+) -> None:
+    """THE SEMANTIC PIN, and the one that makes the choice visible.
+
+    `released` asserts there is no editable checkout. The record here says there IS one and
+    the checkout has since been deleted, so neither `released` (which the old probe
+    answered, because `is_dir()` returns False for a missing path) nor a crash is true.
+    `+unknown` is the declared form that means exactly this, and a change back to a probe
+    that reports `released` has to move this row to do it.
+    """
+    _dist_info(fixture_path, version="2.0.0a5", editable=tmp_path / "never-created")
+
+    assert version_line(DIST) == "2.0.0a5+unknown"
+
+
+def test_a_file_where_a_checkout_was_recorded_answers_unknown(
+    fixture_path: Path, tmp_path: Path
+) -> None:
+    """The second half of the same pin: a FILE at the recorded path is still a record that
+    says editable, so it is still not `released`."""
+    target = tmp_path / "not-a-directory"
+    target.write_text("this is a file, not a checkout\n")
+    _dist_info(fixture_path, version="2.0.0a5", editable=target)
+
+    assert version_line(DIST) == "2.0.0a5+unknown"
+
+
+def test_a_corrupt_metadata_for_another_name_does_not_break_this_lookup(
+    fixture_path: Path, tmp_path: Path
+) -> None:
+    """ATLAS'S SEVENTH-SEAM CONTROL BECAME THE WITNESS, and it is the wider half.
+
+    `_matching_distributions` reads `dist.metadata` for EVERY distribution
+    `importlib.metadata.distributions()` yields, BEFORE it filters by name -- so ONE
+    unreadable METADATA anywhere on `sys.path` breaks the lookup for EVERY name, not only
+    its own. That was found because the CONTROL for a narrower claim was a different,
+    perfectly readable name, and it raised too.
+
+    The control for THIS row is the suite's own editable row: the same lookup, with the same
+    fixture, succeeds when the corrupt dist-info is not there.
+    """
+    corrupt = fixture_path / "othername-1.0.dist-info"
+    corrupt.mkdir()
+    (corrupt / "METADATA").write_bytes(b"Name: othername\nVersion: 1.0\n\xff\xfe\n")
+
+    clone = tmp_path / "clone"
+    sha = _temp_repo(clone)
+    _dist_info(fixture_path, version="2.0.0a5", editable=clone)
+
+    assert version_line(DIST) == f"2.0.0a5+g{sha}"
+
+
+def test_a_corrupt_metadata_for_this_name_answers_the_bare_unknown(fixture_path: Path) -> None:
+    """The other side of the skip: when the unreadable distribution is the ONLY match, the
+    caller has nothing to read and falls through to the declared bare `unknown` -- not a
+    crash, and not an invented version."""
+    corrupt = fixture_path / f"{DIST}-2.0.0a5.dist-info"
+    corrupt.mkdir()
+    (corrupt / "METADATA").write_bytes(b"Metadata-Version: 2.1\nName: gitgrip\n\xff\xfe\n")
+
+    assert version_line(DIST) == "unknown"

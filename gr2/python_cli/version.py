@@ -25,11 +25,17 @@ A `file://` URL is decoded with `url2pathname`, not with `Path(urlparse(url).pat
 latter drops a Windows drive letter, so `file:///C:/repo` becomes `/C:/repo` -- a path that
 cannot exist -- and an editable install on Windows would read as `released`.
 
-A `released` form has no READABLE editable checkout to name: a wheel, or a record that is
-absent, malformed, or shaped unlike a directory record. That sentence is deliberately wider
-than "a released wheel", because the wider reading is what the code does -- several branches
-below return None on a record they could not read, and a reader told only the wheel meaning
-would take an unreadable record for a wheel.
+`released` means **no editable record**: a wheel, or a `direct_url.json` that is absent,
+unreadable, malformed, or does not declare `dir_info.editable`. It does NOT mean a record
+that SAYS editable and could not be read -- that one is the declared `<version>+unknown`,
+because the record states a checkout exists and the honest answer is that its commit cannot
+be read here.
+
+That split was wrong in this module until three readers raised it independently, and they
+were right: `released` was being printed for records that said the opposite. Getting it right
+within the four forms is why there is one rule for a declared-editable record rather than a
+branch per failure -- a branch per failure is also how a stat ended up re-raising errnos that
+`is_dir()` does not ignore.
 
 FOUR FORMS, and the fourth is declared here because it was not. It is a **bare `unknown`**,
 and it means NO SINGLE VERSION COULD BE DETERMINED, for either of two reasons: nothing is
@@ -78,7 +84,22 @@ def _matching_distributions(distribution: str) -> list[importlib.metadata.Distri
     wanted = _normalise(distribution)
     found: list[importlib.metadata.Distribution] = []
     for dist in importlib.metadata.distributions():
-        metadata = dist.metadata
+        try:
+            metadata = dist.metadata
+        except (UnicodeDecodeError, OSError):
+            # THE SEVENTH SEAM, and it is wider than the function it was found in.
+            # `dist.metadata` is not a second primitive -- it is `read_text('METADATA')`,
+            # with the same five-exception suppression list `direct_url.json` has, so a
+            # non-UTF-8 METADATA raises UnicodeDecodeError straight through here.
+            #
+            # AND IT IS READ BEFORE THE NAME FILTER, so ONE corrupt METADATA anywhere on
+            # `sys.path` breaks the lookup for EVERY name, not only its own. Measured: with a
+            # single bad-metadata dist-info present, lookups for an unrelated, perfectly
+            # readable name raised too -- and that unrelated name was the CONTROL, which is
+            # how the shape was found. Skipping the unreadable distribution is the fix that
+            # lets the scan finish; if it was the only match, the caller falls through to
+            # the declared bare `unknown`.
+            continue
         name = metadata["Name"] if metadata is not None else None
         if name and _normalise(str(name)) == wanted:
             found.append(dist)
@@ -129,16 +150,27 @@ def _editable_path(dist: importlib.metadata.Distribution) -> PurePath | None:
     url = doc.get("url")
     if not isinstance(url, str) or not url.startswith("file://"):
         return None
-    path = _file_url_to_path(url)
-    if isinstance(path, Path):
-        return path if path.is_dir() else None
-    # A Windows-shaped checkout recorded on a host that cannot hold it. The record SAYS
-    # editable, so this is not "not editable" -- it is a checkout whose commit cannot be
-    # read here, which is the declared `<version>+unknown` and not a crash. `PurePath` has
-    # no `is_dir()` AT ALL, so calling one on this branch raises AttributeError inside
-    # `--version`: the guard above is the difference between a stated outcome and a
-    # traceback, and the docstring's promise that no failure path raises depends on it.
-    return path
+    # THE RECORD SAYS EDITABLE, SO THE QUESTION IS NOT WHETHER THE PATH IS A DIRECTORY -- it
+    # is whether a COMMIT can be read from it, and that is `_clone_short_sha`'s job.
+    #
+    # The probe that used to sit here (`path.is_dir()`) was both unnecessary and a crash
+    # surface. Unnecessary: `pathlib._IGNORED_ERRNOS` is only (2, 20, 9, 62) -- ENOENT,
+    # ENOTDIR, EBADF, ELOOP -- so `is_dir()` swallows a missing path and RE-RAISES
+    # everything else, which is how a path under a non-traversable directory raises
+    # PermissionError and an over-long component raises Errno 63, both straight out of
+    # `--version`. Measured on this module, with the ordinary missing path as the control
+    # that makes the probe look verified. A crash surface, because every way an editable
+    # checkout can fail to yield a commit -- gone, a file, not a repository, `git` absent,
+    # a path this host cannot represent, a path it cannot probe -- is ONE declared outcome
+    # already: `<version>+unknown`.
+    #
+    # And it was answering the wrong question. `released` asserts there is no editable
+    # checkout; the record in hand says there is. Three readers raised that objection
+    # independently, so the answer is the form that already means what happened: a checkout
+    # exists and its commit could not be read. That is why this returns the path for EVERY
+    # declared-editable record, including the Windows-shaped one below -- one rule, not a
+    # branch per failure.
+    return _file_url_to_path(url)
 
 
 #: `/C:/Users/repo` -- a Windows-shaped path, slash-separated.
@@ -166,7 +198,14 @@ def _file_url_to_path(url: str) -> PurePath:
 
 
 def _version_of(dist: importlib.metadata.Distribution) -> str | None:
-    metadata = dist.metadata
+    try:
+        metadata = dist.metadata
+    except (UnicodeDecodeError, OSError):
+        # The second call site of the same read guarded in `_matching_distributions`, and
+        # the same rule: a value that cannot be measured returns None rather than raising.
+        # A distribution reaching here with unreadable metadata yields no version, which
+        # leaves the caller with no single version to state -- the declared bare `unknown`.
+        return None
     if metadata is None:
         return None
     version = metadata["Version"]
@@ -250,10 +289,11 @@ def version_line(distribution: str = DISTRIBUTION) -> str:
     Four forms, in the order they are decided:
 
     * `<version>+g<sha>` -- an editable checkout, named by the commit at its HEAD;
-    * `<version> released` -- no readable editable checkout was recorded: a wheel, or a
-      `direct_url.json` that is absent, malformed, or not a directory record;
-    * `<version>+unknown` -- a checkout exists but its commit cannot be read (no `git`, or
-      the recorded path is not a repository), so the version is stated and the commit is
+    * `<version> released` -- no editable record at all: a wheel, or a `direct_url.json` that
+      is absent, unreadable, malformed, or does not declare `dir_info.editable`;
+    * `<version>+unknown` -- an editable record exists but no commit could be read from the
+      checkout it names: `git` absent, not a repository, gone, a file, a path this host
+      cannot represent, or a path it cannot probe. The version is stated and the commit is
       not invented;
     * a **bare `unknown`** -- the distribution is not installed for this interpreter, so
       there is no version to state at all.

@@ -108,3 +108,5 @@ pip install -e "gr2[dev]"    # from the repository root
 cd gr2 && pytest             # the gr2 suite (tests + overlay tests)
 cd gr2 && ruff check .       # lint, same config as CI
 ```
+
+The Rust development binary is **`gr2-dev`** — built by `cargo build -p gr2-cli --release`, `publish = false`, and not shipped with `cargo install gitgrip`. It answered to the name `gr2` until 2026-09-30, so a branch written before that rename goes red on `cargo test -p gr2-cli` with `CARGO_BIN_EXE_gr2 is unset`; the repair is `cargo_bin("gr2-dev")`, from which Cargo derives `CARGO_BIN_EXE_gr2-dev`.

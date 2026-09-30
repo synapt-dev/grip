@@ -505,6 +505,10 @@ def test_a_group_file_whose_NAME_disagrees_with_its_id_is_refused(
     assert code is not None, f"main() exited carrying nothing: {output}"
     # Both names, so the operator can see the disagreement rather than guess at it.
     assert "renamed-by-hand" in str(code) and declared in str(code), str(code)
+    # AND THE OPERATIVE CLAUSE, not only the names it mentions. Without this, inverting the
+    # sentence to say the mismatch is harmless left every row green -- the same
+    # subject-without-its-claim defect this row's sibling had one version earlier.
+    assert "rebuilds the path from that id" in str(code), f"the claim is unpinned: {code!r}"
     assert "Traceback" not in output, f"the operator met a stack: {output}"
 
 
@@ -516,7 +520,12 @@ def test_two_group_files_claiming_one_lane_are_refused(
     Silently taking the first-by-name is the same failure the id-less file is refused for:
     a silent pick reads as success. Both paths are named so the operator can delete one.
     """
+    # EXACTLY TWO, which is the natural shape of a duplicate and which a THREE-file row
+    # does not cover: relaxing `len(matches) > 1` to `> 2` survived every row until this
+    # one existed, silently resolving the duplicate through `matches[0]`. So `_workspace`'s
+    # own group file is removed and only two remain.
     workspace = _workspace(tmp_path, [])
+    (workspace / ".grip" / "pr_groups" / f"{GROUP_ID}.json").unlink()
     for name in ("pg_one", "pg_two"):
         (workspace / ".grip" / "pr_groups" / f"{name}.json").write_text(
             json.dumps(
@@ -533,6 +542,9 @@ def test_two_group_files_claiming_one_lane_are_refused(
     output = "".join(capsys.readouterr())
     assert code is not None, f"main() exited carrying nothing: {output}"
     assert "pg_one" in str(code) and "pg_two" in str(code), str(code)
+    # AND THE REASON, for the same purpose: inverting it to "a lane may name several
+    # groups" also left every row green before this line existed.
+    assert "cannot be resolved by guessing" in str(code), f"the claim is unpinned: {code!r}"
     assert "Traceback" not in output, f"the operator met a stack: {output}"
 
 

@@ -13,7 +13,7 @@ from gr2.prototypes import lane_workspace_prototype as lane_proto
 
 from .gitops import GitMissingError, git
 from .review_records import lane_paths_for_repo, read_review_records_for_guard, review_record_pointer_path
-from .spec_apply import MaterializationPlanError, unit_root
+from .spec_apply import MaterializationPlanError, unit_member_path, unit_root
 
 
 class CommitError(Exception):
@@ -261,6 +261,7 @@ def commit_lane(
         else:
             unit_home = workspace_root
         spec_repo_paths: dict[str, Path] = {}
+        spec: dict = {}
         try:
             spec = lane_proto.load_workspace_spec(workspace_root)
             spec_repo_paths = {
@@ -271,7 +272,18 @@ def commit_lane(
             pass
         for row in results:
             candidates: list[Path] = []
-            home_repo = unit_home / row.repo
+            # The member's SPEC PATH inside the unit home (section 6c item 3),
+            # through the one resolver. Was `unit_home / row.repo`, which is the
+            # NAME: on a gr1 desk it names a member that is not there and misses
+            # the one that is, so the "staged somewhere the verb did not commit"
+            # sentence could not see the agent's own checkout.
+            if unit and spec:
+                try:
+                    home_repo = unit_member_path(workspace_root, spec, unit, row.repo)
+                except SystemExit:
+                    home_repo = unit_home / row.repo
+            else:
+                home_repo = unit_home / row.repo
             if home_repo != lane_targets.get(row.repo) and home_repo.is_dir():
                 candidates.append(home_repo)
             root_repo = spec_repo_paths.get(row.repo)

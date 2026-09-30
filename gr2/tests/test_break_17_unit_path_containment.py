@@ -171,7 +171,7 @@ def test_break_17_unit_member_path_refuses_in_a_sentence(tmp_path: Path) -> None
     they did not write, and a spec is something people clone from strangers.
     """
     with pytest.raises(SystemExit) as exc:
-        unit_member_path(tmp_path, {"name": "atlas", "path": "../../escape"}, "r")
+        unit_member_path(tmp_path, {}, {"name": "atlas", "path": "../../escape"}, "r")
     message = str(exc.value)
     assert "atlas" in message, f"the refusal did not name the unit: {message}"
     assert "escape" in message, f"the refusal did not quote the path: {message}"
@@ -184,5 +184,5 @@ def test_break_17_unit_member_path_control_a_legal_path_resolves(tmp_path: Path)
     Without it, an instrument that raised on every call would satisfy the
     refusal row while telling us nothing about the translation.
     """
-    got = unit_member_path(tmp_path, {"name": "atlas", "path": "agents/atlas/home"}, "r")
+    got = unit_member_path(tmp_path, {}, {"name": "atlas", "path": "agents/atlas/home"}, "r")
     assert got == (tmp_path / "agents" / "atlas" / "home" / "r").resolve()

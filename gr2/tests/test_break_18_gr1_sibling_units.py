@@ -240,44 +240,87 @@ def test_control_mutation_hard_coded_unit_path_turns_break_18_red(
 
 
 # ---------------------------------------------------------------------------
-# Break 18, second half: apply REFUSES a shape its consumer cannot place yet
+# Break 18, second half: apply ACCEPTS the shape now that its consumer landed
 # ---------------------------------------------------------------------------
 
-class TestBreak18ApplyRefusesSiblingUnitsUntilConsumerLands:
-    """The declaration is right and the CONSUMER is not updated for it.
+class TestBreak18ApplyAcceptsSiblingUnitsNowThatTheConsumerLanded:
+    """The declaration is right AND the consumer has caught up with it.
 
-    `migrate-gr1` now declares a sibling desk (and `.` for the root unit), but
-    apply still places members by NAME and writes `unit.toml` into the unit
-    home. For a sibling unit that means cloning `grip` into `<desk>/grip`
-    beside that desk's own `./gitgrip`, and dropping a gr2 file into the desk.
-    Both corrupt a layout, so the shape is REFUSED with the reason named until
-    slice items 3, 5 and 6 land. Measured with `build_plan` on this fixture and
-    no network — the same instrument the first measurement used.
+    THESE ROWS ARE THE MIRROR OF A LIFT, and they are turned over in the same
+    change that lifts it. Until that change, `migrate-gr1` declared a sibling
+    desk (and `.` for the root unit) while apply still placed members by NAME and
+    wrote `unit.toml` into the unit home — so for a sibling unit it cloned `grip`
+    into `<desk>/grip` beside that desk's own `./gitgrip` and dropped a gr2 file
+    into the desk. The shape was REFUSED, with the landing point named, "until
+    slice items 3, 5 and 6 land". They landed:
+
+      * item 3 — `spec_apply.unit_member_path` resolves a member at its SPEC PATH
+        inside the unit home, and every production site goes through it;
+      * item 5 — `spec_apply.unit_metadata_path` sends a sibling unit's metadata
+        to `<root>/.grip/state/units/<unit>/`, never into the desk;
+      * the refusal (`unit_path_not_yet_appliable`) and the exit-4 branch in
+        `build_plan` are gone with the reason that produced them.
+
+    The strongest claim about the APPLY behaviour — the desk byte-identical, no
+    clone, metadata under the state root — lives in
+    `tests/test_apply_gr1_sibling_adoption.py`, where it can be measured against a
+    real bare remote. These rows assert the planning half: the shape builds, and a
+    desk member already at its path is not planned for convergence.
     """
 
-    def test_apply_refuses_a_sibling_unit_and_names_the_reason(
-        self, sibling_workspace: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        migrate_gr1_workspace(sibling_workspace)
-        with pytest.raises(SystemExit):
-            build_plan(sibling_workspace)
-        # The refusal exits 4, so the sentence goes to STDERR — assert what the
-        # USER sees, not what the exception object happens to carry.
-        message = capsys.readouterr().err
-        assert "apollo" in message, f"the refusal did not name the sibling unit: {message}"
-        assert "sibling" in message, f"the refusal did not name the shape: {message}"
-        # A REASON, NOT A WALL: what is unsupported and what will support it.
-        assert "3, 5 and 6" in message, f"the refusal gave no landing point: {message}"
+    def test_apply_builds_a_plan_for_a_sibling_unit(self, sibling_workspace: Path) -> None:
+        """Was `test_apply_refuses_a_sibling_unit_and_names_the_reason`.
 
-    def test_apply_refuses_the_root_unit_and_names_the_reason(
-        self, sibling_workspace: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """`worktree = "main"` migrates to `"."` — an outside-the-root shape too."""
+        The assertion inverts with the contract: `build_plan` must RETURN, and the
+        plan must carry the sibling path the migration emitted. A refusal here now
+        means migrate-gr1's own output cannot be applied, which is the whole path
+        section 6b promises.
+        """
         migrate_gr1_workspace(sibling_workspace)
-        with pytest.raises(SystemExit):
-            build_plan(sibling_workspace)
-        message = capsys.readouterr().err
-        assert "opus" in message, f"the root unit was not refused: {message}"
+        plan, operations = build_plan(sibling_workspace)
+        got = {unit["name"]: unit["path"] for unit in plan["units"]}
+        assert got["apollo"] == "../synapt-dev", got
+        assert isinstance(operations, list)
+
+    def test_the_root_unit_is_appliable(self, sibling_workspace: Path) -> None:
+        """Was `test_apply_refuses_the_root_unit_and_names_the_reason`.
+
+        `worktree = "main"` migrates to `"."` — the desk that works IN the root.
+        It is appliable too, and it is the shape that used to share the refusal.
+        """
+        migrate_gr1_workspace(sibling_workspace)
+        plan, _ = build_plan(sibling_workspace)
+        got = {unit["name"]: unit["path"] for unit in plan["units"]}
+        assert got["opus"] == ".", got
+
+    def test_a_desk_member_already_at_its_path_is_not_planned_for_convergence(
+        self, sibling_workspace: Path
+    ) -> None:
+        """THE ROW THE TWO ABOVE CANNOT SEE.
+
+        `grip`'s spec path is `./gitgrip`, and this fixture's desks all hold
+        `<desk>/gitgrip` — so under the NAME-keyed join (`<desk>/grip`) the member
+        read as missing and the plan cloned a second copy beside the agent's own
+        checkout. Asserted on the PLAN, so a green here means the resolver, not a
+        clone that happened not to run.
+        """
+        migrate_gr1_workspace(sibling_workspace)
+        _, operations = build_plan(sibling_workspace)
+        # THE `"."` UNIT IS EXCLUDED, and the exclusion is the fixture's shape
+        # rather than a convenience: `opus` works IN the root, and this fixture
+        # creates no root-level checkouts (only the four desks). So a converge for
+        # `opus` is correct here while the same converge for a SIBLING desk is the
+        # defect. Asserted per unit, which is what makes the two distinguishable.
+        checked = 0
+        for op in operations:
+            if op.kind != "converge_unit_repos" or op.subject == "opus":
+                continue
+            checked += 1
+            assert "grip" not in op.details.get("missing_repos", []), (
+                f"unit {op.subject!r} plans a clone of a member its desk already holds "
+                f"at the spec path ./gitgrip: {op.details}"
+            )
+        assert checked, "no sibling unit was planned for convergence; the row proved nothing"
 
     def test_control_a_nested_unit_still_builds_a_plan(self, tmp_path: Path) -> None:
         """THE HALF THAT MATTERS: the refusal is keyed to the SHAPE, not to apply.
@@ -322,33 +365,35 @@ class TestBreak18ApplyRefusesSiblingUnitsUntilConsumerLands:
         got = {unit["name"]: unit["path"] for unit in spec["units"]}
         assert got == {"nested": "../agents-nested"}, got
 
-    def test_the_sanitised_sibling_is_still_refused_by_apply(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """The translate fix does NOT open the apply gap.
+    def test_the_sanitised_sibling_is_appliable_too(self, tmp_path: Path) -> None:
+        """Was `test_the_sanitised_sibling_is_still_refused_by_apply`.
 
-        `../agents-nested` is still a sibling, so the refusal has to keep holding
-        on the NEW output shape — which is why both fixes went into one round.
+        `../agents-nested` is a sibling produced by the TRANSLATION path rather
+        than by a literal worktree name, and it used to share the refusal. Now
+        that the shape is supported, the translated output must be appliable for
+        the same reason the literal one is: otherwise migrate-gr1 writes a spec
+        that the next verb refuses.
         """
         root = _write_gr1_sibling_workspace(tmp_path)
         (root / ".gitgrip" / "agents.toml").write_text(
             '[agents.nested]\nworktree = "agents/nested"\nchannel = "dev"\n'
         )
         migrate_gr1_workspace(root)
-        with pytest.raises(SystemExit):
-            build_plan(root)
-        message = capsys.readouterr().err
-        assert "nested" in message, f"the sanitised sibling was not refused by apply: {message}"
+        plan, _ = build_plan(root)
+        got = {unit["name"]: unit["path"] for unit in plan["units"]}
+        assert got["nested"] == "../agents-nested", got
 
-    def test_the_refusal_carries_its_own_exit_code_four(
-        self, sibling_workspace: Path
-    ) -> None:
-        """The not-yet-supported shape exits 4, so a caller can tell it from a
-        generic spec error without parsing prose."""
+    def test_the_shape_does_not_claim_exit_code_four(self, sibling_workspace: Path) -> None:
+        """Was `test_the_refusal_carries_its_own_exit_code_four`.
+
+        Exit 4 keyed a caller to "this workspace needs slice items 3/5/6". Those
+        items are in, so no caller may keep reading the code as "unbuilt": a
+        sibling-unit spec is an ordinary workspace and must NOT exit 4. The
+        control below still holds the other direction — a generic spec error must
+        not claim 4 either.
+        """
         migrate_gr1_workspace(sibling_workspace)
-        with pytest.raises(SystemExit) as exc:
-            build_plan(sibling_workspace)
-        assert exc.value.code == 4, f"expected exit 4, got {exc.value.code!r}"
+        build_plan(sibling_workspace)  # must not raise at all
 
     def test_control_a_generic_spec_error_does_not_claim_exit_four(
         self, tmp_path: Path

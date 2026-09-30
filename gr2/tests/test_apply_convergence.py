@@ -226,7 +226,19 @@ class TestApplyConvergence(ConvergenceTestBase):
         # symlink, so an unresolved join here compares two spellings of one real
         # directory and fails on the spelling rather than on the behaviour.
         unit_root = (self.workspace / "agents" / "test-unit").resolve()
-        expected_targets = {unit_root / "repo-a", unit_root / "repo-b"}
+        # THE MEMBER'S SPEC PATH, not its name (design section 6c item 3). This
+        # fixture is exactly the shape that separates the two coordinates: the
+        # members are NAMED `repo-a`/`repo-b` and their spec PATHS are
+        # `repos/repo-a`/`repos/repo-b`. Placing by name puts a member at
+        # `<unit home>/repo-a`, which is not where the desk has it -- on our own
+        # desks the root's paths are mirrored verbatim (`config`, `grip`,
+        # `synapt`, `reference/mem0`), so `<unit home>/<member.path>` is the
+        # rule, the same one the root uses. The assertion below used to pin the
+        # name-keyed target, which is the behaviour this change replaces.
+        expected_targets = {
+            unit_root / "repos" / "repo-a",
+            unit_root / "repos" / "repo-b",
+        }
         actual_targets = set()
         for c in clone_calls:
             args, kwargs = c

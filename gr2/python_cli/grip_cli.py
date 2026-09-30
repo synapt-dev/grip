@@ -92,7 +92,7 @@ def _member_working_root(workspace_root: Path, name: str, declared_path: Path) -
         for unit in spec.get("units", []):
             if name not in [str(item) for item in unit.get("repos", [])]:
                 continue
-            candidate = unit_member_path(workspace_root, unit, name)
+            candidate = unit_member_path(workspace_root, spec, unit, name)
             if gitops.repo_path_state(candidate) == "repo_root":
                 return candidate
         raise SystemExit(

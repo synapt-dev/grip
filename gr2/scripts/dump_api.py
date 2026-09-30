@@ -5,14 +5,22 @@ The file is generated, sorted, one item per line, and carries a stability
 marker. A change to the public surface must change this file in the same PR;
 the gate that enforces that is ``tests/test_api_dump.py``.
 
-Item kinds emitted here: ``verb``, ``flag``, ``arg``, ``exit`` and ``json``. A
-fuller dump also carries ``path`` and ``ref`` items; those need the ``LAYOUT``
-table and append here when it exists rather than replacing anything.
+Item kinds emitted here: ``verb``, ``flag``, ``arg``, ``exit``, ``json``,
+``path`` and ``ref`` -- each from the table that can honestly answer for it,
+never from the app walk alone.
 
 ``json`` comes from ``JSON_SHAPES``, the table beside the store renderers that
 emit the payloads (``gr2/python_cli/grip_cli.py``); a verb carrying ``--json``
 with no entry there is a shape the dump does not promise, and the gate that
 holds that line is ``test_the_store_group_json_verbs_all_have_a_shape``.
+
+``path`` and ``ref`` come from ``LAYOUT`` in ``gr2/python_cli/layout.py``, the
+design's section 3 table. That table is the honest source for the same reason
+the exit table is: a path is not discoverable by walking a Typer app -- nothing
+in the command tree says which of the strings the code builds is part of the
+promised layout. Section 3 carries only the rows it fixes exactly so far; its
+remaining rows land with ``layout.api``, and the module docstring says why
+writing them here early would freeze decisions nobody has made.
 
 Stability comes from ``api/stability.toml``: an item named there as
 ``may-change`` or ``reserved`` carries that marker, and every other item is
@@ -95,6 +103,7 @@ def _items() -> list[tuple[str, str, bool, str | None]]:
             rows.append(("flag" if is_option else "arg", spelling, hidden, hidden_by))
     rows.extend(_exit_items())
     rows.extend(_json_items())
+    rows.extend(_layout_items())
     return rows
 
 
@@ -171,14 +180,62 @@ def _canonical_verb(verb: str) -> str:
     return verb
 
 
-def _marker(kind: str, spelling: str, markers: dict[tuple[str, str], str]) -> str:
-    """The marker for one item, with the json kind INHERITING its verb's.
+def _layout_rows() -> list[tuple[str, str, str]]:
+    """(kind, label, marker) for every LAYOUT row.
 
-    Inheritance is a rule, not a lookup: an explicit entry for a json spelling
-    is deliberately not consulted, because the only honest source for "may this
-    key change" is the verb's own promise. Everything else is the plain lookup
-    with the default the module docstring states -- stable unless named.
+    ONE CONSTRUCTION, used by the item emitter and by the marker lookup, so the
+    label an item carries and the spelling its marker is keyed by cannot drift
+    apart. A path row's label carries the tracked column ("grip.toml tracked")
+    because a caller cannot derive whether the root repo holds the path in its
+    history; a ref row is the namespace alone.
     """
+    from gr2.python_cli.layout import LAYOUT
+
+    return [
+        (
+            row.kind,
+            f"{row.spelling} {row.tracked}" if row.tracked else row.spelling,
+            row.marker,
+        )
+        for row in LAYOUT
+    ]
+
+
+def _layout_items() -> list[tuple[str, str, bool, str | None]]:
+    """The `path` and `ref` kinds, from the LAYOUT table (design section 3).
+
+    Hidden is always False here, for the reason `_exit_items` gives about exit
+    codes: the row is in the dump because section 3 promises it, and it is not
+    any one verb's surface. A `ref` row marked `reserved` STAYS in the dump --
+    which is the opposite of what `reserved` means in `api/stability.toml`,
+    where an entry asserts the spelling is ABSENT. The difference is deliberate
+    and is stated in the layout module: a reader of the layout must be able to
+    see that the namespace exists and that nothing writes it yet.
+    """
+    return [(kind, label, False, None) for kind, label, _ in _layout_rows()]
+
+
+def _marker(kind: str, spelling: str, markers: dict[tuple[str, str], str]) -> str:
+    """The marker for one item, from whichever table owns its kind.
+
+    THREE SOURCES, each for the kind it can honestly answer for. A `path` or
+    `ref` row's promise is a property OF THE LAYOUT (section 3's own stability
+    column), not a decision taken in review, so those two kinds read the layout
+    table. A `json` item INHERITS its canonical verb's marker: inheritance is a
+    rule rather than a lookup, and an explicit entry for a json spelling is
+    deliberately not consulted, because the only honest source for "may this key
+    change" is the verb's own promise. Everything else is the plain lookup with
+    the default the module docstring states -- stable unless named.
+
+    The layout table and `api/stability.toml` are kept DISJOINT. A spelling
+    carrying a marker from both would be answered twice and the winner would
+    depend on lookup order rather than on anyone's decision, and
+    `test_no_spelling_carries_a_marker_from_both_sources` asserts it.
+    """
+    if kind in ("path", "ref"):
+        return {  # keyed by the same label the item carries
+            (row_kind, label): marker for row_kind, label, marker in _layout_rows()
+        }.get((kind, spelling), "stable")
     if kind == "json":
         return markers.get(("verb", _canonical_verb(_verb_of_json(spelling))), "stable")
     return markers.get((kind, spelling), "stable")

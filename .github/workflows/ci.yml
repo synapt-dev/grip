@@ -285,8 +285,109 @@ jobs:
       - name: No source-less .pyc (witness)
         run: ./scripts/check-no-orphan-pyc-selftest.sh
 
-  # Summary job for branch protection - requires all jobs except Windows to pass.
-  # test-windows runs separately (it is significantly slower) but DOES gate:
+      # REPORTS, CANNOT FAIL THE BUILD. gr2 has shipped a committed [tool.ruff]
+      # config (E, F, I, UP; py311; line-length 100) with nothing executing it:
+      # fmt and clippy cover Rust, and boundary-lint's SEARCH_PATHS is
+      # [src, tests, .github, benches], which is gr1's tree. Measured on dev
+      # c25d489, CI-shaped (working-directory: gr2; `ruff check .`; ruff 0.16.8):
+      # 1266 findings over 147 files -- E501 893, I001 150, UP045 81, F401 54,
+      # F841 20; 16 rule codes, 332 carrying a fix. So it reports rather than
+      # gates: a required check carrying 1266 findings would red every PR in the
+      # repo from its first push. Promote it by deleting continue-on-error.
+      #
+      # THE INVOCATION IS LOAD-BEARING AND NOT INTERCHANGEABLE. The same tree
+      # reports 1277 findings over 174 files when invoked from the repo root as
+      # `ruff check gr2 --config gr2/pyproject.toml`; the 11-finding difference is
+      # entirely I001, because isort's project-root inference moves import
+      # classification. This step is the CI shape, and 1266 is its number.
+      #
+      # The version is printed WITH the count on purpose: this installs the
+      # `ruff>=0.4` floor gr2 already declares, not a pin, so a later ruff can
+      # move the number -- and a report that names its own instrument makes that
+      # drift visible instead of silent.
+      #
+      # One matrix entry only: the result does not depend on the interpreter
+      # (target-version is pinned to py311 in the config), so a second identical
+      # run would print a second identical number with nothing to distinguish it.
+      #
+      # THE FAILURE PATH IS SPELLED OUT BECAUSE A REPORT THAT SILENTLY DOES NOT RUN
+      # IS THE DEFECT THIS JOB EXISTS TO SURFACE. Four ways it can go quiet, each
+      # closed here, and the first two were LIVE in earlier versions of this step:
+      #   * ruff not importable at all. `python -m ruff --version` as a bare first
+      #     line sits OUTSIDE any capture, so under `bash -e` the step aborted on it
+      #     and exited with NOTHING printed of its own -- continue-on-error kept the
+      #     aggregate green, so the outcome was a green run containing no report.
+      #     The version call is now inside the same capture and its output is
+      #     interpolated into an echo that always runs.
+      #   * ruff exits non-zero on something that is not findings. The rc is captured
+      #     without a pipe and printed.
+      #   * the JSON is absent or unparseable. The open and the parse are both inside
+      #     the try, so a missing file and a malformed one take the same branch.
+      #   * THE JSON PARSES BUT IS NOT A FINDINGS LIST, which is the drift this
+      #     comment anticipates rather than a contrived case: a later ruff wrapping
+      #     its output in an object, or renaming a field. Measured on two such
+      #     inputs -- `{"findings": []}` printed NOTHING and exited 1 with a
+      #     TypeError, and `[{"filename": "x.py"}]` printed a COUNT and then exited 1
+      #     with a KeyError. The second is the worse one: a number on stdout in a
+      #     failing step. The shape is therefore CHECKED rather than assumed.
+      #   * AND ANY OTHER EXCEPTION THE PARSE ARM CAN RAISE. A named pair was tried
+      #     first and was WRONG: `json.loads` on deeply-nested input raises
+      #     RecursionError, a RuntimeError, which is neither an OSError nor a
+      #     ValueError -- so the arm that claimed it could not raise raised, with no
+      #     line of its own. The arm now catches Exception. The honest limit, since
+      #     this one is a counterexample to a CLAIM rather than a live defect: ruff
+      #     cannot emit deeply-nested JSON, so no real run meets it. But a step whose
+      #     whole purpose is to SAY WHEN IT DID NOT RUN should not be able to fail,
+      #     and catching Exception here costs nothing, because every path through it
+      #     ends in the same honest output either way.
+      # **CI green does not mean this report ran; the NO REPORT line is what says it
+      # did not.**
+      - name: ruff report (not gated)
+        if: matrix.python-version == '3.11'
+        working-directory: gr2
+        continue-on-error: true
+        run: |
+          set +e
+          echo "ruff version: $(python -m ruff --version 2>&1 | head -1)"
+          python -m ruff check . --output-format json > "$RUNNER_TEMP/ruff.json"
+          rc=$?
+          set -e
+          echo "ruff exit code: $rc"
+          python - "$RUNNER_TEMP/ruff.json" "$rc" <<'PY'
+          import collections, json, sys
+          path, rc = sys.argv[1], sys.argv[2]
+          # Exception, not a named pair. json.JSONDecodeError is a ValueError, so a
+          # pair covers a missing file, a malformed one and a wrong-shaped one -- but
+          # NOT RecursionError, which is a RuntimeError and which json.loads raises on
+          # deeply-nested input. Every path through this arm ends in the same honest
+          # output, so there is nothing a narrow class buys.
+          try:
+              with open(path, encoding="utf-8", errors="replace") as fh:
+                  report = json.loads(fh.read())
+              if not isinstance(report, list):
+                  raise ValueError(f"top level is {type(report).__name__}, not a list")
+              for finding in report:
+                  if (not isinstance(finding, dict)
+                          or not isinstance(finding.get("code"), str)
+                          or not isinstance(finding.get("filename"), str)):
+                      raise ValueError("an entry is not an object with string 'code' and 'filename'")
+          except Exception as exc:
+              print(f"NO REPORT: ruff's output is not a findings list "
+                    f"(ruff exit {rc}, {type(exc).__name__}: {exc}).")
+              print("This step reports and cannot fail the aggregate, so a green run")
+              print("does NOT mean the number above is current -- this line says so.")
+              sys.exit(0)
+          files = {d["filename"] for d in report}
+          print(f"gr2 ruff: {len(report)} findings over {len(files)} files")
+          for code, n in collections.Counter(d["code"] for d in report).most_common(8):
+              print(f"  {code:8} {n}")
+          print(f"  fixable: {sum(1 for d in report if d.get('fix'))}")
+          print("not gated: this step reports and cannot fail the aggregate")
+          PY
+
+  # Summary job for branch protection - every job in the chain below must pass,
+  # Windows included. test-windows runs separately because it is significantly
+  # slower, and that separation is about cost, not about gating:
   # the aggregate runs under `if: always()`, so a job only fails this check if
   # it is named in the conditional chain below. `needs` alone never fails it.
   ci:

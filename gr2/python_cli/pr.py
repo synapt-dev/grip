@@ -204,11 +204,12 @@ class PRMergeGroupError(PRMergeError):
         pr_number: object,
         *,
         completed: list[CompletedMerge],
+        problem: str = "which is not an integer",
     ) -> None:
         reason = (
-            f"the group's entry for {repo!r} carries pr_number {pr_number!r}, which is "
-            "not an integer, so the group cannot be read. Nothing was attempted -- this "
-            "is checked before any member's number is converted."
+            f"the group's entry for {repo!r} carries pr_number {pr_number!r}, {problem}, "
+            "so the group cannot be read. Nothing was attempted -- the whole entry is "
+            "proven before anything reads it."
         )
         super().__init__(repo, pr_number, reason, completed=completed)  # type: ignore[arg-type]
 
@@ -393,6 +394,48 @@ def create_pr_group(
     return group
 
 
+def group_members(group: Mapping[str, object]) -> list[tuple[str, int]]:
+    """Every member as `(repo, pr_number)`, proven before anything reads one.
+
+    THE ENTRY, NOT ONLY THE VALUE, AND THE ONLY PLACE THIS REFUSAL IS MADE. `_load_group`
+    is a bare `json.loads` with no schema validation, so a group file can carry an entry
+    that is not an object or that lacks a key, and every read of a member assumes both.
+
+    The CLI's pin parser runs `_parse_head_pins` BEFORE it calls this function, and used to
+    read `item["repo"]` itself -- so the missing-`repo` shape left `main()` as a bare
+    `KeyError`, printing nothing. It is tolerant now rather than refusing, and that is
+    deliberate: this function's refusal is a `PRMergeError`, and the merge verb's
+    `PRMergeError` handler prints the offending entry inside a JSON payload, which the pin
+    parser's own `except ValueError` handler does not. Moving the refusal earlier would
+    keep the sentence and silently drop the entry from the operator's view.
+
+    A QUANTIFIER over the shape rather than an enumeration of the exceptions a conversion
+    raises: `int()` accepts `True` and `7.9` in silence, so "unreadable" was narrower than
+    "not an integer", and a list of exception types is short the moment a type is missed.
+    """
+    raw_prs = group.get("prs")
+    if not isinstance(raw_prs, list):
+        raise PRMergeGroupError(
+            "<the group>", raw_prs, completed=[], problem="which is not a list of members"
+        )
+    members: list[tuple[str, int]] = []
+    for entry in raw_prs:
+        if not isinstance(entry, dict):
+            raise PRMergeGroupError(
+                "<an entry>", entry, completed=[], problem="which is not an object"
+            )
+        repo = entry.get("repo")
+        number = entry.get("pr_number")
+        if not isinstance(repo, str) or not repo:
+            raise PRMergeGroupError(
+                repr(repo), number, completed=[], problem="which is not a usable repo name"
+            )
+        if not isinstance(number, int) or isinstance(number, bool):
+            raise PRMergeGroupError(repo, number, completed=[])
+        members.append((repo, number))
+    return members
+
+
 def merge_pr_group(
     workspace_root: Path,
     pr_group_id: str,
@@ -416,7 +459,10 @@ def merge_pr_group(
     targets = dict(verification_targets)
     pins = dict(expected_heads or {})
 
-    member_repos = [str(item["repo"]) for item in group["prs"]]
+    # Members are proven ONCE, before any of the sites below that used to convert a
+    # number, so a malformed group is refused here and nowhere else.
+    members = group_members(group)
+    member_repos = [repo for repo, _ in members]
     unknown_pins = sorted(set(pins) - set(member_repos))
     if unknown_pins:
         # A pin that matches no member is a typo that leaves the real member
@@ -429,31 +475,11 @@ def merge_pr_group(
             + ")"
         )
 
-    # VALIDATE THE GROUP ONCE, BEFORE ANY CONVERSION OF ITS NUMBERS. Three sites on this
-    # path read `int(pr_number)` -- this check, the pin pass and the merge loop -- and an
-    # unreadable number makes `int()` raise ValueError or TypeError, neither of which the
-    # merge verb's CLI catches. Driven through the entry point with a member carrying
-    # "abc", the operator got NOTHING printed at all. The group is decidable without the
-    # host, so it is checked here, where ONE refusal covers every later conversion rather
-    # than the first of three.
-    for _entry in group["prs"]:
-        _raw = _entry["pr_number"]
-        # A QUANTIFIER, NOT AN ENUMERATION. Naming the exceptions int() raises is a list
-        # that is short the moment a type is missed: it named TypeError and ValueError, and
-        # int() ALSO raises OverflowError -- which is what JSON's bare `Infinity` literal
-        # produces, and json accepts that literal by default, so a group file can carry it.
-        # int() also ACCEPTS non-integers in silence (7.9 becomes 7, true becomes 1), so
-        # "unreadable" is narrower than "not an integer". Asking the question directly
-        # closes every one of them at once: a real int is the only thing that is one, and
-        # `bool` is excluded because isinstance(True, int) is True.
-        if not isinstance(_raw, int) or isinstance(_raw, bool):
-            raise PRMergeGroupError(str(_entry["repo"]), _raw, completed=[])
-
-    missing_targets = [
-        (str(item["repo"]), int(item["pr_number"]))
-        for item in group["prs"]
-        if str(item["repo"]) not in targets
-    ]
+    # The numbers come from the validated pairs, so no site on this path converts one
+    # again: `int()` accepts `True` and `7.9` in silence, and the three reads that used
+    # to convert here, in the pin pass and in the merge loop were three chances to
+    # accept a number nobody wrote.
+    missing_targets = [(repo, number) for repo, number in members if repo not in targets]
     if missing_targets:
         # A PRMergeError subclass, NOT a ValueError: the merge verb's CLI catches
         # PRMergeError and prints a sentence, so a bare ValueError raised here

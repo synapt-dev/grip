@@ -461,7 +461,20 @@ def _parse_head_pins(
     whichever member happened to be listed first: a pin that lands on the wrong
     member reads as protection and is not.
     """
-    members = [str(item["repo"]) for item in group.get("prs", [])]  # type: ignore[union-attr]
+    # TOLERANT ON PURPOSE, AND NOT THIS FUNCTION'S REFUSAL TO MAKE. Reading `item["repo"]`
+    # directly raised a bare KeyError for an entry with no repo, and this runs BEFORE the
+    # merge loop's own guard -- so the whole refusal reached the operator as nothing at
+    # all, not a sentence and not a rendered traceback. Refusing HERE is wrong too: this
+    # call sits under the plain `except ValueError` handler, which prints the sentence
+    # alone, while the merge loop's refusal is caught by the `PRMergeError` handler, which
+    # prints the offending entry inside a JSON payload. A group this cannot read yields no
+    # members, and `merge_pr_group` refuses it -- showing the entry -- before anything merges.
+    _raw_prs = group.get("prs")
+    members = [
+        entry["repo"]
+        for entry in (_raw_prs if isinstance(_raw_prs, list) else [])
+        if isinstance(entry, dict) and isinstance(entry.get("repo"), str) and entry["repo"]
+    ]
     pins: dict[str, str] = {}
     for entry in entries or []:
         text = entry.strip()

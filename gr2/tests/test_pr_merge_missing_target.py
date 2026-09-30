@@ -293,6 +293,46 @@ def test_the_refusal_names_the_FIRST_offender_when_several_entries_are_bad(
     assert '"repo": "api"' in output, f"the FIRST offending entry must be named: {output}"
 
 
+def test_a_malformed_ENTRY_is_refused_by_the_same_guard(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """THE ENTRY, not only the value in it. `_load_group` is a bare json.loads that does no
+    schema validation, so a group file can carry an entry missing a key, or one that is not
+    an object at all.
+
+    A group file is a bare `json.loads` with no schema validation, so `prs` can carry an
+    entry missing a key, or one that is not an object at all. Every read of a member
+    assumed both, and three shapes escaped uncaught and printed NOTHING: an entry missing
+    `pr_number`; one missing `repo`, which the CLI's pin parser reads BEFORE
+    `merge_pr_group` runs; and one that is not a dict.
+
+    The pin parser is TOLERANT of these now rather than refusing them, and that is the
+    point of driving the CLI row rather than the function: the pin parse sits under the
+    plain `except ValueError` handler, which prints the sentence alone, while the merge
+    loop's refusal is caught by the `PRMergeError` handler, which prints the offending
+    entry inside a JSON payload. A guard moved into the pin parser keeps the sentence and
+    silently drops the entry from the operator's view -- so this row asserts the group's
+    own refusal arrives, from the merge loop's own guard, entry and all.
+
+    `_run_main` requires `SystemExit`, so an exception escaping `main()` fails these rows
+    rather than being read as an exit.
+    """
+    shapes = [
+        ("missing-pr-number", [{"repo": "app", "pr_number": 1}, {"repo": "api"}]),
+        ("missing-repo", [{"repo": "app", "pr_number": 1}, {"pr_number": 2}]),
+        ("not-an-object", [{"repo": "app", "pr_number": 1}, "api"]),
+    ]
+
+    for label, prs in shapes:
+        workspace = _workspace(tmp_path / f"case-{label}", [])
+        _write_raw_group(workspace, prs)
+        code = _run_main(["pr", "merge", str(workspace), OWNER_UNIT, LANE_NAME])
+        output = "".join(capsys.readouterr())
+        assert code == 1, f"{label}: an exception escaped main() and printed nothing: {output}"
+        assert "Traceback" not in output, f"{label}: the operator met a stack: {output}"
+        assert "so the group cannot be read" in output, f"{label}: {output}"
+
+
 class _RecordingAdapter:
     """Records a host status READ as well as a merge.
 

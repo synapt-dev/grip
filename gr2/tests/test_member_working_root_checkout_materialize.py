@@ -79,18 +79,34 @@ def test_row1_checkout_acts_on_a_name_placed_member(two_member_ws: Path) -> None
     root = two_member_ws
     assert _cli("store", "init", str(root))[0] == 0
     _assert_init_ran(root)
-    first = _head(root / "alpha")
     # A second commit so there is a revision to go back to.
     _git(root / "alpha", "commit", "-q", "--allow-empty", "-m", "second")
     _git(root / "alpha", "push", "-q", "origin", "main")
     _git(root / "beta", "commit", "-q", "--allow-empty", "-m", "beta second")
     _git(root / "beta", "push", "-q", "origin", "main")
-    assert _cli("store", "commit", "-m", "record two commits")[0] == 0
 
+    # ⚠ THE MEMBER IS PLACED AT ITS NAME **BEFORE** THE ROOT COMMIT, and the order is load
+    # bearing. Placing it after leaves the committed revision naming the member `alpha`
+    # while the working tree names it `alpha-elsewhere`, and `_native_members_at` keys the
+    # pins by the name IN THAT REVISION -- so `pins[member["name"]]` raises KeyError and the
+    # verb dies at exit 1 with NO message on stderr at all. That is a real defect (an
+    # uncaught crash where a refusal belongs) and it is NOT this lane's; committing after
+    # the placement keeps this row measuring the member-path resolution it claims to.
     placed = _place_member_at_its_name(root, "alpha", "alpha-elsewhere")
+    assert _cli("store", "commit", "-m", "record with the member at its name")[0] == 0
+
+    # THE SUBJECT IS A ROOT COMMIT, not a member's sha. `checkout` materializes the members
+    # AT A ROOT COMMIT, and a member's commit object does not exist in the root store --
+    # passing one produced "is not a root commit this store can resolve", a refusal about
+    # the ARGUMENT. A row can be red for a reason other than the one it claims.
+    root_commit = _head(root)
+
+    # The member moves on, so the checkout has somewhere to restore it FROM.
+    _git(placed, "commit", "-q", "--allow-empty", "-m", "third")
+    _git(placed, "push", "-q", "origin", "main")
     before = _head(placed)
 
-    rc, out = _cli("store", "checkout", first[:12])
+    rc, out = _cli("store", "checkout", root_commit[:12])
 
     # WHAT THE VERB ACTUALLY TOUCHED -- observed, not inferred from rc.
     moved = before != _head(placed)
@@ -126,21 +142,36 @@ def test_row2_checkout_refuses_a_resolved_root_with_no_git(two_member_ws: Path) 
     _git(root / "alpha", "push", "-q", "origin", "main")
     _git(root / "beta", "commit", "-q", "--allow-empty", "-m", "beta second")
     _git(root / "beta", "push", "-q", "origin", "main")
-    first = _head(root / "alpha")
     assert _cli("store", "commit", "-m", "record")[0] == 0
+    # A ROOT commit, for the same reason as row 1 -- and taken AFTER the commit, because
+    # the root has no commit to name before `store commit` runs.
+    root_commit = _head(root)
 
     # alpha's checkout moves AWAY entirely; a plain directory takes its declared path.
     (root / "alpha").rename(root / "alpha-moved-away")
     (root / "alpha").mkdir()
     (root / "alpha" / "not-a-repo.txt").write_text("a plain directory, not a checkout\n")
 
-    rc, out = _cli("store", "checkout", first[:12])
+    rc, out = _cli("store", "checkout", root_commit[:12])
 
     why = _identity(root, "alpha", "alpha", root / "alpha") + f"\n    rc={rc} out={out[:200]!r}"
-    assert rc == 3, (
+    # EXIT 5, matching the group's existing answer for this exact state: `store commit`
+    # already refuses "is not a checkout; materialize it first" with 5 (grip_cli.py:956),
+    # and this is that state reached by a different verb. The row's first cut asserted 3 by
+    # no better argument than my own convenience; the codebase already had a code for it.
+    assert rc == 5, (
         "a member whose resolved root carries no `.git` must be REFUSED with a named "
-        "state (exit 3), not handed to git to walk up from." + why
+        "state (exit 5, the group's code for `is not a checkout`), not handed to git to "
+        "walk up from." + why
     )
+    # ⚠ THIS ASSERTION IS THE ONE CARRYING THE MUTATION, and the exit code above is not.
+    # Measured by removing the `.git` check (the mutation, counted: the literal went 1 -> 0):
+    # the walk-up then runs and git fails on the store root's tree, which `_store_git`'s
+    # residual RuntimeError backstop maps to code 5 -- so the rc assertion alone STILL PASSES
+    # and the row stays green on a tree with the refusal deleted. What catches it is the
+    # message: the verb answers with git's "fatal: unable to read tree <sha>", which names
+    # neither the member nor its path. Delete this assertion as redundant with the rc above
+    # and the row stops being able to fail.
     assert "alpha" in out, (
         "the refusal must name the member and the path it could not use; a message that "
         "does not name them leaves the reader to work out which verb touched what." + why
@@ -216,14 +247,57 @@ def test_row4_all_five_verbs_agree_on_one_root_after_a_rename(two_member_ws: Pat
     _git(root / "alpha", "push", "-q", "origin", "main")
     _git(root / "beta", "commit", "-q", "--allow-empty", "-m", "beta second")
     _git(root / "beta", "push", "-q", "origin", "main")
-    first = _head(root / "alpha")
-    assert _cli("store", "commit", "-m", "record")[0] == 0
-
     placed = _place_member_at_its_name(root, "alpha", "alpha-elsewhere")
+    assert _cli("store", "commit", "-m", "record with the member at its name")[0] == 0
+    root_commit = _head(root)
+
+    # ⚠ THE TARGET REVISION IS POST-RENAME, AND THIS ASSERTS IT RATHER THAN ASSUMING IT.
+    # `_native_members_at(root, sha)` keys the pins by the names recorded in grip.toml AT THAT
+    # REVISION, so `store checkout` on a PRE-rename revision raises an uncaught KeyError at
+    # grip_cli.py:1122 before a single member is restored (measured by Atlas, in an isolation
+    # run with no path gap at all -- so it is a separate defect on a separate line, filed as
+    # its own issue and sequenced after this lane). A row that checked out a pre-rename
+    # revision would die on THAT while reading as "the path resolver is broken" -- the resolver
+    # would never have been reached. `root_commit` is taken AFTER the `store commit` that
+    # records the rename, so the name at that revision is the renamed one; that is the entire
+    # content of this precondition, and it is what keeps this row unentangled with the KeyError.
+    recorded = _git_out(root, "show", f"{root_commit[:12]}:grip.toml")
+    assert 'name = "alpha-elsewhere"' in recorded, (
+        "this row must check out a POST-rename revision: the pin lookup keys on the member "
+        "names recorded at the target revision, and a pre-rename target hits an unrelated "
+        "uncaught KeyError that would read as this lane's fix failing. Recorded grip.toml:\n"
+        + recorded
+    )
+
+    # The member moves on, so `checkout` has somewhere to restore it FROM. Without this
+    # the detach is a no-op and "did not move" is indistinguishable from "acted elsewhere",
+    # which is precisely the confusion this row exists to remove.
+    _git(placed, "commit", "-q", "--allow-empty", "-m", "third")
+    _git(placed, "push", "-q", "origin", "main")
     placed_before = _head(placed)
 
-    rc_co, out_co = _cli("store", "checkout", first[:12])
+    rc_co, out_co = _cli("store", "checkout", root_commit[:12])
+    # ⚠ THE WITNESS IS TAKEN HERE, AT THE MOMENT THE VERB RAN. Read at the END of the row
+    # instead, it answers about the last thing that touched the member: the re-attach below
+    # is a `git checkout main`, which puts HEAD back on exactly `placed_before`, so an
+    # end-of-row read compared the third commit with itself and reported "checkout did not
+    # move" while the checkout had in fact moved it (measured). A witness has a MOMENT as
+    # well as a subject.
+    placed_after_checkout = _head(placed)
     rc_st, out_st = _cli("store", "status", "--json")
+
+    # `commit` NEEDS SOMETHING TO RECORD, and the preceding `checkout` removes it: restoring
+    # the member onto the pin leaves HEAD equal to the recorded gitlink, so there is nothing
+    # to commit -- and `git commit` on a clean tree exits 1 with its message on **stdout**,
+    # which `_store_git`'s `stderr.strip() or "git command failed"` turns into a bare
+    # "git command failed" at exit 5 (measured: rc=1, stdout="nothing to commit", stderr
+    # empty, as a control against the same command with a real change). That refusal is about
+    # THIS FIXTURE, not about which root the verb resolved, and a row that read it as a
+    # resolution failure would be red for a reason it does not claim. Detaching also left the
+    # member off its branch, so putting it back is what gives `commit` a pin to record
+    # (and keeps it coverable: a dangling detached commit is not an ancestor of origin/main).
+    _git(placed, "checkout", "-q", "main")
+
     rc_cm, out_cm = _cli("store", "commit", "-m", "after the rename")
     rc_ck, out_ck = _cli("store", "check", "--json")
 
@@ -233,9 +307,12 @@ def test_row4_all_five_verbs_agree_on_one_root_after_a_rename(two_member_ws: Pat
         + f"\n    status    rc={rc_st} out={out_st[:160]!r}"
         + f"\n    commit    rc={rc_cm} out={out_cm[:160]!r}"
         + f"\n    check     rc={rc_ck} out={out_ck[:160]!r}"
+        + f"\n    target revision (post-rename) : {root_commit[:12]}"
+        + f"\n    placed HEAD before checkout : {placed_before}"
+        + f"\n    placed HEAD after  checkout : {placed_after_checkout}"
     )
     assert rc_co == 0, "checkout must act on the name-placed member" + why
-    assert placed_before != _head(placed), (
+    assert placed_before != placed_after_checkout, (
         "the name-placed checkout did not move, so `checkout` acted elsewhere" + why
     )
     assert rc_st == 0 and rc_cm == 0, "status and commit already resolve the name; they must stay 0" + why

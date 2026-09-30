@@ -1087,6 +1087,48 @@ def _native_store_diff(root: Path, ref_a: str, ref_b: str) -> list[dict[str, obj
     return [{"name": name, "old_pin": before.get(name), "new_pin": after.get(name), "changed": before.get(name) != after.get(name)} for name in sorted(set(before) | set(after))]
 
 
+def _member_working_root_or_refuse(
+    root: Path, members: list[dict[str, str]], member: dict[str, str]
+) -> Path:
+    """The member's WORKING ROOT, resolved exactly as `status`/`commit`/`check` resolve it,
+    and REFUSED when that root is not a checkout.
+
+    ONE RESOLVER FOR ALL FIVE VERBS. `checkout` and `materialize` used to build
+    ``root / member["path"]`` directly, so a member whose checkout sits at its NAME
+    coordinate -- the alpha-era placement the fallback exists for -- was acted on at a
+    path that holds nothing, while three other verbs in the same group acted on the
+    checkout that is really there. Two spellings of the member path in one verb group is
+    how `checkout` came to leave a name-placed member silently unrestored, and how
+    `materialize` came to clone a SECOND working copy beside the real one.
+
+    THE `.git` CHECK IS THE POINT OF THIS HELPER, and it closes a class neither verb could
+    see. When nothing is at the declared path and nothing is at the name, the resolver
+    returns the DECLARED path -- correctly, it has nothing better to offer. But a plain
+    directory inside a repository has no toplevel of its own, so `git status` and
+    `git checkout` run there WALK UP and operate on an ancestor: the store root and its
+    other members. A verb that reports one member while git acts on the whole store is the
+    same wrong-subject defect as a name that resolves onto a neighbour. Refusing names the
+    state; a ceiling on git's search would only change what git reads, not what we say.
+
+    A `.git` FILE counts: a separate git dir, a linked worktree and a submodule all carry
+    one, and all three are ordinary member checkouts.
+
+    Exit 5 rather than 3: the group already answers "is not a checkout; materialize it
+    first" with 5 at the `store commit` site, and this is that same state reached by a
+    different verb. A dirty member is 3, and it is checked AFTER this -- there is no point
+    asking whether a directory is dirty before knowing it is the member's directory.
+    """
+    claimed = _claimed_member_paths(root, members, exclude=member)
+    path = _native_member_working_root(root, member, claimed)
+    if not (path / ".git").exists():
+        raise NativeStoreRefusal(
+            f"{member['name']} path {path} is not a checkout (no .git); "
+            f"materialize it first, or point grip.toml at where the checkout is",
+            5,
+        )
+    return path
+
+
 def _native_store_checkout(root: Path, revision: str) -> tuple[str, list[dict[str, str]]]:
     """Materialize the members at a root commit (section 5: `checkout` is materialize-at-a-commit).
 
@@ -1101,7 +1143,11 @@ def _native_store_checkout(root: Path, revision: str) -> tuple[str, list[dict[st
     """
     members = _native_members(root)
     for member in members:
-        path = root / member["path"]
+        # THE WORKING ROOT, and the dirty probe is the first place it matters: probing a
+        # directory that holds no checkout either fails on a path the user can see is not
+        # the member, or -- if something else is there -- asks about a tree that is not
+        # this member's. Both answers are about the wrong subject.
+        path = _member_working_root_or_refuse(root, members, member)
         if _store_git(path, "status", "--porcelain").stdout.strip():
             raise NativeStoreRefusal(f"{member['name']} is dirty; commit or stash changes first", 3)
     # Exit 5 rather than 2 for an unresolvable name: 2 is the argument-parser's code in this
@@ -1118,7 +1164,11 @@ def _native_store_checkout(root: Path, revision: str) -> tuple[str, list[dict[st
     pins = _native_members_at(root, sha)
     restored: list[dict[str, str]] = []
     for member in members:
-        path = root / member["path"]
+        # RESOLVED AGAIN, not carried from the loop above: `_native_members_at` and the
+        # detach both move history, and a path cached before the root was detached is a
+        # second answer to a question that was already answered -- the same class as
+        # resolving the revision twice, which this verb's own docstring records.
+        path = _member_working_root_or_refuse(root, members, member)
         pin = pins[member["name"]]
         _store_git(path, "checkout", "--detach", pin)
         restored.append({"name": member["name"], "pin": pin, "head": _store_git(path, "rev-parse", "HEAD").stdout.strip()})
@@ -1181,10 +1231,24 @@ def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[
 
 def _native_store_materialize(root: Path) -> list[dict[str, str]]:
     materialized: list[dict[str, str]] = []
-    for member in _native_members(root):
+    members = _native_members(root)
+    for member in members:
         if _url_has_credentials(member["remote"]):
             raise _credential_refusal(member["name"])
-        path = root / member["path"]
+        # THE WORKING ROOT, resolved the way the other four verbs resolve it -- but NOT
+        # through `_member_working_root_or_refuse`, which refuses a root with no `.git`.
+        # Refusing is right for the four verbs that MOVE or READ an existing checkout; it
+        # is exactly wrong here, because "no checkout" is the state this verb exists to
+        # fix. So the resolver's answer is used and the existing `is_checkout` test decides
+        # between ADOPTING what is there and cloning.
+        #
+        # WITHOUT THIS, a member placed at its NAME coordinates as `is_checkout` false --
+        # the test looked at `root / member["path"]`, which holds nothing -- and the verb
+        # CLONED A SECOND WORKING COPY at the declared path while the member's real
+        # checkout sat one directory over, untouched. `Materialized N` at rc 0, and nothing
+        # in the message to say which of the two copies a later `commit` would pin.
+        claimed = _claimed_member_paths(root, members, exclude=member)
+        path = _native_member_working_root(root, member, claimed)
         top = _store_git(path, "rev-parse", "--show-toplevel", check=False)
         is_checkout = top.returncode == 0 and Path(top.stdout.strip()).resolve() == path.resolve()
         if not is_checkout:

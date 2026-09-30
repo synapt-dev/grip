@@ -554,6 +554,35 @@ def test_two_group_files_claiming_one_lane_are_refused(
     assert "Traceback" not in output, f"the operator met a stack: {output}"
 
 
+def test_an_empty_group_is_refused_rather_than_reported_as_a_success(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """A RECORD THAT EXISTS WITH NO PRs IS NOT AN ANSWER.
+
+    The verb used to exit **0** on a group with an empty `prs`, printing
+    `merged: [] / merged_receipts: []` in the SAME document shape as a completed merge --
+    and with no `status` field on either, because `status` is failure-only. So a caller
+    gating on the exit code recorded a merge that never happened, and nothing in the
+    output contradicted it. `pr view`'s own source already carries the decision the merge
+    verb did not; this is that decision, one verb over.
+
+    Driven through the console entry point because the EXIT CODE is the surface a script
+    reads, so the assertion is about the code and the payload shape rather than about the
+    prose alone.
+    """
+    workspace = _workspace(tmp_path, [])
+    _write_raw_group(workspace, [])
+
+    code = _run_main(["pr", "merge", str(workspace), OWNER_UNIT, LANE_NAME])
+    output = "".join(capsys.readouterr())
+
+    assert code == 1, f"an empty group must not exit 0: {output}"
+    assert "names no members" in output, f"the refusal must say why: {output}"
+    # AND THE TWO SHAPES MUST BE TELLABLE APART -- that is the whole defect.
+    assert '"status": "failed"' in output, f"the failure shape must say so: {output}"
+    assert "Traceback" not in output, f"the operator met a stack: {output}"
+
+
 class _RecordingAdapter:
     """Records a host status READ as well as a merge.
 

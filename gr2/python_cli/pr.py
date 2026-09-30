@@ -394,6 +394,30 @@ def create_pr_group(
     return group
 
 
+class PRMergeEmptyGroupError(PRMergeError):
+    """The group is READABLE and names no members, so there is nothing to merge.
+
+    A record that EXISTS with no PRs is not an answer -- the decision `pr view`'s source
+    already carries, and the merge verb did not. Without this the verb exits **0** having
+    merged nothing, in the same document shape as a full success and with no `status`
+    field to tell them apart, so a caller gating on the exit code records a merge that
+    never happened. `status` is failure-only on this payload; the success shape sets none.
+
+    Distinct from `PRMergeGroupError`: that one is for a group that CANNOT BE READ. This
+    one reads perfectly and says there is no work in it, which is a different sentence to
+    give the operator.
+    """
+
+    def __init__(self, group_id: object, *, completed: list[CompletedMerge]) -> None:
+        reason = (
+            f"the group {group_id!r} names no members, so there was nothing to merge. "
+            "Refused rather than reported as a success: an empty merge and a completed "
+            "one share the same payload shape, so the exit code alone cannot tell them "
+            "apart and a caller would record work that never happened."
+        )
+        super().__init__(str(group_id), 0, reason, completed=completed)
+
+
 def group_members(group: Mapping[str, object]) -> list[tuple[str, int]]:
     """Every member as `(repo, pr_number)`, proven before anything reads one.
 
@@ -477,6 +501,13 @@ def merge_pr_group(
     # Members are proven ONCE, before any of the sites below that used to convert a
     # number, so a malformed group is refused here and nowhere else.
     members = group_members(group)
+    if not members:
+        # NOTHING TO MERGE IS NOT A SUCCESS. Refused before any pin, target or host call,
+        # so `completed` is empty by construction. The alternative is what this verb did
+        # until now: exit 0 with an empty payload in the same shape as a completed merge,
+        # and no `status` field on either, so a caller gating on the exit code records
+        # work that never happened.
+        raise PRMergeEmptyGroupError(pr_group_id, completed=[])
     member_repos = [repo for repo, _ in members]
     unknown_pins = sorted(set(pins) - set(member_repos))
     if unknown_pins:

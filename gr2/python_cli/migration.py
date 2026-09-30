@@ -873,9 +873,21 @@ def _safe_workspace_relative_path(value: object, field: str) -> str:
         or windows_path.drive
         or windows_path.root
         or ".." in posix_path.parts
-        or str(posix_path) in {".", ""}
     ):
-        raise ValueError(f"{field} escapes the workspace: {value!r}")
+        # The gripspace IS the root and stays it: a gitlink cannot point outside
+        # its tree, so offering a parent directory as a root would trade this
+        # refusal for a checkout that cannot resolve. The message says what to do
+        # instead rather than where else the root could be.
+        raise ValueError(
+            f"{field} is outside this gripspace ({value!r}); members live under the "
+            "gripspace root. Move or clone it inside the gripspace, or leave it out "
+            "of this spec."
+        )
+    if str(posix_path) in {".", ""}:
+        # '.' is INSIDE the gripspace, so the sentence above would be false here.
+        raise ValueError(
+            f"{field} must name a member path inside the gripspace, not {value!r}"
+        )
     return posix_path.as_posix()
 
 

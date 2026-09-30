@@ -560,3 +560,41 @@ def test_the_same_non_object_dir_info_with_editable_absent_is_also_readable(
     )
 
     assert version_line(DIST) == "2.0.0a5 released"
+
+
+def test_a_non_utf8_record_answers_and_does_not_raise(fixture_path: Path) -> None:
+    """THE SIXTH SEAM, shape one: the module's one unguarded READ.
+
+    `read_text` on a `PathDistribution` suppresses exactly five exceptions, read from the
+    stdlib source: FileNotFoundError, IsADirectoryError, KeyError, NotADirectoryError and
+    PermissionError. A record holding non-UTF-8 BYTES is not one of them -- it raises
+    `UnicodeDecodeError`, which is a `ValueError` and NOT an `OSError`, so a catch written
+    for `OSError` alone still misses it. Measured: it escaped through `_editable_path` and
+    through `version_line`, which is the promise this module makes three times.
+    """
+    di = fixture_path / f"{DIST}-2.0.0a5.dist-info"
+    di.mkdir(parents=True)
+    (di / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {DIST}\nVersion: 2.0.0a5\n")
+    (di / "direct_url.json").write_bytes(
+        b'{"url": "file:///tmp/somewhere", "dir_info": {"editable": \xff\xfe}}'
+    )
+
+    assert version_line(DIST) == "2.0.0a5 released"
+
+
+def test_a_symlink_loop_in_the_record_answers_and_does_not_raise(fixture_path: Path) -> None:
+    """THE SIXTH SEAM, shape two: the read fails with an `OSError`, but not a suppressed one.
+
+    A `direct_url.json` that is a symlink to itself raises `OSError` ELOOP, which is not in
+    `read_text`'s five. It is a different failing CLASS from the row above -- one is a
+    decode failure, one is an I/O failure -- which is why the fix catches both and why one
+    witness row could not stand for the other.
+    """
+    di = fixture_path / f"{DIST}-2.0.0a5.dist-info"
+    di.mkdir(parents=True)
+    (di / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {DIST}\nVersion: 2.0.0a5\n")
+    loop = di / "loop"
+    os.symlink(str(loop), str(loop))
+    os.symlink(str(loop), str(di / "direct_url.json"))
+
+    assert version_line(DIST) == "2.0.0a5 released"

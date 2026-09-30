@@ -92,7 +92,19 @@ def _editable_path(dist: importlib.metadata.Distribution) -> PurePath | None:
     (`pip install ./dir`) writes the same file with `dir_info.editable` false, and naming a
     commit for it would point at a checkout the running code does not come from.
     """
-    raw = dist.read_text("direct_url.json")
+    try:
+        raw = dist.read_text("direct_url.json")
+    except (UnicodeDecodeError, OSError):
+        # THE SIXTH SEAM: this is the module's one unguarded READ, and the guards below it
+        # all assume the read succeeded. `PathDistribution.read_text` suppresses exactly five
+        # exceptions (FileNotFoundError, IsADirectoryError, KeyError, NotADirectoryError,
+        # PermissionError), and two malformed shapes escape that set: non-UTF-8 bytes, which
+        # raise `UnicodeDecodeError` -- a `ValueError`, NOT an `OSError`, so catching OSError
+        # alone misses it -- and a symlink loop, which raises `OSError` ELOOP. Measured: both
+        # escaped through this function AND through `version_line`. A record that cannot be
+        # READ gets the declared answer for a record that cannot be PARSED: no readable
+        # editable checkout, so None.
+        return None
     if not raw:
         return None
     try:

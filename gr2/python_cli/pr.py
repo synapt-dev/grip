@@ -38,8 +38,10 @@ __all__ = [
     "MergeMethod",
     "PRHeadPinError",
     "PRMergeError",
+    "PRMergeGroupError",
     "PRMergeOutcomeUnknownError",
     "PRMergePostconditionError",
+    "PRMergeTargetError",
     "UnpermittedMergeMethodError",
     "check_pr_group_status",
     "create_pr_group",
@@ -149,6 +151,67 @@ class PRHeadPinError(PRMergeError):
             "and read it again, or pass the head you actually read."
         )
         super().__init__(repo, pr_number, reason, completed=completed)
+
+
+class PRMergeTargetError(PRMergeError):
+    """A member has no explicit local verification target, so NOTHING merged.
+
+    `completed` is always empty by construction: this is checked before the pin
+    pass and before the first merge, so no member has been touched.
+
+    It is a PRMergeError subclass rather than a bare ValueError because the
+    merge verb's CLI handler catches PRMergeError and renders it as a sentence.
+    As a ValueError this one reached the operator as a traceback -- on the verb
+    whose whole point is to be the safe way to merge a group.
+    """
+
+    def __init__(
+        self,
+        repo: str,
+        pr_number: int,
+        *,
+        missing: list[str],
+        completed: list[CompletedMerge],
+    ) -> None:
+        self.missing = list(missing)
+        listed = ", ".join(self.missing)
+        reason = (
+            f"no explicit local verification target for {listed}: merging would record "
+            "a completion this run never verified against a local DAG, so nothing "
+            "merged. Every member of the group needs a declared workspace repo with a "
+            "live clone, and the group's members are the repos its `prs` entries name."
+        )
+        super().__init__(repo, pr_number, reason, completed=completed)
+
+
+class PRMergeGroupError(PRMergeError):
+    """The group cannot be read as written, so nothing was attempted.
+
+    Raised before any conversion of the group's numbers. Three sites on this path call
+    `int(pr_number)` -- the target check, the pin pass and the merge loop -- and an
+    unreadable number makes `int()` raise ValueError or TypeError, neither of which the
+    merge verb's CLI catches. Driven through the entry point with a member carrying
+    "abc", the operator saw NOTHING at all: the exception propagates out of `main()`,
+    so it is not a sentence and not even a rendered traceback.
+
+    `pr_number` is carried UNREAD into the sentence, so the refusal can show what was
+    actually there rather than a conversion error about it.
+    """
+
+    def __init__(
+        self,
+        repo: str,
+        pr_number: object,
+        *,
+        completed: list[CompletedMerge],
+        problem: str = "which is not an integer",
+    ) -> None:
+        reason = (
+            f"the group's entry for {repo!r} carries pr_number {pr_number!r}, {problem}, "
+            "so the group cannot be read. Nothing was attempted -- the whole entry is "
+            "proven before anything reads it."
+        )
+        super().__init__(repo, pr_number, reason, completed=completed)  # type: ignore[arg-type]
 
 
 class PRMergeOutcomeUnknownError(PRMergeError):
@@ -331,6 +394,87 @@ def create_pr_group(
     return group
 
 
+class PRMergeEmptyGroupError(PRMergeError):
+    """The group is READABLE and names no members, so there is nothing to merge.
+
+    A record that EXISTS with no PRs is not an answer -- the decision `pr view`'s source
+    already carries, and the merge verb did not. Without this the verb exits **0** having
+    merged nothing, in the same document shape as a full success and with no `status`
+    field to tell them apart, so a caller gating on the exit code records a merge that
+    never happened. `status` is failure-only on this payload; the success shape sets none.
+
+    Distinct from `PRMergeGroupError`: that one is for a group that CANNOT BE READ. This
+    one reads perfectly and says there is no work in it, which is a different sentence to
+    give the operator.
+    """
+
+    def __init__(self, group_id: object, *, completed: list[CompletedMerge]) -> None:
+        reason = (
+            f"the group {group_id!r} names no members, so there was nothing to merge. "
+            "Refused rather than reported as a success: an empty merge and a completed "
+            "one share the same payload shape, so the exit code alone cannot tell them "
+            "apart and a caller would record work that never happened."
+        )
+        super().__init__(str(group_id), 0, reason, completed=completed)
+
+
+def group_members(group: Mapping[str, object]) -> list[tuple[str, int]]:
+    """Every member as `(repo, pr_number)`, proven before anything reads one.
+
+    THE DOCUMENT, THEN THE ENTRY, NOT ONLY THE VALUE. `_load_group` is a bare `json.loads`
+    with no schema validation, so a group file can be a list or a string at its top level,
+    carry a `prs` that is not a list, or carry an entry that is not an object or that lacks
+    a key -- and every read below assumes all four. Each shape is proven here, outermost
+    first, before anything reads any of them.
+
+    The CLI's pin parser runs `_parse_head_pins` BEFORE it calls this function, and used to
+    read `item["repo"]` itself -- so the missing-`repo` shape left `main()` as a bare
+    `KeyError`, printing nothing. It is tolerant now rather than refusing, and that is
+    deliberate: this function's refusal is a `PRMergeError`, and the merge verb's
+    `PRMergeError` handler prints the offending entry inside a JSON payload, which the pin
+    parser's own `except ValueError` handler does not. Moving the refusal earlier would
+    keep the sentence and silently drop the entry from the operator's view.
+
+    A QUANTIFIER over the shape rather than an enumeration of the exceptions a conversion
+    raises: `int()` accepts `True` and `7.9` in silence, so "unreadable" was narrower than
+    "not an integer", and a list of exception types is short the moment a type is missed.
+    """
+    # THE DOCUMENT, NOT ONLY THE ENTRY. This is the first act of the function and it
+    # assumed a Mapping -- `_load_group` is a bare `json.loads`, so a group file whose TOP
+    # LEVEL is a list, a string, a number or null made `group.get` raise AttributeError
+    # out of `main()` with nothing printed, which is the same failure this guard exists to
+    # remove one level down. The quantifier has to start at the outermost shape or it is
+    # only proving the part it happens to read first.
+    if not isinstance(group, Mapping):
+        raise PRMergeGroupError(
+            "<the group file>",
+            group,
+            completed=[],
+            problem="which is not a JSON object at its top level",
+        )
+    raw_prs = group.get("prs")
+    if not isinstance(raw_prs, list):
+        raise PRMergeGroupError(
+            "<the group>", raw_prs, completed=[], problem="which is not a list of members"
+        )
+    members: list[tuple[str, int]] = []
+    for entry in raw_prs:
+        if not isinstance(entry, dict):
+            raise PRMergeGroupError(
+                "<an entry>", entry, completed=[], problem="which is not an object"
+            )
+        repo = entry.get("repo")
+        number = entry.get("pr_number")
+        if not isinstance(repo, str) or not repo:
+            raise PRMergeGroupError(
+                repr(repo), number, completed=[], problem="which is not a usable repo name"
+            )
+        if not isinstance(number, int) or isinstance(number, bool):
+            raise PRMergeGroupError(repo, number, completed=[])
+        members.append((repo, number))
+    return members
+
+
 def merge_pr_group(
     workspace_root: Path,
     pr_group_id: str,
@@ -354,7 +498,17 @@ def merge_pr_group(
     targets = dict(verification_targets)
     pins = dict(expected_heads or {})
 
-    member_repos = [str(item["repo"]) for item in group["prs"]]
+    # Members are proven ONCE, before any of the sites below that used to convert a
+    # number, so a malformed group is refused here and nowhere else.
+    members = group_members(group)
+    if not members:
+        # NOTHING TO MERGE IS NOT A SUCCESS. Refused before any pin, target or host call,
+        # so `completed` is empty by construction. The alternative is what this verb did
+        # until now: exit 0 with an empty payload in the same shape as a completed merge,
+        # and no `status` field on either, so a caller gating on the exit code records
+        # work that never happened.
+        raise PRMergeEmptyGroupError(pr_group_id, completed=[])
+    member_repos = [repo for repo, _ in members]
     unknown_pins = sorted(set(pins) - set(member_repos))
     if unknown_pins:
         # A pin that matches no member is a typo that leaves the real member
@@ -367,13 +521,20 @@ def merge_pr_group(
             + ")"
         )
 
-    missing_targets = [
-        str(item["repo"]) for item in group["prs"] if str(item["repo"]) not in targets
-    ]
+    # The numbers come from the validated pairs, so no site on this path converts one
+    # again: `int()` accepts `True` and `7.9` in silence, and the three reads that used
+    # to convert here, in the pin pass and in the merge loop were three chances to
+    # accept a number nobody wrote.
+    missing_targets = [(repo, number) for repo, number in members if repo not in targets]
     if missing_targets:
-        raise ValueError(
-            "merge verification has no explicit local target for: "
-            + ", ".join(missing_targets)
+        # A PRMergeError subclass, NOT a ValueError: the merge verb's CLI catches
+        # PRMergeError and prints a sentence, so a bare ValueError raised here
+        # reached the operator as a traceback. Nothing has merged at this point.
+        raise PRMergeTargetError(
+            missing_targets[0][0],
+            missing_targets[0][1],
+            missing=[repo for repo, _ in missing_targets],
+            completed=[],
         )
 
     # THE PIN PASS. It runs over every member BEFORE the first merge, because a

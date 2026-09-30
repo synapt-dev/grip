@@ -379,11 +379,79 @@ def _find_pr_group(workspace_root: Path, owner_unit: str, lane_name: str) -> tup
     root = workspace_root / ".grip" / "pr_groups"
     if not root.exists():
         raise SystemExit(f"pr group not found for {owner_unit}/{lane_name}: {root}")
+    # A LOCATOR LOCATES; IT DOES NOT REFUSE THE DOCUMENT. This loop reads every `*.json`
+    # in the directory, so it meets whatever else is there -- and it used to assume each
+    # one was an object, which made a file whose top level is a list, a string, a number
+    # or null raise `AttributeError: '<type>' object has no attribute 'get'` out of
+    # `main()` with NOTHING printed. An unparseable file did the same with
+    # JSONDecodeError. A file that is not a JSON object cannot be the group being looked
+    # for, so it is SKIPPED and the search continues: the operator gets the existing
+    # "pr group not found" sentence, which is true -- no group by that name was found --
+    # and never a traceback. Refusing here instead would let one stray file in another
+    # lane's directory block a merge for a lane that is fine.
+    matches: list[tuple[Path, dict]] = []
     for path in sorted(root.glob("*.json")):
-        doc = json.loads(path.read_text())
+        try:
+            doc = json.loads(path.read_text())
+        except Exception:
+            # NOT `(OSError, ValueError)`, and the difference is not theoretical: a
+            # deeply-nested but perfectly VALID document makes `json.loads` raise
+            # RecursionError, which is neither -- and `json` accepts the nesting that
+            # produces it, so the file is one a group directory can really carry. The
+            # named pair was short again, one counter over from the report block that
+            # learned the same lesson tonight. The residual is KeyboardInterrupt and
+            # SystemExit, which mean the runner is aborting and which it would be a
+            # defect to swallow.
+            continue
+        if not isinstance(doc, dict):
+            continue
         if doc.get("owner_unit") == owner_unit and doc.get("lane_name") == lane_name:
-            return path, doc
-    raise SystemExit(f"pr group not found for {owner_unit}/{lane_name}: {root}")
+            matches.append((path, doc))
+    if not matches:
+        raise SystemExit(f"pr group not found for {owner_unit}/{lane_name}: {root}")
+
+    if len(matches) > 1:
+        # TWO FILES CLAIMING ONE LANE IS A STATE THE OPERATOR NEVER EXPRESSED. Silently
+        # taking the first-by-name is the same failure the id-less file got refused for:
+        # a refusal that names what is wrong beats a silent pick that reads as success.
+        raise SystemExit(
+            f"{len(matches)} group files match {owner_unit}/{lane_name}: "
+            + ", ".join(str(p) for p, _ in matches)
+            + "; a lane names one group, so this cannot be resolved by guessing."
+        )
+
+    path, doc = matches[0]
+    # THE FIELD EVERY CALLER READS, PROVEN WHERE THE GROUP IS CHOSEN -- which is here,
+    # because this is the only place one is chosen. The two keys above are the FILTER;
+    # `pr_group_id` is what the call sites then SUBSCRIPT to find the group's merge state,
+    # and this function never proved it. Three shapes escaped `main()` printing nothing:
+    # missing (KeyError), null, and a number -- and the last two are the sharper half,
+    # because they do not raise where they are read, they become a PATH and raise two
+    # frames later in the loader.
+    #
+    # REFUSE here rather than skip, unlike the two skips above: those files did not match,
+    # so they could not be the group. This one matched on BOTH filter keys, so it IS the
+    # group, and "pr group not found" would be false.
+    group_id = doc.get("pr_group_id")
+    if not isinstance(group_id, str) or not group_id:
+        raise SystemExit(
+            f"pr group file {path} matches {owner_unit}/{lane_name} but its "
+            f"pr_group_id is {group_id!r}, which is not a usable name; every caller "
+            "reads that field to find the group's merge state, so the group cannot be used."
+        )
+    # AND THE ID MUST NAME THE FILE THAT WAS FOUND. The callers do not load `path`; they
+    # hand the id to the loader, which REBUILDS the path from it. So a hand-renamed file
+    # makes the locator find one file and the loader look for another, and the loader's
+    # FileNotFoundError escapes `main()` with nothing printed. Proven here because this is
+    # the only place both of them are in hand -- and it is the same axis as the guard just
+    # above: the id was proven a usable NAME and never proven to name the RIGHT FILE.
+    if path.stem != group_id:
+        raise SystemExit(
+            f"pr group file {path} is named {path.stem!r} but declares pr_group_id "
+            f"{group_id!r}; every caller rebuilds the path from that id, so it would "
+            f"look for {path.parent / (group_id + '.json')} and not find it."
+        )
+    return path, doc
 
 
 def _group_state_from_statuses(statuses: list[dict[str, object]]) -> str:
@@ -461,7 +529,20 @@ def _parse_head_pins(
     whichever member happened to be listed first: a pin that lands on the wrong
     member reads as protection and is not.
     """
-    members = [str(item["repo"]) for item in group.get("prs", [])]  # type: ignore[union-attr]
+    # TOLERANT ON PURPOSE, AND NOT THIS FUNCTION'S REFUSAL TO MAKE. Reading `item["repo"]`
+    # directly raised a bare KeyError for an entry with no repo, and this runs BEFORE the
+    # merge loop's own guard -- so the whole refusal reached the operator as nothing at
+    # all, not a sentence and not a rendered traceback. Refusing HERE is wrong too: this
+    # call sits under the plain `except ValueError` handler, which prints the sentence
+    # alone, while the merge loop's refusal is caught by the `PRMergeError` handler, which
+    # prints the offending entry inside a JSON payload. A group this cannot read yields no
+    # members, and `merge_pr_group` refuses it -- showing the entry -- before anything merges.
+    _raw_prs = group.get("prs") if isinstance(group, Mapping) else None
+    members = [
+        entry["repo"]
+        for entry in (_raw_prs if isinstance(_raw_prs, list) else [])
+        if isinstance(entry, dict) and isinstance(entry.get("repo"), str) and entry["repo"]
+    ]
     pins: dict[str, str] = {}
     for entry in entries or []:
         text = entry.strip()
@@ -497,10 +578,15 @@ def _parse_head_pins(
                 f"({pins[repo][:8]} and {sha[:8]})"
             )
         pins[repo] = sha
-    if pins and len(pins) != len(members):
-        unpinned = [member for member in members if member not in pins]
+    # DISTINCT repos, not positions. A group that lists one repo twice otherwise
+    # compares 2 pins against 3 positions and refuses a group whose every repo WAS
+    # pinned -- and the message it printed named NOBODY, because `unpinned` filtered
+    # that same duplicated list. Counting by distinct repo makes both halves right.
+    distinct_members = list(dict.fromkeys(members))
+    if pins and len(pins) != len(distinct_members):
+        unpinned = [member for member in distinct_members if member not in pins]
         raise ValueError(
-            f"--match-head-commit pins {len(pins)} of {len(members)} members; "
+            f"--match-head-commit pins {len(pins)} of {len(distinct_members)} members; "
             f"{', '.join(unpinned)} would merge unpinned. Pin every member or none: a "
             "partial pin reads as protection for the whole group and is not."
         )

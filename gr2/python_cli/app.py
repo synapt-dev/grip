@@ -389,6 +389,7 @@ def _find_pr_group(workspace_root: Path, owner_unit: str, lane_name: str) -> tup
     # "pr group not found" sentence, which is true -- no group by that name was found --
     # and never a traceback. Refusing here instead would let one stray file in another
     # lane's directory block a merge for a lane that is fine.
+    matches: list[tuple[Path, dict]] = []
     for path in sorted(root.glob("*.json")):
         try:
             doc = json.loads(path.read_text())
@@ -405,27 +406,52 @@ def _find_pr_group(workspace_root: Path, owner_unit: str, lane_name: str) -> tup
         if not isinstance(doc, dict):
             continue
         if doc.get("owner_unit") == owner_unit and doc.get("lane_name") == lane_name:
-            # THE FIELD EVERY CALLER READS, PROVEN WHERE THE GROUP IS CHOSEN -- which is
-            # here, because this is the only place one is chosen. The two keys above are
-            # the FILTER; `pr_group_id` is what the call sites then SUBSCRIPT to find the
-            # group's merge state, and this function never proved it. Three shapes escaped
-            # `main()` printing nothing: missing (KeyError), null, and a number. The last
-            # two are the sharper half, because they do not raise where they are read --
-            # they become a PATH and raise two frames later in the loader.
-            #
-            # REFUSE here rather than skip, unlike the two skips above: those files did not
-            # match, so they could not be the group. This one matched on BOTH filter keys,
-            # so it IS the group, and "pr group not found" would be false.
-            group_id = doc.get("pr_group_id")
-            if not isinstance(group_id, str) or not group_id:
-                raise SystemExit(
-                    f"pr group file {path} matches {owner_unit}/{lane_name} but its "
-                    f"pr_group_id is {group_id!r}, which is not a usable name; every "
-                    "caller reads that field to find the group's merge state, so the "
-                    "group cannot be used."
-                )
-            return path, doc
-    raise SystemExit(f"pr group not found for {owner_unit}/{lane_name}: {root}")
+            matches.append((path, doc))
+    if not matches:
+        raise SystemExit(f"pr group not found for {owner_unit}/{lane_name}: {root}")
+
+    if len(matches) > 1:
+        # TWO FILES CLAIMING ONE LANE IS A STATE THE OPERATOR NEVER EXPRESSED. Silently
+        # taking the first-by-name is the same failure the id-less file got refused for:
+        # a refusal that names what is wrong beats a silent pick that reads as success.
+        raise SystemExit(
+            f"{len(matches)} group files match {owner_unit}/{lane_name}: "
+            + ", ".join(str(p) for p, _ in matches)
+            + "; a lane names one group, so this cannot be resolved by guessing."
+        )
+
+    path, doc = matches[0]
+    # THE FIELD EVERY CALLER READS, PROVEN WHERE THE GROUP IS CHOSEN -- which is here,
+    # because this is the only place one is chosen. The two keys above are the FILTER;
+    # `pr_group_id` is what the call sites then SUBSCRIPT to find the group's merge state,
+    # and this function never proved it. Three shapes escaped `main()` printing nothing:
+    # missing (KeyError), null, and a number -- and the last two are the sharper half,
+    # because they do not raise where they are read, they become a PATH and raise two
+    # frames later in the loader.
+    #
+    # REFUSE here rather than skip, unlike the two skips above: those files did not match,
+    # so they could not be the group. This one matched on BOTH filter keys, so it IS the
+    # group, and "pr group not found" would be false.
+    group_id = doc.get("pr_group_id")
+    if not isinstance(group_id, str) or not group_id:
+        raise SystemExit(
+            f"pr group file {path} matches {owner_unit}/{lane_name} but its "
+            f"pr_group_id is {group_id!r}, which is not a usable name; every caller "
+            "reads that field to find the group's merge state, so the group cannot be used."
+        )
+    # AND THE ID MUST NAME THE FILE THAT WAS FOUND. The callers do not load `path`; they
+    # hand the id to the loader, which REBUILDS the path from it. So a hand-renamed file
+    # makes the locator find one file and the loader look for another, and the loader's
+    # FileNotFoundError escapes `main()` with nothing printed. Proven here because this is
+    # the only place both of them are in hand -- and it is the same axis as the guard just
+    # above: the id was proven a usable NAME and never proven to name the RIGHT FILE.
+    if path.stem != group_id:
+        raise SystemExit(
+            f"pr group file {path} is named {path.stem!r} but declares pr_group_id "
+            f"{group_id!r}; every caller rebuilds the path from that id, so it would "
+            f"look for {path.parent / (group_id + '.json')} and not find it."
+        )
+    return path, doc
 
 
 def _group_state_from_statuses(statuses: list[dict[str, object]]) -> str:

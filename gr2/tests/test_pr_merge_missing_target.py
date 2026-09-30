@@ -463,8 +463,77 @@ def test_a_matching_group_whose_pr_group_id_is_unusable_is_refused(
         code = _run_main(["pr", "merge", str(workspace), OWNER_UNIT, LANE_NAME])
         output = "".join(capsys.readouterr())
         assert code is not None, f"{label}: main() exited carrying nothing: {output}"
-        assert "pr_group_id" in str(code), f"{label}: exit carried {code!r}"
+        # THE CLAIM, not the field NAME. Asserting that the string "pr_group_id" appears
+        # pins the SUBJECT and leaves the SENTENCE unwitnessed -- inverting it to "which is
+        # perfectly fine and usable" passed every row here until this line existed. The
+        # offending VALUE has to be carried too, which is the same "name the offender"
+        # property the entry rows assert one layer in.
+        assert "not a usable name" in str(code), f"{label}: exit carried {code!r}"
+        if value != "<missing>":
+            assert repr(value) in str(code), f"{label}: the value is not carried: {code!r}"
         assert "Traceback" not in output, f"{label}: the operator met a stack: {output}"
+
+
+def test_a_group_file_whose_NAME_disagrees_with_its_id_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """THE ID IS PROVEN A USABLE NAME AND WAS NEVER PROVEN TO NAME THE FILE FOUND.
+
+    The locator returns `(path, doc)`; the callers never load `path`. They hand the id to
+    the loader, which REBUILDS the path from it. So a hand-renamed group makes the locator
+    find one file and the loader look for another, and the loader's FileNotFoundError
+    escapes `main()` with nothing printed -- the signature of everything else on this path.
+    """
+    workspace = _workspace(tmp_path, [])
+    declared = "pg_declared"
+    # `_workspace` writes its own group file; this row needs ONE candidate, or the
+    # duplicate-lane refusal fires first and the rename guard is never reached.
+    (workspace / ".grip" / "pr_groups" / f"{GROUP_ID}.json").unlink()
+    (workspace / ".grip" / "pr_groups" / "renamed-by-hand.json").write_text(
+        json.dumps(
+            {
+                "pr_group_id": declared,
+                "owner_unit": OWNER_UNIT,
+                "lane_name": LANE_NAME,
+                "prs": [{"repo": "app", "pr_number": 1}],
+            }
+        )
+    )
+
+    code = _run_main(["pr", "merge", str(workspace), OWNER_UNIT, LANE_NAME])
+    output = "".join(capsys.readouterr())
+    assert code is not None, f"main() exited carrying nothing: {output}"
+    # Both names, so the operator can see the disagreement rather than guess at it.
+    assert "renamed-by-hand" in str(code) and declared in str(code), str(code)
+    assert "Traceback" not in output, f"the operator met a stack: {output}"
+
+
+def test_two_group_files_claiming_one_lane_are_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """A DUPLICATE LANE IS A STATE THE OPERATOR NEVER EXPRESSED.
+
+    Silently taking the first-by-name is the same failure the id-less file is refused for:
+    a silent pick reads as success. Both paths are named so the operator can delete one.
+    """
+    workspace = _workspace(tmp_path, [])
+    for name in ("pg_one", "pg_two"):
+        (workspace / ".grip" / "pr_groups" / f"{name}.json").write_text(
+            json.dumps(
+                {
+                    "pr_group_id": name,
+                    "owner_unit": OWNER_UNIT,
+                    "lane_name": LANE_NAME,
+                    "prs": [{"repo": "app", "pr_number": 1}],
+                }
+            )
+        )
+
+    code = _run_main(["pr", "merge", str(workspace), OWNER_UNIT, LANE_NAME])
+    output = "".join(capsys.readouterr())
+    assert code is not None, f"main() exited carrying nothing: {output}"
+    assert "pg_one" in str(code) and "pg_two" in str(code), str(code)
+    assert "Traceback" not in output, f"the operator met a stack: {output}"
 
 
 class _RecordingAdapter:

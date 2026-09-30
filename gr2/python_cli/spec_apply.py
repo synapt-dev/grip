@@ -255,34 +255,22 @@ def validate_spec(workspace_root: Path) -> list[ValidationIssue]:
             else:
                 resolved_paths[resolved_unit_root] = name
 
-        # REFUSED UNTIL THE CONSUMER CATCHES UP, WITH THE REASON NAMED.
-        # `migrate-gr1` now legitimately declares a sibling desk or the root
-        # itself (slice items 1-2), but apply is NOT updated for that shape:
-        # member presence is checked by NAME, so it clones `grip` into
-        # `<desk>/grip` beside the desk's own `./gitgrip`, and it writes
-        # `unit.toml` INTO the desk. Both corrupt a layout, and a refusal costs
-        # a user a message where a wrong action costs them their workspace.
-        # Items 3/5/6 are what make the shape safe to apply: placement by the
-        # member's spec path, unit metadata under `.grip/state/units/<unit>/`,
-        # and adoption of an existing checkout instead of a re-clone.
-        if resolved_unit_root is not None and (path == "." or path.startswith("../")):
-            issues.append(
-                ValidationIssue(
-                    "error",
-                    "unit_path_not_yet_appliable",
-                    (
-                        f"unit '{name}' declares path {path!r} (a sibling desk or the root itself), "
-                        "and apply does not support that shape yet: it places members by NAME and "
-                        "writes unit metadata into the unit home, so for a sibling desk it would "
-                        "clone a member beside that desk's existing checkout and drop a gr2 file "
-                        "into it. Support lands with slice items 3, 5 and 6 (placement by the "
-                        "member's spec path, unit metadata under .grip/state/units/<unit>/, and "
-                        "adopt-not-re-clone). Declare this unit under the workspace root to apply "
-                        "it today."
-                    ),
-                    f"units[{idx}].path",
-                )
-            )
+        # THE REFUSAL IS LIFTED, and the two lines above it in the git history are
+        # the reason it existed. `migrate-gr1` legitimately declares a sibling desk
+        # or the root itself, but apply was not updated for that shape: member
+        # presence was checked by NAME, so it cloned `grip` into `<desk>/grip`
+        # beside the desk's own `./gitgrip`, and it wrote `unit.toml` INTO the
+        # desk. Items 3 and 5 are what make the shape safe, and both landed with
+        # this change: members are placed by the member's SPEC PATH through ONE
+        # resolver (`unit_member_path`), and a sibling unit's metadata goes under
+        # `<root>/.grip/state/units/<unit>/` rather than into the desk
+        # (`unit_metadata_path`). Adoption instead of re-clone was already true of
+        # the resolver's contract and is now true of this path too.
+        #
+        # A refusal here would be a defect rather than a caution: it made
+        # `migrate-gr1`'s OWN OUTPUT unappliable, which is the whole path
+        # section 6b promises ("`workspace migrate-gr1` then `store init` then
+        # `store commit` is the whole path").
         if (
             resolved_unit_root is not None
             and resolved_unit_root.exists()
@@ -296,6 +284,45 @@ def validate_spec(workspace_root: Path) -> list[ValidationIssue]:
                     f"units[{idx}].path",
                 )
             )
+        # THE MEMBER COORDINATE IS CONTAINED HERE, and it is contained NOW because
+        # the join that reads it moved. Members used to be placed by NAME
+        # (`unit_home / member`), and a name cannot walk out of a directory, so
+        # nothing had to check one. They are placed by the member's DECLARED PATH
+        # now, and that value reaches a clone DESTINATION
+        # (`converge_unit_repos` -> `unit_member_path` -> `clone_and_pin`), so a
+        # declared path that escapes the unit home writes INTO whatever it names.
+        # Measured before this check existed: a unit at "." with a member path of
+        # "../desk-a/sub" passed this validator with NO issues, and planned a
+        # clone whose destination is inside a sibling agent's checkout -- the one
+        # property this whole path exists to protect. `../desk-a` alone resolved
+        # the member to the desk ITSELF, so the desk became the member for every
+        # read verb.
+        #
+        # THE GRAMMAR IS ALREADY THE SPEC'S, not a new one: the compiler refuses
+        # `..` when it BUILDS a spec (`migration._safe_workspace_relative_path`),
+        # so no spec `migrate-gr1` writes can reach this. This is the read-time
+        # half of one rule, for a spec written by a stranger, and it is the same
+        # helper the unit path uses -- one grammar, two coordinates.
+        if resolved_unit_root is not None:
+            for repo_name in repos:
+                declared = _member_spec_path(spec, repo_name)
+                if declared is None:
+                    continue
+                try:
+                    canonicalize_workspace_path(
+                        resolved_unit_root,
+                        declared,
+                        field_name=f"unit '{name}' member '{repo_name}' path",
+                    )
+                except MaterializationPlanError as exc:
+                    issues.append(
+                        ValidationIssue(
+                            "error",
+                            "member_path_outside_unit",
+                            str(exc),
+                            f"units[{idx}].repos",
+                        )
+                    )
         missing = [repo for repo in repos if repo not in repo_names]
         for repo_name in missing:
             issues.append(
@@ -325,14 +352,15 @@ def build_plan(workspace_root: Path) -> tuple[dict[str, object], list[PlanOperat
     if errors:
         rendered = "\n".join(f"- {issue.message}" for issue in errors)
         message = f"workspace spec validation failed:\n{rendered}"
-        # A DISTINGUISHABLE CODE for the not-yet-supported shape, so a caller can
-        # tell "this workspace needs slice items 3/5/6" from a generic spec error
-        # without parsing prose. Every other validation failure keeps the plain
-        # message and exit 1, which is what the rest of this CLI uses.
-        if any(issue.code == "unit_path_not_yet_appliable" for issue in errors):
-            print(message, file=sys.stderr)
-            raise SystemExit(4)
-        raise SystemExit(message)
+        # Printed AND raised, so the message is on stderr in-process as well as at
+        # the interpreter's exit handler. The `unit_path_not_yet_appliable` branch
+        # that used to be the only printer went away with the refusal it served,
+        # and its removal silently moved every OTHER validation failure's message
+        # off stderr -- caught by
+        # `test_two_units_colliding_on_one_sanitised_path_are_refused`, which reads
+        # `capsys.readouterr().err` and got an empty string.
+        print(message, file=sys.stderr)
+        raise SystemExit(1)
 
     spec = load_workspace_spec_doc(workspace_root)
     operations: list[PlanOperation] = []
@@ -367,7 +395,9 @@ def build_plan(workspace_root: Path) -> tuple[dict[str, object], list[PlanOperat
         # Resolved, not joined: an uncontained path here became a mkdir and a
         # unit.toml write outside the root.
         unit_home = unit_root(workspace_root, unit)
-        unit_toml = unit_home / "unit.toml"
+        # NOT `<unit_home>/unit.toml`: for a sibling desk that path is another
+        # agent's checkout. See `unit_metadata_path`.
+        unit_toml = unit_metadata_path(workspace_root, unit)
         if not unit_home.exists():
             operations.append(
                 PlanOperation(
@@ -391,15 +421,24 @@ def build_plan(workspace_root: Path) -> tuple[dict[str, object], list[PlanOperat
 
         # grip#539: computed unconditionally, not gated on unit_root/unit_toml
         # already existing. A brand-new unit's declared repos are trivially
-        # "missing" too (unit_root doesn't exist yet, so (unit_root / r).exists()
-        # is False for every r) -- the old guard meant a first apply published
+        # "missing" too (unit_root doesn't exist yet, so the member path
+        # does not exist for every r) -- the old guard meant a first apply published
         # the unit shell without scheduling its clones, requiring a second,
         # separate apply to notice. Ordered after create_unit_root/
         # write_unit_metadata in this loop, so apply_plan's execution (which
         # processes operations in list order) creates the directory before
         # trying to clone into it.
+        #
+        # THE MEMBER'S SPEC PATH, through the one resolver, so this site cannot
+        # disagree with the read verbs (section 6c item 3). Before that, a desk
+        # holding the member at its declared path read as missing here and the
+        # plan cloned a second copy of it beside the agent's own checkout.
         declared_repos = [str(r) for r in unit.get("repos", [])]
-        missing_repos = [r for r in declared_repos if not (unit_home / r).exists()]
+        missing_repos = [
+            r
+            for r in declared_repos
+            if not unit_member_path(workspace_root, spec, unit, r).exists()
+        ]
         if missing_repos:
             operations.append(
                 PlanOperation(
@@ -501,19 +540,25 @@ def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -
             applied.append(f"created unit root for '{op.subject}' at {unit_home}")
         elif op.kind == "write_unit_metadata":
             unit_spec = _find_unit(spec, op.subject)
-            unit_home = unit_root(workspace_root, unit_spec)
-            unit_home.mkdir(parents=True, exist_ok=True)
-            unit_toml = unit_home / "unit.toml"
+            # The metadata's parent, not the unit home: for a sibling desk the
+            # metadata lives under the root's `.grip/state/units/<unit>/`, and
+            # creating the unit home here would put a directory INSIDE a desk the
+            # plan may have decided not to touch at all.
+            unit_toml = unit_metadata_path(workspace_root, unit_spec)
+            unit_toml.parent.mkdir(parents=True, exist_ok=True)
             unit_toml.write_text(render_unit_toml(unit_spec))
-            applied.append(f"wrote unit metadata for '{op.subject}'")
+            applied.append(f"wrote unit metadata for '{op.subject}' at {unit_toml}")
         elif op.kind == "converge_unit_repos":
             unit_spec = _find_unit(spec, op.subject)
-            unit_home = unit_root(workspace_root, unit_spec)
             missing = [str(r) for r in op.details.get("missing_repos", [])]
             converged: list[str] = []
             for repo_name in missing:
                 repo_spec = _find_repo(spec, repo_name)
-                clone_dest = unit_home / repo_name
+                # THE MEMBER'S SPEC PATH, through the one resolver. A name-keyed
+                # join cloned into `<unit home>/<name>` and left the desk holding
+                # two copies of one member: the agent's own at its path and gr2's
+                # beside it.
+                clone_dest = unit_member_path(workspace_root, spec, unit_spec, repo_name)
                 cache_path = repo_cache_path(workspace_root, str(repo_spec["name"]))
                 pin = str(repo_spec.get("pin") or "")
                 # A clone lands on the remote's default tip; the root declares a
@@ -530,7 +575,8 @@ def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -
                 if first_materialize:
                     converged.append(f"{repo_name}@{pin[:12]}" if pin else repo_name)
                     materialized_repos.append({"repo": repo_name, "first_materialize": True})
-            unit_toml = unit_home / "unit.toml"
+            unit_toml = unit_metadata_path(workspace_root, unit_spec)
+            unit_toml.parent.mkdir(parents=True, exist_ok=True)
             unit_toml.write_text(render_unit_toml(unit_spec))
             applied.append(f"converged unit '{op.subject}': cloned {', '.join(converged)}")
         else:
@@ -1089,8 +1135,65 @@ def unit_root(workspace_root: Path, unit: dict) -> Path:
     return canonicalize_workspace_path(workspace_root, path, field_name=field)
 
 
-def unit_member_path(workspace_root: Path, unit: dict, member: str) -> Path:
-    """One unit's copy of `member`, refusing an illegal unit path in a sentence.
+# The one-release alpha fallback prints its line ONCE per (checkout, declared
+# path) pair even though a plan-then-apply verb resolves the same member twice in
+# one process. Process-local on purpose: a CLI invocation is one process, and the
+# key is absolute, so two workspaces in one run still each get their own line.
+_ALPHA_FALLBACK_NOTICED: set[tuple[str, str]] = set()
+
+
+def _member_spec_path(spec: dict, member: str) -> str | None:
+    """The member's declared `path` in this spec, or None when it declares no such member."""
+    for repo in spec.get("repos", []):
+        if str(repo.get("name")) == member:
+            declared = str(repo.get("path", "")).strip()
+            return declared or None
+    return None
+
+
+def unit_metadata_path(workspace_root: Path, unit: dict) -> Path:
+    """Where one unit's `unit.toml` is written — the TWO homes, and why they differ.
+
+    A unit INSIDE the root keeps `<unit home>/unit.toml`: that is where every
+    existing workspace has it, and moving it would churn workspaces that have no
+    problem. A unit AT the root (`"."`, gr1 `worktree = "main"`) or in a SIBLING
+    desk (`"../x"`) gets `<root>/.grip/state/units/<unit>/unit.toml` instead.
+
+    The sibling case is the reason the rule exists: a desk beside the root is
+    another agent's checkout, and a gr2 file dropped into it is the same class of
+    pollution that moved lanes out of `agents/`. The metadata is gr2's, so it
+    lives under gr2's own state root.
+    """
+    raw = str(unit.get("path") or "").strip()
+    if raw == "." or raw.startswith("../"):
+        return (
+            workspace_root
+            / ".grip"
+            / "state"
+            / "units"
+            / str(unit.get("name"))
+            / "unit.toml"
+        )
+    return unit_root(workspace_root, unit) / "unit.toml"
+
+
+def unit_member_path(workspace_root: Path, spec: dict, unit: dict, member: str) -> Path:
+    """One unit's copy of `member`, at the MEMBER'S SPEC PATH, refusing an illegal
+    unit path in a sentence.
+
+    THE PATH, NOT THE NAME (section 6c item 3). A gr1 desk places its repos by the
+    path the manifest declares, and name and path are two different coordinates:
+    13 of 25 live repos have a name different from their path. A name-keyed join
+    looks for `<desk>/synapt-config` where the desk holds `<desk>/config`, plans a
+    clone of a member that is already there, and would drop a second copy beside
+    the agent's own checkout.
+
+    THE ONE-RELEASE ALPHA FALLBACK, and it reads rather than acts. gr2 alpha (a5
+    is on PyPI) placed members by NAME, so an alpha user whose member name differs
+    from its path may have their checkout at `<unit home>/<name>`. When nothing
+    exists at the path but a checkout exists at the name, this reads it there,
+    prints ONE line naming both, and neither moves nor clones over it. Nothing is
+    moved automatically; the release note names the change.
 
     The READ verbs (lane materialization, the store member map) walk a spec they
     did not write, so they meet `unit_root`'s grammar as a refusal they cannot
@@ -1102,7 +1205,74 @@ def unit_member_path(workspace_root: Path, unit: dict, member: str) -> Path:
         unit_home = unit_root(workspace_root, unit)
     except MaterializationPlanError as exc:
         raise SystemExit(f"the workspace spec is refused: {exc}") from None
-    return (unit_home / member).resolve()
+    declared = _member_spec_path(spec, member)
+    at_name = unit_home / member
+    if declared is None:
+        # A spec that names no such member: the name IS the only coordinate left.
+        return at_name.resolve()
+    at_path = unit_home / declared
+    if at_path.exists():
+        # PATH WINS, INCLUDING WHEN IT IS EMPTY, and that half is deliberate: an
+        # empty directory at a declared path is `empty_placeholder`, the ordinary
+        # state of a freshly cloned superproject, and `validate_spec` blesses it
+        # rather than calling it a conflict.
+        #
+        # WHAT WAS NOT DELIBERATE IS THE SILENCE. `gitops.repo_path_state` exists
+        # in three answers precisely because "present" is not one question: the
+        # planner's missing-member test is `unit_member_path(...).exists()`, so an
+        # EMPTY directory at the declared path reads as PRESENT and no clone is
+        # planned -- while a real checkout from an earlier gr2 release sits at the
+        # name one directory over, which is the exact confusion this note exists
+        # for. It did not fire. Measured before this line: path holding an empty
+        # dir with a real `.git` checkout at the name returned the PATH and
+        # printed nothing, so the member reads as present, is empty, and the user
+        # has no way to see either.
+        #
+        # The RESOLUTION is unchanged (see the paragraph above: a placeholder is a
+        # legal destination and the sync planner clones into one). Only the
+        # silence is removed, so this cannot alter which member a verb reads.
+        if at_name.exists() and gitops.repo_path_state(at_path) != "repo_root":
+            _note_alpha_checkout(member, declared, at_name, at_path, empty_at_path=True)
+        return at_path.resolve()
+    if not at_name.exists():
+        return at_path.resolve()
+    _note_alpha_checkout(member, declared, at_name, at_path, empty_at_path=False)
+    return at_name.resolve()
+
+
+def _note_alpha_checkout(
+    member: str, declared: str, at_name: Path, at_path: Path, *, empty_at_path: bool
+) -> None:
+    """The one-release note, at most once per (name, path) pair.
+
+    EXACTLY ONE LINE, which is the design's word for it and is not free:
+    `apply_plan` calls `build_plan`, and a verb that plans and then applies
+    resolves the same member twice in one process, so a bare print emits the
+    note twice for one user action. Keyed on the two absolute paths, so two
+    different members, or one member in two workspaces, each still get their
+    own line.
+    """
+    key = (str(at_name), str(at_path))
+    if key in _ALPHA_FALLBACK_NOTICED:
+        return
+    _ALPHA_FALLBACK_NOTICED.add(key)
+    if empty_at_path:
+        print(
+            f"note: '{member}' resolves to {at_path}, which holds no checkout, while a "
+            f"checkout built by an earlier gr2 release sits at {at_name}. Nothing is "
+            f"moved and nothing is cloned over it; the spec declares '{declared}', so "
+            f"the path is what is read. If {at_name} is the checkout you meant, it is "
+            "not the one this verb is reading.",
+            file=sys.stderr,
+        )
+        return
+    print(
+        f"note: '{member}' is checked out at {at_name}, the name gr2 placed members "
+        f"by until this release, while the workspace spec declares its path as "
+        f"{declared!r} ({at_path}). Reading the existing checkout where it is; "
+        "nothing is moved and nothing is cloned over it.",
+        file=sys.stderr,
+    )
 
 
 def canonicalize_workspace_path(workspace_root: Path, relative: str, *, field_name: str) -> Path:

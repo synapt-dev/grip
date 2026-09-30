@@ -3,8 +3,13 @@
 Import ``gr2.overlay`` instead. Every submodule of the real package is aliased
 through ``sys.modules`` here, so ``gr2_overlay.units`` IS ``gr2.overlay.units``
 (the same module object, not a parallel copy) — a consumer that has not yet
-migrated keeps working with no behavioural drift. Removed in the release after
-1.5.0; downstream consumers migrate to ``gr2.overlay`` before then.
+migrated keeps working with no behavioural drift. Removed at the ``beta``
+milestone; downstream consumers migrate to ``gr2.overlay`` before then.
+
+The milestone is recorded in ``api/deprecations.toml`` and checked by
+``tests/test_deprecation_registry.py``. It is not restated as a version here: this
+file used to say "removed in the release after 1.5.0", which had already passed at
+2.0.0a5 without anything going red.
 """
 from __future__ import annotations
 
@@ -14,7 +19,7 @@ import sys as _sys
 import warnings as _warnings
 
 _warnings.warn(
-    "gr2_overlay is deprecated and will be removed in the release after 1.5.0; "
+    "gr2_overlay is deprecated and will be removed at the beta milestone; "
     "import gr2.overlay instead.",
     DeprecationWarning,
     stacklevel=2,

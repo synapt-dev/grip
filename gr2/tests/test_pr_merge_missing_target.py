@@ -313,12 +313,20 @@ def test_a_malformed_ENTRY_is_refused_by_the_same_guard(
     silently drops the entry from the operator's view -- so this row asserts the group's
     own refusal arrives, from the merge loop's own guard, entry and all.
 
-    The fourth shape is `prs` ITSELF not being a list, and it is here because a MUTATION
-    found it rather than because it was thought of: making the `isinstance(raw_prs, list)`
+    The fourth and fifth shapes are here because MUTATIONS found them rather than because
+    they were thought of.
+
+    The fourth is `prs` ITSELF not being a list: making the `isinstance(raw_prs, list)`
     guard a no-op left every row in this selection green, since the three shapes above all
     arrive as lists and are caught one guard later. JSON `null` is what a hand-edited group
     file actually carries, and with the guard gone it iterates `None` and raises a bare
     `TypeError` out of `main()`.
+
+    The fifth is the EMPTY-STRING half of the repo-name guard, `or not repo`. Every other
+    row here removes the WHOLE guard, so nothing exercised that half: with it dropped,
+    `"repo": ""` passes as a usable name and the operator meets a refusal that names
+    NOBODY -- `no explicit local verification target for :` -- which is the very defect
+    this change exists to remove, reached through the entry guard instead.
 
     `_run_main` requires `SystemExit`, so an exception escaping `main()` fails these rows
     rather than being read as an exit.
@@ -328,6 +336,8 @@ def test_a_malformed_ENTRY_is_refused_by_the_same_guard(
         ("missing-repo", [{"repo": "app", "pr_number": 1}, {"pr_number": 2}]),
         ("not-an-object", [{"repo": "app", "pr_number": 1}, "api"]),
         ("prs-not-a-list", None),
+        # The empty-string half of the repo-name guard, found by Atlas's eighth mutation.
+        ("empty-repo", [{"repo": "app", "pr_number": 1}, {"repo": "", "pr_number": 2}]),
     ]
 
     for label, prs in shapes:

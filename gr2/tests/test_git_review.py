@@ -304,6 +304,15 @@ def test_both_doors_survive_a_stdout_that_cannot_encode_the_identity():
     the branch under review; the assertion below is what makes this row about THIS tree.
     """
     gr2_dir = Path(__file__).resolve().parents[1]
+    # ⚠ THE CHILD REPORTS ON A MARKED LINE, NOT AS A BARE FIRST LINE. The child inherits
+    # `os.environ`, so a `PYTHONWARNINGS` setting, or any dependency that calls `warnings.warn` at
+    # import, puts a warning AHEAD of the path on stderr -- and reading `stderr.splitlines()[0]`
+    # then asserts on the WARNING: the child resolved correctly and the row says it did not, which
+    # is a row red for a reason it does not claim, with a message that sends the reader to venvs and
+    # PYTHONPATH when the cause was a warning from somewhere else entirely. Measured on this row. A
+    # marked line cannot be confused with a warning before, after or between the two doors, and a
+    # child that reports nothing is its own named failure rather than an empty string.
+    RESOLVED = "GR2_RESOLVED="
     env = {**os.environ, "PYTHONIOENCODING": "ascii", "PYTHONPATH": str(gr2_dir)}
     for flag in ("--help", "--version"):
         res = subprocess.run(
@@ -311,7 +320,7 @@ def test_both_doors_survive_a_stdout_that_cannot_encode_the_identity():
                 sys.executable,
                 "-c",
                 "import sys, gr2.python_cli.git_review as m; "
-                "print(m.__file__, file=sys.stderr); "
+                f"print({RESOLVED!r} + m.__file__, file=sys.stderr); "
                 f"raise SystemExit(m.main([{flag!r}]))",
             ],
             cwd=str(gr2_dir),
@@ -323,7 +332,18 @@ def test_both_doors_survive_a_stdout_that_cannot_encode_the_identity():
         # PRINT WHERE THE IMPORT RESOLVED, AND ASSERT IT IS THIS TREE. This is the assertion the
         # docstring above says is load-bearing, and without it the two below are satisfied by any
         # copy that answers -- which is precisely how a probe reports on the wrong code.
-        resolved = err.splitlines()[0].strip() if err.strip() else ""
+        resolved = next(
+            (
+                line[len(RESOLVED):].strip()
+                for line in err.splitlines()
+                if line.startswith(RESOLVED)
+            ),
+            None,
+        )
+        assert resolved is not None, (
+            f"the child did not report where its import resolved, so this row cannot say which "
+            f"tree answered. rc={res.returncode} stderr={err!r}"
+        )
         assert resolved.startswith(str(gr2_dir)), (
             "the child must have resolved to THIS tree; PYTHONPATH does NOT beat an editable "
             "install, because a meta-path finder runs before sys.path, so a mismatched venv "

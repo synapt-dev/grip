@@ -3483,6 +3483,176 @@ def pr_checks(
         typer.echo(json.dumps(payload, indent=2))
 
 
+def _pr_view_source(workspace_root: Path, owner_unit: str, lane_name: str) -> dict[str, object]:
+    """The change's members, and where that list came from.
+
+    A change is the lane, and the lane's PR group record is the authoritative
+    member->number map -- but a change EXISTS before ``pr create`` writes that record.
+    So an absent group store is not "a change with no members"; it is a change whose PRs
+    have to be found by branch. Reading the empty store as the answer would under-report
+    the change, and an under-reported change reads as a smaller thing than the one that
+    was actually reviewed.
+    """
+    group_root = workspace_root / ".grip" / "pr_groups"
+    if group_root.exists():
+        for path in sorted(group_root.glob("*.json")):
+            doc = json.loads(path.read_text())
+            if doc.get("owner_unit") != owner_unit or doc.get("lane_name") != lane_name:
+                continue
+            # A record that EXISTS with no PRs is not an answer. Returning it would give an
+            # empty member list and never reach the lane record below -- the same
+            # under-report this function's fallback exists to prevent, one level in: the
+            # store is present, its content is empty, and it would be read as the answer.
+            if not doc.get("prs"):
+                continue
+            return {
+                "source": "pr_group",
+                    "pr_group_id": doc.get("pr_group_id"),
+                    "platform": str(doc.get("platform", "github")),
+                    "members": [
+                        {
+                            "repo": str(item["repo"]),
+                            "number": int(item["pr_number"]),
+                            "branch": None,
+                        }
+                        for item in doc.get("prs", [])
+                    ],
+                }
+    lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
+    branch_map = lane_doc.get("branch_map") or {}
+    return {
+        "source": "lane_record",
+        "pr_group_id": None,
+        "platform": "github",
+        "members": [
+            {"repo": str(repo), "number": None, "branch": branch_map.get(str(repo))}
+            for repo in lane_doc.get("repos", [])
+        ],
+    }
+
+
+def _render_pr_detail(row: dict[str, object]) -> list[str]:
+    checks = row.get("checks") or []
+    passing = [c for c in checks if str(c.get("conclusion")).upper() in {"SUCCESS", "NEUTRAL", "SKIPPED"}]
+    reviews = row.get("reviews") or []
+    lines = [
+        f"=== {row['repo']} #{row['number']} ===",
+        f"Title:     {row.get('title') or '(no title)'}",
+        f"State:     {row.get('state')}{' (draft)' if row.get('is_draft') else ''}",
+        f"Branch:    {row.get('head_branch')} -> {row.get('base_branch')}",
+        f"Head:      {row.get('head_oid')}",
+        f"Author:    {row.get('author') or '(unknown)'}",
+        f"Mergeable: {row.get('mergeable')}",
+        f"Checks:    {len(checks)} total, {len(passing)} passing",
+    ]
+    if reviews:
+        who = ", ".join(f"{r.get('user')} {r.get('state')}" for r in reviews)
+        lines.append(f"Reviews:   {who}")
+    elif row.get("review_decision"):
+        lines.append(f"Review:    {row['review_decision']}")
+    if row.get("labels"):
+        lines.append(f"Labels:    {', '.join(str(x) for x in row['labels'])}")
+    lines.append(f"URL:       {row.get('url')}")
+    return lines
+
+
+@pr_app.command("view")
+def pr_view(
+    workspace_root: Path,
+    owner_unit: str,
+    lane_name: Optional[str] = typer.Argument(None, help="Lane name. Defaults to the unit's current lane."),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    repo_filter: Optional[str] = typer.Option(None, "--repo", help="Restrict the view to one member"),
+) -> None:
+    """Show the member PRs of one change."""
+    workspace_root = workspace_root.resolve()
+    resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
+    source = _pr_view_source(workspace_root, owner_unit, resolved_lane)
+    adapter = get_platform_adapter(str(source["platform"]))
+
+    # A filter that matched nothing must not read the same as a change with no members.
+    # The reader cannot tell a typo from an empty change, and the line above has just told
+    # them the members came from an authoritative record.
+    member_names = [str(item["repo"]) for item in source["members"]]
+    if repo_filter is not None and repo_filter not in member_names:
+        typer.echo(
+            f"gr2: --repo {repo_filter} is not a member of this change; members are: "
+            + (", ".join(member_names) if member_names else "(none named)"),
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    rows: list[dict[str, object]] = []
+    for member in source["members"]:
+        repo = str(member["repo"])
+        if repo_filter is not None and repo != repo_filter:
+            continue
+        number = member["number"]
+        if number is None:
+            branch = member["branch"]
+            try:
+                refs = adapter.list_prs(repo, head_branch=str(branch)) if branch else []
+            except AdapterError as exc:
+                rows.append({"repo": repo, "number": None, "unread": str(exc)})
+                continue
+            if not refs or refs[0].number is None:
+                rows.append(
+                    {
+                        "repo": repo,
+                        "number": None,
+                        "unread": f"no open PR for branch {branch!r}",
+                    }
+                )
+                continue
+            number = int(refs[0].number)
+        try:
+            rows.append(adapter.pr_view(repo, int(number)).as_dict())
+        except AdapterError as exc:
+            # A member whose read FAILED is named. Dropping it would print a smaller
+            # change than the one that exists, which is the failure a reader cannot see.
+            rows.append({"repo": repo, "number": int(number), "unread": str(exc)})
+
+    if json_output:
+        # The source is part of the ANSWER, not decoration. The human header prints where
+        # the members came from; a bare array would leave a machine consumer unable to
+        # tell the authoritative member->number map from the by-branch fallback -- and the
+        # two are not interchangeable: a fallback member can come back with no number at
+        # all. The two sources answer different questions, so the payload says which one
+        # it is.
+        typer.echo(
+            json.dumps(
+                {
+                    "source": source["source"],
+                    "pr_group_id": source["pr_group_id"],
+                    "members": rows,
+                },
+                indent=2,
+            )
+        )
+        return
+
+    # The machine value is a stable slug so a consumer can switch on it; the human form
+    # keeps the readable phrase. Same fact, two registers, one spelling each.
+    source_label = {
+        "pr_group": "the PR group record",
+        "lane_record": "the lane record",
+    }.get(str(source["source"]), str(source["source"]))
+    header = f"change {owner_unit}/{resolved_lane}"
+    if source["pr_group_id"]:
+        header += f"  pr group {source['pr_group_id']}"
+    typer.echo(header + f"  (members from {source_label})")
+    if not rows:
+        typer.echo("No pull requests found.")
+        return
+    for row in rows:
+        if row.get("unread"):
+            typer.echo(f"=== {row['repo']} ===")
+            typer.echo(f"unread: {row['unread']}")
+            continue
+        typer.echo("\n".join(_render_pr_detail(row)))
+        typer.echo("")
+
+
 @pr_app.command("merge")
 def pr_merge(
     workspace_root: Path,

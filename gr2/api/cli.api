@@ -55,6 +55,9 @@ arg   pr merge workspace_root <str>                                   stable
 arg   pr status lane_name <str>                                       stable
 arg   pr status owner_unit <str>                                      stable
 arg   pr status workspace_root <str>                                  stable
+arg   pr view lane_name <str>                                         stable
+arg   pr view owner_unit <str>                                        stable
+arg   pr view workspace_root <str>                                    stable
 arg   repo hook-run repo_root <str>                                   stable
 arg   repo hook-run stage <str>                                       stable
 arg   repo hook-run workspace_root <str>                              stable
@@ -210,6 +213,8 @@ flag  pr merge --json                                                 stable
 flag  pr merge --match-head-commit <str>                              stable
 flag  pr merge --method/-m <str>                                      stable
 flag  pr status --json                                                stable
+flag  pr view --json                                                  stable
+flag  pr view --repo <str>                                            stable
 flag  prune --execute                                                 stable
 flag  prune --remote <str>                                            stable
 flag  prune --repo-path <str>                                         stable
@@ -475,6 +480,7 @@ verb  pr checks                                                       stable
 verb  pr create                                                       stable
 verb  pr merge                                                        stable
 verb  pr status                                                       stable
+verb  pr view                                                         stable
 verb  prune                                                           stable
 verb  push                                                            stable
 verb  repo hook-run                                                   stable

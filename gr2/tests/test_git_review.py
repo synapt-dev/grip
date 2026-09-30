@@ -159,6 +159,93 @@ def test_dash_h_prints_usage_and_exits_zero(capsys):
     assert "usage: git review" in out
 
 
+def test_version_says_whose_tool_this_is(capsys):
+    """`git review --version` answers WHOSE tool it is, on its first line.
+
+    `git-review` is also the name of a long-standing PyPI tool that submits code to Gerrit, and
+    both install a command by that name -- so with both on PATH whichever comes first wins, and
+    `git review` may not reach this one. We keep the name (it is this project's single-repo front
+    door, and git's own `git-<name>` discovery is what makes it reachable at all), so the fix is
+    to make the ambiguity VISIBLE. `--version` is where a user asks that question.
+
+    BEFORE this change `--version` was not a verb at all: it fell through to the command dispatch
+    as an unknown subcommand, which is a refusal about the ARGUMENT rather than an answer about
+    the tool. So this row is red on the unmodified tree by exiting non-zero with no identity line.
+
+    Three properties, and the third is the one that makes it a DISCLOSURE rather than a name:
+    it exits 0, the FIRST non-empty line names this tool, and the output names the OTHER tool plus
+    where to find it -- a reader told only "this is git review" has not been told which git review.
+    """
+    rc = git_review.main(["--version"])
+    out = capsys.readouterr().out
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    assert rc == 0, (
+        "`git review --version` must answer about the TOOL, not refuse as an unknown subcommand; "
+        f"rc={rc} out={out!r}"
+    )
+    assert lines, f"`--version` printed nothing: {out!r}"
+    first = lines[0]
+    assert "gr2" in first, (
+        "the FIRST line must say whose tool this is, because the reader who needs it is the one "
+        f"with the other `git-review` in mind. first line was {first!r}, full output:\n{out}"
+    )
+    assert "Gerrit" in out and "pypi.org/project/git-review" in out, (
+        "the output must NAME the other tool and where to get it; identifying only ourselves "
+        f"leaves the user unable to tell the two apart. full output:\n{out}"
+    )
+
+
+def test_help_OPENS_by_saying_whose_tool_this_is(capsys):
+    """The same disclosure on `--help`, and it must come BEFORE the usage text.
+
+    Asserted as an ORDERING, not a substring: `"usage: git review" in out` was already true
+    before this change, so a row written that way passes on both trees and pins nothing. The
+    property is that the identity is the first thing a reader meets, because a user who has just
+    run the wrong `git review` reads the top of the output and stops.
+    """
+    rc = git_review.main(["--help"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "usage: git review" in out, "the usage itself must survive this change"
+    identity_at = next(
+        (i for i, ln in enumerate(out.splitlines()) if "gr2" in ln), None
+    )
+    usage_at = next(i for i, ln in enumerate(out.splitlines()) if "usage: git review" in ln)
+    assert identity_at is not None, (
+        "`--help` must say whose tool this is; no line names gr2. full output:\n" + out
+    )
+    assert identity_at < usage_at, (
+        f"the identity must OPEN the help, not be buried under it: identity at line "
+        f"{identity_at}, usage at line {usage_at}, full output:\n{out}"
+    )
+
+
+def test_both_doors_name_the_same_tool(capsys):
+    """`--help` and `--version` must agree on the identity line.
+
+    Two doors that describe the tool differently is how a user ends up believing they have two
+    tools, or the wrong one. Cheap to pin and cheap to break: an edit to one string and not the
+    other is exactly the drift this row exists to catch.
+    """
+    git_review.main(["--help"])
+    help_out = capsys.readouterr().out
+    git_review.main(["--version"])
+    version_out = capsys.readouterr().out
+    help_identity = [ln for ln in help_out.splitlines() if "gr2" in ln]
+    version_identity = [ln for ln in version_out.splitlines() if "gr2" in ln]
+    assert help_identity, f"no identity line in --help:\n{help_out}"
+    assert version_identity, f"no identity line in --version:\n{version_out}"
+    # COMPARED WITH SENTENCE PUNCTUATION STRIPPED. The help embeds the identity in a sentence and
+    # so ends it with a period; --version prints it as a standalone line. Comparing the raw lines
+    # would fail on that period and say the two doors disagree when they do not -- a row red for a
+    # reason it does not claim. Stripping it keeps what the row is actually for: an edit to one
+    # string and not the other, which is the drift that would leave a reader with two tools.
+    assert help_identity[0].rstrip(".") == version_identity[0].rstrip("."), (
+        "the two doors name the tool differently, so a reader cannot tell they are one tool:\n"
+        f"  --help    says {help_identity[0]!r}\n  --version says {version_identity[0]!r}"
+    )
+
+
 # ---------------------------------------------------------------- `git review run`
 #
 # The run's trust properties, witnessed the same way `gr2 review run`'s are: the

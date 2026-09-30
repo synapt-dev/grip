@@ -1,0 +1,96 @@
+# The deprecation-alias registry.
+#
+# ONE expiry vocabulary, and it is a MILESTONE:
+#
+#     removed-at = alpha | beta | release
+#
+# A registered name is a SURFACE ITEM WITH A REMOVAL MILESTONE. It is not a
+# sentence in a comment, and -- the reason the vocabulary exists -- it is NOT a
+# version number.
+#
+# ⚠ WHAT THIS FILE COVERS TODAY. TWO names are registered: `gr2_overlay` and the
+# `.grip/.git` store home. The tree carries a prose deadline for OTHER sites in
+# FOUR distinct wordings, and none of them is registered here:
+#
+#   "hidden alias for one release, dropped at 2.0 GA"  the four hidden review aliases
+#   "for one release"                                  the `grip` sub-app alias
+#   "removed at beta"                                  the `store snapshot` alias
+#   "one-release"                                      the native-store NAME fallback
+#
+# THE SITES ARE THE FILES CARRYING ONE OF THOSE FOUR WORDINGS, and the list is
+# given instead of a total on purpose: a total reads as complete and goes stale
+# the moment somebody edits a docstring, while a list names what to re-check.
+# Today, in the source:
+#
+#   python_cli/app.py, python_cli/grip_cli.py, python_cli/spec_apply.py,
+#   python_cli/review_records.py, python_cli/review_dispatch.py, api/stability.toml
+#
+# plus test rows that pin the wording, which are a different category and are not
+# counted here.
+#
+# ⚠ RE-CHECK THIS LIST BY READING, NOT BY A ONE-LINE GREP. `stability.toml`'s copy
+# of "removed at beta" WRAPS across lines 62-63 ("...removed" / "at beta..."), so
+# `grep 'removed at beta'` matches nothing there while the deadline is plainly
+# present -- a one-line grep under-reports this list by exactly that one file.
+#
+# So this file is NOT yet the one place a deprecation is recorded; it is the one
+# place a REGISTERED name is. Those sites move in following ranges. NOTHING
+# DETECTS AN UNREGISTERED DEPRECATION: a name that grows a prose deadline and no
+# entry is invisible to both gates below, so for those sites the failure this
+# registry exists to catch -- an expired sentence nobody compares -- is exactly as
+# it was. A version comparison is not the missing piece; the missing piece is a
+# sweep that requires every hidden alias in the dump to be either registered or
+# explicitly exempted, which is the named follow-on and deliberately NOT part of
+# this change.
+#
+# WHY A STAGE AND NOT A VERSION. A stored version with a comparator is not
+# unmeasurable -- it would fail at the bump just as well; the honest difference is
+# that a stored version DRIFTS from the release line while a milestone cannot, and
+# that the product already speaks in stages: the alpha-cleanup rule is "keep old
+# references marked for deletion in alpha, delete at beta". One of the five
+# deadlines had also ALREADY EXPIRED unmeasured -- `gr2_overlay` said it went "in
+# the release after 1.5.0" while the distribution read 2.0.0a5 -- which is what a
+# deadline nobody compares looks like.
+#
+# THE HONEST LIMIT OF THIS VOCABULARY: `alpha | beta | release` cannot express a
+# POST-GA deprecation ("removed in 2.2"). The vocabulary has to be reopened at GA
+# rather than quietly stretched. Recorded here so the reopening is a decision and
+# not a discovery.
+#
+# The vocabulary is CLOSED FOR ENTRIES. A new entry picks one of the three words,
+# or the reader has no way to tell a milestone from a note.
+#
+# The entries below are keyed "<kind> <spelling>" -- the same first-two-columns
+# shape the markers file and `cli.api` use, so a name here is the same kind of
+# object as a name there. `module` and `path` are registry-only kinds today:
+# neither is a CLI spelling, and calling either one a `verb` would be a lie the
+# dump's own population floors would catch.
+#
+# THE GATES, both in tests/test_deprecation_registry.py:
+#   - while the distribution is BEFORE a name's milestone, the name must still
+#     EXIST (an entry for something already gone is stale, and reads as coverage
+#     while guarding nothing);
+#   - once the distribution REACHES a name's milestone, the name must be GONE and
+#     its entry deleted. This is the fail-at-beta gate: it reddens on the version
+#     bump, not on someone remembering.
+
+[removed-at]
+
+# gr2/gr2_overlay/__init__.py -- the top-level shim aliasing every submodule of
+# gr2.overlay through sys.modules. Its own warning already told consumers it would
+# go "in the release after 1.5.0"; that deadline passed unmeasured, and it is the
+# incident this registry was built from.
+#
+# NOTE ON ITS EXISTENCE CHECK, because this entry is the weaker of the two: the
+# `path` check greps for the literal under `python_cli/`, and `.grip/.git` also
+# appears in migration.py, which MUST keep that literal after `workspace init*`
+# stops creating the path. So the stale-entry gate for the `.grip/.git` entry
+# below passes for as long as migration.py exists, and the FAIL-AT-BETA gate is
+# the one doing the work for it. That is stated rather than left to be discovered.
+"module gr2_overlay" = "beta"
+
+# `workspace init` and `init-from-topology` still create <root>/.grip/.git, the
+# ALPHA store home, while `store init` creates <root>/.git. Both are live and both
+# are pinned by tests. KEPT for alpha, MARKED FOR DELETION here, deleted at beta
+# once `workspace init*`'s own disposition is ruled.
+"path .grip/.git" = "beta"

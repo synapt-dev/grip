@@ -700,7 +700,18 @@ def _verdict(summary: dict) -> str:
 # `git-<name>` discovery is what makes it reachable at all. The fix is therefore
 # to make the ambiguity VISIBLE rather than to rename, which is why both entry
 # points open by saying whose tool they are.
-_IDENTITY = "git-review (gitgrip's gr2) — the single-repo review front door"
+#
+# ⚠ ASCII ONLY, AND THAT IS LOAD-BEARING RATHER THAN TIDINESS. This string is the
+# first non-ASCII byte this file would put on the `-h` path -- everything the base
+# prints is ASCII -- and `print` raises UnicodeEncodeError when stdout's encoding
+# cannot carry the character. Measured: with the em dash this constant first
+# carried, `PYTHONIOENCODING=ascii git-review --help` died rc 1 with zero bytes of
+# stdout where dev printed 716, and `--version` failed the same way. The line whose
+# whole job is telling a user WHICH `git review` they are running is exactly the
+# line a misconfigured-environment user needs, so it cannot be the one that fails
+# there. A UTF-8 terminal or LC_ALL=C on 3.11+ would have hidden this, which is why
+# it is a row and not a comment.
+_IDENTITY = "git-review (gitgrip's gr2): the single-repo review front door"
 
 _GERRIT_TOOL = "https://pypi.org/project/git-review/"
 

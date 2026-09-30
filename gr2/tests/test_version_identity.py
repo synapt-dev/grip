@@ -508,3 +508,55 @@ def test_the_same_record_shape_pointing_at_a_real_checkout_names_its_commit(
     _dist_info(fixture_path, version="2.0.0a5", editable=clone)
 
     assert version_line(DIST) == f"2.0.0a5+g{sha}"
+
+
+@pytest.mark.parametrize("dir_info", ["boom", 5, [1], None])
+def test_a_direct_url_whose_dir_info_is_not_an_object_answers_and_does_not_raise(
+    fixture_path: Path, dir_info: object
+) -> None:
+    """THE FIFTH SEAM: the guard above it reads as a null check and is only a falsy check.
+
+    `if not (doc.get("dir_info") or {}).get("editable")` fires `or {}` on a FALSY value, so a
+    truthy NON-dict passes straight through and `.get` raises `AttributeError` out of
+    `--version`. Measured, one fresh process per case: `"boom"`, `5` and `[1]` each raised
+    `'str'/'int'/'list' object has no attribute 'get'`, while `None` was fine because it is
+    falsy -- which is why the bug survives a reading of that line.
+
+    The row is parametrized over all four so the falsy control runs beside the three that
+    reddened: a fix that special-cased one type would pass a single-case row.
+    """
+    import json as _json
+
+    di = fixture_path / f"{DIST}-2.0.0a5.dist-info"
+    di.mkdir(parents=True)
+    (di / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {DIST}\nVersion: 2.0.0a5\n")
+    (di / "direct_url.json").write_text(
+        _json.dumps({"url": "file:///tmp/somewhere", "dir_info": dir_info})
+    )
+
+    # A record we could not read is not a checkout we can name, and it is not evidence of a
+    # file layout we can test either -- so the answer is the declared `released` form and
+    # never a raise. Asserted EXACTLY rather than as membership in the four declared forms:
+    # a membership set would be satisfied by `released` and by `+unknown` alike, which is
+    # the shape of assertion that let an earlier row in this file pass on either answer.
+    assert version_line(DIST) == "2.0.0a5 released"
+
+
+def test_the_same_non_object_dir_info_with_editable_absent_is_also_readable(
+    fixture_path: Path,
+) -> None:
+    """CONTROL: the shape with NO `dir_info` key at all was never the failing case.
+
+    The row above would pass if every non-editable record answered `released` for an
+    unrelated reason, so this pins the ordinary VCS-install shape the guard also covers.
+    """
+    import json as _json
+
+    di = fixture_path / f"{DIST}-2.0.0a5.dist-info"
+    di.mkdir(parents=True)
+    (di / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {DIST}\nVersion: 2.0.0a5\n")
+    (di / "direct_url.json").write_text(
+        _json.dumps({"url": "https://example.invalid/repo.git", "vcs_info": {"vcs": "git"}})
+    )
+
+    assert version_line(DIST) == "2.0.0a5 released"

@@ -25,7 +25,11 @@ A `file://` URL is decoded with `url2pathname`, not with `Path(urlparse(url).pat
 latter drops a Windows drive letter, so `file:///C:/repo` becomes `/C:/repo` -- a path that
 cannot exist -- and an editable install on Windows would read as `released`.
 
-A released wheel has no checkout to name, and says `released` instead of guessing one.
+A `released` form has no READABLE editable checkout to name: a wheel, or a record that is
+absent, malformed, or shaped unlike a directory record. That sentence is deliberately wider
+than "a released wheel", because the wider reading is what the code does -- several branches
+below return None on a record they could not read, and a reader told only the wheel meaning
+would take an unreadable record for a wheel.
 
 FOUR FORMS, and the fourth is declared here because it was not. It is a **bare `unknown`**,
 and it means NO SINGLE VERSION COULD BE DETERMINED, for either of two reasons: nothing is
@@ -97,7 +101,18 @@ def _editable_path(dist: importlib.metadata.Distribution) -> PurePath | None:
         return None
     if not isinstance(doc, dict):
         return None
-    if not (doc.get("dir_info") or {}).get("editable"):
+    # THE FIFTH SEAM, and it is the same member of the same finite set as the two guards
+    # above. `(doc.get("dir_info") or {}).get(...)` reads as a null guard and is not one:
+    # `or {}` fires on a FALSY value, so a truthy NON-dict -- the string "boom", the
+    # integer 5, a list -- passes through and `.get` raises AttributeError out of
+    # `--version`. Measured, one fresh process per case: all three raise, while `null` is
+    # fine because it is falsy. The module promises three times that no failure path
+    # raises, and a corrupt record is exactly the input that promise is about, so the
+    # TYPE is checked rather than assumed. `dir_info` is the last member of the set the
+    # two guards above already cover: unreadable JSON, then a non-object document, then a
+    # non-object `dir_info`.
+    dir_info = doc.get("dir_info")
+    if not isinstance(dir_info, dict) or not dir_info.get("editable"):
         return None
     url = doc.get("url")
     if not isinstance(url, str) or not url.startswith("file://"):
@@ -223,7 +238,8 @@ def version_line(distribution: str = DISTRIBUTION) -> str:
     Four forms, in the order they are decided:
 
     * `<version>+g<sha>` -- an editable checkout, named by the commit at its HEAD;
-    * `<version> released` -- anything else with a version to report;
+    * `<version> released` -- no readable editable checkout was recorded: a wheel, or a
+      `direct_url.json` that is absent, malformed, or not a directory record;
     * `<version>+unknown` -- a checkout exists but its commit cannot be read (no `git`, or
       the recorded path is not a repository), so the version is stated and the commit is
       not invented;

@@ -26,10 +26,14 @@ escapes (17). NO TEST IS WRITTEN FOR 16, deliberately: a test named for a defect
 specified asserts the writer's guess, which is the opposite of what this file is for. If a
 reader can name it, it goes in; until then the gap is stated rather than filled.
 
-⚠ ATTEMPT 20 IS DEFINED (section 6, the name-placed alpha fixture) AND IS NOT IN THIS FILE.
-Section 6 puts 17-20 in one block, so this is a scope choice, not an omission: 20's shape is
-the same lane as 19 and the section 6 text assigns that lane elsewhere. Named here so a
-later reader does not read its absence as an oversight.
+⚠ ATTEMPT 20 IS NOW IN THIS FILE, at the bottom above the beta rows, and the paragraph that
+used to say it was not is superseded here rather than deleted. Section 6 puts 17-20 in one
+block and this file read 20 as "the same lane as 19, assigned elsewhere"; what changed the
+call is that 19's re-aim made the pair legible: **19 asserts the verb prefers the PATH, and 20
+asserts it has anywhere else to look.** MEASURED on the name-placed shape, no site looks at
+the NAME coordinate, so all three verbs refuse with exit 5 naming the declared path only --
+which is a gap a reader meets by moving a checkout, and it belongs beside 19 where the two
+coordinates are pinned from both sides. It is `xfail(strict=True)` and genuinely red.
 
 BETA ROWS ARE `xfail(strict=True)`, per the doc: "so the day beta lands they are forced to
 turn green, and not only to exist." `strict=True` is the load-bearing half — without it the
@@ -1488,6 +1492,76 @@ def test_break_21_tracked_non_member_root_folder_is_untouched(two_member_ws: Pat
         )
     assert _listing(tracked) == before, (
         "a tracked non-member root folder must be byte-identical after every store verb"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 20 — a checkout at the member's NAME, with nothing at its declared PATH
+#
+# THE SHAPE THE DESIGN NAMES AND THE VERB DOES NOT YET SERVE. Section 6's contract for
+# attempt 20 is that the member is FOUND at the name, with "exactly one line printed naming
+# both locations; zero clones; bytes unchanged". MEASURED on that shape (a two-member store,
+# the member renamed, its checkout moved from `alpha/` to `renamed-member/` so the declared
+# path is empty) -- all three verbs refuse with exit 5 and name the PATH only:
+#
+#     store status   rc=5   state "cannot-measure", head null
+#     store check    rc=5   "renamed-member cannot fetch origin"
+#     store commit   rc=5   "renamed-member path alpha is not a checkout; materialize it first"
+#
+# So the gap is not that the verb is wrong ABOUT the member -- it identifies `renamed-member`
+# correctly by name in all three. It is that no site looks at the NAME coordinate at all, so
+# a reader who has moved a checkout is told to materialize a path instead of being told where
+# the checkout already is. That is the same pair of coordinates row 19 pins from the other
+# side, and it is why row 19's re-aim could land green while this one cannot: 19 asks the verb
+# to prefer the PATH, and 20 asks it to have a second place to look.
+#
+# MARKED, not silently absent: the file's own doctrine is that every row here fails until the
+# verbs land, and `strict=True` makes the day it lands loud -- an xpass failure -- rather than
+# a quiet pass nobody reads.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="no site looks at the member's NAME coordinate: all three verbs refuse with exit 5 "
+           "naming the declared path only, measured on the two-member name-placed shape",
+)
+def test_break_20_a_checkout_at_the_name_is_found_and_both_locations_are_named(
+    two_member_ws: Path,
+) -> None:
+    """Section 6: a home holding a checkout at `<home>/<name>`, with nothing at the path.
+
+    The contract is a FINDING and a SENTENCE rather than a refusal -- "found at the name;
+    exactly one line printed naming both locations; zero clones; bytes unchanged" -- so the
+    row asserts the finding, both names in the message, and that nothing was written.
+    """
+    root = two_member_ws
+    assert _cli("store", "init", str(root))[0] == 0
+    _assert_init_ran(root)
+    manifest = root / "grip.toml"
+    manifest.write_text(_set_member_name(manifest.read_text(), "alpha", "renamed-member"))
+    assert _cli("store", "commit", "-m", "store the renamed fixture")[0] == 0
+
+    # THE NAME-PLACED SHAPE: the checkout moves to the NAME and the declared path goes empty.
+    (root / "alpha").rename(root / "renamed-member")
+    assert not (root / "alpha").exists(), "the declared path must be EMPTY for this shape"
+    placed = _listing(root / "renamed-member")
+    assert placed, "the fixture must plant a real checkout at the name, or byte-identity is empty"
+
+    rc, out = _cli("store", "status", "--json")
+    assert rc == 0, f"a checkout at the name must be FOUND, not refused: rc={rc} {out[:200]}"
+
+    # THE SENTENCE, and both coordinates in it. A message naming only the path is the
+    # current refusal; a message naming only the name leaves the reader unable to find the
+    # declaration that disagrees with it.
+    assert "renamed-member" in out, f"the message must name where the checkout IS: {out[:200]}"
+    assert "alpha" in out, f"the message must name the declaration that disagrees: {out[:200]}"
+
+    # ZERO CLONES and bytes unchanged: the verb found the checkout, so it must not write one.
+    assert not (root / "alpha").exists(), "a checkout must not be materialized at the empty path"
+    assert _listing(root / "renamed-member") == placed, (
+        "the checkout found at the name must be byte-identical afterwards"
     )
 
 

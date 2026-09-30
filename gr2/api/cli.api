@@ -434,6 +434,9 @@ json  store status .members[].state  enum(upstream,stale,missing,unpinned,cannot
 json  store status .root.porcelain                                    may-change
 json  store status .root.state  enum(clean,dirty)                     may-change
 json  store status .status  enum(status)                              may-change
+path  grip.toml tracked                                               stable
+ref   refs/dev.synapt/__members__/<member>/heads/*                    reserved
+ref   refs/dev.synapt/__overlays__/<member>/...                       reserved
 verb  add                                                             stable
 verb  apply                                                           stable
 verb  branch                                                          stable

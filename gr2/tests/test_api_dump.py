@@ -73,7 +73,20 @@ JSON_VERBS_PENDING = 47
 # `test_json_items_are_score_neutral` pins. An exclusion that could only raise
 # the number would be a lever for meeting this gate, which is the one thing it
 # must not be.
-SURFACE_KINDS = ("verb", "flag", "arg", "exit")
+#
+# `path` AND `ref` ARE BOTH IN THE LIST, and the difference from `json` is the
+# whole reason the list is explicit rather than "whatever the dump carries". A
+# `path` row (`grip.toml`) and a `ref` namespace (`refs/dev.synapt/...`) are
+# each actionable ON THEIR OWN -- a stranger references the file, or the ref,
+# without going through any verb -- which is the property this list is made of.
+# A json key path has no such independent handle; it is reachable only through
+# its verb. Measured with the three layout rows in the dump: 326/359 = 0.9081,
+# the stable `path` row joining both sides and the two `ref` rows leaving the
+# denominator as reserved (a reserved name is not in the dump at all, in this
+# table's sense). Leaving `path` and `ref` out would read 325/358 = 0.9078 on
+# the same dump, so the two kinds would be free -- and a kind that cannot move
+# the ratio is the lever the paragraph above exists to deny.
+SURFACE_KINDS = ("verb", "flag", "arg", "exit", "path", "ref")
 
 
 def _generator():
@@ -539,4 +552,70 @@ def test_json_items_are_score_neutral() -> None:
             f"adding a {marker} json item moved the share from {base} to "
             f"{_share(probe)}; the exclusion must be symmetric"
         )
+def test_the_layout_rows_are_the_ones_the_design_fixes() -> None:
+    """The `path` and `ref` kinds carry exactly section 7's worked example.
+
+    AN EXACT SET IN BOTH DIRECTIONS, because the two ways this can go wrong are
+    opposite and both silent:
+
+      - a MISSING row is a promise the dump stopped making, and every other gate
+        here passes on it (the share gate divides what is left, the currency
+        gate compares the file to whatever is rendered);
+      - an ADDED row is a LAYOUT DECISION FROZEN by whoever wrote it, which is
+        exactly why the rest of section 3's table is deliberately absent -- those
+        rows are open on another desk, and a dump freezes what it carries.
+
+    So this row is not a ratchet to be raised casually: raising it is the act of
+    freezing a layout row, and it is meant to happen in the change that lands
+    `layout.api`.
+    """
+    rows = _rows(_generator().render())
+    got = {(kind, label, marker) for kind, label, marker in rows if kind in ("path", "ref")}
+    want = {
+        ("path", "grip.toml tracked", "stable"),
+        ("ref", "refs/dev.synapt/__members__/<member>/heads/*", "reserved"),
+        ("ref", "refs/dev.synapt/__overlays__/<member>/...", "reserved"),
+    }
+    assert got == want, (
+        "the layout kinds in the dump are not section 7's:\n"
+        f"  missing: {sorted(want - got)}\n"
+        f"  extra:   {sorted(got - want)}"
+    )
+
+
+def test_every_layout_row_carries_a_known_marker() -> None:
+    """A layout row's marker comes from the ROW, so a typo would make a fourth
+    marker that the share gate then reads as "not reserved" and counts."""
+    from gr2.python_cli.layout import LAYOUT, MARKERS
+
+    assert LAYOUT, "the layout table is empty, so this gate cannot fail"
+    bad = sorted(
+        f"{row.kind} {row.spelling}: {row.marker!r}"
+        for row in LAYOUT
+        if row.marker not in MARKERS
+    )
+    assert not bad, (
+        "layout rows carrying a marker outside MARKERS (the share gate treats "
+        "anything that is not `reserved` as counted):\n  " + "\n  ".join(bad)
+    )
+
+
+def test_no_spelling_carries_a_marker_from_both_sources() -> None:
+    """A layout spelling must not also sit in `api/stability.toml`.
+
+    The two sources mean different things by `reserved` -- stability.toml's
+    asserts the spelling is ABSENT from the dump, the layout's marks a row that
+    is PRESENT -- so a spelling in both would be answered twice, and which answer
+    won would depend on lookup order rather than on anyone's decision.
+    """
+    gen = _generator()
+    layout_keys = {(kind, label) for kind, label, _ in gen._layout_rows()}
+    assert layout_keys, "no layout rows were built, so this gate cannot fail"
+    both = sorted(
+        f"{kind} {spelling}" for kind, spelling in layout_keys & set(gen._markers())
+    )
+    assert not both, (
+        "spelling(s) carrying a marker from BOTH the layout table and "
+        "api/stability.toml:\n  " + "\n  ".join(both)
+    )
 

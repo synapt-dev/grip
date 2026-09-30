@@ -1142,6 +1142,10 @@ def _native_store_checkout(root: Path, revision: str) -> tuple[str, list[dict[st
     the same class as a control that answers a different question than the one asked.
     """
     members = _native_members(root)
+    # PHASE ONE'S OWN RESULT, built before anything is written: each member with the working root
+    # it resolved to. The loop below refuses on anything knowable now, and because nothing has been
+    # written yet, every refusal it raises leaves the root and every member byte-identical.
+    resolved: list[tuple[dict[str, str], Path]] = []
     for member in members:
         # THE WORKING ROOT, and the dirty probe is the first place it matters: probing a
         # directory that holds no checkout either fails on a path the user can see is not
@@ -1150,6 +1154,7 @@ def _native_store_checkout(root: Path, revision: str) -> tuple[str, list[dict[st
         path = _member_working_root_or_refuse(root, members, member)
         if _store_git(path, "status", "--porcelain").stdout.strip():
             raise NativeStoreRefusal(f"{member['name']} is dirty; commit or stash changes first", 3)
+        resolved.append((member, path))
     # Exit 5 rather than 2 for an unresolvable name: 2 is the argument-parser's code in this
     # group, and this is the verb failing to MEASURE the thing the caller named. Named here
     # because it is a judgement call rather than a row the design states -- the readers get
@@ -1160,18 +1165,54 @@ def _native_store_checkout(root: Path, revision: str) -> tuple[str, list[dict[st
             f"{revision} is not a root commit this store can resolve; git says: {_git_detail(target)}", 5
         )
     sha = target.stdout.strip()
-    _store_git(root, "checkout", "--detach", sha)
+    # ⚠ THE PINS ARE RESOLVED HERE, IN PHASE ONE, AND NOT AFTER THE DETACH. `_native_members_at`
+    # keys the snapshot by the member names AS RECORDED AT THAT REVISION, so a member renamed since
+    # then has no pin there -- and this lookup used to happen AFTER `checkout --detach`, which meant
+    # the KeyError it raised left the ROOT DETACHED AT THE TARGET while every member stayed behind.
+    # The caller got exit 1 with empty stdout and empty stderr, and the next verb then failed too.
+    # Resolving first makes every refusal below free: nothing has been written yet, so the root and
+    # every member are still exactly where the caller left them.
     pins = _native_members_at(root, sha)
+    planned: list[tuple[str, Path, str]] = []
+    for member, path in resolved:
+        if member["name"] not in pins:
+            raise NativeStoreRefusal(
+                f"{member['name']} has no pin in the snapshot at {sha[:12]}: the member was renamed "
+                f"after that revision, so the snapshot does not carry the name it now declares. "
+                f"Nothing has been moved -- the root and every member are as they were.",
+                4,
+            )
+        planned.append((member["name"], path, pins[member["name"]]))
+
+    # ---------------------------------------------------------------- PHASE TWO: this mutates.
+    # Phase one above covers everything knowable before the first write. This part does not, and
+    # cannot: a git error on the third member still leaves the earlier ones moved. A rollback would
+    # be a SECOND mutation that can itself fail halfway -- the same class as the half-applied state
+    # it would repair -- so the requirement here is only that the failure NAMES the state.
+    #
+    # ⚠ THE WORKING ROOT IS CARRIED FROM PHASE ONE, AND THAT IS DELIBERATE, because this verb used
+    # to RE-RESOLVE it here and its comment said why: "`_native_members_at` and the detach both move
+    # history, and a path cached before the root was detached is a second answer to a question that
+    # was already answered". The detach is what that guarded against -- and the phase split removes
+    # the hazard rather than moving it. The pins are now read BEFORE anything moves, so no path is
+    # resolved across a detach: the root's movement does not move the member DIRECTORIES the
+    # resolution reads, which is why a re-resolution could not be made to differ from this one.
+    _store_git(root, "checkout", "--detach", sha)
     restored: list[dict[str, str]] = []
-    for member in members:
-        # RESOLVED AGAIN, not carried from the loop above: `_native_members_at` and the
-        # detach both move history, and a path cached before the root was detached is a
-        # second answer to a question that was already answered -- the same class as
-        # resolving the revision twice, which this verb's own docstring records.
-        path = _member_working_root_or_refuse(root, members, member)
-        pin = pins[member["name"]]
-        _store_git(path, "checkout", "--detach", pin)
-        restored.append({"name": member["name"], "pin": pin, "head": _store_git(path, "rev-parse", "HEAD").stdout.strip()})
+    moved: list[str] = []
+    for name, path, pin in planned:
+        step = _store_git(path, "checkout", "--detach", pin, check=False)
+        if step.returncode:
+            not_moved = [name] + [n for n, _, _ in planned if n not in moved and n != name]
+            raise NativeStoreRefusal(
+                f"{name} could not be checked out at {pin[:12]}; git says: {_git_detail(step)}. "
+                f"THIS WORKSPACE IS PART-APPLIED -- moved: {moved or 'nothing'}; "
+                f"did not move: {not_moved}; root HEAD: "
+                f"{_store_git(root, 'rev-parse', 'HEAD', check=False).stdout.strip()[:12]}",
+                5,
+            )
+        moved.append(name)
+        restored.append({"name": name, "pin": pin, "head": _store_git(path, "rev-parse", "HEAD").stdout.strip()})
     # THE RESOLVED SHA IS RETURNED, not the string the caller typed.
     # `--json` reported `root_commit: "HEAD~1"`, which is not a commit: it names
     # one only relative to a HEAD the call itself just moved, so a caller could not tell

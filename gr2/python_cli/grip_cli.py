@@ -498,6 +498,149 @@ def _is_member_checkout(root: Path, rel: str) -> bool:
     return top.returncode == 0 and Path(top.stdout.strip()).resolve() == path.resolve()
 
 
+# The one-release NAME fallback on the NATIVE STORE path, the sibling of
+# `spec_apply._note_alpha_checkout`. gr2 alpha placed members by NAME, so a root whose
+# member name differs from its declared path may hold the checkout at `<root>/<name>`
+# with nothing at the path. Keyed on the two absolute paths, so a verb that resolves a
+# member twice in one process still prints ONE line for one user action.
+_NAME_PLACED_NOTED: set[tuple[str, str]] = set()
+
+
+def _note_name_placed(member: dict[str, str], declared: Path, at_name: Path) -> None:
+    """The one-release note for the native store: EXACTLY ONE line, naming BOTH coordinates.
+
+    The line has to name where the checkout IS and the declaration that disagrees with it.
+    A message naming only the path is the refusal this replaces, and one naming only the
+    name leaves the reader unable to find the manifest line that disagrees with it.
+    """
+    key = (str(declared), str(at_name))
+    if key in _NAME_PLACED_NOTED:
+        return
+    _NAME_PLACED_NOTED.add(key)
+    typer.echo(
+        f"note: '{member['name']}' is checked out at {at_name}, the name gr2 placed members "
+        f"by until this release, while grip.toml declares its path as {member['path']!r} "
+        f"({declared}). Reading the existing checkout where it is; nothing is moved and "
+        "nothing is cloned over it.",
+        err=True,
+    )
+
+
+def _claimed_member_paths(
+    root: Path, members: list[dict[str, str]], exclude: dict[str, str] | None = None
+) -> set[Path]:
+    """Every OTHER member's TWO coordinates -- declared path AND name -- resolved.
+
+    BOTH COORDINATES, and that is the whole point. The first cut of this built the set from
+    DECLARED PATHS alone, and a SECOND reader broke it: a member whose checkout sits at its NAME
+    coordinate (its declared path has nothing at it -- exactly the alpha-era placement this
+    fallback exists for) contributed its declared path to the set and NOT the directory its
+    checkout actually occupies. Another member whose name then landed on that directory found it
+    UNCLAIMED and read it -- and pinned it -- as surely as the rename case, with no rename
+    anywhere. Measured: `beta` declaring `beta-declared` while its checkout sits at `beta`, and
+    `alpha` renamed to `beta`, put beta's HEAD on BOTH rows.
+
+    `exclude` IS LOAD-BEARING, not tidiness: a member's OWN name coordinate must never be in its
+    own claim set, or the fallback would refuse the very directory it exists to find.
+
+    NAMED `_claimed_member_paths`, not `_declared_member_paths`: this module ALREADY defines
+    `_declared_member_paths(root)` with a DIFFERENT signature, and a second definition under that
+    name shadows the first silently -- it parses, and the existing one-argument caller fails only
+    at RUNTIME with a TypeError. Found by grepping the name after writing it; no syntax check can
+    see a redefinition at all.
+    """
+    claimed: set[Path] = set()
+    for member in members:
+        if member is exclude:
+            continue
+        claimed.add((root / member["path"]).resolve())
+        name = str(member.get("name", ""))
+        if name and name != member["path"]:
+            try:
+                claimed.add((root / _normalise_member_path(root, name)).resolve())
+            except NativeStoreRefusal:
+                # A sibling whose name cannot be normalised claims nothing; its own reads are
+                # refused elsewhere and it must not take the fallback away from anyone.
+                continue
+    return claimed
+
+
+def _native_member_working_root(
+    root: Path, member: dict[str, str], claimed: set[Path]
+) -> Path:
+    """Where this member's checkout actually IS: the PATH first, then the NAME.
+
+    THE PATH WINS WHENEVER IT HOLDS A CHECKOUT, and the NAME is consulted only when it
+    does not -- so every root whose two coordinates agree resolves exactly as before, and
+    this cannot change which member a verb reads.
+
+    When nothing is at the path and a checkout sits at the name, the checkout is read
+    WHERE IT IS and both coordinates are named. Nothing is moved; nothing is cloned over
+    it. The alternative was a refusal, and it is the wrong one here: the member is present
+    and healthy, one directory over, and "cannot measure" tells the user nothing about
+    where it went. Exit 5 stays for a member that really is unreadable.
+
+    `claimed` IS EVERY OTHER MEMBER'S TWO COORDINATES, RESOLVED (`_claimed_member_paths`, called
+    with `exclude=<this member>`), and the fallback REFUSES a name coordinate that lands **on OR
+    INSIDE** one -- a subtree test, not an equality test. Landing on a different member's directory
+    is what let a renamed member be measured, and PINNED, from its neighbour; landing *inside* one
+    is the same wrong pin one level out, and equality alone cannot see it.
+
+    IT IS REQUIRED, deliberately, on a reader's suggestion. It was typed `= None` with an
+    `in (claimed or ())` test, so a caller that forgot the argument turned the guard OFF silently
+    -- a guard failing in the one direction that has no symptom and no error. Every caller passes
+    it today, so requiring it costs nothing and turns the omission into a TypeError.
+    """
+    declared = root / member["path"]
+    if _is_member_checkout(root, member["path"]):
+        return declared
+    name = str(member.get("name", ""))
+    if name and name != member["path"]:
+        try:
+            # THE NAME IS A PATH COORDINATE, so it goes through the SAME normaliser the declared
+            # path does. Without this the fallback was a second door into the escape that
+            # normaliser exists to close: a name that is ABSOLUTE or carries `..` resolved
+            # outside the root, `store status` reported the foreign checkout's HEAD, and
+            # `store commit` ran git (fetch) inside it. Refused here exactly as a path is.
+            at_name_rel = _normalise_member_path(root, name)
+        except NativeStoreRefusal:
+            # Falling back to `declared` keeps the refusal the parent already gives this shape:
+            # the member stays unmeasurable, which is what a containing store should say.
+            return declared
+        if _is_member_checkout(root, at_name_rel):
+            # A NAME THAT LANDS ON ANOTHER MEMBER'S DECLARED PATH IS NOT THIS MEMBER'S CHECKOUT.
+            # Found by Apollo's r2 on this lane (2026-09-30): member `alpha` RENAMED to `beta` while
+            # a member named `beta` exists, and alpha's declared path empty. The fallback resolved
+            # alpha's name onto beta's checkout, so `store status` reported beta's HEAD on alpha's
+            # row AND `store commit` REWROTE alpha's gitlink pin to beta's sha at rc 0. The parent
+            # refuses this shape, so the fallback INTRODUCED it; a wrong READ is a bad answer, a
+            # wrong PIN is a bad byte in the root snapshot.
+            #
+            # CONTAINMENT, NOT A CONFIG GATE: refusing a duplicate member NAME once at discovery is
+            # a smaller diff and would close THIS example, but it refuses the whole WORKSPACE for a
+            # collision that only the fallback can act on, and it misses the wider class -- a name
+            # that lands on a path another member declares under a DIFFERENT name, where no
+            # duplicate name exists at all. This closes the class that can write.
+            # A SUBTREE TEST, not an equality test, and the difference is a whole class of shape.
+            # Exact membership closes "the name lands ON another member's coordinate" and CANNOT
+            # close "the name lands INSIDE one" -- measured by a reader (2026-09-30) on
+            # `alpha.name = "beta/nested"` with `beta/nested` a real checkout carrying its own
+            # fetchable origin: alpha's gitlink pin was rewritten to the NESTED checkout's HEAD at
+            # rc 0, which is the same wrong-pin severity as the direct collision.
+            #
+            # ⚠ AND THAT SHAPE ALMOST READ AS CLOSED ANYWAY. With NO remote on the nested checkout
+            # the read WAS stopped -- by §5a's coverage fetch (`cannot fetch origin`), not by this
+            # guard. A refusal arriving from a DIFFERENT guard looks exactly like this predicate
+            # working, so the row that witnesses it must give the nested checkout a real origin.
+            target = (root / at_name_rel).resolve()
+            if any(p == target or p in target.parents for p in claimed):
+                return declared
+            at_name = root / at_name_rel
+            _note_name_placed(member, declared, at_name)
+            return at_name
+    return declared
+
+
 def _discover_members(root: Path, declared: list[str] | None = None) -> list[dict[str, str]]:
     """The member checkouts `store init` records, in the order the sources are trusted.
 
@@ -751,7 +894,9 @@ def _require_root_commit(root: Path) -> None:
         raise NativeStoreRefusal("no root commit yet; run store commit", 5)
 
 
-def _member_coverage(root: Path, member: dict[str, str], sha: str) -> None:
+def _member_coverage(
+    root: Path, member: dict[str, str], sha: str, claimed: set[Path]
+) -> None:
     """Section 5a, in ONE place, so two verbs cannot answer it with different refs.
 
     §5a: run `git fetch <upstream-remote>` and fail with exit 5 if it fails, then
@@ -774,7 +919,11 @@ def _member_coverage(root: Path, member: dict[str, str], sha: str) -> None:
     covered (the recorded pin, not the member's current HEAD -- a member whose HEAD moved is
     `unpinned`, a status observation, and its pin may still be perfectly covered).
     """
-    path = root / member["path"]
+    # THE WORKING ROOT, not the declared path: §5a asks about the member that is HERE, and a
+    # root placed by name one directory over keeps its checkout at the name. The gitlink KEY
+    # stays the declared path at every call site that writes one -- that key belongs to the
+    # root snapshot, not to wherever the working copy happens to be.
+    path = _native_member_working_root(root, member, claimed)
     upstream = member["upstream"]
     remote, separator, branch = upstream.partition("/")
     if not separator or not remote or not branch:
@@ -795,7 +944,10 @@ def _native_store_commit(root: Path, message: str) -> None:
     for member in members:
         if _url_has_credentials(member["remote"]):
             raise _credential_refusal(member["name"])
-        path = root / member["path"]
+        # PER MEMBER, and `exclude=member` is load-bearing: a member's OWN name coordinate must not
+        # be in its own claim set, or the fallback would refuse the directory it exists to find.
+        claimed = _claimed_member_paths(root, members, exclude=member)
+        path = _native_member_working_root(root, member, claimed)
         # A member path that is not a checkout cannot be measured at all. Named here rather
         # than left to the residual RuntimeError backstop: the backstop's code (5) is right
         # but its message is git's, and a refusal a reader meets first should say what to run.
@@ -813,7 +965,7 @@ def _native_store_commit(root: Path, message: str) -> None:
                 f"{member['name']} is dirty; commit or stash changes first", 3
             )
         head = _store_git(path, "rev-parse", "HEAD").stdout.strip()
-        _member_coverage(root, member, head)
+        _member_coverage(root, member, head, claimed)
         changed.append({**member, "pin": head})
     _write_native_members(root, changed)
     _store_git(root, "add", "grip.toml")
@@ -834,8 +986,10 @@ def _native_store_check(root: Path) -> list[dict[str, str]]:
     if issues:
         raise NativeStoreRefusal(f"grip.toml schema invalid: {issues[0].message}", 4)
     _require_root_commit(root)
+    members = _native_members(root)
     checked: list[dict[str, str]] = []
-    for member in _native_members(root):
+    for member in members:
+        claimed = _claimed_member_paths(root, members, exclude=member)
         # ORDER MATTERS AND THE DESIGN STATES IT: §5's check row reads "schema valid, gitlink
         # equals pin for every member, every pin covered against LIVE upstream", so the
         # consistency comparison runs BEFORE coverage. The other order changes which refusal
@@ -852,7 +1006,7 @@ def _native_store_check(root: Path) -> list[dict[str, str]]:
         # §5a's input is the RECORDED PIN, not the member's current HEAD: this verb asks
         # whether the pin the root publishes is still covered, and a member whose HEAD has
         # moved is `unpinned` (a status observation) whose recorded pin may be fine.
-        _member_coverage(root, member, member["pin"])
+        _member_coverage(root, member, member["pin"], claimed)
         checked.append({"name": member["name"], "pin": member["pin"], "upstream": member["upstream"], "state": "upstream"})
     return checked
 
@@ -990,7 +1144,12 @@ def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[
     _require_root_commit(root)
     rows: list[dict[str, str | None]] = []
     for member in members:
-        path = root / member["path"]
+        claimed = _claimed_member_paths(root, members, exclude=member)
+        # THE WORKING ROOT: the declared path unless nothing is there and a checkout sits
+        # at the member's NAME. The `ls-tree` below keeps the DECLARED path -- that is the
+        # gitlink key in the root snapshot, and it must not move with where the working
+        # copy happens to be.
+        path = _native_member_working_root(root, member, claimed)
         tree = _store_git(root, "ls-tree", "HEAD", "--", member["path"]).stdout.strip().split()
         gitlink = tree[2] if len(tree) >= 3 else None
         top = _store_git(path, "rev-parse", "--show-toplevel", check=False)

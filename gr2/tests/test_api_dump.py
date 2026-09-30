@@ -38,6 +38,43 @@ MIN_VERBS = 70
 MIN_FLAGS = 175
 MIN_ARGS = 95
 
+# `--json` verbs that are NOT in `JSON_SHAPES` yet. A COUNT rather than a list,
+# so it is cheap to keep and it still fires on the thing that matters: the
+# moment a verb grows a `--json` flag with no shape, this number moves and the
+# author has to either document the shape or raise this constant IN FRONT OF A
+# READER. LOWER it whenever you cover a verb; never raise it to quiet a red.
+#
+# The covered set today is the `store` group and its hidden `grip` alias (22
+# verb paths, one table, two mounts). Everything else carrying `--json` -- the
+# review machinery, lanes, exec, hooks, the workspace conversions -- is named
+# here as a residual, not left as a silence: section 7's rule ("a verb with
+# `--json` and no table entry fails the dump") is enforced over the group this
+# slice promises, and this count is what makes the rest visible until they are
+# covered one at a time.
+JSON_VERBS_PENDING = 47
+
+# The kinds a stranger BUILDS ON INDEPENDENTLY: a verb, a flag, a positional
+# and an exit code are each actionable on their own -- a caller writes
+# `gr2 store status --json` and branches on exit 3.
+#
+# `json` IS DELIBERATELY NOT ONE OF THEM, and the reason is a measurement, not
+# a preference. A key path is reachable only THROUGH its verb, which is already
+# counted, so counting its keys again measures how much we DOCUMENTED rather
+# than how much we PROMISED -- and it points the incentive the wrong way, where
+# describing your surface lowers your score (measured with the markers as
+# shipped: the STORE mount's 51 key paths, may-change with their verbs, take the
+# share from 325/358 = 0.9078 to 325/409 = 0.7946, i.e. under the floor, for
+# adding nothing but documentation). The population is named because the dump
+# carries 102 key paths, not 51 -- the hidden `grip` mount carries the other 51
+# and counting those too gives 325/460 = 0.7065.
+#
+# The exclusion is SYMMETRIC -- json items leave the numerator as well as the
+# denominator -- so the kind can move the ratio in NEITHER direction, which
+# `test_json_items_are_score_neutral` pins. An exclusion that could only raise
+# the number would be a lever for meeting this gate, which is the one thing it
+# must not be.
+SURFACE_KINDS = ("verb", "flag", "arg", "exit")
+
 
 def _generator():
     """Load the generator by path -- it is a script, not an installed module."""
@@ -58,6 +95,23 @@ def _rows(text: str) -> list[tuple[str, str, str]]:
     return rows
 
 
+def _counted(rows: list[tuple[str, str, str]]) -> list[tuple[str, str, str]]:
+    """The rows the share gate measures. ONE home for the rule, so the gate and
+    the neutrality proof below cannot drift apart."""
+    return [
+        (kind, label, marker)
+        for kind, label, marker in rows
+        if kind in SURFACE_KINDS and marker != "reserved" and "(hidden" not in label
+    ]
+
+
+def _share(rows: list[tuple[str, str, str]]) -> tuple[int, int, float]:
+    """(stable, counted, share) -- the gate's own arithmetic."""
+    counted = _counted(rows)
+    stable = [row for row in counted if row[2] == "stable"]
+    return len(stable), len(counted), (len(stable) / len(counted) if counted else 1.0)
+
+
 def test_api_dump_is_current() -> None:
     rendered = _generator().render()
     assert rendered.strip(), (
@@ -76,16 +130,15 @@ def test_api_dump_is_current() -> None:
 
 def test_api_stable_share_at_least_90() -> None:
     rows = _rows(_generator().render())
-    counted = [
-        (kind, label, marker)
-        for kind, label, marker in rows
-        if marker != "reserved" and "(hidden" not in label
-    ]
-    stable = [row for row in counted if row[2] == "stable"]
-    share = len(stable) / len(counted) if counted else 1.0
-    print(f"stable share: {len(stable)}/{len(counted)} = {share:.4f}")
+    stable_count, counted_count, share = _share(rows)
+    json_rows = [row for row in rows if row[0] == "json"]
+    print(
+        f"stable share: {stable_count}/{counted_count} = {share:.4f}"
+        f"  ({len(json_rows)} json key paths excluded: a key path is a facet of "
+        f"its verb, which is counted)"
+    )
     assert share >= 0.90, (
-        f"stable share {len(stable)}/{len(counted)} = {share:.4f} is under 0.90.\n"
+        f"stable share {stable_count}/{counted_count} = {share:.4f} is under 0.90.\n"
         f"  There are levers here and they are not interchangeable:\n"
         f"    hidden     an internal verb goes hidden=True and leaves the denominator\n"
         f"    reserved   a reserved name leaves the denominator the same way\n"
@@ -272,4 +325,218 @@ def test_api_dump_carries_every_store_exit_code() -> None:
         f"the store exit table must travel with the store verbs' stability, "
         f"found {sorted(store_markers)}"
     )
+
+
+def _json_verb_paths() -> set[str]:
+    """Every verb path in the app that carries a `--json` flag.
+
+    Walked from the app rather than read from the table, because the question
+    these gates ask is what the CLI OFFERS vs what the dump PROMISES -- a
+    comparison that is vacuous if both sides come from the same source.
+    """
+    import typer
+
+    from gr2.python_cli.app import app
+
+    top = typer.main.get_command(app)
+
+    def walk(cmd, prefix: tuple[str, ...] = ()):
+        subs = getattr(cmd, "commands", None)
+        if subs:
+            for name, sub in subs.items():
+                yield from walk(sub, prefix + (name,))
+        else:
+            yield " ".join(prefix), cmd
+
+    return {
+        verb
+        for verb, cmd in walk(top)
+        if any("--json" in (getattr(param, "opts", None) or []) for param in cmd.params)
+    }
+
+
+def test_the_store_group_json_verbs_all_have_a_shape() -> None:
+    """Section 7 over the surface this slice promises: a verb carrying `--json`
+    with no `JSON_SHAPES` entry is a payload the dump does not promise.
+
+    An EXACT-SET assertion in both directions, because either half alone can go
+    quiet: a missing shape is an undocumented payload, and a shape naming no
+    `--json` verb is a promise about something that emits nothing.
+    """
+    from gr2.python_cli import grip_cli
+
+    covered = set(grip_cli.JSON_SHAPES)
+    group = {verb for verb in _json_verb_paths() if verb.split(" ")[0] in ("store", "grip")}
+    assert covered, "JSON_SHAPES is empty, so this gate cannot fail"
+    assert covered == group, (
+        "JSON_SHAPES and the store/grip verbs carrying --json disagree:\n"
+        f"  a --json verb with no shape: {sorted(group - covered)}\n"
+        f"  a shape naming no --json verb: {sorted(covered - group)}"
+    )
+
+
+def test_uncovered_json_verbs_are_counted() -> None:
+    """The residual is a NUMBER that moves, so it cannot grow in silence.
+
+    The covered set is the group this slice promises; every other `--json` verb
+    is a payload with no shape. A count rather than a list: it costs one line,
+    and it still fires the moment a verb grows a `--json` flag -- which is the
+    event that matters, since that author is the one who can document it.
+
+    MEASURED, and the reason the share exclusion is safe only while this holds:
+    adding `--json` to one verb outside the group (applied to app.py and
+    restored by blob hash) takes the count 47 -> 48 and reddens this row, naming
+    the verb it found. Without that mutation on the record, "47" is a number
+    nobody has seen move, and an exclusion resting on it would be resting on a
+    constant rather than on a property.
+    """
+    from gr2.python_cli import grip_cli
+
+    pending = _json_verb_paths() - set(grip_cli.JSON_SHAPES)
+    assert len(pending) == JSON_VERBS_PENDING, (
+        f"{len(pending)} verbs carry --json with no shape in JSON_SHAPES, "
+        f"expected {JSON_VERBS_PENDING}:\n  "
+        + "\n  ".join(sorted(pending))
+        + "\n  Document the new shape in grip_cli.JSON_SHAPES, or move "
+        "JSON_VERBS_PENDING in this file deliberately."
+    )
+
+
+def test_every_json_item_names_a_real_verb() -> None:
+    """The INHERITANCE lookup resolves by verb path, so a typo in the table
+    would silently take the default marker instead of the verb's -- the item
+    would read `stable` while the verb it belongs to is `may-change`.
+    """
+    gen = _generator()
+    verbs = _json_verb_paths()
+    spellings = [spelling for kind, spelling, _, _ in gen._items() if kind == "json"]
+    assert spellings, "no json items were emitted, so this gate cannot fail"
+    unknown = sorted({gen._verb_of_json(spelling) for spelling in spellings} - verbs)
+    assert not unknown, (
+        "json item(s) whose verb path names no --json verb (the marker then "
+        "defaults to stable instead of inheriting):\n  " + "\n  ".join(unknown)
+    )
+
+
+def test_a_json_item_inherits_its_verb_marker() -> None:
+    """The INHERITANCE RULE and the MOUNT TWINS, which nothing else here witnessed.
+
+    MEASURED, and the measurement is why this row exists: deleting the
+    inheritance branch in ``_marker`` and regenerating the dump leaves every
+    OTHER row here green -- the file's json items simply all read ``stable``,
+    because a json spelling is never an entry in ``api/stability.toml`` and the
+    covered-set, count, neutrality and verb-resolution rows are each blind to a
+    marker. So the rule this change rests on ("a key cannot be more promised than
+    the verb that emits it") had no witness at all until this row.
+
+    THREE ASSERTIONS, because any one of them alone is satisfiable by accident:
+
+    1. every json marker equals its CANONICAL verb's marker;
+    2. every json key path carried under BOTH mounts carries the SAME marker --
+       `api/stability.toml` names the canonical mount only, so an alias spelling
+       looks up as if absent and silently takes the `stable` default, publishing
+       a STRONGER promise than the identical payload one mount over. Measured
+       before the alias resolution landed: 51 `grip` key paths read `stable`
+       against 51 `store` twins reading `may-change`;
+    3. at least one marker is non-stable, since a dump whose verbs were all
+       stable would satisfy 1 and 2 vacuously.
+
+    The twin is built by SWAPPING THE MOUNT IN THE SPELLING, never by calling the
+    resolver under test, so this row can disagree with the code it holds.
+    """
+    from gr2.python_cli import grip_cli
+
+    gen = _generator()
+    mounts = grip_cli.STORE_MOUNTS
+    canonical, aliases = mounts[0], tuple(mounts[1:])
+    assert len(mounts) > 1 and canonical not in aliases, (
+        f"STORE_MOUNTS must name a canonical mount first, then one or more "
+        f"aliases: {mounts}"
+    )
+
+    # (kind, bare spelling) -> the marker(s) published for it. The bare spelling
+    # drops the `(hidden:...)` annotation a hidden row carries, so an alias row
+    # and its canonical twin are keyed the same way.
+    by_spelling: dict[tuple[str, str], set[str]] = {}
+    for kind, label, marker in _rows(gen.render()):
+        by_spelling.setdefault((kind, label.split(" (hidden")[0].strip()), set()).add(marker)
+
+    json_spellings = sorted(spelling for kind, spelling in by_spelling if kind == "json")
+    assert json_spellings, "no json items were emitted, so this gate cannot fail"
+
+    markers = gen._markers()
+    wrong: list[str] = []
+
+    # A json spelling's first token is its MOUNT, so one that names neither the
+    # canonical mount nor an alias is an item the mount tuple does not explain.
+    stray = sorted(s for s in json_spellings if s.partition(" ")[0] not in mounts)
+    if stray:
+        wrong.append(f"json spelling(s) under a mount STORE_MOUNTS does not name: {stray}")
+
+    twin_pairs = 0
+    for spelling in json_spellings:
+        found = by_spelling[("json", spelling)]
+        assert len(found) == 1, (
+            f"json {spelling!r} carries more than one marker: {sorted(found)}"
+        )
+        marker = next(iter(found))
+
+        # (1) INHERITANCE, resolved through the canonical mount.
+        json_verb = gen._verb_of_json(spelling)
+        verb_mount, sep, verb_rest = json_verb.partition(" ")
+        canonical_verb = (
+            f"{canonical} {verb_rest}" if sep and verb_mount in aliases else json_verb
+        )
+        want = markers.get(("verb", canonical_verb), "stable")
+        if marker != want:
+            wrong.append(
+                f"{spelling}: marker {marker!r} but its verb {canonical_verb!r} is {want!r}"
+            )
+
+        # (2) TWIN AGREEMENT, across the mounts of the same callbacks.
+        item_mount, item_sep, item_rest = spelling.partition(" ")
+        if not item_sep or item_mount not in aliases:
+            continue
+        twin_pairs += 1
+        twin_key = ("json", f"{canonical} {item_rest}")
+        twin = by_spelling.get(twin_key)
+        if twin is None:
+            wrong.append(
+                f"{spelling}: no {canonical}-mount twin {twin_key[1]!r}; the mounts are the "
+                f"same callbacks, so a key path cannot exist under one only"
+            )
+        elif twin != found:
+            wrong.append(f"{spelling}: {sorted(found)} but its twin reads {sorted(twin)}")
+
+    assert not wrong, (
+        "json item(s) whose marker is not their canonical verb's:\n  " + "\n  ".join(wrong)
+    )
+    assert twin_pairs, (
+        "no json key path is carried under an alias mount, so the twin assertion "
+        "cannot fail and is proving nothing"
+    )
+    assert any(by_spelling[("json", s)] != {"stable"} for s in json_spellings), (
+        "every json item reads stable, so this row cannot tell inheritance from "
+        "the default: the store group's key paths must carry its may-change"
+    )
+
+
+def test_json_items_are_score_neutral() -> None:
+    """A json item must move the share in NEITHER direction.
+
+    This is what makes the exclusion honest rather than convenient: an
+    exclusion that could only RAISE the ratio would be a lever for meeting this
+    gate, and a json item that could lower it would put a price on describing
+    the surface. Adding one of each marker to the real rows must leave the
+    arithmetic exactly where it was.
+    """
+    rows = _rows(_generator().render())
+    base = _share(rows)
+    assert base[1], "the measured set is empty, so this proof is vacuous"
+    for marker in ("stable", "may-change"):
+        probe = rows + [("json", "store probe .key", marker)]
+        assert _share(probe) == base, (
+            f"adding a {marker} json item moved the share from {base} to "
+            f"{_share(probe)}; the exclusion must be symmetric"
+        )
 

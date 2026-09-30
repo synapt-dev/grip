@@ -1123,6 +1123,129 @@ def _native_store_migrate(root: Path, *, dry_run: bool = False) -> dict[str, obj
     }
 
 
+# THE JSON SHAPES TABLE -- design section 7: "JSON keys come from a
+# ``JSON_SHAPES`` table beside each command's renderer". These are the keys the
+# store renderers below actually emit, read off each `json.dumps` site.
+#
+# ONE ENTRY PER KEY PATH, in payload order. A path is dotted from the payload
+# root, and `[]` marks an array whose elements share the path's tail --
+# `.members[].state` is the `state` key of every element of `members`.
+#
+# AN ANNOTATION AFTER TWO SPACES CLOSES THE VALUE DOMAIN where this module
+# closes it: `enum(...)` for a set of literals chosen here, `map<str,str>` for
+# an object keyed by member name. A path with NO annotation is a value whose
+# domain is open (a sha, a path, a commit message); no annotation is an honest
+# "not a closed set", never an oversight -- so a reader can tell "open" from
+# "nobody looked".
+#
+# THE MARKER IS NOT DUPLICATED HERE. A json item's marker is its VERB's marker
+# (dump_api._json_items), because a promise about a verb's keys cannot be
+# stronger than the promise about the verb: while `store status` is may-change,
+# so are the keys it emits. An ALIAS MOUNT resolves to its canonical twin for
+# that lookup (dump_api._canonical_verb), so the same key path cannot publish two
+# different markers depending on which mount a caller reads it through.
+#
+# ⚠ `store migrate`'s `.members` IS AN OBJECT (name -> pin), not the list the
+# other members are -- hence its `map<str,str>` annotation. That is the product's
+# own inconsistency, reported rather than smoothed over; the dump says what the
+# payload is.
+#
+# KEYED BY THE VERB UNDER THE GROUP, because a payload does not depend on the
+# mount: `app.add_typer(grip_app, name="store")` and
+# `app.add_typer(grip_app, name="grip", hidden=True)` are the same callbacks.
+# `JSON_SHAPES` below expands this table to every mount, so the hidden alias
+# family carries the same shapes instead of a gap a reader has to explain.
+_STORE_JSON_SHAPES: dict[str, tuple[str, ...]] = {
+    "init": (
+        ".status  enum(initialized)",
+        ".path",
+        ".store  enum(native)",
+    ),
+    "commit": (
+        ".status  enum(committed)",
+        ".root_commit",
+    ),
+    # The hidden alias of `store commit` (section 5), so it emits commit's shape.
+    "snapshot": (
+        ".status  enum(committed)",
+        ".root_commit",
+    ),
+    "check": (
+        ".status  enum(checked)",
+        ".members[].name",
+        ".members[].pin",
+        ".members[].upstream",
+        ".members[].state  enum(upstream)",
+    ),
+    "push": (
+        ".status  enum(pushed)",
+        ".root_branch",
+        ".root_commit",
+        ".members[].name",
+        ".members[].pin",
+        ".members[].upstream",
+        ".members[].state  enum(upstream)",
+    ),
+    "status": (
+        ".status  enum(status)",
+        ".members[].name",
+        ".members[].pin",
+        ".members[].gitlink",
+        ".members[].head",
+        ".members[].state  enum(upstream,stale,missing,unpinned,cannot-measure)",
+        ".root.state  enum(clean,dirty)",
+        ".root.porcelain",
+    ),
+    "materialize": (
+        ".status  enum(materialized)",
+        ".members[].name",
+        ".members[].pin",
+        ".members[].head",
+    ),
+    "migrate": (
+        ".status  enum(dry-run,migrated)",
+        ".alpha_head",
+        ".root_commit",
+        ".members  map<str,str>",
+    ),
+    "log": (
+        ".entries[].commit",
+        ".entries[].message",
+        ".entries[].pins[].name",
+        ".entries[].pins[].before",
+        ".entries[].pins[].after",
+    ),
+    "diff": (
+        ".ref_a",
+        ".ref_b",
+        ".members[].name",
+        ".members[].old_pin",
+        ".members[].new_pin",
+        ".members[].changed",
+    ),
+    "checkout": (
+        ".status  enum(checked-out)",
+        ".root_commit",
+        ".members[].name",
+        ".members[].pin",
+        ".members[].head",
+    ),
+}
+
+#: THE MOUNTS, NAMED ONCE. The FIRST is canonical; the rest are aliases of the
+#: same callbacks (see the note above). Both the expansion below and the dump's
+#: marker lookup read this tuple, so a second mount cannot be added to one and
+#: missed by the other.
+STORE_MOUNTS: tuple[str, ...] = ("store", "grip")
+
+#: verb path -> key paths, for EVERY mount of this group (see the note above).
+JSON_SHAPES: dict[str, tuple[str, ...]] = {
+    f"{mount} {verb}": paths
+    for mount in STORE_MOUNTS
+    for verb, paths in _STORE_JSON_SHAPES.items()
+}
+
+
 @grip_app.command("init")
 def grip_init_cmd(
     workspace_root: Path | None = typer.Argument(None),

@@ -59,6 +59,14 @@ may-change = [
   "flag store migrate --json",
   "verb store push",
   "flag store push --json",
+  # `store snapshot` is the hidden alias of `store commit` (section 5), removed
+  # at beta, and it was the one store verb left off this list -- so it read
+  # `stable` while the verb it aliases is `may-change`, and the json keys it
+  # emits inherited that same wrong marker. Hidden keeps it out of the 90
+  # percent denominator either way; this is about the file telling the truth.
+  "verb store snapshot",
+  "flag store snapshot --json",
+  "flag store snapshot --message/-m <str>",
   "verb store status",
   "flag store status --json",
   # The group's exit table travels WITH its verbs rather than being promised on

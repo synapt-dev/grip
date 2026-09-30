@@ -992,12 +992,14 @@ def test_break_15_symlink_member_path_is_refused(two_member_ws: Path, tmp_path: 
 @pytest.mark.parametrize(
     "bad", ["absolute", "../../outside", "../sibling/inside", "symlinked"]
 )
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="the unit grammar is defined by gr2/gr2/schemas/gr2-workspace-spec-v1.schema.json "
-           "(design section 4), which is a later builder step's deliverable and does not exist yet",
-)
+# THE MARK CAME OFF HERE, and the reason it carried was stale when it did. It said
+# the schema file "does not exist yet"; gr2/gr2/schemas/gr2-workspace-spec-v1.schema.json
+# has been present and load-bearing since section 4 landed. What actually kept these
+# rows red was narrower: `gr2 spec validate` read `grip.toml` OR the workspace spec and
+# never both, and it exited 1 where section 5's table has no 1. With both documents
+# validated and 4 returned, all four cases below go green, and a strict xfail on a
+# green row is a failure -- which is how the mark was forced off rather than removed
+# on a hunch.
 def test_break_17_unit_path_outside_the_root(two_member_ws: Path, tmp_path: Path, bad: str) -> None:
     """exit 4 naming the unit; nothing created or written outside the root.
 
@@ -1054,7 +1056,95 @@ def test_break_17_unit_path_outside_the_root(two_member_ws: Path, tmp_path: Path
 
     rc, out = _cli("spec", "validate", "--json")
     assert rc == 4, f"a unit path outside the root must be refused with 4, got {rc}: {out}"
-    assert bad in out or "bad" in out, f"the refusal must name the unit; got: {out}"
+    # WHICH PATH, not just the unit's name. This read `bad in out or "bad" in out`,
+    # and the second half was near-vacuous: every fixture here names its unit "bad",
+    # so the assertion held for ANY output mentioning the unit at all -- including one
+    # that never said which path was refused.
+    #
+    # MEASURED on all four cases, and they are not all the same shape: the three
+    # lexical escapes name the path as written, and the symlinked case names the
+    # SYMLINK (`.../ws/escape-link`) instead, because the link is the thing that makes
+    # the path land outside. Asserting the written path for all four was my first
+    # version and it went red on exactly that case, which is the measurement that
+    # produced this form.
+    assert "unit 'bad'" in out, f"the refusal must name the unit; got: {out}"
+    assert bad_path in out or "symlink" in out, (
+        "the refusal must say WHICH path it refused -- the path as written, or the "
+        f"symlink it passes through; got: {out}"
+    )
+    after_parent = {p.name for p in parent.iterdir()}
+    assert after_parent == before_parent, (
+        f"nothing may be created beside the root; got {sorted(after_parent - before_parent)}"
+    )
+
+
+@pytest.mark.parametrize(
+    "bad", ["absolute", "../outside", "dot-segment", "symlinked"]
+)
+def test_break_17_root_repo_path_outside_the_root(
+    two_member_ws: Path, tmp_path: Path, bad: str
+) -> None:
+    """exit 4 naming the repo AND the path; nothing created outside the root.
+
+    BREAK ATTEMPT 17 AT THE ROOT COORDINATE, which is not the coordinate the row above
+    drives. That one escapes through `units[].path`; this one through `repos[].path`,
+    the workspace spec's own top-level repo list, and nothing contained it. The
+    mechanism is pathlib's: `Path("/ws") / "/tmp/outside/x"` IS `"/tmp/outside/x"`,
+    because an absolute right operand REPLACES the base -- so an absolute declared path
+    named a directory outside the root, and every probe downstream of it (`exists`,
+    `repo_path_state`, the hook read) ran against that outside directory. Found by
+    Apollo while reviewing the unit-path fix, measured on base: an absolute path there
+    plans and APPLIES a clone outside the workspace root.
+
+    THE SAME PREDICATE CONTAINS IT HERE, `canonicalize_workspace_path`, which the unit
+    coordinate already delegates to. That is deliberate rather than convenient: a second
+    hand-rolled containment check is a second thing that can disagree with the first,
+    and this file's whole subject is what happens when two spellings of one rule drift.
+
+    AND IT CLOSES A REAL ASYMMETRY rather than only the absolute case. The unit grammar
+    refuses `./m`, `m/`, `m/.` and `a//m` as spellings the same helper's segment rule
+    rejects, while the ROOT level accepted them, because the root level had no segment
+    rule at all. `dot-segment` below is that case, and it is asserted here so the
+    stricter root grammar is a deliberate, visible choice rather than a side effect a
+    reader discovers later. No spec any compiler writes carries those spellings, so the
+    direction that costs anything -- something legal now refused -- is empty.
+    """
+    root = two_member_ws
+    paths = {
+        "absolute": str(tmp_path / "outside" / "abs-repo"),
+        "../outside": "../outside",
+        "dot-segment": "alpha/./beta",
+        "symlinked": "escape-link/alpha",
+    }
+    bad_path = paths[bad]
+
+    parent = root.parent
+    control = parent / "SENTINEL-PLANTED-CONTROL"
+    control.write_text("control\n")
+    (tmp_path / "outside").mkdir(exist_ok=True)
+    link = root / "escape-link"
+    if not link.exists():
+        link.symlink_to(tmp_path, target_is_directory=True)
+
+    assert _cli("store", "init", str(root))[0] == 0
+    _assert_init_ran(root)
+    before_parent = {p.name for p in parent.iterdir()}
+    assert "SENTINEL-PLANTED-CONTROL" in before_parent, "the fingerprint must see a planted file"
+
+    spec_dir = root / ".grip"
+    spec_dir.mkdir(exist_ok=True)
+    (spec_dir / "workspace_spec.toml").write_text(
+        f'workspace_name = "ws"\n\n[[repos]]\nname = "bad"\npath = "{bad_path}"\n'
+        f'url = "https://example.invalid/bad.git"\n'
+    )
+
+    rc, out = _cli("spec", "validate", "--json")
+    assert rc == 4, f"a repo path outside the root must be refused with 4, got {rc}: {out}"
+    assert "repo 'bad'" in out, f"the refusal must name the repo; got: {out}"
+    assert bad_path in out or "symlink" in out, (
+        "the refusal must say WHICH path it refused -- the path as written, or the "
+        f"symlink it passes through; got: {out}"
+    )
     after_parent = {p.name for p in parent.iterdir()}
     assert after_parent == before_parent, (
         f"nothing may be created beside the root; got {sorted(after_parent - before_parent)}"
@@ -1208,8 +1298,16 @@ def test_break_18_migrate_gr1_adopts_existing_checkouts_by_path(gr1_sibling_ws: 
 @pytest.mark.xfail(
     strict=True,
     raises=AssertionError,
-    reason="the member-in-a-unit-home shape is defined by "
-           "gr2/gr2/schemas/gr2-workspace-spec-v1.schema.json (design section 4), not yet delivered",
+    # THE REASON WAS STALE AND SAID THE SCHEMA FILE WAS NOT DELIVERED. It is
+    # (gr2/gr2/schemas/gr2-workspace-spec-v1.schema.json, section 4). This row
+    # cannot go green as written for a different reason: it drives `store status`
+    # over a grip.toml carrying `[[units]]`, and `[[units]]` is beta in this slice,
+    # so the status verb is refused as beta before the name-versus-path resolution
+    # it is testing is ever reached. Re-aiming it waits on the unit-home shape
+    # landing (section 6c items 3 and 5).
+    reason="the row drives `store status` over a grip.toml carrying `[[units]]`, which the "
+           "slice refuses as beta, so the name-versus-path resolution under test is never "
+           "reached; re-aiming waits on section 6c items 3 and 5",
 )
 def test_break_19_member_found_at_its_path_not_its_name(two_member_ws: Path, tmp_path: Path) -> None:
     """Found at its PATH by `status`, `commit` and store resolution; a lookup by NAME finds

@@ -102,6 +102,33 @@ def show_spec(workspace_root: Path, *, json_output: bool) -> str:
     return spec_path.read_text()
 
 
+def validate_workspace(workspace_root: Path) -> list[ValidationIssue]:
+    """Validate EVERY document this root carries, not one or the other.
+
+    A root can hold BOTH `grip.toml` (the Show HN v1 root spec) and
+    `.grip/workspace_spec.toml` (the workspace spec). Until this existed,
+    `spec validate` read grip.toml OR the spec -- so a root carrying both had
+    exactly one of them checked, and WHICH one depended on a file being present
+    rather than on the question being asked. A defect written into the unread
+    document validated clean, and the caller had no way to know which half had
+    been examined.
+
+    A root carrying NEITHER is not a pass: `load_workspace_spec_doc` raises its
+    own named "workspace spec not found", which is the behaviour the one-or-the-
+    other path had by accident and this keeps on purpose.
+    """
+    has_root_spec = (workspace_root / "grip.toml").exists()
+    has_workspace_spec = workspace_spec_path(workspace_root).exists()
+    if not has_root_spec and not has_workspace_spec:
+        load_workspace_spec_doc(workspace_root)  # raises SystemExit, naming the path
+    issues: list[ValidationIssue] = []
+    if has_root_spec:
+        issues.extend(validate_grip_toml(workspace_root))
+    if has_workspace_spec:
+        issues.extend(validate_spec(workspace_root))
+    return issues
+
+
 def validate_spec(workspace_root: Path) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     spec = load_workspace_spec_doc(workspace_root)
@@ -140,7 +167,31 @@ def validate_spec(workspace_root: Path) -> list[ValidationIssue]:
             issues.append(
                 ValidationIssue("error", "missing_repo_url", f"repo '{name}' url must not be empty", f"repos[{idx}].url")
             )
-        repo_root = workspace_root / path
+        # A DECLARED PATH MUST BE CONTAINED AT THIS COORDINATE TOO, not only on a
+        # unit. `Path("/ws") / "/tmp/x"` IS "/tmp/x" -- pathlib DROPS the left
+        # operand when the right one is absolute -- so an absolute `repos[].path`
+        # silently named a directory OUTSIDE the root, and every probe below
+        # (`exists`, `repo_path_state`, the hook read) then ran against that
+        # outside directory. `canonicalize_workspace_path` is this module's ONE
+        # containment predicate -- it also refuses `~`, backslashes, empty/`.`/`..`
+        # segments, and symlinked prefixes -- and the unit coordinate already
+        # delegates to it, so the two coordinates cannot drift apart.
+        #
+        # Reported and then FELL THROUGH as None, which is the shape the unit
+        # coordinate uses two hundred lines up, so one pass names every problem in
+        # the document instead of stopping at the first.
+        repo_root: Path | None = None
+        if path:
+            try:
+                repo_root = canonicalize_workspace_path(
+                    workspace_root, path, field_name=f"repo '{name}' path"
+                )
+            except MaterializationPlanError as exc:
+                issues.append(
+                    ValidationIssue(
+                        "error", "repo_path_outside_root", str(exc), f"repos[{idx}].path"
+                    )
+                )
         # `is_repo_root`, not `is_git_repo`: the latter answers
         # --is-inside-work-tree, which is true for any directory inside a
         # checkout, and a workspace root IS one -- so a plain directory at a
@@ -156,7 +207,7 @@ def validate_spec(workspace_root: Path) -> list[ValidationIssue]:
         # freshly cloned superproject, the exact path the from-superproject
         # entry exists to serve). The helper's one definition is what every
         # call site that uses the helper reads, so the three answers cannot drift apart.
-        if repo_root.exists() and gitops.repo_path_state(repo_root) == "neither":
+        if repo_root is not None and repo_root.exists() and gitops.repo_path_state(repo_root) == "neither":
             issues.append(
                 ValidationIssue(
                     level="error",
@@ -177,7 +228,7 @@ def validate_spec(workspace_root: Path) -> list[ValidationIssue]:
             )
         # Same distinction: hooks are read from a repo root, never from a
         # directory that merely sits inside one.
-        if repo_root.exists() and is_repo_root(repo_root):
+        if repo_root is not None and repo_root.exists() and is_repo_root(repo_root):
             try:
                 load_repo_hooks(repo_root)
             except SystemExit as exc:

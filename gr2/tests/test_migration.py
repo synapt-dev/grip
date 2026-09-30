@@ -1198,6 +1198,14 @@ class TestGripspaceRootRefusalMessage:
         "Move or clone it inside the gripspace, or leave it out of this spec",
     )
 
+    # The sentence a '..' part gets INSTEAD. Kept separate from DESIGN_PARTS on
+    # purpose: the two refusals share a field name and nothing else, and a reader
+    # who merges the tuples would let either sentence answer for the other.
+    DOTDOT_PARTS = (
+        "contains a '..' segment",
+        "write the path without it",
+    )
+
     def test_a_parent_relative_member_path_is_refused_with_the_design_wording(self) -> None:
         with pytest.raises(ValueError) as raised:
             migration._safe_workspace_relative_path("../outside", "repository 'escape' path")
@@ -1222,12 +1230,50 @@ class TestGripspaceRootRefusalMessage:
         for suggestion in ("parent", "~/", "Development", "make"):
             assert suggestion not in message, f"refusal suggests {suggestion!r}: {message}"
 
-    @pytest.mark.parametrize("value", ["/outside", "C:/outside", "nested/../outside"])
+    @pytest.mark.parametrize("value", ["/outside", "C:/outside", "../outside"])
     def test_every_escaping_shape_gets_the_same_wording(self, value: str) -> None:
         with pytest.raises(ValueError) as raised:
             migration._safe_workspace_relative_path(value, "repository 'escape' path")
 
         assert "outside this gripspace" in str(raised.value)
+
+    @pytest.mark.parametrize("value", ["a/../b", "a/..", "nested/../outside"])
+    def test_a_dotdot_part_gets_its_own_sentence(self, value: str) -> None:
+        """A path carrying a '..' part is refused for a DIFFERENT reason than a real
+        escape, and it must not borrow that reason's sentence.
+
+        'a/../b' resolves to 'b', and 'a/..' resolves to the root itself: both are
+        INSIDE the gripspace, so telling their author the path is "outside this
+        gripspace" is false about what the path does and sends them looking for the
+        wrong repair. 'nested/../outside' is the same shape and used to be bundled
+        with the real escapes, which is what made the false sentence look right.
+        """
+        with pytest.raises(ValueError) as raised:
+            migration._safe_workspace_relative_path(value, "repository 'escape' path")
+
+        message = str(raised.value)
+        assert "outside this gripspace" not in message, (
+            f"{value!r} resolves INSIDE the gripspace but is described as outside: {message}"
+        )
+        for part in self.DOTDOT_PARTS:
+            assert part in message, f"missing {part!r} in: {message}"
+        assert value in message
+
+    def test_a_real_escape_still_gets_the_outside_sentence(self) -> None:
+        """The control for the row above: splitting the '..' case out must not have
+        swallowed the case the outside sentence is actually FOR.
+
+        Without this, making the '..' row pass could be done by weakening every
+        parent-relative refusal to the same sentence.
+        """
+        with pytest.raises(ValueError) as raised:
+            migration._safe_workspace_relative_path("../outside", "repository 'escape' path")
+
+        message = str(raised.value)
+        assert "outside this gripspace" in message
+        assert ".." not in message.replace("../outside", ""), (
+            f"a real escape must not be described as a '..' segment problem: {message}"
+        )
 
     def test_a_dot_path_is_not_described_as_outside_the_gripspace(self) -> None:
         "'.' IS inside the gripspace, so the outside-wording would be false here."
@@ -1263,6 +1309,44 @@ class TestGripspaceRootRefusalMessage:
         assert "cannot compile canonical gripspace manifest" in message
         for part in self.DESIGN_PARTS:
             assert part in message, f"the operator never sees {part!r}: {message}"
+        assert not (gr1_workspace / ".grip").exists()
+
+    def test_the_migrate_entry_point_reports_a_sentence_and_not_a_traceback(
+        self, gr1_workspace: Path
+    ) -> None:
+        """The same refusal through the entry point a user actually types.
+
+        `bootstrap_gr1_workspace` converts a compile failure into a sentence. The
+        migrate entry point calls the same compile, and did it with no handler, so
+        the operator met a Python traceback where the other verb gave them the
+        sentence. Same refusal, same wording; what this row pins is that it arrives
+        AS a message rather than as a stack.
+        """
+        manifest_path = gr1_workspace / ".gitgrip" / "spaces" / "main" / "gripspace.yml"
+        manifest_path.write_text(
+            yaml.dump(
+                {
+                    "repos": {
+                        "escape": {
+                            "path": "../outside",
+                            "url": "https://example.invalid/escape.git",
+                        }
+                    }
+                }
+            )
+        )
+        (gr1_workspace / ".gitgrip" / "agents.toml").write_text(
+            '[agents."atlas"]\nworktree = "main"\n'
+        )
+
+        with pytest.raises(SystemExit) as raised:
+            migration.migrate_gr1_workspace(gr1_workspace)
+
+        message = str(raised.value)
+        assert "cannot compile canonical gripspace manifest" in message
+        for part in self.DESIGN_PARTS:
+            assert part in message, f"the operator never sees {part!r}: {message}"
+        assert "Traceback" not in message, f"the operator met a stack: {message}"
         assert not (gr1_workspace / ".grip").exists()
 
     def test_a_member_path_inside_the_gripspace_is_still_accepted(self) -> None:

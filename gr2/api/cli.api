@@ -297,8 +297,8 @@ flag  store materialize --json                                        may-change
 flag  store migrate --dry-run                                         may-change
 flag  store migrate --json                                            may-change
 flag  store push --json                                               may-change
-flag  store snapshot --json (hidden)                                  stable
-flag  store snapshot --message/-m <str> (hidden)                      stable
+flag  store snapshot --json (hidden)                                  may-change
+flag  store snapshot --message/-m <str> (hidden)                      may-change
 flag  store status --json                                             may-change
 flag  sync run --dirty <str>                                          stable
 flag  sync run --json                                                 stable
@@ -332,6 +332,108 @@ flag  workspace migrate-gr1 --json                                    stable
 flag  workspace migrate-lane-state --json                             stable
 flag  workspace migrate-lane-state --receipt <str>                    stable
 flag  workspace status --json                                         stable
+json  grip check .members[].name                                      may-change
+json  grip check .members[].pin                                       may-change
+json  grip check .members[].state  enum(upstream)                     may-change
+json  grip check .members[].upstream                                  may-change
+json  grip check .status  enum(checked)                               may-change
+json  grip checkout .members[].head                                   may-change
+json  grip checkout .members[].name                                   may-change
+json  grip checkout .members[].pin                                    may-change
+json  grip checkout .root_commit                                      may-change
+json  grip checkout .status  enum(checked-out)                        may-change
+json  grip commit .root_commit                                        may-change
+json  grip commit .status  enum(committed)                            may-change
+json  grip diff .members[].changed                                    may-change
+json  grip diff .members[].name                                       may-change
+json  grip diff .members[].new_pin                                    may-change
+json  grip diff .members[].old_pin                                    may-change
+json  grip diff .ref_a                                                may-change
+json  grip diff .ref_b                                                may-change
+json  grip init .path                                                 may-change
+json  grip init .status  enum(initialized)                            may-change
+json  grip init .store  enum(native)                                  may-change
+json  grip log .entries[].commit                                      may-change
+json  grip log .entries[].message                                     may-change
+json  grip log .entries[].pins[].after                                may-change
+json  grip log .entries[].pins[].before                               may-change
+json  grip log .entries[].pins[].name                                 may-change
+json  grip materialize .members[].head                                may-change
+json  grip materialize .members[].name                                may-change
+json  grip materialize .members[].pin                                 may-change
+json  grip materialize .status  enum(materialized)                    may-change
+json  grip migrate .alpha_head                                        may-change
+json  grip migrate .members  map<str,str>                             may-change
+json  grip migrate .root_commit                                       may-change
+json  grip migrate .status  enum(dry-run,migrated)                    may-change
+json  grip push .members[].name                                       may-change
+json  grip push .members[].pin                                        may-change
+json  grip push .members[].state  enum(upstream)                      may-change
+json  grip push .members[].upstream                                   may-change
+json  grip push .root_branch                                          may-change
+json  grip push .root_commit                                          may-change
+json  grip push .status  enum(pushed)                                 may-change
+json  grip snapshot .root_commit                                      may-change
+json  grip snapshot .status  enum(committed)                          may-change
+json  grip status .members[].gitlink                                  may-change
+json  grip status .members[].head                                     may-change
+json  grip status .members[].name                                     may-change
+json  grip status .members[].pin                                      may-change
+json  grip status .members[].state  enum(upstream,stale,missing,unpinned,cannot-measure) may-change
+json  grip status .root.porcelain                                     may-change
+json  grip status .root.state  enum(clean,dirty)                      may-change
+json  grip status .status  enum(status)                               may-change
+json  store check .members[].name                                     may-change
+json  store check .members[].pin                                      may-change
+json  store check .members[].state  enum(upstream)                    may-change
+json  store check .members[].upstream                                 may-change
+json  store check .status  enum(checked)                              may-change
+json  store checkout .members[].head                                  may-change
+json  store checkout .members[].name                                  may-change
+json  store checkout .members[].pin                                   may-change
+json  store checkout .root_commit                                     may-change
+json  store checkout .status  enum(checked-out)                       may-change
+json  store commit .root_commit                                       may-change
+json  store commit .status  enum(committed)                           may-change
+json  store diff .members[].changed                                   may-change
+json  store diff .members[].name                                      may-change
+json  store diff .members[].new_pin                                   may-change
+json  store diff .members[].old_pin                                   may-change
+json  store diff .ref_a                                               may-change
+json  store diff .ref_b                                               may-change
+json  store init .path                                                may-change
+json  store init .status  enum(initialized)                           may-change
+json  store init .store  enum(native)                                 may-change
+json  store log .entries[].commit                                     may-change
+json  store log .entries[].message                                    may-change
+json  store log .entries[].pins[].after                               may-change
+json  store log .entries[].pins[].before                              may-change
+json  store log .entries[].pins[].name                                may-change
+json  store materialize .members[].head                               may-change
+json  store materialize .members[].name                               may-change
+json  store materialize .members[].pin                                may-change
+json  store materialize .status  enum(materialized)                   may-change
+json  store migrate .alpha_head                                       may-change
+json  store migrate .members  map<str,str>                            may-change
+json  store migrate .root_commit                                      may-change
+json  store migrate .status  enum(dry-run,migrated)                   may-change
+json  store push .members[].name                                      may-change
+json  store push .members[].pin                                       may-change
+json  store push .members[].state  enum(upstream)                     may-change
+json  store push .members[].upstream                                  may-change
+json  store push .root_branch                                         may-change
+json  store push .root_commit                                         may-change
+json  store push .status  enum(pushed)                                may-change
+json  store snapshot .root_commit                                     may-change
+json  store snapshot .status  enum(committed)                         may-change
+json  store status .members[].gitlink                                 may-change
+json  store status .members[].head                                    may-change
+json  store status .members[].name                                    may-change
+json  store status .members[].pin                                     may-change
+json  store status .members[].state  enum(upstream,stale,missing,unpinned,cannot-measure) may-change
+json  store status .root.porcelain                                    may-change
+json  store status .root.state  enum(clean,dirty)                     may-change
+json  store status .status  enum(status)                              may-change
 verb  add                                                             stable
 verb  apply                                                           stable
 verb  branch                                                          stable
@@ -400,7 +502,7 @@ verb  store log                                                       may-change
 verb  store materialize                                               may-change
 verb  store migrate                                                   may-change
 verb  store push                                                      may-change
-verb  store snapshot (hidden)                                         stable
+verb  store snapshot (hidden)                                         may-change
 verb  store status                                                    may-change
 verb  sync run                                                        stable
 verb  sync status                                                     stable

@@ -72,7 +72,14 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run cargo check
-        run: cargo check --all-features
+        # --workspace is load-bearing. The root Cargo.toml is a NON-VIRTUAL
+        # workspace root ([package] gitgrip and [workspace] members = ["gr2"] in
+        # one file), and for that shape a bare cargo command selects the ROOT
+        # PACKAGE only; `members` is what only --workspace widens to. Measured
+        # 2026-09-30: `cargo metadata` reports workspace_members =
+        # [gr2-cli, gitgrip] but workspace_default_members = [gitgrip], and no
+        # Rust job in this file compiled the gr2 crate at all.
+        run: cargo check --workspace --all-features
 
   fmt:
     name: Format
@@ -106,7 +113,7 @@ jobs:
         run: |
           # Allow certain lints that are common in the codebase
           # TODO: Fix these and remove the allows
-          cargo clippy --all-features -- \
+          cargo clippy --workspace --all-features -- \
             -A clippy::ptr_arg \
             -A clippy::too_many_arguments \
             -A clippy::if_same_then_else \
@@ -134,7 +141,7 @@ jobs:
         # failure is invisible until the earlier one is fixed and the run
         # repeated — which is exactly how a Windows-only fixture bug hid a second
         # same-class bug in a binary that never ran (grip promote ci-green).
-        run: cargo test --all-features --no-fail-fast
+        run: cargo test --workspace --all-features --no-fail-fast
 
   test-windows:
     name: Test (windows-latest)
@@ -166,14 +173,14 @@ jobs:
       # The second invocation reuses the first's artifacts, so this costs a
       # dependency check, not a rebuild.
       - name: Build tests
-        run: cargo test --all-features --no-run
+        run: cargo test --workspace --all-features --no-run
         env:
           RUSTFLAGS: '-C link-arg=advapi32.lib -C link-arg=/STACK:8388608'
 
       - name: Run tests
         # --no-fail-fast: see the matrix job's note. On Windows especially, one
         # run must surface every failing binary rather than stopping at the first.
-        run: cargo test --all-features --no-fail-fast
+        run: cargo test --workspace --all-features --no-fail-fast
         env:
           RUSTFLAGS: '-C link-arg=advapi32.lib -C link-arg=/STACK:8388608'
 

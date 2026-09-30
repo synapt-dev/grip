@@ -169,7 +169,27 @@ def _editable_path(dist: importlib.metadata.Distribution) -> PurePath | None:
     # exists and its commit could not be read. That is why this returns the path for EVERY
     # declared-editable record, including the Windows-shaped one below -- one rule, not a
     # branch per failure.
-    return _file_url_to_path(url)
+    try:
+        return _file_url_to_path(url)
+    except ValueError:
+        # THE SIXTH SHAPE, and it is the FIFTH SEAM ONE MEMBER FURTHER OUT. That one let a
+        # truthy non-dict through to `.get` and raised AttributeError; this lets a malformed
+        # STRING through to `urlparse`, which raises `ValueError: Invalid IPv6 URL` on an
+        # unclosed bracket -- `file://[::1/repo`. The well-formed `file://[fe80::1]:80/x`
+        # parses fine, so it is the bracket and not IPv6 as such.
+        #
+        # Measured across eighteen corrupt record shapes, one fresh process each: seventeen
+        # answer a declared form and this one raised, out of `_editable_path` AND
+        # `version_line`. The comment above calls its own case the last member of the set,
+        # and the set was not closed -- which is why the type check on the STRING lives here
+        # rather than being assumed from the `isinstance` and `startswith` above it.
+        #
+        # The record still SAYS editable, so `released` is the same false claim this module
+        # already refused elsewhere; a value that is not a path cannot yield a commit, so the
+        # declared `<version>+unknown` is the outcome and the pure value keeps it there.
+        # `_clone_short_sha` already catches `ValueError` for this exact class one function
+        # away, so the exception is known here rather than new.
+        return PurePath(url)
 
 
 #: `/C:/Users/repo` -- a Windows-shaped path, slash-separated.

@@ -703,3 +703,49 @@ def test_a_corrupt_metadata_for_this_name_answers_the_bare_unknown(fixture_path:
     (corrupt / "METADATA").write_bytes(b"Metadata-Version: 2.1\nName: gitgrip\n\xff\xfe\n")
 
     assert version_line(DIST) == "unknown"
+
+
+def test_a_record_whose_url_cannot_be_parsed_answers_unknown_and_does_not_raise(
+    fixture_path: Path,
+) -> None:
+    """ATLAS'S SIXTH SHAPE: the fifth seam one member further out, on the STRING.
+
+    The fifth seam let a truthy non-dict through the `isinstance` check to `.get`. This one
+    lets a malformed string through the `isinstance(url, str)` and `startswith("file://")`
+    checks to `urlparse`, which raises `ValueError: Invalid IPv6 URL` on an unclosed bracket.
+    Measured across eighteen corrupt record shapes in fresh processes: seventeen answer a
+    declared form and this one raised, out of `_editable_path` AND `version_line`.
+
+    The record still SAYS editable, so `released` would be the same false claim this module
+    refuses everywhere else; a value that is not a path cannot yield a commit, so the answer
+    is the declared `<version>+unknown`.
+    """
+    import json as _json
+
+    di = fixture_path / f"{DIST}-2.0.0a5.dist-info"
+    di.mkdir(parents=True)
+    (di / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {DIST}\nVersion: 2.0.0a5\n")
+    (di / "direct_url.json").write_text(
+        _json.dumps({"url": "file://[::1/repo", "dir_info": {"editable": True}})
+    )
+
+    assert version_line(DIST) == "2.0.0a5+unknown"
+
+
+def test_a_well_formed_ipv6_url_is_not_the_failing_case(fixture_path: Path) -> None:
+    """CONTROL: the bracket is the defect, not IPv6.
+
+    `urlparse("file://[fe80::1]:80/x")` parses cleanly, so a fix that special-cased IPv6
+    would be treating the wrong member. This row pins that the well-formed form reaches the
+    same declared outcome by the ordinary route — it is simply not a path on this host.
+    """
+    import json as _json
+
+    di = fixture_path / f"{DIST}-2.0.0a5.dist-info"
+    di.mkdir(parents=True)
+    (di / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {DIST}\nVersion: 2.0.0a5\n")
+    (di / "direct_url.json").write_text(
+        _json.dumps({"url": "file://[fe80::1]:80/x", "dir_info": {"editable": True}})
+    )
+
+    assert version_line(DIST) == "2.0.0a5+unknown"

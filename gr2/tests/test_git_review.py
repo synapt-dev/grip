@@ -5,6 +5,7 @@ refuses. The console script is registered as `git-review` so git resolves `git r
 import json
 import os
 import shlex
+import re
 import shutil
 import subprocess
 import sys
@@ -159,7 +160,8 @@ def test_dash_h_prints_usage_and_exits_zero(capsys):
     assert "usage: git review" in out
 
 
-def test_version_says_whose_tool_this_is(capsys):
+@pytest.mark.parametrize("flag", ["-V", "--version", "version"])
+def test_version_says_whose_tool_this_is(capsys, flag):
     """`git review --version` answers WHOSE tool it is, on its first line.
 
     `git-review` is also the name of a long-standing PyPI tool that submits code to Gerrit, and
@@ -172,22 +174,37 @@ def test_version_says_whose_tool_this_is(capsys):
     as an unknown subcommand, which is a refusal about the ARGUMENT rather than an answer about
     the tool. So this row is red on the unmodified tree by exiting non-zero with no identity line.
 
-    Three properties, and the third is the one that makes it a DISCLOSURE rather than a name:
-    it exits 0, the FIRST non-empty line names this tool, and the output names the OTHER tool plus
-    where to find it -- a reader told only "this is git review" has not been told which git review.
+    PARAMETRISED OVER ALL THREE SPELLINGS the dispatcher accepts. Exercising only `--version` left
+    the others unpinned: reducing the tuple to `("--version",)` kept every row green, so the two
+    aliases were covered by nothing.
+
+    FOUR properties, and the last two are the ones a mutation found unpinned:
+    it exits 0; the FIRST line names this tool; a version TOKEN is on the second line; and the
+    output names the OTHER tool plus where to find it -- a reader told only "this is git review"
+    has not been told which git review.
     """
-    rc = git_review.main(["--version"])
+    rc = git_review.main([flag])
     out = capsys.readouterr().out
     lines = [ln for ln in out.splitlines() if ln.strip()]
     assert rc == 0, (
-        "`git review --version` must answer about the TOOL, not refuse as an unknown subcommand; "
+        f"`git review {flag}` must answer about the TOOL, not refuse as an unknown subcommand; "
         f"rc={rc} out={out!r}"
     )
-    assert lines, f"`--version` printed nothing: {out!r}"
+    assert lines, f"`{flag}` printed nothing: {out!r}"
     first = lines[0]
     assert "gr2" in first, (
         "the FIRST line must say whose tool this is, because the reader who needs it is the one "
         f"with the other `git-review` in mind. first line was {first!r}, full output:\n{out}"
+    )
+    # ⚠ THE VERSION ITSELF, WHICH THIS ROW IS NAMED FOR AND DID NOT PIN. Deleting `{version_line()}`
+    # from the print left all three rows GREEN: the identity and the Gerrit line still satisfied
+    # every other assertion, so a row about the version could not fail when the version was removed.
+    # A TOKEN rather than a literal: the value is a git-describe that legitimately moves with the
+    # head, so pinning a sha or a date would be wrong -- what must hold is that a version is there,
+    # on the line the output promises it on.
+    assert len(lines) >= 2 and re.search(r"\d+\.\d+", lines[1]), (
+        "the SECOND line must carry a version token; a `--version` that prints an identity and a "
+        f"disclaimer with no version at all is not a version command. lines={lines!r}"
     )
     assert "Gerrit" in out and "pypi.org/project/git-review" in out, (
         "the output must NAME the other tool and where to get it; identifying only ourselves "
@@ -218,6 +235,15 @@ def test_help_OPENS_by_saying_whose_tool_this_is(capsys):
         f"the identity must OPEN the help, not be buried under it: identity at line "
         f"{identity_at}, usage at line {usage_at}, full output:\n{out}"
     )
+    # ⚠ THE DISCLOSURE ITSELF, WHICH THE BODY CLAIMS AND NOTHING PINNED. Deleting the Gerrit
+    # paragraph from `_USAGE` left all three rows GREEN: the help still opened with the identity and
+    # still carried "usage: git review", so the half of this change that tells a user WHICH `git
+    # review` they got was covered by no row at all. The body says the help "names the other tool
+    # with a link"; this assertion is that sentence.
+    assert "Gerrit" in out and "pypi.org/project/git-review" in out, (
+        "`--help` must name the OTHER tool and where to find it, not only identify ourselves -- "
+        f"otherwise the collision is stated without being resolvable. full output:\n{out}"
+    )
 
 
 def test_both_doors_name_the_same_tool(capsys):
@@ -244,6 +270,74 @@ def test_both_doors_name_the_same_tool(capsys):
         "the two doors name the tool differently, so a reader cannot tell they are one tool:\n"
         f"  --help    says {help_identity[0]!r}\n  --version says {version_identity[0]!r}"
     )
+
+
+def test_both_doors_survive_a_stdout_that_cannot_encode_the_identity():
+    """Both doors must still PRINT when stdout's encoding cannot carry the identity line.
+
+    ⚠ THIS ROW EXISTS BECAUSE THE CHANGE IT PINS INTRODUCED THE PROBLEM, and it is the one shape a
+    UTF-8 terminal hides completely. `_IDENTITY` first carried an EM DASH (U+2014), which made it the
+    first non-ASCII byte this file puts on the `-h` path -- every byte the base prints is ASCII, so
+    the change moved that boundary. `print` raises `UnicodeEncodeError` when stdout cannot encode the
+    character, so on the head that carried the dash:
+
+        PYTHONIOENCODING=ascii git-review --help   ->  rc 1, ZERO bytes of stdout
+        dev, only git_review.py reverted          ->  rc 0, 716 bytes
+
+    and `--version` failed the same way. The line whose whole job is telling a user WHICH
+    `git review` they are running is exactly the line a user in a misconfigured environment needs,
+    so it cannot be the one that fails there. A UTF-8 terminal, and `LC_ALL=C` on 3.11+, both print
+    the dash fine -- which is why this is a ROW and not a comment: the environment that breaks is
+    the one nobody developing it is sitting in.
+
+    Run as a real SUBPROCESS because `PYTHONIOENCODING` is read when the interpreter starts a stream,
+    so it cannot be set from inside the running test's `os.environ` after the fact.
+
+    ⚠ AND THE CHILD PRINTS WHERE ITS IMPORT RESOLVED, because putting this tree on the child's
+    PYTHONPATH does NOT by itself prove the child ran this tree. An EDITABLE install lands a meta-path
+    finder, and a meta-path finder runs BEFORE `sys.path` -- so in a venv that has one, a child handed
+    a different tree on PYTHONPATH still imports the venv's copy. Measured against this row: with an
+    editable venv, `PYTHONPATH=<another tree>/gr2` resolved to that venv's `git_review.py`, not to the
+    tree on the path. The row could not have noticed, because `rc == 0` and `"gr2" in out` both hold
+    against ANY tree that prints those bytes -- so in a mismatched venv it was green while proving
+    nothing about the diff. That is the recorded failure where a probe ran dev code and reported on
+    the branch under review; the assertion below is what makes this row about THIS tree.
+    """
+    gr2_dir = Path(__file__).resolve().parents[1]
+    env = {**os.environ, "PYTHONIOENCODING": "ascii", "PYTHONPATH": str(gr2_dir)}
+    for flag in ("--help", "--version"):
+        res = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import sys, gr2.python_cli.git_review as m; "
+                "print(m.__file__, file=sys.stderr); "
+                f"raise SystemExit(m.main([{flag!r}]))",
+            ],
+            cwd=str(gr2_dir),
+            env=env,
+            capture_output=True,
+        )
+        out = res.stdout.decode("utf-8", errors="replace")
+        err = res.stderr.decode("utf-8", errors="replace")
+        # PRINT WHERE THE IMPORT RESOLVED, AND ASSERT IT IS THIS TREE. This is the assertion the
+        # docstring above says is load-bearing, and without it the two below are satisfied by any
+        # copy that answers -- which is precisely how a probe reports on the wrong code.
+        resolved = err.splitlines()[0].strip() if err.strip() else ""
+        assert resolved.startswith(str(gr2_dir)), (
+            "the child must have resolved to THIS tree; PYTHONPATH does NOT beat an editable "
+            "install, because a meta-path finder runs before sys.path, so a mismatched venv "
+            f"silently measures another copy while the row stays green. resolved={resolved!r}, "
+            f"expected something under {gr2_dir}"
+        )
+        assert res.returncode == 0, (
+            f"`git review {flag}` must not die when stdout cannot encode what it prints; "
+            f"rc={res.returncode} stdout={out!r} stderr={err!r}"
+        )
+        assert "gr2" in out, (
+            f"`{flag}` produced no identity line under a non-UTF-8 stdout, so a user in that "
+            f"environment cannot tell which git review they have. stdout={out!r}"
+        )
 
 
 # ---------------------------------------------------------------- `git review run`

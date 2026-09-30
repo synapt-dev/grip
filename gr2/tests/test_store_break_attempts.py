@@ -51,6 +51,7 @@ import os
 import re
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -163,6 +164,30 @@ def _set_member_upstream(text: str, member_path: str, upstream: str) -> str:
         if f'path = "{member_path}"' in block:
             new, n = re.subn(r"(?m)^upstream\s*=.*$", f'upstream = "{upstream}"', block)
             assert n == 1, f"expected one upstream line in the {member_path!r} block, found {n}"
+            blocks[i] = new
+            hit = True
+            break
+    assert hit, f"no [[members]] block with path = {member_path!r}"
+    return "[[members]]".join(blocks)
+
+
+def _set_member_name(text: str, member_path: str, name: str) -> str:
+    """Rename ONE member, located by its `path`, leaving every other block alone.
+
+    A block-scoped rename, and the primitive break 19 was missing. That row moved a member's
+    two coordinates with `text.replace('path = "alpha"', 'name = "renamed-member"\\npath = ...', 1)`,
+    which INSERTS a second `name` key into the block it matched instead of renaming the first
+    -- so the document fails `tomllib` with `Cannot overwrite a value`, every verb below exits
+    non-zero with an EMPTY payload, and the row never reaches a single assertion. Locating the
+    member first is what makes the rename well-formed; `_set_member_upstream` and
+    `_set_member_remote` above already work this way.
+    """
+    blocks = text.split("[[members]]")
+    hit = False
+    for i, block in enumerate(blocks[1:], start=1):
+        if f'path = "{member_path}"' in block:
+            new, n = re.subn(r"(?m)^name\s*=.*$", f'name = "{name}"', block)
+            assert n == 1, f"expected one name line in the {member_path!r} block, found {n}"
             blocks[i] = new
             hit = True
             break
@@ -1291,55 +1316,72 @@ def test_break_18_migrate_gr1_adopts_existing_checkouts_by_path(gr1_sibling_ws: 
 
 
 # ---------------------------------------------------------------------------
-# 19 — a member whose name differs from its path, inside a unit home
+# 19 — a member whose name differs from its path
+#
+# THE UNIT-HOME VARIANT CANNOT BE WRITTEN IN THIS SLICE, said here rather than left in a
+# mark's reason: the row drives `store status` over a manifest carrying `[[units]]`, and
+# `[[units]]` is beta, so the status verb is refused as beta before the name-versus-path
+# resolution it tests is ever reached. The coordinate this row CAN measure today is the
+# ROOT-level one, and the rule it pins -- that a member is resolved by PATH and its NAME is
+# carried for reporting and never used as a lookup -- is the same rule at either coordinate.
+# When `[[units]]` leaves beta this is the row to extend, and the extension is a fixture
+# placement, not a new subject.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    # THE REASON WAS STALE AND SAID THE SCHEMA FILE WAS NOT DELIVERED. It is
-    # (gr2/gr2/schemas/gr2-workspace-spec-v1.schema.json, section 4). This row
-    # cannot go green as written for a different reason: it drives `store status`
-    # over a grip.toml carrying `[[units]]`, and `[[units]]` is beta in this slice,
-    # so the status verb is refused as beta before the name-versus-path resolution
-    # it is testing is ever reached. Re-aiming it waits on the unit-home shape
-    # landing (section 6c items 3 and 5).
-    reason="the row drives `store status` over a grip.toml carrying `[[units]]`, which the "
-           "slice refuses as beta, so the name-versus-path resolution under test is never "
-           "reached; re-aiming waits on section 6c items 3 and 5",
-)
 def test_break_19_member_found_at_its_path_not_its_name(two_member_ws: Path, tmp_path: Path) -> None:
     """Found at its PATH by `status`, `commit` and store resolution; a lookup by NAME finds
     nothing. Name and path are two coordinates and the resolution sites must use the path one.
 
-    The first version placed the member at the ROOT rather than inside a unit
-    home, which is the section 6c gap-2 shape this row exists for, and its name check was
-    `"renamed-member" not in out.split("path")[0]` -- a heuristic over JSON that cannot fail.
-    The lookup is now asserted on PARSED `--json`, and the placement waits on the same schema
-    file rows 17 waits on, cited rather than guessed.
+    THE MARK CAME OFF BECAUSE THE ROW NOW RUNS, and it runs because two defects above the
+    subject were removed rather than worked around. Its fixture moved the member's two
+    coordinates with `text.replace('path = "alpha"', 'name = ...\\npath = ...')`, which INSERTS
+    a second `name` key instead of renaming the first, so grip.toml failed `tomllib` with
+    `Cannot overwrite a value` and `store status` exited 1 with an EMPTY payload -- the row
+    died on its own setup and never reached an assertion. Renaming through `_set_member_name`
+    (block-scoped, by path, like the two helpers above it) fixes that, and the row now asserts
+    its own document parses before any verb runs. Second: `store status` measures a COMMITTED
+    spec and exits 5 without one, so the fixture commits before asking.
+
+    WHAT THE ROW CAN AND CANNOT SEE, named so neither half reads as the other. `store
+    status --json` emits `name`, `pin`, `gitlink`, `head` and `state` and carries NO `path`,
+    so the row asserts the observable CONSEQUENCE of path resolution -- the member reports
+    `upstream`, meaning its checkout was found and its HEAD matched its pin -- rather than a
+    `path` field the verb does not emit. A resolution that used the NAME would find no
+    `renamed-member` checkout and could not report a state at all.
     """
     root = two_member_ws
     assert SPEC_SCHEMA_PATH.is_file(), (
-        f"the member-in-a-unit-home shape is defined by {SPEC_SCHEMA_REL} (design section 4); "
+        f"the member shape is defined by {SPEC_SCHEMA_REL} (design section 4); "
         f"until that file exists this row cannot build its fixture without guessing the format"
     )
     assert _cli("store", "init", str(root))[0] == 0
     _assert_init_ran(root)
 
-    # the member is renamed but keeps the OTHER member's path, INSIDE a unit home
-    # (section 6c gap 2: 13 of 25 live repos have a name different from their path).
-    unit_home = root / "agents" / "alpha-desk"
-    unit_home.mkdir(parents=True, exist_ok=True)
-    (unit_home / "checkout").mkdir(exist_ok=True)
-    text = (root / "grip.toml").read_text()
-    (root / "grip.toml").write_text(
-        text.replace('path = "alpha"', 'name = "renamed-member"\npath = "checkout"', 1)
+    # NAME AND PATH ARE TWO COORDINATES, and the fixture makes them DISAGREE while leaving the
+    # checkout exactly where the manifest says it is: the member is RENAMED and its path is
+    # untouched, so a lookup by NAME must not satisfy a path lookup and the resolution sites
+    # must use the path one.
+    manifest = root / "grip.toml"
+    manifest.write_text(_set_member_name(manifest.read_text(), "alpha", "renamed-member"))
+    # THE FIXTURE'S OWN DOCUMENT MUST PARSE, asserted BEFORE the verb runs. The previous
+    # version moved both coordinates with `text.replace('path = "alpha"', 'name = ...\\npath = ...')`,
+    # which INSERTS a second `name` key into the block instead of renaming the first: grip.toml
+    # then fails tomllib with `Cannot overwrite a value`, `store status` exits 1 with an EMPTY
+    # payload, and the row dies on its own setup without reaching a single assertion above.
+    parsed = tomllib.loads(manifest.read_text())
+    assert [m["name"] for m in parsed["members"]] == ["renamed-member", "beta"], (
+        f"the fixture's own document must parse AND carry the rename; got {parsed['members']}"
     )
+
+    # A ROOT COMMIT IS A PRECONDITION OF THE VERB, not decoration: `store status` measures a
+    # committed spec, and with none it exits 5 naming "no root commit yet; run store commit".
+    # The invalid grip.toml masked this -- the row died on its own setup one step earlier.
+    assert _cli("store", "commit", "-m", "store the renamed fixture")[0] == 0
 
     rc, out = _cli("store", "status", "--json")
     assert rc == 0, out
-    # PARSED, not a substring heuristic: the row asserts on the members list by PATH, and
+    # PARSED, not a substring heuristic: the row asserts on the members list, and
     # separately that a lookup by NAME resolves to nothing.
     try:
         data = json.loads(out)
@@ -1352,13 +1394,50 @@ def test_break_19_member_found_at_its_path_not_its_name(two_member_ws: Path, tmp
             f"`store status --json` must emit JSON; got {out[:200]!r}"
         ) from exc
     members = data.get("members") or data.get("member") or []
-    paths = {m.get("path") for m in members if isinstance(m, dict)}
     names = {m.get("name") for m in members if isinstance(m, dict)}
-    assert "checkout" in paths, f"the member must be found at its PATH; got paths={paths}"
-    assert "renamed-member" not in paths, (
-        f"a name must never satisfy a path lookup: renamed-member appeared as a path ({paths})"
+
+    # THE NAME IS CARRIED FOR REPORTING. It is what a reader sees, and it is NOT what the
+    # member is found by.
+    assert names == {"renamed-member", "beta"}, f"the NAME must be carried: got {names}"
+
+    # RESOLUTION USED THE PATH, and this is its observable consequence rather than a claim
+    # about a field. `alpha` is the only place this member's checkout exists, so a member
+    # reported `upstream` was resolved from there: its HEAD was read and matched its pin. A
+    # resolution that used the NAME would find no `renamed-member` checkout and could not
+    # report a state at all.
+    #
+    # WHAT THIS ROW CANNOT ASSERT, named so its absence does not read as an oversight:
+    # `store status --json` emits `name`, `pin`, `gitlink`, `head` and `state` and carries
+    # NO `path`, so there is no path field for a consumer to look up. The path is real --
+    # members are derived from the root's gitlink tree entries, which ARE paths -- it is
+    # simply not reported. Asserting on a `path` key would be asserting on a field the verb
+    # does not emit.
+    renamed = next(
+        (m for m in members if isinstance(m, dict) and m.get("name") == "renamed-member"), None
     )
-    assert "renamed-member" in names, f"the NAME is still carried for reporting: got {names}"
+    assert renamed is not None, f"the renamed member must be listed; got {members}"
+    assert renamed.get("state") == "upstream", (
+        f"the member must resolve from the checkout at its PATH, not its name: got {renamed}"
+    )
+    assert renamed.get("head") == renamed.get("pin"), (
+        f"resolved from the checkout at its path, its HEAD matches its pin: got {renamed}"
+    )
+
+    # CONTROL -- the falsifiable half, and the reason the assertion above is evidence rather
+    # than a description. Give the NAME a directory of its own. Nothing resolves by name
+    # today, so the members list must be byte-identical; a site that resolved by name would
+    # change it. Without this, the row would also pass if the state field were a constant.
+    (root / "renamed-member").mkdir(exist_ok=True)
+    rc2, out2 = _cli("store", "status", "--json")
+    assert rc2 == 0, out2
+    after = json.loads(out2).get("members")
+    assert after == members, (
+        "a directory named after the member must not change resolution: "
+        f"{after} != {members}"
+    )
+    assert "renamed-member" not in {
+        m.get("path") for m in members if isinstance(m, dict)
+    }, f"a name must never satisfy a path lookup; got {members}"
 
 
 # ---------------------------------------------------------------------------

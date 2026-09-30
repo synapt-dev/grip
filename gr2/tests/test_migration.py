@@ -1183,3 +1183,91 @@ def test_grip_mod_alpha_store_carries_the_pins_the_migration_reads(tmp_path: Pat
     assert grip_mod._read_repo_state(bare, "HEAD") == {}, (
         "control: an alpha store with no snapshot has no pins to report"
     )
+
+
+class TestGripspaceRootRefusalMessage:
+    """A member path that leaves the gripspace is refused, and the refusal has to
+    tell the reader the two things that fix it. What it must NOT do is point at
+    some parent directory as a root: a gitlink cannot point outside its tree, so
+    widening the root trades a refusal for a checkout that cannot resolve.
+    """
+
+    DESIGN_PARTS = (
+        "outside this gripspace",
+        "members live under the gripspace root",
+        "Move or clone it inside the gripspace, or leave it out of this spec",
+    )
+
+    def test_a_parent_relative_member_path_is_refused_with_the_design_wording(self) -> None:
+        with pytest.raises(ValueError) as raised:
+            migration._safe_workspace_relative_path("../outside", "repository 'escape' path")
+
+        message = str(raised.value)
+        for part in self.DESIGN_PARTS:
+            assert part in message, f"missing {part!r} in: {message}"
+        assert "../outside" in message
+
+    def test_the_refusal_names_the_gripspace_as_the_only_root(self) -> None:
+        """The word 'root' appears once, and it is the GRIPSPACE root.
+
+        A second occurrence, or any other directory offered as a candidate root,
+        is the suggestion the design forbids.
+        """
+        with pytest.raises(ValueError) as raised:
+            migration._safe_workspace_relative_path("../outside", "repository 'escape' path")
+
+        message = str(raised.value)
+        assert message.count("root") == 1, f"more than one root offered: {message}"
+        assert "gripspace root" in message
+        for suggestion in ("parent", "~/", "Development", "make"):
+            assert suggestion not in message, f"refusal suggests {suggestion!r}: {message}"
+
+    @pytest.mark.parametrize("value", ["/outside", "C:/outside", "nested/../outside"])
+    def test_every_escaping_shape_gets_the_same_wording(self, value: str) -> None:
+        with pytest.raises(ValueError) as raised:
+            migration._safe_workspace_relative_path(value, "repository 'escape' path")
+
+        assert "outside this gripspace" in str(raised.value)
+
+    def test_a_dot_path_is_not_described_as_outside_the_gripspace(self) -> None:
+        "'.' IS inside the gripspace, so the outside-wording would be false here."
+        with pytest.raises(ValueError) as raised:
+            migration._safe_workspace_relative_path(".", "repository 'escape' path")
+
+        assert "outside this gripspace" not in str(raised.value)
+
+    def test_the_message_reaches_the_operator_through_the_real_entry_point(
+        self, gr1_workspace: Path
+    ) -> None:
+        manifest_path = gr1_workspace / ".gitgrip" / "spaces" / "main" / "gripspace.yml"
+        manifest_path.write_text(
+            yaml.dump(
+                {
+                    "repos": {
+                        "escape": {
+                            "path": "../outside",
+                            "url": "https://example.invalid/escape.git",
+                        }
+                    }
+                }
+            )
+        )
+        (gr1_workspace / ".gitgrip" / "agents.toml").write_text(
+            '[agents."atlas"]\nworktree = "main"\n'
+        )
+
+        with pytest.raises(SystemExit) as raised:
+            bootstrap_gr1_workspace(gr1_workspace)
+
+        message = str(raised.value)
+        assert "cannot compile canonical gripspace manifest" in message
+        for part in self.DESIGN_PARTS:
+            assert part in message, f"the operator never sees {part!r}: {message}"
+        assert not (gr1_workspace / ".grip").exists()
+
+    def test_a_member_path_inside_the_gripspace_is_still_accepted(self) -> None:
+        """The control: without it, the refusal above could be unconditional."""
+        assert (
+            migration._safe_workspace_relative_path("nested/inside", "repository 'x' path")
+            == "nested/inside"
+        )

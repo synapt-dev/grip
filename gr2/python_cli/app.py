@@ -1289,9 +1289,12 @@ def spec_validate(
     workspace_root: Optional[Path] = typer.Argument(None),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Validate the current workspace spec."""
+    """Validate every spec document this root carries."""
     workspace_root = _resolve_workspace_root(workspace_root)
-    issues = spec_apply.validate_grip_toml(workspace_root) if (workspace_root / "grip.toml").exists() else spec_apply.validate_spec(workspace_root)
+    # BOTH DOCUMENTS, when both are present. This used to read grip.toml OR the
+    # workspace spec, so a root carrying both had exactly one of them checked
+    # and a defect in the other validated clean (section 9 step 6's break 17).
+    issues = spec_apply.validate_workspace(workspace_root)
     payload = {
         "workspace_root": str(workspace_root),
         "valid": not any(issue.level == "error" for issue in issues),
@@ -1302,7 +1305,11 @@ def spec_validate(
     else:
         typer.echo(spec_apply.render_validation(issues))
     if not payload["valid"]:
-        raise typer.Exit(code=1)
+        # 4, not 1: section 5's table has no 1 -- 0 ok, 2 usage, 3 coverage or
+        # cleanliness, 4 inconsistent or beta, 5 cannot measure -- and an
+        # invalid or beta spec is exactly "refused as inconsistent or beta".
+        # The exit code is part of the CLI's surface, so it is asserted.
+        raise typer.Exit(code=4)
 
 
 @app.command("plan")

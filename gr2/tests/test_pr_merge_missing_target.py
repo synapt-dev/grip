@@ -512,21 +512,24 @@ def test_a_group_file_whose_NAME_disagrees_with_its_id_is_refused(
     assert "Traceback" not in output, f"the operator met a stack: {output}"
 
 
+@pytest.mark.parametrize("count", [2, 3])
 def test_two_group_files_claiming_one_lane_are_refused(
-    tmp_path: Path, capsys: pytest.CaptureFixture
+    tmp_path: Path, capsys: pytest.CaptureFixture, count: int
 ) -> None:
     """A DUPLICATE LANE IS A STATE THE OPERATOR NEVER EXPRESSED.
 
     Silently taking the first-by-name is the same failure the id-less file is refused for:
     a silent pick reads as success. Both paths are named so the operator can delete one.
     """
-    # EXACTLY TWO, which is the natural shape of a duplicate and which a THREE-file row
-    # does not cover: relaxing `len(matches) > 1` to `> 2` survived every row until this
-    # one existed, silently resolving the duplicate through `matches[0]`. So `_workspace`'s
-    # own group file is removed and only two remain.
+    # PARAMETRIZED OVER 2 AND 3, because a witness at ONE POINT of a boundary is a claim
+    # about that point and not about which side the others fall on. A three-file row alone
+    # left `> 2` surviving (exactly two walked through); moving to exactly two then left
+    # `== 2` surviving (three walked through silently). Two points is the smallest set that
+    # pins the guard's shape rather than one of its inputs. `_workspace`'s own group file is
+    # removed so the count is exactly what this row writes.
     workspace = _workspace(tmp_path, [])
     (workspace / ".grip" / "pr_groups" / f"{GROUP_ID}.json").unlink()
-    for name in ("pg_one", "pg_two"):
+    for name in [f"pg_{i}" for i in range(1, count + 1)]:
         (workspace / ".grip" / "pr_groups" / f"{name}.json").write_text(
             json.dumps(
                 {
@@ -541,7 +544,10 @@ def test_two_group_files_claiming_one_lane_are_refused(
     code = _run_main(["pr", "merge", str(workspace), OWNER_UNIT, LANE_NAME])
     output = "".join(capsys.readouterr())
     assert code is not None, f"main() exited carrying nothing: {output}"
-    assert "pg_one" in str(code) and "pg_two" in str(code), str(code)
+    # Every path is named, for every count -- so the refusal is checkable against the files
+    # that are actually there rather than against a fixed pair.
+    for i in range(1, count + 1):
+        assert f"pg_{i}.json" in str(code), f"pg_{i} is not named: {code!r}"
     # AND THE REASON, for the same purpose: inverting it to "a lane may name several
     # groups" also left every row green before this line existed.
     assert "cannot be resolved by guessing" in str(code), f"the claim is unpinned: {code!r}"

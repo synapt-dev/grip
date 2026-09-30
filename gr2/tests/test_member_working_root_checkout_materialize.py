@@ -21,13 +21,19 @@ five verbs must name ONE root.
 
 from __future__ import annotations
 
-import subprocess
-import sys
 from pathlib import Path
 
-import pytest
-
-from test_store_break_attempts import (  # noqa: E402
+# IMPORTED BY ITS PACKAGE PATH, NOT BY BARE MODULE NAME. `tests/__init__.py` exists (0 bytes), so
+# pytest's prepend mode inserts gr2/ -- the first directory WITHOUT an `__init__.py` -- into
+# sys.path, and a bare `test_store_break_attempts` is then unresolvable. Measured: the file fails
+# at COLLECTION with `ModuleNotFoundError: No module named 'test_store_break_attempts'` under the
+# canonical invocation, `python -m pytest` from gr2/, and passes as soon as `tests/` is supplied on
+# the path -- so the rows were never the problem, the import was. That canonical invocation is what
+# CI runs (.github/workflows/ci.yml, job `gr2_python`, `working-directory: gr2`, `python -m pytest`)
+# and what a reader runs by hand, so the bare form would have gone red in CI while passing for an
+# author who happened to export PYTHONPATH. The package form is also this directory's convention:
+# twenty-odd files here import `tests.conftest` the same way.
+from tests.test_store_break_attempts import (
     _assert_init_ran,
     _cli,
     _git,
@@ -315,7 +321,9 @@ def test_row4_all_five_verbs_agree_on_one_root_after_a_rename(two_member_ws: Pat
     assert placed_before != placed_after_checkout, (
         "the name-placed checkout did not move, so `checkout` acted elsewhere" + why
     )
-    assert rc_st == 0 and rc_cm == 0, "status and commit already resolve the name; they must stay 0" + why
+    assert rc_st == 0 and rc_cm == 0, (
+        "status and commit already resolve the name; they must stay 0" + why
+    )
     assert "alpha-elsewhere" in out_st or "alpha" in out_st, (
         "status must report the member it actually read" + why
     )

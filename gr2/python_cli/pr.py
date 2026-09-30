@@ -36,6 +36,7 @@ from .platform import (
 
 __all__ = [
     "MergeMethod",
+    "PRHeadPinError",
     "PRMergeError",
     "PRMergeOutcomeUnknownError",
     "PRMergePostconditionError",
@@ -116,6 +117,38 @@ class PRMergeError(RuntimeError):
             else " (nothing had merged yet)"
         )
         super().__init__(f"merge failed for {repo}#{pr_number}: {reason}{suffix}")
+
+
+class PRHeadPinError(PRMergeError):
+    """A pinned member's head moved after the reads, so NOTHING merged.
+
+    `completed` is always empty by construction: the pin pass runs before the
+    first merge. That is the difference between this and a per-call check --
+    an adapter refusing only the member it has reached has already merged the
+    members before it, and a group that lands half of bytes nobody read is the
+    defect the pin exists to prevent.
+    """
+
+    def __init__(
+        self,
+        repo: str,
+        pr_number: int,
+        *,
+        expected: str,
+        actual: str | None,
+        completed: list[CompletedMerge],
+    ) -> None:
+        self.expected = expected
+        self.actual = actual
+        shown = actual[:8] if actual else "unreadable"
+        reason = (
+            f"head is {shown} ({actual or 'the adapter could not report it'}) but the "
+            f"reviewed head was {expected[:8]} ({expected}): the branch moved after the "
+            "reads, so merging would land bytes nobody reviewed, and an unreadable head "
+            "is not the same as an unchanged one. Re-bind the review to the current head "
+            "and read it again, or pass the head you actually read."
+        )
+        super().__init__(repo, pr_number, reason, completed=completed)
 
 
 class PRMergeOutcomeUnknownError(PRMergeError):
@@ -307,11 +340,32 @@ def merge_pr_group(
     method: MergeMethod,
     verification_targets: Mapping[str, MergeVerificationTarget],
     report: Callable[[str], Any],
+    expected_heads: Mapping[str, str] | None = None,
 ) -> dict:
-    """Merge all PRs, consuming host evidence before recording completion."""
+    """Merge all PRs, consuming host evidence before recording completion.
+
+    `expected_heads` pins a member's reviewed head COMMIT by repo. Every pinned
+    member is checked before the first merge, so a group whose bytes moved under
+    the reads lands nothing at all rather than every member whose head happened
+    to still match.
+    """
     group = _load_group(workspace_root, pr_group_id)
     merged: list[CompletedMerge] = []
     targets = dict(verification_targets)
+    pins = dict(expected_heads or {})
+
+    member_repos = [str(item["repo"]) for item in group["prs"]]
+    unknown_pins = sorted(set(pins) - set(member_repos))
+    if unknown_pins:
+        # A pin that matches no member is a typo that leaves the real member
+        # unpinned while reading as protection. Refuse rather than ignore.
+        raise ValueError(
+            "expected_heads names repo(s) not in this PR group: "
+            + ", ".join(unknown_pins)
+            + " (group carries: "
+            + ", ".join(member_repos)
+            + ")"
+        )
 
     missing_targets = [
         str(item["repo"]) for item in group["prs"] if str(item["repo"]) not in targets
@@ -322,11 +376,32 @@ def merge_pr_group(
             + ", ".join(missing_targets)
         )
 
+    # THE PIN PASS. It runs over every member BEFORE the first merge, because a
+    # per-call check refuses only the member the adapter has reached -- an
+    # earlier member merges first, and half of a group that nobody read lands.
+    for pr_info in group["prs"]:
+        repo = str(pr_info["repo"])
+        expected = pins.get(repo)
+        if expected is None:
+            continue
+        number = int(pr_info["pr_number"])
+        actual = adapter.pr_status(repo, number).head_oid
+        if actual != expected:
+            raise PRHeadPinError(
+                repo,
+                number,
+                expected=expected,
+                actual=actual,
+                completed=[],
+            )
+
     for pr_info in group["prs"]:
         repo = str(pr_info["repo"])
         number = int(pr_info["pr_number"])
         try:
-            receipt = adapter.merge_pr(repo, number, method=method)
+            receipt = adapter.merge_pr(
+                repo, number, method=method, expected_head=pins.get(repo)
+            )
         except MergeEvidenceError as exc:
             _record_merge_failure(
                 workspace_root=workspace_root,

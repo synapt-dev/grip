@@ -35,6 +35,7 @@ class _FailAfter:
         number: int,
         *,
         method: MergeMethod,
+        expected_head: str | None = None,
     ) -> MergeReceipt:
         self.calls.append(repo)
         if repo == self.fail_on:

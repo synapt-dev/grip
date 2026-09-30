@@ -96,6 +96,11 @@ class PRStatus:
     state: str
     mergeable: str | None = None
     checks: list[PRCheck] = field(default_factory=list)
+    # The head COMMIT, not the head branch. A branch name says which ref moved;
+    # only the commit says whether the bytes a reviewer read are the bytes a
+    # merge would land. `None` means the adapter could not report it, which is
+    # not the same as "unchanged".
+    head_oid: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -103,6 +108,7 @@ class PRStatus:
             "state": self.state,
             "mergeable": self.mergeable,
             "checks": [item.as_dict() for item in self.checks],
+            "head_oid": self.head_oid,
         }
 
 
@@ -132,6 +138,7 @@ class PlatformAdapter(Protocol):
         number: int,
         *,
         method: MergeMethod,
+        expected_head: str | None = None,
     ) -> MergeReceipt: ...
 
     def pr_status(self, repo: str, number: int) -> PRStatus: ...
@@ -274,17 +281,25 @@ class GitHubAdapter:
         number: int,
         *,
         method: MergeMethod,
+        expected_head: str | None = None,
     ) -> MergeReceipt:
+        argv = [
+            self.gh_binary,
+            "pr",
+            "merge",
+            str(number),
+            "--repo",
+            repo,
+            method.gh_flag,
+        ]
+        if expected_head is not None:
+            # The host refuses the merge when the head is not this commit. This
+            # is the race-closer, not the gate: it cannot refuse a group BEFORE
+            # an earlier member merges, so the group pre-check is the gate and
+            # this is what closes the window between that check and this call.
+            argv += ["--match-head-commit", expected_head]
         proc = subprocess.run(
-            [
-                self.gh_binary,
-                "pr",
-                "merge",
-                str(number),
-                "--repo",
-                repo,
-                method.gh_flag,
-            ],
+            argv,
             capture_output=True,
             text=True,
             check=False,
@@ -331,7 +346,7 @@ class GitHubAdapter:
                 "--repo",
                 repo,
                 "--json",
-                "number,url,headRefName,baseRefName,title,state,mergeable,statusCheckRollup",
+                "number,url,headRefName,headRefOid,baseRefName,title,state,mergeable,statusCheckRollup",
             ]
         )
         assert isinstance(payload, dict)
@@ -353,6 +368,11 @@ class GitHubAdapter:
                 else None
             ),
             checks=checks,
+            head_oid=(
+                str(payload.get("headRefOid"))
+                if payload.get("headRefOid") is not None
+                else None
+            ),
         )
 
     def list_prs(self, repo: str, *, head_branch: str | None = None) -> list[PRRef]:

@@ -207,6 +207,7 @@ flag  pr create --json                                                stable
 flag  pr create --platform <str>                                      stable
 flag  pr create --title <str>                                         stable
 flag  pr merge --json                                                 stable
+flag  pr merge --match-head-commit <str>                              stable
 flag  pr merge --method/-m <str>                                      stable
 flag  pr status --json                                                stable
 flag  prune --execute                                                 stable

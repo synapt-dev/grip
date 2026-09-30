@@ -8,6 +8,15 @@ the code under review. For a review that spans several repositories, use
 It installs as the console script `git-review`, so git's own `git-<name>`
 convention resolves `git review …` inside any repository.
 
+> **The name `git-review` is also a long-standing PyPI tool** that submits code to
+> Gerrit (<https://pypi.org/project/git-review/>). Both install a command called
+> `git-review`, so if both are on your `PATH` the first one wins and `git review`
+> may reach the other tool — which will not recognise `open`, `run`, `status` or
+> `close`. We keep the name, because `git review` as the single-repo front door is
+> the point and git's own `git-<name>` discovery is what makes it reachable; the
+> ambiguity is made visible instead of renamed away. **`git review --version` says
+> which one you are running**, on its first line, and so does `git review -h`.
+
 ```bash
 uv tool install --pre gitgrip   # brings both `gr2` and `git-review` (or: pip install --pre gitgrip)
 cd some-clone

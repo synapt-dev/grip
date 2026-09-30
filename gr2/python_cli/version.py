@@ -28,8 +28,7 @@ cannot exist -- and an editable install on Windows would read as `released`.
 `released` means **no editable record**: a wheel, or a `direct_url.json` that is absent,
 unreadable, malformed, or does not declare `dir_info.editable`. It does NOT mean a record
 that SAYS editable and could not be read -- that one is the declared `<version>+unknown`,
-because the record states a checkout exists and the honest answer is that its commit cannot
-be read here.
+because the record states a checkout exists while its commit cannot be read here.
 
 That split was wrong in this module until three readers raised it independently, and they
 were right: `released` was being printed for records that said the opposite. Getting it right
@@ -59,8 +58,8 @@ from urllib.request import url2pathname
 DISTRIBUTION = "gitgrip"
 
 # What the line says when an editable checkout exists but its commit cannot be read --
-# git absent, or the recorded path is not a repository. Saying so is the honest answer: a
-# number alone would claim a currency this call cannot verify.
+# git absent, or the recorded path is not a repository. Saying so states what the call
+# established; a number alone would claim a currency it cannot verify.
 UNKNOWN_COMMIT = "unknown"
 
 

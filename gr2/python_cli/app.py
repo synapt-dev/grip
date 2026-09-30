@@ -497,10 +497,15 @@ def _parse_head_pins(
                 f"({pins[repo][:8]} and {sha[:8]})"
             )
         pins[repo] = sha
-    if pins and len(pins) != len(members):
-        unpinned = [member for member in members if member not in pins]
+    # DISTINCT repos, not positions. A group that lists one repo twice otherwise
+    # compares 2 pins against 3 positions and refuses a group whose every repo WAS
+    # pinned -- and the message it printed named NOBODY, because `unpinned` filtered
+    # that same duplicated list. Counting by distinct repo makes both halves right.
+    distinct_members = list(dict.fromkeys(members))
+    if pins and len(pins) != len(distinct_members):
+        unpinned = [member for member in distinct_members if member not in pins]
         raise ValueError(
-            f"--match-head-commit pins {len(pins)} of {len(members)} members; "
+            f"--match-head-commit pins {len(pins)} of {len(distinct_members)} members; "
             f"{', '.join(unpinned)} would merge unpinned. Pin every member or none: a "
             "partial pin reads as protection for the whole group and is not."
         )

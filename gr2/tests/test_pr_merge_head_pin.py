@@ -317,6 +317,35 @@ def test_a_pin_set_that_covers_only_part_of_the_group_refuses() -> None:
     assert "api" in message, f"the refusal must name the member left unpinned: {message}"
 
 
+def test_a_group_that_lists_one_repo_twice_can_be_pinned_completely() -> None:
+    """The coverage guard counted POSITIONS, so a group naming one repo twice compared
+    a COMPLETE pin set against a longer list and refused -- and the message it printed
+    named nobody, because `unpinned` filtered that same duplicated list. Both halves
+    were wrong: the group IS fully pinned, and a refusal that names no member cannot
+    be acted on."""
+    from gr2.python_cli.app import _parse_head_pins
+
+    assert _parse_head_pins([f"app={READ_SHA}"], _group_spec(["app", "app"])) == {
+        "app": READ_SHA
+    }
+
+
+def test_an_empty_pin_set_is_accepted_and_means_no_enforcement() -> None:
+    """THE DEFAULT PATH, and nothing asserted it: no `--match-head-commit` at all.
+
+    `pins and` in the coverage guard is load-bearing. Drop it and an EMPTY pin set becomes
+    indistinguishable from a partial one, so a group the caller deliberately left unpinned
+    is refused with "pins 0 of 2 members; ... would merge unpinned" -- a sentence about a
+    fault nobody committed, on the ordinary merge. A body's Not-covered line calling this
+    case unchanged is true of the code and is not a guard on it; naming the common path as
+    unchanged is not the same as testing it.
+    """
+    from gr2.python_cli.app import _parse_head_pins
+
+    assert _parse_head_pins(None, _group_spec(["app", "api"])) == {}
+    assert _parse_head_pins([], _group_spec(["app", "api"])) == {}
+
+
 def test_a_pin_that_is_not_forty_lowercase_hex_is_refused_as_a_format_problem() -> None:
     """An abbreviated or uppercase sha OF THE CORRECT HEAD used to parse, then fail
     the comparison and be reported as "the branch moved after the reads" -- true of

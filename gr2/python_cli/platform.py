@@ -113,6 +113,69 @@ class PRStatus:
 
 
 @dataclass(frozen=True)
+class PRReview:
+    user: str
+    state: str
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class PRDetail:
+    """One member PR of a change, shaped for a READER rather than for a gate.
+
+    ``PRStatus`` answers "is it open and are the checks green", which is what ``pr
+    status`` and ``pr checks`` need. A view answers a different question -- what is
+    this, who wrote it, what is at its head, who has reviewed it -- so it needs fields
+    ``PRStatus`` does not carry. Keeping the two separate is what stops the view from
+    quietly re-reporting the status payload under a second name.
+    """
+
+    ref: PRRef
+    state: str
+    body: str = ""
+    author: str | None = None
+    labels: list[str] = field(default_factory=list)
+    review_decision: str | None = None
+    reviews: list[PRReview] = field(default_factory=list)
+    head_oid: str | None = None
+    is_draft: bool = False
+    merged: bool = False
+    mergeable: str | None = None
+    checks: list[PRCheck] = field(default_factory=list)
+
+    @property
+    def repo(self) -> str:
+        return self.ref.repo
+
+    @property
+    def number(self) -> int | None:
+        return self.ref.number
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "repo": self.ref.repo,
+            "number": self.ref.number,
+            "url": self.ref.url,
+            "title": self.ref.title,
+            "body": self.body,
+            "state": self.state,
+            "is_draft": self.is_draft,
+            "merged": self.merged,
+            "mergeable": self.mergeable,
+            "head_branch": self.ref.head_branch,
+            "base_branch": self.ref.base_branch,
+            "head_oid": self.head_oid,
+            "author": self.author,
+            "labels": list(self.labels),
+            "review_decision": self.review_decision,
+            "reviews": [item.as_dict() for item in self.reviews],
+            "checks": [item.as_dict() for item in self.checks],
+        }
+
+
+@dataclass(frozen=True)
 class CreatePRRequest:
     repo: str
     title: str
@@ -142,6 +205,8 @@ class PlatformAdapter(Protocol):
     ) -> MergeReceipt: ...
 
     def pr_status(self, repo: str, number: int) -> PRStatus: ...
+
+    def pr_view(self, repo: str, number: int) -> PRDetail: ...
 
     def list_prs(self, repo: str, *, head_branch: str | None = None) -> list[PRRef]: ...
 
@@ -373,6 +438,70 @@ class GitHubAdapter:
                 if payload.get("headRefOid") is not None
                 else None
             ),
+        )
+
+    # The fields `pr view` asks for, in one place so the call and its parser cannot drift
+    # apart: a field added to the parse and not to the request is an AttributeError at the
+    # far end, and a field asked for and not parsed is a silent read of nothing.
+    PR_VIEW_FIELDS = (
+        "number,url,title,body,state,isDraft,mergedAt,mergeable,headRefName,"
+        "baseRefName,headRefOid,author,labels,reviewDecision,reviews,"
+        "createdAt,updatedAt,statusCheckRollup"
+    )
+
+    def pr_view(self, repo: str, number: int) -> PRDetail:
+        payload = _run_json(
+            [
+                self.gh_binary,
+                "pr",
+                "view",
+                str(number),
+                "--repo",
+                repo,
+                "--json",
+                self.PR_VIEW_FIELDS,
+            ]
+        )
+        assert isinstance(payload, dict)
+        reviews = [
+            PRReview(
+                user=str((row.get("author") or {}).get("login", "")),
+                state=str(row.get("state", "")),
+            )
+            for row in (payload.get("reviews") or [])
+            if isinstance(row, dict)
+        ]
+        labels = [
+            str(row.get("name", ""))
+            for row in (payload.get("labels") or [])
+            if isinstance(row, dict)
+        ]
+        merged_at = payload.get("mergedAt")
+        ref = PRRef(
+            repo=repo,
+            number=payload.get("number"),
+            url=payload.get("url"),
+            head_branch=payload.get("headRefName"),
+            base_branch=payload.get("baseRefName"),
+            title=payload.get("title"),
+        )
+        return PRDetail(
+            ref=ref,
+            state=str(payload.get("state", "UNKNOWN")),
+            body=str(payload.get("body") or ""),
+            author=(payload.get("author") or {}).get("login"),
+            labels=labels,
+            review_decision=payload.get("reviewDecision"),
+            reviews=reviews,
+            head_oid=payload.get("headRefOid"),
+            is_draft=bool(payload.get("isDraft")),
+            merged=merged_at is not None,
+            mergeable=(
+                str(payload.get("mergeable"))
+                if payload.get("mergeable") is not None
+                else None
+            ),
+            checks=self._parse_checks(payload.get("statusCheckRollup") or []),
         )
 
     def list_prs(self, repo: str, *, head_branch: str | None = None) -> list[PRRef]:

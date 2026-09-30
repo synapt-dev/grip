@@ -51,7 +51,15 @@ MIN_ARGS = 95
 # `--json` and no table entry fails the dump") is enforced over the group this
 # slice promises, and this count is what makes the rest visible until they are
 # covered one at a time.
-JSON_VERBS_PENDING = 47
+# 48, raised from 47 by `pr view` (its `--json` carries the member rows and the
+# source they came from, and it has no entry in the store group's table -- the
+# group that table covers is the store group and its hidden alias, and this verb
+# is not in it). Raised IN FRONT OF A READER: the shape is stated in that range's
+# PR body rather than left as a number nobody can check. NOT a quieting -- this
+# verb's shape is genuinely unregistered, and registering it in the store table
+# would be this author guessing at another slice's conventions for a verb outside
+# its group.
+JSON_VERBS_PENDING = 48
 
 # The kinds a stranger BUILDS ON INDEPENDENTLY: a verb, a flag, a positional
 # and an exit code are each actionable on their own -- a caller writes

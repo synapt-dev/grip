@@ -379,8 +379,23 @@ def _find_pr_group(workspace_root: Path, owner_unit: str, lane_name: str) -> tup
     root = workspace_root / ".grip" / "pr_groups"
     if not root.exists():
         raise SystemExit(f"pr group not found for {owner_unit}/{lane_name}: {root}")
+    # A LOCATOR LOCATES; IT DOES NOT REFUSE THE DOCUMENT. This loop reads every `*.json`
+    # in the directory, so it meets whatever else is there -- and it used to assume each
+    # one was an object, which made a file whose top level is a list, a string, a number
+    # or null raise `AttributeError: '<type>' object has no attribute 'get'` out of
+    # `main()` with NOTHING printed. An unparseable file did the same with
+    # JSONDecodeError. A file that is not a JSON object cannot be the group being looked
+    # for, so it is SKIPPED and the search continues: the operator gets the existing
+    # "pr group not found" sentence, which is true -- no group by that name was found --
+    # and never a traceback. Refusing here instead would let one stray file in another
+    # lane's directory block a merge for a lane that is fine.
     for path in sorted(root.glob("*.json")):
-        doc = json.loads(path.read_text())
+        try:
+            doc = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(doc, dict):
+            continue
         if doc.get("owner_unit") == owner_unit and doc.get("lane_name") == lane_name:
             return path, doc
     raise SystemExit(f"pr group not found for {owner_unit}/{lane_name}: {root}")
@@ -469,7 +484,7 @@ def _parse_head_pins(
     # alone, while the merge loop's refusal is caught by the `PRMergeError` handler, which
     # prints the offending entry inside a JSON payload. A group this cannot read yields no
     # members, and `merge_pr_group` refuses it -- showing the entry -- before anything merges.
-    _raw_prs = group.get("prs")
+    _raw_prs = group.get("prs") if isinstance(group, Mapping) else None
     members = [
         entry["repo"]
         for entry in (_raw_prs if isinstance(_raw_prs, list) else [])

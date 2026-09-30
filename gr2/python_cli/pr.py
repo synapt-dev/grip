@@ -397,9 +397,11 @@ def create_pr_group(
 def group_members(group: Mapping[str, object]) -> list[tuple[str, int]]:
     """Every member as `(repo, pr_number)`, proven before anything reads one.
 
-    THE ENTRY, NOT ONLY THE VALUE, AND THE ONLY PLACE THIS REFUSAL IS MADE. `_load_group`
-    is a bare `json.loads` with no schema validation, so a group file can carry an entry
-    that is not an object or that lacks a key, and every read of a member assumes both.
+    THE DOCUMENT, THEN THE ENTRY, NOT ONLY THE VALUE. `_load_group` is a bare `json.loads`
+    with no schema validation, so a group file can be a list or a string at its top level,
+    carry a `prs` that is not a list, or carry an entry that is not an object or that lacks
+    a key -- and every read below assumes all four. Each shape is proven here, outermost
+    first, before anything reads any of them.
 
     The CLI's pin parser runs `_parse_head_pins` BEFORE it calls this function, and used to
     read `item["repo"]` itself -- so the missing-`repo` shape left `main()` as a bare
@@ -413,6 +415,19 @@ def group_members(group: Mapping[str, object]) -> list[tuple[str, int]]:
     raises: `int()` accepts `True` and `7.9` in silence, so "unreadable" was narrower than
     "not an integer", and a list of exception types is short the moment a type is missed.
     """
+    # THE DOCUMENT, NOT ONLY THE ENTRY. This is the first act of the function and it
+    # assumed a Mapping -- `_load_group` is a bare `json.loads`, so a group file whose TOP
+    # LEVEL is a list, a string, a number or null made `group.get` raise AttributeError
+    # out of `main()` with nothing printed, which is the same failure this guard exists to
+    # remove one level down. The quantifier has to start at the outermost shape or it is
+    # only proving the part it happens to read first.
+    if not isinstance(group, Mapping):
+        raise PRMergeGroupError(
+            "<the group file>",
+            group,
+            completed=[],
+            problem="which is not a JSON object at its top level",
+        )
     raw_prs = group.get("prs")
     if not isinstance(raw_prs, list):
         raise PRMergeGroupError(

@@ -120,14 +120,22 @@ def test_a_member_with_no_verification_target_refuses_as_a_merge_error(
     )
 
 
-def _run_main(argv: list[str]) -> int:
-    """Drive the console entry point in-process, exactly as the script does."""
+def _run_main(argv: list[str]) -> object:
+    """Drive the console entry point in-process, exactly as the script does.
+
+    Returns `SystemExit.code` AS IT IS, rather than coercing it with `int(code or 0)`.
+    `SystemExit` carries either an int or a MESSAGE, and this CLI raises the message form
+    (`SystemExit("pr group not found ...")`), so the coercion did not express what the
+    process actually exits with: it turned that into `ValueError: invalid literal for
+    int()`. A helper that cannot represent the thing it measures will report a red for the
+    wrong reason, which is the instrument failure this file keeps catching elsewhere.
+    """
     saved = sys.argv
     sys.argv = ["gr2", *argv]
     try:
         with pytest.raises(SystemExit) as exc:
             gr2_app.main()
-        return int(exc.value.code or 0)
+        return exc.value.code
     finally:
         sys.argv = saved
 
@@ -348,6 +356,47 @@ def test_a_malformed_ENTRY_is_refused_by_the_same_guard(
         assert code == 1, f"{label}: an exception escaped main() and printed nothing: {output}"
         assert "Traceback" not in output, f"{label}: the operator met a stack: {output}"
         assert "so the group cannot be read" in output, f"{label}: {output}"
+
+
+def test_a_malformed_DOCUMENT_is_refused_by_the_same_guard(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """THE DOCUMENT, not only the entries in it -- the layer the quantifier missed.
+
+    The guard proved the ENTRY and never the DOCUMENT: its first act was `group.get("prs")`,
+    and the CLI's pin parser, which runs BEFORE it, opened the same way. `_load_group` is a
+    bare `json.loads`, so a group file whose TOP LEVEL is a list, a string, a number or null
+    made `.get` raise `AttributeError` out of `main()` with NOTHING printed -- the same
+    failure this change exists to remove, one level out and reachable through the CLI.
+
+    THE CLI REACHES THIS BEFORE THE GROUP GUARD, which is what makes a guard there alone
+    insufficient: `_find_pr_group` matches by reading `owner_unit` off every file in the
+    directory, so the AttributeError fires in the LOCATOR. A file that is not a JSON object
+    cannot be the group being looked for, so the locator skips it and the search continues
+    -- the operator meets the existing "pr group not found" sentence, which is true, and
+    never a traceback. Five shapes, because a document has more than one way to not be a
+    group and fixing only the reported one would be an enumeration again.
+    """
+    for label, raw in [
+        ("a-list", "[1, 2]"),
+        ("a-string", '"not-an-object"'),
+        ("a-number", "7"),
+        ("null", "null"),
+        ("unparseable", '{"owner_unit": '),
+    ]:
+        workspace = _workspace(tmp_path / f"doc-{label}", [])
+        (workspace / ".grip" / "pr_groups" / f"{GROUP_ID}.json").write_text(raw)
+        code = _run_main(["pr", "merge", str(workspace), OWNER_UNIT, LANE_NAME])
+        output = "".join(capsys.readouterr())
+        # WHAT WITNESSES THIS ROW IS THAT `SystemExit` IS RAISED AT ALL. `pytest.raises`
+        # matches only that type, so an escaping AttributeError or JSONDecodeError fails the
+        # row outright -- which is the defect being closed. The sentence travels in
+        # `SystemExit.code` as a STRING, and the console script prints it; in-process it is
+        # caught, so nothing reaches stdout and asserting on `output` here would be asking
+        # the wrong surface for the evidence.
+        assert code is not None, f"{label}: main() exited carrying nothing"
+        assert "pr group not found" in str(code), f"{label}: exit carried {code!r}"
+        assert "Traceback" not in output, f"{label}: the operator met a stack: {output}"
 
 
 class _RecordingAdapter:

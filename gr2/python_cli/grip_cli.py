@@ -1189,6 +1189,14 @@ def _native_store_checkout(root: Path, revision: str) -> tuple[str, list[dict[st
     # cannot: a git error on the third member still leaves the earlier ones moved. A rollback would
     # be a SECOND mutation that can itself fail halfway -- the same class as the half-applied state
     # it would repair -- so the requirement here is only that the failure NAMES the state.
+    #
+    # ⚠ THE WORKING ROOT IS CARRIED FROM PHASE ONE, AND THAT IS DELIBERATE, because this verb used
+    # to RE-RESOLVE it here and its comment said why: "`_native_members_at` and the detach both move
+    # history, and a path cached before the root was detached is a second answer to a question that
+    # was already answered". The detach is what that guarded against -- and the phase split removes
+    # the hazard rather than moving it. The pins are now read BEFORE anything moves, so no path is
+    # resolved across a detach: the root's movement does not move the member DIRECTORIES the
+    # resolution reads, which is why a re-resolution could not be made to differ from this one.
     _store_git(root, "checkout", "--detach", sha)
     restored: list[dict[str, str]] = []
     moved: list[str] = []

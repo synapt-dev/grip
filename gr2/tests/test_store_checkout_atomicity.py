@@ -244,10 +244,10 @@ def test_row3_json_carries_the_same_diagnostic_as_the_plain_path(
 def test_row4_a_phase_two_failure_names_the_members_that_moved(two_member_ws: Path) -> None:
     """Row 4. Phase two is NOT atomic, and when it fails the output must NAME the state.
 
-    Apollo's boundary: the agreed shape refuses before the first write, which covers everything
-    knowable in advance — but phase two still mutates, and a git error on the third member can leave
-    the members in different states. The requirement for that case is not a rollback (deliberately
-    not built here: a rollback is itself a second mutation that can fail halfway, which is the same
+    The agreed boundary: the shape refuses before the first write, which covers everything knowable
+    in advance — but phase two still mutates, and a git error on the third member can leave the
+    members in different states. The requirement for that case is not a rollback (deliberately not
+    built here: a rollback is itself a second mutation that can fail halfway, which is the same
     class as the half-applied state it would repair) but a plain line that says which members moved,
     which did not, and where the root now sits.
 

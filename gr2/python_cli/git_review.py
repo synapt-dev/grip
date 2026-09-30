@@ -691,7 +691,27 @@ def _verdict(summary: dict) -> str:
         else "red"
     )
 
-_USAGE = """usage: git review <command>
+# WHO THIS TOOL IS, on the first line of both `--help` and `--version`.
+#
+# `git-review` is ALSO the name of a long-standing PyPI tool that submits code to
+# Gerrit, and both install a command by that name -- so with both on PATH,
+# whichever comes first wins and `git review` may not reach this one. We keep the
+# name: `git review` is this project's single-repo front door and git's own
+# `git-<name>` discovery is what makes it reachable at all. The fix is therefore
+# to make the ambiguity VISIBLE rather than to rename, which is why both entry
+# points open by saying whose tool they are.
+_IDENTITY = "git-review (gitgrip's gr2) — the single-repo review front door"
+
+_GERRIT_TOOL = "https://pypi.org/project/git-review/"
+
+_USAGE = f"""{_IDENTITY}.
+
+  Not the Gerrit `git-review` tool, which installs a command of the same name
+  ({_GERRIT_TOOL}). If both are on your PATH, whichever comes first wins, so
+  `git review` may not be this one: `git review --version` says which you are
+  running.
+
+usage: git review <command>
 
   open [<base>]   bind this clone's HEAD (and its tree) as the code under review.
                   <base> defaults to the merge-base with the default branch.
@@ -754,6 +774,18 @@ def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if args and args[0] in ("-h", "--help", "help"):
         print(_USAGE)
+        return 0
+    if args and args[0] in ("-V", "--version", "version"):
+        # The FIRST line says whose tool this is, because the reader who needs to
+        # know is the one who has the other `git-review` in mind. The version comes
+        # from version.py, which answers "which code is running" rather than "what
+        # did the install claim", and it is imported HERE rather than at module
+        # scope: an ordinary `git review status` should not pay for a distribution
+        # scan it never reads.
+        from .version import version_line
+
+        print(f"{_IDENTITY}\n  {version_line()}")
+        print(f"  Not the Gerrit `git-review` tool ({_GERRIT_TOOL}).")
         return 0
     cmd = args[0] if args else "status"
     rest = args[1:]

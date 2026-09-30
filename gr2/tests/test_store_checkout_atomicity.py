@@ -21,6 +21,7 @@ converting the working-root sites does not touch this.
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -276,30 +277,35 @@ def test_row4_a_phase_two_failure_names_the_members_that_moved(two_member_ws: Pa
 
     before = _heads(root)
     beta_git = root / "beta" / ".git"
-    mode = beta_git.stat().st_mode
-    os.chmod(beta_git, 0o555)
-    try:
-        # ⚠ THE INJECTION ASSERTS ITS OWN PRECONDITION, because it is PERMISSION-SHAPED: a
-        # read-only `.git` stops a checkout only for a NON-ROOT user on a filesystem that honours
-        # the mode. As root (a container CI job) or on a filesystem that ignores it, the checkout
-        # SUCCEEDS, phase two never fails, and this row would render a verdict on the fix from a run
-        # that never exercised it. So the fault is PROBED directly first, and a run where it did not
-        # take says exactly that instead of reporting on the fix.
-        #
-        # CI: `.github/workflows/ci.yml`'s `gr2_python` job carries no `container:` and no `user:`
-        # (READ, not run here), so it runs as the default non-root GitHub-hosted runner user and the
-        # injection can take there.
-        probe = _git(root / "beta", "checkout", "--detach", "HEAD", check=False)
-        if probe.returncode == 0:
-            pytest.skip(
-                f"injection did not take: a read-only .git did not stop a checkout "
-                f"(euid={os.geteuid()}), so no phase-two failure can be produced on this host. "
-                f"This is a SKIP, never a pass -- the fault never happened, so the row has nothing "
-                f"to say about the fix. Probe stderr: {probe.stderr.strip()!r}"
-            )
-        res = _invoke("store", "checkout", target[:12])
-    finally:
-        os.chmod(beta_git, mode)
+    # ⚠ THE INJECTION IS PORTABLE, WHICH IS WHY IT IS NOT A READ-ONLY MODE. A read-only `.git` stops
+    # a checkout only for a NON-ROOT user on a filesystem that honours the mode, so it needs a
+    # precondition probe and a loud skip to stay honest. Replacing the member's `.git` with a FRESH
+    # repository satisfies both halves of what phases one and two require in OPPOSITE directions: the
+    # tree is CLEAN, so the dirty probe lets it through, and the pinned commit is NOT resolvable, so
+    # phase two's checkout fails. No permissions, no skip, any user, any filesystem.
+    #
+    # `git add -A` IS LOAD-BEARING AND NOT DECORATION: a fresh `git init` leaves the working files
+    # UNTRACKED, so `status --porcelain` reads dirty and the run refuses in PHASE ONE -- which is not
+    # the failure this row is about. The first attempt at this forgot it, and the assert below is
+    # that half of the precondition.
+    shutil.rmtree(beta_git)
+    _git(root / "beta", "init", "-q", "-b", "main")
+    _git(root / "beta", "config", "user.email", "t@e.invalid")
+    _git(root / "beta", "config", "user.name", "t")
+    _git(root / "beta", "add", "-A")
+    _git(root / "beta", "commit", "-q", "-m", "a fresh repository over the same tree")
+    assert _git_out(root / "beta", "status", "--porcelain") == "", (
+        "the injected member must be CLEAN, or the run refuses in phase one and this row measures "
+        "the wrong failure"
+    )
+    # AND THE PIN MUST BE UNRESOLVABLE, asserted rather than assumed, so a change that accidentally
+    # makes it resolvable reports that instead of rendering a verdict from a run that never failed.
+    probe = _git(root / "beta", "rev-parse", "--verify", f"{before['beta']}^{{commit}}", check=False)
+    assert probe.returncode != 0, (
+        "the injected member must not resolve the pin it is to be checked out at; if it can, no "
+        f"phase-two failure can occur. probe stderr: {probe.stderr.strip()!r}"
+    )
+    res = _invoke("store", "checkout", target[:12])
     after = _heads(root)
 
     out = (res.stdout or "") + (res.stderr or "")
@@ -330,3 +336,70 @@ def test_row4_a_phase_two_failure_names_the_members_that_moved(two_member_ws: Pa
                 f"the failure must NAME the member that did NOT move ({name!r}), or the reader "
                 "cannot tell a half-applied workspace from a fully applied one." + why
             )
+
+
+def test_row5_a_dirty_member_is_refused_before_the_root_moves(two_member_ws: Path) -> None:
+    """Row 5. The DIRTY PROBE's position — which no other row pins.
+
+    Rows 1 to 3 all refuse at the PIN LOOKUP: their trigger is a member renamed since the target
+    revision. Between them they therefore pin where the pin lookup sits and NOTHING ELSE. Moving
+    only the dirty probe from phase one into phase two — leaving the working-root resolution and the
+    pin lookup exactly where the fix put them — leaves every one of those rows GREEN while the root
+    moves before the refusal. That is the half-applied state, reached through a trigger no other row
+    uses, and it was found by asking whether the rows could pass with the ordering wrong rather than
+    by reading them.
+
+    The fixture makes the ordering observable: both members have moved on since the target, so a run
+    that reaches the detach really does move the root, and exactly ONE member is dirty, so the
+    refusal is attributable to it.
+    """
+    root = two_member_ws
+    assert _cli("store", "init", str(root))[0] == 0
+    _assert_init_ran(root)
+    for name in ("alpha", "beta"):
+        # A TRACKED file, created here rather than assumed from the fixture, so this row knows what
+        # to dirty and cannot silently dirty nothing.
+        (root / name / "tracked.txt").write_text("one\n")
+        _git(root / name, "add", "-A")
+        _git(root / name, "commit", "-q", "-m", f"{name} first")
+        _git(root / name, "push", "-q", "origin", "main")
+    assert _cli("store", "commit", "-m", "first record")[0] == 0
+    target = _head(root)
+    # EVERY MEMBER MOVES ON, so restoring to `target` is real work and not a no-op: with the pins
+    # equal to the live heads the detach would change nothing and this row could not tell a
+    # correctly ordered verb from a wrongly ordered one.
+    for name in ("alpha", "beta"):
+        (root / name / "tracked.txt").write_text("two\n")
+        _git(root / name, "add", "-A")
+        _git(root / name, "commit", "-q", "-m", f"{name} second")
+        _git(root / name, "push", "-q", "origin", "main")
+    assert _cli("store", "commit", "-m", "second record")[0] == 0
+    # ONE MEMBER DIRTY, uncommitted, and the other left clean.
+    (root / "alpha" / "tracked.txt").write_text("dirty, uncommitted\n")
+    assert _git_out(root / "alpha", "status", "--porcelain") != "", "alpha must be dirty for this row"
+    assert _git_out(root / "beta", "status", "--porcelain") == "", "beta must stay clean"
+
+    before_root = _head(root)
+    before_heads = _heads(root)
+    res = _invoke("store", "checkout", target[:12])
+    after_root = _head(root)
+    after_heads = _heads(root)
+
+    out = (res.stdout or "") + (res.stderr or "")
+    why = (
+        f"\n    target revision : {target[:12]}"
+        f"\n    root HEAD before: {before_root}"
+        f"\n    root HEAD after : {after_root}   symref={_symref(root)!r}"
+        f"\n    member heads before: {before_heads}"
+        f"\n    member heads after : {after_heads}"
+        f"\n    rc={res.exit_code} stdout={res.stdout!r} stderr={res.stderr!r}"
+        f"\n    exception={res.exception!r}"
+    )
+    assert res.exit_code != 0, "a dirty member cannot be restored" + why
+    assert after_root == before_root, (
+        "the dirty member must be refused BEFORE the root is detached. The root MOVED, which is the "
+        "half-applied state arrived at through the dirty probe rather than the pin lookup — the "
+        "ordering no other row in this file pins." + why
+    )
+    assert after_heads == before_heads, "no member may move on a refusal" + why
+    assert "alpha" in out, "the refusal must name the dirty member" + why

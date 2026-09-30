@@ -749,3 +749,66 @@ def test_a_well_formed_ipv6_url_is_not_the_failing_case(fixture_path: Path) -> N
     )
 
     assert version_line(DIST) == "2.0.0a5+unknown"
+
+
+@pytest.mark.parametrize("url", ["file://", "file://host", "file://."])
+def test_a_record_naming_no_path_answers_unknown(fixture_path: Path, url: str) -> None:
+    """THE SEVENTH SHAPE, and it is worse than the six before it: a CONFIDENT WRONG ANSWER.
+
+    These three spellings parse CLEANLY, so the `ValueError` catch in `_editable_path` never
+    fires for them: `urlparse("file://").path` is `""`, `url2pathname("")` is `""`, and
+    `Path("")` **IS** `Path(".")`. `_clone_short_sha` then runs `git rev-parse` against the
+    process cwd and reports THAT repository's HEAD in the declared `<version>+g<sha>` form --
+    a real sha, from an unrelated repo, with no warning. `file:///` gives `Path("/")` and is
+    harmless; it is the EMPTY component that lies.
+
+    Measured before the fix, one record, two working directories: `2.0.0a5+g759b21bc` from a
+    clone and `2.0.0a5+unknown` from a directory that is not a repository.
+    """
+    import json as _json
+
+    di = fixture_path / f"{DIST}-2.0.0a5.dist-info"
+    di.mkdir(parents=True)
+    (di / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {DIST}\nVersion: 2.0.0a5\n")
+    (di / "direct_url.json").write_text(
+        _json.dumps({"url": url, "dir_info": {"editable": True}})
+    )
+
+    assert version_line(DIST) == "2.0.0a5+unknown"
+
+
+def test_the_answer_does_not_move_with_the_callers_working_directory(
+    fixture_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """THE CONTROL THAT MATTERS MORE THAN THE THREE SPELLINGS, because it generalises.
+
+    Three strings are a list; a cwd-DEPENDENT answer is a class. This runs the same record
+    from two working directories -- one of them a real repository with its own commit, so a
+    cwd-derived sha would be visible -- and asserts the answer is IDENTICAL. Without it, a
+    fix that special-cased the three spellings above would pass and the class would remain.
+
+    It is the same property the module was built on: an answer decided by where the caller
+    stood is the defect, whether the coordinate is `sys.path` or the working directory.
+    """
+    import json as _json
+
+    di = fixture_path / f"{DIST}-2.0.0a5.dist-info"
+    di.mkdir(parents=True)
+    (di / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {DIST}\nVersion: 2.0.0a5\n")
+    (di / "direct_url.json").write_text(
+        _json.dumps({"url": "file://", "dir_info": {"editable": True}})
+    )
+
+    decoy = tmp_path / "decoy-repo"
+    _temp_repo(decoy, marker="decoy")
+
+    answers = []
+    for where in (tmp_path, decoy):
+        monkeypatch.chdir(where)
+        answers.append(version_line(DIST))
+
+    assert answers[0] == answers[1], (
+        answers,
+        "the same record answered differently from two working directories",
+    )
+    assert answers[0] == "2.0.0a5+unknown", answers

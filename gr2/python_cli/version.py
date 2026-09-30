@@ -211,6 +211,25 @@ def _file_url_to_path(url: str) -> PurePath:
     instead of being taken on trust until a Windows user meets it.
     """
     native = url2pathname(urlparse(url).path)
+    if not native:
+        # THE SEVENTH SHAPE, AND IT IS THE WORST OF THEM: a CONFIDENT FALSE ANSWER rather
+        # than a stated non-answer. `file://`, `file://host` and `file://.` all parse
+        # CLEANLY (the netloc is ignored by the `startswith("file://")` guard above), so the
+        # `ValueError` catch in `_editable_path` never fires for them --
+        # `urlparse("file://").path` is `""`, `url2pathname("")` is `""`, and `Path("")`
+        # **IS** `Path(".")`. `_clone_short_sha` then runs `git rev-parse` with the process
+        # cwd and reports THAT repository's HEAD in the declared `<version>+g<sha>` form.
+        #
+        # Measured, one record, two working directories: `2.0.0a5+g759b21bc` from a clone and
+        # `2.0.0a5+unknown` from a directory that is not a repository. The module names an
+        # unrelated commit, with no warning, decided by where the caller stood -- which is
+        # this module's own declared wrongness reached through the CWD instead of through
+        # `sys.path`. `file:///` gives `Path("/")` and lands harmlessly on `+unknown`; it is
+        # the EMPTY component that lies.
+        #
+        # A url naming no path names no checkout, so the honest outcome is the declared
+        # `+unknown` and it is reached by the branch `_editable_path` already has.
+        raise ValueError(f"this file:// URL names no path: {url!r}")
     if _WINDOWS_FILE_PATH.match(native):
         return PureWindowsPath(native.lstrip("/"))
     return Path(native)

@@ -392,7 +392,15 @@ def _find_pr_group(workspace_root: Path, owner_unit: str, lane_name: str) -> tup
     for path in sorted(root.glob("*.json")):
         try:
             doc = json.loads(path.read_text())
-        except (OSError, ValueError):
+        except Exception:
+            # NOT `(OSError, ValueError)`, and the difference is not theoretical: a
+            # deeply-nested but perfectly VALID document makes `json.loads` raise
+            # RecursionError, which is neither -- and `json` accepts the nesting that
+            # produces it, so the file is one a group directory can really carry. The
+            # named pair was short again, one counter over from the report block that
+            # learned the same lesson tonight. The residual is KeyboardInterrupt and
+            # SystemExit, which mean the runner is aborting and which it would be a
+            # defect to swallow.
             continue
         if not isinstance(doc, dict):
             continue

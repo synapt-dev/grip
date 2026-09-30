@@ -383,6 +383,11 @@ def test_a_malformed_DOCUMENT_is_refused_by_the_same_guard(
         ("a-number", "7"),
         ("null", "null"),
         ("unparseable", '{"owner_unit": '),
+        # VALID JSON that `json` accepts and `json.loads` cannot finish: the parse raises
+        # RecursionError, which is neither an OSError nor a ValueError, so the named pair
+        # missed it and it escaped `main()` with nothing printed. Naming the two exception
+        # types a conversion was expected to raise has now been short twice on this path.
+        ("deeply-nested", "[" * 20000 + "]" * 20000),
     ]:
         workspace = _workspace(tmp_path / f"doc-{label}", [])
         (workspace / ".grip" / "pr_groups" / f"{GROUP_ID}.json").write_text(raw)
@@ -397,6 +402,31 @@ def test_a_malformed_DOCUMENT_is_refused_by_the_same_guard(
         assert code is not None, f"{label}: main() exited carrying nothing"
         assert "pr group not found" in str(code), f"{label}: exit carried {code!r}"
         assert "Traceback" not in output, f"{label}: the operator met a stack: {output}"
+
+
+def test_the_group_validator_refuses_every_document_shape_on_its_own() -> None:
+    """THE LIBRARY PATH, not only the CLI -- and the row exists because a MUTATION
+    SURVIVED without it.
+
+    `merge_pr_group` is exported, so a caller using it directly meets `group_members`
+    with no locator in front of it, and every malformed shape has to reach them as a
+    SENTENCE rather than an AttributeError. Dropping the document guard used to leave the
+    whole CLI selection green, because `_find_pr_group` skips those shapes before the
+    validator is ever reached -- which made the guard read as unnecessary rather than
+    unreached. This drives the validator directly, so the guard is witnessed where it is
+    the only thing standing.
+
+    `{}` is deliberate: an empty object IS a JSON object, so it passes the document guard
+    and must be caught one guard in, by the `prs`-is-not-a-list check.
+    """
+    from gr2.python_cli.pr import PRMergeError, group_members
+
+    for value in ([], "nope", None, {}, {"prs": "x"}):
+        with pytest.raises(PRMergeError) as raised:
+            group_members(value)  # type: ignore[arg-type]
+        assert "so the group cannot be read" in str(raised.value), (
+            f"{value!r} reached the caller as {raised.value!r}"
+        )
 
 
 class _RecordingAdapter:

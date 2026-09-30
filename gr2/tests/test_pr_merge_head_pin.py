@@ -317,6 +317,25 @@ def test_a_pin_set_that_covers_only_part_of_the_group_refuses() -> None:
     assert "api" in message, f"the refusal must name the member left unpinned: {message}"
 
 
+def test_the_unpinned_members_are_named_in_the_group_s_own_order() -> None:
+    """WHICH ORDER they are named in, which nothing else here pins.
+
+    Ordering the distinct members with `sorted()` SURVIVED every coverage row this file
+    had, because each of them uses a group whose members are already alphabetical -- so
+    `sorted()` names the same object and prints the same sentence. The group below is
+    deliberately out of order, which is the only shape where the choice is visible.
+    """
+    from gr2.python_cli.app import _parse_head_pins
+
+    with pytest.raises(ValueError) as raised:
+        _parse_head_pins([f"zeta={READ_SHA}"], _group_spec(["zeta", "mid", "alpha"]))
+
+    message = str(raised.value)
+    assert "mid, alpha" in message, (
+        f"the unpinned members must be named in the group's own order: {message}"
+    )
+
+
 def test_a_group_that_lists_one_repo_twice_can_be_pinned_completely() -> None:
     """The coverage guard counted POSITIONS, so a group naming one repo twice compared
     a COMPLETE pin set against a longer list and refused -- and the message it printed

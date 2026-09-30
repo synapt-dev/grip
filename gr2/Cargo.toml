@@ -5,7 +5,12 @@ edition = "2021"
 publish = false
 
 [[bin]]
-name = "gr2"
+# NOT `gr2`. The package publishes no binary, and the user-facing `gr2` command is the
+# PYTHON console script (gr2/pyproject.toml `[project.scripts]`). Naming this dev binary
+# `gr2` meant a developer with `target/release` on PATH silently got the Rust one instead
+# -- two implementations answering to one command name, with nothing checking either.
+# src/main.rs's own header already says "development binary, not shipped".
+name = "gr2-dev"
 path = "src/main.rs"
 
 [lib]

@@ -296,15 +296,14 @@ def test_the_refusal_names_the_FIRST_offender_when_several_entries_are_bad(
 def test_a_malformed_ENTRY_is_refused_by_the_same_guard(
     tmp_path: Path, capsys: pytest.CaptureFixture
 ) -> None:
-    """THE ENTRY, not only the value in it. `_load_group` is a bare json.loads that does no
-    schema validation, so a group file can carry an entry missing a key, or one that is not
-    an object at all.
+    """THE ENTRY, not only the value in it -- and `prs` itself, not only an entry.
 
-    A group file is a bare `json.loads` with no schema validation, so `prs` can carry an
-    entry missing a key, or one that is not an object at all. Every read of a member
-    assumed both, and three shapes escaped uncaught and printed NOTHING: an entry missing
-    `pr_number`; one missing `repo`, which the CLI's pin parser reads BEFORE
-    `merge_pr_group` runs; and one that is not a dict.
+    `_load_group` is a bare `json.loads` with no schema validation, so a group file can
+    carry an entry missing a key, or one that is not an object at all, or a `prs` that is
+    not a list. Every read of a member assumed all three, and the first three shapes below
+    escaped uncaught and printed NOTHING: an entry missing `pr_number`; one missing `repo`,
+    which the CLI's pin parser reads BEFORE `merge_pr_group` runs; and one that is not a
+    dict.
 
     The pin parser is TOLERANT of these now rather than refusing them, and that is the
     point of driving the CLI row rather than the function: the pin parse sits under the
@@ -314,6 +313,13 @@ def test_a_malformed_ENTRY_is_refused_by_the_same_guard(
     silently drops the entry from the operator's view -- so this row asserts the group's
     own refusal arrives, from the merge loop's own guard, entry and all.
 
+    The fourth shape is `prs` ITSELF not being a list, and it is here because a MUTATION
+    found it rather than because it was thought of: making the `isinstance(raw_prs, list)`
+    guard a no-op left every row in this selection green, since the three shapes above all
+    arrive as lists and are caught one guard later. JSON `null` is what a hand-edited group
+    file actually carries, and with the guard gone it iterates `None` and raises a bare
+    `TypeError` out of `main()`.
+
     `_run_main` requires `SystemExit`, so an exception escaping `main()` fails these rows
     rather than being read as an exit.
     """
@@ -321,6 +327,7 @@ def test_a_malformed_ENTRY_is_refused_by_the_same_guard(
         ("missing-pr-number", [{"repo": "app", "pr_number": 1}, {"repo": "api"}]),
         ("missing-repo", [{"repo": "app", "pr_number": 1}, {"pr_number": 2}]),
         ("not-an-object", [{"repo": "app", "pr_number": 1}, "api"]),
+        ("prs-not-a-list", None),
     ]
 
     for label, prs in shapes:

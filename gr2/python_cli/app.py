@@ -5,6 +5,7 @@ import importlib.metadata
 import io
 import json
 import os
+import re
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -474,14 +475,32 @@ def _parse_head_pins(
                 f"{len(members)} members ({', '.join(members)}); pass REPO=SHA so "
                 "the pin cannot land on the wrong member"
             )
+        if repo not in members:
+            raise ValueError(
+                f"--match-head-commit {repo!r} is not a member of this group "
+                f"({', '.join(members) or 'none'}); a pin has to name one of them, so a "
+                "typo cannot leave the member it meant unpinned"
+            )
         if not sha:
             raise ValueError(f"--match-head-commit {entry!r} carries no commit sha")
+        if not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise ValueError(
+                f"--match-head-commit {entry!r} pins {sha!r}, which is not 40 lowercase "
+                "hex characters; pass the full commit as `git rev-parse` prints it"
+            )
         if repo in pins and pins[repo] != sha:
             raise ValueError(
                 f"--match-head-commit pins {repo} twice with different commits "
                 f"({pins[repo][:8]} and {sha[:8]})"
             )
         pins[repo] = sha
+    if pins and len(pins) != len(members):
+        unpinned = [member for member in members if member not in pins]
+        raise ValueError(
+            f"--match-head-commit pins {len(pins)} of {len(members)} members; "
+            f"{', '.join(unpinned)} would merge unpinned. Pin every member or none: a "
+            "partial pin reads as protection for the whole group and is not."
+        )
     return pins
 
 

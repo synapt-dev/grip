@@ -265,11 +265,19 @@ def test_a_bare_sha_is_refused_when_it_could_land_on_the_wrong_member() -> None:
 
 
 def test_repo_equals_sha_binds_that_member_only() -> None:
+    """Each REPO=SHA binds its own member.
+
+    Both members are pinned here because a pin set covering part of the group is now
+    refused; the property being asserted is unchanged, and a complete pin is where it
+    can still be observed. The partial case has its own row above.
+    """
     from gr2.python_cli.app import _parse_head_pins
 
-    pins = _parse_head_pins([f"api={MOVED_SHA}"], _group_spec(["app", "api"]))
+    pins = _parse_head_pins(
+        [f"app={READ_SHA}", f"api={MOVED_SHA}"], _group_spec(["app", "api"])
+    )
 
-    assert pins == {"api": MOVED_SHA}
+    assert pins == {"app": READ_SHA, "api": MOVED_SHA}
 
 
 def test_two_pins_for_one_member_must_agree() -> None:
@@ -287,3 +295,51 @@ def test_a_pin_with_no_commit_refuses() -> None:
 
     with pytest.raises(ValueError):
         _parse_head_pins(["app="], _group_spec(["app"]))
+
+
+# --- the three ways a pin can be wrong before any merge happens ----------------
+# All three are parser refusals rather than merge refusals: each is decidable from
+# the group and the flag alone, and a refusal at parse time reaches the operator as
+# a sentence while the same fault found later reaches them as a traceback.
+
+
+def test_a_pin_set_that_covers_only_part_of_the_group_refuses() -> None:
+    """A pin is a claim that every member was read, so pinning one member of two
+    leaves the other merging whatever it carries. The flag then reads as protection
+    for the whole group while protecting half of it, which is the same hazard the
+    bare-SHA refusal exists to close."""
+    from gr2.python_cli.app import _parse_head_pins
+
+    with pytest.raises(ValueError) as raised:
+        _parse_head_pins([f"app={READ_SHA}"], _group_spec(["app", "api"]))
+
+    message = str(raised.value)
+    assert "api" in message, f"the refusal must name the member left unpinned: {message}"
+
+
+def test_a_pin_that_is_not_forty_lowercase_hex_is_refused_as_a_format_problem() -> None:
+    """An abbreviated or uppercase sha OF THE CORRECT HEAD used to parse, then fail
+    the comparison and be reported as "the branch moved after the reads" -- true of
+    the comparison and false about the cause, which sends the reader to redo a review
+    that was never the problem."""
+    from gr2.python_cli.app import _parse_head_pins
+
+    for value in ("abc1234", READ_SHA.upper(), READ_SHA[:12]):
+        with pytest.raises(ValueError) as raised:
+            _parse_head_pins([f"app={value}"], _group_spec(["app"]))
+        message = str(raised.value)
+        assert "moved" not in message, f"{value!r} was reported as a moved branch: {message}"
+        assert "40" in message, f"the refusal must name the required shape: {message}"
+
+
+def test_a_repo_key_that_is_not_a_member_is_refused_at_parse_time() -> None:
+    """A typo'd repo key used to survive the parser and reach the merge, whose error
+    is not the type the CLI catches -- so the operator met a traceback rather than a
+    sentence. Refusing it here keeps every fault of this shape in one place."""
+    from gr2.python_cli.app import _parse_head_pins
+
+    with pytest.raises(ValueError) as raised:
+        _parse_head_pins([f"tpyp={READ_SHA}"], _group_spec(["app", "api"]))
+
+    message = str(raised.value)
+    assert "tpyp" in message, f"the refusal must name the key that is wrong: {message}"

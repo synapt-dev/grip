@@ -899,3 +899,39 @@ def test_every_url_shape_answers_a_declared_form_and_the_call_raises_two_classes
                 f"{url!r} raised {type(exc).__name__}, outside the two guard classes"
             ) from exc
     assert len(outcomes) == len(_URL_SHAPES)
+
+
+def test_a_conversion_raising_oserror_is_caught_like_a_valueerror(
+    fixture_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """THE CLASS CAUGHT, WITNESSED ON ANY INTERPRETER -- and it exists because a mutation lied.
+
+    The authority shape raises `URLError` on SOME interpreters and not others: measured here,
+    `urllib.request.url2pathname("//host/share")` raises on the 3.14 interpreter and returns
+    the path unchanged on the 3.13 venv this suite runs under. So a row that FEEDS that shape
+    cannot witness the catch everywhere -- and that is not a guess: narrowing the catch back
+    to `ValueError` left the authority row GREEN, which is how the gap was found.
+
+    This row forces the class the interpreter cannot be trusted to raise: the conversion is
+    patched to raise `URLError`, and the caller must answer the declared form. It reddens for
+    any interpreter the moment the catch stops naming `OSError`, which is the property the
+    fix actually has.
+    """
+    import json as _json
+    from urllib.error import URLError
+
+    from gr2.python_cli import version as version_mod
+
+    di = fixture_path / f"{DIST}-2.0.0a5.dist-info"
+    di.mkdir(parents=True)
+    (di / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {DIST}\nVersion: 2.0.0a5\n")
+    (di / "direct_url.json").write_text(
+        _json.dumps({"url": "file:////host/share", "dir_info": {"editable": True}})
+    )
+
+    def refusing(url: str):
+        raise URLError("file:// scheme is supported only on localhost")
+
+    monkeypatch.setattr(version_mod, "_file_url_to_path", refusing)
+
+    assert version_line(DIST) == "2.0.0a5+unknown"

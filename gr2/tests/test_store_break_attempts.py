@@ -1439,9 +1439,20 @@ def test_break_19_member_found_at_its_path_not_its_name(two_member_ws: Path, tmp
         "a directory named after the member must not change resolution: "
         f"{after} != {members}"
     )
-    assert "renamed-member" not in {
-        m.get("path") for m in members if isinstance(m, dict)
-    }, f"a name must never satisfy a path lookup; got {members}"
+    # THE PREMISE, pinned falsifiably. The line that stood here asked whether
+    # `"renamed-member"` was absent from `{m.get("path") for m in members}` -- and that set
+    # is `{None}`, because the verb emits no `path`, so the assertion could not fail and a
+    # reader found a check where nothing was checked (measured: PATHS SET {None}, member
+    # keys ['gitlink','head','name','pin','state']).
+    #
+    # What is worth pinning is the premise itself: there is no `path` field, which is why
+    # the consequence above is read off `state` and `head`. This reddens the day the
+    # payload gains one -- the day this row could assert directly -- and it cannot pass
+    # vacuously, because the name set is pinned exactly two lines up.
+    assert members and all(isinstance(m, dict) and "path" not in m for m in members), (
+        "`store status --json` carries no path today; if it gains one, read this row's "
+        f"consequence off it directly: got {members}"
+    )
 
 
 # ---------------------------------------------------------------------------

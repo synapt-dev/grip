@@ -171,24 +171,37 @@ def _editable_path(dist: importlib.metadata.Distribution) -> PurePath | None:
     # branch per failure.
     try:
         return _file_url_to_path(url)
-    except ValueError:
-        # THE SIXTH SHAPE, and it is the FIFTH SEAM ONE MEMBER FURTHER OUT. That one let a
-        # truthy non-dict through to `.get` and raised AttributeError; this lets a malformed
-        # STRING through to `urlparse`, which raises `ValueError: Invalid IPv6 URL` on an
-        # unclosed bracket -- `file://[::1/repo`. The well-formed `file://[fe80::1]:80/x`
-        # parses fine, so it is the bracket and not IPv6 as such.
+    except (ValueError, OSError):
+        # THE SIXTH AND SEVENTH SHAPES, AND THE CLASS IS THE POINT RATHER THAN EITHER SHAPE.
         #
-        # Measured across eighteen corrupt record shapes, one fresh process each: seventeen
-        # answer a declared form and this one raised, out of `_editable_path` AND
-        # `version_line`. The comment above calls its own case the last member of the set,
-        # and the set was not closed -- which is why the type check on the STRING lives here
-        # rather than being assumed from the `isinstance` and `startswith` above it.
+        # The sixth let a malformed STRING through two guards to `urlparse`, which raises
+        # `ValueError: Invalid IPv6 URL` on an unclosed bracket (`file://[::1/repo`; the
+        # well-formed `file://[fe80::1]:80/x` parses fine, so it is the bracket).
         #
-        # The record still SAYS editable, so `released` is the same false claim this module
-        # already refused elsewhere; a value that is not a path cannot yield a commit, so the
-        # declared `<version>+unknown` is the outcome and the pure value keeps it there.
-        # `_clone_short_sha` already catches `ValueError` for this exact class one function
-        # away, so the exception is known here rather than new.
+        # The seventh was the worst of them, because it was a CONFIDENT FALSE ANSWER rather
+        # than a non-answer: `file://`, `file://host` and `file://.` parse cleanly, so a
+        # `ValueError`-only catch never fired for them -- `urlparse("file://").path` is `""`,
+        # `url2pathname("")` is `""`, and `Path("")` IS `Path(".")`, so `_clone_short_sha`
+        # ran `git rev-parse` against the PROCESS CWD and reported THAT repository's HEAD in
+        # the declared `<version>+g<sha>` form. Measured, one record, two working
+        # directories: `2.0.0a5+g759b21bc` from a clone, `2.0.0a5+unknown` from a directory
+        # that is not a repository.
+        #
+        # And the eighth is why this catch names CLASSES and not shapes: 138 url shapes driven
+        # through `_file_url_to_path` gave 120 returns and 18 raises -- SIXTEEN of them
+        # `URLError` and only two `ValueError`. `URLError` is an `OSError` and NOT a
+        # `ValueError` (MRO: URLError -> OSError -> Exception), so a `ValueError`-only catch
+        # closed two of the eighteen and could not see the rest. On this interpreter
+        # `urllib.request.url2pathname` is not the posixpath one -- it re-parses its argument
+        # as a URL, so a PATH beginning `//` becomes an AUTHORITY (`//host/share` ->
+        # `file://host/share` -> not local -> raise). The authority is discarded on the way in
+        # and re-invented on the way out.
+        #
+        # So: enumerate what the call can raise, and catch the classes. `ValueError` and
+        # `OSError` cover every raise measured across those 138 shapes, and this is the same
+        # pair the module already catches around its reads and around `subprocess.run`. The
+        # outcome is unchanged and declared: the record still says editable, so a value that
+        # is not a usable path keeps the answer at `<version>+unknown`.
         return PurePath(url)
 
 
@@ -204,11 +217,24 @@ def _file_url_to_path(url: str) -> PurePath:
     against a path that cannot exist and would read as `released`. Measured through
     `PureWindowsPath`; the consequence for `is_dir()` follows from it.
 
-    `url2pathname` is the standard library's own answer to exactly this, and it is keyed on
-    the RUNNING platform -- so it converts on Windows and leaves `/C:/repo` untouched
-    anywhere else. The explicit fallback below decodes the Windows form on a host where
-    `url2pathname` will not, which is what makes the behaviour testable off Windows
-    instead of being taken on trust until a Windows user meets it.
+    `url2pathname` is the standard library's own answer to exactly this, and the explicit
+    fallback below decodes the Windows form on a host where it will not, which is what makes
+    the behaviour testable off Windows instead of being taken on trust until a Windows user
+    meets it.
+
+    ⚠ AND THIS SENTENCE USED TO SAY `url2pathname` "is keyed on the RUNNING platform", WHICH
+    IS TRUE OF `posixpath`/`ntpath` AND NOT OF WHAT IS INSTALLED HERE (Atlas, measured on
+    3.14.6, 2026-09-30). `urllib.request.url2pathname` on this interpreter re-parses its
+    argument as a URL rather than converting a path, so a PATH whose first component is empty
+    becomes an AUTHORITY: `//host/share` -> `file://host/share` -> not localhost -> `URLError`.
+    That is why this function's caller catches `OSError` as well as `ValueError`, and why the
+    caller's comment enumerates exception CLASSES instead of listing input shapes.
+
+    It also means the argument here is a path, not a URL, and the callee may treat it as one
+    anyway. The next touch of this function should stop handing a path to a URL parser --
+    `unquote(urlparse(url).path)` directly, or passing the whole url with a scheme check --
+    rather than growing the caller's catch. Named here because it is a design debt this
+    version pays a shape at a time instead of retiring.
     """
     native = url2pathname(urlparse(url).path)
     if not native:

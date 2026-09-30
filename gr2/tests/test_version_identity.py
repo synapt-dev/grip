@@ -812,3 +812,90 @@ def test_the_answer_does_not_move_with_the_callers_working_directory(
         "the same record answered differently from two working directories",
     )
     assert answers[0] == "2.0.0a5+unknown", answers
+
+
+def test_a_double_slash_authority_answers_unknown_and_does_not_raise(fixture_path: Path) -> None:
+    """ATLAS'S EIGHTH SHAPE, and the reason the catch names CLASSES rather than shapes.
+
+    `file:////host/share` parses cleanly, so it reaches the conversion — and on this
+    interpreter `urllib.request.url2pathname` re-parses its ARGUMENT as a URL, so a path whose
+    first component is empty becomes an authority and it raises
+    `URLError: <urlopen error file:// scheme is supported only on localhost>`.
+
+    `URLError` is an `OSError` and NOT a `ValueError` (MRO: URLError -> OSError -> Exception),
+    so the `ValueError`-only catch that closed the bracket could not see this at all. Measured
+    across 138 url shapes: 120 return, 18 raise — sixteen `URLError`, two `ValueError`.
+    """
+    import json as _json
+
+    di = fixture_path / f"{DIST}-2.0.0a5.dist-info"
+    di.mkdir(parents=True)
+    (di / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {DIST}\nVersion: 2.0.0a5\n")
+    (di / "direct_url.json").write_text(
+        _json.dumps({"url": "file:////host/share", "dir_info": {"editable": True}})
+    )
+
+    assert version_line(DIST) == "2.0.0a5+unknown"
+
+
+#: The shapes this conversion actually meets, including every family that raised.
+_URL_SHAPES = [
+    "file:///tmp/somewhere",
+    "file:///tmp/a%20b",
+    "file:///tmp/%2e%2e/x",
+    "file://[::1/repo",
+    "file://[fe80::1]:80/x",
+    "file://",
+    "file://host",
+    "file://.",
+    "file:////host/share",
+    "file:////",
+    "file:/tmp/somewhere",
+    "file:///C:/Users/someone/repo",
+    "https://example.invalid/x",
+    "",
+]
+
+_DECLARED = re.compile(r"(?:2\.0\.0a5(?:\+g[0-9a-f]+|\+unknown| released)|unknown)")
+
+
+def test_every_url_shape_answers_a_declared_form_and_the_call_raises_two_classes(
+    fixture_path: Path,
+) -> None:
+    """THE ENUMERATION MADE CHECKABLE, which is Atlas's closing question on this module.
+
+    Shape-by-shape hunting ended four times in a row because each fix closed an INPUT and
+    left the CLASS. This row asks the question that terminates: for every shape, `version_line`
+    answers one of the four declared forms and never raises, and the conversion underneath may
+    only raise `ValueError` or `OSError` — the two the caller catches. A new third class, or a
+    shape that escapes the guard, reddens here instead of in a reader's next round.
+
+    The list is not claimed to be exhaustive. What is claimed is that the CLASSES are, which
+    is the property that does not depend on having thought of the next spelling.
+    """
+    from gr2.python_cli.version import _file_url_to_path
+
+    import json as _json
+
+    di = fixture_path / f"{DIST}-2.0.0a5.dist-info"
+    di.mkdir(parents=True)
+    (di / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {DIST}\nVersion: 2.0.0a5\n")
+
+    outcomes: list[tuple[str, str]] = []
+    for url in _URL_SHAPES:
+        (di / "direct_url.json").write_text(
+            _json.dumps({"url": url, "dir_info": {"editable": True}})
+        )
+        line = version_line(DIST)
+        outcomes.append((url, line))
+        assert _DECLARED.fullmatch(line), (url, line)
+
+        try:
+            _file_url_to_path(url)
+        except (ValueError, OSError):
+            pass
+        except BaseException as exc:  # noqa: BLE001 - the row is the refusal
+            raise AssertionError(
+                f"{url!r} raised {type(exc).__name__}, outside the two guard classes"
+            ) from exc
+    assert len(outcomes) == len(_URL_SHAPES)

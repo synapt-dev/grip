@@ -8,7 +8,7 @@ import os
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
-from typing import List, Optional
+from typing import List, Mapping, Optional
 
 import typer
 from gr2.prototypes import lane_workspace_prototype as lane_proto
@@ -445,6 +445,44 @@ def _configured_merge_method(workspace_root: Path) -> str | None:
     if not isinstance(value, str):
         raise SystemExit("workspace setting merge_method must be a string")
     return value
+
+
+def _parse_head_pins(
+    entries: list[str] | None,
+    group: Mapping[str, object],
+) -> dict[str, str]:
+    """`REPO=SHA`, or a bare `SHA` when the group has exactly one member.
+
+    A bare sha against a multi-member group is refused rather than applied to
+    whichever member happened to be listed first: a pin that lands on the wrong
+    member reads as protection and is not.
+    """
+    members = [str(item["repo"]) for item in group.get("prs", [])]  # type: ignore[union-attr]
+    pins: dict[str, str] = {}
+    for entry in entries or []:
+        text = entry.strip()
+        if not text:
+            continue
+        if "=" in text:
+            repo, _, sha = text.partition("=")
+            repo, sha = repo.strip(), sha.strip()
+        elif len(members) == 1:
+            repo, sha = members[0], text
+        else:
+            raise ValueError(
+                f"--match-head-commit {text!r} names no repo, and this group has "
+                f"{len(members)} members ({', '.join(members)}); pass REPO=SHA so "
+                "the pin cannot land on the wrong member"
+            )
+        if not sha:
+            raise ValueError(f"--match-head-commit {entry!r} carries no commit sha")
+        if repo in pins and pins[repo] != sha:
+            raise ValueError(
+                f"--match-head-commit pins {repo} twice with different commits "
+                f"({pins[repo][:8]} and {sha[:8]})"
+            )
+        pins[repo] = sha
+    return pins
 
 
 def _find_workspace_root(start: Path) -> Path | None:
@@ -3450,12 +3488,27 @@ def pr_merge(
         "-m",
         help="merge/squash/rebase. Defaults to a merge commit.",
     ),
+    match_head_commit: list[str] = typer.Option(
+        None,
+        "--match-head-commit",
+        help=(
+            "Pin a member's reviewed head COMMIT: REPO=SHA, or a bare SHA when the "
+            "group has one member. Repeatable. The merge refuses before merging ANY "
+            "member when a pinned head is not that PR's current head, so a branch "
+            "that moved after the reads lands nothing instead of landing unread bytes."
+        ),
+    ),
 ) -> None:
     """Merge grouped PRs for a lane."""
     workspace_root = workspace_root.resolve()
     resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
     group_path, group = _find_pr_group(workspace_root, owner_unit, resolved_lane)
     adapter = get_platform_adapter(str(group.get("platform", "github")))
+    try:
+        expected_heads = _parse_head_pins(match_head_commit, group)
+    except ValueError as exc:
+        typer.echo(f"gr2: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     merged: list[str] = []
     failed: list[dict[str, object]] = []
     if failed:
@@ -3490,6 +3543,7 @@ def pr_merge(
                 workspace_root,
             ),
             report=lambda message: typer.echo(message, err=True),
+            expected_heads=expected_heads,
         )
         completed = list(result.get("completed", []))
         merged = [str(item["repo"]) for item in completed]

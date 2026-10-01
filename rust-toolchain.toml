@@ -1,0 +1,7 @@
+# The Rust toolchain for this repo, pinned so a new stable release cannot turn CI red
+# on code nobody touched. rustup reads this file for every cargo/rustc call in the
+# tree, ahead of the toolchain the CI action installs as its default. Bump it in its
+# own PR, with any new lints fixed in the same change.
+[toolchain]
+channel = "1.99.0"
+components = ["clippy", "rustfmt"]

@@ -61,7 +61,7 @@ gr2 commit -m "my change" --workspace-root ~/ws --owner-unit default
 ```bash
 gr2 exec run ~/ws default --actor human:you -- pytest -q   # one command, every lane repo
 gr2 review create-project ~/ws default feat-x              # prints gr:<sha>: one object to review
-gr2 lane current ~/ws default                              # where am I?
+gr2 lane show ~/ws default                                 # where am I?
 gr2 lane exit ~/ws default --actor human:you
 ```
 
@@ -87,7 +87,7 @@ Not there yet:
 |---|---|
 | `workspace` | init, init-from-topology, materialize, status, convert-clone, detect-gr1, migrate-gr1, migrate-lane-state, bootstrap-gr1, gitinclude |
 | `spec` | show, validate |
-| `lane` | create, enter, exit, current, resolve, bind, lease |
+| `lane` | create, enter, exit, show, resolve, bind, lease |
 | (top level) | branch, add, commit, push, prune, status, plan, apply |
 | `sync` | status, run |
 | `pr` | create, status, checks, merge, view |

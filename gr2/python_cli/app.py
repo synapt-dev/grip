@@ -2483,7 +2483,8 @@ def lane_exit(
     )
 
 
-@lane_app.command("current")
+@lane_app.command("show")
+@lane_app.command("current", hidden=True)  # hidden alias, dropped at 2.0 GA
 def lane_current(
     workspace_root: Path,
     owner_unit: str,

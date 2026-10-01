@@ -8,7 +8,7 @@
 # sentence in a comment, and -- the reason the vocabulary exists -- it is NOT a
 # version number.
 #
-# ⚠ WHAT THIS FILE COVERS TODAY. ELEVEN names are registered, and the sweep in
+# ⚠ WHAT THIS FILE COVERS TODAY. TWELVE names are registered, and the sweep in
 # `tests/test_deprecation_registry.py` keeps the six in the first group honest.
 #
 #   THE SIX HIDDEN ALIASES, each carrying the milestone its own site already states:
@@ -17,6 +17,7 @@
 #   AND THE TWO THAT WERE HERE FIRST: `gr2_overlay` and the `.grip/.git` store home.
 #   AND ONE LEGACY FILE NAME: `.grip-open-gr-reconstruct.json` (the pre-rename review marker, still READ)  ->  release
 #   AND TWO HOOK VERBS' OLD SPELLINGS: `repo hooks` and `repo hook-run` (now `hooks show` and `hooks run`)  ->  release
+#   AND ONE LANE VERB'S OLD SPELLING: `lane current` (now `lane show`)  ->  release
 #
 # THE TREE STILL CARRIES PROSE DEADLINES IN FOUR DISTINCT WORDINGS. Three of the four
 # are now registered as the alias they name; the FOURTH IS NOT, because it is not a
@@ -163,3 +164,8 @@
 # registers is the hidden `repo hooks`.
 "alias hooks" = "release"
 "alias hook-run" = "release"
+
+# `lane current`, now `lane show`: one word means one thing in every group (`show`
+# prints a stored thing; `target show` and `lane lease show` already do). The old
+# spelling is a hidden alias of the same callback, keyed by its last path segment.
+"alias current" = "release"

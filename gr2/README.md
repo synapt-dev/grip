@@ -71,7 +71,7 @@ gr2 lane exit ~/ws default --actor human:you
 
 Alpha 2 is a working local workspace layer. Verified by running the walk above:
 
-- `workspace` (init, materialize, status, migrate-gr1 from a gr1 gripspace), `lane` (create, enter, exit, current, lease), `store` (init, snapshot, log, diff, checkout), `exec run`, `repo status`, `sync status`, `review create-project`.
+- `workspace` (init, materialize, status, migrate-gr1 from a gr1 gripspace), `lane` (create, enter, exit, current, lease), `store` (init, commit, log, diff, checkout), `exec run`, `repo status`, `sync status`, `review create-project`.
 - Lanes are independent clones: two lanes, or two agents, never share refs, an index, or a working tree.
 - A lane commit that commits nothing anywhere refuses loudly instead of reporting success.
 
@@ -85,17 +85,18 @@ Not there yet:
 
 | Group | Verbs |
 |---|---|
-| `workspace` | init, init-from-topology, materialize, status, convert-clone, detect-gr1, migrate-gr1, migrate-lane-state, bootstrap-gr1 |
+| `workspace` | init, init-from-topology, materialize, status, convert-clone, detect-gr1, migrate-gr1, migrate-lane-state, bootstrap-gr1, gitinclude |
 | `spec` | show, validate |
 | `lane` | create, enter, exit, current, resolve, bind, lease |
-| (top level) | branch, add, commit, push, prune |
+| (top level) | branch, add, commit, push, prune, status, plan, apply |
 | `sync` | status, run |
-| `pr` | create, status, checks, merge |
+| `pr` | create, status, checks, merge, view |
 | `review` | open, close, checkout-pr, run, requirements, bind, verify, rebind, create-project |
 | `exec` | status, run |
 | `repo` | status, hooks, hook-run, projection-run |
-| `store` | init, snapshot, log, diff, checkout |
-| `target`, `config`, `plan`, `apply` | stored PR target; config overlays; show/apply the materialization plan |
+| `store` | init, commit, check, push, status, log, diff, checkout, materialize, migrate |
+| `hooks` | trust, revoke, status |
+| `target`, `config` | stored PR target; config overlays |
 
 ## Overlay substrate
 

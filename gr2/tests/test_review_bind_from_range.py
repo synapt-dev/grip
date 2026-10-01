@@ -100,7 +100,7 @@ def test_cli_bind_from_range_then_open_gr_matches_tree(tmp_path: Path) -> None:
 
     lane_dir = tmp_path / "lane"
     res2 = runner.invoke(gr2_app.app, [
-        "review", "open-gr", str(ws), sha, "--repo", "alpha",
+        "review", "open", str(ws), sha, "--repo", "alpha",
         "--lane-dir", str(lane_dir), "--enter", "--json",
     ])
     assert res2.exit_code == 0, res2.output

@@ -1,4 +1,4 @@
-"""The deprecation-alias registry and its two gates.
+"""The deprecation-alias registry and its three gates.
 
 `gr2/api/deprecations.toml` is the ONE place a REGISTERED deprecated name is
 recorded, and it carries ONE expiry vocabulary -- a MILESTONE (`alpha` / `beta` /
@@ -6,15 +6,22 @@ recorded, and it carries ONE expiry vocabulary -- a MILESTONE (`alpha` / `beta` 
 that a version is a moving number nobody re-checks, and one of the pre-registry
 deadlines had already expired without anything going red.
 
-⚠ IT IS NOT YET THE ONE PLACE A DEPRECATION IS RECORDED. Two names are registered;
-other sites still carry their own prose deadline in FOUR distinct wordings -- the
-files carrying them are listed in the registry header, with a warning that the
-list is re-checked by reading and not by a one-line grep -- and
-**nothing here detects an UNREGISTERED deprecation**: a name that grows a deadline
-and no entry is invisible to both gates below, which is why a completeness sweep
-is named as the follow-on rather than assumed.
+⚠ THE GAP IS NOW DETECTED, NOT MERELY KNOWN. When this file was written, two names
+were registered and other sites carried their own prose deadline in FOUR distinct
+wordings, with **nothing** detecting an UNREGISTERED deprecation. The SIX hidden
+aliases are now registered (`alias grip | open-gr | open-project | close-gr |
+exit-gr | snapshot`), and **the sweep below turns red on any hidden alias that is
+neither registered nor explicitly exempted** -- so a name that grows a hidden marker
+and no entry is a failure rather than a silence.
 
-THE TWO GATES RUN IN OPPOSITE DIRECTIONS, and both are needed:
+WHAT THE SWEEP STILL DOES NOT COVER, stated so its green is not read as wider than
+it is: an unregistered deadline in a plain DOCSTRING that is not a hidden alias.
+`store snapshot`'s prose and the `.grip/.git` store home are registered as sites, but
+the sweep's subject is "every hidden alias the DUMP names", because that is the set a
+machine can enumerate. Closing "every prose deadline anywhere" needs a different
+instrument and is not claimed here.
+
+THE TWO ENTRY GATES RUN IN OPPOSITE DIRECTIONS, and both are needed:
 
   - BEFORE its milestone, a registered name must still EXIST. An entry naming
     something already gone guards nothing while reading as coverage -- the same
@@ -131,6 +138,14 @@ def _exists(spelling: str) -> bool:
             if rest in src.read_text(encoding="utf-8", errors="replace"):
                 return True
         return False
+    if kind == "alias":
+        # A hidden alias EXISTS while the api dump still names it hidden. The dump is
+        # the surface a stranger reads, so it is the right witness here: the day the
+        # alias is dropped from the CLI it leaves the dump, and the before-milestone
+        # gate then demands its entry go too. Reading the dump rather than the source
+        # also keeps this check independent of the sweep above, so one broken pattern
+        # cannot make both gates agree on the same wrong answer.
+        return rest in _hidden_aliases()
     raise AssertionError(
         f"registry entry {spelling!r} names kind {kind!r}, which this gate does not know "
         f"how to check. Adding a kind means adding its check HERE, in the same change -- "

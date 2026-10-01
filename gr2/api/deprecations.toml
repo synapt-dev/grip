@@ -8,14 +8,22 @@
 # sentence in a comment, and -- the reason the vocabulary exists -- it is NOT a
 # version number.
 #
-# ⚠ WHAT THIS FILE COVERS TODAY. TWO names are registered: `gr2_overlay` and the
-# `.grip/.git` store home. The tree carries a prose deadline for OTHER sites in
-# FOUR distinct wordings, and none of them is registered here:
+# ⚠ WHAT THIS FILE COVERS TODAY. EIGHT names are registered, and the sweep in
+# `tests/test_deprecation_registry.py` keeps the six in the first group honest.
 #
-#   "hidden alias for one release, dropped at 2.0 GA"  the four hidden review aliases
-#   "for one release"                                  the `grip` sub-app alias
-#   "removed at beta"                                  the `store snapshot` alias
-#   "one-release"                                      the native-store NAME fallback
+#   THE SIX HIDDEN ALIASES, each carrying the milestone its own site already states:
+#     `grip` `open-gr` `open-project` `close-gr` `exit-gr`  ->  release  ("dropped at 2.0 GA")
+#     `snapshot`                                            ->  beta     ("removed at beta")
+#   AND THE TWO THAT WERE HERE FIRST: `gr2_overlay` and the `.grip/.git` store home.
+#
+# THE TREE STILL CARRIES PROSE DEADLINES IN FOUR DISTINCT WORDINGS. Three of the four
+# are now registered as the alias they name; the FOURTH IS NOT, because it is not a
+# hidden alias the dump can enumerate, and the sweep therefore cannot see it:
+#
+#   "hidden alias for one release, dropped at 2.0 GA"  the four hidden review aliases   REGISTERED
+#   "for one release"                                  the `grip` sub-app alias         REGISTERED
+#   "removed at beta"                                  the `store snapshot` alias        REGISTERED
+#   "one-release"                                      the native-store NAME fallback    NOT registered
 #
 # THE SITES ARE THE FILES CARRYING ONE OF THOSE FOUR WORDINGS, and the list is
 # given instead of a total on purpose: a total reads as complete and goes stale
@@ -33,15 +41,19 @@
 # `grep 'removed at beta'` matches nothing there while the deadline is plainly
 # present -- a one-line grep under-reports this list by exactly that one file.
 #
-# So this file is NOT yet the one place a deprecation is recorded; it is the one
-# place a REGISTERED name is. Those sites move in following ranges. NOTHING
-# DETECTS AN UNREGISTERED DEPRECATION: a name that grows a prose deadline and no
-# entry is invisible to both gates below, so for those sites the failure this
-# registry exists to catch -- an expired sentence nobody compares -- is exactly as
-# it was. A version comparison is not the missing piece; the missing piece is a
-# sweep that requires every hidden alias in the dump to be either registered or
-# explicitly exempted, which is the named follow-on and deliberately NOT part of
-# this change.
+# So this file is the one place a REGISTERED name is, and -- since the sweep landed --
+# it is now also where an UNREGISTERED one is CAUGHT, for the class the dump can
+# enumerate. The sweep requires every hidden alias in the dump to be either
+# registered or explicitly exempted, so a name that grows a hidden marker and no
+# entry is RED rather than silent. That work was previously named here as a
+# follow-on and deliberately excluded from the change that built this registry; this
+# change is that follow-on.
+#
+# THE HONEST LIMIT OF THE SWEEP, stated so its green is not read as wider than it is:
+# it covers HIDDEN ALIASES, because that is the set a machine can enumerate from the
+# dump. A prose deadline on something that is NOT a hidden alias -- the "one-release"
+# native-store NAME fallback is the live example -- is still invisible to every gate
+# here. Those sites move in following ranges.
 #
 # WHY A STAGE AND NOT A VERSION. A stored version with a comparator is not
 # unmeasurable -- it would fail at the bump just as well; the honest difference is
@@ -94,3 +106,43 @@
 # are pinned by tests. KEPT for alpha, MARKED FOR DELETION here, deleted at beta
 # once `workspace init*`'s own disposition is ruled.
 "path .grip/.git" = "beta"
+
+# --- THE SIX HIDDEN ALIASES, read out of the api dump by the completeness sweep ----
+#
+# Every deadline below is READ FROM THE SITE, not chosen here. The sweep test
+# (`test_every_hidden_alias_is_registered_or_explicitly_exempted`) requires every
+# hidden alias in `api/cli.api` to appear here or in its EXEMPT map, so a name that
+# grows a hidden marker without an entry turns it red -- which is the gate this file
+# previously said did not exist.
+
+# The `grip` sub-app: `app.add_typer(grip_app, name="grip", hidden=True)`. Its site
+# (python_cli/app.py:126) says it "stays as a hidden alias for one release so
+# existing callers keep" working, and names no milestone. The four review aliases
+# below use the same phrase WITH the milestone spelled out ("for one release,
+# dropped at 2.0 GA"), so "one release" is read as GA here too. The inference is
+# written down rather than left implicit, so a wrong reading is visible.
+"alias grip" = "release"
+
+# The review reconstruction verbs, marked identically at their four sites
+# (python_cli/app.py:3012, :3075, :3237, :3309): "hidden alias for one release,
+# dropped at 2.0 GA".
+#
+# ⚠ `open-project` CARRIES A PRECONDITION, and it is the only one of the four that
+# does. `review open` does NOT carry `--allow-local` (api/cli.api:384) while
+# `review open-project` does (:398), so this milestone, as the site states it, would
+# not MOVE that option onto the kept verb -- it would delete the only door to it,
+# and the before-milestone gate would then demand this entry go too. `release` is a
+# correct READING of the site; it is HONEST only once `review open` grows
+# `--allow-local`. If that has not happened by GA, the right edit is to move THIS
+# entry's milestone later than its siblings', and this note moves with it.
+# Measured by Atlas (row 16) and independently corroborated by Sentinel against the
+# dump; recorded here rather than resolved, because the drop decision is not mine.
+"alias open-project" = "release"
+"alias exit-gr" = "release"
+"alias open-gr" = "release"
+"alias close-gr" = "release"
+
+# `grip snapshot`, the alias of `store commit`. Its own docstring carries the
+# deadline (python_cli/grip_cli.py:1715): "Hidden alias of `store commit` (design
+# section 5), removed at beta."
+"alias snapshot" = "beta"

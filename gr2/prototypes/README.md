@@ -441,8 +441,7 @@ prove, each as its own witness:
 - an acknowledged operation replays as a no-op returning the original outcome;
   a refused one starts a new attempt, because a refusal describes a moment
 
-It is also the home of a born-red witness for the existing event outbox:
-`read_events()` advances the consumer cursor before the caller performs its
-effect, so a consumer that fails after reading loses the event. The test is
-marked `xfail(strict=True)` and turns the marker into a failure the moment
-acknowledgment moves after the effect.
+It is also the home of the witness for the event outbox's acknowledgment order:
+a consumer that fails after reading must be offered the event again. It was born
+red as a strict `xfail` (the cursor used to advance at read time) and is an
+ordinary test now that `ack_events()` moves the cursor after the effect.

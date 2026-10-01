@@ -813,20 +813,19 @@ def test_distinct_coordinates_never_share_cursor_or_journal_rows(tmp_path: Path)
     assert journal.notes(right.key(), "a" * 40, "only-left") == 0
 
 
-# ---------------------------------------------------- born-red outbox witness
+# ---------------------------------------------------- outbox survival witness
+#
+# Born red as a strict xfail, and flipped when the consumer cursor moved from
+# read_events() to ack_events(): an event whose effect did not happen is offered again.
 
 
 class EventLost(AssertionError):
-    """Raised ONLY by the survival check below; the xfail is constrained to it.
+    """Raised ONLY by the survival check below.
 
-    ``xfail(strict=True)`` alone accepts ANY failure in the marked test, so a
-    premise that broke -- no event emitted, nothing offered on the first read --
-    would satisfy the marker forever while its reason text kept claiming cursor
-    loss (found in review: replacing the first read's result with ``[]`` still
-    reported the same expected xfail). With ``raises=EventLost`` a premise
-    failure is a plain AssertionError, which is NOT the expected type, so it is
-    reported as a real failure; only the final survival check can satisfy the
-    marker, and only by raising this class explicitly.
+    While the witness was a strict xfail it was the marker's ``raises=`` constraint, so
+    that a premise failure (no event emitted, nothing offered on the first read) could not
+    satisfy the marker. It is kept so a real loss still reads as EventLost and a broken
+    premise as a plain AssertionError.
     """
 
 
@@ -850,17 +849,6 @@ def test_outbox_offers_an_emitted_event_to_a_fresh_consumer(tmp_path: Path) -> N
     assert _offered_types(workspace) == ["sync.completed"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=EventLost,
-    reason=(
-        "outbox consumers lose events: read_events() advances the cursor before the "
-        "caller performs its effect, so a consumer that fails after reading never sees "
-        "the event again. This witness turns green only when acknowledgment moves "
-        "after the effect; strict=True forces the marker off at that moment, and "
-        "raises=EventLost keeps every premise failure outside the expected envelope."
-    ),
-)
 def test_outbox_event_survives_a_consumer_that_fails_after_reading(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

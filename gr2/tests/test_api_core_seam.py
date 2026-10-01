@@ -161,6 +161,7 @@ def test_the_core_renders_a_registry_built_outside_gr2() -> None:
     out = core.render(registry, {("exit", "demo 0 ok"): "may-change"})
     lines = out.splitlines()
     assert lines == [
+        f"# {core.UNGROUPED}",
         f"{'exit':<6}{'demo 0 ok':<64}may-change",
         f"{'verb':<6}{'demo run':<64}stable",
     ], f"unexpected core format: {lines!r}"
@@ -205,8 +206,13 @@ def test_the_core_keeps_a_command_s_items_together() -> None:
     lines = core.render(registry, {}).splitlines()
     items = [ln for ln in lines if not ln.startswith("#")]
 
-    assert [ln for ln in lines if ln.startswith("#")] == ["# add", "# store"], (
-        f"every named group needs its heading, in group order: {lines!r}"
+    assert [ln for ln in lines if ln.startswith("#")] == [
+        "# add",
+        "# store",
+        f"# {core.UNGROUPED}",
+    ], (
+        "every block needs its heading, in group order, the ungrouped block "
+        f"included: {lines!r}"
     )
     assert len(items) == 5, (
         f"grouping lost or duplicated an item (5 registered, {len(items)} rendered): {lines!r}"
@@ -226,8 +232,9 @@ def test_the_core_keeps_a_command_s_items_together() -> None:
     assert items[-1].startswith("verb  loose"), (
         f"the ungrouped row must sort LAST: {lines!r}"
     )
-    assert not lines[-2].startswith("#"), (
-        f"the ungrouped block must not get a heading: {lines!r}"
+    assert lines[-2] == f"# {core.UNGROUPED}", (
+        "the ungrouped block must carry its OWN heading -- with none it sits "
+        f"directly under the store items and reads as one of them: {lines!r}"
     )
 
 

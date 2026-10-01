@@ -45,8 +45,10 @@ class Row(NamedTuple):
     an exit code belongs to a GROUP and a layout path belongs to no verb at all.
     Deriving it here would mean the core guessing at the shape of a spelling.
 
-    An EMPTY group means "attached to no command" and renders with no heading,
-    so a consumer that does not group still gets the ungrouped format.
+    An EMPTY group means "attached to no command" and renders under the
+    ``UNGROUPED`` heading. A heading is what separates one block from the next,
+    so the ungrouped block is given one rather than left as rows appended to
+    whichever command sorted before them.
     """
 
     kind: str
@@ -61,6 +63,16 @@ Markers = dict[tuple[str, str], str]
 # The spelling column is padded to this width so the stability markers line up
 # and a diff reads as a change to one item rather than to the whole block.
 COLUMN = 64
+
+# The heading an item renders under when its consumer gave it no command.
+#
+# NAMED RATHER THAN LEFT BLANK, because a heading is the only thing separating
+# one block from the next: an ungrouped row printed with NO heading lands
+# directly under the last command's items and reads as one of them. The blank
+# version looks tidier in the one case it helps -- a consumer that groups nothing
+# -- and misleads in the case that matters, which is a consumer that groups
+# almost everything and forgets one.
+UNGROUPED = "(ungrouped)"
 
 
 def walk(cmd, prefix: tuple[str, ...] = (), hidden_by: str | None = None):
@@ -234,14 +246,21 @@ class Registry:
 def blocks(rows: list[Row]) -> list[tuple[str, list[Row]]]:
     """Rows grouped by command path, the groups in COMMAND-TREE order.
 
-    Groups are ordered by their own path TOKENS rather than by the joined
-    string, so ``store`` sorts before ``store init``, and both sort before
-    ``store-x`` -- a lexicographic sort of the joined path gets that last case
-    wrong, and the point of the file is that it reads as a tree.
+    The ORDER is by path, which is what makes the file read as a tree: ``store``
+    before ``store init``, and both before ``store-x``, so a command's
+    subcommands sit with it rather than scattered by an unrelated key.
 
-    The UNGROUPED block (the empty path) sorts LAST. It is the items that belong
-    to no command, and opening the file with the part that has no home buries
-    the part that does.
+    THE KEY IS WRITTEN ON THE PATH'S TOKENS, AND ON THIS DUMP THAT CHANGES
+    NOTHING -- measured, not assumed: the separator is a space (0x20), every
+    character a path component can begin with sorts above it, and token order and
+    joined-string order agree on all 88 real headings. It is written on tokens
+    because the RULE is what a reader auditing the order should find stated, and
+    citing a separator's incidental collation order as the reason is how a rule
+    becomes an accident nobody can check.
+
+    The UNGROUPED block sorts LAST, and THAT is the part the key actually earns:
+    it keys on the ABSENCE of tokens rather than on the empty string, which would
+    sort it first and open the file with the items that have no home.
     """
     by_group: dict[str, list[Row]] = {}
     for row in rows:
@@ -268,13 +287,14 @@ def render(registry: Registry, markers: Markers | None = None) -> str:
 
     The heading is a COMMENT (``# <command>``) rather than a row, so a reader
     that parses item lines has one unambiguous shape to parse and the heading
-    cannot be mistaken for a kind.
+    cannot be mistaken for a kind. EVERY block gets one, the ungrouped block
+    included (``# (ungrouped)``): a heading is what separates one block from the
+    next, so the block without one is the block that gets misread.
     """
     markers = {} if markers is None else markers
     lines: list[str] = []
     for group, rows in blocks(registry.rows()):
-        if group:
-            lines.append(f"# {group}")
+        lines.append(f"# {group or UNGROUPED}")
         lines += sorted(
             line(
                 row.kind,

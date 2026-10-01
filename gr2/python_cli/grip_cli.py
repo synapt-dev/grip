@@ -1409,8 +1409,11 @@ def _native_store_migrate(root: Path, *, dry_run: bool = False) -> dict[str, obj
         fetched = _store_git(path, "fetch", "origin", check=False)
         if fetched.returncode:
             raise NativeStoreRefusal(f"{name} cannot fetch origin", 5)
-        if _store_git(path, "merge-base", "--is-ancestor", pin, "origin/main", check=False).returncode:
-            raise NativeStoreRefusal(f"{name} pin {pin} is not on origin/main; push it first", 3)
+        # The branch the member is ON, read by the same helper init records it with, so the pin
+        # is checked against the upstream init would write (`origin/core/main`, not a literal).
+        _ref, upstream = _infer_member_branch(path)
+        if _store_git(path, "merge-base", "--is-ancestor", pin, upstream, check=False).returncode:
+            raise NativeStoreRefusal(f"{name} pin {pin} is not on {upstream}; push it first", 3)
         planned[name] = pin
 
     if dry_run:

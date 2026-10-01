@@ -109,15 +109,13 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Clippy guard self-test
+        run: ./scripts/ci-clippy-selftest.sh
+
       - name: Run clippy
-        run: |
-          # Allow certain lints that are common in the codebase
-          # TODO: Fix these and remove the allows
-          cargo clippy --workspace --all-features -- \
-            -A clippy::ptr_arg \
-            -A clippy::too_many_arguments \
-            -A clippy::if_same_then_else \
-            -D warnings
+        # The flags live in the script (the one copy), which also refuses a clippy that does not
+        # match the active rustc, or a rustc that ignores rust-toolchain.toml.
+        run: ./scripts/ci-clippy.sh
 
   test:
     name: Test (${{ matrix.os }})

@@ -1,4 +1,4 @@
-"""The deprecation-alias registry and its two gates.
+"""The deprecation-alias registry and its three gates.
 
 `gr2/api/deprecations.toml` is the ONE place a REGISTERED deprecated name is
 recorded, and it carries ONE expiry vocabulary -- a MILESTONE (`alpha` / `beta` /
@@ -6,15 +6,22 @@ recorded, and it carries ONE expiry vocabulary -- a MILESTONE (`alpha` / `beta` 
 that a version is a moving number nobody re-checks, and one of the pre-registry
 deadlines had already expired without anything going red.
 
-⚠ IT IS NOT YET THE ONE PLACE A DEPRECATION IS RECORDED. Two names are registered;
-other sites still carry their own prose deadline in FOUR distinct wordings -- the
-files carrying them are listed in the registry header, with a warning that the
-list is re-checked by reading and not by a one-line grep -- and
-**nothing here detects an UNREGISTERED deprecation**: a name that grows a deadline
-and no entry is invisible to both gates below, which is why a completeness sweep
-is named as the follow-on rather than assumed.
+⚠ THE GAP IS NOW DETECTED, NOT MERELY KNOWN. When this file was written, two names
+were registered and other sites carried their own prose deadline in FOUR distinct
+wordings, with **nothing** detecting an UNREGISTERED deprecation. The SIX hidden
+aliases are now registered (`alias grip | open-gr | open-project | close-gr |
+exit-gr | snapshot`), and **the sweep below turns red on any hidden alias that is
+neither registered nor explicitly exempted** -- so a name that grows a hidden marker
+and no entry is a failure rather than a silence.
 
-THE TWO GATES RUN IN OPPOSITE DIRECTIONS, and both are needed:
+WHAT THE SWEEP STILL DOES NOT COVER, stated so its green is not read as wider than
+it is: an unregistered deadline in a plain DOCSTRING that is not a hidden alias.
+`store snapshot`'s prose and the `.grip/.git` store home are registered as sites, but
+the sweep's subject is "every hidden alias the DUMP names", because that is the set a
+machine can enumerate. Closing "every prose deadline anywhere" needs a different
+instrument and is not claimed here.
+
+THE TWO ENTRY GATES RUN IN OPPOSITE DIRECTIONS, and both are needed:
 
   - BEFORE its milestone, a registered name must still EXIST. An entry naming
     something already gone guards nothing while reading as coverage -- the same
@@ -33,6 +40,7 @@ are about the dump.
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 
@@ -130,6 +138,14 @@ def _exists(spelling: str) -> bool:
             if rest in src.read_text(encoding="utf-8", errors="replace"):
                 return True
         return False
+    if kind == "alias":
+        # A hidden alias EXISTS while the api dump still names it hidden. The dump is
+        # the surface a stranger reads, so it is the right witness here: the day the
+        # alias is dropped from the CLI it leaves the dump, and the before-milestone
+        # gate then demands its entry go too. Reading the dump rather than the source
+        # also keeps this check independent of the sweep above, so one broken pattern
+        # cannot make both gates agree on the same wrong answer.
+        return rest in _hidden_aliases()
     raise AssertionError(
         f"registry entry {spelling!r} names kind {kind!r}, which this gate does not know "
         f"how to check. Adding a kind means adding its check HERE, in the same change -- "
@@ -183,4 +199,79 @@ def test_nothing_stays_registered_once_its_milestone_is_reached() -> None:
         f"remove the name (and its shim, path, or alias) and delete its entry. If the removal "
         f"is genuinely not happening, the entry does not belong in this file -- moving the "
         f"milestone later is the honest edit, and it is a visible one."
+    )
+
+
+# --- THE COMPLETENESS SWEEP: the third gate, and the named follow-on -------------
+#
+# The registry's own header names this as the missing piece: "the missing piece is a
+# sweep that requires every hidden alias in the dump to be either registered or
+# explicitly exempted". Without it, a name that grows a prose deadline and no entry is
+# invisible to BOTH gates above -- they only ask questions OF THE ENTRIES -- so the
+# failure the registry exists to catch is exactly as it was for that name.
+
+DUMP = GR2 / "api" / "cli.api"
+
+# Hidden aliases deliberately NOT registered, each with its reason. An exemption here
+# is a DECISION with a sentence; a name that is neither registered nor listed is a
+# defect, which is the whole point of the sweep. Empty today is a legitimate state and
+# is NOT the same as "nothing to do" -- see the assertion below.
+EXEMPT: dict[str, str] = {}
+
+
+def _hidden_aliases() -> dict[str, str]:
+    """Every distinct hidden alias the dump names, with the row it was read from.
+
+    THE DUMP MARKS TWO SHAPES AND BOTH MUST BE READ -- measured on `api/cli.api`:
+
+        verb  review open-gr  (hidden)         <- a bare marker; the alias is the verb
+        verb  grip snapshot   (hidden:grip)    <- the marker names the GROUP; the
+                                                  hidden thing is `grip` itself, not
+                                                  the row's own command
+
+    A pattern matching only the colon form returns ONE alias (`grip`) and misses the
+    other five, and a test built on it passes while five aliases stay unregistered --
+    a check that cannot fail, which is the defect class this file exists to catch. The
+    two shapes are spelled out here so the next reader does not have to rediscover
+    which one their regex dropped.
+    """
+    found: dict[str, str] = {}
+    for line in DUMP.read_text(encoding="utf-8").splitlines():
+        # NOT anchored at end-of-line: the marker is followed by a padded stability
+        # column (`... (hidden)                    stable`). An anchored pattern matches
+        # nothing and the sweep then reports an empty dump, which is why the count is
+        # asserted below rather than trusted.
+        m = re.match(r"^verb\s+(.+?)\s+\(hidden(?::([A-Za-z0-9_-]+))?\)", line)
+        if not m:
+            continue
+        row, group = m.group(1).strip(), m.group(2)
+        # `(hidden:<group>)` marks the GROUP as the hidden thing; the bare form marks
+        # the row's own last path segment.
+        name = group if group else row.split()[-1]
+        found.setdefault(name, line.strip())
+    return found
+
+
+def test_every_hidden_alias_is_registered_or_explicitly_exempted() -> None:
+    """The completeness sweep: nothing may be hidden AND unaccounted for.
+
+    It fires on the NEXT name that grows a hidden marker, not on a list somebody has
+    to remember to update -- which is the difference between a gate and a note.
+    """
+    aliases = _hidden_aliases()
+    assert aliases, (
+        f"the sweep found NO hidden aliases in {DUMP.relative_to(GR2)}. Either every "
+        f"hidden alias really has been dropped, or the dump changed shape and this "
+        f"reader is now matching nothing -- and those two look identical from here, "
+        f"which is why the count is asserted rather than assumed."
+    )
+    registered = {spelling.partition(" ")[2] for spelling in _registered()}
+    unaccounted = sorted(n for n in aliases if n not in registered and n not in EXEMPT)
+    assert not unaccounted, (
+        "these names are hidden but neither registered in api/deprecations.toml nor "
+        "explicitly exempted:\n  "
+        + "\n  ".join(f"{n}   (from: {aliases[n]})" for n in unaccounted)
+        + "\n\nRegister each with a milestone, or add it to EXEMPT with a sentence "
+        "saying why it is not a deprecation. A hidden name with no entry and no reason "
+        "is invisible to both registry gates."
     )

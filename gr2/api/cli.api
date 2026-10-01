@@ -82,7 +82,7 @@ verb  grip checkout (hidden:grip)                                     stable
 flag  grip commit --json (hidden:grip)                                stable
 flag  grip commit --message/-m <str> (hidden:grip)                    stable
 json  grip commit .root_commit                                        may-change
-json  grip commit .status  enum(committed)                            may-change
+json  grip commit .status  enum(committed,unchanged)                  may-change
 verb  grip commit (hidden:grip)                                       stable
 # grip diff
 arg   grip diff ref_a <str> (hidden:grip)                             stable
@@ -141,7 +141,7 @@ verb  grip push (hidden:grip)                                         stable
 flag  grip snapshot --json (hidden:grip)                              stable
 flag  grip snapshot --message/-m <str> (hidden:grip)                  stable
 json  grip snapshot .root_commit                                      may-change
-json  grip snapshot .status  enum(committed)                          may-change
+json  grip snapshot .status  enum(committed,unchanged)                may-change
 verb  grip snapshot (hidden:grip)                                     stable
 # grip status
 flag  grip status --json (hidden:grip)                                stable
@@ -487,7 +487,7 @@ verb  store checkout                                                  may-change
 flag  store commit --json                                             may-change
 flag  store commit --message/-m <str>                                 may-change
 json  store commit .root_commit                                       may-change
-json  store commit .status  enum(committed)                           may-change
+json  store commit .status  enum(committed,unchanged)                 may-change
 verb  store commit                                                    may-change
 # store diff
 arg   store diff ref_a <str>                                          may-change
@@ -546,7 +546,7 @@ verb  store push                                                      may-change
 flag  store snapshot --json (hidden)                                  may-change
 flag  store snapshot --message/-m <str> (hidden)                      may-change
 json  store snapshot .root_commit                                     may-change
-json  store snapshot .status  enum(committed)                         may-change
+json  store snapshot .status  enum(committed,unchanged)               may-change
 verb  store snapshot (hidden)                                         may-change
 # store status
 flag  store status --json                                             may-change

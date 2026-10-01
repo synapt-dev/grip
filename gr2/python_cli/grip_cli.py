@@ -780,6 +780,7 @@ def _refuse_init_disagreement(root: Path, members: list[dict[str, str]] | None =
 # `store init` never edits an adopted root's `.gitignore` (section 3a), and commit must not
 # stage a file the owner wrote.
 STORE_INCOMPLETE_PREFIX = "cannot complete this store verb: "
+STORE_COMMIT_UNCHANGED = "Nothing to record: every pin already matches the root's last commit."
 """Section 5's exit table has no room for an internal error.
 
 For the whole `store` group the table is 0 ok, 2 usage, 3 refused on coverage or cleanliness,
@@ -936,7 +937,8 @@ def _member_coverage(
         )
 
 
-def _native_store_commit(root: Path, message: str) -> None:
+def _native_store_commit(root: Path, message: str) -> bool:
+    """Record the pins; True when a root commit was made, False when there was nothing to record."""
     _refuse_beta(root)
     members = _native_members(root)
     _refuse_symlinked_members(root, members)
@@ -976,7 +978,18 @@ def _native_store_commit(root: Path, message: str) -> None:
         _store_git(root, "add", ".gitignore")
     for member in changed:
         _store_git(root, "update-index", "--add", "--cacheinfo", f"160000,{member['pin']},{member['path']}")
+    # NOTHING STAGED IS A NO-OP, NOT A FAILURE. When every pin already equals the
+    # gitlink the root last committed, `git commit` exits 1 with "nothing to commit" on STDOUT
+    # and an empty stderr, which `_store_git` renders as the bare "git command failed" and the
+    # handler maps to exit 5. `diff --cached --quiet` is the question that distinguishes the
+    # two: 0 means nothing staged, 1 means something is, anything else is a real git failure.
+    staged = _store_git(root, "diff", "--cached", "--quiet", check=False)
+    if staged.returncode == 0:
+        return False
+    if staged.returncode != 1:
+        raise RuntimeError(staged.stderr.strip() or "git diff --cached failed")
     _store_git(root, "-c", "user.name=gr2", "-c", "user.email=gr2@example.invalid", "commit", "-m", message)
+    return True
 
 
 def _native_store_check(root: Path) -> list[dict[str, str]]:
@@ -1426,12 +1439,12 @@ _STORE_JSON_SHAPES: dict[str, tuple[str, ...]] = {
         ".store  enum(native)",
     ),
     "commit": (
-        ".status  enum(committed)",
+        ".status  enum(committed,unchanged)",
         ".root_commit",
     ),
     # The hidden alias of `store commit` (section 5), so it emits commit's shape.
     "snapshot": (
-        ".status  enum(committed)",
+        ".status  enum(committed,unchanged)",
         ".root_commit",
     ),
     "check": (
@@ -1553,7 +1566,7 @@ def grip_commit_cmd(
 ) -> None:
     """Record origin-covered member pins in the root git tree."""
     try:
-        _native_store_commit(Path.cwd(), message)
+        committed = _native_store_commit(Path.cwd(), message)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
@@ -1566,7 +1579,10 @@ def grip_commit_cmd(
         typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
     if json_output:
-        typer.echo(json.dumps({"status": "committed", "root_commit": _store_git(Path.cwd(), "rev-parse", "HEAD").stdout.strip()}))
+        root_commit = _store_git(Path.cwd(), "rev-parse", "HEAD").stdout.strip()
+        typer.echo(json.dumps({"status": "committed" if committed else "unchanged", "root_commit": root_commit}))
+    elif not committed:
+        typer.echo(STORE_COMMIT_UNCHANGED)
 
 
 @grip_app.command("check")
@@ -1727,7 +1743,7 @@ def grip_snapshot_cmd(
     alpha writer, because `store migrate` (section 6a) reads that store and is a later step.
     """
     try:
-        _native_store_commit(Path.cwd(), message)
+        committed = _native_store_commit(Path.cwd(), message)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
@@ -1736,7 +1752,9 @@ def grip_snapshot_cmd(
         raise typer.Exit(code=5)
     root_commit = _store_git(Path.cwd(), "rev-parse", "HEAD").stdout.strip()
     if json_output:
-        typer.echo(json.dumps({"status": "committed", "root_commit": root_commit}))
+        typer.echo(json.dumps({"status": "committed" if committed else "unchanged", "root_commit": root_commit}))
+    elif not committed:
+        typer.echo(STORE_COMMIT_UNCHANGED)
     else:
         typer.echo(f"grip snapshot {root_commit[:12]}")
 

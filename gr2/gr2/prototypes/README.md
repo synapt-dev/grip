@@ -27,13 +27,13 @@ The prototype keeps those decisions explicit instead of burying them inside
 ## Command
 
 ```bash
-python3 gr2/prototypes/repo_maintenance_prototype.py /path/to/workspace
+python3 gr2/gr2/prototypes/repo_maintenance_prototype.py /path/to/workspace
 ```
 
 Optional policy file:
 
 ```bash
-python3 gr2/prototypes/repo_maintenance_prototype.py \
+python3 gr2/gr2/prototypes/repo_maintenance_prototype.py \
   /path/to/workspace \
   --policy /path/to/repo_policy.toml
 ```
@@ -85,24 +85,24 @@ without turning plain `gr2 apply` into an unsafe catch-all mutation command.
 Example:
 
 ```bash
-python3 gr2/prototypes/lane_workspace_prototype.py create-lane \
+python3 gr2/gr2/prototypes/lane_workspace_prototype.py create-lane \
   /path/to/workspace atlas feat-auth --repos app,api --branch feat/auth
 
-python3 gr2/prototypes/lane_workspace_prototype.py plan-exec \
+python3 gr2/gr2/prototypes/lane_workspace_prototype.py plan-exec \
   /path/to/workspace atlas feat-auth 'cargo test'
 ```
 
 Review lane example:
 
 ```bash
-python3 gr2/prototypes/lane_workspace_prototype.py create-review-lane \
+python3 gr2/gr2/prototypes/lane_workspace_prototype.py create-review-lane \
   /path/to/workspace atlas grip 548
 ```
 
 Shared scratchpad example:
 
 ```bash
-python3 gr2/prototypes/lane_workspace_prototype.py create-shared-scratchpad \
+python3 gr2/gr2/prototypes/lane_workspace_prototype.py create-shared-scratchpad \
   /path/to/workspace blog-s17 \
   --kind doc \
   --purpose "Sprint 17 blog draft" \
@@ -110,7 +110,7 @@ python3 gr2/prototypes/lane_workspace_prototype.py create-shared-scratchpad \
   --participant layne \
   --ref grip#552
 
-python3 gr2/prototypes/lane_workspace_prototype.py list-shared-scratchpads \
+python3 gr2/gr2/prototypes/lane_workspace_prototype.py list-shared-scratchpads \
   /path/to/workspace
 ```
 
@@ -197,7 +197,7 @@ operating modes:
 Run:
 
 ```bash
-python3 gr2/prototypes/cross_mode_lane_stress.py
+python3 gr2/gr2/prototypes/cross_mode_lane_stress.py
 ```
 
 This harness does not just show happy-path lane creation. It reports where the
@@ -240,7 +240,7 @@ Lease behavior is now explicit in the prototype:
 To verify that unit-local-first is real and not only metadata, run:
 
 ```bash
-python3 gr2/prototypes/real_git_lane_materialization.py
+python3 gr2/gr2/prototypes/real_git_lane_materialization.py
 ```
 
 This harness:
@@ -258,7 +258,7 @@ This harness:
 To verify that lease writes survive contention, run:
 
 ```bash
-python3 gr2/prototypes/concurrent_lease_stress.py
+python3 gr2/gr2/prototypes/concurrent_lease_stress.py
 ```
 
 This harness runs two phases in one command:
@@ -278,8 +278,8 @@ It reports:
 To verify that event sequence allocation survives contention, run:
 
 ```bash
-python3 gr2/prototypes/concurrent_event_stress.py --rounds 30 --writers 2
-python3 gr2/prototypes/concurrent_event_stress.py --rounds 30 --writers 8
+python3 gr2/gr2/prototypes/concurrent_event_stress.py --rounds 30 --writers 2
+python3 gr2/gr2/prototypes/concurrent_event_stress.py --rounds 30 --writers 8
 ```
 
 Each command reports an intentionally unlocked phase, the locked production
@@ -290,13 +290,13 @@ field.
 Bootstrap command:
 
 ```bash
-python3 gr2/prototypes/real_git_playground.py /tmp/gr2-real-git-demo
+python3 gr2/gr2/prototypes/real_git_playground.py /tmp/gr2-real-git-demo
 ```
 
 If the local environment cannot reach GitHub over SSH, use:
 
 ```bash
-python3 gr2/prototypes/real_git_playground.py /tmp/gr2-real-git-demo \
+python3 gr2/gr2/prototypes/real_git_playground.py /tmp/gr2-real-git-demo \
   --transport https
 ```
 
@@ -316,13 +316,13 @@ The prototype now includes explicit user-guidance commands for the cases that
 usually break first in real workflows:
 
 ```bash
-python3 gr2/prototypes/lane_workspace_prototype.py recommend-surface \
+python3 gr2/gr2/prototypes/lane_workspace_prototype.py recommend-surface \
   --kind doc --collaborative --shared-draft
 
-python3 gr2/prototypes/lane_workspace_prototype.py audit-shared-scratchpads \
+python3 gr2/gr2/prototypes/lane_workspace_prototype.py audit-shared-scratchpads \
   /path/to/workspace --stale-days 3
 
-python3 gr2/prototypes/lane_workspace_prototype.py plan-promote-scratchpad \
+python3 gr2/gr2/prototypes/lane_workspace_prototype.py plan-promote-scratchpad \
   /path/to/workspace blog-s17 \
   --target-repo app \
   --target-path docs/blog/sprint-17.md \
@@ -347,7 +347,7 @@ Real multi-repo bootstrap fails early if transport or auth is wrong, so the
 prototype now includes a dedicated preflight surface:
 
 ```bash
-python3 gr2/prototypes/repo_transport_probe.py \
+python3 gr2/gr2/prototypes/repo_transport_probe.py \
   /path/to/workspace/.grip/workspace_spec.toml
 ```
 
@@ -371,7 +371,7 @@ The real-git playground also needs to answer a harder product question:
 The prototype now includes:
 
 ```bash
-python3 gr2/prototypes/layout_model_probe.py /path/to/workspace --owner-unit atlas
+python3 gr2/gr2/prototypes/layout_model_probe.py /path/to/workspace --owner-unit atlas
 ```
 
 This compares the observed workspace against two candidate models:
@@ -390,7 +390,7 @@ it in practice.
 The prototype now includes:
 
 ```bash
-python3 gr2/prototypes/cache_materialization_probe.py --transport ssh
+python3 gr2/gr2/prototypes/cache_materialization_probe.py --transport ssh
 ```
 
 This measures, per playground repo:
@@ -416,7 +416,7 @@ contract for one propagation is proven on synthetic repositories:
 python3 -m pytest gr2/tests/test_propagation_state_machine.py -q
 ```
 
-`gr2/prototypes/propagation_state_machine.py` drives one change through
+`gr2/gr2/prototypes/propagation_state_machine.py` drives one change through
 `observed -> fetched -> planned -> applied -> verified -> acknowledged`, with
 `refused`, `partial`, and `unverifiable` reachable from any of them. Every
 transition names the observation that established it, and every receipt names

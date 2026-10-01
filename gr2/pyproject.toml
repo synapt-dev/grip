@@ -55,11 +55,10 @@ dev = [
 packages = ["gr2", "gr2.python_cli", "gr2.prototypes", "gr2.overlay", "gr2_overlay"]
 
 [tool.setuptools.package-dir]
-# gr2.overlay resolves under the gr2 package dir (gr2/overlay) with no explicit
-# mapping; the gr2_overlay shim maps to its own top-level dir by default.
+# Every gr2 subpackage lives physically under gr2/gr2/ (overlay, python_cli,
+# prototypes), so the directory name equals the import name and nothing here maps a flat
+# directory onto a dotted one. The gr2_overlay shim maps to its own top-level dir by default.
 gr2 = "gr2"
-"gr2.python_cli" = "python_cli"
-"gr2.prototypes" = "prototypes"
 
 [tool.setuptools.package-data]
 # The pinned MaterializationPlan v1 schema ships inside the

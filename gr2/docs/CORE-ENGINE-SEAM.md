@@ -18,7 +18,7 @@ performance evidence says otherwise.
 - A future Rust core may implement the same engine API behind an adapter, but
   the CLI must not be rewritten around it.
 
-The seam is the `gr2 core-engine API`. It sits below `python_cli/app.py` and
+The seam is the `gr2 core-engine API`. It sits below `gr2/gr2/python_cli/app.py` and
 above raw filesystem/git operations.
 
 ```text
@@ -71,8 +71,8 @@ Non-responsibilities:
 
 Current Python references:
 
-- `python_cli/spec_apply.py::load_workspace_spec_doc`
-- `python_cli/spec_apply.py::validate_spec`
+- `gr2/gr2/python_cli/spec_apply.py::load_workspace_spec_doc`
+- `gr2/gr2/python_cli/spec_apply.py::validate_spec`
 
 ### `plan`
 
@@ -95,8 +95,8 @@ Non-responsibilities:
 
 Current Python references:
 
-- `python_cli/spec_apply.py::build_plan`
-- `python_cli/syncops.py::build_sync_plan`
+- `gr2/gr2/python_cli/spec_apply.py::build_plan`
+- `gr2/gr2/python_cli/syncops.py::build_sync_plan`
 
 ### `apply`
 
@@ -119,8 +119,8 @@ Non-responsibilities:
 
 Current Python references:
 
-- `python_cli/spec_apply.py::apply_plan`
-- `python_cli/syncops.py::run_sync`
+- `gr2/gr2/python_cli/spec_apply.py::apply_plan`
+- `gr2/gr2/python_cli/syncops.py::run_sync`
 
 ### `repo_status`
 
@@ -142,8 +142,8 @@ Non-responsibilities:
 
 Current Python references:
 
-- `prototypes/repo_maintenance_prototype.py`
-- `python_cli/app.py::repo_status`
+- `gr2/gr2/prototypes/repo_maintenance_prototype.py`
+- `gr2/gr2/python_cli/app.py::repo_status`
 
 ### `materialize`
 
@@ -166,9 +166,9 @@ Non-responsibilities:
 
 Current Python references:
 
-- `python_cli/gitops.py::clone_repo`
-- `python_cli/gitops.py::ensure_lane_checkout`
-- `python_cli/app.py::_materialize_lane_repos`
+- `gr2/gr2/python_cli/gitops.py::clone_repo`
+- `gr2/gr2/python_cli/gitops.py::ensure_lane_checkout`
+- `gr2/gr2/python_cli/app.py::_materialize_lane_repos`
 
 ## Boundary Rules
 

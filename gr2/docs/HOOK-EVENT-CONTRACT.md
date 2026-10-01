@@ -218,7 +218,7 @@ is not a workspace file and usually sits outside `workspace_root`.
 
 | Type | Trigger | Payload |
 |------|---------|---------|
-| `propagation.receipt` | The propagation daemon (`gr2/prototypes/propagation_daemon.py`) completed one operation against its declared managed replica, in any terminal state (acknowledged, refused, partial, unverifiable) | `{summary, state, pending_id, operation_id, source_rev, expected_base, after, replayed, receipt_path}` |
+| `propagation.receipt` | The propagation daemon (`gr2/gr2/prototypes/propagation_daemon.py`) completed one operation against its declared managed replica, in any terminal state (acknowledged, refused, partial, unverifiable) | `{summary, state, pending_id, operation_id, source_rev, expected_base, after, replayed, receipt_path}` |
 
 `propagation.receipt` is emitted once per operation; a tick that finds the cursor
 already at the source revision is not an operation and emits nothing. `summary` is
@@ -525,7 +525,7 @@ class EventType(str, Enum):
 The event emission module lives at:
 
 ```
-gr2/python_cli/events.py
+gr2/gr2/python_cli/events.py
 ```
 
 This module owns:

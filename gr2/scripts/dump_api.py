@@ -22,11 +22,11 @@ lives here is what names gr2: its app, its tables, its alias mounts. The
 boundary is held by ``tests/test_api_core_seam.py``, not by this paragraph.
 
 ``json`` comes from ``JSON_SHAPES``, the table beside the store renderers that
-emit the payloads (``gr2/python_cli/grip_cli.py``); a verb carrying ``--json``
+emit the payloads (``gr2/gr2/python_cli/grip_cli.py``); a verb carrying ``--json``
 with no entry there is a shape the dump does not promise, and the gate that
 holds that line is ``test_the_store_group_json_verbs_all_have_a_shape``.
 
-``path`` and ``ref`` come from ``LAYOUT`` in ``gr2/python_cli/layout.py``, the
+``path`` and ``ref`` come from ``LAYOUT`` in ``gr2/gr2/python_cli/layout.py``, the
 design's section 3 table. That table is the honest source for the same reason
 the exit table is: a path is not discoverable by walking a Typer app -- nothing
 in the command tree says which of the strings the code builds is part of the
@@ -189,7 +189,7 @@ def _json_items() -> list[api_core.Row]:
     """The `json` kind, from the ``JSON_SHAPES`` table beside the renderers.
 
     THE TABLE IS THE ONLY SOURCE, and it lives with the code that emits the
-    payload (``gr2/python_cli/grip_cli.py``), so a reviewer reads the shape and
+    payload (``gr2/gr2/python_cli/grip_cli.py``), so a reviewer reads the shape and
     the renderer in one place. Nothing here re-derives a key from the app walk:
     a Typer ``--json`` flag says a verb HAS a payload, never what is in it, and
     a dump that guessed would be a promise nobody made.

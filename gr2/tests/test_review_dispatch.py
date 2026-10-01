@@ -5,8 +5,8 @@ End-to-end: a real open-gr marker routes to close_open_gr_lane and reclaims the 
 a lane with no marker is a PR lane and open-gr teardown refuses it."""
 import pytest
 
-from python_cli import review_dispatch
-from python_cli import open_gr_review
+from gr2.python_cli import review_dispatch
+from gr2.python_cli import open_gr_review
 
 
 def _flat_output(result) -> str:
@@ -21,7 +21,7 @@ def test_review_open_legacy_pr_head_positionals_do_not_classify_owner_unit(tmp_p
     classify_open_target reads as "project". Positionals decide first, so a full
     three-positional open reaches the PR-head path and never the project refusal."""
     from typer.testing import CliRunner
-    from python_cli.app import app
+    from gr2.python_cli.app import app
 
     runner = CliRunner()
     ws = tmp_path / "ws"
@@ -37,7 +37,7 @@ def test_review_open_lone_project_id_still_refuses_with_project_message(tmp_path
     """Control: with only a lone non-hex/non-digit target (no repo/pr_number),
     classification still fires and the project-review refusal is the one raised."""
     from typer.testing import CliRunner
-    from python_cli.app import app
+    from gr2.python_cli.app import app
 
     runner = CliRunner()
     ws = tmp_path / "ws"
@@ -51,7 +51,7 @@ def test_review_open_lone_pr_number_refuses_needing_owner_unit_and_repo(tmp_path
     """A lone PR number cannot open a PR-head lane: that path needs OWNER_UNIT and
     REPO positionals too. It refuses, and NOT with the project message."""
     from typer.testing import CliRunner
-    from python_cli.app import app
+    from gr2.python_cli.app import app
 
     runner = CliRunner()
     ws = tmp_path / "ws"

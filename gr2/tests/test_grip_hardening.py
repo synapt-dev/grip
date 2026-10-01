@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from python_cli.gitops import git
-from python_cli.grip import (
+from gr2.python_cli.gitops import git
+from gr2.python_cli.grip import (
     GripCorruptError,
     GripInitError,
     GripCommitInfo,

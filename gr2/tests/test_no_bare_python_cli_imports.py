@@ -29,7 +29,7 @@ SHIPPED = "python_cli"
 
 def _shipped_files() -> list[Path]:
     root = Path(__file__).resolve().parents[1]
-    return sorted((root / "python_cli").rglob("*.py"))
+    return sorted((root / "gr2" / "python_cli").rglob("*.py"))
 
 
 def _bare_imports(path: Path) -> list[str]:

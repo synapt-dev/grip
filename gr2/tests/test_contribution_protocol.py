@@ -57,7 +57,7 @@ from gr2.prototypes.propagation_state_machine import (
     Operation,
     State,
 )
-from gr2.tests.test_propagation_contribution import (
+from tests.test_propagation_contribution import (
     _GIT_ENV,
     Parent,
     author,

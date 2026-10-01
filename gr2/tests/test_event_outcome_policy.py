@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from gr2.python_cli.events import EventEmitError, EventType, emit_after_outcome
 
-ROOT = Path(__file__).parents[1] / "python_cli"
+ROOT = Path(__file__).parents[1] / "gr2" / "python_cli"
 
 
 def _calls(path: Path) -> list[tuple[str, str, str | None, bool]]:

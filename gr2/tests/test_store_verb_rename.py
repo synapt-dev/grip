@@ -63,7 +63,7 @@ import pathlib
 
 from typer.testing import CliRunner
 
-from python_cli.app import app
+from gr2.python_cli.app import app
 
 runner = CliRunner()
 

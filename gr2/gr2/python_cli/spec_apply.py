@@ -1068,7 +1068,7 @@ def _read_plan_schema_bytes() -> bytes:
     try:
         return (importlib.resources.files("gr2") / _PLAN_SCHEMA_RESOURCE).read_bytes()
     except Exception:
-        return (Path(__file__).resolve().parent.parent / "gr2" / _PLAN_SCHEMA_RESOURCE).read_bytes()
+        return (Path(__file__).resolve().parent.parent / _PLAN_SCHEMA_RESOURCE).read_bytes()
 
 
 def _load_plan_validator() -> Draft202012Validator:

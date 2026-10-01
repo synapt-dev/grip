@@ -2111,7 +2111,8 @@ def hooks_status(
             typer.echo(f"hooks unbound {row['member']} (sha {row['hooks_sha']}) — bind: gr2 hooks trust {row['member']}")
 
 
-@repo_app.command("hooks")
+@hooks_app.command("show")
+@repo_app.command("hooks", hidden=True)  # hidden alias, dropped at 2.0 GA
 def repo_hooks_show(
     repo_root: Path,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
@@ -2126,7 +2127,8 @@ def repo_hooks_show(
         typer.echo(json.dumps(hooks.as_dict(), indent=2))
 
 
-@repo_app.command("hook-run")
+@hooks_app.command("run")
+@repo_app.command("hook-run", hidden=True)  # hidden alias, dropped at 2.0 GA
 def repo_hook_run(
     workspace_root: Path,
     repo_root: Path,
@@ -2481,7 +2483,8 @@ def lane_exit(
     )
 
 
-@lane_app.command("current")
+@lane_app.command("show")
+@lane_app.command("current", hidden=True)  # hidden alias, dropped at 2.0 GA
 def lane_current(
     workspace_root: Path,
     owner_unit: str,

@@ -158,6 +158,18 @@ verb  grip status (hidden:grip)                                       stable
 arg   hooks revoke member <str>                                       stable
 flag  hooks revoke --workspace-root <str>                             stable
 verb  hooks revoke                                                    stable
+# hooks run
+arg   hooks run repo_root <str>                                       stable
+arg   hooks run stage <str>                                           stable
+arg   hooks run workspace_root <str>                                  stable
+flag  hooks run --first-materialize                                   stable
+flag  hooks run --json                                                stable
+flag  hooks run --manual                                              stable
+verb  hooks run                                                       stable
+# hooks show
+arg   hooks show repo_root <str>                                      stable
+flag  hooks show --json                                               stable
+verb  hooks show                                                      stable
 # hooks status
 flag  hooks status --json                                             stable
 flag  hooks status --workspace-root <str>                             stable
@@ -188,10 +200,10 @@ flag  lane create --source <str>                                      stable
 flag  lane create --type <str>                                        stable
 verb  lane create                                                     stable
 # lane current
-arg   lane current owner_unit <str>                                   stable
-arg   lane current workspace_root <str>                               stable
-flag  lane current --json                                             stable
-verb  lane current                                                    stable
+arg   lane current owner_unit <str> (hidden)                          stable
+arg   lane current workspace_root <str> (hidden)                      stable
+flag  lane current --json (hidden)                                    stable
+verb  lane current (hidden)                                           stable
 # lane enter
 arg   lane enter lane_name <str>                                      stable
 arg   lane enter owner_unit <str>                                     stable
@@ -238,6 +250,11 @@ flag  lane resolve --actor <str>                                      stable
 flag  lane resolve --json                                             stable
 flag  lane resolve --resolution <str>                                 stable
 verb  lane resolve                                                    stable
+# lane show
+arg   lane show owner_unit <str>                                      stable
+arg   lane show workspace_root <str>                                  stable
+flag  lane show --json                                                stable
+verb  lane show                                                       stable
 # plan
 arg   plan workspace_root <str>                                       stable
 flag  plan --json                                                     stable
@@ -294,17 +311,17 @@ flag  push --repo-path <str>                                          stable
 flag  push --set-upstream/-u                                          stable
 verb  push                                                            stable
 # repo hook-run
-arg   repo hook-run repo_root <str>                                   stable
-arg   repo hook-run stage <str>                                       stable
-arg   repo hook-run workspace_root <str>                              stable
-flag  repo hook-run --first-materialize                               stable
-flag  repo hook-run --json                                            stable
-flag  repo hook-run --manual                                          stable
-verb  repo hook-run                                                   stable
+arg   repo hook-run repo_root <str> (hidden)                          stable
+arg   repo hook-run stage <str> (hidden)                              stable
+arg   repo hook-run workspace_root <str> (hidden)                     stable
+flag  repo hook-run --first-materialize (hidden)                      stable
+flag  repo hook-run --json (hidden)                                   stable
+flag  repo hook-run --manual (hidden)                                 stable
+verb  repo hook-run (hidden)                                          stable
 # repo hooks
-arg   repo hooks repo_root <str>                                      stable
-flag  repo hooks --json                                               stable
-verb  repo hooks                                                      stable
+arg   repo hooks repo_root <str> (hidden)                             stable
+flag  repo hooks --json (hidden)                                      stable
+verb  repo hooks (hidden)                                             stable
 # repo projection-run
 arg   repo projection-run repo_root <str>                             stable
 arg   repo projection-run workspace_root <str>                        stable

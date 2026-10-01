@@ -187,7 +187,7 @@ def scenario_multi_lane_coexistence(workspace_root: Path, owner_unit: str) -> di
         "feat/web",
     )
     pygr2("lane", "enter", str(workspace_root), owner_unit, "feat-web", "--actor", "agent:atlas")
-    current = read_json(pygr2("lane", "current", str(workspace_root), owner_unit, "--json"))
+    current = read_json(pygr2("lane", "show", str(workspace_root), owner_unit, "--json"))
     feat_auth_app = lane_repo_root(workspace_root, owner_unit, "feat-auth", "app")
     feat_auth_api = lane_repo_root(workspace_root, owner_unit, "feat-auth", "api")
     feat_web = lane_repo_root(workspace_root, owner_unit, "feat-web", "web")
@@ -230,7 +230,7 @@ def scenario_review_lane_isolation(workspace_root: Path, owner_unit: str) -> dic
             "--json",
         )
     )
-    current = read_json(pygr2("lane", "current", str(workspace_root), owner_unit, "--json"))
+    current = read_json(pygr2("lane", "show", str(workspace_root), owner_unit, "--json"))
     feat_auth_app = lane_repo_root(workspace_root, owner_unit, "feat-auth", "app")
     review_app = lane_repo_root(workspace_root, owner_unit, "review-app-101", "app")
     return {

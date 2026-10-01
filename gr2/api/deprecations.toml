@@ -8,7 +8,7 @@
 # sentence in a comment, and -- the reason the vocabulary exists -- it is NOT a
 # version number.
 #
-# ⚠ WHAT THIS FILE COVERS TODAY. NINE names are registered, and the sweep in
+# ⚠ WHAT THIS FILE COVERS TODAY. TWELVE names are registered, and the sweep in
 # `tests/test_deprecation_registry.py` keeps the six in the first group honest.
 #
 #   THE SIX HIDDEN ALIASES, each carrying the milestone its own site already states:
@@ -16,6 +16,8 @@
 #     `snapshot`                                            ->  beta     ("removed at beta")
 #   AND THE TWO THAT WERE HERE FIRST: `gr2_overlay` and the `.grip/.git` store home.
 #   AND ONE LEGACY FILE NAME: `.grip-open-gr-reconstruct.json` (the pre-rename review marker, still READ)  ->  release
+#   AND TWO HOOK VERBS' OLD SPELLINGS: `repo hooks` and `repo hook-run` (now `hooks show` and `hooks run`)  ->  release
+#   AND ONE LANE VERB'S OLD SPELLING: `lane current` (now `lane show`)  ->  release
 #
 # THE TREE STILL CARRIES PROSE DEADLINES IN FOUR DISTINCT WORDINGS. Three of the four
 # are now registered as the alias they name; the FOURTH IS NOT, because it is not a
@@ -153,3 +155,17 @@
 # deadline (python_cli/grip_cli.py:1715): "Hidden alias of `store commit` (design
 # section 5), removed at beta."
 "alias snapshot" = "beta"
+
+# `repo hooks` and `repo hook-run`, the hook READ and RUN verbs that sat under `repo`
+# while the hook consent verbs sat under `hooks`. `hooks show` and `hooks run` are the
+# verbs; the old spellings are hidden aliases of the same callbacks. The sweep keys an
+# alias by the LAST segment of its path, so the two entries below are named `hooks` and
+# `hook-run`; the first shares its spelling with the `hooks` GROUP, and what it
+# registers is the hidden `repo hooks`.
+"alias hooks" = "release"
+"alias hook-run" = "release"
+
+# `lane current`, now `lane show`: one word means one thing in every group (`show`
+# prints a stored thing; `target show` and `lane lease show` already do). The old
+# spelling is a hidden alias of the same callback, keyed by its last path segment.
+"alias current" = "release"

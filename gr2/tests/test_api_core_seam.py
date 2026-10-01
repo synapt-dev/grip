@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -177,3 +178,112 @@ def test_an_unregistered_kind_is_refused() -> None:
     except KeyError:
         return
     raise AssertionError("an unregistered kind resolved a marker instead of refusing")
+
+
+# --- THE RUNTIME HALF OF THE BOUNDARY ------------------------------------
+#
+# THE WALK ABOVE CANNOT SEE A DYNAMIC IMPORT. A dynamic
+# `importlib.import_module("gr2.python_cli")` added to the core leaves the walk
+# GREEN, because `ast.Import` and `ast.ImportFrom` only see names WRITTEN in the
+# source -- measured with a mutation that landed and was restored by hash. So
+# the walk is a good ERROR MESSAGE (it names the offending line) and not a
+# boundary on its own.
+#
+# These two run the subject in a SUBPROCESS whose import system REFUSES every
+# one of gr2's modules, so the check is behavioural: a name built at call time
+# is blocked exactly as a written one is. And they EXERCISE the subject rather
+# than only importing it, because the plugin's own gr2 imports are LAZY -- they
+# sit inside function bodies -- so a probe that stopped at `exec_module` would
+# pass the plugin too and prove nothing.
+#
+# The second test is the control, and it is the plugin because that is the same
+# shape as the subject: a probe that let the plugin through would be measuring
+# nothing about the core.
+
+_PROBE_HEADER = r'''
+import sys
+
+BLOCKED = (
+    "python_cli", "grip_cli", "layout", "exit_codes",
+    "gr2_overlay", "gr2.prototypes", "gr2.overlay", "gr2.python_cli",
+)
+
+
+class Blocked:
+    """Refuse every one of gr2's own modules, however it is reached."""
+
+    def find_spec(self, fullname, path=None, target=None):
+        root = fullname.split(".")[0]
+        if fullname in BLOCKED or root in BLOCKED:
+            raise ImportError("seam probe refuses " + fullname)
+        if fullname.startswith("gr2.") and fullname != "gr2.api_core":
+            raise ImportError("seam probe refuses " + fullname)
+        return None
+
+
+sys.meta_path.insert(0, Blocked())
+'''
+
+# Exercise the core's real entry point, so a dynamic import ON THAT PATH fires.
+_CORE_BODY = r'''
+import gr2.api_core as core
+
+registry = core.Registry()
+registry.register(
+    "verb", lambda: [("verb", "demo run", False, None)], core.plain_marker("verb")
+)
+out = core.render(registry, {})
+assert out.strip(), "the probe rendered nothing, so it exercised nothing"
+print("REACHED-NOTHING")
+'''
+
+# The plugin reaches gr2 through its LAZY imports, so the probe must call the
+# registration rather than stop at loading the file.
+_PLUGIN_BODY = r'''
+import importlib.util
+import pathlib
+
+spec = importlib.util.spec_from_file_location("_seam_probe_plugin", pathlib.Path("scripts/dump_api.py"))
+module = importlib.util.module_from_spec(spec)
+sys.modules["_seam_probe_plugin"] = module
+spec.loader.exec_module(module)
+module._registry()
+print("REACHED-NOTHING")
+'''
+
+
+def _run_probe(body: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-c", _PROBE_HEADER + body],
+        cwd=GR2,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_the_core_reaches_nothing_in_gr2_at_runtime() -> None:
+    """Behavioural, not lexical: a name built at call time is blocked too."""
+    result = _run_probe(_CORE_BODY)
+    assert result.returncode == 0, (
+        f"the core reached a gr2 module while running under the seam probe.\n"
+        f"stdout={result.stdout!r}\nstderr={result.stderr}"
+    )
+    assert result.stdout.strip() == "REACHED-NOTHING", (
+        f"unexpected probe output: {result.stdout!r}{result.stderr}"
+    )
+
+
+def test_the_runtime_probe_can_fail() -> None:
+    """CONTROL. The plugin reaches gr2, so the SAME probe must refuse it."""
+    result = _run_probe(_PLUGIN_BODY)
+    print(f"control: plugin probe rc={result.returncode} stderr tail={result.stderr.strip()[-200:]!r}")
+    assert result.returncode != 0, (
+        "the seam probe let the PLUGIN through, and the plugin imports gr2 "
+        "throughout -- so the probe is blind and its verdict on the core is "
+        "worth nothing until this passes."
+    )
+    assert "seam probe refuses" in result.stderr, (
+        f"the plugin failed, but not because the probe refused a gr2 module; "
+        f"that is a different failure and it does not validate the probe.\n"
+        f"stderr={result.stderr}"
+    )

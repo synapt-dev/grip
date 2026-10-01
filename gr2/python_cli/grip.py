@@ -23,6 +23,13 @@ class GripInitError(Exception):
     """Raised when .grip/ repo is missing or not properly initialized."""
 
 
+class ReviewStoreAbsent(GripInitError):
+    """A native store root with no review store: nothing has been bound here yet.
+
+    This is the state of every fresh `store init` root, not a setup mistake, so it is
+    reported as "nothing bound" and never as advice to run the verb that was just run."""
+
+
 class GripCorruptError(Exception):
     """Raised when .grip/ repo state is corrupt (bad HEAD, missing objects)."""
 
@@ -465,6 +472,27 @@ def create_review_bind_commit(
     workspace: Path, rows: list[dict[str, str]], *, ratified: str | None = None,
     policy_hook: list[str] | None = None,
 ) -> str:
+    """Bind a review gr commit (rows, refusals and the policy hook: see `_bind_review_rows`).
+
+    On a native store root (`store init`) the review store is created here on first use. A bind
+    that does not complete removes what THIS call created, so a refused bind leaves the
+    workspace as it found it; a store that already existed, or that holds a commit, is never
+    removed."""
+    created_store, created_grip_dir = _ensure_review_store(workspace)
+    try:
+        return _bind_review_rows(workspace, rows, ratified=ratified, policy_hook=policy_hook)
+    except BaseException as exc:
+        if created_store:
+            leftover = _discard_review_store(workspace, created_grip_dir)
+            if leftover:
+                exc.add_note(leftover)
+        raise
+
+
+def _bind_review_rows(
+    workspace: Path, rows: list[dict[str, str]], *, ratified: str | None = None,
+    policy_hook: list[str] | None = None,
+) -> str:
     """Bind a review gr commit. Each row: key, remote, path, head, base, ref, title, body.
 
     Reads the live remote head of every row's target ref, records it under
@@ -606,6 +634,7 @@ def verify_review_commit(workspace: Path, commit: str) -> dict[str, object]:
     body NORM the hand gate produced)."""
     import hashlib
 
+    _validate_grip_repo(workspace)
     if _grip_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip() != _REVIEW_BIND_SCHEMA:
         raise GripCorruptError("not a gr2 review bind commit")
 
@@ -868,6 +897,7 @@ def _row_ref(workspace: Path, commit: str, key: str) -> str:
 def review_row_keys(workspace: Path, commit: str) -> list[str]:
     """The repository keys bound in a review gr commit, sorted. Cheap: reads the
     repos/ subtree only (no tree recomputation)."""
+    _validate_grip_repo(workspace)
     return sorted(_read_repo_state(workspace, commit).keys())
 
 
@@ -890,6 +920,7 @@ def reconstruct_review_lane(
     head. Without that object (a range-1-era commit) it falls back to a plain
     ``git am``: tree-faithful, committer re-stamped, so the returned reconstructed_head
     differs from the bound head by design."""
+    _validate_grip_repo(workspace)
     if key not in _tree_keys(workspace, commit, "objects"):
         raise GripReviewRefused("row_carries_no_objects", key, "reconstruction needs a carried range")
     repo = _read_repo_state(workspace, commit)[key]
@@ -950,9 +981,93 @@ def _grip_git(workspace: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return git(workspace / ".grip", *args)
 
 
+def _is_native_workspace(workspace: Path) -> bool:
+    """A native store root: what `store init` makes, a `grip.toml` beside a root `.git`."""
+    return (workspace / "grip.toml").is_file() and (workspace / ".git").exists()
+
+
+def _ensure_review_store(workspace: Path) -> tuple[bool, bool]:
+    """Create the review object store (`.grip/.git`) on first bind, for a native root only.
+    Returns (created the store, created the `.grip` directory) so a bind that does not
+    complete can remove exactly what it made.
+
+    `store init` writes `grip.toml` and a root `.git` and makes no `.grip/.git`, and `bind`
+    is the only verb that writes review objects, so it is the one place that has to make the
+    store. Any other directory is left alone and keeps the `not_initialized` refusal: bind
+    must not initialise arbitrary directories. `grip_init` is idempotent. `store migrate`
+    refuses a root that already holds a native store, so a store made here is never read as
+    an alpha snapshot store. The root is also told to ignore the new store, so an adopted root
+    does not see a nested repo (see `_exclude_review_store`)."""
+    if not _is_native_workspace(workspace) or (workspace / ".grip" / ".git").exists():
+        return False, False
+    created_grip_dir = not (workspace / ".grip").exists()
+    _exclude_review_store(workspace)
+    grip_init(workspace)
+    return True, created_grip_dir
+
+
+def _discard_review_store(workspace: Path, created_grip_dir: bool) -> str | None:
+    """Undo `_ensure_review_store` after a bind that did not complete. A store that holds a
+    commit is never removed (a bind completed in it, perhaps another caller's), and `.grip`
+    itself goes only when this call made it and it is now empty.
+
+    Returns None when nothing is left behind, or a sentence naming what survived when the
+    store could not be fully removed. It does not raise: this runs while the bind's own
+    refusal is propagating, and that refusal must not be replaced by the cleanup's."""
+    # Local import: clone_exec reaches back through spec_apply, so a module-level import here
+    # would be one more edge in that cycle.
+    from .clone_exec import IncompleteRemoval, rmtree_or_refuse
+
+    grip_dir = workspace / ".grip"
+    if git(grip_dir, "rev-parse", "--verify", "HEAD").returncode == 0:
+        return None
+    try:
+        rmtree_or_refuse(grip_dir / ".git")
+    except IncompleteRemoval as leftover:
+        return f"the review store this call created could not be fully removed: {leftover}"
+    if created_grip_dir:
+        try:
+            grip_dir.rmdir()
+        except OSError:
+            pass
+    return None
+
+
+_REVIEW_STORE_EXCLUDE = "/.grip/"
+
+
+def _exclude_review_store(workspace: Path) -> None:
+    """Make the root repo ignore `.grip/`, through the root's own `.git/info/exclude`.
+
+    An adopted root keeps its owner's `.gitignore` (store init never edits it), so nothing there
+    hides a nested repo at `.grip/`: `git status` shows it and `git add -A` records it as a
+    160000 gitlink to local-only review objects. The exclude file is local to the clone and is
+    the place for a tool's private store. The line is added once, and only when absent."""
+    proc = git(workspace, "rev-parse", "--git-path", "info/exclude")
+    if proc.returncode != 0 or not proc.stdout.strip():
+        diagnostic = (proc.stderr or proc.stdout).strip() or "no diagnostic"
+        raise GripInitError(f"cannot locate the root's info/exclude: {diagnostic}")
+    exclude = Path(proc.stdout.strip())
+    if not exclude.is_absolute():
+        exclude = workspace / exclude
+    existing = exclude.read_text() if exclude.exists() else ""
+    if _REVIEW_STORE_EXCLUDE in existing.splitlines():
+        return
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    with exclude.open("a") as handle:
+        if existing and not existing.endswith("\n"):
+            handle.write("\n")
+        handle.write(_REVIEW_STORE_EXCLUDE + "\n")
+
+
 def _validate_grip_repo(workspace: Path) -> None:
     """Verify .grip/ is a valid git repo. Raises GripInitError if not."""
     grip_dir = workspace / ".grip"
+    if _is_native_workspace(workspace) and not (grip_dir / ".git").exists():
+        raise ReviewStoreAbsent(
+            f"No review has been bound in {workspace}: "
+            "`gr2 review bind` creates the review store on first use."
+        )
     if not grip_dir.exists():
         raise GripInitError(
             f"No .grip/ directory at {workspace}. "

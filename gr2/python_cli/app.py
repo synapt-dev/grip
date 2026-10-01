@@ -3105,6 +3105,13 @@ def _strip_gr_prefix(commit: str) -> str:
     return commit[3:] if commit.startswith("gr:") else commit
 
 
+def _echo_notes(exc: BaseException) -> None:
+    """Print what was attached to a propagating error (`add_note`), so a cleanup that could not
+    finish is named next to the refusal instead of vanishing with it."""
+    for note in getattr(exc, "__notes__", []):
+        typer.echo(note, err=True)
+
+
 def _review_call(fn, *args, **kwargs):
     """Run an engine review function, converting a refusal or corruption into a
     clean nonzero exit (code 2) with real error text on stderr — never a
@@ -3118,9 +3125,17 @@ def _review_call(fn, *args, **kwargs):
             f"refused: {exc.refusal}: expected {exc.expected!r}, observed {exc.observed!r}",
             err=True,
         )
+        _echo_notes(exc)
         raise typer.Exit(code=2)
     except grip.GripCorruptError as exc:
         typer.echo(f"corrupt: {exc}", err=True)
+        _echo_notes(exc)
+        raise typer.Exit(code=2)
+    except grip.ReviewStoreAbsent as exc:
+        # A native root where nothing has been bound. Not a setup error, so no remedy that
+        # sends the caller back to the verb they already ran.
+        typer.echo(f"not_bound: {exc}", err=True)
+        _echo_notes(exc)
         raise typer.Exit(code=2)
     except grip.GripInitError as exc:
         # The engine's own message already names what's missing and where
@@ -3128,6 +3143,7 @@ def _review_call(fn, *args, **kwargs):
         # re-deriving the diagnosis, since _validate_grip_repo already did
         # the naming precisely.
         typer.echo(f"not_initialized: {exc} Run `gr2 grip init` to create it.", err=True)
+        _echo_notes(exc)
         raise typer.Exit(code=2)
 
 

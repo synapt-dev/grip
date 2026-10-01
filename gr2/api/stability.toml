@@ -19,7 +19,12 @@
 #               slice lands the name, this gate goes RED and the entry moves
 #               deliberately to stable or to may-change.
 #
-# Entries are "<kind> <spelling>", matching the first two columns of cli.api.
+# Entries are "<kind> <spelling>" -- an item's IDENTITY, not the text of a dump
+# line. That distinction is load-bearing since cli.api was grouped by command: a
+# line now sits under a heading and its label may carry a "(hidden:...)"
+# annotation, and NEITHER is part of the name. A gate that matched raw line text
+# would go red on the grouping rather than on the item, so the gates match on
+# identity -- and the dump's own currency gate is what ties the two together.
 # The kinds are `verb`, `flag`, `arg`, and later `json`, `exit`, `path`, `ref`.
 #
 # The two lists are checked in OPPOSITE directions: every may-change entry must

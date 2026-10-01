@@ -152,10 +152,10 @@ def test_the_core_renders_a_registry_built_outside_gr2() -> None:
     """No gr2 in scope at all: a consumer registers kinds and gets the format."""
     core = _core()
     registry = core.Registry()
-    registry.register("verb", lambda: [("verb", "demo run", False, None)], core.plain_marker("verb"))
+    registry.register("verb", lambda: [core.Row("verb", "demo run")], core.plain_marker("verb"))
     registry.register(
         "exit",
-        lambda: [("exit", "demo 0 ok", False, None)],
+        lambda: [core.Row("exit", "demo 0 ok")],
         core.plain_marker("exit"),
     )
     out = core.render(registry, {("exit", "demo 0 ok"): "may-change"})
@@ -167,12 +167,76 @@ def test_the_core_renders_a_registry_built_outside_gr2() -> None:
     assert out.endswith("\n"), "the dump must be terminated by exactly one newline"
 
 
+def test_the_core_keeps_a_command_s_items_together() -> None:
+    """The grouping rule, witnessed from OUTSIDE gr2.
+
+    THE PROPERTY THAT MATTERS IS ADJACENCY. The old order was one flat
+    lexicographic sort, so every ``arg`` in the product preceded every ``flag``
+    and one command's surface was never readable in one place. The rows below
+    arrive INTERLEAVED across two groups AND two kinds, which is what makes a
+    regression to kind-major ordering fail here rather than pass: the three
+    ``store`` items must be contiguous, under one heading.
+
+    Also pins the other two halves of the contract: a named group gets a
+    heading, and the ungrouped block sorts LAST with none -- so a consumer that
+    does not group still gets the ungrouped format.
+    """
+    core = _core()
+    registry = core.Registry()
+    registry.register(
+        "verb",
+        lambda: [
+            core.Row("verb", "store", group="store"),
+            core.Row("verb", "add", group="add"),
+            core.Row("verb", "loose", group=""),
+        ],
+        core.plain_marker("verb"),
+    )
+    registry.register(
+        "flag",
+        lambda: [core.Row("flag", "store --json", group="store")],
+        core.plain_marker("flag"),
+    )
+    registry.register(
+        "arg",
+        lambda: [core.Row("arg", "store root <str>", group="store")],
+        core.plain_marker("arg"),
+    )
+    lines = core.render(registry, {}).splitlines()
+    items = [ln for ln in lines if not ln.startswith("#")]
+
+    assert [ln for ln in lines if ln.startswith("#")] == ["# add", "# store"], (
+        f"every named group needs its heading, in group order: {lines!r}"
+    )
+    assert len(items) == 5, (
+        f"grouping lost or duplicated an item (5 registered, {len(items)} rendered): {lines!r}"
+    )
+    # The label starts at column 6, past the kind: `core.label` is the rule for
+    # what the label IS, so matching on it cannot drift from the renderer.
+    store_labels = [
+        core.label(spelling, False, None)
+        for spelling in ("store", "store --json", "store root <str>")
+    ]
+    store_at = [i for i, ln in enumerate(items) if ln[6:].startswith(tuple(store_labels))]
+    assert len(store_at) == 3, f"expected three `store` items: {items!r}"
+    assert store_at == sorted(store_at) and max(store_at) - min(store_at) == 2, (
+        "the three `store` items are not CONTIGUOUS -- a kind-major sort scatters "
+        f"them, which is the defect grouping exists to remove: {items!r}"
+    )
+    assert items[-1].startswith("verb  loose"), (
+        f"the ungrouped row must sort LAST: {lines!r}"
+    )
+    assert not lines[-2].startswith("#"), (
+        f"the ungrouped block must not get a heading: {lines!r}"
+    )
+
+
 def test_an_unregistered_kind_is_refused() -> None:
     """A kind nobody registered has no marker rule; guessing 'stable' for it
     would publish a promise nobody made."""
     core = _core()
     registry = core.Registry()
-    registry.register("verb", lambda: [("verb", "demo run", False, None)], core.plain_marker("verb"))
+    registry.register("verb", lambda: [core.Row("verb", "demo run")], core.plain_marker("verb"))
     try:
         registry.marker("exit", "demo 0 ok", {})
     except KeyError:
@@ -230,7 +294,7 @@ import gr2.api_core as core
 
 registry = core.Registry()
 registry.register(
-    "verb", lambda: [("verb", "demo run", False, None)], core.plain_marker("verb")
+    "verb", lambda: [core.Row("verb", "demo run")], core.plain_marker("verb")
 )
 out = core.render(registry, {})
 assert out.strip(), "the probe rendered nothing, so it exercised nothing"

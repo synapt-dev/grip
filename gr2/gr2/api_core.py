@@ -1,10 +1,14 @@
 """The generic core of the API dumper: walker, line format, marker lookup.
 
-THE SEAM. This module knows three things -- how to walk a command tree, how an
-``.api`` line is shaped, and how a stability table is keyed -- and it knows
-nothing about gr2: not its app, not its tables, not its exit codes. Everything
-that names gr2 lives in the consumer (``gr2/scripts/dump_api.py``), which
-REGISTERS the kinds it emits and supplies the marker rules for them.
+THE SEAM. This module knows four things -- how to walk a command tree, how an
+``.api`` line is shaped, how a stability table is keyed, and how items are
+GROUPED into blocks -- and it knows nothing about gr2: not its app, not its
+tables, not its exit codes. Everything that names gr2 lives in the consumer
+(``gr2/scripts/dump_api.py``), which REGISTERS the kinds it emits, supplies the
+marker rules for them, and says which COMMAND each item belongs to (``Row.group``).
+Grouping is a core rule over a consumer-supplied fact, which is the same
+division as the marker table: the core owns the shape, the consumer owns the
+meaning.
 
 The boundary is a test, not a convention: ``tests/test_api_core_seam.py`` walks
 this module's imports at any depth and fails if any of them reaches gr2, with
@@ -29,9 +33,27 @@ import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
-# (kind, spelling, hidden, hidden_by) -- one item, before it is rendered.
-Row = tuple[str, str, bool, str | None]
+
+class Row(NamedTuple):
+    """One item, before it is rendered.
+
+    ``group`` is the COMMAND PATH the item belongs to, and the CONSUMER supplies
+    it rather than the core deriving one. Only the consumer knows what a command
+    is in its own tree: the walk answers for a verb and the flags beneath it, but
+    an exit code belongs to a GROUP and a layout path belongs to no verb at all.
+    Deriving it here would mean the core guessing at the shape of a spelling.
+
+    An EMPTY group means "attached to no command" and renders with no heading,
+    so a consumer that does not group still gets the ungrouped format.
+    """
+
+    kind: str
+    spelling: str
+    hidden: bool = False
+    hidden_by: str | None = None
+    group: str = ""
 
 # (kind, spelling) -> "may-change" | "reserved". An item absent here is stable.
 Markers = dict[tuple[str, str], str]
@@ -209,12 +231,56 @@ class Registry:
         )
 
 
+def blocks(rows: list[Row]) -> list[tuple[str, list[Row]]]:
+    """Rows grouped by command path, the groups in COMMAND-TREE order.
+
+    Groups are ordered by their own path TOKENS rather than by the joined
+    string, so ``store`` sorts before ``store init``, and both sort before
+    ``store-x`` -- a lexicographic sort of the joined path gets that last case
+    wrong, and the point of the file is that it reads as a tree.
+
+    The UNGROUPED block (the empty path) sorts LAST. It is the items that belong
+    to no command, and opening the file with the part that has no home buries
+    the part that does.
+    """
+    by_group: dict[str, list[Row]] = {}
+    for row in rows:
+        by_group.setdefault(row.group, []).append(row)
+    return sorted(
+        by_group.items(), key=lambda item: (not item[0].split(), item[0].split())
+    )
+
+
 def render(registry: Registry, markers: Markers | None = None) -> str:
-    """The exact bytes of an ``.api`` file, terminated by one newline."""
+    """The exact bytes of an ``.api`` file, terminated by one newline.
+
+    GROUPED BY COMMAND, not by kind. The first column is still the item kind and
+    each line still carries one item, but the ORDER is now the command tree: a
+    heading names a command and its items sit under it. The previous order was a
+    single flat lexicographic sort, so all 120 ``arg`` rows preceded all 215
+    ``flag`` rows and no command's surface could be read in one place -- "what
+    does ``store init`` take" was four searches, one per kind.
+
+    WITHIN a block the rows are sorted by their rendered line, which is the old
+    (kind, then label) order: a diff then reads one command at a time, and an
+    item that moves shows up moving between two blocks rather than teleporting
+    to a different corner of the file.
+
+    The heading is a COMMENT (``# <command>``) rather than a row, so a reader
+    that parses item lines has one unambiguous shape to parse and the heading
+    cannot be mistaken for a kind.
+    """
     markers = {} if markers is None else markers
-    lines = [
-        line(kind, label(spelling, hidden, hidden_by), registry.marker(kind, spelling, markers))
-        for kind, spelling, hidden, hidden_by in registry.rows()
-    ]
-    lines.sort()
+    lines: list[str] = []
+    for group, rows in blocks(registry.rows()):
+        if group:
+            lines.append(f"# {group}")
+        lines += sorted(
+            line(
+                row.kind,
+                label(row.spelling, row.hidden, row.hidden_by),
+                registry.marker(row.kind, row.spelling, markers),
+            )
+            for row in rows
+        )
     return "\n".join(lines) + "\n"

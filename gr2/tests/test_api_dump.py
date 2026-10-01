@@ -106,14 +106,34 @@ def _generator():
     return module
 
 
-def _rows(text: str) -> list[tuple[str, str, str]]:
-    """(kind, label, marker) for every line, parsed from the two fixed columns."""
-    rows = []
-    for line in text.splitlines():
-        kind, _, rest = line.partition(" ")
-        label, _, marker = rest.rstrip().rpartition(" ")
-        rows.append((kind, label.strip(), marker))
-    return rows
+def _items() -> list[tuple[str, str, str]]:
+    """(kind, label, marker) for every item, by IDENTITY rather than by text.
+
+    THE DUMP IS GROUPED BY COMMAND NOW, so a parser over its lines has to learn
+    to skip a heading, and each item's first tokens are its command path -- which
+    means a gate reading the text would be RE-DERIVING the command from the very
+    thing it is checking. A parser that re-derives its own subject is measuring
+    itself: get the grouping wrong and the expected value moves with it, and the
+    gate agrees.
+
+    So "what does the dump carry" is answered from the registry the dump is
+    BUILT from, and ``test_api_dump_is_current`` is what ties that registry to
+    the file, byte for byte -- a stronger tie than the old parse was, since it
+    cannot pass on a file with a heading in the wrong place. The FORMAT keeps
+    its own gates below, and they call the generator's ``_line`` and ``_label``
+    directly instead of going through here.
+    """
+    gen = _generator()
+    registry = gen._registry()
+    markers = gen._markers()
+    return [
+        (
+            row.kind,
+            gen._label(row.spelling, row.hidden, row.hidden_by),
+            registry.marker(row.kind, row.spelling, markers),
+        )
+        for row in registry.rows()
+    ]
 
 
 def _counted(rows: list[tuple[str, str, str]]) -> list[tuple[str, str, str]]:
@@ -150,7 +170,7 @@ def test_api_dump_is_current() -> None:
 
 
 def test_api_stable_share_at_least_90() -> None:
-    rows = _rows(_generator().render())
+    rows = _items()
     stable_count, counted_count, share = _share(rows)
     json_rows = [row for row in rows if row[0] == "json"]
     print(
@@ -175,7 +195,7 @@ def test_api_stable_share_at_least_90() -> None:
 def _known_items() -> set[tuple[str, str]]:
     """(kind, bare spelling) for every item the dump carries, hidden included."""
     known = set()
-    for kind, label, _ in _rows(_generator().render()):
+    for kind, label, _ in _items():
         known.add((kind, label.split(" (hidden")[0].strip()))
     return known
 
@@ -253,7 +273,7 @@ def test_api_dump_has_a_population() -> None:
     both. Measured: the parameter loop mutated to iterate over nothing takes
     the dump from 414 items to 85 and both gates stay green.
     """
-    rows = _rows(_generator().render())
+    rows = _items()
     verbs = [r for r in rows if r[0] == "verb"]
     flags = [r for r in rows if r[0] == "flag"]
     args = [r for r in rows if r[0] == "arg"]
@@ -332,7 +352,7 @@ def test_no_label_ends_in_a_space() -> None:
     # about is precisely what stripping removes -- so a version reading `_rows`
     # could not fail for ANY input. Measured, and it is why `_label` exists.
     gen = _generator()
-    labels = [gen._label(spelling, hidden, hidden_by) for _, spelling, hidden, hidden_by in gen._items()]
+    labels = [gen._label(row.spelling, row.hidden, row.hidden_by) for row in gen._items()]
     assert labels, "the dump rendered no labels, so this gate cannot fail"
     bad = sorted({label for label in labels if label.endswith(" ")})
     assert not bad, (
@@ -360,7 +380,7 @@ def test_api_dump_carries_every_store_exit_code() -> None:
     cannot." So it rides the reason field rather than a kind of its own, since
     it is the reason for the code's second shape that a caller matches on.
     """
-    rows = _rows(_generator().render())
+    rows = _items()
     got = {label for kind, label, marker in rows if kind == "exit" and label.startswith("store ")}
     want = {
         "store 0 ok",
@@ -466,7 +486,7 @@ def test_every_json_item_names_a_real_verb() -> None:
     """
     gen = _generator()
     verbs = _json_verb_paths()
-    spellings = [spelling for kind, spelling, _, _ in gen._items() if kind == "json"]
+    spellings = [row.spelling for row in gen._items() if row.kind == "json"]
     assert spellings, "no json items were emitted, so this gate cannot fail"
     unknown = sorted({gen._verb_of_json(spelling) for spelling in spellings} - verbs)
     assert not unknown, (
@@ -515,7 +535,7 @@ def test_a_json_item_inherits_its_verb_marker() -> None:
     # drops the `(hidden:...)` annotation a hidden row carries, so an alias row
     # and its canonical twin are keyed the same way.
     by_spelling: dict[tuple[str, str], set[str]] = {}
-    for kind, label, marker in _rows(gen.render()):
+    for kind, label, marker in _items():
         by_spelling.setdefault((kind, label.split(" (hidden")[0].strip()), set()).add(marker)
 
     json_spellings = sorted(spelling for kind, spelling in by_spelling if kind == "json")
@@ -587,7 +607,7 @@ def test_json_items_are_score_neutral() -> None:
     the surface. Adding one of each marker to the real rows must leave the
     arithmetic exactly where it was.
     """
-    rows = _rows(_generator().render())
+    rows = _items()
     base = _share(rows)
     assert base[1], "the measured set is empty, so this proof is vacuous"
     for marker in ("stable", "may-change"):
@@ -613,7 +633,7 @@ def test_the_layout_rows_are_the_ones_the_design_fixes() -> None:
     freezing a layout row, and it is meant to happen in the change that lands
     `layout.api`.
     """
-    rows = _rows(_generator().render())
+    rows = _items()
     got = {(kind, label, marker) for kind, label, marker in rows if kind in ("path", "ref")}
     want = {
         ("path", "grip.toml tracked", "stable"),

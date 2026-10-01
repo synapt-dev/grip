@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """Generate ``api/cli.api`` -- the committed dump of gr2's command-line surface.
 
-The file is generated, sorted, one item per line, and carries a stability
-marker. A change to the public surface must change this file in the same PR;
-the gate that enforces that is ``tests/test_api_dump.py``.
+The file is generated, GROUPED BY COMMAND, one item per line, and carries a
+stability marker. A change to the public surface must change this file in the
+same PR; the gate that enforces that is ``tests/test_api_dump.py``.
+
+Grouping is a core rule (``gr2/api_core.py``) over a fact only this file can
+supply: which command each item belongs to. The walk hands it over for free for
+verbs, flags and positionals; the json table supplies its own verb key; an exit
+code is filed under the group that returns it; and the layout rows, which belong
+to no verb at all, render under ``LAYOUT_GROUP``.
 
 Item kinds emitted here: ``verb``, ``flag``, ``arg``, ``exit``, ``json``,
 ``path`` and ``ref`` -- each from the table that can honestly answer for it,
@@ -108,6 +114,14 @@ def _canonical_verb(verb: str) -> str:
     return verb
 
 
+# The block the LAYOUT rows render under. They belong to no verb -- a path and
+# a ref are actionable on their own -- so they need a heading that is visibly
+# NOT a command, and the parentheses also sort the block ahead of every real
+# command rather than dropping it in the middle of the alphabet between two of
+# them, where a reader would take it for one.
+LAYOUT_GROUP = "(layout)"
+
+
 def _layout_rows() -> list[tuple[str, str, str]]:
     """(kind, label, marker) for every LAYOUT row.
 
@@ -145,7 +159,11 @@ def _walked_items() -> list[api_core.Row]:
         # Hidden is the leaf's own flag OR an ancestor group's, which the walk
         # reports as the name of the group that did it.
         hidden = bool(getattr(cmd, "hidden", False)) or hidden_by is not None
-        rows.append(("verb", verb, hidden, hidden_by))
+        # THE GROUP IS THE COMMAND PATH, and this is the only place the tree is
+        # in hand -- so nothing downstream has to re-derive a command by
+        # splitting a spelling, and an item cannot be filed under a command the
+        # walk never produced.
+        rows.append(api_core.Row("verb", verb, hidden, hidden_by, verb))
         for prm in getattr(cmd, "params", []):
             opts = list(getattr(prm, "opts", None) or [])
             if not opts:
@@ -159,7 +177,11 @@ def _walked_items() -> list[api_core.Row]:
             spelling = f"{verb} {'/'.join(opts)}"
             if takes_value:
                 spelling += " <str>"
-            rows.append(("flag" if is_option else "arg", spelling, hidden, hidden_by))
+            rows.append(
+                api_core.Row(
+                    "flag" if is_option else "arg", spelling, hidden, hidden_by, verb
+                )
+            )
     return rows
 
 
@@ -187,7 +209,10 @@ def _json_items() -> list[api_core.Row]:
     rows: list[api_core.Row] = []
     for verb, paths in grip_cli.JSON_SHAPES.items():
         for path in paths:
-            rows.append(("json", f"{verb} {path}", False, None))
+            # The verb the TABLE keys by IS the command the key belongs to, so
+            # the group is read off the table rather than re-derived by
+            # splitting the spelling -- one source, no second parse.
+            rows.append(api_core.Row("json", f"{verb} {path}", False, None, verb))
     return rows
 
 
@@ -202,7 +227,10 @@ def _layout_items() -> list[api_core.Row]:
     and is stated in the layout module: a reader of the layout must be able to
     see that the namespace exists and that nothing writes it yet.
     """
-    return [(kind, label, False, None) for kind, label, _ in _layout_rows()]
+    return [
+        api_core.Row(kind, label, False, None, LAYOUT_GROUP)
+        for kind, label, _ in _layout_rows()
+    ]
 
 
 def _exit_items() -> list[api_core.Row]:
@@ -230,7 +258,10 @@ def _exit_items() -> list[api_core.Row]:
             spelling = f"{group} {code} {reason}"
             if (group, code) in PREFIXED_CODES:
                 spelling += f' prefix:"{grip_cli.STORE_INCOMPLETE_PREFIX}"'
-            rows.append(("exit", spelling, False, None))
+            # An exit code belongs to the GROUP that returns it rather than to
+            # any one verb inside the group: the table is keyed by group and the
+            # code is shared by everything under it.
+            rows.append(api_core.Row("exit", spelling, False, None, group))
     return rows
 
 

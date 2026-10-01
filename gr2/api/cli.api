@@ -438,6 +438,7 @@ arg   review run lane_dir <str>                                       stable
 arg   review run pytest_args <str>                                    stable
 flag  review run --install <str>                                      stable
 flag  review run --json                                               stable
+flag  review run --order <str>                                        stable
 flag  review run --package <str>                                      stable
 flag  review run --python <str>                                       stable
 flag  review run --reports <str>                                      stable

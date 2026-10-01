@@ -137,6 +137,22 @@ def _preserve_run_artifacts(lane_dir: Path) -> dict | None:
     # relative name it carried will not exist after the rmtree.
     if "log" in out:
         receipt["output_log"] = out["log"]
+    # A multi-member lane keeps one log per member, `<lane>/<key>.grip-review-run.log`, named
+    # by the receipt (each member entry, and a refusal's own `output_log`). Carry each out
+    # the same way, so the evidence for every member survives the close.
+    member_logs: dict[str, str] = {}
+    for entry in [receipt, *receipt.get("members", [])]:
+        name = entry.get("output_log")
+        if not name or name == _RUN_LOG_NAME or name != Path(name).name:
+            continue
+        src = lane_dir / name
+        if not src.is_file():
+            continue
+        shutil.copy2(src, dest / name)
+        entry["output_log"] = str(dest / name)
+        member_logs[name] = str(dest / name)
+    if member_logs:
+        out["member_logs"] = member_logs
     receipt_dest = dest / _RUN_RECEIPT_NAME
     receipt_dest.write_text(json.dumps(receipt, indent=2) + "\n")
     out["receipt"] = str(receipt_dest)

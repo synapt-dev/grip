@@ -151,7 +151,14 @@ def test_run_env_is_built_by_the_scrub_and_flows_to_pytest():
     the pin follows that shape rather than the bare no-arg call it used to name."""
     import inspect
 
-    src = inspect.getsource(rr._run_review_lane)
+    # The steps that build run_env and run pytest are ONE function, shared by the
+    # single-repo lane and every member of a multi-member lane; both entry points must
+    # go through it, so neither can grow an unscrubbed copy of the run.
+    for entry in (rr._run_review_lane, rr._run_multi_member_lane):
+        assert "_run_member_steps(" in inspect.getsource(entry), (
+            f"{entry.__name__} must run through _run_member_steps, the scrubbed run"
+        )
+    src = inspect.getsource(rr._run_member_steps)
     assert "run_env = scrubbed_python_env(venv_dir=venv_dir)" in src, (
         "the review run must build run_env via scrubbed_python_env(venv_dir=...), "
         "not {**os.environ} and not the bare no-arg call"

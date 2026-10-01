@@ -38,6 +38,7 @@ from gr2.python_cli.events import (
     _outbox_path,
     emit,
     read_events,
+    ack_events,
     read_events_detailed,
     warn_unreadable,
 )
@@ -407,10 +408,11 @@ def test_unreadable_line_is_reported_on_every_read_terminal(workspace: Path):
     outbox.write_bytes(outbox.read_bytes() + b"\xff not utf-8\n")
 
     first = read_events_detailed(workspace, "c")
+    ack_events(workspace, "c", first.events)  # reading alone consumes nothing
     second = read_events_detailed(workspace, "c")
     assert [e["note"] for e in first.events] == ["good"]
     assert len(first.malformed) == 1
-    assert second.events == [], "the good event was consumed, as expected"
+    assert second.events == [], "the good event was acknowledged, as expected"
     assert len(second.malformed) == 1, "the unreadable line is reported again"
 
 
@@ -425,10 +427,11 @@ def test_unreadable_line_is_reported_on_every_read_midfile(workspace: Path):
     outbox.write_bytes(b'{"seq":1,"note":"a"}\n\xff\n{"seq":2,"note":"b"}\n')
 
     first = read_events_detailed(workspace, "c")
+    ack_events(workspace, "c", first.events)
     second = read_events_detailed(workspace, "c")
     assert [e["note"] for e in first.events] == ["a", "b"]
     assert len(first.malformed) == 1
-    assert second.events == [], "both good events were consumed"
+    assert second.events == [], "both good events were acknowledged"
     assert len(second.malformed) == 1, "a mid-file unreadable line repeats too"
 
 

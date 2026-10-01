@@ -294,6 +294,11 @@ Reading flow:
 3. Consumer processes each event.
 4. Consumer updates cursor atomically (write temp file, rename).
 
+In code, step 2 is `events.read_events_detailed()` (or the list-shaped `read_events()`), which
+never moves the cursor, and step 4 is `events.ack_events()`, which moves it monotonically
+through the events passed. A consumer calls it after the effect of each event, so a
+failure in step 3 leaves that event, and the ones behind it, to be read again.
+
 ### 5.2 Known Consumers
 
 | Consumer | Location | What It Does |

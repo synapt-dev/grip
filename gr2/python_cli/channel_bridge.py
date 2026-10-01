@@ -11,10 +11,11 @@ dependency out of the module and makes it fully testable.
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Callable
 
-from .events import read_events_detailed, warn_unreadable
+from .events import ack_events, read_events_detailed, warn_unreadable
 
 
 _CONSUMER_NAME = "channel_bridge"
@@ -99,7 +100,10 @@ def run_bridge(
 ) -> int:
     """Read new events from the outbox and post mapped messages.
 
-    Uses the 'channel_bridge' cursor. Returns the number of messages posted.
+    Uses the 'channel_bridge' cursor, which moves only after each event's effect, so delivery
+    is at-least-once: a post_fn that raises leaves that event and the ones behind it to be
+    offered again on the next run (the post_fn's failure propagates). Returns the number of
+    messages posted.
     The post_fn receives formatted message strings; the caller decides how to
     deliver them (recall_channel, print, log, etc.).
     """
@@ -124,8 +128,29 @@ def run_bridge(
     warn_unreadable(read)
     posted = 0
     for event in read.events:
-        msg = format_event(event)
+        try:
+            msg = format_event(event)
+        except Exception as exc:  # noqa: BLE001 -- the formatter's failure type is not a contract
+            # A malformed event fails to format the same way every time, so leaving it
+            # unacknowledged would stop the bridge at it on every run. Skip it on purpose and
+            # say so (HOOK-EVENT-CONTRACT.md section 5.3: skip, log, do not crash). The catch
+            # is around format_event ONLY and names no exception types: the first version
+            # listed (KeyError, TypeError) and a pr.created with a mixed repos list raised
+            # AttributeError past it, which wedged the bridge at that event. A post_fn
+            # failure is the opposite case and is NOT caught: it may be transient, so it
+            # propagates with the event, and everything behind it, still unacknowledged.
+            print(
+                f"channel bridge: skipping event {event.get('event_id', '?')}"
+                f" ({event.get('type', '?')}): cannot format it ({exc!r})",
+                file=sys.stderr,
+            )
+            ack_events(workspace_root, _CONSUMER_NAME, [event])
+            continue
         if msg is not None:
             post_fn(msg)
             posted += 1
+        # ACKNOWLEDGE AFTER THE EFFECT, one event at a time: a message posted, or an event
+        # that maps to no message (a deliberate skip). If post_fn raised above, this line
+        # was not reached, so that event and every event behind it are offered again.
+        ack_events(workspace_root, _CONSUMER_NAME, [event])
     return posted

@@ -26,6 +26,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -252,6 +253,47 @@ def assert_no_untracked_drift(
             f"untracked path(s) in the lane the run did not create: "
             f"{', '.join(offending[:5])}; an injected conftest/module can change test "
             "behavior without touching the tracked tree",
+        )
+
+
+# What a plain `pip install <dir>` leaves in the tree it installs (measured: an untracked `build/`
+# and `src/<name>.egg-info/`). `*.egg-info` is already allowed by `_is_allowlisted_untracked`, so
+# `build/` is the one extra. This is the ONLY place a NEW untracked path is admitted after the
+# baseline was taken; widening it re-opens the hole `assert_no_new_untracked` closes (an install or
+# a test dropping a `conftest.py` or any importable `.py`).
+_INSTALL_OUTPUT_TOPS = ("build/",)
+
+
+def list_untracked(repo_dir: Path) -> set[str]:
+    """The untracked paths git reports in `repo_dir`, host ignore rules neutralized (see
+    `assert_no_untracked_drift` for why). Every file is listed on its own: without
+    `--untracked-files=all` git collapses a wholly untracked directory to one entry, and a file
+    added inside it later would leave the listing unchanged."""
+    out = _git(
+        repo_dir, "-c", "core.excludesFile=", "status", "--porcelain", "--untracked-files=all"
+    )
+    return {line[3:].strip().strip('"') for line in out.splitlines() if line.startswith("?? ")}
+
+
+def assert_no_new_untracked(repo_dir: Path, baseline: set[str]) -> None:
+    """Refuse when `repo_dir` holds an untracked path that was not there at `baseline` and is not
+    something a run or an install is expected to create. The baseline is taken after the first
+    drift check, before the install, so everything in it already passed that check; what is new
+    since was written by the install step or by tests, which is the code under review. Naming
+    each offender is the point: an untracked `conftest.py` or `.pth`-reachable `.py` changes what
+    runs without touching the tracked tree."""
+    offending = sorted(
+        rel
+        for rel in list_untracked(repo_dir) - baseline
+        if not _is_allowlisted_untracked(rel, extra_tops=_INSTALL_OUTPUT_TOPS)
+    )
+    if offending:
+        raise ReviewRunRefused(
+            "untracked_drift",
+            f"new untracked path(s) appeared in the lane after the checks: "
+            f"{', '.join(offending[:5])}; an install or test that adds a conftest or an importable "
+            "module changes what runs without touching the tracked tree. If it is a test artifact "
+            "(a coverage file, say), ignore it in the repository's .gitignore",
         )
 
 
@@ -649,6 +691,15 @@ def _run_review_lane(
     # (2) venv in the lane, so close-gr reclaims it.
     venv_dir, venv_python = _create_lane_venv(lane_dir, python, system_site_packages)
 
+    # The install step and the tests are the repo's own code. After the checks above, the tracked
+    # tree must stay the bound tree and nothing new may appear untracked except what an install or
+    # a run is expected to leave (see `_INSTALL_OUTPUT_TOPS`).
+    baseline = list_untracked(repo_dir)
+
+    def _tree_intact() -> None:
+        assert_lane_tree_bound(repo_dir, bound_tree)
+        assert_no_new_untracked(repo_dir, baseline)
+
     body = _run_member_steps(
         lane_dir,
         repo_dir,
@@ -658,6 +709,8 @@ def _run_review_lane(
         install=install,
         pytest_args=pytest_args,
         log_name=_OUTPUT_LOG_NAME,
+        before_tests=_tree_intact,
+        after_tests=_tree_intact,
     )
     receipt = {
         "kind": "review-run",
@@ -700,6 +753,8 @@ def _run_member_steps(
     install: list[str] | None,
     pytest_args: list[str],
     log_name: str,
+    before_tests: Callable[[], None] | None = None,
+    after_tests: Callable[[], None] | None = None,
 ) -> dict:
     """Steps (3) to (7) for ONE repository: resolve install and package, install, prove the
     package imports from under the lane, prove pytest imports, run pytest in `repo_dir`, and
@@ -814,11 +869,19 @@ def _run_member_steps(
     # leaving failed_ids empty on a real red run. merge_report_flags folds f/E INTO the
     # caller's own -r chars, so f and E survive whatever the caller passed.
     test_cmd = [str(venv_python), "-m", "pytest", *merge_report_flags(pytest_args)]
+    # The integrity checks ran before the venv, so the install step above (the repo's own code) has
+    # had its chance to change what was checked. Re-assert, immediately before the tests run.
+    if before_tests is not None:
+        before_tests()
     proc = subprocess.run(
         test_cmd, text=True, capture_output=True, cwd=str(repo_dir), env=run_env
     )
     pytest_output = proc.stdout + "\n" + proc.stderr
     (lane_dir / log_name).write_text(pytest_output)
+    # And once the tests have run: a result is about the bound head only if the tracked tree is
+    # still the bound tree. The log is already written, so a refusal here keeps the evidence.
+    if after_tests is not None:
+        after_tests()
     failed_ids = parse_failed_ids(pytest_output)
     summary = parse_pytest_summary(pytest_output)
     if summary is None:
@@ -954,7 +1017,23 @@ def _run_multi_member_lane(
                     "runs pytest members only in this version",
                 )
         current = None
+        # Taken after the checks above and before the venv and any install: everything in it already
+        # passed the drift check, so what is new later was written by an install or by tests.
+        baselines = {member: list_untracked(_member_dir(lane_dir, member)) for member in ran_order}
         venv_dir, venv_python = _create_lane_venv(lane_dir, python, system_site_packages)
+
+        def _lane_intact() -> None:
+            # ANY member's install or an earlier member's tests may have rewritten ANY member's
+            # tracked source or planted a file in it, so every member is re-checked each time.
+            for member in ran_order:
+                mdir = _member_dir(lane_dir, member)
+                try:
+                    assert_lane_tree_bound(mdir, by_key[member].get("bound_head_tree", ""))
+                    assert_no_new_untracked(mdir, baselines[member])
+                except ReviewRunRefused as refusal:
+                    refusal.member = member
+                    raise
+
         for key in ran_order:
             current = key
             body = _run_member_steps(
@@ -966,6 +1045,8 @@ def _run_multi_member_lane(
                 install=None,
                 pytest_args=pytest_args,
                 log_name=f"{key}{_OUTPUT_LOG_NAME}",
+                before_tests=_lane_intact,
+                after_tests=_lane_intact,
             )
             members.append({
                 "key": key,

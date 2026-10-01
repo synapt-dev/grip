@@ -158,6 +158,18 @@ verb  grip status (hidden:grip)                                       stable
 arg   hooks revoke member <str>                                       stable
 flag  hooks revoke --workspace-root <str>                             stable
 verb  hooks revoke                                                    stable
+# hooks run
+arg   hooks run repo_root <str>                                       stable
+arg   hooks run stage <str>                                           stable
+arg   hooks run workspace_root <str>                                  stable
+flag  hooks run --first-materialize                                   stable
+flag  hooks run --json                                                stable
+flag  hooks run --manual                                              stable
+verb  hooks run                                                       stable
+# hooks show
+arg   hooks show repo_root <str>                                      stable
+flag  hooks show --json                                               stable
+verb  hooks show                                                      stable
 # hooks status
 flag  hooks status --json                                             stable
 flag  hooks status --workspace-root <str>                             stable
@@ -294,17 +306,17 @@ flag  push --repo-path <str>                                          stable
 flag  push --set-upstream/-u                                          stable
 verb  push                                                            stable
 # repo hook-run
-arg   repo hook-run repo_root <str>                                   stable
-arg   repo hook-run stage <str>                                       stable
-arg   repo hook-run workspace_root <str>                              stable
-flag  repo hook-run --first-materialize                               stable
-flag  repo hook-run --json                                            stable
-flag  repo hook-run --manual                                          stable
-verb  repo hook-run                                                   stable
+arg   repo hook-run repo_root <str> (hidden)                          stable
+arg   repo hook-run stage <str> (hidden)                              stable
+arg   repo hook-run workspace_root <str> (hidden)                     stable
+flag  repo hook-run --first-materialize (hidden)                      stable
+flag  repo hook-run --json (hidden)                                   stable
+flag  repo hook-run --manual (hidden)                                 stable
+verb  repo hook-run (hidden)                                          stable
 # repo hooks
-arg   repo hooks repo_root <str>                                      stable
-flag  repo hooks --json                                               stable
-verb  repo hooks                                                      stable
+arg   repo hooks repo_root <str> (hidden)                             stable
+flag  repo hooks --json (hidden)                                      stable
+verb  repo hooks (hidden)                                             stable
 # repo projection-run
 arg   repo projection-run repo_root <str>                             stable
 arg   repo projection-run workspace_root <str>                        stable

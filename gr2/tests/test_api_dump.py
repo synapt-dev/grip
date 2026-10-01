@@ -59,7 +59,13 @@ MIN_ARGS = 95
 # verb's shape is genuinely unregistered, and registering it in the store table
 # would be this author guessing at another slice's conventions for a verb outside
 # its group.
-JSON_VERBS_PENDING = 48
+#
+# 48 -> 50, the names pass (hook verbs moved into the `hooks` group): `hooks show` and
+# `hooks run` each carry `--json` and have no shape in JSON_SHAPES, exactly as the
+# `repo hooks` and `repo hook-run` they replace had none. The move ADDS two names to the
+# surface (the old two stay as hidden aliases, still counted); it documents no shape,
+# so the residual grows by two rather than staying put.
+JSON_VERBS_PENDING = 50
 
 # The kinds a stranger BUILDS ON INDEPENDENTLY: a verb, a flag, a positional
 # and an exit code are each actionable on their own -- a caller writes

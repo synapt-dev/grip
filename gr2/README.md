@@ -93,9 +93,9 @@ Not there yet:
 | `pr` | create, status, checks, merge, view |
 | `review` | open, close, checkout-pr, run, requirements, bind, verify, rebind, create-project |
 | `exec` | status, run |
-| `repo` | status, hooks, hook-run, projection-run |
+| `repo` | status, projection-run |
+| `hooks` | trust, revoke, status, show, run |
 | `store` | init, commit, check, push, status, log, diff, checkout, materialize, migrate |
-| `hooks` | trust, revoke, status |
 | `target`, `config` | stored PR target; config overlays |
 
 ## Overlay substrate

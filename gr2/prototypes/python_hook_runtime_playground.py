@@ -142,8 +142,8 @@ def scenario_manual_hook_flag() -> dict[str, object]:
     without_manual = not repo_root.joinpath("MANUAL.txt").exists()
     with_manual = json.loads(
         pygr2(
-            "repo",
-            "hook-run",
+            "hooks",
+            "run",
             str(workspace_root),
             str(repo_root),
             "on_enter",
@@ -165,8 +165,8 @@ def scenario_warn_skip_and_block() -> dict[str, object]:
     repo_root = workspace_root / "agents" / "atlas" / "lanes" / "feat-hooks" / "repos" / "demo"
     warn_skip = json.loads(
         pygr2(
-            "repo",
-            "hook-run",
+            "hooks",
+            "run",
             str(workspace_root),
             str(repo_root),
             "on_enter",
@@ -174,8 +174,8 @@ def scenario_warn_skip_and_block() -> dict[str, object]:
         ).stdout
     )
     block = pygr2(
-        "repo",
-        "hook-run",
+        "hooks",
+        "run",
         str(workspace_root),
         str(repo_root),
         "on_exit",

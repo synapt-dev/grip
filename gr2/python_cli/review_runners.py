@@ -17,6 +17,7 @@ Parsers are written against real runner output:
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -31,18 +32,24 @@ _JEST_COUNT_RE = re.compile(r"(\d+) (passed|failed|skipped|todo|total)")
 
 JUNIT_XML_DEFAULT_REPORTS = "**/build/test-results/**/*.xml"
 
+# What makes a report the SAME file across a run: (st_mtime_ns, st_size, sha256 of the
+# bytes). The hash is load-bearing — the first two agree across a same-length rewrite.
+JunitReportIdentity = tuple[int, int, str | None]
+
 
 class JunitXmlReportError(ValueError):
     """A report file cannot safely provide a test result."""
 
 
-def snapshot_junit_xml_reports(repo_dir: Path, reports: str) -> dict[str, tuple[int, int]]:
+def snapshot_junit_xml_reports(repo_dir: Path, reports: str) -> dict[str, JunitReportIdentity]:
     """Capture report identities before the test command can write them.
 
     The clock is not evidence. A report can carry a future mtime, and an up-to-date
     Gradle module can leave a real-looking old report. The pre-command shape records
-    the two cheap facts we can compare after the command: mtime at nanosecond
-    precision and byte size.
+    the three facts we can compare after the command: mtime at nanosecond precision,
+    byte size, and the sha256 of the bytes. mtime and size together are not an identity
+    — a report rewritten at the same length inside one mtime tick keeps both — so the
+    content hash is what makes "changed" true for that rewrite.
     """
     if Path(reports).is_absolute() or ".." in Path(reports).parts:
         raise RunnerSummaryRefusal(
@@ -50,22 +57,42 @@ def snapshot_junit_xml_reports(repo_dir: Path, reports: str) -> dict[str, tuple[
             f"junit-xml reports glob {reports!r} must stay inside the repository",
         )
     return {
-        str(path.relative_to(repo_dir)): (path.stat().st_mtime_ns, path.stat().st_size)
+        str(path.relative_to(repo_dir)): _junit_report_identity(path)
         for path in repo_dir.glob(reports)
         if path.is_file()
     }
 
 
+def _junit_report_identity(path: Path) -> JunitReportIdentity:
+    stat = path.stat()
+    try:
+        digest: str | None = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        digest = None
+    return (stat.st_mtime_ns, stat.st_size, digest)
+
+
+def _is_same_report(before: JunitReportIdentity | None, after: JunitReportIdentity) -> bool:
+    """Whether `after` is the very file `before` snapshotted.
+
+    A report with no content hash is never the same report: this seam cannot prove it
+    unchanged, so it stays in the fresh set and the parser gets to refuse it with a real
+    reason instead of this comparison quietly retiring it as stale.
+    """
+    if before is None or after[2] is None:
+        return False
+    return before == after
+
+
 def split_junit_xml_reports(
-    repo_dir: Path, reports: str, before: dict[str, tuple[int, int]]
+    repo_dir: Path, reports: str, before: dict[str, JunitReportIdentity]
 ) -> tuple[list[Path], list[str]]:
     """Return reports created or changed by this command, plus ignored stale paths."""
     fresh: list[Path] = []
     stale: list[str] = []
     for path in sorted(path for path in repo_dir.glob(reports) if path.is_file()):
         rel = str(path.relative_to(repo_dir))
-        identity = (path.stat().st_mtime_ns, path.stat().st_size)
-        if before.get(rel) == identity:
+        if _is_same_report(before.get(rel), _junit_report_identity(path)):
             stale.append(rel)
         else:
             fresh.append(path)
@@ -245,7 +272,7 @@ def summarize_runner(
     output: str,
     repo_dir: Path,
     reports: str | None,
-    report_snapshot: dict[str, tuple[int, int]] | None = None,
+    report_snapshot: dict[str, JunitReportIdentity] | None = None,
 ) -> tuple[dict | None, str | None, list[Path], list[str]]:
     """One summary seam shared by `gr2 review run` and `git review run`."""
     if runner != JUNIT_XML_RUNNER:

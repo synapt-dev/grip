@@ -143,6 +143,63 @@ def test_junit_xml_snapshot_counts_only_new_or_changed_reports(tmp_path):
     assert got_stale == ["build/test-results/test/stale.xml"]
 
 
+def test_junit_xml_snapshot_detects_new_content_at_equal_size_and_mtime(tmp_path):
+    """A rewrite that keeps the byte length AND the mtime is still new content.
+
+    mtime+size is not an identity: `tests="1"` -> `tests="2"` is the same size, and a
+    fast machine can rewrite inside a single mtime tick, so the pre-command snapshot
+    would report the new file as the stale one it replaced. os.utime pins the mtime back
+    to the pre-rewrite value so the clock cannot accidentally hide the change; the
+    untouched sibling pins the other direction, so "everything is fresh" cannot pass here.
+    """
+    reports = tmp_path / "build" / "test-results" / "test"
+    reports.mkdir(parents=True)
+    changed = reports / "changed.xml"
+    untouched = reports / "untouched.xml"
+    changed.write_text('<testsuite tests="1" />')
+    untouched.write_text('<testsuite tests="1" />')
+    before = R.snapshot_junit_xml_reports(tmp_path, R.JUNIT_XML_DEFAULT_REPORTS)
+    mtime_ns, size = changed.stat().st_mtime_ns, changed.stat().st_size
+
+    changed.write_text('<testsuite tests="2" />')
+    assert changed.stat().st_size == size  # the bug needs equal size AND equal mtime
+    os.utime(changed, ns=(mtime_ns, mtime_ns))
+
+    got_fresh, got_stale = R.split_junit_xml_reports(
+        tmp_path, R.JUNIT_XML_DEFAULT_REPORTS, before
+    )
+    assert got_fresh == [changed]
+    assert got_stale == ["build/test-results/test/untouched.xml"]
+
+
+def test_junit_xml_report_that_cannot_be_read_stays_fresh_not_stale(tmp_path, monkeypatch):
+    """A report whose bytes cannot be read has no content identity, so this seam cannot prove it
+    unchanged. It must stay in the fresh set, where the parser refuses it with a real reason,
+    and must not be retired as stale. `read_bytes` is made to fail for one named file rather than
+    chmod-ing it, which behaves differently across the platforms the suite runs on."""
+    reports = tmp_path / "build" / "test-results" / "test"
+    reports.mkdir(parents=True)
+    unreadable = reports / "unreadable.xml"
+    readable = reports / "readable.xml"
+    unreadable.write_text('<testsuite tests="1" />')
+    readable.write_text('<testsuite tests="1" />')
+    real_read_bytes = R.Path.read_bytes
+
+    def read_bytes(self):
+        if self.name == "unreadable.xml":
+            raise PermissionError("cannot read")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(R.Path, "read_bytes", read_bytes)
+    before = R.snapshot_junit_xml_reports(tmp_path, R.JUNIT_XML_DEFAULT_REPORTS)
+    assert before["build/test-results/test/unreadable.xml"][2] is None, "fixture: no digest for it"
+
+    got_fresh, got_stale = R.split_junit_xml_reports(tmp_path, R.JUNIT_XML_DEFAULT_REPORTS, before)
+
+    assert got_fresh == [unreadable]
+    assert got_stale == ["build/test-results/test/readable.xml"]
+
+
 # ---- end-to-end: cargo in a bound lane --------------------------------------
 
 def _git(r: Path, *a: str) -> str:

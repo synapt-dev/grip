@@ -9,6 +9,12 @@ Item kinds emitted here: ``verb``, ``flag``, ``arg``, ``exit``, ``json``,
 ``path`` and ``ref`` -- each from the table that can honestly answer for it,
 never from the app walk alone.
 
+THIS FILE IS THE PLUGIN HALF OF A SEAM. Everything generic -- the walker, the
+line format, the marker table, the registry -- is in ``gr2/api_core.py``, which
+imports nothing from gr2 and is where the later extraction will start. What
+lives here is what names gr2: its app, its tables, its alias mounts. The
+boundary is held by ``tests/test_api_core_seam.py``, not by this paragraph.
+
 ``json`` comes from ``JSON_SHAPES``, the table beside the store renderers that
 emit the payloads (``gr2/python_cli/grip_cli.py``); a verb carrying ``--json``
 with no entry there is a shape the dump does not promise, and the gate that
@@ -40,99 +46,21 @@ from pathlib import Path
 
 import typer
 
+from gr2 import api_core
+from gr2.api_core import Registry
+
 HERE = Path(__file__).resolve().parent
 API_DIR = HERE.parent / "api"
 CLI_API = API_DIR / "cli.api"
 STABILITY = API_DIR / "stability.toml"
 
-# The spelling column is padded to this width so the stability markers line up
-# and a diff reads as a change to one item rather than to the whole block.
-COLUMN = 64
-
-
-def _walk(cmd, prefix: tuple[str, ...] = (), hidden_by: str | None = None):
-    """Every leaf command, as (path, command, hidden_by).
-
-    Hidden is INHERITED: a command is hidden when its own flag says so OR any
-    ancestor group is hidden. Typer marks a sub-app hidden at the GROUP level
-    (``add_typer(app, name="grip", hidden=True)``), and the group's children
-    keep ``hidden=False`` of their own -- so reading only the leaf reports a
-    hidden group's whole subtree as part of the visible surface. Measured: the
-    ``grip`` alias group is hidden and 28 of its items were dumped as visible.
-
-    ``hidden_by`` NAMES the ancestor group that did the hiding, because the dump
-    carries no group row of its own: without the name, one group flag reads as
-    dozens of identical lines and the cause is invisible to a reader.
-    """
-    subs = getattr(cmd, "commands", None)
-    if subs:
-        if getattr(cmd, "hidden", False) and prefix:
-            hidden_by = prefix[-1]
-        out: list[tuple[tuple[str, ...], object, str | None]] = []
-        for name, sub in subs.items():
-            out.extend(_walk(sub, prefix + (name,), hidden_by))
-        return out
-    return [(prefix, cmd, hidden_by)]
-
-
-def _items() -> list[tuple[str, str, bool, str | None]]:
-    """(kind, spelling, hidden, hidden_by) for every surface item, unsorted."""
-    from gr2.python_cli.app import app
-
-    top = typer.main.get_command(app)
-    rows: list[tuple[str, str, bool, str | None]] = []
-    for path, cmd, hidden_by in _walk(top):
-        verb = " ".join(path)
-        # Hidden is the leaf's own flag OR an ancestor group's, which `_walk`
-        # reports as the name of the group that did it.
-        hidden = bool(getattr(cmd, "hidden", False)) or hidden_by is not None
-        rows.append(("verb", verb, hidden, hidden_by))
-        for prm in getattr(cmd, "params", []):
-            opts = list(getattr(prm, "opts", None) or [])
-            if not opts:
-                continue
-            # An OPTION's first spelling starts with a dash; a POSITIONAL
-            # parameter's "opt" is just its name. Both arrive here with a
-            # truthy `opts`, so the kind is decided by the spelling, not by
-            # the attribute being present.
-            is_option = any(opt.startswith("-") for opt in opts)
-            takes_value = not getattr(prm, "is_flag", False)
-            spelling = f"{verb} {'/'.join(opts)}"
-            if takes_value:
-                spelling += " <str>"
-            rows.append(("flag" if is_option else "arg", spelling, hidden, hidden_by))
-    rows.extend(_exit_items())
-    rows.extend(_json_items())
-    rows.extend(_layout_items())
-    return rows
-
-
-def _json_items() -> list[tuple[str, str, bool, str | None]]:
-    """The `json` kind, from the ``JSON_SHAPES`` table beside the renderers.
-
-    THE TABLE IS THE ONLY SOURCE, and it lives with the code that emits the
-    payload (``gr2/python_cli/grip_cli.py``), so a reviewer reads the shape and
-    the renderer in one place. Nothing here re-derives a key from the app walk:
-    a Typer ``--json`` flag says a verb HAS a payload, never what is in it, and
-    a dump that guessed would be a promise nobody made.
-
-    Hidden is always False, for the reason ``_exit_items`` gives about exit
-    codes: the item is in the dump because it is part of the group's published
-    contract, and the verb's own visibility is already carried by its own row
-    (``store snapshot`` is visible as hidden on its ``verb`` row).
-
-    A KEY CANNOT BE MORE PROMISED THAN ITS VERB, so the marker is INHERITED
-    rather than looked up here -- see ``_marker``. While the store group is
-    may-change, so are the keys it emits, and they travel together when that
-    marker is lifted.
-    """
-    from gr2.python_cli import grip_cli
-
-    rows: list[tuple[str, str, bool, str | None]] = []
-    for verb, paths in grip_cli.JSON_SHAPES.items():
-        for path in paths:
-            rows.append(("json", f"{verb} {path}", False, None))
-    return rows
+# Re-exported from the core so there is ONE implementation and the gates can
+# still reach them here. `test_the_plugin_uses_the_core_rather_than_a_copy_of_it`
+# asserts these are the core's own objects rather than equal-looking copies.
+COLUMN = api_core.COLUMN
+_walk = api_core.walk
+_label = api_core.label
+_line = api_core.line
 
 
 def _verb_of_json(spelling: str) -> str:
@@ -201,13 +129,75 @@ def _layout_rows() -> list[tuple[str, str, str]]:
     ]
 
 
-def _layout_items() -> list[tuple[str, str, bool, str | None]]:
+def _walked_items() -> list[api_core.Row]:
+    """The app walk, run ONCE, as (kind, spelling, hidden, hidden_by) rows.
+
+    One walk rather than one per kind: ``verb``, ``flag`` and ``arg`` all come
+    out of the same traversal, and three registrations each calling this would
+    walk the whole command tree three times for the same answer.
+    """
+    from gr2.python_cli.app import app
+
+    top = typer.main.get_command(app)
+    rows: list[api_core.Row] = []
+    for path, cmd, hidden_by in api_core.walk(top):
+        verb = " ".join(path)
+        # Hidden is the leaf's own flag OR an ancestor group's, which the walk
+        # reports as the name of the group that did it.
+        hidden = bool(getattr(cmd, "hidden", False)) or hidden_by is not None
+        rows.append(("verb", verb, hidden, hidden_by))
+        for prm in getattr(cmd, "params", []):
+            opts = list(getattr(prm, "opts", None) or [])
+            if not opts:
+                continue
+            # An OPTION's first spelling starts with a dash; a POSITIONAL
+            # parameter's "opt" is just its name. Both arrive here with a
+            # truthy `opts`, so the kind is decided by the spelling, not by
+            # the attribute being present.
+            is_option = any(opt.startswith("-") for opt in opts)
+            takes_value = not getattr(prm, "is_flag", False)
+            spelling = f"{verb} {'/'.join(opts)}"
+            if takes_value:
+                spelling += " <str>"
+            rows.append(("flag" if is_option else "arg", spelling, hidden, hidden_by))
+    return rows
+
+
+def _json_items() -> list[api_core.Row]:
+    """The `json` kind, from the ``JSON_SHAPES`` table beside the renderers.
+
+    THE TABLE IS THE ONLY SOURCE, and it lives with the code that emits the
+    payload (``gr2/python_cli/grip_cli.py``), so a reviewer reads the shape and
+    the renderer in one place. Nothing here re-derives a key from the app walk:
+    a Typer ``--json`` flag says a verb HAS a payload, never what is in it, and
+    a dump that guessed would be a promise nobody made.
+
+    Hidden is always False, for the reason ``_exit_items`` gives about exit
+    codes: the item is in the dump because it is part of the group's published
+    contract, and the verb's own visibility is already carried by its own row
+    (``store snapshot`` is visible as hidden on its ``verb`` row).
+
+    A KEY CANNOT BE MORE PROMISED THAN ITS VERB, so the marker is INHERITED
+    rather than looked up here -- see ``_json_marker``. While the store group is
+    may-change, so are the keys it emits, and they travel together when that
+    marker is lifted.
+    """
+    from gr2.python_cli import grip_cli
+
+    rows: list[api_core.Row] = []
+    for verb, paths in grip_cli.JSON_SHAPES.items():
+        for path in paths:
+            rows.append(("json", f"{verb} {path}", False, None))
+    return rows
+
+
+def _layout_items() -> list[api_core.Row]:
     """The `path` and `ref` kinds, from the LAYOUT table (design section 3).
 
     Hidden is always False here, for the reason `_exit_items` gives about exit
     codes: the row is in the dump because section 3 promises it, and it is not
     any one verb's surface. A `ref` row marked `reserved` STAYS in the dump --
-    which is the opposite of what `reserved` means in `api/stability.toml`,
+    which is the opposite of what `reserved` means in ``api/stability.toml``,
     where an entry asserts the spelling is ABSENT. The difference is deliberate
     and is stated in the layout module: a reader of the layout must be able to
     see that the namespace exists and that nothing writes it yet.
@@ -215,33 +205,7 @@ def _layout_items() -> list[tuple[str, str, bool, str | None]]:
     return [(kind, label, False, None) for kind, label, _ in _layout_rows()]
 
 
-def _marker(kind: str, spelling: str, markers: dict[tuple[str, str], str]) -> str:
-    """The marker for one item, from whichever table owns its kind.
-
-    THREE SOURCES, each for the kind it can honestly answer for. A `path` or
-    `ref` row's promise is a property OF THE LAYOUT (section 3's own stability
-    column), not a decision taken in review, so those two kinds read the layout
-    table. A `json` item INHERITS its canonical verb's marker: inheritance is a
-    rule rather than a lookup, and an explicit entry for a json spelling is
-    deliberately not consulted, because the only honest source for "may this key
-    change" is the verb's own promise. Everything else is the plain lookup with
-    the default the module docstring states -- stable unless named.
-
-    The layout table and `api/stability.toml` are kept DISJOINT. A spelling
-    carrying a marker from both would be answered twice and the winner would
-    depend on lookup order rather than on anyone's decision, and
-    `test_no_spelling_carries_a_marker_from_both_sources` asserts it.
-    """
-    if kind in ("path", "ref"):
-        return {  # keyed by the same label the item carries
-            (row_kind, label): marker for row_kind, label, marker in _layout_rows()
-        }.get((kind, spelling), "stable")
-    if kind == "json":
-        return markers.get(("verb", _canonical_verb(_verb_of_json(spelling))), "stable")
-    return markers.get((kind, spelling), "stable")
-
-
-def _exit_items() -> list[tuple[str, str, bool, str | None]]:
+def _exit_items() -> list[api_core.Row]:
     """The `exit` kind, from the group tables rather than from the app walk.
 
     Exit codes are not discoverable by walking a Typer app -- they are chosen in
@@ -249,14 +213,14 @@ def _exit_items() -> list[tuple[str, str, bool, str | None]]:
     one makes the contract diffable. Hidden is always False here: an exit code is
     either part of the group's published contract or it is not in the table.
 
-    THE PREFIX IS READ FROM ITS OWN HOME, `grip_cli.STORE_INCOMPLETE_PREFIX`,
+    THE PREFIX IS READ FROM ITS OWN HOME, ``grip_cli.STORE_INCOMPLETE_PREFIX``,
     rather than copied, so there is one string and the dump cannot drift from
     the message a caller actually matches on.
     """
     from gr2.python_cli import grip_cli
     from gr2.python_cli.exit_codes import EXIT_CODES, PREFIXED_CODES
 
-    rows: list[tuple[str, str, bool, str | None]] = []
+    rows: list[api_core.Row] = []
     for group, codes in EXIT_CODES.items():
         for code, reason in sorted(codes.items()):
             # Code 5 carries two shapes at one code: a MEASURED cannot-measure
@@ -270,81 +234,92 @@ def _exit_items() -> list[tuple[str, str, bool, str | None]]:
     return rows
 
 
-def _markers() -> dict[tuple[str, str], str]:
+def _layout_marker(kind: str):
+    """The marker rule for a ``path`` or ``ref`` row.
+
+    THESE TWO KINDS READ THE LAYOUT TABLE, not ``api/stability.toml``: their
+    promise is a property OF THE LAYOUT (section 3's own stability column), not
+    a decision taken in review. The rule is bound per kind because a resolver
+    registered for ``path`` must not answer for ``ref``.
+
+    The layout table and ``api/stability.toml`` are kept DISJOINT. A spelling
+    carrying a marker from both would be answered twice and the winner would
+    depend on lookup order rather than on anyone's decision, and
+    ``test_no_spelling_carries_a_marker_from_both_sources`` asserts it.
+    """
+
+    def resolve(spelling: str, markers: api_core.Markers) -> str:
+        return {  # keyed by the same label the item carries
+            (row_kind, row_label): row_marker
+            for row_kind, row_label, row_marker in _layout_rows()
+        }.get((kind, spelling), "stable")
+
+    return resolve
+
+
+def _json_marker(spelling: str, markers: api_core.Markers) -> str:
+    """A ``json`` item INHERITS its canonical verb's marker.
+
+    Inheritance is a rule rather than a lookup, and an explicit entry for a json
+    spelling is deliberately not consulted, because the only honest source for
+    "may this key change" is the verb's own promise. Anything not named is
+    ``stable``, which is the module-level default and not a judgement here.
+    """
+    return markers.get(("verb", _canonical_verb(_verb_of_json(spelling))), "stable")
+
+
+def _subset(rows: list[api_core.Row], kind: str):
+    """The rows of one kind out of a table that emitted several."""
+    return lambda: [row for row in rows if row[0] == kind]
+
+
+def _registry() -> Registry:
+    """The kinds this dump carries, each with the table and rule that own it.
+
+    THREE SOURCES, each for the kind it can honestly answer for:
+
+    * ``verb``/``flag``/``arg`` from the app walk, plain lookups in
+      ``api/stability.toml``.
+    * ``path``/``ref`` from the LAYOUT table for BOTH their items and their
+      markers, because section 3's stability column is their own promise.
+    * ``json`` items from ``JSON_SHAPES`` but markers inherited from the
+      canonical verb, because a key cannot be more promised than its verb.
+    * ``exit`` from the group tables, plain lookups.
+
+    EVERYTHING ELSE IS THE PLAIN LOOKUP with the default the module docstring
+    states -- stable unless named.
+    """
+    registry = Registry()
+
+    walked = _walked_items()
+    for kind in ("verb", "flag", "arg"):
+        registry.register(kind, _subset(walked, kind), api_core.plain_marker(kind))
+
+    registry.register("exit", _exit_items, api_core.plain_marker("exit"))
+    registry.register("json", _json_items, _json_marker)
+
+    # One LAYOUT read, two registrations: `path` and `ref` come out of the same
+    # table but must not answer a marker for each other.
+    layout = _layout_items()
+    for kind in ("path", "ref"):
+        registry.register(kind, _subset(layout, kind), _layout_marker(kind))
+
+    return registry
+
+
+def _items() -> list[api_core.Row]:
+    """(kind, spelling, hidden, hidden_by) for every surface item, unsorted."""
+    return _registry().rows()
+
+
+def _markers() -> api_core.Markers:
     """(kind, spelling) -> 'may-change' | 'reserved', from api/stability.toml."""
-    if not STABILITY.exists():
-        return {}
-    import tomllib
-
-    data = tomllib.loads(STABILITY.read_text())
-    out: dict[tuple[str, str], str] = {}
-    for marker in ("may-change", "reserved"):
-        for entry in data.get(marker, []):
-            kind, _, spelling = entry.partition(" ")
-            out[(kind, spelling)] = marker
-    return out
-
-
-def _label(spelling: str, hidden: bool, hidden_by: str | None) -> str:
-    """The label column for one item -- the text BEFORE any parsing strips it.
-
-    One home for the rule, because a gate that wants to ask a question about the
-    label TEXT (does it end in a space? how long is it?) cannot use ``_rows``:
-    that parser strips the padding, and the trailing space it would be asking
-    about is exactly what stripping removes. Measured -- a first version of
-    ``test_no_label_ends_in_a_space`` read labels through ``_rows`` and could not
-    have failed for any input, because every label it saw had already been
-    stripped.
-
-    An inherited hide names the group that did it; a command hidden in its own
-    right is just ``(hidden)``. The dump carries no group row, so the name is the
-    only place the cause can live.
-    """
-    if not hidden:
-        return spelling
-    return f"{spelling} (hidden:{hidden_by})" if hidden_by else f"{spelling} (hidden)"
-
-
-def _line(kind: str, label: str, marker: str) -> str:
-    """One ``.api`` line: two fixed columns, with the separator GUARANTEED.
-
-    A label at or past ``COLUMN`` is emitted at its own length, so padding it to
-    ``COLUMN`` adds nothing and the marker runs straight into the label. Every
-    label in this dump contains spaces (a flag reads ``verb --flag <str>``), so a
-    reader splitting the two columns then takes a space INSIDE the label as the
-    separator and recovers neither column.
-
-    Measured before this rule existed: the 65-char ``exit`` label rendered as
-    ``...store verb: "may-change``, whose last space is the one inside the quoted
-    prefix. The columns came back as the label truncated at ``verb:`` and a marker
-    of ``"may-change``, the marker lookup then missed, and every exit line
-    silently read as ``stable``.
-
-    Pulled out of ``render`` so the width rule has ONE home and a synthetic long
-    label can be tested against it directly, rather than only through whichever
-    labels happen to reach ``COLUMN`` today.
-
-    ONE SHAPE THIS CANNOT FIX, because the ambiguity is on the reader's side of
-    the line: a label whose LAST character is a space is indistinguishable from
-    the padding, so a reader stripping the padding returns it one character
-    short. Guaranteeing the separator does not help -- the space is inside the
-    label, before it. No label ends in a space today, and
-    ``test_no_label_ends_in_a_space`` keeps it that way.
-    """
-    width = max(COLUMN, len(label) + 1)
-    return f"{kind:<6}{label:<{width}}{marker}"
+    return api_core.load_markers(STABILITY)
 
 
 def render() -> str:
     """The exact bytes of api/cli.api, terminated by one newline."""
-    markers = _markers()
-    lines = []
-    for kind, spelling, hidden, hidden_by in _items():
-        marker = _marker(kind, spelling, markers)
-        label = _label(spelling, hidden, hidden_by)
-        lines.append(_line(kind, label, marker))
-    lines.sort()
-    return "\n".join(lines) + "\n"
+    return api_core.render(_registry(), _markers())
 
 
 def main(argv: list[str] | None = None) -> int:

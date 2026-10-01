@@ -1403,7 +1403,7 @@ def _native_store_migrate(root: Path, *, dry_run: bool = False) -> dict[str, obj
 # "nobody looked".
 #
 # THE MARKER IS NOT DUPLICATED HERE. A json item's marker is its VERB's marker
-# (dump_api._json_items), because a promise about a verb's keys cannot be
+# (dump_api._json_marker), because a promise about a verb's keys cannot be
 # stronger than the promise about the verb: while `store status` is may-change,
 # so are the keys it emits. An ALIAS MOUNT resolves to its canonical twin for
 # that lookup (dump_api._canonical_verb), so the same key path cannot publish two

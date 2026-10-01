@@ -1,10 +1,14 @@
 """The generic core of the API dumper: walker, line format, marker lookup.
 
-THE SEAM. This module knows three things -- how to walk a command tree, how an
-``.api`` line is shaped, and how a stability table is keyed -- and it knows
-nothing about gr2: not its app, not its tables, not its exit codes. Everything
-that names gr2 lives in the consumer (``gr2/scripts/dump_api.py``), which
-REGISTERS the kinds it emits and supplies the marker rules for them.
+THE SEAM. This module knows four things -- how to walk a command tree, how an
+``.api`` line is shaped, how a stability table is keyed, and how items are
+GROUPED into blocks -- and it knows nothing about gr2: not its app, not its
+tables, not its exit codes. Everything that names gr2 lives in the consumer
+(``gr2/scripts/dump_api.py``), which REGISTERS the kinds it emits, supplies the
+marker rules for them, and says which COMMAND each item belongs to (``Row.group``).
+Grouping is a core rule over a consumer-supplied fact, which is the same
+division as the marker table: the core owns the shape, the consumer owns the
+meaning.
 
 The boundary is a test, not a convention: ``tests/test_api_core_seam.py`` walks
 this module's imports at any depth and fails if any of them reaches gr2, with
@@ -29,9 +33,29 @@ import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
-# (kind, spelling, hidden, hidden_by) -- one item, before it is rendered.
-Row = tuple[str, str, bool, str | None]
+
+class Row(NamedTuple):
+    """One item, before it is rendered.
+
+    ``group`` is the COMMAND PATH the item belongs to, and the CONSUMER supplies
+    it rather than the core deriving one. Only the consumer knows what a command
+    is in its own tree: the walk answers for a verb and the flags beneath it, but
+    an exit code belongs to a GROUP and a layout path belongs to no verb at all.
+    Deriving it here would mean the core guessing at the shape of a spelling.
+
+    An EMPTY group means "attached to no command" and renders under the
+    ``UNGROUPED`` heading. A heading is what separates one block from the next,
+    so the ungrouped block is given one rather than left as rows appended to
+    whichever command sorted before them.
+    """
+
+    kind: str
+    spelling: str
+    hidden: bool = False
+    hidden_by: str | None = None
+    group: str = ""
 
 # (kind, spelling) -> "may-change" | "reserved". An item absent here is stable.
 Markers = dict[tuple[str, str], str]
@@ -39,6 +63,16 @@ Markers = dict[tuple[str, str], str]
 # The spelling column is padded to this width so the stability markers line up
 # and a diff reads as a change to one item rather than to the whole block.
 COLUMN = 64
+
+# The heading an item renders under when its consumer gave it no command.
+#
+# NAMED RATHER THAN LEFT BLANK, because a heading is the only thing separating
+# one block from the next: an ungrouped row printed with NO heading lands
+# directly under the last command's items and reads as one of them. The blank
+# version looks tidier in the one case it helps -- a consumer that groups nothing
+# -- and misleads in the case that matters, which is a consumer that groups
+# almost everything and forgets one.
+UNGROUPED = "(ungrouped)"
 
 
 def walk(cmd, prefix: tuple[str, ...] = (), hidden_by: str | None = None):
@@ -209,12 +243,64 @@ class Registry:
         )
 
 
+def blocks(rows: list[Row]) -> list[tuple[str, list[Row]]]:
+    """Rows grouped by command path, the groups in COMMAND-TREE order.
+
+    The ORDER is by path, which is what makes the file read as a tree: ``store``
+    before ``store init``, and both before ``store-x``, so a command's
+    subcommands sit with it rather than scattered by an unrelated key.
+
+    THE KEY IS WRITTEN ON THE PATH'S TOKENS, AND ON THIS DUMP THAT CHANGES
+    NOTHING -- measured, not assumed: the separator is a space (0x20), every
+    character a path component can begin with sorts above it, and token order and
+    joined-string order agree on all 88 real headings. It is written on tokens
+    because the RULE is what a reader auditing the order should find stated, and
+    citing a separator's incidental collation order as the reason is how a rule
+    becomes an accident nobody can check.
+
+    The UNGROUPED block sorts LAST, and THAT is the part the key actually earns:
+    it keys on the ABSENCE of tokens rather than on the empty string, which would
+    sort it first and open the file with the items that have no home.
+    """
+    by_group: dict[str, list[Row]] = {}
+    for row in rows:
+        by_group.setdefault(row.group, []).append(row)
+    return sorted(
+        by_group.items(), key=lambda item: (not item[0].split(), item[0].split())
+    )
+
+
 def render(registry: Registry, markers: Markers | None = None) -> str:
-    """The exact bytes of an ``.api`` file, terminated by one newline."""
+    """The exact bytes of an ``.api`` file, terminated by one newline.
+
+    GROUPED BY COMMAND, not by kind. The first column is still the item kind and
+    each line still carries one item, but the ORDER is now the command tree: a
+    heading names a command and its items sit under it. The previous order was a
+    single flat lexicographic sort, so all 120 ``arg`` rows preceded all 215
+    ``flag`` rows and no command's surface could be read in one place -- "what
+    does ``store init`` take" was four searches, one per kind.
+
+    WITHIN a block the rows are sorted by their rendered line, which is the old
+    (kind, then label) order: a diff then reads one command at a time, and an
+    item that moves shows up moving between two blocks rather than teleporting
+    to a different corner of the file.
+
+    The heading is a COMMENT (``# <command>``) rather than a row, so a reader
+    that parses item lines has one unambiguous shape to parse and the heading
+    cannot be mistaken for a kind. EVERY block gets one, the ungrouped block
+    included (``# (ungrouped)``): a heading is what separates one block from the
+    next, so the block without one is the block that gets misread.
+    """
     markers = {} if markers is None else markers
-    lines = [
-        line(kind, label(spelling, hidden, hidden_by), registry.marker(kind, spelling, markers))
-        for kind, spelling, hidden, hidden_by in registry.rows()
-    ]
-    lines.sort()
+    lines: list[str] = []
+    for group, rows in blocks(registry.rows()):
+        lines.append(f"# {group or UNGROUPED}")
+        lines += sorted(
+            line(
+                row.kind,
+                label(row.spelling, row.hidden, row.hidden_by),
+                registry.marker(row.kind, row.spelling, markers),
+            )
+            for row in rows
+        )
     return "\n".join(lines) + "\n"

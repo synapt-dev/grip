@@ -106,14 +106,38 @@ def _generator():
     return module
 
 
-def _rows(text: str) -> list[tuple[str, str, str]]:
-    """(kind, label, marker) for every line, parsed from the two fixed columns."""
-    rows = []
-    for line in text.splitlines():
-        kind, _, rest = line.partition(" ")
-        label, _, marker = rest.rstrip().rpartition(" ")
-        rows.append((kind, label.strip(), marker))
-    return rows
+def _items() -> list[tuple[str, str, str]]:
+    """(kind, label, marker) for every item, by IDENTITY rather than by text.
+
+    THE DUMP IS GROUPED BY COMMAND NOW, so a parser over its lines has to learn
+    to skip a heading, and each item's first tokens are its command path -- which
+    means a gate reading the text would be RE-DERIVING the command from the very
+    thing it is checking. A parser that re-derives its own subject is measuring
+    itself: get the grouping wrong and the expected value moves with it, and the
+    gate agrees.
+
+    So "what does the dump carry" is answered from the registry the dump is
+    BUILT from, and TWO rows below tie that registry to the FILE --
+    ``test_api_dump_is_current`` byte for byte, and
+    ``test_the_committed_file_carries_exactly_the_items`` item for item. NEITHER
+    IS SUFFICIENT ALONE, which is the whole reason there are two: currency
+    compares the FILE to the RENDERER, so it passes on any renderer that agrees
+    with itself whatever it emits; the item row compares the FILE to the
+    REGISTRY, so it is blind to a renderer change that leaves the item set
+    intact. The FORMAT keeps its own gates below, and they call the generator's
+    ``_line`` and ``_label`` directly instead of going through here.
+    """
+    gen = _generator()
+    registry = gen._registry()
+    markers = gen._markers()
+    return [
+        (
+            row.kind,
+            gen._label(row.spelling, row.hidden, row.hidden_by),
+            registry.marker(row.kind, row.spelling, markers),
+        )
+        for row in registry.rows()
+    ]
 
 
 def _counted(rows: list[tuple[str, str, str]]) -> list[tuple[str, str, str]]:
@@ -149,8 +173,85 @@ def test_api_dump_is_current() -> None:
     )
 
 
+def _committed_items() -> list[tuple[str, str, str]]:
+    """(kind, label, marker) for every ITEM LINE the COMMITTED file carries.
+
+    Reads ``api/cli.api`` -- the published artifact -- and NOT the renderer. That
+    distinction was wrong in the first version of this function and wrong in a
+    way that cost two readers a round: it called ``_generator().render()`` while
+    its docstring, its row and the PR body all said it read the file. The
+    comparison it feeds is the one that ties the PUBLISHED BYTES to the registry,
+    so it has to read the published bytes; a version reading the renderer agrees
+    with any renderer that agrees with itself.
+
+    The parse is the old two-column one, kept deliberately and kept SMALL: it
+    splits the fixed columns and skips a heading, and it derives NOTHING else. It
+    is not here to say what the dump SHOULD carry -- that is ``_items()``, read
+    from the registry -- but to say what the file DOES carry, so the two can be
+    compared by something that is neither the renderer nor the registry.
+    """
+    rows = []
+    for line in (CLI_API.read_text() if CLI_API.exists() else "").splitlines():
+        if line.startswith("#"):
+            continue
+        kind, _, rest = line.partition(" ")
+        label, _, marker = rest.rstrip().rpartition(" ")
+        rows.append((kind, label.strip(), marker))
+    return rows
+
+
+def test_the_committed_file_carries_exactly_the_items() -> None:
+    """Every registry item must reach the PUBLISHED FILE, and nothing else may.
+
+    THIS ROW EXISTS BECAUSE ITS ABSENCE WAS A HOLE, and the hole is worth stating
+    because it was opened by a fix. Every other gate here reads ``_items()``,
+    which is fed from the registry, and ``test_api_dump_is_current`` compares the
+    committed file to whatever the renderer emits NOW -- so a renderer that
+    stopped emitting a whole kind would drop those rows from the file, the
+    regenerated file would still equal itself, every other row would stay green,
+    and the dump would have silently lost part of the surface it exists to
+    publish.
+
+    MEASURED, both directions, and the first version of this function got the
+    second one wrong:
+
+      * renderer mutated to drop every ``json`` row, file regenerated -> RED;
+      * the same mutation with the file left alone -> the renderer and the file
+        disagree, which ``test_api_dump_is_current`` catches, and this row stays
+        green because the FILE is still whole;
+      * rows deleted from the COMMITTED file alone, renderer untouched -> RED
+        here. An earlier version of this function read the renderer, and on that
+        corruption it PASSED while only the currency row failed -- the row's name,
+        docstring and PR body all claimed otherwise, and two readers caught it.
+
+    The comparison is a MULTISET, not a count and not a set: a count cannot see a
+    swap, and a set cannot see a duplicate.
+
+    It is the ONE row here that reads the published bytes, and its two sides come
+    from different places -- the FILE, and the registry. A parse that answers
+    questions about the file while ALSO supplying the expected value is measuring
+    itself; this one supplies only the file. NEITHER this row nor the currency
+    row is sufficient alone: currency compares FILE to RENDERER, this compares
+    FILE to REGISTRY, and a renderer change that leaves the item set intact --
+    a moved heading, a changed label -- is visible only to the first.
+    """
+    from collections import Counter
+
+    committed = Counter(_committed_items())
+    registry = Counter(_items())
+    assert committed and registry, (
+        "one side is empty, so this comparison could not fail"
+    )
+    assert committed == registry, (
+        "the committed dump and the registry disagree about what the surface "
+        "carries:\n"
+        f"  in the registry, MISSING from the file: {sorted((registry - committed).elements())}\n"
+        f"  in the file, NOT in the registry:       {sorted((committed - registry).elements())}"
+    )
+
+
 def test_api_stable_share_at_least_90() -> None:
-    rows = _rows(_generator().render())
+    rows = _items()
     stable_count, counted_count, share = _share(rows)
     json_rows = [row for row in rows if row[0] == "json"]
     print(
@@ -175,7 +276,7 @@ def test_api_stable_share_at_least_90() -> None:
 def _known_items() -> set[tuple[str, str]]:
     """(kind, bare spelling) for every item the dump carries, hidden included."""
     known = set()
-    for kind, label, _ in _rows(_generator().render()):
+    for kind, label, _ in _items():
         known.add((kind, label.split(" (hidden")[0].strip()))
     return known
 
@@ -253,7 +354,7 @@ def test_api_dump_has_a_population() -> None:
     both. Measured: the parameter loop mutated to iterate over nothing takes
     the dump from 414 items to 85 and both gates stay green.
     """
-    rows = _rows(_generator().render())
+    rows = _items()
     verbs = [r for r in rows if r[0] == "verb"]
     flags = [r for r in rows if r[0] == "flag"]
     args = [r for r in rows if r[0] == "arg"]
@@ -270,10 +371,11 @@ def test_api_dump_has_a_population() -> None:
 def test_a_label_at_or_past_column_keeps_its_separator() -> None:
     """The two-column format must survive a label that reaches COLUMN.
 
-    `_rows` recovers the marker by splitting on the LAST space, and the render
-    pads the label to COLUMN. A label at or past COLUMN is emitted at its own
-    length, so the padding adds nothing and the marker runs straight into it --
-    and every label here contains spaces, so the split then lands INSIDE the
+    A READER OF A LINE recovers the marker by splitting on the LAST space, and
+    the render pads the label to COLUMN. A label at or past COLUMN is emitted at
+    its own length, so the padding adds nothing and the marker runs straight
+    into it -- and every label here contains spaces, so the split then lands
+    INSIDE the
     label and BOTH columns come back wrong.
 
     THE SUBJECT IS SYNTHETIC ON PURPOSE. Every other label in the dump is under
@@ -310,8 +412,8 @@ def test_no_label_ends_in_a_space() -> None:
     """The format cannot carry a label whose LAST character is a space.
 
     `_line` guarantees the column separator, but the ambiguity here is on the
-    READER's side of the line and the separator cannot help: `_rows` recovers the
-    label by stripping padding, and a trailing space in the label is
+    READER's side of the line and the separator cannot help: a reader recovers
+    the label by stripping padding, and a trailing space in the label is
     indistinguishable from that padding. Such a label comes back one character
     short -- which then reads as a WRONG LABEL IN THE DUMP when the dump is
     right. A false red on a gate is not the safe direction of failure; it only
@@ -327,12 +429,13 @@ def test_no_label_ends_in_a_space() -> None:
     space from failing an unrelated gate with a misleading red -- which is
     exactly the failure mode this branch exists to remove.
     """
-    # Labels are read from the generator's OWN `_label`, NOT through `_rows`:
-    # that parser strips the padding, and the trailing space this test is asking
-    # about is precisely what stripping removes -- so a version reading `_rows`
-    # could not fail for ANY input. Measured, and it is why `_label` exists.
+    # Labels are read from the generator's OWN `_label`, NOT through a parsed
+    # line: that parser strips the padding, and the trailing space this test is
+    # asking about is precisely what stripping removes -- so a version reading a
+    # rendered line could not fail for ANY input. Measured, and it is why
+    # `_label` exists.
     gen = _generator()
-    labels = [gen._label(spelling, hidden, hidden_by) for _, spelling, hidden, hidden_by in gen._items()]
+    labels = [gen._label(row.spelling, row.hidden, row.hidden_by) for row in gen._items()]
     assert labels, "the dump rendered no labels, so this gate cannot fail"
     bad = sorted({label for label in labels if label.endswith(" ")})
     assert not bad, (
@@ -360,7 +463,7 @@ def test_api_dump_carries_every_store_exit_code() -> None:
     cannot." So it rides the reason field rather than a kind of its own, since
     it is the reason for the code's second shape that a caller matches on.
     """
-    rows = _rows(_generator().render())
+    rows = _items()
     got = {label for kind, label, marker in rows if kind == "exit" and label.startswith("store ")}
     want = {
         "store 0 ok",
@@ -466,7 +569,7 @@ def test_every_json_item_names_a_real_verb() -> None:
     """
     gen = _generator()
     verbs = _json_verb_paths()
-    spellings = [spelling for kind, spelling, _, _ in gen._items() if kind == "json"]
+    spellings = [row.spelling for row in gen._items() if row.kind == "json"]
     assert spellings, "no json items were emitted, so this gate cannot fail"
     unknown = sorted({gen._verb_of_json(spelling) for spelling in spellings} - verbs)
     assert not unknown, (
@@ -515,7 +618,7 @@ def test_a_json_item_inherits_its_verb_marker() -> None:
     # drops the `(hidden:...)` annotation a hidden row carries, so an alias row
     # and its canonical twin are keyed the same way.
     by_spelling: dict[tuple[str, str], set[str]] = {}
-    for kind, label, marker in _rows(gen.render()):
+    for kind, label, marker in _items():
         by_spelling.setdefault((kind, label.split(" (hidden")[0].strip()), set()).add(marker)
 
     json_spellings = sorted(spelling for kind, spelling in by_spelling if kind == "json")
@@ -587,7 +690,7 @@ def test_json_items_are_score_neutral() -> None:
     the surface. Adding one of each marker to the real rows must leave the
     arithmetic exactly where it was.
     """
-    rows = _rows(_generator().render())
+    rows = _items()
     base = _share(rows)
     assert base[1], "the measured set is empty, so this proof is vacuous"
     for marker in ("stable", "may-change"):
@@ -613,7 +716,7 @@ def test_the_layout_rows_are_the_ones_the_design_fixes() -> None:
     freezing a layout row, and it is meant to happen in the change that lands
     `layout.api`.
     """
-    rows = _rows(_generator().render())
+    rows = _items()
     got = {(kind, label, marker) for kind, label, marker in rows if kind in ("path", "ref")}
     want = {
         ("path", "grip.toml tracked", "stable"),

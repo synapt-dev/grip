@@ -1425,7 +1425,7 @@ def workspace_plan(
     workspace_root: Optional[Path] = typer.Argument(None),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Build a Python gr2 execution plan from the workspace spec."""
+    """Build a gr2 execution plan from the workspace spec."""
     workspace_root = _resolve_workspace_root(workspace_root)
     _, operations = spec_apply.build_plan(workspace_root)
     if json_output:
@@ -1441,7 +1441,7 @@ def workspace_apply(
     manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Apply the Python gr2 execution plan."""
+    """Apply the gr2 execution plan."""
     workspace_root = _resolve_workspace_root(workspace_root)
     payload = spec_apply.apply_plan(workspace_root, yes=yes, manual_hooks=manual_hooks)
     if json_output:
@@ -2707,8 +2707,7 @@ def review_open(
       owner_unit is any word, so when both REPO and PR_NUMBER are present the target
       is taken as the owner_unit and NOT classified;
     - with only a lone target, ``open`` dispatches on its shape: a ``gr:<sha>`` bind id
-      (or bare sha) reconstructs from a review-bind commit (the former ``open-gr``,
-      now a hidden alias) -- needs ``--lane-dir`` and ``--enter``; anything else is a
+      (or bare sha) reconstructs from a review-bind commit -- needs ``--lane-dir`` and ``--enter``; anything else is a
       project-review id (``open-project``, hidden alias). A lone PR number is refused
       because a PR-head lane needs the OWNER_UNIT and REPO positionals too.
 
@@ -2819,8 +2818,8 @@ def review_close(
     json_output: bool = typer.Option(False, "--json", help="gr reconstruction only: machine-readable JSON"),
 ) -> None:
     """Drop a review lane. ``close`` reads the lane's marker to tell a reconstruction
-    lane from a PR lane: a directory carrying open-gr's
-    reconstruct marker is reclaimed via the former ``close-gr`` (hidden alias); anything
+    lane from a PR lane: a directory carrying a reconstruction
+    marker (written by ``open --enter``) is reclaimed; anything
     else is treated as a PR-head lane (target is the WORKSPACE_ROOT, then owner/repo/pr).
     The base workspace is untouched.
     """
@@ -3031,7 +3030,7 @@ def review_open_project(
     clone and the SAME blobless+sparse path runs (no full clone). `--sources-json` is
     the older escape hatch that clones normally (full) and is kept for compatibility.
     Writes a receipt so `review exit-gr` restores the prior lane and cwd and removes the
-    disposable ephemeral tree. Contrast `review open-gr`, which RECONSTRUCTS a
+    disposable ephemeral tree. Contrast `review open --enter` on a bind commit, which RECONSTRUCTS a
     review-BIND commit by `git am` over a carried range and asserts tree equality. A
     commit of the wrong kind is refused, naming the kind it found.
     """
@@ -3183,8 +3182,8 @@ def review_bind(
     head: Optional[str] = typer.Option(None, "--head", help="Reviewed head SHA (the pre-push head under review)"),
     ref: str = typer.Option("refs/heads/dev", "--ref", help="Target ref whose live head must equal --base"),
     path: Optional[str] = typer.Option(None, "--path", help="Workspace path for the row (defaults to --repo)"),
-    source: Optional[Path] = typer.Option(None, "--source", help="Author clone holding the pre-push head; required to carry the range so open-gr can reconstruct"),
-    from_range: Optional[Path] = typer.Option(None, "--from-range", help="A frozen range.patch (freeze-public-range.sh output). Carries the range so open-gr reconstructs, deriving the head-tree by applying it over --base in a throwaway clone — NO author clone that holds the head is needed. Exclusive with --source."),
+    source: Optional[Path] = typer.Option(None, "--source", help="Author clone holding the pre-push head; required to carry the range so `review open` can reconstruct"),
+    from_range: Optional[Path] = typer.Option(None, "--from-range", help="A frozen range.patch (freeze-public-range.sh output). Carries the range so `review open` reconstructs, deriving the head-tree by applying it over --base in a throwaway clone — NO author clone that holds the head is needed. Exclusive with --source."),
     title: str = typer.Option("", "--title", help="Platform title text (NORM-hashed into the object)"),
     body: str = typer.Option("", "--body", help="Platform body text (NORM-hashed into the object)"),
     rows_json: Optional[Path] = typer.Option(None, "--rows-json", help="A JSON file with a list of row objects (key/remote/base/head, optional path/ref/title/body/source); binds ALL rows into ONE gr commit. Exclusive with the single-row flags."),
@@ -3259,7 +3258,7 @@ def review_open_gr(
     if root.exists() and any(root.iterdir()):
         typer.echo(
             f"refused: lane_dir_not_empty: --lane-dir {root} exists and is not empty; "
-            "pass a fresh directory (close-gr reclaims the whole lane)",
+            "pass a fresh directory (`review close` reclaims the whole lane)",
             err=True,
         )
         raise typer.Exit(code=2)
@@ -3308,14 +3307,13 @@ def review_open_gr(
 
 @review_app.command("close-gr", hidden=True)  # hidden alias for one release, dropped at 2.0 GA
 def review_close_gr(
-    lane_dir: Path = typer.Argument(..., help="The open-gr reconstruction lane (the --lane-dir from `review open-gr --enter`) to reclaim"),
+    lane_dir: Path = typer.Argument(..., help="The review reconstruction lane (the --lane-dir from `review open --enter`) to reclaim"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Reclaim an `open-gr --enter` reconstruction lane: verify the open-gr marker and
-    remove the disposable tree. The teardown counterpart to `open-gr --enter`; unlike
-    `exit-gr` (the open-PROJECT pop) it needs no OWNER_UNIT, because open-gr pushes no
-    lane and changes no cwd. Refuses a directory without an open-gr marker rather than
-    remove an arbitrary path."""
+    """Reclaim a `review open --enter` reconstruction lane: verify its marker and
+    remove the disposable tree. The teardown counterpart to `review open --enter`; it
+    needs no OWNER_UNIT, because a reconstruction pushes no lane and changes no cwd.
+    Refuses a directory without a review marker rather than remove an arbitrary path."""
     from . import open_gr_review
     try:
         result = open_gr_review.close_open_gr_lane(lane_dir.resolve())
@@ -3335,7 +3333,7 @@ def review_close_gr(
 
 @review_app.command("run")
 def review_run(
-    lane_dir: Path = typer.Argument(..., help="The open-gr reconstruction lane (the --lane-dir from `review open-gr --enter`)"),
+    lane_dir: Path = typer.Argument(..., help="The review reconstruction lane (the --lane-dir from `review open --enter`)"),
     package: Optional[str] = typer.Option(None, "--package", help="Importable package name to bind the install to the lane (its __file__ must resolve under the lane). Optional if the lane's .review-install declares `package`."),
     python: Optional[str] = typer.Option(None, "--python", help="Interpreter to build the lane venv from; defaults to the running interpreter. Recorded in the receipt."),
     system_site_packages: bool = typer.Option(False, "--system-site-packages", help="Create the lane venv with --system-site-packages (host tools visible)"),

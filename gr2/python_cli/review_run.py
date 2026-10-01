@@ -82,7 +82,27 @@ def read_install_hint(repo_dir: Path) -> dict | None:
         out[key] = val.strip()
     return out
 
-_MARKER_NAME = ".grip-open-gr-reconstruct.json"
+_MARKER_NAME = ".grip-review-open.json"
+_MARKER_KIND = "review-open"
+# The marker lanes opened before the open-gr -> open rename carry on disk. READ only,
+# never written, and dropped with the open-gr/close-gr aliases (same drop path), so a
+# stranger who upgrades mid-lane still gets their own lane reclaimed.
+_LEGACY_MARKERS = {".grip-open-gr-reconstruct.json": "open-gr-reconstruct"}
+
+
+def find_marker(lane_dir: Path) -> Path | None:
+    """The lane's reconstruction marker: the current name first, then a legacy one."""
+    for name in (_MARKER_NAME, *_LEGACY_MARKERS):
+        path = Path(lane_dir) / name
+        if path.is_file():
+            return path
+    return None
+
+
+def marker_kind_ok(path: Path, marker: dict) -> bool:
+    """Whether ``marker`` (read from ``path``) is a reconstruction marker."""
+    return marker.get("kind") in {_MARKER_KIND, *_LEGACY_MARKERS.values()}
+
 _RECEIPT_NAME = ".grip-review-run.json"
 # The full pytest output, persisted beside the receipt. The receipt's counts and
 # `failed_ids` say WHAT failed; this file is the raw text a reviewer reads to see
@@ -156,7 +176,7 @@ def assert_lane_tree_bound(repo_dir: Path, bound_head_tree: str) -> str:
 # Untracked paths the run itself is expected to create; everything else untracked in
 # the lane is drift, because an injected conftest.py or module can change what the
 # tests do WITHOUT touching the tracked tree (which `assert_lane_tree_bound` sees).
-_UNTRACKED_ALLOW_NAMES = frozenset({_MARKER_NAME, _RECEIPT_NAME, _OUTPUT_LOG_NAME})
+_UNTRACKED_ALLOW_NAMES = frozenset({_MARKER_NAME, *_LEGACY_MARKERS, _RECEIPT_NAME, _OUTPUT_LOG_NAME})
 _UNTRACKED_ALLOW_TOP = (_VENV_DIRNAME + "/",)
 _UNTRACKED_ALLOW_SEGMENTS = frozenset({"__pycache__", ".pytest_cache", ".mypy_cache"})
 
@@ -487,17 +507,17 @@ def merge_report_flags(pytest_args: list[str]) -> list[str]:
 # ---- the verb ---------------------------------------------------------------
 
 def _read_marker(lane_dir: Path) -> dict:
-    marker_path = lane_dir / _MARKER_NAME
-    if not marker_path.exists():
+    marker_path = find_marker(lane_dir)
+    if marker_path is None:
         raise ReviewRunRefused(
             "no_marker",
-            f"no open-gr marker at {marker_path}; `review run` only runs inside a "
-            "lane opened by `review open-gr --enter`",
+            f"no review marker at {lane_dir / _MARKER_NAME}; `review run` only runs "
+            "inside a lane opened by `review open --enter`",
         )
     marker = json.loads(marker_path.read_text())
-    if marker.get("kind") != "open-gr-reconstruct":
+    if not marker_kind_ok(marker_path, marker):
         raise ReviewRunRefused(
-            "not_open_gr", f"{marker_path} is not an open-gr reconstruction marker"
+            "not_open_gr", f"{marker_path} is not a review reconstruction marker"
         )
     return marker
 

@@ -410,6 +410,42 @@ def _credential_refusal(name: str) -> NativeStoreRefusal:
     )
 
 
+def _infer_member_branch(path: Path) -> tuple[str, str]:
+    """(ref, upstream) for the member checkout at `path`: the branch it is ON, not a literal.
+
+    This used to be the fixed pair ("main", "origin/main") for every member, so a member on
+    `core/main` had its pin checked against `origin/main` and the first `store commit` of a
+    correct workspace was refused. The rule, with each edge decided:
+
+      * attached to branch B: ref = B, and upstream = B's tracking ref when that ref's remote
+        is `origin`, else `origin/B`. ORIGIN ONLY, because `grip.toml` carries the member's
+        origin url and nothing else: a recorded upstream on any other remote (a fork whose
+        branch tracks `upstream/main`) names a remote that a fresh clone and materialize does
+        not have, and `store check` there exits 5 "cannot fetch upstream" where the original
+        root passed. A branch tracking a LOCAL branch (its remote is ".") is the same case:
+        its `@{upstream}` has no remote part, or one that is a local branch name, so it falls
+        back too.
+      * a branch with no upstream is NOT refused here: init is not where that is said, and the
+        coverage check at commit then names the branch that is really missing ("not on
+        origin/B; push it first") instead of naming main.
+      * detached HEAD (or no readable branch): today's defaults, no refusal. A materialized
+        workspace is detached at its pins, so refusing would break init there, and an
+        uncovered pin is already refused at commit.
+
+    One reader, so every caller that records a member agrees on what its branch is.
+    """
+    current = _store_git(path, "branch", "--show-current", check=False)
+    branch = current.stdout.strip() if current.returncode == 0 else ""
+    if not branch:
+        return "main", "origin/main"
+    tracking = _store_git(path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}", check=False)
+    upstream = tracking.stdout.strip() if tracking.returncode == 0 else ""
+    remote = _store_git(path, "config", "--get", f"branch.{branch}.remote", check=False).stdout.strip()
+    if remote != "origin" or not upstream:
+        upstream = f"origin/{branch}"
+    return branch, upstream
+
+
 def _member_from_path(root: Path, rel: str, name: str) -> dict[str, str]:
     """The member record for one checkout, wherever its path came from.
 
@@ -426,12 +462,13 @@ def _member_from_path(root: Path, rel: str, name: str) -> dict[str, str]:
     url = remote.stdout.strip()
     if _url_has_credentials(url):
         raise _credential_refusal(rel)
+    ref, upstream = _infer_member_branch(path)
     return {
         "name": name,
         "path": rel,
         "remote": url,
-        "upstream": "origin/main",
-        "ref": "main",
+        "upstream": upstream,
+        "ref": ref,
         "pin": _store_git(path, "rev-parse", "HEAD").stdout.strip(),
     }
 

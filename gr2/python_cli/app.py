@@ -3344,6 +3344,11 @@ def review_run(
     runner: Optional[str] = typer.Option(None, "--runner", help="Test runner: pytest (default), cargo, jest, or junit-xml. With a non-pytest runner the venv/install/import steps are skipped; counts come from the runner's summary line or fresh JUnit XML reports. Defaults to the lane's .review-install `runner`."),
     test: Optional[str] = typer.Option(None, "--test", help="Test command (shell-split) for a non-pytest runner, e.g. `cargo test` or `npx jest`. Defaults to the lane's .review-install `test` line, so a stranger types nothing."),
     reports: Optional[str] = typer.Option(None, "--reports", help="JUnit XML report glob for `--runner junit-xml`. Defaults to `**/build/test-results/**/*.xml`; only reports written during this run count."),
+    order: Optional[str] = typer.Option(None, "--order", help=(
+        "A multi-repo lane: the member keys, comma-separated, in the order they install and run "
+        "(every member once). Defaults to the marker's order, sorted by key; a member that needs "
+        "another installed first must come after it."
+    )),
     json_output: bool = typer.Option(False, "--json", help="Emit the receipt as JSON"),
     pytest_args: Optional[List[str]] = typer.Argument(None, help="Args passed to pytest after `--` (every -k/-p/path filter is recorded)"),
 ) -> None:
@@ -3395,6 +3400,12 @@ def review_run(
                 "pytest invocation. Pass --runner cargo|jest with --test, or drop --test.",
             )
         if eff_runner != "pytest":
+            if order is not None:
+                raise rr.ReviewRunRefused(
+                    "order_with_runner",
+                    "--order orders the members of a multi-repo lane, which the pytest "
+                    "runner runs; a non-pytest runner has no per-member form yet",
+                )
             if eff_reports and eff_runner != "junit-xml":
                 raise rr.ReviewRunRefused(
                     "reports_for_runner",
@@ -3421,21 +3432,49 @@ def review_run(
                 python=python,
                 install=install_cmd,
                 system_site_packages=system_site_packages,
+                order=[k.strip() for k in order.split(",")] if order is not None else None,
             )
     except rr.ReviewRunRefused as exc:
         typer.echo(f"refused: {exc}", err=True)
+        if exc.order is not None:
+            # A multi-member lane stopped: say where, and which members never ran, so the
+            # stop cannot be read as a result for the whole lane.
+            typer.echo(f"refused at member: {exc.member or '(before any member)'}", err=True)
+            typer.echo(f"order: {', '.join(exc.order)}", err=True)
+            typer.echo(f"not run: {', '.join(exc.not_run) if exc.not_run else '(none)'}", err=True)
         if json_output:
             # review-run door 2: a refusal is machine-readable too, mirroring the
             # refusal receipt the run wrote into the lane. Exit stays 2.
-            typer.echo(json.dumps({
+            refusal = {
                 "kind": "review-run",
                 "result": "refused",
                 "refusal_code": exc.code,
                 "refusal_detail": exc.detail,
-            }, indent=2))
+            }
+            if exc.order is not None:
+                refusal.update(
+                    refusal_member=exc.member,
+                    order=exc.order,
+                    members=exc.completed,
+                    not_run=exc.not_run,
+                )
+            typer.echo(json.dumps(refusal, indent=2))
         raise typer.Exit(code=2)
     if json_output:
         typer.echo(json.dumps(receipt, indent=2))
+    elif "members" in receipt:  # a multi-member lane: one line per member, then the lane
+        for m in receipt["members"]:
+            typer.echo(
+                f"{m['key']}: {m['result']}: selected={m['selected']} passed={m['passed']} "
+                f"failed={m['failed']} skipped={m['skipped']} errors={m['errors']}"
+            )
+            for failed_id in m["failed_ids"]:
+                typer.echo(f"  failed: {failed_id}")
+        typer.echo(
+            f"lane {receipt['result']}: members={len(receipt['members'])} "
+            f"passed={receipt['passed']} failed={receipt['failed']}"
+        )
+        typer.echo(f"order: {', '.join(receipt['order'])}")
     elif receipt.get("runner"):  # non-pytest runner receipt (no venv/import fields)
         result_line = (
             f"{receipt['result']} ({receipt['runner']}): selected={receipt['selected']} "

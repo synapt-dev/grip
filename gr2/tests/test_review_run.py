@@ -340,7 +340,7 @@ def test_run_refuses_a_dir_with_no_marker(tmp_path: Path):
         rr.run_review_lane(d, package="demo_pkg", pytest_args=[])
 
 
-def test_run_refuses_a_multi_repo_lane(tmp_path: Path):
+def test_run_refuses_package_flag_on_a_multi_repo_lane(tmp_path: Path):
     lane = tmp_path / "lane"
     lane.mkdir()
     marker = {
@@ -348,7 +348,7 @@ def test_run_refuses_a_multi_repo_lane(tmp_path: Path):
         "repos": [{"key": "a", "bound_head_tree": "t1"}, {"key": "b", "bound_head_tree": "t2"}],
     }
     (lane / rr._MARKER_NAME).write_text(json.dumps(marker))
-    with pytest.raises(rr.ReviewRunRefused, match="multi_repo_lane"):
+    with pytest.raises(rr.ReviewRunRefused, match="member_flags_ambiguous"):
         rr.run_review_lane(lane, package="demo_pkg", pytest_args=[])
 
 

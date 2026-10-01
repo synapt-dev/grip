@@ -77,7 +77,7 @@ def close_open_gr_lane(lane_dir: Path) -> dict:
             "a review reconstruction)"
         )
     marker = json.loads(marker_path.read_text())
-    if not marker_kind_ok(marker_path, marker):
+    if not marker_kind_ok(marker):
         raise OpenGrReviewError(
             f"marker at {marker_path} is not a review reconstruction "
             f"(kind={marker.get('kind')!r})"

@@ -1,8 +1,8 @@
 """`review run <lane-dir>`: the review-owned in-lane test run — the last raw-shell
 exit point (venv + install + pytest by hand) folded into one verb.
 
-It runs ONLY inside an `open-gr --enter` reconstruction lane (it reads the
-`.grip-open-gr-reconstruct.json` marker), so a green is always about a bound tree.
+It runs ONLY inside a `review open --enter` reconstruction lane (it reads the
+`.grip-review-open.json` marker, or the pre-rename one), so a green is always about a bound tree.
 Two structural bindings make the green mean something:
 
   * THE TREE COMPARISON — the lane's current working tree must equal the marker's
@@ -99,8 +99,8 @@ def find_marker(lane_dir: Path) -> Path | None:
     return None
 
 
-def marker_kind_ok(path: Path, marker: dict) -> bool:
-    """Whether ``marker`` (read from ``path``) is a reconstruction marker."""
+def marker_kind_ok(marker: dict) -> bool:
+    """Whether ``marker`` is a reconstruction marker: the current kind or a legacy one."""
     return marker.get("kind") in {_MARKER_KIND, *_LEGACY_MARKERS.values()}
 
 _RECEIPT_NAME = ".grip-review-run.json"
@@ -515,7 +515,7 @@ def _read_marker(lane_dir: Path) -> dict:
             "inside a lane opened by `review open --enter`",
         )
     marker = json.loads(marker_path.read_text())
-    if not marker_kind_ok(marker_path, marker):
+    if not marker_kind_ok(marker):
         raise ReviewRunRefused(
             "not_open_gr", f"{marker_path} is not a review reconstruction marker"
         )

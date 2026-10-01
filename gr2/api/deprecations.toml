@@ -8,13 +8,14 @@
 # sentence in a comment, and -- the reason the vocabulary exists -- it is NOT a
 # version number.
 #
-# ⚠ WHAT THIS FILE COVERS TODAY. EIGHT names are registered, and the sweep in
+# ⚠ WHAT THIS FILE COVERS TODAY. NINE names are registered, and the sweep in
 # `tests/test_deprecation_registry.py` keeps the six in the first group honest.
 #
 #   THE SIX HIDDEN ALIASES, each carrying the milestone its own site already states:
 #     `grip` `open-gr` `open-project` `close-gr` `exit-gr`  ->  release  ("dropped at 2.0 GA")
 #     `snapshot`                                            ->  beta     ("removed at beta")
 #   AND THE TWO THAT WERE HERE FIRST: `gr2_overlay` and the `.grip/.git` store home.
+#   AND ONE LEGACY FILE NAME: `.grip-open-gr-reconstruct.json` (the pre-rename review marker, still READ)  ->  release
 #
 # THE TREE STILL CARRIES PROSE DEADLINES IN FOUR DISTINCT WORDINGS. Three of the four
 # are now registered as the alias they name; the FOURTH IS NOT, because it is not a
@@ -141,6 +142,12 @@
 "alias exit-gr" = "release"
 "alias open-gr" = "release"
 "alias close-gr" = "release"
+
+# The pre-rename reconstruction marker that `review close` and `review run` still READ
+# (python_cli/review_run.py, `_LEGACY_MARKERS`), so a lane opened by an earlier release
+# is reclaimed rather than refused. It leaves with the `open-gr`/`close-gr` aliases, on
+# the same milestone; the `path` kind checks the literal is still written in the tree.
+"path .grip-open-gr-reconstruct.json" = "release"
 
 # `grip snapshot`, the alias of `store commit`. Its own docstring carries the
 # deadline (python_cli/grip_cli.py:1715): "Hidden alias of `store commit` (design

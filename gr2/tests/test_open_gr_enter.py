@@ -645,8 +645,10 @@ def test_both_review_verbs_help_names_commit_kind_and_path() -> None:
     og = _review_help("open-gr")
     assert "MATERIALIZE" in op and "project-review-KIND" in op
     assert "RECONSTRUCT" in og and "review-BIND" in og
-    # each verb points at the other so the fork is legible from --help alone
-    assert "open-gr" in op and "open-project" in og
+    # each verb points at the other so the fork is legible from --help alone; the
+    # reconstruct side is named by its visible verb, never by the hidden open-gr alias
+    assert "review open --enter" in op and "open-project" in og
+    assert "open-gr" not in op
     assert "exit-gr" in _review_help("exit-gr").lower() or "exit" in _review_help("exit-gr").lower()
 
 

@@ -25,7 +25,8 @@ from . import grip, project_review, review
 from .clone_exec import IncompleteRemoval, rmtree_or_refuse
 from .gitops import git
 from .review_run import _OUTPUT_LOG_NAME as _RUN_LOG_NAME
-from .review_run import _RECEIPT_NAME as _RUN_RECEIPT_NAME
+from .review_run import _MARKER_KIND, _MARKER_NAME, _RECEIPT_NAME as _RUN_RECEIPT_NAME
+from .review_run import find_marker, marker_kind_ok
 
 
 class OpenGrReviewError(Exception):
@@ -37,7 +38,7 @@ _RECEIPT_NAME = ".grip-open-gr.json"
 # open-gr's teardown marker. Distinct from _RECEIPT_NAME (the open-PROJECT receipt
 # exit-gr reads): open-gr pushes no lane and changes no cwd, so its teardown is only
 # the rm of this disposable tree, and it must NOT be mistaken for an exit-gr receipt.
-_OPEN_GR_MARKER = ".grip-open-gr-reconstruct.json"
+_OPEN_GR_MARKER = _MARKER_NAME
 
 
 def write_open_gr_marker(lane_dir: Path, gr_commit: str, results: dict) -> None:
@@ -45,7 +46,7 @@ def write_open_gr_marker(lane_dir: Path, gr_commit: str, results: dict) -> None:
     can verify the directory is an open-gr reconstruction before removing it, rather
     than rm an arbitrary path. ``results`` maps repo key -> the reconstruct dict."""
     marker = {
-        "kind": "open-gr-reconstruct",
+        "kind": _MARKER_KIND,
         "gr_commit": gr_commit,
         "repos": [
             {
@@ -68,17 +69,17 @@ def close_open_gr_lane(lane_dir: Path) -> dict:
     ``--lane-dir`` can never remove an arbitrary path). No OWNER_UNIT, no lane pop,
     no cwd restore -- open-gr did none of those, so teardown undoes only the clone."""
     lane_dir = Path(lane_dir)
-    marker_path = lane_dir / _OPEN_GR_MARKER
-    if not marker_path.exists():
+    marker_path = find_marker(lane_dir)
+    if marker_path is None:
         raise OpenGrReviewError(
-            f"no open-gr marker at {marker_path}; not a lane opened by "
-            "`review open-gr --enter` (refusing to remove a directory that is not "
-            "an open-gr reconstruction)"
+            f"no review marker at {lane_dir / _OPEN_GR_MARKER}; not a lane opened by "
+            "`review open --enter` (refusing to remove a directory that is not "
+            "a review reconstruction)"
         )
     marker = json.loads(marker_path.read_text())
-    if marker.get("kind") != "open-gr-reconstruct":
+    if not marker_kind_ok(marker_path, marker):
         raise OpenGrReviewError(
-            f"marker at {marker_path} is not an open-gr reconstruction "
+            f"marker at {marker_path} is not a review reconstruction "
             f"(kind={marker.get('kind')!r})"
         )
     gr_commit = marker.get("gr_commit", "")
@@ -92,7 +93,7 @@ def close_open_gr_lane(lane_dir: Path) -> dict:
         rmtree_or_refuse(lane_dir)
     except IncompleteRemoval as cleanup_exc:
         raise OpenGrReviewError(
-            f"open-gr lane at {lane_dir} could not be fully reclaimed: {cleanup_exc}"
+            f"review lane at {lane_dir} could not be fully reclaimed: {cleanup_exc}"
         ) from cleanup_exc
     result = {"reclaimed": str(lane_dir), "gr_commit": gr_commit}
     if preserved:

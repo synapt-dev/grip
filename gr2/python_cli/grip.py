@@ -273,7 +273,7 @@ def read_project_review_commit(workspace: Path, commit: str) -> list[dict[str, s
     if actual_schema != _PROJECT_REVIEW_SCHEMA:
         raise GripCorruptError(
             f"not a gr2 project review commit: found kind {actual_schema or '<none>'!r}, "
-            f"expected {_PROJECT_REVIEW_SCHEMA!r} (a project-review-KIND commit; use `review open-gr` "
+            f"expected {_PROJECT_REVIEW_SCHEMA!r} (a project-review-KIND commit; use `review open` "
             f"for a review-BIND commit)"
         )
     rows = _read_repo_state(workspace, commit)

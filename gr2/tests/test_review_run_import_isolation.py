@@ -39,7 +39,10 @@ def _shadow_lane(tmp_path: Path) -> tuple[Path, Path]:
     (real / "__init__.py").write_text("VALUE = 1\n")
 
     venv_dir = lane / rr._VENV_DIRNAME
-    venv.create(venv_dir, with_pip=False)
+    # symlinks=True, as `python -m venv` does on POSIX (the product's own venv path). venv.create defaults to
+    # COPIES, and a copied interpreter from a standalone CPython (uv's) cannot find its libpython, so the
+    # venv python this helper then runs dies in dyld before the test's own assertion is reached.
+    venv.create(venv_dir, with_pip=False, symlinks=True)
     venv_python = venv_dir / "bin" / "python"
 
     sp = subprocess.run(

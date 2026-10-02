@@ -31,6 +31,7 @@ from . import push as push_ops
 from .clone_exec import rmtree_or_refuse
 from .events import EventEmitError, EventType, emit, emit_after_outcome
 from .layout import grip_dir
+from .root_option import ROOT_OPTION, RootOptionCommand, RootOptionalCommand
 from .gitops import (
     branch_exists,
     checkout_branch,
@@ -1760,7 +1761,7 @@ def target_unset(
     typer.echo("target unset" if removed else "target was not set")
 
 
-@exec_app.command("status")
+@exec_app.command("status", cls=RootOptionCommand)
 def exec_status(
     workspace_root: Path,
     owner_unit: str,
@@ -1768,6 +1769,7 @@ def exec_status(
     repos: Optional[str] = typer.Option(None, help="Optional comma-separated repo subset"),
     actor: str = typer.Option("agent:exec-status", help="Actor label for lease conflict evaluation"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Show lane-aware execution status for a lane."""
     workspace_root = workspace_root.resolve()
@@ -1852,7 +1854,7 @@ def normalize_single_command_arg(full_command: list[str]) -> list[str]:
     return tokens
 
 
-@exec_app.command("run", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+@exec_app.command("run", context_settings={"allow_extra_args": True, "ignore_unknown_options": True}, cls=RootOptionCommand)
 def exec_run(
     ctx: typer.Context,
     workspace_root: Path,
@@ -1863,6 +1865,7 @@ def exec_run(
     actor: str = typer.Option(..., help="Actor label, e.g. agent:atlas"),
     ttl_seconds: int = typer.Option(900, "--ttl-seconds", help="TTL for the temporary exec lease"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Run a command across the repos in a lane."""
     workspace_root = workspace_root.resolve()
@@ -2131,8 +2134,8 @@ def repo_hooks_show(
         typer.echo(json.dumps(hooks.as_dict(), indent=2))
 
 
-@hooks_app.command("run")
-@repo_app.command("hook-run", hidden=True)  # hidden alias, dropped at 2.0 GA
+@hooks_app.command("run", cls=RootOptionalCommand)
+@repo_app.command("hook-run", hidden=True, cls=RootOptionalCommand)  # hidden alias, dropped at 2.0 GA
 def repo_hook_run(
     workspace_root: Path,
     repo_root: Path,
@@ -2140,6 +2143,7 @@ def repo_hook_run(
     manual: bool = typer.Option(False, "--manual", help="Allow hooks with when=manual to run"),
     first_materialize: bool = typer.Option(False, "--first-materialize", help="Treat this invocation as first materialization"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Run repo hooks explicitly for one lifecycle stage."""
     workspace_root = workspace_root.resolve()
@@ -2170,11 +2174,12 @@ def repo_hook_run(
         typer.echo(json.dumps(payload, indent=2))
 
 
-@repo_app.command("projection-run")
+@repo_app.command("projection-run", cls=RootOptionalCommand)
 def repo_projection_run(
     workspace_root: Path,
     repo_root: Path,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Apply file projections explicitly for one repo."""
     workspace_root = workspace_root.resolve()
@@ -2243,7 +2248,7 @@ def _remove_lane_artifacts(workspace_root: Path, owner_unit: str, lane_name: str
         rmtree_or_refuse(lane_root)
 
 
-@lane_app.command("create")
+@lane_app.command("create", cls=RootOptionalCommand)
 def lane_create(
     workspace_root: Path,
     owner_unit: str,
@@ -2255,6 +2260,7 @@ def lane_create(
     command: list[str] = typer.Option(None, "--command", help="Default command for the lane"),
     manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual during lane materialization"),
     bind: Optional[Path] = typer.Option(None, "--bind", help="Bind the lane to an EXISTING clean, non-detached single-repo worktree instead of materializing a fresh clone. The receipt is stamped lane_kind=bound."),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Create a lane and materialize its repos.
 
@@ -2351,7 +2357,7 @@ def lane_create(
     )
 
 
-@lane_app.command("enter")
+@lane_app.command("enter", cls=RootOptionalCommand)
 def lane_enter(
     workspace_root: Path,
     owner_unit: str,
@@ -2360,6 +2366,7 @@ def lane_enter(
     notify_channel: bool = typer.Option(False, "--notify-channel"),
     recall: bool = typer.Option(False, "--recall"),
     manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual"),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Enter a lane and optionally emit channel/recall-compatible events."""
     workspace_root = workspace_root.resolve()
@@ -2420,7 +2427,7 @@ def lane_enter(
     )
 
 
-@lane_app.command("resolve")
+@lane_app.command("resolve", cls=RootOptionalCommand)
 def lane_resolve(
     workspace_root: Path,
     owner_unit: str,
@@ -2428,6 +2435,7 @@ def lane_resolve(
     actor: str = typer.Option(..., help="Actor label, e.g. agent:atlas"),
     resolution: str = typer.Option(..., help="Resolution note: retry | skip | escalate"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Resolve a blocking failure marker for a lane-scoped operation."""
     workspace_root = workspace_root.resolve()
@@ -2444,7 +2452,7 @@ def lane_resolve(
         typer.echo(json.dumps(payload, indent=2))
 
 
-@lane_app.command("exit")
+@lane_app.command("exit", cls=RootOptionalCommand)
 def lane_exit(
     workspace_root: Path,
     owner_unit: str,
@@ -2452,6 +2460,7 @@ def lane_exit(
     notify_channel: bool = typer.Option(False, "--notify-channel"),
     recall: bool = typer.Option(False, "--recall"),
     manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual"),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Exit the current lane for a unit."""
     workspace_root = workspace_root.resolve()
@@ -2487,12 +2496,13 @@ def lane_exit(
     )
 
 
-@lane_app.command("show")
-@lane_app.command("current", hidden=True)  # hidden alias, dropped at 2.0 GA
+@lane_app.command("show", cls=RootOptionalCommand)
+@lane_app.command("current", hidden=True, cls=RootOptionalCommand)  # hidden alias, dropped at 2.0 GA
 def lane_current(
     workspace_root: Path,
     owner_unit: str,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Show current lane and recent history for a unit."""
     ns = SimpleNamespace(
@@ -2503,7 +2513,7 @@ def lane_current(
     _exit(lane_proto.current_lane(ns))
 
 
-@lane_app.command("bind")
+@lane_app.command("bind", cls=RootOptionalCommand)
 def lane_bind(
     workspace_root: Path,
     owner_unit: str,
@@ -2511,6 +2521,7 @@ def lane_bind(
     base: Optional[str] = typer.Option(None, "--base", help="Base SHA the reviewed range is measured from: a full 40-hex commit that is an ancestor of the worktree head. Omit to read the lane's recorded fork base; an explicit --base wins. A lane with no recorded fork base and no --base refuses."),
     allow_local: bool = typer.Option(False, "--allow-local", help="Allow a non-portable local: identity for a worktree with no GitHub origin (test/local use)"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Bind a review receipt for a BOUND lane, sourced live from its worktree.
 
@@ -2539,7 +2550,7 @@ def lane_bind(
         )
 
 
-@lease_app.command("acquire")
+@lease_app.command("acquire", cls=RootOptionalCommand)
 def lane_lease_acquire(
     workspace_root: Path,
     owner_unit: str,
@@ -2548,6 +2559,7 @@ def lane_lease_acquire(
     mode: str = typer.Option(..., help="edit | exec | review"),
     ttl_seconds: int = typer.Option(900, "--ttl-seconds"),
     force: bool = typer.Option(False, "--force"),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Acquire a lease for a lane."""
     ns = SimpleNamespace(
@@ -2574,12 +2586,13 @@ def lane_lease_acquire(
     )
 
 
-@lease_app.command("release")
+@lease_app.command("release", cls=RootOptionalCommand)
 def lane_lease_release(
     workspace_root: Path,
     owner_unit: str,
     lane_name: str,
     actor: str = typer.Option(...),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Release a lease for a lane."""
     ns = SimpleNamespace(
@@ -2601,12 +2614,13 @@ def lane_lease_release(
     )
 
 
-@lease_app.command("show")
+@lease_app.command("show", cls=RootOptionalCommand)
 def lane_lease_show(
     workspace_root: Path,
     owner_unit: str,
     lane_name: str,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Show active leases for a lane."""
     ns = SimpleNamespace(
@@ -2618,12 +2632,13 @@ def lane_lease_show(
     _exit(lane_proto.show_lane_leases(ns))
 
 
-@review_app.command("requirements")
+@review_app.command("requirements", cls=RootOptionalCommand)
 def review_requirements(
     workspace_root: Path,
     repo: str,
     pr_number: int,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Check whether compiled review requirements are satisfied for a repo and PR."""
     ns = SimpleNamespace(
@@ -2635,7 +2650,7 @@ def review_requirements(
     _exit(lane_proto.check_review_requirements(ns))
 
 
-@review_app.command("checkout-pr")
+@review_app.command("checkout-pr", cls=RootOptionalCommand)
 def review_checkout_pr(
     workspace_root: Path,
     owner_unit: str,
@@ -2647,6 +2662,7 @@ def review_checkout_pr(
     actor: Optional[str] = typer.Option(None, "--actor", help="Actor label to use when entering the lane"),
     manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual during materialization/enter"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Create and materialize a review lane for a PR."""
     workspace_root = workspace_root.resolve()
@@ -2694,7 +2710,7 @@ def review_checkout_pr(
         typer.echo(json.dumps(payload, indent=2))
 
 
-@review_app.command("open")
+@review_app.command("open", cls=RootOptionCommand)
 def review_open(
     workspace_root: Path,
     target: str = typer.Argument(..., help="What to open: a PR number (PR-head lane), a gr:<sha> bind id (reconstruction), or a project-review id"),
@@ -2707,6 +2723,7 @@ def review_open(
     enter: bool = typer.Option(False, "--enter", help="gr:<sha> only: materialize the reconstruction (the only open mode)"),
     repo_key: Optional[str] = typer.Option(None, "--repo", help="gr:<sha> only: repository key to materialize; omit for every bound row"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Open a review lane. ``open`` decides on its POSITIONALS first, then its argument:
 
@@ -2871,7 +2888,7 @@ def _default_pr_group_body(owner_unit: str, lane_name: str, repos: list[str]) ->
     return f"gr2 PR group for {owner_unit}/{lane_name}\n\nRepos in this group:\n{members}\n"
 
 
-@pr_app.command("create")
+@pr_app.command("create", cls=RootOptionCommand)
 def pr_create(
     workspace_root: Path,
     owner_unit: str,
@@ -2883,6 +2900,7 @@ def pr_create(
     body: Optional[str] = typer.Option(None, "--body", help="Body for every PR in the group. Defaults to a line naming the group and listing its repos."),
     body_file: Optional[Path] = typer.Option(None, "--body-file", help="Read the group body from a file. Use this for anything long or shell-sensitive: the body is passed to gh through a file, so quoting is not the caller's problem."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Create a grouped set of per-repo PRs for a lane."""
     workspace_root = workspace_root.resolve()
@@ -2947,13 +2965,14 @@ def pr_create(
         typer.echo(json.dumps(payload, indent=2))
 
 
-@review_app.command("create-project")
+@review_app.command("create-project", cls=RootOptionalCommand)
 def review_create_project(
     workspace_root: Path,
     owner_unit: str = typer.Argument(..., help="Owner unit whose materialized lane to pin"),
     lane_name: str = typer.Argument(..., help="Materialized lane whose repos to pin at base..head"),
     carry_range: bool = typer.Option(False, "--carry-range", help="Also record each repo's base..head range INSIDE the gr commit, so a pre-push head reconstructs from the commit alone (self-describing). open-project then rebuilds it blobless+sparse without the head on any remote."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """CREATE a project-review-KIND gr commit from a materialized lane and print the
     ``gr:<sha>`` that `review open-project` consumes.
@@ -3015,7 +3034,7 @@ def review_create_project(
             typer.echo(f"  {p.key}: {p.base[:12]}..{p.head[:12]} {p.repo}")
 
 
-@review_app.command("open-project", hidden=True)  # hidden alias for one release, dropped at 2.0 GA
+@review_app.command("open-project", hidden=True, cls=RootOptionalCommand)  # hidden alias for one release, dropped at 2.0 GA
 def review_open_project(
     workspace_root: Path,
     commit: str = typer.Argument(..., help="The project-review-KIND gr commit (gr:<sha> or bare sha); create one with `review create-project`"),
@@ -3027,6 +3046,7 @@ def review_open_project(
     prior_cwd: Optional[Path] = typer.Option(None, "--prior-cwd", help="Directory to restore on `review exit-gr` (defaults to the current directory)"),
     allow_local: bool = typer.Option(False, "--allow-local", help="Permit filesystem repository identities (fixtures/tests)"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """MATERIALIZE a project review from a project-review-KIND gr commit and enter it.
 
@@ -3078,13 +3098,14 @@ def review_open_project(
         raise typer.Exit(code=1)
 
 
-@review_app.command("exit-gr", hidden=True)  # hidden alias for one release, dropped at 2.0 GA
+@review_app.command("exit-gr", hidden=True, cls=RootOptionalCommand)  # hidden alias for one release, dropped at 2.0 GA
 def review_exit_gr(
     workspace_root: Path,
     owner_unit: str = typer.Argument(..., help="Owner unit whose review lane to exit"),
     review_root: Path = typer.Argument(..., help="The review lane root written by `open-project --enter` (holds .grip-open-gr.json)"),
     actor: str = typer.Option("agent:cli", "--actor", help="Actor recorded for the lane exit"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Exit a MATERIALIZED project review opened by `open-project --enter`: pop the
     review lane and restore the prior lane, returning the prior cwd from the receipt.
@@ -3323,7 +3344,7 @@ def _emit_review_opened(workspace_root: Path, sha: str, lane_dir: Path, results:
     )
 
 
-@review_app.command("open-gr", hidden=True)  # hidden alias for one release, dropped at 2.0 GA
+@review_app.command("open-gr", hidden=True, cls=RootOptionalCommand)  # hidden alias for one release, dropped at 2.0 GA
 def review_open_gr(
     workspace_root: Path,
     commit: str = typer.Argument(..., help="The review bind commit, as gr:<sha> or a bare sha"),
@@ -3331,6 +3352,7 @@ def review_open_gr(
     lane_dir: Path = typer.Option(..., "--lane-dir", help="Directory to materialize into (the row's clone for one --repo, or a parent holding one subdir per row)"),
     enter: bool = typer.Option(False, "--enter", help="Materialize the reconstruction (the only open mode)"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """RECONSTRUCT a review lane from a review-BIND commit: clone the recorded remote,
     check out the bound base, ``git am`` the carried range, and assert the resulting
@@ -3605,11 +3627,12 @@ def review_run(
         raise typer.Exit(code=1)
 
 
-@review_app.command("verify")
+@review_app.command("verify", cls=RootOptionalCommand)
 def review_verify(
     workspace_root: Path,
     commit: str = typer.Argument(..., help="The review bind commit, as gr:<sha> or a bare sha"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Recompute the review gr commit tree from its own objects; a mismatch is
     corruption, not drift."""
@@ -3678,12 +3701,13 @@ def review_rebind_cmd(
         typer.echo(f"rebased: patch-ids held; new frozen dir at {result.out_dir}")
 
 
-@pr_app.command("status")
+@pr_app.command("status", cls=RootOptionCommand)
 def pr_status(
     workspace_root: Path,
     owner_unit: str,
     lane_name: Optional[str] = typer.Argument(None, help="Lane name. Defaults to the unit's current lane."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Show grouped PR status for a lane."""
     workspace_root = workspace_root.resolve()
@@ -3715,12 +3739,13 @@ def pr_status(
         typer.echo(json.dumps(payload, indent=2))
 
 
-@pr_app.command("checks")
+@pr_app.command("checks", cls=RootOptionCommand)
 def pr_checks(
     workspace_root: Path,
     owner_unit: str,
     lane_name: Optional[str] = typer.Argument(None, help="Lane name. Defaults to the unit's current lane."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Show grouped PR checks for a lane."""
     workspace_root = workspace_root.resolve()
@@ -3823,13 +3848,14 @@ def _render_pr_detail(row: dict[str, object]) -> list[str]:
     return lines
 
 
-@pr_app.command("view")
+@pr_app.command("view", cls=RootOptionCommand)
 def pr_view(
     workspace_root: Path,
     owner_unit: str,
     lane_name: Optional[str] = typer.Argument(None, help="Lane name. Defaults to the unit's current lane."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     repo_filter: Optional[str] = typer.Option(None, "--repo", help="Restrict the view to one member"),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Show the member PRs of one change."""
     workspace_root = workspace_root.resolve()
@@ -3920,7 +3946,7 @@ def pr_view(
         typer.echo("")
 
 
-@pr_app.command("merge")
+@pr_app.command("merge", cls=RootOptionCommand)
 def pr_merge(
     workspace_root: Path,
     owner_unit: str,
@@ -3942,6 +3968,7 @@ def pr_merge(
             "that moved after the reads lands nothing instead of landing unread bytes."
         ),
     ),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Merge grouped PRs for a lane."""
     workspace_root = workspace_root.resolve()

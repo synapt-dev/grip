@@ -52,6 +52,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   regardless of branch, and `--repo manifest` now selects the manifest. A
   manifest with uncommitted changes but no commits ahead is no longer PR
   content.
+- **A store root nested under an initialised workspace is its own workspace root.**
+  The implied root (what every `gr2` verb that takes an optional workspace root
+  uses when none is given, `gr2 review bind` and `gr2 workspace status` among
+  them) was the nearest ancestor holding
+  `.grip/workspace_spec.toml`. A native store root (a `grip.toml` beside a root
+  `.git`, what `gr2 store init` makes) has no such file, so an outer initialised
+  workspace won: a bind run from inside the store root exited 0, printed a `gr:`
+  id, and wrote the bind commit into the outer workspace, where a read against
+  the root you were standing in said `no_rows`. The root is now the nearest
+  ancestor of either kind, the current directory included. A directory under the
+  outer workspace only still finds the outer one, an explicit root argument still
+  wins, and `workspace status` asks the same resolver instead of keeping its own
+  copy of the walk.
 
 ## [gr2 2.0.0a6] - 2026-10-01
 

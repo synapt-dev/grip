@@ -138,10 +138,21 @@ def _workspace_repo_spec(workspace_root: Path, repo_name: str) -> dict[str, obje
     raise SystemExit(f"repo not found in workspace spec: {repo_name}")
 
 
+def _is_workspace_root(path: Path) -> bool:
+    """A directory that IS a workspace, of either kind: it holds ``.grip/workspace_spec.toml``,
+    or it is a native store root (``grip.toml`` beside a root ``.git``, what ``store init`` makes)."""
+    return (path / ".grip" / "workspace_spec.toml").is_file() or grip._is_native_workspace(path)
+
+
 def _resolve_workspace_root(workspace_root: Optional[Path] = None) -> Path:
     """The workspace root for a verb: the argument if given, else the nearest
-    ancestor of the current directory holding ``.grip/workspace_spec.toml``,
-    else the current directory.
+    ancestor of the current directory (the directory itself included) that is a
+    workspace of EITHER kind, else the current directory.
+
+    NEAREST, across both kinds. A store root has no ``workspace_spec.toml``, so walking
+    for the spec file alone let any outer initialised workspace win over the store root
+    the caller was standing in: ``review bind`` then exited 0 having bound in the outer
+    workspace, and every read of that id against the caller's own root said it bound nothing.
 
     Every verb took this as a REQUIRED bare positional until now, so a stranger
     running ``gr2 spec validate`` from inside their own workspace got
@@ -151,10 +162,7 @@ def _resolve_workspace_root(workspace_root: Optional[Path] = None) -> Path:
     if workspace_root is not None:
         return workspace_root.resolve()
     cwd = Path.cwd().resolve()
-    return next(
-        (path for path in (cwd, *cwd.parents) if (path / ".grip" / "workspace_spec.toml").is_file()),
-        cwd,
-    )
+    return next((path for path in (cwd, *cwd.parents) if _is_workspace_root(path)), cwd)
 
 
 def _workspace_spec_path(workspace_root: Path) -> Path:
@@ -1239,12 +1247,7 @@ def status_cmd() -> None:
     # This is intentionally a route, not a second status implementation: the
     # operational status table already belongs to `repo status`.  `workspace
     # status` answers the different question of which workspace layout exists.
-    cwd = Path.cwd().resolve()
-    workspace_root = next(
-        (path for path in (cwd, *cwd.parents) if (path / ".grip" / "workspace_spec.toml").is_file()),
-        cwd,
-    )
-    repo_status(workspace_root, spec=None, policy=None, json_output=False)
+    repo_status(_resolve_workspace_root(), spec=None, policy=None, json_output=False)
 
 
 @workspace_app.command("convert-clone")

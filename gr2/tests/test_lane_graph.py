@@ -63,6 +63,13 @@ def test_ties_among_ready_groups_follow_marker_order():
     assert order(plan2) == [ids("x"), ids("y"), ids("z")]
 
 
+def test_a_group_that_becomes_ready_later_still_goes_ahead_of_a_later_marker_one_already_waiting():
+    # marker order p, q, r. p needs q; r is free. q goes first (only q and r are ready, q is earlier); then p
+    # becomes ready and is EARLIER than r in marker order, so p goes before r: q, p, r (not q, r, p).
+    plan = build_plan([U("p"), U("q"), U("r")], [E("p", "q")])
+    assert order(plan) == [ids("q"), ids("p"), ids("r")]
+
+
 def test_a_later_member_with_no_dependencies_does_not_jump_ahead_of_an_earlier_ready_one():
     # b needs c; a is free and earlier than c in marker order. a, then c (b waits), then b.
     plan = build_plan([U("a"), U("b"), U("c")], [E("b", "c")])

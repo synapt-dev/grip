@@ -20,7 +20,7 @@ from python_cli.gitops import git
 from python_cli.grip_cli import config_cli_app, grip_app
 
 app = typer.Typer()
-app.add_typer(grip_app, name="grip")
+app.add_typer(grip_app, name="store")
 app.add_typer(config_cli_app, name="config")
 
 runner = make_cli_runner()
@@ -103,18 +103,18 @@ def native_workspace(tmp_path: Path) -> Path:
 
 class TestGripInitCLI:
     def test_init_succeeds(self, workspace: Path) -> None:
-        result = runner.invoke(app, ["grip", "init", str(workspace)])
+        result = runner.invoke(app, ["store", "init", str(workspace)])
         assert result.exit_code == 0
 
     def test_init_json_output(self, workspace: Path) -> None:
-        result = runner.invoke(app, ["grip", "init", str(workspace), "--json"])
+        result = runner.invoke(app, ["store", "init", str(workspace), "--json"])
         assert result.exit_code == 0
         data = json.loads(result.stdout)
         assert data["status"] == "initialized"
 
     def test_init_idempotent(self, workspace: Path) -> None:
-        runner.invoke(app, ["grip", "init", str(workspace)])
-        result = runner.invoke(app, ["grip", "init", str(workspace)])
+        runner.invoke(app, ["store", "init", str(workspace)])
+        result = runner.invoke(app, ["store", "init", str(workspace)])
         assert result.exit_code == 0
 
 
@@ -139,14 +139,14 @@ class TestGripSnapshotCLI:
 
     def test_snapshot_succeeds(self, native_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(native_workspace)
-        runner.invoke(app, ["grip", "init"])
-        result = runner.invoke(app, ["grip", "snapshot", "-m", "first root"])
+        runner.invoke(app, ["store", "init"])
+        result = runner.invoke(app, ["store", "commit", "-m", "first root"])
         assert result.exit_code == 0, result.stdout
 
     def test_snapshot_json_output(self, native_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(native_workspace)
-        runner.invoke(app, ["grip", "init"])
-        result = runner.invoke(app, ["grip", "snapshot", "-m", "first root", "--json"])
+        runner.invoke(app, ["store", "init"])
+        result = runner.invoke(app, ["store", "commit", "-m", "first root", "--json"])
         assert result.exit_code == 0, result.stdout
         data = json.loads(result.stdout)
         assert data["status"] == "committed"
@@ -154,11 +154,11 @@ class TestGripSnapshotCLI:
 
     def test_snapshot_with_message(self, native_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(native_workspace)
-        runner.invoke(app, ["grip", "init"])
-        result = runner.invoke(app, ["grip", "snapshot", "-m", "Sprint 27 ceremony", "--json"])
+        runner.invoke(app, ["store", "init"])
+        result = runner.invoke(app, ["store", "commit", "-m", "Sprint 27 ceremony", "--json"])
         assert result.exit_code == 0, result.stdout
         # the message is the store commit's own message, so the LOG is where it can be checked
-        log = runner.invoke(app, ["grip", "log", "--json"])
+        log = runner.invoke(app, ["store", "log", "--json"])
         entry = json.loads(log.stdout)["entries"][0]
         assert entry["message"] == "Sprint 27 ceremony"
 
@@ -170,7 +170,7 @@ class TestGripSnapshotCLI:
         code running. Without the positional it exercises what it was written for.
         """
         monkeypatch.chdir(native_workspace)
-        result = runner.invoke(app, ["grip", "snapshot", "-m", "no store here"])
+        result = runner.invoke(app, ["store", "commit", "-m", "no store here"])
         assert result.exit_code != 0
         assert "Traceback" not in (result.stderr or "")
 
@@ -198,16 +198,16 @@ class TestGripLogCLI:
         `entries == []` would be a row asserting a behaviour that no longer exists.
         """
         monkeypatch.chdir(native_workspace)
-        runner.invoke(app, ["grip", "init"])
-        result = runner.invoke(app, ["grip", "log", "--json"])
+        runner.invoke(app, ["store", "init"])
+        result = runner.invoke(app, ["store", "log", "--json"])
         assert result.exit_code == 5, result.stdout
         assert "run store commit" in (result.stderr or "")
 
     def test_log_after_snapshot(self, native_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(native_workspace)
-        runner.invoke(app, ["grip", "init"])
-        runner.invoke(app, ["grip", "snapshot", "-m", "test snap"])
-        result = runner.invoke(app, ["grip", "log", "--json"])
+        runner.invoke(app, ["store", "init"])
+        runner.invoke(app, ["store", "commit", "-m", "test snap"])
+        result = runner.invoke(app, ["store", "log", "--json"])
         assert result.exit_code == 0, result.stdout
         data = json.loads(result.stdout)
         assert len(data["entries"]) == 1
@@ -215,7 +215,7 @@ class TestGripLogCLI:
 
     def test_log_max_count(self, native_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(native_workspace)
-        runner.invoke(app, ["grip", "init"])
+        runner.invoke(app, ["store", "init"])
         for i in range(3):
             (native_workspace / "recall" / f"f{i}.txt").write_text(str(i))
             git(native_workspace / "recall", "add", ".")
@@ -224,16 +224,16 @@ class TestGripLogCLI:
             # at 3 otherwise (measured: the second snapshot exits 3 with "pin ... is not on
             # origin/main; push it first" when the commit is local-only).
             git(native_workspace / "recall", "push", "-q", "origin", "HEAD:refs/heads/main")
-            made = runner.invoke(app, ["grip", "snapshot", "-m", f"root {i}", "--json"])
+            made = runner.invoke(app, ["store", "commit", "-m", f"root {i}", "--json"])
             assert made.exit_code == 0, made.stdout
-        result = runner.invoke(app, ["grip", "log", "--max-count", "2", "--json"])
+        result = runner.invoke(app, ["store", "log", "--max-count", "2", "--json"])
         assert result.exit_code == 0, result.stdout
         data = json.loads(result.stdout)
         assert len(data["entries"]) == 2
 
     def test_log_without_init_fails(self, native_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(native_workspace)
-        result = runner.invoke(app, ["grip", "log"])
+        result = runner.invoke(app, ["store", "log"])
         assert result.exit_code != 0
         assert "Traceback" not in (result.stderr or "")
 
@@ -251,8 +251,8 @@ class TestGripDiffCLI:
 
     def test_diff_json(self, native_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(native_workspace)
-        runner.invoke(app, ["grip", "init"])
-        r1 = runner.invoke(app, ["grip", "snapshot", "-m", "root one", "--json"])
+        runner.invoke(app, ["store", "init"])
+        r1 = runner.invoke(app, ["store", "commit", "-m", "root one", "--json"])
         assert r1.exit_code == 0, r1.stdout
         root1 = json.loads(r1.stdout)["root_commit"]
 
@@ -262,11 +262,11 @@ class TestGripDiffCLI:
         # coverage again: an unpushed member pin refuses at 3, so the change must be on origin
         git(native_workspace / "recall", "push", "-q", "origin", "HEAD:refs/heads/main")
 
-        r2 = runner.invoke(app, ["grip", "snapshot", "-m", "root two", "--json"])
+        r2 = runner.invoke(app, ["store", "commit", "-m", "root two", "--json"])
         assert r2.exit_code == 0, r2.stdout
         root2 = json.loads(r2.stdout)["root_commit"]
 
-        result = runner.invoke(app, ["grip", "diff", root1, root2, "--json"])
+        result = runner.invoke(app, ["store", "diff", root1, root2, "--json"])
         assert result.exit_code == 0, result.stdout
         data = json.loads(result.stdout)
         assert data["ref_a"] == root1 and data["ref_b"] == root2
@@ -275,7 +275,7 @@ class TestGripDiffCLI:
 
     def test_diff_without_init_fails(self, native_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(native_workspace)
-        result = runner.invoke(app, ["grip", "diff", "abc", "def"])
+        result = runner.invoke(app, ["store", "diff", "abc", "def"])
         assert result.exit_code != 0
         assert "Traceback" not in (result.stderr or "")
 
@@ -293,12 +293,12 @@ class TestGripCheckoutCLI:
 
     def test_checkout_json(self, native_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(native_workspace)
-        runner.invoke(app, ["grip", "init"])
-        r1 = runner.invoke(app, ["grip", "snapshot", "-m", "root one", "--json"])
+        runner.invoke(app, ["store", "init"])
+        r1 = runner.invoke(app, ["store", "commit", "-m", "root one", "--json"])
         assert r1.exit_code == 0, r1.stdout
         root = json.loads(r1.stdout)["root_commit"]
 
-        result = runner.invoke(app, ["grip", "checkout", root, "--json"])
+        result = runner.invoke(app, ["store", "checkout", root, "--json"])
         assert result.exit_code == 0, result.stdout
         data = json.loads(result.stdout)
         assert data["root_commit"] == root
@@ -306,7 +306,7 @@ class TestGripCheckoutCLI:
 
     def test_checkout_without_init_fails(self, native_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(native_workspace)
-        result = runner.invoke(app, ["grip", "checkout", "HEAD"])
+        result = runner.invoke(app, ["store", "checkout", "HEAD"])
         assert result.exit_code != 0
         assert "Traceback" not in (result.stderr or "")
 

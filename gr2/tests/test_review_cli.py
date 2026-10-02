@@ -137,7 +137,7 @@ def test_bind_open_gr_verify_roundtrip(tmp_path):
 
     lane = tmp_path / "lane"
     opened = runner.invoke(
-        app, ["review", "open-gr", str(ws), grc, "--repo", "recall",
+        app, ["review", "open", str(ws), grc, "--repo", "recall",
                "--lane-dir", str(lane), "--enter", "--json"],
     )
     assert opened.exit_code == 0, opened.output
@@ -173,7 +173,7 @@ def test_open_gr_materializes_every_row_of_a_multi_row_commit(tmp_path):
 
     lane = tmp_path / "multilane"
     opened = runner.invoke(
-        app, ["review", "open-gr", str(ws), f"gr:{commit}", "--lane-dir", str(lane), "--enter"],
+        app, ["review", "open", str(ws), f"gr:{commit}", "--lane-dir", str(lane), "--enter"],
     )
     assert opened.exit_code == 0, opened.output
     assert "one:" in opened.stdout and "two:" in opened.stdout
@@ -284,7 +284,7 @@ def test_open_gr_propagates_tampered_range_loudly(tmp_path):
 
     lane = tmp_path / "lane-tampered"
     opened = runner.invoke(
-        app, ["review", "open-gr", str(ws), tampered, "--repo", "recall",
+        app, ["review", "open", str(ws), tampered, "--repo", "recall",
                "--lane-dir", str(lane), "--enter"],
     )
     assert opened.exit_code == 2, opened.output       # loud, not swallowed
@@ -311,7 +311,7 @@ def test_open_gr_refuses_when_head_tree_is_wrong(tmp_path):
     )
     lane = tmp_path / "lane-wronghead"
     opened = runner.invoke(
-        app, ["review", "open-gr", str(ws), wrong, "--repo", "recall",
+        app, ["review", "open", str(ws), wrong, "--repo", "recall",
                "--lane-dir", str(lane), "--enter"],
     )
     assert opened.exit_code == 2, opened.output       # tree_mismatch, loud
@@ -363,7 +363,7 @@ def test_bind_rows_json_binds_all_rows_in_one_commit(tmp_path):
 
     lane = tmp_path / "lane"
     opened = runner.invoke(
-        app, ["review", "open-gr", str(ws), f"gr:{commit}", "--lane-dir", str(lane), "--enter"],
+        app, ["review", "open", str(ws), f"gr:{commit}", "--lane-dir", str(lane), "--enter"],
     )
     assert opened.exit_code == 0, opened.output
     assert opened.stdout.count("tree_match=True") == 2

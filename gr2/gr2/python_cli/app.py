@@ -31,7 +31,7 @@ from . import push as push_ops
 from .clone_exec import rmtree_or_refuse
 from .events import EventEmitError, EventType, emit, emit_after_outcome
 from .layout import grip_dir
-from .root_option import ROOT_OPTION, RootOptionCommand, RootOptionalCommand
+from .root_option import ROOT_OPTION, ContextCommand, RootOptionCommand, RootOptionalCommand
 from .gitops import (
     branch_exists,
     checkout_branch,
@@ -2246,7 +2246,34 @@ def _remove_lane_artifacts(workspace_root: Path, owner_unit: str, lane_name: str
         rmtree_or_refuse(lane_root)
 
 
-@lane_app.command("create", cls=RootOptionalCommand)
+def _actor_source_payload(items: dict) -> dict[str, str]:
+    """`actor_source` for an event whose actor was inferred, so an inferred name cannot read as a typed one;
+    a typed `--actor` adds nothing, which keeps the event as it was."""
+    actor = items.get("actor")
+    return {"actor_source": actor.source} if actor is not None and actor.inferred else {}
+
+
+def _announce_context(ctx: typer.Context, *, actor: Optional[str] = None, with_actor: bool = False):
+    """Announce what the resolver inferred (stderr, one line each) and resolve the actor when the verb
+    records one: only from `--actor`, then `GR2_ACTOR`, then `human:<git user.name>` at a terminal, else a
+    refusal with exit 4. Returns (the context items, the actor label or None)."""
+    from . import context as ctx_mod
+
+    items = dict(ctx.meta.get("gr2.context", {})) if ctx is not None else {}
+    actor_value: Optional[str] = None
+    if with_actor:
+        try:
+            item = ctx_mod.resolve_actor(actor)
+        except ctx_mod.ActorRefused as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=4)
+        items["actor"] = item
+        actor_value = item.value
+    ctx_mod.announce(items, root=items.get("root"), quiet=ctx_mod.quiet_from_env())
+    return items, actor_value
+
+
+@lane_app.command("create", cls=ContextCommand)
 def lane_create(
     workspace_root: Path,
     owner_unit: str,
@@ -2259,6 +2286,8 @@ def lane_create(
     manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual during lane materialization"),
     bind: Optional[Path] = typer.Option(None, "--bind", help="Bind the lane to an EXISTING clean, non-detached single-repo worktree instead of materializing a fresh clone. The receipt is stamped lane_kind=bound."),
     root: Optional[Path] = ROOT_OPTION,
+    unit: Optional[str] = typer.Option(None, "--unit", help="The unit. Same as the UNIT argument; give one or the other."),
+    ctx: typer.Context = None,  # type: ignore[assignment]
 ) -> None:
     """Create a lane and materialize its repos.
 
@@ -2268,6 +2297,7 @@ def lane_create(
     <lane>` pins each repo at that fork base .. head and prints the gr:<sha> for
     `review open-project`. A `--bind` lane owns no clone and is single-repo.
     """
+    _announce_context(ctx)
     workspace_root = workspace_root.resolve()
     if bind is None and not branch:
         raise typer.BadParameter("--branch is required unless --bind is given")
@@ -2355,18 +2385,21 @@ def lane_create(
     )
 
 
-@lane_app.command("enter", cls=RootOptionalCommand)
+@lane_app.command("enter", cls=ContextCommand)
 def lane_enter(
     workspace_root: Path,
     owner_unit: str,
     lane_name: str,
-    actor: str = typer.Option(..., help="Actor label, e.g. agent:atlas"),
+    actor: Optional[str] = typer.Option(None, help="Actor label, e.g. agent:atlas. Defaults to GR2_ACTOR, then human:<git user.name> at a terminal."),
     notify_channel: bool = typer.Option(False, "--notify-channel"),
     recall: bool = typer.Option(False, "--recall"),
     manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual"),
     root: Optional[Path] = ROOT_OPTION,
+    unit: Optional[str] = typer.Option(None, "--unit", help="The unit. Same as the UNIT argument; give one or the other."),
+    ctx: typer.Context = None,  # type: ignore[assignment]
 ) -> None:
     """Enter a lane and optionally emit channel/recall-compatible events."""
+    items, actor = _announce_context(ctx, actor=actor, with_actor=True)
     workspace_root = workspace_root.resolve()
     unresolved = failures.unresolved_lane_failure(workspace_root, owner_unit, lane_name)
     if unresolved:
@@ -2421,21 +2454,25 @@ def lane_enter(
             "lane_name": outcome.current_lane if outcome else lane_name,
             "lane_type": lane_doc.get("type", "feature"),
             "repos": lane_doc.get("repos", []),
+            **_actor_source_payload(items),
         },
     )
 
 
-@lane_app.command("resolve", cls=RootOptionalCommand)
+@lane_app.command("resolve", cls=ContextCommand)
 def lane_resolve(
     workspace_root: Path,
     owner_unit: str,
     operation_id: str,
-    actor: str = typer.Option(..., help="Actor label, e.g. agent:atlas"),
+    actor: Optional[str] = typer.Option(None, help="Actor label, e.g. agent:atlas. Defaults to GR2_ACTOR, then human:<git user.name> at a terminal."),
     resolution: str = typer.Option(..., help="Resolution note: retry | skip | escalate"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     root: Optional[Path] = ROOT_OPTION,
+    unit: Optional[str] = typer.Option(None, "--unit", help="The unit. Same as the UNIT argument; give one or the other."),
+    ctx: typer.Context = None,  # type: ignore[assignment]
 ) -> None:
     """Resolve a blocking failure marker for a lane-scoped operation."""
+    _items, actor = _announce_context(ctx, actor=actor, with_actor=True)
     workspace_root = workspace_root.resolve()
     payload = failures.resolve_failure_marker(
         workspace_root,
@@ -2450,17 +2487,20 @@ def lane_resolve(
         typer.echo(json.dumps(payload, indent=2))
 
 
-@lane_app.command("exit", cls=RootOptionalCommand)
+@lane_app.command("exit", cls=ContextCommand)
 def lane_exit(
     workspace_root: Path,
     owner_unit: str,
-    actor: str = typer.Option(..., help="Actor label, e.g. human:layne"),
+    actor: Optional[str] = typer.Option(None, help="Actor label, e.g. human:layne. Defaults to GR2_ACTOR, then human:<git user.name> at a terminal."),
     notify_channel: bool = typer.Option(False, "--notify-channel"),
     recall: bool = typer.Option(False, "--recall"),
     manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual"),
     root: Optional[Path] = ROOT_OPTION,
+    unit: Optional[str] = typer.Option(None, "--unit", help="The unit. Same as the UNIT argument; give one or the other."),
+    ctx: typer.Context = None,  # type: ignore[assignment]
 ) -> None:
     """Exit the current lane for a unit."""
+    items, actor = _announce_context(ctx, actor=actor, with_actor=True)
     workspace_root = workspace_root.resolve()
     current_doc = lane_proto.require_current_lane(workspace_root, owner_unit)
     lane_name = current_doc["lane_name"]
@@ -2490,24 +2530,43 @@ def lane_exit(
         payload={
             "lane_name": outcome.previous_lane if outcome else lane_name,
             "stashed_repos": stashed_repos,
+            **_actor_source_payload(items),
         },
     )
 
 
-@lane_app.command("show", cls=RootOptionalCommand)
-@lane_app.command("current", hidden=True, cls=RootOptionalCommand)  # hidden alias, dropped at 2.0 GA
+@lane_app.command("show", cls=ContextCommand)
+@lane_app.command("current", hidden=True, cls=ContextCommand)  # hidden alias, dropped at 2.0 GA
 def lane_current(
+    ctx: typer.Context,
     workspace_root: Path,
     owner_unit: str,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     root: Optional[Path] = ROOT_OPTION,
+    unit: Optional[str] = typer.Option(None, "--unit", help="The unit. Same as the UNIT argument; give one or the other."),
 ) -> None:
-    """Show current lane and recent history for a unit."""
-    ns = SimpleNamespace(
-        workspace_root=workspace_root,
-        owner_unit=owner_unit,
-        json=json_output,
-    )
+    """Show current lane and recent history for a unit.
+
+    Run inside a workspace with a lane entered, this needs no arguments: the root, the unit and the lane
+    come from the workspace and the entered lane's record, and each one that was inferred is named on stderr
+    with its source (silence them with GR2_QUIET_CONTEXT=1)."""
+    from . import context as ctx_mod
+
+    items = dict(ctx.meta.get("gr2.context", {}))
+    root_path = workspace_root.resolve()
+    if items.get("unit") is not None and items["unit"].inferred:
+        # `lane show` takes no lane: with the unit typed, the lane is the answer, not a choice gr2 made.
+        try:
+            items["lane"] = ctx_mod.resolve_lane(root_path, owner_unit)
+        except ctx_mod.ContextRefused:
+            pass
+    ctx_mod.announce(items, root=items.get("root"), quiet=ctx_mod.quiet_from_env())
+    if json_output:
+        doc = dict(lane_proto.load_current_lane_doc(root_path, owner_unit))
+        doc["context"] = ctx_mod.context_dict(items)
+        typer.echo(json.dumps(doc, indent=2))
+        return
+    ns = SimpleNamespace(workspace_root=workspace_root, owner_unit=owner_unit, json=False)
     _exit(lane_proto.current_lane(ns))
 
 
@@ -3101,7 +3160,7 @@ def review_exit_gr(
     workspace_root: Path,
     owner_unit: str = typer.Argument(..., help="Owner unit whose review lane to exit"),
     review_root: Path = typer.Argument(..., help="The review lane root written by `open-project --enter` (holds .grip-open-gr.json)"),
-    actor: str = typer.Option("agent:cli", "--actor", help="Actor recorded for the lane exit"),
+    actor: Optional[str] = typer.Option(None, "--actor", help="Actor recorded for the lane exit. Defaults to GR2_ACTOR, then human:<git user.name> at a terminal; there is no other default."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
@@ -3109,9 +3168,17 @@ def review_exit_gr(
     review lane and restore the prior lane, returning the prior cwd from the receipt.
     This is the project-tier exit; `review close` drops a single-repo `review open` lane.
     """
+    from . import context as ctx_mod
     from . import open_gr_review
+
+    try:
+        actor_item = ctx_mod.resolve_actor(actor)
+    except ctx_mod.ActorRefused as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=4)
+    ctx_mod.announce({"actor": actor_item}, root=None, quiet=ctx_mod.quiet_from_env())
     result = open_gr_review.exit_gr_review(
-        workspace_root.resolve(), owner_unit, review_root.resolve(), actor=actor
+        workspace_root.resolve(), owner_unit, review_root.resolve(), actor=actor_item.value
     )
     if json_output:
         typer.echo(json.dumps({

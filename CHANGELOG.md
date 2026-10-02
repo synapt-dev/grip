@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`gr2 lane show`, `lane enter`, `lane exit`, `lane resolve` and `lane create` no longer make you type what the
+  workspace already holds.** Inside a workspace the root is found from the current directory, and the unit from
+  the lane you have entered (or the workspace's only unit); each value gr2 filled in is named on stderr in one line
+  with where it came from (`gr2: unit=default (the only unit with an entered lane)`; the root is named only when it
+  is not the current directory), and `lane show --json` carries the same pairs under `context`. Set
+  `GR2_QUIET_CONTEXT=1` to silence the lines. `--unit NAME` names the unit; a word that is both a workspace and a
+  unit is refused with both readings spelled out (`-C <word>` for the root, `--unit <word>` for the unit). Calls
+  that name everything behave exactly as before.
+- **The actor of a lane verb is never made up.** `--actor` is now optional on `lane enter`, `lane exit` and
+  `lane resolve` and on the hidden `review exit-gr`: when it is left out gr2 reads `GR2_ACTOR` (set it to the label
+  your session should carry, for example `agent:atlas`), and at a terminal falls back to `human:<git user.name>`;
+  otherwise it refuses, exit 4, in one sentence. `review exit-gr` no longer defaults to `agent:cli`. An event whose
+  actor was filled in carries `actor_source`, so it cannot be read as a typed name.
 - **`gr2` review binds live in the workspace root's own `.git`, as `refs/dev.synapt.grip/__reviews__/<commit>`, and
   no second repo is made.** On a native root (`store init`) a `review bind` used to create
   `<root>/.grip/.git` on first use and write the bind there. The bind is now a parentless commit in the

@@ -10,6 +10,8 @@ open-gr lane (so it never rm's an arbitrary path), and reclaims the tree.
 """
 from __future__ import annotations
 
+from tests.native_root_helper import native_root
+
 import json
 import subprocess
 from pathlib import Path
@@ -53,7 +55,7 @@ def _open_gr_lane(tmp_path: Path, runner: CliRunner) -> tuple[Path, str]:
     ws = tmp_path / "ws"
     (ws / ".grip").mkdir(parents=True)
     from gr2.python_cli import grip
-    grip.grip_init(ws)
+    native_root(ws)
     remote, base, head, range_patch = _base_remote_and_range(tmp_path)
     range_file = tmp_path / "range.patch"
     range_file.write_text(range_patch)
@@ -103,7 +105,7 @@ def test_open_gr_no_repo_single_row_puts_the_marker_at_the_tree(tmp_path: Path) 
     ws = tmp_path / "ws"
     (ws / ".grip").mkdir(parents=True)
     from gr2.python_cli import grip
-    grip.grip_init(ws)
+    native_root(ws)
     remote, base, head, range_patch = _base_remote_and_range(tmp_path)
     range_file = tmp_path / "range.patch"
     range_file.write_text(range_patch)
@@ -197,7 +199,7 @@ def test_close_gr_twice_same_lane_keeps_both_runs(tmp_path: Path) -> None:
     runner = CliRunner()
     ws = tmp_path / "ws"
     (ws / ".grip").mkdir(parents=True)
-    grip.grip_init(ws)
+    native_root(ws)
     remote, base, head, range_patch = _base_remote_and_range(tmp_path)
     range_file = tmp_path / "range.patch"
     range_file.write_text(range_patch)
@@ -253,7 +255,7 @@ def test_open_gr_enter_refuses_a_nonempty_lane_dir(tmp_path: Path) -> None:
     ws = tmp_path / "ws"
     (ws / ".grip").mkdir(parents=True)
     from gr2.python_cli import grip
-    grip.grip_init(ws)
+    native_root(ws)
     remote, base, head, range_patch = _base_remote_and_range(tmp_path)
     range_file = tmp_path / "range.patch"
     range_file.write_text(range_patch)

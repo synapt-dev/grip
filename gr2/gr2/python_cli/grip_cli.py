@@ -902,6 +902,9 @@ def _native_store_init(root: Path, member_paths: list[str] | None = None) -> Non
     _write_native_members(root, members)
     if created_repo:
         _write_gitignore(root, members)
+    # gr2's per-desk state lives under `.grip/` and is never tracked. An adopted root keeps its
+    # owner's `.gitignore`, so the root's own `.git/info/exclude` carries the line (local to the clone).
+    grip_mod.exclude_grip_state(root)
 
 
 def _git_detail(proc: subprocess.CompletedProcess[str]) -> str:

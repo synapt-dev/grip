@@ -1,24 +1,22 @@
-"""`review bind` on a NATIVE store (the root `store init` makes), with no hand-made alpha store.
+"""`review bind` on a NATIVE root (the one `store init` makes): the bind is a ref in the root's own `.git`.
 
-THE DEFECT, found by running `store init` then `review bind` on a fresh workspace: `store init`
-writes `grip.toml` and a root `.git` and creates NO `.grip/.git`, but `review bind` writes the
-review object into `.grip/.git` and refused with `not_initialized: No .grip/ directory ... Run
-`gr2 store init .``, which is advice for the verb the caller had just run. Every existing bind
-test hand-initialises the alpha store with `grip.grip_init`, which is why the native shape was
-never exercised.
-
-THE CONTRACT these rows pin:
-  * on a native root, `review bind` creates the review store itself on first use (bind is the
-    only writer);
+THE HISTORY: `store init` writes `grip.toml` and a root `.git`; the first bind used to make a second
+repo at `.grip/.git` and write the review object there. The bind now lives in the root's
+`.git` under `refs/dev.synapt.grip/__reviews__/<commit>` (see test_review_bind_root_refs.py for the smallest
+proof); this file pins the edges:
+  * a bind needs no store and creates nothing under `.grip/`;
   * a directory that is NOT a workspace keeps the refusal, and bind creates nothing in it;
-  * a bind that refuses (base is not the live head) binds nothing;
-  * a read verb on a native root with nothing bound says nothing has been bound, and does NOT
-    send the caller back to `store init` (the verb they already ran).
+  * a bind that refuses (base is not the live head) binds nothing: no ref, no `.grip/.git`;
+  * a read verb with nothing bound says nothing has been bound, and does NOT send the caller back
+    to `store init`; an id that is not a bound review is refused as unbound;
+  * `.grip/` is excluded by `store init` (an adopted root keeps its owner's `.gitignore`);
+  * review binds an older gr2 left in `.grip/.git` move into refs automatically, once, verified.
 """
 
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -46,6 +44,13 @@ def _bind_args(ws: Path, remote: str, base: str, head: str) -> list[str]:
     ]
 
 
+_REFS = "refs/dev.synapt.grip/__reviews__/"
+
+
+def _refs(ws: Path) -> list[str]:
+    return [l for l in _git_out(ws, "for-each-ref", "--format=%(refname)", _REFS).splitlines() if l]
+
+
 def test_bind_on_a_fresh_native_store_needs_no_alpha_init(two_member_ws: Path) -> None:
     """On a fresh root, `store init` then `review bind` succeeds, and nothing in this test
     calls the engine's `grip_init`."""
@@ -59,14 +64,15 @@ def test_bind_on_a_fresh_native_store_needs_no_alpha_init(two_member_ws: Path) -
     gr_id = out.strip().splitlines()[-1]
     assert gr_id.startswith("gr:") and len(gr_id) == 3 + 40, out
 
-    assert (ws / ".grip" / ".git").is_dir()
+    assert not (ws / ".grip" / ".git").exists()
+    assert _refs(ws) == [_REFS + gr_id[3:]]
     code, out = _cli("review", "verify", str(ws), gr_id)
     assert code == 0 and "tree_matches: True" in out, out
 
 
 def test_bind_works_when_grip_exists_without_a_git_dir(two_member_ws: Path) -> None:
     """A native root can already hold `.grip/` (review records live under `.grip/state/`) with
-    no `.git` inside it, the shape the old `.grip/ exists but has no .git/` refusal described."""
+    no `.git` inside it; a bind neither needs one nor adds one."""
     ws = two_member_ws
     assert _cli("store", "init", str(ws))[0] == 0
     (ws / ".grip" / "state").mkdir(parents=True)
@@ -74,7 +80,8 @@ def test_bind_works_when_grip_exists_without_a_git_dir(two_member_ws: Path) -> N
 
     code, out = _cli(*_bind_args(ws, remote, base, head))
     assert code == 0, out
-    assert (ws / ".grip" / ".git").is_dir()
+    assert not (ws / ".grip" / ".git").exists()
+    assert len(_refs(ws)) == 1
 
 
 @pytest.mark.parametrize("shape", ["plain", "inside_another_repo", "git_repo_without_grip_toml"])
@@ -119,36 +126,21 @@ def test_a_refused_first_bind_leaves_no_review_store_behind(two_member_ws: Path)
     assert not (ws / ".grip").exists(), "a refused bind left a .grip directory it created"
 
 
-def test_a_leftover_after_a_refused_bind_is_named_and_the_refusal_still_surfaces(
-    two_member_ws: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """If the store the refused call created cannot be fully removed, the caller is told what
-    survived, and the bind's own refusal is not replaced by the cleanup failure. Removal that
-    silently drops a failure (`ignore_errors=True`) reports a clean workspace that is not."""
-    if os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0):
-        pytest.skip("a read-only directory only blocks removal for a non-root POSIX user")
+def test_a_refused_first_bind_leaves_no_ref_and_no_store(two_member_ws: Path) -> None:
+    """A bind refused for `base_not_live_head` changes nothing: no ref, no `.grip/.git`, and no
+    `.grip` directory either."""
     ws = two_member_ws
     assert _cli("store", "init", str(ws))[0] == 0
     remote, base, head = _unpushed_head(ws)
-    store = ws / ".grip" / ".git"
-    real = grip_mod._bind_review_rows
 
-    def lock_then_bind(workspace, *args, **kwargs):
-        os.chmod(workspace / ".grip" / ".git", 0o555)  # its entries can no longer be unlinked
-        return real(workspace, *args, **kwargs)
-
-    monkeypatch.setattr(grip_mod, "_bind_review_rows", lock_then_bind)
-    try:
-        code, out = _cli(*_bind_args(ws, remote, head, head))
-    finally:
-        if store.exists():
-            os.chmod(store, 0o755)
+    code, out = _cli(*_bind_args(ws, remote, head, head))  # base = head, not the live remote head
     assert code == 2 and "base_not_live_head" in out, out
-    assert "could not be fully removed" in out and str(store) in out, out
+    assert _refs(ws) == []
+    assert not (ws / ".grip" / ".git").exists()
+    assert not (ws / ".grip").exists()
 
 
-def test_a_refused_bind_keeps_a_grip_dir_that_was_already_there(two_member_ws: Path) -> None:
-    """Only what the refused call created is removed: `.grip/state` was the owner's."""
+def test_a_refused_bind_keeps_what_was_already_in_grip(two_member_ws: Path) -> None:
     ws = two_member_ws
     assert _cli("store", "init", str(ws))[0] == 0
     kept = ws / ".grip" / "state"
@@ -159,46 +151,10 @@ def test_a_refused_bind_keeps_a_grip_dir_that_was_already_there(two_member_ws: P
     code, out = _cli(*_bind_args(ws, remote, head, head))
     assert code == 2 and "base_not_live_head" in out, out
     assert (kept / "marker").read_text() == "keep\n"
-    assert not (ws / ".grip" / ".git").exists(), "a refused bind left an empty review store"
 
 
-def test_a_refused_bind_keeps_an_empty_grip_dir_that_was_already_there(
-    two_member_ws: Path,
-) -> None:
-    """`.grip` goes only when the refused call made it; an empty one the owner made stays."""
-    ws = two_member_ws
-    assert _cli("store", "init", str(ws))[0] == 0
-    (ws / ".grip").mkdir()
-    remote, base, head = _unpushed_head(ws)
-
-    code, out = _cli(*_bind_args(ws, remote, head, head))
-    assert code == 2, out
-    assert (ws / ".grip").is_dir(), "the refused call removed a .grip directory it did not make"
-    assert not (ws / ".grip" / ".git").exists()
-
-
-def test_discarding_never_removes_a_store_that_holds_a_commit(two_member_ws: Path) -> None:
-    """The guard in the cleanup: if a bind completed in the store (another caller's, say), a
-    failed call's cleanup must not take it away. Driven directly, since two sequential binds
-    never reach it."""
-    from gr2.python_cli import grip
-
-    ws = two_member_ws
-    assert _cli("store", "init", str(ws))[0] == 0
-    remote, base, head = _unpushed_head(ws)
-    code, out = _cli(*_bind_args(ws, remote, base, head))
-    assert code == 0, out
-    gr_id = out.strip().splitlines()[-1]
-
-    grip._discard_review_store(ws, True)
-    assert (ws / ".grip" / ".git").is_dir(), "cleanup removed a store holding a bind"
-    assert _cli("review", "verify", str(ws), gr_id)[0] == 0
-
-
-def test_a_refused_bind_does_not_remove_a_store_that_already_holds_a_bind(
-    two_member_ws: Path,
-) -> None:
-    """CONTROL for the cleanup: a store that existed before the refused call is never removed."""
+def test_a_refused_bind_leaves_an_earlier_bind_intact(two_member_ws: Path) -> None:
+    """CONTROL: a refused second bind adds no ref and does not disturb the first."""
     ws = two_member_ws
     assert _cli("store", "init", str(ws))[0] == 0
     remote, base, head = _unpushed_head(ws)
@@ -208,7 +164,7 @@ def test_a_refused_bind_does_not_remove_a_store_that_already_holds_a_bind(
 
     code, out = _cli(*_bind_args(ws, remote, head, head))
     assert code == 2, out
-    assert (ws / ".grip" / ".git").is_dir(), "the refused call removed an existing review store"
+    assert _refs(ws) == [_REFS + first[3:]]
     assert _cli("review", "verify", str(ws), first)[0] == 0, "the earlier bind is gone"
 
 
@@ -226,13 +182,36 @@ def test_verify_on_a_native_root_with_nothing_bound_does_not_say_run_store_init(
     assert "bind" in out, out
 
 
-# --- the root must not see the review store it just got ---------------------------------------
+def test_an_ordinary_root_commit_is_not_a_bound_review(two_member_ws: Path) -> None:
+    """In the root's object database ANY commit resolves, so the bound-review ref is what makes
+    an id a bind: the root's own HEAD commit is refused as unbound, not read as a malformed bind."""
+    ws = two_member_ws
+    assert _cli("store", "init", str(ws))[0] == 0
+    remote, base, head = _unpushed_head(ws)
+    _git(ws / "alpha", "push", "-q", "origin", "main")
+    assert _cli("store", "commit", "-m", "root commit")[0] == 0
+    root_head = _git_out(ws, "rev-parse", "HEAD")
+
+    code, out = _cli("review", "verify", str(ws), "gr:" + root_head)
+    assert code == 2 and "not_bound" in out, out
+
+
+def test_an_abbreviated_id_still_resolves(two_member_ws: Path) -> None:
+    ws = two_member_ws
+    assert _cli("store", "init", str(ws))[0] == 0
+    remote, base, head = _unpushed_head(ws)
+    code, out = _cli(*_bind_args(ws, remote, base, head))
+    gr_id = out.strip().splitlines()[-1]
+    code, out = _cli("review", "verify", str(ws), gr_id[:3 + 12])
+    assert code == 0 and "tree_matches: True" in out, out
+
+
+# --- the root must not see gr2's state directory ------------------------------------------------
 #
 # An ADOPTED root (its own root .git and an owner .gitignore, which `store init` never edits)
-# does not get the allow-list `.gitignore` that hides `.grip/`. Without an exclude, the first bind
-# leaves `?? .grip/` in `git status`, and one `git add -A` records `.grip` as a 160000 gitlink to
-# local-only review objects. The fix excludes it through the root's own `.git/info/exclude`, which
-# is local to the clone and leaves the owner's `.gitignore` alone.
+# does not get the allow-list `.gitignore` that hides `.grip/`. `store init` therefore excludes it
+# through the root's own `.git/info/exclude`, which is local to the clone and leaves the owner's
+# `.gitignore` alone. (A bind writes nothing under `.grip/`; its record is a ref.)
 
 
 def _adopt(ws: Path) -> bytes:
@@ -250,16 +229,18 @@ def _status(ws: Path) -> str:
     return _git_out(ws, "status", "--porcelain")
 
 
-def test_bind_on_an_adopted_root_leaves_the_review_store_out_of_git(two_member_ws: Path) -> None:
+def test_bind_on_an_adopted_root_leaves_grip_state_out_of_git(two_member_ws: Path) -> None:
     ws = two_member_ws
     owner_bytes = _adopt(ws)
     assert _cli("store", "init", str(ws))[0] == 0
-    assert ".grip" not in _status(ws), "precondition: nothing under .grip yet"
+    (ws / ".grip" / "state").mkdir(parents=True)
+    (ws / ".grip" / "state" / "current_lane").write_text("x\n")
+    assert ".grip" not in _status(ws), f"store init left .grip visible:\n{_status(ws)}"
     remote, base, head = _unpushed_head(ws)
 
     code, out = _cli(*_bind_args(ws, remote, base, head))
     assert code == 0, out
-    assert (ws / ".grip" / ".git").is_dir()
+    assert not (ws / ".grip" / ".git").exists()
 
     assert ".grip" not in _status(ws), f"the root sees its review store:\n{_status(ws)}"
     _git(ws, "add", "-A")
@@ -282,12 +263,136 @@ def test_the_exclude_line_is_not_duplicated_when_the_root_already_has_it(
 ) -> None:
     ws = two_member_ws
     _adopt(ws)
-    assert _cli("store", "init", str(ws))[0] == 0
     exclude = ws / ".git" / "info" / "exclude"
     exclude.parent.mkdir(parents=True, exist_ok=True)
     exclude.write_text("# local\n/.grip/\n")
+    assert _cli("store", "init", str(ws))[0] == 0
+    assert exclude.read_text().splitlines().count("/.grip/") == 1, exclude.read_text()
+
+
+# --- a root with no store gets one; real alpha state is refused, naming the conversion ----------------
+#
+# `store init` "needed before review" is the quirk this removes: a bind on a workspace root that has no
+# store sets up the native store itself, says so on stderr, and a `.grip/.git` holding no bind and no
+# snapshot counts as no store and is moved aside. Only a `.grip/.git` with real alpha state is refused,
+# because `store migrate` can legitimately refuse (a pin not on the member's upstream).
+
+
+def _spec_only_root(ws: Path) -> None:
+    (ws / ".grip").mkdir()
+    (ws / ".grip" / "workspace_spec.toml").write_text("")
+
+
+def test_bind_on_a_workspace_root_with_no_store_sets_up_the_native_store(two_member_ws: Path, capfd) -> None:
+    ws = two_member_ws
+    _spec_only_root(ws)
     remote, base, head = _unpushed_head(ws)
 
     code, out = _cli(*_bind_args(ws, remote, base, head))
     assert code == 0, out
-    assert exclude.read_text().splitlines().count("/.grip/") == 1, exclude.read_text()
+    assert "set up a native store" in out + capfd.readouterr().err
+    assert (ws / "grip.toml").is_file() and (ws / ".git").exists()
+    assert not (ws / ".grip" / ".git").exists()
+    assert len(_refs(ws)) == 1
+    gr_id = next(line for line in out.splitlines() if line.startswith("gr:"))
+    assert _cli("review", "verify", str(ws), gr_id)[0] == 0
+
+
+def test_bind_on_a_root_with_an_empty_alpha_store_moves_it_aside(two_member_ws: Path, capfd) -> None:
+    from gr2.python_cli import grip as grip_mod
+
+    ws = two_member_ws
+    grip_mod.grip_init(ws)  # what workspace init and materialize used to leave: an empty `.grip/.git`
+    remote, base, head = _unpushed_head(ws)
+
+    code, out = _cli(*_bind_args(ws, remote, base, head))
+    assert code == 0, out
+    assert "moved an empty .grip/.git aside" in out + capfd.readouterr().err
+    assert not (ws / ".grip" / ".git").exists() and (ws / ".grip" / "legacy-store.git").is_dir()
+    assert len(_refs(ws)) == 1
+
+
+def test_bind_on_a_root_with_real_alpha_state_refuses_naming_store_migrate(two_member_ws: Path) -> None:
+    from gr2.python_cli import grip as grip_mod
+
+    ws = two_member_ws
+    grip_mod.grip_init(ws)
+    remote, base, head = _unpushed_head(ws)
+    snapshot = grip_mod.create_workspace_commit(
+        ws, [{"key": "alpha", "remote": remote, "path": "alpha", "commit": head, "base": base}])
+
+    code, out = _cli(*_bind_args(ws, remote, base, head))
+    assert code == 2 and "alpha_root" in out and "store migrate" in out, out
+    assert not (ws / "grip.toml").exists(), "a refused bind set up a native store"
+    assert _git_out(ws / ".grip", "rev-parse", "HEAD") == snapshot, "a refused bind changed the alpha store"
+    code, out = _cli("review", "verify", str(ws), "gr:" + "0" * 40)
+    assert code == 2 and "store migrate" in out, out
+
+
+def test_verify_on_a_root_with_no_store_creates_nothing(two_member_ws: Path) -> None:
+    ws = two_member_ws
+    _spec_only_root(ws)
+    code, out = _cli("review", "verify", str(ws), "gr:" + "0" * 40)
+    assert code == 2 and "not_bound" in out, out
+    assert not (ws / "grip.toml").exists() and not (ws / ".git").exists()
+
+
+def test_a_refusal_from_store_init_reaches_the_caller_unswallowed(tmp_path: Path, two_member_ws: Path) -> None:
+    """The setup is `store init`'s, so its refusals are the bind's. A workspace root with no sibling git
+    repository cannot be a store; the bind names that reason and writes nothing."""
+    ws = tmp_path / "lonely"
+    ws.mkdir()
+    _spec_only_root(ws)
+    remote, base, head = _unpushed_head(two_member_ws)
+
+    code, out = _cli(*_bind_args(ws, remote, base, head))
+    assert code == 2 and "store_init_refused" in out and "no sibling git repositories" in out, out
+    assert not (ws / "grip.toml").exists()
+
+
+def test_a_refused_first_bind_on_a_root_with_no_store_leaves_no_store_behind(two_member_ws: Path, capfd) -> None:
+    """The setup is undone when the bind refuses: no repository, no grip.toml, no 'set up' line."""
+    ws = two_member_ws
+    _spec_only_root(ws)
+    remote, base, head = _unpushed_head(ws)
+    before = sorted(entry.name for entry in ws.iterdir())
+
+    code, out = _cli(*_bind_args(ws, remote, head, head))  # base == head: refused
+    assert code == 2 and "base_not_live_head" in out, out
+    assert "set up a native store" not in out + capfd.readouterr().err
+    assert sorted(entry.name for entry in ws.iterdir()) == before
+    assert not (ws / "grip.toml").exists() and not (ws / ".git").exists()
+
+
+def test_a_refused_first_bind_does_not_remove_a_store_another_bind_published_into(two_member_ws: Path) -> None:
+    """The cleanup removes only what this call set up: if a valid bind was published into the new store
+    before the refusal runs, the store and that bind survive."""
+    ws = two_member_ws
+    _spec_only_root(ws)
+    remote, base, head = _unpushed_head(ws)
+    created = grip_mod._validate_bind_store(ws, create=True)
+    assert created is not None and ".git" in created[0]
+    row = {"key": "alpha", "remote": remote, "path": "alpha", "head": head, "base": base,
+           "ref": "refs/heads/main", "title": "", "body": "", "source": str(ws / "alpha")}
+    other = grip_mod.create_review_bind_commit(ws, [row])
+
+    def refused() -> str:
+        raise grip_mod.GripReviewRefused("base_not_live_head", "x", "y")
+
+    with pytest.raises(grip_mod.GripReviewRefused):
+        grip_mod._guarded_bind(ws, created, refused)
+    assert (ws / ".git").exists() and (ws / "grip.toml").is_file()
+    assert _refs(ws) == [_REFS + other]
+
+
+def test_a_refused_first_bind_on_an_adopted_root_keeps_grip_toml(two_member_ws: Path, capfd) -> None:
+    """Stated, not cleaned: an adopted root keeps its own `.git`, so `store init`'s `grip.toml` (and the
+    `/.grip/` exclude line) stay after a refusal; the 'set up' line is still not printed."""
+    ws = two_member_ws
+    _adopt(ws)
+    _spec_only_root(ws)
+    remote, base, head = _unpushed_head(ws)
+    code, out = _cli(*_bind_args(ws, remote, head, head))
+    assert code == 2 and "base_not_live_head" in out, out
+    assert "set up a native store" not in out + capfd.readouterr().err
+    assert (ws / "grip.toml").is_file() and (ws / ".git").exists() and _refs(ws) == []

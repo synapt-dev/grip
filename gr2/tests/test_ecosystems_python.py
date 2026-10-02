@@ -227,7 +227,7 @@ def test_the_same_name_in_two_ecosystems_is_not_a_clash(tmp_path: Path) -> None:
     lane = _pyproject_dirs(tmp_path, {"a": None, "b": None})
     one = stub(describe=lambda r: units_answer(u("npm:core", "a")) if r["key"] == "a" else units_answer())
     two = stub(describe=lambda r: units_answer(u("cargo:core", "b")) if r["key"] == "b" else units_answer())
-    plan = plan_lane(lane, ["a", "b"], {"one": one, "two": two})
+    plan = plan_lane(lane, ["a", "b"], {"npm": one, "cargo": two})  # a plugin answers only for its own ecosystem prefix
     assert [g.units for g in plan.groups] == [("npm:core",), ("cargo:core",)]
 
 
@@ -235,5 +235,5 @@ def test_one_member_that_two_plugins_both_claim_yields_two_units(tmp_path: Path)
     lane = _pyproject_dirs(tmp_path, {"a": None})
     one = stub(describe=lambda r: units_answer(u("cargo:a", "a")))
     two = stub(describe=lambda r: units_answer(u("npm:a", "a")))
-    plan = plan_lane(lane, ["a"], {"one": one, "two": two})
+    plan = plan_lane(lane, ["a"], {"cargo": one, "npm": two})  # one is cargo, two is npm: each answers its own prefix
     assert {x.id for x in plan.units} == {"cargo:a", "npm:a"} and {x.member for x in plan.units} == {"a"}

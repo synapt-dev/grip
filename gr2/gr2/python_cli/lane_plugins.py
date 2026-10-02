@@ -20,6 +20,7 @@ import os
 import signal
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -29,6 +30,7 @@ from .lane_graph import LaneRefused
 PREFIX = "grip-ecosystem-"
 DEFAULT_TIMEOUT = 30.0  # seconds per call
 DEFAULT_MAX_BYTES = 1_000_000  # bytes of answer
+_POLL = 0.02  # seconds between looks at a running plugin's output size
 
 
 def discover_plugins(path: str) -> dict[str, str]:
@@ -75,11 +77,16 @@ def external_plugin(
 
         cwd = request.get("dir") if call_name == "describe" else None
         run_env = env if env is not None else {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", ""), "LC_ALL": "C"}
-        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        # The request goes in through a FILE, not a pipe: a pipe holds about 64 KB, so a plugin that does not read
+        # its stdin would block the writer forever on a larger request (a big group's plan_group) and no timeout
+        # could fire. A file never fills the way a pipe does, and there is no broken-pipe case to handle.
+        with tempfile.TemporaryFile() as inp, tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+            inp.write(json.dumps(request).encode())
+            inp.seek(0)
             try:
                 proc = subprocess.Popen(
                     [exe, call_name],
-                    stdin=subprocess.PIPE,
+                    stdin=inp,
                     stdout=out,
                     stderr=err,
                     cwd=cwd if cwd and os.path.isdir(cwd) else None,
@@ -88,14 +95,24 @@ def external_plugin(
                 )
             except OSError as exc:
                 raise fail(f"could not be started ({exc})") from exc
-            try:
-                proc.communicate(json.dumps(request).encode(), timeout=timeout)
-            except subprocess.TimeoutExpired:
-                _kill(proc)
-                proc.wait()
-                raise fail(f"no answer within {timeout:g}s") from None
-            except BrokenPipeError:
-                proc.wait()  # it closed stdin without reading; its exit status says what happened
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    proc.wait(timeout=max(0.0, min(_POLL, deadline - time.monotonic())))
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+                # The answer goes to a file, so the bound is checked WHILE the plugin runs, not after it exits: a
+                # plugin that never stops writing is killed as soon as its output passes the bound, instead of
+                # filling the disk for the length of the timeout.
+                if os.fstat(out.fileno()).st_size > max_bytes:
+                    _kill(proc)
+                    proc.wait()
+                    raise fail(f"an answer over the {max_bytes} byte bound")
+                if time.monotonic() >= deadline:
+                    _kill(proc)
+                    proc.wait()
+                    raise fail(f"no answer within {timeout:g}s")
             if proc.returncode != 0:
                 err.seek(0)
                 tail = err.read(300).decode("utf-8", "replace").strip().replace("\n", " ")

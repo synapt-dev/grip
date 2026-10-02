@@ -3362,8 +3362,10 @@ def review_run(
     reports: Optional[str] = typer.Option(None, "--reports", help="JUnit XML report glob for `--runner junit-xml`. Defaults to `**/build/test-results/**/*.xml`; only reports written during this run count."),
     order: Optional[str] = typer.Option(None, "--order", help=(
         "A multi-repo lane: the member keys, comma-separated, in the order they install and run "
-        "(every member once). Defaults to the marker's order, sorted by key; a member that needs "
-        "another installed first must come after it."
+        "(every member once). Without it the order is derived from each member's declared "
+        "dependencies: a member installs after every other member named in its "
+        "[project].dependencies, and otherwise keeps the marker's order, sorted by key. A cycle "
+        "is refused by name; this flag is the way to choose an order anyway."
     )),
     json_output: bool = typer.Option(False, "--json", help="Emit the receipt as JSON"),
     pytest_args: Optional[List[str]] = typer.Argument(None, help="Args passed to pytest after `--` (every -k/-p/path filter is recorded)"),

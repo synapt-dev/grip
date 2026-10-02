@@ -21,6 +21,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   launch command is now built by one shared path used by both the pane and the
   foreground launch.
 
+### Changed
+
+- **`gr2 review run` derives a multi-repo lane's install order from the members' own declared
+  dependencies.** A member installs after every other member of the lane whose distribution
+  name appears in its `[project].dependencies` (names compared after PEP 503 normalisation).
+  Among members that are ready, the lane marker's order (sorted by member key) still decides,
+  so a lane whose members do not depend on each other runs in the order it always did. Before,
+  the order was the marker's alone unless `--order` named one, so a member that depends on
+  another installed correctly only when its key sorted after the other's. `--order KEY,KEY`
+  stays the explicit override and bypasses the derivation. Two new refusals, both raised before
+  any venv exists and naming the members: `dependency_cycle` (the loop is printed) and
+  `member_name_clash` (two members declare one distribution). A member with no readable
+  `pyproject.toml`, or one that is not a `[project]` table with a list of requirement strings,
+  declares nothing and keeps its marker position, and only
+  `[project].dependencies` counts, not optional dependencies. The receipt gains `order_source`
+  (`dependencies` or `explicit`, null for a refusal before the order is chosen); the printed `order:`
+  line is unchanged.
+
 ### Fixed
 
 - **`gr pr create` opens PRs for the branch you are on, not for every branch

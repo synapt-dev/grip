@@ -26,6 +26,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import tomllib
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -124,6 +125,7 @@ class ReviewRunRefused(Exception):
         # or red before it, and which never ran.
         self.member = member
         self.order: list[str] | None = None
+        self.order_source: str | None = None
         self.completed: list[dict] = []
         self.not_run: list[str] = []
         super().__init__(f"{code}: {detail}")
@@ -597,6 +599,7 @@ def _write_refusal_receipt(lane_dir: Path, exc: "ReviewRunRefused") -> None:
         receipt["output_log"] = member_log if has_log else None
         receipt["refusal_member"] = exc.member
         receipt["order"] = exc.order
+        receipt["order_source"] = exc.order_source
         receipt["members"] = exc.completed
         receipt["not_run"] = exc.not_run
     try:
@@ -962,6 +965,92 @@ def _resolve_member_order(keys: list[str], order: list[str] | None) -> list[str]
     return order
 
 
+_REQUIREMENT_NAME_RE = re.compile(r"^\s*([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)")
+
+
+def _normalized_dist_name(name: str) -> str:
+    """PEP 503 normalisation, so `Demo_Core`, `demo.core` and `demo-core` are one distribution."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _member_distribution(mdir: Path) -> tuple[str | None, list[str]]:
+    """(the member's own distribution name, the distribution names it requires) read from its
+    pyproject.toml `[project]`, or (None, []) when the member has no readable pyproject: a
+    member that installs some other way declares nothing here, so it is placed by the marker
+    order alone, exactly as before this derivation existed."""
+    path = mdir / "pyproject.toml"
+    try:
+        project = tomllib.loads(path.read_text(encoding="utf-8")).get("project", {})
+    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+        return None, []
+    if not isinstance(project, dict):
+        # Valid TOML that is not a [project] table (`project = 5`, `[[project]]`) declares nothing,
+        # the same as an unreadable file.
+        return None, []
+    name = project.get("name")
+    declared = project.get("dependencies", [])
+    required: list[str] = []
+    for spec in declared if isinstance(declared, list) else []:
+        match = _REQUIREMENT_NAME_RE.match(spec) if isinstance(spec, str) else None
+        if match:
+            required.append(_normalized_dist_name(match.group(1)))
+    return (_normalized_dist_name(name) if isinstance(name, str) and name else None), required
+
+
+def _derive_member_order(lane_dir: Path, keys: list[str]) -> list[str]:
+    """Install order from what each member DECLARES: a member installs after every other lane
+    member whose distribution name appears in its `[project].dependencies`. uv does the same
+    for a workspace (every member into one .venv in dependency order), so nobody has to pass an
+    order by hand; `--order` stays the explicit override and bypasses this.
+
+    Stable: among members that are ready, the one earliest in the marker order goes first, so a
+    lane with no declared dependencies between its members keeps the marker order it always had.
+    A cycle is refused by name rather than broken silently; two members that claim one
+    distribution name are refused too, because an edge to that name would point at either."""
+    dist: dict[str, str | None] = {}
+    requires: dict[str, list[str]] = {}
+    for key in keys:
+        dist[key], requires[key] = _member_distribution(_member_dir(lane_dir, key))
+    owner: dict[str, str] = {}
+    for key in keys:
+        name = dist[key]
+        if name is None:
+            continue
+        if name in owner:
+            raise ReviewRunRefused(
+                "member_name_clash",
+                f"members {owner[name]!r} and {key!r} both declare the distribution {name!r}, so "
+                "the install order cannot be derived; pass --order to name it",
+            )
+        owner[name] = key
+    needs = {
+        key: [owner[n] for n in requires[key] if n in owner and owner[n] != key] for key in keys
+    }
+    placed: list[str] = []
+    remaining = list(keys)
+    while remaining:
+        ready = next((k for k in remaining if all(d in placed for d in needs[k])), None)
+        if ready is None:
+            # Everything left waits on something left: walk the waits from the first one until a
+            # member repeats, and print that loop.
+            walk = [remaining[0]]
+            while True:
+                nxt = next(d for d in needs[walk[-1]] if d in remaining)
+                if nxt in walk:
+                    walk = walk[walk.index(nxt):] + [nxt]
+                    break
+                walk.append(nxt)
+            raise ReviewRunRefused(
+                "dependency_cycle",
+                "the lane's members depend on each other in a cycle, so no install order exists: "
+                + " -> ".join(walk)
+                + "; pass --order to choose one",
+            )
+        placed.append(ready)
+        remaining.remove(ready)
+    return placed
+
+
 def _run_multi_member_lane(
     lane_dir: Path,
     marker: dict,
@@ -988,6 +1077,9 @@ def _run_multi_member_lane(
     never ran are named in `not_run`, so a stop never reads as a green."""
     keys = [str(r.get("key", "")) for r in repos]
     ran_order = _resolve_member_order(keys, order)
+    # How the order was chosen, said only once it is true: None until the derivation runs, so a refusal
+    # that happens BEFORE it (an integrity check) does not claim a derived order next to the marker order.
+    order_source = "explicit" if order is not None else None
     by_key = {str(r.get("key", "")): r for r in repos}
     members: list[dict] = []
     done: list[str] = []
@@ -1017,6 +1109,14 @@ def _run_multi_member_lane(
                     "runs pytest members only in this version",
                 )
         current = None
+        # DERIVED ONLY NOW, after every member's tree passed its integrity check: the order is read from
+        # each member's pyproject, and a pyproject that was tampered with must refuse as a tamper (above),
+        # not steer the install order. `--order` bypasses this entirely (the explicit override).
+        if order is None:
+            # Both assigned only once the derivation RETURNS: a cycle or a name clash refuses from inside it,
+            # and that receipt must not label the untouched marker order as derived.
+            ran_order = _derive_member_order(lane_dir, ran_order)
+            order_source = "dependencies"
         # Taken after the checks above and before the venv and any install: everything in it already
         # passed the drift check, so what is new later was written by an install or by tests.
         baselines = {member: list_untracked(_member_dir(lane_dir, member)) for member in ran_order}
@@ -1060,6 +1160,7 @@ def _run_multi_member_lane(
         if exc.member is None:
             exc.member = current
         exc.order = ran_order
+        exc.order_source = order_source
         exc.completed = members
         exc.not_run = [k for k in ran_order if k not in done and k != exc.member]
         raise
@@ -1070,6 +1171,7 @@ def _run_multi_member_lane(
         "created": datetime.now(timezone.utc).isoformat(),
         "gr_commit": marker.get("gr_commit", ""),
         "order": ran_order,
+        "order_source": order_source,
         "members": members,
         "not_run": [],
         "selected": sum(m["selected"] for m in members),

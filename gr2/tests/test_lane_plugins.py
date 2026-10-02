@@ -221,6 +221,20 @@ def test_plan_3_a_dev_dependency_cycle_is_test_edges_no_group_and_normal_order(t
 
 
 @needs_cargo
+def test_a_lane_reached_through_a_symlink_still_gets_a_clean_via(tmp_path: Path, cargo_path: str) -> None:
+    """cargo reports real paths; the request may carry a symlinked lane path (/tmp, a linked workspace). The via must
+    stay `<key>/Cargo.toml [section]`, not a walk up through the link (found by running the plugin from /tmp)."""
+    real = tmp_path / "real"
+    real.mkdir()
+    crate(real, "a", deps={"b": ""})
+    crate(real, "b")
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    plan = plan_lane(link, ["a", "b"], lp.plugin_table(cargo_path))
+    assert [e.via for e in plan.edges] == ["a/Cargo.toml [dependencies]"]
+
+
+@needs_cargo
 def test_plan_3_control_the_same_pair_with_the_cycle_removed_plans_cleanly(tmp_path: Path, cargo_path: str) -> None:
     lane = tmp_path / "lane"
     lane.mkdir()

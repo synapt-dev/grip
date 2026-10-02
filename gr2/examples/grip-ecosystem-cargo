@@ -53,7 +53,8 @@ def describe(req):
     for pid in meta["workspace_members"]:
         pkg = by_id[pid]
         pdir = os.path.dirname(pkg["manifest_path"])
-        rel = os.path.relpath(pkg["manifest_path"], mdir)
+        # cargo reports real paths and the request may carry a symlinked one (/tmp, a linked workspace): compare real to real
+        rel = os.path.relpath(os.path.realpath(pkg["manifest_path"]), os.path.realpath(mdir))
         edges = []
         for dep in nodes[pid]["deps"]:
             target = by_id[dep["pkg"]]["name"]

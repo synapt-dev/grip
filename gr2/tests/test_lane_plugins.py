@@ -16,6 +16,8 @@ from gr2.python_cli import lane_graph as lg
 from gr2.python_cli import lane_plugins as lp
 from gr2.python_cli.lane_graph import LaneRefused, plan_lane
 
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="external plugins are executables with a shebang line; discovery by the executable bit and the process-group kill are POSIX behaviour")
+
 CARGO_EXE = Path(__file__).resolve().parents[1] / "examples" / "grip-ecosystem-cargo"
 needs_cargo = pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is not installed on this host")
 
@@ -138,6 +140,21 @@ def test_a_plugin_that_does_not_answer_in_time_is_killed_and_refuses(tmp_path: P
     pid = int(pidfile.read_text())
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)  # it is gone, not left running
+
+
+def test_a_timeout_still_kills_the_plugin_where_there_is_no_process_group_kill(tmp_path: Path, monkeypatch) -> None:
+    """Where os.killpg does not exist (Windows) the runner kills the plugin process itself; simulated by removing it."""
+    monkeypatch.delattr(os, "killpg")
+    pidfile = tmp_path / "pid"
+    body = f"import os, time\nopen({str(pidfile)!r}, 'w').write(str(os.getpid()))\ntime.sleep(60)\n"
+    import time
+
+    t0 = time.monotonic()
+    with pytest.raises(LaneRefused) as exc:
+        one(tmp_path, body, timeout=1.0)("describe", describe_req(tmp_path))
+    assert time.monotonic() - t0 < 15 and "no answer within 1s" in exc.value.detail
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pidfile.read_text()), 0)
 
 
 def test_an_oversize_answer_is_refused_not_parsed(tmp_path: Path) -> None:

@@ -50,6 +50,20 @@ def discover_plugins(path: str) -> dict[str, str]:
     return found
 
 
+def _kill(proc: subprocess.Popen) -> None:
+    """Stop a plugin that did not answer in time, and its own children where the platform has process groups.
+    POSIX: the plugin was started in its own session, so the whole group is killed. Where there is no
+    ``killpg`` (Windows), or the group is already gone, the plugin process itself is killed."""
+    killpg = getattr(os, "killpg", None)
+    if killpg is not None:
+        try:
+            killpg(proc.pid, signal.SIGKILL)
+            return
+        except (ProcessLookupError, PermissionError):
+            pass
+    proc.kill()
+
+
 def external_plugin(
     name: str, exe: str, *, timeout: float = DEFAULT_TIMEOUT, max_bytes: int = DEFAULT_MAX_BYTES, env: dict | None = None
 ) -> Callable[[str, dict], dict]:
@@ -77,10 +91,7 @@ def external_plugin(
             try:
                 proc.communicate(json.dumps(request).encode(), timeout=timeout)
             except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    proc.kill()
+                _kill(proc)
                 proc.wait()
                 raise fail(f"no answer within {timeout:g}s") from None
             except BrokenPipeError:

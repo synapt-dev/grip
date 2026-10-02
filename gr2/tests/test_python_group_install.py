@@ -13,6 +13,7 @@ fail at the first install. The row skips loudly only when a venv cannot be made 
 from __future__ import annotations
 
 import subprocess
+import sys
 import venv
 from pathlib import Path
 
@@ -21,6 +22,8 @@ from gr2.python_cli import ecosystems_python as ep
 from gr2.python_cli.lane_graph import plan_lane
 
 PY = {"python": ep.call}
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="the scratch venv's interpreter path (bin/python) is POSIX")
 
 BACKEND = '''\
 """A stdlib-only PEP 660 backend: an editable install is one .pth pointing at the member directory."""

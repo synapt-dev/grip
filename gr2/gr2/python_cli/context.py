@@ -141,8 +141,11 @@ def resolve_actor(
     if on_terminal:
         name = git_name
         if name is None:
-            probe = subprocess.run(["git", "config", "user.name"], capture_output=True, text=True, check=False)
-            name = probe.stdout.strip() if probe.returncode == 0 else ""
+            try:
+                probe = subprocess.run(["git", "config", "user.name"], capture_output=True, text=True, check=False)
+                name = probe.stdout.strip() if probe.returncode == 0 else ""
+            except OSError:  # git is not installed or not on PATH: there is no name to use, so refuse below
+                name = ""
         if name:
             return Resolved(f"human:{name}", "git user.name")
     raise ActorRefused(

@@ -37,6 +37,17 @@ def _entered_workspace(tmp_path: Path, units: tuple[str, ...] = ("default",), en
     return root, inside
 
 
+def _plain(text: str) -> str:
+    """A usage refusal is drawn by rich as a boxed, coloured, width-wrapped panel (CI's terminal width and
+    colour differ from a developer's), so the words a row asserts on are compared with the colour codes and
+    the box characters removed and the whitespace collapsed."""
+    import re
+
+    text = re.sub(r"\x1b\[[0-9;]*m", "", text)
+    text = re.sub(r"[│╭╮╰╯─]", " ", text)
+    return " ".join(text.split())
+
+
 def _run(*args: str, cwd: Path, quiet: bool = False, verb: tuple[str, ...] = ("lane", "show"),
          extra_env: dict[str, str] | None = None):
     old = Path.cwd()
@@ -106,7 +117,8 @@ def test_several_units_with_no_entered_lane_refuse_and_list_them(tmp_path: Path)
     (lane_proto.current_lane_file(root, "alpha")).write_text(json.dumps({"current": None, "recent": []}))
     result = _run(cwd=root)
     assert result.exit_code == 2
-    assert "alpha" in result.stderr and "beta" in result.stderr and "--unit" in result.stderr
+    text = _plain(result.stderr)
+    assert "alpha" in text and "beta" in text and "--unit" in text, text
 
 
 def test_a_word_that_is_both_a_root_and_a_unit_refuses_naming_both_readings(tmp_path: Path) -> None:
@@ -116,7 +128,8 @@ def test_a_word_that_is_both_a_root_and_a_unit_refuses_naming_both_readings(tmp_
     (clash / ".grip" / "workspace_spec.toml").write_text("")
     result = _run("a", cwd=root)
     assert result.exit_code == 2
-    assert "-C a" in result.stderr and "--unit a" in result.stderr
+    text = _plain(result.stderr)
+    assert "-C a" in text and "--unit a" in text, text
 
 
 def test_the_only_unit_in_the_spec_is_used_when_no_lane_is_entered(tmp_path: Path) -> None:
@@ -218,3 +231,16 @@ def test_an_inferred_actor_is_marked_in_the_event_and_a_typed_one_is_not(tmp_pat
     assert _run("--actor", "human:me", cwd=typed_inside, verb=("lane", "exit")).exit_code == 0
     typed = _events(typed_root, "lane.exited")
     assert typed and "actor_source" not in typed[-1], typed
+
+
+def test_a_terminal_with_no_git_on_path_refuses_with_the_actor_message_not_a_traceback(monkeypatch) -> None:
+    monkeypatch.setenv("PATH", "/nonexistent")
+    with pytest.raises(ctx_mod.ActorRefused):
+        ctx_mod.resolve_actor(None, env={}, tty=True)  # git_name unset: it asks git, which is absent
+
+
+def test_the_unit_given_twice_is_refused(tmp_path: Path) -> None:
+    root, inside = _entered_workspace(tmp_path)
+    result = _run(str(root), "default", "--unit", "other", cwd=tmp_path)
+    assert result.exit_code == 2, (result.stdout, result.stderr)
+    assert "given twice" in _plain(result.stderr), result.stderr

@@ -362,3 +362,37 @@ def test_a_refused_first_bind_on_a_root_with_no_store_leaves_no_store_behind(two
     assert "set up a native store" not in out + capfd.readouterr().err
     assert sorted(entry.name for entry in ws.iterdir()) == before
     assert not (ws / "grip.toml").exists() and not (ws / ".git").exists()
+
+
+def test_a_refused_first_bind_does_not_remove_a_store_another_bind_published_into(two_member_ws: Path) -> None:
+    """The cleanup removes only what this call set up: if a valid bind was published into the new store
+    before the refusal runs, the store and that bind survive."""
+    ws = two_member_ws
+    _spec_only_root(ws)
+    remote, base, head = _unpushed_head(ws)
+    created = grip_mod._validate_bind_store(ws, create=True)
+    assert created is not None and ".git" in created[0]
+    row = {"key": "alpha", "remote": remote, "path": "alpha", "head": head, "base": base,
+           "ref": "refs/heads/main", "title": "", "body": "", "source": str(ws / "alpha")}
+    other = grip_mod.create_review_bind_commit(ws, [row])
+
+    def refused() -> str:
+        raise grip_mod.GripReviewRefused("base_not_live_head", "x", "y")
+
+    with pytest.raises(grip_mod.GripReviewRefused):
+        grip_mod._guarded_bind(ws, created, refused)
+    assert (ws / ".git").exists() and (ws / "grip.toml").is_file()
+    assert _refs(ws) == [_REFS + other]
+
+
+def test_a_refused_first_bind_on_an_adopted_root_keeps_grip_toml(two_member_ws: Path, capfd) -> None:
+    """Stated, not cleaned: an adopted root keeps its own `.git`, so `store init`'s `grip.toml` (and the
+    `/.grip/` exclude line) stay after a refusal; the 'set up' line is still not printed."""
+    ws = two_member_ws
+    _adopt(ws)
+    _spec_only_root(ws)
+    remote, base, head = _unpushed_head(ws)
+    code, out = _cli(*_bind_args(ws, remote, head, head))
+    assert code == 2 and "base_not_live_head" in out, out
+    assert "set up a native store" not in out + capfd.readouterr().err
+    assert (ws / "grip.toml").is_file() and (ws / ".git").exists() and _refs(ws) == []

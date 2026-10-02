@@ -1056,7 +1056,7 @@ def _bind_commit_tree(workspace: Path, tree_sha: str, *, parent: str | None = No
     return proc.stdout.strip()
 
 
-def _validate_bind_store(workspace: Path, *, create: bool = False) -> list[str] | None:
+def _validate_bind_store(workspace: Path, *, create: bool = False) -> tuple[list[str], str] | None:
     """A native root needs nothing but its own `.git` (a bind creates a ref, never a store), after
     any review binds an older gr2 left in `.grip/.git` have moved into refs (see
     `_migrate_legacy_binds`).
@@ -1068,8 +1068,11 @@ def _validate_bind_store(workspace: Path, *, create: bool = False) -> list[str] 
     (a snapshot or a bind commit) is refused naming `store migrate`, because that conversion can
     legitimately refuse. Any other directory keeps the `not_initialized` refusal.
 
-    Returns the names this call created at the root when it set up a store whose `.git` did not
-    exist before (so a writer that then refuses can remove exactly those), else None."""
+    Returns (the names this call created at the root, the root's HEAD right after setup) when it set
+    up a store whose `.git` did not exist before, so a writer that then refuses can remove exactly
+    those and only while nothing else has been published since; else None. An adopted root (one that
+    already had its own `.git`) is never cleaned: a refused first bind there keeps the `grip.toml` and
+    the `/.grip/` exclude line that `store init` wrote, both harmless."""
     if not _is_native_workspace(workspace):
         legacy = _layout_grip_dir(workspace) / ".git"
         if legacy.is_dir() and _alpha_state_commits(legacy):
@@ -1086,13 +1089,14 @@ def _validate_bind_store(workspace: Path, *, create: bool = False) -> list[str] 
         had_git = (workspace / ".git").exists()
         _set_up_native_store(workspace)
         created = [] if had_git else sorted({entry.name for entry in workspace.iterdir()} - before)
+        head = _bind_git(workspace, "rev-parse", "--verify", "--quiet", "HEAD").stdout.strip()
         _migrate_legacy_binds(workspace)
-        return created
+        return (created, head)
     _migrate_legacy_binds(workspace)
     return None
 
 
-def _guarded_bind(workspace: Path, created: list[str] | None, write) -> str:
+def _guarded_bind(workspace: Path, created: tuple[list[str], str] | None, write) -> str:
     """Run a bind writer; when it refuses after this call set up the native store, remove what the
     setup created (only when the root's `.git` did not exist before) so a refused command leaves
     no repository behind, and say nothing about a store that was never kept."""
@@ -1102,7 +1106,13 @@ def _guarded_bind(workspace: Path, created: list[str] | None, write) -> str:
     try:
         commit = write()
     except BaseException:
-        for name in created or []:
+        names, setup_head = created or ([], "")
+        if ".git" in names and (
+            _bind_git(workspace, "for-each-ref", "--count=1", _REVIEW_REF_PREFIX).stdout.strip()
+            or _bind_git(workspace, "rev-parse", "--verify", "--quiet", "HEAD").stdout.strip() != setup_head
+        ):
+            names = []  # another writer has published into the store since setup: it is theirs now
+        for name in names:
             target = workspace / name
             if target.is_dir() and not target.is_symlink():
                 shutil.rmtree(target, ignore_errors=True)

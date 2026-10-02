@@ -65,8 +65,10 @@ channel = "dev"
 ''')
         from gr2.python_cli.migration import bootstrap_gr1_workspace
         bootstrap_gr1_workspace(workspace)
+        native_root(workspace)  # review binds live in a native root's own .git
     else:
         (workspace / ".grip").mkdir(parents=True)
+        native_root(workspace)
         (workspace / ".grip" / "workspace_spec.toml").write_text('''schema_version = 1
 workspace_name = "m1"
 

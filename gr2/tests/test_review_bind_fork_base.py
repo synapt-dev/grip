@@ -8,6 +8,8 @@ where the pins' base comes from changes."""
 
 from __future__ import annotations
 
+from tests.native_root_helper import native_root
+
 import argparse
 import subprocess
 from pathlib import Path
@@ -39,10 +41,7 @@ def _workspace(tmp_path: Path, repos: list[str]) -> Path:
     ws = tmp_path / "ws"
     grip_dir = ws / ".grip"
     grip_dir.mkdir(parents=True)
-    _git(grip_dir, "init", "-b", "main")
-    _git(grip_dir, "config", "user.name", "Grip")
-    _git(grip_dir, "config", "user.email", "grip@example.com")
-    _git(grip_dir, "commit", "--allow-empty", "-m", "init grip")
+    native_root(ws)
     repo_blocks = "".join(
         f'\n[[repos]]\nname = "{r}"\npath = "repos/{r}"\nurl = "https://example.invalid/{r}.git"\n'
         for r in repos

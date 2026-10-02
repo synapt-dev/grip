@@ -11,6 +11,8 @@ started at) after cloning. These tests drive the real CLI, not create_lane direc
 """
 from __future__ import annotations
 
+from tests.native_root_helper import native_root
+
 import subprocess
 from pathlib import Path
 
@@ -48,11 +50,8 @@ def _source_repo(tmp_path: Path, ws: Path, name: str) -> tuple[str, str]:
 def _workspace(tmp_path: Path, repos: list[str]) -> tuple[Path, dict[str, str]]:
     ws = tmp_path / "ws"
     (ws / ".grip").mkdir(parents=True)
-    # the grip object store (create-project writes the review-kind commit here)
-    _git(ws / ".grip", "init", "-q", "-b", "main")
-    _git(ws / ".grip", "config", "user.email", "g@e.invalid")
-    _git(ws / ".grip", "config", "user.name", "g")
-    _git(ws / ".grip", "commit", "-q", "--allow-empty", "-m", "init grip")
+    # a native root: create-project publishes the review-kind commit as a ref in the root's own .git
+    native_root(ws)
     tips: dict[str, str] = {}
     urls: dict[str, str] = {}
     for r in repos:
@@ -74,10 +73,7 @@ def _workspace_with_blocked_projection(tmp_path: Path) -> tuple[Path, str]:
     projection blocks (HookRuntimeError -> exit 1). Returns (ws, materialization sha)."""
     ws = tmp_path / "ws"
     (ws / ".grip").mkdir(parents=True)
-    _git(ws / ".grip", "init", "-q", "-b", "main")
-    _git(ws / ".grip", "config", "user.email", "g@e.invalid")
-    _git(ws / ".grip", "config", "user.name", "g")
-    _git(ws / ".grip", "commit", "-q", "--allow-empty", "-m", "init grip")
+    native_root(ws)
 
     origin = tmp_path / "app.git"
     _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
@@ -234,7 +230,7 @@ def test_cli_carry_range_reconstructs_the_exact_pinned_sha(tmp_path: Path) -> No
     assert res.exit_code == 0, res.output
     sha = next(l for l in res.output.splitlines() if l.startswith("gr:"))[3:].strip()
     # the objects subtree carries committer metadata, and the pin's remote holds base.
-    obj_names = grip._grip_git(ws, "ls-tree", "--name-only", f"{sha}:objects/app").stdout.split()
+    obj_names = grip._bind_git(ws, "ls-tree", "--name-only", f"{sha}:objects/app").stdout.split()
     assert "committers" in obj_names
 
     result = grip.reconstruct_project_review_lane(ws, sha, "app", tmp_path / "recon" / "app")

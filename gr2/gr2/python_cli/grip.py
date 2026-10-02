@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 
 from .gitops import git
+from .layout import grip_dir as _layout_grip_dir
 from .workspace_guidance import missing_gr2_workspace_guidance
 
 
@@ -21,6 +22,16 @@ from .workspace_guidance import missing_gr2_workspace_guidance
 
 class GripInitError(Exception):
     """Raised when .grip/ repo is missing or not properly initialized."""
+
+
+class AlphaRootRefused(GripInitError):
+    """A review verb on an alpha root (its record is the `.grip/.git` snapshot store). Review binds
+    live in a native root's own `.git`, so the one thing the caller can do is convert the root."""
+
+
+class StoreSetupRefused(GripInitError):
+    """The native store a bind sets up on a root with no store was refused by `store init` itself
+    (no sibling git repositories, a pin not on its upstream, ...). The reason is `store init`'s own."""
 
 
 class ReviewStoreAbsent(GripInitError):
@@ -199,7 +210,7 @@ def create_project_review_commit(
     pinned pre-push head, not merely its tree (the committer-date-match contract). A
     key present in ``committers`` must also be in ``ranges``; the derived head is
     asserted equal to the pinned head at create time."""
-    _validate_bind_store(workspace)
+    _validate_bind_store(workspace, create=True)
     if not pins:
         raise GripCorruptError("project review requires at least one repository pin")
     ranges = ranges or {}
@@ -238,8 +249,7 @@ def create_project_review_commit(
     if objects_entries:
         root_fields.append(f"040000 tree {_bind_mktree(workspace, objects_entries)}\tobjects")
     root_tree = _bind_mktree(workspace, root_fields)
-    native = _is_native_workspace(workspace)
-    commit = _bind_commit_tree(workspace, root_tree, parent=None if native else _current_head(workspace), message="grip project review")
+    commit = _bind_commit_tree(workspace, root_tree, message="grip project review")
     return _publish_bind(workspace, commit, "grip project review")
 
 
@@ -481,7 +491,7 @@ def create_review_bind_commit(
     On a native root the bind is a parentless commit in the root's own `.git`, published as
     `refs/dev.synapt.grip/__reviews__/<commit>` as the LAST step and create-only, so a bind that refuses leaves no
     ref and no store: only unreferenced objects, which `git gc` collects. A root that is not
-    native keeps the alpha `.grip/.git` store."""
+    native is refused (an alpha root names `store migrate`)."""
     return _bind_review_rows(workspace, rows, ratified=ratified, policy_hook=policy_hook)
 
 
@@ -502,7 +512,7 @@ def _bind_review_rows(
     leak, packs hide them) and refuses the bind on a nonzero exit, the way a
     freeze refuses today. OSS ships no hook (records ``no-policy``); our config
     points it at the leak scanner. The verdict is recorded in the object."""
-    _validate_bind_store(workspace)
+    _validate_bind_store(workspace, create=True)
     if not rows:
         raise GripCorruptError("review bind requires at least one repository row")
     entries: list[str] = []
@@ -617,8 +627,7 @@ def _bind_review_rows(
     if evidence_entries:
         root_fields.append(f"040000 tree {_bind_mktree(workspace, evidence_entries)}\tevidence")
     root_tree = _bind_mktree(workspace, root_fields)
-    native = _is_native_workspace(workspace)
-    commit = _bind_commit_tree(workspace, root_tree, parent=None if native else _current_head(workspace), message="grip review bind")
+    commit = _bind_commit_tree(workspace, root_tree, message="grip review bind")
     return _publish_bind(workspace, commit, "grip review bind")
 
 
@@ -985,15 +994,18 @@ def _grip_git(workspace: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return git(workspace / ".grip", *args)
 
 
-# Review binds live in the workspace root's own `.git` on a native root (a `grip.toml` beside a
-# root `.git`), under `refs/dev.synapt.grip/__reviews__/<commit>`; the alpha `.grip/.git` store keeps its old
-# home until it is converted. `_grip_git` and the alpha snapshot helpers above stay on `.grip`.
+# Review binds live in the workspace root's own `.git` (a native root: a `grip.toml` beside a root
+# `.git`), under `refs/dev.synapt.grip/__reviews__/<commit>`. An alpha root is refused naming `store migrate`.
+# `_grip_git` and the alpha snapshot helpers above stay on `.grip/.git`: the snapshot verbs and the
+# config reader still use it.
 _REVIEW_REF_PREFIX = "refs/dev.synapt.grip/__reviews__/"
 _ZERO_OID = "0" * 40
 
 
 def _bind_dir(workspace: Path) -> Path:
-    return workspace if _is_native_workspace(workspace) else workspace / ".grip"
+    """The repo that holds review binds: the workspace root's own `.git`. Every bind-path entry
+    point has already refused a root that is not native (`_validate_bind_store`)."""
+    return workspace
 
 
 def _bind_git(workspace: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -1029,22 +1041,77 @@ def _bind_commit_tree(workspace: Path, tree_sha: str, *, parent: str | None = No
     return proc.stdout.strip()
 
 
-def _validate_bind_store(workspace: Path) -> None:
+def _validate_bind_store(workspace: Path, *, create: bool = False) -> None:
     """A native root needs nothing but its own `.git` (a bind creates a ref, never a store), after
     any review binds an older gr2 left in `.grip/.git` have moved into refs (see
-    `_migrate_legacy_binds`); any other root keeps the alpha `.grip/.git` check."""
-    if _is_native_workspace(workspace):
-        _migrate_legacy_binds(workspace)
-        return
-    _validate_grip_repo(workspace)
+    `_migrate_legacy_binds`).
+
+    A root with NO store goes native when something is bound into it (``create=True``, the writers):
+    a workspace root (it holds `.grip/workspace_spec.toml`) whose `.grip/.git` is absent, or holds no
+    bind and no snapshot commit, gets `store init`'s native store and any such empty `.grip/.git` is
+    moved aside, with one line saying so. Reads never create it. A `.grip/.git` with REAL alpha state
+    (a snapshot or a bind commit) is refused naming `store migrate`, because that conversion can
+    legitimately refuse. Any other directory keeps the `not_initialized` refusal."""
+    if not _is_native_workspace(workspace):
+        legacy = _layout_grip_dir(workspace) / ".git"
+        if legacy.is_dir() and _alpha_state_commits(legacy):
+            raise AlphaRootRefused(
+                f"{workspace} is an alpha workspace (its record is the .grip/.git snapshot store); review "
+                "binds live in a native root's own .git. Run `gr2 store migrate` to convert it, then bind."
+            )
+        if not (legacy.exists() or (_layout_grip_dir(workspace) / "workspace_spec.toml").is_file()):
+            _validate_grip_repo(workspace)  # not a workspace at all: the existing refusal
+            return
+        if not create:
+            raise ReviewStoreAbsent(f"No review bind is bound in {workspace}: nothing has been stored there yet.")
+        _set_up_native_store(workspace)
+    _migrate_legacy_binds(workspace)
+
+
+def _move_aside_empty_store(workspace: Path, legacy: Path) -> None:
+    """A `.grip/.git` holding no bind and no snapshot is not a store: a native root moves it aside."""
+    import sys
+
+    target = _layout_grip_dir(workspace) / "legacy-store.git"
+    if target.exists():
+        return  # an earlier move already took that name; leave this one rather than overwrite
+    legacy.rename(target)
+    print("moved an empty .grip/.git aside to .grip/legacy-store.git", file=sys.stderr)
+
+
+def _alpha_state_commits(store: Path) -> list[str]:
+    """Commits in an alpha `.grip/.git` that carry real state: a snapshot, a review bind or a project
+    review. An empty store, or one holding only unlabelled commits, has none."""
+    listed = subprocess.run(["git", "--git-dir", str(store), "rev-list", "HEAD"], capture_output=True, text=True, check=False)
+    if listed.returncode != 0:
+        return []
+    out = []
+    for commit in listed.stdout.split():
+        schema = subprocess.run(["git", "--git-dir", str(store), "show", f"{commit}:.grip/schema"],
+                                capture_output=True, text=True, check=False).stdout.strip()
+        if schema in (_REVIEW_BIND_SCHEMA, _PROJECT_REVIEW_SCHEMA, _WORKSPACE_SCHEMA):
+            out.append(commit)
+    return out
+
+
+def _set_up_native_store(workspace: Path) -> None:
+    """`store init` for a root that has no store, so the stranger never types it before a bind."""
+    # Local import: grip_cli imports this module.
+    import sys
+
+    from .grip_cli import NativeStoreRefusal, _native_store_init
+
+    try:
+        _native_store_init(workspace)
+    except NativeStoreRefusal as exc:
+        raise StoreSetupRefused(f"{workspace} has no store and `store init` refused to make one: {exc}") from exc
+    print(f"set up a native store at {workspace} (store init), so a review can be bound", file=sys.stderr)
 
 
 def _resolve_bound(workspace: Path, commit: str) -> str:
     """The full id of a bound review. On a native root only a commit with a
     `refs/dev.synapt.grip/__reviews__/` ref is a bind, so an ordinary workspace commit is refused as unbound
     before any tree is read; an abbreviated sha is expanded first, as git did in the old store."""
-    if not _is_native_workspace(workspace):
-        return commit
     proc = _bind_git(workspace, "rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}")
     full = proc.stdout.strip() if proc.returncode == 0 else ""
     if not full or _bind_git(workspace, "rev-parse", "--verify", "--quiet", f"{_REVIEW_REF_PREFIX}{full}").returncode != 0:
@@ -1061,7 +1128,7 @@ def _migrate_legacy_binds(workspace: Path) -> None:
     renamed to `.grip/legacy-store.git` only after every bind is in the root and its tree matches
     the old store's. Any failure raises with its reason BEFORE the verb does its own work. A store
     holding no review bind (alpha snapshots only, or empty) is left where it is."""
-    legacy = workspace / ".grip" / ".git"
+    legacy = _layout_grip_dir(workspace) / ".git"
     if not legacy.is_dir():
         return
     src = ["git", "--git-dir", str(legacy)]
@@ -1069,21 +1136,24 @@ def _migrate_legacy_binds(workspace: Path) -> None:
     def run(argv: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False)
 
+    if not _alpha_state_commits(legacy):
+        _move_aside_empty_store(workspace, legacy)
+        return
     listed = run([*src, "rev-list", "HEAD"])
     if listed.returncode != 0:
-        return  # unborn HEAD: nothing was ever stored
+        return
     binds: list[tuple[str, str]] = []
     for commit in listed.stdout.split():
         schema = run([*src, "show", f"{commit}:.grip/schema"]).stdout.strip()
         if schema in (_REVIEW_BIND_SCHEMA, _PROJECT_REVIEW_SCHEMA):
             binds.append((commit, schema))
     if not binds:
-        return
+        return  # alpha snapshots only: real alpha state, left where it is
 
     def fail(reason: str) -> GripCorruptError:
         return GripCorruptError(f"review bind migration from .grip/.git failed, nothing was renamed: {reason}")
 
-    target = workspace / ".grip" / "legacy-store.git"
+    target = _layout_grip_dir(workspace) / "legacy-store.git"
     if target.exists():
         raise fail(f"{target} already exists")
     fetched = run(["git", "fetch", "--quiet", "--no-tags", str(legacy), "HEAD"], cwd=workspace)
@@ -1113,15 +1183,17 @@ def _migrate_legacy_binds(workspace: Path) -> None:
 
 
 def _publish_bind(workspace: Path, commit: str, message: str) -> str:
-    """Make a bind commit durable and findable. On a native root the commit is parentless and its
-    ref is created last and create-only (old value zero), so the ref is the single commit point
-    and a refused bind leaves only unreferenced objects; any other root keeps the alpha chain."""
-    if _is_native_workspace(workspace):
-        proc = _bind_git(workspace, "update-ref", f"{_REVIEW_REF_PREFIX}{commit}", commit, _ZERO_OID)
-        if proc.returncode != 0:
-            raise RuntimeError(f"update-ref failed for {_REVIEW_REF_PREFIX}{commit}: {proc.stderr.strip()}")
-        return commit
-    _grip_git(workspace, "update-ref", "HEAD", commit)
+    """Make a bind commit durable and findable: the commit is parentless and its ref is created
+    last and create-only (old value zero), so the ref is the single commit point and a bind that
+    refuses leaves only unreferenced objects."""
+    ref = f"{_REVIEW_REF_PREFIX}{commit}"
+    proc = _bind_git(workspace, "update-ref", ref, commit, _ZERO_OID)
+    if proc.returncode != 0:
+        # The commit is parentless, so the same rows bound in the same second are the SAME commit:
+        # that bind already exists, which is success, not a collision.
+        if _bind_git(workspace, "rev-parse", "--verify", "--quiet", ref).stdout.strip() == commit:
+            return commit
+        raise RuntimeError(f"update-ref failed for {ref}: {proc.stderr.strip()}")
     return commit
 
 

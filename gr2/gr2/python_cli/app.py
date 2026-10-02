@@ -705,11 +705,9 @@ def _write_workspace_spec(
             "",
         ]
     )
-    # ``workspace init`` is the public bootstrap boundary.  Its spec is read by
-    # lane creation and its object store is consumed by ``review create-project``;
-    # leave both ready together so an adopted workspace never reaches a later,
-    # undocumented ``grip init`` requirement.
-    grip.grip_init(workspace_root)
+    # ``workspace init`` is the public bootstrap boundary. It writes the spec lane creation reads
+    # and makes NO `.grip/.git`: review binds live in the root's own `.git`, and the first bind on a
+    # root with no store sets that store up itself, so nothing here is a step the caller must remember.
     spec_path.parent.mkdir(parents=True, exist_ok=True)
     spec_path.write_text("\n".join(lines))
     return spec_path
@@ -3015,7 +3013,7 @@ def review_create_project(
                 if cm.returncode != 0:
                     raise ValueError(f"cannot capture committer metadata for {p.key} from {lane_repo}: {cm.stderr.strip()}")
                 committers[p.key] = cm.stdout
-        spec = project_review.make_spec(ws, pins, ranges=ranges, committers=committers)
+        spec = _review_call(project_review.make_spec, ws, pins, ranges=ranges, committers=committers)
     except (ValueError, ws_snap.WorkspaceSnapshotError) as exc:
         typer.echo(f"refused: {exc}", err=True)
         raise typer.Exit(code=2)
@@ -3154,6 +3152,14 @@ def _review_call(fn, *args, **kwargs):
         raise typer.Exit(code=2)
     except grip.GripCorruptError as exc:
         typer.echo(f"corrupt: {exc}", err=True)
+        _echo_notes(exc)
+        raise typer.Exit(code=2)
+    except grip.StoreSetupRefused as exc:
+        typer.echo(f"store_init_refused: {exc}", err=True)
+        _echo_notes(exc)
+        raise typer.Exit(code=2)
+    except grip.AlphaRootRefused as exc:
+        typer.echo(f"alpha_root: {exc}", err=True)
         _echo_notes(exc)
         raise typer.Exit(code=2)
     except grip.ReviewStoreAbsent as exc:

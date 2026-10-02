@@ -195,13 +195,10 @@ def test_read_workspace_commit_rejects_a_non_workspace_kind(tmp_path: Path) -> N
     ws = _materialized_lane(tmp_path, ["a", "b"])
     _commit_lane_change(ws, ["a", "b"])
     lane_root = lanes.lane_dir(ws, "atlas", "feature")
-    pins = [
-        {"key": r, "repo": f"https://example.invalid/{r}.git", "path": f"repos/{r}",
-         "head": _git(lane_root / "repos" / r, "rev-parse", "HEAD").stdout.strip(),
-         "base": _git(lane_root / "repos" / r, "rev-parse", "HEAD^").stdout.strip()}
-        for r in ("a", "b")
-    ]
-    review_commit = grip.create_project_review_commit(ws, pins)
+    # A project-review-kind commit IN THE ALPHA STORE this reader reads. `create_project_review_commit`
+    # now writes only to a native root's own .git, so the fixture builds the commit by hand.
+    review_commit = _write_grip_commit_with_kind(
+        ws, _repo_fields(ws, ["a", "b"]), "review", schema=grip._PROJECT_REVIEW_SCHEMA)
     with pytest.raises(grip.GripCorruptError):
         ws_snap.read_snapshot(ws, review_commit)
 
@@ -217,7 +214,9 @@ def _repo_fields(ws: Path, repos: list[str], lane: str = "feature") -> list[dict
     ]
 
 
-def _write_grip_commit_with_kind(ws: Path, repos: list[dict[str, str]], kind: str) -> str:
+def _write_grip_commit_with_kind(
+    ws: Path, repos: list[dict[str, str]], kind: str, schema: str | None = None,
+) -> str:
     """Build a gr commit through the SAME _mktree/_hash_blob seam create_workspace_commit
     uses, but with the workspace SCHEMA and a parameterized kind blob.
 
@@ -235,7 +234,7 @@ def _write_grip_commit_with_kind(ws: Path, repos: list[dict[str, str]], kind: st
         entries.append(f"040000 tree {grip._mktree(ws, fields)}\t{repo['key']}")
     repos_tree = grip._mktree(ws, entries)
     meta_tree = grip._mktree(ws, [
-        f"100644 blob {grip._hash_blob(ws, grip._WORKSPACE_SCHEMA)}\tschema",
+        f"100644 blob {grip._hash_blob(ws, schema or grip._WORKSPACE_SCHEMA)}\tschema",
         f"100644 blob {grip._hash_blob(ws, kind)}\tkind",
     ])
     root_tree = grip._mktree(ws, [f"040000 tree {meta_tree}\t.grip", f"040000 tree {repos_tree}\trepos"])

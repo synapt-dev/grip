@@ -16,6 +16,7 @@ proof); this file pins the edges:
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -267,3 +268,83 @@ def test_the_exclude_line_is_not_duplicated_when_the_root_already_has_it(
     exclude.write_text("# local\n/.grip/\n")
     assert _cli("store", "init", str(ws))[0] == 0
     assert exclude.read_text().splitlines().count("/.grip/") == 1, exclude.read_text()
+
+
+# --- a root with no store gets one; real alpha state is refused, naming the conversion ----------------
+#
+# `store init` "needed before review" is the quirk this removes: a bind on a workspace root that has no
+# store sets up the native store itself, says so on stderr, and a `.grip/.git` holding no bind and no
+# snapshot counts as no store and is moved aside. Only a `.grip/.git` with real alpha state is refused,
+# because `store migrate` can legitimately refuse (a pin not on the member's upstream).
+
+
+def _spec_only_root(ws: Path) -> None:
+    (ws / ".grip").mkdir()
+    (ws / ".grip" / "workspace_spec.toml").write_text("")
+
+
+def test_bind_on_a_workspace_root_with_no_store_sets_up_the_native_store(two_member_ws: Path, capfd) -> None:
+    ws = two_member_ws
+    _spec_only_root(ws)
+    remote, base, head = _unpushed_head(ws)
+
+    code, out = _cli(*_bind_args(ws, remote, base, head))
+    assert code == 0, out
+    assert "set up a native store" in out + capfd.readouterr().err
+    assert (ws / "grip.toml").is_file() and (ws / ".git").exists()
+    assert not (ws / ".grip" / ".git").exists()
+    assert len(_refs(ws)) == 1
+    gr_id = next(line for line in out.splitlines() if line.startswith("gr:"))
+    assert _cli("review", "verify", str(ws), gr_id)[0] == 0
+
+
+def test_bind_on_a_root_with_an_empty_alpha_store_moves_it_aside(two_member_ws: Path, capfd) -> None:
+    from gr2.python_cli import grip as grip_mod
+
+    ws = two_member_ws
+    grip_mod.grip_init(ws)  # what workspace init and materialize used to leave: an empty `.grip/.git`
+    remote, base, head = _unpushed_head(ws)
+
+    code, out = _cli(*_bind_args(ws, remote, base, head))
+    assert code == 0, out
+    assert "moved an empty .grip/.git aside" in out + capfd.readouterr().err
+    assert not (ws / ".grip" / ".git").exists() and (ws / ".grip" / "legacy-store.git").is_dir()
+    assert len(_refs(ws)) == 1
+
+
+def test_bind_on_a_root_with_real_alpha_state_refuses_naming_store_migrate(two_member_ws: Path) -> None:
+    from gr2.python_cli import grip as grip_mod
+
+    ws = two_member_ws
+    grip_mod.grip_init(ws)
+    remote, base, head = _unpushed_head(ws)
+    snapshot = grip_mod.create_workspace_commit(
+        ws, [{"key": "alpha", "remote": remote, "path": "alpha", "commit": head, "base": base}])
+
+    code, out = _cli(*_bind_args(ws, remote, base, head))
+    assert code == 2 and "alpha_root" in out and "store migrate" in out, out
+    assert not (ws / "grip.toml").exists(), "a refused bind set up a native store"
+    assert _git_out(ws / ".grip", "rev-parse", "HEAD") == snapshot, "a refused bind changed the alpha store"
+    code, out = _cli("review", "verify", str(ws), "gr:" + "0" * 40)
+    assert code == 2 and "store migrate" in out, out
+
+
+def test_verify_on_a_root_with_no_store_creates_nothing(two_member_ws: Path) -> None:
+    ws = two_member_ws
+    _spec_only_root(ws)
+    code, out = _cli("review", "verify", str(ws), "gr:" + "0" * 40)
+    assert code == 2 and "not_bound" in out, out
+    assert not (ws / "grip.toml").exists() and not (ws / ".git").exists()
+
+
+def test_a_refusal_from_store_init_reaches_the_caller_unswallowed(tmp_path: Path, two_member_ws: Path) -> None:
+    """The setup is `store init`'s, so its refusals are the bind's. A workspace root with no sibling git
+    repository cannot be a store; the bind names that reason and writes nothing."""
+    ws = tmp_path / "lonely"
+    ws.mkdir()
+    _spec_only_root(ws)
+    remote, base, head = _unpushed_head(two_member_ws)
+
+    code, out = _cli(*_bind_args(ws, remote, base, head))
+    assert code == 2 and "store_init_refused" in out and "no sibling git repositories" in out, out
+    assert not (ws / "grip.toml").exists()

@@ -22,8 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first time a bind-touching verb runs, keeping its id, after each one is checked against the old
   store; the old store is renamed `.grip/legacy-store.git`, and the move prints one line saying what
   moved. `store init` now adds `/.grip/` to the root's own `.git/info/exclude`, since a bind no longer
-  does. A commit that has no `refs/dev.synapt.grip/__reviews__/` ref is refused as not bound. **Breaking:** an id is a
-  bound review only if it has its ref.
+  does. A commit that has no `refs/dev.synapt.grip/__reviews__/` ref is refused as not bound. `workspace init`
+  no longer makes `.grip/.git`, and `review bind` / `review create-project` on a workspace root with no
+  store set up the native store themselves (`store init`'s own, with its own refusals) and say so on
+  stderr, so there is no `store init` step to remember. A `.grip/.git` that holds no bind and no
+  snapshot counts as no store and is moved aside to `.grip/legacy-store.git`, with one line. A
+  `.grip/.git` with real alpha state (a snapshot or a bind) is refused with `alpha_root` naming
+  `gr2 store migrate`, which can legitimately refuse, and nothing is written. **Breaking:** an id is a
+  bound review only if it has its ref, and `workspace init` leaves no `.grip/.git`.
 
 ### Added
 

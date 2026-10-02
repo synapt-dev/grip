@@ -130,7 +130,7 @@ EXPECTED = {
     "gr2/python_cli/failures.py": 1,
     "gr2/python_cli/file_exec.py": 1,
     "gr2/python_cli/gitops.py": 1,
-    "gr2/python_cli/grip.py": 11,
+    "gr2/python_cli/grip.py": 8,
     "gr2/python_cli/grip_cli.py": 8,
     # the ONE home: GRIP_DIR = ".grip"
     "gr2/python_cli/layout.py": 1,

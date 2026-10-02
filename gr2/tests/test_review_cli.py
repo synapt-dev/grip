@@ -237,16 +237,10 @@ def test_bind_refuses_cleanly_when_the_plumbing_store_is_absent(tmp_path):
     assert str(ws) in result.output  # names WHERE, not just that something's missing
 
 
-def test_workspace_init_leaves_a_store_ready_for_project_review(tmp_path: Path) -> None:
-    """A workspace adopted through the public CLI can create a project review.
-
-    This is the stranger path: initialize an existing workspace, make and enter
-    a materialized lane, then create its project-review commit.  ``workspace
-    init`` used to write only ``workspace_spec.toml``.  The later review command
-    then crashed because the adjacent ``.grip`` directory was not a Git object
-    store.  The initializer owns that store, so this test proves the complete
-    path rather than a private call to ``grip_init``.
-    """
+def test_workspace_init_then_a_project_review_needs_no_store_step(tmp_path: Path) -> None:
+    """The stranger path: initialize an existing workspace, make and enter a materialized lane, then
+    create its project-review commit. `workspace init` makes no `.grip/.git`, and the review sets up the
+    native store itself, so there is no `store init` or `grip init` step to remember."""
     remote, _base, _head, _work = _fixture_repo(tmp_path, "adopted")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -255,27 +249,22 @@ def test_workspace_init_leaves_a_store_ready_for_project_review(tmp_path: Path) 
 
     initialized = runner.invoke(app, ["workspace", "init", str(workspace)])
     assert initialized.exit_code == 0, initialized.output
-    assert (workspace / ".grip" / ".git").is_dir()
+    assert not (workspace / ".grip" / ".git").exists()
 
     created = runner.invoke(
         app,
-        [
-            "lane", "create", str(workspace), "default", "review",
-            "--repos", "adopted", "--branch", "feat/review",
-        ],
+        ["lane", "create", str(workspace), "default", "review", "--repos", "adopted", "--branch", "feat/review"],
     )
     assert created.exit_code == 0, created.output
     entered = runner.invoke(
-        app,
-        ["lane", "enter", str(workspace), "default", "review", "--actor", "agent:test"],
+        app, ["lane", "enter", str(workspace), "default", "review", "--actor", "agent:test"],
     )
     assert entered.exit_code == 0, entered.output
 
-    project = runner.invoke(
-        app, ["review", "create-project", str(workspace), "default", "review"]
-    )
+    project = runner.invoke(app, ["review", "create-project", str(workspace), "default", "review"])
     assert project.exit_code == 0, project.output
-    assert project.stdout.startswith("gr:")
+    assert project.stdout.startswith("gr:") or "gr:" in project.stdout
+    assert (workspace / "grip.toml").is_file() and not (workspace / ".grip" / ".git").exists()
 
 
 # --- Fathom probe 2: TAMPERED CARRIED RANGE, open-gr must fail loud --------

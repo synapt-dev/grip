@@ -3304,7 +3304,9 @@ def _review_lane_workspace(lane_dir: Path) -> Path | None:
     # path that is gone (the workspace was moved or deleted, or the lane came from another
     # machine) would otherwise be silently recreated as an empty `.grip/events`.
     path = Path(recorded)
-    return path if grip_dir(path).is_dir() else None
+    # `.grip/` can be absent on a native root that has bound nothing else yet (a bind writes its
+    # record as a ref in the root's `.git`), so "still a workspace" is the root's own test.
+    return path if grip_dir(path).is_dir() or _is_workspace_root(path) else None
 
 
 def _emit_review_run(lane_dir: Path, event_type: EventType, payload: dict) -> None:

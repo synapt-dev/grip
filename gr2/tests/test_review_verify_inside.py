@@ -10,6 +10,8 @@ cannot say whose code it tested has the same defect one layer up.
 """
 from __future__ import annotations
 
+from tests.native_root_helper import native_root
+
 import json
 import shutil
 import subprocess
@@ -77,7 +79,7 @@ def _open_single_repo_review(tmp_path: Path, name: str, *, package: bool):
         f'[[repos]]\nname = "{name}"\npath = "sources/{name}"\nurl = "{url}"\n'
         f'\n[[units]]\nname = "atlas"\npath = "agents/atlas"\nrepos = ["{name}"]\n'
     )
-    grip.grip_init(workspace)
+    native_root(workspace)
     prior_cwd = tmp_path / "home"
     prior_cwd.mkdir()
     lanes.create_lane(argparse.Namespace(
@@ -130,7 +132,7 @@ def _open_multi_repo_review(tmp_path: Path, names, declared, *, omit_field=None)
         + "\n".join(blocks)
         + f'\n[[units]]\nname = "atlas"\npath = "agents/atlas"\nrepos = {names!r}\n'.replace("'", '"')
     )
-    grip.grip_init(workspace)
+    native_root(workspace)
     prior_cwd = tmp_path / "home"
     prior_cwd.mkdir()
     lanes.create_lane(argparse.Namespace(
@@ -196,7 +198,7 @@ def _open_installable_repo_review(tmp_path: Path, name: str):
         f'[[repos]]\nname = "{name}"\npath = "sources/{name}"\nurl = "{url}"\n'
         f'\n[[units]]\nname = "atlas"\npath = "agents/atlas"\nrepos = ["{name}"]\n'
     )
-    grip.grip_init(workspace)
+    native_root(workspace)
     prior_cwd = tmp_path / "home"
     prior_cwd.mkdir()
     lanes.create_lane(argparse.Namespace(
@@ -511,7 +513,7 @@ def _open_extra_repo_review(tmp_path: Path, name: str):
         f'[[repos]]\nname = "{name}"\npath = "sources/{name}"\nurl = "{url}"\n'
         f'\n[[units]]\nname = "atlas"\npath = "agents/atlas"\nrepos = ["{name}"]\n'
     )
-    grip.grip_init(workspace)
+    native_root(workspace)
     prior_cwd = tmp_path / "home"
     prior_cwd.mkdir()
     lanes.create_lane(argparse.Namespace(
@@ -599,7 +601,7 @@ def _open_extra_repo_review_with_spec_test(tmp_path: Path, name: str, *, extras_
         f'{review_test}'
         f'\n[[units]]\nname = "atlas"\npath = "agents/atlas"\nrepos = ["{name}"]\n'
     )
-    grip.grip_init(workspace)
+    native_root(workspace)
     prior_cwd = tmp_path / "home"
     prior_cwd.mkdir()
     lanes.create_lane(argparse.Namespace(

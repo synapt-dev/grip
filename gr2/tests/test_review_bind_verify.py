@@ -9,6 +9,8 @@ against an independently computed hash (the bridge to the hand freeze's NORM).
 """
 from __future__ import annotations
 
+from tests.native_root_helper import native_root
+
 import hashlib
 import subprocess
 from pathlib import Path
@@ -68,7 +70,7 @@ def _row(remote: str, base: str, head: str) -> dict[str, str]:
 def _grip_ws(tmp_path: Path) -> Path:
     ws = tmp_path / "ws"
     ws.mkdir()
-    grip.grip_init(ws)
+    native_root(ws)
     return ws
 
 
@@ -135,11 +137,11 @@ def test_bind_carries_frozen_set_and_verify_reproduces_objects(tmp_path):
     assert r["head_tree"] == _git(work, "rev-parse", f"{head}^{{tree}}")
     assert len(r["range_sha256"]) == 64
     # The object carries the readable range + metadata + head-tree, and evidence.
-    names = _git(ws / ".grip", "ls-tree", "--name-only", f"{commit}:objects/recall").split()
+    names = _git(ws, "ls-tree", "--name-only", f"{commit}:objects/recall").split()
     assert set(names) == {"range.patch", "metadata", "head-tree"}
-    rng = _git(ws / ".grip", "show", f"{commit}:objects/recall/range.patch")
+    rng = _git(ws, "show", f"{commit}:objects/recall/range.patch")
     assert "Subject:" in rng and "diff --git" in rng
-    ev = _git(ws / ".grip", "ls-tree", "--name-only", f"{commit}:evidence/recall").split()
+    ev = _git(ws, "ls-tree", "--name-only", f"{commit}:evidence/recall").split()
     assert ev == ["commands"]
 
 
@@ -175,7 +177,7 @@ def test_reconstruct_refuses_on_tree_mismatch(tmp_path):
     row["source"] = str(work)
     commit = grip.create_review_bind_commit(ws, [row])
 
-    grip_git = ws / ".grip"
+    grip_git = ws
     wrong_tree = _git(work, "rev-parse", f"{base}^{{tree}}")  # base tree != head tree (a real, wrong sha)
     # Rebuild the objects/recall tree with a tampered head-tree, then rebuild up.
     rng = _git(grip_git, "rev-parse", f"{commit}:objects/recall/range.patch")
@@ -209,6 +211,8 @@ def test_reconstruct_refuses_on_tree_mismatch(tmp_path):
         ["git", "-C", str(grip_git), "-c", "user.name=t", "-c", "user.email=t@e",
          "commit-tree", new_root, "-m", "tampered"],
         capture_output=True, text=True, check=True).stdout.strip()
+    subprocess.run(["git", "-C", str(grip_git), "update-ref", f"refs/dev.synapt.grip/__reviews__/{tampered}", tampered],
+                   check=True)
 
     with pytest.raises(GripReviewRefused) as exc:
         grip.reconstruct_review_lane(ws, tampered, "recall", tmp_path / "lane2")
@@ -286,7 +290,7 @@ def test_policy_hook_sees_carried_bytes_and_refuses_on_hit(tmp_path):
     clean = _row(remote, base, head)
     clean["source"] = str(work)
     commit = grip.create_review_bind_commit(ws, [clean], policy_hook=hook)
-    policy = _git(ws / ".grip", "show", f"{commit}:.grip/policy")
+    policy = _git(ws, "show", f"{commit}:.grip/policy")
     assert policy.startswith("clean:")
     assert grip.verify_review_commit(ws, commit)["tree_matches"] is True
 

@@ -12,6 +12,8 @@ sha so row 2 has its before/after.
 """
 from __future__ import annotations
 
+from tests.native_root_helper import native_root, workspace_kind_commit
+
 import argparse
 import json
 import subprocess
@@ -67,7 +69,7 @@ def _base_remote_and_range(tmp_path: Path) -> tuple[str, str, str, str, str]:
 def test_project_review_carries_range_and_reconstructs_tree(tmp_path: Path) -> None:
     ws = tmp_path / "ws"
     (ws / ".grip").mkdir(parents=True)
-    grip.grip_init(ws)
+    native_root(ws)
     remote, base, head, head_tree, range_patch = _base_remote_and_range(tmp_path)
 
     # create-project records the range for key "alpha" (base + remote + the patch).
@@ -93,7 +95,7 @@ def test_project_review_carries_range_and_reconstructs_tree(tmp_path: Path) -> N
 def test_ranges_referencing_an_unknown_key_is_refused(tmp_path: Path) -> None:
     ws = tmp_path / "ws"
     (ws / ".grip").mkdir(parents=True)
-    grip.grip_init(ws)
+    native_root(ws)
     remote, base, head, _tree, range_patch = _base_remote_and_range(tmp_path)
     with pytest.raises(grip.GripCorruptError, match="not in the pins"):
         grip.create_project_review_commit(
@@ -153,7 +155,7 @@ def test_carried_committers_reconstructs_the_exact_pinned_sha(tmp_path: Path) ->
     # ONLY because the carried committer date is re-stamped per commit.
     ws = tmp_path / "ws"
     (ws / ".grip").mkdir(parents=True)
-    grip.grip_init(ws)
+    native_root(ws)
     remote, base, head, head_tree, range_patch, committers = _base_remote_range_and_committers(tmp_path)
 
     commit = grip.create_project_review_commit(
@@ -162,7 +164,7 @@ def test_carried_committers_reconstructs_the_exact_pinned_sha(tmp_path: Path) ->
         ranges={"beta": range_patch},
         committers={"beta": committers},
     )
-    obj_names = grip._grip_git(ws, "ls-tree", "--name-only", f"{commit}:objects/beta").stdout.split()
+    obj_names = grip._bind_git(ws, "ls-tree", "--name-only", f"{commit}:objects/beta").stdout.split()
     assert "committers" in obj_names  # the objects subtree carries the committer metadata
 
     lane_dir = tmp_path / "lane" / "beta"
@@ -179,7 +181,7 @@ def test_create_refuses_committers_that_do_not_reproduce_the_pinned_head(tmp_pat
     # baked into the commit only to surface as a reconstruction failure at review open.
     ws = tmp_path / "ws"
     (ws / ".grip").mkdir(parents=True)
-    grip.grip_init(ws)
+    native_root(ws)
     remote, base, head, _tree, range_patch, committers = _base_remote_range_and_committers(tmp_path)
     # corrupt the first commit's committer date
     rows = committers.splitlines()
@@ -198,7 +200,7 @@ def test_create_refuses_committers_that_do_not_reproduce_the_pinned_head(tmp_pat
 def test_committers_for_a_key_without_a_range_is_refused(tmp_path: Path) -> None:
     ws = tmp_path / "ws"
     (ws / ".grip").mkdir(parents=True)
-    grip.grip_init(ws)
+    native_root(ws)
     remote, base, head, _tree, _range, committers = _base_remote_range_and_committers(tmp_path)
     with pytest.raises(grip.GripCorruptError, match="without a carried range"):
         grip.create_project_review_commit(
@@ -214,9 +216,9 @@ def test_reconstruct_project_review_lane_refuses_a_non_project_commit(tmp_path: 
     # refuse it naming the schema, not blindly try to git am.
     ws = tmp_path / "ws"
     (ws / ".grip").mkdir(parents=True)
-    grip.grip_init(ws)
+    native_root(ws)
     remote, base, head, _tree, _range = _base_remote_and_range(tmp_path)
-    wrong = grip.create_workspace_commit(
+    wrong = workspace_kind_commit(
         ws, [{"key": "alpha", "remote": remote, "path": "repos/alpha", "commit": head, "base": base}])
     with pytest.raises(grip.GripCorruptError, match="project review"):
         grip.reconstruct_project_review_lane(ws, wrong, "alpha", tmp_path / "lane" / "alpha")
@@ -242,7 +244,7 @@ def test_open_gr_enter_reconstructs_a_carried_range_end_to_end(tmp_path: Path, _
         f'[[repos]]\nname = "alpha"\npath = "sources/alpha"\nurl = "{remote}"\n'
         '\n[[units]]\nname = "atlas"\npath = "agents/atlas"\nrepos = ["alpha"]\n'
     )
-    grip.grip_init(ws)
+    native_root(ws)
     commit = grip.create_project_review_commit(
         ws,
         [{"key": "alpha", "repo": remote, "path": "repos/alpha", "base": base, "head": head}],

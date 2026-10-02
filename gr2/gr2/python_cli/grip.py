@@ -199,7 +199,7 @@ def create_project_review_commit(
     pinned pre-push head, not merely its tree (the committer-date-match contract). A
     key present in ``committers`` must also be in ``ranges``; the derived head is
     asserted equal to the pinned head at create time."""
-    _validate_grip_repo(workspace)
+    _validate_bind_store(workspace)
     if not pins:
         raise GripCorruptError("project review requires at least one repository pin")
     ranges = ranges or {}
@@ -216,15 +216,15 @@ def create_project_review_commit(
         for name, value in (("remote", pin.get("repo", "")), ("path", pin.get("path", "")), ("commit", pin.get("head", "")), ("base", pin.get("base", ""))):
             if not value or (name in {"commit", "base"} and not _SHA40.match(value)):
                 raise GripCorruptError(f"invalid project review {name} for {key}")
-            fields.append(f"100644 blob {_hash_blob(workspace, value)}\t{name}")
-        entries.append(f"040000 tree {_mktree(workspace, fields)}\t{key}")
+            fields.append(f"100644 blob {_bind_blob(workspace, value)}\t{name}")
+        entries.append(f"040000 tree {_bind_mktree(workspace, fields)}\t{key}")
         if key in ranges:
             obj = _carry_objects_from_range(
                 workspace, pin.get("repo", ""), pin.get("base", ""), ranges[key],
                 committers=committers.get(key), expected_head=pin.get("head", ""))
             names = ("range.patch", "metadata", "head-tree") + (("committers",) if "committers" in obj else ())
-            obj_fields = [f"100644 blob {_hash_blob(workspace, obj[n])}\t{n}" for n in names]
-            objects_entries.append(f"040000 tree {_mktree(workspace, obj_fields)}\t{key}")
+            obj_fields = [f"100644 blob {_bind_blob(workspace, obj[n])}\t{n}" for n in names]
+            objects_entries.append(f"040000 tree {_bind_mktree(workspace, obj_fields)}\t{key}")
     unknown = set(ranges) - seen
     if unknown:
         raise GripCorruptError(f"ranges reference keys not in the pins: {sorted(unknown)}")
@@ -232,24 +232,26 @@ def create_project_review_commit(
     if committer_only:
         raise GripCorruptError(
             f"committer metadata for keys without a carried range: {sorted(committer_only)}")
-    repos_tree = _mktree(workspace, entries)
-    meta_tree = _mktree(workspace, [f"100644 blob {_hash_blob(workspace, _PROJECT_REVIEW_SCHEMA)}\tschema", f"100644 blob {_hash_blob(workspace, 'review')}\tkind"])
+    repos_tree = _bind_mktree(workspace, entries)
+    meta_tree = _bind_mktree(workspace, [f"100644 blob {_bind_blob(workspace, _PROJECT_REVIEW_SCHEMA)}\tschema", f"100644 blob {_bind_blob(workspace, 'review')}\tkind"])
     root_fields = [f"040000 tree {meta_tree}\t.grip", f"040000 tree {repos_tree}\trepos"]
     if objects_entries:
-        root_fields.append(f"040000 tree {_mktree(workspace, objects_entries)}\tobjects")
-    root_tree = _mktree(workspace, root_fields)
-    commit = _commit_tree(workspace, root_tree, parent=_current_head(workspace), message="grip project review")
-    _grip_git(workspace, "update-ref", "HEAD", commit)
-    return commit
+        root_fields.append(f"040000 tree {_bind_mktree(workspace, objects_entries)}\tobjects")
+    root_tree = _bind_mktree(workspace, root_fields)
+    native = _is_native_workspace(workspace)
+    commit = _bind_commit_tree(workspace, root_tree, parent=None if native else _current_head(workspace), message="grip project review")
+    return _publish_bind(workspace, commit, "grip project review")
 
 
 def project_review_carried_keys(workspace: Path, commit: str) -> set[str]:
     """The project-review keys that carry a reconstruction range (an ``objects/<key>``
     subtree). Empty when the commit carries no ranges (the remote-resolved case).
     Guards the absent-objects case so a plain project-review commit is not an error."""
+    _validate_bind_store(workspace)
+    commit = _resolve_bound(workspace, commit)
     root = {
         line.strip()
-        for line in _grip_git(workspace, "ls-tree", "--name-only", commit).stdout.splitlines()
+        for line in _bind_git(workspace, "ls-tree", "--name-only", commit).stdout.splitlines()
         if line.strip()
     }
     return _tree_keys(workspace, commit, "objects") if "objects" in root else set()
@@ -266,7 +268,7 @@ def reconstruct_project_review_lane(
     never the sha: ``git am`` re-stamps the committer, so the reconstructed sha differs
     from the pinned head until the committer-date-match lane; both are returned so that
     lane has its before/after."""
-    actual = _grip_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip()
+    actual = _bind_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip()
     if actual != _PROJECT_REVIEW_SCHEMA:
         raise GripCorruptError(
             f"not a gr2 project review commit: found {actual or '<none>'!r}, expected {_PROJECT_REVIEW_SCHEMA!r}"
@@ -276,14 +278,16 @@ def reconstruct_project_review_lane(
 
 def read_project_review_commit(workspace: Path, commit: str) -> list[dict[str, str]]:
     """Strictly decode the minimal reviewed repository fields."""
-    actual_schema = _grip_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip()
+    _validate_bind_store(workspace)
+    commit = _resolve_bound(workspace, commit)
+    actual_schema = _bind_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip()
     if actual_schema != _PROJECT_REVIEW_SCHEMA:
         raise GripCorruptError(
             f"not a gr2 project review commit: found kind {actual_schema or '<none>'!r}, "
             f"expected {_PROJECT_REVIEW_SCHEMA!r} (a project-review-KIND commit; use `review open` "
             f"for a review-BIND commit)"
         )
-    rows = _read_repo_state(workspace, commit)
+    rows = _read_repo_state(workspace, commit, bind=True)
     decoded: list[dict[str, str]] = []
     for key, fields in sorted(rows.items()):
         if set(fields) != {"remote", "path", "commit", "base"} or not _SHA40.match(fields["commit"]) or not _SHA40.match(fields["base"]):
@@ -375,7 +379,7 @@ def _norm_text(value: str) -> str:
 def _remote_head(workspace: Path, remote: str, ref: str) -> str:
     """The live head of one ref on a remote, or '' if absent. A ref name like
     refs/heads/<branch>; ls-remote is read-only and needs no local ref."""
-    proc = _grip_git(workspace, "ls-remote", remote, ref)
+    proc = _bind_git(workspace, "ls-remote", remote, ref)
     if proc.returncode != 0:
         raise GripReviewRefused("remote_unreadable", ref, proc.stderr.strip()[:120])
     line = proc.stdout.strip().splitlines()
@@ -386,7 +390,7 @@ def _head_present_on_remote(workspace: Path, remote: str, head: str) -> bool:
     """True if the head SHA is already an object any ref on the remote points at.
     A pre-push branch's head is present at no ref; a re-freeze of an already
     pushed head is refused unless a prior ratify receipt is named."""
-    proc = _grip_git(workspace, "ls-remote", remote)
+    proc = _bind_git(workspace, "ls-remote", remote)
     if proc.returncode != 0:
         raise GripReviewRefused("remote_unreadable", remote, proc.stderr.strip()[:120])
     return any(row.split("\t", 1)[0] == head for row in proc.stdout.splitlines())
@@ -474,19 +478,11 @@ def create_review_bind_commit(
 ) -> str:
     """Bind a review gr commit (rows, refusals and the policy hook: see `_bind_review_rows`).
 
-    On a native store root (`store init`) the review store is created here on first use. A bind
-    that does not complete removes what THIS call created, so a refused bind leaves the
-    workspace as it found it; a store that already existed, or that holds a commit, is never
-    removed."""
-    created_store, created_grip_dir = _ensure_review_store(workspace)
-    try:
-        return _bind_review_rows(workspace, rows, ratified=ratified, policy_hook=policy_hook)
-    except BaseException as exc:
-        if created_store:
-            leftover = _discard_review_store(workspace, created_grip_dir)
-            if leftover:
-                exc.add_note(leftover)
-        raise
+    On a native root the bind is a parentless commit in the root's own `.git`, published as
+    `refs/dev.synapt.grip/__reviews__/<commit>` as the LAST step and create-only, so a bind that refuses leaves no
+    ref and no store: only unreferenced objects, which `git gc` collects. A root that is not
+    native keeps the alpha `.grip/.git` store."""
+    return _bind_review_rows(workspace, rows, ratified=ratified, policy_hook=policy_hook)
 
 
 def _bind_review_rows(
@@ -506,7 +502,7 @@ def _bind_review_rows(
     leak, packs hide them) and refuses the bind on a nonzero exit, the way a
     freeze refuses today. OSS ships no hook (records ``no-policy``); our config
     points it at the leak scanner. The verdict is recorded in the object."""
-    _validate_grip_repo(workspace)
+    _validate_bind_store(workspace)
     if not rows:
         raise GripCorruptError("review bind requires at least one repository row")
     entries: list[str] = []
@@ -538,22 +534,22 @@ def _bind_review_rows(
         if _head_present_on_remote(workspace, remote, head) and not ratified:
             raise GripReviewRefused("head_already_on_remote", head, "present")
 
-        fields = [f"100644 blob {_hash_blob(workspace, v)}\t{n}"
+        fields = [f"100644 blob {_bind_blob(workspace, v)}\t{n}"
                   for n, v in (("remote", remote), ("path", path), ("commit", head), ("base", base))]
-        entries.append(f"040000 tree {_mktree(workspace, fields)}\t{key}")
+        entries.append(f"040000 tree {_bind_mktree(workspace, fields)}\t{key}")
         # remote-head field hoisted out of the outer f-string's expression: a
         # nested f-string carrying \t inside {…} is a SyntaxError on Python 3.11
         # (PEP 701 only lifted this in 3.12+), and gr2 supports >=3.11. Output is
         # byte-identical, so every content-hash is unchanged.
-        remote_head_field = f"100644 blob {_hash_blob(workspace, observed)}\tremote-head"
+        remote_head_field = f"100644 blob {_bind_blob(workspace, observed)}\tremote-head"
         observed_entries.append(
-            f"040000 tree {_mktree(workspace, [remote_head_field])}\t{key}"
+            f"040000 tree {_bind_mktree(workspace, [remote_head_field])}\t{key}"
         )
         title = _norm_text(row.get("title", ""))
         body = _norm_text(row.get("body", ""))
-        text_fields = [f"100644 blob {_hash_blob(workspace, title)}\ttitle",
-                       f"100644 blob {_hash_blob(workspace, body)}\tbody"]
-        texts_entries.append(f"040000 tree {_mktree(workspace, text_fields)}\t{key}")
+        text_fields = [f"100644 blob {_bind_blob(workspace, title)}\ttitle",
+                       f"100644 blob {_bind_blob(workspace, body)}\tbody"]
+        texts_entries.append(f"040000 tree {_bind_mktree(workspace, text_fields)}\t{key}")
 
         # (a): carry the frozen set inside the object. A row with a source repo
         # carries range.patch + fuller metadata + head-tree so a pre-push head
@@ -586,29 +582,29 @@ def _bind_review_rows(
                 raise GripReviewRefused("range_head_mismatch", head, from_head)
             obj = _carry_objects_from_range(workspace, remote, base, range_patch)
         if obj is not None:
-            obj_fields = [f"100644 blob {_hash_blob(workspace, obj[n])}\t{n}"
+            obj_fields = [f"100644 blob {_bind_blob(workspace, obj[n])}\t{n}"
                           for n in ("range.patch", "metadata", "head-tree")]
-            objects_entries.append(f"040000 tree {_mktree(workspace, obj_fields)}\t{key}")
+            objects_entries.append(f"040000 tree {_bind_mktree(workspace, obj_fields)}\t{key}")
             scan_items.append((f"{key}.range.patch", obj["range.patch"]))
         evidence = row.get("evidence")
         if evidence:
-            ev_fields = [f"100644 blob {_hash_blob(workspace, evidence)}\tcommands"]
+            ev_fields = [f"100644 blob {_bind_blob(workspace, evidence)}\tcommands"]
             resolution = row.get("resolution")
             if resolution:
-                ev_fields.append(f"100644 blob {_hash_blob(workspace, resolution)}\tresolution")
-            evidence_entries.append(f"040000 tree {_mktree(workspace, ev_fields)}\t{key}")
+                ev_fields.append(f"100644 blob {_bind_blob(workspace, resolution)}\tresolution")
+            evidence_entries.append(f"040000 tree {_bind_mktree(workspace, ev_fields)}\t{key}")
 
     # Policy hook: scan the carried readable bytes; refuse on a hit
     # the way a freeze does, and record the verdict in the object.
     policy_verdict = _run_policy_hook(policy_hook, scan_items)
 
-    repos_tree = _mktree(workspace, entries)
-    observed_tree = _mktree(workspace, observed_entries)
-    texts_tree = _mktree(workspace, texts_entries)
-    meta_tree = _mktree(workspace, [
-        f"100644 blob {_hash_blob(workspace, _REVIEW_BIND_SCHEMA)}\tschema",
-        f"100644 blob {_hash_blob(workspace, 'review')}\tkind",
-        f"100644 blob {_hash_blob(workspace, policy_verdict)}\tpolicy",
+    repos_tree = _bind_mktree(workspace, entries)
+    observed_tree = _bind_mktree(workspace, observed_entries)
+    texts_tree = _bind_mktree(workspace, texts_entries)
+    meta_tree = _bind_mktree(workspace, [
+        f"100644 blob {_bind_blob(workspace, _REVIEW_BIND_SCHEMA)}\tschema",
+        f"100644 blob {_bind_blob(workspace, 'review')}\tkind",
+        f"100644 blob {_bind_blob(workspace, policy_verdict)}\tpolicy",
     ])
     root_fields = [
         f"040000 tree {meta_tree}\t.grip",
@@ -617,16 +613,23 @@ def _bind_review_rows(
         f"040000 tree {texts_tree}\ttexts",
     ]
     if objects_entries:
-        root_fields.append(f"040000 tree {_mktree(workspace, objects_entries)}\tobjects")
+        root_fields.append(f"040000 tree {_bind_mktree(workspace, objects_entries)}\tobjects")
     if evidence_entries:
-        root_fields.append(f"040000 tree {_mktree(workspace, evidence_entries)}\tevidence")
-    root_tree = _mktree(workspace, root_fields)
-    commit = _commit_tree(workspace, root_tree, parent=_current_head(workspace), message="grip review bind")
-    _grip_git(workspace, "update-ref", "HEAD", commit)
-    return commit
+        root_fields.append(f"040000 tree {_bind_mktree(workspace, evidence_entries)}\tevidence")
+    root_tree = _bind_mktree(workspace, root_fields)
+    native = _is_native_workspace(workspace)
+    commit = _bind_commit_tree(workspace, root_tree, parent=None if native else _current_head(workspace), message="grip review bind")
+    return _publish_bind(workspace, commit, "grip review bind")
 
 
 def verify_review_commit(workspace: Path, commit: str) -> dict[str, object]:
+    """Re-derive the review gr commit from its own objects and report what was measured (see
+    `_verify_review_commit_in_store`). On a native root the id must be a bound review."""
+    _validate_bind_store(workspace)
+    return _verify_review_commit_in_store(workspace, _resolve_bound(workspace, commit))
+
+
+def _verify_review_commit_in_store(workspace: Path, commit: str) -> dict[str, object]:
     """Re-derive the review gr commit from its own objects and report what was
     measured: the recomputed root tree (must equal the commit's tree, else
     corruption), and per row the remote/path/head/base, the observed remote
@@ -634,15 +637,14 @@ def verify_review_commit(workspace: Path, commit: str) -> dict[str, object]:
     body NORM the hand gate produced)."""
     import hashlib
 
-    _validate_grip_repo(workspace)
-    if _grip_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip() != _REVIEW_BIND_SCHEMA:
+    if _bind_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip() != _REVIEW_BIND_SCHEMA:
         raise GripCorruptError("not a gr2 review bind commit")
 
-    stored_tree = _grip_git(workspace, "rev-parse", f"{commit}^{{tree}}").stdout.strip()
-    rows = _read_repo_state(workspace, commit)
+    stored_tree = _bind_git(workspace, "rev-parse", f"{commit}^{{tree}}").stdout.strip()
+    rows = _read_repo_state(workspace, commit, bind=True)
     root_paths = {
         line.strip()
-        for line in _grip_git(workspace, "ls-tree", "--name-only", commit).stdout.splitlines()
+        for line in _bind_git(workspace, "ls-tree", "--name-only", commit).stdout.splitlines()
         if line.strip()
     }
     has_objects = "objects" in root_paths
@@ -658,9 +660,9 @@ def verify_review_commit(workspace: Path, commit: str) -> dict[str, object]:
     for key, fields in sorted(rows.items()):
         if set(fields) != {"remote", "path", "commit", "base"}:
             raise GripCorruptError(f"invalid review repository tree: {key}")
-        observed = _grip_git(workspace, "show", f"{commit}:observed/{key}/remote-head").stdout.strip()
-        title = _grip_git(workspace, "show", f"{commit}:texts/{key}/title").stdout
-        body = _grip_git(workspace, "show", f"{commit}:texts/{key}/body").stdout
+        observed = _bind_git(workspace, "show", f"{commit}:observed/{key}/remote-head").stdout.strip()
+        title = _bind_git(workspace, "show", f"{commit}:texts/{key}/title").stdout
+        body = _bind_git(workspace, "show", f"{commit}:texts/{key}/body").stdout
         title_norm = _norm_text(title)
         body_norm = _norm_text(body)
         row_measured = {
@@ -671,30 +673,30 @@ def verify_review_commit(workspace: Path, commit: str) -> dict[str, object]:
             "body_sha256": hashlib.sha256(body_norm.encode()).hexdigest(),
         }
         # Recompute the three base subtrees from the decoded content, exactly as bind built them.
-        f = [f"100644 blob {_hash_blob(workspace, v)}\t{n}"
+        f = [f"100644 blob {_bind_blob(workspace, v)}\t{n}"
              for n, v in (("remote", fields["remote"]), ("path", fields["path"]),
                           ("commit", fields["commit"]), ("base", fields["base"]))]
-        recomputed_entries.append(f"040000 tree {_mktree(workspace, f)}\t{key}")
+        recomputed_entries.append(f"040000 tree {_bind_mktree(workspace, f)}\t{key}")
         # remote-head field hoisted (see create_review_bind_commit): nested
         # f-string with \t in the expression is a 3.11 SyntaxError; byte-identical.
-        remote_head_field = f"100644 blob {_hash_blob(workspace, observed)}\tremote-head"
+        remote_head_field = f"100644 blob {_bind_blob(workspace, observed)}\tremote-head"
         observed_recomputed.append(
-            f"040000 tree {_mktree(workspace, [remote_head_field])}\t{key}"
+            f"040000 tree {_bind_mktree(workspace, [remote_head_field])}\t{key}"
         )
-        tf = [f"100644 blob {_hash_blob(workspace, title_norm)}\ttitle",
-              f"100644 blob {_hash_blob(workspace, body_norm)}\tbody"]
-        texts_recomputed.append(f"040000 tree {_mktree(workspace, tf)}\t{key}")
+        tf = [f"100644 blob {_bind_blob(workspace, title_norm)}\ttitle",
+              f"100644 blob {_bind_blob(workspace, body_norm)}\tbody"]
+        texts_recomputed.append(f"040000 tree {_bind_mktree(workspace, tf)}\t{key}")
 
         # (a): the carried frozen set. head-tree is what run asserts the
         # reconstruction against; range/metadata are the readable bytes the
         # leak scanner and reviewer see.
         if key in objects_keys:
-            rng = _grip_git(workspace, "show", f"{commit}:objects/{key}/range.patch").stdout
-            meta = _grip_git(workspace, "show", f"{commit}:objects/{key}/metadata").stdout
-            head_tree = _grip_git(workspace, "show", f"{commit}:objects/{key}/head-tree").stdout.strip()
-            of = [f"100644 blob {_hash_blob(workspace, v)}\t{n}"
+            rng = _bind_git(workspace, "show", f"{commit}:objects/{key}/range.patch").stdout
+            meta = _bind_git(workspace, "show", f"{commit}:objects/{key}/metadata").stdout
+            head_tree = _bind_git(workspace, "show", f"{commit}:objects/{key}/head-tree").stdout.strip()
+            of = [f"100644 blob {_bind_blob(workspace, v)}\t{n}"
                   for n, v in (("range.patch", rng), ("metadata", meta), ("head-tree", head_tree))]
-            objects_recomputed.append(f"040000 tree {_mktree(workspace, of)}\t{key}")
+            objects_recomputed.append(f"040000 tree {_bind_mktree(workspace, of)}\t{key}")
             row_measured["head_tree"] = head_tree
             row_measured["range_sha256"] = hashlib.sha256(rng.encode()).hexdigest()
         if key in evidence_keys:
@@ -702,29 +704,29 @@ def verify_review_commit(workspace: Path, commit: str) -> dict[str, object]:
             ef = []
             for name in ("commands", "resolution"):
                 if name in ev_paths:
-                    content = _grip_git(workspace, "show", f"{commit}:evidence/{key}/{name}").stdout
-                    ef.append(f"100644 blob {_hash_blob(workspace, content)}\t{name}")
-            evidence_recomputed.append(f"040000 tree {_mktree(workspace, ef)}\t{key}")
+                    content = _bind_git(workspace, "show", f"{commit}:evidence/{key}/{name}").stdout
+                    ef.append(f"100644 blob {_bind_blob(workspace, content)}\t{name}")
+            evidence_recomputed.append(f"040000 tree {_bind_mktree(workspace, ef)}\t{key}")
 
         measured.append(row_measured)
 
-    policy = _grip_git(workspace, "show", f"{commit}:.grip/policy").stdout
-    meta_tree = _mktree(workspace, [
-        f"100644 blob {_hash_blob(workspace, _REVIEW_BIND_SCHEMA)}\tschema",
-        f"100644 blob {_hash_blob(workspace, 'review')}\tkind",
-        f"100644 blob {_hash_blob(workspace, policy)}\tpolicy",
+    policy = _bind_git(workspace, "show", f"{commit}:.grip/policy").stdout
+    meta_tree = _bind_mktree(workspace, [
+        f"100644 blob {_bind_blob(workspace, _REVIEW_BIND_SCHEMA)}\tschema",
+        f"100644 blob {_bind_blob(workspace, 'review')}\tkind",
+        f"100644 blob {_bind_blob(workspace, policy)}\tpolicy",
     ])
     root_fields = [
         f"040000 tree {meta_tree}\t.grip",
-        f"040000 tree {_mktree(workspace, observed_recomputed)}\tobserved",
-        f"040000 tree {_mktree(workspace, recomputed_entries)}\trepos",
-        f"040000 tree {_mktree(workspace, texts_recomputed)}\ttexts",
+        f"040000 tree {_bind_mktree(workspace, observed_recomputed)}\tobserved",
+        f"040000 tree {_bind_mktree(workspace, recomputed_entries)}\trepos",
+        f"040000 tree {_bind_mktree(workspace, texts_recomputed)}\ttexts",
     ]
     if objects_recomputed:
-        root_fields.append(f"040000 tree {_mktree(workspace, objects_recomputed)}\tobjects")
+        root_fields.append(f"040000 tree {_bind_mktree(workspace, objects_recomputed)}\tobjects")
     if evidence_recomputed:
-        root_fields.append(f"040000 tree {_mktree(workspace, evidence_recomputed)}\tevidence")
-    recomputed_tree = _mktree(workspace, root_fields)
+        root_fields.append(f"040000 tree {_bind_mktree(workspace, evidence_recomputed)}\tevidence")
+    recomputed_tree = _bind_mktree(workspace, root_fields)
     return {
         "commit": commit,
         "stored_tree": stored_tree,
@@ -736,7 +738,7 @@ def verify_review_commit(workspace: Path, commit: str) -> dict[str, object]:
 
 def _tree_keys(workspace: Path, commit: str, path: str) -> set[str]:
     """The immediate child names of a subtree in a gr commit (empty if absent)."""
-    proc = _grip_git(workspace, "ls-tree", "--name-only", f"{commit}:{path}")
+    proc = _bind_git(workspace, "ls-tree", "--name-only", f"{commit}:{path}")
     if proc.returncode != 0:
         return set()
     return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
@@ -785,7 +787,7 @@ def run_review_checks(
     if key in _tree_keys(workspace, commit, "evidence"):
         if "commands" in _tree_keys(workspace, commit, f"evidence/{key}"):
             checks = parse_evidence(
-                _grip_git(workspace, "show", f"{commit}:evidence/{key}/commands").stdout
+                _bind_git(workspace, "show", f"{commit}:evidence/{key}/commands").stdout
             )
 
     # Resolution: pin PYTHONPATH to the reconstructed lane so a declared check
@@ -861,7 +863,7 @@ def build_review_receipt(
     v = verify_review_commit(workspace, commit)
     # Liveness: re-read every observed remote head NOW and compare to the bound base.
     liveness: list[dict[str, str]] = []
-    for key, fields in sorted(_read_repo_state(workspace, commit).items()):
+    for key, fields in sorted(_read_repo_state(workspace, commit, bind=True).items()):
         live = _remote_head(workspace, fields["remote"], _row_ref(workspace, commit, key))
         liveness.append({
             "key": key, "bound_base": fields["base"], "live_remote_head": live,
@@ -897,8 +899,9 @@ def _row_ref(workspace: Path, commit: str, key: str) -> str:
 def review_row_keys(workspace: Path, commit: str) -> list[str]:
     """The repository keys bound in a review gr commit, sorted. Cheap: reads the
     repos/ subtree only (no tree recomputation)."""
-    _validate_grip_repo(workspace)
-    return sorted(_read_repo_state(workspace, commit).keys())
+    _validate_bind_store(workspace)
+    commit = _resolve_bound(workspace, commit)
+    return sorted(_read_repo_state(workspace, commit, bind=True).keys())
 
 
 def reconstruct_review_lane(
@@ -920,15 +923,16 @@ def reconstruct_review_lane(
     head. Without that object (a range-1-era commit) it falls back to a plain
     ``git am``: tree-faithful, committer re-stamped, so the returned reconstructed_head
     differs from the bound head by design."""
-    _validate_grip_repo(workspace)
+    _validate_bind_store(workspace)
+    commit = _resolve_bound(workspace, commit)
     if key not in _tree_keys(workspace, commit, "objects"):
         raise GripReviewRefused("row_carries_no_objects", key, "reconstruction needs a carried range")
-    repo = _read_repo_state(workspace, commit)[key]
+    repo = _read_repo_state(workspace, commit, bind=True)[key]
     remote, base, bound_head = repo["remote"], repo["base"], repo["commit"]
-    head_tree_expected = _grip_git(workspace, "show", f"{commit}:objects/{key}/head-tree").stdout.strip()
-    committers_proc = _grip_git(workspace, "show", f"{commit}:objects/{key}/committers")
+    head_tree_expected = _bind_git(workspace, "show", f"{commit}:objects/{key}/head-tree").stdout.strip()
+    committers_proc = _bind_git(workspace, "show", f"{commit}:objects/{key}/committers")
     committers = committers_proc.stdout if committers_proc.returncode == 0 else None
-    range_text = _grip_git(workspace, "show", f"{commit}:objects/{key}/range.patch").stdout
+    range_text = _bind_git(workspace, "show", f"{commit}:objects/{key}/range.patch").stdout
 
     lane_dir = Path(lane_dir)
     lane_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -981,68 +985,162 @@ def _grip_git(workspace: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return git(workspace / ".grip", *args)
 
 
+# Review binds live in the workspace root's own `.git` on a native root (a `grip.toml` beside a
+# root `.git`), under `refs/dev.synapt.grip/__reviews__/<commit>`; the alpha `.grip/.git` store keeps its old
+# home until it is converted. `_grip_git` and the alpha snapshot helpers above stay on `.grip`.
+_REVIEW_REF_PREFIX = "refs/dev.synapt.grip/__reviews__/"
+_ZERO_OID = "0" * 40
+
+
+def _bind_dir(workspace: Path) -> Path:
+    return workspace if _is_native_workspace(workspace) else workspace / ".grip"
+
+
+def _bind_git(workspace: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return git(_bind_dir(workspace), *args)
+
+
+def _bind_run(workspace: Path, argv: list[str], *, input: str | None = None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(argv, cwd=_bind_dir(workspace), input=input, capture_output=True, text=True, check=False, env=env)
+
+
+def _bind_blob(workspace: Path, content: str) -> str:
+    proc = _bind_run(workspace, ["git", "hash-object", "-w", "--stdin"], input=content)
+    if proc.returncode != 0:
+        raise RuntimeError(f"hash-object failed: {proc.stderr}")
+    return proc.stdout.strip()
+
+
+def _bind_mktree(workspace: Path, entries: list[str]) -> str:
+    proc = _bind_run(workspace, ["git", "mktree"], input="\n".join(entries) + "\n" if entries else "")
+    if proc.returncode != 0:
+        raise RuntimeError(f"mktree failed: {proc.stderr}")
+    return proc.stdout.strip()
+
+
+def _bind_commit_tree(workspace: Path, tree_sha: str, *, parent: str | None = None, message: str = "") -> str:
+    args = ["git", "commit-tree", tree_sha]
+    if parent:
+        args.extend(["-p", parent])
+    args.extend(["-m", message or "grip snapshot"])
+    proc = _bind_run(workspace, args, env=_git_env())
+    if proc.returncode != 0:
+        raise RuntimeError(f"commit-tree failed: {proc.stderr}")
+    return proc.stdout.strip()
+
+
+def _validate_bind_store(workspace: Path) -> None:
+    """A native root needs nothing but its own `.git` (a bind creates a ref, never a store), after
+    any review binds an older gr2 left in `.grip/.git` have moved into refs (see
+    `_migrate_legacy_binds`); any other root keeps the alpha `.grip/.git` check."""
+    if _is_native_workspace(workspace):
+        _migrate_legacy_binds(workspace)
+        return
+    _validate_grip_repo(workspace)
+
+
+def _resolve_bound(workspace: Path, commit: str) -> str:
+    """The full id of a bound review. On a native root only a commit with a
+    `refs/dev.synapt.grip/__reviews__/` ref is a bind, so an ordinary workspace commit is refused as unbound
+    before any tree is read; an abbreviated sha is expanded first, as git did in the old store."""
+    if not _is_native_workspace(workspace):
+        return commit
+    proc = _bind_git(workspace, "rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}")
+    full = proc.stdout.strip() if proc.returncode == 0 else ""
+    if not full or _bind_git(workspace, "rev-parse", "--verify", "--quiet", f"{_REVIEW_REF_PREFIX}{full}").returncode != 0:
+        raise ReviewStoreAbsent(f"No review bind {commit} is bound in {workspace}.")
+    return full
+
+
+def _migrate_legacy_binds(workspace: Path) -> None:
+    """Move the review binds an older gr2 kept in `<root>/.grip/.git` into `refs/dev.synapt.grip/__reviews__/`.
+
+    Automatic, once, announced, and verified, because the old store is something gr2 itself made
+    and knows how to move. Every id keeps its sha (recorded `gr:<sha>` ids, review markers and
+    verdict text still resolve); each ref is create-only; a rerun is a no-op; and the old store is
+    renamed to `.grip/legacy-store.git` only after every bind is in the root and its tree matches
+    the old store's. Any failure raises with its reason BEFORE the verb does its own work. A store
+    holding no review bind (alpha snapshots only, or empty) is left where it is."""
+    legacy = workspace / ".grip" / ".git"
+    if not legacy.is_dir():
+        return
+    src = ["git", "--git-dir", str(legacy)]
+
+    def run(argv: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False)
+
+    listed = run([*src, "rev-list", "HEAD"])
+    if listed.returncode != 0:
+        return  # unborn HEAD: nothing was ever stored
+    binds: list[tuple[str, str]] = []
+    for commit in listed.stdout.split():
+        schema = run([*src, "show", f"{commit}:.grip/schema"]).stdout.strip()
+        if schema in (_REVIEW_BIND_SCHEMA, _PROJECT_REVIEW_SCHEMA):
+            binds.append((commit, schema))
+    if not binds:
+        return
+
+    def fail(reason: str) -> GripCorruptError:
+        return GripCorruptError(f"review bind migration from .grip/.git failed, nothing was renamed: {reason}")
+
+    target = workspace / ".grip" / "legacy-store.git"
+    if target.exists():
+        raise fail(f"{target} already exists")
+    fetched = run(["git", "fetch", "--quiet", "--no-tags", str(legacy), "HEAD"], cwd=workspace)
+    if fetched.returncode != 0:
+        raise fail(f"fetching the old store: {fetched.stderr.strip()}")
+    for commit, schema in binds:
+        old_tree = run([*src, "rev-parse", f"{commit}^{{tree}}"]).stdout.strip()
+        new_tree = _bind_git(workspace, "rev-parse", "--verify", "--quiet", f"{commit}^{{tree}}").stdout.strip()
+        if not new_tree or new_tree != old_tree:
+            raise fail(f"{commit} tree is {new_tree or 'absent'} in the root, {old_tree} in the old store")
+        if schema == _REVIEW_BIND_SCHEMA and not _verify_review_commit_in_store(workspace, commit)["tree_matches"]:
+            raise fail(f"{commit} does not re-derive its own tree")
+    for commit, _schema in binds:
+        ref = f"{_REVIEW_REF_PREFIX}{commit}"
+        if _bind_git(workspace, "rev-parse", "--verify", "--quiet", ref).stdout.strip() == commit:
+            continue
+        made = _bind_git(workspace, "update-ref", ref, commit, _ZERO_OID)
+        if made.returncode != 0:
+            raise fail(f"{ref}: {made.stderr.strip()}")
+    try:
+        legacy.rename(target)
+    except OSError as exc:
+        raise fail(f"renaming {legacy}: {exc}") from exc
+    import sys
+
+    print(f"migrated {len(binds)} review binds from .grip/.git into refs/dev.synapt.grip/__reviews__", file=sys.stderr)
+
+
+def _publish_bind(workspace: Path, commit: str, message: str) -> str:
+    """Make a bind commit durable and findable. On a native root the commit is parentless and its
+    ref is created last and create-only (old value zero), so the ref is the single commit point
+    and a refused bind leaves only unreferenced objects; any other root keeps the alpha chain."""
+    if _is_native_workspace(workspace):
+        proc = _bind_git(workspace, "update-ref", f"{_REVIEW_REF_PREFIX}{commit}", commit, _ZERO_OID)
+        if proc.returncode != 0:
+            raise RuntimeError(f"update-ref failed for {_REVIEW_REF_PREFIX}{commit}: {proc.stderr.strip()}")
+        return commit
+    _grip_git(workspace, "update-ref", "HEAD", commit)
+    return commit
+
+
 def _is_native_workspace(workspace: Path) -> bool:
     """A native store root: what `store init` makes, a `grip.toml` beside a root `.git`."""
     return (workspace / "grip.toml").is_file() and (workspace / ".git").exists()
 
 
-def _ensure_review_store(workspace: Path) -> tuple[bool, bool]:
-    """Create the review object store (`.grip/.git`) on first bind, for a native root only.
-    Returns (created the store, created the `.grip` directory) so a bind that does not
-    complete can remove exactly what it made.
-
-    `store init` writes `grip.toml` and a root `.git` and makes no `.grip/.git`, and `bind`
-    is the only verb that writes review objects, so it is the one place that has to make the
-    store. Any other directory is left alone and keeps the `not_initialized` refusal: bind
-    must not initialise arbitrary directories. `grip_init` is idempotent. `store migrate`
-    refuses a root that already holds a native store, so a store made here is never read as
-    an alpha snapshot store. The root is also told to ignore the new store, so an adopted root
-    does not see a nested repo (see `_exclude_review_store`)."""
-    if not _is_native_workspace(workspace) or (workspace / ".grip" / ".git").exists():
-        return False, False
-    created_grip_dir = not (workspace / ".grip").exists()
-    _exclude_review_store(workspace)
-    grip_init(workspace)
-    return True, created_grip_dir
-
-
-def _discard_review_store(workspace: Path, created_grip_dir: bool) -> str | None:
-    """Undo `_ensure_review_store` after a bind that did not complete. A store that holds a
-    commit is never removed (a bind completed in it, perhaps another caller's), and `.grip`
-    itself goes only when this call made it and it is now empty.
-
-    Returns None when nothing is left behind, or a sentence naming what survived when the
-    store could not be fully removed. It does not raise: this runs while the bind's own
-    refusal is propagating, and that refusal must not be replaced by the cleanup's."""
-    # Local import: clone_exec reaches back through spec_apply, so a module-level import here
-    # would be one more edge in that cycle.
-    from .clone_exec import IncompleteRemoval, rmtree_or_refuse
-
-    grip_dir = workspace / ".grip"
-    if git(grip_dir, "rev-parse", "--verify", "HEAD").returncode == 0:
-        return None
-    try:
-        rmtree_or_refuse(grip_dir / ".git")
-    except IncompleteRemoval as leftover:
-        return f"the review store this call created could not be fully removed: {leftover}"
-    if created_grip_dir:
-        try:
-            grip_dir.rmdir()
-        except OSError:
-            pass
-    return None
-
-
 _REVIEW_STORE_EXCLUDE = "/.grip/"
 
 
-def _exclude_review_store(workspace: Path) -> None:
+def exclude_grip_state(workspace: Path) -> None:
     """Make the root repo ignore `.grip/`, through the root's own `.git/info/exclude`.
 
     An adopted root keeps its owner's `.gitignore` (store init never edits it), so nothing there
-    hides a nested repo at `.grip/`: `git status` shows it and `git add -A` records it as a
-    160000 gitlink to local-only review objects. The exclude file is local to the clone and is
-    the place for a tool's private store. The line is added once, and only when absent."""
+    hides gr2's per-desk state under `.grip/`: `git status` shows it and `git add -A` would record
+    local state. The exclude file is local to the clone and is the place for a tool's private
+    paths. `store init` writes the line, once and only when absent; a bind writes nothing under
+    `.grip/` (its record is a ref in the root's own `.git`)."""
     proc = git(workspace, "rev-parse", "--git-path", "info/exclude")
     if proc.returncode != 0 or not proc.stdout.strip():
         diagnostic = (proc.stderr or proc.stdout).strip() or "no diagnostic"
@@ -1065,8 +1163,8 @@ def _validate_grip_repo(workspace: Path) -> None:
     grip_dir = workspace / ".grip"
     if _is_native_workspace(workspace) and not (grip_dir / ".git").exists():
         raise ReviewStoreAbsent(
-            f"No review has been bound in {workspace}: "
-            "`gr2 review bind` creates the review store on first use."
+            f"No alpha snapshot store at {workspace}/.grip: a native root keeps its workspace "
+            "record and its review binds in the root's own .git."
         )
     if not grip_dir.exists():
         raise GripInitError(
@@ -1406,9 +1504,11 @@ def grip_diff(workspace: Path, ref_a: str, ref_b: str) -> GripDiff:
     return result
 
 
-def _read_repo_state(workspace: Path, ref: str) -> dict[str, dict[str, str]]:
-    """Read all repo states from a grip commit."""
-    proc = _grip_git(workspace, "ls-tree", f"{ref}:repos")
+def _read_repo_state(workspace: Path, ref: str, *, bind: bool = False) -> dict[str, dict[str, str]]:
+    """Read all repo states from a grip commit. ``bind=True`` reads the review store (the root's
+    own `.git` on a native root); the default keeps reading the alpha `.grip/.git` snapshot store."""
+    _g = _bind_git if bind else _grip_git
+    proc = _g(workspace, "ls-tree", f"{ref}:repos")
     if proc.returncode != 0:
         return {}
 
@@ -1418,13 +1518,13 @@ def _read_repo_state(workspace: Path, ref: str) -> dict[str, dict[str, str]]:
             continue
         name = line.split("\t")[-1]
         state: dict[str, str] = {}
-        fields = _grip_git(workspace, "ls-tree", f"{ref}:repos/{name}")
+        fields = _g(workspace, "ls-tree", f"{ref}:repos/{name}")
         if fields.returncode == 0:
             for fline in fields.stdout.strip().splitlines():
                 if not fline.strip():
                     continue
                 fname = fline.split("\t")[-1]
-                blob = _grip_git(workspace, "show", f"{ref}:repos/{name}/{fname}")
+                blob = _g(workspace, "show", f"{ref}:repos/{name}/{fname}")
                 if blob.returncode == 0:
                     state[fname] = blob.stdout.strip()
         repos[name] = state

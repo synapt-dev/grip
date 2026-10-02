@@ -15,6 +15,8 @@ verify-on-tampered is probe 1/2 (verify recomputes, does not trust the record).
 """
 from __future__ import annotations
 
+from tests.native_root_helper import native_root
+
 import json
 import os
 import re
@@ -82,7 +84,7 @@ def _fixture_repo(tmp_path: Path, name: str = "r") -> tuple[str, str, str, Path]
 def _grip_ws(tmp_path: Path) -> Path:
     ws = tmp_path / "ws"
     ws.mkdir()
-    grip.grip_init(ws)
+    native_root(ws)
     return ws
 
 
@@ -102,7 +104,7 @@ def _bind(ws: Path, remote: str, base: str, head: str, work: Path, key: str = "r
 def _tamper_blob(ws: Path, commit_ref: str, tree_path: str, content: bytes) -> str:
     """Hand-craft a tampered review artifact: replace one carried blob and commit
     the mutated tree onto a NEW commit in .grip. Returns the new gr:<sha>."""
-    gd = ws / ".grip"
+    gd = ws
     sha = commit_ref[3:] if commit_ref.startswith("gr:") else commit_ref
     blob = subprocess.run(
         ["git", "-C", str(gd), "hash-object", "-w", "--stdin"],
@@ -124,6 +126,9 @@ def _tamper_blob(ws: Path, commit_ref: str, tree_path: str, content: bytes) -> s
         env=env, capture_output=True, text=True, check=True,
     ).stdout.strip()
     index.unlink(missing_ok=True)
+    # A tampered commit is only a bind when it has its ref: publish it the way a bind is.
+    subprocess.run(["git", "-C", str(gd), "update-ref", f"refs/dev.synapt.grip/__reviews__/{new_commit}", new_commit],
+                   env=env, check=True)
     return f"gr:{new_commit}"
 
 
@@ -144,7 +149,7 @@ def test_bind_open_gr_verify_roundtrip(tmp_path):
     assert (lane / "f.txt").read_text() == "head under review\n"
     # The assertion is on the TREE (git am mints a new head sha), so tree must match.
     assert _git(lane, "rev-parse", "HEAD^{tree}") == \
-        _git(ws / ".grip", "show", f"{grc[3:]}:objects/recall/head-tree")
+        _git(ws, "show", f"{grc[3:]}:objects/recall/head-tree")
 
     verified = runner.invoke(app, ["review", "verify", str(ws), grc, "--json"])
     assert verified.exit_code == 0, verified.output

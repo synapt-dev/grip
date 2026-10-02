@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.native_root_helper import native_root
+
 import argparse
 import subprocess
 import tomllib
@@ -119,7 +121,7 @@ def test_three_repo_exact_pins_open_only_after_all_members_verify(tmp_path: Path
     from gr2.python_cli.project_review import ProjectReviewPin, make_spec, open_project_review
     pins = [ProjectReviewPin(key=name, repo=f"local:{source[0]}", path=f"repos/{name}", base=source[1], head=source[2]) for name, source in reversed(list(sources.items()))]
     from gr2.python_cli import grip
-    grip.grip_init(workspace)
+    native_root(workspace)
     spec = make_spec(workspace, pins)
     outcome = open_project_review(workspace=workspace, owner_unit="atlas", lane_name="review-m1", spec=spec, sources={name: (source[0], f"review/{name}") for name, source in sources.items()}, allow_local=True)
     assert outcome.status == "opened"
@@ -139,7 +141,7 @@ def test_three_immutable_seed_sources_open_at_pins_not_source_heads(tmp_path: Pa
     workspace, sources, _home, _current = _world(tmp_path)
     from gr2.python_cli import grip, project_review
 
-    grip.grip_init(workspace)
+    native_root(workspace)
     pins = [
         project_review.ProjectReviewPin(name, f"local:{source[0]}", f"repos/{name}", source[1], source[2])
         for name, source in sources.items()
@@ -174,7 +176,7 @@ def test_deleting_explicit_seed_recreates_wrong_source_head_partial(tmp_path: Pa
     workspace, sources, _home, current = _world(tmp_path)
     from gr2.python_cli import grip, project_review, review
 
-    grip.grip_init(workspace)
+    native_root(workspace)
     pins = [
         project_review.ProjectReviewPin(name, f"local:{source[0]}", f"repos/{name}", source[1], source[2])
         for name, source in sources.items()
@@ -268,7 +270,7 @@ def test_invalid_review_root_preflight_creates_no_escaped_clone(tmp_path: Path, 
 def test_missing_pin_refuses_before_any_review_materialization(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workspace, sources, _home, current = _world(tmp_path)
     from gr2.python_cli import grip, project_review
-    grip.grip_init(workspace)
+    native_root(workspace)
     pins = [project_review.ProjectReviewPin(name, f"local:{source[0]}", f"repos/{name}", source[1], ("f" * 40 if name == "gamma" else source[2])) for name, source in sources.items()]
     spec = project_review.make_spec(workspace, pins)
     calls: list[str] = []
@@ -282,7 +284,7 @@ def test_missing_pin_refuses_before_any_review_materialization(tmp_path: Path, m
 def test_beta_failure_is_partial_and_never_enters_review_lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workspace, sources, _home, current = _world(tmp_path)
     from gr2.python_cli import grip, project_review
-    grip.grip_init(workspace)
+    native_root(workspace)
     spec = project_review.make_spec(workspace, [project_review.ProjectReviewPin(name, f"local:{source[0]}", f"repos/{name}", source[1], source[2]) for name, source in sources.items()])
     real = project_review.review.open_review_lane
     calls: list[str] = []
@@ -303,7 +305,7 @@ def test_beta_failure_is_partial_and_never_enters_review_lane(tmp_path: Path, mo
 def test_full_gr_commit_field_mismatch_refuses_before_clone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, value: str) -> None:
     workspace, sources, _home, current = _world(tmp_path)
     from gr2.python_cli import grip, project_review
-    grip.grip_init(workspace)
+    native_root(workspace)
     pins = [project_review.ProjectReviewPin(name, f"local:{source[0]}", f"repos/{name}", source[1], source[2]) for name, source in sources.items()]
     spec = project_review.make_spec(workspace, pins)
     beta = next(pin for pin in spec.pins if pin.key == "beta")
@@ -331,7 +333,7 @@ def test_unknown_workspace_key_refuses_before_clone_or_review_root(tmp_path: Pat
     workspace, sources, _home, current = _world(tmp_path)
     from gr2.python_cli import grip, project_review
 
-    grip.grip_init(workspace)
+    native_root(workspace)
     alpha = sources["alpha"]
     pin = project_review.ProjectReviewPin("grip", f"local:{alpha[0]}", "repos/grip", alpha[1], alpha[2])
     spec = project_review.make_spec(workspace, [pin])
@@ -355,7 +357,7 @@ def test_workspace_identity_and_source_origin_refuse_before_transport(tmp_path: 
     workspace, sources, _home, current = _world(tmp_path)
     from gr2.python_cli import grip, project_review
 
-    grip.grip_init(workspace)
+    native_root(workspace)
     alpha, beta = sources["alpha"], sources["beta"]
     correct = project_review.ProjectReviewPin("alpha", f"local:{alpha[0]}", "repos/alpha", alpha[1], alpha[2])
     bad_identity = dataclasses.replace(correct, repo=f"local:{beta[0]}")
@@ -384,7 +386,7 @@ def test_malformed_workspace_spec_refuses_before_transport_or_lane_change(tmp_pa
     workspace, sources, _home, current = _world(tmp_path)
     from gr2.python_cli import grip, project_review
 
-    grip.grip_init(workspace)
+    native_root(workspace)
     alpha = sources["alpha"]
     spec = project_review.make_spec(workspace, [project_review.ProjectReviewPin("alpha", f"local:{alpha[0]}", "repos/alpha", alpha[1], alpha[2])])
     (workspace / ".grip" / "workspace_spec.toml").write_text("[[repos]\nname = \"unterminated\"\n")
@@ -407,7 +409,7 @@ def test_deleting_malformed_spec_translation_recreates_parser_exception(tmp_path
     workspace, sources, _home, _current = _world(tmp_path)
     from gr2.python_cli import grip, project_review
 
-    grip.grip_init(workspace)
+    native_root(workspace)
     alpha = sources["alpha"]
     spec = project_review.make_spec(workspace, [project_review.ProjectReviewPin("alpha", f"local:{alpha[0]}", "repos/alpha", alpha[1], alpha[2])])
     (workspace / ".grip" / "workspace_spec.toml").write_text("[[repos]\nname = \"unterminated\"\n")
@@ -424,7 +426,7 @@ def test_deleting_workspace_boundary_recreates_unknown_key_clone_side_effect(tmp
     workspace, sources, _home, current = _world(tmp_path)
     from gr2.python_cli import grip, project_review
 
-    grip.grip_init(workspace)
+    native_root(workspace)
     alpha = sources["alpha"]
     pin = project_review.ProjectReviewPin("grip", f"local:{alpha[0]}", "repos/grip", alpha[1], alpha[2])
     spec = project_review.make_spec(workspace, [pin])
@@ -444,7 +446,7 @@ def test_deleting_identity_boundary_recreates_clone_side_effect(tmp_path: Path, 
     workspace, sources, _home, _current = _world(tmp_path)
     from gr2.python_cli import grip, project_review
 
-    grip.grip_init(workspace)
+    native_root(workspace)
     alpha, beta = sources["alpha"], sources["beta"]
     pin = project_review.ProjectReviewPin("alpha", f"local:{beta[0]}", "repos/alpha", alpha[1], alpha[2])
     spec = project_review.make_spec(workspace, [pin])

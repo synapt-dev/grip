@@ -11,6 +11,8 @@ git-am exit point removed from the gr2 review producer.
 """
 from __future__ import annotations
 
+from tests.native_root_helper import native_root
+
 import subprocess
 from pathlib import Path
 
@@ -55,7 +57,7 @@ def _base_remote_and_range(tmp_path: Path) -> tuple[str, str, str, str, str]:
 def _init_ws(tmp_path: Path) -> Path:
     ws = tmp_path / "ws"
     (ws / ".grip").mkdir(parents=True)
-    grip.grip_init(ws)
+    native_root(ws)
     return ws
 
 

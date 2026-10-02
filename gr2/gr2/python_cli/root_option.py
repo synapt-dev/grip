@@ -137,3 +137,108 @@ class RootOptionalCommand(RootOptionCommand):
     """``--root/-C``, and a leading workspace root that may be left out (counted, never guessed)."""
 
     infer_bare = True
+
+
+class ContextCommand(RootOptionalCommand):
+    """A verb that leads with the root and a unit and lets BOTH be left out, resolved by `context.py`.
+
+    It rewrites the words into the full ``ROOT UNIT [REST...]`` form before click parses them, so everything
+    downstream (the usage line, `--root/-C`, the given-twice refusals) is `RootOptionalCommand`'s. What it
+    adds: `--unit NAME` names the unit; with the leading words left out they are inferred; when exactly one
+    leading word is missing and no option names it, the first word is read as the root when it names a
+    workspace, as the unit when it does not, and refused naming both readings when it could be either.
+    The values and their sources land in ``ctx.meta["gr2.context"]`` for the verb to announce."""
+
+    def parse_args(self, ctx, args):
+        from . import context as c
+
+        args = list(args)
+        unit_value, args = self._take_unit_option(args, ctx)
+        positions, root_value = self._scan(args)
+        words = [args[i] for i in positions]
+        required = self._required_positionals  # root, unit and the rest, all required for these verbs
+        given = (root_value is not None) + (unit_value is not None)
+        lead_words = len(words) - (required - 2)
+        if unit_value is not None and lead_words > 1:
+            ctx.fail("the unit was given twice: as an argument and with --unit")
+        if lead_words == 2 and given == 0:
+            ctx.meta["gr2.context"] = {
+                "root": c.Resolved(words[0], "explicit"),
+                "unit": c.Resolved(words[1], "explicit"),
+            }
+            return super().parse_args(ctx, args)
+        if lead_words > 2 - given or lead_words < 0:
+            # fully typed, or too few words: leave it to the class below, which refuses by name
+            ctx.meta["gr2.context"] = {}
+            return super().parse_args(ctx, [*args[:0], *args] if unit_value is None else self._restore(args, unit_value))
+        try:
+            root_item, unit_item, consumed = self._pick(c, words, lead_words, root_value, unit_value)
+        except c.ContextRefused as exc:
+            ctx.fail(str(exc))
+        items = {"root": root_item, "unit": unit_item}
+        ctx.meta["gr2.context"] = items
+        at = positions[0] if positions else len(args)
+        drop = set(positions[:consumed])
+        rest = [t for i, t in enumerate(args) if i not in drop]
+        before = sum(1 for i in range(at) if i not in drop)
+        lead = [] if root_value is not None else [root_item.value]
+        args_out = [*rest[:before], *lead, unit_item.value, *rest[before:]]
+        return super().parse_args(ctx, args_out)
+
+    @staticmethod
+    def _restore(args, unit_value):
+        return [*args, "--unit", unit_value]
+
+    @staticmethod
+    def _take_unit_option(args, ctx):
+        out, value, i = [], None, 0
+        while i < len(args):
+            token = args[i]
+            if token == "--unit":
+                if i + 1 >= len(args):
+                    ctx.fail("--unit needs a value")
+                value, i = args[i + 1], i + 2
+                continue
+            if token.startswith("--unit="):
+                value, i = token.partition("=")[2], i + 1
+                continue
+            out.append(token)
+            i += 1
+        return value, out
+
+    @staticmethod
+    def _pick(c, words, lead_words, root_value, unit_value):
+        """(root, unit, leading words consumed) for the calls that leave a leading word out."""
+        root_item = c.Resolved(root_value, "explicit") if root_value is not None else None
+        unit_item = c.Resolved(unit_value, "explicit") if unit_value is not None else None
+        consumed = 0
+        if lead_words == 1:
+            word = words[0]
+            if root_item is not None and unit_item is None:
+                unit_item, consumed = c.Resolved(word, "explicit"), 1
+            elif unit_item is not None and root_item is None:
+                root_item, consumed = c.Resolved(word, "explicit"), 1
+            else:
+                nearest = None
+                try:
+                    nearest = c.resolve_root(None)
+                except c.ContextRefused:
+                    pass
+                is_root = Path(word).is_dir() and c._is_workspace_root(Path(word).resolve())
+                known = set()
+                if nearest is not None:
+                    known = set(c.entered_units(Path(nearest.value))) | set(c.spec_units(Path(nearest.value)))
+                if is_root and word in known:
+                    raise c.ContextRefused(
+                        f"{word!r} could be the workspace root or a unit; say which: "
+                        f"-C {word} for the root, --unit {word} for the unit"
+                    )
+                if is_root:
+                    root_item, consumed = c.Resolved(word, "explicit"), 1
+                else:
+                    unit_item, consumed = c.Resolved(word, "explicit"), 1
+        if root_item is None:
+            root_item = c.resolve_root(None)
+        if unit_item is None:
+            unit_item = c.resolve_unit(Path(root_item.value), None)
+        return root_item, unit_item, consumed

@@ -29,7 +29,8 @@ from gr2.python_cli import root_option
 from gr2.python_cli.app import app
 from typer.testing import CliRunner
 
-FIXED_ARITY = [  # RootOptionalCommand: the 21
+RESOLVED = ["lane/create", "lane/current", "lane/enter", "lane/exit", "lane/resolve", "lane/show"]  # ContextCommand: fixed arity, and the unit may be left out too
+FIXED_ARITY = [  # RootOptionalCommand: the 15, and ContextCommand: the 6 above
     "repo/hook-run", "repo/projection-run",
     "lane/create", "lane/enter", "lane/resolve", "lane/exit", "lane/current", "lane/show", "lane/bind",
     "lane/lease/acquire", "lane/lease/release", "lane/lease/show",
@@ -122,14 +123,17 @@ def test_the_partition_is_exactly_the_21_and_the_8_and_nothing_else_takes_a_lead
         name for name, c in LEAVES.items()
         if _arguments(c) and _arguments(c)[0].name == "workspace_root"
         and name.split("/")[0] not in {"workspace", "spec", "sync", "store", "grip", "plan", "apply", "repo/status"}
-        and type(c).__name__ in {"RootOptionalCommand", "RootOptionCommand", "TyperCommand"}
-        and (_arguments(c)[0].required or type(c).__name__ == "RootOptionalCommand")
+        and type(c).__name__ in {"RootOptionalCommand", "RootOptionCommand", "TyperCommand", "ContextCommand"}
+        and (_arguments(c)[0].required or type(c).__name__ in {"RootOptionalCommand", "ContextCommand"})
     )
     by_class = {
-        "RootOptionalCommand": sorted(n for n, c in LEAVES.items() if type(c).__name__ == "RootOptionalCommand"),
+        "RootOptionalCommand": sorted(
+            n for n, c in LEAVES.items() if type(c).__name__ in {"RootOptionalCommand", "ContextCommand"}
+        ),
         "RootOptionCommand": sorted(n for n, c in LEAVES.items() if type(c).__name__ == "RootOptionCommand"),
     }
     assert by_class["RootOptionalCommand"] == sorted(FIXED_ARITY)
+    assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ContextCommand") == sorted(RESOLVED)
     assert by_class["RootOptionCommand"] == sorted(OPTIONAL_TRAILING)
     assert [n for n in leading if n not in FIXED_ARITY and n not in OPTIONAL_TRAILING] == [], (
         "a verb takes the workspace root as a required leading positional and is in neither class"

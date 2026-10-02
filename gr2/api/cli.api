@@ -204,12 +204,14 @@ flag  lane create --repos <str>                                       stable
 flag  lane create --root/-C <str>                                     stable
 flag  lane create --source <str>                                      stable
 flag  lane create --type <str>                                        stable
+flag  lane create --unit <str>                                        stable
 verb  lane create                                                     stable
 # lane current
 arg   lane current owner_unit <str> (hidden)                          stable
 arg   lane current workspace_root <str> (hidden)                      stable
 flag  lane current --json (hidden)                                    stable
 flag  lane current --root/-C <str> (hidden)                           stable
+flag  lane current --unit <str> (hidden)                              stable
 verb  lane current (hidden)                                           stable
 # lane enter
 arg   lane enter lane_name <str>                                      stable
@@ -220,6 +222,7 @@ flag  lane enter --manual-hooks                                       stable
 flag  lane enter --notify-channel                                     stable
 flag  lane enter --recall                                             stable
 flag  lane enter --root/-C <str>                                      stable
+flag  lane enter --unit <str>                                         stable
 verb  lane enter                                                      stable
 # lane exit
 arg   lane exit owner_unit <str>                                      stable
@@ -229,6 +232,7 @@ flag  lane exit --manual-hooks                                        stable
 flag  lane exit --notify-channel                                      stable
 flag  lane exit --recall                                              stable
 flag  lane exit --root/-C <str>                                       stable
+flag  lane exit --unit <str>                                          stable
 verb  lane exit                                                       stable
 # lane lease acquire
 arg   lane lease acquire lane_name <str>                              stable
@@ -262,12 +266,14 @@ flag  lane resolve --actor <str>                                      stable
 flag  lane resolve --json                                             stable
 flag  lane resolve --resolution <str>                                 stable
 flag  lane resolve --root/-C <str>                                    stable
+flag  lane resolve --unit <str>                                       stable
 verb  lane resolve                                                    stable
 # lane show
 arg   lane show owner_unit <str>                                      stable
 arg   lane show workspace_root <str>                                  stable
 flag  lane show --json                                                stable
 flag  lane show --root/-C <str>                                       stable
+flag  lane show --unit <str>                                          stable
 verb  lane show                                                       stable
 # plan
 arg   plan workspace_root <str>                                       stable

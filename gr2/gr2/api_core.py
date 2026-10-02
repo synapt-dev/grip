@@ -106,10 +106,10 @@ def label(spelling: str, hidden: bool, hidden_by: str | None) -> str:
     One home for the rule, because a gate that wants to ask a question about the
     label TEXT (does it end in a space? how long is it?) cannot use the parsed
     rows: a parser strips the padding, and the trailing space it would be asking
-    about is exactly what stripping removes. Measured -- a first version of
-    ``test_no_label_ends_in_a_space`` read labels through a parser and could not
-    have failed for any input, because every label it saw had already been
-    stripped.
+    about is exactly what stripping removes. A gate that read labels through a
+    parser could not fail for any input, because every label it saw would
+    already be stripped; ``test_no_label_ends_in_a_space`` calls this function
+    for that reason.
 
     An inherited hide names the group that did it; a command hidden in its own
     right is just ``(hidden)``. The dump carries no group row, so the name is the

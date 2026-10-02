@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 GR2 = Path(__file__).resolve().parents[1]
@@ -183,15 +184,13 @@ def test_api_dump_is_current() -> None:
 def _committed_items() -> list[tuple[str, str, str]]:
     """(kind, label, marker) for every ITEM LINE the COMMITTED file carries.
 
-    Reads ``api/cli.api`` -- the published artifact -- and NOT the renderer. That
-    distinction was wrong in the first version of this function and wrong in a
-    way that cost two readers a round: it called ``_generator().render()`` while
-    its docstring, its row and the PR body all said it read the file. The
+    Reads ``api/cli.api`` -- the published artifact -- and NOT the renderer. The
     comparison it feeds is the one that ties the PUBLISHED BYTES to the registry,
     so it has to read the published bytes; a version reading the renderer agrees
     with any renderer that agrees with itself.
+    ``test_the_block_parse_reads_the_file_not_the_renderer`` holds that.
 
-    The parse is the old two-column one, kept deliberately and kept SMALL: it
+    The parse is the two-column one, kept deliberately and kept SMALL: it
     splits the fixed columns and skips a heading, and it derives NOTHING else. It
     is not here to say what the dump SHOULD carry -- that is ``_items()``, read
     from the registry -- but to say what the file DOES carry, so the two can be
@@ -210,8 +209,7 @@ def _committed_items() -> list[tuple[str, str, str]]:
 def test_the_committed_file_carries_exactly_the_items() -> None:
     """Every registry item must reach the PUBLISHED FILE, and nothing else may.
 
-    THIS ROW EXISTS BECAUSE ITS ABSENCE WAS A HOLE, and the hole is worth stating
-    because it was opened by a fix. Every other gate here reads ``_items()``,
+    THIS ROW CLOSES A HOLE THE OTHER GATES LEAVE OPEN. The item gates here read ``_items()``,
     which is fed from the registry, and ``test_api_dump_is_current`` compares the
     committed file to whatever the renderer emits NOW -- so a renderer that
     stopped emitting a whole kind would drop those rows from the file, the
@@ -219,17 +217,15 @@ def test_the_committed_file_carries_exactly_the_items() -> None:
     and the dump would have silently lost part of the surface it exists to
     publish.
 
-    MEASURED, both directions, and the first version of this function got the
-    second one wrong:
+    MEASURED, both directions:
 
       * renderer mutated to drop every ``json`` row, file regenerated -> RED;
       * the same mutation with the file left alone -> the renderer and the file
         disagree, which ``test_api_dump_is_current`` catches, and this row stays
         green because the FILE is still whole;
       * rows deleted from the COMMITTED file alone, renderer untouched -> RED
-        here. An earlier version of this function read the renderer, and on that
-        corruption it PASSED while only the currency row failed -- the row's name,
-        docstring and PR body all claimed otherwise, and two readers caught it.
+        here, and only here: a parse that read the renderer would pass on that
+        corruption while only the currency row failed.
 
     The comparison is a MULTISET, not a count and not a set: a count cannot see a
     swap, and a set cannot see a duplicate.
@@ -773,3 +769,170 @@ def test_no_spelling_carries_a_marker_from_both_sources() -> None:
         "api/stability.toml:\n  " + "\n  ".join(both)
     )
 
+
+# --- the GROUPING of the committed file -------------------------------------------------------------
+#
+# The dump is grouped by command, and nothing above reads the grouping: ``_items()`` carries no heading,
+# the currency row compares the file to whatever the renderer emits, and the item row compares
+# (kind, label, marker) multisets. A producer that files a row under the wrong command, or under none,
+# and a file regenerated from it, leave every one of those green. The rows below read the HEADINGS of
+# the committed file and compare each to facts no producer supplies: the leaf commands the app walk
+# produces, the keys of the JSON table, and the keys of the exit table. An item's command is derived
+# from its LABEL against those sets, never from the heading it sits under, so a mis-filed row cannot
+# vouch for itself.
+
+LAYOUT_HEADING = "(layout)"
+
+
+def _blocks_of(text: str) -> list[tuple[str, list[tuple[str, str]]]]:
+    """(heading, [(kind, label), ...]) for every block of a dump's text, in file order."""
+    blocks: list[tuple[str, list[tuple[str, str]]]] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        if line.startswith("# "):
+            blocks.append((line[2:].strip(), []))
+            continue
+        assert blocks, f"an item line before any heading: {line!r}"
+        kind, _, rest = line.partition(" ")
+        label, _, _marker = rest.rstrip().rpartition(" ")
+        blocks[-1][1].append((kind, label.strip()))
+    return blocks
+
+
+def _committed_blocks() -> list[tuple[str, list[tuple[str, str]]]]:
+    """The blocks of the COMMITTED file (``api/cli.api``), never of the renderer's output."""
+    return _blocks_of(CLI_API.read_text() if CLI_API.exists() else "")
+
+
+def _grouping_facts() -> tuple[set[str], set[str], set[str]]:
+    """(leaf command paths, JSON table keys, exit table keys): the three things an item's command can be."""
+    import typer
+
+    from gr2 import api_core
+    from gr2.python_cli import grip_cli
+    from gr2.python_cli.app import app
+    from gr2.python_cli.exit_codes import EXIT_CODES
+
+    leaves = {" ".join(path) for path, _cmd, _hidden_by in api_core.walk(typer.main.get_command(app))}
+    return leaves, set(grip_cli.JSON_SHAPES), set(EXIT_CODES)
+
+
+def _owner(kind: str, label: str, facts: tuple[set[str], set[str], set[str]]) -> str | None:
+    """The command an item belongs to, from its label and the independent sets (the longest match)."""
+    leaves, json_keys, exit_groups = facts
+    if kind in ("path", "ref"):
+        return LAYOUT_HEADING
+    pool = json_keys if kind == "json" else exit_groups if kind == "exit" else leaves
+    owners = [command for command in pool if label == command or label.startswith(command + " ")]
+    return max(owners, key=len) if owners else None
+
+
+def _grouping_faults(blocks, facts) -> list[str]:
+    """Every way the blocks disagree with the facts: a heading that is not a command, a command with no
+    block or two, and an item under a heading other than its own command."""
+    leaves, _json_keys, exit_groups = facts
+    faults: list[str] = []
+    headings = [heading for heading, _rows in blocks]
+    expected = leaves | exit_groups | {LAYOUT_HEADING}
+    faults += [f"heading {h!r} is not a command, an exit group or the layout block" for h in sorted(set(headings) - expected)]
+    faults += [f"command {h!r} has no block" for h in sorted(expected - set(headings))]
+    faults += [f"heading {h!r} appears {headings.count(h)} times" for h in sorted(set(headings)) if headings.count(h) > 1]
+    for heading, rows in blocks:
+        for kind, label in rows:
+            owner = _owner(kind, label, facts)
+            if owner != heading:
+                faults.append(f"{kind} {label!r} is filed under {heading!r}, but belongs to {owner!r}")
+    return faults
+
+
+def test_every_command_has_exactly_one_block_and_nothing_else_has_one() -> None:
+    """The headings of the committed file are the leaf commands, the exit groups and the layout block."""
+    blocks = _committed_blocks()
+    assert len(blocks) > 1, "the committed file has no blocks, so there is nothing to compare"
+    faults = [f for f in _grouping_faults(blocks, _grouping_facts()) if f.startswith(("heading", "command"))]
+    assert not faults, "the headings do not match the command tree:\n  " + "\n  ".join(faults[:20])
+
+
+def test_every_item_sits_under_its_own_command() -> None:
+    """Each item is filed under the command its own label names (longest match against the walk, the JSON
+    table's keys, or the exit table's keys), and a layout row sits under the layout block."""
+    blocks = _committed_blocks()
+    assert sum(len(rows) for _heading, rows in blocks) > 100, "the committed file carries too few items to mean anything"
+    faults = [f for f in _grouping_faults(blocks, _grouping_facts()) if " is filed under " in f]
+    assert not faults, "items are filed under the wrong command:\n  " + "\n  ".join(faults[:20])
+
+
+def test_the_grouping_gate_can_fail() -> None:
+    """The two rows above are only worth what they REJECT: each shape of mis-filing, applied to the real
+    blocks, must produce a fault, and the unmodified blocks must produce none."""
+    blocks = _committed_blocks()
+    facts = _grouping_facts()
+    assert _grouping_faults(blocks, facts) == [], "the committed blocks themselves are not clean"
+
+    def moved(kind: str, to: str, only_first: bool = False):
+        taken: list[tuple[str, str]] = []
+        out = []
+        for heading, rows in blocks:
+            keep = []
+            for row in rows:
+                if row[0] == kind and not (only_first and taken):
+                    taken.append(row)
+                else:
+                    keep.append(row)
+            out.append((heading, keep))
+        landed = False
+        result = []
+        for heading, rows in out:
+            if heading == to:
+                rows = rows + taken
+                landed = True
+            result.append((heading, rows))
+        if not landed:
+            result.append((to, taken))
+        return result
+
+    first_word = [(h if h == LAYOUT_HEADING else h.split()[0], rows) for h, rows in blocks]
+    controls = {
+        "json rows filed under no command": moved("json", "(ungrouped)"),
+        "one json row filed under another real command": moved("json", "add", only_first=True),
+        "flag and arg rows filed under no command": moved("flag", "(ungrouped)"),
+        "exit rows filed under no command": [("(ungrouped)" if h == "store" else h, rows) for h, rows in blocks],
+        "layout rows filed under a verb": [("add" if h == LAYOUT_HEADING else h, rows) for h, rows in blocks],
+        "every command filed under its first word only": first_word,
+        "a command's block dropped": [(h, rows) for h, rows in blocks if h != "add"],
+        "a heading removed, its rows joining the block above": [(h, rows) for h, rows in blocks if h != "apply"],
+    }
+    for name, mutated in controls.items():
+        assert mutated != blocks, f"control {name!r} changed nothing, so it proves nothing"
+        assert _grouping_faults(mutated, facts), f"the grouping gate did not notice: {name}"
+
+
+def test_the_block_parse_reads_the_file_not_the_renderer(monkeypatch, tmp_path) -> None:
+    """Both parses of the committed file read ``api/cli.api``. Pointed at a file with its json rows removed,
+    they see the removal; a parse that asked the renderer would still report the whole surface."""
+    text = CLI_API.read_text()
+    corrupted = "".join(line for line in text.splitlines(keepends=True) if not line.startswith("json "))
+    assert corrupted != text and corrupted.strip(), "the corrupted copy must differ from the real file and not be empty"
+    fake = tmp_path / "cli.api"
+    fake.write_text(corrupted)
+    real_blocks = _committed_blocks()
+    monkeypatch.setattr(sys.modules[__name__], "CLI_API", fake)
+    assert _committed_blocks() == _blocks_of(corrupted) != real_blocks
+    assert "json" not in {kind for kind, _label, _marker in _committed_items()}
+
+
+def test_the_owner_of_an_item_is_the_longest_command_that_matches_it_on_a_word() -> None:
+    """With one command a word-prefix of another, an item of the longer one belongs to the longer.
+
+    No pool the oracle reads has such a pair today, so the real file cannot tell the longest match from the
+    shortest, or a word match from a character match. A synthetic set can: ``store`` and ``store status``
+    in both the leaf and the JSON pools, ``store`` alone in the exit pool.
+    """
+    facts = ({"store", "store status"}, {"store", "store status"}, {"store"})
+    assert _owner("verb", "store status", facts) == "store status"
+    assert _owner("flag", "store status --json", facts) == "store status"
+    assert _owner("flag", "store --json", facts) == "store"
+    assert _owner("json", "store status .ok", facts) == "store status"
+    assert _owner("exit", "store 0 ok", facts) == "store"
+    assert _owner("verb", "stored", facts) is None, "a command matches on a whole word, not on a character prefix"

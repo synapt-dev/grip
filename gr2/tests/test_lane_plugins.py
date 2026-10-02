@@ -128,8 +128,12 @@ def test_a_failing_plugin_refuses_naming_the_plugin_and_the_call(tmp_path: Path,
 def test_a_plugin_that_does_not_answer_in_time_is_killed_and_refuses(tmp_path: Path) -> None:
     pidfile = tmp_path / "pid"
     body = f"import os, time\nopen({str(pidfile)!r}, 'w').write(str(os.getpid()))\ntime.sleep(60)\n"
+    import time
+
+    t0 = time.monotonic()
     with pytest.raises(LaneRefused) as exc:
         one(tmp_path, body, timeout=1.0)("describe", describe_req(tmp_path))
+    assert time.monotonic() - t0 < 15, "the call waited out the plugin instead of killing it at the timeout"
     assert "no answer within 1s" in exc.value.detail
     pid = int(pidfile.read_text())
     with pytest.raises(ProcessLookupError):
@@ -178,13 +182,15 @@ def test_a_wrong_protocol_version_refuses_naming_both_versions(tmp_path: Path) -
 # --- plan 3: a Cargo lane through the reference executable ------------------------------------------------
 
 
-def crate(lane: Path, name: str, deps: dict[str, str] | None = None, dev: dict[str, str] | None = None) -> None:
+def crate(lane: Path, name: str, deps: dict[str, str] | None = None, dev: dict[str, str] | None = None, build: dict[str, str] | None = None) -> None:
     d = lane / name
     (d / "src").mkdir(parents=True)
     (d / "src" / "lib.rs").write_text("pub fn f() {}\n")
     text = f'[package]\nname = "{name}"\nversion = "0.1.0"\nedition = "2021"\n'
     if deps:
         text += "[dependencies]\n" + "".join(f'{k} = {{ path = "../{k}" }}\n' for k in deps)
+    if build:
+        text += "[build-dependencies]\n" + "".join(f'{k} = {{ path = "../{k}" }}\n' for k in build)
     if dev:
         text += "[dev-dependencies]\n" + "".join(f'{k} = {{ path = "../{k}" }}\n' for k in dev)
     (d / "Cargo.toml").write_text(text)
@@ -236,6 +242,38 @@ def test_plan_3_a_normal_edge_cycle_refuses_in_cargos_own_words_and_nothing_is_i
     assert exc.value.code == "plugin_failure"
     assert "'cargo'" in exc.value.detail and "cyclic package dependency" in exc.value.detail
     assert not (lane / "a" / "Cargo.lock").exists()  # the refusal left no lockfile behind either
+
+
+@needs_cargo
+def test_a_build_dependency_is_an_install_edge_and_orders_installs(tmp_path: Path, cargo_path: str) -> None:
+    lane = tmp_path / "lane"
+    lane.mkdir()
+    crate(lane, "a", build={"b": ""})
+    crate(lane, "b")
+    plan = plan_lane(lane, ["a", "b"], lp.plugin_table(cargo_path))
+    assert [(e.src, e.dst, e.kind, e.via) for e in plan.edges] == [("cargo:a", "cargo:b", "install", "a/Cargo.toml [build-dependencies]")]
+    assert [list(g.units) for g in plan.groups] == [["cargo:b"], ["cargo:a"]]
+
+
+@needs_cargo
+def test_a_stale_lockfile_is_refused_and_never_rewritten(tmp_path: Path, cargo_path: str) -> None:
+    """With a lockfile present the plugin reads with --locked, so a manifest that no longer matches it is a refusal
+    and the file is not touched; without --locked, cargo would quietly rewrite the member's lockfile."""
+    import subprocess
+
+    lane = tmp_path / "lane"
+    lane.mkdir()
+    crate(lane, "a", deps={"b": ""})
+    crate(lane, "b")
+    crate(lane, "c")
+    subprocess.run(["cargo", "generate-lockfile", "--offline"], cwd=lane / "a", check=True, capture_output=True)
+    before = (lane / "a" / "Cargo.lock").read_bytes()
+    crate_text = (lane / "a" / "Cargo.toml").read_text() + 'c = { path = "../c" }\n'
+    (lane / "a" / "Cargo.toml").write_text(crate_text)  # the manifest now needs a package the lockfile lacks
+    with pytest.raises(LaneRefused) as exc:
+        plan_lane(lane, ["a", "b", "c"], lp.plugin_table(cargo_path))
+    assert exc.value.code == "plugin_failure" and "lock" in exc.value.detail.lower()
+    assert (lane / "a" / "Cargo.lock").read_bytes() == before
 
 
 @needs_cargo

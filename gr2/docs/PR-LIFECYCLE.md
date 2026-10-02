@@ -525,7 +525,7 @@ commands are proven. gr2 PR commands are validated in the playground first
 
 ### Sprint 21 (Implementation Target)
 
-1. `gr2/python_cli/pr.py` module with PR group CRUD.
+1. `gr2/gr2/python_cli/pr.py` module with PR group CRUD.
 2. `gr2 pr create` command consuming PlatformAdapter.
 3. `gr2 pr status` command with aggregated state.
 4. `gr2 pr merge` command with ordering.

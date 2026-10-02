@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from python_cli.config import (
+from gr2.python_cli.config import (
     BaseStaleError,
     FreeWritePolicy,
     OwnWriteOnlyPolicy,
@@ -27,8 +27,8 @@ from python_cli.config import (
     config_show,
     overlay_write,
 )
-from python_cli.gitops import git
-from python_cli.grip import grip_init, grip_snapshot
+from gr2.python_cli.gitops import git
+from gr2.python_cli.grip import grip_init, grip_snapshot
 
 
 # ---------------------------------------------------------------------------

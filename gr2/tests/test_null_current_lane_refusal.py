@@ -82,7 +82,7 @@ def test_no_shipped_caller_reads_the_field_unguarded():
     error as a check that misses one that does.  An AST walk sees expressions
     only.
 
-    Playground and demo modules under ``prototypes/`` are excluded by path
+    Playground and demo modules under ``gr2/gr2/prototypes/`` are excluded by path
     because they are not reachable from any registered verb; the exclusion is
     one named file's worth of surface and is listed here rather than implied.
     """
@@ -90,8 +90,8 @@ def test_no_shipped_caller_reads_the_field_unguarded():
 
     root = Path(__file__).resolve().parents[1]
     targets = [
-        *(root / "python_cli").rglob("*.py"),
-        root / "prototypes" / "lane_workspace_prototype.py",
+        *(root / "gr2" / "python_cli").rglob("*.py"),
+        root / "gr2" / "prototypes" / "lane_workspace_prototype.py",
     ]
     offenders = []
     for f in targets:

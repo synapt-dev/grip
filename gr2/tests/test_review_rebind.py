@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from python_cli import review_rebind as rb
+from gr2.python_cli import review_rebind as rb
 
 
 def _git(r: Path, *a: str) -> str:

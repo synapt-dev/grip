@@ -83,7 +83,7 @@ def test_gr2_version_option_names_the_code_that_runs() -> None:
 
     from typer.testing import CliRunner
 
-    from python_cli.app import app
+    from gr2.python_cli.app import app
 
     result = CliRunner().invoke(app, ["--version"])
     assert result.exit_code == 0, result.output

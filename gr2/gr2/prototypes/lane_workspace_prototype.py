@@ -2050,23 +2050,23 @@ def next_step(args: argparse.Namespace) -> int:
         print("mode: review")
         print("recommended:")
         print(
-            f"  python3 gr2/prototypes/lane_workspace_prototype.py plan-exec {workspace_root} {args.owner_unit} {args.lane_name} 'cargo test'"
+            f"  python3 gr2/gr2/prototypes/lane_workspace_prototype.py plan-exec {workspace_root} {args.owner_unit} {args.lane_name} 'cargo test'"
         )
         print("  inspect the review lane, then return to your feature or home lane")
     elif lane_doc["lane_type"] == "feature":
         print("mode: feature")
         print("recommended:")
         print(
-            f"  python3 gr2/prototypes/lane_workspace_prototype.py plan-exec {workspace_root} {args.owner_unit} {args.lane_name} 'cargo test'"
+            f"  python3 gr2/gr2/prototypes/lane_workspace_prototype.py plan-exec {workspace_root} {args.owner_unit} {args.lane_name} 'cargo test'"
         )
         print(
-            f"  python3 gr2/prototypes/lane_workspace_prototype.py list-shared-scratchpads {workspace_root}"
+            f"  python3 gr2/gr2/prototypes/lane_workspace_prototype.py list-shared-scratchpads {workspace_root}"
         )
     else:
         print("mode: general")
         print("recommended:")
         print(
-            f"  python3 gr2/prototypes/lane_workspace_prototype.py show-lane {workspace_root} {args.owner_unit} {args.lane_name}"
+            f"  python3 gr2/gr2/prototypes/lane_workspace_prototype.py show-lane {workspace_root} {args.owner_unit} {args.lane_name}"
         )
     return 0
 

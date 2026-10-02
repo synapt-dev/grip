@@ -12,7 +12,7 @@ import tempfile
 from pathlib import Path
 from queue import Empty as QueueEmpty
 
-SOURCE_ROOT = Path(__file__).resolve().parents[1]
+SOURCE_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SOURCE_ROOT))
 
 # A rendezvous that cannot complete within this is a NAMED failure rather than a
@@ -36,7 +36,7 @@ START_GATE_TIMEOUT = 10.0
 # for it to place its named outcome on the queue afterwards.
 JOIN_TIMEOUT = START_GATE_TIMEOUT + RENDEZVOUS_TIMEOUT + OUTCOME_TIMEOUT * 2
 
-from python_cli.events import EventType, emit  # noqa: E402
+from gr2.python_cli.events import EventType, emit  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -112,7 +112,7 @@ def _worker(
             # conflation of SLOW with HUNG that the fixed bounds elsewhere in this
             # file already produce. `BrokenBarrierError` is a NAMED failure and
             # reaches the row as `ok=False`.
-            from python_cli import events as _events
+            from gr2.python_cli import events as _events
 
             real_current_seq = _events._current_seq
 

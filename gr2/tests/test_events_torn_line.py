@@ -381,7 +381,7 @@ def test_events_module_loads_under_an_out_of_tree_loader(tmp_path: Path):
     """
     import importlib.util
 
-    events_path = Path(__file__).resolve().parents[1] / "python_cli" / "events.py"
+    events_path = Path(__file__).resolve().parents[1] / "gr2" / "python_cli" / "events.py"
     spec = importlib.util.spec_from_file_location("events_out_of_tree_probe", events_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

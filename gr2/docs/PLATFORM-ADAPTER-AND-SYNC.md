@@ -34,7 +34,7 @@ Platform integration is intentionally narrow:
 
 ## 2. Adapter Contract
 
-`gr2/python_cli/platform.py` defines the protocol:
+`gr2/gr2/python_cli/platform.py` defines the protocol:
 
 - `create_pr`
 - `merge_pr`

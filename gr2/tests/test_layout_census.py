@@ -109,40 +109,40 @@ EXPECTED = {
     "gr2/overlay/trust.py": 1,
     "gr2/overlay/units.py": 3,
     "gr2/overlay/workspace_spec.py": 1,
-    "prototypes/concurrent_event_stress.py": 4,
-    "prototypes/concurrent_lease_stress.py": 2,
-    "prototypes/concurrent_workspace_cap_stress.py": 3,
-    "prototypes/cross_mode_lane_stress.py": 4,
-    "prototypes/lane_workspace_prototype.py": 10,
-    "prototypes/layout_model_probe.py": 1,
-    "prototypes/python_exec_playground.py": 1,
-    "prototypes/python_hook_runtime_playground.py": 2,
-    "prototypes/python_migration_playground.py": 5,
-    "prototypes/python_review_checkout_playground.py": 3,
-    "prototypes/python_spec_apply_playground.py": 5,
-    "prototypes/real_git_lane_materialization.py": 2,
-    "prototypes/real_git_playground.py": 2,
-    "prototypes/recall_lane_history.py": 1,
-    "prototypes/repo_maintenance_prototype.py": 1,
-    "python_cli/app.py": 8,
-    "python_cli/clone_exec.py": 1,
-    "python_cli/events.py": 2,
-    "python_cli/failures.py": 1,
-    "python_cli/file_exec.py": 1,
-    "python_cli/gitops.py": 1,
-    "python_cli/grip.py": 11,
-    "python_cli/grip_cli.py": 8,
+    "gr2/prototypes/concurrent_event_stress.py": 4,
+    "gr2/prototypes/concurrent_lease_stress.py": 2,
+    "gr2/prototypes/concurrent_workspace_cap_stress.py": 3,
+    "gr2/prototypes/cross_mode_lane_stress.py": 4,
+    "gr2/prototypes/lane_workspace_prototype.py": 10,
+    "gr2/prototypes/layout_model_probe.py": 1,
+    "gr2/prototypes/python_exec_playground.py": 1,
+    "gr2/prototypes/python_hook_runtime_playground.py": 2,
+    "gr2/prototypes/python_migration_playground.py": 5,
+    "gr2/prototypes/python_review_checkout_playground.py": 3,
+    "gr2/prototypes/python_spec_apply_playground.py": 5,
+    "gr2/prototypes/real_git_lane_materialization.py": 2,
+    "gr2/prototypes/real_git_playground.py": 2,
+    "gr2/prototypes/recall_lane_history.py": 1,
+    "gr2/prototypes/repo_maintenance_prototype.py": 1,
+    "gr2/python_cli/app.py": 8,
+    "gr2/python_cli/clone_exec.py": 1,
+    "gr2/python_cli/events.py": 2,
+    "gr2/python_cli/failures.py": 1,
+    "gr2/python_cli/file_exec.py": 1,
+    "gr2/python_cli/gitops.py": 1,
+    "gr2/python_cli/grip.py": 11,
+    "gr2/python_cli/grip_cli.py": 8,
     # the ONE home: GRIP_DIR = ".grip"
-    "python_cli/layout.py": 1,
-    "python_cli/migration.py": 25,
-    "python_cli/open_gr_review.py": 1,
-    "python_cli/pr.py": 1,
-    "python_cli/review_records.py": 3,
-    "python_cli/review_run.py": 4,
-    "python_cli/spec_apply.py": 7,
-    "python_cli/syncops.py": 1,
-    "python_cli/target.py": 1,
-    "python_cli/workspace_guidance.py": 1,
+    "gr2/python_cli/layout.py": 1,
+    "gr2/python_cli/migration.py": 25,
+    "gr2/python_cli/open_gr_review.py": 1,
+    "gr2/python_cli/pr.py": 1,
+    "gr2/python_cli/review_records.py": 3,
+    "gr2/python_cli/review_run.py": 4,
+    "gr2/python_cli/spec_apply.py": 7,
+    "gr2/python_cli/syncops.py": 1,
+    "gr2/python_cli/target.py": 1,
+    "gr2/python_cli/workspace_guidance.py": 1,
 }
 
 
@@ -176,8 +176,8 @@ def test_the_census_definition(source: str, expected: int) -> None:
 def test_the_census_is_not_vacuous() -> None:
     got = census()
     assert sum(got.values()) > 50, "the walk found almost nothing, so this gate cannot fail"
-    assert "python_cli/migration.py" in got, "the largest known file is missing from the walk"
-    assert "prototypes/lane_workspace_prototype.py" in got, "gr2.prototypes ships but is not walked"
+    assert "gr2/python_cli/migration.py" in got, "the largest known file is missing from the walk"
+    assert "gr2/prototypes/lane_workspace_prototype.py" in got, "gr2.prototypes ships but is not walked"
 
 
 # -- the walk is derived from what ships ------------------------------------------------------
@@ -190,8 +190,8 @@ def test_shipped_package_dirs_resolve_the_real_wheel_the_way_setuptools_does() -
     root = GR2_ROOT
     assert shipped_package_dirs(root) == {
         "gr2": root / "gr2",
-        "gr2.python_cli": root / "python_cli",
-        "gr2.prototypes": root / "prototypes",
+        "gr2.python_cli": root / "gr2" / "python_cli",
+        "gr2.prototypes": root / "gr2" / "prototypes",
         "gr2.overlay": root / "gr2" / "overlay",
         "gr2_overlay": root / "gr2_overlay",
     }

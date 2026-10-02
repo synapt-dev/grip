@@ -16,8 +16,8 @@ import pytest
 import typer
 from tests.conftest import make_cli_runner
 
-from python_cli.gitops import git
-from python_cli.grip_cli import config_cli_app, grip_app
+from gr2.python_cli.gitops import git
+from gr2.python_cli.grip_cli import config_cli_app, grip_app
 
 app = typer.Typer()
 app.add_typer(grip_app, name="store")

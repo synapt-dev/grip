@@ -30,7 +30,7 @@ import pathlib
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent
-PKG = ROOT / "python_cli"
+PKG = ROOT / "gr2" / "python_cli"
 
 REWRITE = "_effective_remote_url"
 VERBS = {"clone", "fetch"}

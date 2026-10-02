@@ -35,6 +35,229 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   manifest with uncommitted changes but no commits ahead is no longer PR
   content.
 
+## [gr2 2.0.0a6] - 2026-10-01
+
+### The store is a git repository: `gr2 store` has its full verb set
+
+`gr2 store` now keeps the workspace record in the root's own git repository: a
+`grip.toml` naming each member (path, origin url, pin) and one gitlink per
+member in the root's tree. The group gains `commit`, `check`, `push`, `status`,
+`materialize` and `migrate` beside `init`, `log`, `diff` and `checkout`:
+
+- `store init` initializes the store at the current directory or the root you
+  name. It finds members from `--member <path>` (repeatable) first, then from the
+  paths the root's `.grip/workspace_spec.toml` declares, and only then by scanning
+  the root's direct children, so a root whose members sit one level down
+  (`core/config`, `team-b/config`) initializes when `--member` or its spec names
+  them; with neither, only the root's direct children are scanned and it still
+  refuses with `no sibling git repositories found to store`. A path that is not a checkout, escapes the root,
+  resolves to the root itself, aliases another member, or collides with another
+  path on one member name is refused at 4, and every problem is reported in one
+  refusal. A member's name comes from its normalised path (`./core/config` is
+  `core-config`).
+- `store init` records the branch each member is on and its upstream on `origin`,
+  where it used to write `main` and `origin/main` for every member. A member on
+  `core/main` is now checked against `origin/core/main`, so the first `store
+  commit` of a workspace whose members are namespaced branches no longer refuses
+  at 3. A branch tracking a remote other than `origin` records `origin/<branch>`,
+  the only remote a fresh clone has. An existing `grip.toml` is not rewritten.
+- `store commit -m <message>` records each member's pin, refusing at 3 a pin its
+  upstream does not contain. A commit with nothing new to record is now a no-op
+  that exits 0 and prints `Nothing to record: every pin already matches the
+  root's last commit.`; `--json` reports `"status": "unchanged"`. It used to exit
+  5 with `git command failed`.
+- `store check` verifies the root's gitlinks and each member's coverage against
+  its live upstream, fetching first. `store push` checks, then pushes only the
+  root branch, never a member branch.
+- `store status` prints every member's pin, working HEAD and state, and the
+  gitlink when it disagrees with the pin (the `--json` rows always carry it). The
+  table always prints; the verb then exits 4 when a gitlink disagrees with its
+  pin, and 5 when a member cannot be measured.
+- `store materialize` checks out each pin from its declared origin, and
+  `store checkout <commit>` does the same at a root commit.
+- `store migrate` converts an existing `.grip/.git` store into one native root
+  commit (`--dry-run` prints the plan). Each pin is checked against the branch the
+  member is on, the same upstream `store init` records, and a pin that is not
+  covered refuses at 3 and leaves no native store behind.
+
+The group's exit codes are stated in its help: 0 ok, 2 usage, 3 refused on
+coverage or cleanliness, 4 refused as inconsistent or beta, 5 cannot measure; a
+verb that could not complete also exits 5, with its message prefixed `cannot
+complete this store verb:`. `status`, `check` and `log` on a root with no commit
+yet refuse at 5 with `no root commit yet; run store commit`. The store group is
+marked may-change in the published surface (below) while it settles.
+
+What an existing workspace now meets: `store log`, `diff`, `checkout` and
+`snapshot` act on the current directory and no longer take a workspace argument,
+so a script that passes one to `log` or `snapshot` is refused at the parser
+(exit 2). `diff` takes two optional root commits and `checkout` a root commit
+instead, so a workspace path given to either is read as a root commit and refused
+at 5, the code for what the store cannot resolve; a script keyed on exit 2 will
+not see it. `store init` still accepts a
+root, now optionally, but no longer creates `.grip/.git`; `store migrate`
+converts one you already have.
+`store snapshot` is now a hidden alias of `store commit`, removed at beta: it
+makes the native root commit, requires `-m`, and no longer accepts `--repos`,
+`--type`, `--sprint` or `--overlay-dir`. The hidden `grip` group remains an
+alias of `store`.
+
+### Store verbs read members where they actually are
+
+- `store log` on a root that had its own history before it became a store
+  (an adopted root) used to fail whole at 5 on the first commit without a
+  `grip.toml`. The log now stops at that boundary and shows every store commit
+  after it.
+- `grip.toml` declares a member's `path`, but earlier alphas placed members by
+  name. When nothing is at the declared path and a checkout sits at the member's
+  name, `status`, `check`, `commit`, `checkout` and `materialize` now read that
+  checkout where it is and say so once on stderr, naming both locations. Nothing
+  is moved and nothing is cloned over it. A name that would resolve outside the
+  root, onto another member's path or name, or inside another member's tree is
+  never read, so one member's pin cannot be written from another's checkout.
+- `store materialize` used to clone a second working copy at the declared path
+  while the member's checkout sat at its name, and `store checkout` left such a
+  member unrestored; both exited 0. They now resolve the member the same way as
+  the other verbs. When neither location holds a checkout, `checkout` refuses at
+  5 naming the member, instead of letting git act on the store root.
+- `store checkout` used to detach the root and then read the member pins, so a
+  member renamed since the target revision left the root moved, no member moved,
+  and nothing printed. It now resolves every pin before it writes anything and
+  refuses by name with nothing moved. A git failure after the root is detached
+  names which members moved and which did not.
+
+### `gr2 pr view`, and a safer `gr2 pr merge`
+
+`gr2 pr view <workspace_root> <owner_unit> [lane_name] [--json] [--repo <member>]`
+prints the member pull requests of one change, keyed on the lane. Members come
+from the lane's PR group record, or from the lane record when no group exists
+yet; `--json` names which source answered. A member with no PR, or whose read
+failed, is listed rather than dropped, and `--repo` naming a non-member refuses
+and lists the members.
+
+`gr2 pr merge` gains `--match-head-commit [REPO=]SHA`, repeatable. Every pinned
+member's live head is compared before the first merge, so a push that landed
+after review refuses the whole group with both commits named and nothing merged;
+the pin is also passed to the host's merge. A pin must be a full 40-character
+lowercase sha, must cover every member of the group (a bare SHA only for a
+one-member group), and must name members of the group; each fault is refused
+before anything merges. Without the flag a merge behaves as before.
+
+The merge path's other failures now reach you as sentences: a member with no
+verification target, a group file whose entries cannot be read, and a group
+that lists one repo twice. A group with no members used to exit 0 with
+`merged: []`, the same shape as a completed merge; it is now refused. A file in
+the group directory that is not a JSON object is skipped when looking up a group.
+
+### Migrating from gr1 and validating a spec
+
+- `gr2 workspace migrate-gr1` declared every unit at `agents/<unit>/home`. It now
+  emits the location gr1 uses: `.` for `worktree = "main"`, and `../<worktree>`
+  for a desk beside the root (a `/` in the worktree becomes `-`, as gr1 does).
+  `gr2 apply` adopts such a desk instead of re-cloning it: members are found at
+  the `path` their spec declares rather than at their name, and a unit at the
+  root or beside it gets its `unit.toml` under `.grip/state/units/<unit>/`, never
+  inside the desk. A member found only at its name is read where it is, with one
+  line naming both locations. Two units resolving to one path are refused.
+- Unit paths and member paths are contained: an absolute path, `~`, a backslash,
+  `../../x`, `../x/y`, and a path through a symlink are refused with the unit
+  named.
+- `gr2 spec validate` checks both `grip.toml` and `.grip/workspace_spec.toml` when
+  a root carries both. A spec that parses but fails validation now exits 4
+  instead of 1; a file that is not valid TOML still exits 1.
+- `repos[].path` is now contained too. An absolute path used to point outside the
+  root, where a clone would be planned and applied. Newly refused at this
+  coordinate: `./m`, `m/`, `m/.`, `a//m`, any absolute path (even inside the
+  root), a leading `~`, a backslash, NUL, and a path through a symlink. Generated
+  specs never use these spellings; a hand-written one may.
+- A refused gr1 member path is a sentence through `migrate-gr1` as well, where it
+  was a traceback. A path that leaves the gripspace says members live under the
+  gripspace root and to move the member inside or leave it out; a path with a
+  `..` segment that stays inside (`a/../b`) gets its own sentence.
+
+### `gr2 review`
+
+- `review bind` on a fresh native store root refused with advice to run
+  `store init`, the verb just run. It now creates the review store on first use,
+  adds `/.grip/` to the root's `.git/info/exclude` (an adopted root's own
+  `.gitignore` is not touched), and removes what it created if the bind fails.
+  `review verify` on a root with nothing bound names `bind`.
+- `review run` runs a lane that binds several repositories: every member installs
+  into one shared `<lane>/.venv`, each member's tests run in its own directory,
+  and one verdict is printed for the lane. Integrity is checked for every member
+  before the venv exists. Each member's install and package come from its own
+  `.review-install`; `--package` and `--install` on such a lane are refused.
+  `--order KEY,KEY` sets the install order. A refusal stops the run and the
+  receipt names the members not run.
+- `review run --runner junit-xml` retired a report rewritten at the same size
+  within one mtime tick as stale. The report's content is now part of its
+  identity.
+- A reconstruction lane is now marked `.grip-review-open.json`, and help and
+  refusal messages say `review open` and `review close`. A lane opened by an
+  earlier release (`.grip-open-gr-reconstruct.json`) is still reclaimed by
+  `review close` and read by `review run`.
+- Review receipts are kept outside lane state, so reopening a lane does not
+  collide with its receipt.
+- `review run` re-checks the lane after the install step and again after the
+  tests, not only before the venv. The tracked tree of every member must still be
+  the bound tree, and an untracked path that is new since the first check refuses
+  with `untracked_drift`, naming the path, the member in a multi-repo lane, and
+  the fix. What a run may add is unchanged except for one allowance: the lane's
+  own files, `.venv/`, and anything under a `__pycache__`, `.pytest_cache`,
+  `.mypy_cache` or `*.egg-info` segment are admitted as before, and `build/` is
+  now admitted only when it is new since the install step began (what
+  `pip install <dir>` leaves behind); an untracked `build/` already in the tree
+  before the run still refuses at the first check. A repo whose tests write an untracked artifact into the
+  tree (a coverage file, say) now refuses unless the repo ignores that path in its
+  `.gitignore`.
+
+### Verb names and version lines
+
+- `gr2 repo hooks` and `gr2 repo hook-run` are now `gr2 hooks show` and
+  `gr2 hooks run`, beside `hooks trust`, `revoke` and `status`. `gr2 lane current`
+  is now `gr2 lane show`. The old spellings still work as hidden aliases until
+  release.
+- `gr2 --version` used to print the version recorded at install time. It now
+  prints `<version>+g<sha>` for an editable checkout, `<version> released` for a
+  regular install, `<version>+unknown` when an editable checkout's commit cannot
+  be read, and `unknown` when the distribution is not installed for the running
+  interpreter. A broken or missing `git` never makes it fail.
+- `git review` shares its name with the Gerrit `git-review` tool. `git review
+  --help` now opens by saying which tool it is and names the other one, and
+  `git review --version` (also `-V` and `version`) answers instead of exiting 2.
+- `gr2 store log --help` no longer prints references a reader cannot follow, and
+  the clone and project-file executors' wrong-kind refusals say what each
+  executor applies.
+
+### A published surface: `gr2/api/cli.api` and `gr2/api/deprecations.toml`
+
+`gr2/api/cli.api` is a committed, generated listing of the gr2 command line,
+grouped by command: every verb, flag and positional, the store group's exit
+codes, the JSON keys of the store verbs, and the layout rows (`grip.toml` and the
+two reserved ref namespaces). Each line carries a marker: `stable`, `may-change`,
+`reserved`, or `hidden`. The store group and its JSON keys are `may-change`.
+
+`gr2/api/deprecations.toml` records each deprecated name against one milestone
+(`alpha`, `beta` or `release`) instead of a version. Registered today: the
+hidden aliases above, the `review open-gr`, `close-gr`, `exit-gr` and
+`open-project` aliases, the hidden `grip` group, `store snapshot`, the pre-rename
+review marker, the `.grip/.git` store home, and `gr2_overlay`. The
+`gr2_overlay` shim's deadline read "the release after 1.5.0", which had already
+passed; it now says the beta milestone.
+
+### Other fixes
+
+- `.gitinclude` compares names case-insensitively for its self-protection and
+  conflict checks, so on a case-insensitive filesystem `!.GITINCLUDE` no longer
+  untracks the declaration and an include differing from its ignore only by case
+  is reported.
+- The event outbox's reader is now a peek: `read_events()` and
+  `read_events_detailed()` no longer advance a consumer's cursor, and
+  `ack_events()` is the only call that does. The channel bridge acknowledges each
+  event after posting it, so a post that fails loses no event; delivery is
+  at-least-once, and `event_id` is on every event for deduplication. An event the
+  formatter cannot format is skipped, named on stderr, and acknowledged. A caller
+  that relied on a read to consume events must now call `ack_events()`.
+
 ## [gr2 2.0.0a5] - 2026-09-25
 
 ### Adopting a superproject: `gr2 workspace init --from-superproject`

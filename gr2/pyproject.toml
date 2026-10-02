@@ -11,7 +11,7 @@ name = "gitgrip"
 # number and it is not derived from Cargo.toml. gr1 releases as crates.io/GitHub
 # `v1.x.y`; gr2 releases as PyPI `gr2/v2.x.y`. Runtime reads it via
 # importlib.metadata.version("gitgrip"), never a checked-in file.
-version = "2.0.0a5"
+version = "2.0.0a6"
 description = "Workspace layer for multi-repo work: workspaces, isolated lanes, and one grouped review per slice"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -34,13 +34,24 @@ git-review = "gr2.python_cli.git_review:main"
 dev = [
     "pytest>=8.0",
     "ruff>=0.4",
+    # Declared rather than borrowed: `tests/test_deprecation_registry.py` asks
+    # "what PEP 440 stage is this version" and parses with `packaging.version`,
+    # which pytest happens to pull in transitively. An import that arrives by
+    # accident is one a future pytest could take away.
+    "packaging>=22",
 ]
 
 [tool.setuptools]
 # The overlay subsystem is `gr2.overlay` (physically gr2/overlay). `gr2_overlay`
 # is a deprecated top-level compat shim that aliases every submodule through
-# sys.modules to the real gr2.overlay object; it is removed in the release after
-# 1.5.0 once a downstream consumer migrates off the old import.
+# sys.modules to the real gr2.overlay object.
+#
+# ITS REMOVAL MILESTONE IS `beta`. It is recorded in `api/deprecations.toml`, and
+# deliberately NOT restated here: this line used to say "it is removed in the
+# release after 1.5.0", and the distribution had already reached 2.0.0a5 -- the
+# deadline passed with nothing going red, because a version written in a comment
+# is not compared against anything. The registry is the ONE place a milestone
+# lives, and `tests/test_deprecation_registry.py` is what compares it.
 packages = ["gr2", "gr2.python_cli", "gr2.prototypes", "gr2.overlay", "gr2_overlay"]
 
 [tool.setuptools.package-dir]

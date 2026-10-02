@@ -12,6 +12,8 @@ from pathlib import Path
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 
 from .gitops import GitMissingError, git
+from .review_records import lane_paths_for_repo, read_review_records_for_guard, review_record_pointer_path
+from .spec_apply import MaterializationPlanError, unit_member_path, unit_root
 
 
 class CommitError(Exception):
@@ -57,13 +59,14 @@ def _refuse_review_ephemeral_repo(repo: Path) -> None:
     """A review-ephemeral lane repo carries a review record naming its kind. Refuse
     a commit into it directly (the reviewer's cwd is inside the review lane), so a
     review lane never becomes a work lane through the single-repo path."""
-    import json as _json
-    record = Path(repo) / ".git" / "grip-review.json"
     try:
-        kind = _json.loads(record.read_text()).get("lane_kind")
-    except (OSError, ValueError):
-        return
-    if kind == "review-ephemeral":
+        paths = lane_paths_for_repo(repo)
+        records = read_review_records_for_guard(paths) if paths else ()
+    except Exception as exc:
+        raise CommitError(f"cannot safely resolve review receipt for {repo}: {exc}") from exc
+    if review_record_pointer_path(repo).is_file() and not records:
+        raise CommitError(f"{repo} has a review pointer but no readable receipt; refusing commit")
+    if any(record.get("lane_kind") == "review-ephemeral" for record in records):
         raise CommitError(
             f"{repo} is a review-ephemeral review lane (read-only, disposable): it "
             "cannot be committed to. A review lane never becomes a work lane."
@@ -226,7 +229,7 @@ def commit_lane(
                 lane_proto.lane_dir(workspace_root, owner_unit, lane_name) / "repos"
             )
         # A first-time user's layout: work can be staged in the unit-home
-        # copy (agents/<unit>/home/<repo>) or the workspace-root copy (the
+        # copy (wherever the spec places that unit) or the workspace-root copy (the
         # spec repo path), neither of which is the lane's own clone. If a
         # skipped repo has staged changes somewhere the verb did not commit,
         # the one sentence says where (cheaply: the same index probe as the
@@ -238,10 +241,27 @@ def commit_lane(
             unit = lane_proto.find_unit_spec(workspace_root, owner_unit)
         except SystemExit:
             unit = {}
-        unit_home = Path(str(unit.get("path", "")))
-        if not unit_home.is_absolute():
-            unit_home = workspace_root / unit_home
+        # Was `Path(str(unit.get("path","")))`, joined to the root only `if not
+        # unit_home.is_absolute()` — which ACCEPTED an absolute unit path and
+        # used it as given. The same three-form grammar as everywhere else now
+        # applies: one resolver, so this site cannot disagree with the others.
+        # TWO different absences, and they must not be conflated. `unit == {}`
+        # means NO unit spec was found, and keeps the previous meaning (the root
+        # itself). A unit spec that IS found but carries no usable `path` is an
+        # INVALID spec — `validate_spec` reports `missing_unit_path` as an error —
+        # so it is refused with the same sentence the read paths give rather than
+        # silently resolving to the root. Before this, the SAME dict meant the
+        # root here and a refusal in `unit_member_path`; "one resolver, so no site
+        # can disagree" has to hold on this input too.
+        if unit:
+            try:
+                unit_home = unit_root(workspace_root, unit)
+            except MaterializationPlanError as exc:
+                raise SystemExit(f"the workspace spec is refused: {exc}") from None
+        else:
+            unit_home = workspace_root
         spec_repo_paths: dict[str, Path] = {}
+        spec: dict = {}
         try:
             spec = lane_proto.load_workspace_spec(workspace_root)
             spec_repo_paths = {
@@ -252,7 +272,18 @@ def commit_lane(
             pass
         for row in results:
             candidates: list[Path] = []
-            home_repo = unit_home / row.repo
+            # The member's SPEC PATH inside the unit home (section 6c item 3),
+            # through the one resolver. Was `unit_home / row.repo`, which is the
+            # NAME: on a gr1 desk it names a member that is not there and misses
+            # the one that is, so the "staged somewhere the verb did not commit"
+            # sentence could not see the agent's own checkout.
+            if unit and spec:
+                try:
+                    home_repo = unit_member_path(workspace_root, spec, unit, row.repo)
+                except SystemExit:
+                    home_repo = unit_home / row.repo
+            else:
+                home_repo = unit_home / row.repo
             if home_repo != lane_targets.get(row.repo) and home_repo.is_dir():
                 candidates.append(home_repo)
             root_repo = spec_repo_paths.get(row.repo)

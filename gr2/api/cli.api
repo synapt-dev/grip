@@ -1,0 +1,637 @@
+# (layout)
+path  grip.toml tracked                                               stable
+ref   refs/dev.synapt/__members__/<member>/heads/*                    reserved
+ref   refs/dev.synapt/__overlays__/<member>/...                       reserved
+# add
+arg   add paths <str>                                                 stable
+flag  add --repo-path <str>                                           stable
+verb  add                                                             stable
+# apply
+arg   apply workspace_root <str>                                      stable
+flag  apply --json                                                    stable
+flag  apply --manual-hooks                                            stable
+flag  apply --yes                                                     stable
+verb  apply                                                           stable
+# branch
+arg   branch name <str>                                               stable
+flag  branch --base/--from/--start-point <str>                        stable
+flag  branch --repo-path <str>                                        stable
+verb  branch                                                          stable
+# commit
+flag  commit --amend                                                  stable
+flag  commit --lane <str>                                             stable
+flag  commit --message/-m <str>                                       stable
+flag  commit --owner-unit <str>                                       stable
+flag  commit --repo-path <str>                                        stable
+flag  commit --workspace-root <str>                                   stable
+verb  commit                                                          stable
+# config apply
+arg   config apply base_path <str>                                    stable
+flag  config apply --json                                             stable
+flag  config apply --overlay-dir <str>                                stable
+verb  config apply                                                    stable
+# config restore
+arg   config restore ref <str>                                        stable
+arg   config restore workspace_root <str>                             stable
+flag  config restore --json                                           stable
+flag  config restore --overlay-dir <str>                              stable
+verb  config restore                                                  stable
+# config show
+arg   config show base_path <str>                                     stable
+flag  config show --json                                              stable
+flag  config show --key/-k <str>                                      stable
+flag  config show --overlay-dir <str>                                 stable
+flag  config show --strict                                            stable
+verb  config show                                                     stable
+# exec run
+arg   exec run command <str>                                          stable
+arg   exec run owner_unit <str>                                       stable
+arg   exec run workspace_root <str>                                   stable
+flag  exec run --actor <str>                                          stable
+flag  exec run --json                                                 stable
+flag  exec run --lane <str>                                           stable
+flag  exec run --repos <str>                                          stable
+flag  exec run --ttl-seconds <str>                                    stable
+verb  exec run                                                        stable
+# exec status
+arg   exec status lane_name <str>                                     stable
+arg   exec status owner_unit <str>                                    stable
+arg   exec status workspace_root <str>                                stable
+flag  exec status --actor <str>                                       stable
+flag  exec status --json                                              stable
+flag  exec status --repos <str>                                       stable
+verb  exec status                                                     stable
+# grip check
+flag  grip check --json (hidden:grip)                                 stable
+json  grip check .members[].name                                      may-change
+json  grip check .members[].pin                                       may-change
+json  grip check .members[].state  enum(upstream)                     may-change
+json  grip check .members[].upstream                                  may-change
+json  grip check .status  enum(checked)                               may-change
+verb  grip check (hidden:grip)                                        stable
+# grip checkout
+arg   grip checkout ref <str> (hidden:grip)                           stable
+flag  grip checkout --json (hidden:grip)                              stable
+json  grip checkout .members[].head                                   may-change
+json  grip checkout .members[].name                                   may-change
+json  grip checkout .members[].pin                                    may-change
+json  grip checkout .root_commit                                      may-change
+json  grip checkout .status  enum(checked-out)                        may-change
+verb  grip checkout (hidden:grip)                                     stable
+# grip commit
+flag  grip commit --json (hidden:grip)                                stable
+flag  grip commit --message/-m <str> (hidden:grip)                    stable
+json  grip commit .root_commit                                        may-change
+json  grip commit .status  enum(committed,unchanged)                  may-change
+verb  grip commit (hidden:grip)                                       stable
+# grip diff
+arg   grip diff ref_a <str> (hidden:grip)                             stable
+arg   grip diff ref_b <str> (hidden:grip)                             stable
+flag  grip diff --json (hidden:grip)                                  stable
+json  grip diff .members[].changed                                    may-change
+json  grip diff .members[].name                                       may-change
+json  grip diff .members[].new_pin                                    may-change
+json  grip diff .members[].old_pin                                    may-change
+json  grip diff .ref_a                                                may-change
+json  grip diff .ref_b                                                may-change
+verb  grip diff (hidden:grip)                                         stable
+# grip init
+arg   grip init workspace_root <str> (hidden:grip)                    stable
+flag  grip init --json (hidden:grip)                                  stable
+flag  grip init --member <str> (hidden:grip)                          stable
+json  grip init .path                                                 may-change
+json  grip init .status  enum(initialized)                            may-change
+json  grip init .store  enum(native)                                  may-change
+verb  grip init (hidden:grip)                                         stable
+# grip log
+flag  grip log --json (hidden:grip)                                   stable
+flag  grip log --max-count/-n <str> (hidden:grip)                     stable
+json  grip log .entries[].commit                                      may-change
+json  grip log .entries[].message                                     may-change
+json  grip log .entries[].pins[].after                                may-change
+json  grip log .entries[].pins[].before                               may-change
+json  grip log .entries[].pins[].name                                 may-change
+verb  grip log (hidden:grip)                                          stable
+# grip materialize
+flag  grip materialize --json (hidden:grip)                           stable
+json  grip materialize .members[].head                                may-change
+json  grip materialize .members[].name                                may-change
+json  grip materialize .members[].pin                                 may-change
+json  grip materialize .status  enum(materialized)                    may-change
+verb  grip materialize (hidden:grip)                                  stable
+# grip migrate
+flag  grip migrate --dry-run (hidden:grip)                            stable
+flag  grip migrate --json (hidden:grip)                               stable
+json  grip migrate .alpha_head                                        may-change
+json  grip migrate .members  map<str,str>                             may-change
+json  grip migrate .root_commit                                       may-change
+json  grip migrate .status  enum(dry-run,migrated)                    may-change
+verb  grip migrate (hidden:grip)                                      stable
+# grip push
+flag  grip push --json (hidden:grip)                                  stable
+json  grip push .members[].name                                       may-change
+json  grip push .members[].pin                                        may-change
+json  grip push .members[].state  enum(upstream)                      may-change
+json  grip push .members[].upstream                                   may-change
+json  grip push .root_branch                                          may-change
+json  grip push .root_commit                                          may-change
+json  grip push .status  enum(pushed)                                 may-change
+verb  grip push (hidden:grip)                                         stable
+# grip snapshot
+flag  grip snapshot --json (hidden:grip)                              stable
+flag  grip snapshot --message/-m <str> (hidden:grip)                  stable
+json  grip snapshot .root_commit                                      may-change
+json  grip snapshot .status  enum(committed,unchanged)                may-change
+verb  grip snapshot (hidden:grip)                                     stable
+# grip status
+flag  grip status --json (hidden:grip)                                stable
+json  grip status .members[].gitlink                                  may-change
+json  grip status .members[].head                                     may-change
+json  grip status .members[].name                                     may-change
+json  grip status .members[].pin                                      may-change
+json  grip status .members[].state  enum(upstream,stale,missing,unpinned,cannot-measure) may-change
+json  grip status .root.porcelain                                     may-change
+json  grip status .root.state  enum(clean,dirty)                      may-change
+json  grip status .status  enum(status)                               may-change
+verb  grip status (hidden:grip)                                       stable
+# hooks revoke
+arg   hooks revoke member <str>                                       stable
+flag  hooks revoke --workspace-root <str>                             stable
+verb  hooks revoke                                                    stable
+# hooks run
+arg   hooks run repo_root <str>                                       stable
+arg   hooks run stage <str>                                           stable
+arg   hooks run workspace_root <str>                                  stable
+flag  hooks run --first-materialize                                   stable
+flag  hooks run --json                                                stable
+flag  hooks run --manual                                              stable
+verb  hooks run                                                       stable
+# hooks show
+arg   hooks show repo_root <str>                                      stable
+flag  hooks show --json                                               stable
+verb  hooks show                                                      stable
+# hooks status
+flag  hooks status --json                                             stable
+flag  hooks status --workspace-root <str>                             stable
+verb  hooks status                                                    stable
+# hooks trust
+arg   hooks trust member <str>                                        stable
+flag  hooks trust --json                                              stable
+flag  hooks trust --workspace-root <str>                              stable
+verb  hooks trust                                                     stable
+# lane bind
+arg   lane bind lane_name <str>                                       stable
+arg   lane bind owner_unit <str>                                      stable
+arg   lane bind workspace_root <str>                                  stable
+flag  lane bind --allow-local                                         stable
+flag  lane bind --base <str>                                          stable
+flag  lane bind --json                                                stable
+verb  lane bind                                                       stable
+# lane create
+arg   lane create lane_name <str>                                     stable
+arg   lane create owner_unit <str>                                    stable
+arg   lane create workspace_root <str>                                stable
+flag  lane create --bind <str>                                        stable
+flag  lane create --branch <str>                                      stable
+flag  lane create --command <str>                                     stable
+flag  lane create --manual-hooks                                      stable
+flag  lane create --repos <str>                                       stable
+flag  lane create --source <str>                                      stable
+flag  lane create --type <str>                                        stable
+verb  lane create                                                     stable
+# lane current
+arg   lane current owner_unit <str> (hidden)                          stable
+arg   lane current workspace_root <str> (hidden)                      stable
+flag  lane current --json (hidden)                                    stable
+verb  lane current (hidden)                                           stable
+# lane enter
+arg   lane enter lane_name <str>                                      stable
+arg   lane enter owner_unit <str>                                     stable
+arg   lane enter workspace_root <str>                                 stable
+flag  lane enter --actor <str>                                        stable
+flag  lane enter --manual-hooks                                       stable
+flag  lane enter --notify-channel                                     stable
+flag  lane enter --recall                                             stable
+verb  lane enter                                                      stable
+# lane exit
+arg   lane exit owner_unit <str>                                      stable
+arg   lane exit workspace_root <str>                                  stable
+flag  lane exit --actor <str>                                         stable
+flag  lane exit --manual-hooks                                        stable
+flag  lane exit --notify-channel                                      stable
+flag  lane exit --recall                                              stable
+verb  lane exit                                                       stable
+# lane lease acquire
+arg   lane lease acquire lane_name <str>                              stable
+arg   lane lease acquire owner_unit <str>                             stable
+arg   lane lease acquire workspace_root <str>                         stable
+flag  lane lease acquire --actor <str>                                stable
+flag  lane lease acquire --force                                      stable
+flag  lane lease acquire --mode <str>                                 stable
+flag  lane lease acquire --ttl-seconds <str>                          stable
+verb  lane lease acquire                                              stable
+# lane lease release
+arg   lane lease release lane_name <str>                              stable
+arg   lane lease release owner_unit <str>                             stable
+arg   lane lease release workspace_root <str>                         stable
+flag  lane lease release --actor <str>                                stable
+verb  lane lease release                                              stable
+# lane lease show
+arg   lane lease show lane_name <str>                                 stable
+arg   lane lease show owner_unit <str>                                stable
+arg   lane lease show workspace_root <str>                            stable
+flag  lane lease show --json                                          stable
+verb  lane lease show                                                 stable
+# lane resolve
+arg   lane resolve operation_id <str>                                 stable
+arg   lane resolve owner_unit <str>                                   stable
+arg   lane resolve workspace_root <str>                               stable
+flag  lane resolve --actor <str>                                      stable
+flag  lane resolve --json                                             stable
+flag  lane resolve --resolution <str>                                 stable
+verb  lane resolve                                                    stable
+# lane show
+arg   lane show owner_unit <str>                                      stable
+arg   lane show workspace_root <str>                                  stable
+flag  lane show --json                                                stable
+verb  lane show                                                       stable
+# plan
+arg   plan workspace_root <str>                                       stable
+flag  plan --json                                                     stable
+verb  plan                                                            stable
+# pr checks
+arg   pr checks lane_name <str>                                       stable
+arg   pr checks owner_unit <str>                                      stable
+arg   pr checks workspace_root <str>                                  stable
+flag  pr checks --json                                                stable
+verb  pr checks                                                       stable
+# pr create
+arg   pr create lane_name <str>                                       stable
+arg   pr create owner_unit <str>                                      stable
+arg   pr create workspace_root <str>                                  stable
+flag  pr create --base <str>                                          stable
+flag  pr create --body <str>                                          stable
+flag  pr create --body-file <str>                                     stable
+flag  pr create --draft                                               stable
+flag  pr create --json                                                stable
+flag  pr create --platform <str>                                      stable
+flag  pr create --title <str>                                         stable
+verb  pr create                                                       stable
+# pr merge
+arg   pr merge lane_name <str>                                        stable
+arg   pr merge owner_unit <str>                                       stable
+arg   pr merge workspace_root <str>                                   stable
+flag  pr merge --json                                                 stable
+flag  pr merge --match-head-commit <str>                              stable
+flag  pr merge --method/-m <str>                                      stable
+verb  pr merge                                                        stable
+# pr status
+arg   pr status lane_name <str>                                       stable
+arg   pr status owner_unit <str>                                      stable
+arg   pr status workspace_root <str>                                  stable
+flag  pr status --json                                                stable
+verb  pr status                                                       stable
+# pr view
+arg   pr view lane_name <str>                                         stable
+arg   pr view owner_unit <str>                                        stable
+arg   pr view workspace_root <str>                                    stable
+flag  pr view --json                                                  stable
+flag  pr view --repo <str>                                            stable
+verb  pr view                                                         stable
+# prune
+flag  prune --execute                                                 stable
+flag  prune --remote <str>                                            stable
+flag  prune --repo-path <str>                                         stable
+flag  prune --target <str>                                            stable
+verb  prune                                                           stable
+# push
+flag  push --force-with-lease                                         stable
+flag  push --remote <str>                                             stable
+flag  push --repo-path <str>                                          stable
+flag  push --set-upstream/-u                                          stable
+verb  push                                                            stable
+# repo hook-run
+arg   repo hook-run repo_root <str> (hidden)                          stable
+arg   repo hook-run stage <str> (hidden)                              stable
+arg   repo hook-run workspace_root <str> (hidden)                     stable
+flag  repo hook-run --first-materialize (hidden)                      stable
+flag  repo hook-run --json (hidden)                                   stable
+flag  repo hook-run --manual (hidden)                                 stable
+verb  repo hook-run (hidden)                                          stable
+# repo hooks
+arg   repo hooks repo_root <str> (hidden)                             stable
+flag  repo hooks --json (hidden)                                      stable
+verb  repo hooks (hidden)                                             stable
+# repo projection-run
+arg   repo projection-run repo_root <str>                             stable
+arg   repo projection-run workspace_root <str>                        stable
+flag  repo projection-run --json                                      stable
+verb  repo projection-run                                             stable
+# repo status
+arg   repo status workspace_root <str>                                stable
+flag  repo status --json                                              stable
+flag  repo status --policy <str>                                      stable
+flag  repo status --spec <str>                                        stable
+verb  repo status                                                     stable
+# review bind
+arg   review bind workspace_root <str>                                stable
+flag  review bind --base <str>                                        stable
+flag  review bind --body <str>                                        stable
+flag  review bind --from-range <str>                                  stable
+flag  review bind --head <str>                                        stable
+flag  review bind --path <str>                                        stable
+flag  review bind --ratified <str>                                    stable
+flag  review bind --ref <str>                                         stable
+flag  review bind --remote <str>                                      stable
+flag  review bind --repo <str>                                        stable
+flag  review bind --rows-json <str>                                   stable
+flag  review bind --source <str>                                      stable
+flag  review bind --title <str>                                       stable
+verb  review bind                                                     stable
+# review checkout-pr
+arg   review checkout-pr owner_unit <str>                             stable
+arg   review checkout-pr pr_number <str>                              stable
+arg   review checkout-pr repo <str>                                   stable
+arg   review checkout-pr workspace_root <str>                         stable
+flag  review checkout-pr --actor <str>                                stable
+flag  review checkout-pr --branch <str>                               stable
+flag  review checkout-pr --enter                                      stable
+flag  review checkout-pr --json                                       stable
+flag  review checkout-pr --lane <str>                                 stable
+flag  review checkout-pr --manual-hooks                               stable
+verb  review checkout-pr                                              stable
+# review close
+arg   review close owner_unit <str>                                   stable
+arg   review close pr_number <str>                                    stable
+arg   review close repo <str>                                         stable
+arg   review close target <str>                                       stable
+flag  review close --json                                             stable
+flag  review close --lane <str>                                       stable
+verb  review close                                                    stable
+# review close-gr
+arg   review close-gr lane_dir <str> (hidden)                         stable
+flag  review close-gr --json (hidden)                                 stable
+verb  review close-gr (hidden)                                        stable
+# review create-project
+arg   review create-project lane_name <str>                           stable
+arg   review create-project owner_unit <str>                          stable
+arg   review create-project workspace_root <str>                      stable
+flag  review create-project --carry-range                             stable
+flag  review create-project --json                                    stable
+verb  review create-project                                           stable
+# review exit-gr
+arg   review exit-gr owner_unit <str> (hidden)                        stable
+arg   review exit-gr review_root <str> (hidden)                       stable
+arg   review exit-gr workspace_root <str> (hidden)                    stable
+flag  review exit-gr --actor <str> (hidden)                           stable
+flag  review exit-gr --json (hidden)                                  stable
+verb  review exit-gr (hidden)                                         stable
+# review open
+arg   review open pr_number <str>                                     stable
+arg   review open repo <str>                                          stable
+arg   review open target <str>                                        stable
+arg   review open workspace_root <str>                                stable
+flag  review open --enter                                             stable
+flag  review open --json                                              stable
+flag  review open --lane <str>                                        stable
+flag  review open --lane-dir <str>                                    stable
+flag  review open --platform <str>                                    stable
+flag  review open --repo <str>                                        stable
+flag  review open --run <str>                                         stable
+verb  review open                                                     stable
+# review open-gr
+arg   review open-gr commit <str> (hidden)                            stable
+arg   review open-gr workspace_root <str> (hidden)                    stable
+flag  review open-gr --enter (hidden)                                 stable
+flag  review open-gr --json (hidden)                                  stable
+flag  review open-gr --lane-dir <str> (hidden)                        stable
+flag  review open-gr --repo <str> (hidden)                            stable
+verb  review open-gr (hidden)                                         stable
+# review open-project
+arg   review open-project commit <str> (hidden)                       stable
+arg   review open-project lane_name <str> (hidden)                    stable
+arg   review open-project owner_unit <str> (hidden)                   stable
+arg   review open-project workspace_root <str> (hidden)               stable
+flag  review open-project --allow-local (hidden)                      stable
+flag  review open-project --enter (hidden)                            stable
+flag  review open-project --json (hidden)                             stable
+flag  review open-project --local-source <str> (hidden)               stable
+flag  review open-project --prior-cwd <str> (hidden)                  stable
+flag  review open-project --sources-json <str> (hidden)               stable
+verb  review open-project (hidden)                                    stable
+# review rebind
+arg   review rebind frozen_dir <str>                                  stable
+flag  review rebind --allow-public-ref                                stable
+flag  review rebind --json                                            stable
+flag  review rebind --out-dir <str>                                   stable
+flag  review rebind --ref <str>                                       stable
+flag  review rebind --repo <str>                                      stable
+verb  review rebind                                                   stable
+# review requirements
+arg   review requirements pr_number <str>                             stable
+arg   review requirements repo <str>                                  stable
+arg   review requirements workspace_root <str>                        stable
+flag  review requirements --json                                      stable
+verb  review requirements                                             stable
+# review run
+arg   review run lane_dir <str>                                       stable
+arg   review run pytest_args <str>                                    stable
+flag  review run --install <str>                                      stable
+flag  review run --json                                               stable
+flag  review run --order <str>                                        stable
+flag  review run --package <str>                                      stable
+flag  review run --python <str>                                       stable
+flag  review run --reports <str>                                      stable
+flag  review run --runner <str>                                       stable
+flag  review run --system-site-packages                               stable
+flag  review run --test <str>                                         stable
+verb  review run                                                      stable
+# review verify
+arg   review verify commit <str>                                      stable
+arg   review verify workspace_root <str>                              stable
+flag  review verify --json                                            stable
+verb  review verify                                                   stable
+# spec show
+arg   spec show workspace_root <str>                                  stable
+flag  spec show --json                                                stable
+verb  spec show                                                       stable
+# spec validate
+arg   spec validate workspace_root <str>                              stable
+flag  spec validate --json                                            stable
+verb  spec validate                                                   stable
+# status
+verb  status                                                          stable
+# store
+exit  store 0 ok                                                      may-change
+exit  store 2 usage                                                   may-change
+exit  store 3 refused-coverage                                        may-change
+exit  store 4 refused-inconsistent                                    may-change
+exit  store 5 cannot-measure prefix:"cannot complete this store verb: " may-change
+# store check
+flag  store check --json                                              may-change
+json  store check .members[].name                                     may-change
+json  store check .members[].pin                                      may-change
+json  store check .members[].state  enum(upstream)                    may-change
+json  store check .members[].upstream                                 may-change
+json  store check .status  enum(checked)                              may-change
+verb  store check                                                     may-change
+# store checkout
+arg   store checkout ref <str>                                        may-change
+flag  store checkout --json                                           may-change
+json  store checkout .members[].head                                  may-change
+json  store checkout .members[].name                                  may-change
+json  store checkout .members[].pin                                   may-change
+json  store checkout .root_commit                                     may-change
+json  store checkout .status  enum(checked-out)                       may-change
+verb  store checkout                                                  may-change
+# store commit
+flag  store commit --json                                             may-change
+flag  store commit --message/-m <str>                                 may-change
+json  store commit .root_commit                                       may-change
+json  store commit .status  enum(committed,unchanged)                 may-change
+verb  store commit                                                    may-change
+# store diff
+arg   store diff ref_a <str>                                          may-change
+arg   store diff ref_b <str>                                          may-change
+flag  store diff --json                                               may-change
+json  store diff .members[].changed                                   may-change
+json  store diff .members[].name                                      may-change
+json  store diff .members[].new_pin                                   may-change
+json  store diff .members[].old_pin                                   may-change
+json  store diff .ref_a                                               may-change
+json  store diff .ref_b                                               may-change
+verb  store diff                                                      may-change
+# store init
+arg   store init workspace_root <str>                                 may-change
+flag  store init --json                                               may-change
+flag  store init --member <str>                                       may-change
+json  store init .path                                                may-change
+json  store init .status  enum(initialized)                           may-change
+json  store init .store  enum(native)                                 may-change
+verb  store init                                                      may-change
+# store log
+flag  store log --json                                                may-change
+flag  store log --max-count/-n <str>                                  may-change
+json  store log .entries[].commit                                     may-change
+json  store log .entries[].message                                    may-change
+json  store log .entries[].pins[].after                               may-change
+json  store log .entries[].pins[].before                              may-change
+json  store log .entries[].pins[].name                                may-change
+verb  store log                                                       may-change
+# store materialize
+flag  store materialize --json                                        may-change
+json  store materialize .members[].head                               may-change
+json  store materialize .members[].name                               may-change
+json  store materialize .members[].pin                                may-change
+json  store materialize .status  enum(materialized)                   may-change
+verb  store materialize                                               may-change
+# store migrate
+flag  store migrate --dry-run                                         may-change
+flag  store migrate --json                                            may-change
+json  store migrate .alpha_head                                       may-change
+json  store migrate .members  map<str,str>                            may-change
+json  store migrate .root_commit                                      may-change
+json  store migrate .status  enum(dry-run,migrated)                   may-change
+verb  store migrate                                                   may-change
+# store push
+flag  store push --json                                               may-change
+json  store push .members[].name                                      may-change
+json  store push .members[].pin                                       may-change
+json  store push .members[].state  enum(upstream)                     may-change
+json  store push .members[].upstream                                  may-change
+json  store push .root_branch                                         may-change
+json  store push .root_commit                                         may-change
+json  store push .status  enum(pushed)                                may-change
+verb  store push                                                      may-change
+# store snapshot
+flag  store snapshot --json (hidden)                                  may-change
+flag  store snapshot --message/-m <str> (hidden)                      may-change
+json  store snapshot .root_commit                                     may-change
+json  store snapshot .status  enum(committed,unchanged)               may-change
+verb  store snapshot (hidden)                                         may-change
+# store status
+flag  store status --json                                             may-change
+json  store status .members[].gitlink                                 may-change
+json  store status .members[].head                                    may-change
+json  store status .members[].name                                    may-change
+json  store status .members[].pin                                     may-change
+json  store status .members[].state  enum(upstream,stale,missing,unpinned,cannot-measure) may-change
+json  store status .root.porcelain                                    may-change
+json  store status .root.state  enum(clean,dirty)                     may-change
+json  store status .status  enum(status)                              may-change
+verb  store status                                                    may-change
+# sync run
+arg   sync run workspace_root <str>                                   stable
+flag  sync run --dirty <str>                                          stable
+flag  sync run --json                                                 stable
+verb  sync run                                                        stable
+# sync status
+arg   sync status workspace_root <str>                                stable
+flag  sync status --dirty <str>                                       stable
+flag  sync status --json                                              stable
+verb  sync status                                                     stable
+# target set
+arg   target set branch <str>                                         stable
+flag  target set --remote <str>                                       stable
+flag  target set --repo-path <str>                                    stable
+verb  target set                                                      stable
+# target show
+flag  target show --repo-path <str>                                   stable
+verb  target show                                                     stable
+# target unset
+flag  target unset --repo-path <str>                                  stable
+verb  target unset                                                    stable
+# workspace bootstrap-gr1
+arg   workspace bootstrap-gr1 workspace_root <str>                    stable
+flag  workspace bootstrap-gr1 --expected-current-spec-sha256 <str>    stable
+flag  workspace bootstrap-gr1 --expected-spec-sha256 <str>            stable
+flag  workspace bootstrap-gr1 --json                                  stable
+flag  workspace bootstrap-gr1 --receipt <str>                         stable
+flag  workspace bootstrap-gr1 --regenerate                            stable
+flag  workspace bootstrap-gr1 --rollback-receipt <str>                stable
+verb  workspace bootstrap-gr1                                         stable
+# workspace convert-clone
+arg   workspace convert-clone path <str>                              stable
+flag  workspace convert-clone --json                                  stable
+verb  workspace convert-clone                                         stable
+# workspace detect-gr1
+arg   workspace detect-gr1 workspace_root <str>                       stable
+flag  workspace detect-gr1 --json                                     stable
+verb  workspace detect-gr1                                            stable
+# workspace gitinclude
+arg   workspace gitinclude workspace_root <str>                       stable
+flag  workspace gitinclude --check                                    stable
+flag  workspace gitinclude --json                                     stable
+verb  workspace gitinclude                                            stable
+# workspace init
+arg   workspace init workspace_root <str>                             stable
+flag  workspace init --default-unit <str>                             stable
+flag  workspace init --from-superproject                              stable
+flag  workspace init --json                                           stable
+verb  workspace init                                                  stable
+# workspace init-from-topology
+arg   workspace init-from-topology workspace_root <str>               stable
+flag  workspace init-from-topology --default-unit <str>               stable
+flag  workspace init-from-topology --json                             stable
+verb  workspace init-from-topology                                    stable
+# workspace materialize
+arg   workspace materialize workspace_root <str>                      stable
+flag  workspace materialize --json                                    stable
+flag  workspace materialize --manual-hooks                            stable
+flag  workspace materialize --yes                                     stable
+verb  workspace materialize                                           stable
+# workspace migrate-gr1
+arg   workspace migrate-gr1 workspace_root <str>                      stable
+flag  workspace migrate-gr1 --apply                                   stable
+flag  workspace migrate-gr1 --force                                   stable
+flag  workspace migrate-gr1 --json                                    stable
+verb  workspace migrate-gr1                                           stable
+# workspace migrate-lane-state
+arg   workspace migrate-lane-state workspace_root <str>               stable
+flag  workspace migrate-lane-state --json                             stable
+flag  workspace migrate-lane-state --receipt <str>                    stable
+verb  workspace migrate-lane-state                                    stable
+# workspace status
+arg   workspace status workspace_root <str>                           stable
+flag  workspace status --json                                         stable
+verb  workspace status                                                stable

@@ -20,7 +20,7 @@ _GR2_ROOT = Path(__file__).resolve().parents[1]  # gr2/ (the packaging root)
 _REPO_ROOT = _GR2_ROOT.parent
 _PYPROJECT = tomllib.loads((_GR2_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-_EXPECTED = "2.0.0a5"
+_EXPECTED = "2.0.0a6"
 
 
 def _cargo_version() -> str:
@@ -59,16 +59,27 @@ def test_gr2_version_is_decoupled_from_the_crate() -> None:
 
 
 def test_version_is_the_expected_prerelease() -> None:
-    """gr2 opens at the 2.0.0a5 pre-release."""
+    """gr2 opens at the 2.0.0a6 pre-release."""
     assert _PYPROJECT["project"]["version"] == _EXPECTED
 
 
-def test_gr2_version_option_reads_metadata() -> None:
-    """`gr2 --version` prints the distribution version from importlib.metadata and
-    exits 0 — the runtime read the pyproject comment promises, and the same single
-    source of truth as the wheel. Asserted against the metadata value (not a literal),
-    so it tracks whatever is installed rather than pinning to a number here."""
+def test_gr2_version_option_names_the_code_that_runs() -> None:
+    """`gr2 --version` prints the version AND the code that computes it — deliberately
+    NOT the bare install-time metadata value.
+
+    WHAT THIS ASSERTION USED TO BE, and why the equality was the defect: it read
+    `result.stdout.strip() == importlib.metadata.version("gitgrip")`. That equality held
+    in a virtualenv built weeks ago and reported the number the venv was built WITH, so
+    two desks at one commit could answer differently and a stale build was
+    indistinguishable from a current one. This change removed it: `--version` now prints
+    `version_line()`, the number beside the commit of the checkout the code came from.
+
+    The two halves are pinned separately rather than as a literal, so this still tracks
+    whatever is installed — and the last assertion is the one that would redden if the
+    bare metadata read came back.
+    """
     import importlib.metadata
+    import re
 
     from typer.testing import CliRunner
 
@@ -76,7 +87,19 @@ def test_gr2_version_option_reads_metadata() -> None:
 
     result = CliRunner().invoke(app, ["--version"])
     assert result.exit_code == 0, result.output
-    assert result.stdout.strip() == importlib.metadata.version("gitgrip")
+    line = result.stdout.strip()
+    installed = importlib.metadata.version("gitgrip")
+
+    # one of the four declared forms, carrying the installed version when there is one
+    assert re.fullmatch(
+        rf"(?:{re.escape(installed)}(?:\+g[0-9a-f]+|\+unknown| released)|unknown)", line
+    ), (line, installed)
+
+    # and NOT the bare metadata read, which is the whole point of the change
+    assert line != installed, (
+        "`--version` must not be the bare install-time metadata read: that is the defect "
+        "removed here, where a stale venv printed the number it was built with"
+    )
 
 
 def test_overlay_module_carries_no_version_literal() -> None:

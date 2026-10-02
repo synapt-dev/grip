@@ -621,6 +621,7 @@ def test_pr_commands_route_through_platform_adapter(tmp_path: Path, monkeypatch)
             number: int,
             *,
             method: MergeMethod,
+            expected_head: str | None = None,
         ) -> MergeReceipt:
             calls.append(("merge", (repo, number, method)))
             return _merge_receipt(repo, number, method)
@@ -845,6 +846,7 @@ def test_pr_create_persists_group_state_by_pr_group_id(tmp_path: Path, monkeypat
             number: int,
             *,
             method: MergeMethod,
+            expected_head: str | None = None,
         ) -> MergeReceipt:  # pragma: no cover - not used here
             raise AssertionError("merge_pr should not be called")
 
@@ -917,6 +919,7 @@ def test_pr_status_aggregates_group_state(tmp_path: Path, monkeypatch) -> None:
             number: int,
             *,
             method: MergeMethod,
+            expected_head: str | None = None,
         ) -> MergeReceipt:  # pragma: no cover
             raise AssertionError("merge_pr should not be called")
 
@@ -992,6 +995,7 @@ def test_pr_merge_reports_partial_failure_and_preserves_state(tmp_path: Path, mo
             number: int,
             *,
             method: MergeMethod,
+            expected_head: str | None = None,
         ) -> MergeReceipt:
             calls.append(repo)
             if repo == "api":

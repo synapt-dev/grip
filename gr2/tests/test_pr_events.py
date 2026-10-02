@@ -62,6 +62,7 @@ class FakeAdapter:
         number: int,
         *,
         method: MergeMethod,
+        expected_head: str | None = None,
     ) -> MergeReceipt:
         if (repo, number) in self._fail_merge:
             raise AdapterError(f"merge conflict in {repo}#{number}")

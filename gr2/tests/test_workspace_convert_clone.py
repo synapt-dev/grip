@@ -575,7 +575,7 @@ def test_convert_keeps_the_aside_that_holds_ignored_work(tmp_path, capsys):
 
 
 def test_aside_disposition_returns_unreadable_when_it_cannot_enter_the_tree(tmp_path):
-    """P4, Sentinel's r2 finding against the previous version.
+    """P4, measured against the previous version.
 
     An aside that EXISTS but cannot be entered made `subprocess.run(cwd=...)` raise from
     the cwd resolution itself, before git existed -- so the function propagated

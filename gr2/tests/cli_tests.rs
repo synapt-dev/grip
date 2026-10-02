@@ -1,9 +1,13 @@
-//! CLI integration tests for the gr2 binary.
+//! CLI integration tests for the gr2 development binary (`gr2-dev`).
 //!
 //! Lives in the gr2-cli package (not root) because Cargo only sets
 //! CARGO_BIN_EXE_<name> for [[bin]] targets declared by the SAME package
-//! as the test binary -- these tests need CARGO_BIN_EXE_gr2, which only
+//! as the test binary -- these tests need CARGO_BIN_EXE_gr2-dev, which only
 //! gr2-cli's own Cargo.toml declares.
+//!
+//! The bin is named `gr2-dev`, not `gr2`: the user-facing `gr2` command is the Python
+//! console script, and a dev binary claiming the same name put two implementations
+//! behind one command for anyone with `target/release` on PATH.
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -11,7 +15,7 @@ use tempfile::TempDir;
 
 #[test]
 fn test_gr2_help() {
-    let mut cmd = Command::cargo_bin("gr2").unwrap();
+    let mut cmd = Command::cargo_bin("gr2-dev").unwrap();
     cmd.arg("--help")
         .assert()
         .success()
@@ -24,7 +28,7 @@ fn test_gr2_help() {
 
 #[test]
 fn test_gr2_version() {
-    let mut cmd = Command::cargo_bin("gr2").unwrap();
+    let mut cmd = Command::cargo_bin("gr2-dev").unwrap();
     cmd.arg("--version")
         .assert()
         .success()
@@ -33,7 +37,7 @@ fn test_gr2_version() {
 
 #[test]
 fn test_gr2_doctor() {
-    let mut cmd = Command::cargo_bin("gr2").unwrap();
+    let mut cmd = Command::cargo_bin("gr2-dev").unwrap();
     cmd.arg("doctor")
         .assert()
         .success()
@@ -45,7 +49,7 @@ fn test_gr2_init_scaffolds_team_workspace() {
     let temp = TempDir::new().unwrap();
     let workspace_root = temp.path().join("demo-team");
 
-    let mut cmd = Command::cargo_bin("gr2").unwrap();
+    let mut cmd = Command::cargo_bin("gr2-dev").unwrap();
     cmd.arg("init")
         .arg(&workspace_root)
         .arg("--name")
@@ -74,7 +78,7 @@ fn test_gr2_init_rejects_existing_path() {
     let workspace_root = temp.path().join("demo-team");
     std::fs::create_dir_all(&workspace_root).unwrap();
 
-    let mut cmd = Command::cargo_bin("gr2").unwrap();
+    let mut cmd = Command::cargo_bin("gr2-dev").unwrap();
     cmd.arg("init")
         .arg(&workspace_root)
         .assert()
@@ -87,7 +91,7 @@ fn test_gr2_team_add_registers_agent_workspace() {
     let temp = TempDir::new().unwrap();
     let workspace_root = temp.path().join("demo-team");
 
-    let mut init = Command::cargo_bin("gr2").unwrap();
+    let mut init = Command::cargo_bin("gr2-dev").unwrap();
     init.arg("init")
         .arg(&workspace_root)
         .arg("--name")
@@ -95,7 +99,7 @@ fn test_gr2_team_add_registers_agent_workspace() {
         .assert()
         .success();
 
-    let mut team_add = Command::cargo_bin("gr2").unwrap();
+    let mut team_add = Command::cargo_bin("gr2-dev").unwrap();
     team_add
         .current_dir(&workspace_root)
         .arg("team")
@@ -118,10 +122,10 @@ fn test_gr2_team_add_rejects_duplicate_agent() {
     let temp = TempDir::new().unwrap();
     let workspace_root = temp.path().join("demo-team");
 
-    let mut init = Command::cargo_bin("gr2").unwrap();
+    let mut init = Command::cargo_bin("gr2-dev").unwrap();
     init.arg("init").arg(&workspace_root).assert().success();
 
-    let mut first = Command::cargo_bin("gr2").unwrap();
+    let mut first = Command::cargo_bin("gr2-dev").unwrap();
     first
         .current_dir(&workspace_root)
         .arg("team")
@@ -130,7 +134,7 @@ fn test_gr2_team_add_rejects_duplicate_agent() {
         .assert()
         .success();
 
-    let mut duplicate = Command::cargo_bin("gr2").unwrap();
+    let mut duplicate = Command::cargo_bin("gr2-dev").unwrap();
     duplicate
         .current_dir(&workspace_root)
         .arg("team")
@@ -145,7 +149,7 @@ fn test_gr2_team_add_rejects_duplicate_agent() {
 fn test_gr2_team_add_requires_gr2_workspace() {
     let temp = TempDir::new().unwrap();
 
-    let mut team_add = Command::cargo_bin("gr2").unwrap();
+    let mut team_add = Command::cargo_bin("gr2-dev").unwrap();
     team_add
         .current_dir(temp.path())
         .arg("team")
@@ -163,10 +167,10 @@ fn test_gr2_team_list_shows_registered_agents() {
     let temp = TempDir::new().unwrap();
     let workspace_root = temp.path().join("demo-team");
 
-    let mut init = Command::cargo_bin("gr2").unwrap();
+    let mut init = Command::cargo_bin("gr2-dev").unwrap();
     init.arg("init").arg(&workspace_root).assert().success();
 
-    let mut add_atlas = Command::cargo_bin("gr2").unwrap();
+    let mut add_atlas = Command::cargo_bin("gr2-dev").unwrap();
     add_atlas
         .current_dir(&workspace_root)
         .arg("team")
@@ -175,7 +179,7 @@ fn test_gr2_team_list_shows_registered_agents() {
         .assert()
         .success();
 
-    let mut add_opus = Command::cargo_bin("gr2").unwrap();
+    let mut add_opus = Command::cargo_bin("gr2-dev").unwrap();
     add_opus
         .current_dir(&workspace_root)
         .arg("team")
@@ -184,7 +188,7 @@ fn test_gr2_team_list_shows_registered_agents() {
         .assert()
         .success();
 
-    let mut list = Command::cargo_bin("gr2").unwrap();
+    let mut list = Command::cargo_bin("gr2-dev").unwrap();
     list.current_dir(&workspace_root)
         .arg("team")
         .arg("list")
@@ -200,10 +204,10 @@ fn test_gr2_team_list_reports_empty_state() {
     let temp = TempDir::new().unwrap();
     let workspace_root = temp.path().join("demo-team");
 
-    let mut init = Command::cargo_bin("gr2").unwrap();
+    let mut init = Command::cargo_bin("gr2-dev").unwrap();
     init.arg("init").arg(&workspace_root).assert().success();
 
-    let mut list = Command::cargo_bin("gr2").unwrap();
+    let mut list = Command::cargo_bin("gr2-dev").unwrap();
     list.current_dir(&workspace_root)
         .arg("team")
         .arg("list")
@@ -218,7 +222,7 @@ fn test_gr2_team_list_reports_empty_state() {
 fn test_gr2_team_list_requires_gr2_workspace() {
     let temp = TempDir::new().unwrap();
 
-    let mut list = Command::cargo_bin("gr2").unwrap();
+    let mut list = Command::cargo_bin("gr2-dev").unwrap();
     list.current_dir(temp.path())
         .arg("team")
         .arg("list")
@@ -234,10 +238,10 @@ fn test_gr2_team_remove_deletes_registered_agent() {
     let temp = TempDir::new().unwrap();
     let workspace_root = temp.path().join("demo-team");
 
-    let mut init = Command::cargo_bin("gr2").unwrap();
+    let mut init = Command::cargo_bin("gr2-dev").unwrap();
     init.arg("init").arg(&workspace_root).assert().success();
 
-    let mut add = Command::cargo_bin("gr2").unwrap();
+    let mut add = Command::cargo_bin("gr2-dev").unwrap();
     add.current_dir(&workspace_root)
         .arg("team")
         .arg("add")
@@ -248,7 +252,7 @@ fn test_gr2_team_remove_deletes_registered_agent() {
     let agent_root = workspace_root.join("agents/atlas");
     assert!(agent_root.join("agent.toml").exists());
 
-    let mut remove = Command::cargo_bin("gr2").unwrap();
+    let mut remove = Command::cargo_bin("gr2-dev").unwrap();
     remove
         .current_dir(&workspace_root)
         .arg("team")
@@ -268,10 +272,10 @@ fn test_gr2_team_remove_rejects_missing_agent() {
     let temp = TempDir::new().unwrap();
     let workspace_root = temp.path().join("demo-team");
 
-    let mut init = Command::cargo_bin("gr2").unwrap();
+    let mut init = Command::cargo_bin("gr2-dev").unwrap();
     init.arg("init").arg(&workspace_root).assert().success();
 
-    let mut remove = Command::cargo_bin("gr2").unwrap();
+    let mut remove = Command::cargo_bin("gr2-dev").unwrap();
     remove
         .current_dir(&workspace_root)
         .arg("team")
@@ -286,7 +290,7 @@ fn test_gr2_team_remove_rejects_missing_agent() {
 fn test_gr2_team_remove_requires_gr2_workspace() {
     let temp = TempDir::new().unwrap();
 
-    let mut remove = Command::cargo_bin("gr2").unwrap();
+    let mut remove = Command::cargo_bin("gr2-dev").unwrap();
     remove
         .current_dir(temp.path())
         .arg("team")
@@ -304,10 +308,10 @@ fn test_gr2_repo_add_registers_repo() {
     let temp = TempDir::new().unwrap();
     let workspace_root = temp.path().join("demo-team");
 
-    let mut init = Command::cargo_bin("gr2").unwrap();
+    let mut init = Command::cargo_bin("gr2-dev").unwrap();
     init.arg("init").arg(&workspace_root).assert().success();
 
-    let mut repo_add = Command::cargo_bin("gr2").unwrap();
+    let mut repo_add = Command::cargo_bin("gr2-dev").unwrap();
     repo_add
         .current_dir(&workspace_root)
         .arg("repo")
@@ -334,10 +338,10 @@ fn test_gr2_repo_add_rejects_duplicate_repo() {
     let temp = TempDir::new().unwrap();
     let workspace_root = temp.path().join("demo-team");
 
-    let mut init = Command::cargo_bin("gr2").unwrap();
+    let mut init = Command::cargo_bin("gr2-dev").unwrap();
     init.arg("init").arg(&workspace_root).assert().success();
 
-    let mut first = Command::cargo_bin("gr2").unwrap();
+    let mut first = Command::cargo_bin("gr2-dev").unwrap();
     first
         .current_dir(&workspace_root)
         .arg("repo")
@@ -347,7 +351,7 @@ fn test_gr2_repo_add_rejects_duplicate_repo() {
         .assert()
         .success();
 
-    let mut duplicate = Command::cargo_bin("gr2").unwrap();
+    let mut duplicate = Command::cargo_bin("gr2-dev").unwrap();
     duplicate
         .current_dir(&workspace_root)
         .arg("repo")
@@ -363,7 +367,7 @@ fn test_gr2_repo_add_rejects_duplicate_repo() {
 fn test_gr2_repo_add_requires_gr2_workspace() {
     let temp = TempDir::new().unwrap();
 
-    let mut repo_add = Command::cargo_bin("gr2").unwrap();
+    let mut repo_add = Command::cargo_bin("gr2-dev").unwrap();
     repo_add
         .current_dir(temp.path())
         .arg("repo")
@@ -382,10 +386,10 @@ fn test_gr2_repo_list_shows_registered_repos() {
     let temp = TempDir::new().unwrap();
     let workspace_root = temp.path().join("demo-team");
 
-    let mut init = Command::cargo_bin("gr2").unwrap();
+    let mut init = Command::cargo_bin("gr2-dev").unwrap();
     init.arg("init").arg(&workspace_root).assert().success();
 
-    let mut add_app = Command::cargo_bin("gr2").unwrap();
+    let mut add_app = Command::cargo_bin("gr2-dev").unwrap();
     add_app
         .current_dir(&workspace_root)
         .arg("repo")
@@ -395,7 +399,7 @@ fn test_gr2_repo_list_shows_registered_repos() {
         .assert()
         .success();
 
-    let mut add_docs = Command::cargo_bin("gr2").unwrap();
+    let mut add_docs = Command::cargo_bin("gr2-dev").unwrap();
     add_docs
         .current_dir(&workspace_root)
         .arg("repo")
@@ -405,7 +409,7 @@ fn test_gr2_repo_list_shows_registered_repos() {
         .assert()
         .success();
 
-    let mut list = Command::cargo_bin("gr2").unwrap();
+    let mut list = Command::cargo_bin("gr2-dev").unwrap();
     list.current_dir(&workspace_root)
         .arg("repo")
         .arg("list")
@@ -425,10 +429,10 @@ fn test_gr2_repo_list_reports_empty_state() {
     let temp = TempDir::new().unwrap();
     let workspace_root = temp.path().join("demo-team");
 
-    let mut init = Command::cargo_bin("gr2").unwrap();
+    let mut init = Command::cargo_bin("gr2-dev").unwrap();
     init.arg("init").arg(&workspace_root).assert().success();
 
-    let mut list = Command::cargo_bin("gr2").unwrap();
+    let mut list = Command::cargo_bin("gr2-dev").unwrap();
     list.current_dir(&workspace_root)
         .arg("repo")
         .arg("list")
@@ -441,7 +445,7 @@ fn test_gr2_repo_list_reports_empty_state() {
 fn test_gr2_repo_list_requires_gr2_workspace() {
     let temp = TempDir::new().unwrap();
 
-    let mut list = Command::cargo_bin("gr2").unwrap();
+    let mut list = Command::cargo_bin("gr2-dev").unwrap();
     list.current_dir(temp.path())
         .arg("repo")
         .arg("list")
@@ -457,10 +461,10 @@ fn test_gr2_repo_remove_deletes_registered_repo() {
     let temp = TempDir::new().unwrap();
     let workspace_root = temp.path().join("demo-team");
 
-    let mut init = Command::cargo_bin("gr2").unwrap();
+    let mut init = Command::cargo_bin("gr2-dev").unwrap();
     init.arg("init").arg(&workspace_root).assert().success();
 
-    let mut add = Command::cargo_bin("gr2").unwrap();
+    let mut add = Command::cargo_bin("gr2-dev").unwrap();
     add.current_dir(&workspace_root)
         .arg("repo")
         .arg("add")
@@ -472,7 +476,7 @@ fn test_gr2_repo_remove_deletes_registered_repo() {
     let repo_root = workspace_root.join("repos/app");
     assert!(repo_root.join("repo.toml").exists());
 
-    let mut remove = Command::cargo_bin("gr2").unwrap();
+    let mut remove = Command::cargo_bin("gr2-dev").unwrap();
     remove
         .current_dir(&workspace_root)
         .arg("repo")
@@ -491,10 +495,10 @@ fn test_gr2_repo_remove_rejects_missing_repo() {
     let temp = TempDir::new().unwrap();
     let workspace_root = temp.path().join("demo-team");
 
-    let mut init = Command::cargo_bin("gr2").unwrap();
+    let mut init = Command::cargo_bin("gr2-dev").unwrap();
     init.arg("init").arg(&workspace_root).assert().success();
 
-    let mut remove = Command::cargo_bin("gr2").unwrap();
+    let mut remove = Command::cargo_bin("gr2-dev").unwrap();
     remove
         .current_dir(&workspace_root)
         .arg("repo")
@@ -509,7 +513,7 @@ fn test_gr2_repo_remove_rejects_missing_repo() {
 fn test_gr2_repo_remove_requires_gr2_workspace() {
     let temp = TempDir::new().unwrap();
 
-    let mut remove = Command::cargo_bin("gr2").unwrap();
+    let mut remove = Command::cargo_bin("gr2-dev").unwrap();
     remove
         .current_dir(temp.path())
         .arg("repo")

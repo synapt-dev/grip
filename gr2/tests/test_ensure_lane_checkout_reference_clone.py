@@ -222,7 +222,7 @@ def test_concurrent_creators_produce_one_valid_clone_no_residue(tmp_path):
     assert residue == [], f"staging residue left behind: {residue}"
 
 
-# --- grip#807 v2: findings from the r1 boundary probes -----------------------
+# --- grip#807 v2: findings from the boundary probes ----------------------------
 
 
 def test_relative_origin_url_is_resolved_against_source(tmp_path):

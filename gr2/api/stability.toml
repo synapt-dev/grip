@@ -1,0 +1,100 @@
+# Stability markers for the public surface dumped into `api/cli.api`.
+#
+# Every item NOT named here is `stable` -- a new verb or flag is stable unless
+# someone says otherwise in review, which keeps the default honest rather than
+# optimistic.
+#
+# `may-change`  an item that is public but still moving. It STAYS in the 90
+#               percent denominator and stops counting as stable. This lever is
+#               NOT interchangeable with hiding: taking a may-change item out
+#               of the denominator raises the ratio, taking a STABLE one out
+#               lowers it. Measured on the internal review machinery, 225
+#               visible items: marked may-change it reads 100/353, hidden
+#               100/128, against 325/353 with neither.
+# `reserved`    a name HELD for a later slice, and it must therefore be ABSENT
+#               from the dump. A hidden item already leaves the denominator, so
+#               reserving one would add nothing; reserving a name that exists
+#               would empty the word. Held, absent -- it cannot be in the
+#               denominator because it is not in the surface. When the later
+#               slice lands the name, this gate goes RED and the entry moves
+#               deliberately to stable or to may-change.
+#
+# Entries are "<kind> <spelling>" -- an item's IDENTITY, not the text of a dump
+# line. That distinction is load-bearing since cli.api was grouped by command: a
+# line now sits under a heading and its label may carry a "(hidden:...)"
+# annotation, and NEITHER is part of the name. A gate that matched raw line text
+# would go red on the grouping rather than on the item, so the gates match on
+# identity -- and the dump's own currency gate is what ties the two together.
+# The kinds are `verb`, `flag`, `arg`, and later `json`, `exit`, `path`, `ref`.
+#
+# The two lists are checked in OPPOSITE directions: every may-change entry must
+# name an item the dump carries, and every reserved entry must name one it does
+# not. Both directions are pinned by mutation.
+#
+# MAY-CHANGE, and the reason, so it can be lifted deliberately: the `store`
+# group is the surface this thin slice is still finishing -- its own checklist
+# steps for the witness and the full-suite run are unlanded, and the exit table
+# it carries was introduced days ago. Marking it says the store verbs are
+# public today but not yet promised. LIFT THIS when the slice completes.
+
+may-change = [
+  "verb store check",
+  "flag store check --json",
+  "verb store checkout",
+  "flag store checkout --json",
+  "arg store checkout ref <str>",
+  "verb store commit",
+  "flag store commit --json",
+  "flag store commit --message/-m <str>",
+  "verb store diff",
+  "flag store diff --json",
+  "arg store diff ref_a <str>",
+  "arg store diff ref_b <str>",
+  "verb store init",
+  "flag store init --json",
+  "flag store init --member <str>",
+  "arg store init workspace_root <str>",
+  "verb store log",
+  "flag store log --json",
+  "flag store log --max-count/-n <str>",
+  "verb store materialize",
+  "flag store materialize --json",
+  "verb store migrate",
+  "flag store migrate --dry-run",
+  "flag store migrate --json",
+  "verb store push",
+  "flag store push --json",
+  # `store snapshot` is the hidden alias of `store commit` (section 5), removed
+  # at beta, and it was the one store verb left off this list -- so it read
+  # `stable` while the verb it aliases is `may-change`, and the json keys it
+  # emits inherited that same wrong marker. Hidden keeps it out of the 90
+  # percent denominator either way; this is about the file telling the truth.
+  "verb store snapshot",
+  "flag store snapshot --json",
+  "flag store snapshot --message/-m <str>",
+  "verb store status",
+  "flag store status --json",
+  # The group's exit table travels WITH its verbs rather than being promised on
+  # its own: marking it stable here would commit to the codes while the verbs
+  # that return them are still moving. LIFT THIS with the verbs above.
+  #
+  # ⚠ THE LAST ENTRY'S TRAILING SPACE IS LOAD-BEARING AND LIVES INSIDE THE
+  # QUOTES. `STORE_INCOMPLETE_PREFIX` ends in a space ("...store verb: "), and
+  # that space is half of what makes the code-5 message greppable -- so the
+  # entry uses a TOML LITERAL string (single quotes) to carry it verbatim. Do
+  # not reformat it to a basic string or trim the space: the marker lookup is an
+  # exact match, so either change makes the entry name nothing.
+  "exit store 0 ok",
+  "exit store 2 usage",
+  "exit store 3 refused-coverage",
+  "exit store 4 refused-inconsistent",
+  'exit store 5 cannot-measure prefix:"cannot complete this store verb: "',
+]
+
+# A name a later slice will take, held so nobody defines it quietly in the
+# meantime. The spellings are STORE-SCOPED deliberately: the slice that takes
+# these names adds them inside the store group, so a top-level reservation would
+# stay green on the day the real one lands and would be guarding nothing.
+# Neither exists today, which is the point: the entry asserts their ABSENCE, and
+# the day one of them lands this gate reddens.
+reserved = ["verb store extract", "verb store absorb"]

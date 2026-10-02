@@ -79,7 +79,7 @@ def test_open_gr_enter_writes_a_reconstruct_marker(tmp_path: Path) -> None:
     marker = lane_dir / open_gr_review._OPEN_GR_MARKER
     assert marker.exists(), "open-gr --enter must write a teardown marker in the lane"
     data = json.loads(marker.read_text())
-    assert data["kind"] == "open-gr-reconstruct"
+    assert data["kind"] == "review-open"
     assert data["gr_commit"] == gr_sha
 
 
@@ -127,7 +127,7 @@ def test_open_gr_no_repo_single_row_puts_the_marker_at_the_tree(tmp_path: Path) 
     assert not (lane_dir / "alpha").exists(), "the single row must not be nested under <key>"
     # and the marker/clone alignment is exactly what `review run` and `close-gr` consume:
     marker = json.loads((lane_dir / open_gr_review._OPEN_GR_MARKER).read_text())
-    assert marker["kind"] == "open-gr-reconstruct"
+    assert marker["kind"] == "review-open"
     res3 = runner.invoke(gr2_app.app, ["review", "close-gr", str(lane_dir)])
     assert res3.exit_code == 0, res3.output
     assert not lane_dir.exists()
@@ -185,7 +185,7 @@ def test_close_gr_with_no_review_run_has_nothing_to_keep(tmp_path: Path) -> None
 
 
 def test_close_gr_twice_same_lane_keeps_both_runs(tmp_path: Path) -> None:
-    # review-run door 1, R2 v2 probe: closing the SAME lane name twice must preserve
+    # review-run door 1, a probe on the second version: closing the SAME lane name twice must preserve
     # BOTH runs' receipt+log. v1 keyed the preserved dir by lane name alone
     # (<lane>.review-run, mkdir exist_ok + copy2), so the second close overwrote the
     # first's evidence in place -- door 1's promise held for one close per lane name.
@@ -245,7 +245,7 @@ def test_close_gr_twice_same_lane_keeps_both_runs(tmp_path: Path) -> None:
 
 
 def test_open_gr_enter_refuses_a_nonempty_lane_dir(tmp_path: Path) -> None:
-    # Probe C (Stromus R2 v1, RAN): open-gr --enter into a PRE-EXISTING dir that holds
+    # Probe C (run): open-gr --enter into a PRE-EXISTING dir that holds
     # a foreign file must REFUSE, because close-gr reclaims the WHOLE --lane-dir. The
     # marker proves open-gr WROTE there, not that it CREATED the dir; without this guard
     # close-gr removes the foreign file. open-gr owns the lane or does not write it.
@@ -294,3 +294,48 @@ def test_close_gr_refuses_a_dir_without_the_marker(tmp_path: Path) -> None:
     assert res.exit_code != 0
     assert plain.exists(), "close-gr must not remove a directory lacking the marker"
     assert (plain / "keep.txt").exists()
+
+
+def _make_lane_legacy(lane_dir: Path) -> Path:
+    """Rewrite a freshly opened lane's marker into the pre-rename on-disk form, the
+    way a lane opened by an earlier release carries it."""
+    new = lane_dir / open_gr_review._OPEN_GR_MARKER
+    data = json.loads(new.read_text())
+    data["kind"] = "open-gr-reconstruct"
+    legacy = lane_dir / ".grip-open-gr-reconstruct.json"
+    legacy.write_text(json.dumps(data, indent=2) + "\n")
+    new.unlink()
+    assert legacy.is_file() and not new.exists()
+    return legacy
+
+
+def test_review_close_still_reclaims_a_lane_opened_with_the_old_marker(tmp_path: Path) -> None:
+    # A stranger who upgrades mid-lane must not get "not a lane" on their own lane: the
+    # visible `review close` keeps READING the pre-rename marker (name and kind) for the
+    # same drop window as the open-gr/close-gr aliases, while only the new one is written.
+    runner = CliRunner()
+    lane_dir, gr_sha = _open_gr_lane(tmp_path, runner)
+    _make_lane_legacy(lane_dir)
+    res = runner.invoke(gr2_app.app, ["review", "close", str(lane_dir), "--json"])
+    assert res.exit_code == 0, res.output
+    assert json.loads(res.output)["gr_commit"] == gr_sha
+    assert not lane_dir.exists()
+
+
+def test_review_run_reads_the_old_marker_too(tmp_path: Path) -> None:
+    from gr2.python_cli import review_run as rr
+
+    runner = CliRunner()
+    lane_dir, _ = _open_gr_lane(tmp_path, runner)
+    _make_lane_legacy(lane_dir)
+    assert rr._read_marker(lane_dir)["kind"] == "open-gr-reconstruct"
+
+
+def test_review_close_refuses_a_directory_with_no_marker_naming_open_not_open_gr(tmp_path: Path) -> None:
+    stray = tmp_path / "stray"
+    stray.mkdir()
+    (stray / "keep.txt").write_text("x\n")
+    res = CliRunner().invoke(gr2_app.app, ["review", "close", str(stray)])
+    assert res.exit_code != 0
+    assert (stray / "keep.txt").exists(), "a directory with no marker must never be removed"
+    assert "open-gr" not in res.output

@@ -1,6 +1,6 @@
 """Two shape properties of the CLI that no per-command test can see.
 
-Both were found by the head seat's review of a change that made `workspace_root`
+Both came from a change that made `workspace_root`
 optional across many verbs, and neither could have been caught by the Python
 syntax rule that produced the change:
 

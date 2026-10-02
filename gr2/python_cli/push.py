@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .gitops import git
+from .review_records import lane_paths_for_repo, read_review_records_for_guard, review_record_pointer_path
 
 
 class PushError(Exception):
@@ -117,13 +118,14 @@ def _remote_branch_sha(repo: Path, remote: str, branch: str) -> str:
 def _refuse_review_ephemeral_repo(repo: Path) -> None:
     """A review-ephemeral lane is read-only and disposable: refuse a push from it,
     naming the kind, so a review lane never becomes a work lane."""
-    import json as _json
-    record = Path(repo) / ".git" / "grip-review.json"
     try:
-        kind = _json.loads(record.read_text()).get("lane_kind")
-    except (OSError, ValueError):
-        return
-    if kind == "review-ephemeral":
+        paths = lane_paths_for_repo(repo)
+        records = read_review_records_for_guard(paths) if paths else ()
+    except Exception as exc:
+        raise PushError(f"cannot safely resolve review receipt for {repo}: {exc}") from exc
+    if review_record_pointer_path(repo).is_file() and not records:
+        raise PushError(f"{repo} has a review pointer but no readable receipt; refusing push")
+    if any(record.get("lane_kind") == "review-ephemeral" for record in records):
         raise PushError(
             f"{repo} is a review-ephemeral review lane (read-only, disposable): it "
             "cannot be pushed. A review lane never becomes a work lane."

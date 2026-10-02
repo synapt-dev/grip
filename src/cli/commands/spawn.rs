@@ -2284,7 +2284,7 @@ mod tests {
     fn test_routing_upsert_replaces_owned_records_and_preserves_other_gripspaces() {
         let existing = serde_json::json!({
             "apollo": {"target": "synapt:apollo", "runtime": "claude"},
-            "anchor": {"target": "conversa:anchor", "runtime": "claude"}
+            "lead": {"target": "acme:lead", "runtime": "claude"}
         });
         let merged = merge_routing_records(
             existing,
@@ -2297,19 +2297,19 @@ mod tests {
         assert_eq!(merged["synapt:apollo"]["agent_id"], "apollo-001");
         assert_eq!(merged["synapt:apollo"]["store_coordinate"], "store-synapt");
         assert_eq!(merged["apollo"], merged["synapt:apollo"]);
-        assert_eq!(merged["conversa:anchor"]["runtime"], "claude");
-        assert_eq!(merged["anchor"], merged["conversa:anchor"]);
+        assert_eq!(merged["acme:lead"]["runtime"], "claude");
+        assert_eq!(merged["lead"], merged["acme:lead"]);
     }
 
     #[test]
     fn test_routing_upsert_rejects_ambiguous_bare_alias_by_omission() {
         let existing = serde_json::json!({
-            "conversa:reviewer": {
-                "gripspace": "conversa",
-                "qualified_alias": "conversa:reviewer",
+            "acme:reviewer": {
+                "gripspace": "acme",
+                "qualified_alias": "acme:reviewer",
                 "agent_id": "reviewer-002",
-                "store_coordinate": "opaque-conversa",
-                "target": "conversa:reviewer",
+                "store_coordinate": "opaque-acme",
+                "target": "acme:reviewer",
                 "runtime": "claude"
             }
         });
@@ -2327,7 +2327,7 @@ mod tests {
 
         assert!(merged.get("reviewer").is_none());
         assert!(merged.get("synapt:reviewer").is_some());
-        assert!(merged.get("conversa:reviewer").is_some());
+        assert!(merged.get("acme:reviewer").is_some());
     }
 
     #[test]
@@ -2347,8 +2347,8 @@ mod tests {
         let second = std::thread::spawn(move || {
             atomic_upsert_routing_file(
                 &second_path,
-                "conversa",
-                &[routing_record("conversa", "anchor", "anchor-001", "claude")],
+                "acme",
+                &[routing_record("acme", "lead", "lead-001", "claude")],
             )
         });
 
@@ -2356,7 +2356,7 @@ mod tests {
         second.join().unwrap().unwrap();
         let value: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         assert_eq!(value["synapt:apollo"]["runtime"], "codex");
-        assert_eq!(value["conversa:anchor"]["runtime"], "claude");
+        assert_eq!(value["acme:lead"]["runtime"], "claude");
     }
 
     #[test]

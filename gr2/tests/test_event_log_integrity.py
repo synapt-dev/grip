@@ -6,6 +6,7 @@ import importlib.util
 import json
 import multiprocessing
 import sys
+import tempfile
 import time
 from argparse import Namespace
 from pathlib import Path
@@ -138,11 +139,162 @@ def test_repeated_stress_distinguishes_unlocked_and_locked_paths() -> None:
         "strictly_monotonic": True,
         "corruption_count": 0,
     }
+    # THE INTERLEAVING IS FORCED, so the count below is CERTAIN rather than
+    # hoped for. Asserted first and asserted at all, because "the harness says it
+    # forces the window" is the claim the rest of the row rests on: with the
+    # rendezvous removed, `duplicate_seq_rounds` still reads 3 on a fast host and
+    # reads less under load, which is the shape this change exists to delete.
+    assert unlocked["forced_interleaving"] is True
+    # AND THE FLAG IS NOT ENOUGH ON ITS OWN. It used to be the caller's ARGUMENT
+    # (`_run_round` returned `"forced": force`), so a stub that spawned no writer
+    # at all still reported the window as forced -- a reader demonstrated exactly
+    # that before this assertion existed. The count is the OBSERVATION: every
+    # writer, in every round, actually reached the rendezvous.
+    assert unlocked["rendezvous_arrivals"] == 6, (
+        f"3 rounds x 2 writers must each reach the rendezvous; got "
+        f"{unlocked['rendezvous_arrivals']} -- a count below 6 means some writer "
+        f"never entered the forced window and the duplicate is not a property of "
+        f"the fixture"
+    )
+    assert locked["forced_interleaving"] is False, (
+        "the locked arm must NOT rendezvous: the write lock already serialises it, "
+        "and a barrier there would deadlock"
+    )
     assert unlocked["duplicate_seq_rounds"] == 3
+    assert unlocked["worker_failure_rounds"] == 0, (
+        "every writer must reach the rendezvous; a failure there arrives as "
+        "EventEmitError with the real cause in its chain, which is why the harness "
+        "records the chain rather than repr(exc)"
+    )
     assert locked["duplicate_seq_rounds"] == 0
     assert locked["lost_event_rounds"] == 0
     assert locked["corruption_count"] == 0
     assert locked["worker_failure_rounds"] == 0
+
+
+def test_emit_resolves_current_seq_at_call_time_so_a_fixture_can_force_the_window() -> None:
+    """The SEAM the forced interleaving rests on, proved with ONE process.
+
+    The harness forces the read/write window by wrapping `events._current_seq` on
+    the module from inside each spawned worker. That works only if `emit` looks
+    the name up AT CALL TIME. If `emit` had captured the function at import -- or
+    called a local alias -- the wrapper would be dead code, and the forced row
+    would go green while proving nothing about the race.
+
+    This is deliberately a SINGLE-PROCESS, load-free row: it is the part of the
+    work that can be measured without spawning writers, so the concurrent rows
+    are the only thing a clean host or CI has to add. It is also the mutation
+    target for the seam -- binding `_current_seq` at import in `emit` reddens
+    this row and nothing else.
+    """
+    # THE HARNESS'S NAME, not the other one. `python_cli` and `gr2.python_cli` both
+    # resolve to `python_cli/events.py` and are NOT the same module object
+    # (`[tool.setuptools.package-dir]` maps "gr2.python_cli" = "python_cli"), so
+    # each name has its own globals and a patch on one is invisible to the other.
+    # This row is written against `python_cli` because that is the name the fixture
+    # patches -- a reader caught the earlier version proving the property one name
+    # over, on a module the harness never touches.
+    from python_cli import events
+
+    import gr2.python_cli.events as _other_name
+
+    assert events is not _other_name, (
+        "the two import names have become ONE module object, so the split this "
+        "comment describes is gone and the harness's patch site is now the same as "
+        "every other caller's -- update the comment rather than deleting this row"
+    )
+
+    seen: list[Path] = []
+    real = events._current_seq
+
+    def _spy(outbox: Path) -> int:
+        seen.append(outbox)
+        return real(outbox)
+
+    events._current_seq = _spy
+    try:
+        with tempfile.TemporaryDirectory(prefix="gr2-seq-seam-") as tmp:
+            workspace = Path(tmp)
+            (workspace / ".grip").mkdir()
+            events.emit(
+                event_type=events.EventType.LANE_ENTERED,
+                workspace_root=workspace,
+                actor="seam-probe",
+                owner_unit="event-stress",
+                payload={},
+            )
+    finally:
+        events._current_seq = real
+
+    assert seen, (
+        "emit did not call the module-level `_current_seq`; a wrapper installed by "
+        "the harness would be dead code and the forced row would be proving nothing"
+    )
+    assert len(seen) == 1, f"emit should read the sequence exactly once, got {len(seen)}"
+
+
+def test_emit_wraps_a_read_failure_so_the_cause_chain_is_the_diagnosis(tmp_path: Path) -> None:
+    """WHY THE RECORD CARRIES A CHAIN: `emit` wraps whatever the read raises.
+
+    A barrier timeout does NOT arrive at the worker as `BrokenBarrierError`. It
+    arrives as `EventEmitError("event emit failed for <path>")` with the real
+    failure only in `__cause__` -- so a record built from `repr(exc)` names the
+    WRAPPER. Three claims said otherwise until a reader ran it: the comment beside
+    the timeout, the PR body, and an assertion message in the stress row.
+
+    One process, no writers, no load.
+    """
+    from python_cli import events
+
+    real = events._current_seq
+
+    def _boom(outbox: Path) -> int:
+        raise RuntimeError("barrier-probe")
+
+    events._current_seq = _boom
+    try:
+        workspace = tmp_path / "wrap"
+        (workspace / ".grip").mkdir(parents=True)
+        with pytest.raises(BaseException) as caught:
+            events.emit(
+                event_type=events.EventType.LANE_ENTERED,
+                workspace_root=workspace,
+                actor="wrap-probe",
+                owner_unit="event-stress",
+                payload={},
+            )
+    finally:
+        events._current_seq = real
+
+    exc = caught.value
+    assert type(exc).__name__ == "EventEmitError", (
+        f"emit no longer wraps a read failure, so this row and the chain it "
+        f"justifies are both stale -- got {type(exc).__name__}"
+    )
+    assert isinstance(exc.__cause__, RuntimeError) and not isinstance(exc, type(None)), (
+        "the real failure must survive as __cause__; that is what makes the chain "
+        "the diagnosis rather than repr(exc)"
+    )
+    assert "barrier-probe" in str(exc.__cause__)
+
+
+def test_the_error_chain_names_the_cause_and_not_only_the_wrapper() -> None:
+    """THE FIX ITSELF: the record reports the wrapper AND the cause under it."""
+    from gr2.prototypes.concurrent_event_stress import _error_chain
+
+    try:
+        try:
+            raise ValueError("inner-probe")
+        except ValueError as inner:
+            raise RuntimeError("outer-probe") from inner
+    except RuntimeError as outer:
+        chain = _error_chain(outer)
+
+    assert chain.startswith("RuntimeError: outer-probe"), chain
+    assert "ValueError: inner-probe" in chain, (
+        f"the cause must appear in the record, or a barrier timeout reports as a "
+        f"generic emit failure again; got {chain!r}"
+    )
 
 
 def test_spawned_worker_rejects_gr2_import_outside_expected_worktree(

@@ -5,7 +5,7 @@ consumed it. This is the first operation EXECUTOR: `kind == "clone"`.
 
 Contract: MaterializationPlan v1 clone contract and acceptance fruit 6/7/8/9.
 
-Testing discipline carried forward from the S4-A review cycle, and applied at
+Testing discipline, applied at
 DESIGN time rather than at test time: for every guard, ask what ELSE would
 reject this input first, and is the guard therefore untested at its own level.
 Five masking pairs came out of that question before any implementation existed,
@@ -591,8 +591,8 @@ class TestExecutorBinding(CloneExecTestBase):
         takes workspace_root as a separate argument, so nothing structurally
         stops a caller from validating against one workspace and executing
         against another -- every relative path in the plan would then resolve
-        somewhere else. Re-checking the spec at USE is the same lesson S4-A's
-        TOCTOU round ended on."""
+        somewhere else. Re-checking the spec at USE is the same rule the plan
+        validator follows."""
         validated = self._validated()
 
         other_root = self.tmp / "other-workspace"
@@ -673,15 +673,19 @@ class TestExecutorBinding(CloneExecTestBase):
         with self.assertRaises(CloneExecutionError) as ctx:
             execute_clone_operation(validated, 0, workspace_root=self.workspace_root)
         self.assertIn("is kind 'venv'", str(ctx.exception))
+        # The refusal is user-visible: it says what this executor does, and names no
+        # internal build slice a user cannot look up.
+        self.assertIn("applies clone operations only", str(ctx.exception))
+        self.assertNotRegex(str(ctx.exception), r"\bS4-[A-D]\b")
 
 
 class TestIsolationCompleteness(CloneExecTestBase):
-    """Round-2 blockers from Atlas + Sentinel at bd7afe5. Every one is a real
-    git witness they built and this executor accepted; each lands here with the
-    guard that closes it, so the mutant that reopens it has a declared victim."""
+    """The defects present at bd7afe5. Every one is a real git witness this
+    executor accepted; each lands here with the guard that closes it, so the
+    mutant that reopens it has a declared victim."""
 
     def test_a_git_dir_that_is_itself_a_symlink_is_rejected(self):
-        """Atlas 1. The nastiest of the set, because it defeats TWO guards with
+        """The nastiest of the set, because it defeats TWO guards with
         one link: Path.is_dir() FOLLOWS the symlink and answers True, and
         `rev-parse --git-common-dir` resolves THROUGH the same link so both
         sides of the common-dir comparison land on the foreign directory and
@@ -699,7 +703,7 @@ class TestIsolationCompleteness(CloneExecTestBase):
         self.assertIn("redirects .git through a symlink", str(ctx.exception))
 
     def test_symlinked_refs_are_rejected(self):
-        """Sentinel 2 / Atlas 1. .git stays a real local directory and the
+        """.git stays a real local directory and the
         common dir is its own, so every prior guard passes -- while the clone
         reads another unit's refs."""
         victim = self._make_clone(self.tmp / "victim", reference=self.cache_path)
@@ -714,7 +718,7 @@ class TestIsolationCompleteness(CloneExecTestBase):
         self.assertIn(".git/refs", str(ctx.exception))
 
     def test_symlinked_objects_are_rejected_when_no_reference_is_declared(self):
-        """Sentinel 2. The second route to object sharing, and the one the
+        """The second route to object sharing, and the one the
         alternates check structurally cannot see: with no reference_base
         declared there is no alternates file to inspect, so that guard passes
         VACUOUSLY while the objects directory itself is joined to another
@@ -730,7 +734,7 @@ class TestIsolationCompleteness(CloneExecTestBase):
         self.assertIn(".git/objects", str(ctx.exception))
 
     def test_a_shallow_clone_is_rejected(self):
-        """Sentinel 1. Correct origin, local git dir, clean tree, valid
+        """Correct origin, local git dir, clean tree, valid
         alternate -- indistinguishable from healthy to every other guard.
         Section 8.1 requires the complete reachable history and the v1 plan
         declares no shallow profile."""
@@ -773,7 +777,7 @@ class TestIsolationCompleteness(CloneExecTestBase):
 
 class TestCacheBoundaryIsTransitive(CloneExecTestBase):
     def test_a_cache_whose_objects_are_a_symlink_is_rejected(self):
-        """Atlas 2. Containment is only ONE HOP without this: the cache is at
+        """Containment is only ONE HOP without this: the cache is at
         the right path, bare, with the right origin -- and its object store
         lives somewhere else entirely."""
         outside = self.tmp / "global-cache.git"
@@ -788,7 +792,7 @@ class TestCacheBoundaryIsTransitive(CloneExecTestBase):
         self.assertIn("objects directory through a symlink", str(ctx.exception))
 
     def test_a_cache_that_alternates_onward_to_a_global_store_is_rejected(self):
-        """Atlas 2, the decisive form. The clone's own alternate correctly
+        """The decisive form. The clone's own alternate correctly
         names the workspace cache -- so the clone-side check is satisfied --
         and the cache then alternates out to a machine-global store, which the
         clone transitively reads. Object sharing must TERMINATE at the
@@ -806,7 +810,7 @@ class TestCacheBoundaryIsTransitive(CloneExecTestBase):
         self.assertIn("must terminate at", str(ctx.exception))
 
     def test_relative_alternate_lines_resolve_the_way_git_resolves_them(self):
-        """Atlas 2. git resolves a relative alternates entry against the OBJECT
+        """git resolves a relative alternates entry against the OBJECT
         DIRECTORY; resolving it against the process working directory makes the
         verifier and git disagree about what the clone actually reads -- and a
         verifier that disagrees with git is worse than none.
@@ -822,7 +826,7 @@ class TestCacheBoundaryIsTransitive(CloneExecTestBase):
 
 
 class TestDamagedCloneIsNotReused(CloneExecTestBase):
-    """Sentinel 3 AND Atlas 4 -- the one both reviewers hit independently."""
+    """The one case reached independently from two directions."""
 
     def test_a_corrupt_index_blocks_reuse_instead_of_reading_as_clean(self):
         """gitops.repo_dirty() maps EVERY nonzero exit to False, so an
@@ -849,7 +853,7 @@ class TestDamagedCloneIsNotReused(CloneExecTestBase):
         )
 
     def test_a_clone_whose_head_does_not_resolve_blocks_even_though_status_is_clean(self):
-        """Atlas 4's second half: 'HEAD/reachability must succeed.'
+        """The second half of the same requirement: 'HEAD/reachability must succeed.'
 
         Finding the witness for this took two tries, and the first failure is
         worth recording. Deleting the branch ref makes git report an unborn
@@ -879,7 +883,7 @@ class TestDamagedCloneIsNotReused(CloneExecTestBase):
 
 class TestPreflightRunsBeforeAnyMutation(CloneExecTestBase):
     def test_an_invalid_cache_is_refused_before_git_clone_runs(self):
-        """Sentinel 4, and it is the masking finding I missed: my own staging
+        """The masking case I missed: my own staging
         verifier is a stronger neighbour that produces the SAME error and the
         SAME end state, so removing the preflight left every test green while
         a clone had already run.
@@ -907,7 +911,7 @@ class TestPreflightRunsBeforeAnyMutation(CloneExecTestBase):
 
 class TestPublicationResidue(CloneExecTestBase):
     def test_a_failed_rename_leaves_no_staging_residue(self):
-        """Sentinel 5. The rename sat OUTSIDE the cleanup boundary, so the
+        """The rename sat OUTSIDE the cleanup boundary, so the
         no-residue guarantee held for every failure except the one occurring at
         the publication seam itself."""
         from gr2.python_cli import clone_exec
@@ -935,7 +939,7 @@ class TestPublicationResidue(CloneExecTestBase):
 
 class TestCapabilityWindow(CloneExecTestBase):
     def test_a_capability_swapped_during_path_work_cannot_redirect_the_clone(self):
-        """Atlas 3, and it is the validation-vs-use class inside B's own code.
+        """The validation-vs-use class inside B's own code.
 
         The executor verified, then ran callback-capable path work, then re-read
         validated.plan live -- so a caller-supplied Path subclass could swap the
@@ -979,7 +983,7 @@ class TestCapabilityWindow(CloneExecTestBase):
 
 class TestReceiptEvidenceCompleteness(CloneExecTestBase):
     def test_evidence_records_what_was_observed_not_what_was_declared(self):
-        """Atlas 5. Section 12.1 requires repo URL, destination, HEAD,
+        """Section 12.1 requires repo URL, destination, HEAD,
         clone-state evidence, and cache path plus APPROVED-ALTERNATE evidence.
         Echoing the plan's reference_base back is not evidence -- a receipt that
         repeats the plan proves nothing about what is on disk. The previous

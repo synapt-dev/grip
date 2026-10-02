@@ -1,4 +1,4 @@
-"""TDD: workspace init on repos with no remote (alpha-2 finding 1), and bare
+"""TDD: workspace init on repos with no remote, and bare
 repos the scanner skipped.
 
 Measured on 2.0.0a1 (APOLLO-1945 fixture runs): `gr2 workspace init` over two
@@ -81,8 +81,8 @@ def test_init_without_remotes_succeeds_and_names_the_missing_url(tmp_path: Path)
 def test_init_detects_bare_repos_without_adding_them(tmp_path: Path) -> None:
     """Bare dirs beside their clones are a working dev layout: init must find
     the 2 work-tree repos and materialize must succeed on the written spec.
-    Bare dirs are NAMED in the output, never added to the spec (R2 B2,
-    m_0e288205: a bare-as-repo scan wrote url "-" for the upstreams and
+    Bare dirs are NAMED in the output, never added to the spec (a
+    bare-as-repo scan wrote url "-" for the upstreams and
     materialize's validator refused the whole spec)."""
     _init_repo(tmp_path / "alpha")
     _init_repo(tmp_path / "beta")

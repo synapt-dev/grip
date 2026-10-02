@@ -1,4 +1,4 @@
-"""Row 4 (R2 Exact Work Stream 2): run the reviewed repo's tests INSIDE the
+"""Row 4: run the reviewed repo's tests INSIDE the
 materialized review lane and record it in the project-tier receipt as fruit.
 
 `record_review_verification` runs a test command in `review_root/repos/<key>` and

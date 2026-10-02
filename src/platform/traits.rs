@@ -59,6 +59,9 @@ pub struct LinkedPRRef {
 /// Each platform (GitHub, GitLab, Azure DevOps) implements this trait
 #[async_trait]
 #[allow(clippy::too_many_arguments)]
+// async_trait's expansion puts #[must_use] on each method it boxes into a Future, and
+// clippy 1.99 flags that as double_must_use; the attribute is generated, not written here.
+#[allow(clippy::double_must_use)]
 pub trait HostingPlatform: Send + Sync {
     /// Platform type identifier
     fn platform_type(&self) -> PlatformType;

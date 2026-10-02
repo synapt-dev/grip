@@ -283,7 +283,8 @@ class TestBootstrapGr1:
     def test_deleting_unit_name_guard_recreates_the_unsafe_store_side_effect(
         self, gr1_workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Mutation control: unit validation protects the generated agents/<unit>/home path."""
+        """Mutation control: unit validation protects the generated unit name and every
+        path derived from it."""
         (gr1_workspace / ".gitgrip" / "agents.toml").write_text('[agents."../unit"]\nworktree = "main"\n')
         monkeypatch.setattr(migration, "_safe_workspace_component", lambda value, _field: str(value))
 
@@ -987,7 +988,7 @@ def test_regeneration_guard_ignores_plumbing_store_head_deletions(tmp_path):
     """A .grip store is plumbing-only: HEAD is a real commit whose tree is never
     checked out, so `git status --porcelain` reports every HEAD path as a
     deletion. That is the store's normal state, not dirt -- the guard used to
-    refuse every store that had ever held a review commit (Stromus m_4a3fdd37).
+    refuse every store that had ever held a review commit.
     It must judge untracked files only; an untracked file it would clobber still
     refuses."""
     grip = tmp_path / "store"
@@ -1110,3 +1111,247 @@ class TestMigrateLaneState:
         payload = json.loads(result.output)
         assert payload["count"] == 1
         assert (tmp_path / ".grip" / "state" / "lanes" / "atlas" / "feature").is_dir()
+
+
+# ---------------------------------------------------------------------------
+# The ALPHA STORE the migration consumes -- moved here 2026-09-28
+# ---------------------------------------------------------------------------
+#
+# Ruled when the native store port landed: the thirteen rows in
+# tests/test_grip_object_model.py are RETIRED in this step, and any row asserting a property
+# `store migrate` RELIES ON moves here, with its fixture built through `grip_mod`.
+#
+# This is that property, and it is the only one the retired file held that migrate depends on:
+# `_native_store_migrate` reads the alpha store through `grip_mod._read_repo_state`, so the
+# thing that must keep working is that a store built by `grip_mod` carries member pins that
+# reader can find. Everything else in the retired file asserted the CLI surface of
+# `store snapshot/log/diff/checkout`, which section 5 removes -- and the properties worth
+# keeping from it are covered natively now, by test_store_status_values,
+# test_store_member_state and test_store_verb_witnesses.
+
+
+def test_grip_mod_alpha_store_carries_the_pins_the_migration_reads(tmp_path: Path) -> None:
+    """The alpha side of the migration boundary, built through grip_mod itself.
+
+    `_native_store_migrate` opens `<root>/.grip/.git`, reads its HEAD via
+    `grip_mod._read_repo_state`, and takes each member's `commit` field as the pin. So this
+    asserts exactly that: after `grip_init` + `grip_snapshot`, the state reader returns one
+    entry per member, each with a 40-hex `commit` -- the shape the migration's pin loop
+    validates before it will write a native root commit.
+
+    The control is the same reader against a root with no alpha store: an empty dict, not a
+    crash. Without it, a reader that returned a fixed non-empty shape would pass the first
+    half while telling the migration nothing.
+    """
+    from gr2.python_cli import grip as grip_mod
+
+    root = tmp_path / "alpha-ws"
+    root.mkdir()
+    members: dict[str, Path] = {}
+    for name in ("alpha", "beta"):
+        member = root / name
+        member.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main", str(member)], check=True)
+        subprocess.run(["git", "-C", str(member), "config", "user.email", "t@e.invalid"], check=True)
+        subprocess.run(["git", "-C", str(member), "config", "user.name", "t"], check=True)
+        (member / "README.md").write_text(f"# {name}\n")
+        subprocess.run(["git", "-C", str(member), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(member), "commit", "-q", "-m", "initial"], check=True)
+        members[name] = member
+
+    grip_mod.grip_init(root)
+    grip_mod.grip_snapshot(root, members, message="alpha snapshot")
+
+    states = grip_mod._read_repo_state(root, "HEAD")
+    assert sorted(states) == ["alpha", "beta"], f"one entry per member: {sorted(states)}"
+    for name, state in states.items():
+        pin = state.get("commit", "")
+        assert isinstance(pin, str) and len(pin) == 40, (name, state)
+        head = subprocess.run(
+            ["git", "-C", str(members[name]), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert pin == head, f"{name}'s recorded pin must be its HEAD: {pin} vs {head}"
+
+    # CONTROL: the same reader on an alpha store that has been INITIALISED but never
+    # snapshotted -- there is no HEAD to read, so it must return nothing rather than a fixed
+    # shape. (A root with no alpha store at all is not the control: the reader requires the
+    # store to exist and raises, which is a different and correct behaviour.)
+    bare = tmp_path / "alpha-store-no-snapshot"
+    bare.mkdir()
+    grip_mod.grip_init(bare)
+    assert grip_mod._read_repo_state(bare, "HEAD") == {}, (
+        "control: an alpha store with no snapshot has no pins to report"
+    )
+
+
+class TestGripspaceRootRefusalMessage:
+    """A member path that leaves the gripspace is refused, and the refusal has to
+    tell the reader the two things that fix it. What it must NOT do is point at
+    some parent directory as a root: a gitlink cannot point outside its tree, so
+    widening the root trades a refusal for a checkout that cannot resolve.
+    """
+
+    DESIGN_PARTS = (
+        "outside this gripspace",
+        "members live under the gripspace root",
+        "Move or clone it inside the gripspace, or leave it out of this spec",
+    )
+
+    # The sentence a '..' part gets INSTEAD. Kept separate from DESIGN_PARTS on
+    # purpose: the two refusals share a field name and nothing else, and a reader
+    # who merges the tuples would let either sentence answer for the other.
+    DOTDOT_PARTS = (
+        "contains a '..' segment",
+        "write the path without it",
+    )
+
+    def test_a_parent_relative_member_path_is_refused_with_the_design_wording(self) -> None:
+        with pytest.raises(ValueError) as raised:
+            migration._safe_workspace_relative_path("../outside", "repository 'escape' path")
+
+        message = str(raised.value)
+        for part in self.DESIGN_PARTS:
+            assert part in message, f"missing {part!r} in: {message}"
+        assert "../outside" in message
+
+    def test_the_refusal_names_the_gripspace_as_the_only_root(self) -> None:
+        """The word 'root' appears once, and it is the GRIPSPACE root.
+
+        A second occurrence, or any other directory offered as a candidate root,
+        is the suggestion the design forbids.
+        """
+        with pytest.raises(ValueError) as raised:
+            migration._safe_workspace_relative_path("../outside", "repository 'escape' path")
+
+        message = str(raised.value)
+        assert message.count("root") == 1, f"more than one root offered: {message}"
+        assert "gripspace root" in message
+        for suggestion in ("parent", "~/", "Development", "make"):
+            assert suggestion not in message, f"refusal suggests {suggestion!r}: {message}"
+
+    @pytest.mark.parametrize("value", ["/outside", "C:/outside", "../outside"])
+    def test_every_escaping_shape_gets_the_same_wording(self, value: str) -> None:
+        with pytest.raises(ValueError) as raised:
+            migration._safe_workspace_relative_path(value, "repository 'escape' path")
+
+        assert "outside this gripspace" in str(raised.value)
+
+    @pytest.mark.parametrize("value", ["a/../b", "a/..", "nested/../outside"])
+    def test_a_dotdot_part_gets_its_own_sentence(self, value: str) -> None:
+        """A path carrying a '..' part is refused for a DIFFERENT reason than a real
+        escape, and it must not borrow that reason's sentence.
+
+        'a/../b' resolves to 'b', and 'a/..' resolves to the root itself: both are
+        INSIDE the gripspace, so telling their author the path is "outside this
+        gripspace" is false about what the path does and sends them looking for the
+        wrong repair. 'nested/../outside' is the same shape and used to be bundled
+        with the real escapes, which is what made the false sentence look right.
+        """
+        with pytest.raises(ValueError) as raised:
+            migration._safe_workspace_relative_path(value, "repository 'escape' path")
+
+        message = str(raised.value)
+        assert "outside this gripspace" not in message, (
+            f"{value!r} resolves INSIDE the gripspace but is described as outside: {message}"
+        )
+        for part in self.DOTDOT_PARTS:
+            assert part in message, f"missing {part!r} in: {message}"
+        assert value in message
+
+    def test_a_real_escape_still_gets_the_outside_sentence(self) -> None:
+        """The control for the row above: splitting the '..' case out must not have
+        swallowed the case the outside sentence is actually FOR.
+
+        Without this, making the '..' row pass could be done by weakening every
+        parent-relative refusal to the same sentence.
+        """
+        with pytest.raises(ValueError) as raised:
+            migration._safe_workspace_relative_path("../outside", "repository 'escape' path")
+
+        message = str(raised.value)
+        assert "outside this gripspace" in message
+        assert ".." not in message.replace("../outside", ""), (
+            f"a real escape must not be described as a '..' segment problem: {message}"
+        )
+
+    def test_a_dot_path_is_not_described_as_outside_the_gripspace(self) -> None:
+        "'.' IS inside the gripspace, so the outside-wording would be false here."
+        with pytest.raises(ValueError) as raised:
+            migration._safe_workspace_relative_path(".", "repository 'escape' path")
+
+        assert "outside this gripspace" not in str(raised.value)
+
+    def test_the_message_reaches_the_operator_through_the_real_entry_point(
+        self, gr1_workspace: Path
+    ) -> None:
+        manifest_path = gr1_workspace / ".gitgrip" / "spaces" / "main" / "gripspace.yml"
+        manifest_path.write_text(
+            yaml.dump(
+                {
+                    "repos": {
+                        "escape": {
+                            "path": "../outside",
+                            "url": "https://example.invalid/escape.git",
+                        }
+                    }
+                }
+            )
+        )
+        (gr1_workspace / ".gitgrip" / "agents.toml").write_text(
+            '[agents."atlas"]\nworktree = "main"\n'
+        )
+
+        with pytest.raises(SystemExit) as raised:
+            bootstrap_gr1_workspace(gr1_workspace)
+
+        message = str(raised.value)
+        assert "cannot compile canonical gripspace manifest" in message
+        for part in self.DESIGN_PARTS:
+            assert part in message, f"the operator never sees {part!r}: {message}"
+        assert not (gr1_workspace / ".grip").exists()
+
+    def test_the_migrate_entry_point_reports_a_sentence_and_not_a_traceback(
+        self, gr1_workspace: Path
+    ) -> None:
+        """The same refusal through the entry point a user actually types.
+
+        `bootstrap_gr1_workspace` converts a compile failure into a sentence. The
+        migrate entry point calls the same compile, and did it with no handler, so
+        the operator met a Python traceback where the other verb gave them the
+        sentence. Same refusal, same wording; what this row pins is that it arrives
+        AS a message rather than as a stack.
+        """
+        manifest_path = gr1_workspace / ".gitgrip" / "spaces" / "main" / "gripspace.yml"
+        manifest_path.write_text(
+            yaml.dump(
+                {
+                    "repos": {
+                        "escape": {
+                            "path": "../outside",
+                            "url": "https://example.invalid/escape.git",
+                        }
+                    }
+                }
+            )
+        )
+        (gr1_workspace / ".gitgrip" / "agents.toml").write_text(
+            '[agents."atlas"]\nworktree = "main"\n'
+        )
+
+        with pytest.raises(SystemExit) as raised:
+            migration.migrate_gr1_workspace(gr1_workspace)
+
+        message = str(raised.value)
+        assert "cannot compile canonical gripspace manifest" in message
+        for part in self.DESIGN_PARTS:
+            assert part in message, f"the operator never sees {part!r}: {message}"
+        assert "Traceback" not in message, f"the operator met a stack: {message}"
+        assert not (gr1_workspace / ".grip").exists()
+
+    def test_a_member_path_inside_the_gripspace_is_still_accepted(self) -> None:
+        """The control: without it, the refusal above could be unconditional."""
+        assert (
+            migration._safe_workspace_relative_path("nested/inside", "repository 'x' path")
+            == "nested/inside"
+        )

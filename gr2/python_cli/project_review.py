@@ -284,13 +284,19 @@ def open_project_review(*, workspace: Path, owner_unit: str, lane_name: str, spe
             if git(source, "cat-file", "-e", f"{sha}^{{commit}}").returncode != 0:
                 return ProjectReviewOutcome("refused", spec.grip_commit, (), (ProjectReviewFailure(pin.key, f"missing {label} pin {sha}"),), None, False)
     review_root = workspace / "reviews" / owner_unit / lane_name
+    # Keep the lane subsystem's pinned refusal ahead of materialization. This
+    # remains necessary even if an outer caller has already checked the names:
+    # clone destinations must never be created before the lane coordinate is
+    # known to be one portable component per dimension.
+    lanes.validate_lane_path_component(owner_unit, "owner_unit")
+    lanes.validate_lane_path_component(lane_name, "lane_name")
     observed: list[review.ReviewRecord] = []
     for pin in canonical_pins:
         source, branch = sources[pin.key]
         repo_name = Path(source).name.removesuffix(".git")
         materialize_head = materialize_heads.get(pin.key, pin.head)
         try:
-            record = review.open_review_lane(source_repo_root=source, review_branch=branch, expected_head_sha=materialize_head, base_sha=pin.base, lane_repo_root=review_root / "repos" / pin.key, workspace_root=workspace, allow_local=allow_local, ephemeral=ephemeral, repo_name=repo_name, echo=lambda _line: None)
+            record = review.open_review_lane(source_repo_root=source, review_branch=branch, expected_head_sha=materialize_head, base_sha=pin.base, lane_repo_root=review_root / "repos" / pin.key, workspace_root=workspace, allow_local=allow_local, ephemeral=ephemeral, repo_name=repo_name, owner_unit=owner_unit, lane_name=lane_name, member=pin.key, echo=lambda _line: None)
         except Exception as exc:
             return ProjectReviewOutcome("partial", spec.grip_commit, tuple(observed), (ProjectReviewFailure(pin.key, str(exc)),), review_root, False)
         observed.append(record)

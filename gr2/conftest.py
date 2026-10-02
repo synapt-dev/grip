@@ -11,6 +11,8 @@ an ancestor of both, so "every gr2 test" is true rather than aspirational.
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -18,6 +20,97 @@ from pathlib import Path
 import pytest
 
 _project_root = Path(__file__).parent
+# RESOLVED ONCE, and both sides of the containment test use it. The probe reports the path the
+# IMPORT resolved to, which is always canonical, so comparing it against an UNresolved root
+# falsely refuses a checkout that lives under a symlink -- `/tmp/...` reports as
+# `/private/tmp/...` on this host and the test would fire on a correct install. Measured while
+# witnessing this precondition's own second branch.
+_project_root_resolved = _project_root.resolve()
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Refuse the session ONCE, in one line, when a SUBPROCESS cannot import the tree under test.
+
+    WHY A SUBPROCESS AND NOT THIS PROCESS. The block below injects `gr2` into ``sys.modules``
+    so that IN-PROCESS tests import the tree they live in -- which means this process can import
+    `gr2.python_cli` whether or not anything is installed, and can therefore never see the defect.
+    Three test files spawn ``[sys.executable, "-m", "gr2.python_cli.app", ...]`` as a child
+    process. TWO of them pass ``PYTHONPATH=<gr2 dir>`` and treat that as sufficient; the third
+    (``test_review_cli.py``'s ``_run_bind_real``) passes no environment at all and inherits the
+    cwd. Neither is enough: `gr2.python_cli` exists only through the packaging map
+    (``pyproject.toml``: ``"gr2.python_cli" = "python_cli"``, a flat directory mapped onto a
+    dotted name), which an EDITABLE INSTALL provides and a bare tree does not. grip#826: without
+    that install the child dies with ``No module named 'gr2.python_cli'``; measured on the fleet
+    interpreter, the three spawning files are 13 failed / 14 passed.
+
+    THE RESOLVED PATH IS CHECKED, NOT JUST THAT THE IMPORT WORKED, and that half is the one that
+    has actually bitten this team: an editable install of a DIFFERENT CLONE makes the import
+    succeed and the tests measure someone else's bytes, so "it imported" is not the property the
+    suite needs. The property is "it imported FROM THIS TREE".
+
+    Refusing rather than skipping: a skip would hide the difference between "this clone cannot run
+    these tests" and "these tests pass", and the red it replaces is already being misread as a
+    product failure. CI installs before it runs, so this never fires there -- if it ever does, CI
+    is the thing that changed.
+
+    THE PROBE REPRODUCES THE TESTS' OWN ENVIRONMENT AS CLOSELY AS IT CAN, because a probe that
+    answers a DIFFERENT question is an instrument that cannot fail. Two details, both measured:
+
+      - It imports ``gr2.python_cli.app`` -- the module the tests spawn with ``-m`` -- rather than
+        the parent package, so "the parent imports" is not allowed to stand in for "the thing they
+        run imports".
+      - It sets ``PYTHONPATH`` to the SAME directory the test helpers set. That is load-bearing and
+        not obvious: with ``PYTHONPATH=<gr2 dir>``, `gr2` resolves to the INNER regular package
+        (``gr2/gr2/``, which has ``__init__.py``) and that BEATS the namespace-package portion a
+        cwd would otherwise offer. Measured across three cwds on both interpreters, the answer is
+        identical at all three, so this probe is not cwd-dependent -- but it is PYTHONPATH-dependent,
+        and setting it differently from the tests would measure a tree the tests never see.
+
+    KNOWN LIMIT, stated rather than implied. This precondition FORCES ``PYTHONPATH``, so it is
+    blind to an ambient ``PYTHONPATH`` misdirecting the one helper that sets none of its own
+    (``test_review_cli.py::_run_bind_real``). A tree where only that file measured someone else's
+    bytes would pass here. The fix belongs in that helper -- give it the same explicit
+    ``PYTHONPATH`` its two siblings carry -- and is deliberately not in this change.
+    """
+    probe = "import gr2.python_cli.app as m; print(m.__file__)"
+    env = {**os.environ, "PYTHONPATH": str(_project_root)}
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", probe], env=env, capture_output=True, text=True, timeout=60
+        )
+    except (OSError, subprocess.SubprocessError) as exc:  # pragma: no cover - host-dependent
+        pytest.exit(
+            f"gr2 conftest precondition could not run its own probe: {exc!r}\n"
+            f"  interpreter: {sys.executable}",
+            returncode=1,
+        )
+        return
+
+    resolved = (result.stdout or "").strip()
+    if result.returncode != 0:
+        pytest.exit(
+            "gr2 conftest precondition: a SUBPROCESS cannot import `gr2.python_cli`, so the "
+            "subprocess-driven tests would fail for a reason that is not a product failure.\n"
+            f"  interpreter : {sys.executable}\n"
+            f"  PYTHONPATH  : {_project_root}\n"
+            f"  error       : {(result.stderr or '').strip().splitlines()[-1] if result.stderr else '(none)'}\n"
+            "  FIX: install the tree under test -- "
+            '`.venv/bin/python -m pip install -e ".[dev]"` -- and re-run from that venv.',
+            returncode=1,
+        )
+        return
+
+    if _project_root_resolved not in Path(resolved).resolve().parents:
+        pytest.exit(
+            "gr2 conftest precondition: `gr2.python_cli` imported, but NOT from the tree under "
+            "test -- the tests would validate someone else's bytes.\n"
+            f"  interpreter : {sys.executable}\n"
+            f"  resolved to : {resolved}\n"
+            f"  expected in : {_project_root}\n"
+            "  FIX: one venv per tree under test; never borrow a venv that has an editable "
+            "install of a different clone.",
+            returncode=1,
+        )
 
 if "gr2" not in sys.modules:
     # Namespace with two roots: the project dir (python_cli lives flat at
@@ -69,7 +162,7 @@ def _isolated_git_config(tmp_path_factory, monkeypatch):
     blindness this fixture exists to close.
 
     A FOURTH channel, added after the first three were measured closed
-    (Sentinel's R1 finding on the runner PATH lane): git also accepts config
+    (measured on the runner PATH change): git also accepts config
     injected purely through the environment, with precedence ABOVE the file
     sources above --
     ``GIT_CONFIG_COUNT``/``GIT_CONFIG_KEY_<n>``/``GIT_CONFIG_VALUE_<n>`` (a

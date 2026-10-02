@@ -1,4 +1,4 @@
-"""Project-tier open-gr --enter (R2 Exact Work Stream 2 step 4): one review-kind
+"""Project-tier open-gr --enter: one review-kind
 gr commit opens one exact multi-repo review; exit restores the prior lane + cwd."""
 
 from __future__ import annotations
@@ -524,7 +524,7 @@ def test_review_open_project_cli_local_source_materializes_a_pre_push_head(tmp_p
 
 
 def test_review_open_project_cli_rejects_local_source_without_equals(tmp_path: Path) -> None:
-    # Atlas's R1 non-blocking find (folded here): --local-source must be key=PATH; a
+    # Folded here: --local-source must be key=PATH; a
     # value with no "=" is a usage error, not a silent skip or a crash.
     workspace, source, base, head, prior_cwd = _prepush_world(tmp_path)
     gr_commit = _prepush_gr_commit(workspace, source, base, head)
@@ -645,8 +645,10 @@ def test_both_review_verbs_help_names_commit_kind_and_path() -> None:
     og = _review_help("open-gr")
     assert "MATERIALIZE" in op and "project-review-KIND" in op
     assert "RECONSTRUCT" in og and "review-BIND" in og
-    # each verb points at the other so the fork is legible from --help alone
-    assert "open-gr" in op and "open-project" in og
+    # each verb points at the other so the fork is legible from --help alone; the
+    # reconstruct side is named by its visible verb, never by the hidden open-gr alias
+    assert "review open --enter" in op and "open-project" in og
+    assert "open-gr" not in op
     assert "exit-gr" in _review_help("exit-gr").lower() or "exit" in _review_help("exit-gr").lower()
 
 

@@ -1035,9 +1035,9 @@ pub enum MigrateCommands {
     /// linked worktree paths. Requires git 2.30+.
     ///
     /// Example: gr migrate in-place
-    ///   ~/conversa/           → ~/conversa/conversa-app/ (repo)
-    ///                            ~/conversa/.synapt/     (stays)
-    ///                            ~/conversa/.claude/     (stays)
+    ///   ~/acme/               → ~/acme/acme-app/ (repo)
+    ///                            ~/acme/.synapt/  (stays)
+    ///                            ~/acme/.claude/  (stays)
     InPlace {
         /// Show what would happen without making any changes
         #[arg(long)]

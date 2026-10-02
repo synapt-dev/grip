@@ -96,12 +96,81 @@ class PRStatus:
     state: str
     mergeable: str | None = None
     checks: list[PRCheck] = field(default_factory=list)
+    # The head COMMIT, not the head branch. A branch name says which ref moved;
+    # only the commit says whether the bytes a reviewer read are the bytes a
+    # merge would land. `None` means the adapter could not report it, which is
+    # not the same as "unchanged".
+    head_oid: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
             "ref": self.ref.as_dict(),
             "state": self.state,
             "mergeable": self.mergeable,
+            "checks": [item.as_dict() for item in self.checks],
+            "head_oid": self.head_oid,
+        }
+
+
+@dataclass(frozen=True)
+class PRReview:
+    user: str
+    state: str
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class PRDetail:
+    """One member PR of a change, shaped for a READER rather than for a gate.
+
+    ``PRStatus`` answers "is it open and are the checks green", which is what ``pr
+    status`` and ``pr checks`` need. A view answers a different question -- what is
+    this, who wrote it, what is at its head, who has reviewed it -- so it needs fields
+    ``PRStatus`` does not carry. Keeping the two separate is what stops the view from
+    quietly re-reporting the status payload under a second name.
+    """
+
+    ref: PRRef
+    state: str
+    body: str = ""
+    author: str | None = None
+    labels: list[str] = field(default_factory=list)
+    review_decision: str | None = None
+    reviews: list[PRReview] = field(default_factory=list)
+    head_oid: str | None = None
+    is_draft: bool = False
+    merged: bool = False
+    mergeable: str | None = None
+    checks: list[PRCheck] = field(default_factory=list)
+
+    @property
+    def repo(self) -> str:
+        return self.ref.repo
+
+    @property
+    def number(self) -> int | None:
+        return self.ref.number
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "repo": self.ref.repo,
+            "number": self.ref.number,
+            "url": self.ref.url,
+            "title": self.ref.title,
+            "body": self.body,
+            "state": self.state,
+            "is_draft": self.is_draft,
+            "merged": self.merged,
+            "mergeable": self.mergeable,
+            "head_branch": self.ref.head_branch,
+            "base_branch": self.ref.base_branch,
+            "head_oid": self.head_oid,
+            "author": self.author,
+            "labels": list(self.labels),
+            "review_decision": self.review_decision,
+            "reviews": [item.as_dict() for item in self.reviews],
             "checks": [item.as_dict() for item in self.checks],
         }
 
@@ -132,9 +201,12 @@ class PlatformAdapter(Protocol):
         number: int,
         *,
         method: MergeMethod,
+        expected_head: str | None = None,
     ) -> MergeReceipt: ...
 
     def pr_status(self, repo: str, number: int) -> PRStatus: ...
+
+    def pr_view(self, repo: str, number: int) -> PRDetail: ...
 
     def list_prs(self, repo: str, *, head_branch: str | None = None) -> list[PRRef]: ...
 
@@ -274,17 +346,25 @@ class GitHubAdapter:
         number: int,
         *,
         method: MergeMethod,
+        expected_head: str | None = None,
     ) -> MergeReceipt:
+        argv = [
+            self.gh_binary,
+            "pr",
+            "merge",
+            str(number),
+            "--repo",
+            repo,
+            method.gh_flag,
+        ]
+        if expected_head is not None:
+            # The host refuses the merge when the head is not this commit. This
+            # is the race-closer, not the gate: it cannot refuse a group BEFORE
+            # an earlier member merges, so the group pre-check is the gate and
+            # this is what closes the window between that check and this call.
+            argv += ["--match-head-commit", expected_head]
         proc = subprocess.run(
-            [
-                self.gh_binary,
-                "pr",
-                "merge",
-                str(number),
-                "--repo",
-                repo,
-                method.gh_flag,
-            ],
+            argv,
             capture_output=True,
             text=True,
             check=False,
@@ -331,7 +411,7 @@ class GitHubAdapter:
                 "--repo",
                 repo,
                 "--json",
-                "number,url,headRefName,baseRefName,title,state,mergeable,statusCheckRollup",
+                "number,url,headRefName,headRefOid,baseRefName,title,state,mergeable,statusCheckRollup",
             ]
         )
         assert isinstance(payload, dict)
@@ -353,6 +433,75 @@ class GitHubAdapter:
                 else None
             ),
             checks=checks,
+            head_oid=(
+                str(payload.get("headRefOid"))
+                if payload.get("headRefOid") is not None
+                else None
+            ),
+        )
+
+    # The fields `pr view` asks for, in one place so the call and its parser cannot drift
+    # apart: a field added to the parse and not to the request is an AttributeError at the
+    # far end, and a field asked for and not parsed is a silent read of nothing.
+    PR_VIEW_FIELDS = (
+        "number,url,title,body,state,isDraft,mergedAt,mergeable,headRefName,"
+        "baseRefName,headRefOid,author,labels,reviewDecision,reviews,"
+        "createdAt,updatedAt,statusCheckRollup"
+    )
+
+    def pr_view(self, repo: str, number: int) -> PRDetail:
+        payload = _run_json(
+            [
+                self.gh_binary,
+                "pr",
+                "view",
+                str(number),
+                "--repo",
+                repo,
+                "--json",
+                self.PR_VIEW_FIELDS,
+            ]
+        )
+        assert isinstance(payload, dict)
+        reviews = [
+            PRReview(
+                user=str((row.get("author") or {}).get("login", "")),
+                state=str(row.get("state", "")),
+            )
+            for row in (payload.get("reviews") or [])
+            if isinstance(row, dict)
+        ]
+        labels = [
+            str(row.get("name", ""))
+            for row in (payload.get("labels") or [])
+            if isinstance(row, dict)
+        ]
+        merged_at = payload.get("mergedAt")
+        ref = PRRef(
+            repo=repo,
+            number=payload.get("number"),
+            url=payload.get("url"),
+            head_branch=payload.get("headRefName"),
+            base_branch=payload.get("baseRefName"),
+            title=payload.get("title"),
+        )
+        return PRDetail(
+            ref=ref,
+            state=str(payload.get("state", "UNKNOWN")),
+            body=str(payload.get("body") or ""),
+            author=(payload.get("author") or {}).get("login"),
+            labels=labels,
+            review_decision=payload.get("reviewDecision"),
+            reviews=reviews,
+            head_oid=payload.get("headRefOid"),
+            is_draft=bool(payload.get("isDraft")),
+            merged=merged_at is not None,
+            mergeable=(
+                str(payload.get("mergeable"))
+                if payload.get("mergeable") is not None
+                else None
+            ),
+            checks=self._parse_checks(payload.get("statusCheckRollup") or []),
         )
 
     def list_prs(self, repo: str, *, head_branch: str | None = None) -> list[PRRef]:

@@ -13,7 +13,7 @@ import json
 import os
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from enum import Enum
@@ -398,6 +398,9 @@ def emit_after_outcome(
 def read_events_detailed(workspace_root: Path, consumer: str) -> EventRead:
     """New events for `consumer`, AND the lines that could not be read.
 
+    READING DOES NOT ADVANCE THE CURSOR. Two reads with no ack between them return the same
+    events; call ack_events() after the effect to consume them.
+
     This is the primitive; read_events() is the list-shaped wrapper kept for the
     eleven existing call sites, all of them tests. The count is a RETURN VALUE rather than
     hidden state: these are module-level functions with no instance to hang
@@ -444,24 +447,18 @@ def read_events_detailed(workspace_root: Path, consumer: str) -> EventRead:
             continue
         events.append(obj)
 
-    if events:
-        last_event = events[-1]
-        _save_cursor(
-            workspace_root,
-            consumer,
-            {
-                "consumer": consumer,
-                "last_seq": last_event["seq"],
-                "last_event_id": last_event.get("event_id", ""),
-                "last_read": datetime.now(timezone.utc).isoformat(),
-            },
-        )
-
+    # NO CURSOR IS SAVED HERE. A read is a peek: the cursor moves only when the consumer calls
+    # ack_events() after its effect (section 5.1 steps 3 then 4). Saving it here, at the last
+    # event RETURNED, was the defect: a consumer that failed after reading never saw the rest
+    # of the batch again.
     return EventRead(events, tuple(malformed))
 
 
 def read_events(workspace_root: Path, consumer: str) -> list[dict[str, object]]:
     """New events for `consumer`, DISCARDING the unreadable-line report.
+
+    Like read_events_detailed(), it does not advance the cursor: acknowledge with
+    ack_events() once the events have been handled.
 
     Kept list-shaped because eleven call sites index and len() the result, all
     of them tests -- no production caller remains once the bridge moves to
@@ -472,6 +469,40 @@ def read_events(workspace_root: Path, consumer: str) -> list[dict[str, object]]:
     channel bridge, does.
     """
     return read_events_detailed(workspace_root, consumer).events
+
+
+def ack_events(workspace_root: Path, consumer: str, events: Sequence[dict[str, object]]) -> None:
+    """Acknowledge `events` for `consumer`: move its cursor through the last of them.
+
+    THIS is the only thing that moves a cursor; reading never does. A consumer calls it
+    AFTER its effect (a posted message, a written row, a deliberate skip), which is the
+    reading flow HOOK-EVENT-CONTRACT.md section 5.1 states (read, process, THEN update the
+    cursor) and the crash behaviour section 10.2 relies on (re-read from `last_seq + 1`).
+    Delivery is therefore at-least-once: a consumer that dies between its effect and this
+    call sees the event again, which is why section 5.3 makes consumers idempotent.
+
+    MONOTONIC: an acknowledgement at or below the cursor is a no-op, so a late or repeated
+    ack of an older batch can never move a cursor backwards and re-open delivered events.
+    An empty `events` acknowledges nothing and does not create a cursor file.
+    """
+    seqs = [e["seq"] for e in events if isinstance(e.get("seq"), int) and not isinstance(e.get("seq"), bool)]
+    if not seqs:
+        return
+    through = max(seqs)
+    last = _load_cursor(workspace_root, consumer).get("last_seq", 0)
+    if isinstance(last, int) and not isinstance(last, bool) and through <= last:
+        return
+    last_event = next(e for e in events if e.get("seq") == through)
+    _save_cursor(
+        workspace_root,
+        consumer,
+        {
+            "consumer": consumer,
+            "last_seq": through,
+            "last_event_id": last_event.get("event_id", ""),
+            "last_read": datetime.now(timezone.utc).isoformat(),
+        },
+    )
 
 
 def warn_unreadable(read: EventRead, stream=None, *, show_content: bool = False) -> bool:

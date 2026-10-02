@@ -1141,9 +1141,9 @@ def create_lane(args: argparse.Namespace) -> int:
     print(metadata_path)
     # The human line names where the actor works, per repo, absolute: a
     # materialized lane's repos live under its lane tree, a bound lane's one
-    # repo IS the bound worktree. (The stranger's F2 finding: enter/create
-    # used to point at lane.toml only, so the actor never learned where the
-    # lane's repos are.)
+    # repo IS the bound worktree. (Before this, enter/create pointed at
+    # lane.toml only, so the actor never learned where the lane's repos
+    # are.)
     if lane_kind == "bound" and bound_worktree:
         for repo in repos:
             print(f"{repo}: {bound_worktree}")

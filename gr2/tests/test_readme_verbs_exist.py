@@ -90,13 +90,15 @@ def _table_entries(text: str) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
     for raw in text.splitlines():
         line = raw.strip()
-        if not line.startswith("|") or "`" not in line:
+        if not line.startswith("|"):
             continue
         cells = [c.strip() for c in line.strip("|").split("|")]
         if len(cells) < 2:
             continue
         group_cell = cells[0]
-        if not (group_cell.startswith("`") and group_cell.endswith("`")):
+        # `(top level)` carries no backticks, so a backtick-only filter skipped the
+        # whole row and the top-level branch of the tests below could never fire.
+        if group_cell != "(top level)" and not (group_cell.startswith("`") and group_cell.endswith("`")):
             continue
         group = group_cell.strip("`").strip()
         for cell in cells[1:]:
@@ -149,3 +151,66 @@ def test_the_witness_actually_reads_the_readme() -> None:
     entries = _table_entries(text)
     assert len(invocations) >= 8, invocations
     assert len(entries) >= 20, entries
+
+
+def _visible_tree() -> tuple[set[str], dict[str, set[str]]]:
+    """Like `_command_tree`, but only what a stranger sees in `--help`: hidden verbs
+    and hidden groups are left out. The existence test above deliberately accepts a
+    hidden verb (it exists); the README must not TEACH one, and must not omit a live one."""
+    top: set[str] = set()
+    groups: dict[str, set[str]] = {}
+    for info in app.registered_groups:
+        if info.hidden or info.name is None:
+            continue
+        names: set[str] = set()
+        for cmd in info.typer_instance.registered_commands:
+            if cmd.hidden:
+                continue
+            names.add(cmd.name or (cmd.callback.__name__.replace("_", "-") if cmd.callback else ""))
+        for nested in info.typer_instance.registered_groups:
+            if nested.name is not None and not nested.hidden:
+                names.add(nested.name)
+        groups[info.name] = names
+        top.add(info.name)
+    for cmd in app.registered_commands:
+        if not cmd.hidden:
+            top.add(cmd.name or (cmd.callback.__name__.replace("_", "-") if cmd.callback else ""))
+    return top, groups
+
+
+def test_the_readme_commands_table_names_no_hidden_verb() -> None:
+    top, groups = _visible_tree()
+    bad: list[str] = []
+    for group, verb in _table_entries(README.read_text()):
+        if group == "(top level)":
+            if verb not in top:
+                bad.append(f"{verb} (hidden or absent top-level command)")
+        elif group in groups and verb not in groups[group]:
+            bad.append(f"gr2 {group} {verb} (hidden: not in `--help`)")
+    assert not bad, "the Commands table teaches verbs a stranger cannot find:\n  " + "\n  ".join(sorted(bad))
+
+
+def test_the_readme_commands_table_omits_no_live_verb() -> None:
+    top, groups = _visible_tree()
+    listed: dict[str, set[str]] = {}
+    for group, verb in _table_entries(README.read_text()):
+        for one in [g.strip().strip("`").strip() for g in group.split(",")]:
+            listed.setdefault(one, set()).add(verb)
+    # A row may name a group with a prose cell and no verbs (`target`, `config`): it has
+    # a row, and only a group whose row LISTS verbs is held to listing every live one.
+    prose_rows: set[str] = set()
+    for raw in README.read_text().splitlines():
+        cells = [c.strip() for c in raw.strip().strip("|").split("|")]
+        if raw.strip().startswith("|") and len(cells) >= 2 and cells[0].startswith("`"):
+            prose_rows.update(g.strip().strip("`").strip() for g in cells[0].split(","))
+    missing: list[str] = []
+    for group, verbs in groups.items():
+        if group not in listed:
+            if group not in prose_rows:
+                missing.append(f"group {group} (no row)")
+            continue
+        for verb in sorted(verbs - listed[group]):
+            missing.append(f"gr2 {group} {verb}")
+    for verb in sorted(top - set(groups) - listed.get("(top level)", set())):
+        missing.append(f"gr2 {verb} (top level)")
+    assert not missing, "the Commands table omits live verbs:\n  " + "\n  ".join(missing)

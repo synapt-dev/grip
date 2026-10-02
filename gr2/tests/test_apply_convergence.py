@@ -219,8 +219,26 @@ class TestApplyConvergence(ConvergenceTestBase):
 
         self.assertGreater(result["operation_count"], 0)
         clone_calls = mock_clone.call_args_list
-        unit_root = self.workspace / "agents" / "test-unit"
-        expected_targets = {unit_root / "repo-a", unit_root / "repo-b"}
+        # Resolved: the apply path now runs unit paths through
+        # spec_apply.unit_root, which delegates to canonicalize_workspace_path
+        # and returns the CANONICAL path — as every other spec path already did.
+        # The fixture's tempdir is reached through macOS's /var -> /private/var
+        # symlink, so an unresolved join here compares two spellings of one real
+        # directory and fails on the spelling rather than on the behaviour.
+        unit_root = (self.workspace / "agents" / "test-unit").resolve()
+        # THE MEMBER'S SPEC PATH, not its name (design section 6c item 3). This
+        # fixture is exactly the shape that separates the two coordinates: the
+        # members are NAMED `repo-a`/`repo-b` and their spec PATHS are
+        # `repos/repo-a`/`repos/repo-b`. Placing by name puts a member at
+        # `<unit home>/repo-a`, which is not where the desk has it -- on our own
+        # desks the root's paths are mirrored verbatim (`config`, `grip`,
+        # `synapt`, `reference/mem0`), so `<unit home>/<member.path>` is the
+        # rule, the same one the root uses. The assertion below used to pin the
+        # name-keyed target, which is the behaviour this change replaces.
+        expected_targets = {
+            unit_root / "repos" / "repo-a",
+            unit_root / "repos" / "repo-b",
+        }
         actual_targets = set()
         for c in clone_calls:
             args, kwargs = c

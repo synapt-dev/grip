@@ -4,7 +4,7 @@
    file present in each lane repo, caller standing outside the repos — runs
    on the released wheel. The v4 unbalanced-quote refusal catches it, because
    the lexer reads the apostrophe as a quote character and raises ValueError.
-   Stromus's prescription (m_a9386472): on ValueError, refuse only when
+   The prescribed fix: on ValueError, refuse only when
    `shutil.which(single.split()[0])` resolves (the string names something the
    caller could run, so the quote is genuinely unbalanced); otherwise return
    the argument untouched, the released behaviour.
@@ -226,7 +226,7 @@ class TestExecMissingExecutable(ExecApostropheBase):
         assert payload.get("status") == "failed", payload.get("status")
 
 class TestGitMissing(unittest.TestCase):
-    """Stromus's v1 R2 block (m_9341d8d1): `except OSError` was wider than the
+    """`except OSError` was wider than the
     chmod-000 state. With git ABSENT from PATH (a fresh container), the git
     probes raise FileNotFoundError for the executable; answering False made
     every refusal say "<dir> is not a git repository (no repositories found

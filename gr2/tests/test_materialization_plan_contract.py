@@ -10,7 +10,7 @@ S4-B (clone/cache/alternates), S4-C (staging/project_file), and S4-D
 (venv/editable + PEP 610), each with its own domain validation and
 mutation set -- see the grip#797 split.
 
-Testing discipline carried forward from that review cycle: assert WHICH
+Testing discipline: assert WHICH
 invariant fired, not merely that some MaterializationPlanError was
 raised. A fixture broken enough to trip the invariant under test is
 usually broken enough to trip its neighbours too, and a type-only
@@ -442,7 +442,7 @@ class TestReceiptPublication(PlanContractTestBase):
         self.assertEqual(receipt["plan_hash"], compute_plan_hash(validated.plan))
 
     def test_publication_requires_a_validated_plan_capability(self):
-        """Atlas P1: the writer used to accept the raw live plan. Holding a
+        """The writer used to accept the raw live plan. Holding a
         ValidatedPlan IS the proof the contract ran; a raw dict is not."""
         raw = self._plan([self._venv_op()], plan_id="mp_receipt")
         with self.assertRaises(MaterializationPlanError) as ctx:
@@ -474,7 +474,7 @@ class TestReceiptPublication(PlanContractTestBase):
         self.assertIn("not minted by", str(ctx.exception))
 
     def test_invalid_plan_id_cannot_reach_publication(self):
-        """Atlas P1 fruit: plan_id="../../escaped" published
+        """plan_id="../../escaped" published
         .grip/escaped.json outside the receipt directory. It can no longer
         be validated, so it can no longer be published."""
         with self.assertRaises(MaterializationPlanError) as ctx:
@@ -485,7 +485,7 @@ class TestReceiptPublication(PlanContractTestBase):
         self.assertFalse((self.workspace_root / ".grip" / "escaped.json").exists())
 
     def test_empty_evidence_cannot_claim_materialized(self):
-        """Atlas P1 fruit: a one-operation plan with op_results=[] published
+        """A one-operation plan with op_results=[] published
         stage=MATERIALIZED with no evidence at all."""
         with self.assertRaises(MaterializationPlanError) as ctx:
             write_materialization_receipt(self.workspace_root, self._validated(), [])
@@ -507,7 +507,7 @@ class TestReceiptPublication(PlanContractTestBase):
         self.assertIn("identity-bearing", str(ctx.exception))
 
     def test_nested_identity_field_in_evidence_rejected(self):
-        """Atlas P1 fruit, the real smuggling boundary: the plan's closed
+        """The real smuggling boundary: the plan's closed
         schema permits no nested object carrier, but the RESULT graph is
         open and is what gets persisted."""
         with self.assertRaises(MaterializationPlanError) as ctx:
@@ -520,7 +520,7 @@ class TestReceiptPublication(PlanContractTestBase):
         self.assertFalse(materialization_receipt_path(self.workspace_root, "mp_receipt").exists())
 
     def test_publication_order_is_exact(self):
-        """Atlas P3 + Sentinel finding 3: counting two fsync calls does not
+        """Counting two fsync calls does not
         pin the SEQUENCE -- moving the parent-directory fsync before
         os.replace left all five prior tests green.
 
@@ -630,7 +630,7 @@ class TestReceiptPublication(PlanContractTestBase):
 
 
 class TestDerivedPathHardening(PlanContractTestBase):
-    """Atlas P2: §6.2.1 #2 applies to the A-owned DERIVED paths (canonical
+    """§6.2.1 #2 applies to the A-owned DERIVED paths (canonical
     WorkspaceSpec, receipt directory, receipt temp file), not only to
     operation paths. All three probes succeeded before this closure."""
 
@@ -697,7 +697,7 @@ class TestDerivedPathHardening(PlanContractTestBase):
 
 
 class TestCanonicalizerFieldWiring(PlanContractTestBase):
-    """Sentinel finding 4: replacing EVERY operation-path call with a raw
+    """Replacing EVERY operation-path call with a raw
     resolve left all 43 tests green -- the canonicalizer was reachable in
     principle and unpinned per field in practice.
 
@@ -795,7 +795,7 @@ class TestCanonicalizerFieldWiring(PlanContractTestBase):
 
 
 class TestCollisionParticipation(PlanContractTestBase):
-    """Sentinel finding 4b: returning None after canonicalizing the clone
+    """Returning None after canonicalizing the clone
     destination -- and separately the project-file destination -- each left
     43/43 green, because collision accounting was only ever proven with
     venv-vs-venv pairs. Those destinations simply vanished from the ledger.
@@ -853,7 +853,7 @@ class TestCollisionParticipation(PlanContractTestBase):
         )
 
     def test_unicode_nfc_nfd_destination_alias_rejected(self):
-        """Sentinel finding 7: NFC "café" and NFD "café" are distinct
+        """NFC "café" and NFD "café" are distinct
         Python strings that casefold to distinct values, yet name ONE
         destination on a normalization-insensitive filesystem. Normalization
         and case folding are separate aliasing axes."""
@@ -868,7 +868,7 @@ class TestCollisionParticipation(PlanContractTestBase):
 
 
 class TestPlanHashOrdering(PlanContractTestBase):
-    """Sentinel finding 5: a mutant that sorts `operations` before applying
+    """A mutant that sorts `operations` before applying
     the otherwise-exact JSON recipe left 43/43 green. The normative formula
     preserves list order -- sort_keys sorts KEYS, never array elements."""
 
@@ -895,7 +895,7 @@ class TestPlanHashOrdering(PlanContractTestBase):
 
 
 class TestIdentityRejectionProductionWiring(PlanContractTestBase):
-    """Sentinel finding 6: removing the recursive-identity call from
+    """Removing the recursive-identity call from
     validate_materialization_plan left 43/43 green, and removing "secret"
     from the inventory also left 43/43 green -- because the only direct
     helper test exercised "channel".
@@ -969,7 +969,7 @@ class TestIdentityRejectionProductionWiring(PlanContractTestBase):
                 self.assertIn("identity-bearing", str(ctx.exception))
 
     def test_every_declared_forbidden_key_is_rejected_in_receipt_evidence(self):
-        """The same closed rule on the persisted result graph (finding 2)."""
+        """The same closed rule on the persisted result graph."""
         validated = validate_materialization_plan(
             self.workspace_root, self._plan([self._venv_op()], plan_id="mp_inv")
         )
@@ -987,7 +987,7 @@ class TestIdentityRejectionProductionWiring(PlanContractTestBase):
 
 
 class TestReceiptValueBinding(PlanContractTestBase):
-    """Sentinel finding 3b: replacing `operations: op_results` with
+    """Replacing `operations: op_results` with
     `operations: []`, and replacing the receipt plan_id with a constant,
     each left 43/43 green -- the receipt test asserted a key set plus four
     selected leaves, so every unasserted field was free to drift.
@@ -1435,7 +1435,7 @@ class TestConsumptionIsSnapshotBound(PlanContractTestBase):
 
 
 class TestDurabilityFailureMatrix(PlanContractTestBase):
-    """Sentinel finding 3: durability is a FAILURE-PATH contract, not only
+    """Durability is a FAILURE-PATH contract, not only
     an ordering one. The prior failure test injected only at the FIRST
     fsync; letting the file fsync succeed and failing the parent-directory
     fsync left a plausible final receipt published at its path."""
@@ -1493,7 +1493,7 @@ class TestDurabilityFailureMatrix(PlanContractTestBase):
         self.assertEqual(list(state_dir.glob("*.tmp-*")), [])
 
     def test_successful_publication_is_a_regular_in_root_file(self):
-        """Sentinel finding 1's positive face: assert the published receipt
+        """The positive face: assert the published receipt
         is a regular file inside the team root, not merely that something
         exists at the path."""
         path = write_materialization_receipt(self.workspace_root, self._validated(), self._evidence())

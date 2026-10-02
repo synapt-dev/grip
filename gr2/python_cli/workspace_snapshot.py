@@ -1,5 +1,5 @@
 """Capture a materialized lane's resolved repository state as one kind=workspace
-gr commit (R2 Milestone 1, the section-5 semantic tree for the workspace kind).
+gr commit (the section-5 semantic tree for the workspace kind).
 
 The workspace gr commit is a reproduction coordinate: it records, per repo, the
 exact head a checkout must materialize plus the base it builds on. A repo with

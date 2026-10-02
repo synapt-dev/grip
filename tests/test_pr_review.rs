@@ -30,13 +30,13 @@ async fn test_pr_review_unscoped_multi_match_sends_zero_review_posts() {
     let (server, _adapter) = setup_github_mock().await;
 
     let ws = WorkspaceBuilder::new()
-        .add_repo("consult-conversa-config")
+        .add_repo("acme-config")
         .add_repo("billing")
         .add_repo("recall")
         .build();
     let mut manifest = ws.load_manifest();
 
-    for repo_name in ["consult-conversa-config", "billing", "recall"] {
+    for repo_name in ["acme-config", "billing", "recall"] {
         git_helpers::create_branch(&ws.repo_path(repo_name), "sentinel/d5-gr1-bug-five");
         git_helpers::commit_file(
             &ws.repo_path(repo_name),

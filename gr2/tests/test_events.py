@@ -372,8 +372,8 @@ class TestCursorModel:
         assert len(events) == 3
         assert [e["lane_name"] for e in events] == ["lane-0", "lane-1", "lane-2"]
 
-    def test_cursor_advances_after_read(self, workspace: Path):
-        from gr2.python_cli.events import emit, read_events, EventType
+    def test_cursor_advances_after_ack(self, workspace: Path):
+        from gr2.python_cli.events import ack_events, emit, read_events, EventType
         for i in range(3):
             emit(
                 event_type=EventType.LANE_ENTERED,
@@ -385,12 +385,14 @@ class TestCursorModel:
         # First read: get all 3
         events = read_events(workspace, "my_consumer")
         assert len(events) == 3
-        # Second read: get nothing (cursor advanced)
-        events = read_events(workspace, "my_consumer")
-        assert len(events) == 0
+        # Reading alone does not advance the cursor (section 5.1: process, THEN update)
+        assert len(read_events(workspace, "my_consumer")) == 3
+        # Acknowledged after the effect: nothing is left
+        ack_events(workspace, "my_consumer", events)
+        assert len(read_events(workspace, "my_consumer")) == 0
 
     def test_cursor_only_returns_new_events(self, workspace: Path):
-        from gr2.python_cli.events import emit, read_events, EventType
+        from gr2.python_cli.events import ack_events, emit, read_events, EventType
         emit(
             event_type=EventType.LANE_ENTERED,
             workspace_root=workspace,
@@ -398,7 +400,7 @@ class TestCursorModel:
             owner_unit="apollo",
             payload={"lane_name": "first", "lane_type": "feature", "repos": ["grip"]},
         )
-        read_events(workspace, "my_consumer")
+        ack_events(workspace, "my_consumer", read_events(workspace, "my_consumer"))
         # Emit more after cursor advanced
         emit(
             event_type=EventType.LANE_EXITED,
@@ -411,8 +413,8 @@ class TestCursorModel:
         assert len(events) == 1
         assert events[0]["type"] == "lane.exited"
 
-    def test_cursor_file_created(self, workspace: Path):
-        from gr2.python_cli.events import emit, read_events, EventType
+    def test_cursor_file_created_by_ack_not_by_read(self, workspace: Path):
+        from gr2.python_cli.events import ack_events, emit, read_events, EventType
         emit(
             event_type=EventType.LANE_ENTERED,
             workspace_root=workspace,
@@ -420,8 +422,10 @@ class TestCursorModel:
             owner_unit="apollo",
             payload={"lane_name": "feat/test", "lane_type": "feature", "repos": ["grip"]},
         )
-        read_events(workspace, "test_consumer")
+        events = read_events(workspace, "test_consumer")
         cursor_file = workspace / ".grip" / "events" / "cursors" / "test_consumer.json"
+        assert not cursor_file.exists(), "a read must not create a cursor"
+        ack_events(workspace, "test_consumer", events)
         assert cursor_file.exists()
         cursor = json.loads(cursor_file.read_text())
         assert cursor["consumer"] == "test_consumer"

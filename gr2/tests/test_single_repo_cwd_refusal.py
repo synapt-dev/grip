@@ -1,5 +1,5 @@
 """TDD: gr2 branch / add / commit refuse in one sentence when run outside a
-repository (alpha-2 finding 2).
+repository.
 
 Measured on 2.0.0a1 (APOLLO-1945 fixture runs), from a directory ABOVE the
 repos (a materialized unit home): branch and add print git's own
@@ -148,7 +148,7 @@ def test_commit_inside_the_git_dir_refuses(tmp_path: Path, monkeypatch: pytest.M
 def test_commit_inside_a_bare_repo_refuses_naming_the_work_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """These three verbs need a WORK TREE: inside a bare repository the refusal
     says so, instead of leaking git's raw 'this operation must be run in a
-    work tree' (the dev behaviour, non-blocking in the R2, taken)."""
+    work tree' (the dev behaviour, kept)."""
     _git(["init", "--bare", "-b", "main", str(tmp_path / "upstream.git")], tmp_path)
     monkeypatch.chdir(tmp_path / "upstream.git")
 

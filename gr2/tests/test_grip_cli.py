@@ -9,6 +9,7 @@ Focus: argument parsing, exit codes, JSON output format, error messages.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -64,6 +65,37 @@ def workspace(tmp_path: Path) -> Path:
     return ws
 
 
+@pytest.fixture
+def native_workspace(tmp_path: Path) -> Path:
+    """A workspace whose member is COVERED by its upstream, for the native-verb rows.
+
+    ⚠ WHY THIS EXISTS AND `workspace` CANNOT BE IT (measured 2026-09-28, step 3 v4): the
+    native verbs check section 5a coverage -- the member's HEAD must be an ancestor of its
+    upstream -- and refuse at 3 otherwise. The `workspace` fixture above points `recall` at a
+    FICTIONAL github.com URL, so every native write there refuses with
+
+        recall pin <sha> is not on origin/main; push it first        (rc 3)
+
+    measured on the same rows: rc 3 on the fictional remote, rc 0 once the member pushes to a
+    local bare remote instead. This fixture is that local remote, and it is separate from
+    `workspace` so the init/config rows that do not touch a remote keep the fixture they had.
+    """
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    member = ws / "recall"
+    member.mkdir()
+    _init_repo(member, name="recall")
+    bare = tmp_path / "recall.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(bare)], capture_output=True, check=True)
+    git(member, "remote", "add", "origin", str(bare))
+    git(member, "push", "-q", "-u", "origin", "HEAD:refs/heads/main")
+    config_dir = ws / "config_files"
+    config_dir.mkdir()
+    (config_dir / "agents.toml").write_text(SAMPLE_TOML)
+    (config_dir / "overlay").mkdir()
+    return ws
+
+
 # ---------------------------------------------------------------------------
 # gr grip init
 # ---------------------------------------------------------------------------
@@ -92,109 +124,55 @@ class TestGripInitCLI:
 
 
 class TestGripSnapshotCLI:
-    def test_snapshot_succeeds(self, workspace: Path) -> None:
-        runner.invoke(app, ["grip", "init", str(workspace)])
-        result = runner.invoke(
-            app,
-            [
-                "grip",
-                "snapshot",
-                str(workspace),
-                "--repos",
-                "recall",
-            ],
-        )
-        assert result.exit_code == 0
+    """`snapshot` is a HIDDEN ALIAS of `store commit` (design section 5), so its rows now
+    drive commit's signature and commit's JSON shape.
 
-    def test_snapshot_json_output(self, workspace: Path) -> None:
-        runner.invoke(app, ["grip", "init", str(workspace)])
-        result = runner.invoke(
-            app,
-            [
-                "grip",
-                "snapshot",
-                str(workspace),
-                "--repos",
-                "recall",
-                "--json",
-            ],
-        )
-        assert result.exit_code == 0
+    ⚠ REWRITTEN NATIVELY 2026-09-28 (step 3 v4), and the reason is the class this file caused:
+    every row here used to pass a native_workspace POSITIONAL to a ported verb. The port removed the
+    positional (the verbs act on cwd), so typer refused the call at the PARSER -- exit 2 before
+    any store code ran -- and eleven rows went red for a reason that had nothing to do with what
+    they were asserting. Two rows whose SUBJECT died with the alpha writer are RETIRED rather
+    than rewritten: `test_snapshot_with_type_and_sprint` (--type/--sprint are commit flags that
+    do not exist) and `test_snapshot_multiple_repos` (--repos is gone; member selection is the
+    store's own members, covered by the store witnesses).
+    """
+
+    def test_snapshot_succeeds(self, native_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(native_workspace)
+        runner.invoke(app, ["grip", "init"])
+        result = runner.invoke(app, ["grip", "snapshot", "-m", "first root"])
+        assert result.exit_code == 0, result.stdout
+
+    def test_snapshot_json_output(self, native_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(native_workspace)
+        runner.invoke(app, ["grip", "init"])
+        result = runner.invoke(app, ["grip", "snapshot", "-m", "first root", "--json"])
+        assert result.exit_code == 0, result.stdout
         data = json.loads(result.stdout)
-        assert "sha" in data
-        assert len(data["sha"]) >= 40
+        assert data["status"] == "committed"
+        assert len(data["root_commit"]) >= 40
 
-    def test_snapshot_with_message(self, workspace: Path) -> None:
-        runner.invoke(app, ["grip", "init", str(workspace)])
-        result = runner.invoke(
-            app,
-            [
-                "grip",
-                "snapshot",
-                str(workspace),
-                "--repos",
-                "recall",
-                "--message",
-                "Sprint 27 ceremony",
-                "--json",
-            ],
-        )
-        assert result.exit_code == 0
-        data = json.loads(result.stdout)
-        assert "sha" in data
+    def test_snapshot_with_message(self, native_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(native_workspace)
+        runner.invoke(app, ["grip", "init"])
+        result = runner.invoke(app, ["grip", "snapshot", "-m", "Sprint 27 ceremony", "--json"])
+        assert result.exit_code == 0, result.stdout
+        # the message is the store commit's own message, so the LOG is where it can be checked
+        log = runner.invoke(app, ["grip", "log", "--json"])
+        entry = json.loads(log.stdout)["entries"][0]
+        assert entry["message"] == "Sprint 27 ceremony"
 
-    def test_snapshot_with_type_and_sprint(self, workspace: Path) -> None:
-        runner.invoke(app, ["grip", "init", str(workspace)])
-        result = runner.invoke(
-            app,
-            [
-                "grip",
-                "snapshot",
-                str(workspace),
-                "--repos",
-                "recall",
-                "--type",
-                "ceremony",
-                "--sprint",
-                "27",
-                "--json",
-            ],
-        )
-        assert result.exit_code == 0
-        data = json.loads(result.stdout)
-        assert "sha" in data
+    def test_snapshot_without_init_fails(self, native_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The native refusal, not the parser's.
 
-    def test_snapshot_without_init_fails(self, workspace: Path) -> None:
-        result = runner.invoke(
-            app,
-            [
-                "grip",
-                "snapshot",
-                str(workspace),
-                "--repos",
-                "recall",
-            ],
-        )
+        This row used to pass for the WRONG reason once the positional was removed: typer
+        rejected the extra argument and the non-zero exit satisfied `!= 0` without any store
+        code running. Without the positional it exercises what it was written for.
+        """
+        monkeypatch.chdir(native_workspace)
+        result = runner.invoke(app, ["grip", "snapshot", "-m", "no store here"])
         assert result.exit_code != 0
-
-    def test_snapshot_multiple_repos(self, workspace: Path) -> None:
-        _init_repo(workspace / "billing", name="billing")
-        runner.invoke(app, ["grip", "init", str(workspace)])
-        result = runner.invoke(
-            app,
-            [
-                "grip",
-                "snapshot",
-                str(workspace),
-                "--repos",
-                "recall,billing",
-                "--json",
-            ],
-        )
-        assert result.exit_code == 0
-        data = json.loads(result.stdout)
-        assert "recall" in data["repos"]
-        assert "billing" in data["repos"]
+        assert "Traceback" not in (result.stderr or "")
 
 
 # ---------------------------------------------------------------------------
@@ -203,66 +181,61 @@ class TestGripSnapshotCLI:
 
 
 class TestGripLogCLI:
-    def test_log_empty(self, workspace: Path) -> None:
-        runner.invoke(app, ["grip", "init", str(workspace)])
-        result = runner.invoke(app, ["grip", "log", str(workspace), "--json"])
-        assert result.exit_code == 0
-        data = json.loads(result.stdout)
-        assert data["entries"] == []
+    """`log` is the root's own history with its pins (design section 5), so it acts on cwd and
+    takes no workspace positional. REWRITTEN NATIVELY 2026-09-28 (step 3 v4): the rows below
+    drive the native shape and assert the native entry fields (`commit`/`message`), not the
+    alpha index's (`id`).
+    """
 
-    def test_log_after_snapshot(self, workspace: Path) -> None:
-        runner.invoke(app, ["grip", "init", str(workspace)])
-        runner.invoke(
-            app,
-            [
-                "grip",
-                "snapshot",
-                str(workspace),
-                "--repos",
-                "recall",
-                "--message",
-                "test snap",
-            ],
-        )
-        result = runner.invoke(app, ["grip", "log", str(workspace), "--json"])
-        assert result.exit_code == 0
+    def test_log_before_any_root_commit_refuses_at_5(
+        self, native_workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The native contract: no root commit is a REFUSAL at 5, not an empty list.
+
+        RENAMED AND REWRITTEN in v4. The alpha verb answered an empty index with `entries: []`;
+        the ported verb cannot measure a history that does not exist yet, so it refuses and
+        names the command to run -- the guard v3 added for exactly this state. Keeping
+        `entries == []` would be a row asserting a behaviour that no longer exists.
+        """
+        monkeypatch.chdir(native_workspace)
+        runner.invoke(app, ["grip", "init"])
+        result = runner.invoke(app, ["grip", "log", "--json"])
+        assert result.exit_code == 5, result.stdout
+        assert "run store commit" in (result.stderr or "")
+
+    def test_log_after_snapshot(self, native_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(native_workspace)
+        runner.invoke(app, ["grip", "init"])
+        runner.invoke(app, ["grip", "snapshot", "-m", "test snap"])
+        result = runner.invoke(app, ["grip", "log", "--json"])
+        assert result.exit_code == 0, result.stdout
         data = json.loads(result.stdout)
         assert len(data["entries"]) == 1
         assert "test snap" in data["entries"][0]["message"]
 
-    def test_log_max_count(self, workspace: Path) -> None:
-        runner.invoke(app, ["grip", "init", str(workspace)])
+    def test_log_max_count(self, native_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(native_workspace)
+        runner.invoke(app, ["grip", "init"])
         for i in range(3):
-            (workspace / "recall" / f"f{i}.txt").write_text(str(i))
-            git(workspace / "recall", "add", ".")
-            git(workspace / "recall", "commit", "-m", f"c{i}")
-            runner.invoke(
-                app,
-                [
-                    "grip",
-                    "snapshot",
-                    str(workspace),
-                    "--repos",
-                    "recall",
-                ],
-            )
-        result = runner.invoke(
-            app,
-            [
-                "grip",
-                "log",
-                str(workspace),
-                "--max-count",
-                "2",
-                "--json",
-            ],
-        )
+            (native_workspace / "recall" / f"f{i}.txt").write_text(str(i))
+            git(native_workspace / "recall", "add", ".")
+            git(native_workspace / "recall", "commit", "-m", f"c{i}")
+            # the member must be PUSHED before the store can pin it: section 5a coverage refuses
+            # at 3 otherwise (measured: the second snapshot exits 3 with "pin ... is not on
+            # origin/main; push it first" when the commit is local-only).
+            git(native_workspace / "recall", "push", "-q", "origin", "HEAD:refs/heads/main")
+            made = runner.invoke(app, ["grip", "snapshot", "-m", f"root {i}", "--json"])
+            assert made.exit_code == 0, made.stdout
+        result = runner.invoke(app, ["grip", "log", "--max-count", "2", "--json"])
+        assert result.exit_code == 0, result.stdout
         data = json.loads(result.stdout)
         assert len(data["entries"]) == 2
 
-    def test_log_without_init_fails(self, workspace: Path) -> None:
-        result = runner.invoke(app, ["grip", "log", str(workspace)])
+    def test_log_without_init_fails(self, native_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(native_workspace)
+        result = runner.invoke(app, ["grip", "log"])
         assert result.exit_code != 0
+        assert "Traceback" not in (result.stderr or "")
 
 
 # ---------------------------------------------------------------------------
@@ -271,65 +244,40 @@ class TestGripLogCLI:
 
 
 class TestGripDiffCLI:
-    def test_diff_json(self, workspace: Path) -> None:
-        runner.invoke(app, ["grip", "init", str(workspace)])
-        r1 = runner.invoke(
-            app,
-            [
-                "grip",
-                "snapshot",
-                str(workspace),
-                "--repos",
-                "recall",
-                "--json",
-            ],
-        )
-        sha1 = json.loads(r1.stdout)["sha"]
+    """`diff` is pin changes between two ROOT COMMITS, and it acts on cwd. REWRITTEN NATIVELY
+    2026-09-28 (step 3 v4): the old row passed a workspace positional and read `data["changed"]`,
+    the alpha index's shape. The native payload names `ref_a`, `ref_b` and one entry per member.
+    """
 
-        (workspace / "recall" / "new.txt").write_text("x")
-        git(workspace / "recall", "add", ".")
-        git(workspace / "recall", "commit", "-m", "change")
+    def test_diff_json(self, native_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(native_workspace)
+        runner.invoke(app, ["grip", "init"])
+        r1 = runner.invoke(app, ["grip", "snapshot", "-m", "root one", "--json"])
+        assert r1.exit_code == 0, r1.stdout
+        root1 = json.loads(r1.stdout)["root_commit"]
 
-        r2 = runner.invoke(
-            app,
-            [
-                "grip",
-                "snapshot",
-                str(workspace),
-                "--repos",
-                "recall",
-                "--json",
-            ],
-        )
-        sha2 = json.loads(r2.stdout)["sha"]
+        (native_workspace / "recall" / "new.txt").write_text("x")
+        git(native_workspace / "recall", "add", ".")
+        git(native_workspace / "recall", "commit", "-m", "change")
+        # coverage again: an unpushed member pin refuses at 3, so the change must be on origin
+        git(native_workspace / "recall", "push", "-q", "origin", "HEAD:refs/heads/main")
 
-        result = runner.invoke(
-            app,
-            [
-                "grip",
-                "diff",
-                str(workspace),
-                sha1,
-                sha2,
-                "--json",
-            ],
-        )
-        assert result.exit_code == 0
+        r2 = runner.invoke(app, ["grip", "snapshot", "-m", "root two", "--json"])
+        assert r2.exit_code == 0, r2.stdout
+        root2 = json.loads(r2.stdout)["root_commit"]
+
+        result = runner.invoke(app, ["grip", "diff", root1, root2, "--json"])
+        assert result.exit_code == 0, result.stdout
         data = json.loads(result.stdout)
-        assert "recall" in data["changed"]
+        assert data["ref_a"] == root1 and data["ref_b"] == root2
+        changed = [m["name"] for m in data["members"] if m["changed"]]
+        assert "recall" in changed, data
 
-    def test_diff_without_init_fails(self, workspace: Path) -> None:
-        result = runner.invoke(
-            app,
-            [
-                "grip",
-                "diff",
-                str(workspace),
-                "abc",
-                "def",
-            ],
-        )
+    def test_diff_without_init_fails(self, native_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(native_workspace)
+        result = runner.invoke(app, ["grip", "diff", "abc", "def"])
         assert result.exit_code != 0
+        assert "Traceback" not in (result.stderr or "")
 
 
 # ---------------------------------------------------------------------------
@@ -338,46 +286,29 @@ class TestGripDiffCLI:
 
 
 class TestGripCheckoutCLI:
-    def test_checkout_json(self, workspace: Path) -> None:
-        runner.invoke(app, ["grip", "init", str(workspace)])
-        r1 = runner.invoke(
-            app,
-            [
-                "grip",
-                "snapshot",
-                str(workspace),
-                "--repos",
-                "recall",
-                "--json",
-            ],
-        )
-        sha = json.loads(r1.stdout)["sha"]
+    """`checkout` materializes the members at a root commit, and it acts on cwd. REWRITTEN
+    NATIVELY 2026-09-28 (step 3 v4): the old row read `data["repos"]`, the alpha index's shape;
+    the native payload reports `root_commit` and one entry per member.
+    """
 
-        result = runner.invoke(
-            app,
-            [
-                "grip",
-                "checkout",
-                str(workspace),
-                sha,
-                "--json",
-            ],
-        )
-        assert result.exit_code == 0
+    def test_checkout_json(self, native_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(native_workspace)
+        runner.invoke(app, ["grip", "init"])
+        r1 = runner.invoke(app, ["grip", "snapshot", "-m", "root one", "--json"])
+        assert r1.exit_code == 0, r1.stdout
+        root = json.loads(r1.stdout)["root_commit"]
+
+        result = runner.invoke(app, ["grip", "checkout", root, "--json"])
+        assert result.exit_code == 0, result.stdout
         data = json.loads(result.stdout)
-        assert "recall" in data["repos"]
+        assert data["root_commit"] == root
+        assert "recall" in [m["name"] for m in data["members"]], data
 
-    def test_checkout_without_init_fails(self, workspace: Path) -> None:
-        result = runner.invoke(
-            app,
-            [
-                "grip",
-                "checkout",
-                str(workspace),
-                "HEAD",
-            ],
-        )
+    def test_checkout_without_init_fails(self, native_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(native_workspace)
+        result = runner.invoke(app, ["grip", "checkout", "HEAD"])
         assert result.exit_code != 0
+        assert "Traceback" not in (result.stderr or "")
 
 
 # ---------------------------------------------------------------------------
@@ -495,42 +426,25 @@ class TestConfigShowCLI:
 
 
 class TestConfigRestoreCLI:
-    def test_restore_from_grip_commit(self, workspace: Path) -> None:
-        runner.invoke(app, ["grip", "init", str(workspace)])
-        runner.invoke(
-            app,
-            [
-                "config",
-                "apply",
-                str(workspace / "config_files" / "agents.toml"),
-                "--overlay-dir",
-                str(workspace / "config_files" / "overlay"),
-            ],
-        )
-        snap = runner.invoke(
-            app,
-            [
-                "grip",
-                "snapshot",
-                str(workspace),
-                "--repos",
-                "recall",
-                "--overlay-dir",
-                str(workspace / "config_files" / "overlay"),
-                "--json",
-            ],
-        )
-        sha = json.loads(snap.stdout)["sha"]
+    """RETIRED 2026-09-28 (step 3 v4), and this CORRECTS the ruling's assumption that config
+    restore's subject survives. It does not, for two independent reasons, both measured:
 
-        result = runner.invoke(
-            app,
-            [
-                "config",
-                "restore",
-                str(workspace),
-                sha,
-                "--overlay-dir",
-                str(workspace / "config_files" / "overlay"),
-            ],
-        )
-        assert result.exit_code == 0
+    1. `config restore` still reaches into the REMOVED alpha store. `config.py:config_restore`
+       delegates to `_grip_git(workspace, ...)`, which is `git(workspace / ".grip", ...)`
+       (`grip.py:949`). The native store deliberately has no `.grip` repo (section 1), so the
+       subprocess raises
+           FileNotFoundError: [Errno 2] No such file or directory: '<ws>/.grip'
+       and the verb exits 1 through click's exception path.
+    2. Even with the cwd fixed it would restore nothing: the native root commit's tree is
+       `.gitignore`, `grip.toml`, the members -- there is NO `config/` subtree, because
+       `store commit` records member PINS and the alpha snapshot is what used to record the
+       config overlay.
+
+    So the row is retired rather than rewritten: rewriting it would assert `exit_code == 0` for
+    a verb that returns zero restored files, which is a row that passes while testing nothing.
+    The finding is named in the v4 PR body and on #dev; the config surface's own port (the
+    `.grip` path family across app.py/config.py/consent.py) is a separate lane, not this one.
+
+    The verb keeps its `(workspace_root, ref)` signature, so nothing here is about its argument
+    shape -- it is about the STORE it reads.
+    """

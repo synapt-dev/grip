@@ -1,8 +1,8 @@
 """`review run <lane-dir>`: the review-owned in-lane test run — the last raw-shell
 exit point (venv + install + pytest by hand) folded into one verb.
 
-It runs ONLY inside an `open-gr --enter` reconstruction lane (it reads the
-`.grip-open-gr-reconstruct.json` marker), so a green is always about a bound tree.
+It runs ONLY inside a `review open --enter` reconstruction lane (it reads the
+`.grip-review-open.json` marker, or the pre-rename one), so a green is always about a bound tree.
 Two structural bindings make the green mean something:
 
   * THE TREE COMPARISON — the lane's current working tree must equal the marker's
@@ -26,6 +26,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -82,7 +83,27 @@ def read_install_hint(repo_dir: Path) -> dict | None:
         out[key] = val.strip()
     return out
 
-_MARKER_NAME = ".grip-open-gr-reconstruct.json"
+_MARKER_NAME = ".grip-review-open.json"
+_MARKER_KIND = "review-open"
+# The marker lanes opened before the open-gr -> open rename carry on disk. READ only,
+# never written, and dropped with the open-gr/close-gr aliases (same drop path), so a
+# stranger who upgrades mid-lane still gets their own lane reclaimed.
+_LEGACY_MARKERS = {".grip-open-gr-reconstruct.json": "open-gr-reconstruct"}
+
+
+def find_marker(lane_dir: Path) -> Path | None:
+    """The lane's reconstruction marker: the current name first, then a legacy one."""
+    for name in (_MARKER_NAME, *_LEGACY_MARKERS):
+        path = Path(lane_dir) / name
+        if path.is_file():
+            return path
+    return None
+
+
+def marker_kind_ok(marker: dict) -> bool:
+    """Whether ``marker`` is a reconstruction marker: the current kind or a legacy one."""
+    return marker.get("kind") in {_MARKER_KIND, *_LEGACY_MARKERS.values()}
+
 _RECEIPT_NAME = ".grip-review-run.json"
 # The full pytest output, persisted beside the receipt. The receipt's counts and
 # `failed_ids` say WHAT failed; this file is the raw text a reviewer reads to see
@@ -95,9 +116,16 @@ _VENV_DIRNAME = ".venv"
 class ReviewRunRefused(Exception):
     """A structural refusal: the run cannot yield a trustworthy green."""
 
-    def __init__(self, code: str, detail: str) -> None:
+    def __init__(self, code: str, detail: str, member: str | None = None) -> None:
         self.code = code
         self.detail = detail
+        # A multi-member lane stops at the first refusal. The driver fills these in so the
+        # receipt and the CLI can say WHICH member refused, which members still ran green
+        # or red before it, and which never ran.
+        self.member = member
+        self.order: list[str] | None = None
+        self.completed: list[dict] = []
+        self.not_run: list[str] = []
         super().__init__(f"{code}: {detail}")
 
 
@@ -156,7 +184,7 @@ def assert_lane_tree_bound(repo_dir: Path, bound_head_tree: str) -> str:
 # Untracked paths the run itself is expected to create; everything else untracked in
 # the lane is drift, because an injected conftest.py or module can change what the
 # tests do WITHOUT touching the tracked tree (which `assert_lane_tree_bound` sees).
-_UNTRACKED_ALLOW_NAMES = frozenset({_MARKER_NAME, _RECEIPT_NAME, _OUTPUT_LOG_NAME})
+_UNTRACKED_ALLOW_NAMES = frozenset({_MARKER_NAME, *_LEGACY_MARKERS, _RECEIPT_NAME, _OUTPUT_LOG_NAME})
 _UNTRACKED_ALLOW_TOP = (_VENV_DIRNAME + "/",)
 _UNTRACKED_ALLOW_SEGMENTS = frozenset({"__pycache__", ".pytest_cache", ".mypy_cache"})
 
@@ -225,6 +253,47 @@ def assert_no_untracked_drift(
             f"untracked path(s) in the lane the run did not create: "
             f"{', '.join(offending[:5])}; an injected conftest/module can change test "
             "behavior without touching the tracked tree",
+        )
+
+
+# What a plain `pip install <dir>` leaves in the tree it installs (measured: an untracked `build/`
+# and `src/<name>.egg-info/`). `*.egg-info` is already allowed by `_is_allowlisted_untracked`, so
+# `build/` is the one extra. This is the ONLY place a NEW untracked path is admitted after the
+# baseline was taken; widening it re-opens the hole `assert_no_new_untracked` closes (an install or
+# a test dropping a `conftest.py` or any importable `.py`).
+_INSTALL_OUTPUT_TOPS = ("build/",)
+
+
+def list_untracked(repo_dir: Path) -> set[str]:
+    """The untracked paths git reports in `repo_dir`, host ignore rules neutralized (see
+    `assert_no_untracked_drift` for why). Every file is listed on its own: without
+    `--untracked-files=all` git collapses a wholly untracked directory to one entry, and a file
+    added inside it later would leave the listing unchanged."""
+    out = _git(
+        repo_dir, "-c", "core.excludesFile=", "status", "--porcelain", "--untracked-files=all"
+    )
+    return {line[3:].strip().strip('"') for line in out.splitlines() if line.startswith("?? ")}
+
+
+def assert_no_new_untracked(repo_dir: Path, baseline: set[str]) -> None:
+    """Refuse when `repo_dir` holds an untracked path that was not there at `baseline` and is not
+    something a run or an install is expected to create. The baseline is taken after the first
+    drift check, before the install, so everything in it already passed that check; what is new
+    since was written by the install step or by tests, which is the code under review. Naming
+    each offender is the point: an untracked `conftest.py` or `.pth`-reachable `.py` changes what
+    runs without touching the tracked tree."""
+    offending = sorted(
+        rel
+        for rel in list_untracked(repo_dir) - baseline
+        if not _is_allowlisted_untracked(rel, extra_tops=_INSTALL_OUTPUT_TOPS)
+    )
+    if offending:
+        raise ReviewRunRefused(
+            "untracked_drift",
+            f"new untracked path(s) appeared in the lane after the checks: "
+            f"{', '.join(offending[:5])}; an install or test that adds a conftest or an importable "
+            "module changes what runs without touching the tracked tree. If it is a test artifact "
+            "(a coverage file, say), ignore it in the repository's .gitignore",
         )
 
 
@@ -487,17 +556,17 @@ def merge_report_flags(pytest_args: list[str]) -> list[str]:
 # ---- the verb ---------------------------------------------------------------
 
 def _read_marker(lane_dir: Path) -> dict:
-    marker_path = lane_dir / _MARKER_NAME
-    if not marker_path.exists():
+    marker_path = find_marker(lane_dir)
+    if marker_path is None:
         raise ReviewRunRefused(
             "no_marker",
-            f"no open-gr marker at {marker_path}; `review run` only runs inside a "
-            "lane opened by `review open-gr --enter`",
+            f"no review marker at {lane_dir / _MARKER_NAME}; `review run` only runs "
+            "inside a lane opened by `review open --enter`",
         )
     marker = json.loads(marker_path.read_text())
-    if marker.get("kind") != "open-gr-reconstruct":
+    if not marker_kind_ok(marker):
         raise ReviewRunRefused(
-            "not_open_gr", f"{marker_path} is not an open-gr reconstruction marker"
+            "not_open_gr", f"{marker_path} is not a review reconstruction marker"
         )
     return marker
 
@@ -520,6 +589,16 @@ def _write_refusal_receipt(lane_dir: Path, exc: "ReviewRunRefused") -> None:
         # written the log; name it when present so close-gr carries it out too.
         "output_log": _OUTPUT_LOG_NAME if (lane_dir / _OUTPUT_LOG_NAME).exists() else None,
     }
+    if exc.order is not None:
+        # A multi-member lane: name the member that refused, the members that finished
+        # before it, and the members that never ran, so a stop never reads as a green.
+        member_log = f"{exc.member}{_OUTPUT_LOG_NAME}" if exc.member else None
+        has_log = bool(member_log) and (lane_dir / member_log).exists()
+        receipt["output_log"] = member_log if has_log else None
+        receipt["refusal_member"] = exc.member
+        receipt["order"] = exc.order
+        receipt["members"] = exc.completed
+        receipt["not_run"] = exc.not_run
     try:
         (lane_dir / _RECEIPT_NAME).write_text(json.dumps(receipt, indent=2) + "\n")
     except OSError:
@@ -534,6 +613,7 @@ def run_review_lane(
     python: str | None = None,
     install: list[str] | None = None,
     system_site_packages: bool = False,
+    order: list[str] | None = None,
 ) -> dict:
     """Run the lane (see `_run_review_lane`) and, on a refusal that is about a real
     lane, leave a receipt recording why (review-run door 2). `no_marker`/`not_open_gr`
@@ -547,6 +627,7 @@ def run_review_lane(
             python=python,
             install=install,
             system_site_packages=system_site_packages,
+            order=order,
         )
     except ReviewRunRefused as exc:
         if exc.code not in _NOT_A_LANE_CODES:
@@ -562,22 +643,41 @@ def _run_review_lane(
     python: str | None = None,
     install: list[str] | None = None,
     system_site_packages: bool = False,
+    order: list[str] | None = None,
 ) -> dict:
     """Create `<lane>/.venv`, install the reconstructed tree, and run pytest — but
     only after the lane's tree is proven to equal the bound head-tree and the import
     is proven to resolve under the lane. Returns a receipt. Raises ReviewRunRefused
     for any structural problem (no marker, tree drift, import escape, zero collected,
-    unparseable summary)."""
+    unparseable summary).
+
+    A lane that binds more than one repository runs each member in its own directory
+    against one shared venv (`_run_multi_member_lane`); a single-repo lane is the clone
+    itself and behaves exactly as it always has."""
     lane_dir = Path(lane_dir).resolve()
     marker = _read_marker(lane_dir)
     repos = marker.get("repos", [])
-    if len(repos) != 1:
-        raise ReviewRunRefused(
-            "multi_repo_lane",
-            f"v1 review run handles a single-repo lane; marker binds {len(repos)} "
-            "repos (multi-repo is a follow-on)",
+    if not repos:
+        raise ReviewRunRefused("no_members", f"the lane marker at {lane_dir} binds no repos")
+    if len(repos) > 1:
+        return _run_multi_member_lane(
+            lane_dir,
+            marker,
+            repos,
+            package=package,
+            pytest_args=pytest_args,
+            python=python,
+            install=install,
+            system_site_packages=system_site_packages,
+            order=order,
         )
     repo = repos[0]
+    if order is not None and list(order) != [repo.get("key", "")]:
+        raise ReviewRunRefused(
+            "bad_order",
+            f"--order names {list(order)}, but this lane binds one member, "
+            f"{repo.get('key', '')!r}",
+        )
     bound_tree = repo.get("bound_head_tree", "")
     repo_dir = lane_dir  # single-repo lane: the clone IS the lane
 
@@ -589,6 +689,48 @@ def _run_review_lane(
     assert_no_untracked_drift(repo_dir)
 
     # (2) venv in the lane, so close-gr reclaims it.
+    venv_dir, venv_python = _create_lane_venv(lane_dir, python, system_site_packages)
+
+    # The install step and the tests are the repo's own code. After the checks above, the tracked
+    # tree must stay the bound tree and nothing new may appear untracked except what an install or
+    # a run is expected to leave (see `_INSTALL_OUTPUT_TOPS`).
+    baseline = list_untracked(repo_dir)
+
+    def _tree_intact() -> None:
+        assert_lane_tree_bound(repo_dir, bound_tree)
+        assert_no_new_untracked(repo_dir, baseline)
+
+    body = _run_member_steps(
+        lane_dir,
+        repo_dir,
+        venv_dir,
+        venv_python,
+        package=package,
+        install=install,
+        pytest_args=pytest_args,
+        log_name=_OUTPUT_LOG_NAME,
+        before_tests=_tree_intact,
+        after_tests=_tree_intact,
+    )
+    receipt = {
+        "kind": "review-run",
+        # When this run happened, so close-gr can key the preserved evidence by
+        # (gr commit, run time) and two closes of the same lane name do not overwrite
+        # each other's receipt/log.
+        "created": datetime.now(timezone.utc).isoformat(),
+        "gr_commit": marker.get("gr_commit", ""),
+        "bound_head": repo.get("bound_head", ""),
+        "bound_head_tree": bound_tree,
+        **body,
+    }
+    (lane_dir / _RECEIPT_NAME).write_text(json.dumps(receipt, indent=2) + "\n")
+    return receipt
+
+
+def _create_lane_venv(
+    lane_dir: Path, python: str | None, system_site_packages: bool
+) -> tuple[Path, Path]:
+    """Create `<lane>/.venv`, so close-gr reclaims it. Returns (venv_dir, venv_python)."""
     interpreter = python or sys.executable
     venv_dir = lane_dir / _VENV_DIRNAME
     venv_cmd = [interpreter, "-m", "venv"]
@@ -598,8 +740,27 @@ def _run_review_lane(
     proc = subprocess.run(venv_cmd, text=True, capture_output=True)
     if proc.returncode != 0:
         raise ReviewRunRefused("venv_failed", f"venv create failed: {proc.stderr.strip()}")
-    venv_python = venv_dir / "bin" / "python"
+    return venv_dir, venv_dir / "bin" / "python"
 
+
+def _run_member_steps(
+    lane_dir: Path,
+    repo_dir: Path,
+    venv_dir: Path,
+    venv_python: Path,
+    *,
+    package: str | None,
+    install: list[str] | None,
+    pytest_args: list[str],
+    log_name: str,
+    before_tests: Callable[[], None] | None = None,
+    after_tests: Callable[[], None] | None = None,
+) -> dict:
+    """Steps (3) to (7) for ONE repository: resolve install and package, install, prove the
+    package imports from under the lane, prove pytest imports, run pytest in `repo_dir`, and
+    return the per-run fields of the receipt. The output log lands at `<lane>/<log_name>`.
+    The single-repo lane calls this with `repo_dir == lane_dir`; a multi-member lane calls it
+    once per member with the shared venv."""
     # (3) resolve install + package, tracking WHERE each came from. An explicit
     #     --install/--package always wins; otherwise the repo's own .review-install
     #     hint supplies them, so a repo that declares itself (like grip, whose package
@@ -708,11 +869,19 @@ def _run_review_lane(
     # leaving failed_ids empty on a real red run. merge_report_flags folds f/E INTO the
     # caller's own -r chars, so f and E survive whatever the caller passed.
     test_cmd = [str(venv_python), "-m", "pytest", *merge_report_flags(pytest_args)]
+    # The integrity checks ran before the venv, so the install step above (the repo's own code) has
+    # had its chance to change what was checked. Re-assert, immediately before the tests run.
+    if before_tests is not None:
+        before_tests()
     proc = subprocess.run(
         test_cmd, text=True, capture_output=True, cwd=str(repo_dir), env=run_env
     )
     pytest_output = proc.stdout + "\n" + proc.stderr
-    (lane_dir / _OUTPUT_LOG_NAME).write_text(pytest_output)
+    (lane_dir / log_name).write_text(pytest_output)
+    # And once the tests have run: a result is about the bound head only if the tracked tree is
+    # still the bound tree. The log is already written, so a refusal here keeps the evidence.
+    if after_tests is not None:
+        after_tests()
     failed_ids = parse_failed_ids(pytest_output)
     summary = parse_pytest_summary(pytest_output)
     if summary is None:
@@ -741,15 +910,7 @@ def _run_review_lane(
         if (summary["passed"] >= 1 and summary["failed"] == 0 and summary["errors"] == 0)
         else "red"
     )
-    receipt = {
-        "kind": "review-run",
-        # When this run happened, so close-gr can key the preserved evidence by
-        # (gr commit, run time) and two closes of the same lane name do not overwrite
-        # each other's receipt/log.
-        "created": datetime.now(timezone.utc).isoformat(),
-        "gr_commit": marker.get("gr_commit", ""),
-        "bound_head": repo.get("bound_head", ""),
-        "bound_head_tree": bound_tree,
+    return {
         "interpreter": {"path": str(venv_python), "version": version},
         "resolved_install_path": resolved_file,
         "install_command": install_cmd,
@@ -767,7 +928,154 @@ def _run_review_lane(
         # WHICH tests failed (node ids parsed from the summary), so a red receipt is
         # actionable and not just a count, and the raw output log this run wrote.
         "failed_ids": failed_ids,
-        "output_log": _OUTPUT_LOG_NAME,
+        "output_log": log_name,
+        "result": result,
+    }
+
+
+# ---- a lane that binds more than one repository ---------------------------------
+
+def _member_dir(lane_dir: Path, key: str) -> Path:
+    """Where a member lives in a multi-member lane: `<lane>/<key>`, the row key `open` used."""
+    if not key or key in (".", "..") or "/" in key or "\\" in key:
+        raise ReviewRunRefused(
+            "bad_marker",
+            f"the lane marker names a member key {key!r} that is not a plain directory name",
+        )
+    return lane_dir / key
+
+
+def _resolve_member_order(keys: list[str], order: list[str] | None) -> list[str]:
+    """The order members install and run in: the marker's row order (sorted by key at bind)
+    unless `--order` names one. A member installs after the ones it depends on, which the run
+    cannot infer, so an explicit order must name every member exactly once."""
+    if len(set(keys)) != len(keys):
+        raise ReviewRunRefused("bad_marker", f"the lane marker lists a member key twice: {keys}")
+    if order is None:
+        return list(keys)
+    order = list(order)
+    if sorted(order) != sorted(keys):
+        raise ReviewRunRefused(
+            "bad_order",
+            f"--order must name every member exactly once; this lane binds {keys}, got {order}",
+        )
+    return order
+
+
+def _run_multi_member_lane(
+    lane_dir: Path,
+    marker: dict,
+    repos: list[dict],
+    *,
+    package: str | None,
+    pytest_args: list[str],
+    python: str | None,
+    install: list[str] | None,
+    system_site_packages: bool,
+    order: list[str] | None,
+) -> dict:
+    """Run every member of a multi-member lane in ONE shared venv, in a stated order.
+
+    Integrity first: every member's tree and untracked-drift check, and its declared runner,
+    run BEFORE the venv exists, so a lane that already fails integrity installs and runs
+    nothing. Then, per member in order, the single-repo steps against `<lane>/<key>`; the
+    import-under-lane check is against the LANE ROOT, so a member whose package resolves
+    outside the lane refuses, naming that member.
+
+    A refusal stops the run (the environment or tree is not what the review claims, so a
+    later member would be a result about something else); a red does not (every member's
+    failures are information). The lane result is refused > red > green, and the members that
+    never ran are named in `not_run`, so a stop never reads as a green."""
+    keys = [str(r.get("key", "")) for r in repos]
+    ran_order = _resolve_member_order(keys, order)
+    by_key = {str(r.get("key", "")): r for r in repos}
+    members: list[dict] = []
+    done: list[str] = []
+    current: str | None = None
+    try:
+        if package is not None or install is not None:
+            raise ReviewRunRefused(
+                "member_flags_ambiguous",
+                "--package and --install name one package for one repo, and this lane binds "
+                f"{len(repos)}; declare `package` and `install` in each member's own "
+                ".review-install instead",
+            )
+        for key in ran_order:
+            current = key
+            mdir = _member_dir(lane_dir, key)
+            if not mdir.is_dir():
+                raise ReviewRunRefused(
+                    "member_missing", f"member {key!r} has no directory at {mdir}"
+                )
+            assert_lane_tree_bound(mdir, by_key[key].get("bound_head_tree", ""))
+            assert_no_untracked_drift(mdir)
+            hint = read_install_hint(mdir) or {}
+            if hint.get("runner") not in (None, "pytest"):
+                raise ReviewRunRefused(
+                    "member_runner_unsupported",
+                    f"member {key!r} declares runner {hint['runner']!r}; a multi-member lane "
+                    "runs pytest members only in this version",
+                )
+        current = None
+        # Taken after the checks above and before the venv and any install: everything in it already
+        # passed the drift check, so what is new later was written by an install or by tests.
+        baselines = {member: list_untracked(_member_dir(lane_dir, member)) for member in ran_order}
+        venv_dir, venv_python = _create_lane_venv(lane_dir, python, system_site_packages)
+
+        def _lane_intact() -> None:
+            # ANY member's install or an earlier member's tests may have rewritten ANY member's
+            # tracked source or planted a file in it, so every member is re-checked each time.
+            for member in ran_order:
+                mdir = _member_dir(lane_dir, member)
+                try:
+                    assert_lane_tree_bound(mdir, by_key[member].get("bound_head_tree", ""))
+                    assert_no_new_untracked(mdir, baselines[member])
+                except ReviewRunRefused as refusal:
+                    refusal.member = member
+                    raise
+
+        for key in ran_order:
+            current = key
+            body = _run_member_steps(
+                lane_dir,
+                _member_dir(lane_dir, key),
+                venv_dir,
+                venv_python,
+                package=None,
+                install=None,
+                pytest_args=pytest_args,
+                log_name=f"{key}{_OUTPUT_LOG_NAME}",
+                before_tests=_lane_intact,
+                after_tests=_lane_intact,
+            )
+            members.append({
+                "key": key,
+                "bound_head": by_key[key].get("bound_head", ""),
+                "bound_head_tree": by_key[key].get("bound_head_tree", ""),
+                **body,
+            })
+            done.append(key)
+        current = None
+    except ReviewRunRefused as exc:
+        if exc.member is None:
+            exc.member = current
+        exc.order = ran_order
+        exc.completed = members
+        exc.not_run = [k for k in ran_order if k not in done and k != exc.member]
+        raise
+
+    result = "green" if all(m["result"] == "green" for m in members) else "red"
+    receipt = {
+        "kind": "review-run",
+        "created": datetime.now(timezone.utc).isoformat(),
+        "gr_commit": marker.get("gr_commit", ""),
+        "order": ran_order,
+        "members": members,
+        "not_run": [],
+        "selected": sum(m["selected"] for m in members),
+        "passed": sum(m["passed"] for m in members),
+        "failed": sum(m["failed"] for m in members),
+        "errors": sum(m["errors"] for m in members),
         "result": result,
     }
     (lane_dir / _RECEIPT_NAME).write_text(json.dumps(receipt, indent=2) + "\n")
@@ -814,10 +1122,13 @@ def run_test_command_in_lane(
             )
         marker = _read_marker(lane_dir)
         repos = marker.get("repos", [])
-        if len(repos) != 1:
+        if not repos:
+            raise ReviewRunRefused("no_members", f"the lane marker at {lane_dir} binds no repos")
+        if len(repos) > 1:
             raise ReviewRunRefused(
-                "multi_repo_lane",
-                f"v1 review run handles a single-repo lane; marker binds {len(repos)} repos",
+                "member_runner_unsupported",
+                f"a multi-member lane runs pytest members only in this version; marker binds "
+                f"{len(repos)} repos and a non-pytest runner has no per-member form yet",
             )
         repo = repos[0]
         repo_dir = lane_dir

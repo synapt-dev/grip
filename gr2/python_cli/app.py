@@ -5,16 +5,18 @@ import importlib.metadata
 import io
 import json
 import os
+import re
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
-from typing import List, Optional
+from typing import List, Mapping, Optional
 
 import typer
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 from gr2.prototypes import repo_maintenance_prototype as repo_proto
 
 from . import add as add_ops
+from .version import version_line
 from . import branch as branch_ops
 from . import commit as commit_ops
 from . import execops, failures, grip, migration, spec_apply, syncops
@@ -74,11 +76,13 @@ app = typer.Typer(
 
 
 def _version_callback(value: bool) -> None:
-    """`gr2 --version`: print the installed distribution version and exit. The
-    version is read from the package metadata (the static number in
-    gr2/pyproject.toml), the single source of truth — not a literal in code."""
+    """`gr2 --version`: print which code is running, and exit.
+
+    The line is built in `version.py`, which answers the question a reader actually has.
+    The version number alone does not: it is install-time metadata, so a checkout that is
+    months stale reports the number its virtualenv was built with."""
     if value:
-        typer.echo(importlib.metadata.version("gitgrip"))
+        typer.echo(version_line())
         raise typer.Exit()
 
 
@@ -195,7 +199,15 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
             state = gitops.repo_path_state(source_repo_root)
             if state == "empty_placeholder":
                 unit = lane_proto.find_unit_spec(workspace_root, owner_unit)
-                unit_member = (workspace_root / str(unit.get("path", "")) / repo_name).resolve()
+                # The member's SPEC PATH (section 6c item 3), through the one
+                # resolver, so this site cannot disagree with the planner or the
+                # store member map. It needs the whole spec to know the path.
+                unit_member = spec_apply.unit_member_path(
+                    workspace_root,
+                    lane_proto.load_workspace_spec(workspace_root),
+                    unit,
+                    repo_name,
+                )
                 if gitops.repo_path_state(unit_member) != "repo_root":
                     raise SystemExit(
                         f"run gr2 workspace materialize first: the unit's copy of {repo_name} "
@@ -367,11 +379,79 @@ def _find_pr_group(workspace_root: Path, owner_unit: str, lane_name: str) -> tup
     root = workspace_root / ".grip" / "pr_groups"
     if not root.exists():
         raise SystemExit(f"pr group not found for {owner_unit}/{lane_name}: {root}")
+    # A LOCATOR LOCATES; IT DOES NOT REFUSE THE DOCUMENT. This loop reads every `*.json`
+    # in the directory, so it meets whatever else is there -- and it used to assume each
+    # one was an object, which made a file whose top level is a list, a string, a number
+    # or null raise `AttributeError: '<type>' object has no attribute 'get'` out of
+    # `main()` with NOTHING printed. An unparseable file did the same with
+    # JSONDecodeError. A file that is not a JSON object cannot be the group being looked
+    # for, so it is SKIPPED and the search continues: the operator gets the existing
+    # "pr group not found" sentence, which is true -- no group by that name was found --
+    # and never a traceback. Refusing here instead would let one stray file in another
+    # lane's directory block a merge for a lane that is fine.
+    matches: list[tuple[Path, dict]] = []
     for path in sorted(root.glob("*.json")):
-        doc = json.loads(path.read_text())
+        try:
+            doc = json.loads(path.read_text())
+        except Exception:
+            # NOT `(OSError, ValueError)`, and the difference is not theoretical: a
+            # deeply-nested but perfectly VALID document makes `json.loads` raise
+            # RecursionError, which is neither -- and `json` accepts the nesting that
+            # produces it, so the file is one a group directory can really carry. The
+            # named pair was short again, one counter over from the report block that
+            # learned the same lesson tonight. The residual is KeyboardInterrupt and
+            # SystemExit, which mean the runner is aborting and which it would be a
+            # defect to swallow.
+            continue
+        if not isinstance(doc, dict):
+            continue
         if doc.get("owner_unit") == owner_unit and doc.get("lane_name") == lane_name:
-            return path, doc
-    raise SystemExit(f"pr group not found for {owner_unit}/{lane_name}: {root}")
+            matches.append((path, doc))
+    if not matches:
+        raise SystemExit(f"pr group not found for {owner_unit}/{lane_name}: {root}")
+
+    if len(matches) > 1:
+        # TWO FILES CLAIMING ONE LANE IS A STATE THE OPERATOR NEVER EXPRESSED. Silently
+        # taking the first-by-name is the same failure the id-less file got refused for:
+        # a refusal that names what is wrong beats a silent pick that reads as success.
+        raise SystemExit(
+            f"{len(matches)} group files match {owner_unit}/{lane_name}: "
+            + ", ".join(str(p) for p, _ in matches)
+            + "; a lane names one group, so this cannot be resolved by guessing."
+        )
+
+    path, doc = matches[0]
+    # THE FIELD EVERY CALLER READS, PROVEN WHERE THE GROUP IS CHOSEN -- which is here,
+    # because this is the only place one is chosen. The two keys above are the FILTER;
+    # `pr_group_id` is what the call sites then SUBSCRIPT to find the group's merge state,
+    # and this function never proved it. Three shapes escaped `main()` printing nothing:
+    # missing (KeyError), null, and a number -- and the last two are the sharper half,
+    # because they do not raise where they are read, they become a PATH and raise two
+    # frames later in the loader.
+    #
+    # REFUSE here rather than skip, unlike the two skips above: those files did not match,
+    # so they could not be the group. This one matched on BOTH filter keys, so it IS the
+    # group, and "pr group not found" would be false.
+    group_id = doc.get("pr_group_id")
+    if not isinstance(group_id, str) or not group_id:
+        raise SystemExit(
+            f"pr group file {path} matches {owner_unit}/{lane_name} but its "
+            f"pr_group_id is {group_id!r}, which is not a usable name; every caller "
+            "reads that field to find the group's merge state, so the group cannot be used."
+        )
+    # AND THE ID MUST NAME THE FILE THAT WAS FOUND. The callers do not load `path`; they
+    # hand the id to the loader, which REBUILDS the path from it. So a hand-renamed file
+    # makes the locator find one file and the loader look for another, and the loader's
+    # FileNotFoundError escapes `main()` with nothing printed. Proven here because this is
+    # the only place both of them are in hand -- and it is the same axis as the guard just
+    # above: the id was proven a usable NAME and never proven to name the RIGHT FILE.
+    if path.stem != group_id:
+        raise SystemExit(
+            f"pr group file {path} is named {path.stem!r} but declares pr_group_id "
+            f"{group_id!r}; every caller rebuilds the path from that id, so it would "
+            f"look for {path.parent / (group_id + '.json')} and not find it."
+        )
+    return path, doc
 
 
 def _group_state_from_statuses(statuses: list[dict[str, object]]) -> str:
@@ -437,6 +517,80 @@ def _configured_merge_method(workspace_root: Path) -> str | None:
     if not isinstance(value, str):
         raise SystemExit("workspace setting merge_method must be a string")
     return value
+
+
+def _parse_head_pins(
+    entries: list[str] | None,
+    group: Mapping[str, object],
+) -> dict[str, str]:
+    """`REPO=SHA`, or a bare `SHA` when the group has exactly one member.
+
+    A bare sha against a multi-member group is refused rather than applied to
+    whichever member happened to be listed first: a pin that lands on the wrong
+    member reads as protection and is not.
+    """
+    # TOLERANT ON PURPOSE, AND NOT THIS FUNCTION'S REFUSAL TO MAKE. Reading `item["repo"]`
+    # directly raised a bare KeyError for an entry with no repo, and this runs BEFORE the
+    # merge loop's own guard -- so the whole refusal reached the operator as nothing at
+    # all, not a sentence and not a rendered traceback. Refusing HERE is wrong too: this
+    # call sits under the plain `except ValueError` handler, which prints the sentence
+    # alone, while the merge loop's refusal is caught by the `PRMergeError` handler, which
+    # prints the offending entry inside a JSON payload. A group this cannot read yields no
+    # members, and `merge_pr_group` refuses it -- showing the entry -- before anything merges.
+    _raw_prs = group.get("prs") if isinstance(group, Mapping) else None
+    members = [
+        entry["repo"]
+        for entry in (_raw_prs if isinstance(_raw_prs, list) else [])
+        if isinstance(entry, dict) and isinstance(entry.get("repo"), str) and entry["repo"]
+    ]
+    pins: dict[str, str] = {}
+    for entry in entries or []:
+        text = entry.strip()
+        if not text:
+            continue
+        if "=" in text:
+            repo, _, sha = text.partition("=")
+            repo, sha = repo.strip(), sha.strip()
+        elif len(members) == 1:
+            repo, sha = members[0], text
+        else:
+            raise ValueError(
+                f"--match-head-commit {text!r} names no repo, and this group has "
+                f"{len(members)} members ({', '.join(members)}); pass REPO=SHA so "
+                "the pin cannot land on the wrong member"
+            )
+        if repo not in members:
+            raise ValueError(
+                f"--match-head-commit {repo!r} is not a member of this group "
+                f"({', '.join(members) or 'none'}); a pin has to name one of them, so a "
+                "typo cannot leave the member it meant unpinned"
+            )
+        if not sha:
+            raise ValueError(f"--match-head-commit {entry!r} carries no commit sha")
+        if not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise ValueError(
+                f"--match-head-commit {entry!r} pins {sha!r}, which is not 40 lowercase "
+                "hex characters; pass the full commit as `git rev-parse` prints it"
+            )
+        if repo in pins and pins[repo] != sha:
+            raise ValueError(
+                f"--match-head-commit pins {repo} twice with different commits "
+                f"({pins[repo][:8]} and {sha[:8]})"
+            )
+        pins[repo] = sha
+    # DISTINCT repos, not positions. A group that lists one repo twice otherwise
+    # compares 2 pins against 3 positions and refuses a group whose every repo WAS
+    # pinned -- and the message it printed named NOBODY, because `unpinned` filtered
+    # that same duplicated list. Counting by distinct repo makes both halves right.
+    distinct_members = list(dict.fromkeys(members))
+    if pins and len(pins) != len(distinct_members):
+        unpinned = [member for member in distinct_members if member not in pins]
+        raise ValueError(
+            f"--match-head-commit pins {len(pins)} of {len(distinct_members)} members; "
+            f"{', '.join(unpinned)} would merge unpinned. Pin every member or none: a "
+            "partial pin reads as protection for the whole group and is not."
+        )
+    return pins
 
 
 def _find_workspace_root(start: Path) -> Path | None:
@@ -1243,9 +1397,12 @@ def spec_validate(
     workspace_root: Optional[Path] = typer.Argument(None),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Validate the current workspace spec."""
+    """Validate every spec document this root carries."""
     workspace_root = _resolve_workspace_root(workspace_root)
-    issues = spec_apply.validate_spec(workspace_root)
+    # BOTH DOCUMENTS, when both are present. This used to read grip.toml OR the
+    # workspace spec, so a root carrying both had exactly one of them checked
+    # and a defect in the other validated clean (section 9 step 6's break 17).
+    issues = spec_apply.validate_workspace(workspace_root)
     payload = {
         "workspace_root": str(workspace_root),
         "valid": not any(issue.level == "error" for issue in issues),
@@ -1256,7 +1413,11 @@ def spec_validate(
     else:
         typer.echo(spec_apply.render_validation(issues))
     if not payload["valid"]:
-        raise typer.Exit(code=1)
+        # 4, not 1: section 5's table has no 1 -- 0 ok, 2 usage, 3 coverage or
+        # cleanliness, 4 inconsistent or beta, 5 cannot measure -- and an
+        # invalid or beta spec is exactly "refused as inconsistent or beta".
+        # The exit code is part of the CLI's surface, so it is asserted.
+        raise typer.Exit(code=4)
 
 
 @app.command("plan")
@@ -1264,7 +1425,7 @@ def workspace_plan(
     workspace_root: Optional[Path] = typer.Argument(None),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Build a Python gr2 execution plan from the workspace spec."""
+    """Build a gr2 execution plan from the workspace spec."""
     workspace_root = _resolve_workspace_root(workspace_root)
     _, operations = spec_apply.build_plan(workspace_root)
     if json_output:
@@ -1280,7 +1441,7 @@ def workspace_apply(
     manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Apply the Python gr2 execution plan."""
+    """Apply the gr2 execution plan."""
     workspace_root = _resolve_workspace_root(workspace_root)
     payload = spec_apply.apply_plan(workspace_root, yes=yes, manual_hooks=manual_hooks)
     if json_output:
@@ -1950,7 +2111,8 @@ def hooks_status(
             typer.echo(f"hooks unbound {row['member']} (sha {row['hooks_sha']}) — bind: gr2 hooks trust {row['member']}")
 
 
-@repo_app.command("hooks")
+@hooks_app.command("show")
+@repo_app.command("hooks", hidden=True)  # hidden alias, dropped at 2.0 GA
 def repo_hooks_show(
     repo_root: Path,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
@@ -1965,7 +2127,8 @@ def repo_hooks_show(
         typer.echo(json.dumps(hooks.as_dict(), indent=2))
 
 
-@repo_app.command("hook-run")
+@hooks_app.command("run")
+@repo_app.command("hook-run", hidden=True)  # hidden alias, dropped at 2.0 GA
 def repo_hook_run(
     workspace_root: Path,
     repo_root: Path,
@@ -2320,7 +2483,8 @@ def lane_exit(
     )
 
 
-@lane_app.command("current")
+@lane_app.command("show")
+@lane_app.command("current", hidden=True)  # hidden alias, dropped at 2.0 GA
 def lane_current(
     workspace_root: Path,
     owner_unit: str,
@@ -2546,8 +2710,7 @@ def review_open(
       owner_unit is any word, so when both REPO and PR_NUMBER are present the target
       is taken as the owner_unit and NOT classified;
     - with only a lone target, ``open`` dispatches on its shape: a ``gr:<sha>`` bind id
-      (or bare sha) reconstructs from a review-bind commit (the former ``open-gr``,
-      now a hidden alias) -- needs ``--lane-dir`` and ``--enter``; anything else is a
+      (or bare sha) reconstructs from a review-bind commit -- needs ``--lane-dir`` and ``--enter``; anything else is a
       project-review id (``open-project``, hidden alias). A lone PR number is refused
       because a PR-head lane needs the OWNER_UNIT and REPO positionals too.
 
@@ -2624,6 +2787,9 @@ def review_open(
         base_sha=base_sha,
         lane_repo_root=lane_repo_root,
         workspace_root=workspace_root,
+        owner_unit=owner_unit,
+        lane_name=resolved_lane,
+        member=repo,
         echo=typer.echo,
     )
 
@@ -2655,8 +2821,8 @@ def review_close(
     json_output: bool = typer.Option(False, "--json", help="gr reconstruction only: machine-readable JSON"),
 ) -> None:
     """Drop a review lane. ``close`` reads the lane's marker to tell a reconstruction
-    lane from a PR lane: a directory carrying open-gr's
-    reconstruct marker is reclaimed via the former ``close-gr`` (hidden alias); anything
+    lane from a PR lane: a directory carrying a reconstruction
+    marker (written by ``open --enter``) is reclaimed; anything
     else is treated as a PR-head lane (target is the WORKSPACE_ROOT, then owner/repo/pr).
     The base workspace is untouched.
     """
@@ -2682,6 +2848,10 @@ def review_close(
     review_mod.close_review_lane(
         lane_repo_root=lane_repo_root,
         review_lane_root=review_lane_root,
+        workspace_root=workspace_root,
+        owner_unit=owner_unit,
+        lane_name=resolved_lane,
+        member=repo,
         echo=typer.echo,
     )
 
@@ -2863,7 +3033,7 @@ def review_open_project(
     clone and the SAME blobless+sparse path runs (no full clone). `--sources-json` is
     the older escape hatch that clones normally (full) and is kept for compatibility.
     Writes a receipt so `review exit-gr` restores the prior lane and cwd and removes the
-    disposable ephemeral tree. Contrast `review open-gr`, which RECONSTRUCTS a
+    disposable ephemeral tree. Contrast `review open --enter` on a bind commit, which RECONSTRUCTS a
     review-BIND commit by `git am` over a carried range and asserts tree equality. A
     commit of the wrong kind is refused, naming the kind it found.
     """
@@ -2935,6 +3105,13 @@ def _strip_gr_prefix(commit: str) -> str:
     return commit[3:] if commit.startswith("gr:") else commit
 
 
+def _echo_notes(exc: BaseException) -> None:
+    """Print what was attached to a propagating error (`add_note`), so a cleanup that could not
+    finish is named next to the refusal instead of vanishing with it."""
+    for note in getattr(exc, "__notes__", []):
+        typer.echo(note, err=True)
+
+
 def _review_call(fn, *args, **kwargs):
     """Run an engine review function, converting a refusal or corruption into a
     clean nonzero exit (code 2) with real error text on stderr — never a
@@ -2948,9 +3125,17 @@ def _review_call(fn, *args, **kwargs):
             f"refused: {exc.refusal}: expected {exc.expected!r}, observed {exc.observed!r}",
             err=True,
         )
+        _echo_notes(exc)
         raise typer.Exit(code=2)
     except grip.GripCorruptError as exc:
         typer.echo(f"corrupt: {exc}", err=True)
+        _echo_notes(exc)
+        raise typer.Exit(code=2)
+    except grip.ReviewStoreAbsent as exc:
+        # A native root where nothing has been bound. Not a setup error, so no remedy that
+        # sends the caller back to the verb they already ran.
+        typer.echo(f"not_bound: {exc}", err=True)
+        _echo_notes(exc)
         raise typer.Exit(code=2)
     except grip.GripInitError as exc:
         # The engine's own message already names what's missing and where
@@ -2958,6 +3143,7 @@ def _review_call(fn, *args, **kwargs):
         # re-deriving the diagnosis, since _validate_grip_repo already did
         # the naming precisely.
         typer.echo(f"not_initialized: {exc} Run `gr2 grip init` to create it.", err=True)
+        _echo_notes(exc)
         raise typer.Exit(code=2)
 
 
@@ -3015,8 +3201,8 @@ def review_bind(
     head: Optional[str] = typer.Option(None, "--head", help="Reviewed head SHA (the pre-push head under review)"),
     ref: str = typer.Option("refs/heads/dev", "--ref", help="Target ref whose live head must equal --base"),
     path: Optional[str] = typer.Option(None, "--path", help="Workspace path for the row (defaults to --repo)"),
-    source: Optional[Path] = typer.Option(None, "--source", help="Author clone holding the pre-push head; required to carry the range so open-gr can reconstruct"),
-    from_range: Optional[Path] = typer.Option(None, "--from-range", help="A frozen range.patch (freeze-public-range.sh output). Carries the range so open-gr reconstructs, deriving the head-tree by applying it over --base in a throwaway clone — NO author clone that holds the head is needed. Exclusive with --source."),
+    source: Optional[Path] = typer.Option(None, "--source", help="Author clone holding the pre-push head; required to carry the range so `review open` can reconstruct"),
+    from_range: Optional[Path] = typer.Option(None, "--from-range", help="A frozen range.patch (freeze-public-range.sh output). Carries the range so `review open` reconstructs, deriving the head-tree by applying it over --base in a throwaway clone — NO author clone that holds the head is needed. Exclusive with --source."),
     title: str = typer.Option("", "--title", help="Platform title text (NORM-hashed into the object)"),
     body: str = typer.Option("", "--body", help="Platform body text (NORM-hashed into the object)"),
     rows_json: Optional[Path] = typer.Option(None, "--rows-json", help="A JSON file with a list of row objects (key/remote/base/head, optional path/ref/title/body/source); binds ALL rows into ONE gr commit. Exclusive with the single-row flags."),
@@ -3091,7 +3277,7 @@ def review_open_gr(
     if root.exists() and any(root.iterdir()):
         typer.echo(
             f"refused: lane_dir_not_empty: --lane-dir {root} exists and is not empty; "
-            "pass a fresh directory (close-gr reclaims the whole lane)",
+            "pass a fresh directory (`review close` reclaims the whole lane)",
             err=True,
         )
         raise typer.Exit(code=2)
@@ -3140,14 +3326,13 @@ def review_open_gr(
 
 @review_app.command("close-gr", hidden=True)  # hidden alias for one release, dropped at 2.0 GA
 def review_close_gr(
-    lane_dir: Path = typer.Argument(..., help="The open-gr reconstruction lane (the --lane-dir from `review open-gr --enter`) to reclaim"),
+    lane_dir: Path = typer.Argument(..., help="The review reconstruction lane (the --lane-dir from `review open --enter`) to reclaim"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Reclaim an `open-gr --enter` reconstruction lane: verify the open-gr marker and
-    remove the disposable tree. The teardown counterpart to `open-gr --enter`; unlike
-    `exit-gr` (the open-PROJECT pop) it needs no OWNER_UNIT, because open-gr pushes no
-    lane and changes no cwd. Refuses a directory without an open-gr marker rather than
-    remove an arbitrary path."""
+    """Reclaim a `review open --enter` reconstruction lane: verify its marker and
+    remove the disposable tree. The teardown counterpart to `review open --enter`; it
+    needs no OWNER_UNIT, because a reconstruction pushes no lane and changes no cwd.
+    Refuses a directory without a review marker rather than remove an arbitrary path."""
     from . import open_gr_review
     try:
         result = open_gr_review.close_open_gr_lane(lane_dir.resolve())
@@ -3167,7 +3352,7 @@ def review_close_gr(
 
 @review_app.command("run")
 def review_run(
-    lane_dir: Path = typer.Argument(..., help="The open-gr reconstruction lane (the --lane-dir from `review open-gr --enter`)"),
+    lane_dir: Path = typer.Argument(..., help="The review reconstruction lane (the --lane-dir from `review open --enter`)"),
     package: Optional[str] = typer.Option(None, "--package", help="Importable package name to bind the install to the lane (its __file__ must resolve under the lane). Optional if the lane's .review-install declares `package`."),
     python: Optional[str] = typer.Option(None, "--python", help="Interpreter to build the lane venv from; defaults to the running interpreter. Recorded in the receipt."),
     system_site_packages: bool = typer.Option(False, "--system-site-packages", help="Create the lane venv with --system-site-packages (host tools visible)"),
@@ -3175,6 +3360,11 @@ def review_run(
     runner: Optional[str] = typer.Option(None, "--runner", help="Test runner: pytest (default), cargo, jest, or junit-xml. With a non-pytest runner the venv/install/import steps are skipped; counts come from the runner's summary line or fresh JUnit XML reports. Defaults to the lane's .review-install `runner`."),
     test: Optional[str] = typer.Option(None, "--test", help="Test command (shell-split) for a non-pytest runner, e.g. `cargo test` or `npx jest`. Defaults to the lane's .review-install `test` line, so a stranger types nothing."),
     reports: Optional[str] = typer.Option(None, "--reports", help="JUnit XML report glob for `--runner junit-xml`. Defaults to `**/build/test-results/**/*.xml`; only reports written during this run count."),
+    order: Optional[str] = typer.Option(None, "--order", help=(
+        "A multi-repo lane: the member keys, comma-separated, in the order they install and run "
+        "(every member once). Defaults to the marker's order, sorted by key; a member that needs "
+        "another installed first must come after it."
+    )),
     json_output: bool = typer.Option(False, "--json", help="Emit the receipt as JSON"),
     pytest_args: Optional[List[str]] = typer.Argument(None, help="Args passed to pytest after `--` (every -k/-p/path filter is recorded)"),
 ) -> None:
@@ -3226,6 +3416,12 @@ def review_run(
                 "pytest invocation. Pass --runner cargo|jest with --test, or drop --test.",
             )
         if eff_runner != "pytest":
+            if order is not None:
+                raise rr.ReviewRunRefused(
+                    "order_with_runner",
+                    "--order orders the members of a multi-repo lane, which the pytest "
+                    "runner runs; a non-pytest runner has no per-member form yet",
+                )
             if eff_reports and eff_runner != "junit-xml":
                 raise rr.ReviewRunRefused(
                     "reports_for_runner",
@@ -3252,21 +3448,49 @@ def review_run(
                 python=python,
                 install=install_cmd,
                 system_site_packages=system_site_packages,
+                order=[k.strip() for k in order.split(",")] if order is not None else None,
             )
     except rr.ReviewRunRefused as exc:
         typer.echo(f"refused: {exc}", err=True)
+        if exc.order is not None:
+            # A multi-member lane stopped: say where, and which members never ran, so the
+            # stop cannot be read as a result for the whole lane.
+            typer.echo(f"refused at member: {exc.member or '(before any member)'}", err=True)
+            typer.echo(f"order: {', '.join(exc.order)}", err=True)
+            typer.echo(f"not run: {', '.join(exc.not_run) if exc.not_run else '(none)'}", err=True)
         if json_output:
             # review-run door 2: a refusal is machine-readable too, mirroring the
             # refusal receipt the run wrote into the lane. Exit stays 2.
-            typer.echo(json.dumps({
+            refusal = {
                 "kind": "review-run",
                 "result": "refused",
                 "refusal_code": exc.code,
                 "refusal_detail": exc.detail,
-            }, indent=2))
+            }
+            if exc.order is not None:
+                refusal.update(
+                    refusal_member=exc.member,
+                    order=exc.order,
+                    members=exc.completed,
+                    not_run=exc.not_run,
+                )
+            typer.echo(json.dumps(refusal, indent=2))
         raise typer.Exit(code=2)
     if json_output:
         typer.echo(json.dumps(receipt, indent=2))
+    elif "members" in receipt:  # a multi-member lane: one line per member, then the lane
+        for m in receipt["members"]:
+            typer.echo(
+                f"{m['key']}: {m['result']}: selected={m['selected']} passed={m['passed']} "
+                f"failed={m['failed']} skipped={m['skipped']} errors={m['errors']}"
+            )
+            for failed_id in m["failed_ids"]:
+                typer.echo(f"  failed: {failed_id}")
+        typer.echo(
+            f"lane {receipt['result']}: members={len(receipt['members'])} "
+            f"passed={receipt['passed']} failed={receipt['failed']}"
+        )
+        typer.echo(f"order: {', '.join(receipt['order'])}")
     elif receipt.get("runner"):  # non-pytest runner receipt (no venv/import fields)
         result_line = (
             f"{receipt['result']} ({receipt['runner']}): selected={receipt['selected']} "
@@ -3423,6 +3647,176 @@ def pr_checks(
         typer.echo(json.dumps(payload, indent=2))
 
 
+def _pr_view_source(workspace_root: Path, owner_unit: str, lane_name: str) -> dict[str, object]:
+    """The change's members, and where that list came from.
+
+    A change is the lane, and the lane's PR group record is the authoritative
+    member->number map -- but a change EXISTS before ``pr create`` writes that record.
+    So an absent group store is not "a change with no members"; it is a change whose PRs
+    have to be found by branch. Reading the empty store as the answer would under-report
+    the change, and an under-reported change reads as a smaller thing than the one that
+    was actually reviewed.
+    """
+    group_root = workspace_root / ".grip" / "pr_groups"
+    if group_root.exists():
+        for path in sorted(group_root.glob("*.json")):
+            doc = json.loads(path.read_text())
+            if doc.get("owner_unit") != owner_unit or doc.get("lane_name") != lane_name:
+                continue
+            # A record that EXISTS with no PRs is not an answer. Returning it would give an
+            # empty member list and never reach the lane record below -- the same
+            # under-report this function's fallback exists to prevent, one level in: the
+            # store is present, its content is empty, and it would be read as the answer.
+            if not doc.get("prs"):
+                continue
+            return {
+                "source": "pr_group",
+                    "pr_group_id": doc.get("pr_group_id"),
+                    "platform": str(doc.get("platform", "github")),
+                    "members": [
+                        {
+                            "repo": str(item["repo"]),
+                            "number": int(item["pr_number"]),
+                            "branch": None,
+                        }
+                        for item in doc.get("prs", [])
+                    ],
+                }
+    lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
+    branch_map = lane_doc.get("branch_map") or {}
+    return {
+        "source": "lane_record",
+        "pr_group_id": None,
+        "platform": "github",
+        "members": [
+            {"repo": str(repo), "number": None, "branch": branch_map.get(str(repo))}
+            for repo in lane_doc.get("repos", [])
+        ],
+    }
+
+
+def _render_pr_detail(row: dict[str, object]) -> list[str]:
+    checks = row.get("checks") or []
+    passing = [c for c in checks if str(c.get("conclusion")).upper() in {"SUCCESS", "NEUTRAL", "SKIPPED"}]
+    reviews = row.get("reviews") or []
+    lines = [
+        f"=== {row['repo']} #{row['number']} ===",
+        f"Title:     {row.get('title') or '(no title)'}",
+        f"State:     {row.get('state')}{' (draft)' if row.get('is_draft') else ''}",
+        f"Branch:    {row.get('head_branch')} -> {row.get('base_branch')}",
+        f"Head:      {row.get('head_oid')}",
+        f"Author:    {row.get('author') or '(unknown)'}",
+        f"Mergeable: {row.get('mergeable')}",
+        f"Checks:    {len(checks)} total, {len(passing)} passing",
+    ]
+    if reviews:
+        who = ", ".join(f"{r.get('user')} {r.get('state')}" for r in reviews)
+        lines.append(f"Reviews:   {who}")
+    elif row.get("review_decision"):
+        lines.append(f"Review:    {row['review_decision']}")
+    if row.get("labels"):
+        lines.append(f"Labels:    {', '.join(str(x) for x in row['labels'])}")
+    lines.append(f"URL:       {row.get('url')}")
+    return lines
+
+
+@pr_app.command("view")
+def pr_view(
+    workspace_root: Path,
+    owner_unit: str,
+    lane_name: Optional[str] = typer.Argument(None, help="Lane name. Defaults to the unit's current lane."),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    repo_filter: Optional[str] = typer.Option(None, "--repo", help="Restrict the view to one member"),
+) -> None:
+    """Show the member PRs of one change."""
+    workspace_root = workspace_root.resolve()
+    resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
+    source = _pr_view_source(workspace_root, owner_unit, resolved_lane)
+    adapter = get_platform_adapter(str(source["platform"]))
+
+    # A filter that matched nothing must not read the same as a change with no members.
+    # The reader cannot tell a typo from an empty change, and the line above has just told
+    # them the members came from an authoritative record.
+    member_names = [str(item["repo"]) for item in source["members"]]
+    if repo_filter is not None and repo_filter not in member_names:
+        typer.echo(
+            f"gr2: --repo {repo_filter} is not a member of this change; members are: "
+            + (", ".join(member_names) if member_names else "(none named)"),
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    rows: list[dict[str, object]] = []
+    for member in source["members"]:
+        repo = str(member["repo"])
+        if repo_filter is not None and repo != repo_filter:
+            continue
+        number = member["number"]
+        if number is None:
+            branch = member["branch"]
+            try:
+                refs = adapter.list_prs(repo, head_branch=str(branch)) if branch else []
+            except AdapterError as exc:
+                rows.append({"repo": repo, "number": None, "unread": str(exc)})
+                continue
+            if not refs or refs[0].number is None:
+                rows.append(
+                    {
+                        "repo": repo,
+                        "number": None,
+                        "unread": f"no open PR for branch {branch!r}",
+                    }
+                )
+                continue
+            number = int(refs[0].number)
+        try:
+            rows.append(adapter.pr_view(repo, int(number)).as_dict())
+        except AdapterError as exc:
+            # A member whose read FAILED is named. Dropping it would print a smaller
+            # change than the one that exists, which is the failure a reader cannot see.
+            rows.append({"repo": repo, "number": int(number), "unread": str(exc)})
+
+    if json_output:
+        # The source is part of the ANSWER, not decoration. The human header prints where
+        # the members came from; a bare array would leave a machine consumer unable to
+        # tell the authoritative member->number map from the by-branch fallback -- and the
+        # two are not interchangeable: a fallback member can come back with no number at
+        # all. The two sources answer different questions, so the payload says which one
+        # it is.
+        typer.echo(
+            json.dumps(
+                {
+                    "source": source["source"],
+                    "pr_group_id": source["pr_group_id"],
+                    "members": rows,
+                },
+                indent=2,
+            )
+        )
+        return
+
+    # The machine value is a stable slug so a consumer can switch on it; the human form
+    # keeps the readable phrase. Same fact, two registers, one spelling each.
+    source_label = {
+        "pr_group": "the PR group record",
+        "lane_record": "the lane record",
+    }.get(str(source["source"]), str(source["source"]))
+    header = f"change {owner_unit}/{resolved_lane}"
+    if source["pr_group_id"]:
+        header += f"  pr group {source['pr_group_id']}"
+    typer.echo(header + f"  (members from {source_label})")
+    if not rows:
+        typer.echo("No pull requests found.")
+        return
+    for row in rows:
+        if row.get("unread"):
+            typer.echo(f"=== {row['repo']} ===")
+            typer.echo(f"unread: {row['unread']}")
+            continue
+        typer.echo("\n".join(_render_pr_detail(row)))
+        typer.echo("")
+
+
 @pr_app.command("merge")
 def pr_merge(
     workspace_root: Path,
@@ -3435,12 +3829,27 @@ def pr_merge(
         "-m",
         help="merge/squash/rebase. Defaults to a merge commit.",
     ),
+    match_head_commit: list[str] = typer.Option(
+        None,
+        "--match-head-commit",
+        help=(
+            "Pin a member's reviewed head COMMIT: REPO=SHA, or a bare SHA when the "
+            "group has one member. Repeatable. The merge refuses before merging ANY "
+            "member when a pinned head is not that PR's current head, so a branch "
+            "that moved after the reads lands nothing instead of landing unread bytes."
+        ),
+    ),
 ) -> None:
     """Merge grouped PRs for a lane."""
     workspace_root = workspace_root.resolve()
     resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
     group_path, group = _find_pr_group(workspace_root, owner_unit, resolved_lane)
     adapter = get_platform_adapter(str(group.get("platform", "github")))
+    try:
+        expected_heads = _parse_head_pins(match_head_commit, group)
+    except ValueError as exc:
+        typer.echo(f"gr2: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     merged: list[str] = []
     failed: list[dict[str, object]] = []
     if failed:
@@ -3475,6 +3884,7 @@ def pr_merge(
                 workspace_root,
             ),
             report=lambda message: typer.echo(message, err=True),
+            expected_heads=expected_heads,
         )
         completed = list(result.get("completed", []))
         merged = [str(item["repo"]) for item in completed]

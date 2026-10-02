@@ -436,6 +436,10 @@ class TestExecutorBinding(ProjectFileTestBase):
         with self.assertRaises(ProjectFileExecutionError) as ctx:
             self._execute(validated, 0)
         self.assertIn("is kind 'venv'", str(ctx.exception))
+        # The refusal is user-visible: it says what this executor does, and names no
+        # internal build slice a user cannot look up.
+        self.assertIn("applies project_file operations only", str(ctx.exception))
+        self.assertNotRegex(str(ctx.exception), r"\bS4-[A-D]\b")
 
 
 if __name__ == "__main__":

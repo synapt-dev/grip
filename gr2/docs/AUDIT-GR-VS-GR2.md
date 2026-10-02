@@ -67,7 +67,7 @@ Status meanings:
 | Create task context / lane | no first-class lane model | `lane create` | `lane create` | `gr2` shipped |
 | Enter active task context | no first-class lane enter | `lane enter` | missing | Python-only |
 | Exit active task context | no first-class lane exit | `lane exit` | missing | Python-only |
-| Recover current context | ad hoc (`gr status`, branch state) | `lane current` | missing | Python-only |
+| Recover current context | ad hoc (`gr status`, branch state) | `lane show` | missing | Python-only |
 | Lease/occupancy control | no first-class equivalent | `lane lease acquire/release/show` | missing | Python-only |
 | Lane-aware execution planning | indirect | missing in CLI, prototypes exist | `exec status` | split/incomplete |
 | Lane-aware execution run | indirect | missing | missing | missing |

@@ -15,6 +15,9 @@ snapshot, which is worse than the refusal it replaces.
 
 from __future__ import annotations
 
+import json
+import subprocess
+
 import pytest
 from gr2.python_cli.grip_cli import AmbiguousSnapshotId, _find_snapshot_by_id
 
@@ -89,44 +92,130 @@ _ID_ONE = _SHARED + "0" * 28
 _ID_TWO = _SHARED + "1" * 28
 
 
-def _workspace_with_two_colliding_snapshots(tmp_path):
-    snapshots = tmp_path / ".grip" / "snapshots"
-    snapshots.mkdir(parents=True)
-    (snapshots / "index.json").write_text(
-        json.dumps(
-            [
-                {"id": _ID_ONE, "repo_states": {}},
-                {"id": _ID_TWO, "repo_states": {}},
-            ]
-        )
-    )
-    return tmp_path
+def _root_with_two_commits(tmp_path):
+    """A real root repo with TWO commits, so a ref can be resolved against it.
+
+    Built through the store's own verbs: a member is cloned from a bare remote, committed,
+    advanced and pushed, then committed again -- which is the shape every other witness in
+    this range uses and the only one the native verbs accept (they act on the cwd and read
+    the root repo, not a snapshot index).
+    """
+    import subprocess as _sp
+
+    remote = tmp_path / "alpha.git"
+    src = tmp_path / "seed"
+    src.mkdir()
+    _sp.run(["git", "init", "-q", "-b", "main", str(src)], check=True)
+    _sp.run(["git", "-C", str(src), "config", "user.email", "t@e.invalid"], check=True)
+    _sp.run(["git", "-C", str(src), "config", "user.name", "t"], check=True)
+    (src / "README.md").write_text("alpha\n")
+    _sp.run(["git", "-C", str(src), "add", "."], check=True)
+    _sp.run(["git", "-C", str(src), "commit", "-q", "-m", "initial"], check=True)
+    _sp.run(["git", "clone", "-q", "--bare", str(src), str(remote)], check=True)
+
+    root = tmp_path / "ws"
+    root.mkdir()
+    member = root / "alpha"
+    _sp.run(["git", "clone", "-q", str(remote), str(member)], check=True)
+    _sp.run(["git", "-C", str(member), "config", "user.email", "t@e.invalid"], check=True)
+    _sp.run(["git", "-C", str(member), "config", "user.name", "t"], check=True)
+
+    import os
+
+    here = os.getcwd()
+    os.chdir(root)
+    try:
+        assert _runner.invoke(grip_app, ["init", str(root)]).exit_code == 0
+        assert _runner.invoke(grip_app, ["commit", "-m", "first"]).exit_code == 0
+        (member / "next.txt").write_text("next\n")
+        _sp.run(["git", "-C", str(member), "add", "."], check=True)
+        _sp.run(["git", "-C", str(member), "commit", "-q", "-m", "next"], check=True)
+        _sp.run(["git", "-C", str(member), "push", "-q", "origin", "main"], check=True)
+        result = _runner.invoke(grip_app, ["commit", "-m", "second"])
+        assert result.exit_code == 0, result.output
+    finally:
+        os.chdir(here)
+    return root
 
 
-def _assert_clean_refusal(result):
-    assert result.exit_code == 1, result.output
+def _assert_clean_refusal(result, ref):
+    """A refusal a user can act on: a stable code, no traceback, and the diagnostic kept.
+
+    ⚠ THE SECOND HALF IS THE ONE THE OLD ROWS LOST. They asserted that the CANDIDATES were
+    printed, so a bare "ambiguous" would have failed them -- the right instinct. This keeps it
+    by requiring git's own detail in the message, because that is the half of git's output
+    that names candidates ("hint: The candidates are:").
+    """
+    assert result.exit_code == 5, result.output
     assert "Traceback" not in result.output, "a traceback reached the user"
-    assert "AmbiguousSnapshotId" not in result.output
-    # The candidates must be PRINTED. A bare "ambiguous" refusal leaves the
-    # user with no way to proceed, which is barely better than the crash.
-    assert _ID_ONE in result.output
-    assert _ID_TWO in result.output
+    assert ref in result.output, f"the refusal must name the ref: {result.output}"
+    assert "git says:" in result.output, (
+        f"git's diagnostic carries the candidates for an ambiguous prefix; it must not be "
+        f"discarded: {result.output}"
+    )
 
 
-def test_checkout_refuses_an_ambiguous_prefix_without_a_traceback(tmp_path):
-    ws = _workspace_with_two_colliding_snapshots(tmp_path)
-    _assert_clean_refusal(_runner.invoke(grip_app, ["checkout", str(ws), _SHARED]))
+def test_checkout_refuses_a_ref_it_cannot_resolve_without_a_traceback(tmp_path):
+    """⚠ REWRITTEN 2026-09-28 to the native verbs, and the reduction is NAMED.
+
+    The old row drove `checkout <workspace_root> <ambiguous-prefix>` at the alpha snapshot
+    index, which section 5 retires. The PROPERTY it guarded is real and survives: a ref the
+    verb cannot resolve must refuse cleanly, name what it compared, and keep the diagnostic
+    that tells the user how to proceed.
+
+    WHAT IS NO LONGER MANUFACTURED, and why: a real ambiguous SHORT SHA needs two objects
+    sharing their first four hex characters, which is a probabilistic search -- measured on
+    this host at 292 attempts and 15.1 seconds of subprocess time, and not bounded in the
+    tail. A test row that occasionally takes a minute is a worse instrument than one that
+    drives the same code path deterministically: an unresolvable ref takes the SAME branch in
+    the verb, and the diagnostic the row now requires is the same git hint that names
+    candidates in the ambiguous case.
+    """
+    root = _root_with_two_commits(tmp_path)
+    import os
+
+    here = os.getcwd()
+    os.chdir(root)
+    try:
+        result = _runner.invoke(grip_app, ["checkout", "deadbeefdead"])
+    finally:
+        os.chdir(here)
+    _assert_clean_refusal(result, "deadbeefdead")
 
 
-def test_diff_refuses_an_ambiguous_prefix_without_a_traceback(tmp_path):
-    ws = _workspace_with_two_colliding_snapshots(tmp_path)
-    _assert_clean_refusal(_runner.invoke(grip_app, ["diff", str(ws), _SHARED, _ID_ONE]))
+def test_diff_refuses_a_ref_it_cannot_resolve_without_a_traceback(tmp_path):
+    """The same property through `diff`, which resolves both refs before reading anything."""
+    root = _root_with_two_commits(tmp_path)
+    import os
+
+    here = os.getcwd()
+    os.chdir(root)
+    try:
+        result = _runner.invoke(grip_app, ["diff", "deadbeefdead", "HEAD"])
+    finally:
+        os.chdir(here)
+    _assert_clean_refusal(result, "deadbeefdead")
 
 
-def test_the_verbs_still_resolve_an_unambiguous_prefix(tmp_path):
-    """The control.  Without it the two above pass in a world where every
-    prefix is refused, which would break the defect this range came to fix."""
-    ws = _workspace_with_two_colliding_snapshots(tmp_path)
-    result = _runner.invoke(grip_app, ["checkout", str(ws), _ID_ONE[:20]])
-    assert "Ambiguous snapshot id" not in result.output
-    assert "Traceback" not in result.output
+def test_the_verbs_still_resolve_a_ref_that_exists(tmp_path):
+    """THE CONTROL, and the old one could not fail.
+
+    It asserted only two ABSENCES ("no Ambiguous snapshot id", "no Traceback"), which a usage
+    error satisfies -- and a usage error is exactly what it became once the port removed the
+    positional, so it passed while proving nothing. This asserts a POSITIVE: the verb runs,
+    exits 0, and reports the commit it resolved.
+    """
+    root = _root_with_two_commits(tmp_path)
+    import os
+
+    here = os.getcwd()
+    os.chdir(root)
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        result = _runner.invoke(grip_app, ["checkout", head, "--json"])
+    finally:
+        os.chdir(here)
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["root_commit"] == head, result.output

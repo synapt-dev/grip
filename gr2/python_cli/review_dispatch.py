@@ -12,9 +12,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-# open-gr's teardown marker (kept in sync with open_gr_review._OPEN_GR_MARKER;
-# imported below so the two never drift).
-from .open_gr_review import _OPEN_GR_MARKER
+# The reconstruction marker, current or legacy (one definition, in review_run).
+from .review_run import find_marker
 
 _HEX_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
@@ -42,11 +41,11 @@ def classify_open_target(target: str) -> str:
 def classify_close_lane(lane_dir: Path) -> str:
     """Which teardown the lane needs, read from its marker (never from a flag):
 
-    - ``"reconstruction"``  the lane carries open-gr's reconstruct marker -> close_open_gr_lane
+    - ``"reconstruction"``  the lane carries a reconstruct marker (current or the pre-rename one) -> close_open_gr_lane
     - ``"pr"``              no reconstruct marker -> the PR-head close_review_lane
 
     "close reads the lane's marker to tell a reconstruction lane from a PR lane."
     """
-    if (lane_dir / _OPEN_GR_MARKER).is_file():
+    if find_marker(lane_dir) is not None:
         return "reconstruction"
     return "pr"

@@ -109,7 +109,7 @@ def verify_staged_source(
     Two guards this slice's design ASSUMED were its own turned out to be owned
     upstream, and both are deliberately absent rather than duplicated here,
     because an unreachable guard reads as protection while being untestable at
-    its own level (S4-A's round-4 conclusion):
+    its own level (S4-A's conclusion):
 
       - Section 383 staging confinement is enforced SYNTACTICALLY by the pinned
         v1 schema at validation. The spec says "syntactically confined", and A
@@ -198,7 +198,7 @@ def execute_project_file_operation(
     # Plain Path before anything else: a caller-supplied Path SUBCLASS can run
     # arbitrary code from its dunders during path work, which is the callback
     # that reopens the check/use window. Normalising before verification removes
-    # the surface rather than trying to be safe around it (S4-B round 2).
+    # the surface rather than trying to be safe around it (S4-B).
     workspace_root = Path(os.fspath(workspace_root))
 
     validated.verify(require_provenance=True)
@@ -214,9 +214,9 @@ def execute_project_file_operation(
     kind = op.get("kind")
     if kind != "project_file":
         raise ProjectFileExecutionError(
-            f"operations[{index}] is kind {kind!r}, not 'project_file' -- its handler "
-            "lands with a different slice (clone with S4-B, venv/editable_install "
-            "with S4-D)"
+            f"operations[{index}] is kind {kind!r}, not 'project_file' -- this executor "
+            "applies project_file operations only; each other kind has its own "
+            "executor"
         )
 
     binding = _ProjectFileBinding(

@@ -17,6 +17,7 @@ from gr2.python_cli.pr import (
     PRMergeError,
     PRMergeOutcomeUnknownError,
     PRMergePostconditionError,
+    PRMergeTargetError,
     merge_pr_group,
 )
 
@@ -35,6 +36,7 @@ class _FailAfter:
         number: int,
         *,
         method: MergeMethod,
+        expected_head: str | None = None,
     ) -> MergeReceipt:
         self.calls.append(repo)
         if repo == self.fail_on:
@@ -175,7 +177,13 @@ def test_missing_verification_target_refuses_before_any_host_call(tmp_path: Path
     adapter = _FailAfter()
     group_id = _group(tmp_path, ["app", "api"])
 
-    with pytest.raises(ValueError, match="api"):
+    # THE TYPE IS THE POINT HERE, not an incidental. This refusal used to be a bare
+    # ValueError, which the merge verb's CLI does NOT catch, so it escaped main() as a
+    # traceback. Pinning PRMergeTargetError is what lets this row witness the
+    # sentence-reaching-the-operator claim as well as the ordering one -- Atlas
+    # confirmed the MRO is PRMergeTargetError -> PRMergeError -> RuntimeError, so a
+    # ValueError assertion fails for exactly this reason and nothing subtler.
+    with pytest.raises(PRMergeTargetError, match="api"):
         merge_pr_group(
             workspace_root=tmp_path,
             pr_group_id=group_id,

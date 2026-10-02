@@ -41,6 +41,14 @@ from pathlib import Path
 from . import gitops
 from .clone_exec import CloneExecutionError, IncompleteRemoval, rmtree_or_refuse
 from .gitops import ensure_lane_checkout
+from .review_records import (
+    ReviewRecordLocationError,
+    legacy_review_record_path,
+    read_review_record,
+    read_review_record_at,
+    review_record_paths,
+    write_review_record,
+)
 
 _SHA40 = re.compile(r"\A[0-9a-f]{40}\Z")
 
@@ -133,12 +141,13 @@ class ReviewRecord:
         return {"repo": self.repo, "base": self.base, "head": self.head, "lane_kind": self.lane_kind}
 
 
-def review_record_path(lane_repo_root: Path | str) -> Path:
-    """Where the triple is stored: inside the lane clone's own ``.git`` (a real
-    directory per the #807 isolation contract), so it is untracked by the lane's
-    working tree, removed when the lane is dropped, and serves as the identity
-    marker that a directory is a review lane this tool opened."""
-    return Path(lane_repo_root) / ".git" / "grip-review.json"
+def review_record_path(workspace_root: Path | str, owner_unit: str | None = None,
+                       lane_name: str | None = None, member: str | None = None,
+                       lane_repo_root: Path | str | None = None) -> Path:
+    """The workspace-owned review receipt for one exact lane member."""
+    if lane_repo_root is None:
+        return legacy_review_record_path(workspace_root)
+    return review_record_paths(workspace_root, owner_unit, lane_name, member, lane_repo_root).current
 
 
 def assert_cwd_contained(cwd: Path | str, lane_root: Path | str) -> Path:
@@ -192,6 +201,9 @@ def open_review_lane(
     allow_local: bool = False,
     ephemeral: bool = False,
     repo_name: str | None = None,
+    owner_unit: str | None = None,
+    lane_name: str | None = None,
+    member: str | None = None,
     echo: Echo = print,
 ) -> ReviewRecord:
     """Materialize the review lane at the expected head and record the triple.
@@ -203,6 +215,12 @@ def open_review_lane(
     deleted: cleanup removes only a lane this call created."""
     source_repo_root = Path(source_repo_root)
     lane_repo_root = Path(lane_repo_root)
+    try:
+        record_paths = review_record_paths(
+            workspace_root, owner_unit, lane_name, member, lane_repo_root
+        )
+    except ReviewRecordLocationError as exc:
+        raise ReviewError(str(exc)) from exc
     _require_sha("expected head", expected_head_sha)
     _require_sha("base pin", base_sha)
 
@@ -277,9 +295,7 @@ def open_review_lane(
         echo(f"review lane (ephemeral): {lane_repo_root.resolve()}")
         record = ReviewRecord(repo=repo_identity, base=base_sha, head=expected_head_sha,
                               lane_kind=review_ephemeral.REVIEW_EPHEMERAL_KIND)
-        path = review_record_path(lane_repo_root)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(record.to_dict(), indent=2) + "\n")
+        write_review_record(record_paths, record.to_dict())
         return record
     try:
         first_materialize = ensure_lane_checkout(
@@ -345,9 +361,7 @@ def open_review_lane(
     #    isolated clone pinned at the expected head, so the receipt is stamped
     #    ``materialized`` — reconstructible independently of any author worktree.
     record = ReviewRecord(repo=repo_identity, base=base_sha, head=expected_head_sha, lane_kind="materialized")
-    path = review_record_path(lane_repo_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(record.to_dict(), indent=2) + "\n")
+    write_review_record(record_paths, record.to_dict())
     return record
 
 
@@ -373,7 +387,9 @@ def run_in_review_lane(
 
 
 def close_review_lane(
-    *, lane_repo_root: Path, review_lane_root: Path, echo: Echo = print
+    *, lane_repo_root: Path, review_lane_root: Path, workspace_root: Path | None = None,
+    owner_unit: str | None = None, lane_name: str | None = None,
+    member: str | None = None, echo: Echo = print
 ) -> None:
     """Drop a review lane, refusing anything the tool does not own.
 
@@ -418,18 +434,23 @@ def close_review_lane(
 
     # SECONDARY consistency, inside the owned boundary.
     git_dir = lane / ".git"
-    record_path = review_record_path(lane)
-    if not (git_dir.is_dir() and not git_dir.is_symlink()) or not record_path.is_file():
+    if owner_unit is None or lane_name is None or member is None:
+        try:
+            record = json.loads(legacy_review_record_path(lane).read_text())
+        except (OSError, json.JSONDecodeError):
+            record = None
+    else:
+        try:
+            paths = review_record_paths(workspace_root, owner_unit, lane_name, member, lane)
+        except ReviewRecordLocationError as exc:
+            raise ReviewError(str(exc)) from exc
+        located = read_review_record_at(paths, notice=echo)
+        record, record_path = located if located is not None else (None, None)
+    if not (git_dir.is_dir() and not git_dir.is_symlink()) or record is None:
         raise ReviewError(
             f"{lane} lacks an owned .git directory or the review record; refusing to "
             "delete even inside the lane tree."
         )
-    try:
-        record = json.loads(record_path.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ReviewError(
-            f"{lane} review record is unreadable or malformed ({exc}); refusing to delete."
-        ) from exc
     if set(record) != {"repo", "base", "head", "lane_kind"} or not (
         isinstance(record.get("repo"), str)
         and record["repo"]
@@ -457,6 +478,22 @@ def close_review_lane(
             "may hold work — refusing to delete. Reset it to the recorded head, or remove it "
             "by hand once you have saved anything you need."
         )
+
+    # The workspace owns the canonical receipt, so clone removal cannot reclaim it.
+    # Remove it only after every provenance and HEAD gate above has passed.
+    if owner_unit is not None and lane_name is not None and member is not None:
+        try:
+            assert record_path is not None
+            receipt_paths = tuple(dict.fromkeys(
+                path for path in (paths.current, paths.legacy) if path.is_file()
+            ))
+            for receipt_path in receipt_paths:
+                receipt_path.unlink()
+        except OSError as exc:
+            raise ReviewError(
+                f"a review receipt could not be removed: {exc}; refusing to delete the lane "
+                "while its receipt would remain"
+            ) from exc
 
     shutil.rmtree(lane)
     echo(f"review lane dropped: {lane}")

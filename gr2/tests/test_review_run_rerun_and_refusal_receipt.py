@@ -63,7 +63,7 @@ def test_a_refused_run_leaves_a_receipt_naming_the_reason(tmp_path: Path):
     result=refused and the refusal code, so close-gr carries the refusal out and
     `review run --json` has something to print."""
     repo, head_tree = _pkg_repo(tmp_path, test_body=PASS_TEST)
-    # A two-repo marker is a deterministic refusal (`multi_repo_lane`) that needs no
+    # A two-repo marker is a deterministic refusal (`member_flags_ambiguous`) that needs no
     # venv or network, and it happens AFTER the marker is confirmed -- i.e. this IS a
     # lane, which is the case door b is about.
     marker = {
@@ -78,14 +78,14 @@ def test_a_refused_run_leaves_a_receipt_naming_the_reason(tmp_path: Path):
 
     with pytest.raises(rr.ReviewRunRefused) as exc:
         rr.run_review_lane(repo, package="demo_pkg", pytest_args=["-q"])
-    assert exc.value.code == "multi_repo_lane"
+    assert exc.value.code == "member_flags_ambiguous"
 
     receipt_path = repo / rr._RECEIPT_NAME
     assert receipt_path.is_file(), "a refused run must leave a receipt on disk"
     receipt = json.loads(receipt_path.read_text())
     assert receipt["result"] == "refused"
-    assert receipt["refusal_code"] == "multi_repo_lane"
-    assert "multi_repo_lane" in receipt["refusal_detail"] or receipt["refusal_detail"]
+    assert receipt["refusal_code"] == "member_flags_ambiguous"
+    assert "member_flags_ambiguous" in receipt["refusal_detail"] or receipt["refusal_detail"]
 
 
 def test_a_non_lane_dir_gets_no_refusal_receipt(tmp_path: Path):

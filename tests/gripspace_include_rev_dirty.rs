@@ -287,7 +287,7 @@ fn genuine_resolve_failure_warns_and_keeps_declaration() {
     );
 }
 
-/// R2 v3 (warn-at-rev): with the space clone AT the pinned rev, a TRACKED edit
+/// Warn-at-rev: with the space clone AT the pinned rev, a TRACKED edit
 /// to its manifest is HONORED (repos never dropped) but WARNED — gr is
 /// resolving from the local content, not the pin. Untracked at-rev stays silent
 /// (covered above). This path is the one `status` actually reaches, because

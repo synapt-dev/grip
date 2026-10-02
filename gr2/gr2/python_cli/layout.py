@@ -46,6 +46,10 @@ MARKERS = ("stable", "may-change", "reserved")
 #: decision, not a free constant.
 GRIP_DIR = ".grip"
 
+#: The one-line file a MOVED workspace tracks at its root (its state now lives in the root's git
+#: object store). THE ONE SPELLING of it in the source, for the same reason as `GRIP_DIR`.
+MOVED_MARKER = ".grip-moved"
+
 
 def grip_dir(workspace_root: Path) -> Path:
     """`<root>/.grip`: the one place a caller asks for gr2's state directory."""

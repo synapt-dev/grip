@@ -1100,8 +1100,9 @@ def _guarded_bind(workspace: Path, created: tuple[list[str], str] | None, write)
     """Run a bind writer; when it refuses after this call set up the native store, remove what the
     setup created (only when the root's `.git` did not exist before) so a refused command leaves
     no repository behind, and say nothing about a store that was never kept."""
-    import shutil
     import sys
+
+    from .clone_exec import rmtree_or_refuse
 
     try:
         commit = write()
@@ -1115,7 +1116,7 @@ def _guarded_bind(workspace: Path, created: tuple[list[str], str] | None, write)
         for name in names:
             target = workspace / name
             if target.is_dir() and not target.is_symlink():
-                shutil.rmtree(target, ignore_errors=True)
+                rmtree_or_refuse(target)  # a cleanup that cannot finish is surfaced, chained to the refusal
             elif target.exists() or target.is_symlink():
                 target.unlink()
         raise

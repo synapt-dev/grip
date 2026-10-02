@@ -28,6 +28,10 @@ path = "src/main.rs"
 name = "gitgrip"
 path = "src/lib.rs"
 
+[[example]]
+name = "gr_resolver"
+path = "examples/gr_resolver.rs"
+
 [features]
 default = ["telemetry"]
 # Use gitoxide (gix) instead of git2 for git operations (experimental)

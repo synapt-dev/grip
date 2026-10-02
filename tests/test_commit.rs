@@ -23,6 +23,7 @@ fn test_commit_across_repos() {
         move_commits: false,
         repos_filter: None,
         group_filter: None,
+        include_parked: false,
         json: false,
     })
     .unwrap();

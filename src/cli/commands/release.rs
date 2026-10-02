@@ -512,6 +512,8 @@ pub async fn run_release(opts: ReleaseOptions<'_>) -> anyhow::Result<()> {
                     repos_filter: None,
                     group_filter: None,
                     json: opts.json,
+                    // a release cuts its branch in every repo on purpose
+                    include_parked: true,
                 },
             )?;
             steps.push(StepResultJson::ok("branch"));

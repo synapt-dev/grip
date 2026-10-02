@@ -127,6 +127,7 @@ fn test_branch_group_filter_json() {
             move_commits: false,
             repos_filter: None,
             group_filter: Some(&group),
+            include_parked: false,
             json: true,
         });
     assert!(
@@ -291,6 +292,7 @@ fn test_checkout_main_from_feature() {
         move_commits: false,
         repos_filter: None,
         group_filter: None,
+        include_parked: false,
         json: false,
     })
     .unwrap();

@@ -25,6 +25,7 @@ fn test_checkout_existing_branch() {
         move_commits: false,
         repos_filter: None,
         group_filter: None,
+        include_parked: false,
         json: false,
     })
     .unwrap();
@@ -104,6 +105,7 @@ fn test_checkout_main() {
         move_commits: false,
         repos_filter: None,
         group_filter: None,
+        include_parked: false,
         json: false,
     })
     .unwrap();
@@ -174,6 +176,7 @@ fn test_checkout_skips_non_git_repo() {
         move_commits: false,
         repos_filter: None,
         group_filter: None,
+        include_parked: false,
         json: false,
     })
     .unwrap();

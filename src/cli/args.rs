@@ -128,6 +128,10 @@ pub enum Commands {
         /// Only operate on repos in these groups
         #[arg(long, value_delimiter = ',')]
         group: Option<Vec<String>>,
+        /// Also switch clones parked on a branch other than the one the workspace expects
+        /// (without this, a workspace-wide create or move leaves them where they are and names them)
+        #[arg(long)]
+        include_parked: bool,
     },
     #[command(
         after_help = "Examples:\n  gr checkout feat/login\n  gr checkout --base\n  gr checkout add sandbox\n  gr checkout add docs-only --group docs\n  gr checkout add app-only --repo app\n  gr checkout list\n  gr checkout remove sandbox"

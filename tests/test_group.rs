@@ -45,6 +45,7 @@ fn test_branch_with_group_filter() {
             move_commits: false,
             repos_filter: None,
             group_filter: Some(&group),
+            include_parked: false,
             json: false,
         });
     assert!(
@@ -80,6 +81,7 @@ fn test_group_filter_empty_group() {
             move_commits: false,
             repos_filter: None,
             group_filter: Some(&group),
+            include_parked: false,
             json: false,
         });
     assert!(

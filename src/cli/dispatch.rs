@@ -78,6 +78,7 @@ pub async fn dispatch_command(
             r#move,
             repo,
             group,
+            include_parked,
         }) => {
             let ctx = load_workspace_context(quiet, verbose, json)?;
             crate::cli::commands::branch::run_branch(
@@ -90,6 +91,7 @@ pub async fn dispatch_command(
                     repos_filter: repo.as_deref(),
                     group_filter: group.as_deref(),
                     json: ctx.json,
+                    include_parked,
                 },
             )?;
         }

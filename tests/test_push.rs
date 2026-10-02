@@ -21,6 +21,7 @@ fn test_push_to_remote() {
         move_commits: false,
         repos_filter: None,
         group_filter: None,
+        include_parked: false,
         json: false,
     })
     .unwrap();
@@ -102,6 +103,7 @@ fn test_push_skips_reference_repos() {
         move_commits: false,
         repos_filter: None,
         group_filter: None,
+        include_parked: false,
         json: false,
     })
     .unwrap();
@@ -156,6 +158,7 @@ fn test_push_multiple_repos() {
         move_commits: false,
         repos_filter: None,
         group_filter: None,
+        include_parked: false,
         json: false,
     })
     .unwrap();
@@ -204,6 +207,7 @@ fn test_push_force() {
         move_commits: false,
         repos_filter: None,
         group_filter: None,
+        include_parked: false,
         json: false,
     })
     .unwrap();
@@ -327,6 +331,7 @@ fn the_push_summary_names_each_repo_it_pushed_and_only_those() {
         move_commits: false,
         repos_filter: None,
         group_filter: None,
+        include_parked: false,
         json: false,
     })
     .unwrap();

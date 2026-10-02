@@ -192,6 +192,7 @@ fn test_branch_already_exists() {
         move_commits: false,
         repos_filter: None,
         group_filter: None,
+        include_parked: false,
         json: false,
     })
     .unwrap();
@@ -217,6 +218,7 @@ fn test_branch_already_exists() {
             move_commits: false,
             repos_filter: None,
             group_filter: None,
+            include_parked: false,
             json: false,
         });
     assert!(

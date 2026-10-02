@@ -152,6 +152,7 @@ fn test_branch_json_list() {
         move_commits: false,
         repos_filter: None,
         group_filter: None,
+        include_parked: false,
         json: false,
     })
     .unwrap();
@@ -167,6 +168,7 @@ fn test_branch_json_list() {
             move_commits: false,
             repos_filter: None,
             group_filter: None,
+            include_parked: false,
             json: true,
         });
     assert!(

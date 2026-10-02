@@ -37,6 +37,8 @@ import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .layout import GRIP_DIR, grip_dir
+
 
 def hooks_file(repo_root: Path) -> Path:
     return repo_root / ".gr2" / "hooks.toml"
@@ -55,11 +57,11 @@ def consent_path(workspace_root: Path, member_key: str) -> Path:
     rel = member_key.strip("/")
     if not rel or rel in (".", ".."):
         raise ValueError(f"invalid member key: {member_key!r}")
-    return workspace_root / ".grip" / "consent" / (rel + ".json")
+    return grip_dir(workspace_root) / "consent" / (rel + ".json")
 
 
 def workspace_spec_path(workspace_root: Path) -> Path:
-    return workspace_root / ".grip" / "workspace_spec.toml"
+    return grip_dir(workspace_root) / "workspace_spec.toml"
 
 
 def member_key(workspace_root: Path, repo_root: Path, repo_name: str) -> str:
@@ -234,7 +236,7 @@ def confinement_violations(
         if norm_text(part) == norm_text(".git"):
             flags.append("destination resolves under a .git directory")
             break
-    grip_root = workspace_root / ".grip"
+    grip_root = grip_dir(workspace_root)
     if _is_under(resolved, grip_root):
         # a bound member must not write into
         # gr2's own state area — a forged consent record there binds another
@@ -416,7 +418,7 @@ def _trust_ctx(workspace_root: Path, repo_root: Path, hooks, key: str):
 # semantics preserved) and clears the marker — never rm -rf.
 # ---------------------------------------------------------------------------
 
-PENDING_DIR = Path(".grip") / "state" / "hooks_pending"
+PENDING_DIR = Path(GRIP_DIR) / "state" / "hooks_pending"
 
 
 def pending_marker_path(workspace_root: Path, member_key: str) -> Path:

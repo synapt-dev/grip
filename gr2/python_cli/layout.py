@@ -33,10 +33,23 @@ carry it; the reserved ref namespaces do.
 from __future__ import annotations
 
 import dataclasses
+from pathlib import Path
 
 #: The markers a layout row may carry. Asserted, so a typo cannot become a
 #: fourth marker that the share gate then reads as "not reserved".
 MARKERS = ("stable", "may-change", "reserved")
+
+#: The on-disk name of gr2's state directory under a workspace root (design section 3, the
+#: `<root>/.grip/` row). THE ONE SPELLING of it in the source: tests/test_layout_census.py
+#: holds every other file to the count it has today, and each conversion lowers a number
+#: there. Changing this string moves every existing workspace's state, so it is a layout
+#: decision, not a free constant.
+GRIP_DIR = ".grip"
+
+
+def grip_dir(workspace_root: Path) -> Path:
+    """`<root>/.grip`: the one place a caller asks for gr2's state directory."""
+    return workspace_root / GRIP_DIR
 
 
 @dataclasses.dataclass(frozen=True)

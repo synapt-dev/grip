@@ -71,6 +71,13 @@ def test_an_empty_path_entry_is_not_the_current_directory(tmp_path: Path, monkey
     assert lp.discover_plugins(f"{os.pathsep}") == {}
 
 
+def test_a_relative_path_entry_is_not_a_plugin_directory_even_when_it_is_the_current_directory(tmp_path: Path, monkeypatch) -> None:
+    make_exe(tmp_path, "grip-ecosystem-here", OK_BODY)
+    monkeypatch.chdir(tmp_path)
+    assert lp.discover_plugins(".") == {} and lp.discover_plugins("./") == {}
+    assert lp.discover_plugins(str(tmp_path)) == {"here": str(tmp_path / "grip-ecosystem-here")}  # the absolute spelling of the same directory is found
+
+
 def test_a_plugin_file_inside_a_member_is_never_found_or_executed_but_the_same_one_on_the_path_is(tmp_path: Path) -> None:
     marker = tmp_path / "ran"
     body = f"import json, sys\njson.load(sys.stdin)\nopen({str(marker)!r}, 'a').write('x')\nprint(json.dumps({{'protocol': 1, 'ok': True, 'units': []}}))\n"

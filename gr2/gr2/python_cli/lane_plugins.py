@@ -36,8 +36,8 @@ def discover_plugins(path: str) -> dict[str, str]:
     The first directory wins, like a shell. Only the directories named in ``path`` are looked at."""
     found: dict[str, str] = {}
     for d in path.split(os.pathsep):
-        if not d:
-            continue  # an empty PATH entry means the current directory in some shells; it is NOT a plugin directory here
+        if not d or not os.path.isabs(d):
+            continue  # an empty or relative PATH entry means "the current directory" (the member's, when a lane runs there); it is NOT a plugin directory here
         try:
             names = sorted(os.listdir(d))
         except OSError:

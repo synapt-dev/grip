@@ -348,3 +348,17 @@ def test_a_refusal_from_store_init_reaches_the_caller_unswallowed(tmp_path: Path
     code, out = _cli(*_bind_args(ws, remote, base, head))
     assert code == 2 and "store_init_refused" in out and "no sibling git repositories" in out, out
     assert not (ws / "grip.toml").exists()
+
+
+def test_a_refused_first_bind_on_a_root_with_no_store_leaves_no_store_behind(two_member_ws: Path, capfd) -> None:
+    """The setup is undone when the bind refuses: no repository, no grip.toml, no 'set up' line."""
+    ws = two_member_ws
+    _spec_only_root(ws)
+    remote, base, head = _unpushed_head(ws)
+    before = sorted(entry.name for entry in ws.iterdir())
+
+    code, out = _cli(*_bind_args(ws, remote, head, head))  # base == head: refused
+    assert code == 2 and "base_not_live_head" in out, out
+    assert "set up a native store" not in out + capfd.readouterr().err
+    assert sorted(entry.name for entry in ws.iterdir()) == before
+    assert not (ws / "grip.toml").exists() and not (ws / ".git").exists()

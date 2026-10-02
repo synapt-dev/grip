@@ -124,7 +124,7 @@ EXPECTED = {
     "prototypes/real_git_playground.py": 2,
     "prototypes/recall_lane_history.py": 1,
     "prototypes/repo_maintenance_prototype.py": 1,
-    "python_cli/app.py": 9,
+    "python_cli/app.py": 8,
     "python_cli/clone_exec.py": 1,
     "python_cli/events.py": 2,
     "python_cli/failures.py": 1,

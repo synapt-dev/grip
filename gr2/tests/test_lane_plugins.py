@@ -9,6 +9,7 @@ import os
 import shutil
 import stat
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -170,6 +171,45 @@ def test_an_oversize_answer_is_refused_not_parsed(tmp_path: Path) -> None:
         one(tmp_path, body, max_bytes=1000)("describe", describe_req(tmp_path))
     assert "over the 1000 byte bound" in exc.value.detail
     assert one(tmp_path, body, max_bytes=100_000)("describe", describe_req(tmp_path))["ok"] is True  # the bound is the only difference
+
+
+def test_a_plugin_that_never_stops_writing_is_killed_at_the_bound_not_at_the_timeout(tmp_path: Path) -> None:
+    pidfile = tmp_path / "pid"
+    progress = tmp_path / "progress"
+    body = (
+        "import os, sys\n"
+        f"open({str(pidfile)!r}, 'w').write(str(os.getpid()))\n"
+        "import time\n"
+        "sys.stdin.read()\n"
+        "written = 0\n"
+        "while True:\n"
+        "    sys.stdout.write('x' * 4096)\n"
+        "    sys.stdout.flush()\n"
+        "    written += 4096\n"
+        f"    open({str(progress)!r}, 'a').write(str(written) + '\\n')\n"
+        "    time.sleep(0.001)\n"
+    )
+    t0 = time.monotonic()
+    with pytest.raises(LaneRefused) as exc:
+        one(tmp_path, body, timeout=30.0, max_bytes=1000)("describe", describe_req(tmp_path))
+    assert "over the 1000 byte bound" in exc.value.detail, exc.value.detail  # the bound, not "no answer within"
+    assert time.monotonic() - t0 < 10  # long before the 30 s timeout
+    written = max(int(x) for x in progress.read_text().split() if x)  # a line cut by the kill reads short, never long
+    assert written < 1000 + 1_000_000, "the plugin was left writing long after the bound"
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pidfile.read_text()), 0)
+
+
+def test_a_plugin_that_ignores_stdin_cannot_hang_the_planner_on_a_big_request(tmp_path: Path) -> None:
+    """A pipe holds about 64 KB; a request over that, sent to a plugin that never reads it, blocked a writer that
+    had no timeout. The request now goes in through a file, so the timeout is the only thing that ends the call."""
+    body = "import time\ntime.sleep(60)\n"
+    request = {**describe_req(tmp_path), "pad": "x" * 300_000}  # 300 KB, far over a pipe's buffer
+    t0 = time.monotonic()
+    with pytest.raises(LaneRefused) as exc:
+        one(tmp_path, body, timeout=2.0)("describe", request)
+    assert "no answer within 2s" in exc.value.detail, exc.value.detail
+    assert time.monotonic() - t0 < 8  # the timeout, not a blocked write
 
 
 def test_a_plugin_that_cannot_be_started_refuses(tmp_path: Path) -> None:
@@ -351,3 +391,39 @@ def test_the_cargo_plugin_refuses_plan_group_in_its_own_words(tmp_path: Path) ->
     ans = exe("plan_group", {"protocol": 1, "units": [{"id": "cargo:a", "dir": "/x"}, {"id": "cargo:b", "dir": "/y"}], "edges": []})
     assert ans["ok"] is False and "cycle in normal or build dependencies" in ans["reason"] and "cargo:a, cargo:b" in ans["detail"]
     lg.check_answer("cargo", "plan_group", ans)  # and it is a valid refusal under the shared validator
+
+
+def test_a_unit_id_that_does_not_name_the_answering_plugin_is_refused(tmp_path: Path) -> None:
+    lane = lane_of(tmp_path, "m")
+    wrong = OK_BODY.replace("'fake:' + req['key']", "'other:' + req['key']")
+    exe = make_exe(tmp_path / "bin", "grip-ecosystem-fake", wrong)
+    with pytest.raises(LaneRefused) as exc:
+        plan_lane(lane, ["m"], {"fake": lp.external_plugin("fake", str(exe))})
+    assert exc.value.code == "plugin_failure" and 'does not start with "fake:"' in exc.value.detail
+    ok = make_exe(tmp_path / "bin2", "grip-ecosystem-fake", OK_BODY)  # the same plugin with its own prefix plans
+    assert plan_lane(lane, ["m"], {"fake": lp.external_plugin("fake", str(ok))}).units[0].id == "fake:m"
+
+
+def test_a_test_edge_inside_a_cyclic_group_is_not_sent_to_plan_group(tmp_path: Path) -> None:
+    """The group's install method is asked about INSTALL edges only; a test edge between two members of the group
+    is not an install constraint and must not reach the plugin."""
+    lane = lane_of(tmp_path, "a", "b")
+    asked: list[dict] = []
+
+    def plugin(call: str, request: dict) -> dict:
+        if call == "describe":
+            key = request["key"]
+            other = "b" if key == "a" else "a"
+            edges = [{"to": f"fake:{other}", "kind": "install", "via": f"{key} requires {other}"}]
+            if key == "a":
+                edges.append({"to": "fake:b", "kind": "test", "via": "a's tests need b"})
+            return {"protocol": 1, "ok": True, "units": [{"id": f"fake:{key}", "dir": request["dir"], "edges": edges}]}
+        asked.append(request)
+        return {"protocol": 1, "ok": True, "method": "m"}
+
+    plan = plan_lane(lane, ["a", "b"], {"fake": plugin})
+    assert len(plan.cyclic_groups) == 1 and len(asked) == 1
+    assert sorted((e["from"], e["to"], e["kind"]) for e in asked[0]["edges"]) == [
+        ("fake:a", "fake:b", "install"),
+        ("fake:b", "fake:a", "install"),
+    ], "the group request carries the install edges and no test edge"

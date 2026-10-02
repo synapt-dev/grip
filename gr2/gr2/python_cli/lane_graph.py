@@ -340,6 +340,8 @@ def check_answer(plugin: str, call: str, answer: object) -> dict:
         for u in units:
             if not (isinstance(u, dict) and isinstance(u.get("id"), str) and u["id"] and isinstance(u.get("dir"), str)):
                 raise fail('a unit without a string "id" and "dir"')
+            if not u["id"].startswith(f"{plugin}:"):
+                raise fail(f'a unit {u["id"]!r} whose id does not start with "{plugin}:" (a unit id names its ecosystem)')
             if not isinstance(u.get("edges", []), list):
                 raise fail(f'unit {u["id"]!r} with "edges" that is not a list')
             for e in u.get("edges", []):

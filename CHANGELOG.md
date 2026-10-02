@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`gr2` workspace verbs take the root as `--root/-C`, and the 21 with a fixed number of arguments
+  let you leave it out.** Every verb that took `WORKSPACE_ROOT` as its first required argument now
+  also accepts `-C <root>` (or `--root <root>`) anywhere on the line; giving the root both ways is
+  refused. For the 21 verbs whose argument list has a fixed length (`lane create/enter/exit/resolve/
+  show/bind`, `lane lease acquire/release/show`, `review requirements/checkout-pr/create-project/
+  verify`, `repo projection-run`, `hooks run`, `config restore`, and the hidden aliases), leaving the
+  root out now means the nearest workspace above the current directory: `gr2 lane create default
+  feat-x --repos app --branch feat/x` works from the workspace root or any directory below it, and
+  from outside any workspace it refuses and names `-C`. The 8 verbs that end in an optional argument
+  (`pr create/status/checks/view/merge`, `exec status`, `exec run`, `review open`) take `-C` but are
+  never inferred, because one word fewer reads two ways (`pr status unit lane` is both "root left
+  out" and "root is `unit`"); when one of them reads its first word as a root that is not a
+  directory, or reports a missing argument, the error now says to pass the root first or name it
+  with `-C <root>`. The explicit form, `gr2 <verb> ROOT ...`, is unchanged for all 29.
 - **`gr spawn up` interactive fallback.** When tmux is not installed (native
   Windows, a bare container) or `--interactive` is passed, one named agent runs
   in the foreground of the current terminal with the same command, cwd, env, and

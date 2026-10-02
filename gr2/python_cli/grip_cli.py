@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import tomllib
 from pathlib import Path, PurePosixPath
+from typing import Optional
 from urllib.parse import urlsplit
 
 import typer
@@ -19,6 +20,7 @@ from . import config as config_mod
 from . import gitops
 from . import grip as grip_mod
 from .gitops import git, repo_dirty
+from .root_option import ROOT_OPTION, RootOptionalCommand
 from .spec_apply import unit_member_path, validate_grip_toml
 from .workspace_guidance import missing_gr2_workspace_guidance
 
@@ -1958,12 +1960,13 @@ def config_show_cmd(
         typer.echo(json.dumps(result, indent=2))
 
 
-@config_cli_app.command("restore")
+@config_cli_app.command("restore", cls=RootOptionalCommand)
 def config_restore_cmd(
     workspace_root: Path,
     ref: str = typer.Argument(..., help="Grip commit ref to restore config from"),
     overlay_dir: str = typer.Option("", "--overlay-dir", help="Overlay directory to restore into"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Restore config overlay from a grip commit snapshot."""
     workspace_root = workspace_root.resolve()

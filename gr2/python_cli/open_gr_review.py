@@ -41,13 +41,15 @@ _RECEIPT_NAME = ".grip-open-gr.json"
 _OPEN_GR_MARKER = _MARKER_NAME
 
 
-def write_open_gr_marker(lane_dir: Path, gr_commit: str, results: dict) -> None:
+def write_open_gr_marker(lane_dir: Path, gr_commit: str, results: dict, workspace_root: Path | None = None) -> None:
     """Record a small teardown marker at the open-gr lane root so ``close_open_gr_lane``
     can verify the directory is an open-gr reconstruction before removing it, rather
     than rm an arbitrary path. ``results`` maps repo key -> the reconstruct dict."""
     marker = {
         "kind": _MARKER_KIND,
         "gr_commit": gr_commit,
+        # where `review run` and `review close` emit their events; absent on older lanes
+        "workspace_root": str(workspace_root) if workspace_root is not None else None,
         "repos": [
             {
                 "key": key,

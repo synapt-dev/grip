@@ -29,7 +29,8 @@ from . import target as target_ops
 from . import project_review
 from . import push as push_ops
 from .clone_exec import rmtree_or_refuse
-from .events import EventType, emit_after_outcome
+from .events import EventEmitError, EventType, emit, emit_after_outcome
+from .layout import grip_dir
 from .gitops import (
     branch_exists,
     checkout_branch,
@@ -3251,8 +3252,75 @@ def review_bind(
             except OSError as exc:
                 raise typer.BadParameter(f"--from-range {from_range}: {exc.strerror or exc}")
         rows = [row]
-    commit = _review_call(grip.create_review_bind_commit, _resolve_workspace_root(workspace_root), rows, ratified=ratified)
+    bind_root = _resolve_workspace_root(workspace_root)
+    commit = _review_call(grip.create_review_bind_commit, bind_root, rows, ratified=ratified)
+    emit_after_outcome(
+        event_type=EventType.REVIEW_BOUND,
+        workspace_root=Path(bind_root).resolve(),
+        actor="system",
+        owner_unit="workspace",
+        payload={"bind_commit": f"gr:{commit}", "repos": [str(r.get("key", "")) for r in rows]},
+    )
     typer.echo(f"gr:{commit}")
+
+
+def _review_lane_workspace(lane_dir: Path) -> Path | None:
+    """The workspace a review lane was opened from, read from its open-gr marker, or None
+    (no marker, one written before the marker named its workspace, or a recorded workspace
+    that no longer exists)."""
+    from . import open_gr_review
+
+    marker_path = open_gr_review.find_marker(lane_dir)
+    if marker_path is None:
+        return None
+    try:
+        recorded = json.loads(marker_path.read_text()).get("workspace_root")
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not isinstance(recorded, str) or not recorded:
+        return None
+    # Only a workspace that still exists: `emit` creates the outbox's parents, so a recorded
+    # path that is gone (the workspace was moved or deleted, or the lane came from another
+    # machine) would otherwise be silently recreated as an empty `.grip/events`.
+    path = Path(recorded)
+    return path if grip_dir(path).is_dir() else None
+
+
+def _emit_review_run(lane_dir: Path, event_type: EventType, payload: dict) -> None:
+    """`review.run_completed` / `review.run_refused`, after the receipt is written."""
+    workspace = _review_lane_workspace(lane_dir)
+    if workspace is None:
+        return
+    from . import open_gr_review
+
+    marker_path = open_gr_review.find_marker(lane_dir)
+    gr_commit = json.loads(marker_path.read_text()).get("gr_commit", "") if marker_path else ""
+    emit_after_outcome(
+        event_type=event_type,
+        workspace_root=workspace,
+        actor="system",
+        owner_unit="workspace",
+        payload={"bind_commit": f"gr:{gr_commit}", "lane_dir": str(lane_dir), **payload},
+    )
+
+
+def _emit_review_opened(workspace_root: Path, sha: str, lane_dir: Path, results: dict) -> None:
+    """`review.opened`, after the lane exists and its marker is written: the outcome is real
+    whatever the outbox does, so a sink failure is reported, not raised."""
+    emit_after_outcome(
+        event_type=EventType.REVIEW_OPENED,
+        workspace_root=workspace_root,
+        actor="system",
+        owner_unit="workspace",
+        payload={
+            "bind_commit": f"gr:{sha}",
+            "lane_dir": str(lane_dir),
+            "repos": {
+                key: {"tree_match": res["bound_head_tree"] == res["reconstructed_tree"]}
+                for key, res in results.items()
+            },
+        },
+    )
 
 
 @review_app.command("open-gr", hidden=True)  # hidden alias for one release, dropped at 2.0 GA
@@ -3305,7 +3373,8 @@ def review_open_gr(
                 for row_key in keys
             }
             from . import open_gr_review
-            open_gr_review.write_open_gr_marker(root, sha, results)
+            open_gr_review.write_open_gr_marker(root, sha, results, workspace_root.resolve())
+            _emit_review_opened(workspace_root.resolve(), sha, root, results)
             if json_output:
                 typer.echo(json.dumps(results, indent=2))
             else:
@@ -3317,7 +3386,8 @@ def review_open_gr(
         grip.reconstruct_review_lane, workspace_root.resolve(), sha, key, root
     )
     from . import open_gr_review
-    open_gr_review.write_open_gr_marker(root, sha, {key: result})
+    open_gr_review.write_open_gr_marker(root, sha, {key: result}, workspace_root.resolve())
+    _emit_review_opened(workspace_root.resolve(), sha, root, {key: result})
     if json_output:
         typer.echo(json.dumps(result, indent=2))
     else:
@@ -3337,11 +3407,20 @@ def review_close_gr(
     needs no OWNER_UNIT, because a reconstruction pushes no lane and changes no cwd.
     Refuses a directory without a review marker rather than remove an arbitrary path."""
     from . import open_gr_review
+    lane_workspace = _review_lane_workspace(lane_dir.resolve())
     try:
         result = open_gr_review.close_open_gr_lane(lane_dir.resolve())
     except open_gr_review.OpenGrReviewError as exc:
         typer.echo(f"refused: {exc}", err=True)
         raise typer.Exit(code=2)
+    if lane_workspace is not None:
+        emit_after_outcome(
+            event_type=EventType.REVIEW_CLOSED,
+            workspace_root=lane_workspace,
+            actor="system",
+            owner_unit="workspace",
+            payload={"bind_commit": f"gr:{result['gr_commit']}", "lane_dir": str(result["reclaimed"])},
+        )
     if json_output:
         typer.echo(json.dumps(result, indent=2))
     else:
@@ -3456,6 +3535,7 @@ def review_run(
                 order=[k.strip() for k in order.split(",")] if order is not None else None,
             )
     except rr.ReviewRunRefused as exc:
+        _emit_review_run(lane_dir.resolve(), EventType.REVIEW_RUN_REFUSED, {"refusal_code": exc.code})
         typer.echo(f"refused: {exc}", err=True)
         if exc.order is not None:
             # A multi-member lane stopped: say where, and which members never ran, so the
@@ -3481,6 +3561,11 @@ def review_run(
                 )
             typer.echo(json.dumps(refusal, indent=2))
         raise typer.Exit(code=2)
+    _emit_review_run(
+        lane_dir.resolve(),
+        EventType.REVIEW_RUN_COMPLETED,
+        {k: receipt.get(k) for k in ("result", "selected", "passed", "failed", "errors")},
+    )
     if json_output:
         typer.echo(json.dumps(receipt, indent=2))
     elif "members" in receipt:  # a multi-member lane: one line per member, then the lane
@@ -3533,6 +3618,19 @@ def review_verify(
         typer.echo(json.dumps(result, indent=2, default=str))
     else:
         typer.echo(f"tree_matches: {result['tree_matches']}")
+    # The verdict is printed first: a strict emit that fails (an unwritable outbox) still
+    # fails the command, but never hides the answer the caller asked for.
+    try:
+        emit(
+            event_type=EventType.REVIEW_VERIFIED,
+            workspace_root=workspace_root.resolve(),
+            actor="system",
+            owner_unit="workspace",
+            payload={"bind_commit": f"gr:{_strip_gr_prefix(commit)}", "tree_matches": bool(result.get("tree_matches"))},
+        )
+    except EventEmitError as exc:
+        typer.echo(f"error: review.verified could not be recorded: {exc}", err=True)
+        raise typer.Exit(code=1)
     if not result.get("tree_matches"):
         raise typer.Exit(code=1)
 

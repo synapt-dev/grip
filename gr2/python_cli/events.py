@@ -89,6 +89,16 @@ class EventType(str, Enum):
     # outbox so a consumer can relay it without the daemon knowing any channel
     PROPAGATION_RECEIPT = "propagation.receipt"
 
+    # Review: bind, open, verify, run and close, so a timeline or a hook consumer sees reviews the
+    # same way it sees lanes and PRs. Run and close emit only for a lane whose marker names its
+    # workspace (a lane opened before that field existed has no outbox to write to).
+    REVIEW_BOUND = "review.bound"
+    REVIEW_OPENED = "review.opened"
+    REVIEW_VERIFIED = "review.verified"
+    REVIEW_RUN_COMPLETED = "review.run_completed"
+    REVIEW_RUN_REFUSED = "review.run_refused"
+    REVIEW_CLOSED = "review.closed"
+
 
 def _outbox_path(workspace_root: Path) -> Path:
     return workspace_root / ".grip" / "events" / "outbox.jsonl"

@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   launch command is now built by one shared path used by both the pane and the
   foreground launch.
 
+- **`gr2` emits `review.*` events.** `review bind`, `open`, `verify`, `run` and `close` each
+  write an event to the workspace outbox (`review.bound`, `review.opened`, `review.verified`,
+  `review.run_completed` / `review.run_refused`, `review.closed`), so a timeline or a hook
+  consumer sees reviews the way it sees lanes and PRs. A reconstruction lane's marker now
+  records the workspace it was opened from, which is where `run` and `close` write; a lane
+  opened by an earlier version emits no run or close events.
+
 ### Changed
 
 - **`gr2 review run` derives a multi-repo lane's install order from the members' own declared

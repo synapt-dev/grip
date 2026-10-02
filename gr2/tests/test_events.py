@@ -79,11 +79,20 @@ class TestEventTypeEnum:
         assert EventType.WORKSPACE_MATERIALIZED == "workspace.materialized"
         assert EventType.WORKSPACE_FILE_PROJECTED == "workspace.file_projected"
 
+    def test_review_types(self):
+        from gr2.python_cli.events import EventType
+        assert EventType.REVIEW_BOUND == "review.bound"
+        assert EventType.REVIEW_OPENED == "review.opened"
+        assert EventType.REVIEW_VERIFIED == "review.verified"
+        assert EventType.REVIEW_RUN_COMPLETED == "review.run_completed"
+        assert EventType.REVIEW_RUN_REFUSED == "review.run_refused"
+        assert EventType.REVIEW_CLOSED == "review.closed"
+
     def test_total_count(self):
         from gr2.python_cli.events import EventType
         # 5 lane + 4 lease + 4 hook + 7 PR + 8 sync + 3 exec + 2 recovery + 2 workspace
-        # + 1 propagation = 36
-        assert len(EventType) == 36
+        # + 1 propagation + 6 review = 42
+        assert len(EventType) == 42
 
 
 # ---------------------------------------------------------------------------

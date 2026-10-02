@@ -20,6 +20,7 @@ from . import config as config_mod
 from . import gitops
 from . import grip as grip_mod
 from .gitops import git, repo_dirty
+from .layout import MOVED_MARKER
 from .root_option import ROOT_OPTION, RootOptionalCommand
 from .spec_apply import unit_member_path, validate_grip_toml
 from .workspace_guidance import missing_gr2_workspace_guidance
@@ -277,6 +278,43 @@ class NativeStoreRefusal(RuntimeError):
     def __init__(self, message: str, code: int) -> None:
         super().__init__(message)
         self.code = code
+
+
+#: A moved workspace tracks `MOVED_MARKER` at its root, or holds its state under this ref: either
+#: one means a newer gr2 owns this workspace and this one must not touch it.
+MOVED_STATE_REF = "refs/dev.synapt.grip/__state__/v1"
+
+
+def _refuse_moved_workspace(root: Path) -> None:
+    """Refuse, in one sentence, a workspace whose state has moved out of the files this gr2 reads.
+
+    Without this, an older gr2 meeting a moved workspace says "run store init" (its root has no
+    `grip.toml` and no gitlinks), and following that advice starts a second, divergent workspace
+    beside the real one. It reads only the root's git objects, never the working tree: the marker
+    must be in `HEAD`, so a stray untracked copy does not count."""
+    if not (root / ".git").exists():
+        return
+    in_head = _store_git(root, "ls-tree", "--name-only", "HEAD", "--", MOVED_MARKER, check=False)
+    has_ref = _store_git(root, "rev-parse", "--verify", "--quiet", MOVED_STATE_REF, check=False)
+    if (in_head.returncode == 0 and in_head.stdout.strip()) or (has_ref.returncode == 0 and has_ref.stdout.strip()):
+        raise NativeStoreRefusal(
+            "this workspace's state has moved to a format this gr2 cannot read; "
+            "use a newer gr2 (gr2 --version shows this one)",
+            4,
+        )
+
+
+def _refuses_moved_workspace(fn):
+    """Run `_refuse_moved_workspace` on the root (the first argument) before the verb does anything."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(root: Path, *args, **kwargs):
+        _refuse_moved_workspace(root)
+        return fn(root, *args, **kwargs)
+
+    return wrapper
+
 
 
 # The beta list of design section 4. These fields are PARSED and REFUSED, never silently
@@ -861,6 +899,7 @@ def _write_gitignore(root: Path, members: list[dict[str, str]]) -> None:
     root.joinpath(".gitignore").write_text("\n".join(lines) + "\n")
 
 
+@_refuses_moved_workspace
 def _native_store_init(root: Path, member_paths: list[str] | None = None) -> None:
     if (root / ".git").exists() and (root / "grip.toml").exists():
         _refuse_init_disagreement(root)
@@ -979,6 +1018,7 @@ def _member_coverage(
         )
 
 
+@_refuses_moved_workspace
 def _native_store_commit(root: Path, message: str) -> bool:
     """Record the pins; True when a root commit was made, False when there was nothing to record."""
     _refuse_beta(root)
@@ -1034,6 +1074,7 @@ def _native_store_commit(root: Path, message: str) -> bool:
     return True
 
 
+@_refuses_moved_workspace
 def _native_store_check(root: Path) -> list[dict[str, str]]:
     """Verify the committed root pins against each live member upstream."""
     _refuse_beta(root)
@@ -1066,6 +1107,7 @@ def _native_store_check(root: Path) -> list[dict[str, str]]:
     return checked
 
 
+@_refuses_moved_workspace
 def _native_store_push(root: Path) -> dict[str, object]:
     """Push only the checked root record. Member publication is a prior verb."""
     members = _native_store_check(root)
@@ -1085,6 +1127,7 @@ def _native_members_at(root: Path, revision: str) -> dict[str, str]:
     return {str(member["name"]): str(member["pin"]) for member in document.get("members", [])}
 
 
+@_refuses_moved_workspace
 def _native_store_log(root: Path, max_count: int) -> list[dict[str, object]]:
     # THE DOCUMENT IS READ FIRST, so a root that is not a store gets the NAMED refusal rather
     # than git's own "not a git repository" wrapped in an exit code. Found by rewriting the
@@ -1125,6 +1168,7 @@ def _native_store_log(root: Path, max_count: int) -> list[dict[str, object]]:
     return entries
 
 
+@_refuses_moved_workspace
 def _native_store_diff(root: Path, ref_a: str, ref_b: str) -> list[dict[str, object]]:
     # Both refs are resolved FIRST and by name, so an unresolvable one is a NAMED refusal at
     # 5 rather than a wrapped git message from whichever read happened to run first. Same
@@ -1184,6 +1228,7 @@ def _member_working_root_or_refuse(
     return path
 
 
+@_refuses_moved_workspace
 def _native_store_checkout(root: Path, revision: str) -> tuple[str, list[dict[str, str]]]:
     """Materialize the members at a root commit (section 5: `checkout` is materialize-at-a-commit).
 
@@ -1275,6 +1320,7 @@ def _native_store_checkout(root: Path, revision: str) -> tuple[str, list[dict[st
     return sha, restored
 
 
+@_refuses_moved_workspace
 def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[str, object]]:
     """Render every member's working state without stopping at the first bad row.
 
@@ -1325,6 +1371,7 @@ def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[
     return rows, {"state": "dirty" if porcelain else "clean", "porcelain": porcelain}
 
 
+@_refuses_moved_workspace
 def _native_store_materialize(root: Path) -> list[dict[str, str]]:
     materialized: list[dict[str, str]] = []
     members = _native_members(root)
@@ -1375,6 +1422,7 @@ def _native_store_materialize(root: Path) -> list[dict[str, str]]:
     return materialized
 
 
+@_refuses_moved_workspace
 def _native_store_migrate(root: Path, *, dry_run: bool = False) -> dict[str, object]:
     """Move the alpha ``.grip/.git`` HEAD into one native root commit.
 

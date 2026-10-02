@@ -19,8 +19,11 @@ This module holds the pure part: no plugin is run and nothing is installed here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Iterator
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+from typing import Callable, Iterator
+
+PROTOCOL = 1  # the plugin protocol's major version; every request and every answer carries it
 
 INSTALL = "install"
 TEST = "test"
@@ -60,10 +63,20 @@ class Plan:
     edges: tuple[Edge, ...]  # resolved: both ends in the lane, no self edge
     groups: tuple[Group, ...]  # in install order
     loops: dict = field(default_factory=dict)  # group index -> (tuple of loops, truncated)
+    methods: dict = field(default_factory=dict)  # cyclic group index -> the plugin's plan_group answer
 
     @property
     def cyclic_groups(self) -> tuple[Group, ...]:
         return tuple(g for g in self.groups if g.cyclic)
+
+
+class LaneRefused(Exception):
+    """The lane cannot be planned, and the plan phase says so before anything installs. ``code`` is one of
+    ``plugin_failure``, ``plugin_protocol_mismatch``, ``member_name_clash``, ``group_unplannable``."""
+
+    def __init__(self, code: str, detail: str) -> None:
+        super().__init__(f"{code}: {detail}")
+        self.code, self.detail = code, detail
 
 
 class GraphError(ValueError):
@@ -274,6 +287,11 @@ def format_plan(plan: Plan) -> str:
         if not g.cyclic:
             continue
         out.append(f"  group {g.index} [{', '.join(g.units)}]  cyclic")
+        answer = plan.methods.get(g.index)
+        if answer:
+            out.append(f"    plan_group: ok, method {answer['method']}")
+            if answer.get("note"):
+                out.append(f"      {answer['note']}")
         found, truncated = plan.loops[g.index]
         for cycle in found:
             out.append("    loop: " + "  then  ".join(format_loop(plan, cycle)))
@@ -285,3 +303,122 @@ def format_plan(plan: Plan) -> str:
                     out.append(f"    edge  {e.src} -({e.kind})-> {e.dst}   [{e.via}]")
     out.append("order: " + "  then  ".join(f"group {g.index} [{', '.join(g.units)}]" for g in plan.groups))
     return "\n".join(out)
+
+
+# --- the plugin protocol, as the plan phase uses it ------------------------------------------------------
+# A plugin is a callable ``plugin(call, request) -> answer`` where call is "describe" or "plan_group" and both
+# sides are plain JSON-shaped dicts carrying ``"protocol": 1``. The built-in Python plugin is such a callable
+# in process; an external ``grip-ecosystem-<name>`` executable is the same callable behind a subprocess.
+# ``check_answer`` is the ONE validator for both, so the built-in cannot become a special case.
+
+
+def check_answer(plugin: str, call: str, answer: object) -> dict:
+    def fail(why: str) -> LaneRefused:
+        return LaneRefused("plugin_failure", f"plugin {plugin!r} answered {call} with {why}")
+
+    if not isinstance(answer, dict):
+        raise fail("something that is not a JSON object")
+    version = answer.get("protocol")
+    if version is None:
+        raise fail('no "protocol" field')
+    if version != PROTOCOL:
+        raise LaneRefused(
+            "plugin_protocol_mismatch",
+            f"plugin {plugin!r} speaks protocol {version!r} and this gr2 speaks {PROTOCOL}",
+        )
+    ok = answer.get("ok")
+    if not isinstance(ok, bool):
+        raise fail('no boolean "ok"')
+    if not ok:
+        if not isinstance(answer.get("reason"), str) or not answer["reason"]:
+            raise fail('"ok": false and no "reason"')
+        return answer
+    if call == "describe":
+        units = answer.get("units")
+        if not isinstance(units, list):
+            raise fail('no "units" list')
+        for u in units:
+            if not (isinstance(u, dict) and isinstance(u.get("id"), str) and u["id"] and isinstance(u.get("dir"), str)):
+                raise fail('a unit without a string "id" and "dir"')
+            if not isinstance(u.get("edges", []), list):
+                raise fail(f'unit {u["id"]!r} with "edges" that is not a list')
+            for e in u.get("edges", []):
+                if not (isinstance(e, dict) and isinstance(e.get("to"), str) and e.get("kind") in EDGE_KINDS and isinstance(e.get("via"), str)):
+                    raise fail(f'unit {u["id"]!r} with an edge lacking a string "to" and "via" and a kind of {EDGE_KINDS}')
+    elif call == "plan_group":
+        if not isinstance(answer.get("method"), str) or not answer["method"]:
+            raise fail('"ok": true and no "method"')
+    return answer
+
+
+def plan_lane(
+    lane_dir: Path, keys: list[str], plugins: dict[str, Callable[[str, dict], dict]], loop_cap: int = LOOP_CAP
+) -> Plan:
+    """Plan a lane: describe every member (in marker order), build the graph, group, order, and ask the plugin
+    that owns each cyclic group whether it can install that group. Raises ``LaneRefused`` BEFORE anything is
+    installed. A plugin failure refuses the lane; it never falls back to marker order. Marker order stands only
+    for a member NO plugin claims (the lane keeps a stand-in unit ``member:<key>`` for it, so it keeps its place)."""
+    units: list[Unit] = []
+    edges: list[Edge] = []
+    owner: dict[str, str] = {}
+    unit_plugin: dict[str, str] = {}
+    for key in keys:
+        mdir = str(lane_dir / key)
+        claimed = False
+        for name, call in plugins.items():
+            answer = check_answer(name, "describe", call("describe", {"protocol": PROTOCOL, "key": key, "dir": mdir}))
+            if not answer["ok"]:
+                raise LaneRefused(
+                    "plugin_failure",
+                    f"plugin {name!r} refused member {key!r}: {answer['reason']}"
+                    + (f" ({answer['detail']})" if answer.get("detail") else ""),
+                )
+            for u in answer["units"]:
+                if u["id"] in owner:
+                    raise LaneRefused(
+                        "member_name_clash",
+                        f"members {owner[u['id']]!r} and {key!r} both claim the unit {u['id']!r}, so the install order "
+                        "cannot be derived; pass --order to name it",
+                    )
+                owner[u["id"]] = key
+                unit_plugin[u["id"]] = name
+                units.append(Unit(id=u["id"], member=key, dir=u["dir"]))
+                edges.extend(Edge(src=u["id"], dst=e["to"], kind=e["kind"], via=e["via"]) for e in u.get("edges", []))
+                claimed = True
+        if not claimed:
+            units.append(Unit(id=f"member:{key}", member=key, dir=mdir))
+    plan = build_plan(units, edges, loop_cap=loop_cap)
+    methods: dict = {}
+    for g in plan.cyclic_groups:
+        owners = {unit_plugin.get(u) for u in g.units}
+        loops = "; ".join(" ".join(format_loop(plan, c)) for c in plan.loops[g.index][0][:3])
+        if None in owners or len(owners) != 1:
+            raise LaneRefused(
+                "group_unplannable",
+                f"group {g.index} [{', '.join(g.units)}] mixes ecosystems or unclaimed members, so no single plugin can "
+                f"install it; the loop: {loops}",
+            )
+        name = owners.pop()
+        by_id = {u.id: u for u in plan.units}
+        group_edges = [
+            {"from": e.src, "to": e.dst, "kind": e.kind, "via": e.via}
+            for e in plan.edges
+            if e.kind == INSTALL and e.src in g.units and e.dst in g.units
+        ]
+        answer = check_answer(
+            name,
+            "plan_group",
+            plugins[name](
+                "plan_group",
+                {"protocol": PROTOCOL, "units": [{"id": u, "dir": by_id[u].dir} for u in g.units], "edges": group_edges},
+            ),
+        )
+        if not answer["ok"]:
+            raise LaneRefused(
+                "group_unplannable",
+                f"plugin {name!r} cannot plan group {g.index} [{', '.join(g.units)}]: {answer['reason']}"
+                + (f" ({answer['detail']})" if answer.get("detail") else "")
+                + f"; the loops: {loops}",
+            )
+        methods[g.index] = {"method": answer["method"], "note": answer.get("note", "")}
+    return replace(plan, methods=methods)

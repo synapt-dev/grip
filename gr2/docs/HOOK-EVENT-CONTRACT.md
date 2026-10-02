@@ -197,6 +197,23 @@ and `lease.force_broken` (which fires when a live lease is broken with
 | `workspace.materialized` | `gr2 workspace materialize` or `gr2 apply` | `{repos: [{repo, first_materialize: bool}]}` |
 | `workspace.file_projected` | File link/copy applied | `{repo, kind, src, dest}` |
 
+#### Review
+
+| Type | Trigger | Payload |
+|------|---------|---------|
+| `review.bound` | `gr2 review bind` wrote a review bind commit | `{bind_commit, repos}` |
+| `review.opened` | `gr2 review open <gr:sha> --enter` reconstructed a lane | `{bind_commit, lane_dir, repos: {key: {tree_match}}}` |
+| `review.verified` | `gr2 review verify` recomputed a bind commit's tree | `{bind_commit, tree_matches}` |
+| `review.run_completed` | `gr2 review run` finished with a receipt (green or red) | `{bind_commit, lane_dir, result, selected, passed, failed, errors}` |
+| `review.run_refused` | `gr2 review run` refused | `{bind_commit, lane_dir, refusal_code}` |
+| `review.closed` | `gr2 review close` reclaimed a reconstruction lane | `{bind_commit, lane_dir}` |
+
+`review.run_*` and `review.closed` go to the outbox of the workspace the lane was opened
+from, which the lane's marker records as `workspace_root`. A lane opened before the marker
+carried that field emits no run or close events. `lane_dir` is absolute, an exception to
+the relative-path rule in 3.3 like `propagation.receipt`'s `receipt_path`: a review lane
+is not a workspace file and usually sits outside `workspace_root`.
+
 #### Propagation
 
 | Type | Trigger | Payload |
@@ -493,6 +510,14 @@ class EventType(str, Enum):
 
     # Propagation (one event per receipt from the propagation daemon)
     PROPAGATION_RECEIPT = "propagation.receipt"
+
+    # Review
+    REVIEW_BOUND = "review.bound"
+    REVIEW_OPENED = "review.opened"
+    REVIEW_VERIFIED = "review.verified"
+    REVIEW_RUN_COMPLETED = "review.run_completed"
+    REVIEW_RUN_REFUSED = "review.run_refused"
+    REVIEW_CLOSED = "review.closed"
 ```
 
 ### 7.3 Implementation Location

@@ -3392,6 +3392,11 @@ def _downstream_line(block: dict | None) -> str:
         for role in ("downstream", "upstream"):
             if block.get(role):
                 parts.append(f"{role} {', '.join(block[role])}")
+        sources = block.get("sources") or {}
+        taking = set(block.get("upstream") or []) | set(block.get("downstream") or [])
+        local = [n for n in sorted(taking) if sources.get(n, {}).get("source") == "local checkout"]
+        if local:
+            parts.append(f"{', '.join(local)} taken from the local checkout, not checked against its remote")
         return "downstream: ran (" + "; ".join(parts) + ")"
     if status == "selected":
         return "downstream: selected, nothing beyond the lane's own members"

@@ -10,7 +10,10 @@ never declared is exactly the claim this exists to prevent.
 from __future__ import annotations
 
 import re
+import subprocess
+import tempfile
 from pathlib import Path
+from typing import NamedTuple
 
 from . import gitops
 
@@ -116,7 +119,7 @@ def unchanged_members(spec: dict, lane_keys: list[str]) -> list[dict]:
     return [r for r in spec.get("repos", []) if isinstance(r, dict) and r.get("name") and r["name"] not in bound]
 
 
-def materialize_at_pin(repo_spec: dict, dest: Path, *, workspace_root: Path) -> str:
+def materialize_at_pin(repo_spec: dict, dest: Path, *, workspace_root: Path, source: str | None = None) -> str:
     """Clone one unchanged member into ``dest`` at its pin and return the pin. ONE path for every way this can
     fail: no usable pin and a pin the clone cannot reach both refuse as ``PinRefused``, and a clone that did not
     land on the pin is refused too, because ``clone_and_pin`` answers "was this the first materialization", not
@@ -136,7 +139,7 @@ def materialize_at_pin(repo_spec: dict, dest: Path, *, workspace_root: Path) -> 
         raise PinRefused(name, f"the workspace records a pin {pin[:12]} but no url to fetch it from")
     try:
         clone_and_pin(
-            url,
+            source or url,
             dest,
             pin=pin,
             member=name,
@@ -149,6 +152,107 @@ def materialize_at_pin(repo_spec: dict, dest: Path, *, workspace_root: Path) -> 
     if landed != pin:
         raise PinRefused(name, f"it is at {landed[:12] or 'no commit'} in the lane, not at its pin {pin[:12]}")
     return pin
+
+
+#: A root-level file bigger than this is not copied into a probe: a probe exists so the ecosystem plugins can read
+#: manifests, and a manifest is small. (A lockfile or a data file at the root is not what a plugin describes.)
+_PROBE_FILE_CAP = 2 * 1024 * 1024
+
+
+class Probe(NamedTuple):
+    pin: str
+    source: str  # "local checkout" | "cache" | "url"
+    location: str  # the path or url the pin was found at: the full checkout, if one follows, reads from it too
+    filtered: bool  # False when the source ignored the blobless filter (every local source does) and the fetch was depth-1
+
+
+def pin_sources(repo_spec: dict, workspace_root: Path) -> list[tuple[str, str]]:
+    """Where a member's pin may be found, cheapest first: the workspace's own checkout of the member (no network,
+    and the only place a commit nobody has pushed lives), the repo cache, then the member's url. The checkout is
+    looked for at ``<workspace>/<name>``; a member kept elsewhere falls through to the cache and the url."""
+    from .spec_apply import repo_cache_path
+
+    name = str(repo_spec["name"])
+    found: list[tuple[str, str]] = []
+    local = workspace_root / name
+    if (local / ".git").exists():
+        found.append(("local checkout", str(local)))
+    cache = repo_cache_path(workspace_root, name)
+    if cache.exists():
+        found.append(("cache", str(cache)))
+    url = repo_spec.get("url")
+    if isinstance(url, str) and url:
+        found.append(("url", url))
+    return found
+
+
+#: A local source does not offer a blobless fetch unless told to (measured: without it a depth-1 fetch of the pin
+#: of a 1.1 GB repository took 16 s and wrote 836 MB, with it 0.1 s and 244 KB). Passed as the probe repository's
+#: own ``remote.origin.uploadpack`` so the later blob reads use it too; a network remote decides for itself.
+_LOCAL_UPLOAD_PACK = "git -c uploadpack.allowFilter=true -c uploadpack.allowAnySHA1InWant=true upload-pack"
+
+
+def _is_local(location: str) -> bool:
+    return location.startswith("file://") or Path(location).exists()
+
+
+def _git_in(cwd: Path, *args: str, timeout: int = 600) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, timeout=timeout)
+
+
+def probe_at_pin(repo_spec: dict, dest: Path, *, workspace_root: Path) -> Probe:
+    """Put the ROOT-LEVEL FILES of a member's pinned commit into ``dest`` and nothing else, so the planner can read
+    manifests without a clone. ``dest`` holds plain files: not a repository, no history, no tracked tree to check.
+    The commit is fetched (depth 1, asking for no blobs when the source honours it) into a throwaway repository
+    that is removed here, and the fetched commit must BE the pin before a byte is copied. The same refusals as a
+    full clone: no usable pin or no url, or a pin none of the sources has."""
+    name = str(repo_spec["name"])
+    pin = pin_of(repo_spec)
+    if pin is None:
+        raise PinRefused(name, "the workspace records no usable pin for it (a full 40-hex commit is required)")
+    url = repo_spec.get("url")
+    if not isinstance(url, str) or not url:
+        raise PinRefused(name, f"the workspace records a pin {pin[:12]} but no url to fetch it from")
+    tried: list[str] = []
+    for label, location in pin_sources(repo_spec, workspace_root):
+        with tempfile.TemporaryDirectory(prefix="grip-probe-") as tmp:
+            repo = Path(tmp)
+            if _git_in(repo, "init", "-q").returncode != 0 or _git_in(repo, "remote", "add", "origin", location).returncode != 0:
+                tried.append(f"{label}: could not start a probe repository")
+                continue
+            if _is_local(location):
+                _git_in(repo, "config", "remote.origin.uploadpack", _LOCAL_UPLOAD_PACK)
+            try:
+                fetched = _git_in(repo, "fetch", "-q", "--depth", "1", "--filter=blob:none", "origin", pin)
+            except (subprocess.TimeoutExpired, OSError) as exc:
+                tried.append(f"{label}: fetch did not finish ({type(exc).__name__})")
+                continue
+            if fetched.returncode != 0:
+                tried.append(f"{label}: {(fetched.stderr.decode(errors='replace').strip().splitlines() or ['fetch failed'])[-1]}")
+                continue
+            filtered = b"filtering not recognized" not in fetched.stderr
+            head = _git_in(repo, "rev-parse", "--verify", "-q", "FETCH_HEAD^{commit}")
+            if head.returncode != 0 or head.stdout.decode().strip() != pin:
+                tried.append(f"{label}: fetched {head.stdout.decode().strip()[:12] or 'nothing'}, not the pin")
+                continue
+            listing = _git_in(repo, "ls-tree", "-z", "FETCH_HEAD")
+            if listing.returncode != 0:
+                tried.append(f"{label}: the pin's tree could not be listed")
+                continue
+            dest.mkdir(parents=True, exist_ok=True)
+            for entry in listing.stdout.split(b"\0"):
+                if not entry:
+                    continue
+                meta, _, raw = entry.partition(b"\t")
+                mode, kind, obj = meta.decode().split()[:3]
+                if kind != "blob" or mode not in ("100644", "100755"):
+                    continue
+                body = _git_in(repo, "cat-file", "blob", obj)
+                if body.returncode != 0 or len(body.stdout) > _PROBE_FILE_CAP:
+                    continue
+                (dest / raw.decode()).write_bytes(body.stdout)
+            return Probe(pin, label, location, filtered)
+    raise PinRefused(name, f"its pin {pin[:12]} was not found in any source ({'; '.join(tried) or 'none to try'})")
 
 
 def tree_at(dest: Path, pin: str) -> str:

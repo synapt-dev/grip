@@ -1159,35 +1159,68 @@ def _select_downstream(lane_dir: Path, marker: dict, keys: list[str]) -> tuple[d
             "reason": f"the workspace {workspace} has no spec (neither a workspace spec nor a grip.toml) to read pins from",
         }, None
     others = lane_downstream.unchanged_members({"repos": members}, keys)
-    pinned: dict[str, str] = {}
-    for repo in others:
-        name = str(repo["name"])
-        try:
-            pinned[name] = lane_downstream.materialize_at_pin(repo, _member_dir(lane_dir, name), workspace_root=workspace)
-        except lane_downstream.PinRefused as refusal:
-            raise ReviewRunRefused(
-                "downstream_unpinned",
-                f"{refusal}; a lane that skipped it would claim a result about the changed members alone. To review "
-                "the lane's own members only, pass --no-downstream (the receipt records downstream: skipped)",
-                member=name,
-            ) from refusal
+    # PROBE first: the root-level files of each unchanged member at its pin, enough for the planners to read
+    # manifests (a plugin's `describe` sees root-level files in a probe and nothing deeper). Only the members the
+    # plan then selects are cloned, so a lane pays for what it tests, not for every member of the workspace.
+    probes: dict[str, lane_downstream.Probe] = {}
     try:
-        plan = lane_graph.plan_lane(
-            lane_dir, list(keys) + list(pinned), lane_plugins.plugin_table(os.environ.get("PATH", ""))
-        )
-    except lane_graph.LaneRefused as refusal:
-        raise ReviewRunRefused(refusal.code, refusal.detail) from refusal
-    roles = lane_graph.select_roles(plan, set(keys))
-    unselected = [n for n in pinned if n not in roles.upstream and n not in roles.downstream]
-    for name in unselected:
-        rmtree_or_refuse(_member_dir(lane_dir, name))
+        for repo in others:
+            name = str(repo["name"])
+            try:
+                probes[name] = lane_downstream.probe_at_pin(repo, _member_dir(lane_dir, name), workspace_root=workspace)
+            except lane_downstream.PinRefused as refusal:
+                raise ReviewRunRefused(
+                    "downstream_unpinned",
+                    f"{refusal}; a lane that skipped it would claim a result about the changed members alone. To review "
+                    "the lane's own members only, pass --no-downstream (the receipt records downstream: skipped)",
+                    member=name,
+                ) from refusal
+        try:
+            plan = lane_graph.plan_lane(
+                lane_dir, list(keys) + list(probes), lane_plugins.plugin_table(os.environ.get("PATH", ""))
+            )
+        except lane_graph.LaneRefused as refusal:
+            raise ReviewRunRefused(refusal.code, refusal.detail) from refusal
+        roles = lane_graph.select_roles(plan, set(keys))
+        unselected = [n for n in probes if n not in roles.upstream and n not in roles.downstream]
+        for name in probes:
+            rmtree_or_refuse(_member_dir(lane_dir, name))
+        pinned: dict[str, str] = {}
+        by_name = {str(r["name"]): r for r in others}
+        for name in probes:
+            if name in unselected:
+                continue
+            try:
+                pinned[name] = lane_downstream.materialize_at_pin(
+                    by_name[name], _member_dir(lane_dir, name), workspace_root=workspace, source=probes[name].location
+                )
+            except lane_downstream.PinRefused as refusal:
+                raise ReviewRunRefused(
+                    "downstream_unpinned",
+                    f"{refusal}; a lane that skipped it would claim a result about the changed members alone. To review "
+                    "the lane's own members only, pass --no-downstream (the receipt records downstream: skipped)",
+                    member=name,
+                ) from refusal
+    except BaseException:
+        for name in probes:  # a refused lane leaves nothing of a probe behind
+            if _member_dir(lane_dir, name).exists():
+                rmtree_or_refuse(_member_dir(lane_dir, name))
+        raise
     block = {
         "status": "selected",
         "changed": list(roles.changed),
         "upstream": list(roles.upstream),
         "downstream": list(roles.downstream),
         "not_selected": unselected,
-        "pins": {n: pinned[n] for n in pinned if n not in unselected},
+        "pins": dict(pinned),
+        "sources": {
+            n: {
+                "source": probes[n].source,
+                "filtered": probes[n].filtered,
+                **({"published": "not checked"} if probes[n].source == "local checkout" else {}),
+            }
+            for n in probes
+        },
     }
     if not roles.upstream and not roles.downstream:
         return block, None
@@ -1342,7 +1375,7 @@ def _run_multi_member_lane(
         exc.not_run = [k for k in ran_order if k not in done and k != exc.member]
         exc.downstream = (
             {"status": "refused", "code": exc.code, "reason": exc.detail}
-            if exc.code == "downstream_unpinned"
+            if exc.code in ("downstream_unpinned", "downstream_unreadable", "downstream_pin_conflict")
             else selection
         )
         raise

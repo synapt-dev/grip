@@ -3719,6 +3719,7 @@ def review_run(
             result_line += f" ({len(stale_reports)} stale report(s) ignored; see receipt)"
         typer.echo(result_line)
         typer.echo(f"bound_head_tree: {receipt['bound_head_tree']}")
+        typer.echo(_downstream_line(receipt.get("downstream")))
     else:
         typer.echo(
             f"{receipt['result']}: selected={receipt['selected']} "
@@ -3728,6 +3729,7 @@ def review_run(
         )
         typer.echo(f"bound_head_tree: {receipt['bound_head_tree']}")
         typer.echo(f"install resolved: {receipt['resolved_install_path']}")
+        typer.echo(_downstream_line(receipt.get("downstream")))
     if receipt["result"] != "green":
         raise typer.Exit(code=1)
 

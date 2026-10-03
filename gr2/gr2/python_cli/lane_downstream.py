@@ -34,6 +34,67 @@ def pin_of(repo_spec: dict) -> str | None:
     return None
 
 
+class PinConflict(Exception):
+    """The workspace spec and grip.toml record different pins for one member. Neither wins silently."""
+
+    def __init__(self, member: str, spec_pin: str, root_pin: str) -> None:
+        super().__init__(
+            f"member {member!r}: .grip/workspace_spec.toml records pin {spec_pin[:12]} and grip.toml records "
+            f"{root_pin[:12]}; they must agree, so fix one of them"
+        )
+        self.member, self.spec_pin, self.root_pin = member, spec_pin, root_pin
+
+
+def load_members(workspace_root: Path) -> list[dict] | None:
+    """Every member the workspace declares, as plain ``{name, url, pin}`` dicts, or None when the root carries
+    neither source. Two sources exist: the workspace spec's ``[[repos]]`` (name, url, pin) and the root's
+    ``grip.toml`` ``[[members]]`` (name, pin, and the url under ``[members.remotes] origin``). A root made by
+    ``store init`` alone has only the second. Both are read into the SAME shape and every pin is judged by
+    ``pin_of``, so no source can make a non-commit count as a pin.
+
+    Both present: members are matched by name. Two usable pins that differ refuse (``PinConflict``); a usable pin
+    in one file and none in the other is used; a member only in grip.toml is added. Nothing here guesses."""
+    import tomllib
+
+    from .spec_apply import workspace_spec_path
+
+    spec_path = workspace_spec_path(workspace_root)
+    root_path = workspace_root / "grip.toml"
+    spec_members: list[dict] | None = None
+    root_members: list[dict] | None = None
+    if spec_path.is_file():
+        doc = tomllib.loads(spec_path.read_text())
+        spec_members = [
+            {"name": r.get("name"), "url": r.get("url"), "pin": r.get("pin")}
+            for r in doc.get("repos", []) if isinstance(r, dict) and r.get("name")
+        ]
+    if root_path.is_file():
+        doc = tomllib.loads(root_path.read_text())
+        root_members = []
+        for m in doc.get("members", []):
+            if not (isinstance(m, dict) and m.get("name")):
+                continue
+            remotes = m.get("remotes") if isinstance(m.get("remotes"), dict) else {}
+            root_members.append({"name": m["name"], "url": remotes.get("origin"), "pin": m.get("pin")})
+    if spec_members is None and root_members is None:
+        return None
+    if spec_members is None:
+        return root_members
+    if root_members is None:
+        return spec_members
+    by_name = {m["name"]: m for m in root_members}
+    merged: list[dict] = []
+    for m in spec_members:
+        other = by_name.pop(m["name"], None)
+        if other is not None:
+            mine, theirs = pin_of(m), pin_of(other)
+            if mine and theirs and mine != theirs:
+                raise PinConflict(str(m["name"]), mine, theirs)
+            m = {**m, "pin": mine or theirs, "url": m.get("url") or other.get("url")}
+        merged.append(m)
+    return merged + list(by_name.values())
+
+
 def unchanged_members(spec: dict, lane_keys: list[str]) -> list[dict]:
     """The workspace members the lane does not bind, in spec order. A lane key names a member by its spec name."""
     bound = set(lane_keys)

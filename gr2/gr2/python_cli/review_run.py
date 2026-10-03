@@ -778,6 +778,7 @@ def _run_review_lane(
         "bound_head": repo.get("bound_head", ""),
         "bound_head_tree": bound_tree,
         **body,
+        "downstream": _single_repo_downstream(downstream),
     }
     (lane_dir / _RECEIPT_NAME).write_text(json.dumps(receipt, indent=2) + "\n")
     return receipt
@@ -1114,6 +1115,18 @@ def _order_from_plan(plan: lane_graph.Plan, only: set[str] | None = None) -> lis
     return placed
 
 
+def _single_repo_downstream(requested: bool) -> dict:
+    """What a SINGLE-repo lane's receipt says about downstream. The clone IS the lane directory there, so other
+    members cannot be put beside it without writing inside the repository under review; saying so beats a receipt
+    that is silent about it."""
+    if not requested:
+        return {"status": "skipped", "reason": "--no-downstream: only the lane's own member was run"}
+    return {
+        "status": "not_examined",
+        "reason": "a single-repo lane; downstream is examined for multi-member lanes in this version",
+    }
+
+
 def _select_downstream(lane_dir: Path, marker: dict, keys: list[str]) -> tuple[dict, list[str] | None]:
     """Bring the workspace's UNCHANGED members into the lane at their pins and say which of them take part.
 
@@ -1126,17 +1139,20 @@ def _select_downstream(lane_dir: Path, marker: dict, keys: list[str]) -> tuple[d
     changed, downstream and upstream, and the ones in no role are removed again. Returns the selection record and
     the install order of the members that take part (None when none beyond the lane's own do)."""
     from .clone_exec import rmtree_or_refuse
-    from .spec_apply import workspace_spec_path
-
     recorded = marker.get("workspace_root")
     if not isinstance(recorded, str) or not recorded:
         return {"status": "not_examined", "reason": "the lane records no workspace to read pins from"}, None
     workspace = Path(recorded)
-    spec_path = workspace_spec_path(workspace)
-    if not spec_path.is_file():
-        return {"status": "not_examined", "reason": f"the workspace {workspace} has no spec to read pins from"}, None
-    spec = tomllib.loads(spec_path.read_text())
-    others = lane_downstream.unchanged_members(spec, keys)
+    try:
+        members = lane_downstream.load_members(workspace)
+    except lane_downstream.PinConflict as conflict:
+        raise ReviewRunRefused("downstream_pin_conflict", str(conflict), member=conflict.member) from conflict
+    if members is None:
+        return {
+            "status": "not_examined",
+            "reason": f"the workspace {workspace} has no spec (neither a workspace spec nor a grip.toml) to read pins from",
+        }, None
+    others = lane_downstream.unchanged_members({"repos": members}, keys)
     pinned: dict[str, str] = {}
     for repo in others:
         name = str(repo["name"])
@@ -1472,6 +1488,7 @@ def run_test_command_in_lane(
             "skipped": summary["skipped"],
             "errors": summary["errors"],
             "output_log": _OUTPUT_LOG_NAME,
+            "downstream": _single_repo_downstream(True),
             "result": result,
         }
         if report_pattern is not None:

@@ -70,6 +70,52 @@ class Plan:
         return tuple(g for g in self.groups if g.cyclic)
 
 
+@dataclass(frozen=True)
+class Roles:
+    """Which lane members play which part in a run, by member name, in marker order. A member is in at most one."""
+
+    changed: tuple[str, ...]  # the members the lane binds: installed at the bound head, tested
+    upstream: tuple[str, ...]  # members the changed and downstream members need installed, not tested
+    downstream: tuple[str, ...]  # members that need a changed member (install or test edge), tested
+
+
+def select_roles(plan: Plan, changed: set[str] | frozenset[str]) -> Roles:
+    """Split the plan's members into changed, downstream and upstream.
+
+    Downstream is reverse reachability from the changed members to a fixed point over install AND test edges (a
+    member whose dev-dependency is the changed one runs tests that exercise it). Upstream is what the changed and
+    downstream members need INSTALLED, forward over install edges, so a downstream member can be installed at all
+    and the changed member does not come from a registry. A member reached both ways is downstream (it is tested).
+    A member reached neither way is in no role and the run never touches it."""
+    member_of = {u.id: u.member for u in plan.units}
+    changed_units = {u.id for u in plan.units if u.member in changed}
+    needs: dict[str, set[str]] = {u.id: set() for u in plan.units}  # unit -> units it needs installed
+    needed_by: dict[str, set[str]] = {u.id: set() for u in plan.units}  # unit -> units that need it, either kind
+    for e in plan.edges:
+        needed_by[e.dst].add(e.src)
+        if e.kind == INSTALL:
+            needs[e.src].add(e.dst)
+
+    def closure(start: set[str], step: dict[str, set[str]]) -> set[str]:
+        seen, todo = set(start), list(start)
+        while todo:
+            for nxt in step[todo.pop()]:
+                if nxt not in seen:
+                    seen.add(nxt)
+                    todo.append(nxt)
+        return seen
+
+    down_members = {member_of[u] for u in closure(changed_units, needed_by)} - set(changed)
+    base_units = changed_units | {u.id for u in plan.units if u.member in down_members}
+    up_members = {member_of[u] for u in closure(base_units, needs)} - set(changed) - down_members
+    order = list(dict.fromkeys(u.member for u in plan.units))
+    return Roles(
+        changed=tuple(m for m in order if m in changed),
+        upstream=tuple(m for m in order if m in up_members),
+        downstream=tuple(m for m in order if m in down_members),
+    )
+
+
 class LaneRefused(Exception):
     """The lane cannot be planned, and the plan phase says so before anything installs. ``code`` is one of
     ``plugin_failure``, ``plugin_protocol_mismatch``, ``member_name_clash``, ``group_unplannable``."""

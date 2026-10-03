@@ -31,7 +31,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import lane_graph, lane_plugins
+from . import lane_downstream, lane_graph, lane_plugins
 
 # An in-repo hint read when `--install` is omitted. It lives at the REPO ROOT
 # (the lane), NOT in a pyproject table, on purpose: a repo whose importable
@@ -619,6 +619,7 @@ def run_review_lane(
     install: list[str] | None = None,
     system_site_packages: bool = False,
     order: list[str] | None = None,
+    downstream: bool = False,
 ) -> dict:
     """Run the lane (see `_run_review_lane`) and, on a refusal that is about a real
     lane, leave a receipt recording why (review-run door 2). `no_marker`/`not_open_gr`
@@ -633,6 +634,7 @@ def run_review_lane(
             install=install,
             system_site_packages=system_site_packages,
             order=order,
+            downstream=downstream,
         )
     except ReviewRunRefused as exc:
         if exc.code not in _NOT_A_LANE_CODES:
@@ -649,6 +651,7 @@ def _run_review_lane(
     install: list[str] | None = None,
     system_site_packages: bool = False,
     order: list[str] | None = None,
+    downstream: bool = False,
 ) -> dict:
     """Create `<lane>/.venv`, install the reconstructed tree, and run pytest — but
     only after the lane's tree is proven to equal the bound head-tree and the import
@@ -675,6 +678,7 @@ def _run_review_lane(
             install=install,
             system_site_packages=system_site_packages,
             order=order,
+            downstream=downstream,
         )
     repo = repos[0]
     if order is not None and list(order) != [repo.get("key", "")]:
@@ -1035,6 +1039,60 @@ def _derive_member_order(lane_dir: Path, keys: list[str], plugins: dict | None =
     return placed
 
 
+def _select_downstream(lane_dir: Path, marker: dict, keys: list[str]) -> dict | None:
+    """Bring the workspace's UNCHANGED members into the lane at their pins and say which of them take part.
+
+    The workspace is the one the lane was opened from (the marker names it); a lane with no workspace, or a
+    workspace with no spec, has no pins to read and is left exactly as it was (None). Every member the lane does
+    not bind is put at its pin FIRST, because what depends on the changed members can only be learned from the
+    members' own manifests at those pins; a member with no usable pin, or one whose pin cannot be reached,
+    refuses the whole lane as ``downstream_unpinned`` before any venv exists. Then the members are split into
+    changed, downstream and upstream, and the ones in no role are removed again. This SELECTS and materializes;
+    running the roles is the next change, so the selection says so."""
+    from .clone_exec import rmtree_or_refuse
+    from .spec_apply import workspace_spec_path
+
+    recorded = marker.get("workspace_root")
+    if not isinstance(recorded, str) or not recorded:
+        return None
+    workspace = Path(recorded)
+    spec_path = workspace_spec_path(workspace)
+    if not spec_path.is_file():
+        return None
+    spec = tomllib.loads(spec_path.read_text())
+    others = lane_downstream.unchanged_members(spec, keys)
+    pinned: dict[str, str] = {}
+    for repo in others:
+        name = str(repo["name"])
+        try:
+            pinned[name] = lane_downstream.materialize_at_pin(repo, _member_dir(lane_dir, name), workspace_root=workspace)
+        except lane_downstream.PinRefused as refusal:
+            raise ReviewRunRefused(
+                "downstream_unpinned",
+                f"{refusal}; a lane that skipped it would claim a result about the changed members alone",
+                member=name,
+            ) from refusal
+    try:
+        plan = lane_graph.plan_lane(
+            lane_dir, list(keys) + list(pinned), lane_plugins.plugin_table(os.environ.get("PATH", ""))
+        )
+    except lane_graph.LaneRefused as refusal:
+        raise ReviewRunRefused(refusal.code, refusal.detail) from refusal
+    roles = lane_graph.select_roles(plan, set(keys))
+    unselected = [n for n in pinned if n not in roles.upstream and n not in roles.downstream]
+    for name in unselected:
+        rmtree_or_refuse(_member_dir(lane_dir, name))
+    return {
+        "status": "selected",
+        "changed": list(roles.changed),
+        "upstream": list(roles.upstream),
+        "downstream": list(roles.downstream),
+        "not_selected": unselected,
+        "pins": {n: pinned[n] for n in pinned if n not in unselected},
+        "executed": "changed members only; upstream and downstream members are materialized at their pins and not yet run",
+    }
+
+
 def _run_multi_member_lane(
     lane_dir: Path,
     marker: dict,
@@ -1046,6 +1104,7 @@ def _run_multi_member_lane(
     install: list[str] | None,
     system_site_packages: bool,
     order: list[str] | None,
+    downstream: bool = False,
 ) -> dict:
     """Run every member of a multi-member lane in ONE shared venv, in a stated order.
 
@@ -1068,6 +1127,7 @@ def _run_multi_member_lane(
     members: list[dict] = []
     done: list[str] = []
     current: str | None = None
+    selection: dict | None = None
     try:
         if package is not None or install is not None:
             raise ReviewRunRefused(
@@ -1101,6 +1161,8 @@ def _run_multi_member_lane(
             # and that receipt must not label the untouched marker order as derived.
             ran_order = _derive_member_order(lane_dir, ran_order)
             order_source = "dependencies"
+        if downstream:
+            selection = _select_downstream(lane_dir, marker, ran_order)
         # Taken after the checks above and before the venv and any install: everything in it already
         # passed the drift check, so what is new later was written by an install or by tests.
         baselines = {member: list_untracked(_member_dir(lane_dir, member)) for member in ran_order}
@@ -1158,6 +1220,7 @@ def _run_multi_member_lane(
         "order_source": order_source,
         "members": members,
         "not_run": [],
+        **({"downstream": selection} if selection is not None else {}),
         "selected": sum(m["selected"] for m in members),
         "passed": sum(m["passed"] for m in members),
         "failed": sum(m["failed"] for m in members),

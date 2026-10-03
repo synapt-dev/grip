@@ -31,6 +31,8 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import lane_graph, lane_plugins
+
 # An in-repo hint read when `--install` is omitted. It lives at the REPO ROOT
 # (the lane), NOT in a pyproject table, on purpose: a repo whose importable
 # package is a SUBDIR (grip's is `gr2/`) has no top-level pyproject, which is the
@@ -997,57 +999,39 @@ def _member_distribution(mdir: Path) -> tuple[str | None, list[str]]:
     return (_normalized_dist_name(name) if isinstance(name, str) and name else None), required
 
 
-def _derive_member_order(lane_dir: Path, keys: list[str]) -> list[str]:
-    """Install order from what each member DECLARES: a member installs after every other lane
-    member whose distribution name appears in its `[project].dependencies`. uv does the same
-    for a workspace (every member into one .venv in dependency order), so nobody has to pass an
-    order by hand; `--order` stays the explicit override and bypasses this.
+def _derive_member_order(lane_dir: Path, keys: list[str], plugins: dict | None = None) -> list[str]:
+    """Install order from what each member DECLARES, read by the ecosystem plugins: a member installs after
+    every other lane member that one of its units needs. The built-in Python plugin reads each member's
+    `[project].dependencies` (what uv does for a workspace), and every `grip-ecosystem-<name>` executable on the
+    USER's PATH may claim members of other ecosystems; a plugin never comes from a member, so the change under
+    review cannot choose its own order. `--order` stays the explicit override and bypasses this.
 
-    Stable: among members that are ready, the one earliest in the marker order goes first, so a
-    lane with no declared dependencies between its members keeps the marker order it always had.
-    A cycle is refused by name rather than broken silently; two members that claim one
-    distribution name are refused too, because an edge to that name would point at either."""
-    dist: dict[str, str | None] = {}
-    requires: dict[str, list[str]] = {}
-    for key in keys:
-        dist[key], requires[key] = _member_distribution(_member_dir(lane_dir, key))
-    owner: dict[str, str] = {}
-    for key in keys:
-        name = dist[key]
-        if name is None:
-            continue
-        if name in owner:
-            raise ReviewRunRefused(
-                "member_name_clash",
-                f"members {owner[name]!r} and {key!r} both declare the distribution {name!r}, so "
-                "the install order cannot be derived; pass --order to name it",
-            )
-        owner[name] = key
-    needs = {
-        key: [owner[n] for n in requires[key] if n in owner and owner[n] != key] for key in keys
-    }
+    Stable: among members that are ready, the one earliest in the marker order goes first, so a lane with no
+    declared dependencies between its members keeps the marker order it always had. A cycle is refused by name
+    (a group installed in one invocation is a later step), two members claiming one unit are refused too, and a
+    plugin that fails refuses the lane rather than falling back to the marker order."""
+    table = plugins if plugins is not None else lane_plugins.plugin_table(os.environ.get("PATH", ""))
+    try:
+        plan = lane_graph.plan_lane(lane_dir, list(keys), table)
+    except lane_graph.LaneRefused as refusal:
+        raise ReviewRunRefused(refusal.code, refusal.detail) from refusal
+    member_of = {u.id: u.member for u in plan.units}
+    cyclic = plan.cyclic_groups
+    if cyclic:
+        # The first elementary loop of the first cyclic group, in member names: the loop and nothing outside it.
+        loop = plan.loops[cyclic[0].index][0][0]
+        walk = [member_of[u] for u in loop]
+        raise ReviewRunRefused(
+            "dependency_cycle",
+            "the lane's members depend on each other in a cycle, so no install order exists: "
+            + " -> ".join(walk + [walk[0]])
+            + "; pass --order to choose one",
+        )
     placed: list[str] = []
-    remaining = list(keys)
-    while remaining:
-        ready = next((k for k in remaining if all(d in placed for d in needs[k])), None)
-        if ready is None:
-            # Everything left waits on something left: walk the waits from the first one until a
-            # member repeats, and print that loop.
-            walk = [remaining[0]]
-            while True:
-                nxt = next(d for d in needs[walk[-1]] if d in remaining)
-                if nxt in walk:
-                    walk = walk[walk.index(nxt):] + [nxt]
-                    break
-                walk.append(nxt)
-            raise ReviewRunRefused(
-                "dependency_cycle",
-                "the lane's members depend on each other in a cycle, so no install order exists: "
-                + " -> ".join(walk)
-                + "; pass --order to choose one",
-            )
-        placed.append(ready)
-        remaining.remove(ready)
+    for group in plan.groups:
+        for unit in group.units:
+            if member_of[unit] not in placed:
+                placed.append(member_of[unit])
     return placed
 
 

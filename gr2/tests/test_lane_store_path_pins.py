@@ -207,3 +207,29 @@ def test_the_single_repo_verdict_line_says_downstream_was_not_examined(tmp_path:
                      shlex.join(single._offline_install(lane)))
     assert code == 0, out
     assert "downstream: not examined (a single-repo lane; downstream is examined for multi-member lanes in this version)" in out
+
+
+# --- a file that cannot be read is a refusal naming it, not a traceback (the head's follow-on, 1.0526) ----
+
+
+@pytest.mark.parametrize("which", ["grip.toml", ".grip/workspace_spec.toml"])
+def test_a_malformed_pin_file_refuses_naming_the_file(tmp_path: Path, which: str) -> None:
+    lane, root, _ = _store_path_lane(tmp_path, pin="pin")
+    bad = root / which
+    bad.parent.mkdir(parents=True, exist_ok=True)
+    bad.write_text('[[members]\nname = "api"\n')
+    with pytest.raises(rr.ReviewRunRefused) as exc:
+        rr.run_review_lane(lane, pytest_args=["-q"])
+    assert exc.value.code == "downstream_unreadable"
+    assert str(bad) in exc.value.detail and "--no-downstream" in exc.value.detail
+    assert not (lane / rr._VENV_DIRNAME).exists() and not (lane / "api").exists()
+
+
+def test_an_unreadable_pin_file_is_the_same_refusal_and_the_flag_still_skips(tmp_path: Path) -> None:
+    lane, root, _ = _store_path_lane(tmp_path, pin="pin")
+    (root / "grip.toml").write_bytes(b"\xff\xfe not utf-8 \x00")
+    with pytest.raises(rr.ReviewRunRefused) as exc:
+        rr.run_review_lane(lane, pytest_args=["-q"])
+    assert exc.value.code == "downstream_unreadable" and "UnicodeDecodeError" in exc.value.detail
+    receipt = rr.run_review_lane(lane, pytest_args=["-q"], downstream=False)
+    assert receipt["downstream"]["status"] == "skipped"

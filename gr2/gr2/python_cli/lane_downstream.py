@@ -45,6 +45,23 @@ class PinConflict(Exception):
         self.member, self.spec_pin, self.root_pin = member, spec_pin, root_pin
 
 
+class MembersUnreadable(Exception):
+    """A file that records the members' pins cannot be read. Names the file; a lane never guesses around it."""
+
+    def __init__(self, path: Path, reason: str) -> None:
+        super().__init__(f"cannot read {path}: {reason}")
+        self.path, self.reason = path, reason
+
+
+def _read_toml(path: Path) -> dict:
+    import tomllib
+
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError) as exc:
+        raise MembersUnreadable(path, f"{type(exc).__name__}: {exc}") from exc
+
+
 def load_members(workspace_root: Path) -> list[dict] | None:
     """Every member the workspace declares, as plain ``{name, url, pin}`` dicts, or None when the root carries
     neither source. Two sources exist: the workspace spec's ``[[repos]]`` (name, url, pin) and the root's
@@ -54,8 +71,6 @@ def load_members(workspace_root: Path) -> list[dict] | None:
 
     Both present: members are matched by name. Two usable pins that differ refuse (``PinConflict``); a usable pin
     in one file and none in the other is used; a member only in grip.toml is added. Nothing here guesses."""
-    import tomllib
-
     from .spec_apply import workspace_spec_path
 
     spec_path = workspace_spec_path(workspace_root)
@@ -63,13 +78,13 @@ def load_members(workspace_root: Path) -> list[dict] | None:
     spec_members: list[dict] | None = None
     root_members: list[dict] | None = None
     if spec_path.is_file():
-        doc = tomllib.loads(spec_path.read_text())
+        doc = _read_toml(spec_path)
         spec_members = [
             {"name": r.get("name"), "url": r.get("url"), "pin": r.get("pin")}
             for r in doc.get("repos", []) if isinstance(r, dict) and r.get("name")
         ]
     if root_path.is_file():
-        doc = tomllib.loads(root_path.read_text())
+        doc = _read_toml(root_path)
         root_members = []
         for m in doc.get("members", []):
             if not (isinstance(m, dict) and m.get("name")):

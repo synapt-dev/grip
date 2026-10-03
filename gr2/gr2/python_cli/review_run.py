@@ -1147,6 +1147,12 @@ def _select_downstream(lane_dir: Path, marker: dict, keys: list[str]) -> tuple[d
         members = lane_downstream.load_members(workspace)
     except lane_downstream.PinConflict as conflict:
         raise ReviewRunRefused("downstream_pin_conflict", str(conflict), member=conflict.member) from conflict
+    except lane_downstream.MembersUnreadable as unreadable:
+        raise ReviewRunRefused(
+            "downstream_unreadable",
+            f"{unreadable}; fix the file, or to review the lane's own members only pass --no-downstream "
+            f"(the receipt records downstream: skipped)",
+        ) from unreadable
     if members is None:
         return {
             "status": "not_examined",

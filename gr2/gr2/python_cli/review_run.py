@@ -473,6 +473,21 @@ _COUNT_RE = re.compile(
 )
 
 
+# Terminal colour (CSI) escapes. FORCE_COLOR, a caller's own `--color=yes`, or a CI that colours its logs puts them
+# INSIDE the summary line and the `FAILED <id>` lines, which then no longer match the patterns below: a red run
+# came back with an empty failed-id list. Stripped here, at the parse seam, because only the parser sees every
+# input (a `--color=no` we add can be overridden by a later `--color=yes`, and FORCE_COLOR can beat NO_COLOR).
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+# OSC sequences (`ESC ] ... BEL` or `ESC ] ... ESC \\`), notably the OSC 8 hyperlink a terminal-aware plugin wraps
+# round a node id: left in, the link target is read as part of the id and a WRONG id lands in the receipt, which is
+# worse than an empty one. Stripped BEFORE the CSI pass.
+_OSC_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+
+
+def strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", _OSC_RE.sub("", text))
+
+
 def parse_pytest_summary(stdout: str) -> dict | None:
     """Counts from pytest's SUMMARY LINE, never the exit code. Handles both the
     barred normal-mode line (`===== 3 passed in 0.01s =====`) and the bare `-q` line
@@ -480,7 +495,7 @@ def parse_pytest_summary(stdout: str) -> dict | None:
     collected/selected/deselected/passed/failed/skipped/xfailed/errors, or None if
     no summary line exists (unparseable output -> the caller refuses). A run where no
     test ran yields selected==0 (the caller refuses)."""
-    lines = stdout.splitlines()
+    lines = strip_ansi(stdout).splitlines()
     summary_body: str | None = None
     for line in reversed(lines):
         if _SUMMARY_LINE_RE.search(line):
@@ -556,7 +571,7 @@ def parse_failed_ids(output: str) -> list[str]:
     """Return the sorted unique node ids pytest reported as FAILED or ERROR in
     `output`'s short test summary. A count of failures with no ids is a dead end
     for a reviewer; this is the path back to the exact tests to re-run."""
-    return sorted({m.group(1) for m in _FAILED_ID_RE.finditer(output)})
+    return sorted({m.group(1) for m in _FAILED_ID_RE.finditer(strip_ansi(output))})
 
 
 def merge_report_flags(pytest_args: list[str]) -> list[str]:

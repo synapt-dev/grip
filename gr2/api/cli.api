@@ -4,6 +4,7 @@ ref   refs/dev.synapt/__members__/<member>/heads/*                    reserved
 ref   refs/dev.synapt/__overlays__/<member>/...                       reserved
 # add
 arg   add paths <str>                                                 stable
+flag  add --lane                                                      stable
 flag  add --repo-path <str>                                           stable
 verb  add                                                             stable
 # apply

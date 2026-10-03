@@ -399,14 +399,26 @@ def test_app_lane_create_materialized_event_payload_has_lane_kind(tmp_path: Path
     assert "bound_worktree" not in payloads[0]
 
 
-def test_app_lane_create_requires_branch_without_bind(tmp_path: Path) -> None:
-    import typer
+def test_app_lane_create_defaults_the_branch_to_the_lane_name_without_bind(tmp_path: Path, monkeypatch) -> None:
+    """Superseded rule: this row used to assert `--branch is required unless --bind`. Since tier A3 the branch of a
+    materialized lane is the lane name when it is left out (announced on stderr, checked against the remotes)."""
     workspace = _workspace(tmp_path)
-    with pytest.raises(typer.BadParameter, match="branch is required"):
+    seen: dict = {}
+
+    class _Stop(Exception):
+        pass
+
+    def capture(ns):
+        seen["branch"], seen["repos"] = ns.branch, ns.repos
+        raise _Stop
+
+    monkeypatch.setattr(app_module.lane_proto, "create_lane", capture)
+    with pytest.raises(_Stop):
         app_module.lane_create(
             workspace, "atlas", "m", repos="app", branch=None,
             lane_type="feature", source="manual", command=[], manual_hooks=False, bind=None,
         )
+    assert seen == {"branch": "m", "repos": "app"}
 
 
 # --------------------------------------------------------------------------- #

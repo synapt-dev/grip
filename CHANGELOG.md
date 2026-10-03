@@ -21,7 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an older commit than the tip the lane forks from and reads as pushed work too; pass `--branch <name>` to reuse it
   or pick another lane name. If a workspace file cannot be read, a defaulted branch is refused (name it with `--branch`),
   because the check cannot be made; a typed `--repos` entry the workspace files do not declare is named as not checked. `lane create` on a root that has no workspace spec (a root made by `store init` holds
-  only `grip.toml`) refuses in one sentence before writing anything and names `gr2 workspace init`. `--repos` stays
+  only `grip.toml`) writes the spec from its members, announces that step, and builds the lane. If creation refuses
+  before a usable lane exists, it rolls back the spec this call wrote. With neither a spec nor members it still
+  refuses before writing anything and names `gr2 workspace init`. `--repos` stays
   required with `--bind`.
 - **`gr2 add` can stage a whole lane, and will not stage the workspace root by accident.** `gr2 add --lane .` stages
   in every repo of the entered lane (the unit and lane are read from where you are and named on stderr).

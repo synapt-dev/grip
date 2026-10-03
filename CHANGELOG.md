@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`gr2 lane create` takes the repos and the branch from the workspace when you leave them out.** With no `--repos`
+  it makes the lane over every repo the workspace declares (the spec's repos, and a `store init` root's
+  `grip.toml` members) and says how many clones that is; with no `--branch` the branch is the lane name, verbatim.
+  Each value gr2 filled in is one stderr line (`gr2: repos=a,b (every repo of the workspace spec; this makes 2
+  clones)`, `gr2: branch=demo (the lane name)`), hushed by `GR2_QUIET_CONTEXT=1`; a typed value wins and prints
+  nothing. A defaulted branch is checked against each repo's remote under ONE 20 s budget: when `demo` already
+  exists there at a commit other than the tip the lane forks from, `lane create` refuses and names both ways out
+  (`--branch demo` to continue that work, or another lane name); a remote that cannot be asked is named as not
+  checked and the lane is still made (that line is printed even when `GR2_QUIET_CONTEXT` is set, because a safety
+  check that did not run is not information to hush). A branch left over from earlier, already-merged work sits at
+  an older commit than the tip the lane forks from and reads as pushed work too; pass `--branch <name>` to reuse it
+  or pick another lane name. `lane create` on a root that has no workspace spec (a root made by `store init` holds
+  only `grip.toml`) refuses in one sentence before writing anything and names `gr2 workspace init`. `--repos` stays
+  required with `--bind`.
+- **`gr2 add` can stage a whole lane, and will not stage the workspace root by accident.** `gr2 add --lane .` stages
+  in every repo of the entered lane (the unit and lane are read from where you are and named on stderr).
+  `gr2 add .` inside a lane's repo still stages that repo only. Standing at the workspace root while a lane is
+  entered, `add` without `--lane` or `--repo-path` now refuses (exit 2) and says how to stage the lane, one repo,
+  or the root on purpose (`--repo-path .`); with no lane entered it behaves as before.
 - **`gr2 lane show`, `lane enter`, `lane exit`, `lane resolve` and `lane create` no longer make you type what the
   workspace already holds.** Inside a workspace the root is found from the current directory, and the unit from
   the lane you have entered (or the workspace's only unit); each value gr2 filled in is named on stderr in one line

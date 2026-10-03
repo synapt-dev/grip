@@ -59,6 +59,13 @@ def test_sink_failure_cannot_replace_lane_or_lease_outcome(
     )
 
     if operation == "create":
+        # a lane is made from a workspace spec; lane create refuses a root that has none
+        (tmp_path / ".grip").mkdir()
+        (tmp_path / ".grip" / "workspace_spec.toml").write_text(
+            'schema_version = 1\nname = "t"\n\n[[repos]]\nname = "app"\npath = "repos/app"\n'
+            'url = "https://example.invalid/app.git"\n\n[[units]]\nname = "atlas"\n'
+            'path = "agents/atlas/home"\nrepos = ["app"]\n'
+        )
         app_module.lane_create(
             tmp_path, "atlas", "feat/test", "app", "dev", "feature", "manual", [], False, None
         )

@@ -6,6 +6,8 @@ import io
 import json
 import os
 import re
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -1480,6 +1482,74 @@ def branch_cmd(
     typer.echo(f"Switched to branch '{name}'")
 
 
+def _workspace_above_cwd():
+    """(root Resolved, entered units) for the workspace the current directory is inside, or None when it is inside
+    none (a plain repository: `add` behaves as it always did there)."""
+    from . import context as ctx_mod
+
+    try:
+        root = ctx_mod.resolve_root(None, Path.cwd())
+    except ctx_mod.ContextRefused:
+        return None
+    return root, ctx_mod.entered_units(Path(root.value))
+
+
+def _refuse_add_at_a_workspace_root_with_a_lane() -> None:
+    """`add .` where the repository it would stage is the workspace's OWN root, while a lane is entered: the lane's
+    repos are somewhere else, and staging the root's repository there is the mistake this refuses. Standing in a
+    lane repo, or any other repository, is untouched."""
+    found = _workspace_above_cwd()
+    if found is None:
+        return
+    root, entered = found
+    if not entered:
+        return
+    top = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, cwd=str(Path.cwd()))
+    if top.returncode != 0 or Path(top.stdout.strip()).resolve() != Path(root.value).resolve():
+        return
+    lanes = ", ".join(f"{u}/{n}" for u, n in sorted(entered.items()))
+    typer.echo(
+        f"Error: {Path.cwd()} is inside the workspace root's own repository, not a lane repo, and a lane is entered ({lanes}). "
+        "Nothing was staged. To stage every repo of the entered lane, pass --lane; to stage one repo, "
+        "cd into it or pass --repo-path <repo>; to stage the root's own repository on purpose, pass --repo-path .",
+        err=True,
+    )
+    raise typer.Exit(code=2)
+
+
+def _add_in_lane(paths: list[str]) -> None:
+    """`add --lane`: stage the paths in EVERY repo of the entered lane. The root, the unit and the lane come from
+    the resolver (the workspace above the current directory, the only unit with an entered lane, that unit's
+    current lane), each announced on stderr; none of them can be guessed between two candidates."""
+    from . import context as ctx_mod
+
+    try:
+        root = ctx_mod.resolve_root(None, Path.cwd())
+        unit = ctx_mod.resolve_unit(Path(root.value), None)
+        lane_item = ctx_mod.resolve_lane(Path(root.value), unit.value)
+    except ctx_mod.ContextRefused as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    ctx_mod.announce({"root": root, "unit": unit, "lane": lane_item}, root=root, quiet=ctx_mod.quiet_from_env())
+    workspace_root = Path(root.value).resolve()
+    doc = lane_proto.load_lane_doc(workspace_root, unit.value, lane_item.value)
+    failed = False
+    for key, repo_root in commit_ops._lane_repo_targets(workspace_root, unit.value, lane_item.value, doc):
+        try:
+            result = add_ops.stage_files(repo_root, paths)
+        except (add_ops.AddError, gitops.OutsideRepoError, gitops.GitMissingError) as exc:
+            typer.echo(f"{key}: FAILED: {exc}", err=True)
+            failed = True
+            continue
+        typer.echo(
+            f"{key}: staged {len(result.staged_files)} path(s): {', '.join(result.staged_files)}"
+            if result.staged_files
+            else f"{key}: no changes staged for the requested paths"
+        )
+    if failed:
+        raise typer.Exit(code=1)
+
+
 @app.command("add")
 def add_cmd(
     paths: list[str] = typer.Argument(..., help="Paths or pathspecs to stage"),
@@ -1488,8 +1558,25 @@ def add_cmd(
         "--repo-path",
         help="Repo to operate on (defaults to cwd; gr2 verbs are single-repo)",
     ),
+    lane: bool = typer.Option(
+        False,
+        "--lane",
+        help="Stage in EVERY repo of the entered lane (the workspace, unit and lane are read from where you are)",
+    ),
 ) -> None:
-    """Stage paths in one repository, including tracked deletions."""
+    """Stage paths in one repository, including tracked deletions.
+
+    Standing inside a lane's repo, `add .` stages that repo. Standing at the workspace root with a lane entered,
+    it refuses rather than stage the root's own repository by accident: pass --lane for every repo of the lane,
+    or --repo-path for one."""
+    if lane and repo_path is not None:
+        typer.echo("Error: --lane stages every repo of the lane; do not combine it with --repo-path", err=True)
+        raise typer.Exit(code=2)
+    if lane:
+        _add_in_lane(paths)
+        return
+    if repo_path is None:
+        _refuse_add_at_a_workspace_root_with_a_lane()
     target = (repo_path or Path.cwd()).resolve()
     try:
         gitops.require_git_repo(target, "add")
@@ -2273,13 +2360,81 @@ def _announce_context(ctx: typer.Context, *, actor: Optional[str] = None, with_a
     return items, actor_value
 
 
+def _refuse_lane_create_without_a_spec(workspace_root: Path) -> None:
+    """Lanes are made from the workspace spec. A root made by `store init` alone holds only grip.toml, and the lane
+    machinery reads the spec before it writes anything, so without this the stranger meets a traceback. Refused
+    first, before a default is chosen, a remote is asked or a byte is written, in one sentence with the way out."""
+    from .spec_apply import workspace_spec_path
+
+    if workspace_spec_path(workspace_root).is_file():
+        return
+    typer.echo(
+        f"Error: {workspace_root} has no workspace spec ({workspace_spec_path(workspace_root).relative_to(workspace_root)}), "
+        "and a lane is made from one; a root made by `store init` holds only grip.toml. "
+        f"Run `gr2 workspace init {workspace_root}` to write the spec from the repos beside grip.toml, then create the lane again. "
+        "Nothing was created.",
+        err=True,
+    )
+    raise typer.Exit(code=2)
+
+
+def _lane_create_defaults(workspace_root: Path, lane_name: str, repos: Optional[str], branch: Optional[str],
+                          bind: Optional[Path], items: dict) -> tuple[str, str]:
+    """What `lane create` takes from the workspace when it is not told: every repo, and the lane's own name as the
+    branch. Each default is announced on stderr like the resolver's (and hushed the same way); a typed value wins
+    and prints nothing. The branch default is checked against the remotes before anything is created."""
+    from . import context as ctx_mod
+    from . import lane_defaults, lane_downstream
+
+    quiet = ctx_mod.quiet_from_env()
+    announced: dict[str, ctx_mod.Resolved] = {}
+    if repos is None:
+        if bind is not None:
+            raise typer.BadParameter("--repos is required with --bind (a bound lane is single-repo)")
+        try:
+            declared = lane_defaults.workspace_repos(workspace_root, members=False)
+        except lane_downstream.MembersUnreadable as exc:
+            raise typer.BadParameter(f"{exc}; name the repos with --repos, or fix the file")
+        if not declared:
+            raise typer.BadParameter(
+                f"the workspace spec at {workspace_root} declares no repos, so there is nothing to default to; name them with --repos"
+            )
+        repos = ",".join(r.name for r in declared)
+        announced["repos"] = ctx_mod.Resolved(repos, f"every repo of the workspace spec; this makes {len(declared)} clone{'s' if len(declared) != 1 else ''}")
+    if bind is None and not branch:
+        branch = lane_name
+        announced["branch"] = ctx_mod.Resolved(lane_name, "the lane name")
+        chosen = {r.strip() for r in repos.split(",") if r.strip()}
+        try:
+            known = lane_defaults.workspace_repos(workspace_root)
+        except lane_downstream.MembersUnreadable as exc:
+            raise typer.BadParameter(f"{exc}; the branch {branch!r} cannot be checked against the remotes, so name the branch with --branch, or fix the file")
+        declared = [r for r in known if r.name in chosen]
+        result = lane_defaults.check_remote_branch(declared, branch)
+        unasked = sorted(chosen - {r.name for r in declared})
+        result.not_checked.extend(f"{name} (not declared in the workspace files)" for name in unasked)
+        if result.collisions:
+            c = result.collisions[0]
+            more = f" (and {len(result.collisions) - 1} more repo{'s' if len(result.collisions) > 2 else ''})" if len(result.collisions) > 1 else ""
+            raise typer.BadParameter(
+                f"the branch {branch!r} already exists on {c.repo}'s remote at {c.remote_tip[:12]}{more}, which is not the tip of {c.base_ref} "
+                f"({c.base_tip[:12]}) the lane forks from, so it is work that is already pushed. Two readings: to continue that work, "
+                f"pass --branch {branch} to use the existing branch; to start something new, pick another lane name."
+            )
+        if result.not_checked:  # a skipped SAFETY check is not information to hush
+            print(f"gr2: branch {branch!r} was not checked against the remote for: {'; '.join(result.not_checked)}", file=sys.stderr)
+    if announced:
+        ctx_mod.announce(announced, root=items.get("root"), quiet=quiet)
+    return repos, branch or ""
+
+
 @lane_app.command("create", cls=ContextCommand)
 def lane_create(
     workspace_root: Path,
     owner_unit: str,
     lane_name: str,
-    repos: str = typer.Option(..., help="Comma-separated repo names"),
-    branch: Optional[str] = typer.Option(None, help="Default branch or repo=branch mappings (required unless --bind; ignored with --bind, where the branch is read from the bound worktree)"),
+    repos: Optional[str] = typer.Option(None, help="Comma-separated repo names. Omitted: every repo of the workspace (required with --bind)"),
+    branch: Optional[str] = typer.Option(None, help="Default branch or repo=branch mappings. Omitted: the lane name (ignored with --bind, where the branch is read from the bound worktree)"),
     lane_type: str = typer.Option("feature", "--type", help="Lane type"),
     source: str = typer.Option("manual", help="Creation source label"),
     command: list[str] = typer.Option(None, "--command", help="Default command for the lane"),
@@ -2297,10 +2452,10 @@ def lane_create(
     <lane>` pins each repo at that fork base .. head and prints the gr:<sha> for
     `review open-project`. A `--bind` lane owns no clone and is single-repo.
     """
-    _announce_context(ctx)
+    items, _ = _announce_context(ctx)
     workspace_root = workspace_root.resolve()
-    if bind is None and not branch:
-        raise typer.BadParameter("--branch is required unless --bind is given")
+    _refuse_lane_create_without_a_spec(workspace_root)
+    repos, branch = _lane_create_defaults(workspace_root, lane_name, repos, branch, bind, items)
     ns = SimpleNamespace(
         workspace_root=workspace_root,
         owner_unit=owner_unit,

@@ -3382,6 +3382,24 @@ def _review_lane_workspace(lane_dir: Path) -> Path | None:
     return path if grip_dir(path).is_dir() or _is_workspace_root(path) else None
 
 
+def _downstream_line(block: dict | None) -> str:
+    """The lane verdict's last line: what was tested together, in words that cannot read as more than it was."""
+    if not isinstance(block, dict):
+        return "downstream: not recorded"
+    status = block.get("status")
+    if status == "ran":
+        parts = [f"changed {', '.join(block['changed']) or '(none)'}"]
+        for role in ("downstream", "upstream"):
+            if block.get(role):
+                parts.append(f"{role} {', '.join(block[role])}")
+        return "downstream: ran (" + "; ".join(parts) + ")"
+    if status == "selected":
+        return "downstream: selected, nothing beyond the lane's own members"
+    if status == "skipped":
+        return f"downstream: skipped ({block.get('reason', '')})"
+    return f"downstream: not examined ({block.get('reason', '')})"
+
+
 def _emit_review_run(lane_dir: Path, event_type: EventType, payload: dict) -> None:
     """`review.run_completed` / `review.run_refused`, after the receipt is written."""
     workspace = _review_lane_workspace(lane_dir)
@@ -3546,6 +3564,11 @@ def review_run(
         "[project].dependencies, and otherwise keeps the marker's order, sorted by key. A cycle "
         "is refused by name; this flag is the way to choose an order anyway."
     )),
+    no_downstream: bool = typer.Option(False, "--no-downstream", help=(
+        "A multi-repo lane: test only the lane's own members. By default the workspace's other members are put "
+        "in the lane at their pins and the ones that depend on a changed member are tested too; this records "
+        "`downstream: skipped` in the receipt and the verdict line, so the narrower claim stays visible."
+    )),
     json_output: bool = typer.Option(False, "--json", help="Emit the receipt as JSON"),
     pytest_args: Optional[List[str]] = typer.Argument(None, help="Args passed to pytest after `--` (every -k/-p/path filter is recorded)"),
 ) -> None:
@@ -3630,6 +3653,7 @@ def review_run(
                 install=install_cmd,
                 system_site_packages=system_site_packages,
                 order=[k.strip() for k in order.split(",")] if order is not None else None,
+                downstream=not no_downstream,
             )
     except rr.ReviewRunRefused as exc:
         _emit_review_run(lane_dir.resolve(), EventType.REVIEW_RUN_REFUSED, {"refusal_code": exc.code})
@@ -3655,6 +3679,7 @@ def review_run(
                     order=exc.order,
                     members=exc.completed,
                     not_run=exc.not_run,
+                    downstream=exc.downstream,
                 )
             typer.echo(json.dumps(refusal, indent=2))
         raise typer.Exit(code=2)
@@ -3667,8 +3692,12 @@ def review_run(
         typer.echo(json.dumps(receipt, indent=2))
     elif "members" in receipt:  # a multi-member lane: one line per member, then the lane
         for m in receipt["members"]:
+            if not m.get("tested", True):
+                typer.echo(f"{m['key']}: installed (upstream, not tested)")
+                continue
+            role = f" ({m['role']})" if m.get("role") not in (None, "changed") else ""
             typer.echo(
-                f"{m['key']}: {m['result']}: selected={m['selected']} passed={m['passed']} "
+                f"{m['key']}: {m['result']}{role}: selected={m['selected']} passed={m['passed']} "
                 f"failed={m['failed']} skipped={m['skipped']} errors={m['errors']}"
             )
             for failed_id in m["failed_ids"]:
@@ -3678,6 +3707,7 @@ def review_run(
             f"passed={receipt['passed']} failed={receipt['failed']}"
         )
         typer.echo(f"order: {', '.join(receipt['order'])}")
+        typer.echo(_downstream_line(receipt.get("downstream")))
     elif receipt.get("runner"):  # non-pytest runner receipt (no venv/import fields)
         result_line = (
             f"{receipt['result']} ({receipt['runner']}): selected={receipt['selected']} "

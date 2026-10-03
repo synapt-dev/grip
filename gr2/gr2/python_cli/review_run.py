@@ -130,6 +130,7 @@ class ReviewRunRefused(Exception):
         self.order_source: str | None = None
         self.completed: list[dict] = []
         self.not_run: list[str] = []
+        self.downstream: dict | None = None
         super().__init__(f"{code}: {detail}")
 
 
@@ -604,6 +605,8 @@ def _write_refusal_receipt(lane_dir: Path, exc: "ReviewRunRefused") -> None:
         receipt["order_source"] = exc.order_source
         receipt["members"] = exc.completed
         receipt["not_run"] = exc.not_run
+        if exc.downstream is not None:
+            receipt["downstream"] = exc.downstream
     try:
         (lane_dir / _RECEIPT_NAME).write_text(json.dumps(receipt, indent=2) + "\n")
     except OSError:
@@ -619,7 +622,7 @@ def run_review_lane(
     install: list[str] | None = None,
     system_site_packages: bool = False,
     order: list[str] | None = None,
-    downstream: bool = False,
+    downstream: bool = True,
 ) -> dict:
     """Run the lane (see `_run_review_lane`) and, on a refusal that is about a real
     lane, leave a receipt recording why (review-run door 2). `no_marker`/`not_open_gr`
@@ -651,7 +654,7 @@ def _run_review_lane(
     install: list[str] | None = None,
     system_site_packages: bool = False,
     order: list[str] | None = None,
-    downstream: bool = False,
+    downstream: bool = True,
 ) -> dict:
     """Create `<lane>/.venv`, install the reconstructed tree, and run pytest — but
     only after the lane's tree is proven to equal the bound head-tree and the import
@@ -764,6 +767,7 @@ def _run_member_steps(
     log_name: str,
     before_tests: Callable[[], None] | None = None,
     after_tests: Callable[[], None] | None = None,
+    tests: bool = True,
 ) -> dict:
     """Steps (3) to (7) for ONE repository: resolve install and package, install, prove the
     package imports from under the lane, prove pytest imports, run pytest in `repo_dir`, and
@@ -849,6 +853,25 @@ def _run_member_steps(
     run_env = scrubbed_python_env(venv_dir=venv_dir)
     resolved_file = resolve_import_file(venv_python, package, run_env)
     assert_import_under_lane(resolved_file, lane_dir)
+
+    if not tests:
+        # An UPSTREAM member: needed installed so the members that are tested resolve it at its pin, never from
+        # a registry. It is installed and proven to import from under the lane, and it is not tested.
+        if after_tests is not None:
+            after_tests()
+        return {
+            "interpreter": {"path": str(venv_python), "version": ""},
+            "resolved_install_path": resolved_file,
+            "install_command": install_cmd,
+            "install_source": install_source,
+            "package_source": package_source,
+            "tested": False,
+            "collected": 0, "deselected": 0, "selected": 0, "passed": 0, "failed": 0,
+            "skipped": 0, "xfailed": 0, "errors": 0,
+            "failed_ids": [],
+            "output_log": None,
+            "result": "installed",
+        }
 
     # (6) pytest must be importable in the lane venv. A plain editable install does
     #     not bring it (pytest is a test-time extra), and running pytest anyway
@@ -938,6 +961,7 @@ def _run_member_steps(
         # actionable and not just a count, and the raw output log this run wrote.
         "failed_ids": failed_ids,
         "output_log": log_name,
+        "tested": True,
         "result": result,
     }
 
@@ -1019,8 +1043,14 @@ def _derive_member_order(lane_dir: Path, keys: list[str], plugins: dict | None =
         plan = lane_graph.plan_lane(lane_dir, list(keys), table)
     except lane_graph.LaneRefused as refusal:
         raise ReviewRunRefused(refusal.code, refusal.detail) from refusal
+    return _order_from_plan(plan)
+
+
+def _order_from_plan(plan: lane_graph.Plan, only: set[str] | None = None) -> list[str]:
+    """The members of a plan in install order (every member, or only those named), refusing a cycle by name."""
     member_of = {u.id: u.member for u in plan.units}
-    cyclic = plan.cyclic_groups
+    # A cycle among members that take no part in the run is not this run's problem.
+    cyclic = [g for g in plan.cyclic_groups if only is None or any(member_of[u] in only for u in g.units)]
     if cyclic:
         # The first elementary loop of the first cyclic group, in member names: the loop and nothing outside it.
         loop = plan.loops[cyclic[0].index][0][0]
@@ -1034,31 +1064,33 @@ def _derive_member_order(lane_dir: Path, keys: list[str], plugins: dict | None =
     placed: list[str] = []
     for group in plan.groups:
         for unit in group.units:
-            if member_of[unit] not in placed:
-                placed.append(member_of[unit])
+            member = member_of[unit]
+            if member not in placed and (only is None or member in only):
+                placed.append(member)
     return placed
 
 
-def _select_downstream(lane_dir: Path, marker: dict, keys: list[str]) -> dict | None:
+def _select_downstream(lane_dir: Path, marker: dict, keys: list[str]) -> tuple[dict, list[str] | None]:
     """Bring the workspace's UNCHANGED members into the lane at their pins and say which of them take part.
 
     The workspace is the one the lane was opened from (the marker names it); a lane with no workspace, or a
-    workspace with no spec, has no pins to read and is left exactly as it was (None). Every member the lane does
+    workspace with no spec, has no pins to read, and that is RECORDED (``not_examined`` with the reason), never
+    left absent, so a green cannot read as tested-together when it was not. Every member the lane does
     not bind is put at its pin FIRST, because what depends on the changed members can only be learned from the
     members' own manifests at those pins; a member with no usable pin, or one whose pin cannot be reached,
     refuses the whole lane as ``downstream_unpinned`` before any venv exists. Then the members are split into
-    changed, downstream and upstream, and the ones in no role are removed again. This SELECTS and materializes;
-    running the roles is the next change, so the selection says so."""
+    changed, downstream and upstream, and the ones in no role are removed again. Returns the selection record and
+    the install order of the members that take part (None when none beyond the lane's own do)."""
     from .clone_exec import rmtree_or_refuse
     from .spec_apply import workspace_spec_path
 
     recorded = marker.get("workspace_root")
     if not isinstance(recorded, str) or not recorded:
-        return None
+        return {"status": "not_examined", "reason": "the lane records no workspace to read pins from"}, None
     workspace = Path(recorded)
     spec_path = workspace_spec_path(workspace)
     if not spec_path.is_file():
-        return None
+        return {"status": "not_examined", "reason": f"the workspace {workspace} has no spec to read pins from"}, None
     spec = tomllib.loads(spec_path.read_text())
     others = lane_downstream.unchanged_members(spec, keys)
     pinned: dict[str, str] = {}
@@ -1069,7 +1101,8 @@ def _select_downstream(lane_dir: Path, marker: dict, keys: list[str]) -> dict | 
         except lane_downstream.PinRefused as refusal:
             raise ReviewRunRefused(
                 "downstream_unpinned",
-                f"{refusal}; a lane that skipped it would claim a result about the changed members alone",
+                f"{refusal}; a lane that skipped it would claim a result about the changed members alone. To review "
+                "the lane's own members only, pass --no-downstream (the receipt records downstream: skipped)",
                 member=name,
             ) from refusal
     try:
@@ -1082,15 +1115,18 @@ def _select_downstream(lane_dir: Path, marker: dict, keys: list[str]) -> dict | 
     unselected = [n for n in pinned if n not in roles.upstream and n not in roles.downstream]
     for name in unselected:
         rmtree_or_refuse(_member_dir(lane_dir, name))
-    return {
+    block = {
         "status": "selected",
         "changed": list(roles.changed),
         "upstream": list(roles.upstream),
         "downstream": list(roles.downstream),
         "not_selected": unselected,
         "pins": {n: pinned[n] for n in pinned if n not in unselected},
-        "executed": "changed members only; upstream and downstream members are materialized at their pins and not yet run",
     }
+    if not roles.upstream and not roles.downstream:
+        return block, None
+    taking_part = set(roles.changed) | set(roles.upstream) | set(roles.downstream)
+    return block, _order_from_plan(plan, taking_part)
 
 
 def _run_multi_member_lane(
@@ -1104,7 +1140,7 @@ def _run_multi_member_lane(
     install: list[str] | None,
     system_site_packages: bool,
     order: list[str] | None,
-    downstream: bool = False,
+    downstream: bool = True,
 ) -> dict:
     """Run every member of a multi-member lane in ONE shared venv, in a stated order.
 
@@ -1127,7 +1163,7 @@ def _run_multi_member_lane(
     members: list[dict] = []
     done: list[str] = []
     current: str | None = None
-    selection: dict | None = None
+    selection: dict = {"status": "not_examined", "reason": "the run stopped before downstream was examined"}
     try:
         if package is not None or install is not None:
             raise ReviewRunRefused(
@@ -1161,8 +1197,35 @@ def _run_multi_member_lane(
             # and that receipt must not label the untouched marker order as derived.
             ran_order = _derive_member_order(lane_dir, ran_order)
             order_source = "dependencies"
-        if downstream:
-            selection = _select_downstream(lane_dir, marker, ran_order)
+        roles = {key: "changed" for key in ran_order}
+        if not downstream:
+            selection = {"status": "skipped", "reason": "--no-downstream: only the lane's own members were run"}
+        elif order is not None:
+            selection = {"status": "skipped", "reason": "--order names the run's members by hand"}
+        else:
+            selection, full_order = _select_downstream(lane_dir, marker, ran_order)
+            if full_order is not None:
+                # The members that are not bound are checked like a bound one, against the tree of their pin:
+                # tracked content equal to it, no untracked drift, a pytest runner. Before any venv exists.
+                for key in full_order:
+                    if key in roles:
+                        continue
+                    current = key
+                    mdir = _member_dir(lane_dir, key)
+                    pin = selection["pins"][key]
+                    by_key[key] = {"key": key, "bound_head": pin, "bound_head_tree": lane_downstream.tree_at(mdir, pin)}
+                    assert_lane_tree_bound(mdir, by_key[key]["bound_head_tree"])
+                    assert_no_untracked_drift(mdir)
+                    hint = read_install_hint(mdir) or {}
+                    if hint.get("runner") not in (None, "pytest"):
+                        raise ReviewRunRefused(
+                            "member_runner_unsupported",
+                            f"member {key!r} declares runner {hint['runner']!r}; a multi-member lane "
+                            "runs pytest members only in this version",
+                        )
+                    roles[key] = "upstream" if key in selection["upstream"] else "downstream"
+                current = None
+                ran_order = full_order
         # Taken after the checks above and before the venv and any install: everything in it already
         # passed the drift check, so what is new later was written by an install or by tests.
         baselines = {member: list_untracked(_member_dir(lane_dir, member)) for member in ran_order}
@@ -1193,9 +1256,11 @@ def _run_multi_member_lane(
                 log_name=f"{key}{_OUTPUT_LOG_NAME}",
                 before_tests=_lane_intact,
                 after_tests=_lane_intact,
+                tests=roles[key] != "upstream",
             )
             members.append({
                 "key": key,
+                "role": roles[key],
                 "bound_head": by_key[key].get("bound_head", ""),
                 "bound_head_tree": by_key[key].get("bound_head_tree", ""),
                 **body,
@@ -1209,9 +1274,16 @@ def _run_multi_member_lane(
         exc.order_source = order_source
         exc.completed = members
         exc.not_run = [k for k in ran_order if k not in done and k != exc.member]
+        exc.downstream = (
+            {"status": "refused", "code": exc.code, "reason": exc.detail}
+            if exc.code == "downstream_unpinned"
+            else selection
+        )
         raise
 
-    result = "green" if all(m["result"] == "green" for m in members) else "red"
+    if selection.get("status") == "selected":
+        selection = {**selection, "status": "ran", "tested": [m["key"] for m in members if m["tested"]]}
+    result = "green" if all(m["result"] == "green" for m in members if m["tested"]) else "red"
     receipt = {
         "kind": "review-run",
         "created": datetime.now(timezone.utc).isoformat(),
@@ -1220,7 +1292,7 @@ def _run_multi_member_lane(
         "order_source": order_source,
         "members": members,
         "not_run": [],
-        **({"downstream": selection} if selection is not None else {}),
+        "downstream": selection,
         "selected": sum(m["selected"] for m in members),
         "passed": sum(m["passed"] for m in members),
         "failed": sum(m["failed"] for m in members),

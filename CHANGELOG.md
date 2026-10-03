@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `gr2 review check` replaces `review requirements` for compiled reviewer requirements. The old spelling
+  is a hidden alias with a warning on stderr, registered for removal at beta. Both keep the same
+  payload, root inference and exit status, including exit 0 with `satisfied: false`.
+
 - **`gr2 lane create` takes the repos and the branch from the workspace when you leave them out.** With no `--repos`
   it makes the lane over every repo the workspace declares (the spec's repos) and says how many clones that is; with no `--branch` the branch is the lane name, verbatim.
   Each value gr2 filled in is one stderr line (`gr2: repos=a,b (every repo of the workspace spec; this makes 2

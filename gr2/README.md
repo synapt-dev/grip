@@ -91,7 +91,7 @@ Not there yet:
 | (top level) | branch, add, commit, push, prune, status, plan, apply |
 | `sync` | status, run |
 | `pr` | create, status, checks, merge, view |
-| `review` | open, close, checkout-pr, run, requirements, bind, verify, rebind, create-project |
+| `review` | open, close, checkout-pr, run, check, bind, verify, rebind, create-project |
 | `exec` | status, run |
 | `repo` | status, projection-run |
 | `hooks` | trust, revoke, status, show, run |
@@ -111,3 +111,7 @@ cd gr2 && ruff check .       # lint, same config as CI
 ```
 
 The Rust development binary is **`gr2-dev`** — built by `cargo build -p gr2-cli --release`, `publish = false`, and not shipped with `cargo install gitgrip`. It answered to the name `gr2` until 2026-09-30, so a branch written before that rename goes red on `cargo test -p gr2-cli` with `CARGO_BIN_EXE_gr2 is unset`; the repair is `cargo_bin("gr2-dev")`, from which Cargo derives `CARGO_BIN_EXE_gr2-dev`.
+
+Migration: use `gr2 review check` for compiled review requirements. `review requirements`
+remains a hidden alias with a warning on stderr until beta. Both report `satisfied`
+in the same JSON payload, and a missing reviewer remains a reported status with exit 0.

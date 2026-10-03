@@ -157,7 +157,8 @@ def test_roles_are_selected_from_the_manifest_at_the_pin_not_the_tip(tmp_path: P
         {"name": "docs", "path": "docs", "url": str(docs), "pin": docs_pin},
     ])
     marker = json.loads((lane / rr._MARKER_NAME).read_text())
-    selection = rr._select_downstream(lane, marker, ["a-web", "z-core"])
+    selection, order = rr._select_downstream(lane, marker, ["a-web", "z-core"])
+    assert order is not None and order.index("z-core") < order.index("api") and "docs" not in order
     assert selection["status"] == "selected"
     assert selection["changed"] == ["a-web", "z-core"]
     assert selection["downstream"] == ["api"] and selection["upstream"] == []
@@ -165,12 +166,16 @@ def test_roles_are_selected_from_the_manifest_at_the_pin_not_the_tip(tmp_path: P
     assert _g(lane / "api", "rev-parse", "HEAD") == api_pin and not (lane / "docs").exists()
 
 
-def test_a_lane_with_no_workspace_or_no_spec_is_left_exactly_as_it_was(tmp_path: Path) -> None:
+def test_a_lane_with_no_workspace_or_no_spec_is_recorded_as_not_examined(tmp_path: Path) -> None:
+    """Requested downstream with nothing to read pins from is RECORDED with its reason, never left absent, and
+    the lane is otherwise untouched. Goes red if either case returns nothing or a made-up selection."""
     lane = _witness_lane(tmp_path)
     marker = json.loads((lane / rr._MARKER_NAME).read_text())
-    assert rr._select_downstream(lane, marker, ["a-web", "z-core"]) is None  # no workspace_root at all
+    block, order = rr._select_downstream(lane, marker, ["a-web", "z-core"])
+    assert block["status"] == "not_examined" and "no workspace" in block["reason"] and order is None
     marker["workspace_root"] = str(tmp_path / "nowhere")
-    assert rr._select_downstream(lane, marker, ["a-web", "z-core"]) is None  # a workspace with no spec
+    block, order = rr._select_downstream(lane, marker, ["a-web", "z-core"])
+    assert block["status"] == "not_examined" and "no spec" in block["reason"] and order is None
 
 
 def test_an_unpinned_member_refuses_the_whole_lane_before_a_venv_exists(tmp_path: Path) -> None:
@@ -199,14 +204,9 @@ def test_an_unreachable_pin_refuses_with_the_same_code_as_a_missing_pin(tmp_path
     assert not (lane / "api").exists()
 
 
-def test_downstream_is_off_unless_asked_and_the_receipt_is_then_unchanged(tmp_path: Path) -> None:
-    """With the parameter off (the default) a lane whose workspace holds an UNPINNED member runs exactly as the
-    same lane without a workspace does: same result, no refusal, no `downstream` key, nothing materialized. Goes
-    red if the selection runs without being asked."""
-    (tmp_path / "control").mkdir()
-    control = rr.run_review_lane(_witness_lane(tmp_path / "control"), pytest_args=["-q"])
-    api, _, _ = _remote(tmp_path, "api", pinned_deps=["core-lib>=1"], tip_deps=[])
-    lane, _ = _lane_with_workspace(tmp_path, lambda root: [{"name": "api", "path": "api", "url": str(api)}])
-    receipt = rr.run_review_lane(lane, pytest_args=["-q"])
-    assert receipt["result"] == control["result"] and receipt["order"] == control["order"]
-    assert "downstream" not in receipt and not (lane / "api").exists()
+def test_a_member_with_a_pin_and_no_url_is_refused_not_a_keyerror(tmp_path: Path) -> None:
+    with pytest.raises(ld.PinRefused) as exc:
+        ld.materialize_at_pin({"name": "b", "pin": "a" * 40}, tmp_path / "lane" / "b", workspace_root=tmp_path)
+    assert exc.value.member == "b" and "no url" in exc.value.reason
+    with pytest.raises(ld.PinRefused):
+        ld.materialize_at_pin({"name": "b", "pin": "a" * 40, "url": ""}, tmp_path / "lane" / "b", workspace_root=tmp_path)

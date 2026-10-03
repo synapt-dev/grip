@@ -194,9 +194,10 @@ def test_a_plugin_that_never_stops_writing_is_killed_at_the_bound_not_at_the_tim
     with pytest.raises(LaneRefused) as exc:
         one(tmp_path, body, timeout=30.0, max_bytes=1000)("describe", describe_req(tmp_path))
     assert "over the 1000 byte bound" in exc.value.detail, exc.value.detail  # the bound, not "no answer within"
-    assert time.monotonic() - t0 < 10  # long before the 30 s timeout
+    elapsed = time.monotonic() - t0
+    assert elapsed < 10, f"killed after {elapsed:.1f} s, not long before the 30 s timeout"
     written = max(int(x) for x in progress.read_text().split() if x)  # a line cut by the kill reads short, never long
-    assert written < 1000 + 1_000_000, "the plugin was left writing long after the bound"
+    assert written < 1000 + 1_000_000, f"the plugin was left writing long after the bound: {written} bytes written"
     with pytest.raises(ProcessLookupError):
         os.kill(int(pidfile.read_text()), 0)
 

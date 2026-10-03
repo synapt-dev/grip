@@ -55,9 +55,12 @@ def materialize_at_pin(repo_spec: dict, dest: Path, *, workspace_root: Path) -> 
     pin = pin_of(repo_spec)
     if pin is None:
         raise PinRefused(name, "the workspace records no usable pin for it (a full 40-hex commit is required)")
+    url = repo_spec.get("url")
+    if not isinstance(url, str) or not url:
+        raise PinRefused(name, f"the workspace records a pin {pin[:12]} but no url to fetch it from")
     try:
         clone_and_pin(
-            str(repo_spec["url"]),
+            url,
             dest,
             pin=pin,
             member=name,
@@ -70,3 +73,11 @@ def materialize_at_pin(repo_spec: dict, dest: Path, *, workspace_root: Path) -> 
     if landed != pin:
         raise PinRefused(name, f"it is at {landed[:12] or 'no commit'} in the lane, not at its pin {pin[:12]}")
     return pin
+
+
+def tree_at(dest: Path, pin: str) -> str:
+    """The tree id of the pinned commit: what a pinned member's tracked content must equal for the whole run."""
+    out = gitops.git(dest, "rev-parse", "--verify", f"{pin}^{{tree}}")
+    if out.returncode != 0 or not out.stdout.strip():
+        raise PinRefused(dest.name, f"its pin {pin[:12]} has no tree in the lane clone")
+    return out.stdout.strip()

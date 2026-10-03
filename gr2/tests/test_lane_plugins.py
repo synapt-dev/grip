@@ -9,6 +9,7 @@ import os
 import shutil
 import stat
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -205,10 +206,22 @@ def test_a_plugin_that_ignores_stdin_cannot_hang_the_planner_on_a_big_request(tm
     had no timeout. The request now goes in through a file, so the timeout is the only thing that ends the call."""
     body = "import time\ntime.sleep(60)\n"
     request = {**describe_req(tmp_path), "pad": "x" * 300_000}  # 300 KB, far over a pipe's buffer
+    # The call runs in a daemon thread under a hard wall clock, so a regression to a blocking write FAILS this
+    # row by assertion instead of hanging the shard until the job's own timeout.
+    outcome: dict = {}
+
+    def attempt() -> None:
+        try:
+            outcome["answer"] = one(tmp_path, body, timeout=2.0)("describe", request)
+        except LaneRefused as refusal:
+            outcome["refused"] = refusal
+
     t0 = time.monotonic()
-    with pytest.raises(LaneRefused) as exc:
-        one(tmp_path, body, timeout=2.0)("describe", request)
-    assert "no answer within 2s" in exc.value.detail, exc.value.detail
+    worker = threading.Thread(target=attempt, daemon=True)
+    worker.start()
+    worker.join(10.0)
+    assert not worker.is_alive(), "the call was still running after 10 s: the request write blocked on a pipe"
+    assert "no answer within 2s" in outcome["refused"].detail, outcome
     assert time.monotonic() - t0 < 8  # the timeout, not a blocked write
 
 

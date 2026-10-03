@@ -67,7 +67,11 @@ MIN_ARGS = 95
 # `lane current` they replace had none. The old three stay as hidden aliases and are
 # still counted, so the pass ADDS three names to the surface and documents no shape;
 # the residual grows by three rather than staying put.
-JSON_VERBS_PENDING = 51
+# 51 -> 52: `review check` replaces `review requirements`, which stays as a hidden
+# alias until beta. Both carry the same existing JSON payload (repo, pr_number,
+# required_reviewers, actual_reviewers, satisfied, review_lanes), and neither has
+# a registered shape in the store-only table. One new spelling is one extra residual.
+JSON_VERBS_PENDING = 52
 
 # The kinds a stranger BUILDS ON INDEPENDENTLY: a verb, a flag, a positional
 # and an exit code are each actionable on their own -- a caller writes

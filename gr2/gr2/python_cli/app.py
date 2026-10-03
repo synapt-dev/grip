@@ -2844,15 +2844,23 @@ def lane_lease_show(
     _exit(lane_proto.show_lane_leases(ns))
 
 
-@review_app.command("requirements", cls=RootOptionalCommand)
-def review_requirements(
+@review_app.command("check", cls=RootOptionalCommand)
+@review_app.command("requirements", hidden=True, cls=RootOptionalCommand)
+def review_check(
+    ctx: typer.Context,
     workspace_root: Path,
     repo: str,
     pr_number: int,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
-    """Check whether compiled review requirements are satisfied for a repo and PR."""
+    """Check whether compiled review requirements are satisfied for a repo and PR.
+
+    Reports the requirement and reviewer counts with `satisfied`; a missing reviewer is a reported status,
+    not an execution failure. The old `requirements` spelling is a hidden alias removed at beta.
+    """
+    if ctx.info_name == "requirements":
+        typer.echo("gr2: review requirements is deprecated; use review check (removed at beta)", err=True)
     ns = SimpleNamespace(
         workspace_root=workspace_root,
         repo=repo,

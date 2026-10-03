@@ -376,6 +376,13 @@ flag  review bind --rows-json <str>                                   stable
 flag  review bind --source <str>                                      stable
 flag  review bind --title <str>                                       stable
 verb  review bind                                                     stable
+# review check
+arg   review check pr_number <str>                                    stable
+arg   review check repo <str>                                         stable
+arg   review check workspace_root <str>                               stable
+flag  review check --json                                             stable
+flag  review check --root/-C <str>                                    stable
+verb  review check                                                    stable
 # review checkout-pr
 arg   review checkout-pr owner_unit <str>                             stable
 arg   review checkout-pr pr_number <str>                              stable
@@ -462,12 +469,12 @@ flag  review rebind --ref <str>                                       stable
 flag  review rebind --repo <str>                                      stable
 verb  review rebind                                                   stable
 # review requirements
-arg   review requirements pr_number <str>                             stable
-arg   review requirements repo <str>                                  stable
-arg   review requirements workspace_root <str>                        stable
-flag  review requirements --json                                      stable
-flag  review requirements --root/-C <str>                             stable
-verb  review requirements                                             stable
+arg   review requirements pr_number <str> (hidden)                    stable
+arg   review requirements repo <str> (hidden)                         stable
+arg   review requirements workspace_root <str> (hidden)               stable
+flag  review requirements --json (hidden)                             stable
+flag  review requirements --root/-C <str> (hidden)                    stable
+verb  review requirements (hidden)                                    stable
 # review run
 arg   review run lane_dir <str>                                       stable
 arg   review run pytest_args <str>                                    stable

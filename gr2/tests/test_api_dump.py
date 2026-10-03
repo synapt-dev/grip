@@ -71,7 +71,11 @@ MIN_ARGS = 95
 # alias until beta. Both carry the same existing JSON payload (repo, pr_number,
 # required_reviewers, actual_reviewers, satisfied, review_lanes), and neither has
 # a registered shape in the store-only table. One new spelling is one extra residual.
-JSON_VERBS_PENDING = 52
+#
+# 52 -> 53, `review show --json` (tier A4, I17): a review verb outside the store group, so its
+# shape is not registered in the store table either; it is one new name that documents none.
+
+JSON_VERBS_PENDING = 53
 
 # The kinds a stranger BUILDS ON INDEPENDENTLY: a verb, a flag, a positional
 # and an exit code are each actionable on their own -- a caller writes

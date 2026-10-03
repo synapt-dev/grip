@@ -91,7 +91,7 @@ Not there yet:
 | (top level) | branch, add, commit, push, prune, status, plan, apply |
 | `sync` | status, run |
 | `pr` | create, status, checks, merge, view |
-| `review` | open, close, checkout-pr, run, check, bind, verify, rebind, create-project |
+| `review` | open, close, checkout-pr, run, check, bind, verify, show, rebind, create-project |
 | `exec` | status, run |
 | `repo` | status, projection-run |
 | `hooks` | trust, revoke, status, show, run |

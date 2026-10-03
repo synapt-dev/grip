@@ -34,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `gr2 add .` inside a lane's repo still stages that repo only. Standing at the workspace root while a lane is
   entered, `add` without `--lane` or `--repo-path` now refuses (exit 2) and says how to stage the lane, one repo,
   or the root on purpose (`--repo-path .`); with no lane entered it behaves as before.
+- **`gr2 review` takes the bind and the directory from the workspace when you leave them out, and `review show` reads
+  a bind without opening it.** `review bind` with no row given binds every member whose checkout is not at its pin
+  (`--members a,b` narrows; a member with no pin is named as not bound; it refuses when no member differs) and prints
+  the rows chosen on stderr BEFORE it binds anything. `review open` with no target opens the workspace's one review
+  bind, saying so on stderr; several binds are listed and none is chosen, none is refused naming `review bind`.
+  `review open gr:<sha>` with no `--lane-dir` reconstructs into `<workspace>.review/<first 8 of the sha>` beside the
+  workspace, named in full on stderr, and an existing directory is refused rather than reused; `--enter` is accepted
+  and implied. `gr2 review show <workspace> <gr:sha>` (read-only, `--json`) prints each member's repository, base and
+  head, title, body and the files its range changes, and refuses a commit that is not a bind the way `verify` does.
 - **`gr2 lane show`, `lane enter`, `lane exit`, `lane resolve` and `lane create` no longer make you type what the
   workspace already holds.** Inside a workspace the root is found from the current directory, and the unit from
   the lane you have entered (or the workspace's only unit); each value gr2 filled in is named on stderr in one line

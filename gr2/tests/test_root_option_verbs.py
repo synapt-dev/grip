@@ -35,7 +35,7 @@ FIXED_ARITY = [  # RootOptionalCommand: the 16, and ContextCommand: the 6 above
     "lane/create", "lane/enter", "lane/resolve", "lane/exit", "lane/current", "lane/show", "lane/bind",
     "lane/lease/acquire", "lane/lease/release", "lane/lease/show",
     "review/check", "review/requirements", "review/checkout-pr", "review/create-project", "review/open-project",
-    "review/exit-gr", "review/open-gr", "review/verify",
+    "review/exit-gr", "review/open-gr", "review/verify", "review/show",
     "hooks/run", "config/restore",
 ]
 OPTIONAL_TRAILING = [  # RootOptionCommand: the 8

@@ -282,7 +282,7 @@ def test_slow_remotes_that_do_answer_still_share_one_budget(monkeypatch) -> None
     assert result.not_checked and "budget was spent" in result.not_checked[-1] and result.not_checked[-1].startswith("r9 ")
 
 
-# --- a root with no workspace spec: refuse before writing anything (the stranger's `store init` root) ------------
+# --- store-init roots: build from members, roll back a spec on refusal ------------
 
 
 def _store_init_only_root(two_member_ws: Path) -> Path:
@@ -294,19 +294,64 @@ def _store_init_only_root(two_member_ws: Path) -> Path:
     return two_member_ws
 
 
-@pytest.mark.parametrize("flags", [[], ["--repos", "alpha", "--branch", "demo"]], ids=["bare", "typed"])
-def test_lane_create_on_a_store_init_root_refuses_before_writing_anything(two_member_ws: Path, flags: list[str]) -> None:
-    """The control is the same call on dev, which ends in FileNotFoundError out of the lane machinery (RAN, on a root
-    made by `store init`: with typed flags too). Goes red if the refusal is removed: the call raises."""
+def test_bare_lane_create_on_a_store_init_root_builds_the_lane_from_the_grip_toml_members(two_member_ws: Path) -> None:
+    """The smallest working proof of the first-release must: a root made by `store init` holds grip.toml and no
+    workspace spec, and a bare `lane create` makes the lane over its members, says it wrote the spec, and the lane
+    holds one clone per member on the lane's branch. Goes red if the spec is not written from the members."""
     root = _store_init_only_root(two_member_ws)
-    before = sorted(str(p.relative_to(root)) for p in root.rglob("*") if ".git" not in p.parts)
-    res = runner.invoke(gr2_app.app, ["lane", "create", str(root), "default", "demo", *flags])
+    res = runner.invoke(gr2_app.app, ["lane", "create", str(root), "default", "demo"])
+    assert res.exit_code == 0, res.output
     text = _flat(res)
+    assert "workspace spec written from the grip.toml members: alpha, beta" in text
+    assert "gr2: repos=alpha,beta" in text and "gr2: branch=demo" in text
+    assert (root / ".grip" / "workspace_spec.toml").is_file()
+    for repo in ("alpha", "beta"):
+        clone = root / ".grip" / "state" / "lanes" / "default" / "demo" / "repos" / repo
+        assert clone.is_dir(), sorted(str(p.relative_to(root)) for p in root.rglob("repos/*"))
+        head = subprocess.run(["git", "-C", str(clone), "branch", "--show-current"], capture_output=True, text=True).stdout.strip()
+        assert head == "demo", (repo, head)
+
+
+
+def _tree_bytes(root: Path) -> dict[str, bytes | None]:
+    return {str(p.relative_to(root)): p.read_bytes() if p.is_file() else None
+            for p in root.rglob("*")}
+
+
+def test_refused_unknown_member_rolls_back_the_spec_written_from_members(two_member_ws: Path) -> None:
+    """Drop spec rollback and this refusal leaves a new file behind."""
+    root = _store_init_only_root(two_member_ws)
+    before = _tree_bytes(root)
+    res = runner.invoke(gr2_app.app, ["lane", "create", str(root), "default", "demo", "--repos", "alpha,nosuch"])
+    assert res.exit_code == 1, res.output
+    assert "unknown repos for lane: nosuch" in res.output
+    assert not (root / ".grip" / "workspace_spec.toml").exists()
+    assert _tree_bytes(root) == before
+
+
+def test_refused_owner_rolls_back_the_spec_and_a_valid_retry_works(two_member_ws: Path) -> None:
+    """A rejected owner must not poison the spec's only unit for the next call."""
+    root = _store_init_only_root(two_member_ws)
+    before = _tree_bytes(root)
+    res = runner.invoke(gr2_app.app, ["lane", "create", str(root), "../evil", "demo"])
+    assert res.exit_code == 1, res.output
+    assert "invalid owner_unit" in res.output
+    assert not (root / ".grip" / "workspace_spec.toml").exists()
+    assert _tree_bytes(root) == before
+    retry = runner.invoke(gr2_app.app, ["lane", "create", str(root), "default", "demo"])
+    assert retry.exit_code == 0, retry.output
+    assert (root / ".grip" / "state" / "lanes" / "default" / "demo" / "lane.toml").is_file()
+
+
+def test_lane_create_on_a_root_with_neither_spec_nor_members_still_refuses_and_writes_nothing(tmp_path: Path) -> None:
+    """Nothing to build a lane from: the one-sentence refusal stays, and not a byte is written."""
+    root = tmp_path / "empty"
+    root.mkdir()
+    before = sorted(str(p.relative_to(root)) for p in root.rglob("*"))
+    res = runner.invoke(gr2_app.app, ["lane", "create", str(root), "default", "demo"])
     assert res.exit_code == 2, res.output
-    assert res.exception is None or isinstance(res.exception, SystemExit)
-    assert "has no workspace spec" in text and "`store init` holds only grip.toml" in text.replace("a root made by ", "")
-    assert f"gr2 workspace init {root}" in text and "Nothing was created" in text
-    assert sorted(str(p.relative_to(root)) for p in root.rglob("*") if ".git" not in p.parts) == before
+    assert "has no workspace spec" in _flat(res) and "Nothing was created" in _flat(res)
+    assert sorted(str(p.relative_to(root)) for p in root.rglob("*")) == before
 
 
 def test_the_way_out_the_refusal_names_works(two_member_ws: Path) -> None:

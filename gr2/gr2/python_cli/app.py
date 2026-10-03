@@ -2360,22 +2360,52 @@ def _announce_context(ctx: typer.Context, *, actor: Optional[str] = None, with_a
     return items, actor_value
 
 
-def _refuse_lane_create_without_a_spec(workspace_root: Path) -> None:
-    """Lanes are made from the workspace spec. A root made by `store init` alone holds only grip.toml, and the lane
-    machinery reads the spec before it writes anything, so without this the stranger meets a traceback. Refused
-    first, before a default is chosen, a remote is asked or a byte is written, in one sentence with the way out."""
+def _spec_for_lane_create(workspace_root: Path, default_unit: str) -> bool:
+    """Lanes are made from the workspace spec. A root made by `store init` holds only grip.toml, whose [[members]]
+    already say which repos the workspace is, so the spec is written from them (one announced stderr line) and the
+    lane is built as usual. With neither a spec nor members there is nothing to build from: refused first, before a
+    default is chosen, a remote is asked or a byte is written, in one sentence with the way out."""
+    from . import lane_defaults, lane_downstream
     from .spec_apply import workspace_spec_path
 
     if workspace_spec_path(workspace_root).is_file():
-        return
-    typer.echo(
-        f"Error: {workspace_root} has no workspace spec ({workspace_spec_path(workspace_root).relative_to(workspace_root)}), "
-        "and a lane is made from one; a root made by `store init` holds only grip.toml. "
-        f"Run `gr2 workspace init {workspace_root}` to write the spec from the repos beside grip.toml, then create the lane again. "
-        "Nothing was created.",
-        err=True,
+        return False
+    members: list[dict[str, object]] = []
+    grip_toml = workspace_root / "grip.toml"
+    if grip_toml.is_file():
+        try:
+            raw = lane_downstream._read_toml(grip_toml).get("members", [])
+        except lane_downstream.MembersUnreadable as exc:
+            raise typer.BadParameter(f"{exc}; fix the file, or write the spec with `gr2 workspace init {workspace_root}`")
+        for m in raw:
+            if isinstance(m, dict) and isinstance(m.get("name"), str) and m["name"]:
+                remotes = m.get("remotes") if isinstance(m.get("remotes"), dict) else {}
+                entry: dict[str, object] = {
+                    "name": m["name"],
+                    "path": m["path"] if isinstance(m.get("path"), str) and m["path"] else m["name"],
+                    "url": lane_defaults._text(remotes.get("origin")) or "",
+                }
+                if lane_defaults._text(m.get("ref")):
+                    entry["ref"] = m["ref"]
+                members.append(entry)
+    if not members:
+        typer.echo(
+            f"Error: {workspace_root} has no workspace spec ({workspace_spec_path(workspace_root).relative_to(workspace_root)}) "
+            "and no grip.toml members, and a lane is made from one of them. "
+            f"Run `gr2 workspace init {workspace_root}` to write the spec from the repos beside it, then create the lane again. "
+            "Nothing was created.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    _write_workspace_spec(workspace_root, members, default_unit)
+    from . import context as ctx_mod
+
+    ctx_mod.announce(
+        {"spec": ctx_mod.Resolved("written", f"workspace spec written from the grip.toml members: {', '.join(str(m['name']) for m in members)}")},
+        root=workspace_root,
+        quiet=ctx_mod.quiet_from_env(),
     )
-    raise typer.Exit(code=2)
+    return True
 
 
 def _lane_create_defaults(workspace_root: Path, lane_name: str, repos: Optional[str], branch: Optional[str],
@@ -2454,90 +2484,102 @@ def lane_create(
     """
     items, _ = _announce_context(ctx)
     workspace_root = workspace_root.resolve()
-    _refuse_lane_create_without_a_spec(workspace_root)
-    repos, branch = _lane_create_defaults(workspace_root, lane_name, repos, branch, bind, items)
-    ns = SimpleNamespace(
-        workspace_root=workspace_root,
-        owner_unit=owner_unit,
-        lane_name=lane_name,
-        repos=repos,
-        branch=branch or "",
-        type=lane_type,
-        source=source,
-        default_commands=command or [],
-        bind=str(bind) if bind is not None else None,
-    )
-    _exit(lane_proto.create_lane(ns))
-    # A bound lane owns no clone: skip materialization. The branch_map for the
-    # event comes from the lane document create_lane just wrote (derived from the
-    # bound worktree), not from the --branch arg, which --bind ignores.
-    if bind is None:
-        try:
-            _materialize_lane_repos(workspace_root, owner_unit, lane_name, manual_hooks=manual_hooks)
-        except BaseException:
-            # BaseException and not Exception, deliberately: the refusal this guards
-            # against is a SystemExit, which is not an Exception and would sail past a
-            # narrower clause, leaving exactly the orphan this exists to prevent.
-            #
-            # ...but only when the refusal left nothing usable. A blocked projection hook
-            # refuses AFTER the fork base is recorded, and that lane is recoverable by
-            # design -- `review create-project` must still succeed on it -- so the fork
-            # base, not the position of the raise, decides.
-            if not _lane_carries_a_fork_base(workspace_root, owner_unit, lane_name):
-                _remove_lane_artifacts(workspace_root, owner_unit, lane_name)
-            else:
-                # The kept path must be LEGIBLE, not silent. A user who sees "create
-                # failed" and later finds the lane on disk would otherwise read it as the
-                # very orphan this change exists to prevent. So the message says the lane
-                # was KEPT, why it is recoverable, and both ways forward. It names no
-                # removal verb because none exists: `lane` has create/enter/resolve/exit/
-                # current/bind and nothing that removes one, and a message that names a
-                # command a user cannot run is worse than one that names the path.
-                lane_root = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
-                typer.echo(
-                    f"lane create: the lane {owner_unit}/{lane_name} was KEPT because its fork "
-                    f"base is recorded, so it is recoverable.\n"
-                    f"  continue with it: gr2 review create-project {workspace_root} {owner_unit} {lane_name}\n"
-                    f"  remove it:        delete {lane_root}  (no lane-removal verb exists yet)",
-                    err=True,
-                )
-            raise
-    repo_list = [r.strip() for r in repos.split(",")]
-    # The event payload carries lane_kind (and bound_worktree for a bound lane)
-    # so an event-stream consumer can tell a bound lane from a materialized one
-    # without a second read of lane.toml.
-    lane_kind = "materialized"
-    bound_worktree_payload: Optional[str] = None
-    if bind is not None:
-        doc = tomllib.loads(lane_proto.lane_file(workspace_root, owner_unit, lane_name).read_text())
-        branch_map = doc.get("branch_map", {})
-        lane_kind = doc.get("lane_kind", "bound")
-        bound_worktree_payload = doc.get("bound_worktree")
-    else:
-        branch_map = {}
-        for part in (branch or "").split(","):
-            if "=" in part:
-                k, v = part.split("=", 1)
-                branch_map[k.strip()] = v.strip()
-            else:
-                for r in repo_list:
-                    branch_map[r] = part.strip()
-    payload: dict[str, object] = {
-        "lane_name": lane_name,
-        "lane_type": lane_type,
-        "lane_kind": lane_kind,
-        "repos": repo_list,
-        "branch_map": branch_map,
-    }
-    if bound_worktree_payload is not None:
-        payload["bound_worktree"] = bound_worktree_payload
-    emit_after_outcome(
-        event_type=EventType.LANE_CREATED,
-        workspace_root=workspace_root,
-        actor=source,
-        owner_unit=owner_unit,
-        payload=payload,
-    )
+    from .spec_apply import workspace_spec_path
+
+    spec_path = workspace_spec_path(workspace_root)
+    spec_parent_existed = spec_path.parent.exists()
+    wrote_spec = _spec_for_lane_create(workspace_root, owner_unit)
+    try:
+        repos, branch = _lane_create_defaults(workspace_root, lane_name, repos, branch, bind, items)
+        ns = SimpleNamespace(
+            workspace_root=workspace_root,
+            owner_unit=owner_unit,
+            lane_name=lane_name,
+            repos=repos,
+            branch=branch or "",
+            type=lane_type,
+            source=source,
+            default_commands=command or [],
+            bind=str(bind) if bind is not None else None,
+        )
+        _exit(lane_proto.create_lane(ns))
+        # A bound lane owns no clone: skip materialization. The branch_map for the
+        # event comes from the lane document create_lane just wrote (derived from the
+        # bound worktree), not from the --branch arg, which --bind ignores.
+        if bind is None:
+            try:
+                _materialize_lane_repos(workspace_root, owner_unit, lane_name, manual_hooks=manual_hooks)
+            except BaseException:
+                # BaseException and not Exception, deliberately: the refusal this guards
+                # against is a SystemExit, which is not an Exception and would sail past a
+                # narrower clause, leaving exactly the orphan this exists to prevent.
+                #
+                # ...but only when the refusal left nothing usable. A blocked projection hook
+                # refuses AFTER the fork base is recorded, and that lane is recoverable by
+                # design -- `review create-project` must still succeed on it -- so the fork
+                # base, not the position of the raise, decides.
+                if not _lane_carries_a_fork_base(workspace_root, owner_unit, lane_name):
+                    _remove_lane_artifacts(workspace_root, owner_unit, lane_name)
+                else:
+                    # The kept path must be LEGIBLE, not silent. A user who sees "create
+                    # failed" and later finds the lane on disk would otherwise read it as the
+                    # very orphan this change exists to prevent. So the message says the lane
+                    # was KEPT, why it is recoverable, and both ways forward. It names no
+                    # removal verb because none exists: `lane` has create/enter/resolve/exit/
+                    # current/bind and nothing that removes one, and a message that names a
+                    # command a user cannot run is worse than one that names the path.
+                    lane_root = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
+                    typer.echo(
+                        f"lane create: the lane {owner_unit}/{lane_name} was KEPT because its fork "
+                        f"base is recorded, so it is recoverable.\n"
+                        f"  continue with it: gr2 review create-project {workspace_root} {owner_unit} {lane_name}\n"
+                        f"  remove it:        delete {lane_root}  (no lane-removal verb exists yet)",
+                        err=True,
+                    )
+                raise
+        repo_list = [r.strip() for r in repos.split(",")]
+        # The event payload carries lane_kind (and bound_worktree for a bound lane)
+        # so an event-stream consumer can tell a bound lane from a materialized one
+        # without a second read of lane.toml.
+        lane_kind = "materialized"
+        bound_worktree_payload: Optional[str] = None
+        if bind is not None:
+            doc = tomllib.loads(lane_proto.lane_file(workspace_root, owner_unit, lane_name).read_text())
+            branch_map = doc.get("branch_map", {})
+            lane_kind = doc.get("lane_kind", "bound")
+            bound_worktree_payload = doc.get("bound_worktree")
+        else:
+            branch_map = {}
+            for part in (branch or "").split(","):
+                if "=" in part:
+                    k, v = part.split("=", 1)
+                    branch_map[k.strip()] = v.strip()
+                else:
+                    for r in repo_list:
+                        branch_map[r] = part.strip()
+        payload: dict[str, object] = {
+            "lane_name": lane_name,
+            "lane_type": lane_type,
+            "lane_kind": lane_kind,
+            "repos": repo_list,
+            "branch_map": branch_map,
+        }
+        if bound_worktree_payload is not None:
+            payload["bound_worktree"] = bound_worktree_payload
+        emit_after_outcome(
+            event_type=EventType.LANE_CREATED,
+            workspace_root=workspace_root,
+            actor=source,
+            owner_unit=owner_unit,
+            payload=payload,
+        )
+    finally:
+        # Only roll back our bootstrap when no usable lane remains. Existing specs
+        # and lanes kept after a recoverable materialization refusal stay intact.
+        if wrote_spec and not lane_proto.lane_file(workspace_root, owner_unit, lane_name).is_file():
+            spec_path.unlink(missing_ok=True)
+            if not spec_parent_existed and not any(spec_path.parent.iterdir()):
+                spec_path.parent.rmdir()
 
 
 @lane_app.command("enter", cls=ContextCommand)

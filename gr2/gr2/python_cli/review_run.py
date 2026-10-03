@@ -39,10 +39,12 @@ from . import lane_downstream, lane_graph, lane_plugins
 # exact case the default `pip install -e <lane>` cannot handle — so a pyproject
 # hint would be unreadable precisely where it is needed. A root sentinel file
 # works regardless of where the package lives. Format: `key = value` lines, `#`
-# comments; keys `install` (a command with {venv} and {lane} placeholders,
-# shell-split FIRST, then {venv}/{lane} substituted per token — so a lane path with
-# a space stays one token) and optional `package` (the import name whose __file__
-# must resolve under the lane).
+# comments, written either as TOML (`install = "{venv} -m pip install ."`) or bare
+# (`install = {venv} -m pip install .`); keys `install` (a command with {venv} and
+# {lane} placeholders, shell-split FIRST, then {venv}/{lane} substituted per token — so a
+# lane path with a space stays one token; {venv} is the lane venv's PYTHON executable, not
+# its directory) and optional `package` (the import name whose __file__ must resolve
+# under the lane). A [section] header or any other line is refused, naming the line.
 _HINT_NAME = ".review-install"
 
 
@@ -60,31 +62,73 @@ def _apply_install_placeholders(tokens: list[str], venv_python: Path, repo_dir: 
     ]
 
 
+def _unquote(val: str) -> str:
+    """One matched pair of surrounding quotes is dropped, so `package = "x"` and `package = x` agree. A value
+    that merely starts and ends with a quote around several words (`"{venv}" -m pip`) is left alone."""
+    if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'" and val[0] not in val[1:-1]:
+        return val[1:-1]
+    return val
+
+
+def _check_hint_key(p: Path, key: str) -> None:
+    if key not in _HINT_KEYS:
+        raise ReviewRunRefused(
+            "bad_hint",
+            f"unrecognised key {key!r} in {p}; allowed keys are {sorted(_HINT_KEYS)}",
+        )
+
+
 def read_install_hint(repo_dir: Path) -> dict | None:
     """Parse `<repo_dir>/.review-install`; return optional runner settings or None
     when the file is absent. `reports` is the JUnit XML glob for the `junit-xml`
-    runner. An unrecognised key is a
-    REFUSAL (`bad_hint`), not a silent skip: a typo like `instal = ...` would
-    otherwise fall through to the default install and refuse under a cause the repo
-    never declared."""
+    runner. Two spellings of the same file are accepted: real TOML (`install = "..."`, quoted strings) and
+    the older bare lines (`install = {venv} -m pip install .`, not valid TOML). Both give the same
+    dict. Anything else is a REFUSAL (`bad_hint`) naming the file and the line, not a silent skip: an
+    unrecognised key (a typo like `instal = ...` would otherwise fall through to the default install), a
+    `[section]` header, or a line that is not `key = value`."""
     p = repo_dir / _HINT_NAME
     if not p.is_file():
         return None
-    out: dict[str, str] = {}
-    for raw in p.read_text().splitlines():
+    text = p.read_text(encoding="utf-8-sig")
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        data = None
+    if data is not None:
+        out: dict[str, str] = {}
+        for key, val in data.items():
+            if isinstance(val, dict):
+                at = next((i for i, ln in enumerate(text.splitlines(), start=1) if ln.strip() == f"[{key}]"), 0)
+                raise ReviewRunRefused(
+                    "bad_hint",
+                    f"{p} line {at}: a [{key}] section is not used; put the keys at the top of the file "
+                    "as `key = value` lines",
+                )
+            _check_hint_key(p, key)
+            if not isinstance(val, str):
+                raise ReviewRunRefused(
+                    "bad_hint",
+                    f"{p}: {key!r} must be a single string, not a {type(val).__name__}",
+                )
+            out[key] = val.strip()
+        return out
+    out = {}
+    for n, raw in enumerate(text.splitlines(), start=1):
         line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
+        if not line or line.startswith("#"):
             continue
-        key, _, val = line.partition("=")
-        key = key.strip()
-        if key not in _HINT_KEYS:
+        if "=" not in line:
             raise ReviewRunRefused(
                 "bad_hint",
-                f"unrecognised key {key!r} in {p}; allowed keys are "
-                f"{sorted(_HINT_KEYS)}",
+                f"{p} line {n} is not a `key = value` line ({line[:40]!r}); a [section] header is not "
+                "used, put keys at the top of the file",
             )
-        out[key] = val.strip()
+        key, _, val = line.partition("=")
+        key = key.strip()
+        _check_hint_key(p, key)
+        out[key] = _unquote(val.strip())
     return out
+
 
 _MARKER_NAME = ".grip-review-open.json"
 _MARKER_KIND = "review-open"

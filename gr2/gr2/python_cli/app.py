@@ -2392,12 +2392,12 @@ def _lane_create_defaults(workspace_root: Path, lane_name: str, repos: Optional[
         if bind is not None:
             raise typer.BadParameter("--repos is required with --bind (a bound lane is single-repo)")
         try:
-            declared = lane_defaults.workspace_repos(workspace_root)
+            declared = lane_defaults.workspace_repos(workspace_root, members=False)
         except lane_downstream.MembersUnreadable as exc:
             raise typer.BadParameter(f"{exc}; name the repos with --repos, or fix the file")
         if not declared:
             raise typer.BadParameter(
-                f"{workspace_root} declares no repos (no workspace spec and no grip.toml members), so there is nothing to default to; name them with --repos"
+                f"the workspace spec at {workspace_root} declares no repos, so there is nothing to default to; name them with --repos"
             )
         repos = ",".join(r.name for r in declared)
         announced["repos"] = ctx_mod.Resolved(repos, f"every repo of the workspace spec; this makes {len(declared)} clone{'s' if len(declared) != 1 else ''}")
@@ -2406,10 +2406,13 @@ def _lane_create_defaults(workspace_root: Path, lane_name: str, repos: Optional[
         announced["branch"] = ctx_mod.Resolved(lane_name, "the lane name")
         chosen = {r.strip() for r in repos.split(",") if r.strip()}
         try:
-            declared = [r for r in lane_defaults.workspace_repos(workspace_root) if r.name in chosen]
-        except lane_downstream.MembersUnreadable:
-            declared = []
+            known = lane_defaults.workspace_repos(workspace_root)
+        except lane_downstream.MembersUnreadable as exc:
+            raise typer.BadParameter(f"{exc}; the branch {branch!r} cannot be checked against the remotes, so name the branch with --branch, or fix the file")
+        declared = [r for r in known if r.name in chosen]
         result = lane_defaults.check_remote_branch(declared, branch)
+        unasked = sorted(chosen - {r.name for r in declared})
+        result.not_checked.extend(f"{name} (not declared in the workspace files)" for name in unasked)
         if result.collisions:
             c = result.collisions[0]
             more = f" (and {len(result.collisions) - 1} more repo{'s' if len(result.collisions) > 2 else ''})" if len(result.collisions) > 1 else ""

@@ -10,8 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **`gr2 lane create` takes the repos and the branch from the workspace when you leave them out.** With no `--repos`
-  it makes the lane over every repo the workspace declares (the spec's repos, and a `store init` root's
-  `grip.toml` members) and says how many clones that is; with no `--branch` the branch is the lane name, verbatim.
+  it makes the lane over every repo the workspace declares (the spec's repos) and says how many clones that is; with no `--branch` the branch is the lane name, verbatim.
   Each value gr2 filled in is one stderr line (`gr2: repos=a,b (every repo of the workspace spec; this makes 2
   clones)`, `gr2: branch=demo (the lane name)`), hushed by `GR2_QUIET_CONTEXT=1`; a typed value wins and prints
   nothing. A defaulted branch is checked against each repo's remote under ONE 20 s budget: when `demo` already
@@ -20,7 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checked and the lane is still made (that line is printed even when `GR2_QUIET_CONTEXT` is set, because a safety
   check that did not run is not information to hush). A branch left over from earlier, already-merged work sits at
   an older commit than the tip the lane forks from and reads as pushed work too; pass `--branch <name>` to reuse it
-  or pick another lane name. `lane create` on a root that has no workspace spec (a root made by `store init` holds
+  or pick another lane name. If a workspace file cannot be read, a defaulted branch is refused (name it with `--branch`),
+  because the check cannot be made; a typed `--repos` entry the workspace files do not declare is named as not checked. `lane create` on a root that has no workspace spec (a root made by `store init` holds
   only `grip.toml`) refuses in one sentence before writing anything and names `gr2 workspace init`. `--repos` stays
   required with `--bind`.
 - **`gr2 add` can stage a whole lane, and will not stage the workspace root by accident.** `gr2 add --lane .` stages

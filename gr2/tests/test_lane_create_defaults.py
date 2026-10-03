@@ -112,6 +112,42 @@ def test_naming_the_existing_branch_is_the_way_through(tmp_path: Path) -> None:
     assert res.exit_code == 0, res.output
 
 
+def test_an_unreadable_grip_toml_refuses_a_defaulted_branch_instead_of_skipping_the_check(tmp_path: Path) -> None:
+    """The check cannot be made, so the defaulted branch is refused and nothing is created (the head's probe F1: the
+    lane was made on a branch already pushed ahead, with no line saying it was not checked). The control is the same
+    call on a readable root, which refuses naming beta's remote. Goes red if the unreadable file is read as 'no repos'."""
+    ws, _ = _workspace(tmp_path, ["alpha", "beta"])
+    _push_branch(ws, "beta", "demo")
+    control = _create(ws, "--repos", "alpha,beta")
+    assert control.exit_code == 2 and "already exists on beta's remote" in _flat(control)
+    (ws / "grip.toml").write_text("this is [ not toml")
+    res = _create(ws, "--repos", "alpha,beta")
+    assert res.exit_code == 2, res.output
+    assert "cannot be checked against the remotes" in _flat(res) and "--branch" in _flat(res)
+    assert not lanes.lane_dir(ws, "atlas", "demo").exists()
+
+
+def test_a_typed_repo_the_workspace_files_do_not_declare_is_named_as_not_checked(tmp_path: Path) -> None:
+    """A chosen repo with no declaration cannot be asked; it is named, never silently dropped from the check."""
+    ws, _ = _workspace(tmp_path, ["alpha"])
+    res = _create(ws, "--repos", "alpha,ghost")
+    assert "ghost (not declared in the workspace files)" in _flat(res)
+
+
+def test_the_repos_default_reads_the_spec_only_and_never_offers_a_grip_toml_member_the_lane_refuses(tmp_path: Path) -> None:
+    """Spec alpha,beta plus grip.toml members alpha,gamma: the default is alpha,beta with a true label and exit 0 (the
+    head's probe F2 announced alpha,beta,gamma and then died on 'unknown repos for lane: gamma'). Goes red if the
+    grip.toml members are unioned back into the default."""
+    ws, _ = _workspace(tmp_path, ["alpha", "beta"])
+    (ws / "grip.toml").write_text(
+        '[[members]]\nname = "alpha"\npath = "alpha"\n\n[[members]]\nname = "gamma"\npath = "gamma"\n'
+    )
+    res = _create(ws)
+    assert res.exit_code == 0, res.output
+    assert "gr2: repos=alpha,beta (every repo of the workspace spec; this makes 2 clones)" in _flat(res)
+    assert sorted(lanes.load_lane_doc(ws, "atlas", "demo")["fork_base"]) == ["alpha", "beta"]
+
+
 def test_a_remote_branch_at_the_base_is_not_a_collision(tmp_path: Path) -> None:
     ws, tips = _workspace(tmp_path, ["alpha"])
     src = ws / "repos" / "alpha"

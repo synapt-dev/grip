@@ -7,6 +7,7 @@ only the second), read through the same loader downstream uses, so a malformed f
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -24,8 +25,10 @@ class Repo(NamedTuple):
     ref: str | None  # the integration branch a lane forks from, when the workspace names one
 
 
-def workspace_repos(workspace_root: Path) -> list[Repo]:
-    """Every repo the workspace declares, in declaration order, spec first and grip.toml members after.
+def workspace_repos(workspace_root: Path, *, members: bool = True) -> list[Repo]:
+    """Every repo the workspace declares, in declaration order, spec first and, unless ``members`` is False, grip.toml
+    members after. A lane is made over spec repos only, so the repos DEFAULT passes ``members=False``; the remote
+    check keeps both files, because that is where a repo's url and ref may be written.
     Raises ``lane_downstream.MembersUnreadable`` for a file that cannot be read."""
     from .spec_apply import workspace_spec_path
 
@@ -36,7 +39,7 @@ def workspace_repos(workspace_root: Path) -> list[Repo]:
             if isinstance(r, dict) and isinstance(r.get("name"), str) and r["name"]:
                 found.setdefault(r["name"], Repo(r["name"], _text(r.get("url")), _text(r.get("ref") or r.get("default_branch"))))
     root_path = workspace_root / "grip.toml"
-    if root_path.is_file():
+    if members and root_path.is_file():
         for m in lane_downstream._read_toml(root_path).get("members", []):
             if isinstance(m, dict) and isinstance(m.get("name"), str) and m["name"]:
                 remotes = m.get("remotes") if isinstance(m.get("remotes"), dict) else {}
@@ -66,8 +69,8 @@ def _ls_remote(url: str, ref: str, timeout: float) -> str | None:
     ``TimeoutError`` or ``OSError`` when the remote could not be asked."""
     try:
         out = subprocess.run(
-            ["git", "ls-remote", url, ref], capture_output=True, text=True, timeout=max(timeout, 0.1),
-            env={**__import__("os").environ, "GIT_TERMINAL_PROMPT": "0"},
+            ["git", "ls-remote", "--", url, ref], capture_output=True, text=True, timeout=max(timeout, 0.1),
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
         )
     except subprocess.TimeoutExpired as exc:
         raise TimeoutError("did not answer in time") from exc

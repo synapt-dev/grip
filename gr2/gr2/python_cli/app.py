@@ -14,6 +14,10 @@ from types import SimpleNamespace
 from typing import List, Mapping, Optional
 
 import typer
+try:
+    from typer._click.core import ParameterSource
+except ImportError:  # Older Typer uses the separately installed Click.
+    from click.core import ParameterSource
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 from gr2.prototypes import repo_maintenance_prototype as repo_proto
 
@@ -3531,6 +3535,7 @@ def _normalize_review_row(raw: object) -> dict:
 
 @review_app.command("bind")
 def review_bind(
+    ctx: typer.Context,
     workspace_root: Optional[Path] = typer.Argument(None),
     key: Optional[str] = typer.Option(None, "--repo", help="Repository key for a single bound row"),
     remote: Optional[str] = typer.Option(None, "--remote", help="Remote URL or absolute path of the row (relative paths and remote names are not resolved from your shell's directory)"),
@@ -3548,9 +3553,9 @@ def review_bind(
 ) -> None:
     """Bind a review gr commit for one or more repository rows; print ``gr:<commit>``.
 
-    With no row given at all, every member whose checkout is not at its pin is bound, and the rows chosen are
+    With no row given at all, every member whose checkout is ahead of its pin is bound, and the rows chosen are
     printed BEFORE anything is bound (a bind is a local ref, so it can be thrown away, but a run with no terminal
-    cannot stop in between); --members narrows, and it refuses when no member differs from its pin. Otherwise one
+    cannot stop in between); --members narrows, and it refuses when no member is ahead of its pin. Otherwise one
     row from --repo/--remote/--base/--head, or many from --rows-json (all in
     ONE commit). For every row, reads the live remote head of its ref and refuses
     before writing if base is not that head (behind-must-be-0) or if head is
@@ -3561,6 +3566,16 @@ def review_bind(
     if members is not None and not nothing_given:
         raise typer.BadParameter("--members only narrows the members chosen when no row is given")
     if nothing_given:
+        # Presence, not value: explicitly empty text or the default ref still carries intent.
+        supplied = [
+            f"--{name}" for name in ("title", "body", "path", "ref")
+            if ctx.get_parameter_source(name) == ParameterSource.COMMANDLINE
+        ]
+        if supplied:
+            raise typer.BadParameter(
+                f"{', '.join(supplied)} requires an explicit row: give --repo/--remote/--base/--head "
+                "or --rows-json; these flags do not apply to inferred members"
+            )
         from . import lane_downstream, review_members
 
         bind_root = _resolve_workspace_root(workspace_root)
@@ -3573,11 +3588,11 @@ def review_bind(
         if not choice.rows:
             why = "; ".join(choice.skipped) or "every member's checkout is at its pin"
             raise typer.BadParameter(
-                f"nothing to bind: no member's checkout differs from its pin ({why}). Commit in a member's checkout "
+                f"nothing to bind: no member's checkout is ahead of its pin ({why}). Commit in a member's checkout "
                 "first, or give the row with --repo/--remote/--base/--head or --rows-json"
             )
         for row in choice.rows:
-            typer.echo(f"gr2: bind {row['key']} {row['base'][:12]}..{row['head'][:12]} (its checkout is not at its pin)", err=True)
+            typer.echo(f"gr2: bind {row['key']} {row['base'][:12]}..{row['head'][:12]} (its checkout is ahead of its pin)", err=True)
         if choice.skipped:
             typer.echo(f"gr2: not bound: {'; '.join(choice.skipped)}", err=True)
         rows = choice.rows

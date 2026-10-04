@@ -1,4 +1,4 @@
-"""The members a `review bind` can bind without being told: the ones whose checkout is not at its pin.
+"""The members a `review bind` can bind without being told: the ones whose checkout is ahead of its pin.
 
 Reads the workspace spec and the root's ``grip.toml`` through the loader downstream uses (a malformed file refuses
 there, by name), takes every member's pin through the one validator, and compares it to the head of the member's own
@@ -52,7 +52,7 @@ def workspace_members(workspace_root: Path) -> list[Member]:
 
 
 def changed_member_rows(workspace_root: Path, only: list[str] | None = None) -> Choice:
-    """One bind row per member whose checkout head differs from its pin. A member with no pin, no url, no checkout
+    """One bind row per member whose pin is an ancestor of its distinct checkout head. A member with no pin, no url, no checkout
     or an unreadable head is not chosen and is named with the reason. ``only`` narrows to the named members and
     names any that the workspace does not declare."""
     members = workspace_members(workspace_root)
@@ -61,6 +61,7 @@ def changed_member_rows(workspace_root: Path, only: list[str] | None = None) -> 
     skipped: list[str] = [f"{n} (not a member of this workspace)" for n in (only or []) if n not in declared]
     for m in members:
         if only is not None and m.name not in only:
+            skipped.append(f"{m.name} (excluded by --members)")
             continue
         checkout = workspace_root / m.path
         if m.pin is None:
@@ -75,6 +76,14 @@ def changed_member_rows(workspace_root: Path, only: list[str] | None = None) -> 
             continue
         sha = head.stdout.strip()
         if sha == m.pin:
+            skipped.append(f"{m.name} (checkout is at its pin)")
+            continue
+        ancestry = gitops.git(checkout, "merge-base", "--is-ancestor", m.pin, sha)
+        if ancestry.returncode == 1:
+            skipped.append(f"{m.name} (checkout does not descend from its pin)")
+            continue
+        if ancestry.returncode != 0:
+            skipped.append(f"{m.name} (ancestry could not be read)")
             continue
         rows.append({
             "key": m.name, "remote": m.url, "path": m.path, "head": sha, "base": m.pin,

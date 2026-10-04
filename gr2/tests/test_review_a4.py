@@ -70,7 +70,7 @@ def test_a_bare_bind_binds_the_member_whose_checkout_is_not_at_its_pin(two_membe
     _unpushed_head(ws)
     code, out = _cli("review", "bind", str(ws))
     assert code == 0, out
-    assert "gr2: bind alpha " in out and "beta" not in out.split("gr:")[0]
+    assert "gr2: bind alpha " in out and "beta (checkout is at its pin)" in out
     gr_id = [l for l in out.splitlines() if l.startswith("gr:")][-1]
     _, shown = _cli("review", "show", str(ws), gr_id)
     assert "alpha:" in shown and "beta:" not in shown

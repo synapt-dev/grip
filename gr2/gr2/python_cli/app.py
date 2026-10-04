@@ -14,6 +14,10 @@ from types import SimpleNamespace
 from typing import List, Mapping, Optional
 
 import typer
+try:
+    from typer._click.core import ParameterSource
+except ImportError:  # Older Typer uses the separately installed Click.
+    from click.core import ParameterSource
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 from gr2.prototypes import repo_maintenance_prototype as repo_proto
 
@@ -2972,17 +2976,48 @@ def review_checkout_pr(
         typer.echo(json.dumps(payload, indent=2))
 
 
+def _the_one_review_bind(workspace_root: Path) -> str:
+    """`review open` with no target: the workspace's review bind when there is exactly ONE, said on stderr. Several
+    are listed and refused, because opening the wrong review is the mistake; none is refused naming `review bind`."""
+    binds = _review_call(grip.list_review_binds, workspace_root)
+    if not binds:
+        raise typer.BadParameter("this workspace has no review bind to open; make one with `review bind` first, or name the target")
+    if len(binds) > 1:
+        listing = "; ".join(f"gr:{c} ({when})" for c, when in binds)
+        raise typer.BadParameter(
+            f"{len(binds)} review binds exist and `open` will not choose between them: {listing}. Name one, "
+            "for example `review open <root> gr:<sha>`"
+        )
+    commit = binds[0][0]
+    typer.echo(f"gr2: target=gr:{commit} (the only review bind in this workspace)", err=True)
+    return f"gr:{commit}"
+
+
+def _default_review_lane_dir(workspace_root: Path, target: str) -> Path:
+    """Where `review open` reconstructs when no --lane-dir is given: ``<workspace>.review/<first 8 of the sha>``,
+    BESIDE the workspace and not inside it, named in full on stderr. An existing directory is refused, never reused."""
+    sha = _strip_gr_prefix(target)
+    path = workspace_root.parent / f"{workspace_root.name}.review" / sha[:8]
+    if path.exists():
+        raise typer.BadParameter(
+            f"{path} already exists, so `open` will not reconstruct into it; pass --lane-dir <new directory>, or "
+            "close that review first with `review close`"
+        )
+    typer.echo(f"gr2: lane-dir={path} (beside the workspace, from the bind's id)", err=True)
+    return path
+
+
 @review_app.command("open", cls=RootOptionCommand)
 def review_open(
     workspace_root: Path,
-    target: str = typer.Argument(..., help="What to open: a PR number (PR-head lane), a gr:<sha> bind id (reconstruction), or a project-review id"),
+    target: Optional[str] = typer.Argument(None, help="What to open: a PR number (PR-head lane), a gr:<sha> bind id (reconstruction), or a project-review id. Omitted: the workspace's one review bind"),
     repo: Optional[str] = typer.Argument(None, help="PR-head only: the repository key (with an owner_unit-shaped target)"),
     pr_number: Optional[int] = typer.Argument(None, help="PR-head only: the PR number (legacy positional form)"),
     lane_name: Optional[str] = typer.Option(None, "--lane", help="Override the review lane name"),
     platform: str = typer.Option("github", "--platform", help="Platform adapter name"),
     run: Optional[str] = typer.Option(None, "--run", help="After opening, dispatch this command inside the lane (cwd-contained)"),
-    lane_dir: Optional[Path] = typer.Option(None, "--lane-dir", help="gr:<sha> only: directory to reconstruct into"),
-    enter: bool = typer.Option(False, "--enter", help="gr:<sha> only: materialize the reconstruction (the only open mode)"),
+    lane_dir: Optional[Path] = typer.Option(None, "--lane-dir", help="gr:<sha> only: directory to reconstruct into. Omitted: <workspace>.review/<first 8 of the sha>, beside the workspace"),
+    enter: bool = typer.Option(False, "--enter", help="gr:<sha> only: accepted and implied, reconstruction is the only open mode"),
     repo_key: Optional[str] = typer.Option(None, "--repo", help="gr:<sha> only: repository key to materialize; omit for every bound row"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     root: Optional[Path] = ROOT_OPTION,
@@ -3002,6 +3037,9 @@ def review_open(
     """
     from . import review_dispatch
 
+    if target is None and repo is None and pr_number is None:
+        target = _the_one_review_bind(workspace_root.resolve())
+
     # Positionals decide first. The PR-head form's first positional is an owner_unit
     # (an arbitrary word that classifies as "project"), so classifying the target
     # before reading REPO/PR_NUMBER would refuse every legacy PR-head open.
@@ -3011,9 +3049,9 @@ def review_open(
         if kind == "gr":
             # dispatch to the reconstruction path (open-gr); target is the bind commit
             if lane_dir is None:
-                raise typer.BadParameter("--lane-dir is required to open a gr:<sha> reconstruction")
+                lane_dir = _default_review_lane_dir(workspace_root.resolve(), target)
             return review_open_gr(
-                workspace_root, target, key=repo_key, lane_dir=lane_dir, enter=enter, json_output=json_output
+                workspace_root, target, key=repo_key, lane_dir=lane_dir, enter=True, json_output=json_output
             )
         if kind == "project":
             raise typer.BadParameter(
@@ -3497,6 +3535,7 @@ def _normalize_review_row(raw: object) -> dict:
 
 @review_app.command("bind")
 def review_bind(
+    ctx: typer.Context,
     workspace_root: Optional[Path] = typer.Argument(None),
     key: Optional[str] = typer.Option(None, "--repo", help="Repository key for a single bound row"),
     remote: Optional[str] = typer.Option(None, "--remote", help="Remote URL or absolute path of the row (relative paths and remote names are not resolved from your shell's directory)"),
@@ -3510,16 +3549,54 @@ def review_bind(
     body: str = typer.Option("", "--body", help="Platform body text (NORM-hashed into the object)"),
     rows_json: Optional[Path] = typer.Option(None, "--rows-json", help="A JSON file with a list of row objects (key/remote/base/head, optional path/ref/title/body/source); binds ALL rows into ONE gr commit. Exclusive with the single-row flags."),
     ratified: Optional[str] = typer.Option(None, "--ratified", help="Named ratify receipt id: the sanctioned fix-forward when a --head is already on the remote"),
+    members: Optional[str] = typer.Option(None, "--members", help="With no rows given: bind only these members (comma-separated names)"),
 ) -> None:
     """Bind a review gr commit for one or more repository rows; print ``gr:<commit>``.
 
-    One row from --repo/--remote/--base/--head, or many from --rows-json (all in
+    With no row given at all, every member whose checkout is ahead of its pin is bound, and the rows chosen are
+    printed BEFORE anything is bound (a bind is a local ref, so it can be thrown away, but a run with no terminal
+    cannot stop in between); --members narrows, and it refuses when no member is ahead of its pin. Otherwise one
+    row from --repo/--remote/--base/--head, or many from --rows-json (all in
     ONE commit). For every row, reads the live remote head of its ref and refuses
     before writing if base is not that head (behind-must-be-0) or if head is
     already on the remote without --ratified. That printed id is the whole artifact.
     """
     single = any(v is not None for v in (key, remote, base, head))
-    if rows_json is not None:
+    nothing_given = rows_json is None and not single and source is None and from_range is None
+    if members is not None and not nothing_given:
+        raise typer.BadParameter("--members only narrows the members chosen when no row is given")
+    if nothing_given:
+        # Presence, not value: explicitly empty text or the default ref still carries intent.
+        supplied = [
+            f"--{name}" for name in ("title", "body", "path", "ref")
+            if ctx.get_parameter_source(name) == ParameterSource.COMMANDLINE
+        ]
+        if supplied:
+            raise typer.BadParameter(
+                f"{', '.join(supplied)} requires an explicit row: give --repo/--remote/--base/--head "
+                "or --rows-json; these flags do not apply to inferred members"
+            )
+        from . import lane_downstream, review_members
+
+        bind_root = _resolve_workspace_root(workspace_root)
+        try:
+            choice = review_members.changed_member_rows(
+                Path(bind_root).resolve(), [m.strip() for m in members.split(",") if m.strip()] if members else None
+            )
+        except (lane_downstream.MembersUnreadable, lane_downstream.PinConflict) as exc:
+            raise typer.BadParameter(f"{exc}; fix the file, or name the row with --repo/--remote/--base/--head or --rows-json")
+        if not choice.rows:
+            why = "; ".join(choice.skipped) or "every member's checkout is at its pin"
+            raise typer.BadParameter(
+                f"nothing to bind: no member's checkout is ahead of its pin ({why}). Commit in a member's checkout "
+                "first, or give the row with --repo/--remote/--base/--head or --rows-json"
+            )
+        for row in choice.rows:
+            typer.echo(f"gr2: bind {row['key']} {row['base'][:12]}..{row['head'][:12]} (its checkout is ahead of its pin)", err=True)
+        if choice.skipped:
+            typer.echo(f"gr2: not bound: {'; '.join(choice.skipped)}", err=True)
+        rows = choice.rows
+    elif rows_json is not None:
         if single or source is not None or from_range is not None:
             raise typer.BadParameter("--rows-json is exclusive with --repo/--remote/--base/--head/--source/--from-range")
         try:
@@ -3942,6 +4019,32 @@ def review_run(
         typer.echo(_downstream_line(receipt.get("downstream")))
     if receipt["result"] != "green":
         raise typer.Exit(code=1)
+
+
+@review_app.command("show", cls=RootOptionalCommand)
+def review_show(
+    workspace_root: Path,
+    commit: str = typer.Argument(..., help="The review bind, as gr:<sha> or a bare sha"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    root: Optional[Path] = ROOT_OPTION,
+) -> None:
+    """Show what a review bind holds: each member's repository and commit range, the title and body it was bound
+    with, and the files its range changes. Read-only; the id is the one `review bind` printed, `gr:` and all."""
+    result = _review_call(grip.show_review_commit, workspace_root.resolve(), _strip_gr_prefix(commit))
+    if json_output:
+        typer.echo(json.dumps(result, indent=2, default=str))
+        return
+    members = result["members"]
+    typer.echo(f"{result['id']}  ({len(members)} member{'s' if len(members) != 1 else ''})")
+    for m in members:
+        typer.echo(f"{m['key']}: {str(m['base'])[:12]}..{str(m['head'])[:12]}  {m['remote']}")
+        if str(m["title"]).strip():
+            typer.echo(f"  title: {str(m['title']).strip()}")
+        body = str(m["body"]).strip()
+        if body:
+            typer.echo("  body: " + body.replace("\n", "\n        "))
+        files = m["files"]
+        typer.echo("  files: " + (", ".join(files) if files else "(none)" if files == [] else "(not recorded)"))
 
 
 @review_app.command("verify", cls=RootOptionalCommand)

@@ -68,12 +68,12 @@ def test_each_source_reads_as_itself_and_neither_reads_as_none(tmp_path: Path) -
     only_toml = tmp_path / "t"
     _write_grip_toml(only_toml, [{"name": "api", "pin": A, "url": "/r/api"}, {"name": "nourl", "pin": B}])
     assert ld.load_members(only_toml) == [
-        {"name": "api", "url": "/r/api", "pin": A},
-        {"name": "nourl", "url": None, "pin": B},
+        {"name": "api", "url": "/r/api", "pin": A, "path": "api", "ref": "main"},
+        {"name": "nourl", "url": None, "pin": B, "path": "nourl", "ref": "main"},
     ]
     only_spec = tmp_path / "s"
     _write_spec(only_spec, [{"name": "api", "url": "/r/api", "pin": A}])
-    assert ld.load_members(only_spec) == [{"name": "api", "url": "/r/api", "pin": A}]
+    assert ld.load_members(only_spec) == [{"name": "api", "url": "/r/api", "pin": A, "path": "api", "ref": None}]
     (tmp_path / "none").mkdir()
     assert ld.load_members(tmp_path / "none") is None
 

@@ -66,14 +66,15 @@ def _read_toml(path: Path) -> dict:
 
 
 def load_members(workspace_root: Path) -> list[dict] | None:
-    """Every member the workspace declares, as plain ``{name, url, pin}`` dicts, or None when the root carries
+    """Every member the workspace declares, as plain ``{name, url, pin, path, ref}`` dicts, or None when the root carries
     neither source. Two sources exist: the workspace spec's ``[[repos]]`` (name, url, pin) and the root's
     ``grip.toml`` ``[[members]]`` (name, pin, and the url under ``[members.remotes] origin``). A root made by
     ``store init`` alone has only the second. Both are read into the SAME shape and every pin is judged by
     ``pin_of``, so no source can make a non-commit count as a pin.
 
     Both present: members are matched by name. Two usable pins that differ refuse (``PinConflict``); a usable pin
-    in one file and none in the other is used; a member only in grip.toml is added. Nothing here guesses."""
+    in one file and none in the other is used; a member only in grip.toml is added. Path, ref and url use the
+    spec value when present, otherwise the root value. Defaults are left to the caller. Nothing here guesses."""
     from .spec_apply import workspace_spec_path
 
     spec_path = workspace_spec_path(workspace_root)
@@ -83,7 +84,8 @@ def load_members(workspace_root: Path) -> list[dict] | None:
     if spec_path.is_file():
         doc = _read_toml(spec_path)
         spec_members = [
-            {"name": r.get("name"), "url": r.get("url"), "pin": r.get("pin")}
+            {"name": r.get("name"), "url": r.get("url"), "pin": r.get("pin"),
+             "path": r.get("path"), "ref": r.get("ref") or r.get("default_branch")}
             for r in doc.get("repos", []) if isinstance(r, dict) and r.get("name")
         ]
     if root_path.is_file():
@@ -93,7 +95,8 @@ def load_members(workspace_root: Path) -> list[dict] | None:
             if not (isinstance(m, dict) and m.get("name")):
                 continue
             remotes = m.get("remotes") if isinstance(m.get("remotes"), dict) else {}
-            root_members.append({"name": m["name"], "url": remotes.get("origin"), "pin": m.get("pin")})
+            root_members.append({"name": m["name"], "url": remotes.get("origin"), "pin": m.get("pin"),
+                                 "path": m.get("path"), "ref": m.get("ref")})
     if spec_members is None and root_members is None:
         return None
     if spec_members is None:
@@ -108,7 +111,8 @@ def load_members(workspace_root: Path) -> list[dict] | None:
             mine, theirs = pin_of(m), pin_of(other)
             if mine and theirs and mine != theirs:
                 raise PinConflict(str(m["name"]), mine, theirs)
-            m = {**m, "pin": mine or theirs, "url": m.get("url") or other.get("url")}
+            m = {**m, "pin": mine or theirs, "url": m.get("url") or other.get("url"),
+                 "path": m.get("path") or other.get("path"), "ref": m.get("ref") or other.get("ref")}
         merged.append(m)
     return merged + list(by_name.values())
 

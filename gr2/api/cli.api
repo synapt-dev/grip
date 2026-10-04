@@ -367,6 +367,7 @@ flag  review bind --base <str>                                        stable
 flag  review bind --body <str>                                        stable
 flag  review bind --from-range <str>                                  stable
 flag  review bind --head <str>                                        stable
+flag  review bind --members <str>                                     stable
 flag  review bind --path <str>                                        stable
 flag  review bind --ratified <str>                                    stable
 flag  review bind --ref <str>                                         stable
@@ -489,6 +490,12 @@ flag  review run --runner <str>                                       stable
 flag  review run --system-site-packages                               stable
 flag  review run --test <str>                                         stable
 verb  review run                                                      stable
+# review show
+arg   review show commit <str>                                        stable
+arg   review show workspace_root <str>                                stable
+flag  review show --json                                              stable
+flag  review show --root/-C <str>                                     stable
+verb  review show                                                     stable
 # review verify
 arg   review verify commit <str>                                      stable
 arg   review verify workspace_root <str>                              stable

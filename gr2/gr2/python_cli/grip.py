@@ -653,6 +653,51 @@ def verify_review_commit(workspace: Path, commit: str) -> dict[str, object]:
     return _verify_review_commit_in_store(workspace, _resolve_bound(workspace, commit))
 
 
+def list_review_binds(workspace: Path) -> list[tuple[str, str]]:
+    """Every review bind in the workspace root's `.git` as (commit, committed-at), oldest first. Read-only."""
+    _validate_bind_store(workspace)
+    out = _bind_git(workspace, "for-each-ref", "--format=%(refname)\t%(committerdate:iso-strict)", _REVIEW_REF_PREFIX)
+    rows = []
+    for line in out.stdout.splitlines():
+        ref, _, when = line.partition("\t")
+        if ref.startswith(_REVIEW_REF_PREFIX):
+            rows.append((ref[len(_REVIEW_REF_PREFIX):], when))
+    return sorted(rows, key=lambda r: (r[1], r[0]))
+
+
+def show_review_commit(workspace: Path, commit: str) -> dict[str, object]:
+    """What a bound review contains, read-only: per member the repository, the commit range (base and head), the
+    title and body it was bound with, and the files its range changes. The id is the bind's own, as ``gr:<sha>``
+    or a bare sha; a commit that is not a bind is refused the way `verify` refuses it."""
+    _validate_bind_store(workspace)
+    commit = _resolve_bound(workspace, commit)
+    if _bind_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip() != _REVIEW_BIND_SCHEMA:
+        raise GripCorruptError("not a gr2 review bind commit")
+    rows = _read_repo_state(workspace, commit, bind=True)
+    members: list[dict[str, object]] = []
+    for key, fields in sorted(rows.items()):
+        patch = _bind_git(workspace, "show", f"{commit}:objects/{key}/range.patch")
+        files: list[str] | None = None
+        if patch.returncode == 0:
+            files = []
+            for line in patch.stdout.splitlines():
+                if line.startswith("diff --git a/"):
+                    name = line[len("diff --git a/"):].rsplit(" b/", 1)[0]
+                    if name not in files:
+                        files.append(name)
+        members.append({
+            "key": key,
+            "remote": fields["remote"],
+            "path": fields["path"],
+            "base": fields["base"],
+            "head": fields["commit"],
+            "title": _bind_git(workspace, "show", f"{commit}:texts/{key}/title").stdout,
+            "body": _bind_git(workspace, "show", f"{commit}:texts/{key}/body").stdout,
+            "files": files,
+        })
+    return {"id": f"gr:{commit}", "members": members}
+
+
 def _verify_review_commit_in_store(workspace: Path, commit: str) -> dict[str, object]:
     """Re-derive the review gr commit from its own objects and report what was
     measured: the recomputed root tree (must equal the commit's tree, else

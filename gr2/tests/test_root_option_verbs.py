@@ -2,7 +2,7 @@
 verbs with a FIXED number of positionals, as a word that may be left out.
 
 Two command classes (`gr2/python_cli/root_option.py`):
-  * `RootOptionalCommand` (22 verbs): `--root/-C`, and one fewer positional than the verb requires means
+  * `RootOptionalCommand` (23 verbs): `--root/-C`, and one fewer positional than the verb requires means
     the root is the missing one: it is put in front from `--root/-C` or the nearest workspace above cwd.
   * `RootOptionCommand` (8 verbs, each with an OPTIONAL TRAILING positional): `--root/-C` only. One fewer
     word has two readings there (`pr status unit lane` is "root omitted" and "root = unit"), so the bare
@@ -35,7 +35,7 @@ FIXED_ARITY = [  # RootOptionalCommand: the 16, and ContextCommand: the 6 above
     "lane/create", "lane/enter", "lane/resolve", "lane/exit", "lane/current", "lane/show", "lane/bind",
     "lane/lease/acquire", "lane/lease/release", "lane/lease/show",
     "review/check", "review/requirements", "review/checkout-pr", "review/create-project", "review/open-project",
-    "review/exit-gr", "review/open-gr", "review/verify",
+    "review/exit-gr", "review/open-gr", "review/verify", "review/show",
     "hooks/run", "config/restore",
 ]
 OPTIONAL_TRAILING = [  # RootOptionCommand: the 8
@@ -116,7 +116,7 @@ def at(monkeypatch):
     return monkeypatch.chdir
 
 
-def test_the_partition_is_exactly_the_22_and_the_8_and_nothing_else_takes_a_leading_root() -> None:
+def test_the_partition_is_exactly_the_23_and_the_8_and_nothing_else_takes_a_leading_root() -> None:
     """Every verb whose first positional is the workspace root is in exactly one list, by class. A NEW verb
     with a leading root fails here until it is placed in one of them, on purpose."""
     leading = sorted(
@@ -142,7 +142,7 @@ def test_the_partition_is_exactly_the_22_and_the_8_and_nothing_else_takes_a_lead
 
 def test_the_8_are_exactly_the_verbs_with_an_optional_trailing_positional() -> None:
     """WHY the 8 are not inferred: each has an optional positional after the required ones, so one fewer
-    word has two readings. The 22 have none, so counting is exact for them."""
+    word has two readings. The 23 have none, so counting is exact for them."""
     for verb in FIXED_ARITY:
         assert all(p.required or p is _arguments(LEAVES[verb])[0] for p in _arguments(LEAVES[verb])), verb
     for verb in OPTIONAL_TRAILING:
@@ -262,7 +262,7 @@ def test_the_8_do_not_judge_a_root_that_is_a_directory(verb, tmp_path, at) -> No
     assert _root(_parse(verb, [str(plain), *_words(LEAVES[verb], tmp_path, with_optional=False)], tmp_path)) == plain.resolve()
 
 
-def test_the_root_is_optional_in_the_usage_of_the_21_and_required_in_the_8() -> None:
+def test_the_root_is_optional_in_the_usage_of_the_23_and_required_in_the_8() -> None:
     for verb in FIXED_ARITY:
         assert _arguments(LEAVES[verb])[0].required is False, verb
     for verb in OPTIONAL_TRAILING:

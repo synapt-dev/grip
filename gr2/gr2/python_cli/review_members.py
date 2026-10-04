@@ -30,25 +30,11 @@ def _text(value: object) -> str | None:
 
 
 def workspace_members(workspace_root: Path) -> list[Member]:
-    from .spec_apply import workspace_spec_path
-
-    found: dict[str, Member] = {}
-    spec_path = workspace_spec_path(workspace_root)
-    if spec_path.is_file():
-        for r in lane_downstream._read_toml(spec_path).get("repos", []):
-            if isinstance(r, dict) and isinstance(r.get("name"), str) and r["name"]:
-                found.setdefault(r["name"], Member(
-                    r["name"], _text(r.get("path")) or r["name"], _text(r.get("url")),
-                    _text(r.get("ref") or r.get("default_branch")), lane_downstream.pin_of(r)))
-    root_path = workspace_root / "grip.toml"
-    if root_path.is_file():
-        for m in lane_downstream._read_toml(root_path).get("members", []):
-            if isinstance(m, dict) and isinstance(m.get("name"), str) and m["name"]:
-                remotes = m.get("remotes") if isinstance(m.get("remotes"), dict) else {}
-                found.setdefault(m["name"], Member(
-                    m["name"], _text(m.get("path")) or m["name"], _text(remotes.get("origin")),
-                    _text(m.get("ref")), lane_downstream.pin_of(m)))
-    return list(found.values())
+    return [
+        Member(m["name"], _text(m.get("path")) or m["name"], _text(m.get("url")),
+               _text(m.get("ref")), lane_downstream.pin_of(m))
+        for m in (lane_downstream.load_members(workspace_root) or [])
+    ]
 
 
 def changed_member_rows(workspace_root: Path, only: list[str] | None = None) -> Choice:
@@ -87,6 +73,6 @@ def changed_member_rows(workspace_root: Path, only: list[str] | None = None) -> 
             continue
         rows.append({
             "key": m.name, "remote": m.url, "path": m.path, "head": sha, "base": m.pin,
-            "ref": f"refs/heads/{m.ref or 'main'}", "title": "", "body": "", "source": str(checkout.resolve()),
+            "ref": m.ref if m.ref and m.ref.startswith("refs/") else f"refs/heads/{m.ref or 'main'}", "title": "", "body": "", "source": str(checkout.resolve()),
         })
     return Choice(rows, skipped)

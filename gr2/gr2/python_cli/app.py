@@ -3583,7 +3583,7 @@ def review_bind(
             choice = review_members.changed_member_rows(
                 Path(bind_root).resolve(), [m.strip() for m in members.split(",") if m.strip()] if members else None
             )
-        except lane_downstream.MembersUnreadable as exc:
+        except (lane_downstream.MembersUnreadable, lane_downstream.PinConflict) as exc:
             raise typer.BadParameter(f"{exc}; fix the file, or name the row with --repo/--remote/--base/--head or --rows-json")
         if not choice.rows:
             why = "; ".join(choice.skipped) or "every member's checkout is at its pin"

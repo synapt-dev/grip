@@ -115,3 +115,5 @@ The Rust development binary is **`gr2-dev`** — built by `cargo build -p gr2-cl
 Migration: use `gr2 review check` for compiled review requirements. `review requirements`
 remains a hidden alias with a warning on stderr until beta. Both report `satisfied`
 in the same JSON payload, and a missing reviewer remains a reported status with exit 0.
+
+A bare `gr2 review open <workspace>` uses the workspace's sole review bind. Its default directory is `<workspace>.review/<sha8>` in the workspace's parent directory, and the command announces that path on stderr. Give `--lane-dir` to choose another location.

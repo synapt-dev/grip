@@ -3836,7 +3836,7 @@ def review_close_gr(
         typer.echo(json.dumps(result, indent=2))
     else:
         typer.echo(f"reclaimed {result['reclaimed']} (gr:{result['gr_commit']})")
-        preserved = result.get("preserved_run")
+        preserved = result.get("preserved_runs", [])
         if preserved:
             for item in preserved:
                 typer.echo(f"review-run receipt kept at {item['receipt']}")

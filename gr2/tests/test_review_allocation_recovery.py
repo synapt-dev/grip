@@ -68,7 +68,10 @@ def test_post_delete_finalization_failure_retries_without_marker(tmp_path, monke
     doc = json.loads(pending.read_text())
     assert bytes.fromhex(doc["close_marker_hex"]) == marker_bytes
     assert doc["state"] == "closing"
+    attempts = []
+    monkeypatch.setattr(og, "rmtree_or_refuse", lambda path: attempts.append(path))
     result = og.close_open_gr_lane(target, workspace_root=workspace)
+    assert attempts == []
     assert result["gr_commit"] == "a" * 40
     assert not pending.exists()
 
@@ -98,3 +101,17 @@ def test_legacy_adoption_refuses_redirected_managed_ancestor(tmp_path):
         allocation.adopt_legacy_project_allocation(workspace, "unit", "review")
     assert not allocation.allocation_path(workspace, target).exists()
     assert target.exists()
+
+
+def test_absent_open_allocation_cannot_authorize_cleanup(tmp_path, monkeypatch):
+    workspace, target = _owned(tmp_path)
+    pending = allocation.allocation_path(workspace, target)
+    original = pending.read_bytes()
+    # A missing target is recoverable only after the owning close staged CLOSING.
+    target.rename(tmp_path / "moved-review")
+    attempts = []
+    monkeypatch.setattr(og, "rmtree_or_refuse", lambda path: attempts.append(path))
+    with pytest.raises(og.OpenGrReviewError, match="open allocation target is absent"):
+        og.close_open_gr_lane(target, workspace_root=workspace)
+    assert attempts == []
+    assert pending.read_bytes() == original

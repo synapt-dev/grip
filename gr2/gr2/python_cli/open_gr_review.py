@@ -109,7 +109,9 @@ def close_open_gr_lane(lane_dir: Path, *, workspace_root: Path | None = None) ->
     _remove_allocated(workspace, lane_dir, allocation)
     result = {"reclaimed": str(lane_dir), "gr_commit": gr_commit}
     if preserved:
-        result["preserved_run"] = preserved
+        # Preserve the existing single-run response while exposing all members.
+        result["preserved_run"] = preserved[0]
+        result["preserved_runs"] = preserved
     return result
 
 

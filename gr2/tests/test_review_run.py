@@ -780,3 +780,44 @@ def test_spaced_lane_path_survives(tmp_path: Path):
     rcpt = rr.run_review_lane(repo, pytest_args=["-q"])
     assert rcpt["result"] == "green", rcpt
     assert rcpt["passed"] >= 1
+
+
+@pytest.mark.parametrize("control", ["\x1b(B", "\x1b)0", "\x1b[31m", "\x1b[?25l"])
+def test_terminal_controls_do_not_change_failed_id_or_summary(control):
+    node = "tests/t.py::test_param[case 2 with spaces]"
+    out = f"FAILED {control}{node} - AssertionError\n=== 1 {control}failed in 0.01s ===\n"
+    assert rr.parse_failed_ids(out) == [node]
+    assert rr.parse_pytest_summary(out)["failed"] == 1
+
+
+@pytest.mark.parametrize("end", ["\x07", "\x1b\\", "\n", "\r", ""])
+def test_osc_payload_is_removed_at_terminator_or_truncation(end):
+    node = "tests/t.py::test_bad"
+    out = f"FAILED {node}\x1b]8;;https://example.invalid/{end}"
+    assert rr.parse_failed_ids(out) == [node]
+
+
+def test_truncated_osc_preserves_next_summary_row_and_escape():
+    out = "FAILED tests/t.py::test_bad\x1b]8;;truncated\n\x1b(B=== 1 failed in 0.01s ===\n"
+    assert rr.parse_failed_ids(out) == ["tests/t.py::test_bad"]
+    assert rr.parse_pytest_summary(out)["failed"] == 1
+    assert rr.strip_ansi("a\x1b]8;;truncated\x1b[31mb") == "ab"
+
+
+@pytest.mark.parametrize("ending", ["\r", "\r\n", "\n"])
+def test_terminal_row_endings_keep_exact_failed_id(ending):
+    out = f"FAILED tests/t.py::test_bad{ending}=== 1 failed in 0.01s ==={ending}"
+    assert rr.parse_failed_ids(out) == ["tests/t.py::test_bad"]
+    assert rr.parse_pytest_summary(out)["failed"] == 1
+
+
+def test_truncated_osc_does_not_invent_a_hidden_test_id():
+    assert rr.parse_failed_ids("FAILED \x1b]8;;hidden-node") == []
+    assert rr.parse_pytest_summary("\x1b]8;;1 failed in 0.01s") is None
+
+
+@pytest.mark.parametrize("end", ["\x07", "\x1b\\"])
+def test_complete_osc_hyperlink_keeps_visible_parametrized_node(end):
+    node = "tests/t.py::test_param[case 2 with spaces]"
+    out = f"FAILED \x1b]8;;https://example.invalid/{end}{node}\x1b]8;;{end} - AssertionError\n"
+    assert rr.parse_failed_ids(out) == [node]

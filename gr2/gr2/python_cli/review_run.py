@@ -477,15 +477,20 @@ _COUNT_RE = re.compile(
 # INSIDE the summary line and the `FAILED <id>` lines, which then no longer match the patterns below: a red run
 # came back with an empty failed-id list. Stripped here, at the parse seam, because only the parser sees every
 # input (a `--color=no` we add can be overridden by a later `--color=yes`, and FORCE_COLOR can beat NO_COLOR).
-_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[()][0-~])")
 # OSC sequences (`ESC ] ... BEL` or `ESC ] ... ESC \\`), notably the OSC 8 hyperlink a terminal-aware plugin wraps
 # round a node id: left in, the link target is read as part of the id and a WRONG id lands in the receipt, which is
 # worse than an empty one. Stripped BEFORE the CSI pass.
-_OSC_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+# A truncated OSC ends at a line boundary, another escape, or EOF. Discard its
+# payload without consuming the next pytest row. Text inside that payload cannot
+# be recovered as visible terminal output.
+_OSC_RE = re.compile(r"\x1b\][^\x07\x1b\r\n]*(?:\x07|\x1b\\|(?=[\r\n\x1b]|\Z))")
 
 
 def strip_ansi(text: str) -> str:
-    return _ANSI_RE.sub("", _OSC_RE.sub("", text))
+    # CRLF and lone carriage returns separate terminal rows. Keeping a CR in a
+    # FAILED id would bind a different test from the one pytest reported.
+    return _ANSI_RE.sub("", _OSC_RE.sub("", text)).replace("\r\n", "\n").replace("\r", "\n")
 
 
 def parse_pytest_summary(stdout: str) -> dict | None:
@@ -564,7 +569,9 @@ def parse_pytest_summary(stdout: str) -> dict | None:
 # truncates there, since that is also the id/message separator; pytest usually
 # sanitizes such ids and the truncation still keeps the file and test stem, so it
 # is accepted rather than guarded.
-_FAILED_ID_RE = re.compile(r"^(?:FAILED|ERROR)\s+(.+?)(?: - .*)?$", re.MULTILINE)
+# A blank status row (including one left by discarded OSC payload) must never
+# consume a following summary or outcome row as its node id.
+_FAILED_ID_RE = re.compile(r"^(?:FAILED|ERROR)[ \t]+(\S[^\r\n]*?)(?: - .*)?$", re.MULTILINE)
 
 
 def parse_failed_ids(output: str) -> list[str]:

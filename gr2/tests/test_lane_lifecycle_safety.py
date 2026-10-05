@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from gr2.python_cli import app as app_module
+from gr2.python_cli import review_records as records
 from gr2.prototypes import lane_workspace_prototype as lanes
 
 
@@ -454,8 +455,9 @@ def test_bind_bound_lane_writes_a_bound_receipt_from_the_worktree(tmp_path: Path
     assert record.head == head
     assert record.base == base
     assert record.repo.startswith("local:")  # no GitHub origin -> local identity under --allow-local
-    # the receipt is written into the worktree's OWN .git (same helper as materialized)
-    receipt = wt / ".git" / "grip-review.json"
+    receipt = records.review_record_paths(workspace, "atlas", "bound", "app", wt).current
+    assert not records.legacy_review_record_path(wt).exists()
+    assert records.review_record_pointer_path(wt).read_text().strip() == str(receipt)
     assert receipt.is_file()
     data = _json.loads(receipt.read_text())
     assert data == {"repo": record.repo, "base": base, "head": head, "lane_kind": "bound"}
@@ -529,7 +531,7 @@ def test_app_lane_bind_verb_is_registered_and_binds(tmp_path: Path, capsys: pyte
     app_module.lane_bind(workspace, "atlas", "bound", base=base, allow_local=True, json_output=True)
     out = _json.loads(capsys.readouterr().out)
     assert out == {"repo": out["repo"], "base": base, "head": head, "lane_kind": "bound"}
-    assert (wt / ".git" / "grip-review.json").is_file()
+    assert records.review_record_paths(workspace, "atlas", "bound", "app", wt).current.is_file()
 
 
 def test_app_lane_bind_refuses_materialized_with_exit_2(tmp_path: Path) -> None:
@@ -662,7 +664,7 @@ def test_bind_bound_lane_reads_recorded_fork_base_when_base_omitted(tmp_path: Pa
     assert record.base == initial
     assert record.base != head_parent
     assert record.head == head
-    data = _json.loads((wt / ".git" / "grip-review.json").read_text())
+    data = _json.loads(records.review_record_paths(workspace, "atlas", "bound", "app", wt).current.read_text())
     assert data["base"] == initial  # the recorded fork base is what lands in the receipt
 
 
@@ -674,7 +676,7 @@ def test_bind_bound_lane_explicit_base_overrides_recorded_fork_base(tmp_path: Pa
     record = lanes.bind_bound_lane(workspace, "atlas", "bound", base=fork, allow_local=True)
     assert record.base == fork
     assert record.base != initial
-    data = _json.loads((wt / ".git" / "grip-review.json").read_text())
+    data = _json.loads(records.review_record_paths(workspace, "atlas", "bound", "app", wt).current.read_text())
     assert data["base"] == fork
 
 

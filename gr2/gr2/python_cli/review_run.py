@@ -569,7 +569,9 @@ def parse_pytest_summary(stdout: str) -> dict | None:
 # truncates there, since that is also the id/message separator; pytest usually
 # sanitizes such ids and the truncation still keeps the file and test stem, so it
 # is accepted rather than guarded.
-_FAILED_ID_RE = re.compile(r"^(?:FAILED|ERROR)\s+(.+?)(?: - .*)?$", re.MULTILINE)
+# A blank status row (including one left by discarded OSC payload) must never
+# consume a following summary or outcome row as its node id.
+_FAILED_ID_RE = re.compile(r"^(?:FAILED|ERROR)[ \t]+(\S[^\r\n]*?)(?: - .*)?$", re.MULTILINE)
 
 
 def parse_failed_ids(output: str) -> list[str]:

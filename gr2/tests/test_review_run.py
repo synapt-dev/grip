@@ -821,3 +821,19 @@ def test_complete_osc_hyperlink_keeps_visible_parametrized_node(end):
     node = "tests/t.py::test_param[case 2 with spaces]"
     out = f"FAILED \x1b]8;;https://example.invalid/{end}{node}\x1b]8;;{end} - AssertionError\n"
     assert rr.parse_failed_ids(out) == [node]
+
+
+@pytest.mark.parametrize("ending", ["\n", "\r", "\r\n"])
+@pytest.mark.parametrize("following, expected", [
+    ("=== 1 failed, 2 passed in 0.04s ===", []),
+    ("FAILED tests/t.py::test_param[case with spaces] - AssertionError", ["tests/t.py::test_param[case with spaces]"]),
+    ("ERROR tests/t.py::fixture - setup", ["tests/t.py::fixture"]),
+])
+def test_opaque_status_row_does_not_consume_following_row(ending, following, expected):
+    out = f"FAILED \x1b]8;;hidden-node{ending}{following}{ending}"
+    assert rr.parse_failed_ids(out) == expected
+
+
+@pytest.mark.parametrize("blank", ["FAILED    ", "ERROR\t", "FAILED \x1b]8;;hidden-node"])
+def test_blank_status_row_does_not_invent_node(blank):
+    assert rr.parse_failed_ids(blank + "\n=== 1 failed in 0.01s ===\n") == []

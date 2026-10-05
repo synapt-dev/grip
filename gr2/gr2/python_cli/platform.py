@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import contextlib
+import importlib.metadata
+import inspect
 import json
 import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -182,7 +184,7 @@ class CreatePRRequest:
     body: str
     head_branch: str
     base_branch: str
-    draft: bool = False
+    draft: bool = True
 
 
 class PlatformAdapter(Protocol):
@@ -559,8 +561,73 @@ class GitHubAdapter:
         return checks
 
 
+_ADAPTER_FACTORIES: dict[str, Callable[[], PlatformAdapter]] = {}
+PLATFORM_ADAPTER_ENTRY_POINTS = "gr2.platform_adapters"
+PLATFORM_ADAPTER_API_VERSION = 1
+
+
+def require_adapter_capability(adapter: PlatformAdapter, method: str) -> None:
+    """Refuse an unavailable operation before any member is changed."""
+    capability = getattr(adapter, method, None)
+    if not callable(capability):
+        raise AdapterError(f"platform adapter lacks required {method} capability")
+    if method == "merge_pr":
+        try:
+            inspect.signature(capability).bind(
+                "repo", 1, method=MergeMethod.MERGE, expected_head="0" * 40
+            )
+        except (TypeError, ValueError) as exc:
+            raise AdapterError(
+                "platform adapter merge_pr must accept method and expected_head keywords; "
+                "upgrade the adapter rather than dropping the head pin"
+            ) from exc
+
+
+def register_platform_adapter(name: str, factory: Callable[[], PlatformAdapter]) -> None:
+    """Register a zero-argument adapter factory in this process.
+
+    Installed plugins expose the same factory through ``gr2.platform_adapters``
+    entry points. Factories are loaded only when their platform is selected.
+    """
+    normalized = name.strip().lower()
+    if not re.fullmatch(r"[a-z][a-z0-9_-]*", normalized):
+        raise AdapterError(f"invalid platform adapter name: {name!r}")
+    if normalized in {"github", "gh"} or normalized in _ADAPTER_FACTORIES:
+        raise AdapterError(f"platform adapter already registered: {normalized}")
+    if not callable(factory):
+        raise AdapterError(f"platform adapter factory is not callable: {normalized}")
+    _ADAPTER_FACTORIES[normalized] = factory
+
+
 def get_platform_adapter(name: str) -> PlatformAdapter:
     normalized = name.strip().lower()
+    factory = _ADAPTER_FACTORIES.get(normalized)
+    entries = [
+        entry
+        for entry in importlib.metadata.entry_points(group=PLATFORM_ADAPTER_ENTRY_POINTS)
+        if entry.name.strip().lower() == normalized
+    ]
+    if len(entries) > 1 or (entries and factory is not None):
+        raise AdapterError(f"duplicate platform adapter: {normalized}")
+    if entries:
+        if normalized in {"github", "gh"}:
+            raise AdapterError(f"platform adapter name is reserved: {normalized}")
+        try:
+            factory = entries[0].load()
+        except Exception as exc:
+            raise AdapterError(f"cannot load platform adapter {normalized}: {exc}") from exc
+    if factory is not None:
+        try:
+            adapter = factory()
+        except Exception as exc:
+            raise AdapterError(f"cannot initialize platform adapter {normalized}: {exc}") from exc
+        version = getattr(adapter, "platform_adapter_api_version", PLATFORM_ADAPTER_API_VERSION)
+        if type(version) is not int or version != PLATFORM_ADAPTER_API_VERSION:
+            raise AdapterError(
+                f"unsupported platform adapter API version for {normalized}: {version!r}"
+            )
+        require_adapter_capability(adapter, "create_pr")
+        return adapter
     if normalized in {"github", "gh"}:
         return GitHubAdapter()
     raise AdapterError(f"unknown platform adapter: {name}")

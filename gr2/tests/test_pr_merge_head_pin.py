@@ -391,3 +391,33 @@ def test_a_repo_key_that_is_not_a_member_is_refused_at_parse_time() -> None:
 
     message = str(raised.value)
     assert "tpyp" in message, f"the refusal must name the key that is wrong: {message}"
+
+
+def test_legacy_signature_refuses_whole_group_before_status_or_merge(tmp_path: Path) -> None:
+    class Legacy(_Pinned):
+        def merge_pr(self, repo: str, number: int, *, method: MergeMethod) -> MergeReceipt:
+            self.merged.append(repo)
+            raise AssertionError("legacy adapter must never be invoked")
+
+    adapter = Legacy({"app": READ_SHA, "api": READ_SHA})
+    with pytest.raises(AdapterError, match="expected_head"):
+        _merge(tmp_path, ["app", "api"], adapter,
+               expected_heads={"app": READ_SHA, "api": READ_SHA})
+    assert adapter.status_calls == []
+    assert adapter.merged == []
+
+
+def test_internal_type_error_is_not_retried_without_pin(tmp_path: Path) -> None:
+    class Broken(_Pinned):
+        def merge_pr(self, repo: str, number: int, *, method: MergeMethod,
+                     expected_head: str | None = None) -> MergeReceipt:
+            self.merged.append(repo)
+            self.pins_seen[repo] = expected_head
+            raise TypeError("inside compatible adapter")
+
+    adapter = Broken({"app": READ_SHA, "api": READ_SHA})
+    with pytest.raises(TypeError, match="inside compatible adapter"):
+        _merge(tmp_path, ["app", "api"], adapter,
+               expected_heads={"app": READ_SHA, "api": READ_SHA})
+    assert adapter.merged == ["app"]
+    assert adapter.pins_seen == {"app": READ_SHA}

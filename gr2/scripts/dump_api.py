@@ -166,6 +166,7 @@ def _walked_items() -> list[api_core.Row]:
         rows.append(api_core.Row("verb", verb, hidden, hidden_by, verb))
         for prm in getattr(cmd, "params", []):
             opts = list(getattr(prm, "opts", None) or [])
+            opts.extend(getattr(prm, "secondary_opts", None) or [])
             if not opts:
                 continue
             # An OPTION's first spelling starts with a dash; a POSITIONAL

@@ -294,7 +294,7 @@ arg   pr create workspace_root <str>                                  stable
 flag  pr create --base <str>                                          stable
 flag  pr create --body <str>                                          stable
 flag  pr create --body-file <str>                                     stable
-flag  pr create --draft                                               stable
+flag  pr create --draft/--no-draft                                    stable
 flag  pr create --json                                                stable
 flag  pr create --platform <str>                                      stable
 flag  pr create --root/-C <str>                                       stable

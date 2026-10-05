@@ -293,40 +293,72 @@ mitigation is:
 
 ## 5. PlatformAdapter Integration
 
-### 5.1 Adapter Protocol (Atlas's Design)
+### 5.1 Adapter protocol and capabilities
 
-gr2's PR lifecycle consumes Atlas's PlatformAdapter protocol. The expected
-interface (from Atlas's `platform.py`):
+The implemented protocol is in `gr2/python_cli/platform.py`. The earlier command
+flows above are design notes, not a declaration that every flag is implemented.
+In particular, the current merge adapter requires an observed completed merge,
+not an auto-merge request acknowledgement.
 
 ```python
 class PlatformAdapter(Protocol):
-    def create_pr(self, repo: str, head: str, base: str,
-                  title: str, body: str, draft: bool) -> PRRef: ...
-    def get_pr(self, repo: str, pr_number: int) -> PRStatus: ...
-    def merge_pr(self, repo: str, pr_number: int,
-                 strategy: str) -> MergeResult: ...
-    def get_checks(self, repo: str, pr_number: int) -> list[PRCheck]: ...
-    def get_reviews(self, repo: str, pr_number: int) -> list[PRReview]: ...
-    def update_pr_body(self, repo: str, pr_number: int, body: str) -> None: ...
+    name: str
+    def create_pr(self, request: CreatePRRequest) -> PRRef: ...
+    def merge_pr(self, repo: str, number: int, *, method: MergeMethod,
+                 expected_head: str | None = None) -> MergeReceipt: ...
+    def pr_status(self, repo: str, number: int) -> PRStatus: ...
+    def pr_view(self, repo: str, number: int) -> PRDetail: ...
+    def list_prs(self, repo: str, *, head_branch: str | None = None) -> list[PRRef]: ...
+    def pr_checks(self, repo: str, number: int) -> list[PRCheck]: ...
+    def edit_pr_body(self, repo: str, number: int, body: str) -> None: ...
 ```
 
-**PlatformAdapter is group-unaware.** It operates on individual per-repo PRs and
-has no concept of `pr_group_id` or cross-repo correlation. The grouping logic
-lives in gr2's `pr.py` orchestration module, which:
+`PLATFORM_ADAPTER_API_VERSION = 1` names this contract. Plugins can declare
+`platform_adapter_api_version = 1`. An omitted declaration retains compatibility
+through operation-specific capability checks. An unsupported declared version
+refuses. A declaration is a contract, not certification of provider behavior.
 
-1. Calls PlatformAdapter per-repo to create/query/merge individual PRs.
-2. Assigns the `pr_group_id` (format: `pg_` + 8-char hex).
-3. Correlates per-repo `PRRef` objects into a PR group.
-4. Manages cross-link injection into PR bodies.
-5. Emits `pr.*` events with the group ID.
+Creation needs `create_pr`. Single-member groups do not require body editing.
+Multi-member groups require callable `edit_pr_body` before the first PR is created.
+A later provider editing failure is retained in the group and reported through
+`SiblingLinkError`. Body editing must preserve the host's draft state.
 
-This separation keeps platform adapters simple and reusable. A platform adapter
-can be used by other tools that don't need grouping semantics.
+Merge preflights support for `method` and `expected_head` keywords before any
+member merge. Supplied pins are checked across the group and forwarded to the
+host operation to close its race. An adapter must enforce them at the host.
+A legacy signature refuses with an upgrade diagnostic. gr2 never retries a
+`TypeError` by dropping a pin. The group API still permits omitted pins, which
+must not be described as exact-head protection.
 
-### 5.2 Adapter Resolution
+`PRDetail.reviews` is a display surface. The current review-requirement check
+counts local lane owner units, not votes returned by a provider. This interface
+does not certify Azure votes, optional versus blocking policies, or completion
+updates. Those mappings need provider-specific evidence.
 
-`get_platform_adapter(repo_spec)` resolves the correct adapter based on the
-repo's remote URL. For Sprint 20, only `GitHubAdapter` is implemented.
+### 5.2 External adapter discovery and creation policy
+
+`get_platform_adapter(name)` resolves a selected name. Built-in `github` and `gh`
+remain available. A process can call `register_platform_adapter(name, factory)`.
+Installed external packages declare a zero-argument factory:
+
+```toml
+[project.entry-points."gr2.platform_adapters"]
+ado = "my_ado_adapter:factory"
+```
+
+The selected entry point is loaded lazily. Plugin code runs as trusted Python in
+the caller's environment. gr2 does not fetch or install plugins. Duplicate names,
+reserved built-in names, initialization errors and unsupported declared versions
+refuse instead of silently choosing GitHub. The real CLI uses the shared module
+factory, so discovery is not limited to direct Python callers.
+
+`CreatePRRequest`, `create_pr_group` and `gr2 pr create` default to drafts.
+`--draft` explicitly retains draft creation and `--no-draft` explicitly creates
+non-drafts. Python callers can still pass `draft=False`. This changes omitted-flag
+behavior. Body updates and observed `PRDetail.is_draft` defaults are unchanged.
+The bound-lane CLI path currently only pushes and returns a receipt, bypassing
+the platform/group creation path. External adapter CLI creation uses the
+materialized/group path.
 
 ### 5.3 Rate Limiting
 
@@ -346,13 +378,13 @@ The mapping:
 | gr1 Rust trait | gr2 Python adapter |
 |----------------|--------------------|
 | `create_pull_request` | `create_pr` |
-| `get_pull_request` | `get_pr` |
+| `get_pull_request` | `pr_status` / `pr_view` |
 | `merge_pull_request` | `merge_pr` |
-| `get_status_checks` | `get_checks` |
-| `get_pull_request_reviews` | `get_reviews` |
-| `update_pull_request_body` | `update_pr_body` |
-| `find_pr_by_branch` | Not yet in adapter (needed for `gr2 pr status` without group ID) |
-| `is_pull_request_approved` | Derived from `get_reviews` |
+| `get_status_checks` | `pr_checks` |
+| `get_pull_request_reviews` | `pr_view().reviews` (display) |
+| `update_pull_request_body` | `edit_pr_body` |
+| `find_pr_by_branch` | `list_prs(head_branch=...)` |
+| `is_pull_request_approved` | Not provided by the local review-requirement gate |
 
 ## 6. Event Emission
 

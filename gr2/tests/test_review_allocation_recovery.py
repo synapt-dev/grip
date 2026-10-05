@@ -130,6 +130,13 @@ def test_expected_mirror_source_linkage_and_wrong_source_refusal(tmp_path, monke
     monkeypatch.setenv("SYNAPT_REVIEW_CACHE_ROOT", str(cache))
     expected = "local:" + str(source.resolve())
     assert allocation._legacy_transport_source(member, expected) == expected
+    alias = tmp_path / "mirror-alias"
+    alias.symlink_to(mirror, target_is_directory=True)
+    subprocess.run(["git", "-C", str(member), "remote", "set-url", "origin", alias.as_uri()], check=True, capture_output=True)
+    with pytest.raises(ValueError, match="expected mirror"):
+        allocation._legacy_transport_source(member, expected)
+    subprocess.run(["git", "-C", str(member), "remote", "set-url", "origin", mirror.as_uri()], check=True, capture_output=True)
+    assert allocation._legacy_transport_source(member, expected) == expected
     subprocess.run(["git", "-C", str(mirror), "remote", "set-url", "origin", str(tmp_path / "wrong-source")], check=True, capture_output=True)
     with pytest.raises(ValueError, match="mirror source identity differs"):
         allocation._legacy_transport_source(member, expected)

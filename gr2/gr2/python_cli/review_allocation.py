@@ -142,7 +142,7 @@ def _legacy_transport_source(member: Path, expected_repo: str) -> str:
     cache = review_cache_root().resolve()
     mirror = cache / f"{_mirror_basename(expected_location)}.git"
     actual = Path(transport)
-    if not actual.is_absolute() or actual.resolve() != mirror or mirror.resolve() != mirror or mirror.is_symlink():
+    if not actual.is_absolute() or actual != mirror or actual.is_symlink() or actual.resolve() != mirror or mirror.resolve() != mirror or mirror.is_symlink():
         raise ValueError("legacy member transport is not the owning materializer's expected mirror")
     bare = git(mirror, "rev-parse", "--is-bare-repository")
     source = git(mirror, "remote", "get-url", "origin")

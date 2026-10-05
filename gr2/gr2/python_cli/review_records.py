@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -15,15 +18,34 @@ class ReviewRecordLocationError(ValueError):
 class ReviewRecordPaths:
     current: Path
     legacy: Path
+    repo_root: Path | None = None
+
+
+def worktree_git_path(repo_root: Path | str, name: str) -> Path:
+    """Resolve metadata in this worktree, including checkouts whose .git is a file."""
+    repo = Path(repo_root).resolve()
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--git-path", name],
+        text=True, capture_output=True,
+    )
+    if proc.returncode or not proc.stdout.strip():
+        raise ReviewRecordLocationError(f"cannot resolve worktree Git metadata for {repo}")
+    path = Path(proc.stdout.strip())
+    absolute = path if path.is_absolute() else repo / path
+    return absolute.parent.resolve() / absolute.name
 
 
 def legacy_review_record_path(lane_repo_root: Path | str) -> Path:
-    return Path(lane_repo_root) / ".git" / "grip-review.json"
+    # Review-open computes its coordinates before creating the ordinary clone.
+    # No lookup is possible yet. Publication resolves again once Git exists.
+    if not Path(lane_repo_root).exists():
+        return Path(lane_repo_root).resolve() / ".git" / "grip-review.json"
+    return worktree_git_path(lane_repo_root, "grip-review.json")
 
 
 def review_record_pointer_path(lane_repo_root: Path | str) -> Path:
     """The local discovery pointer, never a second copy of receipt content."""
-    return Path(lane_repo_root) / ".git" / "grip-review.pointer"
+    return worktree_git_path(lane_repo_root, "grip-review.pointer")
 
 
 def _component(value: str | None, label: str) -> str:
@@ -45,6 +67,7 @@ def review_record_paths(workspace_root: Path | str, owner_unit: str | None,
     return ReviewRecordPaths(
         workspace / ".grip" / "state" / "reviews" / owner / lane / f"{key}.json",
         legacy_review_record_path(lane_repo_root),
+        Path(lane_repo_root).resolve(),
     )
 
 
@@ -65,7 +88,10 @@ def read_review_records_for_guard(paths: ReviewRecordPaths) -> tuple[dict, ...]:
         if not path.is_file():
             continue
         try:
-            records.append(json.loads(path.read_text()))
+            record = json.loads(path.read_text())
+            if not isinstance(record, dict):
+                raise ValueError("receipt must be an object")
+            records.append(record)
         except (OSError, ValueError) as exc:
             raise ReviewRecordLocationError(f"review receipt cannot be read: {path}") from exc
     return tuple(records)
@@ -78,6 +104,8 @@ def read_review_record_at(paths: ReviewRecordPaths, *, notice: Callable[[str], N
             continue
         try:
             result = json.loads(path.read_text())
+            if not isinstance(result, dict):
+                return None
         except (OSError, ValueError):
             return None
         if legacy:
@@ -87,12 +115,48 @@ def read_review_record_at(paths: ReviewRecordPaths, *, notice: Callable[[str], N
 
 
 def write_review_record(paths: ReviewRecordPaths, record: dict) -> Path:
-    paths.current.parent.mkdir(parents=True, exist_ok=True)
-    paths.current.write_text(json.dumps(record, indent=2) + "\n")
     # A project review can materialize outside `.grip/state/reviews`; commit and
     # push run from that member checkout, so leave one coordinate pointer there.
     # It deliberately contains no receipt fields.
-    review_record_pointer_path(paths.legacy.parent.parent).write_text(str(paths.current) + "\n")
+    repo = paths.repo_root or paths.legacy.parent.parent
+    pointer = review_record_pointer_path(repo)
+    if paths.current.is_symlink() or pointer.is_symlink():
+        raise ReviewRecordLocationError("refusing a symlink review receipt or pointer")
+    paths.current.parent.mkdir(parents=True, exist_ok=True)
+    previous = paths.current.read_bytes() if paths.current.exists() else None
+    staged: list[Path] = []
+
+    def stage(target: Path, data: bytes) -> Path:
+        with tempfile.NamedTemporaryFile(dir=target.parent, prefix=".review-", delete=False) as stream:
+            path = Path(stream.name)
+            staged.append(path)
+            stream.write(data)
+        return path
+
+    try:
+        payload = stage(paths.current, (json.dumps(record, indent=2) + "\n").encode())
+        coordinate = stage(pointer, (str(paths.current) + "\n").encode())
+        backup = stage(paths.current, previous) if previous is not None else None
+        os.replace(payload, paths.current)
+        try:
+            os.replace(coordinate, pointer)
+        except OSError as publication_error:
+            if backup is not None:
+                try:
+                    os.replace(backup, paths.current)
+                except OSError as rollback_error:
+                    staged.remove(backup)
+                    raise ReviewRecordLocationError(
+                        f"pointer publication failed: {publication_error}; "
+                        f"payload rollback failed: {rollback_error}; "
+                        f"prior payload preserved for recovery at {backup}"
+                    ) from rollback_error
+            else:
+                paths.current.unlink()
+            raise
+    finally:
+        for path in staged:
+            path.unlink(missing_ok=True)
     return paths.current
 
 
@@ -119,13 +183,13 @@ def lane_paths_for_repo(repo: Path | str) -> ReviewRecordPaths | None:
                 raise ReviewRecordLocationError("review pointer is not a canonical review receipt")
             _component(owner, "owner unit"); _component(lane, "lane name")
             _component(filename[:-5], "member")
-            return ReviewRecordPaths(resolved_target, legacy)
+            return ReviewRecordPaths(resolved_target, legacy, repo_path)
         except (OSError, ValueError):
             raise ReviewRecordLocationError("review pointer cannot be read safely")
     # A one-release legacy receipt is enough only where no pointer supplies a
     # canonical coordinate. When both exist, the safety guard receives both.
     if legacy.is_file():
-        return ReviewRecordPaths(legacy, legacy)
+        return ReviewRecordPaths(legacy, legacy, repo_path)
     # Compatibility for project-review lanes created before the pointer.
     if repo_path.parent.name == "repos":
         lane_dir = repo_path.parent.parent

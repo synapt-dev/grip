@@ -437,7 +437,7 @@ def close_review_lane(
     if owner_unit is None or lane_name is None or member is None:
         try:
             record = json.loads(legacy_review_record_path(lane).read_text())
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, ReviewRecordLocationError):
             record = None
     else:
         try:

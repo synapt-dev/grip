@@ -37,6 +37,7 @@ from gr2.prototypes.jsonl_store import (
 from gr2.python_cli import gitops
 from gr2.python_cli import review as _review
 from gr2.python_cli import push as _push
+from gr2.python_cli import review_records as _records
 
 LANE_SCHEMA_VERSION = 1
 SCRATCHPAD_SCHEMA_VERSION = 1
@@ -1168,9 +1169,8 @@ def bind_bound_lane(
     dirty tree (tracked OR untracked) is a hard refusal: the receipt promises the
     recorded head reconstructs the reviewed bytes, and drift breaks that promise.
 
-    On success it writes the ``(repo, base, head, lane_kind="bound")`` receipt to
-    the worktree's own ``.git/grip-review.json`` (the same path helper a
-    materialized lane uses) and returns the record.
+    On success it writes the ``(repo, base, head, lane_kind="bound")`` receipt at
+    its canonical workspace coordinate and publishes a per-worktree pointer.
 
     ``base`` is the pin the reviewed range is measured from. It MUST be a full
     40-hex commit that is an ANCESTOR of the worktree head — a non-hex string, a
@@ -1254,9 +1254,15 @@ def bind_bound_lane(
     record = _review.ReviewRecord(
         repo=repo_identity, base=base, head=current_head, lane_kind="bound"
     )
-    receipt_path = _review.review_record_path(resolved)
-    receipt_path.parent.mkdir(parents=True, exist_ok=True)
-    receipt_path.write_text(json.dumps(record.to_dict(), indent=2) + "\n")
+    members = lane_doc.get("repos", [])
+    if len(members) != 1:
+        raise SystemExit("bind refuses: a bound lane must name exactly one member")
+    paths = _records.review_record_paths(workspace_root, owner_unit, lane_name, members[0], resolved)
+    try:
+        _push._refuse_review_ephemeral_repo(resolved)
+        _records.write_review_record(paths, record.to_dict())
+    except (OSError, _records.ReviewRecordLocationError, _push.PushError) as exc:
+        raise SystemExit(f"bind refuses: review receipt cannot be published safely ({exc})") from exc
     return record
 
 
@@ -1290,17 +1296,30 @@ def pr_create_bound_lane(
     if not worktree:
         raise SystemExit(f"pr create refuses: bound lane {owner_unit}/{lane_name} has no bound_worktree")
     resolved = worktree.resolve()
-    receipt_path = _review.review_record_path(resolved)
-    if not receipt_path.is_file():
+    members = lane_doc.get("repos", [])
+    if len(members) != 1:
+        raise SystemExit("pr create refuses: a bound lane must name exactly one member")
+    try:
+        paths = _records.review_record_paths(workspace_root, owner_unit, lane_name, members[0], resolved)
+        _push._refuse_review_ephemeral_repo(resolved)
+        receipt = _records.read_review_record(paths)
+    except (_records.ReviewRecordLocationError, _push.PushError) as exc:
+        raise SystemExit(f"pr create refuses: review receipt cannot be read safely ({exc})") from exc
+    if receipt is None:
         raise SystemExit(
             f"pr create refuses: bound lane {owner_unit}/{lane_name} has no review receipt at "
-            f"{receipt_path}; run `gr2 lane bind` first"
+            f"{paths.current}; run `gr2 lane bind` first"
         )
-    try:
-        receipt = json.loads(receipt_path.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        raise SystemExit(f"pr create refuses: review receipt is unreadable or malformed ({exc})")
     base, head = receipt.get("base"), receipt.get("head")
+    identity = _review.canonical_source_identity(
+        gitops.remote_origin_url(resolved) or str(resolved), allow_local=True
+    )
+    if (set(receipt) != {"repo", "base", "head", "lane_kind"}
+            or receipt.get("repo") != identity or receipt.get("lane_kind") != "bound"
+            or not all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value) for value in (base, head))
+            or head != lane_doc.get("bound_head")
+            or gitops.git(resolved, "merge-base", "--is-ancestor", base, head).returncode != 0):
+        raise SystemExit("pr create refuses: review receipt does not match the bound worktree identity/range")
     if base == head:
         raise SystemExit(
             f"pr create refuses: the reviewed range is EMPTY (base == head == {head}); there is "

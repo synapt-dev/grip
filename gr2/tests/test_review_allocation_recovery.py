@@ -115,3 +115,23 @@ def test_absent_open_allocation_cannot_authorize_cleanup(tmp_path, monkeypatch):
         og.close_open_gr_lane(target, workspace_root=workspace)
     assert attempts == []
     assert pending.read_bytes() == original
+
+
+def test_expected_mirror_source_linkage_and_wrong_source_refusal(tmp_path, monkeypatch):
+    workspace, member = _owned(tmp_path)
+    source = tmp_path / "source"
+    subprocess.run(["git", "clone", "-q", str(member), str(source)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(source), "remote", "set-url", "origin", str(source)], check=True, capture_output=True)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    mirror = cache / "source.git"
+    subprocess.run(["git", "clone", "-q", "--mirror", str(source), str(mirror)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(member), "remote", "add", "origin", mirror.as_uri()], check=True, capture_output=True)
+    monkeypatch.setenv("SYNAPT_REVIEW_CACHE_ROOT", str(cache))
+    expected = "local:" + str(source.resolve())
+    assert allocation._legacy_transport_source(member, expected) == expected
+    subprocess.run(["git", "-C", str(mirror), "remote", "set-url", "origin", str(tmp_path / "wrong-source")], check=True, capture_output=True)
+    with pytest.raises(ValueError, match="mirror source identity differs"):
+        allocation._legacy_transport_source(member, expected)
+    subprocess.run(["git", "-C", str(mirror), "remote", "set-url", "origin", str(source)], check=True, capture_output=True)
+    assert allocation._legacy_transport_source(member, expected) == expected

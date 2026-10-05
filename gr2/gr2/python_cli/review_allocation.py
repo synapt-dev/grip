@@ -112,6 +112,48 @@ def require_allocation(workspace: Path, target: Path, *, owner_unit: str | None 
         ) from exc
 
 
+
+def _legacy_transport_source(member: Path, expected_repo: str) -> str:
+    """Resolve only the existing materializer's expected local mirror transport.
+
+    Workspace/source receipts remain the authority. A cache origin is not an
+    arbitrary redirect and this local provenance check is not publisher auth.
+    """
+    from urllib.parse import unquote, urlsplit
+    from .review import canonical_source_identity
+    from .open_gr_review import review_cache_root, _pin_transport_location, _mirror_basename
+
+    def location(value: str) -> str:
+        if value.startswith("file:"):
+            parsed = urlsplit(value)
+            if parsed.scheme != "file" or parsed.netloc not in {"", "localhost"} or parsed.query or parsed.fragment:
+                raise ValueError("unrecognized local file transport")
+            return unquote(parsed.path)
+        return value.removeprefix("local:")
+
+    origin = git(member, "remote", "get-url", "origin")
+    if origin.returncode:
+        raise ValueError("legacy member source origin unavailable")
+    transport = location(origin.stdout.strip())
+    direct = canonical_source_identity(transport, allow_local=True)
+    if direct == expected_repo:
+        return direct
+    expected_location = _pin_transport_location(expected_repo)
+    cache = review_cache_root().resolve()
+    mirror = cache / f"{_mirror_basename(expected_location)}.git"
+    actual = Path(transport)
+    if not actual.is_absolute() or actual.resolve() != mirror or mirror.resolve() != mirror or mirror.is_symlink():
+        raise ValueError("legacy member transport is not the owning materializer's expected mirror")
+    bare = git(mirror, "rev-parse", "--is-bare-repository")
+    source = git(mirror, "remote", "get-url", "origin")
+    if bare.returncode or bare.stdout.strip() != "true" or source.returncode:
+        raise ValueError("legacy mirror source provenance unavailable")
+    identity = canonical_source_identity(location(source.stdout.strip()), allow_local=True)
+    if identity != expected_repo:
+        raise ValueError("legacy mirror source identity differs from workspace")
+    return identity
+
+
 def adopt_legacy_project_allocation(workspace: Path, owner_unit: str, lane_name: str) -> dict:
     """Deliberate compatibility operation based on independent workspace state.
 
@@ -158,8 +200,7 @@ def adopt_legacy_project_allocation(workspace: Path, owner_unit: str, lane_name:
             if set(record) != {"repo", "base", "head", "lane_kind"} or record["lane_kind"] != kind:
                 raise ValueError("legacy workspace receipt schema/kind mismatch")
             expected_repo = canonical_source_identity(allowed[name], allow_local=True)
-            origin = git(member, "remote", "get-url", "origin")
-            if origin.returncode or record["repo"] != expected_repo or canonical_source_identity(origin.stdout.strip(), allow_local=True) != expected_repo:
+            if record["repo"] != expected_repo or _legacy_transport_source(member, expected_repo) != expected_repo:
                 raise ValueError("legacy member source identity differs from workspace")
             head = git(member, "rev-parse", "HEAD")
             base = git(member, "merge-base", "--is-ancestor", record["base"], record["head"])

@@ -39,6 +39,7 @@ from unittest.mock import patch
 
 from gr2.python_cli import open_gr_review as open_gr_review_mod
 from gr2.python_cli import review as review_mod
+from gr2.python_cli.review_allocation import record_created_allocation
 from gr2.python_cli.clone_exec import (
     CloneExecutionError,
     IncompleteRemoval,
@@ -341,7 +342,11 @@ class CloseOpenGrLaneCleanupTest(unittest.TestCase):
         self.lane_dir.mkdir()
         (self.lane_dir / "leftover.txt").write_text("x\n")
         marker = self.lane_dir / ".grip-open-gr-reconstruct.json"
-        marker.write_text(json.dumps({"kind": "open-gr-reconstruct", "gr_commit": "abc123"}))
+        _init_repo(self.lane_dir, content="owned cleanup\n")
+        workspace = self.tmp / "workspace"
+        workspace.mkdir()
+        record_created_allocation(workspace, self.lane_dir, "workspace", "review", [self.lane_dir], disposable=True)
+        marker.write_text(json.dumps({"kind": "open-gr-reconstruct", "gr_commit": "abc123", "workspace_root": str(workspace)}))
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -355,7 +360,8 @@ class CloseOpenGrLaneCleanupTest(unittest.TestCase):
         with patch("shutil.rmtree", side_effect=lambda *a, **k: None):
             with self.assertRaises(OpenGrReviewError) as cm:
                 close_open_gr_lane(self.lane_dir)
-        self.assertIn("could not be fully reclaimed", str(cm.exception))
+        self.assertIn("could not be fully removed", str(cm.exception))
+        self.assertIn("recovery at", str(cm.exception))
         self.assertTrue(self.lane_dir.exists(), "fixture assumption: the mock never removes anything")
 
 
@@ -368,7 +374,13 @@ class ExitGrReviewCleanupTest(unittest.TestCase):
         self.review_root = self.tmp / "review"
         self.review_root.mkdir()
         (self.review_root / "leftover.txt").write_text("x\n")
+        _init_repo(self.review_root, content="owned exit\n")
+        record_created_allocation(self.tmp, self.review_root, "unit", "some-lane", [self.review_root], disposable=True)
+        selection = open_gr_review_mod.lane_proto.current_lane_file(self.tmp, "unit")
+        selection.parent.mkdir(parents=True, exist_ok=True)
+        selection.write_text('{"current": {"name": "some-lane"}}')
         open_gr_receipt_path(self.review_root).write_text(json.dumps({
+            "owner_unit": "unit", "review_root": str(self.review_root.resolve()), "lane_name": "some-lane",
             "lane_kind": "review-ephemeral",
             "prior_cwd": str(self.tmp),
             "gr_commit": "deadbeef",

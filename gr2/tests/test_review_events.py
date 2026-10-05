@@ -8,7 +8,10 @@ from pathlib import Path
 
 from gr2.python_cli.app import app
 from gr2.python_cli import review_run as rr
-from tests.test_review_cli import _bind, _fixture_repo, _grip_ws, runner
+from tests.test_review_cli import _bind, _fixture_repo, _grip_ws
+from tests.conftest import make_cli_runner
+
+runner = make_cli_runner()
 from tests.test_review_run import PASS_TEST, _git, _offline_install, _pkg_repo, _write_marker
 
 
@@ -144,7 +147,9 @@ def test_a_lane_whose_recorded_workspace_is_gone_emits_nothing_and_creates_nothi
     assert result.exit_code == 2, result.output
     assert not gone.exists()
     closed = runner.invoke(app, ["review", "close", str(lane)])
-    assert closed.exit_code == 0, closed.output
+    assert closed.exit_code != 0, closed.output
+    assert "allocation" in closed.output
+    assert lane.exists()
     assert not gone.exists()
 
 
@@ -161,7 +166,9 @@ def test_a_recorded_workspace_that_exists_without_grip_gets_nothing_written_into
     result = runner.invoke(app, ["review", "run", str(lane), "--test", "true"])
     assert result.exit_code == 2, result.output
     closed = runner.invoke(app, ["review", "close", str(lane)])
-    assert closed.exit_code == 0, closed.output
+    assert closed.exit_code != 0, closed.output
+    assert "allocation" in closed.output
+    assert lane.exists()
     assert list(plain.iterdir()) == []
 
 

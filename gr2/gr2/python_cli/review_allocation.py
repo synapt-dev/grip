@@ -9,6 +9,7 @@ import tomllib
 from pathlib import Path
 
 from .gitops import git
+from .layout import grip_dir
 
 
 class ReviewAllocationError(ValueError):
@@ -17,7 +18,7 @@ class ReviewAllocationError(ValueError):
 
 def allocation_path(workspace: Path, target: Path) -> Path:
     key = hashlib.sha256(str(target.resolve()).encode()).hexdigest()
-    return workspace.resolve() / ".grip" / "state" / "review-allocations" / f"{key}.json"
+    return grip_dir(workspace.resolve()) / "state" / "review-allocations" / f"{key}.json"
 
 
 def _physical(path: Path) -> list[int]:

@@ -117,3 +117,18 @@ remains a hidden alias with a warning on stderr until beta. Both report `satisfi
 in the same JSON payload, and a missing reviewer remains a reported status with exit 0.
 
 A bare `gr2 review open <workspace>` uses the workspace's sole review bind. Its default directory is `<workspace>.review/<sha8>` in the workspace's parent directory, and the command announces that path on stderr. Give `--lane-dir` to choose another location.
+
+
+## External PR adapters
+
+External packages can expose a zero-argument factory through the
+`gr2.platform_adapters` entry-point group. See [the adapter contract](docs/PR-LIFECYCLE.md#51-adapter-protocol-and-capabilities)
+for registration, optional operation capabilities and merge head-pin requirements.
+Select the installed adapter with `gr2 pr create ... --platform NAME` on a
+materialized lane. The bound-lane path currently pushes and returns its receipt.
+
+PRs start as drafts by default. `--draft` is explicit draft creation, while
+`--no-draft` explicitly creates non-drafts. The same default applies to
+`CreatePRRequest` and `create_pr_group`. Existing Python callers can retain
+non-draft creation with `draft=False`. Plugins execute trusted Python from the
+existing environment. The CLI never installs or downloads them.

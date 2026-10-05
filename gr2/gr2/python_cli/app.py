@@ -73,7 +73,8 @@ from .hooks import (
     HookResult,
 )
 from .merge_verification import MergeVerificationTarget
-from .platform import PRRef, get_platform_adapter
+from . import platform as platform_ops
+from .platform import PRRef
 
 app = typer.Typer(
     help=(
@@ -3093,7 +3094,7 @@ def review_open(
     # Base pin = merge-base(head, base-branch tip). The base branch comes from the
     # PR itself, so the pin is what the PR is actually measured against.
     repo_slug = _repo_slug_from_url(remote_origin_url(source_repo_root) or "", repo)
-    base_branch = get_platform_adapter(platform).pr_status(repo_slug, pr_number).ref.base_branch or "main"
+    base_branch = platform_ops.get_platform_adapter(platform).pr_status(repo_slug, pr_number).ref.base_branch or "main"
     git(source_repo_root, "fetch", "--quiet", "origin", base_branch)
     base_tip = git(source_repo_root, "rev-parse", "FETCH_HEAD").stdout.strip()
     merged = git(source_repo_root, "merge-base", expected_head, base_tip)
@@ -3195,7 +3196,7 @@ def pr_create(
     lane_name: Optional[str] = typer.Argument(None, help="Lane name. Defaults to the unit's current lane."),
     platform: str = typer.Option("github", "--platform", help="Platform adapter name"),
     base_branch: str = typer.Option("main", "--base", help="Base branch for created PRs"),
-    draft: bool = typer.Option(False, "--draft", help="Create PRs as drafts"),
+    draft: bool = typer.Option(True, "--draft/--no-draft", help="Create drafts by default. --no-draft explicitly publishes PRs."),
     title: Optional[str] = typer.Option(None, "--title", help="Title for every PR in the group. Defaults to the lane name, which makes every PR in a set read identically; pass one when a reviewer must be able to tell the PRs apart."),
     body: Optional[str] = typer.Option(None, "--body", help="Body for every PR in the group. Defaults to a line naming the group and listing its repos."),
     body_file: Optional[Path] = typer.Option(None, "--body-file", help="Read the group body from a file. Use this for anything long or shell-sensitive: the body is passed to gh through a file, so quoting is not the caller's problem."),
@@ -3223,7 +3224,7 @@ def pr_create(
         typer.echo(json.dumps(pushed, indent=2))
         return
     spec = lane_proto.load_workspace_spec(workspace_root)
-    adapter = get_platform_adapter(platform)
+    adapter = platform_ops.get_platform_adapter(platform)
     branch_map = dict(lane_doc.get("branch_map", {}))
     repos: list[str] = []
     for repo_name in lane_doc.get("repos", []):
@@ -4133,7 +4134,7 @@ def pr_status(
     workspace_root = workspace_root.resolve()
     resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
     group_path, group = _find_pr_group(workspace_root, owner_unit, resolved_lane)
-    adapter = get_platform_adapter(str(group.get("platform", "github")))
+    adapter = platform_ops.get_platform_adapter(str(group.get("platform", "github")))
     group = pr_ops.check_pr_group_status(
         workspace_root=workspace_root,
         pr_group_id=str(group["pr_group_id"]),
@@ -4171,7 +4172,7 @@ def pr_checks(
     workspace_root = workspace_root.resolve()
     resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
     group_path, group = _find_pr_group(workspace_root, owner_unit, resolved_lane)
-    adapter = get_platform_adapter(str(group.get("platform", "github")))
+    adapter = platform_ops.get_platform_adapter(str(group.get("platform", "github")))
     rows = []
     for pr_info in group.get("prs", []):
         ref = PRRef(repo=str(pr_info["repo"]), number=int(pr_info["pr_number"]), url=pr_info.get("url"))
@@ -4281,7 +4282,7 @@ def pr_view(
     workspace_root = workspace_root.resolve()
     resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
     source = _pr_view_source(workspace_root, owner_unit, resolved_lane)
-    adapter = get_platform_adapter(str(source["platform"]))
+    adapter = platform_ops.get_platform_adapter(str(source["platform"]))
 
     # A filter that matched nothing must not read the same as a change with no members.
     # The reader cannot tell a typo from an empty change, and the line above has just told
@@ -4394,7 +4395,7 @@ def pr_merge(
     workspace_root = workspace_root.resolve()
     resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
     group_path, group = _find_pr_group(workspace_root, owner_unit, resolved_lane)
-    adapter = get_platform_adapter(str(group.get("platform", "github")))
+    adapter = platform_ops.get_platform_adapter(str(group.get("platform", "github")))
     try:
         expected_heads = _parse_head_pins(match_head_commit, group)
     except ValueError as exc:

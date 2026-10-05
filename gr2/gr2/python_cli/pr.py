@@ -32,6 +32,7 @@ from .platform import (
     MergeMethod,
     MergeReceipt,
     PlatformAdapter,
+    require_adapter_capability,
 )
 
 __all__ = [
@@ -321,9 +322,12 @@ def create_pr_group(
     actor: str,
     *,
     body: str = "",
-    draft: bool = False,
+    draft: bool = True,
 ) -> dict:
     """Create linked PRs across repos and emit pr.created."""
+    require_adapter_capability(adapter, "create_pr")
+    if len(repos) > 1:
+        require_adapter_capability(adapter, "edit_pr_body")
     pr_group_id = _generate_group_id()
     prs: list[dict] = []
 
@@ -540,6 +544,7 @@ def merge_pr_group(
     # THE PIN PASS. It runs over every member BEFORE the first merge, because a
     # per-call check refuses only the member the adapter has reached -- an
     # earlier member merges first, and half of a group that nobody read lands.
+    require_adapter_capability(adapter, "merge_pr")
     for pr_info in group["prs"]:
         repo = str(pr_info["repo"])
         expected = pins.get(repo)

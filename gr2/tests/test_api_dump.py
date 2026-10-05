@@ -944,3 +944,12 @@ def test_the_owner_of_an_item_is_the_longest_command_that_matches_it_on_a_word()
     assert _owner("json", "store status .ok", facts) == "store status"
     assert _owner("exit", "store 0 ok", facts) == "store"
     assert _owner("verb", "stored", facts) is None, "a command matches on a whole word, not on a character prefix"
+
+
+def test_dual_boolean_negative_spelling_reaches_inventory() -> None:
+    rows = _generator()._walked_items()
+    assert any(
+        row.kind == "flag" and row.spelling == "pr create --draft/--no-draft"
+        for row in rows
+    )
+    assert any(row.spelling == "pr create --json" for row in rows)

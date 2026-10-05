@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- gr2 PR creation defaults to draft at the request, group and CLI layers. Use
+  `--no-draft` or Python `draft=False` for explicit non-draft creation. Body-only
+  sibling edits do not publish drafts.
+- External platform factories can register in-process or use the
+  `gr2.platform_adapters` entry-point group. Only the selected plugin is loaded.
+  Duplicate names and plugin errors refuse clearly, with built-in GitHub names reserved.
+- Platform adapter contract version 1 documents `pr_view`, `edit_pr_body`,
+  `PRStatus.head_oid` and keyword `merge_pr(expected_head=...)`. Older adapters
+  lacking merge-pin support must upgrade rather than drop pins. Single-member
+  create-only adapters remain supported, while multi-member groups preflight
+  body-edit capability before any creation. Provider review votes are display
+  evidence, not inputs to the current local review-requirement check.
+
 - `gr2 review check` replaces `review requirements` for compiled reviewer requirements. The old spelling
   is a hidden alias with a warning on stderr, registered for removal at beta. Both keep the same
   payload, root inference and exit status, including exit 0 with `satisfied: false`.

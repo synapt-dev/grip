@@ -3,6 +3,7 @@
 - ``close`` reads the lane marker (open-gr reconstruct marker -> reconstruction teardown).
 End-to-end: a real open-gr marker routes to close_open_gr_lane and reclaims the lane;
 a lane with no marker is a PR lane and open-gr teardown refuses it."""
+import subprocess
 import pytest
 
 from gr2.python_cli import review_dispatch
@@ -80,11 +81,19 @@ def test_classify_open_target(target, kind):
 def test_close_classifies_and_routes_a_real_reconstruction_lane(tmp_path):
     lane = tmp_path / "lane"
     lane.mkdir()
-    (lane / "some-reconstructed-repo").mkdir()  # the disposable tree open-gr would create
+    member = lane / "some-reconstructed-repo"
+    member.mkdir()
+    for args in (("init", "-q"), ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "seed")):
+        subprocess.run(["git", "-C", str(member), *args], check=True, capture_output=True)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    from gr2.python_cli.review_allocation import record_created_allocation
+    record_created_allocation(workspace, lane, "workspace", "review", [member], disposable=True)
     open_gr_review.write_open_gr_marker(
         lane,
         "gr:deadbeef",
         {"recall": {"bound_head_tree": "t", "reconstructed_tree": "t"}},
+        workspace,
     )
     # decision: the marker tells close this is a reconstruction lane
     assert review_dispatch.classify_close_lane(lane) == "reconstruction"

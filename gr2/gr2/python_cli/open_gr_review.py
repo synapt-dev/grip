@@ -12,6 +12,7 @@ the exact review the author bound.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import os
 import re
@@ -27,6 +28,9 @@ from .gitops import git
 from .review_run import _OUTPUT_LOG_NAME as _RUN_LOG_NAME
 from .review_run import _MARKER_KIND, _MARKER_NAME, _RECEIPT_NAME as _RUN_RECEIPT_NAME
 from .review_run import find_marker, marker_kind_ok
+from .review_allocation import (
+    ReviewAllocationError, allocation_path, require_allocation, save_allocation,
+)
 
 
 class OpenGrReviewError(Exception):
@@ -65,45 +69,79 @@ def write_open_gr_marker(lane_dir: Path, gr_commit: str, results: dict, workspac
     (Path(lane_dir) / _OPEN_GR_MARKER).write_text(json.dumps(marker, indent=2) + "\n")
 
 
-def close_open_gr_lane(lane_dir: Path) -> dict:
+def close_open_gr_lane(lane_dir: Path, *, workspace_root: Path | None = None) -> dict:
     """Reclaim an ``open-gr --enter`` reconstruction lane: verify its marker, then rm
     the disposable tree. Refuses a directory with no open-gr marker (so a wrong
     ``--lane-dir`` can never remove an arbitrary path). No OWNER_UNIT, no lane pop,
     no cwd restore -- open-gr did none of those, so teardown undoes only the clone."""
     lane_dir = Path(lane_dir)
     marker_path = find_marker(lane_dir)
-    if marker_path is None:
-        raise OpenGrReviewError(
-            f"no review marker at {lane_dir / _OPEN_GR_MARKER}; not a lane opened by "
-            "`review open --enter` (refusing to remove a directory that is not "
-            "a review reconstruction)"
-        )
-    marker = json.loads(marker_path.read_text())
-    if not marker_kind_ok(marker):
-        raise OpenGrReviewError(
-            f"marker at {marker_path} is not a review reconstruction "
-            f"(kind={marker.get('kind')!r})"
-        )
-    gr_commit = marker.get("gr_commit", "")
-    # review-run door 1: `review run` writes its receipt and pytest-output log INSIDE
-    # the lane, so the rmtree below would destroy the only record of what a red run
-    # found (35 env failures, in the real review). Carry them OUT first, to a sibling
-    # beside the lane that the rmtree cannot reach, and rewrite the preserved receipt's
-    # `output_log` to the preserved log's path so the receipt still names its log.
-    preserved = _preserve_run_artifacts(lane_dir)
+    marker_bytes = marker_path.read_bytes() if marker_path is not None else None
+    marker = json.loads(marker_bytes) if marker_bytes is not None else None
+    recorded_workspace = workspace_root or (marker or {}).get("workspace_root")
+    if not recorded_workspace:
+        raise OpenGrReviewError("review has no owning workspace allocation; save evidence and reopen an allocated lane")
+    workspace = Path(recorded_workspace).resolve()
     try:
-        rmtree_or_refuse(lane_dir)
-    except IncompleteRemoval as cleanup_exc:
-        raise OpenGrReviewError(
-            f"review lane at {lane_dir} could not be fully reclaimed: {cleanup_exc}"
-        ) from cleanup_exc
+        allocation = require_allocation(workspace, lane_dir, owner_unit="workspace")
+        if not allocation["disposable"]:
+            raise ReviewAllocationError("allocation is not disposable")
+    except ReviewAllocationError as exc:
+        raise OpenGrReviewError(str(exc)) from exc
+    retained = allocation.get("close_marker_hex")
+    if marker_bytes is None and allocation["state"] == "closing" and retained is not None:
+        try:
+            marker_bytes = bytes.fromhex(retained)
+            marker = json.loads(marker_bytes)
+        except (ValueError, TypeError) as exc:
+            raise OpenGrReviewError("invalid retained close marker; operator recovery required") from exc
+    if marker is None or not marker_kind_ok(marker):
+        raise OpenGrReviewError("no valid reconstruction marker; retaining allocation")
+    if retained is not None and marker_bytes.hex() != retained:
+        raise OpenGrReviewError("reconstruction marker changed during cleanup; retaining recovery")
+    gr_commit = marker.get("gr_commit", "")
+    if allocation["state"] == "closing":
+        preserved = allocation.get("preserved_runs", [])
+    else:
+        preserved = _preserve_allocated_runs(workspace, lane_dir, allocation)
+        allocation.update(state="closing", close_marker_hex=marker_bytes.hex(), preserved_runs=preserved)
+        save_allocation(workspace, lane_dir, allocation)
+    _remove_allocated(workspace, lane_dir, allocation)
     result = {"reclaimed": str(lane_dir), "gr_commit": gr_commit}
     if preserved:
-        result["preserved_run"] = preserved
+        # Preserve the existing single-run response while exposing all members.
+        result["preserved_run"] = preserved[0]
+        result["preserved_runs"] = preserved
     return result
 
 
-def _preserve_run_artifacts(lane_dir: Path) -> dict | None:
+def _preserve_allocated_runs(workspace: Path, target: Path, allocation: dict) -> list[dict]:
+    archive = allocation_path(workspace, target).with_suffix("")
+    paths = list(dict.fromkeys([target, *(target / item["path"] for item in allocation["members"])]))
+    result = []
+    for path in paths:
+        relative = str(path.relative_to(target))
+        key = hashlib.sha256(relative.encode()).hexdigest()
+        item = _preserve_run_artifacts(path, archive_root=archive / key)
+        if item:
+            result.append({"member_path": relative, **item})
+    return result
+
+
+def _remove_allocated(workspace: Path, target: Path, allocation: dict) -> None:
+    try:
+        # Revalidate physical target and every member immediately before delegation.
+        require_allocation(workspace, target, owner_unit=allocation["owner_unit"])
+        if target.exists():
+            rmtree_or_refuse(target)
+        if target.exists() or target.is_symlink():
+            raise OpenGrReviewError("allocated target remains after cleanup")
+        allocation_path(workspace, target).unlink()
+    except (IncompleteRemoval, OSError, ReviewAllocationError) as exc:
+        raise OpenGrReviewError(f"review cleanup incomplete: {exc}; recovery at {allocation_path(workspace, target)}") from exc
+
+
+def _preserve_run_artifacts(lane_dir: Path, *, archive_root: Path | None = None) -> dict | None:
     """Copy a `review run` receipt (and its output log) out of the lane into a sibling
     dir that the lane's rmtree cannot reach, BEFORE the rmtree. Returns
     ``{"dir", "receipt", "log"?}`` of the preserved paths, or None when the lane holds
@@ -125,9 +163,13 @@ def _preserve_run_artifacts(lane_dir: Path) -> dict | None:
     gr_short = (receipt.get("gr_commit") or "unknown")[:12]
     created = receipt.get("created") or "no-timestamp"
     key = re.sub(r"[^A-Za-z0-9._-]", "-", f"{gr_short}-{created}")
-    dest = lane_dir.parent / f"{lane_dir.name}.review-run" / key
+    dest = (archive_root or lane_dir.parent / f"{lane_dir.name}.review-run") / key
     dest.mkdir(parents=True, exist_ok=True)
     out: dict[str, str] = {"dir": str(dest)}
+    # Keep byte-exact original evidence in addition to the usable rewritten view.
+    original_dest = dest / (_RUN_RECEIPT_NAME + ".original")
+    original_dest.write_bytes(receipt_src.read_bytes())
+    out["original_receipt"] = str(original_dest)
 
     log_src = lane_dir / _RUN_LOG_NAME
     log_dest = dest / _RUN_LOG_NAME
@@ -678,7 +720,7 @@ class OpenGrExit:
 
 
 def exit_gr_review(
-    workspace: Path, owner_unit: str, review_root: Path, *, actor: str
+    workspace: Path, owner_unit: str, review_root: Path, *, actor: str, adopt_legacy: bool = False
 ) -> OpenGrExit:
     """Exit a review opened by ``open_gr_enter``: restore the prior lane and cwd.
 
@@ -690,10 +732,51 @@ def exit_gr_review(
     import argparse
 
     workspace = Path(workspace).resolve()
+    review_root = Path(review_root)
+    if adopt_legacy:
+        from .review_allocation import adopt_legacy_project_allocation
+        # Target comes from the independent owning coordinate, not the receipt.
+        if review_root.resolve() != workspace / "reviews" / owner_unit / review_root.name:
+            raise OpenGrReviewError("legacy adoption needs the exact managed project review root")
+        try:
+            adopt_legacy_project_allocation(workspace, owner_unit, review_root.name)
+        except ReviewAllocationError as exc:
+            raise OpenGrReviewError(str(exc)) from exc
+    try:
+        allocation = require_allocation(workspace, review_root, owner_unit=owner_unit)
+    except ReviewAllocationError as exc:
+        raise OpenGrReviewError(str(exc)) from exc
     receipt_path = open_gr_receipt_path(review_root)
-    if not receipt_path.exists():
-        raise OpenGrReviewError(f"no open-gr receipt at {receipt_path}; not a review opened by open-gr")
-    receipt = json.loads(receipt_path.read_text())
+    retained = allocation.get("exit_receipt_hex")
+    if receipt_path.is_symlink():
+        raise OpenGrReviewError("project receipt is a symlink; retaining recovery")
+    if receipt_path.exists():
+        receipt_bytes = receipt_path.read_bytes()
+        if retained is not None and receipt_bytes.hex() != retained:
+            raise OpenGrReviewError("project receipt changed during cleanup; retaining recovery")
+    elif retained is not None and allocation["state"] == "closing":
+        receipt_bytes = bytes.fromhex(retained)
+    else:
+        raise OpenGrReviewError(f"project receipt unavailable at {receipt_path}; operator recovery required")
+    receipt = json.loads(receipt_bytes)
+    if receipt.get("owner_unit") != owner_unit or receipt.get("review_root") != str(review_root.resolve()):
+        raise OpenGrReviewError("project receipt unit or target differs; refusing selection change")
+    if allocation["lane_name"] != receipt.get("lane_name"):
+        raise OpenGrReviewError("allocation lane differs from project receipt")
+    if allocation.get("selection_restored"):
+        selection_path = lane_proto.current_lane_file(workspace, owner_unit)
+        if not selection_path.is_file() or selection_path.read_bytes().hex() != allocation.get("restored_selection_hex"):
+            raise OpenGrReviewError("selection changed since incomplete exit; operator recovery required")
+        _remove_allocated(workspace, review_root, allocation)
+        return OpenGrExit(allocation.get("restored_lane"), receipt["prior_cwd"], receipt["gr_commit"])
+    if _current_lane_name(workspace, owner_unit) != allocation["lane_name"]:
+        raise OpenGrReviewError("current selection is not this allocated review; refusing exit")
+    if receipt.get("lane_kind") == "review-ephemeral":
+        if not allocation["disposable"]:
+            raise OpenGrReviewError("allocation does not authorize disposable cleanup")
+        allocation.update(state="closing", exit_receipt_hex=receipt_bytes.hex(),
+                          preserved_runs=_preserve_allocated_runs(workspace, review_root, allocation))
+        save_allocation(workspace, review_root, allocation)
 
     lane_proto.exit_lane(argparse.Namespace(
         workspace_root=workspace, owner_unit=owner_unit, actor=actor,
@@ -704,13 +787,10 @@ def exit_gr_review(
     # cleanup (no prune verb that could ever touch a work lane). The mirror
     # persists; only the disposable review clones are removed.
     if receipt.get("lane_kind") == "review-ephemeral":
-        try:
-            rmtree_or_refuse(review_root)
-        except IncompleteRemoval as cleanup_exc:
-            raise OpenGrReviewError(
-                f"review-ephemeral lane at {review_root} could not be fully "
-                f"removed on exit: {cleanup_exc}"
-            ) from cleanup_exc
+        allocation.update(selection_restored=True, restored_lane=restored_lane,
+                          restored_selection_hex=lane_proto.current_lane_file(workspace, owner_unit).read_bytes().hex())
+        save_allocation(workspace, review_root, allocation)
+        _remove_allocated(workspace, review_root, allocation)
     return OpenGrExit(
         restored_lane=restored_lane,
         restored_cwd=receipt["prior_cwd"],

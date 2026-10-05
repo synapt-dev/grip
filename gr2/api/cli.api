@@ -404,10 +404,12 @@ arg   review close repo <str>                                         stable
 arg   review close target <str>                                       stable
 flag  review close --json                                             stable
 flag  review close --lane <str>                                       stable
+flag  review close --workspace <str>                                  stable
 verb  review close                                                    stable
 # review close-gr
 arg   review close-gr lane_dir <str> (hidden)                         stable
 flag  review close-gr --json (hidden)                                 stable
+flag  review close-gr --workspace <str> (hidden)                      stable
 verb  review close-gr (hidden)                                        stable
 # review create-project
 arg   review create-project lane_name <str>                           stable
@@ -422,6 +424,7 @@ arg   review exit-gr owner_unit <str> (hidden)                        stable
 arg   review exit-gr review_root <str> (hidden)                       stable
 arg   review exit-gr workspace_root <str> (hidden)                    stable
 flag  review exit-gr --actor <str> (hidden)                           stable
+flag  review exit-gr --adopt-legacy (hidden)                          stable
 flag  review exit-gr --json (hidden)                                  stable
 flag  review exit-gr --root/-C <str> (hidden)                         stable
 verb  review exit-gr (hidden)                                         stable

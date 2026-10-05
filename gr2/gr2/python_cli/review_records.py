@@ -20,6 +20,79 @@ class ReviewRecordPaths:
     legacy: Path
     repo_root: Path | None = None
 
+    @property
+    def closing(self) -> Path:
+        """Incomplete disposal evidence, never an active review identity."""
+        return self.current.with_name(self.current.name + ".closing.json")
+
+
+def read_close_recovery(paths: ReviewRecordPaths, target: Path, managed_root: Path) -> dict | None:
+    if not paths.closing.exists() and not paths.closing.is_symlink():
+        return None
+    try:
+        if paths.closing.is_symlink():
+            raise ValueError("symlink recovery record")
+        doc = json.loads(paths.closing.read_text())
+        if set(doc) != {"version", "target", "managed_root", "target_identity", "git_identity", "selected", "receipts"}:
+            raise ValueError("invalid recovery fields")
+        if doc["version"] != 1 or doc["target"] != str(target) or doc["managed_root"] != str(managed_root):
+            raise ValueError("recovery target or managed root mismatch")
+        allowed = {str(paths.current), str(paths.legacy)}
+        if not isinstance(doc["receipts"], dict) or not doc["receipts"] or not set(doc["receipts"]) <= allowed:
+            raise ValueError("invalid retained receipt paths")
+        if doc["selected"] not in doc["receipts"]:
+            raise ValueError("missing selected receipt")
+        for value in doc["receipts"].values():
+            bytes.fromhex(value)
+        for key in ("target_identity", "git_identity"):
+            if not isinstance(doc[key], list) or len(doc[key]) != 2 or not all(type(v) is int for v in doc[key]):
+                raise ValueError("invalid physical identity")
+        return doc
+    except (OSError, ValueError, TypeError, AttributeError) as exc:
+        raise ReviewRecordLocationError(f"close recovery cannot be read safely: {paths.closing}: {exc}") from exc
+
+
+def stage_close_recovery(paths: ReviewRecordPaths, target: Path, managed_root: Path, selected: Path) -> dict:
+    """Keep exact current and legacy bytes outside the clone before disposal."""
+    if paths.closing.exists() or paths.closing.is_symlink():
+        raise ReviewRecordLocationError(f"close already pending at {paths.closing}")
+    if target in paths.closing.resolve().parents:
+        raise ReviewRecordLocationError("close recovery must be outside the deletion target")
+    receipts = {}
+    for path in dict.fromkeys((paths.current, paths.legacy)):
+        if path.is_symlink():
+            raise ReviewRecordLocationError("refusing symlink receipt during close")
+        if path.is_file():
+            receipts[str(path)] = path.read_bytes().hex()
+    target_stat, git_stat = target.stat(), (target / ".git").stat()
+    doc = {"version": 1, "target": str(target), "managed_root": str(managed_root),
+           "target_identity": [target_stat.st_dev, target_stat.st_ino],
+           "git_identity": [git_stat.st_dev, git_stat.st_ino],
+           "selected": str(selected), "receipts": receipts}
+    paths.closing.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=paths.closing.parent, prefix=".closing-", delete=False) as stream:
+        temporary = Path(stream.name)
+        stream.write((json.dumps(doc, indent=2) + "\n").encode())
+    try:
+        os.replace(temporary, paths.closing)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return doc
+
+
+def finish_close_recovery(paths: ReviewRecordPaths, target: Path, doc: dict) -> None:
+    if target.exists() or target.is_symlink():
+        raise ReviewRecordLocationError("cannot finish close while target remains")
+    for name, retained in doc["receipts"].items():
+        path = Path(name)
+        if path.is_symlink():
+            raise ReviewRecordLocationError("receipt changed to symlink during close")
+        if path.exists():
+            if path.read_bytes() != bytes.fromhex(retained):
+                raise ReviewRecordLocationError("receipt changed during close; retaining recovery")
+            path.unlink()
+    paths.closing.unlink()
+
 
 def worktree_git_path(repo_root: Path | str, name: str) -> Path:
     """Resolve metadata in this worktree, including checkouts whose .git is a file."""
@@ -83,6 +156,8 @@ def read_review_records_for_guard(paths: ReviewRecordPaths) -> tuple[dict, ...]:
     cleanup. The commit and push guard has a different question: whether any
     extant receipt marks this checkout disposable.
     """
+    if paths.closing.exists() or paths.closing.is_symlink():
+        raise ReviewRecordLocationError(f"review close is incomplete; recovery at {paths.closing}")
     records: list[dict] = []
     for path in (paths.current, paths.legacy):
         if not path.is_file():
@@ -99,6 +174,8 @@ def read_review_records_for_guard(paths: ReviewRecordPaths) -> tuple[dict, ...]:
 
 def read_review_record_at(paths: ReviewRecordPaths, *, notice: Callable[[str], None] = print) -> tuple[dict, Path] | None:
     """Read a receipt and return the exact path that supplied it for cleanup."""
+    if paths.closing.exists() or paths.closing.is_symlink():
+        return None
     for path, legacy in ((paths.current, False), (paths.legacy, True)):
         if not path.is_file():
             continue
@@ -118,6 +195,8 @@ def write_review_record(paths: ReviewRecordPaths, record: dict) -> Path:
     # A project review can materialize outside `.grip/state/reviews`; commit and
     # push run from that member checkout, so leave one coordinate pointer there.
     # It deliberately contains no receipt fields.
+    if paths.closing.exists() or paths.closing.is_symlink():
+        raise ReviewRecordLocationError(f"review close is incomplete; recovery at {paths.closing}")
     repo = paths.repo_root or paths.legacy.parent.parent
     pointer = review_record_pointer_path(repo)
     if paths.current.is_symlink() or pointer.is_symlink():

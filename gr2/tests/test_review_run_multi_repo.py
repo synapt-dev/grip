@@ -331,14 +331,23 @@ def test_cli_json_prints_the_lane_receipt_and_order_flag_is_accepted(tmp_path: P
 
 def test_close_carries_the_receipt_and_every_member_log_out(tmp_path: Path) -> None:
     lane = _lane(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    from gr2.python_cli.review_allocation import record_created_allocation
+    record_created_allocation(workspace, lane, "workspace", "review", [lane / "demo-core", lane / "demo-web"], disposable=True)
+    marker_path = lane / rr._MARKER_NAME
+    marker = json.loads(marker_path.read_text())
+    marker["workspace_root"] = str(workspace)
+    marker_path.write_text(json.dumps(marker))
     rr.run_review_lane(lane, pytest_args=["-q"])
-    code, out = _cli("review", "close", str(lane))
+    code, out = _cli("review", "close", str(lane), "--json")
     assert code == 0, out
 
-    kept = list((tmp_path / "lane.review-run").iterdir())
-    assert len(kept) == 1, kept
-    receipt = json.loads((kept[0] / rr._RECEIPT_NAME).read_text())
+    closed = json.loads(out)
+    kept = Path(closed["preserved_run"]["dir"])
+    assert kept.is_relative_to(workspace / ".grip" / "state" / "review-allocations")
+    receipt = json.loads(Path(closed["preserved_run"]["receipt"]).read_text())
     for member in receipt["members"]:
         preserved = Path(member["output_log"])
-        assert preserved.is_file() and preserved.parent == kept[0], member
+        assert preserved.is_file() and preserved.parent == kept, member
     assert not lane.exists()

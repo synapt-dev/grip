@@ -85,3 +85,16 @@ def test_destroyed_git_identity_retains_external_authority(tmp_path, monkeypatch
     assert attempts == []
     assert pending.read_bytes() == original
     assert target.exists()
+
+
+def test_legacy_adoption_refuses_redirected_managed_ancestor(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    foreign = tmp_path / "foreign"
+    target = foreign / "unit" / "review"
+    target.mkdir(parents=True)
+    (workspace / "reviews").symlink_to(foreign, target_is_directory=True)
+    with pytest.raises(allocation.ReviewAllocationError, match="managed workspace boundary"):
+        allocation.adopt_legacy_project_allocation(workspace, "unit", "review")
+    assert not allocation.allocation_path(workspace, target).exists()
+    assert target.exists()

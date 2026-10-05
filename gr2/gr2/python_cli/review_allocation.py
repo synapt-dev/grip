@@ -127,7 +127,7 @@ def adopt_legacy_project_allocation(workspace: Path, owner_unit: str, lane_name:
     lanes.validate_lane_path_component(lane_name, "lane_name")
     target = workspace / "reviews" / owner_unit / lane_name
     managed = workspace / "reviews" / owner_unit
-    if target.is_symlink() or target.resolve().parent != managed.resolve() or managed.resolve() not in target.resolve().parents:
+    if target.resolve() != target or target.is_symlink() or target.resolve().parent != managed.resolve() or managed.resolve() not in target.resolve().parents:
         raise ReviewAllocationError("legacy project target is outside its managed workspace boundary")
     try:
         definition = tomllib.loads(lanes.lane_file(workspace, owner_unit, lane_name).read_text())

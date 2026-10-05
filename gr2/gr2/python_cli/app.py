@@ -3141,6 +3141,7 @@ def review_close(
     pr_number: Optional[int] = typer.Argument(None, help="PR-head only: PR number"),
     lane_name: Optional[str] = typer.Option(None, "--lane", help="Override the review lane name"),
     json_output: bool = typer.Option(False, "--json", help="gr reconstruction only: machine-readable JSON"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Owning workspace for reconstruction cleanup recovery"),
 ) -> None:
     """Drop a review lane. ``close`` reads the lane's marker to tell a reconstruction
     lane from a PR lane: a directory carrying a reconstruction
@@ -3150,8 +3151,8 @@ def review_close(
     """
     from . import review_dispatch
 
-    if review_dispatch.classify_close_lane(target) == "reconstruction":
-        return review_close_gr(target, json_output=json_output)
+    if workspace is not None or review_dispatch.classify_close_lane(target) == "reconstruction":
+        return review_close_gr(target, json_output=json_output, workspace=workspace)
 
     # PR-head path: target is the WORKSPACE_ROOT.
     workspace_root = target
@@ -3406,6 +3407,7 @@ def review_exit_gr(
     review_root: Path = typer.Argument(..., help="The review lane root written by `open-project --enter` (holds .grip-open-gr.json)"),
     actor: Optional[str] = typer.Option(None, "--actor", help="Actor recorded for the lane exit. Defaults to GR2_ACTOR, then human:<git user.name> at a terminal; there is no other default."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    adopt_legacy: bool = typer.Option(False, "--adopt-legacy", help="Explicitly recover allocation from independent managed workspace review state before exit"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Exit a MATERIALIZED project review opened by `open-project --enter`: pop the
@@ -3422,7 +3424,7 @@ def review_exit_gr(
         raise typer.Exit(code=4)
     ctx_mod.announce({"actor": actor_item}, root=None, quiet=ctx_mod.quiet_from_env())
     result = open_gr_review.exit_gr_review(
-        workspace_root.resolve(), owner_unit, review_root.resolve(), actor=actor_item.value
+        workspace_root.resolve(), owner_unit, review_root.resolve(), actor=actor_item.value, adopt_legacy=adopt_legacy
     )
     if json_output:
         typer.echo(json.dumps({
@@ -3776,6 +3778,9 @@ def review_open_gr(
                 for row_key in keys
             }
             from . import open_gr_review
+            from .review_allocation import record_created_allocation
+            record_created_allocation(workspace_root.resolve(), root, "workspace", root.name,
+                                      [root / row_key for row_key in keys], disposable=True)
             open_gr_review.write_open_gr_marker(root, sha, results, workspace_root.resolve())
             _emit_review_opened(workspace_root.resolve(), sha, root, results)
             if json_output:
@@ -3789,6 +3794,8 @@ def review_open_gr(
         grip.reconstruct_review_lane, workspace_root.resolve(), sha, key, root
     )
     from . import open_gr_review
+    from .review_allocation import record_created_allocation
+    record_created_allocation(workspace_root.resolve(), root, "workspace", root.name, [root], disposable=True)
     open_gr_review.write_open_gr_marker(root, sha, {key: result}, workspace_root.resolve())
     _emit_review_opened(workspace_root.resolve(), sha, root, {key: result})
     if json_output:
@@ -3804,15 +3811,16 @@ def review_open_gr(
 def review_close_gr(
     lane_dir: Path = typer.Argument(..., help="The review reconstruction lane (the --lane-dir from `review open --enter`) to reclaim"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Owning workspace for recovery after target deletion"),
 ) -> None:
     """Reclaim a `review open --enter` reconstruction lane: verify its marker and
     remove the disposable tree. The teardown counterpart to `review open --enter`; it
     needs no OWNER_UNIT, because a reconstruction pushes no lane and changes no cwd.
     Refuses a directory without a review marker rather than remove an arbitrary path."""
     from . import open_gr_review
-    lane_workspace = _review_lane_workspace(lane_dir.resolve())
+    lane_workspace = workspace or _review_lane_workspace(lane_dir.resolve())
     try:
-        result = open_gr_review.close_open_gr_lane(lane_dir.resolve())
+        result = open_gr_review.close_open_gr_lane(lane_dir.resolve(), workspace_root=workspace)
     except open_gr_review.OpenGrReviewError as exc:
         typer.echo(f"refused: {exc}", err=True)
         raise typer.Exit(code=2)
@@ -3830,9 +3838,10 @@ def review_close_gr(
         typer.echo(f"reclaimed {result['reclaimed']} (gr:{result['gr_commit']})")
         preserved = result.get("preserved_run")
         if preserved:
-            typer.echo(f"review-run receipt kept at {preserved['receipt']}")
-            if preserved.get("log"):
-                typer.echo(f"review-run output log kept at {preserved['log']}")
+            for item in preserved:
+                typer.echo(f"review-run receipt kept at {item['receipt']}")
+                if item.get("log"):
+                    typer.echo(f"review-run output log kept at {item['log']}")
 
 
 @review_app.command("run")

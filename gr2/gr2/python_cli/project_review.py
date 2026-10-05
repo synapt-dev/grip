@@ -284,6 +284,7 @@ def open_project_review(*, workspace: Path, owner_unit: str, lane_name: str, spe
             if git(source, "cat-file", "-e", f"{sha}^{{commit}}").returncode != 0:
                 return ProjectReviewOutcome("refused", spec.grip_commit, (), (ProjectReviewFailure(pin.key, f"missing {label} pin {sha}"),), None, False)
     review_root = workspace / "reviews" / owner_unit / lane_name
+    previously_present = review_root.exists()
     # Keep the lane subsystem's pinned refusal ahead of materialization. This
     # remains necessary even if an outer caller has already checked the names:
     # clone destinations must never be created before the lane coordinate is
@@ -306,6 +307,11 @@ def open_project_review(*, workspace: Path, owner_unit: str, lane_name: str, spe
             # Stamp the lane kind so every mutating verb (commit/push/bind) can
             # refuse this lane naming the kind: a review lane never becomes a work lane.
             _stamp_lane_kind(workspace, owner_unit, lane_name, "review-ephemeral")
+        if not previously_present:
+            from .review_allocation import record_created_allocation
+            record_created_allocation(workspace, review_root, owner_unit, lane_name,
+                                      [review_root / "repos" / pin.key for pin in canonical_pins],
+                                      disposable=ephemeral)
         lanes.enter_lane(argparse.Namespace(workspace_root=workspace, owner_unit=owner_unit, lane_name=lane_name, actor="project-review", notify_channel=False, recall=False))
     except Exception as exc:
         return ProjectReviewOutcome("partial", spec.grip_commit, tuple(observed), (ProjectReviewFailure("transition", str(exc)),), review_root, False)

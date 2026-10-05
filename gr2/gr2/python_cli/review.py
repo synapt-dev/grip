@@ -48,6 +48,9 @@ from .review_records import (
     read_review_record_at,
     review_record_paths,
     write_review_record,
+    read_close_recovery,
+    stage_close_recovery,
+    finish_close_recovery,
 )
 
 _SHA40 = re.compile(r"\A[0-9a-f]{40}\Z")
@@ -414,6 +417,8 @@ def close_review_lane(
     boundary: they catch a corrupted or MOVED lane (a reviewer commit or reset
     that means the lane may hold work), not a foreign one. The base workspace is
     never touched — only the lane clone is removed."""
+    if Path(lane_repo_root).is_symlink():
+        raise ReviewError("refusing to close a symlink lane")
     lane = Path(lane_repo_root).resolve()
     root = Path(review_lane_root).resolve()
 
@@ -428,7 +433,27 @@ def close_review_lane(
             "whatever record it carries."
         )
 
+    recovery = None
+    paths = None
+    if owner_unit is not None and lane_name is not None and member is not None:
+        try:
+            # On interrupted removal Git metadata may be absent. Canonical
+            # coordinates are still known, and the retained legacy path is fixed.
+            from .review_records import ReviewRecordPaths
+            if not (lane / ".git").exists():
+                coordinates = review_record_paths(workspace_root, owner_unit, lane_name, member, lane / ".close-absent")
+                paths = ReviewRecordPaths(coordinates.current, lane / ".git" / "grip-review.json", lane)
+            else:
+                paths = review_record_paths(workspace_root, owner_unit, lane_name, member, lane)
+            recovery = read_close_recovery(paths, lane, root)
+        except (ReviewRecordLocationError, OSError) as exc:
+            raise ReviewError(str(exc)) from exc
     if not lane.exists():
+        if recovery is not None:
+            try:
+                finish_close_recovery(paths, lane, recovery)
+            except (ReviewRecordLocationError, OSError) as exc:
+                raise ReviewError(str(exc)) from exc
         echo(f"no review lane at {lane}")
         return
 
@@ -441,10 +466,30 @@ def close_review_lane(
             record = None
     else:
         try:
-            paths = review_record_paths(workspace_root, owner_unit, lane_name, member, lane)
+            if paths is None:
+                paths = review_record_paths(workspace_root, owner_unit, lane_name, member, lane)
         except ReviewRecordLocationError as exc:
             raise ReviewError(str(exc)) from exc
-        located = read_review_record_at(paths, notice=echo)
+        if recovery is not None:
+            stat = lane.stat()
+            if [stat.st_dev, stat.st_ino] != recovery["target_identity"]:
+                raise ReviewError("close target physical identity changed; retaining recovery")
+            if not git_dir.is_dir() or git_dir.is_symlink():
+                raise ReviewError("close target Git identity unavailable; retaining recovery for operator action")
+            stat = git_dir.stat()
+            if [stat.st_dev, stat.st_ino] != recovery["git_identity"]:
+                raise ReviewError("close target Git identity changed; retaining recovery")
+            for name, retained in recovery["receipts"].items():
+                path = Path(name)
+                if path.is_symlink() or (path.exists() and path.read_bytes() != bytes.fromhex(retained)):
+                    raise ReviewError("review receipt changed during close; retaining recovery")
+            try:
+                original = json.loads(bytes.fromhex(recovery["receipts"][recovery["selected"]]))
+            except (ValueError, UnicodeError) as exc:
+                raise ReviewError("retained selected receipt is malformed") from exc
+            located = (original, Path(recovery["selected"]))
+        else:
+            located = read_review_record_at(paths, notice=echo)
         record, record_path = located if located is not None else (None, None)
     if not (git_dir.is_dir() and not git_dir.is_symlink()) or record is None:
         raise ReviewError(
@@ -479,21 +524,23 @@ def close_review_lane(
             "by hand once you have saved anything you need."
         )
 
-    # The workspace owns the canonical receipt, so clone removal cannot reclaim it.
-    # Remove it only after every provenance and HEAD gate above has passed.
+    # Keep exact current AND legacy safety bytes outside the clone. Incomplete
+    # close evidence is never accepted as active PR identity by the readers.
     if owner_unit is not None and lane_name is not None and member is not None:
         try:
             assert record_path is not None
-            receipt_paths = tuple(dict.fromkeys(
-                path for path in (paths.current, paths.legacy) if path.is_file()
-            ))
-            for receipt_path in receipt_paths:
-                receipt_path.unlink()
-        except OSError as exc:
+            if recovery is None:
+                recovery = stage_close_recovery(paths, lane, root, record_path)
+        except (OSError, ReviewRecordLocationError) as exc:
             raise ReviewError(
-                f"a review receipt could not be removed: {exc}; refusing to delete the lane "
-                "while its receipt would remain"
+                f"close recovery could not be retained: {exc}; refusing to delete the lane"
             ) from exc
 
-    shutil.rmtree(lane)
+    try:
+        shutil.rmtree(lane)
+        if recovery is not None:
+            finish_close_recovery(paths, lane, recovery)
+    except (OSError, ReviewRecordLocationError) as exc:
+        where = f"; recovery at {paths.closing}" if recovery is not None else ""
+        raise ReviewError(f"review close did not complete: {exc}{where}") from exc
     echo(f"review lane dropped: {lane}")

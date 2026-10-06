@@ -469,11 +469,29 @@ def test_review_open_incomplete_pr_fields_not_completed(ws, at):
     assert (params["target"], params["repo"], params["pr_number"]) == ("unit", "repo", None)
 
 
-def test_review_open_help_marks_inferred_root_and_explicit_intent():
+@pytest.mark.parametrize("styled", [False, True], ids=["plain", "styled"])
+def test_review_open_help_marks_inferred_root_and_explicit_intent(monkeypatch, styled):
+    from typer import rich_utils
+    try:
+        from typer._click.utils import strip_ansi
+    except ImportError:  # older Typer uses the installed Click
+        from click.utils import strip_ansi
+
+    # Inspect displayed help without treating ANSI styling as part of an option name.
+    monkeypatch.setattr(rich_utils, "FORCE_TERMINAL", styled)
+    monkeypatch.setattr(rich_utils, "MAX_WIDTH", 120)
+    monkeypatch.delenv("NO_COLOR", raising=False)
     command = LEAVES["review/open"]
     assert type(command).__name__ == "ReviewOpenCommand"
-    assert _arguments(command)[0].required is False
-    result = runner.invoke(app, ["review", "open", "--help"])
+    arguments = {p.name: p for p in _arguments(command)}
+    assert arguments["workspace_root"].required is False
+    assert arguments["target"].required is False
+    assert arguments["target"].default is None
+    root = next(p for p in command.params if p.name == "root")
+    assert "--root" in root.opts and "-C" in root.opts
+    result = runner.invoke(app, ["review", "open", "--help"], color=True)
     assert result.exit_code == 0, result.output
-    assert "workspace_root" in result.output
-    assert "target" in result.output and "--root" in result.output
+    display = strip_ansi(result.output)
+    assert (display != result.output) is styled
+    assert "workspace_root" in display
+    assert "target" in display and "--root" in display and "-C" in display

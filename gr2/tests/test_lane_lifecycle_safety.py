@@ -461,6 +461,7 @@ def test_bind_bound_lane_writes_a_bound_receipt_from_the_worktree(tmp_path: Path
     assert receipt == git_receipt and receipt.is_file()
     assert records.review_record_pointer_path(wt).read_text() == str(workspace_receipt) + "\n"
     assert not workspace_receipt.exists()
+    assert not (git_receipt.parent / "grip-review.publication.json").exists()
     data = _json.loads(receipt.read_text())
     assert data == {"repo": record.repo, "base": base, "head": head, "lane_kind": "bound"}
 

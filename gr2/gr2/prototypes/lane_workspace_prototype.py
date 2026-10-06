@@ -1169,8 +1169,10 @@ def bind_bound_lane(
     dirty tree (tracked OR untracked) is a hard refusal: the receipt promises the
     recorded head reconstructs the reviewed bytes, and drift breaks that promise.
 
-    On success it writes the ``(repo, base, head, lane_kind="bound")`` receipt at
-    its canonical workspace coordinate and publishes a per-worktree pointer.
+    On success it writes the ``(repo, base, head, lane_kind="bound")`` active
+    receipt in Git-resolved per-worktree metadata. The per-worktree pointer names
+    its workspace context coordinate, which need not contain a payload. An extant
+    workspace compatibility payload participates in explicit rebind publication.
 
     ``base`` is the pin the reviewed range is measured from. It MUST be a full
     40-hex commit that is an ANCESTOR of the worktree head — a non-hex string, a

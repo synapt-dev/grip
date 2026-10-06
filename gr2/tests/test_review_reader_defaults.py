@@ -45,6 +45,16 @@ def test_review_reader_selects_only_one_bind(two_member_ws, monkeypatch, tmp_pat
         result = make_cli_runner().invoke(app, ["review", verb, *args, "--json"])
         assert result.exit_code != 0
         assert "the only review bind" not in result.stderr
+    for target in (bind, bind[3:], bind[3:15]):
+        (nested / target).mkdir()
+        for args in ([target], ["-C", str(ws), target]):
+            result = make_cli_runner().invoke(app, ["review", verb, *args, "--json"])
+            assert result.exit_code == 0, result.output
+            assert json.loads(result.stdout) == json.loads(explicit)
+    (nested / "gr:not-a-bind").mkdir()
+    result = make_cli_runner().invoke(app, ["review", verb, "gr:not-a-bind", "--json"])
+    assert result.exit_code != 0 and "No review bind" in result.stderr
+    assert "the only review bind" not in result.stderr
     if verb == "show":
         actual = json.loads(explicit)
         assert len(actual["members"]) == 2

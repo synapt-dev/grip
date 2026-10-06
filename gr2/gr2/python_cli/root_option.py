@@ -15,6 +15,7 @@ and neither reads what a positional contains to decide anything about a root:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -142,8 +143,9 @@ class RootOptionalCommand(RootOptionCommand):
 class ReviewTargetCommand(RootOptionalCommand):
     """A review reader with an optional target and a workspace inferred from cwd.
 
-    Two words retain ROOT TARGET. One existing directory names ROOT, and one
-    other word names TARGET in the current workspace. With -C, the remaining
+    Two words retain ROOT TARGET. An explicit gr: target or bare hash retains
+    its target role even when a directory has that name. Otherwise one existing
+    directory names ROOT, and one other word names TARGET. With -C, the remaining
     word is TARGET. No target is chosen here: the reader refuses zero or several
     binds rather than choosing the most recent one.
     """
@@ -152,9 +154,9 @@ class ReviewTargetCommand(RootOptionalCommand):
         args = list(args)
         positions, root_value = self._scan(args)
         if root_value is not None:
-            if len(positions) > 1 or (positions and Path(args[positions[0]]).is_dir()):
+            if len(positions) > 1 or (positions and self._is_root_word(args[positions[0]])):
                 ctx.fail("the workspace root was given twice: as the first argument and with --root/-C")
-        elif len(positions) == 1 and not Path(args[positions[0]]).is_dir():
+        elif len(positions) == 1 and not self._is_root_word(args[positions[0]]):
             from .app import _is_workspace_root, _resolve_workspace_root
 
             found = _resolve_workspace_root()
@@ -162,6 +164,11 @@ class ReviewTargetCommand(RootOptionalCommand):
                 ctx.fail(f"no workspace at or above {found}; run this inside one, or name it with -C <root>")
             args.insert(positions[0], str(found))
         return super().parse_args(ctx, args)
+
+    @staticmethod
+    def _is_root_word(word: str) -> bool:
+        target_spelled = word.startswith("gr:") or re.fullmatch(r"[0-9a-fA-F]{4,64}", word) is not None
+        return not target_spelled and Path(word).is_dir()
 
 
 class ContextCommand(RootOptionalCommand):

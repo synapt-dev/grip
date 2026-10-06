@@ -7,8 +7,8 @@ Three command classes (`gr2/python_cli/root_option.py`):
   * `RootOptionCommand` (8 verbs, each with an OPTIONAL TRAILING positional): `--root/-C` only. One fewer
     word has two readings there (`pr status unit lane` is "root omitted" and "root = unit"), so the bare
     form is never inferred, and an error that came from reading the first word as the root names `-C`.
-  * `ReviewTargetCommand` (2 verbs): root and target can both be omitted. One directory names the root,
-    one other word names the target. Selection of a sole bind is checked by the reader, not this parser.
+  * `ReviewTargetCommand` (2 verbs): root and target can both be omitted. Explicit gr: targets and bare
+    hashes retain their target role before directory classification. Selection is checked by the reader.
 
 Rows parse each verb's real command (`make_context`) without running it, so they cover every verb in
 both lists; a few drive the real CLI. Each row names what must make it go red:
@@ -290,6 +290,24 @@ def test_review_reader_root_and_target_grammar(verb, ws, at, tmp_path) -> None:
     for args in ([], [target]):
         with pytest.raises(UsageError, match="no workspace at or above"):
             _parse(verb, args, tmp_path)
+
+
+@pytest.mark.parametrize("verb", REVIEW_TARGETS)
+def test_review_reader_explicit_id_keeps_its_role_despite_a_directory(verb, ws, at, tmp_path) -> None:
+    inside = ws / "sub" / "deeper"
+    at(inside)
+    for target in ("gr:" + "a" * 40, "a" * 40, "a" * 12, "gr:not-a-bind"):
+        (inside / target).mkdir()
+        for args in ([target], ["-C", str(ws), target]):
+            params = _parse(verb, args, tmp_path)
+            assert _root(params) == ws.resolve() and params["commit"] == target
+    # A hash-named root remains selectable by an explicit root option or path.
+    hash_root = inside / ("b" * 40)
+    (hash_root / ".grip").mkdir(parents=True)
+    (hash_root / ".grip/workspace_spec.toml").write_text("schema_version = 1\n")
+    for args in (["-C", str(hash_root)], ["./" + hash_root.name]):
+        params = _parse(verb, args, tmp_path)
+        assert _root(params) == hash_root.resolve() and params["commit"] is None
 
 
 def test_a_stray_dash_c_inside_a_variadic_command_is_the_commands_not_ours(ws, at) -> None:

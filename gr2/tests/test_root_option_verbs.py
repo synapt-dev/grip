@@ -1,12 +1,14 @@
 """The workspace root as ``--root/-C`` on every verb that took it as a leading positional, and, for the
 verbs with a FIXED number of positionals, as a word that may be left out.
 
-Two command classes (`gr2/python_cli/root_option.py`):
-  * `RootOptionalCommand` (23 verbs): `--root/-C`, and one fewer positional than the verb requires means
+Three command classes (`gr2/python_cli/root_option.py`):
+  * `RootOptionalCommand` (21 verbs): `--root/-C`, and one fewer positional than the verb requires means
     the root is the missing one: it is put in front from `--root/-C` or the nearest workspace above cwd.
   * `RootOptionCommand` (8 verbs, each with an OPTIONAL TRAILING positional): `--root/-C` only. One fewer
     word has two readings there (`pr status unit lane` is "root omitted" and "root = unit"), so the bare
     form is never inferred, and an error that came from reading the first word as the root names `-C`.
+  * `ReviewTargetCommand` (2 verbs): root and target can both be omitted. Explicit gr: targets and bare
+    hashes retain their target role before directory classification. Selection is checked by the reader.
 
 Rows parse each verb's real command (`make_context`) without running it, so they cover every verb in
 both lists; a few drive the real CLI. Each row names what must make it go red:
@@ -22,6 +24,7 @@ both lists; a few drive the real CLI. Each row names what must make it go red:
 from __future__ import annotations
 
 from pathlib import Path
+import os
 
 import pytest
 import typer
@@ -35,12 +38,14 @@ FIXED_ARITY = [  # RootOptionalCommand: the 16, and ContextCommand: the 6 above
     "lane/create", "lane/enter", "lane/resolve", "lane/exit", "lane/current", "lane/show", "lane/bind",
     "lane/lease/acquire", "lane/lease/release", "lane/lease/show",
     "review/check", "review/requirements", "review/checkout-pr", "review/create-project", "review/open-project",
-    "review/exit-gr", "review/open-gr", "review/verify", "review/show",
+    "review/exit-gr", "review/open-gr",
     "hooks/run", "config/restore",
 ]
 OPTIONAL_TRAILING = [  # RootOptionCommand: the 8
     "pr/create", "pr/status", "pr/checks", "pr/view", "pr/merge", "exec/status", "exec/run", "review/open",
 ]
+REVIEW_TARGETS = ["review/show", "review/verify"]
+ALL_ROOT_VERBS = [*FIXED_ARITY, *OPTIONAL_TRAILING, *REVIEW_TARGETS]
 UsageError = root_option._usage_error()
 runner = CliRunner()
 
@@ -116,15 +121,15 @@ def at(monkeypatch):
     return monkeypatch.chdir
 
 
-def test_the_partition_is_exactly_the_23_and_the_8_and_nothing_else_takes_a_leading_root() -> None:
+def test_the_partition_accounts_for_every_leading_root_command() -> None:
     """Every verb whose first positional is the workspace root is in exactly one list, by class. A NEW verb
     with a leading root fails here until it is placed in one of them, on purpose."""
     leading = sorted(
         name for name, c in LEAVES.items()
         if _arguments(c) and _arguments(c)[0].name == "workspace_root"
         and name.split("/")[0] not in {"workspace", "spec", "sync", "store", "grip", "plan", "apply", "repo/status"}
-        and type(c).__name__ in {"RootOptionalCommand", "RootOptionCommand", "TyperCommand", "ContextCommand"}
-        and (_arguments(c)[0].required or type(c).__name__ in {"RootOptionalCommand", "ContextCommand"})
+        and type(c).__name__ in {"RootOptionalCommand", "RootOptionCommand", "TyperCommand", "ContextCommand", "ReviewTargetCommand"}
+        and (_arguments(c)[0].required or type(c).__name__ in {"RootOptionalCommand", "ContextCommand", "ReviewTargetCommand"})
     )
     by_class = {
         "RootOptionalCommand": sorted(
@@ -135,14 +140,15 @@ def test_the_partition_is_exactly_the_23_and_the_8_and_nothing_else_takes_a_lead
     assert by_class["RootOptionalCommand"] == sorted(FIXED_ARITY)
     assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ContextCommand") == sorted(RESOLVED)
     assert by_class["RootOptionCommand"] == sorted(OPTIONAL_TRAILING)
-    assert [n for n in leading if n not in FIXED_ARITY and n not in OPTIONAL_TRAILING] == [], (
+    assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ReviewTargetCommand") == sorted(REVIEW_TARGETS)
+    assert [n for n in leading if n not in ALL_ROOT_VERBS] == [], (
         "a verb takes the workspace root as a required leading positional and is in neither class"
     )
 
 
-def test_the_8_are_exactly_the_verbs_with_an_optional_trailing_positional() -> None:
+def test_fixed_arity_and_explicit_root_groups_retain_their_positional_contract() -> None:
     """WHY the 8 are not inferred: each has an optional positional after the required ones, so one fewer
-    word has two readings. The 23 have none, so counting is exact for them."""
+    word has two readings. The fixed-arity group has none, so counting is exact for it."""
     for verb in FIXED_ARITY:
         assert all(p.required or p is _arguments(LEAVES[verb])[0] for p in _arguments(LEAVES[verb])), verb
     for verb in OPTIONAL_TRAILING:
@@ -171,14 +177,14 @@ def test_a_bare_call_outside_any_workspace_is_refused_by_name(verb, tmp_path, at
     assert "no workspace at or above" in str(exc.value.format_message()) and "-C <root>" in exc.value.format_message()
 
 
-@pytest.mark.parametrize("verb", [*FIXED_ARITY, *OPTIONAL_TRAILING])
+@pytest.mark.parametrize("verb", ALL_ROOT_VERBS)
 def test_the_explicit_leading_root_is_unchanged(verb, ws, tmp_path, at) -> None:
     at(tmp_path)  # a directory that is not the workspace: the argument wins
     params = _parse(verb, [str(ws), *_words(LEAVES[verb], tmp_path, with_optional=True)], tmp_path)
     assert _root(params) == ws.resolve()
 
 
-@pytest.mark.parametrize("verb", [*FIXED_ARITY, *OPTIONAL_TRAILING])
+@pytest.mark.parametrize("verb", ALL_ROOT_VERBS)
 @pytest.mark.parametrize("form", ["-C", "--root", "--root=", "-Cglued"])
 def test_root_option_names_the_root_before_the_words_or_after_them(verb, form, ws, tmp_path, at) -> None:
     """From a directory that is NOT the workspace, `-C ROOT words`, `words -C ROOT`, `--root=ROOT words` and
@@ -192,7 +198,7 @@ def test_root_option_names_the_root_before_the_words_or_after_them(verb, form, w
         assert _root(_parse(verb, args, tmp_path)) == ws.resolve()
 
 
-@pytest.mark.parametrize("verb", [*FIXED_ARITY, *OPTIONAL_TRAILING])
+@pytest.mark.parametrize("verb", ALL_ROOT_VERBS)
 def test_a_root_given_twice_is_refused(verb, ws, tmp_path, at) -> None:
     """With every word present. At fewer words a verb that has an optional trailing positional cannot tell
     `verb ROOT unit -C ROOT` from `verb unit lane -C ROOT`, which is why the 8 are not inferred."""
@@ -262,11 +268,48 @@ def test_the_8_do_not_judge_a_root_that_is_a_directory(verb, tmp_path, at) -> No
     assert _root(_parse(verb, [str(plain), *_words(LEAVES[verb], tmp_path, with_optional=False)], tmp_path)) == plain.resolve()
 
 
-def test_the_root_is_optional_in_the_usage_of_the_23_and_required_in_the_8() -> None:
-    for verb in FIXED_ARITY:
+def test_root_usage_matches_the_inferred_and_explicit_groups() -> None:
+    for verb in [*FIXED_ARITY, *REVIEW_TARGETS]:
         assert _arguments(LEAVES[verb])[0].required is False, verb
     for verb in OPTIONAL_TRAILING:
         assert _arguments(LEAVES[verb])[0].required is True, verb
+
+
+@pytest.mark.parametrize("verb", REVIEW_TARGETS)
+def test_review_reader_root_and_target_grammar(verb, ws, at, tmp_path) -> None:
+    at(ws / "sub" / "deeper")
+    target = "gr:" + "a" * 40
+    for args in ([], [str(ws)], ["-C", str(ws)]):
+        params = _parse(verb, args, tmp_path)
+        assert _root(params) == ws.resolve() and params["commit"] is None
+    for args in ([target], [str(ws), target], ["-C", str(ws), target], [target, "-C", str(ws)]):
+        params = _parse(verb, args, tmp_path)
+        assert _root(params) == ws.resolve() and params["commit"] == target
+    with pytest.raises(UsageError, match="given twice"):
+        _parse(verb, [str(ws), "-C", str(ws)], tmp_path)
+    at(tmp_path)
+    for args in ([], [target]):
+        with pytest.raises(UsageError, match="no workspace at or above"):
+            _parse(verb, args, tmp_path)
+
+
+@pytest.mark.parametrize("verb", REVIEW_TARGETS)
+def test_review_reader_explicit_id_keeps_its_role_despite_a_directory(verb, ws, at, tmp_path) -> None:
+    inside = ws / "sub" / "deeper"
+    at(inside)
+    for target in ("gr:" + "a" * 40, "a" * 40, "a" * 12, "gr:not-a-bind"):
+        if ":" not in target or os.name != "nt":
+            (inside / target).mkdir()
+        for args in ([target], ["-C", str(ws), target]):
+            params = _parse(verb, args, tmp_path)
+            assert _root(params) == ws.resolve() and params["commit"] == target
+    # A hash-named root remains selectable by an explicit root option or path.
+    hash_root = inside / ("b" * 40)
+    (hash_root / ".grip").mkdir(parents=True)
+    (hash_root / ".grip/workspace_spec.toml").write_text("schema_version = 1\n")
+    for args in (["-C", str(hash_root)], ["./" + hash_root.name]):
+        params = _parse(verb, args, tmp_path)
+        assert _root(params) == hash_root.resolve() and params["commit"] is None
 
 
 def test_a_stray_dash_c_inside_a_variadic_command_is_the_commands_not_ours(ws, at) -> None:

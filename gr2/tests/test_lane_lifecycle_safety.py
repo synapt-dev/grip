@@ -456,9 +456,12 @@ def test_bind_bound_lane_writes_a_bound_receipt_from_the_worktree(tmp_path: Path
     assert record.base == base
     assert record.repo.startswith("local:")  # no GitHub origin -> local identity under --allow-local
     receipt = records.review_record_paths(workspace, "atlas", "bound", "app", wt).current
-    assert not records.legacy_review_record_path(wt).exists()
-    assert records.review_record_pointer_path(wt).read_text().strip() == str(receipt)
-    assert receipt.is_file()
+    git_receipt = Path(_git(wt, "rev-parse", "--path-format=absolute", "--git-path", "grip-review.json").stdout.strip())
+    workspace_receipt = workspace / ".grip" / "state" / "reviews" / "atlas" / "bound" / "app.json"
+    assert receipt == git_receipt and receipt.is_file()
+    assert records.review_record_pointer_path(wt).read_text() == str(workspace_receipt) + "\n"
+    assert not workspace_receipt.exists()
+    assert not (git_receipt.parent / "grip-review.json.publication.json").exists()
     data = _json.loads(receipt.read_text())
     assert data == {"repo": record.repo, "base": base, "head": head, "lane_kind": "bound"}
 

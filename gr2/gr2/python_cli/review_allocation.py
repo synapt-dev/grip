@@ -69,7 +69,8 @@ def record_created_allocation(workspace: Path, target: Path, owner_unit: str,
     return doc
 
 
-def require_allocation(workspace: Path, target: Path, *, owner_unit: str | None = None) -> dict:
+def _read_allocation(workspace: Path, target: Path, *, owner_unit: str | None,
+                     check_head: bool) -> dict:
     if target.is_symlink():
         raise ReviewAllocationError("review target is a symlink")
     workspace, target = workspace.resolve(), target.resolve()
@@ -99,9 +100,10 @@ def require_allocation(workspace: Path, target: Path, *, owner_unit: str | None 
                 gd = member / ".git"
                 if not gd.is_dir() or gd.is_symlink() or _physical(member) != item["identity"] or _physical(gd) != item["git_identity"]:
                     raise ValueError("allocated Git identity unavailable or changed; operator recovery required")
-                head = git(member, "rev-parse", "HEAD")
-                if head.returncode or head.stdout.strip() != item["head"]:
-                    raise ValueError("allocated member HEAD changed")
+                if check_head:
+                    head = git(member, "rev-parse", "HEAD")
+                    if head.returncode or head.stdout.strip() != item["head"]:
+                        raise ValueError("allocated member HEAD changed")
         elif doc["state"] != "closing":
             raise ValueError("open allocation target is absent")
         return doc
@@ -111,6 +113,22 @@ def require_allocation(workspace: Path, target: Path, *, owner_unit: str | None 
             "For an existing managed project review use explicit legacy adoption. Otherwise save work/run "
             "artifacts and reopen into a newly allocated lane; unavailable identity requires operator recovery."
         ) from exc
+
+
+def require_allocation(workspace: Path, target: Path, *, owner_unit: str | None = None) -> dict:
+    """Validate disposal authority, including unchanged member HEADs."""
+    return _read_allocation(workspace, target, owner_unit=owner_unit, check_head=True)
+
+
+def require_member_relationship(workspace: Path, target: Path, owner: str,
+                                lane: str, member: Path) -> None:
+    """Validate physical project membership without granting disposal or pinning HEAD."""
+    doc = _read_allocation(workspace, target, owner_unit=owner, check_head=False)
+    if doc["lane_name"] != lane or doc["state"] != "open":
+        raise ReviewAllocationError("project review relationship is not active in this lane")
+    expected = str(member.relative_to(target))
+    if not any(item["path"] == expected for item in doc["members"]):
+        raise ReviewAllocationError("project allocation does not declare this member")
 
 
 
@@ -195,9 +213,11 @@ def adopt_legacy_project_allocation(workspace: Path, owner_unit: str, lane_name:
             selected = read_review_record_at(paths, notice=lambda _s: None)
             # Allocation is recovered from workspace-owned canonical evidence, not
             # a member-local legacy receipt that could be planted with the marker.
-            if selected is None or selected[1] != paths.current:
+            if selected is None or not paths.legacy.is_file() or paths.legacy.is_symlink():
                 raise ValueError("independent canonical safety evidence unavailable")
-            record = selected[0]
+            record = json.loads(paths.legacy.read_text())
+            if record != selected[0]:
+                raise ValueError("active safety differs from independent workspace evidence")
             if set(record) != {"repo", "base", "head", "lane_kind"} or record["lane_kind"] != kind:
                 raise ValueError("legacy workspace receipt schema/kind mismatch")
             expected_repo = canonical_source_identity(allowed[name], allow_local=True)

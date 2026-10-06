@@ -43,7 +43,9 @@ from .clone_exec import CloneExecutionError, IncompleteRemoval, rmtree_or_refuse
 from .gitops import ensure_lane_checkout
 from .review_records import (
     ReviewRecordLocationError,
+    ReviewRecordPaths,
     legacy_review_record_path,
+    _refuse_pending_publication,
     read_review_record,
     read_review_record_at,
     review_record_paths,
@@ -147,7 +149,7 @@ class ReviewRecord:
 def review_record_path(workspace_root: Path | str, owner_unit: str | None = None,
                        lane_name: str | None = None, member: str | None = None,
                        lane_repo_root: Path | str | None = None) -> Path:
-    """The workspace-owned review receipt for one exact lane member."""
+    """The Git-resolved safety receipt for one exact lane member."""
     if lane_repo_root is None:
         return legacy_review_record_path(workspace_root)
     return review_record_paths(workspace_root, owner_unit, lane_name, member, lane_repo_root).current
@@ -207,6 +209,7 @@ def open_review_lane(
     owner_unit: str | None = None,
     lane_name: str | None = None,
     member: str | None = None,
+    workspace_evidence: bool = False,
     echo: Echo = print,
 ) -> ReviewRecord:
     """Materialize the review lane at the expected head and record the triple.
@@ -298,7 +301,7 @@ def open_review_lane(
         echo(f"review lane (ephemeral): {lane_repo_root.resolve()}")
         record = ReviewRecord(repo=repo_identity, base=base_sha, head=expected_head_sha,
                               lane_kind=review_ephemeral.REVIEW_EPHEMERAL_KIND)
-        write_review_record(record_paths, record.to_dict())
+        write_review_record(record_paths, record.to_dict(), workspace_evidence=workspace_evidence)
         return record
     try:
         first_materialize = ensure_lane_checkout(
@@ -364,7 +367,7 @@ def open_review_lane(
     #    isolated clone pinned at the expected head, so the receipt is stamped
     #    ``materialized`` — reconstructible independently of any author worktree.
     record = ReviewRecord(repo=repo_identity, base=base_sha, head=expected_head_sha, lane_kind="materialized")
-    write_review_record(record_paths, record.to_dict())
+    write_review_record(record_paths, record.to_dict(), workspace_evidence=workspace_evidence)
     return record
 
 
@@ -439,12 +442,7 @@ def close_review_lane(
         try:
             # On interrupted removal Git metadata may be absent. Canonical
             # coordinates are still known, and the retained legacy path is fixed.
-            from .review_records import ReviewRecordPaths
-            if not (lane / ".git").exists():
-                coordinates = review_record_paths(workspace_root, owner_unit, lane_name, member, lane / ".close-absent")
-                paths = ReviewRecordPaths(coordinates.current, lane / ".git" / "grip-review.json", lane)
-            else:
-                paths = review_record_paths(workspace_root, owner_unit, lane_name, member, lane)
+            paths = review_record_paths(workspace_root, owner_unit, lane_name, member, lane)
             recovery = read_close_recovery(paths, lane, root)
         except (ReviewRecordLocationError, OSError) as exc:
             raise ReviewError(str(exc)) from exc
@@ -461,7 +459,12 @@ def close_review_lane(
     git_dir = lane / ".git"
     if owner_unit is None or lane_name is None or member is None:
         try:
-            record = json.loads(legacy_review_record_path(lane).read_text())
+            local_record = legacy_review_record_path(lane)
+            _refuse_pending_publication(ReviewRecordPaths(local_record, local_record, lane).publication_pending)
+        except (ReviewRecordLocationError, OSError) as exc:
+            raise ReviewError(str(exc)) from exc
+        try:
+            record = json.loads(local_record.read_text())
         except (OSError, json.JSONDecodeError, ReviewRecordLocationError):
             record = None
     else:

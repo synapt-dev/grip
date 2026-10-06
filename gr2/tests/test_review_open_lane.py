@@ -88,10 +88,11 @@ def review_world(tmp_path: Path):
     review_branch = "pr/7"
     head_sha = _seed_pr_head(source, review_branch, "pr work\n")
     base_sha = _run(source, "rev-parse", "main")
-    lane_root = tmp_path / "lane"
-    lane = lane_root / "repos" / "grip"
     workspace_root = tmp_path / "ws"
     workspace_root.mkdir()
+    from gr2.prototypes.lane_workspace_prototype import lane_dir
+    lane_root = lane_dir(workspace_root, "atlas", "review-7")
+    lane = lane_root / "repos" / "grip"
     return {
         "source": source,
         "review_branch": review_branch,
@@ -265,48 +266,31 @@ def _v6_receipt(world) -> Path:
             / "atlas" / "review-7" / "grip.json")
 
 
-def test_reopen_the_same_lane_name_finds_the_receipt_at_the_new_coordinate(review_world):
-    """Open, exit, and RE-OPEN the same lane name: the second open succeeds and the
-    receipt is found at the new coordinate.
-
-    RED until the record coordinate moves. The re-open itself already works on the
-    base tree; what is absent is the receipt at .grip/state/reviews/<owner>/<lane>/
-    <member>.json, because the base keeps it under state/lanes/<owner>/<lane>/review/.
-    """
-    _open(review_world)                      # open, then let the handle go (exit)
-    receipt = _v6_receipt(review_world)
-    assert receipt.is_file(), f"receipt absent at the v6 coordinate: {receipt}"
-    assert _new_record(review_world) == receipt, (
-        "the record-path helper and the literal v6 coordinate disagree"
-    )
-
-    again = _open(review_world)              # RE-OPEN the same lane name
-    assert isinstance(again, ReviewRecord)
-    assert again.head == review_world["head_sha"]
-    assert receipt.is_file(), "re-open lost the receipt at the v6 coordinate"
-
-
-def test_open_writes_only_the_workspace_record_not_member_git(review_world):
-    """The member .git holds ONLY grip-review.pointer, and its content is exactly
-    the receipt path plus one newline -- never a copy of the receipt."""
+def test_reopen_the_same_lane_name_finds_the_git_safety_record(review_world):
     _open(review_world)
-    record = _new_record(review_world)
-    assert record.is_file()
-    assert record == _v6_receipt(review_world)
+    receipt = review_world["lane"] / ".git" / "grip-review.json"
+    assert receipt.is_file() and _new_record(review_world) == receipt
+    previous = receipt.read_bytes()
+    assert not _v6_receipt(review_world).exists()
+    again = _open(review_world)
+    assert isinstance(again, ReviewRecord) and again.head == review_world["head_sha"]
+    assert receipt.read_bytes() == previous
+    assert not _v6_receipt(review_world).exists()
 
+
+def test_open_writes_git_safety_and_workspace_context_pointer(review_world):
+    _open(review_world)
     git_dir = review_world["lane"] / ".git"
-    strays = sorted(p.name for p in git_dir.glob("grip-*"))
-    assert strays == ["grip-review.pointer"], (
-        f"member .git must hold only grip-review.pointer, found {strays}"
-    )
+    record = _new_record(review_world)
+    assert record == git_dir / "grip-review.json" and record.is_file()
+    context = _v6_receipt(review_world)
+    assert not context.exists(), "ordinary safety does not require a phantom workspace payload"
+    assert sorted(p.name for p in git_dir.glob("grip-*")) == ["grip-review.json", "grip-review.pointer"]
     body = (git_dir / "grip-review.pointer").read_text()
-    assert body == str(record) + "\n", (
-        f"pointer must be exactly the receipt path plus one newline, got {body!r}"
-    )
-    assert not body.lstrip().startswith("{"), "pointer must not carry receipt content"
-    assert not (git_dir / "grip-review.json").exists(), (
-        "no JSON receipt may live in the member .git"
-    )
+    assert body == str(context) + "\n"
+    assert not body.lstrip().startswith("{")
+    paths = review_record_paths(review_world["workspace_root"], "atlas", "review-7", "grip", review_world["lane"])
+    assert read_review_record(paths) == json.loads(record.read_bytes())
 
 
 def test_open_refuses_missing_lane_coordinate_before_materializing(review_world):

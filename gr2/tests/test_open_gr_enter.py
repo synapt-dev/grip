@@ -106,6 +106,12 @@ def test_open_gr_enter_materializes_pins_enters_and_writes_a_receipt(tmp_path: P
         prior_cwd=prior_cwd, allow_local=True,
     )
     assert outcome.status == "opened"
+    current = lanes.load_current_lane_doc(workspace, "atlas")["current"]
+    assert current["repo_paths"] == {
+        name: str(workspace / "reviews" / "atlas" / "review-m1" / "repos" / name)
+        for name in sources
+    }
+    assert lanes.load_lane_doc(workspace, "atlas", "review-m1")["checkout_root"] == "reviews/atlas/review-m1"
     # the three pinned heads are materialized
     for name in sources:
         assert (outcome.review_root / "repos" / name / ".git").is_dir()
@@ -170,6 +176,12 @@ def test_open_gr_enter_resolves_sources_from_the_recorded_remote(tmp_path: Path)
         prior_cwd=prior_cwd, allow_local=True, staging_dir=tmp_path / "staging",
     )
     assert outcome.status == "opened"
+    current = lanes.load_current_lane_doc(workspace, "atlas")["current"]
+    assert current["repo_paths"] == {
+        name: str(workspace / "reviews" / "atlas" / "review-m1" / "repos" / name)
+        for name in sources
+    }
+    assert lanes.load_lane_doc(workspace, "atlas", "review-m1")["checkout_root"] == "reviews/atlas/review-m1"
     for name in sources:
         assert (outcome.review_root / "repos" / name / ".git").is_dir()
         # each materialized head equals the pinned head, reached via the recorded remote

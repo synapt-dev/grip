@@ -61,13 +61,16 @@ def resolve_lane_repos(workspace_root: Path, owner_unit: str, lane_name: str) ->
     workspace_root = Path(workspace_root).resolve()
     doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
     fork_base = doc.get("fork_base", {})
-    spec = lane_proto.load_workspace_spec(workspace_root)
-    spec_by_name = {r.get("name"): r for r in spec.get("repos", [])}
-    lane_root = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
+    native_members = lane_proto.native_lane_members(workspace_root, doc)
+    if native_members is not None:
+        spec_by_name = {m["name"]: {"path": m["path"], "url": m["remote"]} for m in native_members}
+    else:
+        spec = lane_proto.load_workspace_spec(workspace_root)
+        spec_by_name = {r.get("name"): r for r in spec.get("repos", [])}
 
     resolved: list[dict[str, str]] = []
     for key in doc.get("repos", []):
-        repo_root = lane_root / "repos" / key
+        repo_root = lane_proto.lane_repo_root(workspace_root, owner_unit, lane_name, key)
         if not (repo_root / ".git").exists():
             raise WorkspaceSnapshotError(f"repo {key} is not materialized at {repo_root}")
         if repo_dirty(repo_root):

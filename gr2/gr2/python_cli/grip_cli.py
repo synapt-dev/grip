@@ -20,7 +20,7 @@ from . import config as config_mod
 from . import gitops
 from . import grip as grip_mod
 from .gitops import git, repo_dirty
-from .layout import MOVED_MARKER
+from .layout import MOVED_MARKER, grip_dir
 from .root_option import ROOT_OPTION, RootOptionalCommand
 from .spec_apply import unit_member_path, validate_grip_toml
 from .workspace_guidance import missing_gr2_workspace_guidance
@@ -400,8 +400,10 @@ def _refuse_symlinked_members(root: Path, members: list[dict[str, str]]) -> None
             )
 
 
-def _native_members(root: Path) -> list[dict[str, str]]:
-    data = _grip_document(root)
+def _native_members(root: Path, revision: str | None = None) -> list[dict[str, str]]:
+    # A selected workspace commit owns the whole document, not only its pins.
+    data = (_grip_document(root) if revision is None else
+            tomllib.loads(_store_git(root, "show", f"{revision}:grip.toml").stdout))
     members = data.get("members", [])
     if not isinstance(members, list) or not members:
         raise NativeStoreRefusal("grip.toml has no members; run store init against a root that has them", 4)
@@ -412,6 +414,13 @@ def _native_members(root: Path) -> list[dict[str, str]]:
         if not isinstance(remotes, dict) or not isinstance(remotes.get("origin"), str):
             raise NativeStoreRefusal(f"{item.get('name', 'member')} has no origin remote", 4)
         item["remote"] = remotes["origin"]
+        if revision is not None:
+            item["path"] = _normalise_member_path(root, str(item["path"]))
+            if any(previous["name"] == item["name"] or previous["path"] == item["path"] for previous in result):
+                raise NativeStoreRefusal("selected workspace commit has duplicate member names or paths", 4)
+            link = _store_git(root, "ls-tree", revision, "--", item["path"]).stdout.split()
+            if len(link) < 3 or link[0] != "160000" or link[2] != item["pin"]:
+                raise NativeStoreRefusal(f"{item['name']} selected document pin disagrees with its gitlink", 4)
         result.append(item)
     return result
 
@@ -852,10 +861,6 @@ def _refuse_init_disagreement(root: Path, members: list[dict[str, str]] | None =
             )
 
 
-# Written as the first line of an allow-list THIS VERB generates, so `store commit` can tell
-# a gr2-generated `.gitignore` from an adopted root's own file without guessing by content.
-# `store init` never edits an adopted root's `.gitignore` (section 3a), and commit must not
-# stage a file the owner wrote.
 STORE_INCOMPLETE_PREFIX = "cannot complete this store verb: "
 STORE_COMMIT_UNCHANGED = "Nothing to record: every pin already matches the root's last commit."
 """Section 5's exit table has no room for an internal error.
@@ -869,40 +874,76 @@ a caller reading the code alone cannot. Named as a constant so the ten handlers 
 spelling, and named in the change description so a reader can hold the contract.
 """
 
-GITIGNORE_MARKER = "# gr2 store allow-list (written by store init; an adopted root keeps its own)"
+def _compile_workspace_gitignore(declaration: str) -> str:
+    from .gitinclude import compile_gitignore
+
+    generated, notices = compile_gitignore(declaration)
+    if notices:
+        detail = "; ".join(f"{n.line}: {n.reason}" for n in notices)
+        raise NativeStoreRefusal(f".gitinclude cannot be compiled: {detail}", 4)
+    return generated
+
+
+def _regenerate_workspace_gitignore(root: Path) -> bool:
+    declaration = root / ".gitinclude"
+    if declaration.is_symlink():
+        raise NativeStoreRefusal(".gitinclude must be a regular file, not a symlink", 4)
+    if declaration.exists() and not declaration.is_file():
+        raise NativeStoreRefusal(".gitinclude must be a regular file", 4)
+    if not declaration.is_file():
+        return False  # Historical adopted roots keep their owner's file.
+    _validate_workspace_ignore_paths(root)
+    generated = _compile_workspace_gitignore(declaration.read_text(encoding="utf-8"))
+    _publish_workspace_gitignore(root, generated)
+    return True
+
+
+def _validate_workspace_ignore_paths(root: Path) -> None:
+    for name in (".gitinclude", ".gitignore"):
+        path = root / name
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise NativeStoreRefusal(f"{name} must be a regular file, not a symlink or directory", 4)
+    tracked = _store_git(root, "ls-files", "--", ".gitignore").stdout
+    if tracked:
+        raise NativeStoreRefusal(".gitignore is tracked; preserve the owner's file and resolve the declaration conflict before generation", 4)
+
+
+def _publish_workspace_gitignore(root: Path, generated: str) -> None:
+    """Replace generated output without opening an existing owner path."""
+    import os
+    import stat
+    import tempfile
+
+    _validate_workspace_ignore_paths(root)
+    target = root / ".gitignore"
+    mode = stat.S_IMODE(target.stat().st_mode) if target.exists() else 0o644
+    fd, temporary = tempfile.mkstemp(prefix=".gitignore-", dir=root)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(generated)
+        os.chmod(temporary, mode)
+        os.replace(temporary, target)
+    finally:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass  # Cleanup cannot replace a primary write/replace failure.
 
 
 def _write_gitignore(root: Path, members: list[dict[str, str]]) -> None:
-    """Section 3a's allow-list, written ONLY when `store init` creates the root repo.
-
-    A gr1 root holds venvs, scratch and logs beside its members, so without this the root's
-    `git status` is noise and someone eventually commits a venv (measured 2026-09-28: a
-    fresh init left `?? alpha/` for the whole member checkout). An ADOPTED root is never
-    touched -- the caller decides, not this function.
-
-    The shape is `/*` (ignore everything), then the two files the root exists to carry, then
-    one un-ignore per member. A nested member path also needs each ancestor directory
-    un-ignored and its other contents re-ignored, or `/*` swallows the way down:
-
-        !/reference/
-        /reference/*
-        !/reference/mem0
-    """
-    lines = [GITIGNORE_MARKER, "/*", "!/.gitignore", "!/grip.toml"]
-    for member in members:
-        parts = [part for part in member["path"].split("/") if part]
-        for depth in range(1, len(parts)):
-            prefix = "/" + "/".join(parts[:depth]) + "/"
-            lines.append(f"!{prefix}")
-            lines.append(f"{prefix}*")
-        lines.append("!/" + "/".join(parts))
-    root.joinpath(".gitignore").write_text("\n".join(lines) + "\n")
+    """Seed the inclusion declaration, then use the existing compiler."""
+    declaration = root / ".gitinclude"
+    _validate_workspace_ignore_paths(root)
+    if not declaration.exists():
+        declaration.write_text("grip.toml\n" + "".join(f"{m['path']}\n" for m in members), encoding="utf-8")
+    _regenerate_workspace_gitignore(root)
 
 
 @_refuses_moved_workspace
 def _native_store_init(root: Path, member_paths: list[str] | None = None) -> None:
     if (root / ".git").exists() and (root / "grip.toml").exists():
         _refuse_init_disagreement(root)
+        _regenerate_workspace_gitignore(root)
         return
     # ⚠ A STORE ROOT MUST BE ITS OWN REPO. Measured 2026-09-28: before this check, `store
     # init` inside another repo's worktree returned 0 and created a NESTED repo, so the
@@ -922,8 +963,8 @@ def _native_store_init(root: Path, member_paths: list[str] | None = None) -> Non
     members = _discover_members(root, declared=member_paths)
     if not members:
         raise NativeStoreRefusal("no sibling git repositories found to store", 4)
-    # Section 3a: the allow-list is written ONLY when init CREATES the root repo. An adopted
-    # root keeps whatever rule its owner wrote (break_12 asserts byte-identical).
+    # New roots record .gitinclude. Adopted roots without that declaration
+    # retain their owner's ignore file and historical index.
     created_repo = not (root / ".git").exists()
     # ⚠ PIN THE ROOT BRANCH. A bare `git init` takes its initial branch from the ambient
     # git configuration, so the same workspace produced `main` on a host whose system
@@ -941,6 +982,8 @@ def _native_store_init(root: Path, member_paths: list[str] | None = None) -> Non
     _write_native_members(root, members)
     if created_repo:
         _write_gitignore(root, members)
+    else:
+        _regenerate_workspace_gitignore(root)
     # gr2's per-desk state lives under `.grip/` and is never tracked. An adopted root keeps its
     # owner's `.gitignore`, so the root's own `.git/info/exclude` carries the line (local to the clone).
     grip_mod.exclude_grip_state(root)
@@ -1051,13 +1094,27 @@ def _native_store_commit(root: Path, message: str) -> bool:
         head = _store_git(path, "rev-parse", "HEAD").stdout.strip()
         _member_coverage(root, member, head, claimed)
         changed.append({**member, "pin": head})
+    has_declaration = _regenerate_workspace_gitignore(root)
+    if has_declaration:
+        from .gitinclude import path_is_included
+        declaration = (root / ".gitinclude").read_text(encoding="utf-8")
+        # Ignore rules do not constrain already staged files or cacheinfo writes.
+        # Refuse excluded index entries without clearing the author's index.
+        indexed = _store_git(root, "ls-files", "-z").stdout.split("\0")
+        head = _store_git(root, "rev-parse", "--verify", "HEAD", check=False)
+        committed = set(_store_git(root, "ls-tree", "-r", "--name-only", "-z", "HEAD").stdout.split("\0")) if head.returncode == 0 else set()
+        for path in dict.fromkeys(["grip.toml", *[m["path"] for m in changed], *filter(None, indexed)]):
+            if not path_is_included(declaration, path):
+                raise NativeStoreRefusal(f"{path} is not included by .gitinclude; update the declaration before store commit", 4)
+            ignored = _store_git(root, "check-ignore", "--no-index", "--", path, check=False)
+            if ignored.returncode == 0 and path not in committed:
+                raise NativeStoreRefusal(f"{path} is ignored by Git; resolve its ignore rule before store commit", 4)
+            if ignored.returncode not in (0, 1):
+                raise NativeStoreRefusal(f"cannot measure .gitinclude coverage for {path}: {_git_detail(ignored)}", 5)
     _write_native_members(root, changed)
     _store_git(root, "add", "grip.toml")
-    # The generated allow-list is TRACKED (section 3: ".gitignore | tracked, only when init
-    # created the repo"). Staged only when it is ours, proved by the marker line.
-    allow_list = root / ".gitignore"
-    if allow_list.is_file() and allow_list.read_text().splitlines()[:1] == [GITIGNORE_MARKER]:
-        _store_git(root, "add", ".gitignore")
+    if has_declaration:
+        _store_git(root, "add", ".gitinclude")
     for member in changed:
         _store_git(root, "update-index", "--add", "--cacheinfo", f"160000,{member['pin']},{member['path']}")
     # NOTHING STAGED IS A NO-OP, NOT A FAILURE. When every pin already equals the
@@ -1241,78 +1298,100 @@ def _native_store_checkout(root: Path, revision: str) -> tuple[str, list[dict[st
     "fatal: invalid object name 'HEAD~1'". A name that means one thing and then another is
     the same class as a control that answers a different question than the one asked.
     """
-    members = _native_members(root)
-    # PHASE ONE'S OWN RESULT, built before anything is written: each member with the working root
-    # it resolved to. The loop below refuses on anything knowable now, and because nothing has been
-    # written yet, every refusal it raises leaves the root and every member byte-identical.
-    resolved: list[tuple[dict[str, str], Path]] = []
-    for member in members:
-        # THE WORKING ROOT, and the dirty probe is the first place it matters: probing a
-        # directory that holds no checkout either fails on a path the user can see is not
-        # the member, or -- if something else is there -- asks about a tree that is not
-        # this member's. Both answers are about the wrong subject.
-        path = _member_working_root_or_refuse(root, members, member)
-        if _store_git(path, "status", "--porcelain").stdout.strip():
-            raise NativeStoreRefusal(f"{member['name']} is dirty; commit or stash changes first", 3)
-        resolved.append((member, path))
-    # Exit 5 rather than 2 for an unresolvable name: 2 is the argument-parser's code in this
-    # group, and this is the verb failing to MEASURE the thing the caller named. Named here
-    # because it is a judgement call rather than a row the design states -- the readers get
-    # to attack it.
-    target = _store_git(root, "rev-parse", f"{revision}^{{commit}}", check=False)
+    target = _store_git(root, "rev-parse", "--verify", f"{revision}^{{commit}}", check=False)
     if target.returncode:
         raise NativeStoreRefusal(
             f"{revision} is not a root commit this store can resolve; git says: {_git_detail(target)}", 5
         )
     sha = target.stdout.strip()
-    # ⚠ THE PINS ARE RESOLVED HERE, IN PHASE ONE, AND NOT AFTER THE DETACH. `_native_members_at`
-    # keys the snapshot by the member names AS RECORDED AT THAT REVISION, so a member renamed since
-    # then has no pin there -- and this lookup used to happen AFTER `checkout --detach`, which meant
-    # the KeyError it raised left the ROOT DETACHED AT THE TARGET while every member stayed behind.
-    # The caller got exit 1 with empty stdout and empty stderr, and the next verb then failed too.
-    # Resolving first makes every refusal below free: nothing has been written yet, so the root and
-    # every member are still exactly where the caller left them.
-    pins = _native_members_at(root, sha)
-    planned: list[tuple[str, Path, str]] = []
-    for member, path in resolved:
-        if member["name"] not in pins:
-            raise NativeStoreRefusal(
-                f"{member['name']} has no pin in the snapshot at {sha[:12]}: the member was renamed "
-                f"after that revision, so the snapshot does not carry the name it now declares. "
-                f"Nothing has been moved -- the root and every member are as they were.",
-                4,
-            )
-        planned.append((member["name"], path, pins[member["name"]]))
+    members = _native_members(root, sha)
+    planned: list[tuple[dict[str, str], Path, bool]] = []
+    for member in members:
+        if _url_has_credentials(member["remote"]):
+            raise _credential_refusal(member["name"])
+        # Selected C owns the physical path. Legacy PATH-then-NAME fallback
+        # remains for ambient readers, but must not redirect this operation.
+        path = root / member["path"]
+        exists = (path / ".git").exists()
+        if exists:
+            top = _store_git(path, "rev-parse", "--show-toplevel", check=False)
+            if top.returncode or Path(top.stdout.strip()).resolve() != path.resolve():
+                raise NativeStoreRefusal(f"{member['name']} selected path {path} is not its own checkout", 5)
+            if _store_git(path, "status", "--porcelain").stdout.strip():
+                raise NativeStoreRefusal(f"{member['name']} is dirty; commit or stash changes first", 3)
+        elif path.exists() and any(path.iterdir()):
+            raise NativeStoreRefusal(f"{member['name']} path {path} is not an empty checkout placeholder", 3)
+        planned.append((member, path, exists))
 
-    # ---------------------------------------------------------------- PHASE TWO: this mutates.
-    # Phase one above covers everything knowable before the first write. This part does not, and
-    # cannot: a git error on the third member still leaves the earlier ones moved. A rollback would
-    # be a SECOND mutation that can itself fail halfway -- the same class as the half-applied state
-    # it would repair -- so the requirement here is only that the failure NAMES the state.
-    #
-    # ⚠ THE WORKING ROOT IS CARRIED FROM PHASE ONE, AND THAT IS DELIBERATE, because this verb used
-    # to RE-RESOLVE it here and its comment said why: "`_native_members_at` and the detach both move
-    # history, and a path cached before the root was detached is a second answer to a question that
-    # was already answered". The detach is what that guarded against -- and the phase split removes
-    # the hazard rather than moving it. The pins are now read BEFORE anything moves, so no path is
-    # resolved across a detach: the root's movement does not move the member DIRECTORIES the
-    # resolution reads, which is why a re-resolution could not be made to differ from this one.
+    include = _store_git(root, "show", f"{sha}:.gitinclude", check=False)
+    generated_ignore = _compile_workspace_gitignore(include.stdout) if include.returncode == 0 else None
+    if generated_ignore is not None:
+        _validate_workspace_ignore_paths(root)
+        declaration_entry = _store_git(root, "ls-tree", sha, "--", ".gitinclude").stdout
+        if not declaration_entry.startswith(("100644 blob ", "100755 blob ")):
+            raise NativeStoreRefusal("selected .gitinclude must be a regular blob", 4)
+        if _store_git(root, "ls-tree", sha, "--", ".gitignore").stdout:
+            raise NativeStoreRefusal("selected commit tracks generated .gitignore; resolve the declaration conflict before checkout", 4)
+    # Member planning precedes root movement. Later materialization failures may
+    # leave a partially applied selected C, so preserve every existing directory.
     _store_git(root, "checkout", "--detach", sha)
+    if generated_ignore is not None:
+        try:
+            _publish_workspace_gitignore(root, generated_ignore)
+        except Exception as primary:
+            primary.gr2_workspace_part_applied = sha
+            try:
+                primary.add_note(f"THIS WORKSPACE IS PART-APPLIED -- ignore generation failed; root HEAD: {sha}")
+            except Exception:
+                pass
+            raise
     restored: list[dict[str, str]] = []
     moved: list[str] = []
-    for name, path, pin in planned:
-        step = _store_git(path, "checkout", "--detach", pin, check=False)
-        if step.returncode:
-            not_moved = [name] + [n for n, _, _ in planned if n not in moved and n != name]
-            raise NativeStoreRefusal(
-                f"{name} could not be checked out at {pin[:12]}; git says: {_git_detail(step)}. "
-                f"THIS WORKSPACE IS PART-APPLIED -- moved: {moved or 'nothing'}; "
-                f"did not move: {not_moved}; root HEAD: "
-                f"{_store_git(root, 'rev-parse', 'HEAD', check=False).stdout.strip()[:12]}",
-                5,
+    for member, path, exists in planned:
+        name, pin = member["name"], member["pin"]
+        stage = "member checkout"
+        try:
+            if not exists:
+                from .clone_exec import materialize_lane_clone
+
+                cache = grip_dir(root) / "cache" / "repos" / f"{name}.git"
+                stage = "cache seeding"
+                gitops.ensure_repo_cache(member["remote"], cache)
+                # Keep the existing cache and ordinary reference-clone owners.
+                stage = "clone materialization"
+                if path.exists():
+                    path.rmdir()  # planning proved this is an empty placeholder
+                materialize_lane_clone(source_repo_root=cache, dest=path,
+                    branch=member.get("ref", "main"), seed_commit=pin,
+                    workspace_root=root, cache_root=cache)
+            stage = "member checkout"
+            step = _store_git(path, "checkout", "--detach", pin, check=False)
+            if step.returncode:
+                raise NativeStoreRefusal(
+                    f"{name} could not be checked out at {pin[:12]}; git says: {_git_detail(step)}", 5,
+                )
+            moved.append(name)
+            stage = "member HEAD read"
+            restored.append({"name": name, "pin": pin, "head": _store_git(path, "rev-parse", "HEAD").stdout.strip()})
+        except Exception as primary:
+            primary.gr2_workspace_part_applied = sha
+            remaining = [m["name"] for m, _, _ in planned if m["name"] not in moved]
+            detail = (
+                f"THIS WORKSPACE IS PART-APPLIED -- {name}: {stage} failed; "
+                f"moved: {moved or 'nothing'}; did not move: {remaining}; "
+                f"root HEAD: {sha}"
             )
-        moved.append(name)
-        restored.append({"name": name, "pin": pin, "head": _store_git(path, "rev-parse", "HEAD").stdout.strip()})
+            # Reporting is secondary. Preserve the failure and usable partial
+            # materialization even if stderr or exception annotation fails.
+            try:
+                primary.add_note(detail)
+            except Exception:
+                pass
+            try:
+                typer.echo(detail, err=True)
+            except Exception:
+                pass
+            raise
     # THE RESOLVED SHA IS RETURNED, not the string the caller typed.
     # `--json` reported `root_commit: "HEAD~1"`, which is not a commit: it names
     # one only relative to a HEAD the call itself just moved, so a caller could not tell

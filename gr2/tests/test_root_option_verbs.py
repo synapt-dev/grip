@@ -1,14 +1,15 @@
 """The workspace root as ``--root/-C`` on every verb that took it as a leading positional, and, for the
 verbs with a FIXED number of positionals, as a word that may be left out.
 
-Three command classes (`gr2/python_cli/root_option.py`):
+Four command classes (`gr2/python_cli/root_option.py`):
   * `RootOptionalCommand` (21 verbs): `--root/-C`, and one fewer positional than the verb requires means
     the root is the missing one: it is put in front from `--root/-C` or the nearest workspace above cwd.
-  * `RootOptionCommand` (8 verbs, each with an OPTIONAL TRAILING positional): `--root/-C` only. One fewer
+  * `RootOptionCommand` (7 verbs, each with an OPTIONAL TRAILING positional): `--root/-C` only. One fewer
     word has two readings there (`pr status unit lane` is "root omitted" and "root = unit"), so the bare
     form is never inferred, and an error that came from reading the first word as the root names `-C`.
   * `ReviewTargetCommand` (2 verbs): root and target can both be omitted. Explicit gr: targets and bare
     hashes retain their target role before directory classification. Selection is checked by the reader.
+  * `ReviewOpenCommand` (open): inferred reconstruction context plus unchanged explicit PR-head grammar.
 
 Rows parse each verb's real command (`make_context`) without running it, so they cover every verb in
 both lists; a few drive the real CLI. Each row names what must make it go red:
@@ -42,10 +43,11 @@ FIXED_ARITY = [  # RootOptionalCommand: the 16, and ContextCommand: the 6 above
     "hooks/run", "config/restore",
 ]
 OPTIONAL_TRAILING = [  # RootOptionCommand: the 8
-    "pr/create", "pr/status", "pr/checks", "pr/view", "pr/merge", "exec/status", "exec/run", "review/open",
+    "pr/create", "pr/status", "pr/checks", "pr/view", "pr/merge", "exec/status", "exec/run",
 ]
 REVIEW_TARGETS = ["review/show", "review/verify"]
-ALL_ROOT_VERBS = [*FIXED_ARITY, *OPTIONAL_TRAILING, *REVIEW_TARGETS]
+REVIEW_OPENS = ["review/open"]
+ALL_ROOT_VERBS = [*FIXED_ARITY, *OPTIONAL_TRAILING, *REVIEW_TARGETS, *REVIEW_OPENS]
 UsageError = root_option._usage_error()
 runner = CliRunner()
 
@@ -128,8 +130,8 @@ def test_the_partition_accounts_for_every_leading_root_command() -> None:
         name for name, c in LEAVES.items()
         if _arguments(c) and _arguments(c)[0].name == "workspace_root"
         and name.split("/")[0] not in {"workspace", "spec", "sync", "store", "grip", "plan", "apply", "repo/status"}
-        and type(c).__name__ in {"RootOptionalCommand", "RootOptionCommand", "TyperCommand", "ContextCommand", "ReviewTargetCommand"}
-        and (_arguments(c)[0].required or type(c).__name__ in {"RootOptionalCommand", "ContextCommand", "ReviewTargetCommand"})
+        and type(c).__name__ in {"RootOptionalCommand", "RootOptionCommand", "TyperCommand", "ContextCommand", "ReviewTargetCommand", "ReviewOpenCommand"}
+        and (_arguments(c)[0].required or type(c).__name__ in {"RootOptionalCommand", "ContextCommand", "ReviewTargetCommand", "ReviewOpenCommand"})
     )
     by_class = {
         "RootOptionalCommand": sorted(
@@ -141,6 +143,7 @@ def test_the_partition_accounts_for_every_leading_root_command() -> None:
     assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ContextCommand") == sorted(RESOLVED)
     assert by_class["RootOptionCommand"] == sorted(OPTIONAL_TRAILING)
     assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ReviewTargetCommand") == sorted(REVIEW_TARGETS)
+    assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ReviewOpenCommand") == sorted(REVIEW_OPENS)
     assert [n for n in leading if n not in ALL_ROOT_VERBS] == [], (
         "a verb takes the workspace root as a required leading positional and is in neither class"
     )
@@ -269,7 +272,7 @@ def test_the_8_do_not_judge_a_root_that_is_a_directory(verb, tmp_path, at) -> No
 
 
 def test_root_usage_matches_the_inferred_and_explicit_groups() -> None:
-    for verb in [*FIXED_ARITY, *REVIEW_TARGETS]:
+    for verb in [*FIXED_ARITY, *REVIEW_TARGETS, *REVIEW_OPENS]:
         assert _arguments(LEAVES[verb])[0].required is False, verb
     for verb in OPTIONAL_TRAILING:
         assert _arguments(LEAVES[verb])[0].required is True, verb
@@ -390,3 +393,87 @@ def test_lane_create_from_inside_one_workspace_with_a_glued_dash_c_names_the_oth
     assert done.exit_code == 0, done.output
     assert (b / ".grip" / "state" / "lanes" / "default" / "glued" / "lane.toml").is_file()
     assert not (a / ".grip" / "state" / "lanes" / "default" / "glued").exists(), "the lane was made in the cwd's workspace"
+
+
+@pytest.mark.parametrize("form", ["bare", "target", "root", "root-target", "root-option", "option-after", "long-equal", "glued"])
+def test_review_open_reconstruction_parser_context(form, ws, at, tmp_path):
+    at(ws / "sub" / "deeper")
+    target = "gr:" + "a" * 40
+    args = {"bare": [], "target": [target], "root": [str(ws)],
+            "root-target": [str(ws), target], "root-option": ["-C", str(ws), target],
+            "option-after": [target, "-C", str(ws)], "long-equal": ["--root=" + str(ws), target],
+            "glued": ["-C" + str(ws), target]}[form]
+    params = _parse("review/open", args)
+    assert _root(params) == ws.resolve()
+    assert params["target"] == (None if form in {"bare", "root"} else target)
+    assert params["repo"] is None and params["pr_number"] is None
+
+
+@pytest.mark.parametrize("owner", ["unit", "gr:" + "a" * 40, "existing-directory"])
+@pytest.mark.parametrize("form", ["positional", "option-before", "option-after"])
+def test_review_open_legacy_pr_fields_preserved(owner, form, ws, at, tmp_path):
+    at(tmp_path)
+    (tmp_path / "existing-directory").mkdir()
+    words = [owner, "repo", "123"]
+    args = {"positional": [str(ws), *words], "option-before": ["-C", str(ws), *words],
+            "option-after": [*words, "-C", str(ws)]}[form]
+    params = _parse("review/open", args)
+    assert _root(params) == ws.resolve()
+    assert (params["target"], params["repo"], params["pr_number"]) == (owner, "repo", 123)
+
+
+@pytest.mark.parametrize("target", ["gr:" + "a" * 40, "a" * 40, "gr:not-a-bind"])
+def test_review_open_explicit_target_directory_collision(target, ws, at):
+    inside = ws / "sub" / "deeper"
+    at(inside)
+    (inside / target).mkdir()
+    for args in ([target], ["-C", str(ws), target]):
+        params = _parse("review/open", args)
+        assert _root(params) == ws.resolve() and params["target"] == target
+
+
+def test_review_open_explicit_hash_path_and_invalid_root_never_fallback(ws, at, tmp_path):
+    at(ws)
+    target = "gr:" + "a" * 40
+    hash_root = tmp_path / ("b" * 40)
+    hash_root.mkdir()
+    missing = tmp_path / "missing-explicit"
+    for root in (hash_root, missing):
+        for args in ([str(root), target], ["-C", str(root), target]):
+            params = _parse("review/open", args)
+            assert _root(params) == root.resolve() and params["target"] == target
+            assert _root(params) != ws.resolve()
+    # Parser preserves caller input. Engine validity is a separate owning check.
+
+
+@pytest.mark.parametrize("case", ["double-reconstruction", "double-pr", "invalid-number", "missing-legacy-root", "outside"])
+def test_review_open_named_parser_refusals(case, ws, at, tmp_path):
+    at(tmp_path)
+    target = "gr:" + "a" * 40
+    args, diagnostic = {
+        "double-reconstruction": ([str(ws), target, "-C", str(ws)], "given twice"),
+        "double-pr": ([str(ws), "unit", "repo", "123", "-C", str(ws)], "given twice"),
+        "invalid-number": ([str(ws), "unit", "repo", "invalid"], "not a valid int"),
+        "missing-legacy-root": (["unit", "repo", "123"], "is not a directory"),
+        "outside": ([], "no workspace at or above"),
+    }[case]
+    with pytest.raises(UsageError) as exc:
+        _parse("review/open", args)
+    assert diagnostic in exc.value.format_message().lower()
+
+
+def test_review_open_incomplete_pr_fields_not_completed(ws, at):
+    at(ws)
+    params = _parse("review/open", [str(ws), "unit", "repo"])
+    assert _root(params) == ws.resolve()
+    assert (params["target"], params["repo"], params["pr_number"]) == ("unit", "repo", None)
+
+
+def test_review_open_help_marks_inferred_root_and_explicit_intent():
+    command = LEAVES["review/open"]
+    assert type(command).__name__ == "ReviewOpenCommand"
+    assert _arguments(command)[0].required is False
+    result = runner.invoke(app, ["review", "open", "--help"])
+    assert result.exit_code == 0, result.output
+    assert "workspace_root" in result.output
+    assert "target" in result.output and "--root" in result.output

@@ -472,7 +472,7 @@ def build_sync_plan(
             )
 
         for repo_name in lane_doc.get("repos", []):
-            lane_repo_root = lane_root / "repos" / str(repo_name)
+            lane_repo_root = lane_proto.lane_repo_root(workspace_root, owner_unit, lane_name, str(repo_name))
             expected_branch = str(dict(lane_doc.get("branch_map", {})).get(repo_name, ""))
             if not lane_repo_root.exists() or repo_path_state(lane_repo_root) == "empty_placeholder":
                 # An empty placeholder is a lane checkout NOT materialized

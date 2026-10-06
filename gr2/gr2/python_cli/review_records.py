@@ -303,8 +303,7 @@ def _validate_context_repo(workspace: Path, owner: str, lane: str, member: str, 
             document = tomllib.loads(definition.read_text())
         except (OSError, ValueError) as exc:
             raise ReviewRecordLocationError("review context lane definition cannot be read") from exc
-        if (document.get("owner_unit") != owner or document.get("lane_name") != lane
-                or member not in document.get("repos", [])):
+        if document.get("owner_unit") != owner or document.get("lane_name") != lane:
             raise ReviewRecordLocationError("review context does not declare this lane member")
         kind = document.get("lane_kind", "materialized")
         project = document.get("creation_source") == "project-review"
@@ -319,6 +318,8 @@ def _validate_context_repo(workspace: Path, owner: str, lane: str, member: str, 
                 raise ReviewRecordLocationError("review context belongs to a different bound worktree")
             return
         if project:
+            if member not in document.get("repos", []):
+                raise ReviewRecordLocationError("review context does not declare this lane member")
             target = workspace / "reviews" / owner / lane
             if repo != target / "repos" / member or target.resolve() != target:
                 raise ReviewRecordLocationError("review context belongs to a different project member")
@@ -330,7 +331,13 @@ def _validate_context_repo(workspace: Path, owner: str, lane: str, member: str, 
             return
     # Explicit ordinary review producers may have no lane definition. Their
     # managed coordinate remains exact, not guessed from a parent or selection.
-    expected = lanes.lane_dir(workspace, owner, lane) / "repos" / member
+    if definition.exists():
+        try:
+            expected = lanes.lane_repo_root(workspace, owner, lane, member)
+        except SystemExit as exc:
+            raise ReviewRecordLocationError(str(exc)) from exc
+    else:
+        expected = lanes.lane_dir(workspace, owner, lane) / "repos" / member
     if repo != expected or expected.resolve() != expected:
         raise ReviewRecordLocationError("review context belongs to a different materialized member")
 

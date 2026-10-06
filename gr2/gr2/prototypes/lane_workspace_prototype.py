@@ -100,6 +100,8 @@ class LaneMetadata:
     lane_kind: str = "materialized"
     bound_worktree: str | None = None
     bound_head: str | None = None
+    # Absent on older materialized lanes: their checkout stays beside lane.toml.
+    checkout_root: str | None = None
     # The fork base: the per-repo coordinate the lane
     # forked from on its integration branch, recorded ONCE at create and never
     # recomputed. Each entry is {branch: <integration branch, e.g. dev>, sha: <its
@@ -131,6 +133,8 @@ class LaneMetadata:
             document["bound_worktree"] = self.bound_worktree
         if self.bound_head is not None:
             document["bound_head"] = self.bound_head
+        if self.checkout_root is not None:
+            document["checkout_root"] = self.checkout_root
         if self.fork_base:
             document["fork_base"] = {
                 repo: {"branch": entry["branch"], "sha": entry["sha"]}
@@ -418,6 +422,43 @@ def lane_dir(workspace_root: Path, owner_unit: str, lane_name: str) -> Path:
     return lane_state_root(workspace_root) / owner_unit / lane_name
 
 
+def lane_checkout_root(workspace_root: Path, owner_unit: str, lane_name: str) -> Path:
+    """Recorded physical location, never inferred from directories that happen to exist."""
+    from gr2.python_cli.spec_apply import canonicalize_workspace_path, MaterializationPlanError
+
+    doc = load_lane_doc(workspace_root, owner_unit, lane_name)
+    kind = doc.get("lane_kind", "materialized")
+    if kind == "bound":
+        if "checkout_root" in doc or not isinstance(doc.get("bound_worktree"), str) or not doc["bound_worktree"]:
+            raise SystemExit("bound lane needs its explicit bound_worktree and no checkout_root")
+        return Path(doc["bound_worktree"]).resolve()
+    if kind not in {"materialized", "review-ephemeral"} or doc.get("bound_worktree") is not None:
+        raise SystemExit("invalid or conflicting lane checkout coordinates")
+    if "checkout_root" not in doc:
+        return lane_dir(workspace_root, owner_unit, lane_name)
+    value = doc["checkout_root"]
+    if not isinstance(value, str) or not value:
+        raise SystemExit("lane checkout_root must be a nonempty workspace-relative path")
+    try:
+        return canonicalize_workspace_path(workspace_root, value, field_name="lane.checkout_root")
+    except MaterializationPlanError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def lane_repo_root(workspace_root: Path, owner_unit: str, lane_name: str, repo: str) -> Path:
+    doc = load_lane_doc(workspace_root, owner_unit, lane_name)
+    if repo not in doc.get("repos", []):
+        raise SystemExit(f"repo is not in lane: {repo}")
+    root = lane_checkout_root(workspace_root, owner_unit, lane_name)
+    members = native_lane_members(workspace_root, doc)
+    if members is not None:
+        member = next((m for m in members if m["name"] == repo), None)
+        if member is None:
+            raise SystemExit(f"repo is not in selected lane workspace commit: {repo}")
+        return root / member["path"]
+    return root if doc.get("lane_kind") == "bound" else root / "repos" / repo
+
+
 def lane_file(workspace_root: Path, owner_unit: str, lane_name: str) -> Path:
     return lane_dir(workspace_root, owner_unit, lane_name) / "lane.toml"
 
@@ -522,7 +563,31 @@ def load_lane_doc(workspace_root: Path, owner_unit: str, lane_name: str) -> dict
     path = lane_file(workspace_root, owner_unit, lane_name)
     if not path.exists():
         raise SystemExit(f"lane not found: {owner_unit}/{lane_name}")
-    return tomllib.loads(path.read_text())
+    doc = tomllib.loads(path.read_text())
+    members = native_lane_members(workspace_root, doc)
+    if members is not None:
+        doc["repos"] = [m["name"] for m in members]
+        old_map = doc.get("branch_map", {})
+        doc["branch_map"] = {m["name"]: old_map.get(m["name"], lane_name) for m in members}
+    return doc
+
+
+def native_lane_members(workspace_root: Path, doc: dict) -> list[dict[str, str]] | None:
+    """A native lane's current root commit owns its children. Legacy lanes stay unchanged."""
+    from gr2.python_cli.spec_apply import canonicalize_workspace_path
+
+    if doc.get("lane_kind", "materialized") != "materialized" or not doc.get("checkout_root"):
+        return None
+    root = canonicalize_workspace_path(workspace_root, doc["checkout_root"], field_name="lane.checkout_root")
+    if not (root / ".git").exists():
+        return None
+    from gr2.python_cli import grip_cli
+
+    top = gitops.git(root, "rev-parse", "--show-toplevel")
+    if top.returncode or Path(top.stdout.strip()).resolve() != root.resolve():
+        raise SystemExit(f"native lane root is not its own Git checkout: {root}")
+    head = gitops.current_head_sha(root)
+    return grip_cli._native_members(root, head)
 
 
 def record_fork_base(
@@ -1019,7 +1084,7 @@ def create_lane(args: argparse.Namespace) -> int:
     workspace_root = args.workspace_root.resolve()
     validate_lane_path_component(args.owner_unit, "owner_unit")
     validate_lane_path_component(args.lane_name, "lane_name")
-    spec = load_workspace_spec(workspace_root)
+    spec = getattr(args, "workspace_spec", None) or load_workspace_spec(workspace_root)
     unit_spec = find_unit_spec(workspace_root, args.owner_unit)
     repo_names = [item["name"] for item in spec.get("repos", [])]
     repos = parse_repo_list(args.repos)
@@ -1111,9 +1176,14 @@ def create_lane(args: argparse.Namespace) -> int:
         bound_worktree=bound_worktree,
         bound_head=bound_head,
         fork_base=fork_base,
+        checkout_root=(f"agents/{args.owner_unit}/lanes/{args.lane_name}" if lane_kind == "materialized" else None),
     )
     lane_root = lane_dir(workspace_root, args.owner_unit, args.lane_name)
     metadata_path = lane_file(workspace_root, args.owner_unit, args.lane_name)
+    if metadata_path.exists() and lane_kind == "materialized":
+        existing = load_lane_doc(workspace_root, args.owner_unit, args.lane_name)
+        lane_checkout_root(workspace_root, args.owner_unit, args.lane_name)
+        metadata.checkout_root = existing.get("checkout_root")
     expected = metadata.as_toml()
     # Refuse the ordinary existing-target case before even publishing lock
     # scaffolding. The locked recheck below still protects a racing creator.
@@ -1124,6 +1194,10 @@ def create_lane(args: argparse.Namespace) -> int:
         raise SystemExit(f"refusing to replace existing lane: {metadata_path}")
     if lane_root.exists():
         raise SystemExit(f"refusing to create lane over existing path: {lane_root}")
+    if metadata.checkout_root is not None:
+        physical = workspace_root / metadata.checkout_root
+        if physical.exists() or physical.is_symlink():
+            raise SystemExit(f"refusing to create lane over existing checkout path: {physical}")
     with exclusive_lock(lane_creation_lock_file(workspace_root, args.owner_unit, args.lane_name)):
         if metadata_path.exists():
             if metadata_path.read_text() == expected:
@@ -1132,27 +1206,31 @@ def create_lane(args: argparse.Namespace) -> int:
             raise SystemExit(f"refusing to replace existing lane: {metadata_path}")
         if lane_root.exists():
             raise SystemExit(f"refusing to create lane over existing path: {lane_root}")
+        if metadata.checkout_root is not None:
+            physical = workspace_root / metadata.checkout_root
+            if physical.exists() or physical.is_symlink():
+                raise SystemExit(f"refusing to create lane over existing checkout path: {physical}")
         lane_root.mkdir(parents=True)
         # A bound lane owns no clone, so it has no repos/ subdir — the absence is
         # itself a signal to materialization that there is nothing to clone.
-        if lane_kind != "bound":
+        if lane_kind != "bound" and metadata.checkout_root is None:
             (lane_root / "repos").mkdir()
         (lane_root / "context").mkdir()
         atomic_replace_text(metadata_path, expected)
+        state = metadata_path.stat()
+        args.created_lane_file = [metadata_path, state.st_dev, state.st_ino]
     print(metadata_path)
-    # The human line names where the actor works, per repo, absolute: a
-    # materialized lane's repos live under its lane tree, a bound lane's one
-    # repo IS the bound worktree. (Before this, enter/create pointed at
-    # lane.toml only, so the actor never learned where the lane's repos
-    # are.)
-    if lane_kind == "bound" and bound_worktree:
-        for repo in repos:
-            print(f"{repo}: {bound_worktree}")
-    else:
-        lane_root = lane_dir(workspace_root, args.owner_unit, args.lane_name)
-        for repo in repos:
-            print(f"{repo}: {lane_root / 'repos' / repo}")
+    # Native CLI materialization first installs the selected root commit. Its
+    # member paths cannot be rendered from the pre-materialization legacy shape.
+    if not getattr(args, "defer_checkout_paths", False):
+        print_lane_repo_paths(workspace_root, args.owner_unit, args.lane_name)
     return 0
+
+
+def print_lane_repo_paths(workspace_root: Path, owner_unit: str, lane_name: str) -> None:
+    """Display the same physical coordinates that enter and other consumers use."""
+    for repo in load_lane_doc(workspace_root, owner_unit, lane_name).get("repos", []):
+        print(f"{repo}: {lane_repo_root(workspace_root, owner_unit, lane_name, repo)}")
 
 
 def bind_bound_lane(
@@ -1364,7 +1442,7 @@ def enter_lane(args: argparse.Namespace) -> LaneTransitionOutcome:
         else:
             lane_root = lane_dir(workspace_root, args.owner_unit, args.lane_name)
             repo_paths = {
-                r: str(lane_root / "repos" / r) for r in lane_doc.get("repos", [])
+                r: str(lane_repo_root(workspace_root, args.owner_unit, args.lane_name, r)) for r in lane_doc.get("repos", [])
             }
 
         deduped: list[dict] = []
@@ -1767,6 +1845,7 @@ def create_continuation_lane(args: argparse.Namespace) -> int:
         ],
         exec_defaults=source.get("exec_defaults", {}),
         creation_source="lane-handoff",
+        checkout_root=f"agents/{args.target_unit}/lanes/{args.target_lane_name}",
         shared_with=[],
         handoff_source={
             "kind": "continuation",
@@ -1776,6 +1855,10 @@ def create_continuation_lane(args: argparse.Namespace) -> int:
     )
     lane_root = lane_dir(workspace_root, args.target_unit, args.target_lane_name)
     metadata_path = lane_file(workspace_root, args.target_unit, args.target_lane_name)
+    if metadata_path.exists():
+        existing = load_lane_doc(workspace_root, args.target_unit, args.target_lane_name)
+        lane_checkout_root(workspace_root, args.target_unit, args.target_lane_name)
+        metadata.checkout_root = existing.get("checkout_root")
     expected = metadata.as_toml()
     if metadata_path.exists():
         if metadata_path.read_text() == expected:
@@ -1792,8 +1875,13 @@ def create_continuation_lane(args: argparse.Namespace) -> int:
             raise SystemExit(f"refusing to replace existing lane: {metadata_path}")
         if lane_root.exists():
             raise SystemExit(f"refusing to create lane over existing path: {lane_root}")
+        if metadata.checkout_root is not None:
+            physical = workspace_root / metadata.checkout_root
+            if physical.exists() or physical.is_symlink():
+                raise SystemExit(f"refusing to create lane over existing checkout path: {physical}")
         lane_root.mkdir(parents=True)
-        (lane_root / "repos").mkdir()
+        if metadata.checkout_root is None:
+            (lane_root / "repos").mkdir()
         (lane_root / "context").mkdir()
         atomic_replace_text(metadata_path, expected)
     print(metadata_path)
@@ -1824,13 +1912,7 @@ def plan_handoff(args: argparse.Namespace) -> int:
                     "lane_name": args.source_lane_name,
                     "repo": repo,
                     "cwd": str(
-                        lane_dir(
-                            workspace_root,
-                            args.source_owner_unit,
-                            args.source_lane_name,
-                        )
-                        / "repos"
-                        / repo
+                        lane_repo_root(workspace_root, args.source_owner_unit, args.source_lane_name, repo)
                     ),
                     "lease_scope": f"{args.source_owner_unit}/{args.source_lane_name}",
                 }
@@ -1856,13 +1938,7 @@ def plan_handoff(args: argparse.Namespace) -> int:
                     "lane_name": target_lane_name,
                     "repo": repo,
                     "cwd": str(
-                        lane_dir(
-                            workspace_root,
-                            args.target_unit,
-                            target_lane_name,
-                        )
-                        / "repos"
-                        / repo
+                        workspace_root / "agents" / args.target_unit / "lanes" / target_lane_name / "repos" / repo
                     ),
                     "lease_scope": f"{args.target_unit}/{target_lane_name}",
                 }
@@ -2152,9 +2228,7 @@ def plan_exec(args: argparse.Namespace) -> int:
                 "repo": repo,
                 "branch": lane_doc["branch_map"].get(repo),
                 "cwd": str(
-                    lane_dir(workspace_root, args.owner_unit, args.lane_name)
-                    / "repos"
-                    / repo
+                    lane_repo_root(workspace_root, args.owner_unit, args.lane_name, repo)
                 ),
                 "command": command_argv,
                 "shared_context_roots": lane_doc.get("context", {}).get("shared_roots", []),

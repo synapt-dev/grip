@@ -11,7 +11,7 @@ import sys
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
-from typing import List, Mapping, Optional
+from typing import Annotated, List, Mapping, Optional
 
 import typer
 try:
@@ -37,7 +37,7 @@ from . import push as push_ops
 from .clone_exec import rmtree_or_refuse
 from .events import EventEmitError, EventType, emit, emit_after_outcome
 from .layout import grip_dir
-from .root_option import ROOT_OPTION, ContextCommand, ReviewTargetCommand, RootOptionCommand, RootOptionalCommand
+from .root_option import ROOT_OPTION, ContextCommand, ReviewTargetCommand, ReviewOpenCommand, RootOptionCommand, RootOptionalCommand
 from .gitops import (
     branch_exists,
     checkout_branch,
@@ -179,13 +179,30 @@ def _workspace_spec_path(workspace_root: Path) -> Path:
 
 
 def _lane_repo_root(workspace_root: Path, owner_unit: str, lane_name: str, repo_name: str) -> Path:
-    return lane_proto.lane_dir(workspace_root, owner_unit, lane_name) / "repos" / repo_name
+    return lane_proto.lane_repo_root(workspace_root, owner_unit, lane_name, repo_name)
 
 
-def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: str, *, manual_hooks: bool = False) -> None:
+def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: str, *, manual_hooks: bool = False, created_checkout_roots: list | None = None, created_lane_file: list | None = None, workspace_commit: str | None = None) -> None:
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
     branch_map = dict(lane_doc.get("branch_map", {}))
-    lane_root = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
+    lane_root = lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)
+    if lane_doc.get("checkout_root") is not None and not lane_root.exists():
+        lane_root.mkdir(parents=True, exist_ok=False)
+        state = lane_root.stat()
+        if created_checkout_roots is not None:
+            created_checkout_roots.append((lane_root, state.st_dev, state.st_ino))
+    native_members = None
+    if workspace_commit is not None:
+        from . import grip_cli
+
+        if not (lane_root / ".git").exists():
+            cloned = git(workspace_root, "clone", "--no-checkout", str(workspace_root), str(lane_root))
+            if cloned.returncode:
+                raise SystemExit(f"cannot create native lane workspace: {cloned.stderr}")
+        elif gitops.current_head_sha(lane_root) != workspace_commit:
+            raise SystemExit("existing native lane selects a different workspace commit; preserved unchanged")
+        grip_cli._native_store_checkout(lane_root, workspace_commit)
+        native_members = {m["name"]: m for m in grip_cli._native_members(lane_root, workspace_commit)}
     fork_base: dict[str, dict[str, str]] = {}
 
     # The fork base of every repo whose checkout exists is persisted in the `finally`
@@ -198,48 +215,59 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
     # BEFORE its own hooks run, so the finally captures every materialized repo,
     # including the one whose hook just blocked, while the exit 1 and its JSON report
     # still propagate.
+    primary_error: BaseException | None = None
     try:
         for repo_name in lane_doc.get("repos", []):
-            repo_spec = _workspace_repo_spec(workspace_root, repo_name)
-            source_repo_root = (workspace_root / str(repo_spec["path"])).resolve()
-            # The state helper decides what the declared path holds, because
-            # asking only `.exists()` was the read-through's fifth site: on an
-            # adopted superproject the declared path is the EMPTY placeholder,
-            # so `materialize_lane_clone` asked the PLACEHOLDER for its origin,
-            # git answered for the workspace root, and the provenance check
-            # refused the lane ("seeded from <root>, not the declared
-            # upstream"). The three answers decide here: a repo root is used
-            # as-is; a placeholder is replaced by the unit's materialized copy
-            # of that member (the clone materialize placed at its pin); a
-            # present path that is neither is refused with the verb that fixes
-            # it.
-            state = gitops.repo_path_state(source_repo_root)
-            if state == "empty_placeholder":
-                unit = lane_proto.find_unit_spec(workspace_root, owner_unit)
-                # The member's SPEC PATH (section 6c item 3), through the one
-                # resolver, so this site cannot disagree with the planner or the
-                # store member map. It needs the whole spec to know the path.
-                unit_member = spec_apply.unit_member_path(
-                    workspace_root,
-                    lane_proto.load_workspace_spec(workspace_root),
-                    unit,
-                    repo_name,
-                )
-                if gitops.repo_path_state(unit_member) != "repo_root":
-                    raise SystemExit(
-                        f"run gr2 workspace materialize first: the unit's copy of {repo_name} "
-                        f"is not a repository at {unit_member}"
+            if native_members is not None:
+                member = native_members[repo_name]
+                target_repo_root = lane_root / member["path"]
+                checkout = git(target_repo_root, "checkout", "-B", branch_map[repo_name], member["pin"])
+                if checkout.returncode:
+                    raise SystemExit(f"cannot select lane branch: {checkout.stderr}")
+                first_materialize = True
+            else:
+                repo_spec = _workspace_repo_spec(workspace_root, repo_name)
+                source_repo_root = (workspace_root / str(repo_spec["path"])).resolve()
+                # The state helper decides what the declared path holds, because
+                # asking only `.exists()` was the read-through's fifth site: on an
+                # adopted superproject the declared path is the EMPTY placeholder,
+                # so `materialize_lane_clone` asked the PLACEHOLDER for its origin,
+                # git answered for the workspace root, and the provenance check
+                # refused the lane ("seeded from <root>, not the declared
+                # upstream"). The three answers decide here: a repo root is used
+                # as-is; a placeholder is replaced by the unit's materialized copy
+                # of that member (the clone materialize placed at its pin); a
+                # present path that is neither is refused with the verb that fixes
+                # it.
+                state = gitops.repo_path_state(source_repo_root)
+                if state == "empty_placeholder":
+                    unit = lane_proto.find_unit_spec(workspace_root, owner_unit)
+                    # The member's SPEC PATH (section 6c item 3), through the one
+                    # resolver, so this site cannot disagree with the planner or the
+                    # store member map. It needs the whole spec to know the path.
+                    unit_member = spec_apply.unit_member_path(
+                        workspace_root,
+                        lane_proto.load_workspace_spec(workspace_root),
+                        unit,
+                        repo_name,
                     )
-                source_repo_root = unit_member
-            elif state == "neither":
-                raise SystemExit(f"run gr2 workspace materialize first: {source_repo_root} is not a repository")
-            target_repo_root = _lane_repo_root(workspace_root, owner_unit, lane_name, repo_name)
-            first_materialize = ensure_lane_checkout(
-                source_repo_root=source_repo_root,
-                target_repo_root=target_repo_root,
-                branch=branch_map[repo_name],
-                workspace_root=workspace_root,
-            )
+                    if gitops.repo_path_state(unit_member) != "repo_root":
+                        raise SystemExit(
+                            f"run gr2 workspace materialize first: the unit's copy of {repo_name} "
+                            f"is not a repository at {unit_member}"
+                        )
+                    source_repo_root = unit_member
+                elif state == "neither":
+                    raise SystemExit(f"run gr2 workspace materialize first: {source_repo_root} is not a repository")
+                target_repo_root = _lane_repo_root(workspace_root, owner_unit, lane_name, repo_name)
+                cache_root = grip_dir(workspace_root) / "cache" / "repos" / f"{source_repo_root.name}.git"
+                gitops.ensure_repo_cache(gitops.remote_origin_url(source_repo_root), cache_root, local_source=source_repo_root)
+                first_materialize = ensure_lane_checkout(
+                    source_repo_root=source_repo_root,
+                    target_repo_root=target_repo_root,
+                    branch=branch_map[repo_name],
+                    workspace_root=workspace_root,
+                )
             # Record the fork base = the materialization point (the branch the lane forked
             # from and the sha it started at), so `review create-project` can pin base..head
             # Collected here, before this repo's hooks run below.
@@ -267,12 +295,25 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
                 first_materialize=first_materialize,
                 allow_manual=manual_hooks,
             )
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
         # Persist the fork base for every repo materialized above, even if a hook
         # raised on the way out. Without this a materialized lane can have no
         # fork_base and `review create-project` refuses.
-        if fork_base:
-            lane_proto.record_fork_base(workspace_root, owner_unit, lane_name, fork_base)
+        try:
+            if fork_base:
+                lane_proto.record_fork_base(workspace_root, owner_unit, lane_name, fork_base)
+                # This owning write atomically replaces lane.toml. Keep the attempt's
+                # cleanup identity current without adopting any preexisting lane.
+                if created_lane_file is not None:
+                    state = created_lane_file[0].stat()
+                    created_lane_file[1:] = [state.st_dev, state.st_ino]
+        except BaseException as secondary:
+            if primary_error is None:
+                raise
+            primary_error.add_note(f"lane fork-base recording failed: {secondary!r}")
 
 
 def _run_lane_stage(
@@ -282,7 +323,7 @@ def _run_lane_stage(
     result, so a caller can record what did not run to completion instead of
     absorbing it into a plain success."""
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
-    lane_root = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
+    lane_root = lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)
     results: list[HookResult] = []
     for repo_name in lane_doc.get("repos", []):
         repo_root = _lane_repo_root(workspace_root, owner_unit, lane_name, repo_name)
@@ -2325,17 +2366,19 @@ def _lane_carries_a_fork_base(workspace_root: Path, owner_unit: str, lane_name: 
     return bool(fork_base) and set(repos) <= set(fork_base)
 
 
-def _remove_lane_artifacts(workspace_root: Path, owner_unit: str, lane_name: str) -> None:
-    """Remove the lane directory a REFUSED create wrote, when nothing in it is usable.
-
-    A refusal that never reached a fork base must leave no lane that any verb accepts,
-    and the caller checks that precondition before calling this. Removal goes through
-    ``rmtree_or_refuse`` so a partial cleanup raises instead of reporting success: a lane
-    half-removed is the same defect as a lane never removed.
-    """
-    lane_root = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
-    if lane_root.exists():
-        rmtree_or_refuse(lane_root)
+def _remove_lane_artifacts(workspace_root: Path, owner_unit: str, lane_name: str, *, created_lane_file=None, created_checkout_roots=()) -> None:
+    """Roll back only the current create's artifacts, never an existing lane."""
+    if created_lane_file is None:
+        return
+    metadata, dev, ino = created_lane_file
+    if not metadata.exists() or (metadata.stat().st_dev, metadata.stat().st_ino) != (dev, ino):
+        raise RuntimeError("lane metadata changed after create; preserving artifacts")
+    for root, root_dev, root_ino in created_checkout_roots:
+        if root.exists():
+            if (root.stat().st_dev, root.stat().st_ino) != (root_dev, root_ino):
+                raise RuntimeError("checkout root changed after create; preserving artifacts")
+            rmtree_or_refuse(root)
+    rmtree_or_refuse(lane_proto.lane_dir(workspace_root, owner_unit, lane_name))
 
 
 def _actor_source_payload(items: dict) -> dict[str, str]:
@@ -2414,7 +2457,7 @@ def _spec_for_lane_create(workspace_root: Path, default_unit: str) -> bool:
 
 
 def _lane_create_defaults(workspace_root: Path, lane_name: str, repos: Optional[str], branch: Optional[str],
-                          bind: Optional[Path], items: dict) -> tuple[str, str]:
+                          bind: Optional[Path], items: dict, *, selected_members: list[dict] | None = None) -> tuple[str, str]:
     """What `lane create` takes from the workspace when it is not told: every repo, and the lane's own name as the
     branch. Each default is announced on stderr like the resolver's (and hushed the same way); a typed value wins
     and prints nothing. The branch default is checked against the remotes before anything is created."""
@@ -2427,7 +2470,8 @@ def _lane_create_defaults(workspace_root: Path, lane_name: str, repos: Optional[
         if bind is not None:
             raise typer.BadParameter("--repos is required with --bind (a bound lane is single-repo)")
         try:
-            declared = lane_defaults.workspace_repos(workspace_root, members=False)
+            declared = ([lane_defaults.Repo(m["name"], m["remote"], m.get("ref")) for m in selected_members]
+                        if selected_members is not None else lane_defaults.workspace_repos(workspace_root, members=False))
         except lane_downstream.MembersUnreadable as exc:
             raise typer.BadParameter(f"{exc}; name the repos with --repos, or fix the file")
         if not declared:
@@ -2435,13 +2479,15 @@ def _lane_create_defaults(workspace_root: Path, lane_name: str, repos: Optional[
                 f"the workspace spec at {workspace_root} declares no repos, so there is nothing to default to; name them with --repos"
             )
         repos = ",".join(r.name for r in declared)
-        announced["repos"] = ctx_mod.Resolved(repos, f"every repo of the workspace spec; this makes {len(declared)} clone{'s' if len(declared) != 1 else ''}")
+        authority = "selected workspace commit" if selected_members is not None else "workspace spec"
+        announced["repos"] = ctx_mod.Resolved(repos, f"every repo of the {authority}; this makes {len(declared)} clone{'s' if len(declared) != 1 else ''}")
     if bind is None and not branch:
         branch = lane_name
         announced["branch"] = ctx_mod.Resolved(lane_name, "the lane name")
         chosen = {r.strip() for r in repos.split(",") if r.strip()}
         try:
-            known = lane_defaults.workspace_repos(workspace_root)
+            known = ([lane_defaults.Repo(m["name"], m["remote"], m.get("ref")) for m in selected_members]
+                     if selected_members is not None else lane_defaults.workspace_repos(workspace_root))
         except lane_downstream.MembersUnreadable as exc:
             raise typer.BadParameter(f"{exc}; the branch {branch!r} cannot be checked against the remotes, so name the branch with --branch, or fix the file")
         declared = [r for r in known if r.name in chosen]
@@ -2475,6 +2521,7 @@ def lane_create(
     command: list[str] = typer.Option(None, "--command", help="Default command for the lane"),
     manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual during lane materialization"),
     bind: Optional[Path] = typer.Option(None, "--bind", help="Bind the lane to an EXISTING clean, non-detached single-repo worktree instead of materializing a fresh clone. The receipt is stamped lane_kind=bound."),
+    workspace_commit: Annotated[Optional[str], typer.Option("--workspace-commit", help="Native workspace commit to materialize. Omitted: current root HEAD.")] = None,
     root: Optional[Path] = ROOT_OPTION,
     unit: Optional[str] = typer.Option(None, "--unit", help="The unit. Same as the UNIT argument; give one or the other."),
     ctx: typer.Context = None,  # type: ignore[assignment]
@@ -2490,12 +2537,32 @@ def lane_create(
     items, _ = _announce_context(ctx)
     workspace_root = workspace_root.resolve()
     from .spec_apply import workspace_spec_path
+    from . import grip_cli
+
+    selected_members = None
+    selected_commit = None
+    native_root = gitops.repo_path_state(workspace_root) == "repo_root" and (workspace_root / "grip.toml").is_file()
+    if workspace_commit is not None and (bind is not None or not native_root):
+        raise typer.BadParameter("--workspace-commit requires a native materialized workspace lane")
+    if bind is None and native_root:
+        resolved = git(workspace_root, "rev-parse", "--verify", f"{workspace_commit or 'HEAD'}^{{commit}}")
+        if resolved.returncode:
+            raise typer.BadParameter("cannot resolve selected native workspace commit; record the workspace with gr2 store commit --message MESSAGE, or name an existing --workspace-commit")
+        selected_commit = resolved.stdout.strip()
+        selected_members = grip_cli._native_members(workspace_root, selected_commit)
+        selected_names = [m["name"] for m in selected_members]
+        if repos is not None and set(r.strip() for r in repos.split(",")) != set(selected_names):
+            raise typer.BadParameter("a native workspace lane materializes the complete selected member set")
 
     spec_path = workspace_spec_path(workspace_root)
     spec_parent_existed = spec_path.parent.exists()
     wrote_spec = _spec_for_lane_create(workspace_root, owner_unit)
     try:
-        repos, branch = _lane_create_defaults(workspace_root, lane_name, repos, branch, bind, items)
+        repos, branch = _lane_create_defaults(workspace_root, lane_name, repos, branch, bind, items, selected_members=selected_members)
+        selected_spec = None
+        if selected_members is not None:
+            selected_spec = dict(lane_proto.load_workspace_spec(workspace_root))
+            selected_spec["repos"] = [{"name": m["name"], "path": m["path"], "url": m["remote"], "ref": m.get("ref", "main")} for m in selected_members]
         ns = SimpleNamespace(
             workspace_root=workspace_root,
             owner_unit=owner_unit,
@@ -2506,15 +2573,29 @@ def lane_create(
             source=source,
             default_commands=command or [],
             bind=str(bind) if bind is not None else None,
+            workspace_spec=selected_spec,
+            defer_checkout_paths=selected_commit is not None,
         )
         _exit(lane_proto.create_lane(ns))
+        created_checkout_roots: list = []
         # A bound lane owns no clone: skip materialization. The branch_map for the
         # event comes from the lane document create_lane just wrote (derived from the
         # bound worktree), not from the --branch arg, which --bind ignores.
         if bind is None:
             try:
-                _materialize_lane_repos(workspace_root, owner_unit, lane_name, manual_hooks=manual_hooks)
-            except BaseException:
+                _materialize_lane_repos(workspace_root, owner_unit, lane_name, manual_hooks=manual_hooks, created_checkout_roots=created_checkout_roots, created_lane_file=getattr(ns, "created_lane_file", None), workspace_commit=selected_commit)
+            except BaseException as primary:
+                if getattr(primary, "gr2_workspace_part_applied", None) is not None:
+                    # The native owner has already detached the root and may
+                    # have materialized children. Do not erase this partial lane
+                    # just because fork-base recording has not begun yet.
+                    try:
+                        primary.add_note(
+                            f"partial native lane preserved at {lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)}"
+                        )
+                    except Exception:
+                        pass
+                    raise
                 # BaseException and not Exception, deliberately: the refusal this guards
                 # against is a SystemExit, which is not an Exception and would sail past a
                 # narrower clause, leaving exactly the orphan this exists to prevent.
@@ -2523,8 +2604,18 @@ def lane_create(
                 # refuses AFTER the fork base is recorded, and that lane is recoverable by
                 # design -- `review create-project` must still succeed on it -- so the fork
                 # base, not the position of the raise, decides.
-                if not _lane_carries_a_fork_base(workspace_root, owner_unit, lane_name):
-                    _remove_lane_artifacts(workspace_root, owner_unit, lane_name)
+                try:
+                    has_fork_base = _lane_carries_a_fork_base(workspace_root, owner_unit, lane_name)
+                except BaseException as secondary:
+                    primary.add_note(f"lane recovery check failed, artifacts preserved: {secondary!r}")
+                    raise primary
+                if not has_fork_base:
+                    try:
+                        _remove_lane_artifacts(workspace_root, owner_unit, lane_name,
+                            created_lane_file=getattr(ns, "created_lane_file", None),
+                            created_checkout_roots=created_checkout_roots)
+                    except BaseException as secondary:
+                        primary.add_note(f"lane create cleanup failed, artifacts preserved: {secondary!r}")
                 else:
                     # The kept path must be LEGIBLE, not silent. A user who sees "create
                     # failed" and later finds the lane on disk would otherwise read it as the
@@ -2538,10 +2629,14 @@ def lane_create(
                         f"lane create: the lane {owner_unit}/{lane_name} was KEPT because its fork "
                         f"base is recorded, so it is recoverable.\n"
                         f"  continue with it: gr2 review create-project {workspace_root} {owner_unit} {lane_name}\n"
-                        f"  remove it:        delete {lane_root}  (no lane-removal verb exists yet)",
+                        f"  metadata:         {lane_root}\n"
+                        f"  checkout:         {lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)}\n"
+                        f"  removal needs both paths (no lane-removal verb exists yet)",
                         err=True,
                     )
                 raise
+        if selected_commit is not None:
+            lane_proto.print_lane_repo_paths(workspace_root, owner_unit, lane_name)
         repo_list = [r.strip() for r in repos.split(",")]
         # The event payload carries lane_kind (and bound_worktree for a bound lane)
         # so an event-stream consumer can tell a bound lane from a materialized one
@@ -3008,7 +3103,7 @@ def _default_review_lane_dir(workspace_root: Path, target: str) -> Path:
     return path
 
 
-@review_app.command("open", cls=RootOptionCommand)
+@review_app.command("open", cls=ReviewOpenCommand)
 def review_open(
     workspace_root: Path,
     target: Optional[str] = typer.Argument(None, help="What to open: a PR number (PR-head lane), a gr:<sha> bind id (reconstruction), or a project-review id. Omitted: the workspace's one review bind"),
@@ -3023,13 +3118,18 @@ def review_open(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
-    """Open a review lane. ``open`` decides on its POSITIONALS first, then its argument:
+    """Open a review lane. Reconstruction may omit the root and sole bind target.
+
+    Explicit roots and targets retain their roles. Missing or ambiguous context
+    refuses instead of choosing another workspace or the latest bind. ``open``
+    decides on its POSITIONALS first, then its argument:
 
     - the PR-head form is ``OWNER_UNIT REPO PR_NUMBER`` (three positionals): the
       owner_unit is any word, so when both REPO and PR_NUMBER are present the target
       is taken as the owner_unit and NOT classified;
     - with only a lone target, ``open`` dispatches on its shape: a ``gr:<sha>`` bind id
-      (or bare sha) reconstructs from a review-bind commit -- needs ``--lane-dir`` and ``--enter``; anything else is a
+      (or bare sha) reconstructs from a review-bind commit. The lane directory
+      defaults beside the workspace and reconstruction is implied. Anything else is a
       project-review id (``open-project``, hidden alias). A lone PR number is refused
       because a PR-head lane needs the OWNER_UNIT and REPO positionals too.
 

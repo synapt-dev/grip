@@ -1,22 +1,9 @@
-"""Rows for the two verbs that still build `root / member["path"]` directly.
+"""Selected checkout uses committed paths, while ambient readers retain compatibility.
 
-`store` resolves a member's WORKING ROOT through `_native_member_working_root` --
-the declared PATH unless nothing is at it, in which case the member's NAME
-coordinate is tried. Three verbs use it (`status`, `commit`, `check`). Two did
-not: `_native_store_checkout` (two sites: the dirty check and the detach) and
-`_native_store_materialize` (one site). This file pins what those two do TODAY,
-on the unmodified tree, before the conversion.
-
-FOUR ROWS, and each prints the SUBJECT'S IDENTITY on failure -- member, declared
-path, and the root each verb actually used -- because the defect this lane is
-about is a verb acting on a DIFFERENT directory than the one it reports. A
-failure that says only "rc 5" cannot distinguish "the checkout was not restored"
-from "the verb looked somewhere else entirely".
-
-Rows 1 and 3 are the two consequences the issue names. Row 2 is the walk-up
-case, where the resolved root has no `.git` of its own and git would silently
-walk up to an ancestor. Row 4 is the agreement row: after a member is renamed,
-five verbs must name ONE root.
+Checkout restores the selected commit's declared physical path and leaves a
+legacy name-coordinate checkout unchanged. Ambient materialization, status,
+commit and check retain their existing path-then-name compatibility behavior.
+A nonempty directory without its own Git root refuses before checkout effects.
 """
 
 from __future__ import annotations
@@ -114,18 +101,13 @@ def test_row1_checkout_acts_on_a_name_placed_member(two_member_ws: Path) -> None
 
     rc, out = _cli("store", "checkout", root_commit[:12])
 
-    # WHAT THE VERB ACTUALLY TOUCHED -- observed, not inferred from rc.
-    moved = before != _head(placed)
-    why = _identity(root, "alpha", "alpha", placed) + f"\n    rc={rc} out={out[:200]!r}"
-    assert rc == 0, (
-        "`store checkout` refused a member that is present at its NAME coordinate; "
-        "its declared path is empty, which is the shape the resolver exists for." + why
-    )
-    assert moved, (
-        "`store checkout` returned 0 but the checkout at the NAME did not move: the verb "
-        "acted on some other directory (the declared path, or a walk-up), not on this "
-        "member's working root." + why
-    )
+    # Selected C owns its declared path. The legacy name checkout remains intact.
+    why = _identity(root, "alpha-elsewhere", "alpha", placed) + f"\nrc={rc} out={out!r}"
+    assert rc == 0, why
+    assert _head(placed) == before, why
+    assert (root / "alpha" / ".git").is_dir(), why
+    expected = _git_out(root, "ls-tree", root_commit, "--", "alpha").split()[2]
+    assert _head(root / "alpha") == expected, why
 
 
 def test_row2_checkout_refuses_a_resolved_root_with_no_git(two_member_ws: Path) -> None:
@@ -161,28 +143,10 @@ def test_row2_checkout_refuses_a_resolved_root_with_no_git(two_member_ws: Path) 
     rc, out = _cli("store", "checkout", root_commit[:12])
 
     why = _identity(root, "alpha", "alpha", root / "alpha") + f"\n    rc={rc} out={out[:200]!r}"
-    # EXIT 5, matching the group's existing answer for this exact state: `store commit`
-    # already refuses "is not a checkout; materialize it first" with 5 (grip_cli.py:956),
-    # and this is that state reached by a different verb. The row's first cut asserted 3 by
-    # no better argument than my own convenience; the codebase already had a code for it.
-    assert rc == 5, (
-        "a member whose resolved root carries no `.git` must be REFUSED with a named "
-        "state (exit 5, the group's code for `is not a checkout`), not handed to git to "
-        "walk up from." + why
-    )
-    # ⚠ THIS ASSERTION IS THE ONE CARRYING THE MUTATION, and the exit code above is not.
-    # Measured by removing the `.git` check (the mutation, counted: the literal went 1 -> 0):
-    # the walk-up then runs and git fails on the store root's tree, which `_store_git`'s
-    # residual RuntimeError backstop maps to code 5 -- so the rc assertion alone STILL PASSES
-    # and the row stays green on a tree with the refusal deleted. What catches it is the
-    # message: the verb answers with git's "fatal: unable to read tree <sha>", which names
-    # neither the member nor its path. Delete this assertion as redundant with the rc above
-    # and the row stops being able to fail.
-    assert "alpha" in out, (
-        "the refusal must name the member and the path it could not use; a message that "
-        "does not name them leaves the reader to work out which verb touched what." + why
-    )
-    assert "Traceback" not in out, "a refusal is a state, not a crash" + why
+    assert rc == 3, why
+    assert "not an empty checkout placeholder" in out, why
+    assert _head(root) == root_commit, why
+    assert (root / "alpha" / "not-a-repo.txt").read_text() == "a plain directory, not a checkout\n"
 
 
 def test_row3_materialize_leaves_exactly_one_working_copy_per_member(two_member_ws: Path) -> None:
@@ -237,93 +201,20 @@ def test_row3_materialize_leaves_exactly_one_working_copy_per_member(two_member_
     )
 
 
-def test_row4_all_five_verbs_agree_on_one_root_after_a_rename(two_member_ws: Path) -> None:
-    """Row 4, the agreement row. After a member is renamed, `checkout`, `status`,
-    `commit` and `check` must all name ONE root -- the checkout's.
-
-    This is the row that makes the other three safe to land: converting two verbs
-    while three others already resolve differently would leave the group internally
-    inconsistent, and the inconsistency would surface as a wrong PIN rather than a
-    wrong read.
-    """
+def test_row4_ambient_readers_keep_name_fallback_until_selected_checkout(two_member_ws: Path) -> None:
+    """Legacy ambient reads keep their fallback. Selected checkout does not borrow it."""
     root = two_member_ws
     assert _cli("store", "init", str(root))[0] == 0
     _assert_init_ran(root)
-    _git(root / "alpha", "commit", "-q", "--allow-empty", "-m", "second")
-    _git(root / "alpha", "push", "-q", "origin", "main")
-    _git(root / "beta", "commit", "-q", "--allow-empty", "-m", "beta second")
-    _git(root / "beta", "push", "-q", "origin", "main")
     placed = _place_member_at_its_name(root, "alpha", "alpha-elsewhere")
-    assert _cli("store", "commit", "-m", "record with the member at its name")[0] == 0
-    root_commit = _head(root)
-
-    # ⚠ THE TARGET REVISION IS POST-RENAME, AND THIS ASSERTS IT RATHER THAN ASSUMING IT.
-    # `_native_members_at(root, sha)` keys the pins by the names recorded in grip.toml AT THAT
-    # REVISION, so `store checkout` on a PRE-rename revision raises an uncaught KeyError at
-    # grip_cli.py:1122 before a single member is restored (measured by Atlas, in an isolation
-    # run with no path gap at all -- so it is a separate defect on a separate line, filed as
-    # its own issue and sequenced after this lane). A row that checked out a pre-rename
-    # revision would die on THAT while reading as "the path resolver is broken" -- the resolver
-    # would never have been reached. `root_commit` is taken AFTER the `store commit` that
-    # records the rename, so the name at that revision is the renamed one; that is the entire
-    # content of this precondition, and it is what keeps this row unentangled with the KeyError.
-    recorded = _git_out(root, "show", f"{root_commit[:12]}:grip.toml")
-    assert 'name = "alpha-elsewhere"' in recorded, (
-        "this row must check out a POST-rename revision: the pin lookup keys on the member "
-        "names recorded at the target revision, and a pre-rename target hits an unrelated "
-        "uncaught KeyError that would read as this lane's fix failing. Recorded grip.toml:\n"
-        + recorded
-    )
-
-    # The member moves on, so `checkout` has somewhere to restore it FROM. Without this
-    # the detach is a no-op and "did not move" is indistinguishable from "acted elsewhere",
-    # which is precisely the confusion this row exists to remove.
-    _git(placed, "commit", "-q", "--allow-empty", "-m", "third")
-    _git(placed, "push", "-q", "origin", "main")
-    placed_before = _head(placed)
-
-    rc_co, out_co = _cli("store", "checkout", root_commit[:12])
-    # ⚠ THE WITNESS IS TAKEN HERE, AT THE MOMENT THE VERB RAN. Read at the END of the row
-    # instead, it answers about the last thing that touched the member: the re-attach below
-    # is a `git checkout main`, which puts HEAD back on exactly `placed_before`, so an
-    # end-of-row read compared the third commit with itself and reported "checkout did not
-    # move" while the checkout had in fact moved it (measured). A witness has a MOMENT as
-    # well as a subject.
-    placed_after_checkout = _head(placed)
-    rc_st, out_st = _cli("store", "status", "--json")
-
-    # `commit` NEEDS SOMETHING TO RECORD, and the preceding `checkout` removes it: restoring
-    # the member onto the pin leaves HEAD equal to the recorded gitlink, so there is nothing
-    # to commit -- and `git commit` on a clean tree exits 1 with its message on **stdout**,
-    # which `_store_git`'s `stderr.strip() or "git command failed"` turns into a bare
-    # "git command failed" at exit 5 (measured: rc=1, stdout="nothing to commit", stderr
-    # empty, as a control against the same command with a real change). That refusal is about
-    # THIS FIXTURE, not about which root the verb resolved, and a row that read it as a
-    # resolution failure would be red for a reason it does not claim. Detaching also left the
-    # member off its branch, so putting it back is what gives `commit` a pin to record
-    # (and keeps it coverable: a dangling detached commit is not an ancestor of origin/main).
-    _git(placed, "checkout", "-q", "main")
-
-    rc_cm, out_cm = _cli("store", "commit", "-m", "after the rename")
-    rc_ck, out_ck = _cli("store", "check", "--json")
-
-    why = (
-        _identity(root, "alpha", "alpha", placed)
-        + f"\n    checkout  rc={rc_co} out={out_co[:160]!r}"
-        + f"\n    status    rc={rc_st} out={out_st[:160]!r}"
-        + f"\n    commit    rc={rc_cm} out={out_cm[:160]!r}"
-        + f"\n    check     rc={rc_ck} out={out_ck[:160]!r}"
-        + f"\n    target revision (post-rename) : {root_commit[:12]}"
-        + f"\n    placed HEAD before checkout : {placed_before}"
-        + f"\n    placed HEAD after  checkout : {placed_after_checkout}"
-    )
-    assert rc_co == 0, "checkout must act on the name-placed member" + why
-    assert placed_before != placed_after_checkout, (
-        "the name-placed checkout did not move, so `checkout` acted elsewhere" + why
-    )
-    assert rc_st == 0 and rc_cm == 0, (
-        "status and commit already resolve the name; they must stay 0" + why
-    )
-    assert "alpha-elsewhere" in out_st or "alpha" in out_st, (
-        "status must report the member it actually read" + why
-    )
+    assert _cli("store", "commit", "-m", "record at name")[0] == 0
+    target = _head(root)
+    before = _head(placed)
+    rc, out = _cli("store", "status", "--json")
+    assert rc == 0, out
+    assert "alpha-elsewhere" in out
+    assert not (root / "alpha").exists()
+    rc, out = _cli("store", "checkout", target)
+    assert rc == 0, out
+    assert _head(placed) == before
+    assert _head(root / "alpha") == before

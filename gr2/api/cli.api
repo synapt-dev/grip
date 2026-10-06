@@ -206,6 +206,7 @@ flag  lane create --root/-C <str>                                     stable
 flag  lane create --source <str>                                      stable
 flag  lane create --type <str>                                        stable
 flag  lane create --unit <str>                                        stable
+flag  lane create --workspace-commit <str>                            stable
 verb  lane create                                                     stable
 # lane current
 arg   lane current owner_unit <str> (hidden)                          stable

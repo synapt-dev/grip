@@ -139,7 +139,7 @@ def test_python_cli_renders_the_transition_writer_outcome(tmp_path: Path, capsys
     app_module.lane_enter(workspace, "atlas", "feature", "agent:atlas", False, False, False)
 
     payload = json.loads(capsys.readouterr().out)
-    lane_root = lanes.lane_dir(workspace, "atlas", "feature")
+    lane_root = workspace / "agents" / "atlas" / "lanes" / "feature"
     assert payload == {
         "status": "ok",
         "action": "enter",
@@ -268,13 +268,15 @@ repos = ["app", "lib"]
 
 def test_materialized_lane_records_lane_kind_materialized(tmp_path: Path) -> None:
     # Every lane document carries lane_kind so a reader never infers it; the
-    # ordinary create path is "materialized" and owns a repos/ subdir.
+    # ordinary create path records the visible checkout before materialization.
     workspace = _workspace(tmp_path)
     assert lanes.create_lane(_create(workspace, "feature")) == 0
     doc = lanes.tomllib.loads(lanes.lane_file(workspace, "atlas", "feature").read_text())
     assert doc["lane_kind"] == "materialized"
     assert "bound_worktree" not in doc
-    assert (lanes.lane_dir(workspace, "atlas", "feature") / "repos").is_dir()
+    assert doc["checkout_root"] == "agents/atlas/lanes/feature"
+    assert not (workspace / doc["checkout_root"]).exists()
+    assert not (lanes.lane_dir(workspace, "atlas", "feature") / "repos").exists()
 
 
 def test_create_bound_lane_writes_bound_receipt_and_no_clone(tmp_path: Path) -> None:

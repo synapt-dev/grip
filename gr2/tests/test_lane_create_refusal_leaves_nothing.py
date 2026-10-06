@@ -23,7 +23,9 @@ from typer.testing import CliRunner
 
 from gr2.python_cli.app import app
 
-runner = CliRunner()
+from .conftest import make_cli_runner
+
+runner = make_cli_runner()
 
 SPEC = (
     'schema_version = 1\nworkspace_name = "m"\n\n'
@@ -217,6 +219,7 @@ def test_the_path_the_kept_message_names_is_safe_to_remove(tmp_path: Path) -> No
     )
 
     # --- the advice, followed literally ---
+    shutil.rmtree(ws / "agents" / "atlas" / "lanes" / "feature")
     shutil.rmtree(lane_root)
     assert not lane_root.exists()
 

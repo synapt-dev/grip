@@ -60,7 +60,7 @@ def _create_materialized_lane_ws(tmp: Path) -> tuple[Path, Path]:
     """(ws, lane_root) with a two-repo materialized lane whose repos/<r> dirs
     are real git repos (the same shape test_commit._materialized_lane builds)."""
     ws = _make_workspace_units_home(tmp)
-    lane_root = lanes.lane_dir(ws, "atlas", "feature")
+    lane_root = ws / "agents" / "atlas" / "lanes" / "feature"
     branch = "a=main,b=main"
     assert lanes.create_lane(
         argparse.Namespace(
@@ -69,6 +69,7 @@ def _create_materialized_lane_ws(tmp: Path) -> tuple[Path, Path]:
             default_commands=[],
         )
     ) == 0
+    (lane_root / "repos").mkdir(parents=True)
     for r in ("a", "b"):
         _init_repo(lane_root / "repos" / r)
     return ws, lane_root
@@ -91,7 +92,7 @@ def _unit_home_with_staged_change(ws: Path, repo: str) -> Path:
 
 def test_lane_create_human_line_names_repo_dirs(tmp_path: Path, capsys) -> None:
     ws = _make_workspace_units_home(tmp_path)
-    lane_root = lanes.lane_dir(ws, "atlas", "feature")
+    lane_root = ws / "agents" / "atlas" / "lanes" / "feature"
     assert lanes.create_lane(
         argparse.Namespace(
             workspace_root=ws, owner_unit="atlas", lane_name="feature",
@@ -102,14 +103,14 @@ def test_lane_create_human_line_names_repo_dirs(tmp_path: Path, capsys) -> None:
     out = capsys.readouterr().out
     # The metadata line exists and each repo's WORKING directory is named,
     # absolute, one per repo.
-    assert str(lane_root / "lane.toml") in out
+    assert str(lanes.lane_file(ws, "atlas", "feature")) in out
     assert str(lane_root / "repos" / "a") in out
     assert str(lane_root / "repos" / "b") in out
 
 
 def test_lane_enter_receipt_json_carries_absolute_repo_paths(tmp_path: Path) -> None:
     ws = _materialized_lane(tmp_path, ["a", "b"])
-    lane_root = lanes.lane_dir(ws, "atlas", "feature")
+    lane_root = ws / "agents" / "atlas" / "lanes" / "feature"
     lanes.enter_lane(
         argparse.Namespace(
             workspace_root=ws, owner_unit="atlas", lane_name="feature",
@@ -127,7 +128,7 @@ def test_lane_enter_receipt_json_carries_absolute_repo_paths(tmp_path: Path) -> 
 
 def test_lane_enter_human_line_names_repo_paths(tmp_path: Path) -> None:
     ws = _materialized_lane(tmp_path, ["a", "b"])
-    lane_root = lanes.lane_dir(ws, "atlas", "feature")
+    lane_root = ws / "agents" / "atlas" / "lanes" / "feature"
     result = runner.invoke(
         app,
         ["lane", "enter", str(ws), "atlas", "feature", "--actor", "test"],
@@ -198,7 +199,7 @@ def test_partial_skip_stays_exit_zero_and_names_skipped(tmp_path: Path) -> None:
     # Control, unchanged contract: one committed, one skipped → exit 0, the
     # skipped repo still named, no "committed nothing" sentence.
     ws = _materialized_lane(tmp_path, ["a", "b"])
-    lane_root = lanes.lane_dir(ws, "atlas", "feature")
+    lane_root = ws / "agents" / "atlas" / "lanes" / "feature"
     _stage_change(lane_root / "repos" / "a")  # b left empty
 
     result = runner.invoke(

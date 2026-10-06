@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import json
 import re
 import tomllib
 from pathlib import Path
@@ -199,16 +200,18 @@ def _load_workspace_boundary_doc(workspace: Path) -> tuple[dict[str, object] | N
         return None, ProjectReviewFailure("workspace_spec", str(exc))
 
 
-def _stamp_lane_kind(workspace: Path, owner_unit: str, lane_name: str, kind: str) -> None:
-    """Rewrite the lane's ``lane_kind`` in place. create_lane writes the default
-    ``materialized``; a review lane overrides it so require_current_lane reports the
-    review kind to every mutating verb."""
+def _record_review_checkout(workspace: Path, owner_unit: str, lane_name: str, kind: str, review_root: Path) -> None:
+    """Record the existing review owner's physical root and read-only kind."""
     path = lanes.lane_file(workspace, owner_unit, lane_name)
     text = path.read_text()
-    new = re.sub(r'(?m)^lane_kind\s*=\s*"[^"]*"\s*$', f'lane_kind = "{kind}"', text)
-    if 'lane_kind' not in new:
-        new = new.rstrip("\n") + f'\nlane_kind = "{kind}"\n'
-    path.write_text(new)
+    values = {"lane_kind": kind, "checkout_root": review_root.relative_to(workspace).as_posix()}
+    for key, value in values.items():
+        line = f"{key} = {json.dumps(value)}"
+        pattern = rf'(?m)^{key}\s*=\s*"[^"\n]*"\s*$'
+        text, count = re.subn(pattern, lambda _match: line, text)
+        if count == 0:
+            text = text.rstrip("\n") + "\n" + line + "\n"
+    lanes.atomic_replace_text(path, text)
 
 
 def open_project_review(*, workspace: Path, owner_unit: str, lane_name: str, spec: ProjectReviewSpec, sources: dict[str, tuple[Path, str]], allow_local: bool = False, ephemeral: bool = False, materialize_heads: dict[str, str] | None = None) -> ProjectReviewOutcome:
@@ -302,11 +305,10 @@ def open_project_review(*, workspace: Path, owner_unit: str, lane_name: str, spe
             return ProjectReviewOutcome("partial", spec.grip_commit, tuple(observed), (ProjectReviewFailure(pin.key, str(exc)),), review_root, False)
         observed.append(record)
     try:
-        lanes.create_lane(argparse.Namespace(workspace_root=workspace, owner_unit=owner_unit, lane_name=lane_name, type="review", repos=",".join(pin.key for pin in canonical_pins), branch="main", source="project-review", default_commands=[]))
-        if ephemeral:
-            # Stamp the lane kind so every mutating verb (commit/push/bind) can
-            # refuse this lane naming the kind: a review lane never becomes a work lane.
-            _stamp_lane_kind(workspace, owner_unit, lane_name, "review-ephemeral")
+        lanes.create_lane(argparse.Namespace(workspace_root=workspace, owner_unit=owner_unit, lane_name=lane_name, type="review", repos=",".join(pin.key for pin in canonical_pins), branch="main", source="project-review", default_commands=[], defer_checkout_paths=True))
+        _record_review_checkout(workspace, owner_unit, lane_name,
+                                "review-ephemeral" if ephemeral else "materialized", review_root)
+        lanes.print_lane_repo_paths(workspace, owner_unit, lane_name)
         if not previously_present:
             from .review_allocation import record_created_allocation
             record_created_allocation(workspace, review_root, owner_unit, lane_name,

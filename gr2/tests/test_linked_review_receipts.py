@@ -438,6 +438,15 @@ def assert_publication_recovered(world, monkeypatch, state):
     assert calls == [repo]
 
 
+def observe_recovery_effects(observer, effects):
+    unlink = Path.unlink
+    observer.setattr(records.os, 'replace', lambda *args: effects.append(('replace', args)))
+    def record_unlink(target, *args, **kwargs):
+        effects.append(('unlink', str(target)))
+        return unlink(target, *args, **kwargs)
+    observer.setattr(Path, 'unlink', record_unlink)
+
+
 def test_pending_publication_refuses_without_pointer(world, monkeypatch):
     state = pending_publication(world, monkeypatch)
     _, paths, pointer, _, before = state
@@ -445,7 +454,7 @@ def test_pending_publication_refuses_without_pointer(world, monkeypatch):
     assert_pending_consumers(world, monkeypatch, state)
     effects = []
     with monkeypatch.context() as observer:
-        observer.setattr(records.os, 'replace', lambda *a: effects.append(a))
+        observe_recovery_effects(observer, effects)
         with pytest.raises(records.ReviewRecordLocationError, match='target content changed'):
             records.recover_review_publication(paths)
     assert effects == [] and paths.publication_pending.exists()
@@ -453,7 +462,7 @@ def test_pending_publication_refuses_without_pointer(world, monkeypatch):
     assert_publication_recovered(world, monkeypatch, state)
 
 
-@pytest.mark.parametrize('damage', ['json', 'symlink', 'extra-target', 'foreign-content', 'boolean-identity'])
+@pytest.mark.parametrize('damage', ['json', 'symlink', 'extra-target', 'foreign-content', 'boolean-identity', 'float-identity'])
 def test_invalid_publication_recovery_has_no_restoration(world, monkeypatch, damage, tmp_path):
     state = pending_publication(world, monkeypatch)
     _, paths, _, _, _ = state
@@ -471,16 +480,25 @@ def test_invalid_publication_recovery_has_no_restoration(world, monkeypatch, dam
         doc = json.loads(original)
         if damage == 'extra-target':
             doc['targets'][str(tmp_path / 'foreign')] = {'old': None, 'new': ''}
-        else:
+        elif damage == 'boolean-identity':
             doc['repo_identity'] = [True, False]
+        else:
+            integers = doc['repo_identity']
+            doc['repo_identity'] = [float(value) for value in integers]
+            assert doc['repo_identity'] == integers  # Type is the only changed fact.
         pending.write_text(json.dumps(doc))
+    def damaged_snapshot():
+        return {str(p): ('symlink', str(p.readlink())) if p.is_symlink()
+                else ('bytes', p.read_bytes()) if p.exists() else ('absent', None)
+                for p in (pending, paths.current, records.review_record_pointer_path(state[0]), paths.legacy)}
+    damaged = damaged_snapshot()
     assert_pending_consumers(world, monkeypatch, state)
     effects = []
     with monkeypatch.context() as observer:
-        observer.setattr(records.os, 'replace', lambda *a: effects.append(a))
+        observe_recovery_effects(observer, effects)
         with pytest.raises(records.ReviewRecordLocationError, match='publication recovery refused'):
             records.recover_review_publication(paths)
-    assert effects == [] and (pending.exists() or pending.is_symlink())
+    assert effects == [] and damaged_snapshot() == damaged
     if pending.is_symlink():
         pending.unlink()
     pending.write_bytes(original)
@@ -531,7 +549,7 @@ def test_publication_recovery_refuses_replaced_physical_owner(world, monkeypatch
     shutil.copytree(saved, target)
     effects = []
     with monkeypatch.context() as observer:
-        observer.setattr(records.os, 'replace', lambda *a: effects.append(a))
+        observe_recovery_effects(observer, effects)
         with pytest.raises(records.ReviewRecordLocationError, match='owner or Git identity changed'):
             records.recover_review_publication(paths)
     assert effects == [] and paths.publication_pending.read_bytes() == original_pending
@@ -548,7 +566,7 @@ def test_publication_recovery_refuses_another_linked_worktree(world, monkeypatch
     sibling_paths.publication_pending.write_bytes(paths.publication_pending.read_bytes())
     effects = []
     with monkeypatch.context() as observer:
-        observer.setattr(records.os, 'replace', lambda *a: effects.append(a))
+        observe_recovery_effects(observer, effects)
         with pytest.raises(records.ReviewRecordLocationError, match='owner or Git identity changed'):
             records.recover_review_publication(sibling_paths)
     assert effects == [] and paths.publication_pending.exists()
@@ -573,7 +591,7 @@ def test_publication_recovery_refuses_changed_workspace_parent(world, monkeypatc
         parent.symlink_to(foreign, target_is_directory=True)
     effects = []
     with monkeypatch.context() as observer:
-        observer.setattr(records.os, 'replace', lambda *a: effects.append(a))
+        observe_recovery_effects(observer, effects)
         with pytest.raises(records.ReviewRecordLocationError) as caught:
             records.recover_review_publication(paths)
     reason = 'destination parent identity changed' if redirect == 'replacement' else 'ancestor is a symlink'

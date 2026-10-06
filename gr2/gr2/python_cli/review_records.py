@@ -32,6 +32,147 @@ class ReviewRecordPaths:
         """Workspace coordinate carried by the pointer, not an active payload."""
         return self.legacy if self.recovery_path is not None else self.current
 
+    @property
+    def publication_pending(self) -> Path:
+        return self.current.with_name(self.current.name + ".publication.json")
+
+
+def _refuse_pending_publication(path: Path) -> None:
+    if path.exists() or path.is_symlink():
+        raise ReviewRecordLocationError(f"review publication is incomplete; explicit recovery at {path}")
+
+
+def _physical_identity(path: Path) -> list[int]:
+    stat = path.stat()
+    return [stat.st_dev, stat.st_ino]
+
+
+def _publication_coordinates(paths: ReviewRecordPaths) -> tuple[Path, str, str, str]:
+    context = paths.context
+    workspace = context.parents[5]
+    owner, lane, member = context.parents[1].name, context.parent.name, context.stem
+    expected = review_record_paths(workspace, owner, lane, member, paths.repo_root or paths.current.parent.parent)
+    if expected != paths:
+        raise ReviewRecordLocationError("publication coordinates differ from the calling worktree")
+    if workspace.is_symlink():
+        raise ReviewRecordLocationError("publication workspace is a symlink")
+    current = workspace
+    for component in context.parent.relative_to(workspace).parts:
+        current /= component
+        if current.is_symlink():
+            raise ReviewRecordLocationError("publication workspace evidence ancestor is a symlink")
+    return workspace, owner, lane, member
+
+
+def _publication_ownership(paths: ReviewRecordPaths, targets: list[Path], evidence: bool) -> dict:
+    workspace, owner, lane, member = _publication_coordinates(paths)
+    repo = paths.repo_root or paths.current.parent.parent
+    from ..prototypes import lane_workspace_prototype as lanes
+    definition = lanes.lane_file(workspace, owner, lane)
+    # The project producer writes member receipts before its lane definition
+    # and allocation. Exact managed creation coordinates permit restoration of
+    # those bytes only, never selection or deletion authority.
+    if (not definition.exists() and not definition.is_symlink() and evidence
+            and repo == workspace / "reviews" / owner / lane / "repos" / member):
+        if repo.resolve() != repo:
+            raise ReviewRecordLocationError("publication project coordinate is redirected")
+    else:
+        _validate_context_repo(workspace, owner, lane, member, repo)
+    parents = {str(p.parent): _physical_identity(p.parent) for p in targets}
+    current = workspace
+    if evidence:
+        for component in paths.context.parent.relative_to(workspace).parts:
+            current /= component
+            parents[str(current)] = _physical_identity(current)
+    return {"workspace": str(workspace), "workspace_identity": _physical_identity(workspace), "parents": parents}
+
+
+def _valid_physical_identity(value: object) -> bool:
+    return isinstance(value, list) and len(value) == 2 and all(type(v) is int for v in value)
+
+
+def _stage_publication_pending(paths: ReviewRecordPaths, pointer: Path,
+                               previous: dict[Path, bytes | None], data: bytes) -> None:
+    repo = paths.repo_root or paths.current.parent.parent
+    doc = {"version": 1, "repo": str(repo), "repo_identity": _physical_identity(repo),
+           "git_dir": str(paths.current.parent), "git_identity": _physical_identity(paths.current.parent),
+           "context": str(paths.context), "workspace_evidence": paths.legacy in previous,
+           "ownership": _publication_ownership(paths, list(previous), paths.legacy in previous),
+           "targets": {str(target): {"old": old.hex() if old is not None else None,
+                                     "new": ((str(paths.context) + "\n").encode() if target == pointer else data).hex()}
+                       for target, old in previous.items()}}
+    with tempfile.NamedTemporaryFile(dir=paths.current.parent, prefix=".publication-", delete=False) as stream:
+        temporary = Path(stream.name)
+        stream.write((json.dumps(doc, indent=2) + "\n").encode())
+    try:
+        # Create-only: an existing pending record is never overwritten.
+        os.link(temporary, paths.publication_pending)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def recover_review_publication(paths: ReviewRecordPaths) -> None:
+    """Explicitly restore prior bytes, without changing HEAD or workspace authority."""
+    pending = paths.publication_pending
+    repo = paths.repo_root or paths.current.parent.parent
+    pointer = review_record_pointer_path(repo)
+    try:
+        if pending.is_symlink():
+            raise ValueError("symlink pending record")
+        doc = json.loads(pending.read_text())
+        if (set(doc) != {"version", "repo", "repo_identity", "git_dir", "git_identity", "context", "workspace_evidence", "ownership", "targets"}
+                or type(doc["version"]) is not int or doc["version"] != 1
+                or type(doc["workspace_evidence"]) is not bool
+                or not _valid_physical_identity(doc["repo_identity"])
+                or not _valid_physical_identity(doc["git_identity"])
+                or doc["repo"] != str(repo) or doc["context"] != str(paths.context)
+                or doc["repo_identity"] != _physical_identity(repo)
+                or doc["git_dir"] != str(paths.current.parent)
+                or doc["git_identity"] != _physical_identity(paths.current.parent)
+                or legacy_review_record_path(repo) != paths.current):
+            raise ValueError("publication owner or Git identity changed")
+        targets = list(dict.fromkeys([paths.current, pointer] + ([paths.legacy] if doc["workspace_evidence"] else [])))
+        ownership = doc["ownership"]
+        if (not isinstance(ownership, dict) or set(ownership) != {"workspace", "workspace_identity", "parents"}
+                or not _valid_physical_identity(ownership["workspace_identity"])
+                or not isinstance(ownership["parents"], dict)
+                or not all(_valid_physical_identity(value) for value in ownership["parents"].values())
+                or ownership != _publication_ownership(paths, targets, doc["workspace_evidence"])):
+            raise ValueError("publication workspace or destination parent identity changed")
+        if not isinstance(doc["targets"], dict) or set(doc["targets"]) != {str(p) for p in targets}:
+            raise ValueError("publication targets differ from owning coordinates")
+        originals = {}
+        for target in targets:
+            item = doc["targets"][str(target)]
+            if not isinstance(item, dict) or set(item) != {"old", "new"}:
+                raise ValueError("invalid publication evidence")
+            old = None if item["old"] is None else bytes.fromhex(item["old"])
+            new = bytes.fromhex(item["new"])
+            if target.is_symlink():
+                raise ValueError("publication target is a symlink")
+            live = target.read_bytes() if target.exists() else None
+            if live not in (old, new):
+                raise ValueError("publication target content changed")
+            originals[target] = old
+        # Validate every destination before the first restoration. Partial
+        # restoration or finalization failure retains the complete evidence.
+        for target, old in originals.items():
+            if old is None:
+                target.unlink(missing_ok=True)
+            else:
+                with tempfile.NamedTemporaryFile(dir=target.parent, prefix=".publication-restore-", delete=False) as stream:
+                    temporary = Path(stream.name)
+                    stream.write(old)
+                try:
+                    os.replace(temporary, target)
+                finally:
+                    temporary.unlink(missing_ok=True)
+        if any((p.read_bytes() if p.exists() else None) != old for p, old in originals.items()):
+            raise ValueError("publication restoration could not be verified")
+        pending.unlink()
+    except (OSError, ValueError, TypeError, AttributeError, KeyError, IndexError) as exc:
+        raise ReviewRecordLocationError(f"publication recovery refused; retaining {pending}: {exc}") from exc
+
 
 def read_close_recovery(paths: ReviewRecordPaths, target: Path, managed_root: Path) -> dict | None:
     if not paths.closing.exists() and not paths.closing.is_symlink():
@@ -206,6 +347,7 @@ def read_review_records_for_guard(paths: ReviewRecordPaths) -> tuple[dict, ...]:
     cleanup. The commit and push guard has a different question: whether any
     extant receipt marks this checkout disposable.
     """
+    _refuse_pending_publication(paths.publication_pending)
     if paths.closing.exists() or paths.closing.is_symlink():
         raise ReviewRecordLocationError(f"review close is incomplete; recovery at {paths.closing}")
     records: list[dict] = []
@@ -226,6 +368,7 @@ def read_review_records_for_guard(paths: ReviewRecordPaths) -> tuple[dict, ...]:
 
 def read_review_record_at(paths: ReviewRecordPaths, *, notice: Callable[[str], None] = print) -> tuple[dict, Path] | None:
     """Read a receipt and return the exact path that supplied it for cleanup."""
+    _refuse_pending_publication(paths.publication_pending)
     if paths.closing.exists() or paths.closing.is_symlink():
         return None
     # Selection cannot turn a preferred active receipt into a way of masking
@@ -250,6 +393,7 @@ def write_review_record(paths: ReviewRecordPaths, record: dict, *, workspace_evi
     # A project review can materialize outside `.grip/state/reviews`; commit and
     # push run from that member checkout, so leave one coordinate pointer there.
     # It deliberately contains no receipt fields.
+    _refuse_pending_publication(paths.publication_pending)
     if paths.closing.exists() or paths.closing.is_symlink():
         raise ReviewRecordLocationError(f"review close is incomplete; recovery at {paths.closing}")
     repo = paths.repo_root or paths.legacy.parent.parent
@@ -262,6 +406,7 @@ def write_review_record(paths: ReviewRecordPaths, record: dict, *, workspace_evi
         raise ReviewRecordLocationError("refusing a symlink review receipt, pointer or workspace evidence")
     read_review_records_for_guard(paths)
     previous = {target: target.read_bytes() if target.exists() else None for target in targets}
+    _publication_coordinates(paths)
     for target in targets:
         target.parent.mkdir(parents=True, exist_ok=True)
     staged: list[Path] = []
@@ -280,6 +425,7 @@ def write_review_record(paths: ReviewRecordPaths, record: dict, *, workspace_evi
                                       if target == pointer else data) for target in targets}
         backups = {target: stage(target, old) if old is not None else None
                    for target, old in previous.items()}
+        _stage_publication_pending(paths, pointer, previous, data)
         try:
             for target in targets:
                 os.replace(replacements[target], target)
@@ -303,7 +449,15 @@ def write_review_record(paths: ReviewRecordPaths, record: dict, *, workspace_evi
                     f"review publication failed: {publication_error}; rollback failed: "
                     + "; ".join(failures)
                 ) from publication_error
+            if any((target.read_bytes() if target.exists() else None) != old
+                   for target, old in previous.items()):
+                raise ReviewRecordLocationError("review rollback verification failed; retaining publication evidence") from publication_error
+            paths.publication_pending.unlink()
             raise
+        if any(target.read_bytes() != ((str(paths.context) + "\n").encode() if target == pointer else data)
+               for target in targets):
+            raise ReviewRecordLocationError("review publication verification failed; retaining publication evidence")
+        paths.publication_pending.unlink()
     finally:
         for path in staged:
             path.unlink(missing_ok=True)
@@ -314,6 +468,7 @@ def lane_paths_for_repo(repo: Path | str) -> ReviewRecordPaths | None:
     """Locate only a repo structurally inside a materialized lane, never by scan."""
     repo_path = Path(repo).resolve()
     legacy = legacy_review_record_path(repo_path)
+    _refuse_pending_publication(legacy.with_name(legacy.name + ".publication.json"))
     pointer = review_record_pointer_path(repo_path)
     if pointer.is_file():
         try:

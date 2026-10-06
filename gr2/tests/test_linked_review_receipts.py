@@ -51,21 +51,36 @@ def bind(world, repo):
 
 def test_three_checkouts_bind_and_validate_before_stub_push(world, monkeypatch):
     pointers = []
+    active = []
+    siblings = {}
     calls = []
-    monkeypatch.setattr(lanes._push, 'push_current_branch', lambda repo, **kw: calls.append(repo))
+    monkeypatch.setattr(lanes._push, 'push_current_branch', lambda repo, **kw: calls.append((repo, git(repo, 'rev-parse', 'HEAD'))))
     for repo in world[1]:
+        # Each worktree has distinct payload and head, so sharing only G while
+        # leaving P per-worktree cannot silently overwrite equivalent bytes.
+        (repo / 'file').write_text(repo.name + '\n')
+        git(repo, 'commit', '-qam', repo.name)
+        head = git(repo, 'rev-parse', 'HEAD')
+        definition = lanes.lane_file(world[0], 'owner', repo.name)
+        doc = lanes.load_lane_doc(world[0], 'owner', repo.name)
+        definition.write_text(lanes.serialize_toml({**doc, 'bound_head': head}))
         receipt = bind(world, repo)
         paths = coordinates(world, repo)
         pointer = records.review_record_pointer_path(repo)
         pointers.append(pointer)
+        active.append(paths.current)
         assert pointer.read_text() == str(paths.context) + '\n'
         assert records.lane_paths_for_repo(repo) == paths
         assert json.loads(paths.current.read_text()) == receipt.to_dict()
-        assert (receipt.base, receipt.head, receipt.lane_kind) == (world[2], world[3], 'bound')
+        assert (receipt.base, receipt.head, receipt.lane_kind) == (world[2], head, 'bound')
         assert not paths.legacy.exists()
         lanes.pr_create_bound_lane(world[0], 'owner', repo.name)
-    assert calls == world[1]
+        assert all(path.read_bytes() == raw for path, raw in siblings.items())
+        siblings.update({paths.current: paths.current.read_bytes(), pointer: pointer.read_bytes()})
+    assert calls == [(repo, git(repo, 'rev-parse', 'HEAD')) for repo in world[1]]
+    assert len({head for _, head in calls}) == 3
     assert len(set(pointers)) == 3
+    assert len(set(active)) == 3
 
 
 @pytest.mark.parametrize('content', [None, '[]', '{bad', '{"lane_kind":"review-ephemeral"}'])
@@ -338,3 +353,235 @@ def test_workspace_symlink_preflight_performs_no_replacement(world, monkeypatch,
     with pytest.raises(records.ReviewRecordLocationError, match='symlink'):
         records.write_review_record(paths, old)
     assert calls == [] and foreign.read_bytes() == b'foreign\n'
+
+
+def pending_publication(world, monkeypatch, *, evidence=False):
+    """Valid A->B->H with same H and two different nonempty reviewed ranges."""
+    repo = world[1][1]
+    (repo / 'file').write_text('publication-head\n')
+    git(repo, 'commit', '-qam', 'publication head')
+    head = git(repo, 'rev-parse', 'HEAD')
+    definition = lanes.lane_file(world[0], 'owner', repo.name)
+    doc = lanes.load_lane_doc(world[0], 'owner', repo.name)
+    definition.write_text(lanes.serialize_toml({**doc, 'bound_head': head}))
+    old = lanes.bind_bound_lane(world[0], 'owner', repo.name, base=world[3], allow_local=True).to_dict()
+    paths = coordinates(world, repo)
+    pointer = records.review_record_pointer_path(repo)
+    if evidence:
+        paths.legacy.parent.mkdir(parents=True)
+        paths.legacy.write_text(json.dumps(old, separators=(',', ':')) + '\n')
+        pointer.write_bytes(pointer.read_bytes() + b'\n')
+    targets = [paths.current, pointer] + ([paths.legacy] if evidence else [])
+    before = {p: p.read_bytes() for p in targets}
+    faults = []
+    replace = records.os.replace
+    published = False
+    def fail_twice(source, target):
+        nonlocal published
+        if Path(target) == pointer:
+            faults.append('pointer')
+            raise OSError('named pointer publication fault')
+        if Path(target) == paths.current:
+            if published:
+                faults.append('G rollback')
+                raise OSError('named G compensation fault')
+            published = True
+        return replace(source, target)
+    with monkeypatch.context() as fault:
+        fault.setattr(records.os, 'replace', fail_twice)
+        with pytest.raises(records.ReviewRecordLocationError) as caught:
+            records.write_review_record(paths, {**old, 'base': world[2]})
+    assert faults == ['pointer', 'G rollback']
+    assert 'named pointer publication fault' in str(caught.value)
+    assert 'named G compensation fault' in str(caught.value)
+    backup = Path(str(caught.value).split('prior bytes at ', 1)[1])
+    assert backup.read_bytes() == before[paths.current]
+    assert paths.publication_pending.is_file()
+    assert json.loads(paths.current.read_bytes()) == {**old, 'base': world[2]}
+    return repo, paths, pointer, old, before
+
+
+def assert_pending_consumers(world, monkeypatch, state):
+    repo, paths, _, old, _ = state
+    calls = []
+    effects = []
+    with monkeypatch.context() as observer:
+        observer.setattr(lanes._push, 'push_current_branch', lambda *a, **kw: calls.append(a))
+        observer.setattr(records.os, 'replace', lambda *a: effects.append(a))
+        observer.setattr(records.os, 'link', lambda *a: effects.append(a))
+        consumers = [lambda: records.lane_paths_for_repo(repo),
+                     lambda: records.read_review_record_at(paths),
+                     lambda: records.read_review_records_for_guard(paths),
+                     lambda: commit._refuse_review_ephemeral_repo(repo),
+                     lambda: push._refuse_review_ephemeral_repo(repo),
+                     lambda: lanes.pr_create_bound_lane(world[0], 'owner', repo.name),
+                     lambda: records.write_review_record(paths, old)]
+        for consumer in consumers:
+            with pytest.raises((records.ReviewRecordLocationError, commit.CommitError, push.PushError, SystemExit)) as caught:
+                consumer()
+            assert 'publication is incomplete' in exception_chain(caught.value)
+    assert calls == [] and effects == []
+
+
+def assert_publication_recovered(world, monkeypatch, state):
+    repo, paths, _, old, before = state
+    records.recover_review_publication(paths)
+    assert not paths.publication_pending.exists()
+    assert {p: p.read_bytes() for p in before} == before
+    assert records.read_review_record_at(paths) == (old, paths.current)
+    commit._refuse_review_ephemeral_repo(repo)
+    push._refuse_review_ephemeral_repo(repo)
+    calls = []
+    with monkeypatch.context() as recorder:
+        recorder.setattr(lanes._push, 'push_current_branch', lambda target, **kw: calls.append(target))
+        lanes.pr_create_bound_lane(world[0], 'owner', repo.name)
+    assert calls == [repo]
+
+
+def test_pending_publication_refuses_without_pointer(world, monkeypatch):
+    state = pending_publication(world, monkeypatch)
+    _, paths, pointer, _, before = state
+    pointer.unlink()
+    assert_pending_consumers(world, monkeypatch, state)
+    effects = []
+    with monkeypatch.context() as observer:
+        observer.setattr(records.os, 'replace', lambda *a: effects.append(a))
+        with pytest.raises(records.ReviewRecordLocationError, match='target content changed'):
+            records.recover_review_publication(paths)
+    assert effects == [] and paths.publication_pending.exists()
+    pointer.write_bytes(before[pointer])
+    assert_publication_recovered(world, monkeypatch, state)
+
+
+@pytest.mark.parametrize('damage', ['json', 'symlink', 'extra-target', 'foreign-content', 'boolean-identity'])
+def test_invalid_publication_recovery_has_no_restoration(world, monkeypatch, damage, tmp_path):
+    state = pending_publication(world, monkeypatch)
+    _, paths, _, _, _ = state
+    pending = paths.publication_pending
+    original = pending.read_bytes()
+    live = paths.current.read_bytes()
+    if damage == 'json':
+        pending.write_text('{bad')
+    elif damage == 'symlink':
+        pending.unlink()
+        pending.symlink_to(tmp_path / 'absent-pending')
+    elif damage == 'foreign-content':
+        paths.current.write_bytes(live + b'\n')
+    else:
+        doc = json.loads(original)
+        if damage == 'extra-target':
+            doc['targets'][str(tmp_path / 'foreign')] = {'old': None, 'new': ''}
+        else:
+            doc['repo_identity'] = [True, False]
+        pending.write_text(json.dumps(doc))
+    assert_pending_consumers(world, monkeypatch, state)
+    effects = []
+    with monkeypatch.context() as observer:
+        observer.setattr(records.os, 'replace', lambda *a: effects.append(a))
+        with pytest.raises(records.ReviewRecordLocationError, match='publication recovery refused'):
+            records.recover_review_publication(paths)
+    assert effects == [] and (pending.exists() or pending.is_symlink())
+    if pending.is_symlink():
+        pending.unlink()
+    pending.write_bytes(original)
+    paths.current.write_bytes(live)
+    assert_publication_recovered(world, monkeypatch, state)
+
+
+@pytest.mark.parametrize('fault_target', ['pointer', 'pending-clear'])
+def test_partial_publication_recovery_retains_pending_until_retry(world, monkeypatch, fault_target):
+    state = pending_publication(world, monkeypatch, evidence=True)
+    _, paths, pointer, _, before = state
+    retained = paths.publication_pending.read_bytes()
+    replace, unlink = records.os.replace, Path.unlink
+    faults, restored = [], []
+    def failing_replace(source, target):
+        if fault_target == 'pointer' and Path(target) == pointer:
+            faults.append('pointer restore')
+            raise OSError('named later restoration fault')
+        restored.append(str(target))
+        return replace(source, target)
+    def failing_unlink(target, *a, **kw):
+        if fault_target == 'pending-clear' and target == paths.publication_pending:
+            faults.append('pending clear')
+            raise OSError('named pending finalization fault')
+        return unlink(target, *a, **kw)
+    with monkeypatch.context() as fault:
+        fault.setattr(records.os, 'replace', failing_replace)
+        fault.setattr(Path, 'unlink', failing_unlink)
+        with pytest.raises(records.ReviewRecordLocationError, match='named .* fault'):
+            records.recover_review_publication(paths)
+    assert len(faults) == 1 and str(paths.current) in restored
+    assert paths.publication_pending.read_bytes() == retained
+    assert_pending_consumers(world, monkeypatch, state)
+    assert_publication_recovered(world, monkeypatch, state)
+    assert {p: p.read_bytes() for p in before} == before
+
+
+@pytest.mark.parametrize('changed', ['worktree', 'git-dir'])
+def test_publication_recovery_refuses_replaced_physical_owner(world, monkeypatch, changed):
+    import shutil
+    state = pending_publication(world, monkeypatch)
+    repo, paths, _, _, _ = state
+    original_pending = paths.publication_pending.read_bytes()
+    target = repo if changed == 'worktree' else paths.current.parent
+    saved = target.with_name(target.name + '-saved')
+    detached = target.with_name(target.name + '-replacement')
+    target.rename(saved)
+    shutil.copytree(saved, target)
+    effects = []
+    with monkeypatch.context() as observer:
+        observer.setattr(records.os, 'replace', lambda *a: effects.append(a))
+        with pytest.raises(records.ReviewRecordLocationError, match='owner or Git identity changed'):
+            records.recover_review_publication(paths)
+    assert effects == [] and paths.publication_pending.read_bytes() == original_pending
+    target.rename(detached)
+    saved.rename(target)
+    assert_publication_recovered(world, monkeypatch, state)
+
+
+def test_publication_recovery_refuses_another_linked_worktree(world, monkeypatch):
+    state = pending_publication(world, monkeypatch)
+    _, paths, _, _, _ = state
+    sibling = world[1][2]
+    sibling_paths = coordinates(world, sibling)
+    sibling_paths.publication_pending.write_bytes(paths.publication_pending.read_bytes())
+    effects = []
+    with monkeypatch.context() as observer:
+        observer.setattr(records.os, 'replace', lambda *a: effects.append(a))
+        with pytest.raises(records.ReviewRecordLocationError, match='owner or Git identity changed'):
+            records.recover_review_publication(sibling_paths)
+    assert effects == [] and paths.publication_pending.exists()
+    sibling_paths.publication_pending.unlink()
+    assert_publication_recovered(world, monkeypatch, state)
+
+
+@pytest.mark.parametrize('redirect', ['replacement', 'symlink'])
+def test_publication_recovery_refuses_changed_workspace_parent(world, monkeypatch, redirect):
+    state = pending_publication(world, monkeypatch, evidence=True)
+    _, paths, _, _, _ = state
+    parent = paths.legacy.parent
+    retained = paths.publication_pending.read_bytes()
+    original_w = paths.legacy.read_bytes()
+    saved, foreign = parent.with_name('saved-parent'), parent.with_name('foreign-parent')
+    parent.rename(saved)
+    foreign.mkdir()
+    (foreign / paths.legacy.name).write_bytes(original_w)
+    if redirect == 'replacement':
+        foreign.rename(parent)
+    else:
+        parent.symlink_to(foreign, target_is_directory=True)
+    effects = []
+    with monkeypatch.context() as observer:
+        observer.setattr(records.os, 'replace', lambda *a: effects.append(a))
+        with pytest.raises(records.ReviewRecordLocationError) as caught:
+            records.recover_review_publication(paths)
+    reason = 'destination parent identity changed' if redirect == 'replacement' else 'ancestor is a symlink'
+    assert reason in exception_chain(caught.value)
+    assert effects == [] and paths.publication_pending.read_bytes() == retained
+    if redirect == 'replacement':
+        parent.rename(foreign)
+    else:
+        parent.unlink()
+    saved.rename(parent)
+    assert_publication_recovered(world, monkeypatch, state)

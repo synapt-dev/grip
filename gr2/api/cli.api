@@ -465,6 +465,13 @@ flag  review open-project --prior-cwd <str> (hidden)                  stable
 flag  review open-project --root/-C <str> (hidden)                    stable
 flag  review open-project --sources-json <str> (hidden)               stable
 verb  review open-project (hidden)                                    stable
+# review publish
+arg   review publish commit <str>                                     may-change
+arg   review publish workspace_root <str>                             stable
+flag  review publish --ref <str>                                      may-change
+flag  review publish --remote <str>                                   may-change
+flag  review publish --root/-C <str>                                  stable
+verb  review publish                                                  may-change
 # review rebind
 arg   review rebind frozen_dir <str>                                  stable
 flag  review rebind --allow-public-ref                                stable
@@ -473,6 +480,13 @@ flag  review rebind --out-dir <str>                                   stable
 flag  review rebind --ref <str>                                       stable
 flag  review rebind --repo <str>                                      stable
 verb  review rebind                                                   stable
+# review receive
+arg   review receive commit <str>                                     may-change
+arg   review receive workspace_root <str>                             stable
+flag  review receive --ref <str>                                      may-change
+flag  review receive --remote <str>                                   may-change
+flag  review receive --root/-C <str>                                  stable
+verb  review receive                                                  may-change
 # review requirements
 arg   review requirements pr_number <str> (hidden)                    stable
 arg   review requirements repo <str> (hidden)                         stable

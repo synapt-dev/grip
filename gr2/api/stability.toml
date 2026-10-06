@@ -38,6 +38,17 @@
 # public today but not yet promised. LIFT THIS when the slice completes.
 
 may-change = [
+  # Native review transport is public but still under focused validation.
+  # Its unchanged shared workspace-root positional and --root/-C contract
+  # retain the existing stable context semantics.
+  "verb review publish",
+  "arg review publish commit <str>",
+  "flag review publish --ref <str>",
+  "flag review publish --remote <str>",
+  "verb review receive",
+  "arg review receive commit <str>",
+  "flag review receive --ref <str>",
+  "flag review receive --remote <str>",
   "verb store check",
   "flag store check --json",
   "verb store checkout",

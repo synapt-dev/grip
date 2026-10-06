@@ -43,7 +43,9 @@ from .clone_exec import CloneExecutionError, IncompleteRemoval, rmtree_or_refuse
 from .gitops import ensure_lane_checkout
 from .review_records import (
     ReviewRecordLocationError,
+    ReviewRecordPaths,
     legacy_review_record_path,
+    _refuse_pending_publication,
     read_review_record,
     read_review_record_at,
     review_record_paths,
@@ -457,7 +459,12 @@ def close_review_lane(
     git_dir = lane / ".git"
     if owner_unit is None or lane_name is None or member is None:
         try:
-            record = json.loads(legacy_review_record_path(lane).read_text())
+            local_record = legacy_review_record_path(lane)
+            _refuse_pending_publication(ReviewRecordPaths(local_record, local_record, lane).publication_pending)
+        except (ReviewRecordLocationError, OSError) as exc:
+            raise ReviewError(str(exc)) from exc
+        try:
+            record = json.loads(local_record.read_text())
         except (OSError, json.JSONDecodeError, ReviewRecordLocationError):
             record = None
     else:

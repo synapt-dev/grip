@@ -603,3 +603,74 @@ def test_publication_recovery_refuses_changed_workspace_parent(world, monkeypatc
         parent.unlink()
     saved.rename(parent)
     assert_publication_recovered(world, monkeypatch, state)
+
+
+def ordinary_coordinate_less_close_fixture(world):
+    workspace = world[0]
+    root = lanes.lane_dir(workspace, 'owner', 'legacy-close')
+    repo = root / 'repos' / 'member'
+    repo.parent.mkdir(parents=True)
+    subprocess.check_call(['git', 'clone', '-q', str(world[1][0]), str(repo)])
+    git(repo, 'config', 'user.name', 'Test')
+    git(repo, 'config', 'user.email', 'test@example.invalid')
+    (repo / 'file').write_text('same-head-close\n')
+    git(repo, 'commit', '-qam', 'close head')
+    paths = records.review_record_paths(workspace, 'owner', 'legacy-close', 'member', repo)
+    record = {'repo': 'local:' + str(world[1][0]), 'base': world[3],
+              'head': git(repo, 'rev-parse', 'HEAD'), 'lane_kind': 'materialized'}
+    records.write_review_record(paths, record)
+    return root, repo, paths, record
+
+
+def test_coordinate_less_close_without_pending_removes_owned_clone(world):
+    from gr2.python_cli.review import close_review_lane
+    root, repo, paths, record = ordinary_coordinate_less_close_fixture(world)
+    assert not paths.publication_pending.exists()
+    close_review_lane(lane_repo_root=repo, review_lane_root=root)
+    assert not repo.exists()
+    assert world[1][0].is_dir() and git(world[1][0], 'rev-parse', 'HEAD') == world[3]
+
+
+@pytest.mark.parametrize('pending_kind', ['file', 'dangling-symlink'])
+def test_coordinate_less_close_refuses_pending_publication(world, monkeypatch, pending_kind):
+    from gr2.python_cli import review
+    root, repo, paths, record = ordinary_coordinate_less_close_fixture(world)
+    pointer = records.review_record_pointer_path(repo)
+    replace = records.os.replace
+    published = False
+    faults = []
+    def double_fault(source, target):
+        nonlocal published
+        if Path(target) == pointer:
+            faults.append('pointer')
+            raise OSError('coordinate-less pointer fault')
+        if Path(target) == paths.current:
+            if published:
+                faults.append('rollback')
+                raise OSError('coordinate-less G rollback fault')
+            published = True
+        return replace(source, target)
+    with monkeypatch.context() as injection:
+        injection.setattr(records.os, 'replace', double_fault)
+        with pytest.raises(records.ReviewRecordLocationError, match='coordinate-less pointer fault') as caught:
+            records.write_review_record(paths, {**record, 'base': world[2]})
+    assert faults == ['pointer', 'rollback']
+    backup = Path(str(caught.value).split('prior bytes at ', 1)[1])
+    assert json.loads(paths.current.read_bytes()) == {**record, 'base': world[2]}
+    pending_bytes = paths.publication_pending.read_bytes()
+    if pending_kind == 'dangling-symlink':
+        retained = paths.publication_pending.with_name('retained-pending.json')
+        paths.publication_pending.rename(retained)
+        paths.publication_pending.symlink_to(repo / '.git' / 'absent-pending')
+        assert retained.read_bytes() == pending_bytes and not paths.publication_pending.exists()
+    before = {p: p.read_bytes() for p in (paths.current, pointer, backup)}
+    attempts = []
+    monkeypatch.setattr(review.shutil, 'rmtree', lambda target: attempts.append(str(target)))
+    with pytest.raises(review.ReviewError, match='publication is incomplete'):
+        review.close_review_lane(lane_repo_root=repo, review_lane_root=root)
+    assert attempts == [] and repo.is_dir()
+    assert {p: p.read_bytes() for p in before} == before
+    if pending_kind == 'file':
+        assert paths.publication_pending.read_bytes() == pending_bytes
+    else:
+        assert paths.publication_pending.is_symlink() and retained.read_bytes() == pending_bytes

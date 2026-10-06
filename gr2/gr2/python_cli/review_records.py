@@ -1,10 +1,11 @@
-"""Canonical review-record locations, outside member ``.git`` directories."""
+"""Per-worktree safety records and independently workspace-owned recovery."""
 from __future__ import annotations
 
 import json
 import os
 import subprocess
 import tempfile
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -19,11 +20,17 @@ class ReviewRecordPaths:
     current: Path
     legacy: Path
     repo_root: Path | None = None
+    recovery_path: Path | None = None
 
     @property
     def closing(self) -> Path:
         """Incomplete disposal evidence, never an active review identity."""
-        return self.current.with_name(self.current.name + ".closing.json")
+        return self.recovery_path or self.current.with_name(self.current.name + ".closing.json")
+
+    @property
+    def context(self) -> Path:
+        """Workspace coordinate carried by the pointer, not an active payload."""
+        return self.legacy if self.recovery_path is not None else self.current
 
 
 def read_close_recovery(paths: ReviewRecordPaths, target: Path, managed_root: Path) -> dict | None:
@@ -111,7 +118,7 @@ def worktree_git_path(repo_root: Path | str, name: str) -> Path:
 def legacy_review_record_path(lane_repo_root: Path | str) -> Path:
     # Review-open computes its coordinates before creating the ordinary clone.
     # No lookup is possible yet. Publication resolves again once Git exists.
-    if not Path(lane_repo_root).exists():
+    if not (Path(lane_repo_root) / ".git").exists():
         return Path(lane_repo_root).resolve() / ".git" / "grip-review.json"
     return worktree_git_path(lane_repo_root, "grip-review.json")
 
@@ -132,16 +139,59 @@ def _component(value: str | None, label: str) -> str:
 def review_record_paths(workspace_root: Path | str, owner_unit: str | None,
                         lane_name: str | None, member: str | None,
                         lane_repo_root: Path | str) -> ReviewRecordPaths:
-    """The canonical path and the one-release member-git fallback."""
+    """Active Git safety, workspace compatibility and external close recovery."""
     owner = _component(owner_unit, "owner unit")
     lane = _component(lane_name, "lane name")
     key = _component(member, "member")
     workspace = Path(workspace_root).resolve()
-    return ReviewRecordPaths(
-        workspace / ".grip" / "state" / "reviews" / owner / lane / f"{key}.json",
-        legacy_review_record_path(lane_repo_root),
-        Path(lane_repo_root).resolve(),
-    )
+    compatibility = workspace / ".grip" / "state" / "reviews" / owner / lane / f"{key}.json"
+    return ReviewRecordPaths(legacy_review_record_path(lane_repo_root), compatibility,
+                             Path(lane_repo_root).resolve(),
+                             compatibility.with_name(compatibility.name + ".closing.json"))
+
+
+def _validate_context_repo(workspace: Path, owner: str, lane: str, member: str, repo: Path) -> None:
+    """Check relationship only. HEAD, dirty state and deletion are other contracts."""
+    from ..prototypes import lane_workspace_prototype as lanes
+    definition = lanes.lane_file(workspace, owner, lane)
+    document = None
+    if definition.exists() or definition.is_symlink():
+        if definition.is_symlink():
+            raise ReviewRecordLocationError("review context lane definition is a symlink")
+        try:
+            document = tomllib.loads(definition.read_text())
+        except (OSError, ValueError) as exc:
+            raise ReviewRecordLocationError("review context lane definition cannot be read") from exc
+        if (document.get("owner_unit") != owner or document.get("lane_name") != lane
+                or member not in document.get("repos", [])):
+            raise ReviewRecordLocationError("review context does not declare this lane member")
+        kind = document.get("lane_kind", "materialized")
+        project = document.get("creation_source") == "project-review"
+        bound = document.get("bound_worktree")
+        if ((project and (kind not in {"materialized", "review-ephemeral"} or bound))
+                or (not project and kind not in {"bound", "materialized"})
+                or (kind == "materialized" and bound)):
+            raise ReviewRecordLocationError("review context has conflicting or unsupported ownership modes")
+        if kind == "bound":
+            if (document.get("repos") != [member] or not document.get("bound_worktree")
+                    or Path(document["bound_worktree"]).resolve() != repo):
+                raise ReviewRecordLocationError("review context belongs to a different bound worktree")
+            return
+        if project:
+            target = workspace / "reviews" / owner / lane
+            if repo != target / "repos" / member or target.resolve() != target:
+                raise ReviewRecordLocationError("review context belongs to a different project member")
+            from .review_allocation import require_member_relationship, ReviewAllocationError
+            try:
+                require_member_relationship(workspace, target, owner, lane, repo)
+            except ReviewAllocationError as exc:
+                raise ReviewRecordLocationError(str(exc)) from exc
+            return
+    # Explicit ordinary review producers may have no lane definition. Their
+    # managed coordinate remains exact, not guessed from a parent or selection.
+    expected = lanes.lane_dir(workspace, owner, lane) / "repos" / member
+    if repo != expected or expected.resolve() != expected:
+        raise ReviewRecordLocationError("review context belongs to a different materialized member")
 
 
 def read_review_record(paths: ReviewRecordPaths, *, notice: Callable[[str], None] = print) -> dict | None:
@@ -159,7 +209,7 @@ def read_review_records_for_guard(paths: ReviewRecordPaths) -> tuple[dict, ...]:
     if paths.closing.exists() or paths.closing.is_symlink():
         raise ReviewRecordLocationError(f"review close is incomplete; recovery at {paths.closing}")
     records: list[dict] = []
-    for path in (paths.current, paths.legacy):
+    for path in dict.fromkeys((paths.current, paths.legacy)):
         if not path.is_file():
             continue
         try:
@@ -169,6 +219,8 @@ def read_review_records_for_guard(paths: ReviewRecordPaths) -> tuple[dict, ...]:
             records.append(record)
         except (OSError, ValueError) as exc:
             raise ReviewRecordLocationError(f"review receipt cannot be read: {path}") from exc
+    if len(records) == 2 and records[0] != records[1]:
+        raise ReviewRecordLocationError("active and workspace safety evidence conflict; reconcile retained evidence before rebinding")
     return tuple(records)
 
 
@@ -176,6 +228,9 @@ def read_review_record_at(paths: ReviewRecordPaths, *, notice: Callable[[str], N
     """Read a receipt and return the exact path that supplied it for cleanup."""
     if paths.closing.exists() or paths.closing.is_symlink():
         return None
+    # Selection cannot turn a preferred active receipt into a way of masking
+    # conflicting or unreadable compatibility evidence.
+    read_review_records_for_guard(paths)
     for path, legacy in ((paths.current, False), (paths.legacy, True)):
         if not path.is_file():
             continue
@@ -191,7 +246,7 @@ def read_review_record_at(paths: ReviewRecordPaths, *, notice: Callable[[str], N
     return None
 
 
-def write_review_record(paths: ReviewRecordPaths, record: dict) -> Path:
+def write_review_record(paths: ReviewRecordPaths, record: dict, *, workspace_evidence: bool = False) -> Path:
     # A project review can materialize outside `.grip/state/reviews`; commit and
     # push run from that member checkout, so leave one coordinate pointer there.
     # It deliberately contains no receipt fields.
@@ -199,10 +254,16 @@ def write_review_record(paths: ReviewRecordPaths, record: dict) -> Path:
         raise ReviewRecordLocationError(f"review close is incomplete; recovery at {paths.closing}")
     repo = paths.repo_root or paths.legacy.parent.parent
     pointer = review_record_pointer_path(repo)
-    if paths.current.is_symlink() or pointer.is_symlink():
-        raise ReviewRecordLocationError("refusing a symlink review receipt or pointer")
-    paths.current.parent.mkdir(parents=True, exist_ok=True)
-    previous = paths.current.read_bytes() if paths.current.exists() else None
+    # Existing workspace evidence participates in explicit rebind. New ordinary
+    # binds stay Git-only, while project creation requests independent evidence.
+    evidence = workspace_evidence or paths.legacy.exists() or paths.legacy.is_symlink()
+    targets = list(dict.fromkeys([paths.current, pointer] + ([paths.legacy] if evidence else [])))
+    if any(target.is_symlink() for target in targets):
+        raise ReviewRecordLocationError("refusing a symlink review receipt, pointer or workspace evidence")
+    read_review_records_for_guard(paths)
+    previous = {target: target.read_bytes() if target.exists() else None for target in targets}
+    for target in targets:
+        target.parent.mkdir(parents=True, exist_ok=True)
     staged: list[Path] = []
 
     def stage(target: Path, data: bytes) -> Path:
@@ -212,26 +273,36 @@ def write_review_record(paths: ReviewRecordPaths, record: dict) -> Path:
             stream.write(data)
         return path
 
+    changed: list[Path] = []
     try:
-        payload = stage(paths.current, (json.dumps(record, indent=2) + "\n").encode())
-        coordinate = stage(pointer, (str(paths.current) + "\n").encode())
-        backup = stage(paths.current, previous) if previous is not None else None
-        os.replace(payload, paths.current)
+        data = (json.dumps(record, indent=2) + "\n").encode()
+        replacements = {target: stage(target, (str(paths.context) + "\n").encode()
+                                      if target == pointer else data) for target in targets}
+        backups = {target: stage(target, old) if old is not None else None
+                   for target, old in previous.items()}
         try:
-            os.replace(coordinate, pointer)
+            for target in targets:
+                os.replace(replacements[target], target)
+                changed.append(target)
         except OSError as publication_error:
-            if backup is not None:
+            failures = []
+            for target in reversed(changed):
+                backup = backups[target]
                 try:
-                    os.replace(backup, paths.current)
+                    if backup is None:
+                        target.unlink(missing_ok=True)
+                    else:
+                        os.replace(backup, target)
                 except OSError as rollback_error:
-                    staged.remove(backup)
-                    raise ReviewRecordLocationError(
-                        f"pointer publication failed: {publication_error}; "
-                        f"payload rollback failed: {rollback_error}; "
-                        f"prior payload preserved for recovery at {backup}"
-                    ) from rollback_error
-            else:
-                paths.current.unlink()
+                    if backup is not None:
+                        staged.remove(backup)
+                    failures.append(f"{target}: {rollback_error}; prior bytes at {backup}" if backup
+                                    else f"{target}: {rollback_error}; prior state was absent")
+            if failures:
+                raise ReviewRecordLocationError(
+                    f"review publication failed: {publication_error}; rollback failed: "
+                    + "; ".join(failures)
+                ) from publication_error
             raise
     finally:
         for path in staged:
@@ -262,7 +333,10 @@ def lane_paths_for_repo(repo: Path | str) -> ReviewRecordPaths | None:
                 raise ReviewRecordLocationError("review pointer is not a canonical review receipt")
             _component(owner, "owner unit"); _component(lane, "lane name")
             _component(filename[:-5], "member")
-            return ReviewRecordPaths(resolved_target, legacy, repo_path)
+            workspace = Path(*parts[:index])
+            key = filename[:-5]
+            _validate_context_repo(workspace, owner, lane, key, repo_path)
+            return review_record_paths(workspace, owner, lane, key, repo_path)
         except (OSError, ValueError):
             raise ReviewRecordLocationError("review pointer cannot be read safely")
     # A one-release legacy receipt is enough only where no pointer supplies a

@@ -36,7 +36,7 @@ def world(tmp_path):
     for repo in repos:
         doc = lanes.lane_file(workspace, 'owner', repo.name)
         doc.parent.mkdir(parents=True)
-        doc.write_text('lane_kind = "bound"\nrepos = ["member"]\nbound_worktree = '
+        doc.write_text('owner_unit = "owner"\nlane_name = ' + json.dumps(repo.name) + '\nlane_kind = "bound"\nrepos = ["member"]\nbound_worktree = '
                        + json.dumps(str(repo)) + '\nbound_head = ' + json.dumps(head) + '\n')
     return workspace, repos, base, head
 
@@ -58,7 +58,7 @@ def test_three_checkouts_bind_and_validate_before_stub_push(world, monkeypatch):
         paths = coordinates(world, repo)
         pointer = records.review_record_pointer_path(repo)
         pointers.append(pointer)
-        assert pointer.read_text() == str(paths.current) + '\n'
+        assert pointer.read_text() == str(paths.context) + '\n'
         assert records.lane_paths_for_repo(repo) == paths
         assert json.loads(paths.current.read_text()) == receipt.to_dict()
         assert (receipt.base, receipt.head, receipt.lane_kind) == (world[2], world[3], 'bound')
@@ -88,6 +88,7 @@ def test_legacy_disposable_cannot_hide_under_canonical_bound(world, monkeypatch)
     paths = coordinates(world, repo)
     for module, error in ((commit, commit.CommitError), (push, push.PushError)):
         module._refuse_review_ephemeral_repo(repo)  # nondisposable positive control
+        paths.legacy.parent.mkdir(parents=True, exist_ok=True)
         paths.legacy.write_text(json.dumps({**record, 'lane_kind': 'review-ephemeral'}))
         with pytest.raises(error):
             module._refuse_review_ephemeral_repo(repo)
@@ -103,6 +104,7 @@ def test_legacy_bound_read_only_fallback(world, monkeypatch, capsys):
     record = bind(world, repo).to_dict()
     paths = coordinates(world, repo)
     paths.current.unlink()
+    paths.legacy.parent.mkdir(parents=True, exist_ok=True)
     paths.legacy.write_text(json.dumps(record))
     previous = paths.legacy.read_bytes()
     calls = []
@@ -123,7 +125,7 @@ def test_pointer_failure_preserves_pair_or_leaves_no_new_payload(world, monkeypa
     old_pointer = pointer.read_bytes()
     old_payload = paths.current.read_bytes()
     if not prior:
-        paths = records.review_record_paths(world[0], 'owner', 'fresh', 'member', repo)
+        paths.current.unlink()
     replace = records.os.replace
     def fail_pointer(source, target):
         if Path(target) == pointer:
@@ -162,7 +164,7 @@ def test_failed_compensation_keeps_recoverable_prior_payload(world, monkeypatch)
         records.write_review_record(paths, {**old, 'head': world[2]})
     message = str(caught.value)
     assert 'pointer fault' in message and 'rollback fault' in message
-    recovery = Path(message.split('preserved for recovery at ', 1)[1])
+    recovery = Path(message.split('prior bytes at ', 1)[1])
     assert recovery.read_bytes() == old_payload
     assert pointer.read_bytes() == old_pointer
     assert list(paths.current.parent.glob('.review-*')) == [recovery]
@@ -172,8 +174,9 @@ def test_existing_non_git_directory_refuses_and_future_clone_coordinate_is_safe(
     future = tmp_path / 'future'
     assert records.legacy_review_record_path(future) == future / '.git' / 'grip-review.json'
     future.mkdir()
-    with pytest.raises(records.ReviewRecordLocationError):
-        records.legacy_review_record_path(future)
+    # A known ordinary coordinate remains available for interrupted close.
+    # This does not validate Git ownership or grant a deletion permission.
+    assert records.legacy_review_record_path(future) == future / '.git' / 'grip-review.json'
 
 
 def test_close_never_deletes_bound_linked_author_checkout(world):
@@ -221,3 +224,117 @@ def test_symlink_publication_refuses_without_changing_prior_pair(world, target):
     with pytest.raises(records.ReviewRecordLocationError, match='symlink'):
         records.write_review_record(paths, record)
     assert path.is_symlink() and saved.read_bytes() == prior
+
+
+def test_explicit_rebind_synchronizes_existing_workspace_evidence(world):
+    repo = world[1][1]
+    old = bind(world, repo).to_dict()
+    paths = coordinates(world, repo)
+    paths.legacy.parent.mkdir(parents=True)
+    paths.legacy.write_text(json.dumps(old, separators=(',', ':')) + '\n')
+    new = {**old, 'base': old['head']}
+    records.write_review_record(paths, new)
+    assert records.read_review_record_at(paths) == (new, paths.current)
+    assert json.loads(paths.legacy.read_bytes()) == new
+
+
+@pytest.mark.parametrize('failed_destination', ['pointer', 'workspace'])
+def test_participating_workspace_publication_failure_restores_all_bytes(world, monkeypatch, failed_destination):
+    repo = world[1][1]
+    old = bind(world, repo).to_dict()
+    paths = coordinates(world, repo)
+    pointer = records.review_record_pointer_path(repo)
+    paths.legacy.parent.mkdir(parents=True)
+    paths.legacy.write_text(json.dumps(old, separators=(',', ':')) + '\n')
+    # Same valid coordinate, distinct bytes from canonical publication.
+    pointer.write_bytes(pointer.read_bytes() + b'\n')
+    before = {p: p.read_bytes() for p in (paths.current, pointer, paths.legacy)}
+    failed = pointer if failed_destination == 'pointer' else paths.legacy
+    replace = records.os.replace
+    faults = []
+    def fail_once(source, target):
+        if Path(target) == failed and not faults:
+            faults.append(str(target))
+            raise OSError('named participating publication failure')
+        return replace(source, target)
+    monkeypatch.setattr(records.os, 'replace', fail_once)
+    with pytest.raises(OSError, match='named participating publication failure'):
+        records.write_review_record(paths, {**old, 'base': old['head']})
+    assert len(faults) == 1
+    assert {p: p.read_bytes() for p in before} == before
+
+
+def test_swapped_linked_context_refuses_each_guard(world):
+    one, two = world[1][1:]
+    bind(world, one)
+    bind(world, two)
+    pointer = records.review_record_pointer_path(one)
+    original = pointer.read_bytes()
+    pointer.write_bytes(records.review_record_pointer_path(two).read_bytes())
+    for module, error in ((commit, commit.CommitError), (push, push.PushError)):
+        with pytest.raises(error) as caught:
+            module._refuse_review_ephemeral_repo(one)
+        assert 'different bound worktree' in exception_chain(caught.value)
+    pointer.write_bytes(original)
+    commit._refuse_review_ephemeral_repo(one)
+    push._refuse_review_ephemeral_repo(one)
+
+
+def exception_chain(error):
+    reasons = []
+    while error is not None:
+        reasons.append(str(error))
+        error = error.__cause__ or error.__context__
+    return "\n".join(reasons)
+
+
+def test_bound_project_mode_conflict_never_uses_bound_return(world):
+    import tomllib
+    repo = world[1][1]
+    bind(world, repo)
+    definition = lanes.lane_file(world[0], 'owner', repo.name)
+    document = tomllib.loads(definition.read_text())
+    definition.write_text(lanes.serialize_toml({**document, 'creation_source': 'project-review'}))
+    with pytest.raises(records.ReviewRecordLocationError) as caught:
+        records.lane_paths_for_repo(repo)
+    assert 'conflicting or unsupported ownership modes' in exception_chain(caught.value)
+
+
+@pytest.mark.parametrize('overrides', [
+    {'lane_kind': 'unknown'},
+    {'lane_kind': 'materialized', 'bound_worktree': 'contradictory'},
+])
+def test_invalid_mode_at_valid_materialized_coordinate_refuses(world, overrides):
+    workspace = world[0]
+    repo = lanes.lane_dir(workspace, 'owner', 'materialized') / 'repos' / 'member'
+    repo.parent.mkdir(parents=True)
+    subprocess.check_call(['git', 'clone', '-q', str(world[1][0]), str(repo)])
+    definition = lanes.lane_file(workspace, 'owner', 'materialized')
+    document = {'owner_unit': 'owner', 'lane_name': 'materialized', 'repos': ['member']}
+    definition.write_text(lanes.serialize_toml(document))
+    paths = records.review_record_paths(workspace, 'owner', 'materialized', 'member', repo)
+    record = {'repo': 'local:' + str(world[1][0]), 'base': world[2], 'head': world[3], 'lane_kind': 'materialized'}
+    records.write_review_record(paths, record)
+    # Omitted-kind compatibility and absent-definition standalone both work.
+    assert records.lane_paths_for_repo(repo) == paths
+    definition.unlink()
+    assert records.lane_paths_for_repo(repo) == paths
+    definition.write_text(lanes.serialize_toml({**document, **overrides}))
+    with pytest.raises(records.ReviewRecordLocationError) as caught:
+        records.lane_paths_for_repo(repo)
+    assert 'conflicting or unsupported ownership modes' in exception_chain(caught.value)
+
+
+def test_workspace_symlink_preflight_performs_no_replacement(world, monkeypatch, tmp_path):
+    repo = world[1][1]
+    old = bind(world, repo).to_dict()
+    paths = coordinates(world, repo)
+    paths.legacy.parent.mkdir(parents=True)
+    foreign = tmp_path / 'foreign'
+    foreign.write_bytes(b'foreign\n')
+    paths.legacy.symlink_to(foreign)
+    calls = []
+    monkeypatch.setattr(records.os, 'replace', lambda *args: calls.append(args))
+    with pytest.raises(records.ReviewRecordLocationError, match='symlink'):
+        records.write_review_record(paths, old)
+    assert calls == [] and foreign.read_bytes() == b'foreign\n'

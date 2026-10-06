@@ -297,7 +297,7 @@ def open_project_review(*, workspace: Path, owner_unit: str, lane_name: str, spe
         repo_name = Path(source).name.removesuffix(".git")
         materialize_head = materialize_heads.get(pin.key, pin.head)
         try:
-            record = review.open_review_lane(source_repo_root=source, review_branch=branch, expected_head_sha=materialize_head, base_sha=pin.base, lane_repo_root=review_root / "repos" / pin.key, workspace_root=workspace, allow_local=allow_local, ephemeral=ephemeral, repo_name=repo_name, owner_unit=owner_unit, lane_name=lane_name, member=pin.key, echo=lambda _line: None)
+            record = review.open_review_lane(source_repo_root=source, review_branch=branch, expected_head_sha=materialize_head, base_sha=pin.base, lane_repo_root=review_root / "repos" / pin.key, workspace_root=workspace, allow_local=allow_local, ephemeral=ephemeral, repo_name=repo_name, owner_unit=owner_unit, lane_name=lane_name, member=pin.key, workspace_evidence=True, echo=lambda _line: None)
         except Exception as exc:
             return ProjectReviewOutcome("partial", spec.grip_commit, tuple(observed), (ProjectReviewFailure(pin.key, str(exc)),), review_root, False)
         observed.append(record)

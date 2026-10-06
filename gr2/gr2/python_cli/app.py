@@ -182,6 +182,23 @@ def _lane_repo_root(workspace_root: Path, owner_unit: str, lane_name: str, repo_
     return lane_proto.lane_repo_root(workspace_root, owner_unit, lane_name, repo_name)
 
 
+def _pr_head_review_paths(
+    workspace_root: Path, owner_unit: str, lane_name: str, repo_name: str
+) -> tuple[Path, Path]:
+    """PR-head producers also own ordinary reviews without a lane definition."""
+    definition = lane_proto.lane_file(workspace_root, owner_unit, lane_name)
+    if not definition.exists() and not definition.is_symlink():
+        managed = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
+        return managed, managed / "repos" / repo_name
+    doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
+    if doc.get("lane_kind", "materialized") == "bound":
+        raise SystemExit("PR-head reviews require a managed lane, not a bound author checkout")
+    return (
+        lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name),
+        lane_proto.lane_repo_root(workspace_root, owner_unit, lane_name, repo_name),
+    )
+
+
 def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: str, *, manual_hooks: bool = False, created_checkout_roots: list | None = None, created_lane_file: list | None = None, workspace_commit: str | None = None) -> None:
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
     branch_map = dict(lane_doc.get("branch_map", {}))
@@ -3174,6 +3191,7 @@ def review_open(
     lane_proto.validate_lane_path_component(repo, "repo")
     lane_proto.validate_lane_path_component(resolved_lane, "lane_name")
 
+    _, lane_repo_root = _pr_head_review_paths(workspace_root, owner_unit, resolved_lane, repo)
     repo_spec = _workspace_repo_spec(workspace_root, repo)
     source_repo_root = (workspace_root / str(repo_spec["path"])).resolve()
     if not source_repo_root.exists():
@@ -3199,8 +3217,6 @@ def review_open(
     base_tip = git(source_repo_root, "rev-parse", "FETCH_HEAD").stdout.strip()
     merged = git(source_repo_root, "merge-base", expected_head, base_tip)
     base_sha = merged.stdout.strip() if merged.returncode == 0 else base_tip
-
-    lane_repo_root = _lane_repo_root(workspace_root, owner_unit, resolved_lane, repo)
 
     record = review_mod.open_review_lane(
         source_repo_root=source_repo_root,
@@ -3266,8 +3282,7 @@ def review_close(
     lane_proto.validate_lane_path_component(owner_unit, "owner_unit")
     lane_proto.validate_lane_path_component(repo, "repo")
     lane_proto.validate_lane_path_component(resolved_lane, "lane_name")
-    review_lane_root = lane_proto.lane_dir(workspace_root, owner_unit, resolved_lane)
-    lane_repo_root = _lane_repo_root(workspace_root, owner_unit, resolved_lane, repo)
+    review_lane_root, lane_repo_root = _pr_head_review_paths(workspace_root, owner_unit, resolved_lane, repo)
     review_mod.close_review_lane(
         lane_repo_root=lane_repo_root,
         review_lane_root=review_lane_root,

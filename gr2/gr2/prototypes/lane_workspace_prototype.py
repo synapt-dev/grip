@@ -406,9 +406,10 @@ def lane_state_root(workspace_root: Path) -> Path:
     Lane state is grip plumbing: it lives beside the rest of the lane control
     plane under ``.grip/state/`` -- the same tree that already holds
     ``current_lane``, ``lane_transitions``, ``lane_creation`` and the lease
-    locks. The old ``workspace_root/agents/`` root was pollution at the
-    workspace top level; every path that reaches into lane state funnels
-    through here so the layout has a single point of truth.
+    locks. The historical ``workspace_root/agents/`` location for lane metadata
+    has been replaced by this state owner. Physical agent homes and checkouts
+    remain separate coordinates, including their visible ``agents/`` locations.
+    Every path that reaches into lane metadata funnels through this owner.
 
     Deliberately NOT ``.grip/lanes``:
     the boundary test (``test_oss_gr2_has_no_external_lane_envelope_reader``)

@@ -243,8 +243,12 @@ or output failures do not replace the original exception.
 
 2. The engine does not own lane envelopes.
 
-   gr2 lane records live under `agents/<owner_unit>/lanes/<lane>`. gr2 reads
-   that location and no other, whatever else may exist in the workspace.
+   gr2 lane definitions and leases live under
+   `.grip/state/lanes/<owner_unit>/<lane>`. Physical checkouts are resolved from
+   the owning lane document's `checkout_root`, explicit bound coordinate, or
+   deterministic legacy coordinate described above. Existing project reviews
+   retain their owning review location. An unrelated external lane envelope
+   does not become read authority merely by existing in the workspace.
 
 3. The engine does not own CLI shape.
 

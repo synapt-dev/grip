@@ -139,6 +139,31 @@ class RootOptionalCommand(RootOptionCommand):
     infer_bare = True
 
 
+class ReviewTargetCommand(RootOptionalCommand):
+    """A review reader with an optional target and a workspace inferred from cwd.
+
+    Two words retain ROOT TARGET. One existing directory names ROOT, and one
+    other word names TARGET in the current workspace. With -C, the remaining
+    word is TARGET. No target is chosen here: the reader refuses zero or several
+    binds rather than choosing the most recent one.
+    """
+
+    def parse_args(self, ctx, args):
+        args = list(args)
+        positions, root_value = self._scan(args)
+        if root_value is not None:
+            if len(positions) > 1 or (positions and Path(args[positions[0]]).is_dir()):
+                ctx.fail("the workspace root was given twice: as the first argument and with --root/-C")
+        elif len(positions) == 1 and not Path(args[positions[0]]).is_dir():
+            from .app import _is_workspace_root, _resolve_workspace_root
+
+            found = _resolve_workspace_root()
+            if not _is_workspace_root(found):
+                ctx.fail(f"no workspace at or above {found}; run this inside one, or name it with -C <root>")
+            args.insert(positions[0], str(found))
+        return super().parse_args(ctx, args)
+
+
 class ContextCommand(RootOptionalCommand):
     """A verb that leads with the root and a unit and lets BOTH be left out, resolved by `context.py`.
 

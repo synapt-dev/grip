@@ -37,7 +37,7 @@ from . import push as push_ops
 from .clone_exec import rmtree_or_refuse
 from .events import EventEmitError, EventType, emit, emit_after_outcome
 from .layout import grip_dir
-from .root_option import ROOT_OPTION, ContextCommand, RootOptionCommand, RootOptionalCommand
+from .root_option import ROOT_OPTION, ContextCommand, ReviewTargetCommand, RootOptionCommand, RootOptionalCommand
 from .gitops import (
     branch_exists,
     checkout_branch,
@@ -2977,17 +2977,17 @@ def review_checkout_pr(
         typer.echo(json.dumps(payload, indent=2))
 
 
-def _the_one_review_bind(workspace_root: Path) -> str:
-    """`review open` with no target: the workspace's review bind when there is exactly ONE, said on stderr. Several
-    are listed and refused, because opening the wrong review is the mistake; none is refused naming `review bind`."""
+def _the_one_review_bind(workspace_root: Path, verb: str = "open") -> str:
+    """Select the workspace's sole bind, announced on stderr. Refuse zero or
+    several binds and name the invoking reader in the remedy."""
     binds = _review_call(grip.list_review_binds, workspace_root)
     if not binds:
-        raise typer.BadParameter("this workspace has no review bind to open; make one with `review bind` first, or name the target")
+        raise typer.BadParameter(f"this workspace has no review bind to {verb}; make one with `review bind` first, or name the target")
     if len(binds) > 1:
         listing = "; ".join(f"gr:{c} ({when})" for c, when in binds)
         raise typer.BadParameter(
-            f"{len(binds)} review binds exist and `open` will not choose between them: {listing}. Name one, "
-            "for example `review open <root> gr:<sha>`"
+            f"{len(binds)} review binds exist and `{verb}` will not choose between them: {listing}. Name one, "
+            f"for example `review {verb} <root> gr:<sha>`"
         )
     commit = binds[0][0]
     typer.echo(f"gr2: target=gr:{commit} (the only review bind in this workspace)", err=True)
@@ -4031,15 +4031,17 @@ def review_run(
         raise typer.Exit(code=1)
 
 
-@review_app.command("show", cls=RootOptionalCommand)
+@review_app.command("show", cls=ReviewTargetCommand)
 def review_show(
     workspace_root: Path,
-    commit: str = typer.Argument(..., help="The review bind, as gr:<sha> or a bare sha"),
+    commit: Optional[str] = typer.Argument(None, help="The review bind, as gr:<sha> or a bare sha; omitted only when the workspace has exactly one bind"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Show what a review bind holds: each member's repository and commit range, the title and body it was bound
-    with, and the files its range changes. Read-only; the id is the one `review bind` printed, `gr:` and all."""
+    with, and the files its range changes. Read-only; with no id, selects the workspace's sole bind."""
+    if commit is None:
+        commit = _the_one_review_bind(workspace_root.resolve(), "show")
     result = _review_call(grip.show_review_commit, workspace_root.resolve(), _strip_gr_prefix(commit))
     if json_output:
         typer.echo(json.dumps(result, indent=2, default=str))
@@ -4057,15 +4059,17 @@ def review_show(
         typer.echo("  files: " + (", ".join(files) if files else "(none)" if files == [] else "(not recorded)"))
 
 
-@review_app.command("verify", cls=RootOptionalCommand)
+@review_app.command("verify", cls=ReviewTargetCommand)
 def review_verify(
     workspace_root: Path,
-    commit: str = typer.Argument(..., help="The review bind commit, as gr:<sha> or a bare sha"),
+    commit: Optional[str] = typer.Argument(None, help="The review bind commit, as gr:<sha> or a bare sha; omitted only when the workspace has exactly one bind"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Recompute the review gr commit tree from its own objects; a mismatch is
-    corruption, not drift."""
+    corruption, not drift. With no id, selects the workspace's sole bind."""
+    if commit is None:
+        commit = _the_one_review_bind(workspace_root.resolve(), "verify")
     result = _review_call(grip.verify_review_commit, workspace_root.resolve(), _strip_gr_prefix(commit))
     if json_output:
         typer.echo(json.dumps(result, indent=2, default=str))

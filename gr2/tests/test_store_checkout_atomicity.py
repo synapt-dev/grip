@@ -106,140 +106,40 @@ def _heads(root: Path) -> dict[str, str]:
     return heads
 
 
-def test_row1_a_refusal_before_the_first_write_moves_nothing(two_member_ws: Path) -> None:
-    """Row 1. The atomicity row: a refusal leaves root and members BYTE-IDENTICAL.
-
-    Today the root is detached BEFORE the member loop raises, so the root ends at the target commit
-    while both members still sit at their old pins -- a workspace the caller did not ask for and
-    cannot see. The witness is the before/after pair, not the exit code: an exit code alone cannot
-    distinguish "refused and changed nothing" from "refused and moved the root".
-    """
+def test_row1_selected_commit_ignores_later_ambient_rename(two_member_ws: Path) -> None:
+    """A later name does not replace the target commit's complete member tuple."""
     root = two_member_ws
     target = _store_with_two_members(root)
-
     before = _heads(root)
-    root_symbolic_before = _symref(root)
-
     res = _invoke("store", "checkout", target[:12])
-
-    after = _heads(root)
-    why = (
-        f"\n    target revision : {target[:12]}"
-        f"\n    root HEAD before: {before['root']}"
-        f"\n    root HEAD after : {after['root']}"
-        f"\n    root symbolic-ref before: {root_symbolic_before!r}"
-        f"\n    root symbolic-ref after : {_symref(root)!r}"
-        f"\n    member heads before: {before}"
-        f"\n    member heads after : {after}"
-        f"\n    rc={res.exit_code} stdout={res.stdout!r} stderr={res.stderr!r}"
-        f"\n    exception={res.exception!r}"
-    )
-    assert after["root"] == before["root"], (
-        "the verb refused, and a refusal must leave the root where it found it. Today the root is "
-        "detached before the member loop raises, so it ends at the target while the members stay "
-        "behind -- the half-applied state this row exists for." + why
-    )
-    assert after["alpha"] == before["alpha"] and after["beta"] == before["beta"], (
-        "a refusal must leave every member where it found it too; a member that moved while the "
-        "verb refused is the same half-applied state one layer down." + why
-    )
+    assert res.exit_code == 0, res.output
+    assert _head(root) == target
+    assert _symref(root) == "(detached)"
+    assert _head(root / "alpha") == before["alpha"]
+    assert _head(root / "beta") == before["beta"]
 
 
-def test_row2_the_refusal_is_named_and_does_not_escape_as_an_exception(two_member_ws: Path) -> None:
-    """Row 2. The failure is the group's own named refusal, not an uncaught traceback.
-
-    `pins[member["name"]]` raises `KeyError` for a member renamed since the target revision, and it
-    is raised rather than converted to a `NativeStoreRefusal` -- so it escapes the verb's error
-    shape entirely. The row asserts the POSITIVE property (a message naming what could not be
-    resolved) rather than the absence of a traceback, because an empty output would satisfy the
-    absence and is exactly what the defect produces.
-    """
+def test_row2_dirty_selected_member_refuses_before_root_movement(two_member_ws: Path) -> None:
     root = two_member_ws
     target = _store_with_two_members(root)
-
+    (root / "alpha" / "untracked-refusal").write_text("dirty")
+    before, branch = _heads(root), _symref(root)
     res = _invoke("store", "checkout", target[:12])
-
-    out = (res.stdout or "") + (res.stderr or "")
-    why = (
-        f"\n    target revision : {target[:12]}"
-        f"\n    rc={res.exit_code} stdout={res.stdout!r} stderr={res.stderr!r}"
-        f"\n    exception={res.exception!r}"
-    )
-    assert res.exit_code != 0, (
-        "a member whose name is absent from the target snapshot cannot be restored, so this must "
-        "not report success." + why
-    )
-    assert out.strip(), (
-        "the verb produced NO diagnostic at all -- empty stdout and empty stderr is the measured "
-        "symptom of the uncaught KeyError, and a caller has nothing to act on." + why
-    )
-    assert "Traceback" not in out, (
-        "a refusal is a state, not a crash; an uncaught exception escaping the verb's error shape "
-        "is the defect this row pins." + why
-    )
-    # A CONVERTED REFUSAL IS STILL A `SystemExit` under `CliRunner` -- the group's refusal is
-    # surfaced as an exit carrying its code, which is the shape working as designed. The defect is
-    # a RAW exception escaping instead (the `KeyError` this row was written for), which reaches the
-    # caller as exit 1 with nothing on either stream.
-    assert res.exception is None or isinstance(res.exception, SystemExit), (
-        "the failure must be converted to the group's own refusal, not escape to the caller as a "
-        f"raw exception. Escaped: {res.exception!r}" + why
-    )
-    assert "alpha" in out, (
-        "the refusal must name the member it could not resolve, or the reader is left to work out "
-        "which one failed." + why
-    )
+    assert res.exit_code == 3, res.output
+    assert "alpha is dirty" in res.output
+    assert _heads(root) == before and _symref(root) == branch
 
 
 @pytest.mark.parametrize("extra", [[], ["--json"]], ids=["plain", "json"])
-def test_row3_json_carries_the_same_diagnostic_as_the_plain_path(
-    two_member_ws: Path, extra: list[str]
-) -> None:
-    """Row 3. `--json` must not be a second, quieter contract.
-
-    MEASURED ON THIS TRIGGER, and it corrects an assumption I brought in from the issue: BOTH paths
-    are silent, not only `--json`. The issue records the plain path printing a backstop diagnostic
-    ("fatal: unable to read tree") -- that was a DIFFERENT trigger, where the root had already been
-    detached and a member's checkout failed. On the renamed-member trigger this row uses, the
-    `KeyError` escapes before either path prints anything, so the plain path is silent too. Stated
-    because the first draft of this docstring called the plain path "the control", and a control that
-    is itself broken is not a control.
-
-    The property is therefore asserted of BOTH paths, on its own terms: a refusal must produce a
-    diagnostic naming the member, on whichever path the caller chose. A `--json` returning nothing is
-    the worst case for a parser -- it cannot tell "refused" from "crashed" from "printed nothing" --
-    and a plain path returning nothing has the same defect for a human.
-
-    PARITY IS PINNED BY CONSTRUCTION, not by comparing two runs in one test: the same assertions run
-    against both invocations, and each PARAMETRISATION gets its own fixture instance. Asking for
-    `two_member_ws` twice inside one test would hand back the SAME store -- the fixture is
-    function-scoped -- and since the first run detaches the root, the second would be measuring a
-    workspace the first one had already altered. Two runs, two workspaces.
-    """
+def test_row3_plain_and_json_name_the_same_prewrite_refusal(two_member_ws: Path, extra: list[str]) -> None:
     root = two_member_ws
     target = _store_with_two_members(root)
-
+    (root / "alpha" / "untracked-refusal").write_text("dirty")
+    before = _heads(root)
     res = _invoke("store", "checkout", target[:12], *extra)
-    out = (res.stdout or "") + (res.stderr or "")
-
-    why = (
-        f"\n    args: {' '.join(extra) or '(plain)'}"
-        f"\n    rc={res.exit_code} stdout={res.stdout!r} stderr={res.stderr!r}"
-        f"\n    exception={res.exception!r}"
-    )
-    assert res.exit_code != 0, "a member absent from the target snapshot cannot be restored" + why
-    assert res.exception is None or isinstance(res.exception, SystemExit), (
-        "the failure must be converted to the group's own refusal on BOTH paths -- a raw exception "
-        f"escaping one of them is the defect. Escaped: {res.exception!r}" + why
-    )
-    assert out.strip(), (
-        "this path produced NOTHING while the other produces a diagnostic: a caller parsing "
-        "`--json` cannot tell a refusal from a crash from silence." + why
-    )
-    assert "alpha" in out, (
-        "the diagnostic must name the member it could not resolve on BOTH paths, or the two paths "
-        "disagree about what happened." + why
-    )
+    assert res.exit_code == 3, res.output
+    assert "alpha is dirty" in res.output
+    assert _heads(root) == before
 
 
 def test_row4_a_phase_two_failure_names_the_members_that_moved(two_member_ws: Path) -> None:

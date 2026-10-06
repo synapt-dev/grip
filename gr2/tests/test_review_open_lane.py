@@ -127,6 +127,102 @@ def _new_record(world, lane=None):
     )
 
 
+@pytest.mark.parametrize("declared", [False, True])
+def test_pr_head_cli_open_close_owns_absent_and_declared_lane_coordinates(review_world, monkeypatch, declared):
+    from types import SimpleNamespace
+    from typer.testing import CliRunner
+    from gr2.python_cli import app as app_mod, review as review_mod
+    from gr2.prototypes import lane_workspace_prototype as lanes
+
+    world = review_world
+    ws = world["workspace_root"]
+    (ws / ".grip").mkdir()
+    (ws / ".grip" / "workspace_spec.toml").write_text(
+        f'[[repos]]\nname = "grip"\npath = "{world["source"]}"\n'
+    )
+    definition = lanes.lane_file(ws, "atlas", "review-7")
+    if declared:
+        definition.parent.mkdir(parents=True)
+        definition.write_text(
+            'owner_unit = "atlas"\nlane_name = "review-7"\nlane_kind = "materialized"\n'
+            'repos = ["grip"]\ncheckout_root = "agents/atlas/lanes/review-7"\n'
+        )
+        managed = ws / "agents" / "atlas" / "lanes" / "review-7"
+    else:
+        managed = ws / ".grip" / "state" / "lanes" / "atlas" / "review-7"
+    expected = managed / "repos" / "grip"
+    sibling = managed / "repos" / "retained"
+    sibling.mkdir(parents=True)
+    (sibling / "notes").write_bytes(b"review notes\n")
+
+    monkeypatch.setattr(review_mod, "host_pr_head_oid", lambda *args: world["head_sha"])
+    monkeypatch.setattr(app_mod, "_prepare_review_branch", lambda *args: world["review_branch"])
+    monkeypatch.setattr(app_mod.platform_ops, "get_platform_adapter", lambda *args: SimpleNamespace(
+        pr_status=lambda *args: SimpleNamespace(ref=SimpleNamespace(base_branch="main"))))
+    calls = []
+    real_open = review_mod.open_review_lane
+
+    def local_open(**kwargs):
+        calls.append(kwargs["lane_repo_root"])
+        return real_open(**kwargs, allow_local=True)
+
+    monkeypatch.setattr(review_mod, "open_review_lane", local_open)
+    runner = CliRunner()
+    opened = runner.invoke(app_mod.app, ["review", "open", str(ws), "atlas", "grip", "7", "--json"])
+    assert opened.exit_code == 0, (opened.output, opened.exception)
+    assert calls == [expected]
+    assert _run(expected, "rev-parse", "HEAD") == world["head_sha"]
+    payload = json.loads(opened.output[opened.output.index("{\n"):])
+    assert payload["lane_repo_root"] == str(expected)
+    assert payload["review_record"]["head"] == world["head_sha"]
+    assert read_review_record(review_record_paths(ws, "atlas", "review-7", "grip", expected))["head"] == world["head_sha"]
+    closed = runner.invoke(app_mod.app, ["review", "close", str(ws), "atlas", "grip", "7"])
+    assert closed.exit_code == 0, (closed.output, closed.exception)
+    assert not expected.exists()
+    assert (sibling / "notes").read_bytes() == b"review notes\n"
+    assert definition.exists() == declared
+
+
+@pytest.mark.parametrize("kind", ["bound", "materialized", "unknown"])
+def test_pr_head_cli_refuses_bound_conflicting_and_unknown_coordinates_before_delegates(tmp_path, monkeypatch, kind):
+    from typer.testing import CliRunner
+    from gr2.python_cli import app as app_mod, review as review_mod
+    from gr2.prototypes import lane_workspace_prototype as lanes
+
+    ws = tmp_path / "ws"
+    author = tmp_path / "author"
+    author.mkdir()
+    (author / "work").write_bytes(b"author bytes\n")
+    definition = lanes.lane_file(ws, "atlas", "review-7")
+    definition.parent.mkdir(parents=True)
+    definition.write_text(
+        f'owner_unit = "atlas"\nlane_name = "review-7"\nrepos = ["grip"]\n'
+        f'lane_kind = "{kind}"\nbound_worktree = "{author}"\n'
+    )
+    original = definition.read_bytes()
+    calls = []
+
+    def unexpected(*args, **kwargs):
+        calls.append("downstream")
+        raise AssertionError("invalid coordinates reached a downstream delegate")
+
+    monkeypatch.setattr(app_mod, "_workspace_repo_spec", unexpected)
+    monkeypatch.setattr(review_mod, "host_pr_head_oid", unexpected)
+    monkeypatch.setattr(app_mod, "_prepare_review_branch", unexpected)
+    monkeypatch.setattr(app_mod.platform_ops, "get_platform_adapter", unexpected)
+    monkeypatch.setattr(review_mod, "open_review_lane", unexpected)
+    monkeypatch.setattr(review_mod, "close_review_lane", unexpected)
+    reason = ("PR-head reviews require a managed lane, not a bound author checkout"
+              if kind == "bound" else "invalid or conflicting lane checkout coordinates")
+    for verb in ("open", "close"):
+        result = CliRunner().invoke(app_mod.app, ["review", verb, str(ws), "atlas", "grip", "7"])
+        assert result.exit_code != 0
+        assert reason in result.output + str(result.exception)
+        assert calls == []
+        assert (author / "work").read_bytes() == b"author bytes\n"
+        assert definition.read_bytes() == original
+
+
 # --------------------------------------------------------------------------- #
 # 1. materialize the lane at the PR head
 # --------------------------------------------------------------------------- #

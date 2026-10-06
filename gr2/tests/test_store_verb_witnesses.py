@@ -325,12 +325,14 @@ def test_fresh_init_generates_the_allow_list_and_the_root_ends_clean(ws: Path) -
     allow_list = ws / ".gitignore"
     assert allow_list.is_file(), "a fresh init writes the 3a allow-list"
     text = allow_list.read_text()
-    for line in ("/*", "!/.gitignore", "!/grip.toml", "!/alpha", "!/beta"):
-        assert line in text.splitlines(), f"{line!r} missing from the allow-list:\n{text}"
+    assert (ws / ".gitinclude").read_text().splitlines() == ["grip.toml", "alpha", "beta"]
+    for line in ("*", "!/.gitinclude", "!/grip.toml", "!/alpha", "!/beta", "/.gitignore"):
+        assert line in text.splitlines(), f"{line!r} missing from the generated rules:\n{text}"
+    assert "!/.gitignore" not in text.splitlines()
 
     assert _cli("store", "commit", "-m", "first")[0] == 0
     tracked = _git_out(ws, "ls-tree", "HEAD", "--name-only").splitlines()
-    assert sorted(tracked) == [".gitignore", "alpha", "beta", "grip.toml"], tracked
+    assert sorted(tracked) == [".gitinclude", "alpha", "beta", "grip.toml"], tracked
     assert _git_out(ws, "status", "--porcelain") == "", (
         "the whole point of the allow-list: a committed root is clean, not venv-noise"
     )
@@ -387,18 +389,21 @@ def test_write_gitignore_unignores_a_nested_member_path(
     root = tmp_path / "nested"
     root.mkdir()
     (root / "reference" / "mem0").mkdir(parents=True)
+    _git(root, "init", "-q", "-b", "main")  # checked publisher and check-ignore need the owning repo
     _write_gitignore(root, [{"name": "mem0", "path": "reference/mem0"}])
     lines = (root / ".gitignore").read_text().splitlines()
-    assert lines[1:] == [
-        "/*",
-        "!/.gitignore",
+    assert (root / ".gitinclude").read_text().splitlines() == ["grip.toml", "reference/mem0"]
+    assert lines[2:] == [
+        "*",
+        "!/.gitinclude",
         "!/grip.toml",
+        "!/grip.toml/**",
         "!/reference/",
-        "/reference/*",
         "!/reference/mem0",
+        "!/reference/mem0/**",
+        "/.gitignore",
     ], lines
     monkeypatch.chdir(root)
-    _git(root, "init", "-q", "-b", "main")  # check-ignore needs a repo to read the rule
     # `check-ignore` exits 1 and prints nothing when the path is NOT ignored, so both calls
     # are read with check=False: the output is the instrument, not the exit code.
     assert _git_out(root, "check-ignore", "reference/mem0/marker.txt", check=False) == "", (

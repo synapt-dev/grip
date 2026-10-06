@@ -23,10 +23,18 @@ from gr2.prototypes import lane_workspace_prototype as lanes
 from gr2.python_cli import app as gr2_app
 from gr2.python_cli import lane_defaults
 
-from tests.test_lane_create_fork_base_cli import _git, _workspace
+from tests.test_lane_create_fork_base_cli import _git, _workspace as _native_workspace
 from tests.test_store_break_attempts import two_member_ws  # noqa: F401
 
 runner = CliRunner()
+
+
+def _workspace(tmp_path, repos):
+    """Legacy defaults exercise live documents without a native root commit owner."""
+    import shutil
+    ws, tips = _native_workspace(tmp_path, repos)
+    shutil.rmtree(ws / ".git")
+    return ws, tips
 
 
 def _flat(res) -> str:
@@ -58,7 +66,7 @@ def test_a_bare_lane_create_takes_every_repo_and_the_lane_name(tmp_path: Path) -
     doc = lanes.load_lane_doc(ws, "atlas", "demo")
     assert sorted(doc["fork_base"]) == ["alpha", "beta"]
     assert all(v["sha"] == tips[k] for k, v in doc["fork_base"].items())
-    lane_root = lanes.lane_dir(ws, "atlas", "demo")
+    lane_root = ws / "agents" / "atlas" / "lanes" / "demo"
     assert _git(lane_root / "repos" / "alpha", "rev-parse", "--abbrev-ref", "HEAD") == "demo"
     assert _git(lane_root / "repos" / "beta", "rev-parse", "--abbrev-ref", "HEAD") == "demo"
 
@@ -192,11 +200,11 @@ def test_a_bind_lane_still_needs_its_repo_named(tmp_path: Path) -> None:
 
 
 def _entered_lane(tmp_path: Path):
-    ws, _ = _workspace(tmp_path, ["alpha", "beta"])
+    ws, _ = _native_workspace(tmp_path, ["alpha", "beta"])
     assert _create(ws).exit_code == 0
     res = runner.invoke(gr2_app.app, ["lane", "enter", str(ws), "atlas", "demo", "--actor", "human:t"])
     assert res.exit_code == 0, res.output
-    lane_root = lanes.lane_dir(ws, "atlas", "demo")
+    lane_root = ws / "agents" / "atlas" / "lanes" / "demo"
     for repo in ("alpha", "beta"):
         (lane_root / "repos" / repo / "edit.txt").write_text(f"change in {repo}\n")
     return ws, lane_root
@@ -239,6 +247,10 @@ def test_add_dot_at_the_workspace_root_with_a_lane_entered_refuses_and_stages_no
 
 def test_add_repo_path_at_the_root_is_the_explicit_way_to_stage_the_root(tmp_path: Path, monkeypatch) -> None:
     ws, _ = _entered_lane(tmp_path)
+    from gr2.python_cli import grip_cli
+    with (ws / ".gitinclude").open("a") as declaration:
+        declaration.write("stray.txt\n")
+    grip_cli._regenerate_workspace_gitignore(ws)
     (ws / "stray.txt").write_text("on purpose\n")
     monkeypatch.chdir(ws)
     res = runner.invoke(gr2_app.app, ["add", "--repo-path", ".", "stray.txt"])
@@ -247,7 +259,11 @@ def test_add_repo_path_at_the_root_is_the_explicit_way_to_stage_the_root(tmp_pat
 
 
 def test_add_dot_at_the_root_with_no_lane_entered_is_what_it_always_was(tmp_path: Path, monkeypatch) -> None:
-    ws, _ = _workspace(tmp_path, ["alpha"])
+    ws, _ = _native_workspace(tmp_path, ["alpha"])
+    from gr2.python_cli import grip_cli
+    with (ws / ".gitinclude").open("a") as declaration:
+        declaration.write("stray.txt\n")
+    grip_cli._regenerate_workspace_gitignore(ws)
     (ws / "stray.txt").write_text("plain\n")
     monkeypatch.chdir(ws)
     res = runner.invoke(gr2_app.app, ["add", "stray.txt"])
@@ -285,11 +301,14 @@ def test_slow_remotes_that_do_answer_still_share_one_budget(monkeypatch) -> None
 # --- store-init roots: build from members, roll back a spec on refusal ------------
 
 
-def _store_init_only_root(two_member_ws: Path) -> Path:
-    """The root `store init` makes: grip.toml and a root git repository, members beside it, NO workspace spec."""
+def _store_init_only_root(two_member_ws: Path, *, commit: bool = True) -> Path:
+    """Initialize a native root and normally record C, retaining no workspace spec."""
     from tests.test_store_break_attempts import _cli as store_cli
 
     assert store_cli("store", "init", str(two_member_ws))[0] == 0
+    if commit:
+        result = store_cli("store", "commit", "--message", "workspace fixture")
+        assert result[0] == 0, result[1]
     assert not (two_member_ws / ".grip" / "workspace_spec.toml").exists()
     return two_member_ws
 
@@ -306,7 +325,7 @@ def test_bare_lane_create_on_a_store_init_root_builds_the_lane_from_the_grip_tom
     assert "gr2: repos=alpha,beta" in text and "gr2: branch=demo" in text
     assert (root / ".grip" / "workspace_spec.toml").is_file()
     for repo in ("alpha", "beta"):
-        clone = root / ".grip" / "state" / "lanes" / "default" / "demo" / "repos" / repo
+        clone = root / "agents" / "default" / "lanes" / "demo" / repo
         assert clone.is_dir(), sorted(str(p.relative_to(root)) for p in root.rglob("repos/*"))
         head = subprocess.run(["git", "-C", str(clone), "branch", "--show-current"], capture_output=True, text=True).stdout.strip()
         assert head == "demo", (repo, head)
@@ -318,13 +337,13 @@ def _tree_bytes(root: Path) -> dict[str, bytes | None]:
             for p in root.rglob("*")}
 
 
-def test_refused_unknown_member_rolls_back_the_spec_written_from_members(two_member_ws: Path) -> None:
-    """Drop spec rollback and this refusal leaves a new file behind."""
+def test_native_member_subset_refuses_before_spec_bootstrap(two_member_ws: Path) -> None:
+    """A native lane requires the complete selected set before spec bootstrap."""
     root = _store_init_only_root(two_member_ws)
     before = _tree_bytes(root)
     res = runner.invoke(gr2_app.app, ["lane", "create", str(root), "default", "demo", "--repos", "alpha,nosuch"])
-    assert res.exit_code == 1, res.output
-    assert "unknown repos for lane: nosuch" in res.output
+    assert res.exit_code == 2, res.output
+    assert "complete selected member set" in _flat(res)
     assert not (root / ".grip" / "workspace_spec.toml").exists()
     assert _tree_bytes(root) == before
 
@@ -372,3 +391,30 @@ def test_a_skipped_remote_check_is_printed_even_when_context_lines_are_hushed(tm
     res = _create(ws)
     assert "was not checked against the remote for:" in res.output and "alpha (" in res.output
     assert "gr2: repos=" not in res.output  # the ordinary lines stay hushed
+
+
+def test_native_default_announces_selected_commit_and_checks_its_remote(tmp_path):
+    ws, _ = _native_workspace(tmp_path, ["alpha", "beta"])
+    _push_branch(ws, "beta", "demo")
+    # An ambient document cannot hide a selected member from the collision check.
+    (ws / ".grip" / "workspace_spec.toml").write_text(
+        'schema_version=1\n[[repos]]\nname="ambient"\npath="wrong/path"\nurl="https://example.invalid/ambient.git"\n[[units]]\nname="atlas"\npath="agents/atlas/home"\nrepos=["ambient"]\n'
+    )
+    refused = _create(ws)
+    assert refused.exit_code == 2 and "already exists on beta's remote" in _flat(refused)
+    assert not lanes.lane_file(ws, "atlas", "demo").exists()
+    matched = _create(ws, "--branch", "explicit")
+    assert matched.exit_code == 0, matched.output
+    assert "every repo of the selected workspace commit; this makes 2 clones" in _flat(matched)
+    assert set(lanes.load_lane_doc(ws, "atlas", "demo")["repos"]) == {"alpha", "beta"}
+
+
+def test_native_lane_requires_a_committed_workspace_before_materializing(two_member_ws):
+    root = _store_init_only_root(two_member_ws, commit=False)
+    before = _tree_bytes(root)
+    refused = runner.invoke(gr2_app.app, ["lane", "create", str(root), "default", "demo"])
+    assert refused.exit_code == 2, refused.output
+    assert "store commit" in _flat(refused)
+    assert not (root / ".grip" / "workspace_spec.toml").exists()
+    assert not lanes.lane_file(root, "default", "demo").exists()
+    assert _tree_bytes(root) == before

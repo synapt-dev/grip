@@ -131,14 +131,8 @@ def _lines_for(path: str, prefix: str, with_ancestors: bool) -> list[str]:
     return out
 
 
-def compile_gitignore(text: str) -> tuple[str, list[Notice]]:
-    """Compile `.gitinclude` text into the `.gitignore` gr2 writes.
-
-    Returns the generated text and the report. The report is part of the API
-    rather than a side channel: the caller prints it, so a line that is refused,
-    or that a later ignore will defeat, is visible to the person who wrote it
-    instead of quietly doing nothing.
-    """
+def _parse_declaration(text: str) -> tuple[list[str], list[str], list[Notice]]:
+    """One parser owns both generated rules and index authorization."""
     includes: list[str] = []
     ignores: list[str] = []
     report: list[Notice] = []
@@ -174,6 +168,9 @@ def compile_gitignore(text: str) -> tuple[str, list[Notice]]:
                 )
             )
             continue
+        if not is_ignore and path.casefold() == ".gitignore":
+            report.append(Notice(line=raw, reason=".gitignore is generated and cannot be included", kind=REFUSED))
+            continue
         (ignores if is_ignore else includes).append(path)
 
     # An include at or under an ignored path can never take effect: the ignore is
@@ -200,6 +197,35 @@ def compile_gitignore(text: str) -> tuple[str, list[Notice]]:
                 )
                 break
 
+    return includes, ignores, report
+
+
+def path_is_included(text: str, path: str) -> bool:
+    """Authorize a root-relative path from the declaration alone.
+
+    Ancestors opened for traversal do not authorize their other contents.
+    Nested ignore files and global Git configuration cannot grant inclusion.
+    """
+    includes, ignores, report = _parse_declaration(text)
+    if report or _refusal_reason(path) is not None:
+        return False
+    path = path.rstrip("/")
+    if path.casefold() == ".gitignore":
+        return False
+    if path.casefold() == ".gitinclude":
+        return True
+    def within(parent: str) -> bool:
+        return path == parent or path.startswith(parent + "/")
+    # Parser conflicts already use conservative casefolded exclusions. Keep
+    # authorization consistent, including when nested Git rules undo an ignore.
+    folded = path.casefold()
+    excluded = any(folded == p.casefold() or folded.startswith(p.casefold() + "/") for p in ignores)
+    return any(within(p) for p in includes) and not excluded
+
+
+def compile_gitignore(text: str) -> tuple[str, list[Notice]]:
+    """Compile the declaration, returning generated text and all notices."""
+    includes, ignores, report = _parse_declaration(text)
     lines = ["*", f"!{SELF}"]
     for path in sorted(set(includes)):
         lines.extend(_lines_for(path, "!", with_ancestors=True))
@@ -207,4 +233,5 @@ def compile_gitignore(text: str) -> tuple[str, list[Notice]]:
     # and two orderings of one declaration compile to the same bytes.
     for path in sorted(set(ignores)):
         lines.extend(_lines_for(path, "", with_ancestors=False))
+    lines.append("/.gitignore")  # Generated output never belongs in the index.
     return HEADER + "\n".join(lines) + "\n", report

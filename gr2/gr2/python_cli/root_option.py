@@ -3,7 +3,7 @@
 Every workspace verb used to take the root as its FIRST required positional, so a caller inside a
 workspace retyped a path the current directory already named. Click binds positionals in order, so an
 optional leading argument followed by required ones cannot be declared. Two command classes cover it,
-and neither reads what a positional contains to decide anything about a root:
+for the generic fixed/optional-arity contracts. Review readers add the explicit identity/path grammar:
 
 * ``RootOptionCommand``: ``--root/-C`` names the root; the positional form is untouched, and a bare
   call is NOT inferred. For verbs whose last positional is optional, one fewer word has two readings
@@ -11,6 +11,10 @@ and neither reads what a positional contains to decide anything about a root:
 * ``RootOptionalCommand``: also COUNTS. One fewer positional than the verb requires means the root is
   the missing one, and it is put in front: from ``--root/-C`` when given, else the nearest workspace
   above the current directory. Exact for a verb with a fixed number of positionals.
+* ``ReviewTargetCommand``: show/verify distinguish an explicit identity from a
+  directory and leave zero/several-bind refusal to the reader.
+* ``ReviewOpenCommand``: reconstruction infers its root through ``context.py``
+  while the explicit ROOT UNIT REPO PR positional form retains its meaning.
 """
 
 from __future__ import annotations
@@ -169,6 +173,41 @@ class ReviewTargetCommand(RootOptionalCommand):
     def _is_root_word(word: str) -> bool:
         target_spelled = word.startswith("gr:") or re.fullmatch(r"[0-9a-fA-F]{4,64}", word) is not None
         return not target_spelled and Path(word).is_dir()
+
+
+class ReviewOpenCommand(ReviewTargetCommand):
+    """Infer reconstruction context, retaining the legacy ROOT UNIT REPO PR form.
+
+    Zero or one target uses the same context owner as other workspace verbs.
+    Three/four words retain the previous PR-head positional grammar and never
+    infer an owner, repository or PR number.
+    """
+
+    def parse_args(self, ctx, args):
+        args = list(args)
+        help_option = self.get_help_option(ctx)
+        option_tokens = args[:args.index("--")] if "--" in args else args
+        if help_option is not None and any(word in help_option.opts for word in option_tokens):
+            # Help is eager and needs no workspace or review target.
+            return typer.core.TyperCommand.parse_args(self, ctx, args)
+        positions, root_value = self._scan(args)
+        if len(positions) >= 3:
+            # PR-head positionals are intent, not a review target to reinterpret.
+            if root_value is None and not Path(args[positions[0]]).is_dir():
+                ctx.fail(f"{args[positions[0]]!r} is not a directory, so it cannot be the workspace root; {_HINT}")
+            return RootOptionCommand.parse_args(self, ctx, args)
+        if root_value is None and (
+            not positions or len(positions) == 1 and not self._is_root_word(args[positions[0]])
+        ):
+            from . import context as c
+
+            try:
+                root_item = c.resolve_root(None)
+            except c.ContextRefused as exc:
+                ctx.fail(str(exc))
+            c.announce({"root": root_item}, root=root_item, quiet=c.quiet_from_env())
+            args.insert(positions[0] if positions else len(args), root_item.value)
+        return super().parse_args(ctx, args)
 
 
 class ContextCommand(RootOptionalCommand):

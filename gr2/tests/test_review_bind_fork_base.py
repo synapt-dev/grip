@@ -68,7 +68,8 @@ def _materialized_lane(
     if fork_base:
         ns.fork_base = {r: {"branch": "main", "sha": tips[r]} for r in repos}
     assert lanes.create_lane(ns) == 0
-    lane_root = lanes.lane_dir(ws, "atlas", lane)
+    lane_root = ws / "agents" / "atlas" / "lanes" / lane
+    (lane_root / "repos").mkdir(parents=True)
     for r in repos:
         _git(lane_root / "repos", "clone", "-q", str(tmp_path / "src" / r), r)
         repo = lane_root / "repos" / r
@@ -78,7 +79,7 @@ def _materialized_lane(
 
 
 def _commit_lane_change(ws: Path, repos: list[str], lane: str = "feature", times: int = 1) -> None:
-    lane_root = lanes.lane_dir(ws, "atlas", lane)
+    lane_root = ws / "agents" / "atlas" / "lanes" / lane
     for n in range(times):
         for r in repos:
             (lane_root / "repos" / r / f"new{n}.txt").write_text(f"x{n}\n")
@@ -94,7 +95,7 @@ def test_review_pins_base_is_the_recorded_fork_base_not_head_parent(tmp_path: Pa
     # recomputes base from HEAD^ reds this.
     ws = _materialized_lane(tmp_path, ["a", "b"])
     _commit_lane_change(ws, ["a", "b"], times=2)
-    lane_root = lanes.lane_dir(ws, "atlas", "feature")
+    lane_root = ws / "agents" / "atlas" / "lanes" / "feature"
     doc = lanes.load_lane_doc(ws, "atlas", "feature")
 
     pins = {p.key: p for p in project_review.pins_from_lane(ws, "atlas", "feature")}

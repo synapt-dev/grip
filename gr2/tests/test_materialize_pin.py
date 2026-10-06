@@ -220,11 +220,10 @@ def test_PB_lane_create_bases_on_the_pin(tmp_path: Path) -> None:
         "lane", "create", str(root), "default", "feat", "--repos", "diverging", "--branch", "feat/x"
     )
     assert rc == 0, out
-    checkouts = [p for p in (root / ".grip").rglob("diverging") if (p / ".git").exists()]
-    assert checkouts, "precondition: the lane created a checkout to assert on"
-    for path in checkouts:
-        got = _run("rev-parse", "HEAD", cwd=path).stdout.strip()
-        assert got == pins["diverging"], f"{path} was based on {got[:12]}, not the pin"
+    path = root / "agents" / "default" / "lanes" / "feat" / "repos" / "diverging"
+    assert (path / ".git").is_dir(), "precondition: the lane created its ordinary checkout"
+    got = _run("rev-parse", "HEAD", cwd=path).stdout.strip()
+    assert got == pins["diverging"], f"{path} was based on {got[:12]}, not the pin"
 
 
 def test_PC_missing_root_member_is_cloned_at_its_pin(tmp_path: Path) -> None:

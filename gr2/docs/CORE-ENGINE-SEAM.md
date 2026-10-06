@@ -9,6 +9,29 @@ performance evidence says otherwise.
 
 ## Decision
 
+### Native workspace inclusion
+
+A new native workspace commits `.gitinclude` as its inclusion declaration.
+The existing inclusion compiler generates `.gitignore`, with default exclusion
+and an explicit final rule excluding `.gitignore` itself. Including that
+generated file is refused. Init and store commit regenerate the file from the
+working declaration. Selected-commit checkout regenerates it from the selected
+commit's declaration before materializing members.
+
+Store commit checks both the proposed document/member paths and existing index
+entries against the declaration's canonical policy, independently of nested
+ignore negations. Canonical exclusions use the compiler's conservative
+casefold policy, so case aliases cannot undo an exclusion. An excluded indexed path is refused without
+clearing the index. Ignore rules alone cannot constrain forced staging or Git
+gitlink insertion. Inside an included directory, child `.gitignore` files retain
+normal Git exclusions and may themselves be tracked. Those exclusions prevent
+new ignored files being staged, while already-tracked files retain normal Git
+behavior. Generated root output refuses symlink/nonregular or tracked-owner
+conflicts before replacement. Publication replaces the file atomically without
+opening the old output for truncation. Existing adopted roots without `.gitinclude` retain their
+owner's ignore file and tracked history. This change does not migrate or untrack
+those files automatically.
+
 `gr2` has one live implementation surface:
 
 - Python owns CLI, user workflow, JSON/human rendering, error presentation,
@@ -170,6 +193,47 @@ Current Python references:
 - `gr2/gr2/python_cli/gitops.py::ensure_lane_checkout`
 - `gr2/gr2/python_cli/app.py::_materialize_lane_repos`
 
+### Lane checkout coordinates
+
+`lane.toml` and lane leases remain local metadata under
+`.grip/state/lanes/<unit>/<lane>`. New materialized lanes record the optional
+workspace-relative `checkout_root = "agents/<unit>/lanes/<lane>"`. A native lane
+root is an ordinary Git checkout. Its current HEAD's committed `grip.toml` and
+gitlinks determine the complete member set, declared child paths and pins.
+Member keys are not child paths. Unit launch homes remain
+`agents/<unit>/home`, outside `.grip`.
+
+The owning lane resolver uses recorded coordinates, never directory existence:
+
+- Bound lanes retain their explicit `bound_worktree`. They cannot also declare
+  `checkout_root`.
+- Materialized lanes with `checkout_root` use that validated workspace-relative
+  root. Native child paths come from its current committed workspace document.
+  Spec-backed legacy lanes retain `<checkout_root>/repos/<repo>`.
+- Existing project reviews record their owning `reviews/<unit>/<lane>` root in
+  the same field. `review-ephemeral` retains its read-only kind and does not use
+  the native workspace member projection. This does not move review directories.
+- Older materialized documents without the field retain the deterministic
+  `.grip/state/lanes/<unit>/<lane>/repos/<repo>` location.
+
+Creating a lane does not relocate or rebind existing lanes. The existing cache
+seeder and ordinary reference-clone materializer provide independent mutable Git
+state, allowing two units to use the same branch. Failed creation removes only
+artifacts created by that attempt. A complete recorded fork base retains a usable
+checkout after a lifecycle-hook refusal. Cleanup failure preserves the original
+error and reports the secondary failure.
+
+Native lane creation defaults to the source workspace HEAD. `--workspace-commit`
+selects another resolvable commit before materialization. The selected committed
+document wins over an ambient spec. Enter follows the lane root's current HEAD,
+without a separate remembered membership or path map. Removing a member from a
+workspace commit does not authorize deleting its previous checkout.
+
+After root detach, cache, clone or member-checkout failures report PART-APPLIED
+with the selected commit, failing member/stage and completed members. Existing
+checkouts and usable partial materialization remain in place. Diagnostic storage
+or output failures do not replace the original exception.
+
 ## Boundary Rules
 
 1. The engine does not own identity.
@@ -179,8 +243,12 @@ Current Python references:
 
 2. The engine does not own lane envelopes.
 
-   gr2 lane records live under `agents/<owner_unit>/lanes/<lane>`. gr2 reads
-   that location and no other, whatever else may exist in the workspace.
+   gr2 lane definitions and leases live under
+   `.grip/state/lanes/<owner_unit>/<lane>`. Physical checkouts are resolved from
+   the owning lane document's `checkout_root`, explicit bound coordinate, or
+   deterministic legacy coordinate described above. Existing project reviews
+   retain their owning review location. An unrelated external lane envelope
+   does not become read authority merely by existing in the workspace.
 
 3. The engine does not own CLI shape.
 

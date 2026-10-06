@@ -157,7 +157,7 @@ def _lane_repo_targets(
 
     A bound lane is single-repo: its one repo lives in the author's bound
     worktree, not under the lane state tree. A materialized lane commits each
-    of its repos/<key> checkouts.
+    of its checkouts at the owning lane resolver's declared paths.
     """
     kind = doc.get("lane_kind", "materialized")
     repos = list(doc.get("repos", []))
@@ -169,8 +169,7 @@ def _lane_repo_targets(
             )
         key = repos[0] if repos else "bound"
         return [(key, Path(worktree))]
-    lane_root = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
-    return [(repo, lane_root / "repos" / repo) for repo in repos]
+    return [(repo, lane_proto.lane_repo_root(workspace_root, owner_unit, lane_name, repo)) for repo in repos]
 
 
 def commit_lane(
@@ -225,9 +224,8 @@ def commit_lane(
             targets = _lane_repo_targets(workspace_root, owner_unit, lane_name, doc)
             lane_repo_dir = str(targets[0][1]) if targets else None
         else:
-            lane_repo_dir = str(
-                lane_proto.lane_dir(workspace_root, owner_unit, lane_name) / "repos"
-            )
+            root = lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)
+            lane_repo_dir = str(root if lane_proto.native_lane_members(workspace_root, doc) is not None else root / "repos")
         # A first-time user's layout: work can be staged in the unit-home
         # copy (wherever the spec places that unit) or the workspace-root copy (the
         # spec repo path), neither of which is the lane's own clone. If a

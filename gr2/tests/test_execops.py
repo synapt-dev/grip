@@ -88,6 +88,7 @@ class ExecTestBase(unittest.TestCase):
         # execops derives each repo cwd from lane_proto.lane_dir;
         # delegate to the real helper so the mock cannot drift from the layout.
         mock.lane_dir.side_effect = _real_lane_dir
+        mock.lane_repo_root.side_effect = lambda ws, unit, lane, repo: _real_lane_dir(ws, unit, lane) / "repos" / repo
         return mock
 
 

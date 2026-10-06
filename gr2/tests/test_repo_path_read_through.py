@@ -358,7 +358,7 @@ def test_lane_create_sources_a_placeholder_member_from_the_unit_copy(tmp_path: P
     )
     assert rc == 0, f"lane create must succeed with the unit's materialized source: {out}"
     for member in pins:
-        lane_repo = plain / ".grip" / "state" / "lanes" / "default" / "feat-x" / "repos" / member
+        lane_repo = plain / "agents" / "default" / "lanes" / "feat-x" / "repos" / member
         head = _run("rev-parse", "HEAD", cwd=lane_repo)
         assert head.returncode == 0, f"lane checkout exists for {member}: {out}"
         origin = _run("config", "remote.origin.url", cwd=lane_repo).stdout.strip()

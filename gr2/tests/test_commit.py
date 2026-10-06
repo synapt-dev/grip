@@ -214,7 +214,8 @@ def _materialized_lane(tmp_path: Path, repos: list[str], lane: str = "feature") 
         workspace_root=ws, owner_unit="atlas", lane_name=lane, type="feature",
         repos=",".join(repos), branch=branch, source="test", default_commands=[],
     )) == 0
-    lane_root = lanes.lane_dir(ws, "atlas", lane)
+    lane_root = lanes.lane_checkout_root(ws, "atlas", lane)
+    (lane_root / "repos").mkdir(parents=True)
     for r in repos:
         _init_repo(lane_root / "repos" / r)
     return ws
@@ -227,7 +228,7 @@ def _stage_change(repo: Path, name: str = "new.txt", content: str = "x\n") -> No
 
 def test_lane_commit_commits_each_staged_repo_under_one_message(tmp_path: Path) -> None:
     ws = _materialized_lane(tmp_path, ["a", "b"])
-    lane_root = lanes.lane_dir(ws, "atlas", "feature")
+    lane_root = lanes.lane_checkout_root(ws, "atlas", "feature")
     _stage_change(lane_root / "repos" / "a")
     _stage_change(lane_root / "repos" / "b")
 
@@ -245,7 +246,7 @@ def test_lane_commit_commits_each_staged_repo_under_one_message(tmp_path: Path) 
 def test_lane_commit_skips_empty_index_repo_and_says_so(tmp_path: Path) -> None:
     # Control: a repo with nothing staged is skipped, never an empty commit.
     ws = _materialized_lane(tmp_path, ["a", "b"])
-    lane_root = lanes.lane_dir(ws, "atlas", "feature")
+    lane_root = lanes.lane_checkout_root(ws, "atlas", "feature")
     _stage_change(lane_root / "repos" / "a")  # b left empty
     head_b_before = _git(lane_root / "repos" / "b", "rev-parse", "HEAD").stdout.strip()
 
@@ -259,7 +260,7 @@ def test_lane_commit_skips_empty_index_repo_and_says_so(tmp_path: Path) -> None:
 
 def test_lane_commit_failing_repo_does_not_roll_back_others_and_is_named(tmp_path: Path) -> None:
     ws = _materialized_lane(tmp_path, ["a", "b"])
-    lane_root = lanes.lane_dir(ws, "atlas", "feature")
+    lane_root = lanes.lane_checkout_root(ws, "atlas", "feature")
     _stage_change(lane_root / "repos" / "a")
     # Make repo b fail its commit: stage a change, then corrupt HEAD so commit errors.
     _stage_change(lane_root / "repos" / "b")
@@ -286,7 +287,7 @@ def test_single_repo_cwd_commit_unchanged(tmp_path: Path) -> None:
 
 def test_cli_lane_commit_prints_one_line_per_repo(tmp_path: Path) -> None:
     ws = _materialized_lane(tmp_path, ["a", "b"])
-    lane_root = lanes.lane_dir(ws, "atlas", "feature")
+    lane_root = lanes.lane_checkout_root(ws, "atlas", "feature")
     _stage_change(lane_root / "repos" / "a")  # b empty
     result = CliRunner().invoke(
         app, ["commit", "-m", "m", "--workspace-root", str(ws), "--owner-unit", "atlas", "--lane", "feature"],

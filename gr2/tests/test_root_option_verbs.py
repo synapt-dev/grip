@@ -24,6 +24,7 @@ both lists; a few drive the real CLI. Each row names what must make it go red:
 from __future__ import annotations
 
 from pathlib import Path
+import os
 
 import pytest
 import typer
@@ -297,7 +298,8 @@ def test_review_reader_explicit_id_keeps_its_role_despite_a_directory(verb, ws, 
     inside = ws / "sub" / "deeper"
     at(inside)
     for target in ("gr:" + "a" * 40, "a" * 40, "a" * 12, "gr:not-a-bind"):
-        (inside / target).mkdir()
+        if ":" not in target or os.name != "nt":
+            (inside / target).mkdir()
         for args in ([target], ["-C", str(ws), target]):
             params = _parse(verb, args, tmp_path)
             assert _root(params) == ws.resolve() and params["commit"] == target

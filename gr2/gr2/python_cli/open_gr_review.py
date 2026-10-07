@@ -100,6 +100,8 @@ def close_open_gr_lane(lane_dir: Path, *, workspace_root: Path | None = None) ->
     if retained is not None and marker_bytes.hex() != retained:
         raise OpenGrReviewError("reconstruction marker changed during cleanup; retaining recovery")
     gr_commit = marker.get("gr_commit", "")
+    if allocation["state"] != "closing":
+        _refuse_local_work(lane_dir, allocation)
     if allocation["state"] == "closing":
         preserved = allocation.get("preserved_runs", [])
     else:
@@ -113,6 +115,71 @@ def close_open_gr_lane(lane_dir: Path, *, workspace_root: Path | None = None) ->
         result["preserved_run"] = preserved[0]
         result["preserved_runs"] = preserved
     return result
+
+
+def _refuse_local_work(target: Path, allocation: dict) -> None:
+    """Close removes the lane, so it first refuses when the lane holds work that exists nowhere
+    else: in a member repository, a staged, unstaged or untracked change (the review's own
+    marker, run receipt and logs excepted), a stash, or a commit no remote has and the reviewed
+    HEAD does not contain; and, at the root of a multi-member lane, any entry that is not a member,
+    the shared environment, or the review's own files. A git call that cannot answer refuses too.
+    Files git ignores are not examined. The lane, its allocation and its run evidence stay."""
+    from .review_run import _is_allowlisted_untracked
+
+    def ask(path: Path, *args: str) -> str:
+        proc = git(path, *args)
+        if proc.returncode != 0:
+            raise OpenGrReviewError(f"lane {target}: could not read {path} (git {args[0]}): "
+                                    f"{(proc.stderr or proc.stdout).strip()}; close refused")
+        return proc.stdout
+
+    from .review_runners import RUNNER_CREATED_PATHS
+    # A runner's own outputs (cargo's target/ and Cargo.lock, ...) are the review's, exactly as
+    # `review run` treats them; the receipt names the runner that wrote them.
+    try:
+        runner = json.loads((target / _RUN_RECEIPT_NAME).read_text()).get("runner")
+    except (OSError, ValueError, AttributeError):
+        runner = None
+    created = RUNNER_CREATED_PATHS.get(runner or "", {})
+    found: list[str] = []
+    members = [target / item["path"] for item in allocation["members"]]
+    if not (target / ".git").exists():
+        from .review_run import _LEGACY_MARKERS
+        member_names = {m.relative_to(target).parts[0] for m in members if m != target}
+        # The exact names the review writes at the root, as regular files: its marker, receipt and
+        # run logs (one per member, in either spelling). The shared environment is the `.venv`
+        # directory, checked separately. Nothing else is the review's.
+        own = {_MARKER_NAME, *_LEGACY_MARKERS, _RUN_RECEIPT_NAME, _RUN_LOG_NAME,
+               *(f"{key}{_RUN_LOG_NAME}" for key in member_names),
+               *(f"{_RUN_LOG_NAME}.{key}" for key in member_names)}
+        for entry in sorted(target.iterdir()):
+            name = entry.name
+            if name in member_names or (name == ".venv" and entry.is_dir()) \
+                    or (name in own and entry.is_file() and not entry.is_symlink()):
+                continue
+            found.append(f"work at the lane root: {entry}")
+    for path in dict.fromkeys([target, *members]):
+        if not (path / ".git").exists():
+            continue
+        for line in ask(path, "status", "--porcelain", "--untracked-files=all").splitlines():
+            if line.startswith("?? ") and _is_allowlisted_untracked(
+                    line[3:], extra_names=created.get("names", frozenset()),
+                    extra_tops=created.get("tops", ()), extra_segments=created.get("segments", frozenset())):
+                continue
+            found.append(f"uncommitted work in {path}: {line}")
+        stashes = ask(path, "stash", "list", "--format=%H").split()
+        if stashes:
+            found.append(f"uncommitted work in {path}: a stash")
+        # Every ref and every reflog entry (a commit left only in the reflog is still work), less
+        # what a remote has, the reviewed HEAD, and the stashes reported above.
+        unpublished = ask(path, "rev-list", "--exclude=refs/stash", "--all", "--reflog",
+                          "--not", "--remotes", "HEAD", *stashes).split()
+        if unpublished:
+            found.append(f"unpublished commits in {path}: {', '.join(c[:12] for c in unpublished)}")
+    if found:
+        raise OpenGrReviewError(
+            f"lane {target} holds work that exists nowhere else; commit and push it, or move it out, "
+            "then close again:\n  " + "\n  ".join(found))
 
 
 def _preserve_allocated_runs(workspace: Path, target: Path, allocation: dict) -> list[dict]:

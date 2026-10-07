@@ -37,7 +37,7 @@ from . import push as push_ops
 from .clone_exec import rmtree_or_refuse
 from .events import EventEmitError, EventType, emit, emit_after_outcome
 from .layout import grip_dir
-from .root_option import ROOT_OPTION, ContextCommand, ReviewTargetCommand, ReviewOpenCommand, ReviewSubjectCommand, RootOptionCommand, RootOptionalCommand
+from .root_option import ROOT_OPTION, ContextCommand, ReviewTargetCommand, ReviewOpenCommand, ReviewSubjectCommand, ReviewReaderSubjectCommand, RootOptionCommand, RootOptionalCommand
 from .gitops import (
     branch_exists,
     checkout_branch,
@@ -3371,7 +3371,7 @@ def review_open(
 
 @review_app.command("close")
 def review_close(
-    target: Path = typer.Argument(..., help="What to close: a reconstruction lane dir (gr, read from its marker), or the WORKSPACE_ROOT of a PR-head lane"),
+    target: Annotated[Optional[Path], typer.Argument(help="Reconstruction lane directory; omitted inside its marked lane. PR-head form: WORKSPACE_ROOT")] = None,
     owner_unit: Optional[str] = typer.Argument(None, help="PR-head only: owner unit"),
     repo: Optional[str] = typer.Argument(None, help="PR-head only: repository key"),
     pr_number: Optional[int] = typer.Argument(None, help="PR-head only: PR number"),
@@ -3386,6 +3386,16 @@ def review_close(
     The base workspace is untouched.
     """
     from . import review_dispatch
+
+    if target is None:
+        from . import context as c
+        try:
+            review_context = c.resolve_review_context()
+        except c.ContextRefused as exc:
+            _refuse(str(exc))
+        if review_context is None:
+            _refuse("no_review_context: no enclosing review reconstruction; pass TARGET or enter a lane opened by `gr2 review open`")
+        target = review_context.lane
 
     if workspace is not None or review_dispatch.classify_close_lane(target) == "reconstruction":
         return review_close_gr(target, json_output=json_output, workspace=workspace)
@@ -4475,18 +4485,25 @@ def pr_status(
         typer.echo(json.dumps(payload, indent=2))
 
 
-@pr_app.command("checks", cls=RootOptionCommand)
+@pr_app.command("checks", cls=ReviewReaderSubjectCommand)
 def pr_checks(
     workspace_root: Path,
-    owner_unit: str,
+    owner_unit: Optional[str] = typer.Argument(None, help="Owner unit of a lane. Omit for the current review's PRs."),
     lane_name: Optional[str] = typer.Argument(None, help="Lane name. Defaults to the unit's current lane."),
+    review: Optional[str] = typer.Option(None, "--review", help="Review ID (gr:<sha>); defaults to the workspace's only review bind"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
-    """Show grouped PR checks for a lane."""
+    """Show grouped PR checks for a lane, or for the current review."""
     workspace_root = workspace_root.resolve()
-    resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
-    group_path, group = _find_pr_group(workspace_root, owner_unit, resolved_lane)
+    _refuse_review_beside_unit(owner_unit, review)
+    if owner_unit is None:
+        target, _ = resolve_review_subject(workspace_root, review)
+        group_path, group = _find_review_pr_group(workspace_root, target)
+        owner_unit, resolved_lane = str(group.get("owner_unit")), str(group.get("lane_name"))
+    else:
+        resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
+        group_path, group = _find_pr_group(workspace_root, owner_unit, resolved_lane)
     adapter = platform_ops.get_platform_adapter(str(group.get("platform", "github")))
     rows = []
     for pr_info in group.get("prs", []):
@@ -4584,19 +4601,33 @@ def _render_pr_detail(row: dict[str, object]) -> list[str]:
     return lines
 
 
-@pr_app.command("view", cls=RootOptionCommand)
+@pr_app.command("view", cls=ReviewReaderSubjectCommand)
 def pr_view(
     workspace_root: Path,
-    owner_unit: str,
+    owner_unit: Optional[str] = typer.Argument(None, help="Owner unit of a lane. Omit for the current review's PRs."),
     lane_name: Optional[str] = typer.Argument(None, help="Lane name. Defaults to the unit's current lane."),
+    review: Optional[str] = typer.Option(None, "--review", help="Review ID (gr:<sha>); defaults to the workspace's only review bind"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     repo_filter: Optional[str] = typer.Option(None, "--repo", help="Restrict the view to one member"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Show the member PRs of one change."""
     workspace_root = workspace_root.resolve()
-    resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
-    source = _pr_view_source(workspace_root, owner_unit, resolved_lane)
+    _refuse_review_beside_unit(owner_unit, review)
+    if owner_unit is None:
+        target, _ = resolve_review_subject(workspace_root, review)
+        _, group = _find_review_pr_group(workspace_root, target)
+        owner_unit, resolved_lane = str(group.get("owner_unit")), str(group.get("lane_name"))
+        source = {
+            "source": "pr_group",
+            "pr_group_id": group["pr_group_id"],
+            "platform": str(group.get("platform", "github")),
+            "members": [{"repo": str(item["repo"]), "number": int(item["pr_number"]), "branch": None}
+                        for item in group.get("prs", [])],
+        }
+    else:
+        resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
+        source = _pr_view_source(workspace_root, owner_unit, resolved_lane)
     adapter = platform_ops.get_platform_adapter(str(source["platform"]))
 
     # A filter that matched nothing must not read the same as a change with no members.

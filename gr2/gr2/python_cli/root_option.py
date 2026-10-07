@@ -159,16 +159,35 @@ class ReviewTargetCommand(RootOptionalCommand):
     def parse_args(self, ctx, args):
         args = list(args)
         positions, root_value = self._scan(args)
+        help_option = self.get_help_option(ctx)
+        option_tokens = args[:args.index("--")] if "--" in args else args
+        if help_option is not None and any(word in help_option.opts for word in option_tokens):
+            return typer.core.TyperCommand.parse_args(self, ctx, args)
         if root_value is not None:
             if len(positions) > 1 or (positions and self._is_root_word(args[positions[0]])):
                 ctx.fail("the workspace root was given twice: as the first argument and with --root/-C")
-        elif len(positions) == 1 and not self._is_root_word(args[positions[0]]):
-            from .app import _is_workspace_root, _resolve_workspace_root
+        elif not positions or (
+            len(positions) == 1 and not self._is_root_word(args[positions[0]])
+        ):
+            from . import context as c
 
-            found = _resolve_workspace_root()
-            if not _is_workspace_root(found):
-                ctx.fail(f"no workspace at or above {found}; run this inside one, or name it with -C <root>")
-            args.insert(positions[0], str(found))
+            try:
+                review_context = c.resolve_review_context()
+                found = str(review_context.workspace) if review_context is not None else c.resolve_root(None).value
+            except c.ContextRefused as exc:
+                ctx.fail(str(exc))
+            # A transport's required independent ID is never supplied by a marker.
+            optional_commit = any(p.param_type_name == "argument" and p.name == "commit" and not p.required
+                                  for p in self.params)
+            if not positions and review_context is not None and optional_commit:
+                args.extend([found, review_context.commit])
+            else:
+                args.insert(positions[0] if positions else len(args), found)
+            if not positions and not optional_commit:
+                # We supplied only the root, never the independent transport ID.
+                # Avoid the fixed-arity superclass inferring a second root into
+                # that missing ID slot; Click must name the missing commit.
+                return typer.core.TyperCommand.parse_args(self, ctx, args)
         return super().parse_args(ctx, args)
 
     @staticmethod
@@ -209,6 +228,38 @@ class ReviewSubjectCommand(RootOptionCommand):
             # In FRONT, so every option keeps the value the user typed after it: appended, the root
             # became the value of a trailing option given none (`--title` alone).
             args.insert(0, str(found))
+        return super().parse_args(ctx, args)
+
+
+class ReviewReaderSubjectCommand(ReviewSubjectCommand):
+    """PR readers use the reconstruction's subject when root and subject are omitted.
+
+    Explicit roots and legacy unit positionals bypass marker lookup. An explicit
+    --review keeps its target while an omitted root may still come from the marker.
+    Create, status and merge retain ReviewSubjectCommand's existing behavior.
+    """
+
+    def parse_args(self, ctx, args):
+        args = list(args)
+        help_option = self.get_help_option(ctx)
+        option_tokens = args[:args.index("--")] if "--" in args else args
+        if help_option is not None and any(word in help_option.opts for word in option_tokens):
+            return typer.core.TyperCommand.parse_args(self, ctx, args)
+        positions, root_value = self._scan(args)
+        if not positions and root_value is None:
+            from . import context as c
+
+            try:
+                review_context = c.resolve_review_context()
+            except c.ContextRefused as exc:
+                ctx.fail(str(exc))
+            if review_context is not None:
+                explicit_review = any(word == "--review" or word.startswith("--review=")
+                                      for word in option_tokens)
+                inferred = [str(review_context.workspace)]
+                if not explicit_review:
+                    inferred.extend(["--review", review_context.commit])
+                args[0:0] = inferred
         return super().parse_args(ctx, args)
 
 

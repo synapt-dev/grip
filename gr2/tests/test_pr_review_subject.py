@@ -258,17 +258,40 @@ def test_a_remote_that_never_answers_is_refused_within_the_bound(reviewed, monke
     server = socket.socket()
     server.bind(("127.0.0.1", 0))
     server.listen(4)
+    server.settimeout(0.1)
     held = []
-    threading.Thread(target=lambda: [held.append(server.accept()) for _ in range(4)], daemon=True).start()
+    stop = threading.Event()
+
+    def accept_silent_peers():
+        while not stop.is_set():
+            try:
+                peer = server.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                if stop.is_set():
+                    return
+                raise
+            held.append(peer)
+
+    listener = threading.Thread(target=accept_silent_peers)
+    listener.start()
     port = server.getsockname()[1]
-    git(reviewed["author"], "config", "--local", "--unset-all", f"url.file://{reviewed['bare']['alpha']}.insteadOf")
-    git(reviewed["author"], "config", "--local", f"url.http://127.0.0.1:{port}/alpha.git.insteadOf", URL["alpha"])
-    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
-        monkeypatch.delenv(name, raising=False)  # dial the silent peer itself, not the dead proxy
-    monkeypatch.setattr(app_mod, "_REMOTE_TIP_TIMEOUT", 2.0)
-    started = time.monotonic()
-    result = gr2(reviewed["author"], monkeypatch, "pr", "create", "--json")
-    assert time.monotonic() - started < 20
-    refused(result, "alpha", "timed out")
-    assert reviewed["adapter"].created == []
-    server.close()
+    try:
+        git(reviewed["author"], "config", "--local", "--unset-all", f"url.file://{reviewed['bare']['alpha']}.insteadOf")
+        git(reviewed["author"], "config", "--local", f"url.http://127.0.0.1:{port}/alpha.git.insteadOf", URL["alpha"])
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+            monkeypatch.delenv(name, raising=False)  # dial the silent peer itself, not the dead proxy
+        monkeypatch.setattr(app_mod, "_REMOTE_TIP_TIMEOUT", 2.0)
+        started = time.monotonic()
+        result = gr2(reviewed["author"], monkeypatch, "pr", "create", "--json")
+        assert time.monotonic() - started < 20
+        refused(result, "alpha", "timed out")
+        assert reviewed["adapter"].created == []
+    finally:
+        stop.set()
+        server.close()
+        listener.join(timeout=2)
+        for connection, _ in held:
+            connection.close()
+    assert not listener.is_alive(), "silent peer fixture listener did not stop"

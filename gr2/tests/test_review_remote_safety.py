@@ -8,6 +8,7 @@ FAKE token only; every fake https URL is rewritten to a local bare repo, and a d
 from __future__ import annotations
 
 import subprocess
+
 from pathlib import Path
 
 import pytest

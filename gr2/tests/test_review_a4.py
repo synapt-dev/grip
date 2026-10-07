@@ -18,6 +18,7 @@ import pytest
 from tests.review_ref_helper import REVIEW_REF_PREFIX
 from gr2.python_cli import grip as grip_mod
 
+from tests.review_ref_helper import REVIEW_REF_PREFIX
 from tests.test_review_bind_native_store import _bind_args, _unpushed_head
 from tests.test_store_break_attempts import _cli, _git, _git_out, two_member_ws  # noqa: F401
 

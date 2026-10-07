@@ -7,6 +7,7 @@ import pytest
 from tests.review_ref_helper import REVIEW_REF_ROOT
 from gr2.python_cli import app as app_mod
 from gr2.python_cli import pr as pr_ops
+from tests.review_ref_helper import REVIEW_REF_ROOT
 from tests.test_pr_review_subject import KEYS, URL, git, gr2, reviewed
 from tests.test_review_context_witnesses import opened
 
@@ -102,6 +103,8 @@ def test_pr_reader_infers_one_bind_across_known_spellings(reviewed, monkeypatch,
     git(author, "update-ref", prefix + "v1/" + sha, sha)
     if spelling == "v1-only":
         git(author, "update-ref", "-d", prefix + sha)
+    else:
+        git(author, "update-ref", prefix + sha, sha)
     result, calls = read(author, monkeypatch, reviewed, verb)
     assert_group(result, calls, expected, verb)
 

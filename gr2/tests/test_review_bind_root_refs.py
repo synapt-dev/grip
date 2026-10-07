@@ -7,7 +7,7 @@ content-equivalent to the old store.
   * exactly one `the review ref` exists and it is the printed `gr:<commit>`;
   * the root's commit log and `git status` are unchanged by the bind (the ref is outside both);
   * `review verify` on the id reports `tree_matches: True`;
-  * the bound tree keeps the `gr2-review-bind/v2` layout (only the home moved).
+  * the bound record is a form D tree accepted as written.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from pathlib import Path
 from tests.review_ref_helper import REVIEW_REF_PREFIX
 from gr2.python_cli import grip as grip_mod
 
+from tests.review_ref_helper import REVIEW_REF_PREFIX
 from tests.test_review_bind_native_store import _bind_args, _unpushed_head
 from tests.test_store_break_attempts import _cli, _git_out, two_member_ws  # noqa: F401
 
@@ -51,26 +52,19 @@ def test_a_bind_is_one_ref_in_the_root_git_and_no_second_repo(two_member_ws: Pat
     assert code == 0 and "tree_matches: True" in out, out
 
 
-def test_the_bound_tree_keeps_the_v2_layout(two_member_ws: Path) -> None:
-    """Only the home moved: the tree a bind stores is the `gr2-review-bind/v2` layout the alpha store
-    wrote. (At the change itself the SAME rows were also bound through the alpha `.grip/.git` writer and
-    the two `stored_tree` ids were equal; that writer is gone, so this pins the layout instead.)"""
+def test_the_bound_tree_is_form_d(two_member_ws: Path) -> None:
+    """The bind commit pins the form D tree itself, not derived protobuf bytes."""
+    from gr2.python_cli import review_form_d
     ws = two_member_ws
     assert _cli("store", "init", str(ws))[0] == 0
     remote, base, head = _unpushed_head(ws)
     code, out = _cli(*_bind_args(ws, remote, base, head))
     assert code == 0, out
     commit = out.strip().splitlines()[-1][3:]
-
-    paths = _git_out(ws, "ls-tree", "-r", "--name-only", commit).splitlines()
-    assert sorted(paths) == sorted([
-        ".grip/kind", ".grip/policy", ".grip/schema",
-        "objects/alpha/head-tree", "objects/alpha/metadata", "objects/alpha/range.patch",
-        "observed/alpha/remote-head",
-        "repos/alpha/base", "repos/alpha/commit", "repos/alpha/path", "repos/alpha/remote",
-        "texts/alpha/body", "texts/alpha/title",
-    ])
-    assert _git_out(ws, "show", f"{commit}:.grip/schema") == "gr2-review-bind/v2"
+    tree = _git_out(ws, "rev-parse", commit + "^{tree}")
+    review_form_d.verify_tree(ws, tree)
+    record = review_form_d.read_record(ws, tree)
+    assert record["members"][0]["commit"] == head
 
 
 def test_the_same_rows_bound_twice_in_one_second_are_one_bind(two_member_ws: Path) -> None:

@@ -3961,7 +3961,7 @@ def review_close_gr(
 
 @review_app.command("run")
 def review_run(
-    lane_dir: Path = typer.Argument(..., help="The review reconstruction lane (the --lane-dir from `review open --enter`)"),
+    lane_dir: Optional[Path] = typer.Argument(None, help="Review reconstruction lane; defaults to the unique enclosing review marker"),
     package: Optional[str] = typer.Option(None, "--package", help="Importable package name to bind the install to the lane (its __file__ must resolve under the lane). Optional if the lane's .review-install declares `package`."),
     python: Optional[str] = typer.Option(None, "--python", help="Interpreter to build the lane venv from; defaults to the running interpreter. Recorded in the receipt."),
     system_site_packages: bool = typer.Option(False, "--system-site-packages", help="Create the lane venv with --system-site-packages (host tools visible)"),
@@ -4013,9 +4013,13 @@ def review_run(
     # Resolve runner + test command from the flags, else the lane's .review-install hint,
     # so a stranger who cloned a repo that declares itself types nothing.
     try:
+        lane_dir = rr.resolve_run_lane(lane_dir)
         hint = rr.read_install_hint(lane_dir.resolve()) or {}
     except rr.ReviewRunRefused as exc:
         typer.echo(f"refused: {exc}", err=True)
+        if json_output:
+            typer.echo(json.dumps({"kind": "review-run", "result": "refused",
+                                   "refusal_code": exc.code, "refusal_detail": exc.detail}, indent=2))
         raise typer.Exit(code=2)
     eff_runner = runner or hint.get("runner") or "pytest"
     eff_test = test or hint.get("test")

@@ -642,6 +642,36 @@ def _read_marker(lane_dir: Path) -> dict:
     return marker
 
 
+
+def resolve_run_lane(lane_dir: Path | None, *, cwd: Path | None = None) -> Path:
+    """Use an explicit lane, otherwise the unique enclosing reconstruction marker.
+
+    Development lane metadata and sibling review lanes are not reconstruction
+    context. A malformed marker or nested reconstruction is a refusal, never a
+    reason to fall back to a different lane.
+    """
+    if lane_dir is not None:
+        candidates = [Path(lane_dir).resolve()]
+    else:
+        here = (cwd or Path.cwd()).resolve()
+        candidates = [p for p in (here, *here.parents) if find_marker(p) is not None]
+        if not candidates:
+            raise ReviewRunRefused(
+                "no_review_context",
+                "no enclosing review reconstruction; pass LANE_DIR or enter a lane opened by `review open`",
+            )
+        if len(candidates) != 1:
+            raise ReviewRunRefused(
+                "ambiguous_review_context",
+                "multiple enclosing review reconstructions; pass an explicit LANE_DIR",
+            )
+    selected = candidates[0]
+    try:
+        _read_marker(selected)
+    except (OSError, ValueError, AttributeError) as exc:
+        raise ReviewRunRefused("bad_marker", f"invalid review marker at {selected}: {exc}") from exc
+    return selected
+
 _NOT_A_LANE_CODES = frozenset({"no_marker", "not_open_gr"})
 
 

@@ -181,6 +181,9 @@ def test_merge_reads_a_configured_method_when_the_root_has_one(reviewed, monkeyp
 
 @pytest.mark.parametrize("remote,path,why", [
     ("https://gitlab.com/o/alpha.git", "alpha", "names no GitHub owner/repo"),
+    ("https://github.com/o/alpha.git?access_token=FAKE-TOKEN-0000", "alpha", "names no GitHub owner/repo"),
+    ("https://github.com/o/alpha#frag", "alpha", "names no GitHub owner/repo"),
+    ("https://github.com/o/alpha with space", "alpha", "names no GitHub owner/repo"),
     ("https://github.com/o/alpha.git", "../outside", "leaves the workspace"),
     ("https://github.com/o/alpha.git", "gone", "is missing"),
 ])
@@ -205,3 +208,15 @@ def test_an_ssh_url_remote_addresses_its_repo(tmp_path):
     (tmp_path / "alpha").mkdir()
     member = dict(key="alpha", remote="ssh://git@github.com/o/alpha.git", path="alpha", commit="0" * 40, base="0" * 40)
     assert list(app_mod._review_members_on_host(tmp_path.resolve(), [member])) == ["o/alpha"]
+
+
+@pytest.mark.parametrize("verb", ["create", "status", "merge"])
+@pytest.mark.parametrize("option", ["--title", "--base", "--review"])
+def test_a_trailing_option_without_its_value_is_a_usage_error(reviewed, monkeypatch, verb, option):
+    opts = {o for p in typer.main.get_command(app).commands["pr"].commands[verb].params for o in p.opts}
+    if option not in opts:
+        pytest.skip(f"pr {verb} has no {option}")
+    result = gr2(reviewed["author"], monkeypatch, "pr", verb, option)
+    assert result.exit_code == 2, result.output
+    assert "requires an argument" in result.output, result.output
+    assert reviewed["adapter"].created == []

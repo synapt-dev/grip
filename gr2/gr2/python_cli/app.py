@@ -563,6 +563,7 @@ def _find_review_pr_group(workspace_root: Path, target: str) -> tuple[Path, dict
 
 
 _GITHUB_REMOTE_PREFIXES = ("https://github.com/", "git@github.com:", "ssh://git@github.com/")
+_GITHUB_SLUG = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 
 
 def _review_members_on_host(workspace_root: Path, members: list[dict[str, str]]) -> dict[str, tuple[dict[str, str], Path]]:
@@ -574,7 +575,7 @@ def _review_members_on_host(workspace_root: Path, members: list[dict[str, str]])
         remote = m["remote"].strip()
         prefix = next((p for p in _GITHUB_REMOTE_PREFIXES if remote.startswith(p)), None)
         slug = remote[len(prefix):].removesuffix(".git").strip("/") if prefix else ""
-        if slug.count("/") != 1 or not all(slug.split("/")):
+        if not _GITHUB_SLUG.fullmatch(slug):
             _refuse(f"{m['key']}'s remote names no GitHub owner/repo, so no PR can be addressed for it")
         if slug in on_host:
             _refuse(f"{m['key']} and {on_host[slug][0]['key']} are both {slug}; one PR group cannot hold two members on one repo")

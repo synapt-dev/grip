@@ -206,7 +206,9 @@ class ReviewSubjectCommand(RootOptionCommand):
             found = _resolve_workspace_root()
             if not _is_workspace_root(found):
                 ctx.fail(f"no workspace at or above {found}; run this inside one, or name it with -C <root>")
-            args.append(str(found))
+            # In FRONT, so every option keeps the value the user typed after it: appended, the root
+            # became the value of a trailing option given none (`--title` alone).
+            args.insert(0, str(found))
         return super().parse_args(ctx, args)
 
 

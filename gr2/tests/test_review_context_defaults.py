@@ -51,7 +51,7 @@ def test_lane_reader_uses_marked_bind_even_when_author_has_two(opened, monkeypat
     new_head = git(member, "rev-parse", "HEAD")
     second = gr2(opened["author"], monkeypatch, "review", "bind", opened["author"],
                  "--repo", row["key"], "--remote", row["remote"], "--base", row["base"],
-                 "--head", new_head, "--ref", git(member, "symbolic-ref", "HEAD"), "--path", row["path"],
+                 "--head", new_head, "--ref", "refs/heads/main", "--path", row["path"],
                  "--source", member, "--title", "another subject")
     assert second.exit_code == 0, second.output
     assert second.stdout.strip() != opened["target"]

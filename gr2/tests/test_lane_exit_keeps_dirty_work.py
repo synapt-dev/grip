@@ -120,3 +120,26 @@ def test_the_refusal_names_a_command_that_can_be_pasted(tmp_path: Path) -> None:
     (repo / "f.txt").write_text("edited\n")
     result = _exit(ws)
     assert f"gr2 lane exit {ws} atlas --dirty stash" in result.stderr, result.stderr
+
+
+def test_a_refusal_after_a_stash_still_prints_the_stash_it_made(tmp_path: Path) -> None:
+    ws, repo = _entered_lane(tmp_path, hook="echo hooked > from-hook.txt")
+    (repo / "f.txt").write_text("edited\n")
+    result = _exit(ws, "--dirty", "stash")
+    assert result.exit_code == 2, result.output
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "refused" and payload["current_lane"] == "x", payload
+    assert payload["refusal"] == "lane_has_uncommitted_work_after_on_exit", payload
+    [row] = payload["stashed"]
+    assert row["stash"] == _git(repo, "rev-parse", "stash@{0}") and row["stash"] in result.stderr, payload
+    assert _git(repo, "show", "stash@{0}:f.txt") == "edited"
+    assert (repo / "from-hook.txt").read_text() == "hooked\n"
+    assert _current_lane(ws) == "x"
+
+
+def test_a_plain_refusal_prints_a_receipt_naming_the_repo(tmp_path: Path) -> None:
+    ws, repo = _entered_lane(tmp_path)
+    (repo / "f.txt").write_text("edited\n")
+    payload = json.loads(_exit(ws).stdout)
+    assert payload["refusal"] == "lane_has_uncommitted_work" and payload["stashed"] == [], payload
+    assert payload["dirty"] == [{"repo": "app", "path": str(repo)}], payload

@@ -2923,6 +2923,17 @@ def lane_resolve(
         typer.echo(json.dumps(payload, indent=2))
 
 
+def _refuse_exit_json(refusal: str, owner_unit: str, lane_name: str, dirty: list, stashed: list) -> NoReturn:
+    """A refused lane exit still prints its receipt: the lane stays entered, the repos holding work
+    are named, and any stash this call already made is listed with its restore command."""
+    typer.echo(json.dumps({
+        "status": "refused", "action": "exit", "refusal": refusal, "owner_unit": owner_unit,
+        "current_lane": lane_name, "dirty": [{"repo": name, "path": str(path)} for name, path in dirty],
+        "stashed": stashed,
+    }, indent=2))
+    raise typer.Exit(code=2)
+
+
 @lane_app.command("exit", cls=ContextCommand)
 def lane_exit(
     workspace_root: Path,
@@ -2956,7 +2967,7 @@ def lane_exit(
         typer.echo(f"commit or discard the work first, or stash it in each repo with: "
                    f"gr2 lane exit {shlex.quote(str(workspace_root))} {shlex.quote(owner_unit)} --dirty stash; "
                    f"the lane {owner_unit}/{lane_name} is still entered", err=True)
-        raise typer.Exit(code=2)
+        _refuse_exit_json("lane_has_uncommitted_work", owner_unit, lane_name, dirty, [])
     stashed_repos: list[str] = []
     stashed: list[dict[str, str]] = []
     for name, path in dirty:
@@ -2973,7 +2984,7 @@ def lane_exit(
         for name, path in hook_dirty:
             typer.echo(f"refused: lane_has_uncommitted_work_after_on_exit: {name} ({path})", err=True)
         typer.echo(f"an on_exit hook left uncommitted work; the lane {owner_unit}/{lane_name} is still entered", err=True)
-        raise typer.Exit(code=2)
+        _refuse_exit_json("lane_has_uncommitted_work_after_on_exit", owner_unit, lane_name, hook_dirty, stashed)
     ns = SimpleNamespace(
         workspace_root=workspace_root,
         owner_unit=owner_unit,

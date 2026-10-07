@@ -866,9 +866,9 @@ def _tree_keys(workspace: Path, commit: str, path: str) -> set[str]:
 
 def plain_member_key(key: str) -> bool:
     """A member key names a directory in a lane (`<lane>/<key>`), so it must be one plain name: not
-    empty, not "." or "..", and no separator, NUL or newline. A legacy key was a Git tree entry name;
-    a form D key is a free string field, so readers apply this rule before any path is built from it."""
-    return bool(key) and key not in (".", "..") and not any(c in key for c in "/\\\0\n")
+    empty, no leading dot (".", "..", ".git" and the lane's own marker file all start with one), and
+    no separator, NUL or newline. Readers apply this rule to every bind before any path is built."""
+    return bool(key) and not key.startswith(".") and not any(c in key for c in "/\\\0\n")
 
 
 def _is_form_d_bind(workspace: Path, commit: str) -> bool:
@@ -879,7 +879,9 @@ def _is_form_d_bind(workspace: Path, commit: str) -> bool:
 
 
 def _text(value: object) -> str:
-    return value.decode("utf-8", "surrogateescape") if isinstance(value, bytes) else str(value)
+    """Carried bytes become text for the readers that apply and run them; bytes that are not UTF-8
+    are refused here, before anything is materialized, rather than failing late in a lane."""
+    return value.decode("utf-8") if isinstance(value, bytes) else str(value)
 
 
 _FORM_D_VIEWS: dict[tuple[str, str], dict[str, object]] = {}
@@ -901,6 +903,13 @@ def _form_d_view(workspace: Path, commit: str) -> dict[str, object]:
 
 
 def _check_form_d(repo: Path, tree: str) -> dict[str, object]:
+    try:
+        return _decode_form_d(repo, tree)
+    except UnicodeError as exc:
+        raise GripCorruptError(f"invalid form D review record: a text field is not UTF-8 ({exc.reason})") from exc
+
+
+def _decode_form_d(repo: Path, tree: str) -> dict[str, object]:
     from . import review_form_d as fd
     try:
         fd.verify_tree(repo, tree)
@@ -919,6 +928,11 @@ def _check_form_d(repo: Path, tree: str) -> dict[str, object]:
         missing = [f for f in ("remote", "path", "commit", "base") if not m.get(f)]
         if missing:
             raise GripCorruptError(f"invalid review repository tree: {key} has no {', '.join(missing)}")
+        for f in ("commit", "base"):
+            if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", m[f]):
+                raise GripCorruptError(f"invalid review repository tree: {key} {f} is not a commit id")
+        if m["remote"].startswith("-") or any(ord(c) < 32 or ord(c) == 127 for c in m["remote"]):
+            raise GripCorruptError(f"invalid review repository tree: {key} remote is not a remote")
         for name in ("title", "body"):
             if m.get(name, "") != _norm_text(m.get(name, "")):
                 raise GripCorruptError(f"invalid review repository tree: {key} {name} is not NORM text")
@@ -938,6 +952,8 @@ def _check_form_d(repo: Path, tree: str) -> dict[str, object]:
             "remote_head": m.get("remote_head", ""), "title": m.get("title", ""), "body": m.get("body", ""),
             "objects": objects, "evidence": evidence,
         }
+    if not members:
+        raise GripCorruptError("invalid review repository tree: a bind names no member")
     return {"tree": tree, "policy": record.get("policy", ""), "members": members}
 
 
@@ -954,7 +970,9 @@ def _carried(workspace: Path, commit: str, key: str, group: str, name: str) -> s
 def _carries_objects(workspace: Path, commit: str, key: str) -> bool:
     if _is_form_d_bind(workspace, commit):
         member = _form_d_view(workspace, commit)["members"].get(key)
-        return member is not None and member["objects"] is not None
+        objects = None if member is None else member["objects"]
+        # Reconstruction needs the range and the tree it must produce; metadata alone is not a range.
+        return objects is not None and bool(objects["range.patch"]) and bool(objects["head-tree"])
     return key in _tree_keys(workspace, commit, "objects")
 
 
@@ -2052,6 +2070,8 @@ def _read_repo_state(workspace: Path, ref: str, *, bind: bool = False) -> dict[s
                 blob = _g(workspace, "show", f"{ref}:repos/{name}/{fname}")
                 if blob.returncode == 0:
                     state[fname] = blob.stdout.strip()
+        if bind and not plain_member_key(name):
+            raise GripCorruptError(f"invalid review repository tree: member key {name!r}")
         repos[name] = state
 
     return repos

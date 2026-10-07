@@ -87,3 +87,83 @@ def test_text_that_is_not_norm_is_refused(record_world, field):
     commit = _bound_variant(record_world, **{field: "text\n\n"})
     with pytest.raises(grip.GripCorruptError, match=f"{field} is not NORM text"):
         grip.verify_review_commit(record_world["author"], commit)
+
+
+def _bound_record(w, record):
+    tree = fd.write_record(w["author"], record)
+    commit = git(w["author"], "commit-tree", tree, "-m", "record")
+    git(w["author"], "update-ref", review_ref(commit), commit, "0" * 40)
+    return commit
+
+
+def test_a_record_of_another_schema_or_kind_is_not_a_bind(record_world):
+    w = record_world
+    for change in ({"schema": "something-else"}, {"kind": "project"}):
+        commit = _bound_record(w, {**w["record"], **change})
+        with pytest.raises(grip.GripCorruptError, match="not a gr2 review bind commit"):
+            grip.show_review_commit(w["author"], commit)
+
+
+def test_a_bind_with_no_member_is_refused(record_world):
+    commit = _bound_record(record_world, {**record_world["record"], "members": []})
+    with pytest.raises(grip.GripCorruptError, match="names no member"):
+        grip.verify_review_commit(record_world["author"], commit)
+
+
+@pytest.mark.parametrize("field,value,reason", [
+    ("commit", "HEAD", "not a commit id"), ("base", "1" * 39, "not a commit id"),
+    ("remote", "--upload-pack=x", "remote is not a remote"), ("remote", "https://x\x01y", "remote is not a remote"),
+])
+def test_repository_values_that_are_not_ids_or_remotes_are_refused(record_world, field, value, reason):
+    commit = _bound_variant(record_world, **{field: value})
+    with pytest.raises(grip.GripCorruptError, match=reason):
+        grip.verify_review_commit(record_world["author"], commit)
+
+
+@pytest.mark.parametrize("keep", [("metadata",), ("head_tree",), ("range_patch",), ("metadata", "committers")])
+def test_reconstruction_needs_a_range_and_its_tree_before_any_clone(record_world, tmp_path, keep):
+    w = record_world
+    carried = ("range_patch", "metadata", "head_tree", "committers")
+    commit = _bound_variant(w, **{k: None for k in carried if k not in keep})
+    with pytest.raises(grip.GripReviewRefused) as exc:
+        grip.reconstruct_review_lane(w["author"], commit, "recall", tmp_path / "lane")
+    assert exc.value.refusal == "row_carries_no_objects"
+    assert not (tmp_path / "lane").exists()
+
+
+def test_text_that_is_not_utf8_is_refused_by_name(record_world, tmp_path):
+    """A title that is not UTF-8 (a string field), and a range that is not UTF-8 (bytes the lane applies)."""
+    w = record_world
+    member = {**w["record"]["members"][0]}
+    raw = fd.encode({**w["record"], "members": [member]})
+    bad_title = raw.replace(member["title"].encode(), b"\xff\xfe" + member["title"].encode()[2:], 1)
+    bad_range = raw.replace(member["range_patch"], member["range_patch"].replace(b"From", b"Fr\xffm", 1), 1)
+    for raw_bad in (bad_title, bad_range):
+        tree = fd.write_tree(w["author"], raw_bad)
+        commit = git(w["author"], "commit-tree", tree, "-m", "not utf-8")
+        git(w["author"], "update-ref", review_ref(commit), commit, "0" * 40)
+        for call, args in ((grip.show_review_commit, ()), (grip.verify_review_commit, ()),
+                           (grip.reconstruct_review_lane, ("recall", tmp_path / "lane"))):
+            with pytest.raises(grip.GripCorruptError, match="not UTF-8"):
+                call(w["author"], commit, *args)
+    assert not (tmp_path / "lane").exists()
+
+
+@pytest.mark.parametrize("bad_key", ["../escape", "/abs", ".", ".git", ".grip-review-open.json"])
+def test_review_open_refuses_a_bad_member_key_before_any_member_is_reconstructed(
+        record_world, tmp_path, monkeypatch, bad_key):
+    from tests.test_pr_review_subject import gr2
+    w = record_world
+    first = {**w["record"]["members"][0], "key": "alpha", "path": "alpha"}
+    second = {**w["record"]["members"][0], "key": bad_key, "path": "beta"}
+    commit = _bound_record(w, {**w["record"], "members": [first, second]})
+    calls = []
+    monkeypatch.setattr(grip, "reconstruct_review_lane", lambda *a, **k: calls.append(a))
+    lane = tmp_path / "lane"
+    result = gr2(w["author"], monkeypatch, "review", "open", "gr:" + commit, "--lane-dir", lane)
+    assert result.exit_code != 0
+    assert "member key" in result.output + str(result.exception)
+    assert calls == []
+    assert not lane.exists() or not any(lane.iterdir())
+    good = _bound_record(w, {**w["record"], "members": [first, {**second, "key": "beta"}]})
+    assert grip.review_row_keys(w["author"], good) == ["alpha", "beta"]  # control

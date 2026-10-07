@@ -137,8 +137,9 @@ flag  grip migrate-reviews --json (hidden:grip)                       stable
 json  grip migrate-reviews .receipt                                   stable
 json  grip migrate-reviews .rows[].new_id                             stable
 json  grip migrate-reviews .rows[].old_id                             stable
+json  grip migrate-reviews .rows[].reason                             stable
 json  grip migrate-reviews .rows[].ref                                stable
-json  grip migrate-reviews .rows[].status  enum(created,present)      stable
+json  grip migrate-reviews .rows[].status  enum(created,present,refused) stable
 verb  grip migrate-reviews (hidden:grip)                              stable
 # grip push
 flag  grip push --json (hidden:grip)                                  stable
@@ -623,8 +624,9 @@ flag  store migrate-reviews --json                                    stable
 json  store migrate-reviews .receipt                                  stable
 json  store migrate-reviews .rows[].new_id                            stable
 json  store migrate-reviews .rows[].old_id                            stable
+json  store migrate-reviews .rows[].reason                            stable
 json  store migrate-reviews .rows[].ref                               stable
-json  store migrate-reviews .rows[].status  enum(created,present)     stable
+json  store migrate-reviews .rows[].status  enum(created,present,refused) stable
 verb  store migrate-reviews                                           stable
 # store push
 flag  store push --json                                               may-change

@@ -285,7 +285,7 @@ def test_listing_rejects_wrong_canonical_target(handoff):
     assert any(row[0] == commit for row in grip.list_review_binds(author))
 
 
-def test_recomputed_tree_mismatch_is_not_published(handoff, monkeypatch):
+def test_a_field_tree_with_a_stray_entry_is_not_published(handoff, monkeypatch):
     author, receiver, remote, commit, _, _ = handoff
     blob = git(author, "hash-object", "-w", "--stdin", input="unexpected content\n")
     entries = git(author, "ls-tree", commit) + "\n100644 blob " + blob + "\tunexpected.txt\n"
@@ -314,3 +314,22 @@ def test_listing_rejects_short_alias_but_explicit_abbreviation_still_reads(hando
     git(author, "update-ref", "-d", PREFIX + short, target)
     assert grip.show_review_commit(author, short)["id"] == "gr:" + commit
     assert any(row[0] == commit for row in grip.list_review_binds(author))
+
+
+def test_a_legacy_bind_whose_tree_does_not_recompute_is_not_published(handoff, monkeypatch):
+    """The legacy layout keeps its own gate: received content that does not recompute is refused."""
+    from tests.review_ref_helper import legacy_bind_tree, legacy_review_ref
+    author, receiver, remote, _, base, head = handoff
+    row = dict(key="member", path="member", remote=str(remote), base=base, head=head, title="t", body="b")
+    tree = legacy_bind_tree(author, row)
+    blob = git(author, "hash-object", "-w", "--stdin", input="unexpected content\n")
+    stray = git(author, "mktree", input=git(author, "ls-tree", tree) + "\n100644 blob " + blob + "\tunexpected.txt\n")
+    corrupt = git(author, "commit-tree", stray, "-m", "legacy review tree with a stray entry")
+    ref = legacy_review_ref(corrupt)
+    git(author, "push", remote, corrupt + ":" + ref)
+    before = authority(receiver)
+    monkeypatch.setattr(grip, "_publish_bind", lambda *a, **k: pytest.fail("non-recomputing review reached publication"))
+    result = cli(receiver, monkeypatch, "receive", "gr:" + corrupt, "--remote", remote, "--ref", ref)
+    assert result.exit_code == 2 and "review_tree_mismatch" in result.output, result.output
+    assert git(receiver, "for-each-ref", "--format=%(refname)", PREFIX) == ""
+    assert authority(receiver) == before

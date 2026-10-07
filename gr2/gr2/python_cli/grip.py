@@ -779,8 +779,10 @@ def _verify_review_commit_in_store(workspace: Path, commit: str) -> dict[str, ob
             rng = _bind_git(workspace, "show", f"{commit}:objects/{key}/range.patch").stdout
             meta = _bind_git(workspace, "show", f"{commit}:objects/{key}/metadata").stdout
             head_tree = _bind_git(workspace, "show", f"{commit}:objects/{key}/head-tree").stdout.strip()
-            of = [f"100644 blob {_bind_blob(workspace, v)}\t{n}"
-                  for n, v in (("range.patch", rng), ("metadata", meta), ("head-tree", head_tree))]
+            carried = [("range.patch", rng), ("metadata", meta), ("head-tree", head_tree)]
+            if "committers" in _tree_keys(workspace, commit, f"objects/{key}"):
+                carried.append(("committers", _bind_git(workspace, "show", f"{commit}:objects/{key}/committers").stdout))
+            of = [f"100644 blob {_bind_blob(workspace, v)}\t{n}" for n, v in sorted(carried)]
             objects_recomputed.append(f"040000 tree {_bind_mktree(workspace, of)}\t{key}")
             row_measured["head_tree"] = head_tree
             row_measured["range_sha256"] = hashlib.sha256(rng.encode()).hexdigest()
@@ -1576,8 +1578,10 @@ def migrate_review_binds(workspace: Path) -> tuple[Path, list[dict[str, str]]]:
     the commit keeps the legacy commit's author, committer, dates and full message, so the same
     legacy bind gives the same new id for any caller, at any time, on every rerun. The legacy ref,
     commit and tree are left as they are. The v1 ref is created create-only; one already at the
-    same id is `present`, one at another target refuses. Rows converted before a refusal stay
-    published; the receipt names what this run published. A read never converts (see
+    same id is `present`, one at another target refuses. A bind is converted only when it verifies
+    as written AND its twin passes every rule the field tree readers apply, so migrate never
+    publishes a record `show` would refuse. A refused bind is a `refused` row with its reason and
+    the run continues; the receipt records every row. A read never converts (see
     `_migrate_legacy_binds`)."""
     import datetime
     import json
@@ -1588,23 +1592,20 @@ def migrate_review_binds(workspace: Path) -> tuple[Path, list[dict[str, str]]]:
     legacy = sorted(r[len(_REVIEW_REF_PREFIX):] for r in out.stdout.splitlines()
                     if r.startswith(_REVIEW_REF_PREFIX) and _SHA40.fullmatch(r[len(_REVIEW_REF_PREFIX):]))
     rows: list[dict[str, str]] = []
-    failure: Exception | None = None
     for old in legacy:
-        if _is_field_tree_bind(workspace, old) or \
-                _bind_git(workspace, "show", f"{old}:{GRIP_DIR}/schema").stdout.strip() != _REVIEW_BIND_SCHEMA:
-            continue  # already a field tree, or not a review bind (a project review keeps its format)
+        if _bind_git(workspace, "show", f"{old}:{GRIP_DIR}/schema").stdout.strip() != _REVIEW_BIND_SCHEMA:
+            continue  # a field tree (no .grip), or not a review bind (a project review keeps its format)
         try:
             rows.append(_migrate_one_bind(workspace, repo, old, fd))
-        except GripCorruptError as exc:
-            failure = exc
-            break
+        except (GripCorruptError, UnicodeError) as exc:
+            # A legacy reader decodes text as UTF-8, so bytes that are not UTF-8 refuse there.
+            reason = str(exc) if isinstance(exc, GripCorruptError) else f"legacy_bind_not_utf8: {exc.reason}"
+            rows.append({"old_id": f"gr:{old}", "new_id": "", "ref": "", "status": "refused", "reason": reason})
     receipts = _layout_grip_dir(workspace) / "receipts"
     receipts.mkdir(parents=True, exist_ok=True)
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     receipt = receipts / f"migrate-reviews-{stamp}.json"
     receipt.write_text(json.dumps({"rows": rows}, indent=2) + "\n")
-    if failure is not None:
-        raise failure
     return receipt, rows
 
 
@@ -1615,8 +1616,18 @@ def _migrate_one_bind(workspace: Path, repo: Path, old: str, fd) -> dict[str, st
 
     def text(path: str) -> str:
         value = blob(path)
-        return "" if value is None else value.decode("utf-8")
+        try:
+            return "" if value is None else value.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise GripCorruptError(f"legacy_bind_not_utf8: {path} ({exc.reason})") from exc
 
+    raw = subprocess.run(["git", "-C", str(repo), "cat-file", "commit", old], capture_output=True, check=True).stdout
+    headers, _, message = raw.partition(b"\n\n")
+    if any(line.startswith(b"encoding ") for line in headers.splitlines()):
+        # The twin keeps the message bytes; without the header they would be read as UTF-8.
+        raise GripCorruptError("legacy_commit_encoding: the bind's commit declares a non-UTF-8 encoding")
+    if not _verify_review_commit_in_store(workspace, old)["tree_matches"]:
+        raise GripCorruptError("legacy_bind_tree_mismatch: the legacy bind does not verify as written")
     members: list[dict[str, object]] = []
     for key, fields in sorted(_read_repo_state(workspace, old, bind=True).items()):
         member: dict[str, object] = {
@@ -1628,9 +1639,8 @@ def _migrate_one_bind(workspace: Path, repo: Path, old: str, fd) -> dict[str, st
             value = blob(f"objects/{key}/{name}")
             if value is not None:
                 member[field] = value
-        head_tree = blob(f"objects/{key}/head-tree")
-        if head_tree is not None:
-            member["head_tree"] = head_tree.decode("utf-8").strip()
+        if blob(f"objects/{key}/head-tree") is not None:
+            member["head_tree"] = text(f"objects/{key}/head-tree").strip()
         evidence = {name: value for name in ("commands", "resolution")
                     if (value := blob(f"evidence/{key}/{name}")) is not None}
         if evidence:
@@ -1639,9 +1649,7 @@ def _migrate_one_bind(workspace: Path, repo: Path, old: str, fd) -> dict[str, st
     record = {"schema": _REVIEW_BIND_SCHEMA, "kind": "review",
               "policy": text(f"{GRIP_DIR}/policy").strip(), "members": members}
     tree = fd.write_tree(repo, fd.encode(record))
-    fd.verify_tree(repo, tree)
-    raw = subprocess.run(["git", "-C", str(repo), "cat-file", "commit", old], capture_output=True, check=True).stdout
-    headers, _, message = raw.partition(b"\n\n")
+    _check_field_tree(repo, tree)  # verify as written, then every reader rule; nothing published yet
     kept = [line for line in headers.splitlines() if line.startswith((b"author ", b"committer "))]
     body = b"tree " + tree.encode() + b"\n" + b"\n".join(kept) + b"\n\n" + message
     new = subprocess.run(["git", "-C", str(repo), "hash-object", "-t", "commit", "-w", "--stdin"],

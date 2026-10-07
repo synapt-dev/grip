@@ -1656,7 +1656,8 @@ _STORE_JSON_SHAPES: dict[str, tuple[str, ...]] = {
         ".rows[].old_id",
         ".rows[].new_id",
         ".rows[].ref",
-        ".rows[].status  enum(created,present)",
+        ".rows[].status  enum(created,present,refused)",
+        ".rows[].reason",
     ),
     "log": (
         ".entries[].commit",
@@ -1911,8 +1912,13 @@ def grip_migrate_reviews_cmd(
         typer.echo(json.dumps({"receipt": str(receipt), "rows": rows}))
     else:
         for row in rows:
-            typer.echo(f"{row['status']}: {row['old_id']} -> {row['new_id']}")
+            if row["status"] == "refused":
+                typer.echo(f"refused: {row['old_id']}: {row['reason']}", err=True)
+            else:
+                typer.echo(f"{row['status']}: {row['old_id']} -> {row['new_id']}")
         typer.echo(f"receipt: {receipt}")
+    if any(row["status"] == "refused" for row in rows):
+        raise typer.Exit(code=4)
 
 
 @grip_app.command("snapshot", hidden=True)

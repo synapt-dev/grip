@@ -281,6 +281,14 @@ def test_migrate_rich_legacy_record_preserves_full_content_and_sorted_members(ha
     fd.verify_tree(root, actual_tree)
     assert fd.read_record(root, actual_tree) == expected, "migration lost or changed carried fields/member order"
     assert git(root, "rev-parse", old + "^{tree}") == tree
+    # The twin reads as its legacy original through the verbs, not only through the record decoder.
+    assert grip._verify_review_commit_in_store(root, old)["tree_matches"], "the legacy original must verify, committers included"
+    shown_old, shown_new = grip.show_review_commit(root, old), grip.show_review_commit(root, new)
+    assert {k: v for k, v in shown_old.items() if k != "id"} == {k: v for k, v in shown_new.items() if k != "id"}
+    assert grip.verify_review_commit(root, new)["rows"] == grip.verify_review_commit(root, old)["rows"]
+    for key in ("alpha", "zeta"):
+        for group, name in (("objects", "range.patch"), ("objects", "committers"), ("evidence", "resolution")):
+            assert grip._carried(root, new, key, group, name) == grip._carried(root, old, key, group, name)
 
 
 def test_migrate_reviews_cli_api_contract():
@@ -289,3 +297,107 @@ def test_migrate_reviews_cli_api_contract():
                  "json  store migrate-reviews .receipt", "json  store migrate-reviews .rows[].old_id", "json  store migrate-reviews .rows[].new_id",
                  "json  store migrate-reviews .rows[].ref", "json  store migrate-reviews .rows[].status"):
         assert any(row.startswith(line + " ") for row in api.splitlines()), "missing CLI API contract: " + line
+
+
+# --- refusals are rows; migrate never publishes a twin the readers refuse ----------------------
+
+
+def _legacy(root: Path, row: dict, message: str = "legacy bind") -> str:
+    commit = git(root, "commit-tree", legacy_bind_tree(root, row), "-m", message)
+    git(root, "update-ref", legacy_review_ref(commit), commit)
+    return commit
+
+
+def _run(root: Path, monkeypatch):
+    monkeypatch.chdir(root)
+    result = runner.invoke(app, ["store", "migrate-reviews", str(root), "--json"])
+    return result, {r["old_id"][3:]: r for r in json.loads(result.stdout)["rows"]} if result.stdout else {}
+
+
+def _v1_refs(root: Path) -> dict[str, str]:
+    return {r: oid for r, oid in refs(root).items() if r == review_ref(oid)}
+
+
+@pytest.mark.parametrize("bad", ["dash-remote", "non-hex-commit"])
+def test_migrate_refuses_a_twin_the_field_tree_readers_would_refuse(handoff, tmp_path, monkeypatch, bad):
+    """The legacy bind verifies as written, but its twin breaks a reader rule: refused, never published."""
+    _, _, remote, _, base, head = handoff
+    root = native_root(tmp_path / "reader-rules")
+    row = dict(key="member", path="member", remote=str(remote), base=base, head=head, title="t", body="b")
+    row.update({"dash-remote": {"remote": "-uploadpack=x"}, "non-hex-commit": {"head": "not-a-commit-id"}}[bad])
+    old = _legacy(root, row)
+    assert grip._verify_review_commit_in_store(root, old)["tree_matches"]  # control: legacy verify passes
+    result, rows = _run(root, monkeypatch)
+    assert result.exit_code == 4, result.output
+    assert rows[old]["status"] == "refused" and "invalid review repository tree" in rows[old]["reason"]
+    assert _v1_refs(root) == {}, "migrate published a twin show would refuse"
+
+
+def test_one_refused_bind_does_not_block_the_binds_after_it(handoff, tmp_path, monkeypatch):
+    _, _, remote, _, base, head = handoff
+    root = native_root(tmp_path / "continue")
+    good = dict(key="member", path="member", remote=str(remote), base=base, head=head, title="t", body="b")
+    olds = [_legacy(root, dict(good, title=f"t{i}")) for i in range(3)]
+    bad = _legacy(root, dict(good, remote="-x"))
+    result, rows = _run(root, monkeypatch)
+    assert result.exit_code == 4, result.output
+    assert rows[bad]["status"] == "refused"
+    assert [rows[o]["status"] for o in olds] == ["created"] * 3, "a refusal stopped the run"
+    assert len(_v1_refs(root)) == 3
+    receipt = json.loads(Path(json.loads(result.stdout)["receipt"]).read_text())
+    assert sorted(r["status"] for r in receipt["rows"]) == ["created"] * 3 + ["refused"]
+
+
+def test_a_non_utf8_legacy_text_is_a_refused_row_with_a_receipt(handoff, tmp_path, monkeypatch):
+    _, _, remote, _, base, head = handoff
+    root = native_root(tmp_path / "non-utf8")
+    row = dict(key="member", path="member", remote=str(remote), base=base, head=head, title="t", body="b")
+    good = _legacy(root, dict(row, title="fine"))
+    tree = legacy_bind_tree(root, row)
+    bad_blob = subprocess.run(["git", "-C", str(root), "hash-object", "-w", "--stdin"], input=b"caf\xe9",
+                              capture_output=True, check=True).stdout.decode().strip()
+    texts = git(root, "rev-parse", f"{tree}:texts/member")
+    new_texts = git(root, "mktree", input=f"100644 blob {bad_blob}\tbody\n100644 blob "
+                    + git(root, "rev-parse", f"{texts}:title") + "\ttitle\n")
+    member_texts = git(root, "mktree", input=f"040000 tree {new_texts}\tmember\n")
+    root_tree = git(root, "mktree", input="".join(
+        line + "\n" if not line.endswith("\ttexts") else f"040000 tree {member_texts}\ttexts\n"
+        for line in git(root, "ls-tree", tree).splitlines()))
+    bad = git(root, "commit-tree", root_tree, "-m", "non-utf8 legacy")
+    git(root, "update-ref", legacy_review_ref(bad), bad)
+    result, rows = _run(root, monkeypatch)
+    assert result.exit_code == 4 and "Traceback" not in result.output, result.output
+    assert rows[bad]["status"] == "refused", rows
+    assert rows[good]["status"] == "created"
+
+
+def test_a_legacy_commit_with_an_encoding_header_is_refused(handoff, tmp_path, monkeypatch):
+    _, _, remote, _, base, head = handoff
+    root = native_root(tmp_path / "encoding")
+    row = dict(key="member", path="member", remote=str(remote), base=base, head=head, title="t", body="b")
+    tree = legacy_bind_tree(root, row)
+    body = (f"tree {tree}\nauthor A <a@e> 1 +0000\ncommitter A <a@e> 1 +0000\nencoding ISO-8859-1\n\nmsg\n").encode()
+    old = subprocess.run(["git", "-C", str(root), "hash-object", "-t", "commit", "-w", "--stdin"], input=body,
+                         capture_output=True, check=True).stdout.decode().strip()
+    git(root, "update-ref", legacy_review_ref(old), old)
+    result, rows = _run(root, monkeypatch)
+    assert result.exit_code == 4, result.output
+    assert rows[old]["status"] == "refused" and "legacy_commit_encoding" in rows[old]["reason"]
+    assert _v1_refs(root) == {}
+
+
+def test_a_legacy_bind_that_does_not_verify_is_refused(handoff, tmp_path, monkeypatch):
+    _, _, remote, _, base, head = handoff
+    root = native_root(tmp_path / "unverified")
+    row = dict(key="member", path="member", remote=str(remote), base=base, head=head, title="t", body="b")
+    tree = legacy_bind_tree(root, row)
+    extra = git(root, "hash-object", "-w", "--stdin", input="stray\n")
+    stray = git(root, "mktree", input="".join(l + "\n" for l in git(root, "ls-tree", tree).splitlines())
+                + f"100644 blob {extra}\tstray.txt\n")
+    old = git(root, "commit-tree", stray, "-m", "legacy with a stray entry")
+    git(root, "update-ref", legacy_review_ref(old), old)
+    assert not grip._verify_review_commit_in_store(root, old)["tree_matches"]  # control
+    result, rows = _run(root, monkeypatch)
+    assert result.exit_code == 4, result.output
+    assert "legacy_bind_tree_mismatch" in rows[old]["reason"]
+    assert _v1_refs(root) == {}

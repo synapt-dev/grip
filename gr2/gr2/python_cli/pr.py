@@ -323,8 +323,11 @@ def create_pr_group(
     *,
     body: str = "",
     draft: bool = True,
+    review_target: str | None = None,
 ) -> dict:
-    """Create linked PRs across repos and emit pr.created."""
+    """Create linked PRs across repos and emit pr.created. A group opened for a review
+    records its `review_target` (gr:<sha>); that field, not a unit or lane, is how the pr
+    verbs find it again."""
     require_adapter_capability(adapter, "create_pr")
     if len(repos) > 1:
         require_adapter_capability(adapter, "edit_pr_body")
@@ -382,6 +385,8 @@ def create_pr_group(
         "status": {repo: "OPEN" for repo in repos},
         "sibling_edits": sibling_edits,
     }
+    if review_target is not None:
+        group["review_target"] = review_target
     path = _save_group(workspace_root, group)
 
     emit_after_outcome(

@@ -542,6 +542,72 @@ def _group_state_from_statuses(statuses: list[dict[str, object]]) -> str:
     return "mixed"
 
 
+def _find_review_pr_group(workspace_root: Path, target: str) -> tuple[Path, dict[str, object]]:
+    """The PR group opened for review `target`, found by its `review_target` field. None or
+    several is a refusal that names the review, never a guess."""
+    root = workspace_root / ".grip" / "pr_groups"
+    matches: list[tuple[Path, dict]] = []
+    for path in sorted(root.glob("*.json")) if root.exists() else []:
+        try:
+            doc = json.loads(path.read_text())
+        except Exception:
+            continue
+        if isinstance(doc, dict) and doc.get("review_target") == target and isinstance(doc.get("pr_group_id"), str):
+            matches.append((path, doc))
+    if not matches:
+        raise SystemExit(f"no PR group for review {target}; open one with `gr2 pr create`")
+    if len(matches) > 1:
+        raise SystemExit(f"{len(matches)} PR groups claim review {target}: " + ", ".join(str(p) for p, _ in matches))
+    return matches[0]
+
+
+def _pr_create_for_review(workspace_root, review, platform, base_branch, draft, title, body, body_file) -> None:
+    """Open one PR per member of the current review. Each member's checkout must still be at
+    its reviewed commit, so no PR opens for bytes nobody reviewed; the head branch is the branch
+    that checkout is on, and the base is --base or the member's tracked branch."""
+    target, members = resolve_review_subject(workspace_root, review)
+    from . import review_members
+    tracked = {m.name: m.ref for m in review_members.workspace_members(workspace_root)}
+    heads, bases, repos = {}, {}, []
+    for m in members:
+        checkout = (workspace_root / m["path"]).resolve()
+        at = git(checkout, "rev-parse", "HEAD")
+        if at.returncode != 0 or at.stdout.strip() != m["commit"]:
+            typer.echo(f"refused: {m['key']} is no longer at its reviewed commit {m['commit'][:12]}; "
+                       "re-bind the review or restore the checkout", err=True)
+            raise typer.Exit(code=2)
+        branch = git(checkout, "branch", "--show-current").stdout.strip()
+        if not branch:
+            typer.echo(f"refused: {m['key']} has a detached HEAD; check out the branch to open its PR from", err=True)
+            raise typer.Exit(code=2)
+        heads[m["key"]] = branch
+        bases[m["key"]] = base_branch or str(tracked.get(m["key"]) or "")
+        repos.append(_repo_slug_from_url(m["remote"], m["key"]))
+    for name, values in (("head branch", heads), ("base branch", bases)):
+        if len(set(values.values())) != 1 or not next(iter(values.values())):
+            listing = ", ".join(f"{k}={v or '?'}" for k, v in values.items())
+            hint = " pass --base" if name == "base branch" else " put every member on one branch"
+            typer.echo(f"refused: members disagree on the {name} ({listing});{hint}", err=True)
+            raise typer.Exit(code=2)
+    if body is not None and body_file is not None:
+        typer.echo("pass one of --body or --body-file, not both", err=True)
+        raise typer.Exit(code=2)
+    group_body = body_file.read_text(encoding="utf-8") if body_file is not None else body
+    head = next(iter(heads.values()))
+    try:
+        payload = pr_ops.create_pr_group(
+            workspace_root=workspace_root, owner_unit="review", lane_name=target, title=title or head,
+            base_branch=next(iter(bases.values())), head_branch=head, repos=repos,
+            adapter=platform_ops.get_platform_adapter(platform), actor="agent:review",
+            body=group_body or _default_pr_group_body("review", target, repos), draft=draft, review_target=target,
+        )
+    except pr_ops.SiblingLinkError as exc:
+        typer.echo(json.dumps(exc.group, indent=2))
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1)
+    typer.echo(json.dumps(payload, indent=2))
+
+
 def _repo_slug_from_url(url: str, fallback_name: str) -> str:
     cleaned = url.strip()
     if cleaned.startswith("git@github.com:"):
@@ -3305,13 +3371,14 @@ def _default_pr_group_body(owner_unit: str, lane_name: str, repos: list[str]) ->
     return f"gr2 PR group for {owner_unit}/{lane_name}\n\nRepos in this group:\n{members}\n"
 
 
-@pr_app.command("create", cls=RootOptionCommand)
+@pr_app.command("create", cls=RootOptionalCommand)
 def pr_create(
     workspace_root: Path,
-    owner_unit: str,
+    owner_unit: Optional[str] = typer.Argument(None, help="Owner unit of a lane. Omit to open PRs for the current review."),
     lane_name: Optional[str] = typer.Argument(None, help="Lane name. Defaults to the unit's current lane."),
     platform: str = typer.Option("github", "--platform", help="Platform adapter name"),
-    base_branch: str = typer.Option("main", "--base", help="Base branch for created PRs"),
+    base_branch: Optional[str] = typer.Option(None, "--base", help="Base branch for created PRs. A lane defaults to main; a review uses each member's tracked branch."),
+    review: Optional[str] = typer.Option(None, "--review", help="Review ID (gr:<sha>) to open PRs for; defaults to the workspace's only review bind"),
     draft: bool = typer.Option(True, "--draft/--no-draft", help="Create drafts by default. --no-draft explicitly publishes PRs."),
     title: Optional[str] = typer.Option(None, "--title", help="Title for every PR in the group. Defaults to the lane name, which makes every PR in a set read identically; pass one when a reviewer must be able to tell the PRs apart."),
     body: Optional[str] = typer.Option(None, "--body", help="Body for every PR in the group. Defaults to a line naming the group and listing its repos."),
@@ -3319,8 +3386,12 @@ def pr_create(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
-    """Create a grouped set of per-repo PRs for a lane."""
+    """Create a grouped set of per-repo PRs for a lane, or for the current review."""
     workspace_root = workspace_root.resolve()
+    if owner_unit is None:
+        _pr_create_for_review(workspace_root, review, platform, base_branch, draft, title, body, body_file)
+        return
+    base_branch = base_branch or "main"
     resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, resolved_lane)
     # A bound lane's PR is opened FROM the author's worktree, not a materialized
@@ -4304,18 +4375,24 @@ def review_rebind_cmd(
         typer.echo(f"rebased: patch-ids held; new frozen dir at {result.out_dir}")
 
 
-@pr_app.command("status", cls=RootOptionCommand)
+@pr_app.command("status", cls=RootOptionalCommand)
 def pr_status(
     workspace_root: Path,
-    owner_unit: str,
+    owner_unit: Optional[str] = typer.Argument(None, help="Owner unit of a lane. Omit for the current review's PRs."),
     lane_name: Optional[str] = typer.Argument(None, help="Lane name. Defaults to the unit's current lane."),
+    review: Optional[str] = typer.Option(None, "--review", help="Review ID (gr:<sha>); defaults to the workspace's only review bind"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
-    """Show grouped PR status for a lane."""
+    """Show grouped PR status for a lane, or for the current review."""
     workspace_root = workspace_root.resolve()
-    resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
-    group_path, group = _find_pr_group(workspace_root, owner_unit, resolved_lane)
+    if owner_unit is None:
+        target, _ = resolve_review_subject(workspace_root, review)
+        group_path, group = _find_review_pr_group(workspace_root, target)
+        owner_unit, resolved_lane = str(group.get("owner_unit")), str(group.get("lane_name"))
+    else:
+        resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
+        group_path, group = _find_pr_group(workspace_root, owner_unit, resolved_lane)
     adapter = platform_ops.get_platform_adapter(str(group.get("platform", "github")))
     group = pr_ops.check_pr_group_status(
         workspace_root=workspace_root,
@@ -4549,11 +4626,12 @@ def pr_view(
         typer.echo("")
 
 
-@pr_app.command("merge", cls=RootOptionCommand)
+@pr_app.command("merge", cls=RootOptionalCommand)
 def pr_merge(
     workspace_root: Path,
-    owner_unit: str,
+    owner_unit: Optional[str] = typer.Argument(None, help="Owner unit of a lane. Omit to merge the current review's PRs."),
     lane_name: Optional[str] = typer.Argument(None, help="Lane name. Defaults to the unit's current lane."),
+    review: Optional[str] = typer.Option(None, "--review", help="Review ID (gr:<sha>); defaults to the workspace's only review bind"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     method: Optional[str] = typer.Option(
         None,
@@ -4573,10 +4651,22 @@ def pr_merge(
     ),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
-    """Merge grouped PRs for a lane."""
+    """Merge grouped PRs for a lane, or for the current review. A review's PRs are
+    pinned to its reviewed commits unless --match-head-commit names other pins."""
     workspace_root = workspace_root.resolve()
-    resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
-    group_path, group = _find_pr_group(workspace_root, owner_unit, resolved_lane)
+    subject_targets = None
+    if owner_unit is None:
+        target, members = resolve_review_subject(workspace_root, review)
+        group_path, group = _find_review_pr_group(workspace_root, target)
+        owner_unit, resolved_lane = str(group.get("owner_unit")), str(group.get("lane_name"))
+        reviewed = {_repo_slug_from_url(m["remote"], m["key"]): m for m in members}
+        subject_targets = {slug: MergeVerificationTarget(repo_root=(workspace_root / m["path"]).resolve(), remote=m["remote"])
+                           for slug, m in reviewed.items()}
+        if not match_head_commit:
+            match_head_commit = [f"{slug}={m['commit']}" for slug, m in reviewed.items()]
+    else:
+        resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
+        group_path, group = _find_pr_group(workspace_root, owner_unit, resolved_lane)
     adapter = platform_ops.get_platform_adapter(str(group.get("platform", "github")))
     try:
         expected_heads = _parse_head_pins(match_head_commit, group)
@@ -4611,9 +4701,10 @@ def pr_merge(
             actor=f"agent:{owner_unit}",
             method=pr_ops.resolve_merge_method(
                 explicit=method,
-                configured=_configured_merge_method(workspace_root),
+                # A review's workspace is a native root, configured in grip.toml, with no lane spec to read.
+                configured=None if subject_targets is not None else _configured_merge_method(workspace_root),
             ),
-            verification_targets=_merge_verification_targets(
+            verification_targets=subject_targets if subject_targets is not None else _merge_verification_targets(
                 workspace_root,
             ),
             report=lambda message: typer.echo(message, err=True),

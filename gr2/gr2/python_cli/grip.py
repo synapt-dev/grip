@@ -1464,7 +1464,10 @@ def _review_remote_target(workspace: Path, remote: str, ref: str) -> str:
     return rows[0][0]
 
 
-def _require_review_content(workspace: Path, full: str) -> None:
+def _require_review_content(workspace: Path, full: str, ref: str | None = None) -> None:
+    # The v1 spelling names the field tree format: a record of the old layout never travels under it.
+    if ref is not None and ref == _review_ref_v1(full) and not _is_form_d_bind(workspace, full):
+        raise GripCorruptError(f"review_ref_format_mismatch: {ref} holds a record that is not a field tree")
     if not _verify_review_commit_in_store(workspace, full)["tree_matches"]:
         raise GripCorruptError("review_tree_mismatch: received content does not recompute")
 
@@ -1482,7 +1485,7 @@ def publish_review_commit(workspace: Path, commit: str, remote: str,
                          if _bind_git(workspace, "rev-parse", "--verify", "--quiet", r).returncode == 0)
     elif _bind_git(workspace, "rev-parse", "--verify", "--quiet", canonical).returncode != 0:
         raise GripCorruptError(f"review_ref_not_local: {canonical}")
-    _require_review_content(workspace, full)
+    _require_review_content(workspace, full, canonical)
     # A record made before the writer guard, or received from elsewhere, is checked again here:
     # nothing leaves with a credential, and an author-local path never leaves this host.
     off_host = destination.startswith("https://")
@@ -1536,7 +1539,7 @@ def receive_review_commit(workspace: Path, commit: str, remote: str,
             raise GripCorruptError(f"fetched_review_id_mismatch: expected {full}, observed {actual}")
         if _bind_git(workspace, "cat-file", "-t", actual).stdout.strip() != "commit":
             raise GripCorruptError("fetched_review_kind_mismatch: expected a commit")
-        _require_review_content(workspace, actual)
+        _require_review_content(workspace, actual, canonical)
         for spelling in _review_refs_for(actual):
             existing = _bind_git(workspace, "rev-parse", "--verify", "--quiet", spelling)
             if existing.returncode == 0 and existing.stdout.strip() != actual:

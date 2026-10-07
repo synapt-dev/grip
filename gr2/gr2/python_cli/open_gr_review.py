@@ -146,9 +146,10 @@ def _refuse_local_work(target: Path, allocation: dict) -> None:
     if not (target / ".git").exists():
         from .review_run import _LEGACY_MARKERS
         member_names = {m.relative_to(target).parts[0] for m in members if m != target}
-        # The exact names the review writes at the root: its marker, receipt and run logs (one per
-        # member, in either spelling) and the shared environment. Nothing else is the review's.
-        own = {".venv", _MARKER_NAME, *_LEGACY_MARKERS, _RUN_RECEIPT_NAME, _RUN_LOG_NAME,
+        # The exact names the review writes at the root, as regular files: its marker, receipt and
+        # run logs (one per member, in either spelling). The shared environment is the `.venv`
+        # directory, checked separately. Nothing else is the review's.
+        own = {_MARKER_NAME, *_LEGACY_MARKERS, _RUN_RECEIPT_NAME, _RUN_LOG_NAME,
                *(f"{key}{_RUN_LOG_NAME}" for key in member_names),
                *(f"{_RUN_LOG_NAME}.{key}" for key in member_names)}
         for entry in sorted(target.iterdir()):

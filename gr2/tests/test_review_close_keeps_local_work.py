@@ -42,6 +42,11 @@ def reconstruction(tmp_path: Path):
     return runner, lane, allocation, (marker, receipt, log)
 
 
+
+def _text(result) -> str:
+    """Both streams: stdout and stderr are separate on click<8.2 (see make_cli_runner), merged after."""
+    return result.stdout + result.stderr
+
 def _put_local_work(lane: Path, kind: str) -> tuple[Path, str | None]:
     file = lane / ("new-user-file.txt" if kind == "untracked" else "f.txt")
     file.write_text("user work must survive close\n")
@@ -84,13 +89,13 @@ def test_reconstruction_close_refuses_local_work_and_keeps_evidence(reconstructi
     assert result.exit_code != 0, (
         f"unsafe {verb} accepted {kind} user work: rc={result.exit_code}, "
         f"lane_kept={lane.exists()}, allocation_kept={allocation.exists()}, "
-        f"run_evidence_kept={all(p.exists() for p in evidence[1:])}; {result.output}"
+        f"run_evidence_kept={all(p.exists() for p in evidence[1:])}; {_text(result)}"
     )
-    text = result.output.lower()
-    assert "refused" in text and str(lane) in result.output, result.output
+    text = _text(result).lower()
+    assert "refused" in text and str(lane) in _text(result), _text(result)
     assert ("unpublished" in text or "unpushed" in text) if commit else (
         "uncommitted" in text or "dirty" in text
-    ), result.output
+    ), _text(result)
     assert lane.is_dir() and (lane / ".git").is_dir()
     assert {path: path.read_bytes() for path in before} == before
     assert _git(lane, "status", "--porcelain") == status
@@ -108,7 +113,7 @@ def test_reconstruction_close_clean_control_preserves_run_evidence(reconstructio
     runner, lane, allocation, evidence = reconstruction
     receipt_before, log_before = evidence[1].read_bytes(), evidence[2].read_bytes()
     result = runner.invoke(gr2_app.app, ["review", verb, str(lane), "--json"])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 0, _text(result)
     assert not lane.exists() and not allocation.exists()
     payload = json.loads(result.stdout)
     preserved = payload["preserved_run"]
@@ -127,8 +132,8 @@ def test_reconstruction_close_refuses_a_lane_holding_a_stash(reconstruction, ver
     _git(lane, "stash", "push", "-q", "-m", "user stash")
     assert _git(lane, "status", "--porcelain", "--", "f.txt") == ""
     result = runner.invoke(gr2_app.app, ["review", verb, str(lane), "--json"])
-    assert result.exit_code != 0, result.output
-    assert "stash" in result.output.lower(), result.output
+    assert result.exit_code != 0, _text(result)
+    assert "stash" in _text(result).lower(), _text(result)
     assert lane.is_dir() and allocation.exists()
     assert _git(lane, "show", "stash@{0}:f.txt") == "stashed user work"
 
@@ -140,8 +145,8 @@ def test_reconstruction_close_refuses_when_git_cannot_read_the_lane(reconstructi
     (lane / "new-user-file.txt").write_text("user work\n")
     (lane / ".git" / "index").write_bytes(b"not an index")
     result = runner.invoke(gr2_app.app, ["review", verb, str(lane), "--json"])
-    assert result.exit_code != 0, result.output
-    assert "could not read" in result.output, result.output
+    assert result.exit_code != 0, _text(result)
+    assert "could not read" in _text(result), _text(result)
     assert (lane / "new-user-file.txt").read_text() == "user work\n" and allocation.exists()
 
 
@@ -152,7 +157,7 @@ def test_reconstruction_close_refuses_a_commit_on_the_reviewed_head(reconstructi
     _git(lane, "-c", "user.name=F", "-c", "user.email=f@x.invalid", "commit", "-qam", "user commit")
     commit = _git(lane, "rev-parse", "HEAD")
     result = runner.invoke(gr2_app.app, ["review", verb, str(lane), "--json"])
-    assert result.exit_code != 0, result.output
+    assert result.exit_code != 0, _text(result)
     assert lane.is_dir() and allocation.exists() and _git(lane, "rev-parse", "HEAD") == commit
 
 
@@ -166,7 +171,7 @@ def test_reconstruction_close_refuses_a_local_only_tag(reconstruction, verb):
     _git(lane, "tag", "kept-work", commit)
     assert commit not in _git(lane, "rev-list", "--reflog").split()
     result = runner.invoke(gr2_app.app, ["review", verb, str(lane), "--json"])
-    assert result.exit_code != 0 and "unpublished" in result.output.lower(), result.output
+    assert result.exit_code != 0 and "unpublished" in _text(result).lower(), _text(result)
     assert lane.is_dir() and allocation.exists()
 
 
@@ -189,7 +194,7 @@ def test_close_refuses_a_user_file_at_the_root_of_a_multi_member_lane(tmp_path: 
     lane = _multi_member_lane(tmp_path)
     (lane / "notes.txt").write_text("user notes\n")
     result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
-    assert result.exit_code != 0 and "lane root" in result.output, result.output
+    assert result.exit_code != 0 and "lane root" in _text(result), _text(result)
     assert (lane / "notes.txt").read_text() == "user notes\n"
 
 
@@ -199,7 +204,7 @@ def test_a_clean_multi_member_lane_still_closes(tmp_path: Path):
     (lane / ".venv").mkdir()
     (lane / f"demo-core{review_run._OUTPUT_LOG_NAME}").write_text("log\n")
     result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 0, _text(result)
     assert not lane.exists()
 
 
@@ -209,7 +214,7 @@ def test_a_root_file_that_only_looks_like_a_run_log_is_work(tmp_path: Path, name
     lane = _multi_member_lane(tmp_path)
     (lane / name).write_text("user file\n")
     result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
-    assert result.exit_code != 0 and name in result.output, result.output
+    assert result.exit_code != 0 and name in _text(result), _text(result)
     assert (lane / name).read_text() == "user file\n"
 
 
@@ -220,7 +225,7 @@ def test_the_exact_run_log_names_at_the_root_are_the_reviews_own(tmp_path: Path)
                  f"{review_run._OUTPUT_LOG_NAME}.demo-core", *review_run._LEGACY_MARKERS):
         (lane / name).write_text("tool output\n")
     result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 0, _text(result)
 
 
 def test_a_stash_is_named_once_and_not_as_an_unpublished_commit(reconstruction):
@@ -228,8 +233,8 @@ def test_a_stash_is_named_once_and_not_as_an_unpublished_commit(reconstruction):
     (lane / "f.txt").write_text("stashed\n")
     _git(lane, "stash", "push", "-q")
     result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
-    assert result.exit_code != 0 and "a stash" in result.output, result.output
-    assert "unpublished" not in result.output.lower(), result.output
+    assert result.exit_code != 0 and "a stash" in _text(result), _text(result)
+    assert "unpublished" not in _text(result).lower(), _text(result)
 
 
 def test_a_directory_named_like_a_run_log_at_the_root_is_work(tmp_path: Path):
@@ -239,7 +244,7 @@ def test_a_directory_named_like_a_run_log_at_the_root_is_work(tmp_path: Path):
     notes.mkdir()
     (notes / "valuable.txt").write_text("user notes\n")
     result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
-    assert result.exit_code != 0, result.output
+    assert result.exit_code != 0, _text(result)
     assert (notes / "valuable.txt").read_text() == "user notes\n"
 
 
@@ -252,7 +257,7 @@ def test_a_commit_left_only_in_the_reflog_is_unpublished(reconstruction):
     _git(lane, "checkout", "-q", "--detach", head)
     assert commit not in _git(lane, "rev-list", "--all").split()
     result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
-    assert result.exit_code != 0 and commit[:12] in result.output, result.output
+    assert result.exit_code != 0 and commit[:12] in _text(result), _text(result)
     assert lane.is_dir() and allocation.exists()
 
 
@@ -266,7 +271,7 @@ def test_a_runners_own_outputs_do_not_refuse_a_clean_lane(reconstruction):
     (lane / "target" / "debug").mkdir(parents=True)
     (lane / "target" / "debug" / "out").write_text("bin\n")
     result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 0, _text(result)
     assert not lane.exists()
 
 
@@ -274,4 +279,14 @@ def test_the_same_outputs_without_that_runner_are_work(reconstruction):
     runner, lane, allocation, _ = reconstruction
     (lane / "Cargo.lock").write_text("# lock\n")
     result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
-    assert result.exit_code != 0 and "Cargo.lock" in result.output, result.output
+    assert result.exit_code != 0 and "Cargo.lock" in _text(result), _text(result)
+
+
+def test_a_file_named_venv_at_the_root_is_work(tmp_path: Path):
+    """The shared environment is a directory; a regular file by that name is not the review's."""
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    (lane / ".venv").write_text("user notes\n")
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code != 0 and ".venv" in _text(result), _text(result)
+    assert (lane / ".venv").read_text() == "user notes\n"

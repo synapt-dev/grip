@@ -263,6 +263,12 @@ def _bad_rows(repo: Path) -> dict[str, list]:
         "varint with bytes after its end": [ok, _blobrow(repo, "060.0_a", b"\x01\x01")],
         "short fixed32": [_blobrow(repo, "060.5_a", b""), _blobrow(repo, "061.2_b", b"x")],
         "short fixed64": [_blobrow(repo, "060.1_a", b""), _blobrow(repo, "061.2_b", b"abcde")],
+        # One row per clause of the scalar check, each beside the SAME valid neighbour, so
+        # the row is refused only by the clause it names:
+        "varint whose last byte continues": [_blobrow(repo, "060.0_a", b"\x80"), _blobrow(repo, "061.2_b", b"\x01\x00")],
+        "varint ended before its last byte": [_blobrow(repo, "060.0_a", b"\x01\x08"), _blobrow(repo, "061.2_b", b"\x01\x00")],
+        "fixed64 longer than 8 bytes": [_blobrow(repo, "060.1_a", b"12345678\x08"), _blobrow(repo, "061.2_b", b"\x01\x00")],
+        "fixed32 longer than 4 bytes": [_blobrow(repo, "060.5_a", b"1234\x08"), _blobrow(repo, "061.2_b", b"\x01\x00")],
     }
 
 

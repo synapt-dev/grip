@@ -1,13 +1,14 @@
 """A minimal NATIVE root for tests that exercise the review engine, not `store init`.
 
 A native root is a `grip.toml` beside the root's own `.git` (`grip._is_native_workspace`). Review binds
-live in that `.git` under `refs/dev.synapt.grip/__reviews__/`, so a bind test needs exactly this and nothing from the
+live in that `.git` under `the review namespace`, so a bind test needs exactly this and nothing from the
 alpha `.grip/.git` store. Tests of `store init` itself use the verb."""
 
 from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from tests.review_ref_helper import legacy_review_ref
 
 
 def native_root(ws: Path) -> Path:
@@ -19,7 +20,7 @@ def native_root(ws: Path) -> Path:
 
 
 def workspace_kind_commit(ws: Path, repos: list[dict[str, str]]) -> str:
-    """A `gr2-workspace/v1`-kind commit published under `refs/dev.synapt.grip/__reviews__/` in a native root: the
+    """A `gr2-workspace/v1`-kind commit published under `the review namespace` in a native root: the
     WRONG-KIND fixture for the refusal rows (a commit that IS bound but is not a review or a project
     review). It mirrors the shape `grip.create_workspace_commit` writes to the alpha store."""
 
@@ -40,5 +41,5 @@ def workspace_kind_commit(ws: Path, repos: list[dict[str, str]]) -> str:
     meta = git("mktree", stdin=f"100644 blob {blob('gr2-workspace/v1')}\tschema\n100644 blob {blob('workspace')}\tkind\n")
     root = git("mktree", stdin=f"040000 tree {meta}\t.grip\n040000 tree {repos_tree}\trepos\n")
     commit = git("commit-tree", root, "-m", "grip workspace snapshot")
-    git("update-ref", f"refs/dev.synapt.grip/__reviews__/{commit}", commit)
+    git("update-ref", legacy_review_ref(commit), commit)
     return commit

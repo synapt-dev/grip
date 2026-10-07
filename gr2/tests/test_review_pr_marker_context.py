@@ -1,8 +1,10 @@
 """PR readers follow a production-opened reconstruction, including beneath a decoy workspace."""
+
 import json
 import os
 from types import SimpleNamespace
 import pytest
+from tests.review_ref_helper import REVIEW_REF_ROOT
 from gr2.python_cli import app as app_mod
 from gr2.python_cli import pr as pr_ops
 from tests.test_pr_review_subject import KEYS, URL, git, gr2, reviewed
@@ -95,7 +97,7 @@ def test_pr_reader_infers_one_bind_across_known_spellings(reviewed, monkeypatch,
     author, target = reviewed["author"], reviewed["target"]
     expected = group(author, target, monkeypatch)
     sha = target[3:]
-    prefix = "refs/dev.synapt.grip/__reviews__/"
+    prefix = REVIEW_REF_ROOT
     # Deliberate alternate writer spelling, same production-created bind.
     git(author, "update-ref", prefix + "v1/" + sha, sha)
     if spelling == "v1-only":

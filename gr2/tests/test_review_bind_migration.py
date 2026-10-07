@@ -1,4 +1,4 @@
-"""Review binds an older gr2 left in `<root>/.grip/.git` move into `refs/dev.synapt.grip/__reviews__/` by themselves.
+"""Review binds an older gr2 left in `<root>/.grip/.git` move into `the review namespace` by themselves.
 
 The migration is AUTOMATIC (no verb to run), runs once before the verb's own
 work, says what it did, and keeps every guard: ids keep their shas; each ref is create-only; a rerun
@@ -13,13 +13,14 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from tests.review_ref_helper import REVIEW_REF_PREFIX, review_ref_glob
 from gr2.python_cli import grip as grip_mod
 
 from tests.native_root_helper import native_root
 from tests.test_review_bind_native_store import _unpushed_head
 from tests.test_store_break_attempts import _cli, _git_out, two_member_ws  # noqa: F401
 
-_REFS = "refs/dev.synapt.grip/__reviews__/"
+_REFS = REVIEW_REF_PREFIX
 
 
 def _legacy_binds(ws: Path, tmp_path: Path, n: int = 2) -> list[str]:
@@ -41,7 +42,7 @@ def _legacy_binds(ws: Path, tmp_path: Path, n: int = 2) -> list[str]:
                               capture_output=True, text=True, check=True).stdout.strip()
 
     g("init", "-q")
-    g("fetch", "-q", str(maker), "+refs/dev.synapt.grip/__reviews__/*:refs/maker/*")
+    g("fetch", "-q", str(maker), f"+{review_ref_glob()}:refs/maker/*")
     chain: list[str] = []
     for commit in made:
         parent = ["-p", chain[-1]] if chain else []
@@ -65,7 +66,7 @@ def test_old_binds_move_into_refs_on_the_first_bind_touching_verb(two_member_ws:
 
     code, out = _cli("review", "verify", str(ws), "gr:" + ids[1])
     assert code == 0 and "tree_matches: True" in out, out
-    assert "migrated 2 review binds from .grip/.git into refs/dev.synapt.grip/__reviews__" in out + capfd.readouterr().err
+    assert f"migrated 2 review binds from .grip/.git into {REVIEW_REF_PREFIX.rstrip(chr(47))}" in out + capfd.readouterr().err
     assert sorted(_refs(ws)) == sorted(_REFS + i for i in ids), "ids must keep their shas"
     assert not (ws / ".grip" / ".git").exists() and (ws / ".grip" / "legacy-store.git").is_dir()
     code, out = _cli("review", "verify", str(ws), "gr:" + ids[0])

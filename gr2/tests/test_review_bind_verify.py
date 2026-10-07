@@ -9,6 +9,7 @@ against an independently computed hash (the bridge to the hand freeze's NORM).
 """
 from __future__ import annotations
 
+from tests.review_ref_helper import legacy_review_ref
 from tests.native_root_helper import native_root
 
 import hashlib
@@ -211,7 +212,7 @@ def test_reconstruct_refuses_on_tree_mismatch(tmp_path):
         ["git", "-C", str(grip_git), "-c", "user.name=t", "-c", "user.email=t@e",
          "commit-tree", new_root, "-m", "tampered"],
         capture_output=True, text=True, check=True).stdout.strip()
-    subprocess.run(["git", "-C", str(grip_git), "update-ref", f"refs/dev.synapt.grip/__reviews__/{tampered}", tampered],
+    subprocess.run(["git", "-C", str(grip_git), "update-ref", legacy_review_ref(tampered), tampered],
                    check=True)
 
     with pytest.raises(GripReviewRefused) as exc:

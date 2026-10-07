@@ -13,11 +13,12 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from tests.review_ref_helper import REVIEW_REF_PREFIX
 from gr2.python_cli import grip
 from gr2.python_cli.app import app
 
 runner = CliRunner()
-PREFIX = "refs/dev.synapt.grip/__reviews__/"
+PREFIX = REVIEW_REF_PREFIX
 TOKEN = "FAKE-TOKEN-0000"
 CRED = f"https://user:{TOKEN}@example.invalid/o/member.git"
 FOREIGN = "https://example.invalid/o/destination.git"

@@ -1,6 +1,6 @@
 """The versioned review ref, reader side.
 
-A writer of `refs/dev.synapt.grip/__reviews__/v1/<id>` must never meet a reader that breaks on it. Measured on grip
+A writer of `the versioned review ref` must never meet a reader that breaks on it. Measured on grip
 dev cecab8c8: with ANY `v1/` ref in the store, `list_review_binds` raised GripCorruptError ("noncanonical review
 ref"), so every command that lists binds failed, and a bind present only as `v1/<id>` resolved as "not bound".
 This is the reader-tolerant step: the review id is the LAST path segment, legacy and `v1` are the known
@@ -9,16 +9,18 @@ spellings, an unknown nested spelling is skipped with a warning, and nothing her
 
 from __future__ import annotations
 
+
 from pathlib import Path
 
 import pytest
 
+from tests.review_ref_helper import REVIEW_REF_ROOT
 from gr2.python_cli import grip as grip_mod
 
 from tests.test_review_bind_native_store import _bind_args, _unpushed_head
 from tests.test_store_break_attempts import _cli, _commit_identity, _git, _git_out, two_member_ws  # noqa: F401
 
-ROOT = "refs/dev.synapt.grip/__reviews__/"
+ROOT = REVIEW_REF_ROOT
 
 
 def _bound(ws: Path) -> str:

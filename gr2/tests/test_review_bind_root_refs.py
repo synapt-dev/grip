@@ -1,10 +1,10 @@
-"""A review bind on a NATIVE root lives in the root's own `.git` under `refs/dev.synapt.grip/__reviews__/<commit>`.
+"""A review bind on a NATIVE root lives in the root's own `.git` under `the review ref`.
 
 THE SMALLEST WORKING PROOF: one bind into the root ref, read back by `verify`,
 content-equivalent to the old store.
 
   * no `<root>/.grip/.git` appears (there is no second repo);
-  * exactly one `refs/dev.synapt.grip/__reviews__/<commit>` exists and it is the printed `gr:<commit>`;
+  * exactly one `the review ref` exists and it is the printed `gr:<commit>`;
   * the root's commit log and `git status` are unchanged by the bind (the ref is outside both);
   * `review verify` on the id reports `tree_matches: True`;
   * the bound tree keeps the `gr2-review-bind/v2` layout (only the home moved).
@@ -12,14 +12,16 @@ content-equivalent to the old store.
 
 from __future__ import annotations
 
+
 from pathlib import Path
 
+from tests.review_ref_helper import REVIEW_REF_PREFIX
 from gr2.python_cli import grip as grip_mod
 
 from tests.test_review_bind_native_store import _bind_args, _unpushed_head
 from tests.test_store_break_attempts import _cli, _git_out, two_member_ws  # noqa: F401
 
-_REFS = "refs/dev.synapt.grip/__reviews__/"
+_REFS = REVIEW_REF_PREFIX
 
 
 def _ref_names(root: Path) -> list[str]:

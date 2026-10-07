@@ -25,8 +25,8 @@ def _git(cwd: Path, *a: str) -> str:
     return subprocess.run(["git", *a], cwd=cwd, text=True, capture_output=True, check=True).stdout.strip()
 
 
-def _entered_lane(tmp_path: Path) -> tuple[Path, Path]:
-    ws, _, _ = _workspace_with_enter_hook(tmp_path, command="exit 0", stage_key="on_exit")
+def _entered_lane(tmp_path: Path, hook: str = "exit 0") -> tuple[Path, Path]:
+    ws, _, _ = _workspace_with_enter_hook(tmp_path, command=hook, stage_key="on_exit")
     for argv in (["lane", "create", str(ws), "atlas", "x", "--repos", "app", "--branch", "app=feat/x"],
                  ["lane", "enter", str(ws), "atlas", "x", "--actor", "agent:s"]):
         result = runner.invoke(gr2_app.app, argv)
@@ -89,7 +89,7 @@ def test_exit_with_dirty_stash_names_the_stash_and_how_to_restore_it(tmp_path: P
     assert row["repo"] == "app" and row["path"] == str(repo), payload
     assert row["stash"] == _git(repo, "rev-parse", "stash@{0}"), payload
     assert row["restore"] == f"git -C {repo} stash pop", payload
-    assert row["restore"] in result.stderr
+    assert row["restore"] in result.stderr and row["stash"] in result.stderr
     assert _git(repo, "show", "stash@{0}:f.txt") == "edited"
     assert _current_lane(ws) != "x"
 
@@ -102,3 +102,21 @@ def test_an_unknown_dirty_mode_is_refused_before_anything_moves(tmp_path: Path) 
     assert (repo / "f.txt").read_text() == "edited\n"
     assert _git(repo, "stash", "list") == ""
     assert _current_lane(ws) == "x"
+
+
+def test_an_on_exit_hook_that_leaves_work_in_the_lane_is_refused(tmp_path: Path) -> None:
+    ws, repo = _entered_lane(tmp_path, hook="echo hooked > from-hook.txt")
+    result = _exit(ws)
+    assert result.exit_code != 0, result.output
+    assert "after_on_exit" in result.stderr and "app" in result.stderr, result.stderr
+    assert '"ok"' not in result.output
+    assert (repo / "from-hook.txt").read_text() == "hooked\n"
+    assert _git(repo, "stash", "list") == ""
+    assert _current_lane(ws) == "x"
+
+
+def test_the_refusal_names_a_command_that_can_be_pasted(tmp_path: Path) -> None:
+    ws, repo = _entered_lane(tmp_path)
+    (repo / "f.txt").write_text("edited\n")
+    result = _exit(ws)
+    assert f"gr2 lane exit {ws} atlas --dirty stash" in result.stderr, result.stderr

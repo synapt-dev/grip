@@ -6,6 +6,7 @@ import io
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -2952,19 +2953,27 @@ def lane_exit(
     if dirty and dirty_mode == "block":
         for name, path in dirty:
             typer.echo(f"refused: lane_has_uncommitted_work: {name} ({path})", err=True)
-        typer.echo(f"commit or discard the work first, or run `gr2 lane exit ... --dirty stash` to stash it "
-                   f"in each repo; the lane {owner_unit}/{lane_name} is still entered", err=True)
+        typer.echo(f"commit or discard the work first, or stash it in each repo with: "
+                   f"gr2 lane exit {shlex.quote(str(workspace_root))} {shlex.quote(owner_unit)} --dirty stash; "
+                   f"the lane {owner_unit}/{lane_name} is still entered", err=True)
         raise typer.Exit(code=2)
     stashed_repos: list[str] = []
     stashed: list[dict[str, str]] = []
     for name, path in dirty:
         stash_if_dirty(path, f"gr2 exit {owner_unit}/{lane_name}")
         stashed_repos.append(name)
-        restore = f"git -C {path} stash pop"
-        stashed.append({"repo": name, "path": str(path),
-                        "stash": git(path, "rev-parse", "stash@{0}").stdout.strip(), "restore": restore})
-        typer.echo(f"stashed uncommitted work in {name}; restore it with: {restore}", err=True)
+        restore = f"git -C {shlex.quote(str(path))} stash pop"
+        sha = git(path, "rev-parse", "stash@{0}").stdout.strip()
+        stashed.append({"repo": name, "path": str(path), "stash": sha, "restore": restore})
+        typer.echo(f"stashed uncommitted work in {name} as {sha}; restore it with: {restore}", err=True)
     exit_results = _run_lane_stage(workspace_root, owner_unit, lane_name, "on_exit", manual_hooks=manual_hooks)
+    # An on_exit hook runs in the lane and can leave work of its own; exit does not hide that either.
+    hook_dirty = [(name, path) for name, path in lane_repos if path.exists() and repo_dirty(path)]
+    if hook_dirty:
+        for name, path in hook_dirty:
+            typer.echo(f"refused: lane_has_uncommitted_work_after_on_exit: {name} ({path})", err=True)
+        typer.echo(f"an on_exit hook left uncommitted work; the lane {owner_unit}/{lane_name} is still entered", err=True)
+        raise typer.Exit(code=2)
     ns = SimpleNamespace(
         workspace_root=workspace_root,
         owner_unit=owner_unit,

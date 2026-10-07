@@ -1,10 +1,11 @@
 """Explicit intent and marker provenance beside the certified bare-command rows."""
 import json
+import os
 
 import pytest
 
 from gr2.python_cli import app as app_mod
-from tests.test_pr_review_subject import gr2, reviewed  # noqa: F401
+from tests.test_pr_review_subject import KEYS, URL, git, gr2, reviewed  # noqa: F401
 from tests.test_review_context_witnesses import opened  # noqa: F401
 
 
@@ -105,3 +106,71 @@ def test_transport_keeps_independent_id_required_inside_lane(opened, monkeypatch
                  "--remote", str(opened["bare"]["alpha"]))
     assert result.exit_code == 2
     assert "Missing argument" in result.output and "commit" in result.output
+
+
+def test_marker_workspace_wins_over_different_nearest_native_workspace(reviewed, monkeypatch):
+    workspace = reviewed["author"]
+    ambient = reviewed["tmp"] / "ambient"
+    ambient.mkdir()
+    for key in KEYS:
+        git(ambient, "clone", "--branch", "main", reviewed["bare"][key], key)
+    initialized = gr2(ambient, monkeypatch, "store", "init", ambient)
+    assert initialized.exit_code == 0, "fixture ambient store failed: " + initialized.output
+    assert app_mod._is_workspace_root(ambient)
+    # Only the fixture's isolated global config is changed for reconstruction.
+    for key in KEYS:
+        git(workspace, "config", "--file", os.environ["GIT_CONFIG_GLOBAL"],
+            f"url.file://{reviewed['bare'][key]}.insteadOf", URL[key])
+    lane = ambient / "opened"
+    result = gr2(workspace, monkeypatch, "review", "open", "--lane-dir", lane, "--json")
+    assert result.exit_code == 0, "fixture nested open failed: " + result.output
+    marker = json.loads((lane / ".grip-review-open.json").read_text())
+    assert marker["workspace_root"] == str(workspace) and marker["gr_commit"] == reviewed["target"][3:]
+    monkeypatch.chdir(lane / "alpha")
+    assert app_mod._resolve_workspace_root() == ambient.resolve(), "fixture must expose a different nearest root"
+    result = gr2(lane / "alpha", monkeypatch, "review", "show", "--json")
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["id"] == reviewed["target"]
+    assert {m["key"]: m["head"] for m in payload["members"]} == reviewed["heads"]
+
+
+@pytest.mark.parametrize("field,value,code", [
+    ("workspace_root", "relative/workspace", "bad_review_workspace"),
+    ("workspace_root", None, "bad_review_workspace"),
+    ("gr_commit", "a" * 12, "bad_review_commit"),
+])
+def test_marker_bad_subject_fields_refuse_instead_of_sole_bind(opened, monkeypatch, field, value, code):
+    marker = dict(opened["marker"])
+    if value is None:
+        marker.pop(field)
+    else:
+        marker[field] = value
+    (opened["lane"] / ".grip-review-open.json").write_text(json.dumps(marker))
+    result = gr2(opened["lane"], monkeypatch, "review", "show", "--json")
+    assert result.exit_code == 2 and code in result.output
+
+
+def test_publish_missing_independent_id_inside_lane_names_commit(opened, monkeypatch):
+    result = gr2(opened["lane"], monkeypatch, "review", "publish",
+                 "--remote", str(opened["bare"]["alpha"]))
+    assert result.exit_code == 2
+    assert "Missing argument 'commit'" in result.output
+
+
+def test_review_view_unknown_repo_filter_names_members(reviewed, monkeypatch):
+    root = reviewed["author"]
+    created = gr2(root, monkeypatch, "pr", "create", "--json")
+    assert created.exit_code == 0, created.output
+    result = gr2(root, monkeypatch, "pr", "view", "--repo", "o/unknown", "--json")
+    assert result.exit_code == 1
+    assert "--repo o/unknown is not a member of this change" in result.output
+    assert all(f"o/{key}" in result.output for key in KEYS)
+
+
+def test_show_help_ignores_broken_enclosing_marker(opened, monkeypatch):
+    (opened["lane"] / ".grip-review-open.json").write_text("not-json\n")
+    result = gr2(opened["lane"], monkeypatch, "review", "show", "--help")
+    assert result.exit_code == 0, result.output
+    assert "Usage:" in result.output and "show" in result.output
+    assert "bad_marker" not in result.output

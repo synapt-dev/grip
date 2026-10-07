@@ -166,7 +166,7 @@ class ReviewTargetCommand(RootOptionalCommand):
         if root_value is not None:
             if len(positions) > 1 or (positions and self._is_root_word(args[positions[0]])):
                 ctx.fail("the workspace root was given twice: as the first argument and with --root/-C")
-        elif (not positions and self._required_positionals == 1) or (
+        elif not positions or (
             len(positions) == 1 and not self._is_root_word(args[positions[0]])
         ):
             from . import context as c
@@ -183,6 +183,11 @@ class ReviewTargetCommand(RootOptionalCommand):
                 args.extend([found, review_context.commit])
             else:
                 args.insert(positions[0] if positions else len(args), found)
+            if not positions and not optional_commit:
+                # We supplied only the root, never the independent transport ID.
+                # Avoid the fixed-arity superclass inferring a second root into
+                # that missing ID slot; Click must name the missing commit.
+                return typer.core.TyperCommand.parse_args(self, ctx, args)
         return super().parse_args(ctx, args)
 
     @staticmethod

@@ -241,10 +241,10 @@ def test_writer_members_open_run_and_close_with_disjoint_logs(tmp_path, monkeypa
         assert receipt["result"] == "green"
     logs = {".grip-review-run.log." + k: (lane / (".grip-review-run.log." + k)).read_bytes() for k in keys}
     assert all((lane / k).is_dir() for k in keys)
-    assert [m["output_log"] for m in receipt["members"]] == [".grip-review-run.log." + k for k in keys]
+    assert [m["output_log"] for m in receipt["members"]] == [".grip-review-run.log." + k for k in (keys[:1] if zero_tests else keys)]
     closed = close_open_gr_lane(lane, workspace_root=root)
     assert not lane.exists()
     saved = [json.loads(Path(item["receipt"]).read_text()) for item in closed["preserved_runs"]]
     archived = {Path(m["output_log"]).name: Path(m["output_log"]).read_bytes()
-                for r in saved for m in r.get("members", []) if m.get("output_log")}
+                for r in saved for m in [r, *r.get("members", [])] if m.get("output_log")}
     assert archived == logs, "close must carry the actual member logs by receipt name"

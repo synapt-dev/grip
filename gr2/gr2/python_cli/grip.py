@@ -1588,11 +1588,17 @@ def migrate_review_binds(workspace: Path) -> tuple[Path, list[dict[str, str]]]:
     from . import review_field_tree as fd
     _validate_bind_store(workspace)
     repo = _bind_dir(workspace)
-    out = _bind_git(workspace, "for-each-ref", "--format=%(refname)", _REVIEW_REF_PREFIX)
-    legacy = sorted(r[len(_REVIEW_REF_PREFIX):] for r in out.stdout.splitlines()
+    out = _bind_git(workspace, "for-each-ref", "--format=%(refname) %(objectname)", _REVIEW_REF_PREFIX)
+    targets = dict(line.split(" ", 1) for line in out.stdout.splitlines() if " " in line)
+    legacy = sorted(r[len(_REVIEW_REF_PREFIX):] for r in targets
                     if r.startswith(_REVIEW_REF_PREFIX) and _SHA40.fullmatch(r[len(_REVIEW_REF_PREFIX):]))
     rows: list[dict[str, str]] = []
     for old in legacy:
+        if targets[_REVIEW_REF_PREFIX + old] != old:
+            # The ref names one id and holds another: neither is converted under that name.
+            rows.append({"old_id": f"gr:{old}", "new_id": "", "ref": "", "status": "refused",
+                         "reason": f"review_ref_target_mismatch: {_REVIEW_REF_PREFIX}{old}"})
+            continue
         if _bind_git(workspace, "show", f"{old}:{GRIP_DIR}/schema").stdout.strip() != _REVIEW_BIND_SCHEMA:
             continue  # a field tree (no .grip), or not a review bind (a project review keeps its format)
         try:
@@ -1625,7 +1631,7 @@ def _migrate_one_bind(workspace: Path, repo: Path, old: str, fd) -> dict[str, st
     headers, _, message = raw.partition(b"\n\n")
     if any(line.startswith(b"encoding ") for line in headers.splitlines()):
         # The twin keeps the message bytes; without the header they would be read as UTF-8.
-        raise GripCorruptError("legacy_commit_encoding: the bind's commit declares a non-UTF-8 encoding")
+        raise GripCorruptError("legacy_commit_encoding: the bind's commit declares an encoding, which the twin would not carry")
     if not _verify_review_commit_in_store(workspace, old)["tree_matches"]:
         raise GripCorruptError("legacy_bind_tree_mismatch: the legacy bind does not verify as written")
     members: list[dict[str, object]] = []

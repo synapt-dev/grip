@@ -289,6 +289,15 @@ def test_migrate_rich_legacy_record_preserves_full_content_and_sorted_members(ha
     for key in ("alpha", "zeta"):
         for group, name in (("objects", "range.patch"), ("objects", "committers"), ("evidence", "resolution")):
             assert grip._carried(root, new, key, group, name) == grip._carried(root, old, key, group, name)
+    # And they open the same: each reconstructs into its own lane, to the reviewed head exactly
+    # (the bind carries committers), the reviewed tree and the reviewed file.
+    lanes = {}
+    for label, commit in (("old", old), ("new", new)):
+        lane = tmp_path / f"open-{label}"
+        grip.reconstruct_review_lane(root, commit, "alpha", lane)
+        lanes[label] = (git(lane, "rev-parse", "HEAD"), git(lane, "rev-parse", "HEAD^{tree}"),
+                        (lane / "payload.txt").read_text())
+    assert lanes["old"] == lanes["new"] == (head, objects["head-tree"], "reviewed\n")
 
 
 def test_migrate_reviews_cli_api_contract():
@@ -337,15 +346,20 @@ def test_one_refused_bind_does_not_block_the_binds_after_it(handoff, tmp_path, m
     _, _, remote, _, base, head = handoff
     root = native_root(tmp_path / "continue")
     good = dict(key="member", path="member", remote=str(remote), base=base, head=head, title="t", body="b")
-    olds = [_legacy(root, dict(good, title=f"t{i}")) for i in range(3)]
     bad = _legacy(root, dict(good, remote="-x"))
+    olds = [_legacy(root, dict(good, title=f"t{i}")) for i in range(3)]
+    i = 3
+    while max(olds) < bad:  # ids are content hashes: keep adding until one sorts after the refusal
+        olds.append(_legacy(root, dict(good, title=f"t{i}")))
+        i += 1
+    assert any(o > bad for o in olds), "the witness needs a valid bind that sorts after the refused one"
     result, rows = _run(root, monkeypatch)
     assert result.exit_code == 4, result.output
     assert rows[bad]["status"] == "refused"
-    assert [rows[o]["status"] for o in olds] == ["created"] * 3, "a refusal stopped the run"
-    assert len(_v1_refs(root)) == 3
+    assert [rows[o]["status"] for o in olds] == ["created"] * len(olds), "a refusal stopped the run"
+    assert len(_v1_refs(root)) == len(olds)
     receipt = json.loads(Path(json.loads(result.stdout)["receipt"]).read_text())
-    assert sorted(r["status"] for r in receipt["rows"]) == ["created"] * 3 + ["refused"]
+    assert sorted(r["status"] for r in receipt["rows"]) == ["created"] * len(olds) + ["refused"]
 
 
 def test_a_non_utf8_legacy_text_is_a_refused_row_with_a_receipt(handoff, tmp_path, monkeypatch):
@@ -401,3 +415,18 @@ def test_a_legacy_bind_that_does_not_verify_is_refused(handoff, tmp_path, monkey
     assert result.exit_code == 4, result.output
     assert "legacy_bind_tree_mismatch" in rows[old]["reason"]
     assert _v1_refs(root) == {}
+
+
+def test_a_legacy_ref_that_holds_another_id_is_refused_and_converts_nothing_under_its_name(handoff, tmp_path, monkeypatch):
+    _, _, remote, _, base, head = handoff
+    root = native_root(tmp_path / "repointed")
+    row = dict(key="member", path="member", remote=str(remote), base=base, head=head, title="t", body="b")
+    a = _legacy(root, dict(row, title="a"))
+    b = _legacy(root, dict(row, title="b"))
+    git(root, "update-ref", legacy_review_ref(a), b)  # the ref named for A now holds B
+    result, rows = _run(root, monkeypatch)
+    assert result.exit_code == 4, result.output
+    assert rows[a]["status"] == "refused" and "review_ref_target_mismatch" in rows[a]["reason"]
+    assert rows[b]["status"] == "created"  # control: a ref that holds its own id converts
+    assert len(_v1_refs(root)) == 1
+    assert git(root, "rev-parse", legacy_review_ref(a)) == b, "migrate repaired or moved the legacy ref"

@@ -1591,7 +1591,7 @@ def migrate_review_binds(workspace: Path) -> tuple[Path, list[dict[str, str]]]:
     failure: Exception | None = None
     for old in legacy:
         if _is_form_d_bind(workspace, old) or \
-                _bind_git(workspace, "show", f"{old}:.grip/schema").stdout.strip() != _REVIEW_BIND_SCHEMA:
+                _bind_git(workspace, "show", f"{old}:{GRIP_DIR}/schema").stdout.strip() != _REVIEW_BIND_SCHEMA:
             continue  # already a field tree, or not a review bind (a project review keeps its format)
         try:
             rows.append(_migrate_one_bind(workspace, repo, old, fd))
@@ -1637,7 +1637,7 @@ def _migrate_one_bind(workspace: Path, repo: Path, old: str, fd) -> dict[str, st
             member["evidence"] = evidence
         members.append(member)
     record = {"schema": _REVIEW_BIND_SCHEMA, "kind": "review",
-              "policy": text(".grip/policy").strip(), "members": members}
+              "policy": text(f"{GRIP_DIR}/policy").strip(), "members": members}
     tree = fd.write_tree(repo, fd.encode(record))
     fd.verify_tree(repo, tree)
     raw = subprocess.run(["git", "-C", str(repo), "cat-file", "commit", old], capture_output=True, check=True).stdout

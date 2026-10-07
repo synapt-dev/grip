@@ -118,7 +118,9 @@ def _tamper(lane: Path, key: str) -> None:
 
 
 def _log(lane: Path, key: str) -> Path:
-    return lane / f"{key}{rr._OUTPUT_LOG_NAME}"
+    """Where a member's run log must land: spelled out here, not taken from the code under test,
+    so a writer that drifts from this name reddens the rows that read the log."""
+    return lane / f"{rr._OUTPUT_LOG_NAME}.{key}"
 
 
 # ------------------------------------------------------------------ the happy path
@@ -208,6 +210,7 @@ def test_a_refusal_at_the_first_member_leaves_the_later_one_in_not_run(tmp_path:
     receipt = json.loads((lane / rr._RECEIPT_NAME).read_text())
     assert receipt["result"] == "refused" and receipt["not_run"] == ["demo-web"]
     assert not _log(lane, "demo-web").exists()
+    assert receipt["output_log"] is None or (lane / receipt["output_log"]) == _log(lane, "demo-core")
 
 
 def test_a_member_that_selects_zero_tests_refuses(tmp_path: Path) -> None:
@@ -217,6 +220,8 @@ def test_a_member_that_selects_zero_tests_refuses(tmp_path: Path) -> None:
     assert exc.value.code == "zero_collected" and exc.value.member == "demo-core"
     receipt = json.loads((lane / rr._RECEIPT_NAME).read_text())
     assert receipt["not_run"] == ["demo-web"]
+    # pytest ran, so the refusal receipt names the log it wrote, at the member's own log name
+    assert receipt["output_log"] == _log(lane, "demo-core").name and _log(lane, "demo-core").is_file(), receipt
 
 
 def test_a_package_that_resolves_outside_the_lane_refuses_for_that_member(tmp_path: Path) -> None:

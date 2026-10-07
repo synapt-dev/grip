@@ -12,7 +12,6 @@ import subprocess
 import tomllib
 from pathlib import Path, PurePosixPath
 from typing import Optional
-from urllib.parse import urlsplit
 
 import typer
 
@@ -444,13 +443,8 @@ def _write_native_members(root: Path, members: list[dict[str, str]]) -> None:
 
 
 def _url_has_credentials(url: str) -> bool:
-    """Refuse URL userinfo except an SSH login, never by printing the URL."""
-    head = url.split("://", 1)[0]
-    address = url.split("::", 1)[1] if "::" in head else url
-    parsed = urlsplit(address)
-    if parsed.password is not None:
-        return True
-    return parsed.username is not None and parsed.scheme.lower() not in {"ssh", "git+ssh", "ssh+git"}
+    """Refuse URL userinfo except an SSH login, never by printing the URL (owner: grip.url_has_credentials)."""
+    return grip_mod.url_has_credentials(url)
 
 
 def _credential_refusal(name: str) -> NativeStoreRefusal:

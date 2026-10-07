@@ -566,16 +566,33 @@ _GITHUB_REMOTE_PREFIXES = ("https://github.com/", "git@github.com:", "ssh://git@
 _GITHUB_SLUG = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 
 
+def _github_slug(remote: str) -> Optional[str]:
+    """The github.com owner/repo a remote URL names, or None when it names none."""
+    remote = remote.strip()
+    prefix = next((p for p in _GITHUB_REMOTE_PREFIXES if remote.startswith(p)), None)
+    slug = remote[len(prefix):].removesuffix(".git").strip("/") if prefix else ""
+    return slug if _GITHUB_SLUG.fullmatch(slug) else None
+
+
+# The same bound review bind gives its own ls-remote: a peer that accepts and never replies blocks forever.
+_REMOTE_TIP_TIMEOUT = 30.0
+
+
+def _effective_remote(workspace_root: Path, remote: str) -> str:
+    """The URL git dials for `remote` from the workspace, after url.<base>.insteadOf rewrites.
+    `ls-remote --get-url` expands the rewrite and connects nowhere."""
+    got = git(workspace_root, "ls-remote", "--get-url", remote)
+    return got.stdout.strip() if got.returncode == 0 else ""
+
+
 def _review_members_on_host(workspace_root: Path, members: list[dict[str, str]]) -> dict[str, tuple[dict[str, str], Path]]:
     """Each review member's host slug and checkout, keyed by slug. Refused by name when either cannot
     be trusted: a remote naming no GitHub owner/repo, two members on one slug (one would silently drop
     out of the group), or a recorded path that leaves the workspace or is missing."""
     on_host: dict[str, tuple[dict[str, str], Path]] = {}
     for m in members:
-        remote = m["remote"].strip()
-        prefix = next((p for p in _GITHUB_REMOTE_PREFIXES if remote.startswith(p)), None)
-        slug = remote[len(prefix):].removesuffix(".git").strip("/") if prefix else ""
-        if not _GITHUB_SLUG.fullmatch(slug):
+        slug = _github_slug(m["remote"])
+        if slug is None:
             _refuse(f"{m['key']}'s remote names no GitHub owner/repo, so no PR can be addressed for it")
         if slug in on_host:
             _refuse(f"{m['key']} and {on_host[slug][0]['key']} are both {slug}; one PR group cannot hold two members on one repo")
@@ -600,15 +617,20 @@ def _pr_create_for_review(workspace_root, review, platform, base_branch, draft, 
     from . import review_members
     tracked = {m.name: m.ref for m in review_members.workspace_members(workspace_root)}
     heads, bases = {}, {}
-    for m, checkout in on_host.values():
+    for slug, (m, checkout) in on_host.items():
         at = git(checkout, "rev-parse", "HEAD")
         if at.returncode != 0 or at.stdout.strip() != m["commit"]:
             _refuse(f"{m['key']} is no longer at its reviewed commit {m['commit'][:12]}; re-bind the review or restore the checkout")
         branch = git(checkout, "branch", "--show-current").stdout.strip()
         if not branch:
             _refuse(f"{m['key']} has a detached HEAD; check out the branch to open its PR from")
-        # Dialled from the workspace root, as review bind dials.
-        seen = git(workspace_root, "ls-remote", m["remote"], f"refs/heads/{branch}")
+        # Dialled from the workspace root, as review bind dials. The tip read there is evidence about
+        # the PR only if git dials the same github.com repo the PR opens on: a url rewrite to any other
+        # place (a decoy, a local path) would answer for bytes the platform never sees.
+        if _github_slug(_effective_remote(workspace_root, m["remote"])) != slug:
+            _refuse(f"{m['key']}: a git url rewrite sends its remote somewhere other than {slug} on github.com, "
+                    "so the tip read here would not be the tip the PR opens on")
+        seen = git(workspace_root, "ls-remote", m["remote"], f"refs/heads/{branch}", timeout=_REMOTE_TIP_TIMEOUT)
         if seen.returncode != 0:
             _refuse(f"cannot read {branch} on {m['key']}'s remote: {seen.stderr.strip()}")
         tips = [line.split()[0] for line in seen.stdout.splitlines() if line.split()[1:] == [f"refs/heads/{branch}"]]

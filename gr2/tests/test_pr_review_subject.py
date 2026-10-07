@@ -83,8 +83,14 @@ def reviewed(tmp_path, monkeypatch):
     target = json.loads(shown.stdout)["id"]
     adapter = FakeAdapter()
     monkeypatch.setattr(app_mod.platform_ops, "get_platform_adapter", lambda name: adapter)
+    # THE INTERCEPTION, declared: the fixture's own insteadOf sends each fake github.com remote to a local
+    # bare, and this seam reports it as the github.com remote, which is what the test means it to stand for.
+    # The decoy test below removes the seam and expects the rewrite to be refused.
+    real_effective = app_mod._effective_remote
+    monkeypatch.setattr(app_mod, "_effective_remote", lambda ws, remote: remote)
     repos = {k: f"o/{k}" for k in KEYS}  # the owner/repo slug the platform adapter receives
-    return dict(author=author, heads=heads, target=target, adapter=adapter, repos=repos, bare={k: tmp_path / (k + ".git") for k in KEYS})
+    return dict(author=author, heads=heads, target=target, adapter=adapter, repos=repos, bare={k: tmp_path / (k + ".git") for k in KEYS},
+                real_effective=real_effective, tmp=tmp_path)
 
 
 def test_instrument_rewrites_fake_remotes_locally(reviewed):
@@ -220,3 +226,49 @@ def test_a_trailing_option_without_its_value_is_a_usage_error(reviewed, monkeypa
     assert result.exit_code == 2, result.output
     assert "requires an argument" in result.output, result.output
     assert reviewed["adapter"].created == []
+
+
+def test_a_rewrite_to_a_decoy_holding_the_reviewed_commit_is_refused(reviewed, monkeypatch):
+    # The recorded github.com branch is stale, and a url rewrite points the dial at a decoy whose branch
+    # IS the reviewed commit. The tip read would pass while the PR opens on the stale branch.
+    older = git(reviewed["bare"]["alpha"], "rev-parse", "main")
+    decoy = reviewed["tmp"] / "decoy.git"
+    git(reviewed["tmp"], "clone", "--bare", "-q", reviewed["bare"]["alpha"], decoy)
+    git(reviewed["bare"]["alpha"], "update-ref", "refs/heads/feat/two-member", older)
+    git(reviewed["author"], "config", "--local", "--unset-all", f"url.file://{reviewed['bare']['alpha']}.insteadOf")
+    git(reviewed["author"], "config", "--local", f"url.file://{decoy}.insteadOf", URL["alpha"])
+    assert git(reviewed["author"], "ls-remote", URL["alpha"], "refs/heads/feat/two-member").split()[0] == reviewed["heads"]["alpha"]
+    monkeypatch.setattr(app_mod, "_effective_remote", reviewed["real_effective"])
+    refused(gr2(reviewed["author"], monkeypatch, "pr", "create", "--json"), "alpha", "url rewrite")
+    assert reviewed["adapter"].created == []
+
+
+def test_a_rewrite_that_keeps_the_github_repo_is_the_same_endpoint(tmp_path):
+    # https -> ssh for the same repository is a common user rewrite; it names the same repo.
+    git(tmp_path, "init", "-q")
+    git(tmp_path, "config", "--local", "url.git@github.com:.insteadOf", "https://github.com/")
+    dialled = app_mod._effective_remote(tmp_path, URL["alpha"])
+    assert dialled == "git@github.com:o/alpha.git"
+    assert app_mod._github_slug(dialled) == app_mod._github_slug(URL["alpha"]) == "o/alpha"
+
+
+def test_a_remote_that_never_answers_is_refused_within_the_bound(reviewed, monkeypatch):
+    # A peer that accepts the connection and never replies: without a bound, pr create waits forever.
+    import socket, threading, time
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(4)
+    held = []
+    threading.Thread(target=lambda: [held.append(server.accept()) for _ in range(4)], daemon=True).start()
+    port = server.getsockname()[1]
+    git(reviewed["author"], "config", "--local", "--unset-all", f"url.file://{reviewed['bare']['alpha']}.insteadOf")
+    git(reviewed["author"], "config", "--local", f"url.http://127.0.0.1:{port}/alpha.git.insteadOf", URL["alpha"])
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        monkeypatch.delenv(name, raising=False)  # dial the silent peer itself, not the dead proxy
+    monkeypatch.setattr(app_mod, "_REMOTE_TIP_TIMEOUT", 2.0)
+    started = time.monotonic()
+    result = gr2(reviewed["author"], monkeypatch, "pr", "create", "--json")
+    assert time.monotonic() - started < 20
+    refused(result, "alpha", "timed out")
+    assert reviewed["adapter"].created == []
+    server.close()

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -20,7 +21,7 @@ from tests.native_root_helper import native_root
 from tests.review_ref_helper import review_ref, legacy_review_ref, legacy_bind_tree
 from tests.test_review_transport import git, cli, handoff, root_owned_wrong_target  # noqa: F401
 from tests.test_review_ref_v1_writer import refs
-from tests.test_review_ref_v1_migration import legacy_world, migrate_rows, full_id  # noqa: F401
+from tests.test_review_ref_v1_migration import legacy_world, migrate_rows, full_id, commit_inputs  # noqa: F401
 from tests.test_review_run_multi_repo import HOST_PATHS, PTH_SCRIPT
 
 
@@ -117,9 +118,9 @@ def test_default_receive_uses_v1_once_and_never_falls_back_on_fault(handoff, tmp
         if args and args[0] == "ls-remote":
             measured.append(tuple(map(str, args)))
             if args[-1] == v1 and fault == "measurement":
-                return 1, "", "fixture cannot measure v1"
+                return subprocess.CompletedProcess(args, 1, "", "fixture cannot measure v1")
             if args[-1] == v1 and fault == "malformed":
-                return 0, "not-a-valid-ls-remote-row\n", ""
+                return subprocess.CompletedProcess(args, 0, "not-a-valid-ls-remote-row\n", "")
         return original(root, *args, **kwargs)
     monkeypatch.setattr(grip, "git", spy)
     result = cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", remote)
@@ -129,9 +130,12 @@ def test_default_receive_uses_v1_once_and_never_falls_back_on_fault(handoff, tmp
         assert json.loads(result.stdout)["ref"] == v1 and refs(receiver) == {v1: commit}
     else:
         assert result.exit_code != 0, result.output
+        assert isinstance(result.exception, SystemExit), repr(result.exception)
         if fault == "wrong-target":
-            assert "review_ref_target_mismatch" in result.output, result.output
+            assert "remote_review_id_mismatch" in result.output, result.output
         if fault == "measurement":
+            assert "cannot_measure_review_ref" in result.output, result.output
+        if fault == "malformed":
             assert "cannot_measure_review_ref" in result.output, result.output
         assert refs(receiver) == {}
 
@@ -142,7 +146,7 @@ def test_explicit_migration_uses_shared_key_boundary_without_renaming(legacy_wor
     root, source = w["root"], w["source"]
     row = dict(w["row"], key=key, path=key)
     tree = legacy_bind_tree(source, row)
-    old = git(source, "commit-tree", tree, "-m", "legacy key boundary")
+    old = git(source, "commit-tree", tree, "-m", "legacy key boundary: " + key)
     old_ref = legacy_review_ref(old)
     git(source, "update-ref", old_ref, old)
     if source != root:
@@ -151,6 +155,10 @@ def test_explicit_migration_uses_shared_key_boundary_without_renaming(legacy_wor
     old_bytes = git(source, "cat-file", "-p", old)
     unsafe = key.startswith(".grip-review") or key == ".venv"
     if unsafe:
+        before_v1 = {r: oid for r, oid in refs(root).items() if r == review_ref(oid)}
+        allowed_inputs = [commit_inputs(root, w["old"])]
+        rejected_inputs = commit_inputs(root, old)
+        assert rejected_inputs not in allowed_inputs
         monkeypatch.chdir(root)
         result = CliRunner().invoke(app, ["store", "migrate-reviews", str(root), "--json"])
         assert git(root, "rev-parse", old_ref) == old
@@ -161,7 +169,8 @@ def test_explicit_migration_uses_shared_key_boundary_without_renaming(legacy_wor
         # Other valid binds may convert first. Check actual publication for the
         # rejected source, rather than promising an all-binds transaction.
         for ref, oid in refs(root).items():
-            if ref == review_ref(oid):
+            if ref == review_ref(oid) and ref not in before_v1:
+                assert commit_inputs(root, oid) in allowed_inputs, "unsafe source was converted, renamed or dropped"
                 assert key not in [m["key"] for m in fd.read_record(root, git(root, "rev-parse", oid + "^{tree}"))["members"]]
         for receipt in (root / ".grip" / "receipts").glob("*.json"):
             payload = json.loads(receipt.read_text())
@@ -180,9 +189,9 @@ def test_explicit_migration_uses_shared_key_boundary_without_renaming(legacy_wor
 
 @pytest.mark.parametrize("publication", ["writer", "manual-d-control"])
 @pytest.mark.parametrize("zero_tests", [False, True], ids=["both-green", "post-test-refusal"])
-def test_writer_members_open_run_and_close_with_disjoint_logs(tmp_path, monkeypatch, zero_tests, publication):
+def test_writer_members_open_run_and_close_with_disjoint_logs(tmp_path, monkeypatch, zero_tests, publication, legacy_receipts=False):
     root = native_root(tmp_path / "producer")
-    keys = ["alpha", "alpha.grip-review-run.log"]
+    keys = ["alpha", "beta"] if legacy_receipts else ["alpha", "alpha.grip-review-run.log"]
     rows = []
     for i, key in enumerate(keys):
         work = tmp_path / ("source" + str(i))
@@ -242,9 +251,52 @@ def test_writer_members_open_run_and_close_with_disjoint_logs(tmp_path, monkeypa
     logs = {".grip-review-run.log." + k: (lane / (".grip-review-run.log." + k)).read_bytes() for k in keys}
     assert all((lane / k).is_dir() for k in keys)
     assert [m["output_log"] for m in receipt["members"]] == [".grip-review-run.log." + k for k in (keys[:1] if zero_tests else keys)]
+    if legacy_receipts:
+        # Old multi-member logs remain owned by their stored receipt names.
+        # Use non-overlapping old member names; the new producer case separately
+        # covers the suffix-key collision that made the old layout unsafe.
+        for key in keys:
+            (lane / (".grip-review-run.log." + key)).rename(lane / (key + ".grip-review-run.log"))
+        for entry in [receipt, *receipt.get("members", [])]:
+            if entry.get("output_log"):
+                key = entry["output_log"].removeprefix(".grip-review-run.log.")
+                entry["output_log"] = key + ".grip-review-run.log"
+        (lane / rr._RECEIPT_NAME).write_text(json.dumps(receipt))
+        logs = {key + ".grip-review-run.log": logs[".grip-review-run.log." + key] for key in keys}
     closed = close_open_gr_lane(lane, workspace_root=root)
     assert not lane.exists()
     saved = [json.loads(Path(item["receipt"]).read_text()) for item in closed["preserved_runs"]]
     archived = {Path(m["output_log"]).name: Path(m["output_log"]).read_bytes()
                 for r in saved for m in [r, *r.get("members", [])] if m.get("output_log")}
     assert archived == logs, "close must carry the actual member logs by receipt name"
+
+
+@pytest.mark.parametrize("zero_tests", [False, True], ids=["completed-members", "top-level-refusal"])
+def test_close_preserves_old_named_multi_member_logs_by_receipt(tmp_path, monkeypatch, zero_tests):
+    test_writer_members_open_run_and_close_with_disjoint_logs(
+        tmp_path, monkeypatch, zero_tests, "manual-d-control", legacy_receipts=True)
+
+
+def test_receive_invalid_stored_form_d_record_refuses_without_legacy_fallback(handoff, tmp_path, monkeypatch):
+    _, _, remote, _, _, _ = handoff
+    source = native_root(tmp_path / "invalid-record-source")
+    receiver = native_root(tmp_path / "invalid-record-receiver")
+    # A real committed tree with duplicate singular kind, independently of bind.
+    tree = fd.write_tree(source, b"\x12\x06review\x12\x06review")
+    with pytest.raises(fd.ReviewRecordError, match="wire type 2"):
+        fd.verify_tree(source, tree)
+    commit = git(source, "commit-tree", tree, "-m", "malformed stored D record")
+    v1 = review_ref(commit)
+    git(source, "push", remote, f"{commit}:{v1}", f"{commit}:{legacy_review_ref(commit)}")
+    measured = []
+    original = grip.git
+    def spy(root, *args, **kwargs):
+        if args and args[0] == "ls-remote":
+            measured.append(tuple(map(str, args)))
+        return original(root, *args, **kwargs)
+    monkeypatch.setattr(grip, "git", spy)
+    result = cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", remote)
+    assert measured == [("ls-remote", "--refs", str(remote), v1)], "invalid stored v1 record must not fall back"
+    assert result.exit_code != 0 and "invalid form D review record" in result.output, result.output
+    assert isinstance(result.exception, SystemExit), repr(result.exception)
+    assert refs(receiver) == {}

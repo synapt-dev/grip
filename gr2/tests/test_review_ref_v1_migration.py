@@ -16,7 +16,7 @@ from typer.testing import CliRunner
 
 from tests.review_ref_helper import REVIEW_REF_ROOT, review_ref, legacy_review_ref, legacy_bind_tree
 from gr2.python_cli import grip
-from gr2.python_cli import review_form_d as fd
+from gr2.python_cli import review_field_tree as fd
 from gr2.python_cli.app import app
 from tests.native_root_helper import native_root
 from tests.test_review_transport import git, handoff, root_owned_wrong_target  # noqa: F401
@@ -124,7 +124,7 @@ def test_read_preserves_both_review_ref_and_object_sets(legacy_world):
     assert git(w["root"], "cat-file", "-p", w["old"]) == w["old_bytes"]
 
 
-def test_explicit_migrate_adds_one_v1_form_d_ref_as_the_read_control(legacy_world, monkeypatch):
+def test_explicit_migrate_adds_one_v1_field_tree_ref_as_the_read_control(legacy_world, monkeypatch):
     w = legacy_world
     before = state(w)
     new = one_mapping(w, migrate_rows(w["root"], monkeypatch))

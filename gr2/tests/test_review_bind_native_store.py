@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 from tests.review_ref_helper import REVIEW_REF_PREFIX, REVIEW_REF_ROOT, review_ref, legacy_review_ref
-from gr2.python_cli import review_form_d as fd
+from gr2.python_cli import review_field_tree as fd
 from gr2.python_cli import grip as grip_mod
 
 from tests.test_store_break_attempts import _cli, _git, _git_out, two_member_ws  # noqa: F401
@@ -382,7 +382,7 @@ def test_a_refused_first_bind_does_not_remove_a_store_another_bind_published_int
     else:
         tree = fd.write_record(ws, {"schema": grip_mod._REVIEW_BIND_SCHEMA, "kind": "review", "policy": "no-policy"})
         fd.verify_tree(ws, tree)
-        other = grip_mod._bind_commit_tree(ws, tree, message="concurrent form D writer")
+        other = grip_mod._bind_commit_tree(ws, tree, message="concurrent field tree writer")
         ref = review_ref(other, version="v1" if spelling == "v1" else "future/nested")
         _git(ws, "update-ref", ref, other)
     before_refs = _git_out(ws, "for-each-ref", "--format=%(refname) %(objectname)", REVIEW_REF_ROOT)

@@ -563,7 +563,7 @@ def _bind_review_rows_body(
     leak, packs hide them) and refuses the bind on a nonzero exit, the way a
     freeze refuses today. OSS ships no hook (records ``no-policy``); our config
     points it at the leak scanner. The verdict is recorded in the object."""
-    from . import review_form_d as fd
+    from . import review_field_tree as fd
     if not rows:
         raise GripCorruptError("review bind requires at least one repository row")
     members: list[dict[str, object]] = []
@@ -1468,7 +1468,7 @@ def _require_review_content(workspace: Path, full: str, ref: str | None = None) 
     if not _verify_review_commit_in_store(workspace, full)["tree_matches"]:
         raise GripCorruptError("review_tree_mismatch: received content does not recompute")
     # The v1 spelling names the field tree format: a record of the old layout never travels under it.
-    if ref is not None and ref == _review_ref_v1(full) and not _is_form_d_bind(workspace, full):
+    if ref is not None and ref == _review_ref_v1(full) and not _is_field_tree_bind(workspace, full):
         raise GripCorruptError(f"review_ref_format_mismatch: {ref} holds a record that is not a field tree")
 
 
@@ -1581,7 +1581,7 @@ def migrate_review_binds(workspace: Path) -> tuple[Path, list[dict[str, str]]]:
     `_migrate_legacy_binds`)."""
     import datetime
     import json
-    from . import review_form_d as fd
+    from . import review_field_tree as fd
     _validate_bind_store(workspace)
     repo = _bind_dir(workspace)
     out = _bind_git(workspace, "for-each-ref", "--format=%(refname)", _REVIEW_REF_PREFIX)
@@ -1590,7 +1590,7 @@ def migrate_review_binds(workspace: Path) -> tuple[Path, list[dict[str, str]]]:
     rows: list[dict[str, str]] = []
     failure: Exception | None = None
     for old in legacy:
-        if _is_form_d_bind(workspace, old) or \
+        if _is_field_tree_bind(workspace, old) or \
                 _bind_git(workspace, "show", f"{old}:{GRIP_DIR}/schema").stdout.strip() != _REVIEW_BIND_SCHEMA:
             continue  # already a field tree, or not a review bind (a project review keeps its format)
         try:

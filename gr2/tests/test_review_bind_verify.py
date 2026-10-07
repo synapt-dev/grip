@@ -138,7 +138,7 @@ def test_bind_carries_frozen_set_and_verify_reproduces_objects(tmp_path):
     assert r["head_tree"] == _git(work, "rev-parse", f"{head}^{{tree}}")
     assert len(r["range_sha256"]) == 64
     # Decode by field number, so this checks content through the D reader.
-    from gr2.python_cli import review_form_d as fd
+    from gr2.python_cli import review_field_tree as fd
     tree = _git(ws, "rev-parse", commit + "^{tree}")
     member = fd.read_record(ws, tree)["members"][0]
     assert member["head_tree"] == _git(work, "rev-parse", head + "^{tree}")
@@ -179,7 +179,7 @@ def test_reconstruct_refuses_on_tree_mismatch(tmp_path):
     row["source"] = str(work)
     commit = grip.create_review_bind_commit(ws, [row])
 
-    from gr2.python_cli import review_form_d as fd
+    from gr2.python_cli import review_field_tree as fd
     wrong_tree = _git(work, "rev-parse", f"{base}^{{tree}}")  # base tree != head tree (a real, wrong sha)
     # Replace the member's head_tree field (Member field 6) in the field tree, then commit it.
     tree = _git(ws, "rev-parse", f"{commit}^{{tree}}")
@@ -266,7 +266,7 @@ def test_policy_hook_sees_carried_bytes_and_refuses_on_hit(tmp_path):
     clean = _row(remote, base, head)
     clean["source"] = str(work)
     commit = grip.create_review_bind_commit(ws, [clean], policy_hook=hook)
-    from gr2.python_cli import review_form_d as fd
+    from gr2.python_cli import review_field_tree as fd
     policy = fd.read_record(ws, _git(ws, "rev-parse", f"{commit}^{{tree}}"))["policy"]
     assert policy.startswith("clean:")
     assert grip.verify_review_commit(ws, commit)["tree_matches"] is True

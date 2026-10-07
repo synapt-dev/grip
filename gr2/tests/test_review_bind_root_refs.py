@@ -7,7 +7,7 @@ content-equivalent to the old store.
   * exactly one `the review ref` exists and it is the printed `gr:<commit>`;
   * the root's commit log and `git status` are unchanged by the bind (the ref is outside both);
   * `review verify` on the id reports `tree_matches: True`;
-  * the bound record is a form D tree accepted as written.
+  * the bound record is a field tree accepted as written.
 """
 
 from __future__ import annotations
@@ -51,9 +51,9 @@ def test_a_bind_is_one_ref_in_the_root_git_and_no_second_repo(two_member_ws: Pat
     assert code == 0 and "tree_matches: True" in out, out
 
 
-def test_the_bound_tree_is_form_d(two_member_ws: Path) -> None:
-    """The bind commit pins the form D tree itself, not derived protobuf bytes."""
-    from gr2.python_cli import review_form_d
+def test_the_bound_tree_is_field_tree(two_member_ws: Path) -> None:
+    """The bind commit pins the field tree tree itself, not derived protobuf bytes."""
+    from gr2.python_cli import review_field_tree
     ws = two_member_ws
     assert _cli("store", "init", str(ws))[0] == 0
     remote, base, head = _unpushed_head(ws)
@@ -61,8 +61,8 @@ def test_the_bound_tree_is_form_d(two_member_ws: Path) -> None:
     assert code == 0, out
     commit = out.strip().splitlines()[-1][3:]
     tree = _git_out(ws, "rev-parse", commit + "^{tree}")
-    review_form_d.verify_tree(ws, tree)
-    record = review_form_d.read_record(ws, tree)
+    review_field_tree.verify_tree(ws, tree)
+    record = review_field_tree.read_record(ws, tree)
     assert record["members"][0]["commit"] == head
 
 

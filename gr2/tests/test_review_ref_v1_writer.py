@@ -1,4 +1,4 @@
-"""Writer contracts: versioned refs and a form D tree, through real local Git stores.
+"""Writer contracts: versioned refs and a field tree, through real local Git stores.
 
 These are deliberately ordinary assertions, not xfails. Legacy records used for
 migration are built independently of whichever shape today's bind writer uses.
@@ -12,7 +12,7 @@ import pytest
 
 from tests.review_ref_helper import REVIEW_REF_ROOT, review_ref, legacy_review_ref, legacy_bind_tree
 from gr2.python_cli import grip
-from gr2.python_cli import review_form_d as fd
+from gr2.python_cli import review_field_tree as fd
 from tests.test_review_transport import cli, git, handoff, root_owned_wrong_target  # noqa: F401
 
 
@@ -67,18 +67,18 @@ def test_same_record_and_commit_inputs_give_the_same_id(handoff, monkeypatch):
     assert git(author, "rev-list", "--parents", "-n", "1", first).split() == [first]
 
 
-def test_a_bind_record_is_a_form_d_tree_accepted_as_written(handoff):
+def test_a_bind_record_is_a_field_tree_tree_accepted_as_written(handoff):
     author, _, remote, commit, base, head = handoff
     tree = git(author, "rev-parse", commit + "^{tree}")
     try:
         fd.verify_tree(author, tree)
     except fd.ReviewRecordError as exc:
-        pytest.fail(f"section7: bind tree is not a valid form D record: {exc}")
+        pytest.fail(f"section7: bind tree is not a valid field tree record: {exc}")
     record = fd.read_record(author, tree)
     assert record["kind"] == "review"
     assert [(m["key"], m["path"], m["remote"], m["base"], m["commit"])
             for m in record["members"]] == [("member", "member", str(remote), base, head)]
-    assert record["members"][0]["range_patch"], "form D record lost the reviewed range"
+    assert record["members"][0]["range_patch"], "field tree record lost the reviewed range"
     assert git(author, "rev-parse", commit + "^{tree}") == tree, "verification rewrote the record"
 
 

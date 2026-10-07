@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from gr2.python_cli import grip, review_form_d as fd, review_run as rr
+from gr2.python_cli import grip, review_field_tree as fd, review_run as rr
 from gr2.python_cli.app import app
 from gr2.python_cli.open_gr_review import close_open_gr_lane
 from tests.native_root_helper import native_root
@@ -46,7 +46,7 @@ def test_new_writer_refuses_unsafe_key_before_publication(handoff, key):
 
 
 @pytest.mark.parametrize("key", [".github", "alpha", "alpha.grip-review-run.log"])
-def test_new_writer_accepts_plain_names_and_preserves_them_in_form_d(handoff, key):
+def test_new_writer_accepts_plain_names_and_preserves_them_in_field_tree(handoff, key):
     author = handoff[0]
     commit = grip.create_review_bind_commit(author, [writer_row(handoff, key)])
     tree = git(author, "rev-parse", commit + "^{tree}")
@@ -233,7 +233,7 @@ def test_writer_members_open_run_and_close_with_disjoint_logs(tmp_path, monkeypa
                 committers=(git(work, "log", "--reverse", "--format=%cn%x09%ce%x09%cI", row["base"] + ".." + row["head"]) + "\n").encode()))
         tree = fd.write_record(root, dict(schema=grip._REVIEW_BIND_SCHEMA, kind="review", policy="no-policy", members=members))
         fd.verify_tree(root, tree)
-        commit = git(root, "commit-tree", tree, "-m", "test-owned form D lifecycle control")
+        commit = git(root, "commit-tree", tree, "-m", "test-owned field tree lifecycle control")
         git(root, "update-ref", review_ref(commit), commit)
     tree = git(root, "rev-parse", commit + "^{tree}")
     fd.verify_tree(root, tree)  # Baseline must fail at producer format, not venv creation.
@@ -280,7 +280,7 @@ def test_close_preserves_old_named_multi_member_logs_by_receipt(tmp_path, monkey
         tmp_path, monkeypatch, zero_tests, "manual-d-control", legacy_receipts=True)
 
 
-def test_receive_invalid_stored_form_d_record_refuses_without_legacy_fallback(handoff, tmp_path, monkeypatch):
+def test_receive_invalid_stored_field_tree_record_refuses_without_legacy_fallback(handoff, tmp_path, monkeypatch):
     _, _, remote, _, _, _ = handoff
     source = native_root(tmp_path / "invalid-record-source")
     receiver = native_root(tmp_path / "invalid-record-receiver")
@@ -300,6 +300,6 @@ def test_receive_invalid_stored_form_d_record_refuses_without_legacy_fallback(ha
     monkeypatch.setattr(grip, "git", spy)
     result = cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", remote)
     assert measured == [("ls-remote", "--refs", str(remote), v1)], "invalid stored v1 record must not fall back"
-    assert result.exit_code != 0 and "invalid form D review record" in result.output, result.output
+    assert result.exit_code != 0 and "invalid field tree review record" in result.output, result.output
     assert isinstance(result.exception, SystemExit), repr(result.exception)
     assert refs(receiver) == {}

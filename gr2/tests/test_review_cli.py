@@ -135,7 +135,7 @@ def _tamper_blob(ws: Path, commit_ref: str, tree_path: str, content: bytes) -> s
 
 
 def _member_ordinal(ws: Path, sha: str, key: str) -> str:
-    from gr2.python_cli import review_form_d as fd
+    from gr2.python_cli import review_field_tree as fd
     tree = _git(ws, "rev-parse", f"{sha}^{{tree}}")
     keys = [m["key"] for m in fd.read_record(ws, tree)["members"]]
     return f"{keys.index(key) + 1:07d}"
@@ -144,7 +144,7 @@ def _member_ordinal(ws: Path, sha: str, key: str) -> str:
 def _tamper_field(ws: Path, commit_ref: str, key: str, field: str, content: bytes) -> str:
     """Replace one field of one member in a field tree bind (field by its NNN.W stem, e.g. "008.2"
     for range_patch, "006.2" for head_tree), commit it and publish it at v1 the way a bind is."""
-    from gr2.python_cli import review_form_d as fd
+    from gr2.python_cli import review_field_tree as fd
     sha = commit_ref[3:] if commit_ref.startswith("gr:") else commit_ref
     tree = _git(ws, "rev-parse", f"{sha}^{{tree}}")
     new_tree = fd.replace_entry(ws, tree, ["004.2", _member_ordinal(ws, sha, key), field], content)
@@ -182,7 +182,7 @@ def test_bind_open_gr_verify_roundtrip(tmp_path):
     assert opened.exit_code == 0, opened.output
     assert (lane / "f.txt").read_text() == "head under review\n"
     # The assertion is on the TREE (git am mints a new head sha), so tree must match.
-    from gr2.python_cli import review_form_d as fd
+    from gr2.python_cli import review_field_tree as fd
     record = fd.read_record(ws, _git(ws, "rev-parse", f"{grc[3:]}^{{tree}}"))
     assert _git(lane, "rev-parse", "HEAD^{tree}") == record["members"][0]["head_tree"]
 

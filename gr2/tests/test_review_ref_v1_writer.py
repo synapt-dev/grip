@@ -106,6 +106,9 @@ def test_writer_verifies_invalid_bytes_before_commit_or_ref(handoff, monkeypatch
         fd.verify_tree(root, bad_tree)
     assert reason in str(exc.value)
     before = refs(root)
+    before_commits = {line.split()[0] for line in git(
+        root, "cat-file", "--batch-all-objects", "--batch-check=%(objectname) %(objecttype)"
+    ).splitlines() if line.endswith(" commit")}
     monkeypatch.setattr(fd, "encode", invalid)
     failure = None
     try:
@@ -113,6 +116,10 @@ def test_writer_verifies_invalid_bytes_before_commit_or_ref(handoff, monkeypatch
     except fd.ReviewRecordError as exc:
         failure = str(exc)
     assert refs(root) == before == {}, "verify-after-write: invalid bytes reached a durable ref"
+    after_commits = {line.split()[0] for line in git(
+        root, "cat-file", "--batch-all-objects", "--batch-check=%(objectname) %(objecttype)"
+    ).splitlines() if line.endswith(" commit")}
+    assert after_commits == before_commits, "verify-after-write: invalid bytes reached commit-tree"
     assert calls == ["ReviewBind"], "production writer did not traverse the record-to-bytes seam"
     assert failure is not None and reason in failure
     # A valid control through the SAME production writer must bind successfully.

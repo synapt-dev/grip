@@ -162,6 +162,24 @@ def _tag(number: int, wire_type: int) -> bytes:
     return _varint(number << 3 | wire_type)
 
 
+def check_payload(wt: int, payload: bytes) -> None:
+    """A scalar must be exactly ONE payload of its wire type: a varint of 1..10 bytes
+    whose last byte alone ends it (a tenth byte of at most 1), or exactly 8 or 4 bytes
+    for the fixed widths. Anything else would let one entry's bytes run into the next
+    when protobuf is derived. Length-delimited payloads carry their own length."""
+    if wt == 0:
+        ok = (1 <= len(payload) <= 10 and not payload[-1] & 0x80
+              and all(b & 0x80 for b in payload[:-1]) and not (len(payload) == 10 and payload[-1] > 1))
+    elif wt == 1:
+        ok = len(payload) == 8
+    elif wt == 5:
+        ok = len(payload) == 4
+    else:
+        ok = wt == 2
+    if not ok:
+        raise ReviewRecordError(f"payload {payload[:12].hex()} is not one wire type {wt} value")
+
+
 def fields(buf: bytes) -> list[tuple[int, int, bytes]]:
     """(number, wire type, payload) in wire order. A varint payload keeps its varint
     bytes; a fixed payload its little-endian bytes; length-delimited drops the length."""
@@ -182,6 +200,7 @@ def fields(buf: bytes) -> list[tuple[int, int, bytes]]:
             raise ReviewRecordError(f"unsupported wire type {wt} for field {number}")
         if j > len(buf):
             raise ReviewRecordError(f"truncated field {number}")
+        check_payload(wt, buf[i:j])
         out.append((number, wt, buf[i:j]))
         i = j
     return out
@@ -342,6 +361,7 @@ def to_protobuf(repo: Path, tree: str) -> bytes:
         kids = _occurrences(repo, name, oid) if repeated else [(mode, kind, oid, name)]
         for _, k, o, _ in kids:
             payload = to_protobuf(repo, o) if k == "tree" else _git(repo, "cat-file", "blob", o)
+            check_payload(wt, payload)
             out += _emit(number, wt, payload)
     return out
 

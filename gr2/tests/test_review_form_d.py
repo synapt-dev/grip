@@ -250,7 +250,19 @@ def _bad_rows(repo: Path) -> dict[str, list]:
         "ordinal newline": [ok, occ("0000001\n")],
         "executable mode": [ok, _blobrow(repo, "051.2_x", mode="100755")],
         "symlink mode": [ok, _blobrow(repo, "051.2_x", mode="120000")],
+        # The tree derives to exactly four bytes, so only the "a message is wire type 2"
+        # check refuses it; a tree under wire type 0 is refused by the scalar check too.
+        "a tree under wire type 5": [ok, _tree(repo, "099.5_x", [ok])],
         "a tree under wire type 0": [ok, _tree(repo, "099.0_x", [ok])],
+        # Scalar payloads that are not exactly one value, each beside a next field it
+        # would swallow when protobuf is derived:
+        "unterminated varint": [_blobrow(repo, "060.0_a", b"\x80"), _blobrow(repo, "061.0_b", b"")],
+        "empty varint": [ok, _blobrow(repo, "060.0_a", b"")],
+        "eleven-byte varint": [ok, _blobrow(repo, "060.0_a", b"\xff" * 10 + b"\x01")],
+        "varint overflowing 64 bits": [ok, _blobrow(repo, "060.0_a", b"\xff" * 9 + b"\x02")],
+        "varint with bytes after its end": [ok, _blobrow(repo, "060.0_a", b"\x01\x01")],
+        "short fixed32": [_blobrow(repo, "060.5_a", b""), _blobrow(repo, "061.2_b", b"x")],
+        "short fixed64": [_blobrow(repo, "060.1_a", b""), _blobrow(repo, "061.2_b", b"abcde")],
     }
 
 
@@ -286,6 +298,21 @@ def test_verify_accepts_the_written_record_and_refuses_each_malformed_class(repo
             pytest.fail(f"verify passed: {label}, {depth}")
 
 
+def test_well_formed_scalars_of_every_wire_type_verify(repo):
+    rows = [_blobrow(repo, "060.0_a", b"\x96\x01"), _blobrow(repo, "061.0_b", b"\xff" * 9 + b"\x01"),
+            _blobrow(repo, "062.1_c", b"12345678"), _blobrow(repo, "063.5_d", b"1234"),
+            _blobrow(repo, "064.2_e", b"")]
+    tree = _mk(repo, rows)
+    fd.verify_tree(repo, tree)
+    assert [n for n, _, _ in fd.fields(fd.to_protobuf(repo, tree))] == [60, 61, 62, 63, 64]
+
+
+def test_the_writer_refuses_a_varint_longer_than_ten_bytes(repo):
+    with pytest.raises(fd.ReviewRecordError, match="not one wire type 0 value"):
+        fd.write_tree(repo, fd._tag(60, 0) + b"\xff" * 10 + b"\x01")
+    assert "060.0" in names(repo, fd.write_tree(repo, fd._tag(60, 0) + b"\xff" * 9 + b"\x01"))  # control
+
+
 # --- edits keep what they do not touch ---------------------------------------------------------
 
 def test_an_edit_keeps_a_siblings_mode(repo):
@@ -296,7 +323,7 @@ def test_an_edit_keeps_a_siblings_mode(repo):
 
 def test_an_edit_beside_a_non_utf8_name_keeps_it(repo):
     blob = git(repo, "hash-object", "-w", "--stdin", data=b"x")
-    data = f"100644 blob {blob}\t002.2_kind\0100644 blob {blob}\t".encode() + b"051.2_\xff" + b"\0"
+    data = f"100644 blob {blob}\t002.2_kind".encode() + b"\0" + f"100644 blob {blob}\t".encode() + b"051.2_\xff\0"
     tree = subprocess.run(["git", "-C", str(repo), "mktree", "-z"], input=data, capture_output=True,
                           check=True).stdout.decode().strip()
     edited = fd.replace_entry(repo, tree, ["002.2"], b"changed")

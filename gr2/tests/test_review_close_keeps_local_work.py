@@ -56,8 +56,9 @@ def _put_local_work(lane: Path, kind: str) -> tuple[Path, str | None]:
         assert _git(lane, "branch", "-r", "--contains", commit) == ""
         # Query the real local bare origin as well as cached remote-tracking
         # refs: this commit is absent from every advertised remote branch.
+        assert _git(lane, "remote") == "origin"
         remote = _git(lane, "remote", "get-url", "origin")
-        assert _git(Path(remote), "for-each-ref", "--contains", commit) == ""
+        assert commit not in _git(Path(remote), "rev-list", "--all").splitlines()
         _git(lane, "checkout", "-q", "--detach", reviewed_head)
         assert _git(lane, "rev-parse", "HEAD") == reviewed_head
         assert _git(lane, "diff", "--name-only") == ""

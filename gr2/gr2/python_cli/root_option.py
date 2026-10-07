@@ -159,16 +159,30 @@ class ReviewTargetCommand(RootOptionalCommand):
     def parse_args(self, ctx, args):
         args = list(args)
         positions, root_value = self._scan(args)
+        help_option = self.get_help_option(ctx)
+        option_tokens = args[:args.index("--")] if "--" in args else args
+        if help_option is not None and any(word in help_option.opts for word in option_tokens):
+            return typer.core.TyperCommand.parse_args(self, ctx, args)
         if root_value is not None:
             if len(positions) > 1 or (positions and self._is_root_word(args[positions[0]])):
                 ctx.fail("the workspace root was given twice: as the first argument and with --root/-C")
-        elif len(positions) == 1 and not self._is_root_word(args[positions[0]]):
-            from .app import _is_workspace_root, _resolve_workspace_root
+        elif (not positions and self._required_positionals == 1) or (
+            len(positions) == 1 and not self._is_root_word(args[positions[0]])
+        ):
+            from . import context as c
 
-            found = _resolve_workspace_root()
-            if not _is_workspace_root(found):
-                ctx.fail(f"no workspace at or above {found}; run this inside one, or name it with -C <root>")
-            args.insert(positions[0], str(found))
+            try:
+                review_context = c.resolve_review_context()
+                found = str(review_context.workspace) if review_context is not None else c.resolve_root(None).value
+            except c.ContextRefused as exc:
+                ctx.fail(str(exc))
+            # A transport's required independent ID is never supplied by a marker.
+            optional_commit = any(p.param_type_name == "argument" and p.name == "commit" and not p.required
+                                  for p in self.params)
+            if not positions and review_context is not None and optional_commit:
+                args.extend([found, review_context.commit])
+            else:
+                args.insert(positions[0] if positions else len(args), found)
         return super().parse_args(ctx, args)
 
     @staticmethod

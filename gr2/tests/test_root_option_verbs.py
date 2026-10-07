@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+import json
 
 import pytest
 import typer
@@ -42,10 +43,10 @@ FIXED_ARITY = [  # RootOptionalCommand: the 16, and ContextCommand: the 6 above
     "review/exit-gr", "review/open-gr",
     "hooks/run", "config/restore",
 ]
-OPTIONAL_TRAILING = [  # RootOptionCommand: the 8
-    "pr/checks", "pr/view", "exec/status", "exec/run",
+OPTIONAL_TRAILING = [  # RootOptionCommand: the two execution verbs
+    "exec/status", "exec/run",
 ]
-REVIEW_SUBJECTS = ["pr/create", "pr/status", "pr/merge"]  # ReviewSubjectCommand: bare = the current review
+REVIEW_SUBJECTS = ["pr/create", "pr/status", "pr/merge", "pr/checks", "pr/view"]  # ReviewSubjectCommand: bare = the current review
 REVIEW_TARGETS = ["review/show", "review/verify"]
 REVIEW_TRANSPORTS = ["review/publish", "review/receive"]
 REVIEW_OPENS = ["review/open"]
@@ -153,7 +154,7 @@ def test_the_partition_accounts_for_every_leading_root_command() -> None:
 
 
 def test_fixed_arity_and_explicit_root_groups_retain_their_positional_contract() -> None:
-    """WHY the 8 are not inferred: each has an optional positional after the required ones, so one fewer
+    """Why execution verbs are not inferred: each has an optional positional after the required ones, so one fewer
     word has two readings. The fixed-arity group has none, so counting is exact for it."""
     for verb in FIXED_ARITY:
         assert all(p.required or p is _arguments(LEAVES[verb])[0] for p in _arguments(LEAVES[verb])), verb
@@ -316,6 +317,38 @@ def test_review_reader_explicit_id_keeps_its_role_despite_a_directory(verb, ws, 
     for args in (["-C", str(hash_root)], ["./" + hash_root.name]):
         params = _parse(verb, args, tmp_path)
         assert _root(params) == hash_root.resolve() and params["commit"] is None
+
+
+@pytest.mark.parametrize("verb", REVIEW_TARGETS)
+def test_review_reader_marker_context_preserves_explicit_forms(verb, ws, at, tmp_path) -> None:
+    lane = tmp_path / "opened-lane"
+    member = lane / "alpha"
+    member.mkdir(parents=True)
+    marked = "a" * 40
+    (lane / ".grip-review-open.json").write_text(json.dumps({
+        "kind": "review-open", "workspace_root": str(ws.resolve()), "gr_commit": marked,
+    }))
+    at(member)
+    params = _parse(verb, [], tmp_path)
+    assert _root(params) == ws.resolve() and params["commit"] == "gr:" + marked
+    target = "gr:" + "b" * 40
+    for args in ([target], [str(ws), target], ["-C", str(ws), target]):
+        params = _parse(verb, args, tmp_path)
+        assert _root(params) == ws.resolve() and params["commit"] == target
+    for args in ([str(ws)], ["-C", str(ws)]):
+        params = _parse(verb, args, tmp_path)
+        assert _root(params) == ws.resolve() and params["commit"] is None
+    params = _parse(verb, ["gr:not-a-bind"], tmp_path)
+    assert params["commit"] == "gr:not-a-bind"
+
+
+def test_close_usage_keeps_explicit_legacy_target_and_eager_help(tmp_path, at) -> None:
+    at(tmp_path)
+    assert _arguments(LEAVES["review/close"])[0].required is False
+    params = _parse("review/close", [str(tmp_path), "unit", "alpha", "123"], tmp_path)
+    assert Path(params["target"]) == tmp_path
+    assert (params["owner_unit"], params["repo"], params["pr_number"]) == ("unit", "alpha", 123)
+    assert runner.invoke(app, ["review", "close", "--help"]).exit_code == 0
 
 
 def test_a_stray_dash_c_inside_a_variadic_command_is_the_commands_not_ours(ws, at) -> None:

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tomllib
@@ -41,6 +42,40 @@ class Resolved:
 
 class ContextRefused(RuntimeError):
     """The context cannot be resolved without a choice only the caller can make."""
+
+
+@dataclass(frozen=True)
+class ReviewContext:
+    lane: Path
+    workspace: Path
+    commit: str
+
+
+def resolve_review_context(cwd: Optional[Path] = None) -> Optional[ReviewContext]:
+    """The enclosing reconstruction's recorded subject, or no enclosing lane.
+
+    Marker selection and compatibility belong to review_run. Bad or ambiguous
+    context refuses; it must not turn into an ambient workspace/sole-bind lookup.
+    """
+    from . import review_run
+
+    try:
+        lane = review_run.resolve_run_lane(None, cwd=cwd)
+        marker = review_run._read_marker(lane)
+    except review_run.ReviewRunRefused as exc:
+        if exc.code == "no_review_context":
+            return None
+        raise ContextRefused(f"{exc.code}: {exc.detail}") from exc
+    recorded = marker.get("workspace_root")
+    if not isinstance(recorded, str) or not recorded or not Path(recorded).is_absolute():
+        raise ContextRefused("bad_review_workspace: the review marker has no absolute workspace_root; pass an explicit root")
+    workspace = Path(recorded).resolve()
+    if not _is_workspace_root(workspace):
+        raise ContextRefused(f"bad_review_workspace: recorded workspace {workspace} is missing or not a workspace")
+    commit = marker.get("gr_commit")
+    if not isinstance(commit, str) or re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", commit) is None:
+        raise ContextRefused("bad_review_commit: the review marker has no full gr_commit; pass an explicit target")
+    return ReviewContext(lane=lane, workspace=workspace, commit=f"gr:{commit}")
 
 
 def quiet_from_env(env: Optional[dict[str, str]] = None) -> bool:

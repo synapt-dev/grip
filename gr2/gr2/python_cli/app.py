@@ -1083,6 +1083,7 @@ def _exit(code: int) -> None:
 def _consume_lane_transition(
     outcome: lane_proto.LaneTransitionOutcome | int,
     hook_failures: list[dict] | None = None,
+    extra: dict | None = None,
 ) -> lane_proto.LaneTransitionOutcome | None:
     """Render the state writer's one outcome instead of inferring one in the CLI.
 
@@ -1091,7 +1092,7 @@ def _consume_lane_transition(
     nowhere), hook_failures names the hook and its rc, and the same text goes
     to stderr. Exit code stays 0 — warn is the caller's own declaration."""
     if isinstance(outcome, lane_proto.LaneTransitionOutcome):
-        payload = outcome.as_dict()
+        payload = {**outcome.as_dict(), **(extra or {})}
         if hook_failures:
             payload["status"] = "warned"
             payload["hook_failures"] = hook_failures
@@ -2929,22 +2930,40 @@ def lane_exit(
     notify_channel: bool = typer.Option(False, "--notify-channel"),
     recall: bool = typer.Option(False, "--recall"),
     manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual"),
+    dirty_mode: str = typer.Option("block", "--dirty", help="Uncommitted work in the lane: block (refuse, the default) or stash (stash it and name the stash)"),
     root: Optional[Path] = ROOT_OPTION,
     unit: Optional[str] = typer.Option(None, "--unit", help="The unit. Same as the UNIT argument; give one or the other."),
     ctx: typer.Context = None,  # type: ignore[assignment]
 ) -> None:
-    """Exit the current lane for a unit."""
+    """Exit the current lane for a unit.
+
+    A lane with uncommitted work (staged, unstaged or untracked) is refused unless --dirty stash
+    is given; a stash made here is named in the output with the command that restores it."""
     items, actor = _announce_context(ctx, actor=actor, with_actor=True)
     workspace_root = workspace_root.resolve()
     current_doc = lane_proto.require_current_lane(workspace_root, owner_unit)
     lane_name = current_doc["lane_name"]
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
+    if dirty_mode not in ("block", "stash"):
+        _refuse(f"--dirty must be block or stash, not {dirty_mode!r}")
+    lane_repos = [(name, _lane_repo_root(workspace_root, owner_unit, lane_name, name))
+                  for name in lane_doc.get("repos", [])]
+    dirty = [(name, path) for name, path in lane_repos if path.exists() and repo_dirty(path)]
+    if dirty and dirty_mode == "block":
+        for name, path in dirty:
+            typer.echo(f"refused: lane_has_uncommitted_work: {name} ({path})", err=True)
+        typer.echo(f"commit or discard the work first, or run `gr2 lane exit ... --dirty stash` to stash it "
+                   f"in each repo; the lane {owner_unit}/{lane_name} is still entered", err=True)
+        raise typer.Exit(code=2)
     stashed_repos: list[str] = []
-    for repo_name in lane_doc.get("repos", []):
-        repo_root = _lane_repo_root(workspace_root, owner_unit, lane_name, repo_name)
-        if repo_root.exists():
-            if stash_if_dirty(repo_root, f"gr2 exit {owner_unit}/{lane_name}"):
-                stashed_repos.append(repo_name)
+    stashed: list[dict[str, str]] = []
+    for name, path in dirty:
+        stash_if_dirty(path, f"gr2 exit {owner_unit}/{lane_name}")
+        stashed_repos.append(name)
+        restore = f"git -C {path} stash pop"
+        stashed.append({"repo": name, "path": str(path),
+                        "stash": git(path, "rev-parse", "stash@{0}").stdout.strip(), "restore": restore})
+        typer.echo(f"stashed uncommitted work in {name}; restore it with: {restore}", err=True)
     exit_results = _run_lane_stage(workspace_root, owner_unit, lane_name, "on_exit", manual_hooks=manual_hooks)
     ns = SimpleNamespace(
         workspace_root=workspace_root,
@@ -2954,7 +2973,7 @@ def lane_exit(
         recall=recall,
     )
     outcome = _consume_lane_transition(
-        lane_proto.exit_lane(ns), _hook_failures_from(exit_results)
+        lane_proto.exit_lane(ns), _hook_failures_from(exit_results), extra={"stashed": stashed}
     )
     emit_after_outcome(
         event_type=EventType.LANE_EXITED,

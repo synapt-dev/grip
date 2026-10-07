@@ -74,7 +74,7 @@ def test_bind_from_range_carries_the_range_and_reconstructs_the_tree(tmp_path: P
     # WITNESS (kills the routing mutation): a range-bearing row carries the objects
     # subtree, exactly as a --source row does. Neuter the `elif range_patch` branch
     # in create_review_bind_commit and this key is absent.
-    assert "alpha" in grip._tree_keys(ws, commit, "objects")
+    assert grip._carries_objects(ws, commit, "alpha")
 
     lane_dir = tmp_path / "lane" / "alpha"
     result = grip.reconstruct_review_lane(ws, commit, "alpha", lane_dir)

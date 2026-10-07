@@ -174,12 +174,9 @@ def test_review_open_refuses_a_bad_member_key_before_any_member_is_reconstructed
 @pytest.mark.parametrize("bad_key", ["..", ".git"])
 def test_a_legacy_bind_with_an_unsafe_member_key_is_refused(record_world, bad_key):
     """Legacy keys were Git tree entry names, and git accepts ".." there: the same rule applies."""
-    from tests.test_review_bind_verify import _row
-    from tests.test_review_field_tree_readers import EVIDENCE
+    from tests.test_review_field_tree_readers import legacy_layout_bind
     w = record_world
-    row = _row(w["remote"], w["base"], w["head"])
-    row.update(source=str(w["work"]), evidence=EVIDENCE.decode())
-    good = grip.create_review_bind_commit(w["author"], [row])
+    good = legacy_layout_bind(w)
     assert grip.review_row_keys(w["author"], good)  # control
 
     def renamed(tree, sub):

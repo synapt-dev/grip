@@ -297,7 +297,9 @@ def test_recomputed_tree_mismatch_is_not_published(handoff, monkeypatch):
         pytest.fail("non-recomputing review reached canonical publication")
     monkeypatch.setattr(grip, "_publish_bind", no_publish)
     result = cli(receiver, monkeypatch, "receive", "gr:" + corrupt, "--remote", remote)
-    assert result.exit_code == 2 and "review_tree_mismatch" in result.output
+    # A field tree is verified as written: the extra entry is refused by name before anything
+    # recomputes (a legacy-layout record reports review_tree_mismatch for the same drift).
+    assert result.exit_code == 2 and "unexpected.txt" in result.output, result.output
     assert git(receiver, "for-each-ref", "--format=%(refname)", PREFIX) == ""
     assert authority(receiver) == before
 

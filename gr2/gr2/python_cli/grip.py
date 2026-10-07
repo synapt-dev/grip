@@ -1465,11 +1465,11 @@ def _review_remote_target(workspace: Path, remote: str, ref: str) -> str:
 
 
 def _require_review_content(workspace: Path, full: str, ref: str | None = None) -> None:
+    if not _verify_review_commit_in_store(workspace, full)["tree_matches"]:
+        raise GripCorruptError("review_tree_mismatch: received content does not recompute")
     # The v1 spelling names the field tree format: a record of the old layout never travels under it.
     if ref is not None and ref == _review_ref_v1(full) and not _is_form_d_bind(workspace, full):
         raise GripCorruptError(f"review_ref_format_mismatch: {ref} holds a record that is not a field tree")
-    if not _verify_review_commit_in_store(workspace, full)["tree_matches"]:
-        raise GripCorruptError("review_tree_mismatch: received content does not recompute")
 
 
 def publish_review_commit(workspace: Path, commit: str, remote: str,

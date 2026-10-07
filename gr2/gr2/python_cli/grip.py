@@ -391,9 +391,17 @@ def url_has_credentials(url: str) -> bool:
     return parsed.username is not None and parsed.scheme.lower() not in {"ssh", "git+ssh", "ssh+git"}
 
 
-def _is_local_remote(url: str) -> bool:
-    """An author-local remote: an absolute path or a file:// URL. It names this host's filesystem."""
-    return url.startswith("file://") or Path(url).is_absolute()
+_PORTABLE_SCHEMES = {"https", "http", "ssh", "git", "git+ssh", "ssh+git"}
+_SCP_LIKE = re.compile(r"^(?:[^@/:\s]+@)?[^@/:\s]{2,}:(?!:)\S")
+
+
+def _is_portable_remote(url: str) -> bool:
+    """A remote another host can resolve: a network URL or an scp-like host:path. Fails closed:
+    anything else -- an absolute or relative path, file://, a bare remote alias, a transport
+    helper -- means something only on the author's host, so it must not be published off it."""
+    if "://" in url:
+        return url.split("://", 1)[0].lower() in _PORTABLE_SCHEMES
+    return bool(_SCP_LIKE.match(url))
 
 
 def _refuse_remote_credentials(key: str, remote: str) -> None:
@@ -1301,9 +1309,9 @@ def publish_review_commit(workspace: Path, commit: str, remote: str,
     off_host = destination.startswith("https://")
     for key, fields in sorted(_read_repo_state(workspace, full, bind=True).items()):
         _refuse_remote_credentials(key, fields["remote"])
-        if off_host and _is_local_remote(fields["remote"]):
+        if off_host and not _is_portable_remote(fields["remote"]):
             raise GripReviewRefused("local_path_remote", key,
-                                    "an author-local path stays on this host; publish to a local destination")
+                                    "a host-local path or alias stays on this host; publish to a local destination")
     proc = git(workspace, "push", destination, f"{full}:{canonical}", timeout=30)
     if proc.returncode:
         raise GripCorruptError(f"review_publication_unconfirmed: {proc.stderr.strip()}")

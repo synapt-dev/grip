@@ -21,6 +21,7 @@ PREFIX = "refs/dev.synapt.grip/__reviews__/"
 TOKEN = "FAKE-TOKEN-0000"
 CRED = f"https://user:{TOKEN}@example.invalid/o/member.git"
 FOREIGN = "https://example.invalid/o/destination.git"
+PORTABLE = "https://example.invalid/o/member.git"
 
 
 def git(root, *args):
@@ -43,7 +44,8 @@ def reviews(root):
 def world(tmp_path, monkeypatch):
     remote, dest, seed, author = tmp_path / "remote.git", tmp_path / "dest.git", tmp_path / "seed", tmp_path / "author"
     gitconfig = tmp_path / "gitconfig"
-    gitconfig.write_text(f'[url "file://{remote}"]\n\tinsteadOf = {CRED}\n[url "file://{dest}"]\n\tinsteadOf = {FOREIGN}\n')
+    gitconfig.write_text(f'[url "file://{remote}"]\n\tinsteadOf = {CRED}\n\tinsteadOf = {PORTABLE}\n'
+                         f'[url "file://{dest}"]\n\tinsteadOf = {FOREIGN}\n')
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
@@ -156,3 +158,40 @@ def world_env(world, monkeypatch):
     monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
     for name in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"):
         monkeypatch.setenv(name, "http://127.0.0.1:9")
+
+
+@pytest.mark.parametrize("spelling", ["relative", "dot-relative", "file-url"])
+def test_publish_keeps_every_host_local_spelling_on_the_host(world, monkeypatch, spelling):
+    # Found in review: `../remote.git` is not absolute, so an absolute-path test let it publish off-host.
+    remote = {"relative": "../remote.git", "dot-relative": "./../remote.git", "file-url": f"file://{world['remote']}"}[spelling]
+    made = bind(world, monkeypatch, remote)
+    assert made.exit_code == 0, made.output
+    commit = reviews(world["author"]).rsplit("/", 1)[1]
+    assert git(world["author"], "show", f"{commit}:repos/member/remote") == remote
+    off_host = review(world["author"], monkeypatch, "publish", "gr:" + commit, "--remote", FOREIGN)
+    assert off_host.exit_code != 0, off_host.output
+    assert "local_path_remote" in off_host.output, off_host.output
+    assert git(world["dest"], "for-each-ref") == "", "nothing may be pushed before the refusal"
+    assert reviews(world["author"]).rsplit("/", 1)[1] == commit, "the author's bind is unchanged"
+    on_host = review(world["author"], monkeypatch, "publish", "gr:" + commit, "--remote", world["dest"])
+    assert on_host.exit_code == 0, on_host.output
+
+
+def test_publish_sends_a_portable_record_off_host(world, monkeypatch):
+    # Matched positive: the refusal is about the record's remote, not about https destinations.
+    made = bind(world, monkeypatch, PORTABLE)
+    assert made.exit_code == 0, made.output
+    commit = reviews(world["author"]).rsplit("/", 1)[1]
+    sent = review(world["author"], monkeypatch, "publish", "gr:" + commit, "--remote", FOREIGN)
+    assert sent.exit_code == 0, sent.output
+    assert git(world["dest"], "rev-parse", PREFIX + commit) == commit
+
+
+@pytest.mark.parametrize("remote,portable", [
+    ("https://github.com/o/r.git", True), ("http://host/o/r.git", True), ("ssh://git@host/o/r.git", True),
+    ("git://host/o/r.git", True), ("git@github.com:o/r.git", True), ("host.example:o/r.git", True),
+    ("/abs/r.git", False), ("../r.git", False), ("./r.git", False), ("r.git", False), ("origin", False),
+    ("file:///abs/r.git", False), ("ext::sh -c x", False), ("C:/repos/r.git", False), ("", False),
+])
+def test_portable_remote_classifier(remote, portable):
+    assert grip._is_portable_remote(remote) is portable

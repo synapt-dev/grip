@@ -200,3 +200,32 @@ def test_a_clean_multi_member_lane_still_closes(tmp_path: Path):
     result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
     assert result.exit_code == 0, result.output
     assert not lane.exists()
+
+
+@pytest.mark.parametrize("name", ["mine.grip-review-run.log", ".grip-review-run.log.bak"])
+def test_a_root_file_that_only_looks_like_a_run_log_is_work(tmp_path: Path, name: str):
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    (lane / name).write_text("user file\n")
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code != 0 and name in result.output, result.output
+    assert (lane / name).read_text() == "user file\n"
+
+
+def test_the_exact_run_log_names_at_the_root_are_the_reviews_own(tmp_path: Path):
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    for name in (review_run._OUTPUT_LOG_NAME, f"demo-web{review_run._OUTPUT_LOG_NAME}",
+                 f"{review_run._OUTPUT_LOG_NAME}.demo-core", *review_run._LEGACY_MARKERS):
+        (lane / name).write_text("tool output\n")
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code == 0, result.output
+
+
+def test_a_stash_is_named_once_and_not_as_an_unpublished_commit(reconstruction):
+    runner, lane, _, _ = reconstruction
+    (lane / "f.txt").write_text("stashed\n")
+    _git(lane, "stash", "push", "-q")
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code != 0 and "a stash" in result.output, result.output
+    assert "unpublished" not in result.output.lower(), result.output

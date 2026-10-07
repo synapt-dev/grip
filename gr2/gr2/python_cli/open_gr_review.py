@@ -136,11 +136,16 @@ def _refuse_local_work(target: Path, allocation: dict) -> None:
     found: list[str] = []
     members = [target / item["path"] for item in allocation["members"]]
     if not (target / ".git").exists():
+        from .review_run import _LEGACY_MARKERS
         member_names = {m.relative_to(target).parts[0] for m in members if m != target}
+        # The exact names the review writes at the root: its marker, receipt and run logs (one per
+        # member, in either spelling) and the shared environment. Nothing else is the review's.
+        own = {".venv", _MARKER_NAME, *_LEGACY_MARKERS, _RUN_RECEIPT_NAME, _RUN_LOG_NAME,
+               *(f"{key}{_RUN_LOG_NAME}" for key in member_names),
+               *(f"{_RUN_LOG_NAME}.{key}" for key in member_names)}
         for entry in sorted(target.iterdir()):
             name = entry.name
-            if name in member_names or name in (".venv", _MARKER_NAME, _RUN_RECEIPT_NAME) \
-                    or name.startswith(_RUN_LOG_NAME) or name.endswith(_RUN_LOG_NAME):
+            if name in member_names or name in own:
                 continue
             found.append(f"work at the lane root: {entry}")
     for path in dict.fromkeys([target, *members]):
@@ -152,7 +157,7 @@ def _refuse_local_work(target: Path, allocation: dict) -> None:
             found.append(f"uncommitted work in {path}: {line}")
         if ask(path, "stash", "list").strip():
             found.append(f"uncommitted work in {path}: a stash")
-        unpublished = ask(path, "rev-list", "--all", "--not", "--remotes", "HEAD").split()
+        unpublished = ask(path, "rev-list", "--exclude=refs/stash", "--all", "--not", "--remotes", "HEAD").split()
         if unpublished:
             found.append(f"unpublished commits in {path}: {', '.join(c[:12] for c in unpublished)}")
     if found:

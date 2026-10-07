@@ -41,14 +41,31 @@ def legacy_bind_tree(repo, row: dict[str, str]) -> str:
             f"{'040000' if kind == 'tree' else '100644'} {kind} {oid}\t{name}\n"
             for name, kind, oid in entries))
 
-    key = row["key"]
-    member = tree([(name, "blob", blob(row[value])) for name, value in (
-        ("remote", "remote"), ("path", "path"), ("commit", "head"), ("base", "base"))])
-    observed = tree([("remote-head", "blob", blob(row["base"]))])
-    texts = tree([(name, "blob", blob(row.get(name, "").rstrip("\n"))) for name in ("title", "body")])
+    rows = row if isinstance(row, list) else [row]
+    repos, observed, texts, objects, evidence = [], [], [], [], []
+    for item in rows:
+        key = item["key"]
+        member = tree([(name, "blob", blob(item[value])) for name, value in (
+            ("remote", "remote"), ("path", "path"), ("commit", "head"), ("base", "base"))])
+        repos.append((key, "tree", member))
+        observed.append((key, "tree", tree([("remote-head", "blob", blob(item.get("remote_head", item["base"])))])))
+        texts.append((key, "tree", tree([(name, "blob", blob(item.get(name, "").rstrip("\n")))
+                                       for name in ("title", "body")])))
+        if item.get("objects"):
+            objects.append((key, "tree", tree([(name, "blob", blob(value))
+                                               for name, value in item["objects"].items()])))
+        if item.get("evidence"):
+            fields = [("commands", "blob", blob(item["evidence"]))]
+            if item.get("resolution"):
+                fields.append(("resolution", "blob", blob(item["resolution"])))
+            evidence.append((key, "tree", tree(fields)))
     meta = tree([(name, "blob", blob(value)) for name, value in (
-        ("schema", "gr2-review-bind/v2"), ("kind", "review"), ("policy", "no-policy"))])
-    return tree([(".grip", "tree", meta),
-                 ("repos", "tree", tree([(key, "tree", member)])),
-                 ("observed", "tree", tree([(key, "tree", observed)])),
-                 ("texts", "tree", tree([(key, "tree", texts)]))])
+        ("schema", "gr2-review-bind/v2"), ("kind", "review"),
+        ("policy", rows[0].get("policy", "no-policy")))])
+    entries = [(".grip", "tree", meta), ("repos", "tree", tree(repos)),
+               ("observed", "tree", tree(observed)), ("texts", "tree", tree(texts))]
+    if objects:
+        entries.append(("objects", "tree", tree(objects)))
+    if evidence:
+        entries.append(("evidence", "tree", tree(evidence)))
+    return tree(entries)

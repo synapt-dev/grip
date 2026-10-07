@@ -179,3 +179,41 @@ def test_receive_keeps_requested_source_and_destination_spelling(handoff, monkey
         assert refs(receiver) == {requested: commit}, "receive converted or relabelled the requested format"
         assert git(receiver, "cat-file", "-p", commit) == before
         assert git(receiver, "rev-parse", commit + "^{tree}") == tree
+
+
+@pytest.mark.parametrize("available", ["v1", "legacy", "neither"], ids=["default-v1", "default-legacy", "default-absent"])
+def test_receive_without_ref_measures_exact_v1_then_legacy(handoff, monkeypatch, tmp_path, available):
+    from tests.native_root_helper import native_root
+    _, _, remote, _, base, head = handoff
+    source = native_root(tmp_path / "default-source")
+    receiver = native_root(tmp_path / "default-receiver")
+    if available == "v1":
+        tree = fd.write_record(source, {"schema": grip._REVIEW_BIND_SCHEMA, "kind": "review", "policy": "no-policy",
+            "members": [{"key": "member", "path": "member", "remote": str(remote), "base": base, "commit": head, "remote_head": base}]})
+    else:
+        tree = legacy_bind_tree(source, dict(key="member", path="member", remote=str(remote), base=base, head=head))
+    commit = git(source, "commit-tree", tree, "-m", "default receive original")
+    requested = review_ref(commit, version="v1" if available == "v1" else "")
+    if available != "neither":
+        git(source, "push", remote, f"{commit}:{requested}")
+    else:
+        # The ID IS on the remote, but only outside either accepted spelling.
+        git(source, "push", remote, f"{commit}:{review_ref(commit, version='future/nested')}")
+    measured = []
+    original = grip.git
+    def spy(root, *args, **kwargs):
+        if args and args[0] == "ls-remote":
+            measured.append(tuple(map(str, args)))
+        return original(root, *args, **kwargs)
+    monkeypatch.setattr(grip, "git", spy)
+    result = cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", remote)
+    expected_refs = [review_ref(commit)] + ([] if available == "v1" else [legacy_review_ref(commit)])
+    assert measured == [("ls-remote", "--refs", str(remote), ref) for ref in expected_refs], "no-ref receive must measure exact v1 then exact legacy, never a glob"
+    if available == "neither":
+        assert result.exit_code != 0 and "remote_review_ref_missing" in result.output, result.output
+        assert refs(receiver) == {}
+    else:
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["ref"] == requested
+        assert refs(receiver) == {requested: commit}
+        assert git(receiver, "cat-file", "-p", commit) == git(source, "cat-file", "-p", commit)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -77,24 +78,23 @@ def legacy_world(handoff, tmp_path, monkeypatch, request):
                 old_bytes=git(root, "cat-file", "-p", commit), row=row)
 
 
-def migrate_rows(root: Path, monkeypatch):
+def migrate_rows(root: Path, monkeypatch, receipt_out=None):
     monkeypatch.chdir(root)
     result = runner.invoke(app, ["store", "migrate-reviews", str(root), "--json"])
     assert result.exit_code == 0, f"explicit review migration refused: {result.output}"
     payload = json.loads(result.stdout)
-    def rows(value):
-        if isinstance(value, list) and all(isinstance(v, dict) for v in value):
-            if all({"old_id", "new_id", "ref", "status"} <= set(v) for v in value):
-                return value
-        if isinstance(value, dict):
-            for child in value.values():
-                answer = rows(child)
-                if answer is not None:
-                    return answer
-        return None
-    answer = rows(payload)
-    assert answer is not None, "receipt must list old_id/new_id/ref/status migration rows"
-    return answer
+    assert set(payload) == {"receipt", "rows"}, "migration JSON contract is receipt + rows"
+    assert isinstance(payload["rows"], list)
+    for row in payload["rows"]:
+        assert set(row) == {"old_id", "new_id", "ref", "status"}
+    receipt = Path(payload["receipt"])
+    if not receipt.is_absolute():
+        receipt = root / receipt
+    assert receipt.resolve().is_relative_to((root / ".grip" / "receipts").resolve())
+    assert receipt.is_file(), "returned receipt path does not exist"
+    if receipt_out is not None:
+        receipt_out.append(receipt)
+    return payload["rows"]
 
 
 def full_id(value: str) -> str:
@@ -133,7 +133,12 @@ def test_explicit_migrate_adds_one_v1_form_d_ref_as_the_read_control(legacy_worl
     tree = git(w["root"], "rev-parse", new + "^{tree}")
     assert tree != w["old_tree"]
     fd.verify_tree(w["root"], tree)
-    assert fd.read_record(w["root"], tree)["members"][0]["commit"] == w["row"]["head"]
+    row = w["row"]
+    assert fd.read_record(w["root"], tree) == {
+        "schema": grip._REVIEW_BIND_SCHEMA, "kind": "review", "policy": "no-policy",
+        "members": [{"key": row["key"], "path": row["path"], "remote": row["remote"],
+                     "base": row["base"], "commit": row["head"], "remote_head": row["base"],
+                     "title": row["title"], "body": row["body"]}]}, "SHA-only legacy content changed or optional objects invented"
     if w["shape"] == "alpha":
         assert refs(w["source"]) == before["source_refs"]
         assert object_set(w["source"]) == before["source_objects"]
@@ -142,26 +147,21 @@ def test_explicit_migrate_adds_one_v1_form_d_ref_as_the_read_control(legacy_worl
 def test_migrate_keeps_legacy_targets_trees_bytes_and_receipt_outside_review_namespace(legacy_world, monkeypatch):
     w = legacy_world
     before = state(w)
-    new = one_mapping(w, migrate_rows(w["root"], monkeypatch))
+    receipt_paths = []
+    returned_rows = migrate_rows(w["root"], monkeypatch, receipt_paths)
+    new = one_mapping(w, returned_rows)
     assert refs(w["root"]) == {**before["root_refs"], review_ref(new): new}, "legacy ref deleted/rewritten or a receipt ref was published"
     assert git(w["root"], "rev-parse", legacy_review_ref(w["old"])) == w["old"]
     assert git(w["root"], "rev-parse", w["old"] + "^{tree}") == w["old_tree"]
     assert git(w["root"], "cat-file", "-p", w["old"]) == w["old_bytes"]
-    receipts = list((w["root"] / ".grip" / "receipts").rglob("*.json"))
-    assert receipts, "the old-to-new receipt must be a file under .grip/receipts"
-    def mapping_present(value):
-        if isinstance(value, dict):
-            normalized = {str(k).removeprefix("gr:"): str(v).removeprefix("gr:") for k,v in value.items()}
-            if normalized.get(w["old"]) == new:
-                return True
-            vals = set(normalized.values())
-            if w["old"] in vals and new in vals:
-                return True
-            return any(mapping_present(v) for v in value.values())
-        if isinstance(value, list):
-            return any(mapping_present(v) for v in value)
-        return False
-    assert any(mapping_present(json.loads(p.read_text())) for p in receipts), "durable receipt lost the old-to-new mapping"
+    durable = json.loads(receipt_paths[0].read_text())
+    assert isinstance(durable, dict) and isinstance(durable.get("rows"), list)
+    assert durable["rows"] == returned_rows, "receipt rows differ from returned mappings"
+    assert durable["rows"] == [{"old_id": returned_rows[0]["old_id"],
+                                "new_id": returned_rows[0]["new_id"],
+                                "ref": review_ref(new), "status": "created"}]
+    assert full_id(durable["rows"][0]["old_id"]) == w["old"]
+    assert full_id(durable["rows"][0]["new_id"]) == new
     assert set(c for c, _ in grip.list_review_binds(w["root"])) == {w["old"], new}
     if w["shape"] == "alpha":
         assert refs(w["source"]) == before["source_refs"]
@@ -179,6 +179,7 @@ def test_migrate_id_is_stable_across_caller_identity_clock_and_rerun(legacy_worl
     first_rows = migrate_rows(w["root"], monkeypatch)
     first = one_mapping(w, first_rows)
     assert first_rows[0]["status"] == "created"
+    assert commit_inputs(w["root"], first) == commit_inputs(w["root"], w["old"])
     for who in ("AUTHOR", "COMMITTER"):
         monkeypatch.setenv(f"GIT_{who}_NAME", "Different Caller")
         monkeypatch.setenv(f"GIT_{who}_EMAIL", "second@example.invalid")
@@ -215,3 +216,76 @@ def test_plain_store_migrate_still_refuses_native_root(legacy_world, monkeypatch
     reason = "native store already exists" if w["shape"] == "alpha" else "no alpha .grip/.git store"
     assert result.exit_code == 4 and reason in result.output, result.output
     assert state(w) == before
+
+
+def commit_inputs(root, commit):
+    raw = subprocess.run(["git", "-C", str(root), "cat-file", "-p", commit],
+                         capture_output=True, check=True).stdout
+    headers, _, message = raw.partition(b"\n\n")
+    return ([line for line in headers.splitlines() if line.startswith((b"author ", b"committer "))], message)
+
+
+def test_migrate_preserves_two_distinct_legacy_commit_inputs(legacy_world, monkeypatch):
+    w = legacy_world
+    for who, name, date in (("AUTHOR", "Second Author", "2021-06-07T08:09:10+02:00"),
+                            ("COMMITTER", "Second Committer", "2022-07-08T09:10:11-04:00")):
+        monkeypatch.setenv(f"GIT_{who}_NAME", name)
+        monkeypatch.setenv(f"GIT_{who}_EMAIL", name.lower().replace(" ", ".") + "@example.invalid")
+        monkeypatch.setenv(f"GIT_{who}_DATE", date)
+    second = git(w["root"], "commit-tree", w["old_tree"], "-m", "second subject\n\nFull second body.\nAnother paragraph.\n")
+    git(w["root"], "update-ref", legacy_review_ref(second), second)
+    originals = {old: commit_inputs(w["root"], old) for old in (w["old"], second)}
+    assert originals[w["old"]] != originals[second]
+    for who in ("AUTHOR", "COMMITTER"):
+        monkeypatch.setenv(f"GIT_{who}_NAME", "Unrelated Caller")
+        monkeypatch.setenv(f"GIT_{who}_EMAIL", "caller@example.invalid")
+        monkeypatch.setenv(f"GIT_{who}_DATE", "2040-01-01T00:00:00Z")
+    rows = migrate_rows(w["root"], monkeypatch)
+    assert {full_id(row["old_id"]) for row in rows} == set(originals)
+    for row in rows:
+        old, new = full_id(row["old_id"]), full_id(row["new_id"])
+        assert commit_inputs(w["root"], new) == originals[old], "migration changed source author/committer/dates/full message"
+        assert row["ref"] == review_ref(new) and row["status"] == "created"
+        assert git(w["root"], "rev-parse", legacy_review_ref(old)) == old
+
+
+def test_migrate_rich_legacy_record_preserves_full_content_and_sorted_members(handoff, tmp_path, monkeypatch):
+    author, _, remote, _, base, head = handoff
+    root = native_root(tmp_path / "rich-legacy")
+    work = author / "member"
+    def raw(*args):
+        return subprocess.run(["git", "-C", str(work), *args], capture_output=True, check=True).stdout.decode()
+    objects = {"range.patch": raw("format-patch", "--stdout", base + ".." + head),
+               "metadata": raw("log", "--format=fuller", base + ".." + head),
+               "head-tree": git(work, "rev-parse", head + "^{tree}"),
+               "committers": raw("log", "--reverse", "--format=%cn%x09%ce%x09%cI", base + ".." + head)}
+    rows = [dict(key=key, path=key, remote=str(remote), base=base, head=head, remote_head=base,
+                 title=key + " title\n\n", body=key + " body\ncontinued\n\n", policy="passed",
+                 objects=objects, evidence="label: " + key + "\ncommand: true\nexit: 0\n",
+                 resolution=key + " resolution\n") for key in ("zeta", "alpha")]
+    expected = {"schema": grip._REVIEW_BIND_SCHEMA, "kind": "review", "policy": "passed", "members": [
+        {"key": r["key"], "path": r["path"], "remote": r["remote"], "base": base, "commit": head,
+         "remote_head": base, "title": r["title"].rstrip("\n"), "body": r["body"].rstrip("\n"),
+         "head_tree": objects["head-tree"], "metadata": objects["metadata"].encode(),
+         "range_patch": objects["range.patch"].encode(), "committers": objects["committers"].encode(),
+         "evidence": {"commands": r["evidence"].encode(), "resolution": r["resolution"].encode()}}
+        for r in sorted(rows, key=lambda r: r["key"])]}
+    tree = legacy_bind_tree(root, rows)
+    old = git(root, "commit-tree", tree, "-m", "rich legacy inputs")
+    git(root, "update-ref", legacy_review_ref(old), old)
+    # The independent expected record can itself be written/verified as D.
+    fd.verify_tree(root, fd.write_record(root, expected))
+    mappings = migrate_rows(root, monkeypatch)
+    new = one_mapping({"old": old}, mappings)
+    actual_tree = git(root, "rev-parse", new + "^{tree}")
+    fd.verify_tree(root, actual_tree)
+    assert fd.read_record(root, actual_tree) == expected, "migration lost or changed carried fields/member order"
+    assert git(root, "rev-parse", old + "^{tree}") == tree
+
+
+def test_migrate_reviews_cli_api_contract():
+    api = (Path(__file__).resolve().parents[1] / "api" / "cli.api").read_text()
+    for line in ("verb  store migrate-reviews", "arg   store migrate-reviews root", "flag  store migrate-reviews --json",
+                 "json  store migrate-reviews .receipt", "json  store migrate-reviews .rows[].old_id", "json  store migrate-reviews .rows[].new_id",
+                 "json  store migrate-reviews .rows[].ref", "json  store migrate-reviews .rows[].status"):
+        assert any(row.startswith(line + " ") for row in api.splitlines()), "missing CLI API contract: " + line

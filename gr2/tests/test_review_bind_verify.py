@@ -137,13 +137,14 @@ def test_bind_carries_frozen_set_and_verify_reproduces_objects(tmp_path):
     # head-tree is recorded so run can assert reconstruction WITHOUT the head object.
     assert r["head_tree"] == _git(work, "rev-parse", f"{head}^{{tree}}")
     assert len(r["range_sha256"]) == 64
-    # The object carries the readable range + metadata + head-tree, and evidence.
-    names = _git(ws, "ls-tree", "--name-only", f"{commit}:objects/recall").split()
-    assert set(names) == {"range.patch", "metadata", "head-tree"}
-    rng = _git(ws, "show", f"{commit}:objects/recall/range.patch")
-    assert "Subject:" in rng and "diff --git" in rng
-    ev = _git(ws, "ls-tree", "--name-only", f"{commit}:evidence/recall").split()
-    assert ev == ["commands"]
+    # Decode by field number, so this checks content through the D reader.
+    from gr2.python_cli import review_form_d as fd
+    tree = _git(ws, "rev-parse", commit + "^{tree}")
+    member = fd.read_record(ws, tree)["members"][0]
+    assert member["head_tree"] == _git(work, "rev-parse", head + "^{tree}")
+    assert b"Subject:" in member["range_patch"] and b"diff --git" in member["range_patch"]
+    assert member["metadata"]
+    assert member["evidence"] == {"commands": row["evidence"].encode()}
 
 
 def test_reconstruct_materializes_pre_push_head_and_asserts_tree(tmp_path):

@@ -83,6 +83,7 @@ def test_cli_handoff_idempotence_and_reconstruction(handoff, monkeypatch, tmp_pa
     for _ in range(2):
         result = cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", remote)
         assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["ref"] == PREFIX + commit
         assert git(receiver, "rev-parse", PREFIX + commit) == commit
     assert authority(author) == before_author
     assert authority(receiver) == before_receiver

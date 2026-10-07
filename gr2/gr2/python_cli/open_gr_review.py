@@ -100,6 +100,8 @@ def close_open_gr_lane(lane_dir: Path, *, workspace_root: Path | None = None) ->
     if retained is not None and marker_bytes.hex() != retained:
         raise OpenGrReviewError("reconstruction marker changed during cleanup; retaining recovery")
     gr_commit = marker.get("gr_commit", "")
+    if allocation["state"] != "closing":
+        _refuse_local_work(lane_dir, allocation)
     if allocation["state"] == "closing":
         preserved = allocation.get("preserved_runs", [])
     else:
@@ -113,6 +115,33 @@ def close_open_gr_lane(lane_dir: Path, *, workspace_root: Path | None = None) ->
         result["preserved_run"] = preserved[0]
         result["preserved_runs"] = preserved
     return result
+
+
+def _refuse_local_work(target: Path, allocation: dict) -> None:
+    """Close removes the lane, so it first refuses when any member repository holds work that
+    exists nowhere else: a staged, unstaged or untracked change (the review's own marker, run
+    receipt and logs excepted), a stash, or a local branch commit that no remote has and the
+    reviewed HEAD does not contain. The lane, its allocation and its run evidence stay."""
+    from .review_run import _is_allowlisted_untracked
+    found: list[str] = []
+    paths = dict.fromkeys([target, *(target / item["path"] for item in allocation["members"])])
+    for path in paths:
+        if not (path / ".git").exists():
+            continue
+        for line in git(path, "status", "--porcelain", "--untracked-files=all").stdout.splitlines():
+            name = line[3:]
+            if line.startswith("?? ") and _is_allowlisted_untracked(name):
+                continue
+            found.append(f"uncommitted work in {path}: {line}")
+        if git(path, "stash", "list").stdout.strip():
+            found.append(f"uncommitted work in {path}: a stash")
+        unpublished = git(path, "rev-list", "--branches", "--not", "--remotes", "HEAD").stdout.split()
+        if unpublished:
+            found.append(f"unpublished commits in {path}: {', '.join(c[:12] for c in unpublished)}")
+    if found:
+        raise OpenGrReviewError(
+            f"lane {target} holds work that exists nowhere else; commit and push it, or move it out, "
+            "then close again:\n  " + "\n  ".join(found))
 
 
 def _preserve_allocated_runs(workspace: Path, target: Path, allocation: dict) -> list[dict]:

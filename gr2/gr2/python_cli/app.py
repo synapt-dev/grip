@@ -6,6 +6,7 @@ import io
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -1083,6 +1084,7 @@ def _exit(code: int) -> None:
 def _consume_lane_transition(
     outcome: lane_proto.LaneTransitionOutcome | int,
     hook_failures: list[dict] | None = None,
+    extra: dict | None = None,
 ) -> lane_proto.LaneTransitionOutcome | None:
     """Render the state writer's one outcome instead of inferring one in the CLI.
 
@@ -1091,7 +1093,7 @@ def _consume_lane_transition(
     nowhere), hook_failures names the hook and its rc, and the same text goes
     to stderr. Exit code stays 0 — warn is the caller's own declaration."""
     if isinstance(outcome, lane_proto.LaneTransitionOutcome):
-        payload = outcome.as_dict()
+        payload = {**outcome.as_dict(), **(extra or {})}
         if hook_failures:
             payload["status"] = "warned"
             payload["hook_failures"] = hook_failures
@@ -2921,6 +2923,17 @@ def lane_resolve(
         typer.echo(json.dumps(payload, indent=2))
 
 
+def _refuse_exit_json(refusal: str, owner_unit: str, lane_name: str, dirty: list, stashed: list) -> NoReturn:
+    """A refused lane exit still prints its receipt: the lane stays entered, the repos holding work
+    are named, and any stash this call already made is listed with its restore command."""
+    typer.echo(json.dumps({
+        "status": "refused", "action": "exit", "refusal": refusal, "owner_unit": owner_unit,
+        "current_lane": lane_name, "dirty": [{"repo": name, "path": str(path)} for name, path in dirty],
+        "stashed": stashed,
+    }, indent=2))
+    raise typer.Exit(code=2)
+
+
 @lane_app.command("exit", cls=ContextCommand)
 def lane_exit(
     workspace_root: Path,
@@ -2929,23 +2942,58 @@ def lane_exit(
     notify_channel: bool = typer.Option(False, "--notify-channel"),
     recall: bool = typer.Option(False, "--recall"),
     manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual"),
+    dirty_mode: str = typer.Option("block", "--dirty", help="Uncommitted work in the lane: block (refuse, the default) or stash (stash it and name the stash)"),
     root: Optional[Path] = ROOT_OPTION,
     unit: Optional[str] = typer.Option(None, "--unit", help="The unit. Same as the UNIT argument; give one or the other."),
     ctx: typer.Context = None,  # type: ignore[assignment]
 ) -> None:
-    """Exit the current lane for a unit."""
+    """Exit the current lane for a unit.
+
+    A lane with uncommitted work (staged, unstaged or untracked) is refused unless --dirty stash
+    is given; a stash made here is named in the output with the command that restores it."""
     items, actor = _announce_context(ctx, actor=actor, with_actor=True)
     workspace_root = workspace_root.resolve()
     current_doc = lane_proto.require_current_lane(workspace_root, owner_unit)
     lane_name = current_doc["lane_name"]
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
+    if dirty_mode not in ("block", "stash"):
+        typer.echo(f"refused: --dirty must be block or stash, not {dirty_mode!r}", err=True)
+        _refuse_exit_json("unknown_dirty_mode", owner_unit, lane_name, [], [])
+    lane_repos = [(name, _lane_repo_root(workspace_root, owner_unit, lane_name, name))
+                  for name in lane_doc.get("repos", [])]
+    dirty = [(name, path) for name, path in lane_repos if path.exists() and repo_dirty(path)]
+    if dirty and dirty_mode == "block":
+        for name, path in dirty:
+            typer.echo(f"refused: lane_has_uncommitted_work: {name} ({path})", err=True)
+        typer.echo(f"commit or discard the work first, or stash it in each repo with: "
+                   f"gr2 lane exit {shlex.quote(str(workspace_root))} {shlex.quote(owner_unit)} --dirty stash; "
+                   f"the lane {owner_unit}/{lane_name} is still entered", err=True)
+        _refuse_exit_json("lane_has_uncommitted_work", owner_unit, lane_name, dirty, [])
     stashed_repos: list[str] = []
-    for repo_name in lane_doc.get("repos", []):
-        repo_root = _lane_repo_root(workspace_root, owner_unit, lane_name, repo_name)
-        if repo_root.exists():
-            if stash_if_dirty(repo_root, f"gr2 exit {owner_unit}/{lane_name}"):
-                stashed_repos.append(repo_name)
-    exit_results = _run_lane_stage(workspace_root, owner_unit, lane_name, "on_exit", manual_hooks=manual_hooks)
+    stashed: list[dict[str, str]] = []
+    try:
+        for name, path in dirty:
+            stash_if_dirty(path, f"gr2 exit {owner_unit}/{lane_name}")
+            stashed_repos.append(name)
+            sha = git(path, "rev-parse", "stash@{0}").stdout.strip()
+            # Bound to this stash by its sha, and keeping the index: a later stash cannot redirect
+            # it, and the stash entry stays until the user drops it.
+            restore = f"git -C {shlex.quote(str(path))} stash apply --index {sha}"
+            stashed.append({"repo": name, "path": str(path), "stash": sha, "restore": restore})
+            typer.echo(f"stashed uncommitted work in {name} as {sha}; restore it with: {restore}", err=True)
+        exit_results = _run_lane_stage(workspace_root, owner_unit, lane_name, "on_exit", manual_hooks=manual_hooks)
+    except SystemExit as exc:
+        # A stash or an on_exit hook refused after earlier work may already have been stashed:
+        # the lane stays entered and the receipt still names every stash this call made.
+        typer.echo(f"refused: {exc}; the lane {owner_unit}/{lane_name} is still entered", err=True)
+        _refuse_exit_json("exit_step_failed", owner_unit, lane_name, [], stashed)
+    # An on_exit hook runs in the lane and can leave work of its own; exit does not hide that either.
+    hook_dirty = [(name, path) for name, path in lane_repos if path.exists() and repo_dirty(path)]
+    if hook_dirty:
+        for name, path in hook_dirty:
+            typer.echo(f"refused: lane_has_uncommitted_work_after_on_exit: {name} ({path})", err=True)
+        typer.echo(f"an on_exit hook left uncommitted work; the lane {owner_unit}/{lane_name} is still entered", err=True)
+        _refuse_exit_json("lane_has_uncommitted_work_after_on_exit", owner_unit, lane_name, hook_dirty, stashed)
     ns = SimpleNamespace(
         workspace_root=workspace_root,
         owner_unit=owner_unit,
@@ -2954,7 +3002,7 @@ def lane_exit(
         recall=recall,
     )
     outcome = _consume_lane_transition(
-        lane_proto.exit_lane(ns), _hook_failures_from(exit_results)
+        lane_proto.exit_lane(ns), _hook_failures_from(exit_results), extra={"stashed": stashed}
     )
     emit_after_outcome(
         event_type=EventType.LANE_EXITED,
@@ -2964,6 +3012,7 @@ def lane_exit(
         payload={
             "lane_name": outcome.previous_lane if outcome else lane_name,
             "stashed_repos": stashed_repos,
+            "stashed": stashed,
             **_actor_source_payload(items),
         },
     )

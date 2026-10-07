@@ -274,7 +274,7 @@ def scenario_dirty_state_and_recovery(workspace_root: Path, owner_unit: str) -> 
     feat_web_repo = lane_repo_root(workspace_root, owner_unit, "feat-web", "web")
     web_readme = feat_web_repo / "README.md"
     web_readme.write_text(web_readme.read_text() + "\nexit should stash this\n")
-    pygr2("lane", "exit", str(workspace_root), owner_unit, "--actor", "human:layne")
+    exited = read_json(pygr2("lane", "exit", str(workspace_root), owner_unit, "--actor", "human:layne", "--dirty", "stash"))
 
     sync_run = read_json(pygr2("sync", "run", str(workspace_root), "--dirty", "stash", "--json"))
     dirty_issues = {item["code"] for item in sync_block["issues"]}
@@ -288,6 +288,7 @@ def scenario_dirty_state_and_recovery(workspace_root: Path, owner_unit: str) -> 
         and not bool(git("status", "--porcelain", cwd=shared_app).stdout.strip())
         and len(stash_entries(shared_app)) >= 1
         and not bool(git("status", "--porcelain", cwd=feat_web_repo).stdout.strip())
+        and [row["repo"] for row in exited.get("stashed", [])] == ["web"]
         and len(stash_entries(feat_web_repo)) >= 1,
         "payload": {
             "repo_status": app_status,

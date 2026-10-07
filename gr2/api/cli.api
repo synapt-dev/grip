@@ -230,6 +230,7 @@ verb  lane enter                                                      stable
 arg   lane exit owner_unit <str>                                      stable
 arg   lane exit workspace_root <str>                                  stable
 flag  lane exit --actor <str>                                         stable
+flag  lane exit --dirty <str>                                         stable
 flag  lane exit --manual-hooks                                        stable
 flag  lane exit --notify-channel                                      stable
 flag  lane exit --recall                                              stable

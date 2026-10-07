@@ -4,6 +4,12 @@ The suite-wide `_isolated_git_config` autouse fixture lives in the ROOT
 conftest (`gr2/conftest.py`), not here -- it must be an ancestor of both
 `tests/` and the sibling `gr2/overlay/tests/` tree, and this directory is
 not.
+
+CLI diagnostic witnesses assert displayed semantics after dependency-provided
+strip_ansi (typer._click.utils, or click.utils on older Typer), not raw styled
+option names. Styling can split a literal such as --root or --remote. Preserve
+raw output and named diagnostics, exercise actual styled/plain modes, and assert
+stripping changes only the styled output. Keep JSON assertions on stdout alone.
 """
 from __future__ import annotations
 

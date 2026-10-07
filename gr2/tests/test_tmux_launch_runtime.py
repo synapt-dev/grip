@@ -30,6 +30,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from gr2.python_cli import launch_exec
 
@@ -313,12 +314,28 @@ class TmuxContractBase(unittest.TestCase):
             "list-panes",
             "-a",
             "-F",
-            "#{session_name}\t#{pane_id}\t#{pane_pid}\t#{pane_current_path}\t#{pane_dead}",
+            "#{session_id}|#{pane_id}|#{pane_pid}|#{pane_current_path}|#{pane_dead}",
             check=True,
         )
         rows = []
         for line in result.stdout.splitlines():
-            session, pane, pid, cwd, dead = line.split("\t")
+            # Independent framing oracle, not the product parser. Paths own
+            # all bytes between the numeric prefix and final dead suffix.
+            remainder = line
+            prefix = []
+            for _ in range(3):
+                value, delimiter, remainder = remainder.partition("|")
+                self.assertEqual(delimiter, "|")
+                prefix.append(value)
+            cwd, delimiter, dead = remainder.rpartition("|")
+            self.assertEqual(delimiter, "|")
+            session, pane, pid = prefix
+            self.assertTrue(session.startswith("$") and session[1:].isascii() and session[1:].isdigit())
+            self.assertTrue(pane.startswith("%") and pane[1:].isascii() and pane[1:].isdigit())
+            self.assertTrue(pid.isascii() and pid.isdigit() and int(pid) > 0)
+            self.assertIn(dead, ("0", "1"))
+            self.assertTrue(Path(cwd).is_absolute())
+            self.assertNotIn(pane, {row["pane_id"] for row in rows})
             rows.append(
                 {
                     "session": session,
@@ -354,6 +371,144 @@ class TmuxContractBase(unittest.TestCase):
             pre_kill_evidence_path=pre_kill_evidence_path,
         )
         return self._runtime(tmux_binary=str(proxy)), log
+
+
+class TestTmuxEvidenceRetention(unittest.TestCase):
+    """Small owner witnesses without creating a tmux server."""
+
+    def test_printable_session_format_matches_exact_numeric_tuple(self):
+        with tempfile.TemporaryDirectory(prefix="ap37-evidence-") as directory:
+            root = Path(directory)
+            root.chmod(0o700)
+            runtime = launch_exec.TmuxPaneRuntime(root / "s", "proof")
+            response = subprocess.CompletedProcess([], 0, "123|$4|%5\n", "")
+            with patch.object(launch_exec.TmuxPaneRuntime, "_invoke", return_value=response) as invoke:
+                output = runtime._create_session(root)
+            args = invoke.call_args.args
+            self.assertEqual(args[args.index("-F") + 1], "#{pid}|#{session_id}|#{pane_id}")
+            self.assertEqual(runtime._parse_session_handles(output), (123, "$4", "%5"))
+            for malformed in ("123_$4_%5", "123|$4", "abc|$4|%5", "0|$4|%5", "123|4|%5"):
+                with self.subTest(malformed=malformed), self.assertRaises(launch_exec.LaunchExecutionError):
+                    runtime._parse_session_handles(malformed)
+
+    def _malformed_launch(self, cleanup_succeeds):
+        with tempfile.TemporaryDirectory(prefix="ap37-evidence-") as directory:
+            root = Path(directory)
+            root.chmod(0o700)
+            runtime = launch_exec.TmuxPaneRuntime(root / "s", "proof")
+            primaries = []
+            parser = launch_exec.TmuxPaneRuntime._parse_session_handles
+
+            def capture(instance, output):
+                try:
+                    return parser(instance, output)
+                except launch_exec.LaunchExecutionError as primary:
+                    primaries.append(primary)
+                    raise
+
+            with (
+                patch.object(launch_exec.TmuxPaneRuntime, "_prepare", return_value=[]),
+                patch.object(launch_exec.TmuxPaneRuntime, "_require_supported_version"),
+                patch.object(launch_exec.TmuxPaneRuntime, "_create_session", return_value="123_$4_%5"),
+                patch.object(launch_exec.TmuxPaneRuntime, "_parse_session_handles", capture),
+                patch.object(launch_exec.TmuxPaneRuntime, "_invoke", return_value=subprocess.CompletedProcess([], 0, "", "")) as invoke,
+                patch.object(Path, "unlink") as unlink,
+            ):
+                if cleanup_succeeds:
+                    with patch.object(launch_exec.TmuxPaneRuntime, "_kill_created_server") as cleanup:
+                        with self.assertRaises(launch_exec.LaunchExecutionError) as caught:
+                            runtime.launch_team((object(),), workspace_root=root, env_values_by_unit={}, settle_seconds=0)
+                    cleanup.assert_called_once_with(None, None)
+                    self.assertFalse(hasattr(caught.exception, "__notes__"))
+                    invoke.assert_not_called()
+                else:
+                    with self.assertRaises(launch_exec.LaunchExecutionError) as caught:
+                        runtime.launch_team((object(),), workspace_root=root, env_values_by_unit={}, settle_seconds=0)
+                    invoke.assert_called_once_with("kill-server", operation="rollback")
+                    note = "\n".join(caught.exception.__notes__)
+                    self.assertIn("rollback failed or remains unverified", note)
+                    self.assertIn(str(runtime.socket_path), note)
+                    self.assertIn("LaunchExecutionError", note)
+                    self.assertIn("without captured PID evidence", note)
+                self.assertEqual(len(primaries), 1)
+                self.assertIs(caught.exception, primaries[0])
+                self.assertEqual(str(caught.exception), "tmux session creation returned malformed handle evidence")
+                unlink.assert_not_called()
+
+    def test_malformed_evidence_retains_same_primary_and_unverified_rollback_note(self):
+        self._malformed_launch(cleanup_succeeds=False)
+
+    def test_successful_cleanup_retains_same_primary_without_failure_note(self):
+        self._malformed_launch(cleanup_succeeds=True)
+
+
+class TestTmuxPaneObservationEvidence(unittest.TestCase):
+    """Actual owner and independent oracle, with command transport intercepted."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix="g2observe-", dir="/tmp")
+        self.addCleanup(self.directory.cleanup)
+        self.socket = Path(self.directory.name).resolve() / "control.sock"
+
+    def _production(self, text):
+        runtime = launch_exec.TmuxPaneRuntime(self.socket, "control")
+        with patch.object(launch_exec.TmuxPaneRuntime, "_invoke", return_value=subprocess.CompletedProcess([], 0, text, "")) as invoke:
+            result = runtime._observe_panes()
+        self.assertEqual(invoke.call_args.args, ("list-panes", "-a", "-F", "#{pane_id}|#{pane_pid}|#{pane_current_path}|#{pane_dead}"))
+        return result
+
+    def _independent(self, text):
+        oracle = TmuxContractBase()
+        oracle.socket = self.socket
+        with patch(__name__ + "._tmux", return_value=subprocess.CompletedProcess([], 0, text, "")) as invoke:
+            result = oracle._pane_rows()
+        self.assertEqual(invoke.call_args.args[-1], "#{session_id}|#{pane_id}|#{pane_pid}|#{pane_current_path}|#{pane_dead}")
+        return result
+
+    def test_middle_path_preserved_by_actual_owner_and_independent_oracle(self):
+        paths = [
+            "/tmp/g2tmux-example/workspace/units/u_one/home",
+            "/tmp/g2tmux-example/workspace/units/u_two/home",
+            "/tmp/g2tmux-example/generated-session-" + "x" * 170 + "/scratchpad/workspace/units/u_long/home",
+            "/tmp/ap37-path-example/cwd with spaces|pipe",
+            "/tmp/ap37-path-example/ spaced | mid || trailing|",
+            "/tmp/ap37-path-example/café|文",
+        ]
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertEqual(os.fsencode(self._production(f"%2|123|{path}|0\n")["%2"].workdir), os.fsencode(path))
+                self.assertEqual(os.fsencode(self._independent(f"$3|%2|123|{path}|0\n")[0]["cwd"]), os.fsencode(Path(path).resolve()))
+
+    def test_malformed_truncated_and_duplicate_rows_refuse(self):
+        rows = ["%2|123", "%2|123|/tmp/cwd", "%x|123|/tmp/cwd|0",
+                "%2|bad|/tmp/cwd|0", "%2|0|/tmp/cwd|0", "%2|123|/tmp/cwd|2",
+                "%2|123|/tmp/cwd|0|extra", "%2|123||0", "%2|123|relative|0",
+                "%2|123|/tmp/cwd\n/extra|0"]
+        for row in rows:
+            with self.subTest(row=row):
+                with self.assertRaises(launch_exec.LaunchExecutionError):
+                    self._production(row)
+                with self.assertRaises((AssertionError, ValueError)):
+                    self._independent("$3|" + row)
+        with self.assertRaises(launch_exec.LaunchExecutionError):
+            self._production("%2|123|/tmp/cwd|0\n%2|123|/tmp/cwd|0\n")
+        with self.assertRaises(AssertionError):
+            self._independent("$3|%2|123|/tmp/cwd|0\n$3|%2|123|/tmp/cwd|0\n")
+
+    def test_exact_members_with_only_explicit_bootstrap_exception(self):
+        from types import SimpleNamespace
+        runtime = launch_exec.TmuxPaneRuntime(self.socket, "control")
+        panes = {"one": "%2", "two": "%3"}
+        prepared = {key: SimpleNamespace(workdir=Path("/tmp/" + key)) for key in panes}
+        rows = "%2|123|/tmp/one|0\n%3|124|/tmp/two|0\n"
+        with patch.object(launch_exec.TmuxPaneRuntime, "_invoke", return_value=subprocess.CompletedProcess([], 0, rows, "")):
+            self.assertEqual(set(runtime._require_live_units(panes, prepared)), set(panes))
+        for altered in (rows.splitlines()[0] + "\n", rows + "%4|125|/tmp/extra|0\n"):
+            with self.subTest(rows=altered), patch.object(launch_exec.TmuxPaneRuntime, "_invoke", return_value=subprocess.CompletedProcess([], 0, altered, "")):
+                with self.assertRaisesRegex(launch_exec.LaunchExecutionError, "missing or extra pane members"):
+                    runtime._require_live_units(panes, prepared)
+        with patch.object(launch_exec.TmuxPaneRuntime, "_invoke", return_value=subprocess.CompletedProcess([], 0, rows + "%0|125|/tmp/bootstrap|0\n", "")):
+            self.assertEqual(set(runtime._require_live_units(panes, prepared, bootstrap_pane="%0")), set(panes))
 
 
 class TestExplicitRuntimeCoordinates(TmuxContractBase):
@@ -675,7 +830,7 @@ class TestTmuxLaunchFruit(TmuxContractBase):
         with self.assertRaises(launch_exec.LaunchExecutionError) as ctx:
             self._launch([entry], runtime=runtime)
 
-        self.assertIn("rollback", str(ctx.exception))
+        self.assertIn("rollback", "\n".join(ctx.exception.__notes__))
         self.assertTrue(
             self.socket.exists(),
             "a failed termination was hidden by unlinking its still-live server socket",
@@ -699,7 +854,7 @@ class TestTmuxLaunchFruit(TmuxContractBase):
         with self.assertRaises(launch_exec.LaunchExecutionError) as ctx:
             self._launch([entry], runtime=runtime)
 
-        self.assertIn("still reachable", str(ctx.exception))
+        self.assertIn("still reachable", "\n".join(ctx.exception.__notes__))
         self.assertTrue(
             self.socket.exists(),
             "a false-success termination was hidden by unlinking its live server socket",
@@ -728,8 +883,8 @@ class TestTmuxLaunchFruit(TmuxContractBase):
         self.assertIs(control["socket_exists"], True)
         self.assertIs(control["client_succeeds"], True)
         self.assertIs(control["pid_alive"], True)
-        self.assertIn("process", str(ctx.exception))
-        self.assertIn("still alive", str(ctx.exception))
+        self.assertIn("process", "\n".join(ctx.exception.__notes__))
+        self.assertIn("still alive", "\n".join(ctx.exception.__notes__))
         self.assertFalse(self.socket.exists())
         after_client = _tmux("-S", str(self.socket), "list-panes", "-a")
         self.assertNotEqual(after_client.returncode, 0)

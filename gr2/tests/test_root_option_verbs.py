@@ -7,7 +7,7 @@ Four command classes (`gr2/python_cli/root_option.py`):
   * `RootOptionCommand` (7 verbs, each with an OPTIONAL TRAILING positional): `--root/-C` only. One fewer
     word has two readings there (`pr status unit lane` is "root omitted" and "root = unit"), so the bare
     form is never inferred, and an error that came from reading the first word as the root names `-C`.
-  * `ReviewTargetCommand` (2 verbs): root and target can both be omitted. Explicit gr: targets and bare
+  * `ReviewTargetCommand` (4 verbs): readers may omit root and target. Transport verbs may omit only the root. Explicit gr: targets and bare
     hashes retain their target role before directory classification. Selection is checked by the reader.
   * `ReviewOpenCommand` (open): inferred reconstruction context plus unchanged explicit PR-head grammar.
 
@@ -46,8 +46,9 @@ OPTIONAL_TRAILING = [  # RootOptionCommand: the 8
     "pr/create", "pr/status", "pr/checks", "pr/view", "pr/merge", "exec/status", "exec/run",
 ]
 REVIEW_TARGETS = ["review/show", "review/verify"]
+REVIEW_TRANSPORTS = ["review/publish", "review/receive"]
 REVIEW_OPENS = ["review/open"]
-ALL_ROOT_VERBS = [*FIXED_ARITY, *OPTIONAL_TRAILING, *REVIEW_TARGETS, *REVIEW_OPENS]
+ALL_ROOT_VERBS = [*FIXED_ARITY, *OPTIONAL_TRAILING, *REVIEW_TARGETS, *REVIEW_TRANSPORTS, *REVIEW_OPENS]
 UsageError = root_option._usage_error()
 runner = CliRunner()
 
@@ -142,7 +143,7 @@ def test_the_partition_accounts_for_every_leading_root_command() -> None:
     assert by_class["RootOptionalCommand"] == sorted(FIXED_ARITY)
     assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ContextCommand") == sorted(RESOLVED)
     assert by_class["RootOptionCommand"] == sorted(OPTIONAL_TRAILING)
-    assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ReviewTargetCommand") == sorted(REVIEW_TARGETS)
+    assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ReviewTargetCommand") == sorted([*REVIEW_TARGETS, *REVIEW_TRANSPORTS])
     assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ReviewOpenCommand") == sorted(REVIEW_OPENS)
     assert [n for n in leading if n not in ALL_ROOT_VERBS] == [], (
         "a verb takes the workspace root as a required leading positional and is in neither class"
@@ -272,7 +273,7 @@ def test_the_8_do_not_judge_a_root_that_is_a_directory(verb, tmp_path, at) -> No
 
 
 def test_root_usage_matches_the_inferred_and_explicit_groups() -> None:
-    for verb in [*FIXED_ARITY, *REVIEW_TARGETS, *REVIEW_OPENS]:
+    for verb in [*FIXED_ARITY, *REVIEW_TARGETS, *REVIEW_TRANSPORTS, *REVIEW_OPENS]:
         assert _arguments(LEAVES[verb])[0].required is False, verb
     for verb in OPTIONAL_TRAILING:
         assert _arguments(LEAVES[verb])[0].required is True, verb

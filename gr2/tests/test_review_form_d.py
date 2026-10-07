@@ -199,6 +199,11 @@ def test_every_unread_schema_form_is_refused(form):
     assert fd.parse_proto('syntax = "proto3";\npackage p.v1;\nmessage M {\n  string a = 1;\n}\n')["M"][1].name == "a"
 
 
+def test_a_schema_that_ends_inside_a_message_is_refused():
+    with pytest.raises(fd.ReviewRecordError, match="ends inside a message"):
+        fd.parse_proto("message M {\n  string a = 1;\n")
+
+
 def test_a_one_line_message_is_refused():
     with pytest.raises(fd.ReviewRecordError):
         fd.parse_proto("message M { string a = 1; }\n")
@@ -216,31 +221,69 @@ def _blobrow(repo: Path, name: str, payload: bytes = b"x", mode: str = "100644")
     return (mode, "blob", git(repo, "hash-object", "-w", "--stdin", data=payload), name)
 
 
-def _bad_trees(repo: Path) -> dict[str, str]:
-    ok_kind = _blobrow(repo, "002.2_kind", b"review")
-    occ = lambda *names: ("040000", "tree", _mk(repo, [_blobrow(repo, n) for n in names]), "099.2r")
+def _tree(repo: Path, name: str, rows) -> tuple[str, str, str, str]:
+    return ("040000", "tree", _mk(repo, rows), name)
+
+
+def _depths(repo: Path):
+    """The same rows at three depths: the record itself, inside a Member occurrence, and
+    inside that member's Evidence. A defect must be refused wherever it sits."""
     return {
-        "field 000": _mk(repo, [ok_kind, _blobrow(repo, "000.2_zero")]),
-        "unicode digits": _mk(repo, [ok_kind, _blobrow(repo, "\u0661\u0662\u0663.2_x")]),
-        "trailing newline": _mk(repo, [ok_kind, _blobrow(repo, "005.2_x\n")]),
-        "two entries for one number": _mk(repo, [ok_kind, _blobrow(repo, "002.2_kind_again", b"review")]),
-        "r on a known single field": _mk(repo, [("040000", "tree", _mk(repo, [_blobrow(repo, "0000001", b"review")]), "002.2r_kind")]),
-        "known field, wrong wire type": _mk(repo, [_blobrow(repo, "002.0_kind", b"\x01")]),
-        "known message stored as blob": _mk(repo, [ok_kind, ("040000", "tree", _mk(repo, [_blobrow(repo, "0000001", fd.encode(member("a"), "Member"))]), "004.2r_members")]),
-        "ordinal gap": _mk(repo, [ok_kind, occ("0000001", "0000005")]),
-        "ordinal newline": _mk(repo, [ok_kind, occ("0000001\n")]),
-        "executable mode": _mk(repo, [ok_kind, _blobrow(repo, "005.2_x", mode="100755")]),
-        "symlink mode": _mk(repo, [ok_kind, _blobrow(repo, "005.2_x", mode="120000")]),
+        "top level": lambda rows: _mk(repo, rows),
+        "inside a Member": lambda rows: _mk(repo, [_tree(repo, "004.2r_members", [_tree(repo, "0000001", rows)])]),
+        "inside Evidence": lambda rows: _mk(repo, [_tree(repo, "004.2r_members", [
+            _tree(repo, "0000001", [_tree(repo, "013.2_evidence", rows)])])]),
+    }
+
+
+def _bad_rows(repo: Path) -> dict[str, list]:
+    """Malformed classes that do not depend on which message holds them: every field
+    number here is one no review message declares."""
+    ok = _blobrow(repo, "050.2_ok")
+    occ = lambda *names: _tree(repo, "099.2r", [_blobrow(repo, n) for n in names])
+    return {
+        "field 000": [ok, _blobrow(repo, "000.2_zero")],
+        "unicode digits": [ok, _blobrow(repo, "\u0661\u0662\u0663.2_x")],
+        "trailing newline": [ok, _blobrow(repo, "051.2_x\n")],
+        "two entries for one number": [ok, _blobrow(repo, "051.2_a"), _blobrow(repo, "051.2_b")],
+        "ordinal gap": [ok, occ("0000001", "0000005")],
+        "ordinal newline": [ok, occ("0000001\n")],
+        "executable mode": [ok, _blobrow(repo, "051.2_x", mode="100755")],
+        "symlink mode": [ok, _blobrow(repo, "051.2_x", mode="120000")],
+        "a tree under wire type 0": [ok, _tree(repo, "099.0_x", [ok])],
+    }
+
+
+def _schema_rows(repo: Path) -> dict[tuple[str, str], list]:
+    """Malformed classes that break what the schema says about a known field."""
+    kind = _blobrow(repo, "002.2_kind", b"review")
+    single = lambda name: _tree(repo, name, [_blobrow(repo, "0000001", b"x")])
+    return {
+        ("top level", "r on a known single field"): [single("002.2r_kind")],
+        ("top level", "known field, wrong wire type"): [_blobrow(repo, "002.0_kind", b"\x01")],
+        ("top level", "known message stored as blob"): [kind, _tree(repo, "004.2r_members", [
+            _blobrow(repo, "0000001", fd.encode(member("a"), "Member"))])],
+        ("inside a Member", "r on a known single field"): [single("002.2r_path")],
+        ("inside a Member", "known field, wrong wire type"): [_blobrow(repo, "002.0_path", b"\x01")],
+        ("inside a Member", "known message stored as blob"): [
+            _blobrow(repo, "013.2_evidence", fd.encode({"commands": b"make test"}, "Evidence"))],
+        ("inside Evidence", "known field, wrong wire type"): [_blobrow(repo, "001.0_commands", b"\x01")],
     }
 
 
 def test_verify_accepts_the_written_record_and_refuses_each_malformed_class(repo):
     fd.verify_tree(repo, fd.write_record(repo, RECORD))  # control
     fd.verify_tree(repo, _with_unknown_member_field(repo))  # control: unknown entries are form D
-    for label, tree in _bad_trees(repo).items():
+    depths = _depths(repo)
+    ok = [_blobrow(repo, "050.2_ok")]
+    cases = [(d, label, rows) for d in depths for label, rows in _bad_rows(repo).items()]
+    cases += [(d, label, rows) for (d, label), rows in _schema_rows(repo).items()]
+    for depth, wrap in depths.items():
+        fd.verify_tree(repo, wrap(ok))  # control at this depth
+    for depth, label, rows in cases:
         with pytest.raises(fd.ReviewRecordError):
-            fd.verify_tree(repo, tree)
-            pytest.fail(f"verify passed: {label}")
+            fd.verify_tree(repo, depths[depth](rows))
+            pytest.fail(f"verify passed: {label}, {depth}")
 
 
 # --- edits keep what they do not touch ---------------------------------------------------------
@@ -249,6 +292,17 @@ def test_an_edit_keeps_a_siblings_mode(repo):
     tree = _mk(repo, [_blobrow(repo, "002.2_kind", b"review"), _blobrow(repo, "005.2_x", mode="100755")])
     edited = fd.replace_entry(repo, tree, ["002.2"], b"changed")
     assert "100755 blob" in [l for l in git(repo, "ls-tree", edited).splitlines() if l.endswith("005.2_x")][0]
+
+
+def test_an_edit_beside_a_non_utf8_name_keeps_it(repo):
+    blob = git(repo, "hash-object", "-w", "--stdin", data=b"x")
+    data = f"100644 blob {blob}\t002.2_kind\0100644 blob {blob}\t".encode() + b"051.2_\xff" + b"\0"
+    tree = subprocess.run(["git", "-C", str(repo), "mktree", "-z"], input=data, capture_output=True,
+                          check=True).stdout.decode().strip()
+    edited = fd.replace_entry(repo, tree, ["002.2"], b"changed")
+    raw = subprocess.run(["git", "-C", str(repo), "ls-tree", "-z", "--name-only", edited], capture_output=True,
+                         check=True).stdout
+    assert b"051.2_\xff" in raw.split(b"\0")
 
 
 def test_an_edit_that_matches_more_than_one_entry_is_refused(repo):

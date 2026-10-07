@@ -260,7 +260,9 @@ Entry = tuple[str, str, str, str]  # (mode, kind, oid, name), as ls-tree reports
 
 
 def _mktree(repo: Path, entries: list[Entry]) -> str:
-    data = b"".join(f"{mode} {kind} {oid}\t".encode() + name.encode() + b"\0" for mode, kind, oid, name in entries)
+    # surrogateescape round-trips a name that is not UTF-8, as _ls decoded it
+    data = b"".join(f"{mode} {kind} {oid}\t".encode() + name.encode("utf-8", "surrogateescape") + b"\0"
+                    for mode, kind, oid, name in entries)
     return _git(repo, "mktree", "-z", data=data).decode().strip()
 
 

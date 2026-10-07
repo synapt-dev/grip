@@ -1456,8 +1456,11 @@ def _review_remote_target(workspace: Path, remote: str, ref: str) -> str:
     if proc.returncode:
         raise GripCorruptError(f"cannot_measure_review_ref: {proc.stderr.strip()}")
     rows = [line.split() for line in proc.stdout.splitlines() if line.strip()]
-    if len(rows) != 1 or len(rows[0]) != 2 or rows[0][1] != ref:
+    if not rows:
         raise ReviewStoreAbsent(f"remote_review_ref_missing: {ref}")
+    # Rows that are not exactly this ref at one object are a fault, never read as absence.
+    if len(rows) != 1 or len(rows[0]) != 2 or rows[0][1] != ref or not _SHA40.fullmatch(rows[0][0]):
+        raise GripCorruptError(f"cannot_measure_review_ref: unexpected answer for {ref}")
     return rows[0][0]
 
 
@@ -1507,7 +1510,17 @@ def receive_review_commit(workspace: Path, commit: str, remote: str,
     full, canonical = _review_transport_identity(commit, ref)
     source = _review_transport_remote(remote)
     _validate_bind_store(workspace)
-    observed = _review_remote_target(workspace, source, canonical)
+    if ref is None:
+        # No spelling named: the exact v1 ref, then the exact legacy ref only when v1 is absent.
+        # A v1 fault or a v1 at another target refuses; it never falls back.
+        canonical = _review_ref_v1(full)
+        try:
+            observed = _review_remote_target(workspace, source, canonical)
+        except ReviewStoreAbsent:
+            canonical = f"{_REVIEW_REF_PREFIX}{full}"
+            observed = _review_remote_target(workspace, source, canonical)
+    else:
+        observed = _review_remote_target(workspace, source, canonical)
     if observed != full:
         raise GripCorruptError(f"remote_review_id_mismatch: expected {full}, observed {observed}")
     staging = f"refs/dev.synapt.grip/__review_transfers__/{uuid.uuid4().hex}"

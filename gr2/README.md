@@ -95,7 +95,7 @@ Not there yet:
 | `exec` | status, run |
 | `repo` | status, projection-run |
 | `hooks` | trust, revoke, status, show, run |
-| `store` | init, commit, check, push, status, log, diff, checkout, materialize, migrate |
+| `store` | init, commit, check, push, status, log, diff, checkout, materialize, migrate, migrate-reviews |
 | `target`, `config` | stored PR target; config overlays |
 
 ## Overlay substrate

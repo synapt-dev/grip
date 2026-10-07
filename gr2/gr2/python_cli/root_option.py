@@ -15,6 +15,8 @@ for the generic fixed/optional-arity contracts. Review readers add the explicit 
   directory and leave zero/several-bind refusal to the reader.
 * ``ReviewOpenCommand``: reconstruction infers its root through ``context.py``
   while the explicit ROOT UNIT REPO PR positional form retains its meaning.
+* ``ReviewSubjectCommand``: a pr verb whose subject may be the current review. Only a call with NO
+  positional is inferred (the review form); any positional keeps the ``RootOptionCommand`` grammar.
 """
 
 from __future__ import annotations
@@ -173,6 +175,39 @@ class ReviewTargetCommand(RootOptionalCommand):
     def _is_root_word(word: str) -> bool:
         target_spelled = word.startswith("gr:") or re.fullmatch(r"[0-9a-fA-F]{4,64}", word) is not None
         return not target_spelled and Path(word).is_dir()
+
+
+class ReviewSubjectCommand(RootOptionCommand):
+    """A pr verb whose subject may be the current review.
+
+    A call with NO positional and no ``-C`` is the review form, and its root is the workspace above
+    the current directory. Any positional keeps the ``RootOptionCommand`` grammar exactly: the root
+    comes first and is never guessed, so ``verb nobody`` is a root that is not a directory, not a unit
+    whose root was left out. The verb itself refuses ``--review`` beside a unit.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)  # counts the root as required first, for the explicit grammar
+        for param in self.params:
+            if param.param_type_name == "argument" and param.name == "workspace_root":
+                param.required = False  # the review form supplies it, so the usage line says so
+                break
+
+    def parse_args(self, ctx, args):
+        args = list(args)
+        help_option = self.get_help_option(ctx)
+        option_tokens = args[:args.index("--")] if "--" in args else args
+        if help_option is not None and any(word in help_option.opts for word in option_tokens):
+            return typer.core.TyperCommand.parse_args(self, ctx, args)
+        positions, root_value = self._scan(args)
+        if not positions and root_value is None:
+            from .app import _is_workspace_root, _resolve_workspace_root
+
+            found = _resolve_workspace_root()
+            if not _is_workspace_root(found):
+                ctx.fail(f"no workspace at or above {found}; run this inside one, or name it with -C <root>")
+            args.append(str(found))
+        return super().parse_args(ctx, args)
 
 
 class ReviewOpenCommand(ReviewTargetCommand):

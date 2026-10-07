@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 
 from gr2.python_cli import app as app_mod
 from gr2.python_cli import pr as pr_ops
+import typer
 from gr2.python_cli.app import app
 
 from tests.test_pr_events import FakeAdapter
@@ -75,13 +76,15 @@ def reviewed(tmp_path, monkeypatch):
         heads[k] = git(author / k, "rev-parse", "HEAD")
     bound = gr2(author, monkeypatch, "review", "bind")
     assert bound.exit_code == 0, bound.output
+    for k in KEYS:  # the reviewed branch is pushed after the bind, as an author does before opening PRs
+        git(author / k, "push", tmp_path / (k + ".git"), "feat/two-member")
     shown = gr2(author, monkeypatch, "review", "show", "--json")
     assert shown.exit_code == 0, shown.output
     target = json.loads(shown.stdout)["id"]
     adapter = FakeAdapter()
     monkeypatch.setattr(app_mod.platform_ops, "get_platform_adapter", lambda name: adapter)
     repos = {k: f"o/{k}" for k in KEYS}  # the owner/repo slug the platform adapter receives
-    return dict(author=author, heads=heads, target=target, adapter=adapter, repos=repos)
+    return dict(author=author, heads=heads, target=target, adapter=adapter, repos=repos, bare={k: tmp_path / (k + ".git") for k in KEYS})
 
 
 def test_instrument_rewrites_fake_remotes_locally(reviewed):
@@ -131,3 +134,74 @@ def test_create_refuses_a_member_whose_checkout_moved_after_the_review(reviewed,
 def test_legacy_unit_lane_form_is_unchanged(reviewed, monkeypatch):
     legacy = gr2(reviewed["author"], monkeypatch, "pr", "status", reviewed["author"], "nobody")
     assert legacy.exit_code == 1 and "no current lane recorded for unit: nobody" in legacy.output
+
+
+def refused(result, *words):
+    assert result.exit_code != 0, result.output
+    for word in words:
+        assert word in result.output, result.output
+
+
+def test_create_refuses_when_the_remote_branch_is_not_the_reviewed_commit(reviewed, monkeypatch):
+    # The PR carries the REMOTE branch, so a checkout at the reviewed commit is not enough.
+    older = git(reviewed["bare"]["alpha"], "rev-parse", "main")
+    git(reviewed["bare"]["alpha"], "update-ref", "refs/heads/feat/two-member", older)
+    refused(gr2(reviewed["author"], monkeypatch, "pr", "create", "--json"), "alpha", "not the reviewed commit")
+    assert reviewed["adapter"].created == []
+
+
+def test_create_refuses_a_branch_that_was_never_pushed(reviewed, monkeypatch):
+    git(reviewed["bare"]["beta"], "update-ref", "-d", "refs/heads/feat/two-member")
+    refused(gr2(reviewed["author"], monkeypatch, "pr", "create", "--json"), "beta", "absent")
+    assert reviewed["adapter"].created == []
+
+
+def test_a_second_create_for_one_review_is_refused(reviewed, monkeypatch):
+    assert gr2(reviewed["author"], monkeypatch, "pr", "create", "--json").exit_code == 0
+    refused(gr2(reviewed["author"], monkeypatch, "pr", "create", "--json"), "already exists")
+    assert len(reviewed["adapter"].created) == 2
+    assert gr2(reviewed["author"], monkeypatch, "pr", "status", "--json").exit_code == 0
+
+
+@pytest.mark.parametrize("verb", ["create", "status", "merge"])
+def test_review_beside_a_legacy_unit_is_refused(reviewed, monkeypatch, verb):
+    refused(gr2(reviewed["author"], monkeypatch, "pr", verb, reviewed["author"], "unit", "--review", reviewed["target"]),
+            "give one or the other")
+
+
+def test_merge_reads_a_configured_method_when_the_root_has_one(reviewed, monkeypatch):
+    assert gr2(reviewed["author"], monkeypatch, "pr", "create", "--json").exit_code == 0
+    spec = reviewed["author"] / ".grip" / "workspace_spec.toml"
+    spec.write_text('schema_version = 1\nworkspace_name = "author"\n[settings]\nmerge_method = "squash"\n')
+    seen = {}
+    monkeypatch.setattr(pr_ops, "merge_pr_group", lambda **kw: seen.update(kw) or {"pr_group_id": kw["pr_group_id"], "group_state": "merged", "completed": []})
+    assert gr2(reviewed["author"], monkeypatch, "pr", "merge", "--json").exit_code == 0
+    assert "squash" in str(seen["method"]).lower()
+
+
+@pytest.mark.parametrize("remote,path,why", [
+    ("https://gitlab.com/o/alpha.git", "alpha", "names no GitHub owner/repo"),
+    ("https://github.com/o/alpha.git", "../outside", "leaves the workspace"),
+    ("https://github.com/o/alpha.git", "gone", "is missing"),
+])
+def test_members_that_cannot_be_addressed_are_refused_by_name(tmp_path, remote, path, why, capsys):
+    (tmp_path / "alpha").mkdir()
+    member = dict(key="alpha", remote=remote, path=path, commit="0" * 40, base="0" * 40)
+    with pytest.raises(typer.Exit):
+        app_mod._review_members_on_host(tmp_path.resolve(), [member])
+    assert why in capsys.readouterr().err
+
+
+def test_two_members_on_one_repo_are_refused(tmp_path, capsys):
+    for k in KEYS:
+        (tmp_path / k).mkdir()
+    members = [dict(key=k, remote="git@github.com:o/mono.git", path=k, commit="0" * 40, base="0" * 40) for k in KEYS]
+    with pytest.raises(typer.Exit):
+        app_mod._review_members_on_host(tmp_path.resolve(), members)
+    assert "o/mono" in capsys.readouterr().err
+
+
+def test_an_ssh_url_remote_addresses_its_repo(tmp_path):
+    (tmp_path / "alpha").mkdir()
+    member = dict(key="alpha", remote="ssh://git@github.com/o/alpha.git", path="alpha", commit="0" * 40, base="0" * 40)
+    assert list(app_mod._review_members_on_host(tmp_path.resolve(), [member])) == ["o/alpha"]

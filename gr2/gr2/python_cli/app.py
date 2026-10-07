@@ -11,7 +11,7 @@ import sys
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Annotated, List, Mapping, Optional
+from typing import Annotated, List, Mapping, NoReturn, Optional
 
 import typer
 try:
@@ -37,7 +37,7 @@ from . import push as push_ops
 from .clone_exec import rmtree_or_refuse
 from .events import EventEmitError, EventType, emit, emit_after_outcome
 from .layout import grip_dir
-from .root_option import ROOT_OPTION, ContextCommand, ReviewTargetCommand, ReviewOpenCommand, RootOptionCommand, RootOptionalCommand
+from .root_option import ROOT_OPTION, ContextCommand, ReviewTargetCommand, ReviewOpenCommand, ReviewSubjectCommand, RootOptionCommand, RootOptionalCommand
 from .gitops import (
     branch_exists,
     checkout_branch,
@@ -542,18 +542,19 @@ def _group_state_from_statuses(statuses: list[dict[str, object]]) -> str:
     return "mixed"
 
 
+def _refuse(message: str) -> NoReturn:
+    typer.echo(f"refused: {message}", err=True)
+    raise typer.Exit(code=2)
+
+
+def _refuse_review_beside_unit(owner_unit: Optional[str], review: Optional[str]) -> None:
+    if owner_unit is not None and review is not None:
+        _refuse("--review names a review and OWNER_UNIT names a lane; give one or the other")
+
+
 def _find_review_pr_group(workspace_root: Path, target: str) -> tuple[Path, dict[str, object]]:
-    """The PR group opened for review `target`, found by its `review_target` field. None or
-    several is a refusal that names the review, never a guess."""
-    root = workspace_root / ".grip" / "pr_groups"
-    matches: list[tuple[Path, dict]] = []
-    for path in sorted(root.glob("*.json")) if root.exists() else []:
-        try:
-            doc = json.loads(path.read_text())
-        except Exception:
-            continue
-        if isinstance(doc, dict) and doc.get("review_target") == target and isinstance(doc.get("pr_group_id"), str):
-            matches.append((path, doc))
+    """The PR group opened for review `target`. None or several is a refusal that names the review."""
+    matches = pr_ops.review_pr_groups(workspace_root, target)
     if not matches:
         raise SystemExit(f"no PR group for review {target}; open one with `gr2 pr create`")
     if len(matches) > 1:
@@ -561,39 +562,69 @@ def _find_review_pr_group(workspace_root: Path, target: str) -> tuple[Path, dict
     return matches[0]
 
 
+_GITHUB_REMOTE_PREFIXES = ("https://github.com/", "git@github.com:", "ssh://git@github.com/")
+
+
+def _review_members_on_host(workspace_root: Path, members: list[dict[str, str]]) -> dict[str, tuple[dict[str, str], Path]]:
+    """Each review member's host slug and checkout, keyed by slug. Refused by name when either cannot
+    be trusted: a remote naming no GitHub owner/repo, two members on one slug (one would silently drop
+    out of the group), or a recorded path that leaves the workspace or is missing."""
+    on_host: dict[str, tuple[dict[str, str], Path]] = {}
+    for m in members:
+        remote = m["remote"].strip()
+        prefix = next((p for p in _GITHUB_REMOTE_PREFIXES if remote.startswith(p)), None)
+        slug = remote[len(prefix):].removesuffix(".git").strip("/") if prefix else ""
+        if slug.count("/") != 1 or not all(slug.split("/")):
+            _refuse(f"{m['key']}'s remote names no GitHub owner/repo, so no PR can be addressed for it")
+        if slug in on_host:
+            _refuse(f"{m['key']} and {on_host[slug][0]['key']} are both {slug}; one PR group cannot hold two members on one repo")
+        checkout = (workspace_root / m["path"]).resolve()
+        if not checkout.is_relative_to(workspace_root):
+            _refuse(f"{m['key']}'s recorded path {m['path']!r} leaves the workspace")
+        if not checkout.is_dir():
+            _refuse(f"{m['key']}'s checkout {checkout} is missing")
+        on_host[slug] = (m, checkout)
+    return on_host
+
+
 def _pr_create_for_review(workspace_root, review, platform, base_branch, draft, title, body, body_file) -> None:
-    """Open one PR per member of the current review. Each member's checkout must still be at
-    its reviewed commit, so no PR opens for bytes nobody reviewed; the head branch is the branch
-    that checkout is on, and the base is --base or the member's tracked branch."""
+    """Open one PR per member of the current review, and only for the reviewed bytes: each member's
+    checkout must be at its reviewed commit, and the branch the PR opens from must be at that commit ON
+    THE REMOTE, since the remote branch, not the checkout, is what the PR carries. The base is --base or
+    the member's tracked branch. A second group for one review is refused."""
     target, members = resolve_review_subject(workspace_root, review)
+    if pr_ops.review_pr_groups(workspace_root, target):
+        _refuse(f"a PR group for review {target} already exists; read it with `gr2 pr status`")
+    on_host = _review_members_on_host(workspace_root, members)
     from . import review_members
     tracked = {m.name: m.ref for m in review_members.workspace_members(workspace_root)}
-    heads, bases, repos = {}, {}, []
-    for m in members:
-        checkout = (workspace_root / m["path"]).resolve()
+    heads, bases = {}, {}
+    for m, checkout in on_host.values():
         at = git(checkout, "rev-parse", "HEAD")
         if at.returncode != 0 or at.stdout.strip() != m["commit"]:
-            typer.echo(f"refused: {m['key']} is no longer at its reviewed commit {m['commit'][:12]}; "
-                       "re-bind the review or restore the checkout", err=True)
-            raise typer.Exit(code=2)
+            _refuse(f"{m['key']} is no longer at its reviewed commit {m['commit'][:12]}; re-bind the review or restore the checkout")
         branch = git(checkout, "branch", "--show-current").stdout.strip()
         if not branch:
-            typer.echo(f"refused: {m['key']} has a detached HEAD; check out the branch to open its PR from", err=True)
-            raise typer.Exit(code=2)
+            _refuse(f"{m['key']} has a detached HEAD; check out the branch to open its PR from")
+        # Dialled from the workspace root, as review bind dials.
+        seen = git(workspace_root, "ls-remote", m["remote"], f"refs/heads/{branch}")
+        if seen.returncode != 0:
+            _refuse(f"cannot read {branch} on {m['key']}'s remote: {seen.stderr.strip()}")
+        tips = [line.split()[0] for line in seen.stdout.splitlines() if line.split()[1:] == [f"refs/heads/{branch}"]]
+        if tips != [m["commit"]]:
+            where = tips[0][:12] if tips else "absent"
+            _refuse(f"{m['key']}: {branch} on the remote is {where}, not the reviewed commit {m['commit'][:12]}; push the reviewed commit first")
         heads[m["key"]] = branch
         bases[m["key"]] = base_branch or str(tracked.get(m["key"]) or "")
-        repos.append(_repo_slug_from_url(m["remote"], m["key"]))
     for name, values in (("head branch", heads), ("base branch", bases)):
         if len(set(values.values())) != 1 or not next(iter(values.values())):
             listing = ", ".join(f"{k}={v or '?'}" for k, v in values.items())
-            hint = " pass --base" if name == "base branch" else " put every member on one branch"
-            typer.echo(f"refused: members disagree on the {name} ({listing});{hint}", err=True)
-            raise typer.Exit(code=2)
+            _refuse(f"members disagree on the {name} ({listing}); " + ("pass --base" if name == "base branch" else "put every member on one branch"))
     if body is not None and body_file is not None:
         typer.echo("pass one of --body or --body-file, not both", err=True)
         raise typer.Exit(code=2)
     group_body = body_file.read_text(encoding="utf-8") if body_file is not None else body
-    head = next(iter(heads.values()))
+    head, repos = next(iter(heads.values())), list(on_host)
     try:
         payload = pr_ops.create_pr_group(
             workspace_root=workspace_root, owner_unit="review", lane_name=target, title=title or head,
@@ -3371,7 +3402,7 @@ def _default_pr_group_body(owner_unit: str, lane_name: str, repos: list[str]) ->
     return f"gr2 PR group for {owner_unit}/{lane_name}\n\nRepos in this group:\n{members}\n"
 
 
-@pr_app.command("create", cls=RootOptionalCommand)
+@pr_app.command("create", cls=ReviewSubjectCommand)
 def pr_create(
     workspace_root: Path,
     owner_unit: Optional[str] = typer.Argument(None, help="Owner unit of a lane. Omit to open PRs for the current review."),
@@ -3388,6 +3419,7 @@ def pr_create(
 ) -> None:
     """Create a grouped set of per-repo PRs for a lane, or for the current review."""
     workspace_root = workspace_root.resolve()
+    _refuse_review_beside_unit(owner_unit, review)
     if owner_unit is None:
         _pr_create_for_review(workspace_root, review, platform, base_branch, draft, title, body, body_file)
         return
@@ -4375,7 +4407,7 @@ def review_rebind_cmd(
         typer.echo(f"rebased: patch-ids held; new frozen dir at {result.out_dir}")
 
 
-@pr_app.command("status", cls=RootOptionalCommand)
+@pr_app.command("status", cls=ReviewSubjectCommand)
 def pr_status(
     workspace_root: Path,
     owner_unit: Optional[str] = typer.Argument(None, help="Owner unit of a lane. Omit for the current review's PRs."),
@@ -4386,6 +4418,7 @@ def pr_status(
 ) -> None:
     """Show grouped PR status for a lane, or for the current review."""
     workspace_root = workspace_root.resolve()
+    _refuse_review_beside_unit(owner_unit, review)
     if owner_unit is None:
         target, _ = resolve_review_subject(workspace_root, review)
         group_path, group = _find_review_pr_group(workspace_root, target)
@@ -4626,7 +4659,7 @@ def pr_view(
         typer.echo("")
 
 
-@pr_app.command("merge", cls=RootOptionalCommand)
+@pr_app.command("merge", cls=ReviewSubjectCommand)
 def pr_merge(
     workspace_root: Path,
     owner_unit: Optional[str] = typer.Argument(None, help="Owner unit of a lane. Omit to merge the current review's PRs."),
@@ -4654,16 +4687,17 @@ def pr_merge(
     """Merge grouped PRs for a lane, or for the current review. A review's PRs are
     pinned to its reviewed commits unless --match-head-commit names other pins."""
     workspace_root = workspace_root.resolve()
+    _refuse_review_beside_unit(owner_unit, review)
     subject_targets = None
     if owner_unit is None:
         target, members = resolve_review_subject(workspace_root, review)
         group_path, group = _find_review_pr_group(workspace_root, target)
         owner_unit, resolved_lane = str(group.get("owner_unit")), str(group.get("lane_name"))
-        reviewed = {_repo_slug_from_url(m["remote"], m["key"]): m for m in members}
-        subject_targets = {slug: MergeVerificationTarget(repo_root=(workspace_root / m["path"]).resolve(), remote=m["remote"])
-                           for slug, m in reviewed.items()}
+        on_host = _review_members_on_host(workspace_root, members)
+        subject_targets = {slug: MergeVerificationTarget(repo_root=checkout, remote=m["remote"])
+                           for slug, (m, checkout) in on_host.items()}
         if not match_head_commit:
-            match_head_commit = [f"{slug}={m['commit']}" for slug, m in reviewed.items()]
+            match_head_commit = [f"{slug}={m['commit']}" for slug, (m, _) in on_host.items()]
     else:
         resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
         group_path, group = _find_pr_group(workspace_root, owner_unit, resolved_lane)
@@ -4701,8 +4735,10 @@ def pr_merge(
             actor=f"agent:{owner_unit}",
             method=pr_ops.resolve_merge_method(
                 explicit=method,
-                # A review's workspace is a native root, configured in grip.toml, with no lane spec to read.
-                configured=None if subject_targets is not None else _configured_merge_method(workspace_root),
+                # A native root may hold no lane spec; read its settings when it does, and fall back to
+                # the default (a merge commit) when it does not.
+                configured=_configured_merge_method(workspace_root)
+                if subject_targets is None or spec_apply.workspace_spec_path(workspace_root).exists() else None,
             ),
             verification_targets=subject_targets if subject_targets is not None else _merge_verification_targets(
                 workspace_root,

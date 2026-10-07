@@ -274,6 +274,21 @@ def _pr_groups_dir(workspace_root: Path) -> Path:
     return workspace_root / ".grip" / "pr_groups"
 
 
+def review_pr_groups(workspace_root: Path, review_target: str) -> list[tuple[Path, dict]]:
+    """Every stored group opened for `review_target`. Unreadable or id-less files are skipped:
+    they are not a group this review can be resolved to."""
+    root = _pr_groups_dir(workspace_root)
+    found: list[tuple[Path, dict]] = []
+    for path in sorted(root.glob("*.json")) if root.exists() else []:
+        try:
+            doc = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(doc, dict) and doc.get("review_target") == review_target and isinstance(doc.get("pr_group_id"), str):
+            found.append((path, doc))
+    return found
+
+
 def _generate_group_id() -> str:
     return "pg_" + os.urandom(4).hex()
 

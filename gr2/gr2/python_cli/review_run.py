@@ -1067,7 +1067,8 @@ def _run_member_steps(
 
 def _member_dir(lane_dir: Path, key: str) -> Path:
     """Where a member lives in a multi-member lane: `<lane>/<key>`, the row key `open` used."""
-    if not key or key in (".", "..") or "/" in key or "\\" in key:
+    from .grip import plain_member_key
+    if not plain_member_key(key):
         raise ReviewRunRefused(
             "bad_marker",
             f"the lane marker names a member key {key!r} that is not a plain directory name",

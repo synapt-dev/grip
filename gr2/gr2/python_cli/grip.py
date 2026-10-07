@@ -864,30 +864,44 @@ def _tree_keys(workspace: Path, commit: str, path: str) -> set[str]:
 # observed/, texts/, objects/, evidence/); a form D record (review_form_d) is one entry per protobuf
 # field. Readers ask the helpers below and never spell a layout's paths themselves.
 
+def plain_member_key(key: str) -> bool:
+    """A member key names a directory in a lane (`<lane>/<key>`), so it must be one plain name: not
+    empty, not "." or "..", and no separator, NUL or newline. A legacy key was a Git tree entry name;
+    a form D key is a free string field, so readers apply this rule before any path is built from it."""
+    return bool(key) and key not in (".", "..") and not any(c in key for c in "/\\\0\n")
+
+
 def _is_form_d_bind(workspace: Path, commit: str) -> bool:
-    from . import review_form_d as fd
+    """A bound commit whose tree has no `.grip` entry is read as form D, so a malformed record is
+    refused for what is wrong with it rather than as "not a bind"."""
     names = [n for n in _bind_git(workspace, "ls-tree", "--name-only", commit).stdout.splitlines() if n]
-    if not names or ".grip" in names:
-        return False
-    try:
-        for n in names:
-            fd.parse_entry(n)
-    except fd.ReviewRecordError:
-        return False
-    return True
+    return bool(names) and ".grip" not in names
 
 
 def _text(value: object) -> str:
     return value.decode("utf-8", "surrogateescape") if isinstance(value, bytes) else str(value)
 
 
+_FORM_D_VIEWS: dict[tuple[str, str], dict[str, object]] = {}
+
+
 def _form_d_view(workspace: Path, commit: str) -> dict[str, object]:
     """A form D bind, verified AS WRITTEN and decoded by field number, in the shape the readers use:
     per member its repository row, observed remote head, texts, carried objects (None when the bind
-    carried no range) and evidence (None when absent). Nothing is rebuilt and compared."""
-    from . import review_form_d as fd
+    carried no range) and evidence (None when absent). Nothing is rebuilt and compared. A tree is
+    content-addressed, so its checked view is kept per store and tree."""
     repo = _bind_dir(workspace)
     tree = _bind_git(workspace, "rev-parse", f"{commit}^{{tree}}").stdout.strip()
+    cached = _FORM_D_VIEWS.get((str(repo), tree))
+    if cached is not None:
+        return cached
+    view = _check_form_d(repo, tree)
+    _FORM_D_VIEWS[(str(repo), tree)] = view
+    return view
+
+
+def _check_form_d(repo: Path, tree: str) -> dict[str, object]:
+    from . import review_form_d as fd
     try:
         fd.verify_tree(repo, tree)
         record = fd.read_record(repo, tree)
@@ -898,8 +912,16 @@ def _form_d_view(workspace: Path, commit: str) -> dict[str, object]:
     members: dict[str, dict[str, object]] = {}
     for m in record.get("members", []):
         key = m.get("key", "")
-        if not key or key in members:
-            raise GripCorruptError(f"invalid review repository tree: {key!r}")
+        if not plain_member_key(key) or key in members:
+            raise GripCorruptError(f"invalid review repository tree: member key {key!r}")
+        # proto3 cannot tell an absent string from an empty one, so every repository field the legacy
+        # verifier demands must be non-empty here.
+        missing = [f for f in ("remote", "path", "commit", "base") if not m.get(f)]
+        if missing:
+            raise GripCorruptError(f"invalid review repository tree: {key} has no {', '.join(missing)}")
+        for name in ("title", "body"):
+            if m.get(name, "") != _norm_text(m.get(name, "")):
+                raise GripCorruptError(f"invalid review repository tree: {key} {name} is not NORM text")
         objects = None
         if any(k in m for k in ("range_patch", "metadata", "head_tree")):
             objects = {"range.patch": _text(m["range_patch"]) if "range_patch" in m else None,

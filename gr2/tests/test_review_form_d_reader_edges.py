@@ -6,6 +6,7 @@ from __future__ import annotations
 import pytest
 
 from gr2.python_cli import grip
+from gr2.python_cli import review_form_d as fd
 from tests.review_ref_helper import legacy_review_ref, review_ref
 from tests.test_review_form_d_readers import attach, bound, record_world, ref_targets  # noqa: F401
 from tests.test_review_transport import git
@@ -21,6 +22,7 @@ def _duplicate_kind(root, tree):
 
 def test_readers_refuse_a_form_d_record_that_fails_verify(record_world, tmp_path):
     w = record_world
+    assert grip.show_review_commit(w["author"], attach(w["author"], w["tree"]))["members"]  # control
     bad = _duplicate_kind(w["author"], w["tree"])
     commit = git(w["author"], "commit-tree", bad, "-m", "malformed")
     git(w["author"], "update-ref", review_ref(commit), commit, "0" * 40)
@@ -30,7 +32,6 @@ def test_readers_refuse_a_form_d_record_that_fails_verify(record_world, tmp_path
         with pytest.raises(grip.GripCorruptError, match="invalid form D review record"):
             call(w["author"], commit, *args)
     assert not (tmp_path / "lane").exists()
-    assert grip.show_review_commit(w["author"], attach(w["author"], w["tree"]))["members"]  # control
 
 
 def test_publish_sends_the_spelling_the_bind_has(bound):
@@ -47,3 +48,42 @@ def test_receive_refuses_when_another_spelling_names_a_different_commit(bound):
     with pytest.raises(grip.GripCorruptError, match="review_ref_target_mismatch"):
         grip.receive_review_commit(bound["receiver"], bound["id"], bound["remote"], ref=review_ref(bound["id"]))
     assert ref_targets(bound["receiver"]) == {legacy_review_ref(bound["id"]): other}
+
+
+def _bound_variant(w, **member_changes):
+    member = {**w["record"]["members"][0], **member_changes}
+    member = {k: v for k, v in member.items() if v is not None}
+    tree = fd.write_record(w["author"], {**w["record"], "members": [member]})
+    commit = git(w["author"], "commit-tree", tree, "-m", "variant")
+    git(w["author"], "update-ref", review_ref(commit), commit, "0" * 40)
+    return commit
+
+
+@pytest.mark.parametrize("key", ["../escape", "/tmp/pwn", "a/b", ".", "..", "a\\b", "a\nb", "a\0b"])
+def test_a_member_key_that_is_not_a_plain_name_is_refused_before_any_path(record_world, tmp_path, key):
+    w = record_world
+    commit = _bound_variant(w, key=key)
+    for call, args in ((grip.show_review_commit, ()), (grip.verify_review_commit, ()), (grip.review_row_keys, ()),
+                       (grip.reconstruct_review_lane, (key, tmp_path / "lane"))):
+        with pytest.raises(grip.GripCorruptError, match="member key"):
+            call(w["author"], commit, *args)
+    assert not (tmp_path / "lane").exists()
+
+
+def test_a_plain_member_key_is_read(record_world):
+    commit = _bound_variant(record_world, key="alpha")
+    assert grip.review_row_keys(record_world["author"], commit) == ["alpha"]
+
+
+@pytest.mark.parametrize("field", ["remote", "path", "commit", "base"])
+def test_a_member_missing_a_repository_field_is_refused(record_world, field):
+    commit = _bound_variant(record_world, **{field: None})
+    with pytest.raises(grip.GripCorruptError, match=f"has no {field}"):
+        grip.verify_review_commit(record_world["author"], commit)
+
+
+@pytest.mark.parametrize("field", ["title", "body"])
+def test_text_that_is_not_norm_is_refused(record_world, field):
+    commit = _bound_variant(record_world, **{field: "text\n\n"})
+    with pytest.raises(grip.GripCorruptError, match=f"{field} is not NORM text"):
+        grip.verify_review_commit(record_world["author"], commit)

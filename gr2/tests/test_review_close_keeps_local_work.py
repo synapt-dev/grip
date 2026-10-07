@@ -117,3 +117,17 @@ def test_reconstruction_close_clean_control_preserves_run_evidence(reconstructio
     usable = json.loads(Path(preserved["receipt"]).read_text())
     assert usable["failed_ids"] == ["tests/example.py::test_example"]
     assert Path(usable["output_log"]) == Path(preserved["log"])
+
+
+@pytest.mark.parametrize("verb", ["close", "close-gr"])
+def test_reconstruction_close_refuses_a_lane_holding_a_stash(reconstruction, verb):
+    """A stash is work too: a clean tree with a stash must not be removed with it."""
+    runner, lane, allocation, _ = reconstruction
+    (lane / "f.txt").write_text("stashed user work\n")
+    _git(lane, "stash", "push", "-q", "-m", "user stash")
+    assert _git(lane, "status", "--porcelain", "--", "f.txt") == ""
+    result = runner.invoke(gr2_app.app, ["review", verb, str(lane), "--json"])
+    assert result.exit_code != 0, result.output
+    assert "stash" in result.output.lower(), result.output
+    assert lane.is_dir() and allocation.exists()
+    assert _git(lane, "show", "stash@{0}:f.txt") == "stashed user work"

@@ -9,6 +9,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 import re
+from urllib.parse import urlsplit
 
 from .gitops import git
 from .layout import grip_dir as _layout_grip_dir
@@ -230,6 +231,7 @@ def _project_review_body(
         if not key or key in seen or any(ch in key for ch in "/\\"):
             raise GripCorruptError(f"invalid or duplicate project review key: {key!r}")
         seen.add(key)
+        _refuse_remote_credentials(key, pin.get("repo", ""))
         fields: list[str] = []
         for name, value in (("remote", pin.get("repo", "")), ("path", pin.get("path", "")), ("commit", pin.get("head", "")), ("base", pin.get("base", ""))):
             if not value or (name in {"commit", "base"} and not _SHA40.match(value)):
@@ -335,6 +337,7 @@ def create_workspace_commit(workspace: Path, repos: list[dict[str, str]]) -> str
         if not key or key in seen or any(ch in key for ch in "/\\"):
             raise GripCorruptError(f"invalid or duplicate workspace repo key: {key!r}")
         seen.add(key)
+        _refuse_remote_credentials(key, repo.get("remote", ""))
         fields: list[str] = []
         for name, value in (("remote", repo.get("remote", "")), ("path", repo.get("path", "")), ("commit", repo.get("commit", "")), ("base", repo.get("base", ""))):
             if not value or (name in {"commit", "base"} and not _SHA40.match(value)):
@@ -375,6 +378,30 @@ def read_workspace_commit(workspace: Path, commit: str) -> list[dict[str, str]]:
 # ---------------------------------------------------------------------------
 
 _REVIEW_BIND_SCHEMA = "gr2-review-bind/v2"
+
+
+def url_has_credentials(url: str) -> bool:
+    """URL userinfo other than an SSH login. Never prints the URL. The one owner of this rule:
+    store init and every review-record writer and the publisher ask it here."""
+    head = url.split("://", 1)[0]
+    address = url.split("::", 1)[1] if "::" in head else url
+    parsed = urlsplit(address)
+    if parsed.password is not None:
+        return True
+    return parsed.username is not None and parsed.scheme.lower() not in {"ssh", "git+ssh", "ssh+git"}
+
+
+def _is_local_remote(url: str) -> bool:
+    """An author-local remote: an absolute path or a file:// URL. It names this host's filesystem."""
+    return url.startswith("file://") or Path(url).is_absolute()
+
+
+def _refuse_remote_credentials(key: str, remote: str) -> None:
+    """A review record is portable and travels with `review publish`, so a remote carrying URL
+    userinfo is refused at every writer, before any git call can dial it. The refusal names the
+    member, never the URL."""
+    if url_has_credentials(remote):
+        raise GripReviewRefused("remote_credentials", key, "remove URL userinfo and use a credential helper")
 
 
 class GripReviewRefused(Exception):
@@ -551,6 +578,7 @@ def _bind_review_rows_body(
             if not value or (sha and not _SHA40.match(value)):
                 raise GripReviewRefused("invalid_field", f"{key}/{name}", value)
 
+        _refuse_remote_credentials(key, remote)
         # Refusal 1: base must be the live remote head of the target ref.
         observed = _remote_head(workspace, remote, ref)
         if base != observed:
@@ -1268,6 +1296,14 @@ def publish_review_commit(workspace: Path, commit: str, remote: str,
     _validate_bind_store(workspace)
     _resolve_bound(workspace, full)
     _require_review_content(workspace, full)
+    # A record made before the writer guard, or received from elsewhere, is checked again here:
+    # nothing leaves with a credential, and an author-local path never leaves this host.
+    off_host = destination.startswith("https://")
+    for key, fields in sorted(_read_repo_state(workspace, full, bind=True).items()):
+        _refuse_remote_credentials(key, fields["remote"])
+        if off_host and _is_local_remote(fields["remote"]):
+            raise GripReviewRefused("local_path_remote", key,
+                                    "an author-local path stays on this host; publish to a local destination")
     proc = git(workspace, "push", destination, f"{full}:{canonical}", timeout=30)
     if proc.returncode:
         raise GripCorruptError(f"review_publication_unconfirmed: {proc.stderr.strip()}")

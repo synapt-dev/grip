@@ -59,7 +59,7 @@ def _bound_variant(w, **member_changes):
     return commit
 
 
-@pytest.mark.parametrize("key", ["../escape", "/tmp/pwn", "a/b", ".", "..", ".git", ".grip-review-open.json",
+@pytest.mark.parametrize("key", ["../escape", "/tmp/pwn", "a/b", ".", "..", ".git", ".venv", ".grip-review-open.json",
                                  ".grip-review-run.json", "a\\b", "a\nb", "a\0b"])
 def test_a_member_key_that_is_not_a_plain_name_is_refused_before_any_path(record_world, tmp_path, key):
     w = record_world
@@ -151,7 +151,7 @@ def test_text_that_is_not_utf8_is_refused_by_name(record_world, tmp_path):
     assert not (tmp_path / "lane").exists()
 
 
-@pytest.mark.parametrize("bad_key", ["../escape", "/abs", ".", ".git", ".grip-review-open.json"])
+@pytest.mark.parametrize("bad_key", ["../escape", "/abs", ".", ".git", ".venv", ".grip-review-open.json"])
 def test_review_open_refuses_a_bad_member_key_before_any_member_is_reconstructed(
         record_world, tmp_path, monkeypatch, bad_key):
     from tests.test_pr_review_subject import gr2
@@ -235,6 +235,18 @@ def test_every_lane_control_file_carries_the_refused_prefix():
     if every control file review_run writes actually starts with it."""
     from gr2.python_cli import review_run
     from gr2.python_cli.layout import LANE_CONTROL_PREFIX
-    names = [review_run._MARKER_NAME, review_run._RECEIPT_NAME, review_run._OUTPUT_LOG_NAME]
+    names = [review_run._MARKER_NAME, review_run._RECEIPT_NAME, review_run._OUTPUT_LOG_NAME,
+             review_run._member_log_name("alpha"), review_run._member_log_name(".github")]
     assert all(n.startswith(LANE_CONTROL_PREFIX) for n in names), names
     assert not any(grip.plain_member_key(n) for n in names)
+    assert not grip.plain_member_key(review_run._VENV_DIRNAME)
+
+
+def test_two_members_whose_names_overlap_get_disjoint_lane_paths():
+    """`alpha` and `alpha.grip-review-run.log` are both plain keys; alpha's run log must not land in
+    the other member's directory."""
+    from gr2.python_cli import review_run
+    keys = ["alpha", "alpha.grip-review-run.log"]
+    assert all(grip.plain_member_key(k) for k in keys)
+    logs = [review_run._member_log_name(k) for k in keys]
+    assert len(set(logs)) == 2 and not set(logs) & set(keys), logs

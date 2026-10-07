@@ -12,7 +12,7 @@ import re
 from urllib.parse import urlsplit
 
 from .gitops import git
-from .layout import GRIP_DIR, LANE_CONTROL_PREFIX, grip_dir as _layout_grip_dir
+from .layout import GRIP_DIR, LANE_CONTROL_PREFIX, LANE_VENV, grip_dir as _layout_grip_dir
 from .workspace_guidance import missing_gr2_workspace_guidance
 
 
@@ -866,10 +866,11 @@ def _tree_keys(workspace: Path, commit: str, path: str) -> set[str]:
 
 def plain_member_key(key: str) -> bool:
     """A member key names a directory in a lane (`<lane>/<key>`), so it must be one plain name: not
-    empty, not ".", ".." or ".git", not one of the lane's own control files (`.grip-review*`), and no
-    separator, NUL or newline. Other dot names are real repository keys (an org's `.github`).
+    empty, not ".", ".." or ".git", not the lane's shared environment (`.venv`), not one of the lane's
+    own control files (`.grip-review*`, every run log included), and no separator, NUL or newline.
+    Other dot names are real repository keys (an org's `.github`).
     Readers apply this rule to every bind before any path is built."""
-    return (bool(key) and key not in (".", "..", ".git") and not key.startswith(LANE_CONTROL_PREFIX)
+    return (bool(key) and key not in (".", "..", ".git", LANE_VENV) and not key.startswith(LANE_CONTROL_PREFIX)
             and not any(c in key for c in "/\\\0\n"))
 
 

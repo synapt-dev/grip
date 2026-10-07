@@ -54,6 +54,10 @@ MOVED_MARKER = ".grip-moved"
 #: member key can never name one of them.
 LANE_CONTROL_PREFIX = ".grip-review"
 
+#: The shared environment a multi-member review lane installs into, at `<lane>/.venv`, beside
+#: the member repositories; no member key may name it.
+LANE_VENV = ".venv"
+
 
 def grip_dir(workspace_root: Path) -> Path:
     """`<root>/.grip`: the one place a caller asks for gr2's state directory."""

@@ -3556,6 +3556,30 @@ def _strip_gr_prefix(commit: str) -> str:
     return commit[3:] if commit.startswith("gr:") else commit
 
 
+def resolve_review_subject(
+    root: Path, explicit_target: Optional[str] = None,
+) -> tuple[str, list[dict[str, str]]]:
+    """Read canonical member facts from an explicit or sole current bind.
+
+    Consumers own their operations and group association. This reader neither
+    creates a lane nor derives branch names from commit identity.
+    """
+    workspace = root.resolve()
+    target = explicit_target if explicit_target is not None else _the_one_review_bind(workspace, "show")
+    record = _review_call(grip.show_review_commit, workspace, _strip_gr_prefix(target))
+    members = [
+        {
+            "key": member["key"],
+            "path": member["path"],
+            "remote": member["remote"],
+            "base": member["base"],
+            "commit": member["head"],
+        }
+        for member in record["members"]
+    ]
+    return record["id"], members
+
+
 def _echo_notes(exc: BaseException) -> None:
     """Print what was attached to a propagating error (`add_note`), so a cleanup that could not
     finish is named next to the refusal instead of vanishing with it."""

@@ -693,15 +693,21 @@ def list_review_binds(workspace: Path) -> list[tuple[str, str]]:
     """Every review bind in the workspace root's `.git` as (commit, committed-at), oldest first. Read-only."""
     _validate_bind_store(workspace)
     out = _bind_git(workspace, "for-each-ref", "--format=%(refname)\t%(committerdate:iso-strict)", _REVIEW_REF_PREFIX)
-    rows = []
+    rows: dict[str, str] = {}
     for line in out.stdout.splitlines():
         ref, _, when = line.partition("\t")
         if ref.startswith(_REVIEW_REF_PREFIX):
-            suffix = ref[len(_REVIEW_REF_PREFIX):]
-            if not _SHA40.fullmatch(suffix):
+            parsed = _review_ref_id(ref)
+            if parsed is None:
+                import sys
+                print(f"gr2: skipping review ref of an unknown version: {ref}", file=sys.stderr)
+                continue
+            if not _SHA40.fullmatch(parsed[1]):
                 raise GripCorruptError(f"review_ref_identity_mismatch: noncanonical review ref {ref}")
-            rows.append((_resolve_bound(workspace, suffix), when))
-    return sorted(rows, key=lambda r: (r[1], r[0]))
+            # One bind may carry a legacy and a v1 spelling at once (mid-migration); it is listed once.
+            full = _resolve_bound(workspace, parsed[1])
+            rows[full] = min(rows.get(full, when), when)
+    return sorted(rows.items(), key=lambda r: (r[1], r[0]))
 
 
 def show_review_commit(workspace: Path, commit: str) -> dict[str, object]:
@@ -1098,6 +1104,26 @@ def _grip_git(workspace: Path, *args: str) -> subprocess.CompletedProcess[str]:
 # `_grip_git` and the alpha snapshot helpers above stay on `.grip/.git`: the snapshot verbs and the
 # config reader still use it.
 _REVIEW_REF_PREFIX = "refs/dev.synapt.grip/__reviews__/"
+# Versioned spellings a reader understands, beside the legacy one (`<prefix><id>`, version 0). This code only
+# READS them; writers keep the legacy spelling until readers that know them are what everyone runs.
+_REVIEW_REF_VERSIONS = ("v1",)
+
+
+def _review_ref_id(ref: str) -> tuple[str, str] | None:
+    """(version, id) for a ref under the review prefix; the id is the LAST path segment. Version "" is the
+    legacy spelling. None for a nested spelling this reader does not know (a newer writer's), which callers
+    skip rather than refuse: an unknown version must not break every command that lists binds."""
+    parts = ref[len(_REVIEW_REF_PREFIX):].split("/")
+    if len(parts) == 1:
+        return "", parts[0]
+    if len(parts) == 2 and parts[0] in _REVIEW_REF_VERSIONS:
+        return parts[0], parts[1]
+    return None
+
+
+def _review_refs_for(full: str) -> list[str]:
+    """Every spelling a bind for `full` may have, newest version first."""
+    return [f"{_REVIEW_REF_PREFIX}{v}/{full}" for v in reversed(_REVIEW_REF_VERSIONS)] + [f"{_REVIEW_REF_PREFIX}{full}"]
 _ZERO_OID = "0" * 40
 
 
@@ -1254,12 +1280,19 @@ def _resolve_bound(workspace: Path, commit: str) -> str:
     before any tree is read; an abbreviated sha is expanded first, as git did in the old store."""
     proc = _bind_git(workspace, "rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}")
     full = proc.stdout.strip() if proc.returncode == 0 else ""
-    bound = _bind_git(workspace, "rev-parse", "--verify", "--quiet", f"{_REVIEW_REF_PREFIX}{full}")
-    if not full or bound.returncode != 0:
-        raise ReviewStoreAbsent(f"No review bind {commit} is bound in {workspace}.")
-    if bound.stdout.strip() != full:
-        raise GripCorruptError(f"review_ref_target_mismatch: {_REVIEW_REF_PREFIX}{full}")
-    return full
+    if full:
+        # Every known spelling present must name the bind itself: a valid v1 ref must not mask a legacy ref that
+        # points elsewhere, or the other way round.
+        found = False
+        for ref in _review_refs_for(full):
+            bound = _bind_git(workspace, "rev-parse", "--verify", "--quiet", ref)
+            if bound.returncode == 0:
+                if bound.stdout.strip() != full:
+                    raise GripCorruptError(f"review_ref_target_mismatch: {ref}")
+                found = True
+        if found:
+            return full
+    raise ReviewStoreAbsent(f"No review bind {commit} is bound in {workspace}.")
 
 
 def _review_transport_identity(commit: str, ref: str | None) -> tuple[str, str]:

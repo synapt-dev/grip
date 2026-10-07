@@ -866,9 +866,11 @@ def _tree_keys(workspace: Path, commit: str, path: str) -> set[str]:
 
 def plain_member_key(key: str) -> bool:
     """A member key names a directory in a lane (`<lane>/<key>`), so it must be one plain name: not
-    empty, no leading dot (".", "..", ".git" and the lane's own marker file all start with one), and
-    no separator, NUL or newline. Readers apply this rule to every bind before any path is built."""
-    return bool(key) and not key.startswith(".") and not any(c in key for c in "/\\\0\n")
+    empty, not ".", ".." or ".git", not one of the lane's own control files (`.grip-review*`), and no
+    separator, NUL or newline. Other dot names are real repository keys (an org's `.github`).
+    Readers apply this rule to every bind before any path is built."""
+    return (bool(key) and key not in (".", "..", ".git") and not key.startswith(".grip-review")
+            and not any(c in key for c in "/\\\0\n"))
 
 
 def _is_form_d_bind(workspace: Path, commit: str) -> bool:
@@ -976,6 +978,15 @@ def _carries_objects(workspace: Path, commit: str, key: str) -> bool:
     return key in _tree_keys(workspace, commit, "objects")
 
 
+def require_reconstructable(workspace: Path, commit: str, keys: list[str]) -> None:
+    """Before a multi-member open reconstructs anything: every member carries a range and its tree.
+    Pure reads, so a refusal leaves no member cloned."""
+    commit = _resolve_bound(workspace, commit)
+    for key in keys:
+        if not _carries_objects(workspace, commit, key):
+            raise GripReviewRefused("row_carries_no_objects", key, "reconstruction needs a carried range")
+
+
 def _range_files(patch: str | None) -> list[str] | None:
     if patch is None:
         return None
@@ -993,7 +1004,11 @@ def _verify_form_d_commit(workspace: Path, commit: str) -> dict[str, object]:
     field, scalars) and decoded by number, so the stored tree IS the verified tree."""
     import hashlib
 
-    view = _form_d_view(workspace, commit)
+    # verify measures the store as it is NOW: re-check from the objects, never from the readers' cache.
+    repo = _bind_dir(workspace)
+    tree = _bind_git(workspace, "rev-parse", f"{commit}^{{tree}}").stdout.strip()
+    view = _check_form_d(repo, tree)
+    _FORM_D_VIEWS[(str(repo), tree)] = view
     measured: list[dict[str, str]] = []
     for key, m in sorted(view["members"].items()):
         repo, observed = m["repo"], m["remote_head"]

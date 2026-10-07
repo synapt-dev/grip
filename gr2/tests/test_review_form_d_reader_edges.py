@@ -59,7 +59,8 @@ def _bound_variant(w, **member_changes):
     return commit
 
 
-@pytest.mark.parametrize("key", ["../escape", "/tmp/pwn", "a/b", ".", "..", "a\\b", "a\nb", "a\0b"])
+@pytest.mark.parametrize("key", ["../escape", "/tmp/pwn", "a/b", ".", "..", ".git", ".grip-review-open.json",
+                                 ".grip-review-run.json", "a\\b", "a\nb", "a\0b"])
 def test_a_member_key_that_is_not_a_plain_name_is_refused_before_any_path(record_world, tmp_path, key):
     w = record_world
     commit = _bound_variant(w, key=key)
@@ -70,9 +71,10 @@ def test_a_member_key_that_is_not_a_plain_name_is_refused_before_any_path(record
     assert not (tmp_path / "lane").exists()
 
 
-def test_a_plain_member_key_is_read(record_world):
-    commit = _bound_variant(record_world, key="alpha")
-    assert grip.review_row_keys(record_world["author"], commit) == ["alpha"]
+@pytest.mark.parametrize("key", ["alpha", ".github-org", ".github", "a.b"])
+def test_a_plain_member_key_is_read(record_world, key):
+    commit = _bound_variant(record_world, key=key)
+    assert grip.review_row_keys(record_world["author"], commit) == [key]
 
 
 @pytest.mark.parametrize("field", ["remote", "path", "commit", "base"])
@@ -196,3 +198,33 @@ def test_a_legacy_bind_with_an_unsafe_member_key_is_refused(record_world, bad_ke
     git(w["author"], "update-ref", legacy_review_ref(bad), bad, "0" * 40)
     with pytest.raises(grip.GripCorruptError, match="member key"):
         grip.review_row_keys(w["author"], bad)
+
+
+def test_verify_measures_the_store_now_not_a_cached_view(bound):
+    """A long-lived caller views a bind, the store changes underneath, and verify must see it."""
+    author = bound["author"]
+    assert grip.show_review_commit(author, bound["id"])["members"]  # fills the readers' cache
+    blob = git(author, "rev-parse", bound["id"] + ":004.2r_members/0000001/010.2_title")
+    loose = author / ".git" / "objects" / blob[:2] / blob[2:]
+    assert loose.is_file()
+    import zlib
+    loose.chmod(0o644)
+    loose.write_bytes(zlib.compress(b"blob 3\0bad"))
+    with pytest.raises(grip.GripCorruptError, match="fsck"):
+        grip.verify_review_commit(author, bound["id"])
+
+
+def test_review_open_checks_every_member_carries_a_range_before_the_first_clone(record_world, tmp_path, monkeypatch):
+    from tests.test_pr_review_subject import gr2
+    w = record_world
+    first = {**w["record"]["members"][0], "key": "alpha", "path": "alpha"}
+    second = {k: v for k, v in {**w["record"]["members"][0], "key": "beta", "path": "beta"}.items() if k != "head_tree"}
+    commit = _bound_record(w, {**w["record"], "members": [first, second]})
+    calls = []
+    monkeypatch.setattr(grip, "reconstruct_review_lane", lambda *a, **k: calls.append(a))
+    lane = tmp_path / "lane"
+    result = gr2(w["author"], monkeypatch, "review", "open", "gr:" + commit, "--lane-dir", lane)
+    assert result.exit_code != 0
+    assert "row_carries_no_objects" in result.output + str(result.exception)
+    assert calls == []
+    assert not lane.exists() or not any(lane.iterdir())

@@ -382,20 +382,20 @@ def test_a_refused_first_bind_does_not_remove_a_store_another_bind_published_int
     else:
         tree = fd.write_record(ws, {"schema": grip_mod._REVIEW_BIND_SCHEMA, "kind": "review", "policy": "no-policy"})
         fd.verify_tree(ws, tree)
-        other = _git_out(ws, "commit-tree", tree, "-m", "concurrent form D writer")
+        other = grip_mod._bind_commit_tree(ws, tree, message="concurrent form D writer")
         ref = review_ref(other, version="v1" if spelling == "v1" else "future/nested")
         _git(ws, "update-ref", ref, other)
     before_refs = _git_out(ws, "for-each-ref", "--format=%(refname) %(objectname)", REVIEW_REF_ROOT)
     assert before_refs == ref + " " + other
     physical = (ws / ".git").stat().st_ino
-    before_head = _git_out(ws, "rev-parse", "HEAD")
+    before_head = (ws / ".git" / "HEAD").read_bytes()
     def refused() -> str:
         raise grip_mod.GripReviewRefused("base_not_live_head", "x", "y")
     with pytest.raises(grip_mod.GripReviewRefused):
         grip_mod._guarded_bind(ws, created, refused)
     assert (ws / ".git").exists() and (ws / "grip.toml").is_file()
     assert (ws / ".git").stat().st_ino == physical
-    assert _git_out(ws, "rev-parse", "HEAD") == before_head
+    assert (ws / ".git" / "HEAD").read_bytes() == before_head
     assert _git_out(ws, "for-each-ref", "--format=%(refname) %(objectname)", REVIEW_REF_ROOT) == before_refs
 
 

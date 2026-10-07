@@ -286,6 +286,7 @@ arg   pr checks lane_name <str>                                       stable
 arg   pr checks owner_unit <str>                                      stable
 arg   pr checks workspace_root <str>                                  stable
 flag  pr checks --json                                                stable
+flag  pr checks --review <str>                                        stable
 flag  pr checks --root/-C <str>                                       stable
 verb  pr checks                                                       stable
 # pr create
@@ -326,6 +327,7 @@ arg   pr view owner_unit <str>                                        stable
 arg   pr view workspace_root <str>                                    stable
 flag  pr view --json                                                  stable
 flag  pr view --repo <str>                                            stable
+flag  pr view --review <str>                                          stable
 flag  pr view --root/-C <str>                                         stable
 verb  pr view                                                         stable
 # prune

@@ -159,11 +159,12 @@ def test_reconstruction_close_refuses_a_commit_on_the_reviewed_head(reconstructi
 @pytest.mark.parametrize("verb", ["close", "close-gr"])
 def test_reconstruction_close_refuses_a_local_only_tag(reconstruction, verb):
     runner, lane, allocation, _ = reconstruction
-    head = _git(lane, "rev-parse", "HEAD")
-    (lane / "f.txt").write_text("tagged work\n")
-    _git(lane, "-c", "user.name=F", "-c", "user.email=f@x.invalid", "commit", "-qam", "tagged")
-    _git(lane, "tag", "kept-work")
-    _git(lane, "checkout", "-q", "--detach", head)
+    # Made without moving HEAD, so no reflog holds it: only the tag reaches this commit.
+    tree = _git(lane, "rev-parse", "HEAD^{tree}")
+    commit = _git(lane, "-c", "user.name=F", "-c", "user.email=f@x.invalid", "commit-tree", tree,
+                  "-p", "HEAD", "-m", "tagged")
+    _git(lane, "tag", "kept-work", commit)
+    assert commit not in _git(lane, "rev-list", "--reflog").split()
     result = runner.invoke(gr2_app.app, ["review", verb, str(lane), "--json"])
     assert result.exit_code != 0 and "unpublished" in result.output.lower(), result.output
     assert lane.is_dir() and allocation.exists()

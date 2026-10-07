@@ -716,20 +716,20 @@ def show_review_commit(workspace: Path, commit: str) -> dict[str, object]:
     or a bare sha; a commit that is not a bind is refused the way `verify` refuses it."""
     _validate_bind_store(workspace)
     commit = _resolve_bound(workspace, commit)
+    if _is_form_d_bind(workspace, commit):
+        view = _form_d_view(workspace, commit)
+        return {"id": f"gr:{commit}", "members": [{
+            "key": key, "remote": m["repo"]["remote"], "path": m["repo"]["path"],
+            "base": m["repo"]["base"], "head": m["repo"]["commit"], "title": m["title"], "body": m["body"],
+            "files": _range_files(None if m["objects"] is None else m["objects"]["range.patch"]),
+        } for key, m in sorted(view["members"].items())]}
     if _bind_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip() != _REVIEW_BIND_SCHEMA:
         raise GripCorruptError("not a gr2 review bind commit")
     rows = _read_repo_state(workspace, commit, bind=True)
     members: list[dict[str, object]] = []
     for key, fields in sorted(rows.items()):
         patch = _bind_git(workspace, "show", f"{commit}:objects/{key}/range.patch")
-        files: list[str] | None = None
-        if patch.returncode == 0:
-            files = []
-            for line in patch.stdout.splitlines():
-                if line.startswith("diff --git a/"):
-                    name = line[len("diff --git a/"):].rsplit(" b/", 1)[0]
-                    if name not in files:
-                        files.append(name)
+        files = _range_files(patch.stdout if patch.returncode == 0 else None)
         members.append({
             "key": key,
             "remote": fields["remote"],
@@ -751,6 +751,8 @@ def _verify_review_commit_in_store(workspace: Path, commit: str) -> dict[str, ob
     body NORM the hand gate produced)."""
     import hashlib
 
+    if _is_form_d_bind(workspace, commit):
+        return _verify_form_d_commit(workspace, commit)
     if _bind_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip() != _REVIEW_BIND_SCHEMA:
         raise GripCorruptError("not a gr2 review bind commit")
 
@@ -858,6 +860,118 @@ def _tree_keys(workspace: Path, commit: str, path: str) -> set[str]:
     return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
 
 
+# A review bind is stored in one of two layouts. The legacy layout names its subtrees (.grip/, repos/,
+# observed/, texts/, objects/, evidence/); a form D record (review_form_d) is one entry per protobuf
+# field. Readers ask the helpers below and never spell a layout's paths themselves.
+
+def _is_form_d_bind(workspace: Path, commit: str) -> bool:
+    from . import review_form_d as fd
+    names = [n for n in _bind_git(workspace, "ls-tree", "--name-only", commit).stdout.splitlines() if n]
+    if not names or ".grip" in names:
+        return False
+    try:
+        for n in names:
+            fd.parse_entry(n)
+    except fd.ReviewRecordError:
+        return False
+    return True
+
+
+def _text(value: object) -> str:
+    return value.decode("utf-8", "surrogateescape") if isinstance(value, bytes) else str(value)
+
+
+def _form_d_view(workspace: Path, commit: str) -> dict[str, object]:
+    """A form D bind, verified AS WRITTEN and decoded by field number, in the shape the readers use:
+    per member its repository row, observed remote head, texts, carried objects (None when the bind
+    carried no range) and evidence (None when absent). Nothing is rebuilt and compared."""
+    from . import review_form_d as fd
+    repo = _bind_dir(workspace)
+    tree = _bind_git(workspace, "rev-parse", f"{commit}^{{tree}}").stdout.strip()
+    try:
+        fd.verify_tree(repo, tree)
+        record = fd.read_record(repo, tree)
+    except fd.ReviewRecordError as exc:
+        raise GripCorruptError(f"invalid form D review record: {exc}") from exc
+    if record.get("schema") != _REVIEW_BIND_SCHEMA or record.get("kind") != "review":
+        raise GripCorruptError("not a gr2 review bind commit")
+    members: dict[str, dict[str, object]] = {}
+    for m in record.get("members", []):
+        key = m.get("key", "")
+        if not key or key in members:
+            raise GripCorruptError(f"invalid review repository tree: {key!r}")
+        objects = None
+        if any(k in m for k in ("range_patch", "metadata", "head_tree")):
+            objects = {"range.patch": _text(m["range_patch"]) if "range_patch" in m else None,
+                       "metadata": _text(m.get("metadata", b"")),
+                       "head-tree": m.get("head_tree", "")}
+            if "committers" in m:
+                objects["committers"] = _text(m["committers"])
+        evidence = None
+        if "evidence" in m:
+            evidence = {k: _text(v) for k, v in m["evidence"].items()}
+        members[key] = {
+            "repo": {"remote": m.get("remote", ""), "path": m.get("path", ""),
+                     "commit": m.get("commit", ""), "base": m.get("base", "")},
+            "remote_head": m.get("remote_head", ""), "title": m.get("title", ""), "body": m.get("body", ""),
+            "objects": objects, "evidence": evidence,
+        }
+    return {"tree": tree, "policy": record.get("policy", ""), "members": members}
+
+
+def _carried(workspace: Path, commit: str, key: str, group: str, name: str) -> str | None:
+    """One carried value of a member (group "objects" or "evidence"), in either layout; None if absent."""
+    if _is_form_d_bind(workspace, commit):
+        member = _form_d_view(workspace, commit)["members"].get(key)
+        values = None if member is None else member[group]
+        return None if values is None else values.get(name)
+    proc = _bind_git(workspace, "show", f"{commit}:{group}/{key}/{name}")
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _carries_objects(workspace: Path, commit: str, key: str) -> bool:
+    if _is_form_d_bind(workspace, commit):
+        member = _form_d_view(workspace, commit)["members"].get(key)
+        return member is not None and member["objects"] is not None
+    return key in _tree_keys(workspace, commit, "objects")
+
+
+def _range_files(patch: str | None) -> list[str] | None:
+    if patch is None:
+        return None
+    files: list[str] = []
+    for line in patch.splitlines():
+        if line.startswith("diff --git a/"):
+            name = line[len("diff --git a/"):].rsplit(" b/", 1)[0]
+            if name not in files:
+                files.append(name)
+    return files
+
+
+def _verify_form_d_commit(workspace: Path, commit: str) -> dict[str, object]:
+    """verify for a form D bind: the tree is checked as written (fsck, entry names, one value per
+    field, scalars) and decoded by number, so the stored tree IS the verified tree."""
+    import hashlib
+
+    view = _form_d_view(workspace, commit)
+    measured: list[dict[str, str]] = []
+    for key, m in sorted(view["members"].items()):
+        repo, observed = m["repo"], m["remote_head"]
+        row = {
+            "key": key, "remote": repo["remote"], "path": repo["path"],
+            "head": repo["commit"], "base": repo["base"], "observed_remote_head": observed,
+            "base_equals_observed": str(repo["base"] == observed),
+            "title_sha256": hashlib.sha256(_norm_text(m["title"]).encode()).hexdigest(),
+            "body_sha256": hashlib.sha256(_norm_text(m["body"]).encode()).hexdigest(),
+        }
+        if m["objects"] is not None:
+            row["head_tree"] = m["objects"]["head-tree"]
+            row["range_sha256"] = hashlib.sha256((m["objects"]["range.patch"] or "").encode()).hexdigest()
+        measured.append(row)
+    return {"commit": commit, "stored_tree": view["tree"], "recomputed_tree": view["tree"],
+            "tree_matches": True, "rows": measured}
+
+
 def parse_evidence(text: str) -> list[dict[str, str]]:
     """Parse the carried evidence blob into declared checks.
 
@@ -898,11 +1012,9 @@ def run_review_checks(
     materialized = reconstruct_review_lane(workspace, commit, key, lane_dir)
     lane = Path(materialized["lane"])
     checks = []
-    if key in _tree_keys(workspace, commit, "evidence"):
-        if "commands" in _tree_keys(workspace, commit, f"evidence/{key}"):
-            checks = parse_evidence(
-                _bind_git(workspace, "show", f"{commit}:evidence/{key}/commands").stdout
-            )
+    commands = _carried(workspace, commit, key, "evidence", "commands")
+    if commands is not None:
+        checks = parse_evidence(commands)
 
     # Resolution: pin PYTHONPATH to the reconstructed lane so a declared check
     # (e.g. `python -m pytest ...`) imports the REVIEWED tree, never a machine-wide
@@ -1039,14 +1151,13 @@ def reconstruct_review_lane(
     differs from the bound head by design."""
     _validate_bind_store(workspace)
     commit = _resolve_bound(workspace, commit)
-    if key not in _tree_keys(workspace, commit, "objects"):
+    if not _carries_objects(workspace, commit, key):
         raise GripReviewRefused("row_carries_no_objects", key, "reconstruction needs a carried range")
     repo = _read_repo_state(workspace, commit, bind=True)[key]
     remote, base, bound_head = repo["remote"], repo["base"], repo["commit"]
-    head_tree_expected = _bind_git(workspace, "show", f"{commit}:objects/{key}/head-tree").stdout.strip()
-    committers_proc = _bind_git(workspace, "show", f"{commit}:objects/{key}/committers")
-    committers = committers_proc.stdout if committers_proc.returncode == 0 else None
-    range_text = _bind_git(workspace, "show", f"{commit}:objects/{key}/range.patch").stdout
+    head_tree_expected = (_carried(workspace, commit, key, "objects", "head-tree") or "").strip()
+    committers = _carried(workspace, commit, key, "objects", "committers")
+    range_text = _carried(workspace, commit, key, "objects", "range.patch") or ""
 
     lane_dir = Path(lane_dir)
     lane_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -1104,8 +1215,9 @@ def _grip_git(workspace: Path, *args: str) -> subprocess.CompletedProcess[str]:
 # `_grip_git` and the alpha snapshot helpers above stay on `.grip/.git`: the snapshot verbs and the
 # config reader still use it.
 _REVIEW_REF_PREFIX = "refs/dev.synapt.grip/__reviews__/"
-# Versioned spellings a reader understands, beside the legacy one (`<prefix><id>`, version 0). This code only
-# READS them; writers keep the legacy spelling until readers that know them are what everyone runs.
+# Versioned spellings a reader understands, beside the legacy one (`<prefix><id>`, version 0). New binds keep
+# the legacy spelling until readers that know them are what everyone runs; receive and publish carry a bind
+# under the spelling it already has.
 _REVIEW_REF_VERSIONS = ("v1",)
 
 
@@ -1300,9 +1412,9 @@ def _review_transport_identity(commit: str, ref: str | None) -> tuple[str, str]:
     if not _SHA40.fullmatch(full):
         raise GripCorruptError("expected_review_id_must_be_full: provide gr:<40 lowercase hex digits>")
     canonical = f"{_REVIEW_REF_PREFIX}{full}"
-    if ref is not None and ref != canonical:
+    if ref is not None and ref not in _review_refs_for(full):
         raise GripCorruptError("review_ref_identity_mismatch: ref must name the expected full review ID")
-    return full, canonical
+    return full, ref or canonical
 
 
 def _review_transport_remote(remote: str) -> str:
@@ -1336,6 +1448,12 @@ def publish_review_commit(workspace: Path, commit: str, remote: str,
     destination = _review_transport_remote(remote)
     _validate_bind_store(workspace)
     _resolve_bound(workspace, full)
+    if ref is None:
+        # Publish the spelling this bind has here, newest first; publishing never renames a bind.
+        canonical = next(r for r in _review_refs_for(full)
+                         if _bind_git(workspace, "rev-parse", "--verify", "--quiet", r).returncode == 0)
+    elif _bind_git(workspace, "rev-parse", "--verify", "--quiet", canonical).returncode != 0:
+        raise GripCorruptError(f"review_ref_not_local: {canonical}")
     _require_review_content(workspace, full)
     # A record made before the writer guard, or received from elsewhere, is checked again here:
     # nothing leaves with a credential, and an author-local path never leaves this host.
@@ -1381,11 +1499,12 @@ def receive_review_commit(workspace: Path, commit: str, remote: str,
         if _bind_git(workspace, "cat-file", "-t", actual).stdout.strip() != "commit":
             raise GripCorruptError("fetched_review_kind_mismatch: expected a commit")
         _require_review_content(workspace, actual)
-        existing = _bind_git(workspace, "rev-parse", "--verify", "--quiet", canonical)
-        if existing.returncode == 0 and existing.stdout.strip() != actual:
-            raise GripCorruptError(f"review_ref_target_mismatch: {canonical}")
+        for spelling in _review_refs_for(actual):
+            existing = _bind_git(workspace, "rev-parse", "--verify", "--quiet", spelling)
+            if existing.returncode == 0 and existing.stdout.strip() != actual:
+                raise GripCorruptError(f"review_ref_target_mismatch: {spelling}")
         try:
-            _publish_bind(workspace, actual, "received review")
+            _publish_bind(workspace, actual, "received review", ref=canonical)
         except RuntimeError as exc:
             raise GripCorruptError(f"review_bind_publication_failed: {exc}") from exc
         return {"id": f"gr:{actual}", "ref": canonical, "remote": source}
@@ -1491,11 +1610,12 @@ def _free_aside_name(workspace: Path) -> Path | None:
     return None
 
 
-def _publish_bind(workspace: Path, commit: str, message: str) -> str:
+def _publish_bind(workspace: Path, commit: str, message: str, *, ref: str | None = None) -> str:
     """Make a bind commit durable and findable: the commit is parentless and its ref is created
     last and create-only (old value zero), so the ref is the single commit point and a bind that
-    refuses leaves only unreferenced objects."""
-    ref = f"{_REVIEW_REF_PREFIX}{commit}"
+    refuses leaves only unreferenced objects. The destination is the legacy spelling unless the
+    caller names one (receive names the spelling it was asked for)."""
+    ref = ref or f"{_REVIEW_REF_PREFIX}{commit}"
     proc = _bind_git(workspace, "update-ref", ref, commit, _ZERO_OID)
     if proc.returncode != 0:
         # The commit is parentless, so the same rows bound in the same second are the SAME commit:
@@ -1888,6 +2008,8 @@ def grip_diff(workspace: Path, ref_a: str, ref_b: str) -> GripDiff:
 def _read_repo_state(workspace: Path, ref: str, *, bind: bool = False) -> dict[str, dict[str, str]]:
     """Read all repo states from a grip commit. ``bind=True`` reads the review store (the root's
     own `.git` on a native root); the default keeps reading the alpha `.grip/.git` snapshot store."""
+    if bind and _is_form_d_bind(workspace, ref):
+        return {key: dict(m["repo"]) for key, m in _form_d_view(workspace, ref)["members"].items()}
     _g = _bind_git if bind else _grip_git
     proc = _g(workspace, "ls-tree", f"{ref}:repos")
     if proc.returncode != 0:

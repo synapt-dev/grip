@@ -231,6 +231,38 @@ class ReviewSubjectCommand(RootOptionCommand):
         return super().parse_args(ctx, args)
 
 
+class ReviewReaderSubjectCommand(ReviewSubjectCommand):
+    """PR readers use the reconstruction's subject when root and subject are omitted.
+
+    Explicit roots and legacy unit positionals bypass marker lookup. An explicit
+    --review keeps its target while an omitted root may still come from the marker.
+    Create, status and merge retain ReviewSubjectCommand's existing behavior.
+    """
+
+    def parse_args(self, ctx, args):
+        args = list(args)
+        help_option = self.get_help_option(ctx)
+        option_tokens = args[:args.index("--")] if "--" in args else args
+        if help_option is not None and any(word in help_option.opts for word in option_tokens):
+            return typer.core.TyperCommand.parse_args(self, ctx, args)
+        positions, root_value = self._scan(args)
+        if not positions and root_value is None:
+            from . import context as c
+
+            try:
+                review_context = c.resolve_review_context()
+            except c.ContextRefused as exc:
+                ctx.fail(str(exc))
+            if review_context is not None:
+                explicit_review = any(word == "--review" or word.startswith("--review=")
+                                      for word in option_tokens)
+                inferred = [str(review_context.workspace)]
+                if not explicit_review:
+                    inferred.extend(["--review", review_context.commit])
+                args[0:0] = inferred
+        return super().parse_args(ctx, args)
+
+
 class ReviewOpenCommand(ReviewTargetCommand):
     """Infer reconstruction context, retaining the legacy ROOT UNIT REPO PR form.
 

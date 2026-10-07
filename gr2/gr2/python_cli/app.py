@@ -37,7 +37,7 @@ from . import push as push_ops
 from .clone_exec import rmtree_or_refuse
 from .events import EventEmitError, EventType, emit, emit_after_outcome
 from .layout import grip_dir
-from .root_option import ROOT_OPTION, ContextCommand, ReviewTargetCommand, ReviewOpenCommand, ReviewSubjectCommand, RootOptionCommand, RootOptionalCommand
+from .root_option import ROOT_OPTION, ContextCommand, ReviewTargetCommand, ReviewOpenCommand, ReviewSubjectCommand, ReviewReaderSubjectCommand, RootOptionCommand, RootOptionalCommand
 from .gitops import (
     branch_exists,
     checkout_branch,
@@ -4485,7 +4485,7 @@ def pr_status(
         typer.echo(json.dumps(payload, indent=2))
 
 
-@pr_app.command("checks", cls=ReviewSubjectCommand)
+@pr_app.command("checks", cls=ReviewReaderSubjectCommand)
 def pr_checks(
     workspace_root: Path,
     owner_unit: Optional[str] = typer.Argument(None, help="Owner unit of a lane. Omit for the current review's PRs."),
@@ -4601,7 +4601,7 @@ def _render_pr_detail(row: dict[str, object]) -> list[str]:
     return lines
 
 
-@pr_app.command("view", cls=ReviewSubjectCommand)
+@pr_app.command("view", cls=ReviewReaderSubjectCommand)
 def pr_view(
     workspace_root: Path,
     owner_unit: Optional[str] = typer.Argument(None, help="Owner unit of a lane. Omit for the current review's PRs."),

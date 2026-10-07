@@ -167,3 +167,32 @@ def test_review_open_refuses_a_bad_member_key_before_any_member_is_reconstructed
     assert not lane.exists() or not any(lane.iterdir())
     good = _bound_record(w, {**w["record"], "members": [first, {**second, "key": "beta"}]})
     assert grip.review_row_keys(w["author"], good) == ["alpha", "beta"]  # control
+
+
+@pytest.mark.parametrize("bad_key", ["..", ".git"])
+def test_a_legacy_bind_with_an_unsafe_member_key_is_refused(record_world, bad_key):
+    """Legacy keys were Git tree entry names, and git accepts ".." there: the same rule applies."""
+    from tests.test_review_bind_verify import _row
+    from tests.test_review_form_d_readers import EVIDENCE
+    w = record_world
+    row = _row(w["remote"], w["base"], w["head"])
+    row.update(source=str(w["work"]), evidence=EVIDENCE.decode())
+    good = grip.create_review_bind_commit(w["author"], [row])
+    assert grip.review_row_keys(w["author"], good)  # control
+
+    def renamed(tree, sub):
+        rows = git(w["author"], "ls-tree", f"{tree}:{sub}").splitlines()
+        return git(w["author"], "mktree", input="".join(
+            line.rsplit("\t", 1)[0] + "\t" + bad_key + "\n" for line in rows))
+
+    root = git(w["author"], "rev-parse", good + "^{tree}")
+    top = []
+    for line in git(w["author"], "ls-tree", root).splitlines():
+        meta, name = line.split("\t")
+        if name in ("repos", "observed", "texts", "objects", "evidence"):
+            meta = f"040000 tree {renamed(root, name)}"
+        top.append(f"{meta}\t{name}\n")
+    bad = git(w["author"], "commit-tree", git(w["author"], "mktree", input="".join(top)), "-m", "legacy bad key")
+    git(w["author"], "update-ref", legacy_review_ref(bad), bad, "0" * 40)
+    with pytest.raises(grip.GripCorruptError, match="member key"):
+        grip.review_row_keys(w["author"], bad)

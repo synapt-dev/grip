@@ -118,24 +118,41 @@ def close_open_gr_lane(lane_dir: Path, *, workspace_root: Path | None = None) ->
 
 
 def _refuse_local_work(target: Path, allocation: dict) -> None:
-    """Close removes the lane, so it first refuses when any member repository holds work that
-    exists nowhere else: a staged, unstaged or untracked change (the review's own marker, run
-    receipt and logs excepted), a stash, or a local branch commit that no remote has and the
-    reviewed HEAD does not contain. The lane, its allocation and its run evidence stay."""
+    """Close removes the lane, so it first refuses when the lane holds work that exists nowhere
+    else: in a member repository, a staged, unstaged or untracked change (the review's own
+    marker, run receipt and logs excepted), a stash, or a commit no remote has and the reviewed
+    HEAD does not contain; and, at the root of a multi-member lane, any entry that is not a member,
+    the shared environment, or the review's own files. A git call that cannot answer refuses too.
+    Files git ignores are not examined. The lane, its allocation and its run evidence stay."""
     from .review_run import _is_allowlisted_untracked
+
+    def ask(path: Path, *args: str) -> str:
+        proc = git(path, *args)
+        if proc.returncode != 0:
+            raise OpenGrReviewError(f"lane {target}: could not read {path} (git {args[0]}): "
+                                    f"{(proc.stderr or proc.stdout).strip()}; close refused")
+        return proc.stdout
+
     found: list[str] = []
-    paths = dict.fromkeys([target, *(target / item["path"] for item in allocation["members"])])
-    for path in paths:
+    members = [target / item["path"] for item in allocation["members"]]
+    if not (target / ".git").exists():
+        member_names = {m.relative_to(target).parts[0] for m in members if m != target}
+        for entry in sorted(target.iterdir()):
+            name = entry.name
+            if name in member_names or name in (".venv", _MARKER_NAME, _RUN_RECEIPT_NAME) \
+                    or name.startswith(_RUN_LOG_NAME) or name.endswith(_RUN_LOG_NAME):
+                continue
+            found.append(f"work at the lane root: {entry}")
+    for path in dict.fromkeys([target, *members]):
         if not (path / ".git").exists():
             continue
-        for line in git(path, "status", "--porcelain", "--untracked-files=all").stdout.splitlines():
-            name = line[3:]
-            if line.startswith("?? ") and _is_allowlisted_untracked(name):
+        for line in ask(path, "status", "--porcelain", "--untracked-files=all").splitlines():
+            if line.startswith("?? ") and _is_allowlisted_untracked(line[3:]):
                 continue
             found.append(f"uncommitted work in {path}: {line}")
-        if git(path, "stash", "list").stdout.strip():
+        if ask(path, "stash", "list").strip():
             found.append(f"uncommitted work in {path}: a stash")
-        unpublished = git(path, "rev-list", "--branches", "--not", "--remotes", "HEAD").stdout.split()
+        unpublished = ask(path, "rev-list", "--all", "--not", "--remotes", "HEAD").split()
         if unpublished:
             found.append(f"unpublished commits in {path}: {', '.join(c[:12] for c in unpublished)}")
     if found:

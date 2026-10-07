@@ -131,3 +131,72 @@ def test_reconstruction_close_refuses_a_lane_holding_a_stash(reconstruction, ver
     assert "stash" in result.output.lower(), result.output
     assert lane.is_dir() and allocation.exists()
     assert _git(lane, "show", "stash@{0}:f.txt") == "stashed user work"
+
+
+@pytest.mark.parametrize("verb", ["close", "close-gr"])
+def test_reconstruction_close_refuses_when_git_cannot_read_the_lane(reconstruction, verb):
+    """A git call that fails must not read as a clean lane: a corrupt index makes status fail."""
+    runner, lane, allocation, _ = reconstruction
+    (lane / "new-user-file.txt").write_text("user work\n")
+    (lane / ".git" / "index").write_bytes(b"not an index")
+    result = runner.invoke(gr2_app.app, ["review", verb, str(lane), "--json"])
+    assert result.exit_code != 0, result.output
+    assert "could not read" in result.output, result.output
+    assert (lane / "new-user-file.txt").read_text() == "user work\n" and allocation.exists()
+
+
+@pytest.mark.parametrize("verb", ["close", "close-gr"])
+def test_reconstruction_close_refuses_a_commit_on_the_reviewed_head(reconstruction, verb):
+    runner, lane, allocation, _ = reconstruction
+    (lane / "f.txt").write_text("committed on the reconstruction\n")
+    _git(lane, "-c", "user.name=F", "-c", "user.email=f@x.invalid", "commit", "-qam", "user commit")
+    commit = _git(lane, "rev-parse", "HEAD")
+    result = runner.invoke(gr2_app.app, ["review", verb, str(lane), "--json"])
+    assert result.exit_code != 0, result.output
+    assert lane.is_dir() and allocation.exists() and _git(lane, "rev-parse", "HEAD") == commit
+
+
+@pytest.mark.parametrize("verb", ["close", "close-gr"])
+def test_reconstruction_close_refuses_a_local_only_tag(reconstruction, verb):
+    runner, lane, allocation, _ = reconstruction
+    head = _git(lane, "rev-parse", "HEAD")
+    (lane / "f.txt").write_text("tagged work\n")
+    _git(lane, "-c", "user.name=F", "-c", "user.email=f@x.invalid", "commit", "-qam", "tagged")
+    _git(lane, "tag", "kept-work")
+    _git(lane, "checkout", "-q", "--detach", head)
+    result = runner.invoke(gr2_app.app, ["review", verb, str(lane), "--json"])
+    assert result.exit_code != 0 and "unpublished" in result.output.lower(), result.output
+    assert lane.is_dir() and allocation.exists()
+
+
+def _multi_member_lane(tmp_path: Path) -> Path:
+    from tests.test_review_run_multi_repo import _lane
+    lane = _lane(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    review_allocation.record_created_allocation(
+        workspace, lane, "workspace", "review", [lane / "demo-core", lane / "demo-web"], disposable=True)
+    marker_path = lane / review_run._MARKER_NAME
+    marker = json.loads(marker_path.read_text())
+    marker["workspace_root"] = str(workspace)
+    marker_path.write_text(json.dumps(marker))
+    return lane
+
+
+def test_close_refuses_a_user_file_at_the_root_of_a_multi_member_lane(tmp_path: Path):
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    (lane / "notes.txt").write_text("user notes\n")
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code != 0 and "lane root" in result.output, result.output
+    assert (lane / "notes.txt").read_text() == "user notes\n"
+
+
+def test_a_clean_multi_member_lane_still_closes(tmp_path: Path):
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    (lane / ".venv").mkdir()
+    (lane / f"demo-core{review_run._OUTPUT_LOG_NAME}").write_text("log\n")
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code == 0, result.output
+    assert not lane.exists()

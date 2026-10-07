@@ -121,7 +121,12 @@ def test_the_reader_step_writes_no_v1_ref(two_member_ws: Path) -> None:
     assert _refs(ws) == [f"{ROOT}{commit}"]
 
 
-def test_receive_still_refuses_a_v1_ref(two_member_ws: Path) -> None:
-    """Accepting one would write a local v1 ref, which belongs to the later writer release."""
-    with pytest.raises(grip_mod.GripCorruptError, match="review_ref_identity_mismatch"):
-        grip_mod._review_transport_identity("gr:" + "a" * 40, f"{ROOT}v1/{'a' * 40}")
+def test_transport_takes_known_spellings_and_refuses_an_unknown_version(two_member_ws: Path) -> None:
+    """Receive and publish carry a bind under a spelling a reader knows (legacy or v1); a version no
+    reader knows, or a ref naming another id, is refused."""
+    full = "a" * 40
+    for spelling in (f"{ROOT}{full}", f"{ROOT}v1/{full}"):
+        assert grip_mod._review_transport_identity("gr:" + full, spelling) == (full, spelling)
+    for bad in (f"{ROOT}v9/{full}", f"{ROOT}v1/{'b' * 40}"):
+        with pytest.raises(grip_mod.GripCorruptError, match="review_ref_identity_mismatch"):
+            grip_mod._review_transport_identity("gr:" + full, bad)

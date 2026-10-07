@@ -716,8 +716,8 @@ def show_review_commit(workspace: Path, commit: str) -> dict[str, object]:
     or a bare sha; a commit that is not a bind is refused the way `verify` refuses it."""
     _validate_bind_store(workspace)
     commit = _resolve_bound(workspace, commit)
-    if _is_form_d_bind(workspace, commit):
-        view = _form_d_view(workspace, commit)
+    if _is_field_tree_bind(workspace, commit):
+        view = _field_tree_view(workspace, commit)
         return {"id": f"gr:{commit}", "members": [{
             "key": key, "remote": m["repo"]["remote"], "path": m["repo"]["path"],
             "base": m["repo"]["base"], "head": m["repo"]["commit"], "title": m["title"], "body": m["body"],
@@ -751,8 +751,8 @@ def _verify_review_commit_in_store(workspace: Path, commit: str) -> dict[str, ob
     body NORM the hand gate produced)."""
     import hashlib
 
-    if _is_form_d_bind(workspace, commit):
-        return _verify_form_d_commit(workspace, commit)
+    if _is_field_tree_bind(workspace, commit):
+        return _verify_field_tree_commit(workspace, commit)
     if _bind_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip() != _REVIEW_BIND_SCHEMA:
         raise GripCorruptError("not a gr2 review bind commit")
 
@@ -861,7 +861,7 @@ def _tree_keys(workspace: Path, commit: str, path: str) -> set[str]:
 
 
 # A review bind is stored in one of two layouts. The legacy layout names its subtrees (.grip/, repos/,
-# observed/, texts/, objects/, evidence/); a form D record (review_form_d) is one entry per protobuf
+# observed/, texts/, objects/, evidence/); a field tree record (review_field_tree) is one entry per protobuf
 # field. Readers ask the helpers below and never spell a layout's paths themselves.
 
 def plain_member_key(key: str) -> bool:
@@ -874,8 +874,8 @@ def plain_member_key(key: str) -> bool:
             and not any(c in key for c in "/\\\0\n"))
 
 
-def _is_form_d_bind(workspace: Path, commit: str) -> bool:
-    """A bound commit whose tree has no `.grip` entry is read as form D, so a malformed record is
+def _is_field_tree_bind(workspace: Path, commit: str) -> bool:
+    """A bound commit whose tree has no `.grip` entry is read as a field tree, so a malformed record is
     refused for what is wrong with it rather than as "not a bind"."""
     names = [n for n in _bind_git(workspace, "ls-tree", "--name-only", commit).stdout.splitlines() if n]
     return bool(names) and GRIP_DIR not in names
@@ -887,38 +887,38 @@ def _text(value: object) -> str:
     return value.decode("utf-8") if isinstance(value, bytes) else str(value)
 
 
-_FORM_D_VIEWS: dict[tuple[str, str], dict[str, object]] = {}
+_FIELD_TREE_VIEWS: dict[tuple[str, str], dict[str, object]] = {}
 
 
-def _form_d_view(workspace: Path, commit: str) -> dict[str, object]:
-    """A form D bind, verified AS WRITTEN and decoded by field number, in the shape the readers use:
+def _field_tree_view(workspace: Path, commit: str) -> dict[str, object]:
+    """A field tree bind, verified AS WRITTEN and decoded by field number, in the shape the readers use:
     per member its repository row, observed remote head, texts, carried objects (None when the bind
     carried no range) and evidence (None when absent). Nothing is rebuilt and compared. A tree is
     content-addressed, so its checked view is kept per store and tree."""
     repo = _bind_dir(workspace)
     tree = _bind_git(workspace, "rev-parse", f"{commit}^{{tree}}").stdout.strip()
-    cached = _FORM_D_VIEWS.get((str(repo), tree))
+    cached = _FIELD_TREE_VIEWS.get((str(repo), tree))
     if cached is not None:
         return cached
-    view = _check_form_d(repo, tree)
-    _FORM_D_VIEWS[(str(repo), tree)] = view
+    view = _check_field_tree(repo, tree)
+    _FIELD_TREE_VIEWS[(str(repo), tree)] = view
     return view
 
 
-def _check_form_d(repo: Path, tree: str) -> dict[str, object]:
+def _check_field_tree(repo: Path, tree: str) -> dict[str, object]:
     try:
-        return _decode_form_d(repo, tree)
+        return _decode_field_tree(repo, tree)
     except UnicodeError as exc:
-        raise GripCorruptError(f"invalid form D review record: a text field is not UTF-8 ({exc.reason})") from exc
+        raise GripCorruptError(f"invalid field tree review record: a text field is not UTF-8 ({exc.reason})") from exc
 
 
-def _decode_form_d(repo: Path, tree: str) -> dict[str, object]:
-    from . import review_form_d as fd
+def _decode_field_tree(repo: Path, tree: str) -> dict[str, object]:
+    from . import review_field_tree as fd
     try:
         fd.verify_tree(repo, tree)
         record = fd.read_record(repo, tree)
     except fd.ReviewRecordError as exc:
-        raise GripCorruptError(f"invalid form D review record: {exc}") from exc
+        raise GripCorruptError(f"invalid field tree review record: {exc}") from exc
     if record.get("schema") != _REVIEW_BIND_SCHEMA or record.get("kind") != "review":
         raise GripCorruptError("not a gr2 review bind commit")
     members: dict[str, dict[str, object]] = {}
@@ -962,8 +962,8 @@ def _decode_form_d(repo: Path, tree: str) -> dict[str, object]:
 
 def _carried(workspace: Path, commit: str, key: str, group: str, name: str) -> str | None:
     """One carried value of a member (group "objects" or "evidence"), in either layout; None if absent."""
-    if _is_form_d_bind(workspace, commit):
-        member = _form_d_view(workspace, commit)["members"].get(key)
+    if _is_field_tree_bind(workspace, commit):
+        member = _field_tree_view(workspace, commit)["members"].get(key)
         values = None if member is None else member[group]
         return None if values is None else values.get(name)
     proc = _bind_git(workspace, "show", f"{commit}:{group}/{key}/{name}")
@@ -971,8 +971,8 @@ def _carried(workspace: Path, commit: str, key: str, group: str, name: str) -> s
 
 
 def _carries_objects(workspace: Path, commit: str, key: str) -> bool:
-    if _is_form_d_bind(workspace, commit):
-        member = _form_d_view(workspace, commit)["members"].get(key)
+    if _is_field_tree_bind(workspace, commit):
+        member = _field_tree_view(workspace, commit)["members"].get(key)
         objects = None if member is None else member["objects"]
         # Reconstruction needs the range and the tree it must produce; metadata alone is not a range.
         return objects is not None and bool(objects["range.patch"]) and bool(objects["head-tree"])
@@ -1000,16 +1000,16 @@ def _range_files(patch: str | None) -> list[str] | None:
     return files
 
 
-def _verify_form_d_commit(workspace: Path, commit: str) -> dict[str, object]:
-    """verify for a form D bind: the tree is checked as written (fsck, entry names, one value per
+def _verify_field_tree_commit(workspace: Path, commit: str) -> dict[str, object]:
+    """verify for a field tree bind: the tree is checked as written (fsck, entry names, one value per
     field, scalars) and decoded by number, so the stored tree IS the verified tree."""
     import hashlib
 
     # verify measures the store as it is NOW: re-check from the objects, never from the readers' cache.
     repo = _bind_dir(workspace)
     tree = _bind_git(workspace, "rev-parse", f"{commit}^{{tree}}").stdout.strip()
-    view = _check_form_d(repo, tree)
-    _FORM_D_VIEWS[(str(repo), tree)] = view
+    view = _check_field_tree(repo, tree)
+    _FIELD_TREE_VIEWS[(str(repo), tree)] = view
     measured: list[dict[str, str]] = []
     for key, m in sorted(view["members"].items()):
         repo, observed = m["repo"], m["remote_head"]
@@ -2064,8 +2064,8 @@ def grip_diff(workspace: Path, ref_a: str, ref_b: str) -> GripDiff:
 def _read_repo_state(workspace: Path, ref: str, *, bind: bool = False) -> dict[str, dict[str, str]]:
     """Read all repo states from a grip commit. ``bind=True`` reads the review store (the root's
     own `.git` on a native root); the default keeps reading the alpha `.grip/.git` snapshot store."""
-    if bind and _is_form_d_bind(workspace, ref):
-        return {key: dict(m["repo"]) for key, m in _form_d_view(workspace, ref)["members"].items()}
+    if bind and _is_field_tree_bind(workspace, ref):
+        return {key: dict(m["repo"]) for key, m in _field_tree_view(workspace, ref)["members"].items()}
     _g = _bind_git if bind else _grip_git
     proc = _g(workspace, "ls-tree", f"{ref}:repos")
     if proc.returncode != 0:

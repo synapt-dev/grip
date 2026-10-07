@@ -1,4 +1,4 @@
-"""Review records as form D Git trees (package ``dev.synapt.grip.review.v1alpha1``).
+"""Review records as field trees (package ``dev.synapt.grip.review.v1alpha1``).
 
 A record is a Git tree with one entry per protobuf field, named ``NNN.W[r]_name``:
 the field number zero-padded to three digits (Git sorts entry names bytewise, so
@@ -51,7 +51,7 @@ _WIRE_TYPE = {
 
 
 class ReviewRecordError(ValueError):
-    """A record that cannot be written or read as form D."""
+    """A record that cannot be written or read as a field tree."""
 
 
 @dataclass(frozen=True)
@@ -262,7 +262,7 @@ def decode(buf: bytes, message: str = "ReviewBind") -> dict:
     return out
 
 
-# --- form D trees -----------------------------------------------------------------
+# --- field trees -----------------------------------------------------------------
 
 def _git(repo: Path, *args: str, data: bytes | None = None) -> bytes:
     proc = subprocess.run(["git", "-C", str(repo), *args], input=data, capture_output=True)
@@ -305,7 +305,7 @@ def entry_name(f: Field | None, number: int, wt: int, repeated: bool) -> str:
 def parse_entry(name: str) -> tuple[int, int, bool]:
     m = _ENTRY.fullmatch(name)
     if not m:
-        raise ReviewRecordError(f"not a form D entry name: {name!r}")
+        raise ReviewRecordError(f"not a field tree entry name: {name!r}")
     number = int(m.group(1))
     if not 1 <= number <= MAX_FIELD_NUMBER:
         raise ReviewRecordError(f"entry {name!r}: field number outside 1..{MAX_FIELD_NUMBER}")
@@ -322,7 +322,7 @@ def _occurrences(repo: Path, name: str, oid: str) -> list[Entry]:
 
 
 def write_tree(repo: Path, buf: bytes, message: str = "ReviewBind") -> str:
-    """Store protobuf bytes as a form D tree, names from the current schema."""
+    """Store protobuf bytes as a field tree, names from the current schema."""
     spec = schema()[message]
     grouped: dict[tuple[int, int], list[bytes]] = {}
     for number, wt, payload in fields(buf):
@@ -418,7 +418,7 @@ def _check_message(repo: Path, tree: str, message: str | None) -> None:
         for kmode, k, o, kname in kids:
             # Every stored object passes here: a single entry is its own one kid.
             if (kmode, k) not in ((_BLOB_MODE, "blob"), (_TREE_MODE, "tree")):
-                raise ReviewRecordError(f"{name}/{kname}: mode {kmode} {k} is not a form D entry")
+                raise ReviewRecordError(f"{name}/{kname}: mode {kmode} {k} is not a field tree entry")
             if k == "tree" and wt != 2:
                 raise ReviewRecordError(f"{name}: a message is wire type 2")
             if f is not None and (k == "tree") != f.message:
@@ -429,7 +429,7 @@ def _check_message(repo: Path, tree: str, message: str | None) -> None:
 
 def verify_tree(repo: Path, tree: str, message: str = "ReviewBind") -> None:
     """Check the record AS WRITTEN: every object re-hashes from its own content
-    (``git fsck --strict``); every entry is a plain blob or tree with a form D name,
+    (``git fsck --strict``); every entry is a plain blob or tree with a field tree name,
     one per field number, its wire type and repetition agreeing with any field the
     schema knows; occurrences run 0000001..n; and the record decodes by number. Names
     are never regenerated from the schema and compared. This checks a tree, not WHICH

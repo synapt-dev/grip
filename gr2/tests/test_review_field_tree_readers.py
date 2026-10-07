@@ -1,6 +1,6 @@
-"""Reader-first form D witnesses, independent of the production bind writer.
+"""Reader-first field tree witnesses, independent of the production bind writer.
 
-Each form D fixture is written by the adapter, committed and attached by Git
+Each field tree fixture is written by the adapter, committed and attached by Git
 under a v1 ref. Legacy controls use the unchanged production writer. There is
 no new-writer or migration contract in this file.
 """
@@ -12,11 +12,11 @@ from pathlib import Path
 import pytest
 
 from gr2.python_cli import grip
-from gr2.python_cli import review_form_d as fd
+from gr2.python_cli import review_field_tree as fd
 from tests.native_root_helper import native_root
 from tests.review_ref_helper import REVIEW_REF_ROOT, legacy_review_ref, review_ref
 from tests.test_review_bind_verify import BODY, TITLE, _fixture_remote, _row
-from tests.test_review_form_d import _rename_entry
+from tests.test_review_field_tree import _rename_entry
 from tests.test_review_transport import git
 from tests.test_store_break_attempts import two_member_ws  # noqa: F401
 
@@ -34,12 +34,12 @@ def read(call, *args, **kwargs):
     try:
         return call(*args, **kwargs)
     except (grip.GripCorruptError, grip.GripReviewRefused) as exc:
-        pytest.fail(f"reader {call.__name__} refused a valid form D record: {exc}")
+        pytest.fail(f"reader {call.__name__} refused a valid field tree record: {exc}")
 
 
 def attach(root: Path, tree: str) -> str:
     fd.verify_tree(root, tree)
-    commit = git(root, "commit-tree", tree, "-m", "test-owned form D review")
+    commit = git(root, "commit-tree", tree, "-m", "test-owned field tree review")
     git(root, "update-ref", review_ref(commit), commit, "0" * 40)
     assert ref_targets(root) == {review_ref(commit): commit}
     assert git(root, "rev-parse", commit + "^{tree}") == tree
@@ -74,7 +74,7 @@ def bound(record_world):
     return w
 
 
-def test_form_d_fixture_is_real_and_verifies_as_written(bound):
+def test_field_tree_fixture_is_real_and_verifies_as_written(bound):
     """Control: failures below cannot be caused by an invalid test-owned tree."""
     fd.verify_tree(bound["author"], bound["tree"])
     assert fd.read_record(bound["author"], bound["tree"]) == bound["record"]
@@ -82,7 +82,7 @@ def test_form_d_fixture_is_real_and_verifies_as_written(bound):
     assert git(bound["remote"], "rev-parse", "dev") == bound["base"]
 
 
-def test_show_reads_real_form_d_member_values_and_carried_files(bound):
+def test_show_reads_real_field_tree_member_values_and_carried_files(bound):
     got = read(grip.show_review_commit, bound["author"], bound["id"])
     assert got == {"id": "gr:" + bound["id"], "members": [{
         "key": "recall", "remote": bound["remote"], "path": "recall",
@@ -91,7 +91,7 @@ def test_show_reads_real_form_d_member_values_and_carried_files(bound):
     }]}
 
 
-def test_verify_checks_real_form_d_tree_and_norm_text_hashes(bound):
+def test_verify_checks_real_field_tree_tree_and_norm_text_hashes(bound):
     before = git(bound["author"], "cat-file", "-p", bound["id"])
     got = read(grip.verify_review_commit, bound["author"], bound["id"])
     assert got["tree_matches"] is True
@@ -105,7 +105,7 @@ def test_verify_checks_real_form_d_tree_and_norm_text_hashes(bound):
     assert ref_targets(bound["author"]) == {review_ref(bound["id"]): bound["id"]}
 
 
-def test_reconstruct_reads_form_d_range_and_committers_exactly(bound, tmp_path):
+def test_reconstruct_reads_field_tree_range_and_committers_exactly(bound, tmp_path):
     lane = tmp_path / "lane"
     got = read(grip.reconstruct_review_lane, bound["author"], bound["id"], "recall", lane)
     assert got["reconstructed_head"] == bound["head"]
@@ -114,7 +114,7 @@ def test_reconstruct_reads_form_d_range_and_committers_exactly(bound, tmp_path):
     assert git(bound["remote"], "rev-parse", "dev") == bound["base"]
 
 
-def test_run_checks_reads_form_d_evidence_and_runs_inside_reconstruction(bound, tmp_path):
+def test_run_checks_reads_field_tree_evidence_and_runs_inside_reconstruction(bound, tmp_path):
     lane = tmp_path / "checked-lane"
     got = read(grip.run_review_checks, bound["author"], bound["id"], "recall", lane)
     assert got["materialized"]["reconstructed_head"] == bound["head"]
@@ -126,18 +126,18 @@ def test_run_checks_reads_form_d_evidence_and_runs_inside_reconstruction(bound, 
     assert got["import_resolution"] == str(lane)
 
 
-def test_review_row_keys_reads_the_form_d_members(bound):
+def test_review_row_keys_reads_the_field_tree_members(bound):
     assert read(grip.review_row_keys, bound["author"], bound["id"]) == ["recall"]
 
 
-def test_publish_content_gate_accepts_valid_form_d_without_rewriting(bound):
+def test_publish_content_gate_accepts_valid_field_tree_without_rewriting(bound):
     got = read(grip.publish_review_commit, bound["author"], bound["id"], bound["remote"])
     assert got["id"] == "gr:" + bound["id"]
     assert git(bound["remote"], "rev-parse", got["ref"]) == bound["id"]
     assert git(bound["remote"], "rev-parse", bound["id"] + "^{tree}") == bound["tree"]
 
 
-def test_receive_accepts_v1_form_d_and_returned_ref_is_the_durable_ref(bound):
+def test_receive_accepts_v1_field_tree_and_returned_ref_is_the_durable_ref(bound):
     git(bound["author"], "push", bound["remote"], f"{bound['id']}:{review_ref(bound['id'])}")
     assert ref_targets(Path(bound["remote"])) == {review_ref(bound["id"]): bound["id"]}
     for _ in range(2):

@@ -1,4 +1,4 @@
-"""Edges of the form D readers that the reader red set does not pin: a record that fails
+"""Edges of the field tree readers that the reader red set does not pin: a record that fails
 verify is refused by every reader, publish keeps the spelling a bind already has, and
 receive refuses when another spelling of the same id names a different commit."""
 from __future__ import annotations
@@ -6,9 +6,9 @@ from __future__ import annotations
 import pytest
 
 from gr2.python_cli import grip
-from gr2.python_cli import review_form_d as fd
+from gr2.python_cli import review_field_tree as fd
 from tests.review_ref_helper import legacy_review_ref, review_ref
-from tests.test_review_form_d_readers import attach, bound, record_world, ref_targets  # noqa: F401
+from tests.test_review_field_tree_readers import attach, bound, record_world, ref_targets  # noqa: F401
 from tests.test_review_transport import git
 from tests.test_store_break_attempts import two_member_ws  # noqa: F401
 
@@ -20,7 +20,7 @@ def _duplicate_kind(root, tree):
     return git(root, "mktree", input=entries)
 
 
-def test_readers_refuse_a_form_d_record_that_fails_verify(record_world, tmp_path):
+def test_readers_refuse_a_field_tree_record_that_fails_verify(record_world, tmp_path):
     w = record_world
     assert grip.show_review_commit(w["author"], attach(w["author"], w["tree"]))["members"]  # control
     bad = _duplicate_kind(w["author"], w["tree"])
@@ -29,7 +29,7 @@ def test_readers_refuse_a_form_d_record_that_fails_verify(record_world, tmp_path
     for call, args in ((grip.show_review_commit, ()), (grip.verify_review_commit, ()),
                        (grip.review_row_keys, ()),
                        (grip.reconstruct_review_lane, ("recall", tmp_path / "lane"))):
-        with pytest.raises(grip.GripCorruptError, match="invalid form D review record"):
+        with pytest.raises(grip.GripCorruptError, match="invalid field tree review record"):
             call(w["author"], commit, *args)
     assert not (tmp_path / "lane").exists()
 
@@ -175,7 +175,7 @@ def test_review_open_refuses_a_bad_member_key_before_any_member_is_reconstructed
 def test_a_legacy_bind_with_an_unsafe_member_key_is_refused(record_world, bad_key):
     """Legacy keys were Git tree entry names, and git accepts ".." there: the same rule applies."""
     from tests.test_review_bind_verify import _row
-    from tests.test_review_form_d_readers import EVIDENCE
+    from tests.test_review_field_tree_readers import EVIDENCE
     w = record_world
     row = _row(w["remote"], w["base"], w["head"])
     row.update(source=str(w["work"]), evidence=EVIDENCE.decode())

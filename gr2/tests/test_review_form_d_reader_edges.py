@@ -250,3 +250,22 @@ def test_two_members_whose_names_overlap_get_disjoint_lane_paths():
     assert all(grip.plain_member_key(k) for k in keys)
     logs = [review_run._member_log_name(k) for k in keys]
     assert len(set(logs)) == 2 and not set(logs) & set(keys), logs
+
+
+def test_a_member_key_named_twice_is_refused(record_world):
+    w = record_world
+    member = w["record"]["members"][0]
+    commit = _bound_record(w, {**w["record"], "members": [member, {**member, "path": "other"}]})
+    with pytest.raises(grip.GripCorruptError, match="member key"):
+        grip.review_row_keys(w["author"], commit)
+    single = _bound_record(w, {**w["record"], "members": [member]})
+    assert grip.review_row_keys(w["author"], single) == [member["key"]]  # control
+
+
+def test_publish_refuses_a_named_spelling_the_bind_does_not_have(bound):
+    """The bind exists here only under v1; asking to publish the legacy spelling must not create it."""
+    with pytest.raises(grip.GripCorruptError, match="review_ref_not_local"):
+        grip.publish_review_commit(bound["author"], bound["id"], bound["remote"], ref=legacy_review_ref(bound["id"]))
+    assert git(bound["remote"], "for-each-ref", "--format=%(refname)", "refs/dev.synapt.grip/__reviews__/") == ""
+    got = grip.publish_review_commit(bound["author"], bound["id"], bound["remote"], ref=review_ref(bound["id"]))
+    assert got["ref"] == review_ref(bound["id"])  # control: the spelling it has

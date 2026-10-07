@@ -1,4 +1,4 @@
-"""Form D review records: the build witnesses that need no ref writer. Each test
+"""Field tree review records: the build witnesses that need no ref writer. Each test
 names the rule it holds."""
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from gr2.python_cli import review_form_d as fd
+from gr2.python_cli import review_field_tree as fd
 
 
 def git(repo: Path, *args: str, data: bytes | None = None) -> str:
@@ -69,7 +69,7 @@ def test_field_number_above_999_is_refused_in_the_schema_and_at_write(repo):
         fd.write_tree(repo, fd._emit(1000, 2, b"x"))
 
 
-# --- form D encode, decode, identity ------------------------------------------------
+# --- field tree encode, decode, identity ------------------------------------------------
 
 def test_record_round_trips_and_derives_canonical_protobuf(repo):
     tree = fd.write_record(repo, RECORD)
@@ -174,10 +174,10 @@ def test_verify_refuses_a_tampered_blob(repo):
         fd.verify_tree(repo, tree)
 
 
-def test_a_non_form_d_entry_name_is_refused(repo):
+def test_a_non_field_tree_entry_name_is_refused(repo):
     blob = git(repo, "hash-object", "-w", "--stdin", data=b"x")
     tree = git(repo, "mktree", data=f"100644 blob {blob}\tschema\n".encode())
-    with pytest.raises(fd.ReviewRecordError, match="not a form D entry name"):
+    with pytest.raises(fd.ReviewRecordError, match="not a field tree entry name"):
         fd.read_record(repo, tree)
 
 
@@ -209,7 +209,7 @@ def test_a_one_line_message_is_refused():
         fd.parse_proto("message M { string a = 1; }\n")
 
 
-# --- verify refuses every tree that is not form D ------------------------------------------
+# --- verify refuses every tree that is not a field tree ------------------------------------------
 
 def _mk(repo: Path, rows: list[tuple[str, str, str, str]]) -> str:
     data = b"".join(f"{m} {k} {o}\t".encode() + n.encode() + b"\0" for m, k, o, n in rows)
@@ -291,7 +291,7 @@ def _schema_rows(repo: Path) -> dict[tuple[str, str], list]:
 
 def test_verify_accepts_the_written_record_and_refuses_each_malformed_class(repo):
     fd.verify_tree(repo, fd.write_record(repo, RECORD))  # control
-    fd.verify_tree(repo, _with_unknown_member_field(repo))  # control: unknown entries are form D
+    fd.verify_tree(repo, _with_unknown_member_field(repo))  # control: unknown entries are allowed in a field tree
     depths = _depths(repo)
     ok = [_blobrow(repo, "050.2_ok")]
     cases = [(d, label, rows) for d in depths for label, rows in _bad_rows(repo).items()]

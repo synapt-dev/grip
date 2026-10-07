@@ -217,3 +217,16 @@ def test_receive_without_ref_measures_exact_v1_then_legacy(handoff, monkeypatch,
         assert json.loads(result.stdout)["ref"] == requested
         assert refs(receiver) == {requested: commit}
         assert git(receiver, "cat-file", "-p", commit) == git(source, "cat-file", "-p", commit)
+
+
+def test_writer_carries_evidence_resolution_through_the_record(handoff):
+    """Evidence WITH a resolution, through the production writer, reads back from the field tree."""
+    author, _, remote, _, base, head = handoff
+    row = dict(key="member", path="member", remote=str(remote), base=base, head=head,
+               ref="refs/heads/main", title="t", body="", source=str(author / "member"),
+               evidence="label: ran\ncommand: true\nexit: 0\n", resolution="fixed by the next commit\n")
+    commit = grip.create_review_bind_commit(author, [row])
+    record = fd.read_record(author, git(author, "rev-parse", commit + "^{tree}"))
+    assert record["members"][0]["evidence"] == {"commands": b"label: ran\ncommand: true\nexit: 0\n",
+                                                "resolution": b"fixed by the next commit\n"}
+    assert grip._carried(author, commit, "member", "evidence", "resolution") == "fixed by the next commit\n"

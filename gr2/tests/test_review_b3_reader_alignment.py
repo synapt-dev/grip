@@ -106,7 +106,7 @@ def test_default_publish_preserves_local_spelling_and_missing_explicit_ref_refus
     assert refs(remote) == {ref: commit}
 
 
-@pytest.mark.parametrize("fault", ["both", "wrong-target", "measurement", "malformed"])
+@pytest.mark.parametrize("fault", ["both", "wrong-target", "measurement", "malformed", "non-hex-id"])
 def test_default_receive_uses_v1_once_and_never_falls_back_on_fault(handoff, tmp_path, monkeypatch, fault):
     source, remote, commit, v1 = source_record(handoff, tmp_path, "v1")
     receiver = native_root(tmp_path / "receive-target")
@@ -121,6 +121,9 @@ def test_default_receive_uses_v1_once_and_never_falls_back_on_fault(handoff, tmp
                 return subprocess.CompletedProcess(args, 1, "", "fixture cannot measure v1")
             if args[-1] == v1 and fault == "malformed":
                 return subprocess.CompletedProcess(args, 0, "not-a-valid-ls-remote-row\n", "")
+            if args[-1] == v1 and fault == "non-hex-id":
+                # One row, the exact name, a first column that is not an object id.
+                return subprocess.CompletedProcess(args, 0, "z" * 40 + "\t" + v1 + "\n", "")
         return original(root, *args, **kwargs)
     monkeypatch.setattr(grip, "git", spy)
     result = cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", remote)
@@ -135,7 +138,7 @@ def test_default_receive_uses_v1_once_and_never_falls_back_on_fault(handoff, tmp
             assert "remote_review_id_mismatch" in result.output, result.output
         if fault == "measurement":
             assert "cannot_measure_review_ref" in result.output, result.output
-        if fault == "malformed":
+        if fault in ("malformed", "non-hex-id"):
             assert "cannot_measure_review_ref" in result.output, result.output
         assert refs(receiver) == {}
 

@@ -4,9 +4,14 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
+try:
+    from typer._click.utils import strip_ansi
+except ImportError:  # older Typer uses the installed Click
+    from click.utils import strip_ansi
 
 from gr2.python_cli import grip
 from gr2.python_cli.app import app
@@ -109,18 +114,55 @@ def test_invalid_explicit_transport_never_falls_back(handoff, monkeypatch, verb,
     assert result.exit_code == 2 and reason in result.output
 
 
+def required_input_display(result, styled, *tokens):
+    display = strip_ansi(result.output)
+    assert (display != result.output) is styled, result.output
+    assert result.exit_code == 2, result.output
+    assert all(token in display.lower() for token in tokens), result.output
+    return display
+
+
+@pytest.mark.parametrize("styled", [False, True], ids=["plain", "styled"])
 @pytest.mark.parametrize("verb", ["publish", "receive"])
-def test_required_expectation_and_remote_are_not_inferred(handoff, monkeypatch, verb):
+def test_required_expectation_and_remote_are_not_inferred(handoff, monkeypatch, tmp_path, verb, styled):
+    from typer import rich_utils
+    monkeypatch.setattr(rich_utils, "FORCE_TERMINAL", styled)
+    monkeypatch.setattr(rich_utils, "MAX_WIDTH", 120)
+    monkeypatch.delenv("NO_COLOR", raising=False)
     author, _, remote, commit, _, _ = handoff
+    calls = []
     def no_owner(*args, **kwargs):
+        calls.append((args, kwargs))
         pytest.fail("missing required input reached transport owner")
     monkeypatch.setattr(grip, "publish_review_commit", no_owner)
     monkeypatch.setattr(grip, "receive_review_commit", no_owner)
-    missing_id = cli(author, monkeypatch, verb, "--remote", remote)
-    display = missing_id.output.lower()
-    assert missing_id.exit_code == 2 and "missing argument" in display and "commit" in display, missing_id.output
-    missing_remote = cli(author, monkeypatch, verb, "gr:" + commit)
-    assert missing_remote.exit_code == 2 and "--remote" in missing_remote.output, missing_remote.output
+    monkeypatch.chdir(author)
+    missing_id = runner.invoke(app, ["review", verb, "--remote", str(remote)], color=True)
+    (tmp_path / "missing-id.raw.txt").write_text(missing_id.output)
+    display = required_input_display(missing_id, styled, "missing argument", "commit")
+    (tmp_path / "missing-id.display.txt").write_text(display)
+    assert calls == []
+    missing_remote = runner.invoke(app, ["review", verb, "gr:" + commit], color=True)
+    (tmp_path / "missing-remote.raw.txt").write_text(missing_remote.output)
+    display = required_input_display(missing_remote, styled, "missing option", "--remote")
+    (tmp_path / "missing-remote.display.txt").write_text(display)
+    assert calls == []
+
+
+@pytest.mark.parametrize("styled", [False, True], ids=["plain", "styled"])
+@pytest.mark.parametrize("message,tokens,removed", [
+    ("Missing option '--remote'", ("missing option", "--remote"), "--remote"),
+    ("Missing argument 'commit'", ("missing argument", "commit"), "commit"),
+])
+def test_required_input_display_retains_semantics(styled, message, tokens, removed):
+    def rendered(text):
+        return "\x1b[31m" + text.replace("--remote", "-\x1b[0m\x1b[31m-remote") + "\x1b[0m" if styled else text
+    positive = SimpleNamespace(exit_code=2, output=rendered(message))
+    assert required_input_display(positive, styled, *tokens) == message
+    assert message.count(removed) == 1
+    negative = SimpleNamespace(exit_code=2, output=rendered(message.replace(removed, "")))
+    with pytest.raises(AssertionError):
+        required_input_display(negative, styled, *tokens)
 
 
 def test_wrong_full_id_refuses_before_fetch(handoff, monkeypatch):

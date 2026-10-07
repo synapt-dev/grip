@@ -50,6 +50,14 @@ GRIP_DIR = ".grip"
 #: object store). THE ONE SPELLING of it in the source, for the same reason as `GRIP_DIR`.
 MOVED_MARKER = ".grip-moved"
 
+#: The prefix every review lane control file (marker, receipt, log) starts with, so a review
+#: member key can never name one of them.
+LANE_CONTROL_PREFIX = ".grip-review"
+
+#: The shared environment a multi-member review lane installs into, at `<lane>/.venv`, beside
+#: the member repositories; no member key may name it.
+LANE_VENV = ".venv"
+
 
 def grip_dir(workspace_root: Path) -> Path:
     """`<root>/.grip`: the one place a caller asks for gr2's state directory."""

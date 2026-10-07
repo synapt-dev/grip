@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import lane_downstream, lane_graph, lane_plugins
+from .layout import LANE_VENV
 
 # An in-repo hint read when `--install` is omitted. It lives at the REPO ROOT
 # (the lane), NOT in a pyproject table, on purpose: a repo whose importable
@@ -157,7 +158,7 @@ _RECEIPT_NAME = ".grip-review-run.json"
 # WHY. Named so `close-gr` can carry it (and the receipt) out before it reclaims
 # the lane (review-run door 1).
 _OUTPUT_LOG_NAME = ".grip-review-run.log"
-_VENV_DIRNAME = ".venv"
+_VENV_DIRNAME = LANE_VENV
 
 
 class ReviewRunRefused(Exception):
@@ -693,7 +694,7 @@ def _write_refusal_receipt(lane_dir: Path, exc: "ReviewRunRefused") -> None:
     if exc.order is not None:
         # A multi-member lane: name the member that refused, the members that finished
         # before it, and the members that never ran, so a stop never reads as a green.
-        member_log = f"{exc.member}{_OUTPUT_LOG_NAME}" if exc.member else None
+        member_log = _member_log_name(exc.member) if exc.member else None
         has_log = bool(member_log) and (lane_dir / member_log).exists()
         receipt["output_log"] = member_log if has_log else None
         receipt["refusal_member"] = exc.member
@@ -1065,9 +1066,16 @@ def _run_member_steps(
 
 # ---- a lane that binds more than one repository ---------------------------------
 
+def _member_log_name(key: str) -> str:
+    """A member's run log in a multi-member lane: `<lane>/.grip-review-run.log.<key>`. It starts with
+    the lane control prefix, which no member key may, so it can never be another member's directory."""
+    return f"{_OUTPUT_LOG_NAME}.{key}"
+
+
 def _member_dir(lane_dir: Path, key: str) -> Path:
     """Where a member lives in a multi-member lane: `<lane>/<key>`, the row key `open` used."""
-    if not key or key in (".", "..") or "/" in key or "\\" in key:
+    from .grip import plain_member_key
+    if not plain_member_key(key):
         raise ReviewRunRefused(
             "bad_marker",
             f"the lane marker names a member key {key!r} that is not a plain directory name",
@@ -1404,7 +1412,7 @@ def _run_multi_member_lane(
                 package=None,
                 install=None,
                 pytest_args=pytest_args,
-                log_name=f"{key}{_OUTPUT_LOG_NAME}",
+                log_name=_member_log_name(key),
                 before_tests=_lane_intact,
                 after_tests=_lane_intact,
                 tests=roles[key] != "upstream",

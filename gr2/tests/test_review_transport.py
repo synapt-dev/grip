@@ -13,11 +13,12 @@ try:
 except ImportError:  # older Typer uses the installed Click
     from click.utils import strip_ansi
 
+from tests.review_ref_helper import REVIEW_REF_PREFIX
 from gr2.python_cli import grip
 from gr2.python_cli.app import app
 
 runner = CliRunner()
-PREFIX = "refs/dev.synapt.grip/__reviews__/"
+PREFIX = REVIEW_REF_PREFIX
 
 
 def git(root, *args, input=None):

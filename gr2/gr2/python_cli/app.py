@@ -4046,6 +4046,7 @@ def review_open_gr(
             # repo there) nor `review run <lane-dir>/<key>` (no marker there) could run.
             key = keys[0]
         else:
+            _review_call(grip.require_reconstructable, workspace_root.resolve(), sha, keys)
             results = {
                 row_key: _review_call(
                     grip.reconstruct_review_lane, workspace_root.resolve(), sha, row_key, root / row_key

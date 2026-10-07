@@ -2,7 +2,7 @@
 
 THE HISTORY: `store init` writes `grip.toml` and a root `.git`; the first bind used to make a second
 repo at `.grip/.git` and write the review object there. The bind now lives in the root's
-`.git` under `refs/dev.synapt.grip/__reviews__/<commit>` (see test_review_bind_root_refs.py for the smallest
+`.git` under `the review ref` (see test_review_bind_root_refs.py for the smallest
 proof); this file pins the edges:
   * a bind needs no store and creates nothing under `.grip/`;
   * a directory that is NOT a workspace keeps the refusal, and bind creates nothing in it;
@@ -20,6 +20,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from tests.review_ref_helper import REVIEW_REF_PREFIX
 from gr2.python_cli import grip as grip_mod
 
 from tests.test_store_break_attempts import _cli, _git, _git_out, two_member_ws  # noqa: F401
@@ -44,7 +45,7 @@ def _bind_args(ws: Path, remote: str, base: str, head: str) -> list[str]:
     ]
 
 
-_REFS = "refs/dev.synapt.grip/__reviews__/"
+_REFS = REVIEW_REF_PREFIX
 
 
 def _refs(ws: Path) -> list[str]:

@@ -15,6 +15,7 @@ import re
 from pathlib import Path
 
 import pytest
+from tests.review_ref_helper import REVIEW_REF_PREFIX
 from gr2.python_cli import grip as grip_mod
 
 from tests.test_review_bind_native_store import _bind_args, _unpushed_head
@@ -82,7 +83,7 @@ def test_a_bare_bind_with_every_member_at_its_pin_refuses(two_member_ws: Path) -
     code, out = _cli("review", "bind", str(ws))
     out = _flat(out)
     assert code != 0 and "nothing to bind" in out and "--rows-json" in out
-    assert not [l for l in _git_out(ws, "for-each-ref", "refs/dev.synapt.grip/__reviews__/").splitlines() if l]
+    assert not [l for l in _git_out(ws, "for-each-ref", REVIEW_REF_PREFIX).splitlines() if l]
 
 
 def test_members_narrows_and_names_one_that_is_not_a_member(two_member_ws: Path) -> None:
@@ -130,7 +131,7 @@ def test_the_rows_are_printed_before_anything_is_bound(two_member_ws: Path) -> N
     _git(other, "push", "-q", "origin", "main")
     code, out = _cli("review", "bind", str(ws))
     assert code != 0 and "gr2: bind alpha" in out
-    assert not [l for l in _git_out(ws, "for-each-ref", "refs/dev.synapt.grip/__reviews__/").splitlines() if l]
+    assert not [l for l in _git_out(ws, "for-each-ref", REVIEW_REF_PREFIX).splitlines() if l]
 
 
 def test_open_with_no_target_opens_the_one_bind_into_a_lane_beside_the_workspace(two_member_ws: Path) -> None:

@@ -15,6 +15,7 @@ verify-on-tampered is probe 1/2 (verify recomputes, does not trust the record).
 """
 from __future__ import annotations
 
+from tests.review_ref_helper import legacy_review_ref
 from tests.native_root_helper import native_root
 
 import json
@@ -22,6 +23,7 @@ import os
 import re
 import subprocess
 import sys
+
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -127,7 +129,7 @@ def _tamper_blob(ws: Path, commit_ref: str, tree_path: str, content: bytes) -> s
     ).stdout.strip()
     index.unlink(missing_ok=True)
     # A tampered commit is only a bind when it has its ref: publish it the way a bind is.
-    subprocess.run(["git", "-C", str(gd), "update-ref", f"refs/dev.synapt.grip/__reviews__/{new_commit}", new_commit],
+    subprocess.run(["git", "-C", str(gd), "update-ref", legacy_review_ref(new_commit), new_commit],
                    env=env, check=True)
     return f"gr:{new_commit}"
 

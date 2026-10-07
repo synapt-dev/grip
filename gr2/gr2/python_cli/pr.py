@@ -274,6 +274,21 @@ def _pr_groups_dir(workspace_root: Path) -> Path:
     return workspace_root / ".grip" / "pr_groups"
 
 
+def review_pr_groups(workspace_root: Path, review_target: str) -> list[tuple[Path, dict]]:
+    """Every stored group opened for `review_target`. Unreadable or id-less files are skipped:
+    they are not a group this review can be resolved to."""
+    root = _pr_groups_dir(workspace_root)
+    found: list[tuple[Path, dict]] = []
+    for path in sorted(root.glob("*.json")) if root.exists() else []:
+        try:
+            doc = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(doc, dict) and doc.get("review_target") == review_target and isinstance(doc.get("pr_group_id"), str):
+            found.append((path, doc))
+    return found
+
+
 def _generate_group_id() -> str:
     return "pg_" + os.urandom(4).hex()
 
@@ -323,8 +338,11 @@ def create_pr_group(
     *,
     body: str = "",
     draft: bool = True,
+    review_target: str | None = None,
 ) -> dict:
-    """Create linked PRs across repos and emit pr.created."""
+    """Create linked PRs across repos and emit pr.created. A group opened for a review
+    records its `review_target` (gr:<sha>); that field, not a unit or lane, is how the pr
+    verbs find it again."""
     require_adapter_capability(adapter, "create_pr")
     if len(repos) > 1:
         require_adapter_capability(adapter, "edit_pr_body")
@@ -382,6 +400,8 @@ def create_pr_group(
         "status": {repo: "OPEN" for repo in repos},
         "sibling_edits": sibling_edits,
     }
+    if review_target is not None:
+        group["review_target"] = review_target
     path = _save_group(workspace_root, group)
 
     emit_after_outcome(

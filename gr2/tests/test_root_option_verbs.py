@@ -43,12 +43,13 @@ FIXED_ARITY = [  # RootOptionalCommand: the 16, and ContextCommand: the 6 above
     "hooks/run", "config/restore",
 ]
 OPTIONAL_TRAILING = [  # RootOptionCommand: the 8
-    "pr/create", "pr/status", "pr/checks", "pr/view", "pr/merge", "exec/status", "exec/run",
+    "pr/checks", "pr/view", "exec/status", "exec/run",
 ]
+REVIEW_SUBJECTS = ["pr/create", "pr/status", "pr/merge"]  # ReviewSubjectCommand: bare = the current review
 REVIEW_TARGETS = ["review/show", "review/verify"]
 REVIEW_TRANSPORTS = ["review/publish", "review/receive"]
 REVIEW_OPENS = ["review/open"]
-ALL_ROOT_VERBS = [*FIXED_ARITY, *OPTIONAL_TRAILING, *REVIEW_TARGETS, *REVIEW_TRANSPORTS, *REVIEW_OPENS]
+ALL_ROOT_VERBS = [*FIXED_ARITY, *OPTIONAL_TRAILING, *REVIEW_SUBJECTS, *REVIEW_TARGETS, *REVIEW_TRANSPORTS, *REVIEW_OPENS]
 UsageError = root_option._usage_error()
 runner = CliRunner()
 
@@ -131,8 +132,8 @@ def test_the_partition_accounts_for_every_leading_root_command() -> None:
         name for name, c in LEAVES.items()
         if _arguments(c) and _arguments(c)[0].name == "workspace_root"
         and name.split("/")[0] not in {"workspace", "spec", "sync", "store", "grip", "plan", "apply", "repo/status"}
-        and type(c).__name__ in {"RootOptionalCommand", "RootOptionCommand", "TyperCommand", "ContextCommand", "ReviewTargetCommand", "ReviewOpenCommand"}
-        and (_arguments(c)[0].required or type(c).__name__ in {"RootOptionalCommand", "ContextCommand", "ReviewTargetCommand", "ReviewOpenCommand"})
+        and type(c).__name__ in {"RootOptionalCommand", "RootOptionCommand", "TyperCommand", "ContextCommand", "ReviewTargetCommand", "ReviewOpenCommand", "ReviewSubjectCommand"}
+        and (_arguments(c)[0].required or type(c).__name__ in {"RootOptionalCommand", "ContextCommand", "ReviewTargetCommand", "ReviewOpenCommand", "ReviewSubjectCommand"})
     )
     by_class = {
         "RootOptionalCommand": sorted(
@@ -145,6 +146,7 @@ def test_the_partition_accounts_for_every_leading_root_command() -> None:
     assert by_class["RootOptionCommand"] == sorted(OPTIONAL_TRAILING)
     assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ReviewTargetCommand") == sorted([*REVIEW_TARGETS, *REVIEW_TRANSPORTS])
     assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ReviewOpenCommand") == sorted(REVIEW_OPENS)
+    assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ReviewSubjectCommand") == sorted(REVIEW_SUBJECTS)
     assert [n for n in leading if n not in ALL_ROOT_VERBS] == [], (
         "a verb takes the workspace root as a required leading positional and is in neither class"
     )
@@ -273,7 +275,7 @@ def test_the_8_do_not_judge_a_root_that_is_a_directory(verb, tmp_path, at) -> No
 
 
 def test_root_usage_matches_the_inferred_and_explicit_groups() -> None:
-    for verb in [*FIXED_ARITY, *REVIEW_TARGETS, *REVIEW_TRANSPORTS, *REVIEW_OPENS]:
+    for verb in [*FIXED_ARITY, *REVIEW_SUBJECTS, *REVIEW_TARGETS, *REVIEW_TRANSPORTS, *REVIEW_OPENS]:
         assert _arguments(LEAVES[verb])[0].required is False, verb
     for verb in OPTIONAL_TRAILING:
         assert _arguments(LEAVES[verb])[0].required is True, verb
@@ -496,3 +498,24 @@ def test_review_open_help_marks_inferred_root_and_explicit_intent(monkeypatch, s
     assert (display != result.output) is styled
     assert "workspace_root" in display
     assert "target" in display and "--root" in display and "-C" in display
+
+
+@pytest.mark.parametrize("verb", REVIEW_SUBJECTS)
+def test_review_subject_grammar(verb, ws, at, tmp_path) -> None:
+    """Only a call with no positional is the review form; every positional form keeps the explicit-root
+    grammar, so a lone word that is not a directory is refused as a root, never read as a unit."""
+    at(ws / "sub" / "deeper")
+    bare = _parse(verb, [], tmp_path)
+    assert _root(bare) == ws.resolve() and bare["owner_unit"] is None
+    named = _parse(verb, ["-C", str(ws)], tmp_path)
+    assert _root(named) == ws.resolve() and named["owner_unit"] is None
+    legacy = _parse(verb, [str(ws), "unit", "lane"], tmp_path)
+    assert _root(legacy) == ws.resolve() and (legacy["owner_unit"], legacy["lane_name"]) == ("unit", "lane")
+    for words in (["nobody"], ["nobody", "lane"]):
+        with pytest.raises(UsageError) as exc:
+            _parse(verb, words, tmp_path)
+        assert "is not a directory" in exc.value.format_message() and "-C <root>" in exc.value.format_message()
+    at(tmp_path)
+    with pytest.raises(UsageError, match="no workspace at or above"):
+        _parse(verb, [], tmp_path)
+    assert runner.invoke(app, [*verb.split("/"), "--help"]).exit_code == 0

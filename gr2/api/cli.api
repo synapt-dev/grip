@@ -298,6 +298,7 @@ flag  pr create --body-file <str>                                     stable
 flag  pr create --draft/--no-draft                                    stable
 flag  pr create --json                                                stable
 flag  pr create --platform <str>                                      stable
+flag  pr create --review <str>                                        stable
 flag  pr create --root/-C <str>                                       stable
 flag  pr create --title <str>                                         stable
 verb  pr create                                                       stable
@@ -308,6 +309,7 @@ arg   pr merge workspace_root <str>                                   stable
 flag  pr merge --json                                                 stable
 flag  pr merge --match-head-commit <str>                              stable
 flag  pr merge --method/-m <str>                                      stable
+flag  pr merge --review <str>                                         stable
 flag  pr merge --root/-C <str>                                        stable
 verb  pr merge                                                        stable
 # pr status
@@ -315,6 +317,7 @@ arg   pr status lane_name <str>                                       stable
 arg   pr status owner_unit <str>                                      stable
 arg   pr status workspace_root <str>                                  stable
 flag  pr status --json                                                stable
+flag  pr status --review <str>                                        stable
 flag  pr status --root/-C <str>                                       stable
 verb  pr status                                                       stable
 # pr view

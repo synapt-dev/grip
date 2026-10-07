@@ -563,19 +563,19 @@ def _bind_review_rows_body(
     leak, packs hide them) and refuses the bind on a nonzero exit, the way a
     freeze refuses today. OSS ships no hook (records ``no-policy``); our config
     points it at the leak scanner. The verdict is recorded in the object."""
+    from . import review_form_d as fd
     if not rows:
         raise GripCorruptError("review bind requires at least one repository row")
-    entries: list[str] = []
-    observed_entries: list[str] = []
-    texts_entries: list[str] = []
-    objects_entries: list[str] = []
-    evidence_entries: list[str] = []
+    members: list[dict[str, object]] = []
     scan_items: list[tuple[str, str]] = []
     seen: set[str] = set()
-    for row in sorted(rows, key=lambda item: item["key"]):
+    for row in sorted(rows, key=lambda item: item.get("key", "")):
         key = row.get("key", "")
-        if not key or key in seen or any(ch in key for ch in "/\\"):
-            raise GripCorruptError(f"invalid or duplicate review key: {key!r}")
+        # The same rule the readers apply, so the writer never makes a record its readers refuse.
+        if not plain_member_key(key):
+            raise GripCorruptError(f"invalid review key: {key!r}")
+        if key in seen:
+            raise GripCorruptError(f"duplicate review key: {key!r}")
         seen.add(key)
         remote, path, head, base, ref = (
             row.get("remote", ""), row.get("path", ""), row.get("head", ""),
@@ -595,22 +595,10 @@ def _bind_review_rows_body(
         if _head_present_on_remote(workspace, remote, head) and not ratified:
             raise GripReviewRefused("head_already_on_remote", head, "present")
 
-        fields = [f"100644 blob {_bind_blob(workspace, v)}\t{n}"
-                  for n, v in (("remote", remote), ("path", path), ("commit", head), ("base", base))]
-        entries.append(f"040000 tree {_bind_mktree(workspace, fields)}\t{key}")
-        # remote-head field hoisted out of the outer f-string's expression: a
-        # nested f-string carrying \t inside {…} is a SyntaxError on Python 3.11
-        # (PEP 701 only lifted this in 3.12+), and gr2 supports >=3.11. Output is
-        # byte-identical, so every content-hash is unchanged.
-        remote_head_field = f"100644 blob {_bind_blob(workspace, observed)}\tremote-head"
-        observed_entries.append(
-            f"040000 tree {_bind_mktree(workspace, [remote_head_field])}\t{key}"
-        )
         title = _norm_text(row.get("title", ""))
         body = _norm_text(row.get("body", ""))
-        text_fields = [f"100644 blob {_bind_blob(workspace, title)}\ttitle",
-                       f"100644 blob {_bind_blob(workspace, body)}\tbody"]
-        texts_entries.append(f"040000 tree {_bind_mktree(workspace, text_fields)}\t{key}")
+        member: dict[str, object] = {"key": key, "path": path, "remote": remote, "base": base,
+                                     "commit": head, "remote_head": observed, "title": title, "body": body}
 
         # (a): carry the frozen set inside the object. A row with a source repo
         # carries range.patch + fuller metadata + head-tree so a pre-push head
@@ -643,43 +631,24 @@ def _bind_review_rows_body(
                 raise GripReviewRefused("range_head_mismatch", head, from_head)
             obj = _carry_objects_from_range(workspace, remote, base, range_patch)
         if obj is not None:
-            obj_fields = [f"100644 blob {_bind_blob(workspace, obj[n])}\t{n}"
-                          for n in ("range.patch", "metadata", "head-tree")]
-            objects_entries.append(f"040000 tree {_bind_mktree(workspace, obj_fields)}\t{key}")
+            member.update(range_patch=obj["range.patch"], metadata=obj["metadata"], head_tree=obj["head-tree"])
             scan_items.append((f"{key}.range.patch", obj["range.patch"]))
         evidence = row.get("evidence")
         if evidence:
-            ev_fields = [f"100644 blob {_bind_blob(workspace, evidence)}\tcommands"]
-            resolution = row.get("resolution")
-            if resolution:
-                ev_fields.append(f"100644 blob {_bind_blob(workspace, resolution)}\tresolution")
-            evidence_entries.append(f"040000 tree {_bind_mktree(workspace, ev_fields)}\t{key}")
+            member["evidence"] = {"commands": evidence, "resolution": row.get("resolution") or ""}
+        members.append(member)
 
     # Policy hook: scan the carried readable bytes; refuse on a hit
     # the way a freeze does, and record the verdict in the object.
     policy_verdict = _run_policy_hook(policy_hook, scan_items)
 
-    repos_tree = _bind_mktree(workspace, entries)
-    observed_tree = _bind_mktree(workspace, observed_entries)
-    texts_tree = _bind_mktree(workspace, texts_entries)
-    meta_tree = _bind_mktree(workspace, [
-        f"100644 blob {_bind_blob(workspace, _REVIEW_BIND_SCHEMA)}\tschema",
-        f"100644 blob {_bind_blob(workspace, 'review')}\tkind",
-        f"100644 blob {_bind_blob(workspace, policy_verdict)}\tpolicy",
-    ])
-    root_fields = [
-        f"040000 tree {meta_tree}\t.grip",
-        f"040000 tree {observed_tree}\tobserved",
-        f"040000 tree {repos_tree}\trepos",
-        f"040000 tree {texts_tree}\ttexts",
-    ]
-    if objects_entries:
-        root_fields.append(f"040000 tree {_bind_mktree(workspace, objects_entries)}\tobjects")
-    if evidence_entries:
-        root_fields.append(f"040000 tree {_bind_mktree(workspace, evidence_entries)}\tevidence")
-    root_tree = _bind_mktree(workspace, root_fields)
+    record = {"schema": _REVIEW_BIND_SCHEMA, "kind": "review", "policy": policy_verdict, "members": members}
+    repo = _bind_dir(workspace)
+    root_tree = fd.write_tree(repo, fd.encode(record))
+    # Verify the tree as written before it is committed: invalid bytes never reach a commit or a ref.
+    fd.verify_tree(repo, root_tree)
     commit = _bind_commit_tree(workspace, root_tree, message="grip review bind")
-    return _publish_bind(workspace, commit, "grip review bind")
+    return _publish_bind(workspace, commit, "grip review bind", ref=_review_ref_v1(commit))
 
 
 def verify_review_commit(workspace: Path, commit: str) -> dict[str, object]:
@@ -1664,6 +1633,11 @@ def _free_aside_name(workspace: Path) -> Path | None:
         if not candidate.exists():
             return candidate
     return None
+
+
+def _review_ref_v1(commit: str) -> str:
+    """The versioned spelling a new review bind is published at."""
+    return f"{_REVIEW_REF_PREFIX}v1/{commit}"
 
 
 def _publish_bind(workspace: Path, commit: str, message: str, *, ref: str | None = None) -> str:

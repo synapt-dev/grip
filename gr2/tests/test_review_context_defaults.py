@@ -41,7 +41,18 @@ def test_review_pr_reader_legacy_unit_form_stays_explicit(reviewed, monkeypatch,
 @pytest.mark.parametrize("verb", ["show", "verify"])
 def test_lane_reader_uses_marked_bind_even_when_author_has_two(opened, monkeypatch, verb):
     # Produce a second bind through the existing writer; do not forge a bind ref.
-    second = gr2(opened["author"], monkeypatch, "review", "bind", "--title", "another subject")
+    first = gr2(opened["author"], monkeypatch, "review", "show", opened["author"], opened["target"], "--json")
+    assert first.exit_code == 0, first.output
+    row = next(m for m in json.loads(first.stdout)["members"] if m["key"] == "alpha")
+    member = opened["author"] / row["path"]
+    # The fixture pushed the first head for PR-create controls. The second bind
+    # therefore needs a fresh local-only head, not a fabricated ratify receipt.
+    git(member, "commit", "--allow-empty", "-m", "another review subject")
+    new_head = git(member, "rev-parse", "HEAD")
+    second = gr2(opened["author"], monkeypatch, "review", "bind", opened["author"],
+                 "--repo", row["key"], "--remote", row["remote"], "--base", row["base"],
+                 "--head", new_head, "--ref", row["ref"], "--path", row["path"],
+                 "--source", member, "--title", "another subject")
     assert second.exit_code == 0, second.output
     assert second.stdout.strip() != opened["target"]
     cwd = opened["lane"] / "alpha"
@@ -98,6 +109,17 @@ def test_close_outside_lane_names_missing_context(tmp_path, monkeypatch):
 def test_close_invalid_explicit_path_does_not_fall_back(opened, monkeypatch):
     result = gr2(opened["lane"], monkeypatch, "review", "close", opened["lane"] / "missing", "--json")
     assert result.exit_code != 0 and opened["lane"].exists()
+
+
+def test_explicit_close_from_author_preserves_author_and_sibling(opened, monkeypatch):
+    sibling = opened["lane"].parent / "unrelated"
+    sibling.mkdir()
+    sentinel = sibling / "keep.txt"
+    sentinel.write_text("keep\n")
+    result = gr2(opened["author"], monkeypatch, "review", "close", opened["lane"], "--json")
+    assert result.exit_code == 0, result.output
+    assert not opened["lane"].exists() and sentinel.read_text() == "keep\n"
+    assert all((opened["author"] / key / "p.txt").is_file() for key in KEYS)
 
 
 @pytest.mark.parametrize("verb", ["publish", "receive"])

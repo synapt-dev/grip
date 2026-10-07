@@ -63,6 +63,7 @@ _AF_UNIX_SOCKET_PATH_MAX_BYTES = 103
 _MINIMUM_TMUX_VERSION = (3, 2)
 _TMUX_ROLLBACK_SETTLE_SECONDS = 2.0
 _TMUX_ROLLBACK_POLL_SECONDS = 0.02
+_TMUX_SESSION_HANDLE_SEPARATOR = "|"
 
 
 class LaunchExecutionError(MaterializationPlanError):
@@ -490,7 +491,7 @@ class TmuxPaneRuntime:
             "-d",
             "-P",
             "-F",
-            "#{pid}\t#{session_id}\t#{pane_id}",
+            _TMUX_SESSION_HANDLE_SEPARATOR.join(("#{pid}", "#{session_id}", "#{pane_id}")),
             "-s",
             self.session_name,
             "-c",
@@ -504,7 +505,7 @@ class TmuxPaneRuntime:
         return self._require_success(result, operation="session creation")
 
     def _parse_session_handles(self, output: str) -> tuple[int, str, str]:
-        fields = output.split("\t")
+        fields = output.split(_TMUX_SESSION_HANDLE_SEPARATOR)
         if len(fields) != 3 or not fields[1].startswith("$") or not fields[2].startswith("%"):
             raise LaunchExecutionError("tmux session creation returned malformed handle evidence")
         try:
@@ -550,20 +551,38 @@ class TmuxPaneRuntime:
             "list-panes",
             "-a",
             "-F",
-            "#{pane_id}\t#{pane_pid}\t#{pane_current_path}\t#{pane_dead}",
+            "#{pane_id}|#{pane_pid}|#{pane_current_path}|#{pane_dead}",
             operation="pane observation",
         )
         output = self._require_success(result, operation="pane observation")
         observed: dict[str, _ObservedPane] = {}
         for line in output.splitlines():
-            fields = line.split("\t")
-            if len(fields) != 4:
+            # Only the bounded handle/PID prefix and dead suffix are framing.
+            # The entire middle path may contain spaces and literal pipes.
+            # Newlines in paths cannot be represented by this row protocol.
+            fields = line.split("|", 2)
+            suffix = fields[2].rsplit("|", 1) if len(fields) == 3 else []
+            if len(fields) != 3 or len(suffix) != 2:
                 raise LaunchExecutionError("tmux returned malformed pane observation evidence")
-            pane_id, pid_text, workdir_text, dead_text = fields
+            pane_id, pid_text = fields[:2]
+            workdir_text, dead_text = suffix
+            if (
+                not pane_id.startswith("%")
+                or not pane_id[1:].isascii()
+                or not pane_id[1:].isdigit()
+                or not pid_text.isascii()
+                or not pid_text.isdigit()
+                or dead_text not in ("0", "1")
+                or not Path(workdir_text).is_absolute()
+                or pane_id in observed
+            ):
+                raise LaunchExecutionError("tmux returned malformed pane observation evidence")
             try:
                 pid = int(pid_text)
             except ValueError as exc:
                 raise LaunchExecutionError("tmux returned a non-numeric pane PID") from exc
+            if pid <= 0:
+                raise LaunchExecutionError("tmux returned a non-positive pane PID")
             observed[pane_id] = _ObservedPane(
                 pane_id=pane_id,
                 pid=pid,
@@ -576,8 +595,15 @@ class TmuxPaneRuntime:
         self,
         pane_ids: Mapping[str, str],
         prepared_by_unit: Mapping[str, _PreparedTmuxEntry],
+        *,
+        bootstrap_pane: str | None = None,
     ) -> dict[str, _ObservedPane]:
         observed = self._observe_panes()
+        expected = set(pane_ids.values())
+        if bootstrap_pane is not None:
+            expected.add(bootstrap_pane)
+        if len(set(pane_ids.values())) != len(pane_ids) or set(observed) != expected:
+            raise LaunchExecutionError("tmux returned missing or extra pane members")
         live: dict[str, _ObservedPane] = {}
         for unit_key, pane_id in pane_ids.items():
             pane = observed.get(pane_id)
@@ -704,7 +730,7 @@ class TmuxPaneRuntime:
                 for item in prepared
             }
             time.sleep(settle_seconds)
-            self._require_live_units(pane_ids, prepared_by_unit)
+            self._require_live_units(pane_ids, prepared_by_unit, bootstrap_pane=bootstrap_pane)
 
             # The bootstrap is removed only while unit panes exist.  Then every
             # unit is observed again, because the first observation is stale the
@@ -728,9 +754,15 @@ class TmuxPaneRuntime:
                 )
                 for item in prepared
             ]
-        except BaseException:
+        except BaseException as primary:
             if server_created:
-                self._kill_created_server(created_socket_identity, server_pid)
+                try:
+                    self._kill_created_server(created_socket_identity, server_pid)
+                except Exception as cleanup_error:
+                    primary.add_note(
+                        f"tmux rollback failed or remains unverified at {self.socket_path}: "
+                        f"{type(cleanup_error).__name__}: {cleanup_error}"
+                    )
             raise
 
 

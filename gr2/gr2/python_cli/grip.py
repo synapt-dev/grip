@@ -661,7 +661,10 @@ def list_review_binds(workspace: Path) -> list[tuple[str, str]]:
     for line in out.stdout.splitlines():
         ref, _, when = line.partition("\t")
         if ref.startswith(_REVIEW_REF_PREFIX):
-            rows.append((ref[len(_REVIEW_REF_PREFIX):], when))
+            suffix = ref[len(_REVIEW_REF_PREFIX):]
+            if not _SHA40.fullmatch(suffix):
+                raise GripCorruptError(f"review_ref_identity_mismatch: noncanonical review ref {ref}")
+            rows.append((_resolve_bound(workspace, suffix), when))
     return sorted(rows, key=lambda r: (r[1], r[0]))
 
 
@@ -1215,9 +1218,117 @@ def _resolve_bound(workspace: Path, commit: str) -> str:
     before any tree is read; an abbreviated sha is expanded first, as git did in the old store."""
     proc = _bind_git(workspace, "rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}")
     full = proc.stdout.strip() if proc.returncode == 0 else ""
-    if not full or _bind_git(workspace, "rev-parse", "--verify", "--quiet", f"{_REVIEW_REF_PREFIX}{full}").returncode != 0:
+    bound = _bind_git(workspace, "rev-parse", "--verify", "--quiet", f"{_REVIEW_REF_PREFIX}{full}")
+    if not full or bound.returncode != 0:
         raise ReviewStoreAbsent(f"No review bind {commit} is bound in {workspace}.")
+    if bound.stdout.strip() != full:
+        raise GripCorruptError(f"review_ref_target_mismatch: {_REVIEW_REF_PREFIX}{full}")
     return full
+
+
+def _review_transport_identity(commit: str, ref: str | None) -> tuple[str, str]:
+    full = commit[3:] if commit.startswith("gr:") else commit
+    if not _SHA40.fullmatch(full):
+        raise GripCorruptError("expected_review_id_must_be_full: provide gr:<40 lowercase hex digits>")
+    canonical = f"{_REVIEW_REF_PREFIX}{full}"
+    if ref is not None and ref != canonical:
+        raise GripCorruptError("review_ref_identity_mismatch: ref must name the expected full review ID")
+    return full, canonical
+
+
+def _review_transport_remote(remote: str) -> str:
+    from .gitops import _effective_remote_url
+    if not remote or remote.startswith("-") or not (
+        remote.startswith("https://") or Path(remote).is_absolute()
+    ):
+        raise GripCorruptError("review_remote_required: provide an HTTPS URL or absolute local remote path")
+    return _effective_remote_url(remote)
+
+
+def _review_remote_target(workspace: Path, remote: str, ref: str) -> str:
+    proc = git(workspace, "ls-remote", "--refs", remote, ref, timeout=30)
+    if proc.returncode:
+        raise GripCorruptError(f"cannot_measure_review_ref: {proc.stderr.strip()}")
+    rows = [line.split() for line in proc.stdout.splitlines() if line.strip()]
+    if len(rows) != 1 or len(rows[0]) != 2 or rows[0][1] != ref:
+        raise ReviewStoreAbsent(f"remote_review_ref_missing: {ref}")
+    return rows[0][0]
+
+
+def _require_review_content(workspace: Path, full: str) -> None:
+    if not _verify_review_commit_in_store(workspace, full)["tree_matches"]:
+        raise GripCorruptError("review_tree_mismatch: received content does not recompute")
+
+
+def publish_review_commit(workspace: Path, commit: str, remote: str,
+                          ref: str | None = None) -> dict[str, str]:
+    """Publish one existing native review ref, without approval or branch publication."""
+    full, canonical = _review_transport_identity(commit, ref)
+    destination = _review_transport_remote(remote)
+    _validate_bind_store(workspace)
+    _resolve_bound(workspace, full)
+    _require_review_content(workspace, full)
+    proc = git(workspace, "push", destination, f"{full}:{canonical}", timeout=30)
+    if proc.returncode:
+        raise GripCorruptError(f"review_publication_unconfirmed: {proc.stderr.strip()}")
+    observed = _review_remote_target(workspace, destination, canonical)
+    if observed != full:
+        raise GripCorruptError(f"remote_review_id_mismatch: expected {full}, observed {observed}")
+    return {"id": f"gr:{full}", "ref": canonical, "remote": destination}
+
+
+def receive_review_commit(workspace: Path, commit: str, remote: str,
+                          ref: str | None = None) -> dict[str, str]:
+    """Validate fetched review content before create-only local bind publication.
+
+    Object downloads/recomputation are not approval, allocation or cleanup authority.
+    """
+    import uuid
+    full, canonical = _review_transport_identity(commit, ref)
+    source = _review_transport_remote(remote)
+    _validate_bind_store(workspace)
+    observed = _review_remote_target(workspace, source, canonical)
+    if observed != full:
+        raise GripCorruptError(f"remote_review_id_mismatch: expected {full}, observed {observed}")
+    staging = f"refs/dev.synapt.grip/__review_transfers__/{uuid.uuid4().hex}"
+    primary = None
+    try:
+        proc = git(workspace, "fetch", "--no-tags", "--no-write-fetch-head", source,
+                   f"{canonical}:{staging}", timeout=30)
+        if proc.returncode:
+            raise GripCorruptError(f"review_fetch_unconfirmed: {proc.stderr.strip()}")
+        fetched = _bind_git(workspace, "rev-parse", "--verify", "--quiet", staging)
+        actual = fetched.stdout.strip() if fetched.returncode == 0 else ""
+        if actual != full:
+            raise GripCorruptError(f"fetched_review_id_mismatch: expected {full}, observed {actual}")
+        if _bind_git(workspace, "cat-file", "-t", actual).stdout.strip() != "commit":
+            raise GripCorruptError("fetched_review_kind_mismatch: expected a commit")
+        _require_review_content(workspace, actual)
+        existing = _bind_git(workspace, "rev-parse", "--verify", "--quiet", canonical)
+        if existing.returncode == 0 and existing.stdout.strip() != actual:
+            raise GripCorruptError(f"review_ref_target_mismatch: {canonical}")
+        try:
+            _publish_bind(workspace, actual, "received review")
+        except RuntimeError as exc:
+            raise GripCorruptError(f"review_bind_publication_failed: {exc}") from exc
+        return {"id": f"gr:{actual}", "ref": canonical, "remote": source}
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        try:
+            target = _bind_git(workspace, "rev-parse", "--verify", "--quiet", staging)
+            if target.returncode == 0:
+                removed = _bind_git(workspace, "update-ref", "-d", staging, target.stdout.strip())
+                if removed.returncode:
+                    raise GripCorruptError(f"review_staging_cleanup_failed: {removed.stderr.strip()}")
+            elif target.returncode != 1:
+                raise GripCorruptError(f"review_staging_cleanup_failed: {target.stderr.strip()}")
+        except Exception as cleanup:
+            if primary is not None:
+                primary.add_note(f"review_staging_cleanup_failed: {cleanup}")
+            else:
+                raise GripCorruptError(f"review_staging_cleanup_failed: {cleanup}") from cleanup
 
 
 def _migrate_legacy_binds(workspace: Path) -> None:

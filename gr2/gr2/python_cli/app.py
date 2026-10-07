@@ -4150,6 +4150,32 @@ def review_run(
         raise typer.Exit(code=1)
 
 
+@review_app.command("publish", cls=ReviewTargetCommand)
+def review_publish(
+    workspace_root: Path,
+    commit: str = typer.Argument(..., help="Full gr:<sha> review ID"),
+    remote: str = typer.Option(..., "--remote", help="HTTPS URL or absolute local remote path"),
+    ref: Optional[str] = typer.Option(None, "--ref", help="Exact native review ref, otherwise derived from ID"),
+    root: Optional[Path] = ROOT_OPTION,
+) -> None:
+    """Publish the existing native review ref and verify its remote ID."""
+    result = _review_call(grip.publish_review_commit, workspace_root.resolve(), commit, remote, ref)
+    typer.echo(json.dumps(result))
+
+
+@review_app.command("receive", cls=ReviewTargetCommand)
+def review_receive(
+    workspace_root: Path,
+    commit: str = typer.Argument(..., help="Independent expected full gr:<sha> review ID"),
+    remote: str = typer.Option(..., "--remote", help="HTTPS URL or absolute local remote path"),
+    ref: Optional[str] = typer.Option(None, "--ref", help="Exact native review ref, otherwise derived from ID"),
+    root: Optional[Path] = ROOT_OPTION,
+) -> None:
+    """Receive and validate an exact native review before binding it locally."""
+    result = _review_call(grip.receive_review_commit, workspace_root.resolve(), commit, remote, ref)
+    typer.echo(json.dumps(result))
+
+
 @review_app.command("show", cls=ReviewTargetCommand)
 def review_show(
     workspace_root: Path,

@@ -22,17 +22,6 @@ def refs(root: Path) -> dict[str, str]:
     ).splitlines())
 
 
-def put_remote_v1(handoff, *, legacy: bool = False) -> None:
-    author, _, remote, commit, _, _ = handoff
-    git(author, "push", remote, f"{commit}:{review_ref(commit)}")
-    if legacy:
-        git(author, "push", remote, f"{commit}:{legacy_review_ref(commit)}")
-    assert refs(remote) == {
-        **({legacy_review_ref(commit): commit} if legacy else {}),
-        review_ref(commit): commit,
-    }, "transport fixture must expose the intended exact ref spelling"
-
-
 def test_site6_publish_pushes_exactly_one_v1_ref(handoff, monkeypatch):
     author, _, remote, commit, _, _ = handoff
     result = cli(author, monkeypatch, "publish", "gr:" + commit, "--remote", remote)
@@ -46,61 +35,20 @@ def test_site11_new_bind_creates_exactly_one_v1_ref(handoff):
     assert refs(author) == {review_ref(commit): commit}, "site11: new bind wrote a legacy or extra review ref"
 
 
-def test_site11_create_only_does_not_replace_an_existing_v1_target(handoff):
-    author, _, _, commit, _, _ = handoff
+def test_site11_create_only_does_not_replace_an_existing_v1_target(handoff, monkeypatch):
+    author, _, remote, _, base, head = handoff
+    row = dict(key="member", path="member", remote=str(remote), base=base, head=head,
+               ref="refs/heads/main", title="collision", body="", source=str(author / "member"))
+    for who in ("AUTHOR", "COMMITTER"):
+        monkeypatch.setenv(f"GIT_{who}_DATE", "2026-10-07T00:00:00Z")
+    commit = grip.create_review_bind_commit(author, [row])
     wrong = root_owned_wrong_target(author, commit)
     git(author, "update-ref", review_ref(commit), wrong)
     before = refs(author)
-    with pytest.raises(RuntimeError, match="update-ref failed"):
-        grip._publish_bind(author, commit, "same reviewed bind")
+    with pytest.raises((RuntimeError, grip.GripCorruptError), match="update-ref failed|review_ref_target_mismatch"):
+        grip.create_review_bind_commit(author, [dict(row)])
     assert refs(author) == before, "site11: create-only collision changed an existing ref"
     assert git(author, "rev-parse", review_ref(commit)) == wrong
-
-
-def test_site5_receive_accepts_an_explicit_v1_publish(handoff, monkeypatch):
-    _, receiver, remote, commit, _, _ = handoff
-    put_remote_v1(handoff)
-    result = cli(receiver, monkeypatch, "receive", "gr:" + commit,
-                 "--remote", remote, "--ref", review_ref(commit))
-    assert result.exit_code == 0, f"site5: explicit v1 transport was refused: {result.output}"
-    assert refs(receiver) == {review_ref(commit): commit}
-
-
-def test_site8_receive_default_fetches_the_v1_only_publish(handoff, monkeypatch):
-    _, receiver, remote, commit, _, _ = handoff
-    put_remote_v1(handoff)
-    result = cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", remote)
-    assert result.exit_code == 0, f"site8: receive looked for the wrong published ref: {result.output}"
-    assert refs(receiver) == {review_ref(commit): commit}
-    assert json.loads(result.stdout)["ref"] == review_ref(commit)
-    assert git(receiver, "for-each-ref", "refs/dev.synapt.grip/__review_transfers__/") == ""
-
-
-def test_site9_existing_v1_bind_is_received_without_adding_a_legacy_ref(handoff, monkeypatch):
-    author, receiver, remote, commit, _, _ = handoff
-    # Both remote spellings let a legacy fetch succeed, exposing the local
-    # existing-bind mistake independently of the earlier fetch lookup failure.
-    put_remote_v1(handoff, legacy=True)
-    git(receiver, "fetch", "--no-tags", author, f"{commit}:{review_ref(commit)}")
-    before = refs(receiver)
-    for _ in range(2):
-        result = cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", remote)
-        assert result.exit_code == 0, result.output
-        assert refs(receiver) == before, "site9: receive added a legacy ref beside the existing v1 bind"
-
-
-def test_site9_existing_v1_ref_with_wrong_target_is_refused(handoff, monkeypatch):
-    author, receiver, remote, commit, _, _ = handoff
-    put_remote_v1(handoff, legacy=True)
-    git(receiver, "fetch", "--no-tags", author, commit)
-    wrong = root_owned_wrong_target(receiver, commit)
-    git(receiver, "update-ref", review_ref(commit), wrong)
-    before = refs(receiver)
-    result = cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", remote)
-    assert result.exit_code == 2 and "review_ref_target_mismatch" in result.output, (
-        f"site9: receive ignored the conflicting v1 bind: {result.output}"
-    )
-    assert refs(receiver) == before
 
 
 def test_same_record_and_commit_inputs_give_the_same_id(handoff, monkeypatch):
@@ -134,25 +82,93 @@ def test_a_bind_record_is_a_form_d_tree_accepted_as_written(handoff):
     assert git(author, "rev-parse", commit + "^{tree}") == tree, "verification rewrote the record"
 
 
-def test_site10_legacy_store_migrates_to_v1_without_rewriting_record(handoff):
-    author, receiver, remote, _, base, head = handoff
-    legacy = receiver / ".grip"
-    legacy.mkdir(exist_ok=True)
-    git(legacy, "init", "-q", "-b", "main")
+@pytest.mark.parametrize("payload,reason", [
+    (b"\x12\x06review\x12\x06review", "wire type 2"),
+    (b"\x10\x01", "wire type 2"),
+], ids=["duplicate-singular-kind", "kind-as-varint"])
+def test_writer_verifies_invalid_bytes_before_commit_or_ref(handoff, monkeypatch, tmp_path, payload, reason):
+    from tests.native_root_helper import native_root
+    author, _, remote, _, base, head = handoff
+    root = native_root(tmp_path / "fresh-writer")
+    row = dict(key="member", path="member", remote=str(remote), base=base, head=head,
+               ref="refs/heads/main", title="", body="", source=str(author / "member"))
+    calls = []
+    original = fd.encode
+    def invalid(record, message="ReviewBind"):
+        if message == "ReviewBind":
+            calls.append(message)
+            return payload
+        return original(record, message)
+    # Prove this corrupt byte seam CAN create a tree, and that verify rejects
+    # that actual tree; encode's normal input validation cannot stand in for it.
+    bad_tree = fd.write_tree(root, payload)
+    with pytest.raises(fd.ReviewRecordError) as exc:
+        fd.verify_tree(root, bad_tree)
+    assert reason in str(exc.value)
+    before = refs(root)
+    monkeypatch.setattr(fd, "encode", invalid)
+    failure = None
+    try:
+        grip.create_review_bind_commit(root, [row])
+    except fd.ReviewRecordError as exc:
+        failure = str(exc)
+    assert refs(root) == before == {}, "verify-after-write: invalid bytes reached a durable ref"
+    assert calls == ["ReviewBind"], "production writer did not traverse the record-to-bytes seam"
+    assert failure is not None and reason in failure
+    # A valid control through the SAME production writer must bind successfully.
+    monkeypatch.setattr(fd, "encode", original)
+    commit = grip.create_review_bind_commit(root, [row])
+    fd.verify_tree(root, git(root, "rev-parse", commit + "^{tree}"))
+    assert refs(root) == {review_ref(commit): commit}
+
+
+def test_project_review_caller_keeps_legacy_destination_and_reconstruction(handoff, tmp_path):
+    author, _, remote, _, base, head = handoff
+    from tests.native_root_helper import native_root
+    root = native_root(tmp_path / "project-root")
+    pin = dict(key="member", path="member", repo=str(remote), base=base, head=head)
+    patch = git(author / "member", "format-patch", "--stdout", base + ".." + head)
+    committers = git(author / "member", "log", "--reverse", "--format=%cn%x09%ce%x09%cI", base + ".." + head) + "\n"
+    commit = grip.create_project_review_commit(root, [pin], {"member": patch}, {"member": committers})
+    assert refs(root) == {legacy_review_ref(commit): commit}, "project caller changed its format destination to v1"
+    assert git(root, "show", commit + ":.grip/schema") == grip._PROJECT_REVIEW_SCHEMA
+    assert grip.read_project_review_commit(root, commit) == [pin]
+    lane = tmp_path / "project-lane"
+    got = grip.reconstruct_project_review_lane(root, commit, "member", lane)
+    assert got["reconstructed_head"] == head
+    assert git(lane, "rev-parse", "HEAD^{tree}") == git(author / "member", "rev-parse", "HEAD^{tree}")
+    assert (lane / "payload.txt").read_text() == "reviewed\n"
+
+
+@pytest.mark.parametrize("version", ["", "v1"], ids=["legacy-source", "v1-source"])
+def test_receive_keeps_requested_source_and_destination_spelling(handoff, monkeypatch, tmp_path, version):
+    from tests.native_root_helper import native_root
+    _, _, remote, _, base, head = handoff
+    source = native_root(tmp_path / "transport-source")
+    receiver = native_root(tmp_path / "transport-receiver")
     row = dict(key="member", path="member", remote=str(remote), base=base, head=head,
                title="legacy title", body="legacy body")
-    tree = legacy_bind_tree(legacy, row)
-    commit = git(legacy, "commit-tree", tree, "-m", "legacy review bind")
-    git(legacy, "update-ref", "HEAD", commit)
-    before = git(legacy, "cat-file", "-p", commit)
-    assert git(legacy, "show", commit + ":.grip/schema") == "gr2-review-bind/v2"
-    grip._migrate_legacy_binds(receiver)
-    assert refs(receiver) == {review_ref(commit): commit}, "site10: migration published a legacy or extra ref"
-    assert git(receiver, "cat-file", "-p", commit) == before, "migration changed commit inputs/id"
-    assert git(receiver, "rev-parse", commit + "^{tree}") == tree, "migration rewrote legacy record tree"
-    assert grip.verify_review_commit(receiver, commit)["tree_matches"] is True
-    aside = receiver / ".grip" / "legacy-store.git"
-    assert aside.is_dir() and not (legacy / ".git").exists()
-    assert git(aside, "rev-parse", "HEAD") == commit
-    grip._migrate_legacy_binds(receiver)
-    assert refs(receiver) == {review_ref(commit): commit}
+    if version:
+        record = {"schema": grip._REVIEW_BIND_SCHEMA, "kind": "review", "policy": "no-policy",
+                  "members": [{"key": "member", "path": "member", "remote": str(remote),
+                               "base": base, "commit": head, "remote_head": base,
+                               "title": row["title"], "body": row["body"]}]}
+        tree = fd.write_record(source, record)
+        fd.verify_tree(source, tree)
+    else:
+        tree = legacy_bind_tree(source, row)
+    commit = git(source, "commit-tree", tree, "-m", "original received review")
+    requested = review_ref(commit, version=version)
+    git(source, "update-ref", requested, commit, "0" * 40)
+    git(source, "push", remote, f"{commit}:{requested}")
+    assert refs(remote) == {requested: commit}
+    before = git(source, "cat-file", "-p", commit)
+    for _ in range(2):
+        result = cli(receiver, monkeypatch, "receive", "gr:" + commit,
+                     "--remote", remote, "--ref", requested)
+        assert result.exit_code == 0, result.output
+        got = json.loads(result.stdout)
+        assert got["ref"] == requested
+        assert refs(receiver) == {requested: commit}, "receive converted or relabelled the requested format"
+        assert git(receiver, "cat-file", "-p", commit) == before
+        assert git(receiver, "rev-parse", commit + "^{tree}") == tree

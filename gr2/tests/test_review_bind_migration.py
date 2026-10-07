@@ -13,14 +13,14 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from tests.review_ref_helper import REVIEW_REF_PREFIX, legacy_bind_tree
+from tests.review_ref_helper import REVIEW_REF_ROOT, legacy_bind_tree
 from gr2.python_cli import grip as grip_mod
 
 from tests.native_root_helper import native_root
 from tests.test_review_bind_native_store import _unpushed_head
 from tests.test_store_break_attempts import _cli, _git_out, two_member_ws  # noqa: F401
 
-_REFS = REVIEW_REF_PREFIX
+_REFS = REVIEW_REF_ROOT
 
 
 def _legacy_binds(ws: Path, tmp_path: Path, n: int = 2) -> list[str]:
@@ -71,7 +71,7 @@ def test_old_binds_move_into_refs_on_the_first_bind_touching_verb(two_member_ws:
 
     code, out = _cli("review", "verify", str(ws), "gr:" + ids[1])
     assert code == 0 and "tree_matches: True" in out, out
-    assert f"migrated 2 review binds from .grip/.git into {REVIEW_REF_PREFIX.rstrip(chr(47))}" in out + capfd.readouterr().err
+    assert f"migrated 2 review binds from .grip/.git into {REVIEW_REF_ROOT.rstrip(chr(47))}" in out + capfd.readouterr().err
     assert sorted(_refs(ws)) == sorted(_REFS + i for i in ids), "ids must keep their shas"
     assert not (ws / ".grip" / ".git").exists() and (ws / ".grip" / "legacy-store.git").is_dir()
     code, out = _cli("review", "verify", str(ws), "gr:" + ids[0])

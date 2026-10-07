@@ -229,3 +229,48 @@ def test_a_stash_is_named_once_and_not_as_an_unpublished_commit(reconstruction):
     result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
     assert result.exit_code != 0 and "a stash" in result.output, result.output
     assert "unpublished" not in result.output.lower(), result.output
+
+
+def test_a_directory_named_like_a_run_log_at_the_root_is_work(tmp_path: Path):
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    notes = lane / review_run._OUTPUT_LOG_NAME
+    notes.mkdir()
+    (notes / "valuable.txt").write_text("user notes\n")
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code != 0, result.output
+    assert (notes / "valuable.txt").read_text() == "user notes\n"
+
+
+def test_a_commit_left_only_in_the_reflog_is_unpublished(reconstruction):
+    runner, lane, allocation, _ = reconstruction
+    head = _git(lane, "rev-parse", "HEAD")
+    (lane / "f.txt").write_text("reflog-only work\n")
+    _git(lane, "-c", "user.name=F", "-c", "user.email=f@x.invalid", "commit", "-qam", "reflog only")
+    commit = _git(lane, "rev-parse", "HEAD")
+    _git(lane, "checkout", "-q", "--detach", head)
+    assert commit not in _git(lane, "rev-list", "--all").split()
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code != 0 and commit[:12] in result.output, result.output
+    assert lane.is_dir() and allocation.exists()
+
+
+def test_a_runners_own_outputs_do_not_refuse_a_clean_lane(reconstruction):
+    """The receipt names the runner; its created outputs (cargo: Cargo.lock, target/) are the review's."""
+    runner, lane, allocation, (_, receipt, _) = reconstruction
+    data = json.loads(receipt.read_text())
+    data["runner"] = "cargo"
+    receipt.write_text(json.dumps(data) + "\n")
+    (lane / "Cargo.lock").write_text("# lock\n")
+    (lane / "target" / "debug").mkdir(parents=True)
+    (lane / "target" / "debug" / "out").write_text("bin\n")
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code == 0, result.output
+    assert not lane.exists()
+
+
+def test_the_same_outputs_without_that_runner_are_work(reconstruction):
+    runner, lane, allocation, _ = reconstruction
+    (lane / "Cargo.lock").write_text("# lock\n")
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code != 0 and "Cargo.lock" in result.output, result.output

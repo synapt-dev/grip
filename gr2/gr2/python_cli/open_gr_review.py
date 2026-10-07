@@ -133,6 +133,14 @@ def _refuse_local_work(target: Path, allocation: dict) -> None:
                                     f"{(proc.stderr or proc.stdout).strip()}; close refused")
         return proc.stdout
 
+    from .review_runners import RUNNER_CREATED_PATHS
+    # A runner's own outputs (cargo's target/ and Cargo.lock, ...) are the review's, exactly as
+    # `review run` treats them; the receipt names the runner that wrote them.
+    try:
+        runner = json.loads((target / _RUN_RECEIPT_NAME).read_text()).get("runner")
+    except (OSError, ValueError, AttributeError):
+        runner = None
+    created = RUNNER_CREATED_PATHS.get(runner or "", {})
     found: list[str] = []
     members = [target / item["path"] for item in allocation["members"]]
     if not (target / ".git").exists():
@@ -145,19 +153,26 @@ def _refuse_local_work(target: Path, allocation: dict) -> None:
                *(f"{_RUN_LOG_NAME}.{key}" for key in member_names)}
         for entry in sorted(target.iterdir()):
             name = entry.name
-            if name in member_names or name in own:
+            if name in member_names or (name == ".venv" and entry.is_dir()) \
+                    or (name in own and entry.is_file() and not entry.is_symlink()):
                 continue
             found.append(f"work at the lane root: {entry}")
     for path in dict.fromkeys([target, *members]):
         if not (path / ".git").exists():
             continue
         for line in ask(path, "status", "--porcelain", "--untracked-files=all").splitlines():
-            if line.startswith("?? ") and _is_allowlisted_untracked(line[3:]):
+            if line.startswith("?? ") and _is_allowlisted_untracked(
+                    line[3:], extra_names=created.get("names", frozenset()),
+                    extra_tops=created.get("tops", ()), extra_segments=created.get("segments", frozenset())):
                 continue
             found.append(f"uncommitted work in {path}: {line}")
-        if ask(path, "stash", "list").strip():
+        stashes = ask(path, "stash", "list", "--format=%H").split()
+        if stashes:
             found.append(f"uncommitted work in {path}: a stash")
-        unpublished = ask(path, "rev-list", "--exclude=refs/stash", "--all", "--not", "--remotes", "HEAD").split()
+        # Every ref and every reflog entry (a commit left only in the reflog is still work), less
+        # what a remote has, the reviewed HEAD, and the stashes reported above.
+        unpublished = ask(path, "rev-list", "--exclude=refs/stash", "--all", "--reflog",
+                          "--not", "--remotes", "HEAD", *stashes).split()
         if unpublished:
             found.append(f"unpublished commits in {path}: {', '.join(c[:12] for c in unpublished)}")
     if found:

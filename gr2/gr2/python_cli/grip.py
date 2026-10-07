@@ -1565,6 +1565,96 @@ def receive_review_commit(workspace: Path, commit: str, remote: str,
                 raise GripCorruptError(f"review_staging_cleanup_failed: {cleanup}") from cleanup
 
 
+def migrate_review_binds(workspace: Path) -> tuple[Path, list[dict[str, str]]]:
+    """Explicit `store migrate-reviews`: give every legacy review bind a field tree twin at v1.
+
+    Each legacy bind is read through the same reader the review verbs use (an unsafe member key is
+    refused there, and that bind is not converted). Its content becomes a new record with a new id:
+    the commit keeps the legacy commit's author, committer, dates and full message, so the same
+    legacy bind gives the same new id for any caller, at any time, on every rerun. The legacy ref,
+    commit and tree are left as they are. The v1 ref is created create-only; one already at the
+    same id is `present`, one at another target refuses. Rows converted before a refusal stay
+    published; the receipt names what this run published. A read never converts (see
+    `_migrate_legacy_binds`)."""
+    import datetime
+    import json
+    from . import review_form_d as fd
+    _validate_bind_store(workspace)
+    repo = _bind_dir(workspace)
+    out = _bind_git(workspace, "for-each-ref", "--format=%(refname)", _REVIEW_REF_PREFIX)
+    legacy = sorted(r[len(_REVIEW_REF_PREFIX):] for r in out.stdout.splitlines()
+                    if r.startswith(_REVIEW_REF_PREFIX) and _SHA40.fullmatch(r[len(_REVIEW_REF_PREFIX):]))
+    rows: list[dict[str, str]] = []
+    failure: Exception | None = None
+    for old in legacy:
+        if _is_form_d_bind(workspace, old) or \
+                _bind_git(workspace, "show", f"{old}:.grip/schema").stdout.strip() != _REVIEW_BIND_SCHEMA:
+            continue  # already a field tree, or not a review bind (a project review keeps its format)
+        try:
+            rows.append(_migrate_one_bind(workspace, repo, old, fd))
+        except GripCorruptError as exc:
+            failure = exc
+            break
+    receipts = _layout_grip_dir(workspace) / "receipts"
+    receipts.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    receipt = receipts / f"migrate-reviews-{stamp}.json"
+    receipt.write_text(json.dumps({"rows": rows}, indent=2) + "\n")
+    if failure is not None:
+        raise failure
+    return receipt, rows
+
+
+def _migrate_one_bind(workspace: Path, repo: Path, old: str, fd) -> dict[str, str]:
+    def blob(path: str) -> bytes | None:
+        proc = subprocess.run(["git", "-C", str(repo), "cat-file", "blob", f"{old}:{path}"], capture_output=True)
+        return proc.stdout if proc.returncode == 0 else None
+
+    def text(path: str) -> str:
+        value = blob(path)
+        return "" if value is None else value.decode("utf-8")
+
+    members: list[dict[str, object]] = []
+    for key, fields in sorted(_read_repo_state(workspace, old, bind=True).items()):
+        member: dict[str, object] = {
+            "key": key, "path": fields.get("path", ""), "remote": fields.get("remote", ""),
+            "base": fields.get("base", ""), "commit": fields.get("commit", ""),
+            "remote_head": text(f"observed/{key}/remote-head").strip(),
+            "title": text(f"texts/{key}/title"), "body": text(f"texts/{key}/body")}
+        for name, field in (("range.patch", "range_patch"), ("metadata", "metadata"), ("committers", "committers")):
+            value = blob(f"objects/{key}/{name}")
+            if value is not None:
+                member[field] = value
+        head_tree = blob(f"objects/{key}/head-tree")
+        if head_tree is not None:
+            member["head_tree"] = head_tree.decode("utf-8").strip()
+        evidence = {name: value for name in ("commands", "resolution")
+                    if (value := blob(f"evidence/{key}/{name}")) is not None}
+        if evidence:
+            member["evidence"] = evidence
+        members.append(member)
+    record = {"schema": _REVIEW_BIND_SCHEMA, "kind": "review",
+              "policy": text(".grip/policy").strip(), "members": members}
+    tree = fd.write_tree(repo, fd.encode(record))
+    fd.verify_tree(repo, tree)
+    raw = subprocess.run(["git", "-C", str(repo), "cat-file", "commit", old], capture_output=True, check=True).stdout
+    headers, _, message = raw.partition(b"\n\n")
+    kept = [line for line in headers.splitlines() if line.startswith((b"author ", b"committer "))]
+    body = b"tree " + tree.encode() + b"\n" + b"\n".join(kept) + b"\n\n" + message
+    new = subprocess.run(["git", "-C", str(repo), "hash-object", "-t", "commit", "-w", "--stdin"],
+                         input=body, capture_output=True, check=True).stdout.decode().strip()
+    ref = _review_ref_v1(new)
+    existing = _bind_git(workspace, "rev-parse", "--verify", "--quiet", ref)
+    if existing.returncode == 0:
+        if existing.stdout.strip() != new:
+            raise GripCorruptError(f"review_ref_target_mismatch: {ref}")
+        status = "present"
+    else:
+        _publish_bind(workspace, new, "migrated review", ref=ref)
+        status = "created"
+    return {"old_id": f"gr:{old}", "new_id": f"gr:{new}", "ref": ref, "status": status}
+
+
 def _migrate_legacy_binds(workspace: Path) -> None:
     """Move the review binds an older gr2 kept in `<root>/.grip/.git` into `refs/dev.synapt.grip/__reviews__/`.
 

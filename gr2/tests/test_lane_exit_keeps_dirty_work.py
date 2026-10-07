@@ -88,7 +88,7 @@ def test_exit_with_dirty_stash_names_the_stash_and_how_to_restore_it(tmp_path: P
     [row] = payload["stashed"]
     assert row["repo"] == "app" and row["path"] == str(repo), payload
     assert row["stash"] == _git(repo, "rev-parse", "stash@{0}"), payload
-    assert row["restore"] == f"git -C {repo} stash pop", payload
+    assert row["restore"] == f"git -C {repo} stash apply --index {row['stash']}", payload
     assert row["restore"] in result.stderr and row["stash"] in result.stderr
     assert _git(repo, "show", "stash@{0}:f.txt") == "edited"
     assert _current_lane(ws) != "x"
@@ -143,3 +143,42 @@ def test_a_plain_refusal_prints_a_receipt_naming_the_repo(tmp_path: Path) -> Non
     payload = json.loads(_exit(ws).stdout)
     assert payload["refusal"] == "lane_has_uncommitted_work" and payload["stashed"] == [], payload
     assert payload["dirty"] == [{"repo": "app", "path": str(repo)}], payload
+
+
+def test_the_printed_restore_brings_back_this_stash_with_its_index_after_a_later_stash(tmp_path: Path) -> None:
+    ws, repo = _entered_lane(tmp_path)
+    (repo / "f.txt").write_text("staged edit\n")
+    _git(repo, "add", "f.txt")
+    (repo / "f.txt").write_text("unstaged on top\n")
+    index_before = _git(repo, "diff", "--cached")
+    tree_before = _git(repo, "diff")
+    row = json.loads(_exit(ws, "--dirty", "stash").stdout)["stashed"][0]
+    (repo / "other.txt").write_text("a later, different stash\n")
+    _git(repo, "stash", "push", "-u", "-q", "-m", "later")
+    subprocess.run(row["restore"], shell=True, check=True, capture_output=True)
+    assert _git(repo, "diff", "--cached") == index_before
+    assert _git(repo, "diff") == tree_before
+    assert row["stash"] in _git(repo, "stash", "list", "--format=%H").split()
+
+
+def test_a_blocking_on_exit_hook_after_a_stash_still_prints_the_receipt(tmp_path: Path) -> None:
+    ws, _, _ = _workspace_with_enter_hook(tmp_path, command="exit 4", stage_key="on_exit",
+                                          extra='on_failure = "block"\n')
+    for argv in (["lane", "create", str(ws), "atlas", "x", "--repos", "app", "--branch", "app=feat/x"],
+                 ["lane", "enter", str(ws), "atlas", "x", "--actor", "agent:s"]):
+        assert runner.invoke(gr2_app.app, argv).exit_code == 0
+    repo = gr2_app._lane_repo_root(ws, "atlas", "x", "app")
+    (repo / "f.txt").write_text("edited\n")
+    result = _exit(ws, "--dirty", "stash")
+    assert result.exit_code == 2, result.output
+    payload = json.loads(result.stdout)
+    assert payload["refusal"] == "exit_step_failed" and payload["current_lane"] == "x", payload
+    [row] = payload["stashed"]
+    assert row["stash"] == _git(repo, "rev-parse", "stash@{0}"), payload
+    assert _current_lane(ws) == "x"
+
+
+def test_an_unknown_mode_prints_a_receipt(tmp_path: Path) -> None:
+    ws, repo = _entered_lane(tmp_path)
+    result = _exit(ws, "--dirty", "discard")
+    assert result.exit_code == 2 and json.loads(result.stdout)["refusal"] == "unknown_dirty_mode", result.output

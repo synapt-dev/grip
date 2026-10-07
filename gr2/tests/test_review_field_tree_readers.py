@@ -23,6 +23,19 @@ from tests.test_store_break_attempts import two_member_ws  # noqa: F401
 EVIDENCE = b"label: reviewed-content\ncommand: git show HEAD:f.txt\nexit: 0\n"
 
 
+def legacy_layout_bind(w) -> str:
+    """A legacy-layout bind (carried objects and evidence included), built independently of the
+    production writer, which writes field trees; published at the legacy spelling."""
+    from tests.review_ref_helper import legacy_bind_tree
+    row = _row(w["remote"], w["base"], w["head"])
+    objects = grip._carry_objects(w["author"], str(w["work"]), w["base"], w["head"])
+    tree = legacy_bind_tree(w["author"], dict(row, remote_head=w["base"], objects=objects,
+                                              evidence=EVIDENCE.decode()))
+    commit = git(w["author"], "commit-tree", tree, "-m", "legacy layout bind")
+    git(w["author"], "update-ref", legacy_review_ref(commit), commit, "0" * 40)
+    return commit
+
+
 def ref_targets(root: Path) -> dict[str, str]:
     return dict(line.split() for line in git(
         root, "for-each-ref", "--format=%(refname) %(objectname)", REVIEW_REF_ROOT
@@ -217,9 +230,7 @@ def test_absent_evidence_gives_no_checks_and_absent_committers_is_tree_faithful(
 
 def test_legacy_layout_reads_and_automatic_read_does_not_convert_ids(record_world, tmp_path):
     w = record_world
-    row = _row(w["remote"], w["base"], w["head"])
-    row.update(source=str(w["work"]), evidence=EVIDENCE.decode())
-    commit = grip.create_review_bind_commit(w["author"], [row])
+    commit = legacy_layout_bind(w)
     before = ref_targets(w["author"])
     assert before == {legacy_review_ref(commit): commit}
     tree = git(w["author"], "rev-parse", commit + "^{tree}")

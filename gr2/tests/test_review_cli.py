@@ -15,7 +15,7 @@ verify-on-tampered is probe 1/2 (verify recomputes, does not trust the record).
 """
 from __future__ import annotations
 
-from tests.review_ref_helper import legacy_review_ref
+from tests.review_ref_helper import legacy_review_ref, review_ref
 from tests.native_root_helper import native_root
 
 import json
@@ -134,6 +134,38 @@ def _tamper_blob(ws: Path, commit_ref: str, tree_path: str, content: bytes) -> s
     return f"gr:{new_commit}"
 
 
+def _member_ordinal(ws: Path, sha: str, key: str) -> str:
+    from gr2.python_cli import review_field_tree as fd
+    tree = _git(ws, "rev-parse", f"{sha}^{{tree}}")
+    keys = [m["key"] for m in fd.read_record(ws, tree)["members"]]
+    return f"{keys.index(key) + 1:07d}"
+
+
+def _tamper_field(ws: Path, commit_ref: str, key: str, field: str, content: bytes) -> str:
+    """Replace one field of one member in a field tree bind (field by its NNN.W stem, e.g. "008.2"
+    for range_patch, "006.2" for head_tree), commit it and publish it at v1 the way a bind is."""
+    from gr2.python_cli import review_field_tree as fd
+    sha = commit_ref[3:] if commit_ref.startswith("gr:") else commit_ref
+    tree = _git(ws, "rev-parse", f"{sha}^{{tree}}")
+    new_tree = fd.replace_entry(ws, tree, ["004.2", _member_ordinal(ws, sha, key), field], content)
+    new_commit = _git(ws, "commit-tree", new_tree, "-p", sha, "-m", "tamper")
+    _git(ws, "update-ref", review_ref(new_commit), new_commit)
+    return f"gr:{new_commit}"
+
+
+def _add_root_entry(ws: Path, commit_ref: str, name: str, content: bytes) -> str:
+    """Add an entry no field tree may hold at the record's root, and publish it at v1."""
+    sha = commit_ref[3:] if commit_ref.startswith("gr:") else commit_ref
+    blob = subprocess.run(["git", "-C", str(ws), "hash-object", "-w", "--stdin"], input=content,
+                          env=_env(), capture_output=True, check=True).stdout.decode().strip()
+    listing = _git(ws, "ls-tree", f"{sha}^{{tree}}")
+    new_tree = subprocess.run(["git", "-C", str(ws), "mktree"], input=f"{listing}\n100644 blob {blob}\t{name}\n",
+                              env=_env(), capture_output=True, text=True, check=True).stdout.strip()
+    new_commit = _git(ws, "commit-tree", new_tree, "-p", sha, "-m", "tamper")
+    _git(ws, "update-ref", review_ref(new_commit), new_commit)
+    return f"gr:{new_commit}"
+
+
 # --- happy path: the smallest proof, as a test -----------------------------
 
 
@@ -150,8 +182,9 @@ def test_bind_open_gr_verify_roundtrip(tmp_path):
     assert opened.exit_code == 0, opened.output
     assert (lane / "f.txt").read_text() == "head under review\n"
     # The assertion is on the TREE (git am mints a new head sha), so tree must match.
-    assert _git(lane, "rev-parse", "HEAD^{tree}") == \
-        _git(ws, "show", f"{grc[3:]}:objects/recall/head-tree")
+    from gr2.python_cli import review_field_tree as fd
+    record = fd.read_record(ws, _git(ws, "rev-parse", f"{grc[3:]}^{{tree}}"))
+    assert _git(lane, "rev-parse", "HEAD^{tree}") == record["members"][0]["head_tree"]
 
     verified = runner.invoke(app, ["review", "verify", str(ws), grc, "--json"])
     assert verified.exit_code == 0, verified.output
@@ -276,7 +309,7 @@ def test_open_gr_propagates_tampered_range_loudly(tmp_path):
     remote, base, head, work = _fixture_repo(tmp_path)
     ws = _grip_ws(tmp_path)
     grc = _bind(ws, remote, base, head, work)
-    tampered = _tamper_blob(ws, grc, "objects/recall/range.patch", b"not a valid patch\n")
+    tampered = _tamper_field(ws, grc, "recall", "008.2", b"not a valid patch\n")
 
     lane = tmp_path / "lane-tampered"
     opened = runner.invoke(
@@ -301,10 +334,7 @@ def test_open_gr_refuses_when_head_tree_is_wrong(tmp_path):
     ws = _grip_ws(tmp_path)
     grc = _bind(ws, remote, base, head, work)
     # Claim a different head-tree than the range reconstructs to.
-    wrong = _tamper_blob(
-        ws, grc, "objects/recall/head-tree",
-        b"0000000000000000000000000000000000000000\n",
-    )
+    wrong = _tamper_field(ws, grc, "recall", "006.2", b"0000000000000000000000000000000000000000")
     lane = tmp_path / "lane-wronghead"
     opened = runner.invoke(
         app, ["review", "open", str(ws), wrong, "--repo", "recall",
@@ -325,13 +355,16 @@ def test_verify_flags_structural_corruption_nonzero(tmp_path):
     remote, base, head, work = _fixture_repo(tmp_path)
     ws = _grip_ws(tmp_path)
     grc = _bind(ws, remote, base, head, work)
-    # Add an extraneous blob the canonical recomputation will not reproduce.
-    corrupt = _tamper_blob(ws, grc, "objects/recall/EXTRA", b"unexpected\n")
+    # An entry no field tree may hold. A field tree is verified as written, so verify REFUSES it
+    # (exit 2, a named reason, nothing on stdout) rather than reporting tree_matches false, which is
+    # what a legacy-layout bind reports for the same drift.
+    corrupt = _add_root_entry(ws, grc, "unexpected.txt", b"unexpected\n")
 
     verified = runner.invoke(app, ["review", "verify", str(ws), corrupt, "--json"])
-    assert verified.exit_code != 0, verified.output   # structural drift is never green
+    assert verified.exit_code == 2, verified.output   # structural drift is never green
     assert "Traceback" not in verified.output
-    assert '"tree_matches": false' in verified.stdout
+    assert "review record" in verified.output and "unexpected.txt" in verified.output
+    assert verified.stdout == ""
 
 
 # --- multi-row bind from the CLI (N rows in ONE commit) -------

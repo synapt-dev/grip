@@ -131,6 +131,16 @@ json  grip migrate .members  map<str,str>                             may-change
 json  grip migrate .root_commit                                       may-change
 json  grip migrate .status  enum(dry-run,migrated)                    may-change
 verb  grip migrate (hidden:grip)                                      stable
+# grip migrate-reviews
+arg   grip migrate-reviews root <str> (hidden:grip)                   stable
+flag  grip migrate-reviews --json (hidden:grip)                       stable
+json  grip migrate-reviews .receipt                                   stable
+json  grip migrate-reviews .rows[].new_id                             stable
+json  grip migrate-reviews .rows[].old_id                             stable
+json  grip migrate-reviews .rows[].reason                             stable
+json  grip migrate-reviews .rows[].ref                                stable
+json  grip migrate-reviews .rows[].status  enum(created,present,refused) stable
+verb  grip migrate-reviews (hidden:grip)                              stable
 # grip push
 flag  grip push --json (hidden:grip)                                  stable
 json  grip push .members[].name                                       may-change
@@ -608,6 +618,16 @@ json  store migrate .members  map<str,str>                            may-change
 json  store migrate .root_commit                                      may-change
 json  store migrate .status  enum(dry-run,migrated)                   may-change
 verb  store migrate                                                   may-change
+# store migrate-reviews
+arg   store migrate-reviews root <str>                                stable
+flag  store migrate-reviews --json                                    stable
+json  store migrate-reviews .receipt                                  stable
+json  store migrate-reviews .rows[].new_id                            stable
+json  store migrate-reviews .rows[].old_id                            stable
+json  store migrate-reviews .rows[].reason                            stable
+json  store migrate-reviews .rows[].ref                               stable
+json  store migrate-reviews .rows[].status  enum(created,present,refused) stable
+verb  store migrate-reviews                                           stable
 # store push
 flag  store push --json                                               may-change
 json  store push .members[].name                                      may-change

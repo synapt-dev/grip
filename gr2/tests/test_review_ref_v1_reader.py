@@ -28,7 +28,11 @@ def _bound(ws: Path) -> str:
     remote, base, head = _unpushed_head(ws)
     code, out = _cli(*_bind_args(ws, remote, base, head))
     assert code == 0, out
-    return out.strip().splitlines()[-1][3:]
+    commit = out.strip().splitlines()[-1][3:]
+    # Deliberate legacy reader fixture, independent of the current writer.
+    _git(ws, "update-ref", f"{ROOT}{commit}", commit)
+    _git(ws, "update-ref", "-d", f"{ROOT}v1/{commit}")
+    return commit
 
 
 def _move_to_v1(ws: Path, commit: str) -> None:
@@ -114,13 +118,6 @@ def test_two_valid_spellings_resolve(two_member_ws: Path) -> None:
     assert grip_mod._resolve_bound(ws, commit) == commit
 
 
-def test_the_reader_step_writes_no_v1_ref(two_member_ws: Path) -> None:
-    """A new bind is still ONE legacy ref; writing v1 refs is the later writer release."""
-    ws = two_member_ws
-    commit = _bound(ws)
-    assert _refs(ws) == [f"{ROOT}{commit}"]
-
-
 def test_transport_takes_known_spellings_and_refuses_an_unknown_version(two_member_ws: Path) -> None:
     """Receive and publish carry a bind under a spelling a reader knows (legacy or v1); a version no
     reader knows, or a ref naming another id, is refused."""
@@ -130,3 +127,8 @@ def test_transport_takes_known_spellings_and_refuses_an_unknown_version(two_memb
     for bad in (f"{ROOT}v9/{full}", f"{ROOT}v1/{'b' * 40}"):
         with pytest.raises(grip_mod.GripCorruptError, match="review_ref_identity_mismatch"):
             grip_mod._review_transport_identity("gr:" + full, bad)
+def test_legacy_transport_identity_remains_accepted() -> None:
+    """A v1 writer still receives an explicitly selected legacy review ref."""
+    commit = "a" * 40
+    full, ref = grip_mod._review_transport_identity("gr:" + commit, ROOT + commit)
+    assert full == commit and ref == ROOT + commit

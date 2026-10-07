@@ -13,27 +13,27 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from tests.review_ref_helper import REVIEW_REF_PREFIX, review_ref_glob
+from tests.review_ref_helper import REVIEW_REF_ROOT, legacy_bind_tree
 from gr2.python_cli import grip as grip_mod
 
 from tests.native_root_helper import native_root
 from tests.test_review_bind_native_store import _unpushed_head
 from tests.test_store_break_attempts import _cli, _git_out, two_member_ws  # noqa: F401
 
-_REFS = REVIEW_REF_PREFIX
+_REFS = REVIEW_REF_ROOT
 
 
 def _legacy_binds(ws: Path, tmp_path: Path, n: int = 2) -> list[str]:
     """What an older gr2 left behind: `<root>/.grip/.git` whose HEAD chains `n` bind commits (each
     commit's parent is the one before). The current code no longer writes that shape, so the trees
-    are made by binding into a scratch native root and the chain is rebuilt in a fresh repo at
-    `.grip/`; the commits are the old shape, the trees are real binds."""
+    are built independently as old v2 records in a scratch native root, and the chain is rebuilt
+    in a fresh repo at `.grip/`; a new writer cannot change this legacy fixture."""
     remote, base, head = _unpushed_head(ws)
     maker = native_root(tmp_path / "legacy-maker")
     rows = [{"key": "alpha", "remote": remote, "path": "alpha", "head": head, "base": base,
              "ref": "refs/heads/main", "title": f"bind {i}", "body": "", "source": str(ws / "alpha")}
             for i in range(n)]
-    made = [grip_mod.create_review_bind_commit(maker, [row]) for row in rows]
+    trees = [legacy_bind_tree(maker, row) for row in rows]
     legacy = ws / ".grip"
     legacy.mkdir(exist_ok=True)
 
@@ -42,11 +42,16 @@ def _legacy_binds(ws: Path, tmp_path: Path, n: int = 2) -> list[str]:
                               capture_output=True, text=True, check=True).stdout.strip()
 
     g("init", "-q")
-    g("fetch", "-q", str(maker), f"+{review_ref_glob()}:refs/maker/*")
+    # Import each immutable legacy tree through a commit, not a namespace glob
+    # that could mix two ref versions.
+    for tree in trees:
+        made = _git_out(maker, "-c", "user.name=t", "-c", "user.email=t@e.invalid",
+                        "commit-tree", tree, "-m", "legacy fixture")
+        g("fetch", "-q", str(maker), made)
     chain: list[str] = []
-    for commit in made:
+    for tree in trees:
         parent = ["-p", chain[-1]] if chain else []
-        chain.append(g("commit-tree", f"{commit}^{{tree}}", *parent, "-m", "grip review bind"))
+        chain.append(g("commit-tree", tree, *parent, "-m", "grip review bind"))
     g("update-ref", "HEAD", chain[-1])
     g("for-each-ref", "--format=%(refname)", "refs/maker")  # the maker refs are dropped below
     for ref in g("for-each-ref", "--format=%(refname)", "refs/maker").splitlines():
@@ -66,7 +71,7 @@ def test_old_binds_move_into_refs_on_the_first_bind_touching_verb(two_member_ws:
 
     code, out = _cli("review", "verify", str(ws), "gr:" + ids[1])
     assert code == 0 and "tree_matches: True" in out, out
-    assert f"migrated 2 review binds from .grip/.git into {REVIEW_REF_PREFIX.rstrip(chr(47))}" in out + capfd.readouterr().err
+    assert f"migrated 2 review binds from .grip/.git into {REVIEW_REF_ROOT.rstrip(chr(47))}" in out + capfd.readouterr().err
     assert sorted(_refs(ws)) == sorted(_REFS + i for i in ids), "ids must keep their shas"
     assert not (ws / ".grip" / ".git").exists() and (ws / ".grip" / "legacy-store.git").is_dir()
     code, out = _cli("review", "verify", str(ws), "gr:" + ids[0])

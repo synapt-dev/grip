@@ -20,7 +20,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from tests.review_ref_helper import REVIEW_REF_PREFIX
+from tests.review_ref_helper import REVIEW_REF_PREFIX, REVIEW_REF_ROOT, review_ref, legacy_review_ref
+from gr2.python_cli import review_field_tree as fd
 from gr2.python_cli import grip as grip_mod
 
 from tests.test_store_break_attempts import _cli, _git, _git_out, two_member_ws  # noqa: F401
@@ -365,25 +366,37 @@ def test_a_refused_first_bind_on_a_root_with_no_store_leaves_no_store_behind(two
     assert not (ws / "grip.toml").exists() and not (ws / ".git").exists()
 
 
-def test_a_refused_first_bind_does_not_remove_a_store_another_bind_published_into(two_member_ws: Path) -> None:
-    """The cleanup removes only what this call set up: if a valid bind was published into the new store
-    before the refusal runs, the store and that bind survive."""
+@pytest.mark.parametrize("spelling", ["legacy-project", "v1", "unknown-nested"])
+def test_a_refused_first_bind_does_not_remove_a_store_another_bind_published_into(two_member_ws: Path, spelling) -> None:
     ws = two_member_ws
     _spec_only_root(ws)
     remote, base, head = _unpushed_head(ws)
     created = grip_mod._validate_bind_store(ws, create=True)
     assert created is not None and ".git" in created[0]
-    row = {"key": "alpha", "remote": remote, "path": "alpha", "head": head, "base": base,
-           "ref": "refs/heads/main", "title": "", "body": "", "source": str(ws / "alpha")}
-    other = grip_mod.create_review_bind_commit(ws, [row])
-
+    if spelling == "legacy-project":
+        pin = dict(key="alpha", path="alpha", repo=remote, base=base, head=head)
+        patch = _git_out(ws / "alpha", "format-patch", "--stdout", base + ".." + head)
+        other = grip_mod.create_project_review_commit(ws, [pin], {"alpha": patch})
+        ref = legacy_review_ref(other)
+        assert _git_out(ws, "show", other + ":.grip/schema") == grip_mod._PROJECT_REVIEW_SCHEMA
+    else:
+        tree = fd.write_record(ws, {"schema": grip_mod._REVIEW_BIND_SCHEMA, "kind": "review", "policy": "no-policy"})
+        fd.verify_tree(ws, tree)
+        other = grip_mod._bind_commit_tree(ws, tree, message="concurrent field tree writer")
+        ref = review_ref(other, version="v1" if spelling == "v1" else "future/nested")
+        _git(ws, "update-ref", ref, other)
+    before_refs = _git_out(ws, "for-each-ref", "--format=%(refname) %(objectname)", REVIEW_REF_ROOT)
+    assert before_refs == ref + " " + other
+    physical = (ws / ".git").stat().st_ino
+    before_head = (ws / ".git" / "HEAD").read_bytes()
     def refused() -> str:
         raise grip_mod.GripReviewRefused("base_not_live_head", "x", "y")
-
     with pytest.raises(grip_mod.GripReviewRefused):
         grip_mod._guarded_bind(ws, created, refused)
     assert (ws / ".git").exists() and (ws / "grip.toml").is_file()
-    assert _refs(ws) == [_REFS + other]
+    assert (ws / ".git").stat().st_ino == physical
+    assert (ws / ".git" / "HEAD").read_bytes() == before_head
+    assert _git_out(ws, "for-each-ref", "--format=%(refname) %(objectname)", REVIEW_REF_ROOT) == before_refs
 
 
 def test_a_refused_first_bind_on_an_adopted_root_keeps_grip_toml(two_member_ws: Path, capfd) -> None:

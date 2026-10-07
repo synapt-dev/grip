@@ -1651,6 +1651,14 @@ _STORE_JSON_SHAPES: dict[str, tuple[str, ...]] = {
         ".root_commit",
         ".members  map<str,str>",
     ),
+    "migrate-reviews": (
+        ".receipt",
+        ".rows[].old_id",
+        ".rows[].new_id",
+        ".rows[].ref",
+        ".rows[].status  enum(created,present,refused)",
+        ".rows[].reason",
+    ),
     "log": (
         ".entries[].commit",
         ".entries[].message",
@@ -1887,6 +1895,30 @@ def grip_migrate_cmd(
         typer.echo(f"Would migrate alpha {payload['alpha_head']} with {len(payload['members'])} member(s)")
     else:
         typer.echo(f"Migrated alpha {payload['alpha_head']} to root {payload['root_commit']}")
+
+
+@grip_app.command("migrate-reviews")
+def grip_migrate_reviews_cmd(
+    root: Path = typer.Argument(..., help="The native store root whose review binds to migrate"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Give every legacy review bind a field tree twin at the v1 ref; legacy refs stay as they are."""
+    try:
+        receipt, rows = grip_mod.migrate_review_binds(root.resolve())
+    except grip_mod.GripCorruptError as exc:
+        typer.echo(f"refused: {exc}", err=True)
+        raise typer.Exit(code=4)
+    if json_output:
+        typer.echo(json.dumps({"receipt": str(receipt), "rows": rows}))
+    else:
+        for row in rows:
+            if row["status"] == "refused":
+                typer.echo(f"refused: {row['old_id']}: {row['reason']}", err=True)
+            else:
+                typer.echo(f"{row['status']}: {row['old_id']} -> {row['new_id']}")
+        typer.echo(f"receipt: {receipt}")
+    if any(row["status"] == "refused" for row in rows):
+        raise typer.Exit(code=4)
 
 
 @grip_app.command("snapshot", hidden=True)

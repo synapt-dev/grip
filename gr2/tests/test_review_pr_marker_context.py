@@ -102,6 +102,8 @@ def test_pr_reader_infers_one_bind_across_known_spellings(reviewed, monkeypatch,
     git(author, "update-ref", prefix + "v1/" + sha, sha)
     if spelling == "v1-only":
         git(author, "update-ref", "-d", prefix + sha)
+    else:
+        git(author, "update-ref", prefix + sha, sha)
     result, calls = read(author, monkeypatch, reviewed, verb)
     assert_group(result, calls, expected, verb)
 

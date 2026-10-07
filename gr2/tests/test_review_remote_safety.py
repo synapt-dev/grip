@@ -8,6 +8,7 @@ FAKE token only; every fake https URL is rewritten to a local bare repo, and a d
 from __future__ import annotations
 
 import subprocess
+
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,15 @@ from typer.testing import CliRunner
 from tests.review_ref_helper import REVIEW_REF_PREFIX
 from gr2.python_cli import grip
 from gr2.python_cli.app import app
+from gr2.python_cli import review_field_tree as fd
+
+
+def _member_remote(root: Path, commit: str) -> str:
+    """The bound remote of the one member, read from the field tree record the writer stores."""
+    tree = subprocess.run(["git", "-C", str(root), "rev-parse", f"{commit}^{{tree}}"],
+                          capture_output=True, text=True, check=True).stdout.strip()
+    (member,) = fd.read_record(root, tree)["members"]
+    return member["remote"]
 
 runner = CliRunner()
 PREFIX = REVIEW_REF_PREFIX
@@ -109,7 +119,7 @@ def test_publish_refuses_an_existing_record_that_carries_credentials(world, monk
     monkeypatch.undo()
     world_env(world, monkeypatch)
     commit = reviews(world["author"]).rsplit("/", 1)[1]
-    assert TOKEN in git(world["author"], "show", f"{commit}:repos/member/remote")
+    assert TOKEN in _member_remote(world["author"], commit)
     assert_credential_refusal(review(world["author"], monkeypatch, "publish", "gr:" + commit, "--remote", world["dest"]))
     assert git(world["dest"], "for-each-ref") == ""
 
@@ -168,7 +178,7 @@ def test_publish_keeps_every_host_local_spelling_on_the_host(world, monkeypatch,
     made = bind(world, monkeypatch, remote)
     assert made.exit_code == 0, made.output
     commit = reviews(world["author"]).rsplit("/", 1)[1]
-    assert git(world["author"], "show", f"{commit}:repos/member/remote") == remote
+    assert _member_remote(world["author"], commit) == remote
     off_host = review(world["author"], monkeypatch, "publish", "gr:" + commit, "--remote", FOREIGN)
     assert off_host.exit_code != 0, off_host.output
     assert "local_path_remote" in off_host.output, off_host.output

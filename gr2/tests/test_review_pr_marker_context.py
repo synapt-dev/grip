@@ -7,7 +7,6 @@ import pytest
 from tests.review_ref_helper import REVIEW_REF_ROOT
 from gr2.python_cli import app as app_mod
 from gr2.python_cli import pr as pr_ops
-from tests.review_ref_helper import REVIEW_REF_ROOT
 from tests.test_pr_review_subject import KEYS, URL, git, gr2, reviewed
 from tests.test_review_context_witnesses import opened
 

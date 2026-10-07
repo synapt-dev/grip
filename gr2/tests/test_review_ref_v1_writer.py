@@ -10,10 +10,9 @@ from pathlib import Path
 
 import pytest
 
+from tests.review_ref_helper import REVIEW_REF_ROOT, review_ref, legacy_review_ref, legacy_bind_tree
 from gr2.python_cli import grip
 from gr2.python_cli import review_form_d as fd
-from tests.review_ref_helper import REVIEW_REF_ROOT, legacy_review_ref, review_ref
-from tests.review_ref_helper import legacy_bind_tree
 from tests.test_review_transport import cli, git, handoff, root_owned_wrong_target  # noqa: F401
 
 

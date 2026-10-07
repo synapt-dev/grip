@@ -46,7 +46,8 @@ FIXED_ARITY = [  # RootOptionalCommand: the 16, and ContextCommand: the 6 above
 OPTIONAL_TRAILING = [  # RootOptionCommand: the two execution verbs
     "exec/status", "exec/run",
 ]
-REVIEW_SUBJECTS = ["pr/create", "pr/status", "pr/merge", "pr/checks", "pr/view"]  # ReviewSubjectCommand: bare = the current review
+REVIEW_READER_SUBJECTS = ["pr/checks", "pr/view"]  # reconstruction-aware readers
+REVIEW_SUBJECTS = ["pr/create", "pr/status", "pr/merge", *REVIEW_READER_SUBJECTS]
 REVIEW_TARGETS = ["review/show", "review/verify"]
 REVIEW_TRANSPORTS = ["review/publish", "review/receive"]
 REVIEW_OPENS = ["review/open"]
@@ -133,8 +134,8 @@ def test_the_partition_accounts_for_every_leading_root_command() -> None:
         name for name, c in LEAVES.items()
         if _arguments(c) and _arguments(c)[0].name == "workspace_root"
         and name.split("/")[0] not in {"workspace", "spec", "sync", "store", "grip", "plan", "apply", "repo/status"}
-        and type(c).__name__ in {"RootOptionalCommand", "RootOptionCommand", "TyperCommand", "ContextCommand", "ReviewTargetCommand", "ReviewOpenCommand", "ReviewSubjectCommand"}
-        and (_arguments(c)[0].required or type(c).__name__ in {"RootOptionalCommand", "ContextCommand", "ReviewTargetCommand", "ReviewOpenCommand", "ReviewSubjectCommand"})
+        and type(c).__name__ in {"RootOptionalCommand", "RootOptionCommand", "TyperCommand", "ContextCommand", "ReviewTargetCommand", "ReviewOpenCommand", "ReviewSubjectCommand", "ReviewReaderSubjectCommand"}
+        and (_arguments(c)[0].required or type(c).__name__ in {"RootOptionalCommand", "ContextCommand", "ReviewTargetCommand", "ReviewOpenCommand", "ReviewSubjectCommand", "ReviewReaderSubjectCommand"})
     )
     by_class = {
         "RootOptionalCommand": sorted(
@@ -147,7 +148,8 @@ def test_the_partition_accounts_for_every_leading_root_command() -> None:
     assert by_class["RootOptionCommand"] == sorted(OPTIONAL_TRAILING)
     assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ReviewTargetCommand") == sorted([*REVIEW_TARGETS, *REVIEW_TRANSPORTS])
     assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ReviewOpenCommand") == sorted(REVIEW_OPENS)
-    assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ReviewSubjectCommand") == sorted(REVIEW_SUBJECTS)
+    assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ReviewSubjectCommand") == sorted(set(REVIEW_SUBJECTS) - set(REVIEW_READER_SUBJECTS))
+    assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ReviewReaderSubjectCommand") == sorted(REVIEW_READER_SUBJECTS)
     assert [n for n in leading if n not in ALL_ROOT_VERBS] == [], (
         "a verb takes the workspace root as a required leading positional and is in neither class"
     )

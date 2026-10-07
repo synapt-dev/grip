@@ -12,7 +12,7 @@ import re
 from urllib.parse import urlsplit
 
 from .gitops import git
-from .layout import grip_dir as _layout_grip_dir
+from .layout import GRIP_DIR, LANE_CONTROL_PREFIX, grip_dir as _layout_grip_dir
 from .workspace_guidance import missing_gr2_workspace_guidance
 
 
@@ -869,7 +869,7 @@ def plain_member_key(key: str) -> bool:
     empty, not ".", ".." or ".git", not one of the lane's own control files (`.grip-review*`), and no
     separator, NUL or newline. Other dot names are real repository keys (an org's `.github`).
     Readers apply this rule to every bind before any path is built."""
-    return (bool(key) and key not in (".", "..", ".git") and not key.startswith(".grip-review")
+    return (bool(key) and key not in (".", "..", ".git") and not key.startswith(LANE_CONTROL_PREFIX)
             and not any(c in key for c in "/\\\0\n"))
 
 
@@ -877,7 +877,7 @@ def _is_form_d_bind(workspace: Path, commit: str) -> bool:
     """A bound commit whose tree has no `.grip` entry is read as form D, so a malformed record is
     refused for what is wrong with it rather than as "not a bind"."""
     names = [n for n in _bind_git(workspace, "ls-tree", "--name-only", commit).stdout.splitlines() if n]
-    return bool(names) and ".grip" not in names
+    return bool(names) and GRIP_DIR not in names
 
 
 def _text(value: object) -> str:

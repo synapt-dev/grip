@@ -228,3 +228,13 @@ def test_review_open_checks_every_member_carries_a_range_before_the_first_clone(
     assert "row_carries_no_objects" in result.output + str(result.exception)
     assert calls == []
     assert not lane.exists() or not any(lane.iterdir())
+
+
+def test_every_lane_control_file_carries_the_refused_prefix():
+    """A member key may not start with the lane control prefix; that refusal only protects the lane
+    if every control file review_run writes actually starts with it."""
+    from gr2.python_cli import review_run
+    from gr2.python_cli.layout import LANE_CONTROL_PREFIX
+    names = [review_run._MARKER_NAME, review_run._RECEIPT_NAME, review_run._OUTPUT_LOG_NAME]
+    assert all(n.startswith(LANE_CONTROL_PREFIX) for n in names), names
+    assert not any(grip.plain_member_key(n) for n in names)

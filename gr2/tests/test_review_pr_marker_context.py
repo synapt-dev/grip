@@ -81,7 +81,7 @@ def test_outside_author_with_second_bind_keeps_marked_pr_subject(opened, monkeyp
     expected = group(author, opened["target"], monkeypatch)
     member = author / "alpha"
     git(member, "commit", "--allow-empty", "-m", "second subject")
-    second = gr2(author, monkeypatch, "review", "bind")
+    second = gr2(author, monkeypatch, "review", "bind", "--members", "alpha")
     assert second.exit_code == 0 and second.stdout.strip() != opened["target"], second.output
     result, calls = read(opened["lane"] / "alpha", monkeypatch, opened, verb)
     assert_group(result, calls, expected, verb)

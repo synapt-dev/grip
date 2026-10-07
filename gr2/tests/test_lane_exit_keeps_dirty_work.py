@@ -182,3 +182,36 @@ def test_an_unknown_mode_prints_a_receipt(tmp_path: Path) -> None:
     ws, repo = _entered_lane(tmp_path)
     result = _exit(ws, "--dirty", "discard")
     assert result.exit_code == 2 and json.loads(result.stdout)["refusal"] == "unknown_dirty_mode", result.output
+
+
+def test_a_stash_that_fails_prints_the_receipt_and_keeps_the_lane(tmp_path: Path, monkeypatch) -> None:
+    """The stash itself is inside the refusal guard: a stash that fails exits 2 with the receipt."""
+    ws, repo = _entered_lane(tmp_path)
+    (repo / "f.txt").write_text("edited\n")
+    events: list[dict] = []
+    monkeypatch.setattr(gr2_app, "emit_after_outcome", lambda **kw: events.append(kw))
+
+    def failing_stash(path, message):
+        raise SystemExit(f"could not stash {path}")
+
+    monkeypatch.setattr(gr2_app, "stash_if_dirty", failing_stash)
+    result = _exit(ws, "--dirty", "stash")
+    assert result.exit_code == 2, result.output
+    payload = json.loads(result.stdout)
+    assert payload["refusal"] == "exit_step_failed" and payload["stashed"] == [], payload
+    assert payload["current_lane"] == "x" and _current_lane(ws) == "x"
+    assert (repo / "f.txt").read_text() == "edited\n"
+    assert events == []
+
+
+def test_the_exit_event_carries_the_same_stash_rows_as_the_output(tmp_path: Path, monkeypatch) -> None:
+    ws, repo = _entered_lane(tmp_path)
+    (repo / "f.txt").write_text("edited\n")
+    events: list[dict] = []
+    monkeypatch.setattr(gr2_app, "emit_after_outcome", lambda **kw: events.append(kw))
+    result = _exit(ws, "--dirty", "stash")
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)["stashed"]
+    [event] = events
+    assert event["payload"]["stashed"] == rows and rows[0]["stash"], event
+    assert event["payload"]["stashed_repos"] == ["app"]

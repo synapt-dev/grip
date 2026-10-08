@@ -15,6 +15,18 @@ message Receipt {
   optional int32 exit = 4;      // 0 all merged; 3 none merged; 4 partial or unknown
   repeated Member members = 5;  // bound-member order; [] on a local bind fault
   optional string refused = 6;  // a local fault before any member is touched
+  // Optional in existing receipts: absent on an early bind fault; otherwise
+  // null or an object describing approval policy and its measurement.
+  // Unmeasured object: required (nonnegative integer), optionally skipped
+  // (boolean). Only required=0 with skipped=true guarantees no chain read;
+  // positive required without a summary does not prove a read was skipped.
+  // Counted object: review_id (string), tip (commit OID or null), count
+  // (nonnegative integer, distinct approver names), links (array), signed
+  // (boolean, currently false), required (nonnegative integer).
+  // Each link: approver, key_id, record_hash and commit (strings), signed
+  // (boolean, currently false). No chain has tip=null, count=0, links=[].
+  // These allowed JSON shapes are documented, not validated by Value.
+  google.protobuf.Value approvals = 7;
 }
 
 message Member {

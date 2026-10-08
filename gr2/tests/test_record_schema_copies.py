@@ -25,15 +25,15 @@ COPIES = (
     ),
     (
         "dev.synapt.grip.merge.v1alpha1",
-        "4e8c5a00505352c97514be0633e6e1ed8f043807",
+        "73f69f513c19211561a8209c46198739a30501ec",
         "merge.proto",
-        "fd06a2fefaeb030623a13997f7d1e2a652ce1b3458c90465aa07f530cedd37b0",
+        "748f129d8df97cb817261af3d9a15e875736043212f7ccf77721979579f8f8f5",
     ),
     (
         "dev.synapt.grip.merge.v1alpha1",
-        "4e8c5a00505352c97514be0633e6e1ed8f043807",
+        "73f69f513c19211561a8209c46198739a30501ec",
         "descriptor_set.pb",
-        "5b9c7aedaa658cfb8f4afdb83abc5a1f0a92d3bc084ce1951935f7050efb2878",
+        "8a36f79b29b7e0d97ff25354de70ab821b517fb156edc44f49162c27568288dc",
     ),
 )
 

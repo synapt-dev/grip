@@ -23,6 +23,7 @@ an existing adapter cannot absorb.
   supplied. Direct Python callers may omit it and keep the previous stored-group shape. This is additive
   to adapter API version 1; factories still take no arguments and `repo` keeps its existing value.
   Later lifecycle calls still receive the existing repo string; this field supplies creation context only.
+  Lane URLs are stripped of surrounding whitespace; blank values are treated as absent.
 
 ## 2.0.0a7
 

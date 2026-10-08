@@ -3537,10 +3537,11 @@ def pr_create(
     remotes: dict[str, str] = {}
     for repo_name in lane_doc.get("repos", []):
         repo_spec = next(repo for repo in spec.get("repos", []) if repo.get("name") == repo_name)
-        remote = str(repo_spec.get("url", ""))
+        remote = str(repo_spec.get("url", "")).strip()
         repo = _repo_slug_from_url(remote, repo_name)
         repos.append(repo)
-        remotes[repo] = remote
+        if remote:
+            remotes[repo] = remote
     if body is not None and body_file is not None:
         typer.echo("pass one of --body or --body-file, not both", err=True)
         raise typer.Exit(code=2)

@@ -177,6 +177,10 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
     final = []
     for r, m in zip(rows, view["members"]):
         repo = (workspace / m["path"]).resolve()
+        if not repo.is_relative_to(root):
+            r["final"] = "unknown"  # never touched, so never measured: no fetch writes into a repo outside the workspace
+            final.append("unknown")
+            continue
         state, merged = _state(repo, m["remote"], into, m["head"])
         r["final"] = state
         if merged:

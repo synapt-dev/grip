@@ -222,7 +222,9 @@ def test_a_member_path_outside_the_workspace_is_refused(world, tmp_path, monkeyp
         view["members"][0]["path"] = str(outside)  # an absolute path escapes the workspace
         return view
     monkeypatch.setattr(merge_gate.grip, "show_review_commit", show)
+    before = git(outside, "count-objects", "-v")
     code, receipt = merge(world)
+    assert git(outside, "count-objects", "-v") == before, "the gate wrote into a repo outside the workspace"
     assert code != merge_gate.EXIT_MERGED, receipt
     assert receipt["members"][0]["refused"].startswith("member_path_outside_workspace"), receipt
     assert git(world["remote"], "rev-parse", "main") == world["base"]

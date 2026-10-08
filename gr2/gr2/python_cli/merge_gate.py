@@ -80,6 +80,10 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
             row["refused"] = f"remote_unmeasurable: {exc}"
             continue
+        published = _git(repo, "ls-remote", m["remote"], f"refs/dev.synapt.grip/__reviews__/v1/{review_id}", check=False)
+        if published.split("\t")[0] != review_id:
+            row["refused"] = "review_not_on_member_remote: the remote does not hold this exact review"
+            continue
         merged = _merged_at(repo, target, m["head"]) if target else None
         if merged:
             row.update(state="already_merged", merged=merged)
@@ -120,6 +124,13 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                 if r["state"] != "ready":
                     continue
                 repo = (workspace / m["path"]).resolve()
+                try:
+                    still = _remote_tip(repo, m["remote"], feature)
+                except (RuntimeError, subprocess.SubprocessError, OSError):
+                    still = None
+                if still != m["head"]:
+                    r["refused"] = f"feature_moved_before_push: remote {feature} is {still}"
+                    break  # narrows the head race; no further member is pushed
                 proc = subprocess.run(
                     ["git", "-C", str(repo), "push", f"--force-with-lease=refs/heads/{into}:{m['base']}",
                      m["remote"], f"{builds[r['key']]}:refs/heads/{into}"],

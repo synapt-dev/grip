@@ -54,7 +54,14 @@ def world(tmp_path, monkeypatch):
     assert made.exit_code == 0, made.output
     review = "gr:" + git(author, "for-each-ref", "--format=%(refname)", REVIEW_REF_PREFIX).rsplit("/", 1)[1]
     git(member, "push", remote, "feat")
-    return dict(author=author, member=member, remote=remote, base=base, head=head, review=review)
+    world = dict(author=author, member=member, remote=remote, base=base, head=head, review=review)
+    publish(world["author"], review, remote)
+    return world
+
+
+def publish(author, review, remote):
+    out = runner.invoke(app, ["review", "publish", review, "--remote", str(remote)])
+    assert out.exit_code == 0, out.output
 
 
 def check(w):
@@ -149,6 +156,7 @@ def slice2(tmp_path, monkeypatch):
     out["review"] = "gr:" + git(author, "for-each-ref", "--format=%(refname)", REVIEW_REF_PREFIX).rsplit("/", 1)[1]
     for m in out["members"].values():
         git(m["repo"], "push", m["remote"], "feat")
+        publish(author, out["review"], m["remote"])
         check_records.run_check(m["repo"], str(m["remote"]), m["head"], "test", [sys.executable, "-c", "pass"])
     return out
 
@@ -188,3 +196,13 @@ def test_a_rerun_after_an_earlier_partial_reports_partial_not_refused(slice2):
     move(beta)
     code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
     assert code == merge_gate.EXIT_PARTIAL, receipt
+
+
+def test_refuses_a_review_not_published_on_the_member_remote(world):
+    check(world)
+    ref = f"{REVIEW_REF_PREFIX}{world['review'].removeprefix('gr:')}"
+    assert git(world["remote"], "rev-parse", "--verify", ref), "the published review must exist before it is removed"
+    git(world["remote"], "update-ref", "-d", ref)
+    code, receipt = merge(world)
+    assert code == merge_gate.EXIT_REFUSED, receipt
+    assert receipt["members"][0]["refused"].startswith("review_not_on_member_remote"), receipt

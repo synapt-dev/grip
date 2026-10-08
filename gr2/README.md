@@ -167,6 +167,9 @@ or cleanup authority. Opening a reconstruction remains a separate operation.
 External packages can expose a zero-argument factory through the
 `gr2.platform_adapters` entry-point group. See [the adapter contract](docs/PR-LIFECYCLE.md#51-adapter-protocol-and-capabilities)
 for registration, optional operation capabilities and merge head-pin requirements.
+What changed in that protocol, release by release, ships in the package: read it from
+an install with `importlib.resources.files("gr2") / "PLATFORM_ADAPTER_CHANGELOG.md"`,
+or in this repository at [gr2/PLATFORM_ADAPTER_CHANGELOG.md](gr2/PLATFORM_ADAPTER_CHANGELOG.md).
 Select the installed adapter with `gr2 pr create ... --platform NAME` on a
 materialized lane. The bound-lane path currently pushes and returns its receipt.
 

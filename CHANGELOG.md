@@ -20,6 +20,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refuses and names the single-agent form. Unix tmux behaviour is unchanged: the
   launch command is now built by one shared path used by both the pane and the
   foreground launch.
+- **`gr2`: the platform adapter protocol's changelog ships in the package.** The
+  wheel and sdist carry `gr2/PLATFORM_ADAPTER_CHANGELOG.md`, readable from an
+  install with `importlib.resources.files("gr2")`. It lists, release by release
+  since 2.0.0a1, each method, keyword, field and registration rule an
+  out-of-tree adapter implements or receives, and a test fails when the protocol
+  gains one with no entry.
+
+### Changed
+
+- **`gr2` runs every git command in its workspace and review modules through
+  one shared helper.** Each such call carries `-c maintenance.auto=false -c
+  gc.auto=0`, so none starts background maintenance in your repository. A clone
+  is never bounded; every other call has a 600-second default, including calls
+  that had none before (an expiry is exit 124). Lane workspace cloning loses its
+  previous 600-second bound. A merge-tree timeout in `gr2 review merge` is still
+  reported as `merge_build_failed`.
 
 ### Fixed
 

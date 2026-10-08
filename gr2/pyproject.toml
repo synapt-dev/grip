@@ -64,7 +64,9 @@ gr2 = "gr2"
 # The pinned MaterializationPlan v1 schema ships inside the
 # gr2 package -- spec_apply verifies its bytes against the pinned SHA-256
 # at load and fails closed on any mismatch.
-gr2 = ["schemas/*.json", "schemas/*/*.proto", "schemas/*/*.pb"]
+# PLATFORM_ADAPTER_CHANGELOG.md ships too, so an out-of-tree adapter author can read the protocol's changes
+# from the installed package (tests/test_platform_adapter_changelog.py keeps it in step with the protocol).
+gr2 = ["schemas/*.json", "schemas/*/*.proto", "schemas/*/*.pb", "PLATFORM_ADAPTER_CHANGELOG.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "gr2/overlay/tests"]

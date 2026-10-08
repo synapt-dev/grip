@@ -14,10 +14,10 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import grip
+from . import approval_schema, grip
 
 PREFIX = "refs/dev.synapt.grip/__approvals__/v1/"
-SCHEMA = "dev.synapt.grip.approval.v1alpha1"
+SCHEMA = approval_schema.PACKAGE
 
 
 class ApprovalRefused(RuntimeError):

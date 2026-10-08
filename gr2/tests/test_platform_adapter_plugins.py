@@ -115,6 +115,19 @@ def test_per_member_remotes_reach_entry_point_and_stored_group(plugin):
     assert [row["kind"] for row in events] == ["create", "create", "edit", "edit"]
 
 
+def test_duplicate_member_identity_refuses_before_adapter_calls(tmp_path):
+    calls = []
+    adapter = SimpleNamespace(
+        create_pr=lambda request: calls.append(request), edit_pr_body=lambda *args: None,
+    )
+    with pytest.raises(platform.AdapterError, match="duplicate.*repo"):
+        pr.create_pr_group(tmp_path, "default", "proof", "title", "main", "head",
+                           ["same", "same"], adapter, "local",
+                           remotes={"same": "https://example.invalid/selected.git"})
+    assert calls == []
+    assert not (tmp_path / ".grip").exists()
+
+
 @pytest.mark.parametrize("flags,draft", [([], True), (["--draft"], True), (["--no-draft"], False)])
 def test_external_entry_point_actual_cli_carries_policy_and_target(plugin, flags, draft):
     workspace, capture, env, _ = plugin

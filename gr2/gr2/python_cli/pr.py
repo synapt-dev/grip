@@ -344,6 +344,8 @@ def create_pr_group(
     """Create linked PRs across repos and emit pr.created. A group opened for a review
     records its `review_target` (gr:<sha>); that field, not a unit or lane, is how the pr
     verbs find it again."""
+    if len(set(repos)) != len(repos):
+        raise AdapterError("duplicate repo identity in PR group; use distinct member targets")
     require_adapter_capability(adapter, "create_pr")
     if len(repos) > 1:
         require_adapter_capability(adapter, "edit_pr_body")

@@ -38,7 +38,8 @@ class Adapter:
             log.write(json.dumps(dict(kind="create", request=asdict(request))) + "\\n")
         number = 1 if request.repo == "sample" else 2
         remote = getattr(request, "remote", None)
-        target = remote.removesuffix(".git") if remote else "https://example.invalid/" + request.repo
+        target = (remote.removesuffix(".git") if remote
+                  else "https://example.invalid/" + request.repo)
         url = target + "/pull/" + str(number)
         return PRRef(repo=request.repo, number=number, url=url)
     def edit_pr_body(self, repo, number, body):
@@ -130,6 +131,24 @@ def test_duplicate_member_identity_refuses_before_adapter_calls(tmp_path):
                            remotes={"same": "https://example.invalid/selected.git"})
     assert calls == []
     assert not (tmp_path / ".grip").exists()
+
+
+def test_duplicate_cli_identity_names_refusal_before_adapter_calls(plugin):
+    workspace, capture, env, _ = plugin
+    (workspace / ".grip/workspace_spec.toml").write_text(
+        '[[repos]]\nname="sample"\nurl="https://github.com/example/common.git"\n'
+        '[[repos]]\nname="second"\nurl="https://github.com/example/common.git"\n'
+    )
+    (workspace / ".grip/state/lanes/default/proof/lane.toml").write_text(
+        'repos=["sample","second"]\nlane_kind="materialized"\n'
+        '[branch_map]\nsample="feature/proof"\nsecond="feature/proof"\n'
+    )
+    result = _create_cli(plugin, "--json")
+    assert result.returncode == 1
+    assert "duplicate repo identity" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert not capture.exists()
+    assert not Path(env["FIXTURE_EVENTS"]).exists()
 
 
 @pytest.mark.parametrize("flags,draft", [([], True), (["--draft"], True), (["--no-draft"], False)])

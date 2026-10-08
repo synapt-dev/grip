@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import approval_schema, grip
+from . import approval_schema, gitops, grip
 
 PREFIX = "refs/dev.synapt.grip/__approvals__/v1/"
 SCHEMA = approval_schema.PACKAGE
@@ -27,8 +27,7 @@ class ApprovalRefused(RuntimeError):
 
 def _git(repo: Path, *args: str, data: str | None = None, raw: bool = False) -> str:
     try:
-        p = subprocess.run(["git", "-c", "maintenance.auto=false", "-c", "gc.auto=0", "-C", str(repo), *args],
-                           input=data, capture_output=True, text=True, timeout=60)
+        p = gitops.run(repo, *args, input=data, timeout=60, raise_timeout=True)
     except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
         raise ApprovalRefused(f"approval_unmeasurable: {type(exc).__name__}") from exc
     if p.returncode:

@@ -449,7 +449,7 @@ def test_chain_length_limit_refuses(monkeypatch):
 
 
 def test_git_failure_is_not_an_empty_success(monkeypatch, tmp_path):
-    monkeypatch.setattr(approvals.subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess([], 1, "", "refused"))
+    monkeypatch.setattr(approvals.gitops, "run", lambda *args, **kwargs: subprocess.CompletedProcess([], 1, "", "refused"))
     with pytest.raises(approvals.ApprovalRefused, match="approval_unmeasurable"):
         approvals._git(tmp_path, "ls-remote")
 
@@ -716,3 +716,37 @@ def test_merge_defaults_keep_explicit_flags_with_approval_floor(world):
     assert receipt["approvals"]["required"] == 1 and receipt["approvals"]["count"] == 1
     assert "(given)" in result.stderr
     assert git(world["remote"], "rev-parse", "main^2") == world["head"]
+
+
+def test_git_adapter_keeps_input_timeout_and_raw_text(monkeypatch, tmp_path):
+    seen = []
+    def launch(repo, *args, **kwargs):
+        seen.append((repo, args, kwargs))
+        return subprocess.CompletedProcess([], 0, "  result\n", "")
+    monkeypatch.setattr(approvals.gitops, "run", launch)
+    assert approvals._git(tmp_path, "hash-object", "--stdin", data="payload", raw=True) == "  result\n"
+    assert approvals._git(tmp_path, "status") == "result"
+    assert seen == [
+        (tmp_path, ("hash-object", "--stdin"), {"input": "payload", "timeout": 60, "raise_timeout": True}),
+        (tmp_path, ("status",), {"input": None, "timeout": 60, "raise_timeout": True}),
+    ]
+
+
+@pytest.mark.parametrize("fault", [OSError("missing"), subprocess.SubprocessError("fault"),
+                                  UnicodeError("bad text"), subprocess.TimeoutExpired("git", 60)])
+def test_git_adapter_keeps_failure_translation(monkeypatch, tmp_path, fault):
+    def launch(*args, **kwargs):
+        raise fault
+    monkeypatch.setattr(approvals.gitops, "run", launch)
+    with pytest.raises(approvals.ApprovalRefused, match="approval_unmeasurable: " + type(fault).__name__):
+        approvals._git(tmp_path, "ls-remote")
+
+
+def test_default_approve_skips_canonical_blob_ref(world):
+    blob = approvals._git(world["workspace"], "hash-object", "-w", "--stdin", data="not a bind commit")
+    git(world["workspace"], "update-ref", "refs/dev.synapt.grip/__reviews__/v1/" + blob, blob)
+    result = approve_as(world, "Approver B")
+    assert result.exit_code == 0, result.output
+    receipt = json.loads(result.stdout)
+    assert receipt["review_id"] == "gr:" + world["rid"]
+    assert receipt["count"] == 1

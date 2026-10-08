@@ -109,11 +109,12 @@ def _store_inside(repo: Path, root: Path) -> bool:
         return False
     if not all((repo / line).resolve().is_relative_to(root) for line in lines):
         return False
-    # Git writes objects and refs by temp-file-then-rename INTO a directory, so a symlinked directory at any
-    # depth (objects/xx, refs/heads/..., logs/...) redirects the write; walk without following links.
+    # A symlink at any depth redirects a write: a symlinked DIRECTORY catches temp-file-then-rename writes
+    # (objects/xx, refs/heads/...), and a symlinked FILE catches in-place appends (logs/... reflogs).
+    # Walk without following links and refuse any link at all.
     for top in {(repo / lines[0]).resolve(), (repo / lines[1]).resolve()}:
-        for dirpath, dirnames, _files in os.walk(top, followlinks=False):
-            if any(os.path.islink(os.path.join(dirpath, d)) for d in dirnames):
+        for dirpath, dirnames, filenames in os.walk(top, followlinks=False):
+            if any(os.path.islink(os.path.join(dirpath, n)) for n in (*dirnames, *filenames)):
                 return False
     return True
 

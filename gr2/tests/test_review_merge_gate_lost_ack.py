@@ -379,3 +379,26 @@ def test_a_symlinked_fanout_dir_under_a_real_objects_dir_is_refused(world, tmp_p
     assert receipt["members"][0]["refused"].startswith("member_store_outside_workspace"), receipt
     assert git(outside, "count-objects", "-v") == before
     assert git(world["remote"], "rev-parse", "main") == world["base"]
+
+
+def test_a_symlinked_reflog_file_is_refused_and_never_appended_to(world, tmp_path, monkeypatch):
+    check(world)
+    git(world["member"], "config", "core.logAllRefUpdates", "always")
+    fixed = merge_gate.uuid.UUID(int=0x1138)
+    monkeypatch.setattr(merge_gate.uuid, "uuid4", lambda: fixed)  # deterministic staging ref, so its log can be planted
+    victim = tmp_path / "outside-reflog"
+    victim.write_bytes(b"victim\n")
+    logdir = world["member"] / ".git" / "logs" / "refs" / "dev.synapt.grip" / "__merge_transfers__"
+    logdir.mkdir(parents=True)
+    (logdir / fixed.hex).symlink_to(victim)
+    code, receipt = merge(world)
+    assert receipt["members"][0]["refused"].startswith("member_store_outside_workspace"), receipt
+    assert victim.read_bytes() == b"victim\n", "the gate appended a reflog outside the workspace"
+    assert git(world["remote"], "rev-parse", "main") == world["base"]
+
+
+def test_an_ordinary_reflog_is_not_refused(world):
+    check(world)
+    git(world["member"], "config", "core.logAllRefUpdates", "always")
+    code, receipt = merge(world)
+    assert code == merge_gate.EXIT_MERGED, receipt

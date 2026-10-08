@@ -138,7 +138,7 @@ def _unmeasured(review_id: str, into: str, feature: str, reason: str) -> tuple[i
 
 
 def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature: str,
-                 required_checks: Sequence[str] = ("test",)) -> tuple[int, dict]:
+                 required_checks: Sequence[str] = ("test",), required_approvals: int | None = None) -> tuple[int, dict]:
     review_id = review_id.removeprefix("gr:")
     try:
         verified = grip.verify_review_commit(workspace, review_id)
@@ -198,6 +198,21 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                 row["refused"] = f"check_{check['status']}: {check['reason']}"
             else:
                 row["state"] = "ready"
+
+    approval_receipt = None
+    if not any(r["refused"] for r in rows):
+        from . import approvals
+        try:
+            required = approvals.required_approvals(root, required_approvals)
+            approval_receipt = approvals.count_approvals(root, view["id"])
+            approval_receipt["required"] = required
+            if approval_receipt["count"] < required:
+                raise approvals.ApprovalRefused(f"approvals_insufficient: {approval_receipt['count']} of {required}")
+        except (approvals.ApprovalRefused, grip.GripInitError, grip.GripCorruptError,
+                OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+            for r in rows:
+                if r["state"] == "ready":
+                    r["refused"] = str(exc)
 
     if not any(r["refused"] for r in rows):
         # Build every merge before any push.
@@ -263,4 +278,5 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         code = EXIT_REFUSED
     else:
         code = EXIT_PARTIAL
-    return code, {"id": view["id"], "into": into, "feature": feature, "exit": code, "members": rows}
+    return code, {"id": view["id"], "into": into, "feature": feature, "exit": code, "members": rows,
+                  "approvals": approval_receipt}

@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import tomllib
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,11 +45,48 @@ def current_review(workspace: Path) -> str:
     hits = []
     for commit in sorted(set(refs.splitlines())):
         view = grip.show_review_commit(workspace, commit)
-        if all(_git(workspace / m["path"], "rev-parse", "HEAD") == m["head"] for m in view["members"]):
+        from . import merge_gate
+        root = workspace.resolve()
+        if all((repo := (root / m["path"]).resolve()).is_relative_to(root)
+               and merge_gate._toplevel(repo) == repo
+               and _git(repo, "rev-parse", "HEAD") == m["head"] for m in view["members"]):
             hits.append(commit)
     if len(hits) != 1:
         raise ApprovalRefused(f"approval_bind_not_unique: {len(hits)} binds match the current member heads")
     return hits[0]
+
+
+def required_approvals(workspace: Path, given: int | None = None) -> int:
+    """Workspace grip.toml policy, default zero; an explicit CLI count wins."""
+    try:
+        policy = tomllib.loads((workspace / "grip.toml").read_text()).get("approvals", {})
+    except (OSError, ValueError) as exc:
+        raise ApprovalRefused("approval_policy_unreadable") from exc
+    if not isinstance(policy, dict):
+        raise ApprovalRefused("approval_policy_invalid")
+    if policy.get("require_signed"):
+        raise ApprovalRefused("approval_signed_unsupported")
+    required = given if given is not None else policy.get("required", 0)
+    if type(required) is not int or required < 0:
+        raise ApprovalRefused("approval_policy_invalid: required must be a nonnegative integer")
+    return required
+
+
+def current_branch(workspace: Path, review_id: str) -> str:
+    """Temporary branch resolver until the shared defaults module lands."""
+    from . import merge_gate
+    view = grip.show_review_commit(workspace, review_id.removeprefix("gr:"))
+    names = set()
+    root = workspace.resolve()
+    for m in view["members"]:
+        repo = (root / m["path"]).resolve()
+        if not repo.is_relative_to(root) or merge_gate._toplevel(repo) != repo:
+            raise ApprovalRefused("approval_member_repo_mismatch")
+        name = _git(repo, "symbolic-ref", "--quiet", "--short", "HEAD")
+        names.add(name)
+    if len(names) != 1:
+        raise ApprovalRefused("feature_unresolved: pass --from when members are on different branches")
+    return names.pop()
 
 
 def _context(workspace: Path, review_id: str) -> tuple[dict, set[str]]:

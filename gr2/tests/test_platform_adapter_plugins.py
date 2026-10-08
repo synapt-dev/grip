@@ -37,7 +37,9 @@ class Adapter:
         with Path(os.environ["FIXTURE_EVENTS"]).open("a") as log:
             log.write(json.dumps(dict(kind="create", request=asdict(request))) + "\\n")
         number = 1 if request.repo == "sample" else 2
-        url = "https://example.invalid/" + request.repo + "/pull/" + str(number)
+        remote = getattr(request, "remote", None)
+        target = remote.removesuffix(".git") if remote else "https://example.invalid/" + request.repo
+        url = target + "/pull/" + str(number)
         return PRRef(repo=request.repo, number=number, url=url)
     def edit_pr_body(self, repo, number, body):
         with Path(os.environ["FIXTURE_EVENTS"]).open("a") as log:
@@ -74,35 +76,50 @@ def factory(): return Adapter()
     return workspace, capture, env, metadata
 
 
+def _create_cli(plugin, *flags):
+    workspace, _, env, _ = plugin
+    return subprocess.run(
+        [sys.executable, "-m", "gr2.python_cli", "pr", "create", str(workspace),
+         "default", "proof", "--platform", "fixture", *flags],
+        env=env, cwd=workspace, text=True, capture_output=True,
+    )
+
+
+def test_per_member_remotes_reach_entry_point_and_stored_group(plugin):
+    workspace, _, env, _ = plugin
+    remotes = ["https://example.invalid/context-one/_git/common",
+               "https://example.invalid/context-two/_git/common"]
+    (workspace / ".grip/workspace_spec.toml").write_text(
+        f'[[repos]]\nname="sample"\nurl="{remotes[0]}"\n'
+        f'[[repos]]\nname="second"\nurl="{remotes[1]}"\n'
+    )
+    (workspace / ".grip/state/lanes/default/proof/lane.toml").write_text(
+        'repos=["sample","second"]\nlane_kind="materialized"\n'
+        '[branch_map]\nsample="feature/proof"\nsecond="feature/proof"\n'
+    )
+    subprocess.run(["git", "-C", str(workspace), "remote", "add", "origin",
+                    "https://example.invalid/ambient/decoy.git"], check=True)
+    result = _create_cli(plugin, "--json")
+    assert result.returncode == 0, result.stderr
+    events = [json.loads(line) for line in Path(env["FIXTURE_EVENTS"]).read_text().splitlines()]
+    requests = [row["request"] for row in events if row["kind"] == "create"]
+    assert [request.get("remote") for request in requests] == remotes
+    group = json.loads(result.stdout)
+    saved = json.loads(Path(group["state_path"]).read_text())
+    assert [row.get("remote") for row in saved["prs"]] == remotes
+    assert [row["url"] for row in saved["prs"]] == [
+        remotes[0] + "/pull/1", remotes[1] + "/pull/2",
+    ]
+    assert [request["repo"] for request in requests] == ["sample", "second"]
+    assert all(request["draft"] for request in requests)
+    assert [row["kind"] for row in events] == ["create", "create", "edit", "edit"]
+
+
 @pytest.mark.parametrize("flags,draft", [([], True), (["--draft"], True), (["--no-draft"], False)])
 def test_external_entry_point_actual_cli_carries_policy_and_target(plugin, flags, draft):
     workspace, capture, env, _ = plugin
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "gr2.python_cli",
-            "pr",
-            "create",
-            str(workspace),
-            "default",
-            "proof",
-            "--platform",
-            "fixture",
-            "--base",
-            "integration",
-            "--title",
-            "Local proof",
-            "--body",
-            "Fixture text",
-            "--json",
-            *flags,
-        ],
-        env=env,
-        cwd=workspace,
-        text=True,
-        capture_output=True,
-    )
+    result = _create_cli(plugin, "--base", "integration", "--title", "Local proof",
+                         "--body", "Fixture text", "--json", *flags)
     assert result.returncode == 0, result.stderr
     assert json.loads(capture.read_text()) == dict(
         repo="sample",
@@ -225,32 +242,8 @@ def test_two_member_actual_cli_body_edits_do_not_publish(plugin, flags, draft):
         'repos=["sample","second"]\nlane_kind="materialized"\n'
         '[branch_map]\nsample="feature/proof"\nsecond="feature/proof"\n'
     )
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "gr2.python_cli",
-            "pr",
-            "create",
-            str(workspace),
-            "default",
-            "proof",
-            "--platform",
-            "fixture",
-            "--base",
-            "integration",
-            "--title",
-            "Local proof",
-            "--body",
-            "Fixture text",
-            "--json",
-            *flags,
-        ],
-        env=env,
-        cwd=workspace,
-        text=True,
-        capture_output=True,
-    )
+    result = _create_cli(plugin, "--base", "integration", "--title", "Local proof",
+                         "--body", "Fixture text", "--json", *flags)
     assert result.returncode == 0, result.stderr
     events = [json.loads(line) for line in Path(env["FIXTURE_EVENTS"]).read_text().splitlines()]
     assert [row["kind"] for row in events] == ["create", "create", "edit", "edit"]

@@ -109,3 +109,82 @@ def test_refuses_a_moved_base(world, tmp_path):
     assert code == merge_gate.EXIT_REFUSED, receipt
     assert receipt["members"][0]["refused"].startswith("base_moved"), receipt
     assert git(world["remote"], "rev-parse", "main") == moved
+
+
+@pytest.fixture
+def slice2(tmp_path, monkeypatch):
+    """Two members, alpha and beta, bound into ONE review with --rows-json."""
+    import json
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+    author = tmp_path / "author"
+    author.mkdir()
+    out = {"author": author, "members": {}}
+    for name in ("alpha", "beta"):
+        remote, seed = tmp_path / f"{name}.git", tmp_path / f"seed-{name}"
+        git(tmp_path, "init", "--bare", "-b", "main", remote)
+        seed.mkdir()
+        git(seed, "init", "-b", "main")
+        (seed / "payload.txt").write_text(f"{name} base\n")
+        git(seed, "add", "payload.txt")
+        git(seed, "commit", "-m", "base")
+        git(seed, "push", remote, "main")
+        git(author, "clone", "--no-local", "--branch", "main", remote, name)
+        out["members"][name] = {"remote": remote, "base": git(seed, "rev-parse", "HEAD"), "repo": author / name}
+    init = runner.invoke(app, ["store", "init", str(author)])
+    assert init.exit_code == 0, init.output
+    rows = []
+    for name, m in out["members"].items():
+        git(m["repo"], "checkout", "-b", "feat")
+        (m["repo"] / "payload.txt").write_text(f"{name} reviewed\n")
+        git(m["repo"], "add", "payload.txt")
+        git(m["repo"], "commit", "-m", "reviewed")
+        m["head"] = git(m["repo"], "rev-parse", "HEAD")
+        rows.append({"key": name, "path": name, "remote": str(m["remote"]), "base": m["base"], "head": m["head"],
+                     "ref": "refs/heads/main", "source": str(m["repo"])})
+    (tmp_path / "rows.json").write_text(json.dumps(rows))
+    monkeypatch.chdir(author)
+    made = runner.invoke(app, ["review", "bind", "--rows-json", str(tmp_path / "rows.json")])
+    assert made.exit_code == 0, made.output
+    out["review"] = "gr:" + git(author, "for-each-ref", "--format=%(refname)", REVIEW_REF_PREFIX).rsplit("/", 1)[1]
+    for m in out["members"].values():
+        git(m["repo"], "push", m["remote"], "feat")
+        check_records.run_check(m["repo"], str(m["remote"]), m["head"], "test", [sys.executable, "-c", "pass"])
+    return out
+
+
+def move(m, tmp_path_name="moved.txt"):
+    (m["repo"] / tmp_path_name).write_text("after review\n")
+    git(m["repo"], "add", tmp_path_name)
+    git(m["repo"], "commit", "-m", "moved after review")
+    git(m["repo"], "push", m["remote"], "feat")
+
+
+def mains(s):
+    return {k: git(m["remote"], "rev-parse", "main") for k, m in s["members"].items()}
+
+
+def test_a_two_member_slice_merges_as_a_set(slice2):
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    assert code == merge_gate.EXIT_MERGED, receipt
+    for k, m in slice2["members"].items():
+        parents = git(m["remote"], "rev-list", "--parents", "-n", "1", "main").split()[1:]
+        assert parents == [m["base"], m["head"]], (k, parents)
+
+
+def test_moving_the_last_member_refuses_the_whole_set(slice2):
+    move(slice2["members"]["beta"])
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    assert code == merge_gate.EXIT_REFUSED, receipt
+    assert mains(slice2) == {k: m["base"] for k, m in slice2["members"].items()}, "no member may merge"
+
+
+def test_a_rerun_after_an_earlier_partial_reports_partial_not_refused(slice2):
+    # alpha merged by an earlier run; then beta moves; the rerun refuses beta but the STATE is partial.
+    code, _ = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    assert code == merge_gate.EXIT_MERGED
+    beta = slice2["members"]["beta"]
+    git(beta["remote"], "update-ref", "refs/heads/main", beta["base"])  # undo beta's merge on the remote
+    move(beta)
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    assert code == merge_gate.EXIT_PARTIAL, receipt

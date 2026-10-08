@@ -133,6 +133,20 @@ def test_duplicate_member_identity_refuses_before_adapter_calls(tmp_path):
     assert not (tmp_path / ".grip").exists()
 
 
+@pytest.mark.parametrize("url_line", ["", 'url="   "\n'], ids=["missing", "whitespace"])
+def test_absent_lane_url_omits_creation_remote(plugin, url_line):
+    workspace, capture, _, _ = plugin
+    (workspace / ".grip/workspace_spec.toml").write_text(
+        '[[repos]]\nname="sample"\n' + url_line
+    )
+    result = _create_cli(plugin, "--json")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(capture.read_text())["remote"] is None
+    group = json.loads(result.stdout)
+    saved = json.loads(Path(group["state_path"]).read_text())
+    assert "remote" not in saved["prs"][0]
+
+
 def test_duplicate_cli_identity_names_refusal_before_adapter_calls(plugin):
     workspace, capture, env, _ = plugin
     (workspace / ".grip/workspace_spec.toml").write_text(

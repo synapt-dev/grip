@@ -15,6 +15,12 @@ import sys
 import tempfile
 
 GUARDS = [
+    ("workspace_policy_floor", "required_approvals", "return max(required, given or 0)", "return given if given is not None else required", "test_cli_count_cannot_lower_workspace_policy"),
+    ("requested_count_type", "required_approvals", "if given is not None and (type(given) is not int or given < 0):", "if False:", "test_invalid_requested_count_refuses"),
+    ("optional_policy_file", "required_approvals", "except FileNotFoundError:", "except FileExistsError:", "test_missing_policy_file_defaults_zero_and_merges"),
+    ("workspace_approver", "approve", 'name = _git(workspace, "config", "user.name")', 'name = _git(Path.cwd(), "config", "user.name")', "test_approve_uses_workspace_identity_from_a_member_cwd"),
+    ("zero_policy_skips_count", "review_merge", "if required:", "if True:", "test_zero_required_skips_an_unmeasurable_approval_chain"),
+    ("merge_quorum", "review_merge", 'if approval_receipt["count"] < required:', "if False:", "test_default_merge_reads_workspace_policy_and_counts_two_approvers"),
     ("member_repo", "_context", "if not repo.is_relative_to(root) or merge_gate._toplevel(repo) != repo or not merge_gate._store_inside(repo, root):", "if False:", "test_context_refuses_member_that_is_not_its_own_repo"),
     ("head_tree", "_context", "if actual_tree != tree:", "if False:", "test_context_refuses_a_head_tree_mismatch"),
     ("branch_repo", "current_branch", "if not repo.is_relative_to(root) or merge_gate._toplevel(repo) != repo:", "if False:", "test_branch_resolver_refuses_nested_member"),
@@ -61,11 +67,11 @@ GUARDS = [
     ("append_lease", "approve", 'f"--force-with-lease={ref}:{old or \'\'}"', '"--force"', "test_lease_race_refuses_then_a_fresh_attempt_appends"),
 ]
 
-PLUGIN = '''import ast, json, os
+PLUGIN = '''import ast, importlib, json, os
 from pathlib import Path
 def pytest_sessionstart(session):
-    import gr2.python_cli.approvals as module
     spec=json.loads(os.environ['APPROVAL_MUTATION'])
+    module=importlib.import_module('gr2.python_cli.'+spec['module'])
     source=Path(module.__file__).read_text()
     node=next(n for n in ast.parse(source).body if isinstance(n,ast.FunctionDef) and n.name==spec['function'])
     lines=source.splitlines(keepends=True)
@@ -87,6 +93,8 @@ def main():
     subject = root / "gr2/python_cli/approvals.py"
     source = subject.read_text()
     before = hashlib.sha256(subject.read_bytes()).hexdigest()
+    subjects = {name: root / ("gr2/python_cli/" + name + ".py") for name in ("approvals", "merge_gate")}
+    source_hashes = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in subjects.items()}
     env = {**os.environ, "PYTHONPATH": str(root) + os.pathsep + os.environ.get("PYTHONPATH", "")}
     env.pop("APPROVAL_MUTATION", None)
     pristine = subprocess.run([sys.executable, "-m", "pytest", "-q", "tests/test_review_approvals.py"], cwd=root, env=env, capture_output=True, text=True)
@@ -100,26 +108,29 @@ def main():
         for ident, function, target, replacement, test in GUARDS:
             if args.only and ident != args.only:
                 continue
-            node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == function)
-            part = "".join(source.splitlines(keepends=True)[node.lineno-1:node.end_lineno])
+            module = "merge_gate" if function == "review_merge" else "approvals"
+            candidate_source = subjects[module].read_text()
+            node = next(n for n in ast.parse(candidate_source).body if isinstance(n, ast.FunctionDef) and n.name == function)
+            part = "".join(candidate_source.splitlines(keepends=True)[node.lineno-1:node.end_lineno])
             count = part.count(target)
             if count != 1:
                 raise SystemExit(f"{ident}: target occurrence count {count}, expected1")
             assert part.replace(target, replacement).count(target) == 0
-            spec = dict(function=function, target=target, replacement=replacement)
+            spec = dict(module=module, function=function, target=target, replacement=replacement)
             mutated_env = {**env, "PYTHONPATH": td + os.pathsep + env["PYTHONPATH"], "APPROVAL_MUTATION": json.dumps(spec)}
             run = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "approval_mutant_plugin",
                                   "tests/test_review_approvals.py::" + test], cwd=root, env=mutated_env, capture_output=True, text=True)
             killed = run.returncode == 1 and "FAILED tests/test_review_approvals.py::" in run.stdout
-            results.append({"id": ident, "function": function, "target": target, "replacement": replacement,
+            results.append({"id": ident, "module": module, "function": function, "target": target, "replacement": replacement,
                             "target_count_before": 1, "target_count_after": 0, "witness": test,
                             "status": "KILLED" if killed else "SURVIVED_OR_INVALID", "exit": run.returncode,
                             "output": run.stdout + run.stderr})
             print(ident, results[-1]["status"], flush=True)
     after = hashlib.sha256(subject.read_bytes()).hexdigest()
     assert after == before, "source changed during mutation run"
+    assert source_hashes == {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in subjects.items()}, "source changed during mutation run"
     result = {"subject": str(subject), "source_sha256": before, "source_unchanged": True,
-              "pristine": pristine.stdout, "mutants": results}
+              "source_hashes": source_hashes, "pristine": pristine.stdout, "mutants": results}
     Path(args.output).write_text(json.dumps(result, indent=2) + "\n")
     raise SystemExit(0 if results and all(row["status"] == "KILLED" for row in results) else 1)
 

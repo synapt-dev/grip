@@ -102,7 +102,7 @@ Not there yet:
 ## Unsigned approvals
 
 Inside a workspace with one review bind matching every member's current head,
-an approver uses their Git `user.name`:
+an approver uses the workspace's Git `user.name`:
 
 ```bash
 gr2 review approve
@@ -121,9 +121,10 @@ The workspace's `grip.toml` sets the number required before merging:
 required = 2
 ```
 
-The default is zero; `review merge --approvals N` overrides the count for that
-run. Broken records or different approval-chain tips across member remotes
-refuse before this run pushes a merge. After a refused approval append, rerun
+The default is zero; `review merge --approvals N` can raise the count for that
+run, but cannot lower the workspace policy. With zero required, the merge gate
+skips approval counting. When approvals are required, broken records or different
+chain tips across member remotes refuse before this run pushes a merge. After a refused approval append, rerun
 `review approve` to read the current chain and retry with a lease.
 
 ## Overlay substrate

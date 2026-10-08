@@ -82,9 +82,11 @@ def current_review(workspace: Path) -> str:
 
 
 def required_approvals(workspace: Path, given: int | None = None) -> int:
-    """Workspace grip.toml policy, default zero; an explicit CLI count wins."""
+    """Workspace policy is a floor, default zero; a CLI count can raise it."""
     try:
         policy = tomllib.loads((workspace / "grip.toml").read_text()).get("approvals", {})
+    except FileNotFoundError:
+        policy = {}
     except (OSError, ValueError) as exc:
         raise ApprovalRefused("approval_policy_unreadable") from exc
     if not isinstance(policy, dict):
@@ -93,10 +95,12 @@ def required_approvals(workspace: Path, given: int | None = None) -> int:
         raise ApprovalRefused("approval_policy_invalid: require_signed must be a boolean")
     if policy.get("require_signed"):
         raise ApprovalRefused("approval_signed_unsupported")
-    required = given if given is not None else policy.get("required", 0)
+    required = policy.get("required", 0)
     if type(required) is not int or required < 0:
         raise ApprovalRefused("approval_policy_invalid: required must be a nonnegative integer")
-    return required
+    if given is not None and (type(given) is not int or given < 0):
+        raise ApprovalRefused("approval_policy_invalid: requested count must be a nonnegative integer")
+    return max(required, given or 0)
 
 
 def current_branch(workspace: Path, review_id: str) -> str:
@@ -289,7 +293,7 @@ def approve(workspace: Path, review_id: str | None = None) -> dict:
     workspace = workspace.resolve()
     rid = review_id.removeprefix("gr:") if review_id else current_review(workspace)
     root, authors = _context(workspace, rid)
-    name = _git(Path.cwd(), "config", "user.name")
+    name = _git(workspace, "config", "user.name")
     if not name.strip():
         raise ApprovalRefused("approval_identity_missing")
     if name in authors:

@@ -10,7 +10,7 @@ import pytest
 
 from typer.testing import CliRunner
 
-from gr2.python_cli import approvals, check_records
+from gr2.python_cli import approvals, check_records, merge_gate
 from gr2.python_cli.app import app
 
 runner = CliRunner()
@@ -243,6 +243,8 @@ def test_policy_default_zero_and_explicit_override(tmp_path):
     p.write_text("[approvals]\nrequired=2\n")
     assert approvals.required_approvals(tmp_path) == 2
     assert approvals.required_approvals(tmp_path, 3) == 3
+    assert approvals.required_approvals(tmp_path, 0) == 2
+    assert approvals.required_approvals(tmp_path, 1) == 2
 
 
 @pytest.fixture
@@ -614,3 +616,54 @@ def test_reconcile_lease_keeps_a_racing_remote_link(multi, monkeypatch):
     assert refused.exit_code == 2, refused.output
     assert git(beta, "rev-parse", ref) == competitor
     assert git(multi["remote"], "rev-parse", ref) == tip
+
+
+def test_cli_count_cannot_lower_workspace_policy(world):
+    set_policy(world, 2)
+    result = runner.invoke(app, ["review", "merge", "--approvals", "0"])
+    assert result.exit_code == 3, result.output
+    receipt = json.loads(result.output)
+    assert receipt["approvals"]["required"] == 2 and receipt["approvals"]["count"] == 0
+    assert receipt["members"][0]["refused"].startswith("approvals_insufficient")
+    assert git(world["remote"], "rev-parse", "main") == world["base"]
+
+
+def test_zero_required_skips_an_unmeasurable_approval_chain(world, monkeypatch):
+    set_policy(world, 0)
+    calls = []
+    def unmeasurable(*args):
+        calls.append(args)
+        raise approvals.ApprovalRefused("approval_unmeasurable: fixture")
+    monkeypatch.setattr(approvals, "count_approvals", unmeasurable)
+    result = runner.invoke(app, ["review", "merge"])
+    assert result.exit_code == 0, result.output
+    assert calls == []
+    assert json.loads(result.output)["approvals"] == {"required": 0, "skipped": True}
+    assert git(world["remote"], "rev-list", "--parents", "-n", "1", "main").split()[1:] == [world["base"], world["head"]]
+
+
+def test_missing_policy_file_defaults_zero_and_merges(world):
+    set_policy(world, 0)
+    (world["workspace"] / "grip.toml").unlink()
+    code, receipt = merge_gate.review_merge(world["workspace"], world["rid"], into="main", feature="feature")
+    assert code == 0, receipt
+    assert receipt["approvals"] == {"required": 0, "skipped": True}
+
+
+def test_approve_uses_workspace_identity_from_a_member_cwd(world, monkeypatch):
+    git(world["workspace"], "config", "user.name", "Workspace B")
+    git(world["member"], "config", "user.name", "Member C")
+    monkeypatch.chdir(world["member"])
+    result = runner.invoke(app, ["review", "approve"])
+    assert result.exit_code == 0, result.output
+    receipt = json.loads(result.output)
+    assert receipt["links"][0]["approver"] == "Workspace B"
+    record = json.loads(git(world["remote"], "show", receipt["tip"] + ":approval.json"))
+    assert record["approver"]["name"] == "Workspace B"
+
+
+@pytest.mark.parametrize("given", [-1, True, "2"])
+def test_invalid_requested_count_refuses(tmp_path, given):
+    (tmp_path / "grip.toml").write_text("[approvals]\nrequired=2\n")
+    with pytest.raises(approvals.ApprovalRefused, match="requested count"):
+        approvals.required_approvals(tmp_path, given)

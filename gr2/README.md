@@ -91,6 +91,7 @@ Not there yet:
 | (top level) | branch, add, commit, push, prune, status, plan, apply |
 | `sync` | status, run |
 | `pr` | create, status, checks, merge, view |
+| `check` | run, show |
 | `review` | open, close, checkout-pr, run, check, bind, publish, receive, verify, show, rebind, create-project |
 | `exec` | status, run |
 | `repo` | status, projection-run |
@@ -168,3 +169,36 @@ PRs start as drafts by default. `--draft` is explicit draft creation, while
 `CreatePRRequest` and `create_pr_group`. Existing Python callers can retain
 non-draft creation with `draft=False`. Plugins execute trusted Python from the
 existing environment. The CLI never installs or downloads them.
+
+## Checks on a plain Git remote
+
+Run a command at an exact full commit id in a disposable checkout, then publish
+its exit status to the repository's remote:
+
+```sh
+gr2 check run ./repo --remote https://example.com/team/repo.git --head <full-sha> --name test -- python -m pytest
+gr2 check show ./repo --remote https://example.com/team/repo.git --head <full-sha> --json
+```
+
+Absolute paths to local bare remotes also work. Observations live at
+`refs/dev.synapt.grip/__checks__/v1`, keyed by commit id. `check show` fetches a
+fresh snapshot; a different commit has no check even when its tree is identical.
+Supplied `--require` names replace the default `test` requirement. For both
+checks, use `--require test --require lint`.
+
+The read JSON contains `status`, `record_id` (the head's record-set blob id or
+null), `snapshot_oid`, `head`, `member_key`, `records`, and `reason`. Each
+observation retains its fields and adds a SHA-256 `observation_id`.
+
+A failed command is recorded and `check run` exits 1. Publication or execution
+refusals exit 2. `check show` returns `pass`, `fail` or `absent` in its JSON;
+failed or unmeasurable reads exit 2. Conflicting pass and fail observations both
+survive and refuse readiness. Rerunning a check does not erase its earlier
+failure at that commit. Concurrent writes union observations with bounded
+compare-and-swap retries. An unmeasurable push acknowledgement is reported as
+indeterminate unless a fresh remote read confirms the observation.
+
+These records are attestations by writers trusted with remote access, not signed
+proof against a writer who can forge Git objects. Test output and environment
+contents are not uploaded. Read this custom ref through gr2; plain `git notes`
+cannot read notes outside `refs/notes/`.

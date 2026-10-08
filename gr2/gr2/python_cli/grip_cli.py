@@ -16,6 +16,7 @@ from typing import Optional
 import typer
 
 from . import config as config_mod
+from .check_records import JSON_SHAPES as CHECK_JSON_SHAPES
 from . import gitops
 from . import grip as grip_mod
 from .gitops import git, repo_dirty
@@ -1695,6 +1696,8 @@ JSON_SHAPES: dict[str, tuple[str, ...]] = {
     for mount in STORE_MOUNTS
     for verb, paths in _STORE_JSON_SHAPES.items()
 }
+# Additional groups declare their shapes beside their own readers.
+JSON_SHAPES.update(CHECK_JSON_SHAPES)
 
 
 @grip_app.command("init")

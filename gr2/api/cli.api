@@ -18,6 +18,35 @@ arg   branch name <str>                                               stable
 flag  branch --base/--from/--start-point <str>                        stable
 flag  branch --repo-path <str>                                        stable
 verb  branch                                                          stable
+# check run
+arg   check run command <str>                                         stable
+arg   check run repo <str>                                            stable
+flag  check run --head <str>                                          stable
+flag  check run --name <str>                                          stable
+flag  check run --remote <str>                                        stable
+verb  check run                                                       stable
+# check show
+arg   check show repo <str>                                           stable
+flag  check show --head <str>                                         stable
+flag  check show --json                                               stable
+flag  check show --member <str>                                       stable
+flag  check show --remote <str>                                       stable
+flag  check show --require <str>                                      stable
+json  check show .head                                                stable
+json  check show .member_key                                          stable
+json  check show .reason                                              stable
+json  check show .record_id                                           stable
+json  check show .records                                             stable
+json  check show .records[].exit_code                                 stable
+json  check show .records[].head                                      stable
+json  check show .records[].name                                      stable
+json  check show .records[].observation_id                            stable
+json  check show .records[].observed_head                             stable
+json  check show .records[].result  enum(pass,fail,error)             stable
+json  check show .records[].v  enum(1)                                stable
+json  check show .snapshot_oid                                        stable
+json  check show .status  enum(pass,fail,absent)                      stable
+verb  check show                                                      stable
 # commit
 flag  commit --amend                                                  stable
 flag  commit --lane <str>                                             stable

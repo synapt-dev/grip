@@ -536,7 +536,7 @@ def test_the_store_group_json_verbs_all_have_a_shape() -> None:
     """
     from gr2.python_cli import grip_cli
 
-    covered = set(grip_cli.JSON_SHAPES)
+    covered = {verb for verb in grip_cli.JSON_SHAPES if verb.split(" ")[0] in ("store", "grip")}
     group = {verb for verb in _json_verb_paths() if verb.split(" ")[0] in ("store", "grip")}
     assert covered, "JSON_SHAPES is empty, so this gate cannot fail"
     assert covered == group, (
@@ -640,7 +640,9 @@ def test_a_json_item_inherits_its_verb_marker() -> None:
 
     # A json spelling's first token is its MOUNT, so one that names neither the
     # canonical mount nor an alias is an item the mount tuple does not explain.
-    stray = sorted(s for s in json_spellings if s.partition(" ")[0] not in mounts)
+    from gr2.python_cli.check_records import JSON_SHAPES as check_shapes
+    stray = sorted(s for s in json_spellings
+                   if s.partition(" ")[0] not in mounts and gen._verb_of_json(s) not in check_shapes)
     if stray:
         wrong.append(f"json spelling(s) under a mount STORE_MOUNTS does not name: {stray}")
 
@@ -953,3 +955,15 @@ def test_dual_boolean_negative_spelling_reaches_inventory() -> None:
         for row in rows
     )
     assert any(row.spelling == "pr create --json" for row in rows)
+
+
+def test_check_show_json_shape_is_registered_and_matches_adapter() -> None:
+    from gr2.python_cli import check_records, grip_cli
+    result = check_records.read_remote_check("invalid", {}, "invalid")
+    paths = grip_cli.JSON_SHAPES["check show"]
+    top_keys = {path.split("  ")[0][1:] for path in paths if "[]." not in path}
+    assert top_keys == set(result)
+    assert grip_cli.JSON_SHAPES["check show"] == check_records.JSON_SHAPES["check show"]
+    assert {row.spelling for row in _generator()._items() if row.kind == "json" and row.group == "check show"} == {
+        "check show " + path for path in paths
+    }

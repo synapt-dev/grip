@@ -407,6 +407,11 @@ flag  repo status --json                                              stable
 flag  repo status --policy <str>                                      stable
 flag  repo status --spec <str>                                        stable
 verb  repo status                                                     stable
+# review approve
+arg   review approve review_id <str>                                  stable
+arg   review approve workspace_root <str>                             stable
+flag  review approve --root/-C <str>                                  stable
+verb  review approve                                                  stable
 # review bind
 arg   review bind workspace_root <str>                                stable
 flag  review bind --base <str>                                        stable
@@ -477,6 +482,7 @@ verb  review exit-gr (hidden)                                         stable
 # review merge
 arg   review merge review_id <str>                                    stable
 arg   review merge workspace_root <str>                               stable
+flag  review merge --approvals <str>                                  stable
 flag  review merge --check <str>                                      stable
 flag  review merge --from <str>                                       stable
 flag  review merge --into <str>                                       stable

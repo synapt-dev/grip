@@ -48,7 +48,7 @@ OPTIONAL_TRAILING = [  # RootOptionCommand: the two execution verbs
 ]
 REVIEW_READER_SUBJECTS = ["pr/checks", "pr/view"]  # reconstruction-aware readers
 REVIEW_SUBJECTS = ["pr/create", "pr/status", "pr/merge", *REVIEW_READER_SUBJECTS]
-REVIEW_TARGETS = ["review/show", "review/verify"]
+REVIEW_TARGETS = ["review/show", "review/verify", "review/approve"]
 REVIEW_HEADS = ["review/merge"]
 REVIEW_TRANSPORTS = ["review/publish", "review/receive"]
 REVIEW_OPENS = ["review/open"]

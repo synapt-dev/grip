@@ -1,12 +1,13 @@
 """Unsigned, exact-head approval links in ordinary Git refs.
 
-Names are self-declared Git identities, not authenticated identities. Phase one
-does not accept signatures. Each link names the bind and repeats its member pins.
+Names are self-declared Git identities, not authenticated identities. Unsigned
+links do not accept signature fields. Each link names the bind and repeats its member pins.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import tomllib
 import uuid
@@ -23,16 +24,19 @@ class ApprovalRefused(RuntimeError):
     pass
 
 
-def _git(repo: Path, *args: str, data: str | None = None) -> str:
-    p = subprocess.run(["git", "-c", "maintenance.auto=false", "-c", "gc.auto=0", "-C", str(repo), *args],
-                       input=data, capture_output=True, text=True, timeout=60)
+def _git(repo: Path, *args: str, data: str | None = None, raw: bool = False) -> str:
+    try:
+        p = subprocess.run(["git", "-c", "maintenance.auto=false", "-c", "gc.auto=0", "-C", str(repo), *args],
+                           input=data, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
+        raise ApprovalRefused(f"approval_unmeasurable: {type(exc).__name__}") from exc
     if p.returncode:
         raise ApprovalRefused(f"approval_unmeasurable: {p.stderr.strip()}")
-    return p.stdout.strip()
+    return p.stdout if raw else p.stdout.strip()
 
 
 def canonical(record: dict) -> str:
-    return json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
 
 
 def digest(record: dict) -> str:
@@ -64,6 +68,8 @@ def required_approvals(workspace: Path, given: int | None = None) -> int:
         raise ApprovalRefused("approval_policy_unreadable") from exc
     if not isinstance(policy, dict):
         raise ApprovalRefused("approval_policy_invalid")
+    if "require_signed" in policy and type(policy["require_signed"]) is not bool:
+        raise ApprovalRefused("approval_policy_invalid: require_signed must be a boolean")
     if policy.get("require_signed"):
         raise ApprovalRefused("approval_signed_unsupported")
     required = given if given is not None else policy.get("required", 0)
@@ -91,13 +97,16 @@ def current_branch(workspace: Path, review_id: str) -> str:
 
 def _context(workspace: Path, review_id: str) -> tuple[dict, set[str]]:
     from . import merge_gate
+    workspace = workspace.resolve()
+    if merge_gate._toplevel(workspace) != workspace or not merge_gate._store_inside(workspace, workspace):
+        raise ApprovalRefused("approval_workspace_store_outside_workspace")
     rid = review_id.removeprefix("gr:")
     verified = grip.verify_review_commit(workspace, rid)
     if verified.get("tree_matches") is not True:
         raise ApprovalRefused("approval_bind_unverified")
     view = grip.show_review_commit(workspace, rid)
     measured = {m["key"]: m for m in verified["rows"]}
-    # Until the review schema adds author, use the bind's own immutable Git author.
+    # Older binds have no author field; their immutable Git author is the fallback.
     author = view.get("author") or _git(workspace, "show", "-s", "--format=%an", rid)
     authors = {author}
     members = []
@@ -106,8 +115,9 @@ def _context(workspace: Path, review_id: str) -> tuple[dict, set[str]]:
         repo = (root / m["path"]).resolve()
         if not repo.is_relative_to(root) or merge_gate._toplevel(repo) != repo or not merge_gate._store_inside(repo, root):
             raise ApprovalRefused(f"approval_member_repo_mismatch: {m['key']}")
-        tree = measured[m["key"]].get("head_tree")
-        if not tree or _git(repo, "rev-parse", f"{m['head']}^{{tree}}") != tree:
+        actual_tree = _git(repo, "rev-parse", f"{m['head']}^{{tree}}")
+        tree = measured[m["key"]].get("head_tree", actual_tree)
+        if actual_tree != tree:
             raise ApprovalRefused(f"approval_head_tree_unmeasurable: {m['key']}")
         authors.update(_git(repo, "log", "--format=%an", f"{m['base']}..{m['head']}").splitlines())
         members.append({"key": m["key"], "remote": m["remote"], "head_commit": m["head"], "head_tree": tree})
@@ -138,44 +148,105 @@ def _remote_tips(workspace: Path, root: dict) -> dict[str, str | None]:
     return tips
 
 
+def _unique_pairs(pairs):
+    out = {}
+    for key, value in pairs:
+        if key in out:
+            raise ApprovalRefused("approval_chain_broken: duplicate JSON key")
+        out[key] = value
+    return out
+
+
+def _read_link(workspace: Path, commit: str) -> dict:
+    entries = _git(workspace, "ls-tree", commit).splitlines()
+    if len(entries) != 1 or not re.fullmatch(r"100644 blob [0-9a-f]{40}\tapproval\.json", entries[0]):
+        raise ApprovalRefused("approval_chain_broken: expected only plain approval.json")
+    text = _git(workspace, "show", f"{commit}:approval.json", raw=True)
+    try:
+        record = json.loads(text, object_pairs_hook=_unique_pairs)
+        if not isinstance(record, dict) or text != canonical(record):
+            raise ApprovalRefused("approval_chain_broken: not canonical")
+    except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
+        raise ApprovalRefused("approval_chain_broken: invalid JSON") from exc
+    return record
+
+
+def _validate_link(record: dict, root: dict, authors: set[str]) -> str:
+    required = {"schema", "review_id", "members", "approver", "author", "verdict", "prev", "created_at"}
+    if not required.issubset(record) or set(record) - required - {"sig", "keyring_tip"}:
+        raise ApprovalRefused("approval_chain_broken: missing or unknown fields")
+    if record["schema"] != SCHEMA or record["verdict"] != "approve":
+        raise ApprovalRefused("approval_chain_broken: schema or verdict")
+    if any(record[k] != root[k] for k in ("review_id", "author", "members")):
+        raise ApprovalRefused("approval_chain_broken: bind or head pins")
+    identity = record["approver"]
+    if not isinstance(identity, dict) or set(identity) != {"name", "key_id"}:
+        raise ApprovalRefused("approval_chain_broken: approver fields")
+    name = identity["name"]
+    if not isinstance(name, str) or not name or name != name.strip() or any(ord(c) < 32 or ord(c) == 127 for c in name):
+        raise ApprovalRefused("approval_chain_broken: invalid approver name")
+    if name in authors:
+        raise ApprovalRefused("self_approval")
+    if "sig" in record or identity["key_id"] != "" or record.get("keyring_tip", "") != "":
+        raise ApprovalRefused("approval_signed_unsupported")
+    if not isinstance(record["prev"], str) or not re.fullmatch(r"[0-9a-f]{64}", record["prev"]):
+        raise ApprovalRefused("approval_chain_broken: invalid prev digest")
+    stamp = record["created_at"]
+    if not isinstance(stamp, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z", stamp):
+        raise ApprovalRefused("approval_chain_broken: invalid created_at")
+    try:
+        datetime.fromisoformat(stamp.removesuffix("Z") + "+00:00")
+    except ValueError as exc:
+        raise ApprovalRefused("approval_chain_broken: invalid created_at") from exc
+    return name
+
+
 def _walk(workspace: Path, root: dict, authors: set[str], tip: str | None) -> list[dict]:
     rid = root["review_id"].removeprefix("gr:")
+    if tip == rid:
+        raise ApprovalRefused("approval_chain_broken: approval ref points at bind")
     links = []
     seen = set()
     while tip and tip != rid:
-        if tip in seen or len(seen) >= 10000:
-            raise ApprovalRefused("approval_chain_broken: cycle or excessive length")
+        if len(seen) >= 10000:
+            raise ApprovalRefused("approval_chain_broken: excessive length")
         seen.add(tip)
         parents = _git(workspace, "rev-list", "--parents", "-n", "1", tip).split()[1:]
         if len(parents) != 1:
             raise ApprovalRefused("approval_chain_broken: expected one parent")
-        text = _git(workspace, "show", f"{tip}:approval.json")
-        try:
-            record = json.loads(text)
-        except ValueError as exc:
-            raise ApprovalRefused("approval_chain_broken: invalid JSON") from exc
-        if not isinstance(record, dict) or text != canonical(record):
-            raise ApprovalRefused("approval_chain_broken: not canonical")
-        if record.get("schema") != SCHEMA or record.get("verdict") != "approve":
-            raise ApprovalRefused("approval_chain_broken: schema or verdict")
-        if any(record.get(k) != root[k] for k in ("review_id", "author", "members")):
-            raise ApprovalRefused("approval_chain_broken: bind or head pins")
-        identity = record.get("approver", {})
-        name = identity.get("name") if isinstance(identity, dict) else None
-        if not isinstance(name, str) or not name.strip():
-            raise ApprovalRefused("approval_chain_broken: missing approver")
-        if name in authors:
-            raise ApprovalRefused("self_approval")
-        if record.get("sig") or identity.get("key_id") or record.get("keyring_tip"):
-            raise ApprovalRefused("approval_signed_unsupported")
-        previous = root if parents[0] == rid else json.loads(_git(workspace, "show", f"{parents[0]}:approval.json"))
+        record = _read_link(workspace, tip)
+        name = _validate_link(record, root, authors)
+        previous = root if parents[0] == rid else _read_link(workspace, parents[0])
         if record.get("prev") != digest(previous):
             raise ApprovalRefused("approval_chain_broken: prev")
         links.append({"approver": name, "key_id": "", "record_hash": digest(record), "commit": tip, "signed": False})
         tip = parents[0]
-    if links and tip != rid:
-        raise ApprovalRefused("approval_chain_broken: not rooted at bind")
     return list(reversed(links))
+
+
+def _reconcile(workspace: Path, root: dict, authors: set[str], tips: dict[str, str | None]) -> str | None:
+    """Republish a linear descendant to lagging remotes; never pick a side of a fork."""
+    candidates = set(tips.values()) - {None}
+    for tip in candidates:
+        _walk(workspace, root, authors, tip)
+    if not candidates:
+        return None
+    longest = []
+    for candidate in candidates:
+        ancestors = set(_git(workspace, "rev-list", candidate).splitlines())
+        if all(tip is None or tip in ancestors for tip in tips.values()):
+            longest.append(candidate)
+    if len(longest) != 1:
+        raise ApprovalRefused("approval_chain_divergent: " + canonical(tips))
+    tip = longest[0]
+    ref = PREFIX + root["review_id"].removeprefix("gr:")
+    for remote, old in tips.items():
+        if old != tip:
+            _git(workspace, "push", f"--force-with-lease={ref}:{old or ''}", "--", remote, f"{tip}:{ref}")
+    measured = _remote_tips(workspace, root)
+    if set(measured.values()) != {tip}:
+        raise ApprovalRefused("approval_chain_divergent: " + canonical(measured))
+    return tip
 
 
 def count_approvals(workspace: Path, review_id: str) -> dict:
@@ -185,6 +256,10 @@ def count_approvals(workspace: Path, review_id: str) -> dict:
         raise ApprovalRefused("approval_chain_divergent: " + canonical(tips))
     tip = next(iter(tips.values()))
     links = _walk(workspace, root, authors, tip)
+    current = _remote_tips(workspace, root)
+    if current != tips:
+        raise ApprovalRefused("approval_chain_divergent: " + canonical(current) if len(set(current.values())) != 1
+                              else "approval_chain_moved: retry the measurement")
     distinct = {link["approver"]: link for link in links}
     return {"review_id": root["review_id"], "tip": tip, "count": len(distinct), "links": list(distinct.values()), "signed": False}
 
@@ -199,19 +274,19 @@ def approve(workspace: Path, review_id: str | None = None) -> dict:
     if name in authors:
         raise ApprovalRefused("self_approval")
     tips = _remote_tips(workspace, root)
-    if len(set(tips.values())) != 1:
-        raise ApprovalRefused("approval_chain_divergent: " + canonical(tips))
-    tip = next(iter(tips.values()))
+    tip = _reconcile(workspace, root, authors, tips)
     _walk(workspace, root, authors, tip)
-    previous = root if tip is None else json.loads(_git(workspace, "show", f"{tip}:approval.json"))
+    previous = root if tip is None else _read_link(workspace, tip)
     record = {**root, "schema": SCHEMA, "approver": {"name": name, "key_id": ""}, "keyring_tip": "",
               "verdict": "approve", "prev": digest(previous),
               "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
+    _validate_link(record, root, authors)
     blob = _git(workspace, "hash-object", "-w", "--stdin", data=canonical(record))
     tree = _git(workspace, "mktree", data=f"100644 blob {blob}\tapproval.json\n")
     commit = _git(workspace, "commit-tree", tree, "-p", tip or rid, "-m", "Approve " + root["review_id"])
     ref = PREFIX + rid
-    for remote, old in tips.items():
+    for remote in tips:
+        old = tip
         _git(workspace, "push", f"--force-with-lease={ref}:{old or ''}", "--", remote, f"{commit}:{ref}")
     _git(workspace, "update-ref", ref, commit)
     return count_approvals(workspace, rid)

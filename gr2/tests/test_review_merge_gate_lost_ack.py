@@ -6,6 +6,7 @@ replaced: the real `git push` runs, and the wrapper then reports a failure and, 
 """
 from __future__ import annotations
 
+import json
 import subprocess
 
 import pytest
@@ -232,3 +233,69 @@ def test_a_member_path_outside_the_workspace_is_refused(world, tmp_path, monkeyp
     assert code != merge_gate.EXIT_MERGED, receipt
     assert receipt["members"][0]["refused"].startswith("member_path_outside_workspace"), receipt
     assert git(world["remote"], "rev-parse", "main") == world["base"]
+
+
+def test_a_bind_whose_verification_returns_false_refuses_before_any_transfer(world, monkeypatch):
+    check(world)
+    monkeypatch.setattr(merge_gate.grip, "verify_review_commit", lambda *a, **k: {"tree_matches": False})
+    calls = []
+    real_run = subprocess.run
+    def run(cmd, *a, **kw):
+        if isinstance(cmd, (list, tuple)) and any(v in cmd[:5] for v in ("fetch", "push", "ls-remote")):
+            calls.append(cmd)
+        return real_run(cmd, *a, **kw)
+    monkeypatch.setattr(merge_gate.subprocess, "run", run)
+    code, receipt = merge(world)
+    assert code == merge_gate.EXIT_PARTIAL and receipt["refused"].startswith("bind_verification_failed"), receipt
+    assert calls == [], "no remote transfer for an unverified bind"
+    assert git(world["remote"], "rev-parse", "main") == world["base"]
+
+
+def test_a_nested_directory_never_selects_its_enclosing_repo(world, monkeypatch):
+    check(world)
+    nested = world["member"] / "empty"
+    nested.mkdir()
+    real_show = merge_gate.grip.show_review_commit
+    def show(*a, **k):
+        view = real_show(*a, **k)
+        view["members"][0]["path"] = "member/empty"  # inside the workspace, but git would select member/
+        return view
+    monkeypatch.setattr(merge_gate.grip, "show_review_commit", show)
+    refs = git(world["member"], "for-each-ref")
+    objects = git(world["member"], "count-objects", "-v")
+    code, receipt = merge(world)
+    assert receipt["members"][0]["refused"].startswith("member_repo_mismatch"), receipt
+    assert receipt["members"][0]["final"] == "unknown"
+    assert git(world["member"], "for-each-ref") == refs
+    assert git(world["member"], "count-objects", "-v") == objects
+    assert git(world["remote"], "rev-parse", "main") == world["base"]
+
+
+def test_a_missing_bind_through_the_cli_is_a_json_receipt_not_a_traceback(world):
+    from typer.testing import CliRunner
+    from gr2.python_cli.app import app
+    out = CliRunner().invoke(app, ["review", "merge", str(world["author"]), "gr:" + "0" * 40, "--from", "feat"])
+    assert out.exit_code == merge_gate.EXIT_PARTIAL, out.output
+    receipt = json.loads(out.stdout)
+    assert receipt["refused"].startswith("bind_unreadable") and receipt["members"] == []
+
+
+def test_a_later_member_moving_after_an_earlier_push_is_partial_not_none(slice2, monkeypatch):
+    beta = slice2["members"]["beta"]
+    real_run = subprocess.run
+    fired = {"n": 0}
+    def run(cmd, *a, **kw):
+        result = real_run(cmd, *a, **kw)
+        if isinstance(cmd, (list, tuple)) and "push" in cmd[:5] and not fired["n"]:
+            fired["n"] = 1  # alpha has just been pushed; beta's feature moves before its re-read
+            (beta["repo"] / "late.txt").write_text("late\n")
+            git(beta["repo"], "add", "late.txt")
+            git(beta["repo"], "commit", "-m", "late")
+            git(beta["repo"], "push", beta["remote"], "feat")
+        return result
+    monkeypatch.setattr(merge_gate.subprocess, "run", run)
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    rows = {r["key"]: r for r in receipt["members"]}
+    assert rows["alpha"]["final"] == "merged", receipt
+    assert rows["beta"]["refused"].startswith("feature_moved_before_push"), receipt
+    assert code == merge_gate.EXIT_PARTIAL, receipt

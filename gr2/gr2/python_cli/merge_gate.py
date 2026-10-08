@@ -1,4 +1,4 @@
-"""Merge a bound review into plain Git remotes: preflight every member, merge none on any failure.
+"""Merge a bound review into plain Git remotes: preflight every member, push nothing if any member fails it.
 
 The gate keys on the review id, not a hosting-platform PR. For each member it requires, read from
 the member's remote: the feature branch still at the reviewed head, the target branch still at
@@ -80,13 +80,36 @@ def _state(repo: Path, remote: str, into: str, head: str) -> tuple[str, str | No
     return ("merged", merged) if merged else ("unmerged", None)
 
 
+def _toplevel(repo: Path) -> Path | None:
+    """The worktree git actually selects for repo; a plain directory inherits its enclosing repo."""
+    try:
+        p = subprocess.run(["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True, timeout=60)
+    except (subprocess.SubprocessError, OSError):
+        return None
+    return Path(p.stdout.strip()).resolve() if p.returncode == 0 and p.stdout.strip() else None
+
+
+def _unmeasured(review_id: str, into: str, feature: str, reason: str) -> tuple[int, dict]:
+    """A local bind fault: nothing was transferred, and no member's remote state was measured."""
+    return EXIT_PARTIAL, {"id": f"gr:{review_id}", "into": into, "feature": feature, "exit": EXIT_PARTIAL,
+                          "refused": reason, "members": []}
+
+
 def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature: str,
                  required_checks: Sequence[str] = ("test",)) -> tuple[int, dict]:
     review_id = review_id.removeprefix("gr:")
-    grip.verify_review_commit(workspace, review_id)  # raises on a non-verifying bind
-    view = grip.show_review_commit(workspace, review_id)
+    try:
+        verified = grip.verify_review_commit(workspace, review_id)
+        if verified.get("tree_matches") is not True:  # the legacy verifier RETURNS a mismatch, it does not raise
+            return _unmeasured(review_id, into, feature, "bind_verification_failed: stored tree does not match")
+        view = grip.show_review_commit(workspace, review_id)
+    except (grip.GripInitError, grip.GripCorruptError, RuntimeError, OSError, ValueError, KeyError,
+            subprocess.SubprocessError) as exc:
+        return _unmeasured(review_id, into, feature, f"bind_unreadable: {type(exc).__name__}: {exc}")
     rows: list[dict] = []
     root = Path(workspace).resolve()
+    selected: set[str] = set()  # members whose git repository IS the bound path; only these are ever touched
     for m in view["members"]:
         repo = (workspace / m["path"]).resolve()
         row = {"key": m["key"], "remote": m["remote"], "head": m["head"], "base": m["base"],
@@ -95,6 +118,10 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         if not repo.is_relative_to(root):
             row["refused"] = f"member_path_outside_workspace: {m['path']}"
             continue
+        if _toplevel(repo) != repo:
+            row["refused"] = f"member_repo_mismatch: {m['path']} is not its own git worktree"
+            continue
+        selected.add(m["key"])
         try:
             target = _remote_tip(repo, m["remote"], into)
             feat = _remote_tip(repo, m["remote"], feature)
@@ -177,7 +204,7 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
     final = []
     for r, m in zip(rows, view["members"]):
         repo = (workspace / m["path"]).resolve()
-        if not repo.is_relative_to(root):
+        if m["key"] not in selected:
             r["final"] = "unknown"  # never touched, so never measured: no fetch writes into a repo outside the workspace
             final.append("unknown")
             continue

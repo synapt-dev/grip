@@ -4460,7 +4460,7 @@ def review_merge(
     check: List[str] = typer.Option(["test"], "--check", help="Required exact-head check name (repeatable)"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
-    """Merge a bound review into plain Git remotes: preflight every member, merge none on any failure.
+    """Merge a bound review into plain Git remotes: preflight every member, push nothing if any member fails it.
 
     Requires, per member: the remote feature branch at the reviewed head, the target at the reviewed base,
     and a passing exact-head check. Merges are separate pushes, not atomic across repos. Exit 0 all merged,

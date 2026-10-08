@@ -30,6 +30,7 @@ from . import execops, failures, grip, migration, spec_apply, syncops
 from . import gitinclude
 from . import gitops
 from . import check_records
+from . import defaults
 from . import merge_gate
 from . import pr as pr_ops
 from .platform import AdapterError
@@ -40,7 +41,7 @@ from . import push as push_ops
 from .clone_exec import rmtree_or_refuse
 from .events import EventEmitError, EventType, emit, emit_after_outcome
 from .layout import grip_dir
-from .root_option import ROOT_OPTION, ContextCommand, ReviewTargetCommand, ReviewOpenCommand, ReviewSubjectCommand, ReviewReaderSubjectCommand, RootOptionCommand, RootOptionalCommand
+from .root_option import ROOT_OPTION, ContextCommand, ReviewTargetCommand, ReviewHeadCommand, ReviewOpenCommand, ReviewSubjectCommand, ReviewReaderSubjectCommand, RootOptionCommand, RootOptionalCommand
 from .gitops import (
     branch_exists,
     checkout_branch,
@@ -4451,12 +4452,36 @@ def review_verify(
         raise typer.Exit(code=1)
 
 
-@review_app.command("merge", cls=RootOptionalCommand)
+def _resolve_merge_defaults(ws: Path, review_id: Optional[str], into: Optional[str],
+                            feature: Optional[str]) -> tuple[str, str, str]:
+    """Fill the review id, --from and --into from the workspace when not given; say on stderr what was resolved."""
+    def members(bind: str) -> list[tuple[Path, str]]:
+        return [((ws / m["path"]).resolve(), m["head"]) for m in grip.show_review_commit(ws, bind)["members"]]
+
+    rsrc = "given"
+    if not review_id:
+        review_id, rsrc = defaults.review([b for b, _ in grip.list_review_binds(ws)], members, defaults.current_head)
+    try:
+        view = grip.show_review_commit(ws, review_id.removeprefix("gr:"))
+    except (grip.GripInitError, grip.GripCorruptError, RuntimeError, OSError, ValueError, KeyError,
+            subprocess.SubprocessError):
+        if rsrc != "given":
+            raise
+        # A named bind that cannot be read is the merge gate's to report: its receipt says bind_unreadable.
+        return review_id, into or "", feature or ""
+    paths = [(ws / m["path"]).resolve() for m in view["members"]]
+    feature, fsrc = defaults.branch(paths, feature)
+    into, isrc = defaults.target_branch([(p, m["remote"], m["base"]) for p, m in zip(paths, view["members"])], into)
+    typer.echo(f"resolved: review={view['id']} ({rsrc}), from={feature} ({fsrc}), into={into} ({isrc})", err=True)
+    return view["id"], into, feature
+
+
+@review_app.command("merge", cls=ReviewHeadCommand)
 def review_merge(
     workspace_root: Path,
-    review_id: str = typer.Argument(..., help="Bound review id, gr:<sha>"),
-    into: str = typer.Option("main", "--into", help="Target branch on each member's remote"),
-    feature: str = typer.Option(..., "--from", help="Feature branch on each member's remote"),
+    review_id: Optional[str] = typer.Argument(None, help="Bound review id, gr:<sha>; default: the bind at the members' current heads"),
+    into: Optional[str] = typer.Option(None, "--into", help="Target branch; default: the remote's default branch when it is the one branch at the reviewed base"),
+    feature: Optional[str] = typer.Option(None, "--from", help="Feature branch; default: the members' current branch"),
     check: List[str] = typer.Option(["test"], "--check", help="Required exact-head check name (repeatable)"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
@@ -4466,7 +4491,17 @@ def review_merge(
     and a passing exact-head check. Merges are separate pushes, not atomic across repos. Exit 0 all merged,
     3 none merged (refused), 4 partial or unknown; computed from the remote state after the run.
     """
-    code, receipt = merge_gate.review_merge(workspace_root.resolve(), review_id, into=into, feature=feature,
+    ws = workspace_root.resolve()
+    try:
+        review_id, into, feature = _resolve_merge_defaults(ws, review_id, into, feature)
+    except (defaults.Unresolved, grip.GripInitError, grip.GripCorruptError) as exc:
+        # The same receipt shape the merge gate prints; nothing was pushed, so it is exit 3, none merged.
+        code = merge_gate.EXIT_REFUSED
+        typer.echo(json.dumps({"id": review_id if review_id is None or review_id.startswith("gr:") else f"gr:{review_id}",
+                               "into": into, "feature": feature, "exit": code, "members": [],
+                               "refused": str(exc)}))
+        raise typer.Exit(code)
+    code, receipt = merge_gate.review_merge(ws, review_id, into=into, feature=feature,
                                             required_checks=tuple(check))
     typer.echo(json.dumps(receipt))
     if code:
@@ -4934,18 +4969,27 @@ def pr_merge(
         typer.echo(json.dumps(payload, indent=2))
 
 
+def _resolve_remote_head(repo: Path, remote: Optional[str], head: Optional[str]) -> tuple[str, str]:
+    """Fill --remote and --head from the repo when not given, and say on stderr what was resolved."""
+    url, rsrc = defaults.remote(repo, remote)
+    sha, hsrc = defaults.head(repo, head)
+    typer.echo(f"resolved: remote={defaults.shown(url)} ({rsrc}), head={sha} ({hsrc})", err=True)
+    return url, sha
+
+
 @check_app.command("run")
 def check_run(
     repo: Path,
     command: List[str] = typer.Argument(..., help="Command arguments after --"),
-    remote: str = typer.Option(..., "--remote"),
-    head: str = typer.Option(..., "--head"),
+    remote: Optional[str] = typer.Option(None, "--remote", help="Remote URL, path or name; default: the branch's upstream, else origin"),
+    head: Optional[str] = typer.Option(None, "--head", help="Commit to check; default: HEAD"),
     name: str = typer.Option("test", "--name"),
 ) -> None:
     """Execute at the exact commit and publish its observation."""
     try:
+        remote, head = _resolve_remote_head(repo, remote, head)
         result = check_records.run_check(repo, remote, head, name, command)
-    except (check_records.CheckRefused, subprocess.SubprocessError, OSError) as exc:
+    except (check_records.CheckRefused, defaults.Unresolved, subprocess.SubprocessError, OSError) as exc:
         typer.echo(json.dumps({"status": "fail", "reason": str(exc)}))
         raise typer.Exit(2)
     typer.echo(json.dumps(result))
@@ -4956,13 +5000,18 @@ def check_run(
 @check_app.command("show")
 def check_show(
     repo: Path,
-    remote: str = typer.Option(..., "--remote"),
-    head: str = typer.Option(..., "--head"),
+    remote: Optional[str] = typer.Option(None, "--remote", help="Remote URL, path or name; default: the branch's upstream, else origin"),
+    head: Optional[str] = typer.Option(None, "--head", help="Commit to read; default: HEAD"),
     member: str = typer.Option("repo", "--member"),
     required: List[str] = typer.Option(["test"], "--require"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Read fresh remote observations for this exact commit."""
+    try:
+        remote, head = _resolve_remote_head(repo, remote, head)
+    except defaults.Unresolved as exc:
+        typer.echo(json.dumps({"status": "fail", "reason": str(exc)}))
+        raise typer.Exit(2)
     result = check_records.read_remote_check(
         remote, {"path": repo, "key": member, "remote": remote}, head, required)
     typer.echo(json.dumps(result))

@@ -156,6 +156,9 @@ class ReviewTargetCommand(RootOptionalCommand):
     binds rather than choosing the most recent one.
     """
 
+    target_argument = "commit"
+    marker_supplies_target = True
+
     def parse_args(self, ctx, args):
         args = list(args)
         positions, root_value = self._scan(args)
@@ -177,9 +180,9 @@ class ReviewTargetCommand(RootOptionalCommand):
             except c.ContextRefused as exc:
                 ctx.fail(str(exc))
             # A transport's required independent ID is never supplied by a marker.
-            optional_commit = any(p.param_type_name == "argument" and p.name == "commit" and not p.required
+            optional_commit = any(p.param_type_name == "argument" and p.name == self.target_argument and not p.required
                                   for p in self.params)
-            if not positions and review_context is not None and optional_commit:
+            if not positions and review_context is not None and optional_commit and self.marker_supplies_target:
                 args.extend([found, review_context.commit])
             else:
                 args.insert(positions[0] if positions else len(args), found)
@@ -194,6 +197,17 @@ class ReviewTargetCommand(RootOptionalCommand):
     def _is_root_word(word: str) -> bool:
         target_spelled = word.startswith("gr:") or re.fullmatch(r"[0-9a-fA-F]{4,64}", word) is not None
         return not target_spelled and Path(word).is_dir()
+
+
+class ReviewHeadCommand(ReviewTargetCommand):
+    """Writers infer the workspace but select the bind at current member heads.
+
+    A reconstruction marker supplies only the workspace. An explicit review id
+    keeps the same target grammar as the readers.
+    """
+
+    target_argument = "review_id"
+    marker_supplies_target = False
 
 
 class ReviewSubjectCommand(RootOptionCommand):

@@ -4476,6 +4476,22 @@ def _resolve_merge_defaults(ws: Path, review_id: Optional[str], into: Optional[s
     return view["id"], into, feature
 
 
+@review_app.command("approve", cls=ReviewTargetCommand)
+def review_approve(
+    workspace_root: Path,
+    commit: Optional[str] = typer.Argument(None, help="Review id; default is the bind at the current member heads"),
+    root: Optional[Path] = ROOT_OPTION,
+) -> None:
+    """Append an unsigned exact-head approval as git user.name, on every member remote."""
+    from . import approvals
+    try:
+        result = approvals.approve(workspace_root.resolve(), commit)
+    except approvals.ApprovalRefused as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2)
+    typer.echo(json.dumps(result))
+
+
 @review_app.command("merge", cls=ReviewHeadCommand)
 def review_merge(
     workspace_root: Path,

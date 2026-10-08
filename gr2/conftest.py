@@ -126,7 +126,7 @@ if "gr2" not in sys.modules:
 
 @pytest.fixture(autouse=True)
 def _isolated_git_config(tmp_path_factory, monkeypatch):
-    """Every gr2 test runs against a BLANK host git config by default.
+    """Every gr2 test runs against an isolated Git identity and no host options.
 
     `git review run`'s cleanup lost two review cycles to the same class of defect:
     `git status --porcelain` reads the AUTHORING MACHINE's global ignore rules
@@ -141,7 +141,7 @@ def _isolated_git_config(tmp_path_factory, monkeypatch):
     `gr2/overlay/tests/` (see the module docstring above).
 
     Three independent host-config channels, all closed:
-      - ``GIT_CONFIG_GLOBAL`` points at an EMPTY file. An *absent* variable falls
+      - ``GIT_CONFIG_GLOBAL`` points at a file containing only fixture identity. An *absent* variable falls
         back to ``~/.gitconfig`` -- exactly the ambient state this fixture exists
         to remove -- so it must point at a real, present, empty file, not be unset.
       - ``XDG_CONFIG_HOME`` points at an empty temp dir, removing the
@@ -190,7 +190,9 @@ def _isolated_git_config(tmp_path_factory, monkeypatch):
     ever measured to behave otherwise.
     """
     blank_global = tmp_path_factory.mktemp("isolated-git-global") / "gitconfig"
-    blank_global.write_text("")
+    # Bind records the binder's configured identity. Keep that representative
+    # while excluding all ambient options and ignore rules, as before.
+    blank_global.write_text("[user]\n\tname = Fixture\n\temail = fixture@example.invalid\n")
     blank_xdg = tmp_path_factory.mktemp("isolated-git-xdg")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(blank_global))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(blank_xdg))

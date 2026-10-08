@@ -47,9 +47,9 @@ def objects(repo: Path, tree: str) -> set[str]:
 
 def test_vendored_schema_is_the_pinned_schemas_commit():
     s = fd.schema()
-    assert {n: f.name for n, f in s["ReviewBind"].items()} == {1: "schema", 2: "kind", 3: "policy", 4: "members"}
+    assert {n: f.name for n, f in s["ReviewBind"].items()} == {1: "schema", 2: "kind", 3: "policy", 4: "members", 5: "author"}
     assert s["Member"][10].name == "title" and s["Member"][13].type == "Evidence"
-    assert fd.SCHEMA_COMMIT == "eb877b7d56f6a4d039446c17a8a08c34d92cb891"
+    assert fd.SCHEMA_COMMIT == "88babf4a0c55110a1e1badc53f07a6f0f8912f86"
     assert fd.SCHEMA_SOURCE == f"{fd.PACKAGE}@{fd.SCHEMA_COMMIT}"
 
 

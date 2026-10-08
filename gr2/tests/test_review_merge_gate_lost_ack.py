@@ -215,7 +215,11 @@ def test_an_option_shaped_remote_never_reaches_git(world, tmp_path):
 def test_a_member_path_outside_the_workspace_is_refused(world, tmp_path, monkeypatch):
     check(world)
     outside = tmp_path / "outside"
-    git(tmp_path, "clone", "-q", "--no-local", world["remote"], outside)
+    outside.mkdir()
+    git(outside, "init", "-q", "-b", "main")  # an UNRELATED repo: any fetch into it would add objects
+    (outside / "v.txt").write_text("victim\n")
+    git(outside, "add", "v.txt")
+    git(outside, "commit", "-q", "-m", "victim")
     real_show = merge_gate.grip.show_review_commit
     def show(*a, **k):
         view = real_show(*a, **k)

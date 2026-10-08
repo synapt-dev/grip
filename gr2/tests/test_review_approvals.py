@@ -277,6 +277,7 @@ def multi(world, tmp_path):
 
 
 def test_divergent_remote_tips_refuse_and_approve_repairs_a_linear_partial(multi):
+    set_policy(multi, 1)
     result = approve_as(multi, "Approver B")
     assert result.exit_code == 0, result.output
     tip = json.loads(result.output)["tip"]
@@ -642,9 +643,11 @@ def test_zero_required_skips_an_unmeasurable_approval_chain(world, monkeypatch):
     assert git(world["remote"], "rev-list", "--parents", "-n", "1", "main").split()[1:] == [world["base"], world["head"]]
 
 
-def test_missing_policy_file_defaults_zero_and_merges(world):
-    set_policy(world, 0)
-    (world["workspace"] / "grip.toml").unlink()
+def test_missing_policy_file_defaults_zero_and_merges(world, tmp_path):
+    # A missing file defaults the policy; a workspace without an approvals table
+    # still keeps its member-discovery configuration for the real merge.
+    assert approvals.required_approvals(tmp_path) == 0
+    check_records.run_check(world["member"], str(world["remote"]), world["head"], "test", [sys.executable, "-c", "pass"])
     code, receipt = merge_gate.review_merge(world["workspace"], world["rid"], into="main", feature="feature")
     assert code == 0, receipt
     assert receipt["approvals"] == {"required": 0, "skipped": True}

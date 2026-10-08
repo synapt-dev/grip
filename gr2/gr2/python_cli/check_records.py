@@ -12,6 +12,16 @@ from typing import Mapping, Sequence
 
 CHECK_REF = "refs/dev.synapt.grip/__checks__/v1"
 
+# Required read-adapter keys. Unknown observation metadata is preserved but
+# does not become a closed schema promise in the public surface dump.
+JSON_SHAPES = {"check show": (
+    ".status  enum(pass,fail,absent)", ".record_id", ".snapshot_oid", ".head",
+    ".member_key", ".records", ".records[].v  enum(1)", ".records[].head",
+    ".records[].observed_head", ".records[].name",
+    ".records[].result  enum(pass,fail,error)", ".records[].exit_code",
+    ".records[].observation_id", ".reason",
+)}
+
 
 class CheckRefused(ValueError):
     pass

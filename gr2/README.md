@@ -91,6 +91,7 @@ Not there yet:
 | (top level) | branch, add, commit, push, prune, status, plan, apply |
 | `sync` | status, run |
 | `pr` | create, status, checks, merge, view |
+| `check` | run, show |
 | `review` | open, close, checkout-pr, run, check, bind, publish, receive, verify, show, rebind, create-project |
 | `exec` | status, run |
 | `repo` | status, projection-run |
@@ -183,6 +184,10 @@ Absolute paths to local bare remotes also work. Observations live at
 `refs/dev.synapt.grip/__checks__/v1`, keyed by commit id. `check show` fetches a
 fresh snapshot; a different commit has no check even when its tree is identical.
 Use repeated `--require <name>` options to require additional check names.
+
+The read JSON contains `status`, `record_id` (the head's record-set blob id or
+null), `snapshot_oid`, `head`, `member_key`, `records`, and `reason`. Each
+observation retains its fields and adds a SHA-256 `observation_id`.
 
 A failed command is recorded and `check run` exits 1. Publication or execution
 refusals exit 2. `check show` returns `pass`, `fail` or `absent` in its JSON;

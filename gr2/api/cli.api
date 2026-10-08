@@ -32,6 +32,20 @@ flag  check show --json                                               stable
 flag  check show --member <str>                                       stable
 flag  check show --remote <str>                                       stable
 flag  check show --require <str>                                      stable
+json  check show .head                                                stable
+json  check show .member_key                                          stable
+json  check show .reason                                              stable
+json  check show .record_id                                           stable
+json  check show .records                                             stable
+json  check show .records[].exit_code                                 stable
+json  check show .records[].head                                      stable
+json  check show .records[].name                                      stable
+json  check show .records[].observation_id                            stable
+json  check show .records[].observed_head                             stable
+json  check show .records[].result  enum(pass,fail,error)             stable
+json  check show .records[].v  enum(1)                                stable
+json  check show .snapshot_oid                                        stable
+json  check show .status  enum(pass,fail,absent)                      stable
 verb  check show                                                      stable
 # commit
 flag  commit --amend                                                  stable

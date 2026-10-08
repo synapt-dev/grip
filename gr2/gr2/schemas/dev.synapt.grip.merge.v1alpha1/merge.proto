@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package dev.synapt.grip.merge.v1alpha1;
+
+import "google/protobuf/struct.proto";
+
+// The JSON receipt already printed by review merge. This descriptor neither
+// changes that JSON encoding nor introduces a persistent merge-record ref.
+// Field numbers and meanings only grow: reserve removed numbers; a rename or
+// changed meaning needs a new major package. No schema field is added to JSON.
+message Receipt {
+  optional string id = 1;       // gr:<review bind commit id>
+  optional string into = 2;     // target branch
+  optional string feature = 3;  // caller's feature branch
+  optional int32 exit = 4;      // 0 all merged; 3 none merged; 4 partial or unknown
+  repeated Member members = 5;  // bound-member order; [] on a local bind fault
+  optional string refused = 6;  // a local fault before any member is touched
+}
+
+message Member {
+  optional string key = 1;
+  optional string remote = 2;
+  optional string head = 3;     // reviewed commit OID
+  optional string base = 4;     // reviewed base commit OID
+  // Value represents the existing JSON string-or-null fields. Optional string
+  // would collapse null and absence in protobuf JSON; Value keeps them distinct.
+  // These fields allow ONLY string_value or null_value in existing receipts.
+  google.protobuf.Value state = 5;   // null, ready, already_merged, merged, unmerged, unknown
+  google.protobuf.Value merged = 6;  // merge commit OID or null
+  google.protobuf.Value refused = 7; // named refusal text or null
+  // null or an object with status (pass/fail/absent), record_id (blob OID/null)
+  // and reason (string). This is the gate's summary, not complete observations.
+  google.protobuf.Value check = 8;
+  // Only members which reached push reconciliation have merged_by. It is
+  // this_run, another_writer or null; absence means reconciliation was not run.
+  google.protobuf.Value merged_by = 9;
+  optional string push_error = 10; // only an unconfirmed/failed push not ours
+  optional string final = 11;     // merged, unmerged or unknown; freshly measured
+}

@@ -29,6 +29,7 @@ from . import commit as commit_ops
 from . import execops, failures, grip, migration, spec_apply, syncops
 from . import gitinclude
 from . import gitops
+from . import check_records
 from . import pr as pr_ops
 from .platform import AdapterError
 from . import prune as prune_ops
@@ -113,6 +114,7 @@ repo_app = typer.Typer(help="Repo maintenance and inspection")
 lane_app = typer.Typer(help="Lane creation and navigation")
 lease_app = typer.Typer(help="Lane lease operations")
 review_app = typer.Typer(help="Review and reviewer requirement operations")
+check_app = typer.Typer(help="Run and read exact-head checks on a Git remote")
 pr_app = typer.Typer(help="Cross-repo PR orchestration")
 workspace_app = typer.Typer(help="Workspace bootstrap and materialization")
 spec_app = typer.Typer(help="Declarative workspace spec operations")
@@ -124,6 +126,7 @@ app.add_typer(repo_app, name="repo")
 app.add_typer(lane_app, name="lane")
 lane_app.add_typer(lease_app, name="lease")
 app.add_typer(review_app, name="review")
+app.add_typer(check_app, name="check")
 app.add_typer(pr_app, name="pr")
 app.add_typer(workspace_app, name="workspace")
 app.add_typer(spec_app, name="spec")
@@ -4906,6 +4909,42 @@ def pr_merge(
         typer.echo(json.dumps(payload, indent=2))
     else:
         typer.echo(json.dumps(payload, indent=2))
+
+
+@check_app.command("run")
+def check_run(
+    repo: Path,
+    command: List[str] = typer.Argument(..., help="Command arguments after --"),
+    remote: str = typer.Option(..., "--remote"),
+    head: str = typer.Option(..., "--head"),
+    name: str = typer.Option("test", "--name"),
+) -> None:
+    """Execute at the exact commit and publish its observation."""
+    try:
+        result = check_records.run_check(repo, remote, head, name, command)
+    except (check_records.CheckRefused, subprocess.SubprocessError, OSError) as exc:
+        typer.echo(json.dumps({"status": "fail", "reason": str(exc)}))
+        raise typer.Exit(2)
+    typer.echo(json.dumps(result))
+    if result["observation"]["result"] != "pass":
+        raise typer.Exit(1)
+
+
+@check_app.command("show")
+def check_show(
+    repo: Path,
+    remote: str = typer.Option(..., "--remote"),
+    head: str = typer.Option(..., "--head"),
+    member: str = typer.Option("repo", "--member"),
+    required: List[str] = typer.Option(["test"], "--require"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Read fresh remote observations for this exact commit."""
+    result = check_records.read_remote_check(
+        remote, {"path": repo, "key": member, "remote": remote}, head, required)
+    typer.echo(json.dumps(result))
+    if result["status"] == "fail":
+        raise typer.Exit(2)
 
 
 def main() -> None:

@@ -284,3 +284,39 @@ def test_failed_execution_is_recorded_and_pass_cannot_erase_it(repositories):
     seen = read(repo, remote, head)
     assert seen['status'] == 'fail' and len(seen['records']) == 2
     assert {r['result'] for r in seen['records']} == {'pass', 'fail'}
+
+
+@pytest.mark.parametrize('duplicate', ['leaf', 'fanout', 'none'])
+def test_duplicate_git_tree_paths_refuse_without_replacing_remote(repositories, duplicate):
+    repo, remote, head, _ = repositories
+
+    def raw_tree(entries):
+        raw = b''.join(mode.encode() + b' ' + name.encode() + b'\0' + bytes.fromhex(oid)
+                       for mode, name, oid in entries)
+        return check_records._git(repo, 'hash-object', '-w', '-t', 'tree', '--literally', '--stdin', data=raw).decode().strip()
+
+    failed = check_records._git(repo, 'hash-object', '-w', '--stdin',
+        data=check_records._line(receipt(head, code=1)) + b'\n').decode().strip()
+    passed = check_records._git(repo, 'hash-object', '-w', '--stdin',
+        data=check_records._line(receipt(head)) + b'\n').decode().strip()
+    suffix, prefix = head[2:], head[:2]
+    leaves = [('100644', suffix, passed)]
+    if duplicate == 'leaf':
+        leaves.insert(0, ('100644', suffix, failed))
+    fanout = raw_tree(leaves)
+    roots = [('40000', prefix, fanout)]
+    if duplicate == 'fanout':
+        roots.insert(0, ('40000', prefix, raw_tree([('100644', suffix, failed)])))
+    root = raw_tree(roots)
+    snapshot = check_records._git(repo, 'commit-tree', root, data=b'Tree path fixture\n').decode().strip()
+    check_records._git(repo, 'push', remote, snapshot + ':' + check_records.CHECK_REF)
+    seen = read(repo, remote, head)
+    if duplicate == 'none':
+        assert seen['status'] == 'pass'
+        assert seen['record_id'] == passed
+        assert len(seen['records']) == 1
+    else:
+        assert seen['status'] == 'fail' and seen['reason'] == 'duplicate_checks_tree_path'
+        with pytest.raises(check_records.CheckRefused, match='duplicate_checks_tree_path'):
+            check_records.publish_observation(repo, remote, receipt(head))
+        assert check_records._snapshot(repo, remote) == snapshot

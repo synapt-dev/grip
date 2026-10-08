@@ -106,6 +106,7 @@ def _entries(repo: Path, snapshot: str | None) -> dict[str, str]:
     if snapshot is None:
         return {}
     entries = {}
+    seen = set()
     # Refuse unexpected tree shapes, including executable or symbolic-link blobs.
     for raw in _git(repo, "ls-tree", "-r", "-t", "-z", snapshot).split(b"\0"):
         if not raw:
@@ -113,6 +114,9 @@ def _entries(repo: Path, snapshot: str | None) -> dict[str, str]:
         metadata, name = raw.split(b"\t", 1)
         mode, kind, oid = metadata.decode().split()
         path = name.decode("ascii")
+        if path in seen:
+            raise CheckRefused("duplicate_checks_tree_path")
+        seen.add(path)
         if kind == "tree":
             if mode != "040000" or not re.fullmatch(r"[0-9a-f]{2}", path):
                 raise CheckRefused("invalid_checks_tree")

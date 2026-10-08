@@ -183,7 +183,8 @@ gr2 check show ./repo --remote https://example.com/team/repo.git --head <full-sh
 Absolute paths to local bare remotes also work. Observations live at
 `refs/dev.synapt.grip/__checks__/v1`, keyed by commit id. `check show` fetches a
 fresh snapshot; a different commit has no check even when its tree is identical.
-Use repeated `--require <name>` options to require additional check names.
+Supplied `--require` names replace the default `test` requirement. For both
+checks, use `--require test --require lint`.
 
 The read JSON contains `status`, `record_id` (the head's record-set blob id or
 null), `snapshot_oid`, `head`, `member_key`, `records`, and `reason`. Each

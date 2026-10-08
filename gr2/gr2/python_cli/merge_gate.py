@@ -12,6 +12,7 @@ an unresolved member is `unknown`; no further member is pushed after one.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import uuid
 from pathlib import Path
@@ -106,7 +107,15 @@ def _store_inside(repo: Path, root: Path) -> bool:
     lines = p.stdout.splitlines()
     if p.returncode or len(lines) != 2 + len(_WRITE_PATHS):
         return False
-    return all((repo / line).resolve().is_relative_to(root) for line in lines)
+    if not all((repo / line).resolve().is_relative_to(root) for line in lines):
+        return False
+    # Git writes objects and refs by temp-file-then-rename INTO a directory, so a symlinked directory at any
+    # depth (objects/xx, refs/heads/..., logs/...) redirects the write; walk without following links.
+    for top in {(repo / lines[0]).resolve(), (repo / lines[1]).resolve()}:
+        for dirpath, dirnames, _files in os.walk(top, followlinks=False):
+            if any(os.path.islink(os.path.join(dirpath, d)) for d in dirnames):
+                return False
+    return True
 
 
 def _unmeasured(review_id: str, into: str, feature: str, reason: str) -> tuple[int, dict]:

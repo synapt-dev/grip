@@ -352,3 +352,30 @@ def test_an_objects_symlink_inside_an_inside_git_dir_is_refused(world, tmp_path,
     assert receipt["members"][0]["refused"].startswith("member_store_outside_workspace"), receipt
     assert git(outside, "count-objects", "-v") == before
     assert git(world["remote"], "rev-parse", "main") == world["base"]
+
+
+def test_a_symlinked_fanout_dir_under_a_real_objects_dir_is_refused(world, tmp_path):
+    check(world)
+    outside = tmp_path / "outside-fanout"
+    outside.mkdir()
+    git(outside, "init", "-q", "-b", "main")
+    (outside / "v.txt").write_text("victim\n")
+    git(outside, "add", "v.txt")
+    git(outside, "commit", "-q", "-m", "victim")
+    objects = world["member"] / ".git" / "objects"
+    git(world["member"], "repack", "-a", "-d", "-q")  # loose fan-out dirs are now empty; replace each with a link
+    for i in range(256):
+        name = f"{i:02x}"
+        here, there = objects / name, outside / ".git" / "objects" / name
+        there.mkdir(exist_ok=True)
+        if here.exists():
+            for f in here.iterdir():
+                f.rename(there / f.name)
+            here.rmdir()
+        here.symlink_to(there)
+    assert git(world["member"], "rev-parse", "HEAD")
+    before = git(outside, "count-objects", "-v")
+    code, receipt = merge(world)
+    assert receipt["members"][0]["refused"].startswith("member_store_outside_workspace"), receipt
+    assert git(outside, "count-objects", "-v") == before
+    assert git(world["remote"], "rev-parse", "main") == world["base"]

@@ -77,14 +77,16 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         try:
             target = _remote_tip(repo, m["remote"], into)
             feat = _remote_tip(repo, m["remote"], feature)
+            published = _git(repo, "ls-remote", m["remote"], f"refs/dev.synapt.grip/__reviews__/v1/{review_id}")
+            merged = _merged_at(repo, target, m["head"]) if target else None
+            ancestor = _git(repo, "merge-base", m["head"], target) if target else ""
         except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
+            # Every measurement fault, advertisement and history reads included, is a named refusal in the receipt.
             row["refused"] = f"remote_unmeasurable: {exc}"
             continue
-        published = _git(repo, "ls-remote", m["remote"], f"refs/dev.synapt.grip/__reviews__/v1/{review_id}", check=False)
         if published.split("\t")[0] != review_id:
             row["refused"] = "review_not_on_member_remote: the remote does not hold this exact review"
             continue
-        merged = _merged_at(repo, target, m["head"]) if target else None
         if merged:
             row.update(state="already_merged", merged=merged)
             continue
@@ -92,7 +94,7 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
             row["refused"] = f"feature_moved: remote {feature} is {feat}, reviewed {m['head']}"
         elif target != m["base"]:
             row["refused"] = f"base_moved: remote {into} is {target}, reviewed base {m['base']}"
-        elif _git(repo, "merge-base", m["head"], target, check=False) != target:
+        elif ancestor != target:
             row["refused"] = "base_not_ancestor_of_head"
         else:
             check = check_records.read_remote_check(
@@ -111,14 +113,17 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
             if r["state"] != "ready":
                 continue
             repo = (workspace / m["path"]).resolve()
-            proc = subprocess.run(["git", "-C", str(repo), "merge-tree", "--write-tree", m["base"], m["head"]],
-                                  capture_output=True, text=True, timeout=60)
-            if proc.returncode:
-                r["refused"] = "merge_conflict"
-                continue
-            tree = proc.stdout.split()[0]
-            builds[r["key"]] = _git(repo, "commit-tree", tree, "-p", m["base"], "-p", m["head"],
-                                    "-m", f"Merge {feature} into {into} (review gr:{view['id'].removeprefix('gr:')})")
+            try:
+                proc = subprocess.run(["git", "-C", str(repo), "merge-tree", "--write-tree", m["base"], m["head"]],
+                                      capture_output=True, text=True, timeout=60)
+                if proc.returncode:
+                    r["refused"] = "merge_conflict"
+                    continue
+                tree = proc.stdout.split()[0]
+                builds[r["key"]] = _git(repo, "commit-tree", tree, "-p", m["base"], "-p", m["head"], "-m",
+                                        f"Merge {feature} into {into} (review gr:{view['id'].removeprefix('gr:')})")
+            except (RuntimeError, subprocess.SubprocessError, OSError, IndexError) as exc:
+                r["refused"] = f"merge_build_failed: {exc}"
         if not any(r["refused"] for r in rows):
             for r, m in zip(rows, view["members"]):
                 if r["state"] != "ready":

@@ -142,3 +142,41 @@ def test_no_further_member_is_pushed_after_an_unknown_one(slice2, monkeypatch):
     assert code == merge_gate.EXIT_PARTIAL, receipt
     assert git(beta["remote"], "rev-parse", "main") == beta["base"], "beta must not have been pushed"
     assert git(alpha["remote"], "rev-list", "--parents", "-n", "1", "main").split()[1:] == [alpha["base"], alpha["head"]]
+
+
+def test_an_advertisement_read_fault_is_a_named_refusal_not_a_crash(world, monkeypatch):
+    check(world)
+    real = merge_gate._git
+    def failing(repo, *args, **kw):
+        if args[:1] == ("ls-remote",) and any("__reviews__" in a for a in args):
+            raise RuntimeError("ls-remote: simulated advertisement fault")
+        return real(repo, *args, **kw)
+    monkeypatch.setattr(merge_gate, "_git", failing)
+    code, receipt = merge(world)
+    assert code == merge_gate.EXIT_REFUSED, receipt
+    assert receipt["members"][0]["refused"].startswith("remote_unmeasurable"), receipt
+    assert git(world["remote"], "rev-parse", "main") == world["base"]
+
+
+def test_a_history_read_fault_in_preflight_is_a_named_refusal_not_a_crash(world, monkeypatch):
+    check(world)
+    def broken(*a, **k):
+        raise RuntimeError("rev-list: simulated history fault")
+    monkeypatch.setattr(merge_gate, "_merged_at", broken)
+    code, receipt = merge(world)
+    assert receipt["members"][0]["refused"].startswith("remote_unmeasurable"), receipt
+    assert git(world["remote"], "rev-parse", "main") == world["base"]
+
+
+def test_a_merge_build_fault_refuses_before_any_push(world, monkeypatch):
+    check(world)
+    real = merge_gate._git
+    def failing(repo, *args, **kw):
+        if args[:1] == ("commit-tree",):
+            raise RuntimeError("commit-tree: simulated build fault")
+        return real(repo, *args, **kw)
+    monkeypatch.setattr(merge_gate, "_git", failing)
+    code, receipt = merge(world)
+    assert code == merge_gate.EXIT_REFUSED, receipt
+    assert receipt["members"][0]["refused"].startswith("merge_build_failed"), receipt
+    assert git(world["remote"], "rev-parse", "main") == world["base"]

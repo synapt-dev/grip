@@ -184,7 +184,7 @@ def test_oss_gr2_has_no_external_lane_envelope_reader() -> None:
     )
 
     offenders: list[str] = []
-    for source_root in (gr2_root / "python_cli", gr2_root / "prototypes"):
+    for source_root in (gr2_root / "gr2" / "python_cli", gr2_root / "gr2" / "prototypes"):
         for path in sorted(source_root.rglob("*.py")):
             text = path.read_text()
             if any(fragment in text for fragment in forbidden_fragments):

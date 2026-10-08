@@ -1,34 +1,9 @@
-"""Acceptance suite for the native-store review-record move.
+"""Git-active review safety and workspace compatibility acceptance probes.
 
-Five cases, and they are deliberately split so a green means something.
-
-THREE OF THEM FAIL ON THE PRE-FIX RANGE and are the acceptance bar for the fix:
-
-  D  the review-ephemeral commit guard, on the layout project_review.py:286
-     actually creates -- the receipt is written canonically to
-     .grip/state/reviews/<owner>/<lane>/<member>.json while the locator
-     walks the repo's own path, and the walk cannot match that layout.
-  B  the same guard on a legacy-shaped lane whose receipt is at the
-     member-.git location.
-  A  close on a lane whose receipt is ONLY at the legacy member-.git location,
-     which today refuses because cleanup unlinks `paths.current` -- a path that
-     does not exist in that state.
-
-TWO OF THEM PASS ON BOTH SIDES and exist to stop the three above from being
-satisfiable the lazy way:
-
-  C  on a CANONICAL lane the guard DOES refuse, so B and D are failures of
-     location, not of a guard that never worked.
-  A-control  the same lane with a canonical receipt closes cleanly, so A is a
-     failure of the legacy path, not of close.
-
-Without C and A-control, deleting the guard outright -- or making close always
-succeed -- would turn the suite green while destroying the behaviour it is
-supposed to protect. That is the whole reason they are here.
-
-The fix for D and B writes a one-line pointer in the member `.git` naming the
-workspace coordinate, keeping the canonical receipt and restoring a locator that
-cannot drift from it; the fix for A unlinks the path it actually reads.
+Active records live in per-worktree Git metadata. The pointer carries the
+workspace compatibility coordinate even when that payload is absent. Selected
+identity fallback and the all-extant disposable guard remain distinct contracts.
+These ordinary-repository cases complement the linked-worktree isolation suite.
 """
 from __future__ import annotations
 
@@ -45,6 +20,7 @@ from gr2.python_cli.review_records import (
     lane_paths_for_repo,
     legacy_review_record_path,
     read_review_record,
+    read_review_record_at,
     review_record_pointer_path,
     review_record_paths,
 )
@@ -73,9 +49,9 @@ def _world(tmp_path: Path) -> dict:
     _run(source, "commit", "-q", "-m", "work")
     head = _run(source, "rev-parse", "HEAD")
     _run(source, "checkout", "-q", "main")
-    lane_root = tmp_path / "lane"
     ws = tmp_path / "ws"
     ws.mkdir()
+    lane_root = ws / ".grip" / "state" / "lanes" / "atlas" / "review-7"
     return {"source": source, "head": head, "base": _run(source, "rev-parse", "main"),
             "lane": lane_root / "repos" / "grip", "lane_root": lane_root, "ws": ws}
 
@@ -102,75 +78,63 @@ def _ephemeral_receipt(lane: Path) -> None:
                                   "lane_kind": "review-ephemeral"}, indent=2) + "\n")
 
 
-def _guard_refused(lane: Path) -> bool:
-    try:
+def _assert_disposable_guards_refuse(lane: Path) -> None:
+    with pytest.raises(CommitError, match="is a review-ephemeral review lane"):
         _refuse_review_ephemeral_repo(lane)
-        return False
-    except CommitError:
-        return True
+    with pytest.raises(PushError, match="is a review-ephemeral review lane"):
+        refuse_review_ephemeral_push(lane)
 
 
 # --------------------------------------------------------------------------- #
 # THE ACCEPTANCE CASES
 # --------------------------------------------------------------------------- #
 def test_D_guard_fires_on_the_project_review_lane_layout(tmp_path):
-    """D: the guard, as project_review.py:286/:293 actually build a lane.
-
-    The receipt is written to the CANONICAL coordinate while the lane lives
-    under <ws>/reviews/<owner>/<lane>/repos/<key>, so a locator that walks the
-    repo path finds nothing. Reachable by default: open_gr_review.py sets
-    ephemeral=True when sources is None.
-    """
+    """Pre-pointer project layout discovers workspace compatibility evidence."""
     ws = tmp_path / "ws"
     lane = ws / "reviews" / "atlas" / "review-7" / "repos" / "grip"
     lane.mkdir(parents=True)
-    receipt = review_record_paths(ws, "atlas", "review-7", "grip", lane).current
-    receipt.parent.mkdir(parents=True)
+    _run(lane, "init")
+    receipt = ws / ".grip" / "state" / "reviews" / "atlas" / "review-7" / "grip.json"
+    receipt.parent.mkdir(parents=True, exist_ok=True)
     receipt.write_text(json.dumps({"repo": "whatever", "base": "0" * 40, "head": "0" * 40,
                                    "lane_kind": "review-ephemeral"}, indent=2) + "\n")
 
-    # Precondition, so a failure below cannot be blamed on a missing receipt.
+    assert not legacy_review_record_path(lane).exists()
+    assert not review_record_pointer_path(lane).exists()
+    # Pre-pointer compatibility is a separate discovery branch.
     by_coord = review_record_paths(ws, "atlas", "review-7", "grip", lane)
     assert read_review_record(by_coord, notice=lambda _m: None) is not None, (
-        "fixture: the receipt must be readable by its canonical coordinate"
+        "fixture: the workspace compatibility receipt must be readable"
     )
-    assert _guard_refused(lane), (
-        f"the review-ephemeral guard did not fire on the project-review layout "
-        f"(lane_paths_for_repo -> {lane_paths_for_repo(lane)}); a read-only disposable "
-        "review lane is open to commit and push"
-    )
+    _assert_disposable_guards_refuse(lane)
 
 
 def test_B_guard_fires_on_a_legacy_shaped_lane(tmp_path):
     """B: the guard, for a lane opened before the receipt moved: receipt in the member .git."""
     w = _world(tmp_path)
     _open(w)
+    review_record_pointer_path(w["lane"]).unlink()
+    assert not review_record_paths(w["ws"], "atlas", "review-7", "grip", w["lane"]).legacy.exists()
     _ephemeral_receipt(w["lane"])
-    assert _guard_refused(w["lane"]), (
-        "the review-ephemeral guard did not fire although the legacy receipt says "
-        "review-ephemeral"
-    )
+    _assert_disposable_guards_refuse(w["lane"])
 
 
 def test_A_close_succeeds_for_a_legacy_only_receipt(tmp_path):
-    """A: a lane whose receipt is only at the legacy location must still close.
-
-    Today this refuses: read_review_record falls back to the legacy path and
-    returns the record, then cleanup unlinks `paths.current`, which does not
-    exist, so the OSError branch refuses to delete. The code's own stated
-    concern is that no receipt outlives its lane, so after a successful close
-    neither location may hold one.
-    """
+    """A workspace compatibility-only receipt still authorizes owned close."""
     w = _world(tmp_path)
     _open(w)
     paths = review_record_paths(w["ws"], "atlas", "review-7", "grip", w["lane"])
 
-    legacy = legacy_review_record_path(w["lane"])
+    legacy = paths.legacy
+    assert legacy == w["ws"] / ".grip" / "state" / "reviews" / "atlas" / "review-7" / "grip.json"
+    assert paths.current == w["lane"] / ".git" / "grip-review.json"
+    assert review_record_pointer_path(w["lane"]).read_bytes() == (str(legacy) + "\n").encode()
     legacy.parent.mkdir(parents=True, exist_ok=True)
-    legacy.write_text(paths.current.read_text())
+    legacy.write_bytes(paths.current.read_bytes())
     paths.current.unlink()
     assert legacy.is_file() and not paths.current.exists(), "fixture: legacy-only state"
 
+    assert read_review_record_at(paths, notice=lambda _m: None)[1] == legacy
     _close(w)  # must not raise
 
     assert not w["lane"].exists(), "the lane should be gone after a successful close"
@@ -188,14 +152,12 @@ def test_C_control_the_guard_still_fires_on_a_canonical_lane(tmp_path):
     ws = tmp_path / "ws"
     lane = ws / ".grip" / "state" / "lanes" / "atlas" / "review-7" / "repos" / "grip"
     lane.mkdir(parents=True)
+    _run(lane, "init")
     receipt = review_record_paths(ws, "atlas", "review-7", "grip", lane).current
-    receipt.parent.mkdir(parents=True)
+    receipt.parent.mkdir(parents=True, exist_ok=True)
     receipt.write_text(json.dumps({"repo": "whatever", "base": "0" * 40, "head": "0" * 40,
                                    "lane_kind": "review-ephemeral"}, indent=2) + "\n")
-    assert _guard_refused(lane), (
-        "control: on a canonical lane the guard is expected to fire -- if this fails, "
-        "B and D are not measuring a locator defect"
-    )
+    _assert_disposable_guards_refuse(lane)
 
 
 def test_control_close_still_works_on_a_canonical_receipt(tmp_path):
@@ -217,12 +179,7 @@ def test_control_close_still_works_on_a_canonical_receipt(tmp_path):
 )
 def test_any_ephemeral_receipt_refuses_when_receipts_disagree(
         tmp_path, canonical_kind, legacy_kind):
-    """A receipt preference selects cleanup identity, never the safety verdict.
-
-    Both directions matter. Preferring either canonical or legacy would leave one
-    row open to commit and push. Restoring either preference instead of the union
-    makes the corresponding row red.
-    """
+    """Disagreeing active and compatibility evidence refuses before kind selection."""
     w = _world(tmp_path)
     _open(w)
     paths = review_record_paths(w["ws"], "atlas", "review-7", "grip", w["lane"])
@@ -233,30 +190,36 @@ def test_any_ephemeral_receipt_refuses_when_receipts_disagree(
     legacy["lane_kind"] = legacy_kind
     paths.legacy.parent.mkdir(parents=True, exist_ok=True)
     paths.legacy.write_text(json.dumps(legacy) + "\n")
-    with pytest.raises(CommitError, match="review-ephemeral"):
+    before = (paths.current.read_bytes(), paths.legacy.read_bytes())
+    with pytest.raises(CommitError, match="safety evidence conflict"):
         _refuse_review_ephemeral_repo(w["lane"])
-    with pytest.raises(PushError, match="review-ephemeral"):
+    with pytest.raises(PushError, match="safety evidence conflict"):
         refuse_review_ephemeral_push(w["lane"])
+    assert (paths.current.read_bytes(), paths.legacy.read_bytes()) == before
 
 
 @pytest.mark.parametrize("receipt", [None, "{"])
 def test_pointer_without_a_readable_receipt_refuses_commit(tmp_path, receipt):
-    """A pointer naming the canonical coordinate with NO receipt there, and with a
-    CORRUPT one, must both refuse.
-
-    The target is DERIVED, not spelled. A literal coordinate silently changes what
-    this row proves the moment the receipts move: the pointer would then be rejected
-    as a non-canonical marker rather than as a missing or corrupt receipt, and the
-    row would keep PASSING for the wrong reason -- a degraded witness.
-    """
-    repo = tmp_path / "repo"; _run(tmp_path, "init", "-q", str(repo))
-    target = review_record_paths(tmp_path / "ws", "atlas", "review-7", "grip", repo).current
+    """Missing or corrupt compatibility payload with no active Git record refuses."""
+    ws = tmp_path / "ws"
+    repo = ws / ".grip" / "state" / "lanes" / "atlas" / "review-7" / "repos" / "grip"
+    repo.mkdir(parents=True)
+    _run(repo, "init", "-q")
+    target = ws / ".grip" / "state" / "reviews" / "atlas" / "review-7" / "grip.json"
+    paths = review_record_paths(ws, "atlas", "review-7", "grip", repo)
+    assert paths.legacy == target and not paths.current.exists()
     target.parent.mkdir(parents=True)
     if receipt is not None:
         target.write_text(receipt)
     review_record_pointer_path(repo).write_text(str(target) + "\n")
-    with pytest.raises(CommitError, match="pointer|safely"):
+    reason = "no readable receipt" if receipt is None else "review receipt cannot be read"
+    with pytest.raises(CommitError, match=reason):
         _refuse_review_ephemeral_repo(repo)
+    with pytest.raises(PushError, match=reason):
+        refuse_review_ephemeral_push(repo)
+    target.write_text(json.dumps({"lane_kind": "materialized"}) + "\n")
+    _refuse_review_ephemeral_repo(repo)
+    refuse_review_ephemeral_push(repo)
 
 
 def test_pointer_with_unsafe_coordinate_refuses_commit(tmp_path):
@@ -264,3 +227,14 @@ def test_pointer_with_unsafe_coordinate_refuses_commit(tmp_path):
     review_record_pointer_path(repo).write_text(str(tmp_path / "ws" / ".grip" / "state" / "reviews" / ".." / "x.json") + "\n")
     with pytest.raises(CommitError, match="unsafe|safely"):
         _refuse_review_ephemeral_repo(repo)
+
+
+def test_equal_active_and_workspace_materialized_evidence_allows(tmp_path):
+    w = _world(tmp_path)
+    _open(w)
+    paths = review_record_paths(w["ws"], "atlas", "review-7", "grip", w["lane"])
+    paths.legacy.parent.mkdir(parents=True, exist_ok=True)
+    paths.legacy.write_bytes(paths.current.read_bytes())
+    assert paths.current != paths.legacy
+    _refuse_review_ephemeral_repo(w["lane"])
+    refuse_review_ephemeral_push(w["lane"])

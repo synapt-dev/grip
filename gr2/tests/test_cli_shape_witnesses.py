@@ -62,6 +62,11 @@ def _optional_positional_before_required(cmds) -> list[tuple[str, str, list[str]
         for i, arg in enumerate(args):
             if arg.required:
                 continue
+            if i == 0 and arg.name == "workspace_root" and getattr(cmd, "infer_bare", False):
+                # A RootOptionalCommand puts the root in front BEFORE click binds anything, so its
+                # leading optional root cannot mis-bind (python_cli/root_option.py). Only that one
+                # argument, only first, only on that class: test_the_root_exemption_is_narrow.
+                continue
             after = [p.name for p in args[i + 1:] if p.required]
             if after:
                 offenders.append((path, arg.name, after))
@@ -145,3 +150,31 @@ def test_the_order_witness_reports_a_leading_optional_positional() -> None:
     inner_clean.command("ordered")(ordered)
     outer_clean.add_typer(inner_clean, name="probe")
     assert _optional_positional_before_required(_walk(typer.main.get_command(outer_clean))) == []
+
+
+def test_the_root_exemption_is_narrow() -> None:
+    """The one exemption in the order witness: a RootOptionalCommand's FIRST positional named
+    workspace_root. Each probe below is a way the exemption could be too wide, and must still be named:
+    another leading optional, the root optional in the middle, and the same root on a plain command."""
+    from gr2.python_cli.root_option import RootOptionalCommand
+
+    def probe(function, cls=None):
+        outer, inner = typer.Typer(), typer.Typer()
+        inner.command("probe", **({"cls": cls} if cls else {}))(function)
+        outer.add_typer(inner, name="p")
+        return _optional_positional_before_required(_walk(typer.main.get_command(outer)))
+
+    def exempt(workspace_root: Path | None = typer.Argument(None), commit: str = typer.Argument()) -> None:
+        """Probe."""
+
+    def other_name(unit: str | None = typer.Argument(None), commit: str = typer.Argument()) -> None:
+        """Probe."""
+
+    def in_the_middle(commit: str = typer.Argument(), workspace_root: Path | None = typer.Argument(None),
+                      lane: str = typer.Argument()) -> None:
+        """Probe."""
+
+    assert probe(exempt, RootOptionalCommand) == [], "the exemption must hold for the real shape"
+    assert probe(exempt) != [], "a plain command with a leading optional root is still named"
+    assert probe(other_name, RootOptionalCommand) != [], "another leading optional on that class is still named"
+    assert probe(in_the_middle, RootOptionalCommand) != [], "the root optional in the middle is still named"

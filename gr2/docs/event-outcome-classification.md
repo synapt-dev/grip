@@ -32,6 +32,12 @@ recording failure on stderr. It is not a general event wrapper.
 | `app.lane_exit` | `lane.exited` | after exit mutation | preserve outcome |
 | `app.lane_lease_acquire` | `lease.acquired` | after lease mutation | preserve outcome |
 | `app.lane_lease_release` | `lease.released` | after lease mutation | preserve outcome |
+| `app.review_bind` | `review.bound` | after the bind commit is written | preserve outcome |
+| `app._emit_review_opened` | `review.opened` | after reconstruction and marker | preserve outcome |
+| `app.review_verify` | `review.verified` | read-only observation | strict |
+| `app._emit_review_run` | `review.run_completed` | after the run and its receipt | preserve outcome |
+| `app._emit_review_run` | `review.run_refused` | after the refusal (and its receipt, when one is written) | preserve outcome |
+| `app.review_close_gr` | `review.closed` | after the lane is reclaimed | preserve outcome |
 
 ## Dynamic sync callers
 

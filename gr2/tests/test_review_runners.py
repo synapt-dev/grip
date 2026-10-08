@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from python_cli import review_run as rr
-from python_cli import review_runners as R
+from gr2.python_cli import review_run as rr
+from gr2.python_cli import review_runners as R
 
 
 # ---- parser unit tests (real output shapes) ---------------------------------
@@ -345,7 +345,7 @@ def test_junit_xml_runner_refuses_a_malformed_fresh_report_with_its_name(tmp_pat
 @pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo not on this host")
 def test_cli_review_run_cargo_flags(tmp_path):
     from typer.testing import CliRunner
-    from python_cli.app import app
+    from gr2.python_cli.app import app
 
     lane = _cargo_lane(tmp_path)
     r = CliRunner().invoke(app, ["review", "run", str(lane), "--runner", "cargo", "--test", "cargo test"])
@@ -357,7 +357,7 @@ def test_cli_review_run_cargo_flags(tmp_path):
 def test_cli_review_run_cargo_from_review_install_hint(tmp_path):
     """A stranger types nothing: .review-install declares the runner and test line."""
     from typer.testing import CliRunner
-    from python_cli.app import app
+    from gr2.python_cli.app import app
 
     lane = _cargo_lane(tmp_path, review_install="runner = cargo\ntest = cargo test\n")
     r = CliRunner().invoke(app, ["review", "run", str(lane)])
@@ -367,7 +367,7 @@ def test_cli_review_run_cargo_from_review_install_hint(tmp_path):
 
 def test_cli_non_pytest_runner_without_test_command_refuses(tmp_path):
     from typer.testing import CliRunner
-    from python_cli.app import app
+    from gr2.python_cli.app import app
 
     lane = _cargo_lane(tmp_path)
     r = CliRunner().invoke(app, ["review", "run", str(lane), "--runner", "cargo"])
@@ -377,7 +377,7 @@ def test_cli_non_pytest_runner_without_test_command_refuses(tmp_path):
 
 def test_cli_review_run_junit_xml_flags(tmp_path):
     from typer.testing import CliRunner
-    from python_cli.app import app
+    from gr2.python_cli.app import app
 
     lane = _junit_lane(tmp_path)
     command = shlex.join(_write_junit_report_command(
@@ -396,7 +396,7 @@ def test_cli_review_run_junit_xml_flags(tmp_path):
 
 def test_cli_review_run_junit_xml_from_review_install_hint(tmp_path):
     from typer.testing import CliRunner
-    from python_cli.app import app
+    from gr2.python_cli.app import app
 
     command = shlex.join(_write_junit_report_command(
         '<testsuite tests="1" />', "reports/TEST-demo.xml"
@@ -433,7 +433,7 @@ def test_pytest_runner_with_test_flag_refuses(tmp_path):
     """Fix-forward: --test with the pytest runner refuses instead of silently ignoring
     the command (which would run pytest and call the result green about the wrong thing)."""
     from typer.testing import CliRunner
-    from python_cli.app import app
+    from gr2.python_cli.app import app
 
     lane = _cargo_lane(tmp_path)
     r = CliRunner().invoke(app, ["review", "run", str(lane), "--test", "cargo test"])

@@ -175,7 +175,7 @@ def test_r4_mutation_walking_past_the_boundary_exits_5_again(tmp_path: Path) -> 
     instrument measures nothing. This one disables the guard outright.
     """
     guard = 'if _store_git(root, "cat-file", "-e", f"{commit}:grip.toml", check=False).returncode:'
-    pristine = REPO / "python_cli" / "grip_cli.py"
+    pristine = REPO / "gr2" / "python_cli" / "grip_cli.py"
     source = pristine.read_text()
     before = source.count(guard)
     assert before == 1, f"the boundary guard must appear exactly once in the pristine source, found {before}"

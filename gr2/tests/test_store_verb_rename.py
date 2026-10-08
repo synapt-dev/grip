@@ -9,6 +9,52 @@ commit in the workspace root's OWN `.git` and states "No `.grip` store repo" (de
 verbs landed. Measured: the native `store init` creates `<root>/.git` plus `grip.toml`, and
 never `.grip/.git`. The rows keep their real purpose (both spellings reach the same callback
 and the store is created) against the native home.
+
+⚠ ROWS HELD UNTIL THE ALIAS DROP -- the list the deletion must consume. These pin the ALIAS NAME,
+so they stay GREEN now and, but for the two marked below, go RED at the drop (measured: all nine
+hidden aliases dropped in a scratch copy, full suite run); they are deliberately NOT re-pointed,
+because they are the alias's only coverage while the alias is still live, and deleting them now
+would remove that coverage invisibly.
+  - test_store_verb_rename.py::test_grip_alias_still_reaches_the_same_callback
+  - test_store_verb_rename.py::test_both_names_enumerate_the_same_verbs
+  - test_store_verb_rename.py::test_root_help_shows_store_and_hides_grip   (asserts the hidden name is ABSENT,
+    so it stays GREEN at the drop: delete it by hand with the alias, it will not announce itself)
+  - test_store_verb_witnesses.py::test_snapshot_is_a_hidden_alias_of_commit
+  - test_open_gr_enter.py::test_both_review_verbs_help_names_commit_kind_and_path  (the old-help spellings)
+  - test_project_review_three_repo.py::test_project_review_cli_adapter_and_structured_rendering_are_registered
+    (`assert "open-project" in commands`; re-pointing it to "open" would be VACUOUS -- "open" is always
+    registered -- so this one is HELD rather than re-pointed)
+⚠ AND TWO ROWS THAT ARE NOT RE-POINTABLE AT ALL, because the kept name's behaviour DIFFERS from the
+alias it replaces (measured; reported to Fathom, whose row 3 owns the CLI surface):
+  - test_open_project_refusal_reason_cli.py (both rows): `review open-project` accepts `--allow-local`;
+    `review open` REFUSES it -- "No such option: --allow-local", exit 2 instead of exit 1. So
+    `open-project` is not a pure alias of `open` at the option surface.
+  - test_review_create_project_cli.py::test_create_project_is_discoverable_from_help: `review
+    open-project --help` names "create-project"; `review open --help` does not. It stays GREEN at
+    the drop for the wrong reason: `review open-project --help` then exits 2 with "No such command
+    'open-project'. Did you mean 'create-project'?", which contains the string the row looks for. The
+    drop must delete or re-point it by hand; nothing will say it tested nothing.
+⚠ ROWS THAT ARRIVED ON dev AFTER THE LIST ABOVE WAS FIRST WRITTEN (named from a grep of the test names
+and bodies added since this branch's base f8b1c95e; each pins a hidden alias by name, and all were
+RUN against an alias drop, in the same scratch copy as above: all red but the registry sweep). The
+drop must consume these too, or it finds them by going red:
+  - test_store_commit_noop.py::test_the_hidden_snapshot_alias_is_a_no_op_too
+  - test_hooks_group_names.py::test_hooks_show_and_the_hidden_repo_hooks_print_the_same_json
+  - test_hooks_group_names.py::test_hooks_run_and_the_hidden_repo_hook_run_agree
+  - test_hooks_group_names.py::test_the_old_repo_spellings_are_hidden_but_the_new_ones_are_listed
+  - test_lane_show_name.py::test_lane_show_and_the_hidden_lane_current_print_the_same_thing
+  - test_lane_show_name.py::test_the_old_spelling_is_hidden_and_the_new_one_is_listed
+  - test_deprecation_registry.py::test_every_hidden_alias_is_registered_or_explicitly_exempted
+    (the registry sweep: it reads the alias set, so it is the row that SHOULD shrink with the drop; it
+    stays GREEN at the drop, because the set it reads is then empty)
+⚠ AND SIX ROWS IN test_api_dump.py GO RED AT THE DROP THROUGH THE COMMITTED api/cli.api, which lists the
+aliases. They are not alias-pinning rows; the drop must regenerate the file (gr2/scripts/dump_api.py):
+  - test_api_dump.py::test_api_dump_is_current
+  - test_api_dump.py::test_every_json_item_names_a_real_verb
+  - test_api_dump.py::test_may_change_entries_all_name_a_real_item
+  - test_api_dump.py::test_the_committed_file_carries_exactly_the_items
+  - test_api_dump.py::test_the_store_group_json_verbs_all_have_a_shape
+  - test_api_dump.py::test_uncovered_json_verbs_are_counted
 """
 import re
 import subprocess
@@ -17,7 +63,7 @@ import pathlib
 
 from typer.testing import CliRunner
 
-from python_cli.app import app
+from gr2.python_cli.app import app
 
 runner = CliRunner()
 

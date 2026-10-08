@@ -11,7 +11,7 @@ name = "gitgrip"
 # number and it is not derived from Cargo.toml. gr1 releases as crates.io/GitHub
 # `v1.x.y`; gr2 releases as PyPI `gr2/v2.x.y`. Runtime reads it via
 # importlib.metadata.version("gitgrip"), never a checked-in file.
-version = "2.0.0a6"
+version = "2.0.0a7"
 description = "Workspace layer for multi-repo work: workspaces, isolated lanes, and one grouped review per slice"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -55,17 +55,16 @@ dev = [
 packages = ["gr2", "gr2.python_cli", "gr2.prototypes", "gr2.overlay", "gr2_overlay"]
 
 [tool.setuptools.package-dir]
-# gr2.overlay resolves under the gr2 package dir (gr2/overlay) with no explicit
-# mapping; the gr2_overlay shim maps to its own top-level dir by default.
+# Every gr2 subpackage lives physically under gr2/gr2/ (overlay, python_cli,
+# prototypes), so the directory name equals the import name and nothing here maps a flat
+# directory onto a dotted one. The gr2_overlay shim maps to its own top-level dir by default.
 gr2 = "gr2"
-"gr2.python_cli" = "python_cli"
-"gr2.prototypes" = "prototypes"
 
 [tool.setuptools.package-data]
 # The pinned MaterializationPlan v1 schema ships inside the
 # gr2 package -- spec_apply verifies its bytes against the pinned SHA-256
 # at load and fails closed on any mismatch.
-gr2 = ["schemas/*.json"]
+gr2 = ["schemas/*.json", "schemas/*/*.proto", "schemas/*/*.pb"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "gr2/overlay/tests"]

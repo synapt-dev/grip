@@ -88,10 +88,11 @@ def review_world(tmp_path: Path):
     review_branch = "pr/7"
     head_sha = _seed_pr_head(source, review_branch, "pr work\n")
     base_sha = _run(source, "rev-parse", "main")
-    lane_root = tmp_path / "lane"
-    lane = lane_root / "repos" / "grip"
     workspace_root = tmp_path / "ws"
     workspace_root.mkdir()
+    from gr2.prototypes.lane_workspace_prototype import lane_dir
+    lane_root = lane_dir(workspace_root, "atlas", "review-7")
+    lane = lane_root / "repos" / "grip"
     return {
         "source": source,
         "review_branch": review_branch,
@@ -124,6 +125,102 @@ def _new_record(world, lane=None):
     return review_record_path(
         world["workspace_root"], "atlas", "review-7", "grip", lane or world["lane"]
     )
+
+
+@pytest.mark.parametrize("declared", [False, True])
+def test_pr_head_cli_open_close_owns_absent_and_declared_lane_coordinates(review_world, monkeypatch, declared):
+    from types import SimpleNamespace
+    from typer.testing import CliRunner
+    from gr2.python_cli import app as app_mod, review as review_mod
+    from gr2.prototypes import lane_workspace_prototype as lanes
+
+    world = review_world
+    ws = world["workspace_root"]
+    (ws / ".grip").mkdir()
+    (ws / ".grip" / "workspace_spec.toml").write_text(
+        f'[[repos]]\nname = "grip"\npath = "{world["source"]}"\n'
+    )
+    definition = lanes.lane_file(ws, "atlas", "review-7")
+    if declared:
+        definition.parent.mkdir(parents=True)
+        definition.write_text(
+            'owner_unit = "atlas"\nlane_name = "review-7"\nlane_kind = "materialized"\n'
+            'repos = ["grip"]\ncheckout_root = "agents/atlas/lanes/review-7"\n'
+        )
+        managed = ws / "agents" / "atlas" / "lanes" / "review-7"
+    else:
+        managed = ws / ".grip" / "state" / "lanes" / "atlas" / "review-7"
+    expected = managed / "repos" / "grip"
+    sibling = managed / "repos" / "retained"
+    sibling.mkdir(parents=True)
+    (sibling / "notes").write_bytes(b"review notes\n")
+
+    monkeypatch.setattr(review_mod, "host_pr_head_oid", lambda *args: world["head_sha"])
+    monkeypatch.setattr(app_mod, "_prepare_review_branch", lambda *args: world["review_branch"])
+    monkeypatch.setattr(app_mod.platform_ops, "get_platform_adapter", lambda *args: SimpleNamespace(
+        pr_status=lambda *args: SimpleNamespace(ref=SimpleNamespace(base_branch="main"))))
+    calls = []
+    real_open = review_mod.open_review_lane
+
+    def local_open(**kwargs):
+        calls.append(kwargs["lane_repo_root"])
+        return real_open(**kwargs, allow_local=True)
+
+    monkeypatch.setattr(review_mod, "open_review_lane", local_open)
+    runner = CliRunner()
+    opened = runner.invoke(app_mod.app, ["review", "open", str(ws), "atlas", "grip", "7", "--json"])
+    assert opened.exit_code == 0, (opened.output, opened.exception)
+    assert calls == [expected]
+    assert _run(expected, "rev-parse", "HEAD") == world["head_sha"]
+    payload = json.loads(opened.output[opened.output.index("{\n"):])
+    assert payload["lane_repo_root"] == str(expected)
+    assert payload["review_record"]["head"] == world["head_sha"]
+    assert read_review_record(review_record_paths(ws, "atlas", "review-7", "grip", expected))["head"] == world["head_sha"]
+    closed = runner.invoke(app_mod.app, ["review", "close", str(ws), "atlas", "grip", "7"])
+    assert closed.exit_code == 0, (closed.output, closed.exception)
+    assert not expected.exists()
+    assert (sibling / "notes").read_bytes() == b"review notes\n"
+    assert definition.exists() == declared
+
+
+@pytest.mark.parametrize("kind", ["bound", "materialized", "unknown"])
+def test_pr_head_cli_refuses_bound_conflicting_and_unknown_coordinates_before_delegates(tmp_path, monkeypatch, kind):
+    from typer.testing import CliRunner
+    from gr2.python_cli import app as app_mod, review as review_mod
+    from gr2.prototypes import lane_workspace_prototype as lanes
+
+    ws = tmp_path / "ws"
+    author = tmp_path / "author"
+    author.mkdir()
+    (author / "work").write_bytes(b"author bytes\n")
+    definition = lanes.lane_file(ws, "atlas", "review-7")
+    definition.parent.mkdir(parents=True)
+    definition.write_text(
+        f'owner_unit = "atlas"\nlane_name = "review-7"\nrepos = ["grip"]\n'
+        f'lane_kind = "{kind}"\nbound_worktree = "{author}"\n'
+    )
+    original = definition.read_bytes()
+    calls = []
+
+    def unexpected(*args, **kwargs):
+        calls.append("downstream")
+        raise AssertionError("invalid coordinates reached a downstream delegate")
+
+    monkeypatch.setattr(app_mod, "_workspace_repo_spec", unexpected)
+    monkeypatch.setattr(review_mod, "host_pr_head_oid", unexpected)
+    monkeypatch.setattr(app_mod, "_prepare_review_branch", unexpected)
+    monkeypatch.setattr(app_mod.platform_ops, "get_platform_adapter", unexpected)
+    monkeypatch.setattr(review_mod, "open_review_lane", unexpected)
+    monkeypatch.setattr(review_mod, "close_review_lane", unexpected)
+    reason = ("PR-head reviews require a managed lane, not a bound author checkout"
+              if kind == "bound" else "invalid or conflicting lane checkout coordinates")
+    for verb in ("open", "close"):
+        result = CliRunner().invoke(app_mod.app, ["review", verb, str(ws), "atlas", "grip", "7"])
+        assert result.exit_code != 0
+        assert reason in result.output + str(result.exception)
+        assert calls == []
+        assert (author / "work").read_bytes() == b"author bytes\n"
+        assert definition.read_bytes() == original
 
 
 # --------------------------------------------------------------------------- #
@@ -265,48 +362,31 @@ def _v6_receipt(world) -> Path:
             / "atlas" / "review-7" / "grip.json")
 
 
-def test_reopen_the_same_lane_name_finds_the_receipt_at_the_new_coordinate(review_world):
-    """Open, exit, and RE-OPEN the same lane name: the second open succeeds and the
-    receipt is found at the new coordinate.
-
-    RED until the record coordinate moves. The re-open itself already works on the
-    base tree; what is absent is the receipt at .grip/state/reviews/<owner>/<lane>/
-    <member>.json, because the base keeps it under state/lanes/<owner>/<lane>/review/.
-    """
-    _open(review_world)                      # open, then let the handle go (exit)
-    receipt = _v6_receipt(review_world)
-    assert receipt.is_file(), f"receipt absent at the v6 coordinate: {receipt}"
-    assert _new_record(review_world) == receipt, (
-        "the record-path helper and the literal v6 coordinate disagree"
-    )
-
-    again = _open(review_world)              # RE-OPEN the same lane name
-    assert isinstance(again, ReviewRecord)
-    assert again.head == review_world["head_sha"]
-    assert receipt.is_file(), "re-open lost the receipt at the v6 coordinate"
-
-
-def test_open_writes_only_the_workspace_record_not_member_git(review_world):
-    """The member .git holds ONLY grip-review.pointer, and its content is exactly
-    the receipt path plus one newline -- never a copy of the receipt."""
+def test_reopen_the_same_lane_name_finds_the_git_safety_record(review_world):
     _open(review_world)
-    record = _new_record(review_world)
-    assert record.is_file()
-    assert record == _v6_receipt(review_world)
+    receipt = review_world["lane"] / ".git" / "grip-review.json"
+    assert receipt.is_file() and _new_record(review_world) == receipt
+    previous = receipt.read_bytes()
+    assert not _v6_receipt(review_world).exists()
+    again = _open(review_world)
+    assert isinstance(again, ReviewRecord) and again.head == review_world["head_sha"]
+    assert receipt.read_bytes() == previous
+    assert not _v6_receipt(review_world).exists()
 
+
+def test_open_writes_git_safety_and_workspace_context_pointer(review_world):
+    _open(review_world)
     git_dir = review_world["lane"] / ".git"
-    strays = sorted(p.name for p in git_dir.glob("grip-*"))
-    assert strays == ["grip-review.pointer"], (
-        f"member .git must hold only grip-review.pointer, found {strays}"
-    )
+    record = _new_record(review_world)
+    assert record == git_dir / "grip-review.json" and record.is_file()
+    context = _v6_receipt(review_world)
+    assert not context.exists(), "ordinary safety does not require a phantom workspace payload"
+    assert sorted(p.name for p in git_dir.glob("grip-*")) == ["grip-review.json", "grip-review.pointer"]
     body = (git_dir / "grip-review.pointer").read_text()
-    assert body == str(record) + "\n", (
-        f"pointer must be exactly the receipt path plus one newline, got {body!r}"
-    )
-    assert not body.lstrip().startswith("{"), "pointer must not carry receipt content"
-    assert not (git_dir / "grip-review.json").exists(), (
-        "no JSON receipt may live in the member .git"
-    )
+    assert body == str(context) + "\n"
+    assert not body.lstrip().startswith("{")
+    paths = review_record_paths(review_world["workspace_root"], "atlas", "review-7", "grip", review_world["lane"])
+    assert read_review_record(paths) == json.loads(record.read_bytes())
 
 
 def test_open_refuses_missing_lane_coordinate_before_materializing(review_world):

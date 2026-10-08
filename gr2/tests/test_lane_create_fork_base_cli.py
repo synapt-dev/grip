@@ -11,6 +11,8 @@ started at) after cloning. These tests drive the real CLI, not create_lane direc
 """
 from __future__ import annotations
 
+from tests.native_root_helper import native_root
+
 import subprocess
 from pathlib import Path
 
@@ -48,11 +50,8 @@ def _source_repo(tmp_path: Path, ws: Path, name: str) -> tuple[str, str]:
 def _workspace(tmp_path: Path, repos: list[str]) -> tuple[Path, dict[str, str]]:
     ws = tmp_path / "ws"
     (ws / ".grip").mkdir(parents=True)
-    # the grip object store (create-project writes the review-kind commit here)
-    _git(ws / ".grip", "init", "-q", "-b", "main")
-    _git(ws / ".grip", "config", "user.email", "g@e.invalid")
-    _git(ws / ".grip", "config", "user.name", "g")
-    _git(ws / ".grip", "commit", "-q", "--allow-empty", "-m", "init grip")
+    # a native root: create-project publishes the review-kind commit as a ref in the root's own .git
+    native_root(ws)
     tips: dict[str, str] = {}
     urls: dict[str, str] = {}
     for r in repos:
@@ -65,7 +64,25 @@ def _workspace(tmp_path: Path, repos: list[str]) -> tuple[Path, dict[str, str]]:
         f'schema_version = 1\nworkspace_name = "m"\n{blocks}\n'
         f'[[units]]\nname = "atlas"\npath = "agents/atlas"\nrepos = {repos!r}\n'.replace("'", '"')
     )
+    _commit_native_workspace(ws)
     return ws, tips
+
+
+def _commit_native_workspace(ws: Path) -> None:
+    """Native lane fixtures have a committed document and gitlinks, not just a marker."""
+    import tomllib
+    from gr2.python_cli import grip_cli
+
+    spec = tomllib.loads((ws / '.grip/workspace_spec.toml').read_text())
+    members = [grip_cli._member_from_path(ws, r['path'], r['name']) for r in spec['repos']]
+    grip_cli._write_native_members(ws, members)
+    grip_cli._write_gitignore(ws, members)
+    _git(ws, 'config', 'user.name', 'fixture')
+    _git(ws, 'config', 'user.email', 'fixture@example.invalid')
+    _git(ws, 'add', 'grip.toml', '.gitinclude')
+    for member in members:
+        _git(ws, 'update-index', '--add', '--cacheinfo', f"160000,{member['pin']},{member['path']}")
+    _git(ws, 'commit', '-qm', 'native workspace fixture')
 
 
 def _workspace_with_blocked_projection(tmp_path: Path) -> tuple[Path, str]:
@@ -74,10 +91,7 @@ def _workspace_with_blocked_projection(tmp_path: Path) -> tuple[Path, str]:
     projection blocks (HookRuntimeError -> exit 1). Returns (ws, materialization sha)."""
     ws = tmp_path / "ws"
     (ws / ".grip").mkdir(parents=True)
-    _git(ws / ".grip", "init", "-q", "-b", "main")
-    _git(ws / ".grip", "config", "user.email", "g@e.invalid")
-    _git(ws / ".grip", "config", "user.name", "g")
-    _git(ws / ".grip", "commit", "-q", "--allow-empty", "-m", "init grip")
+    native_root(ws)
 
     origin = tmp_path / "app.git"
     _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
@@ -107,6 +121,7 @@ def _workspace_with_blocked_projection(tmp_path: Path) -> tuple[Path, str]:
         f'[[repos]]\nname = "app"\npath = "repos/app"\nurl = "{origin}"\n'
         f'[[units]]\nname = "atlas"\npath = "agents/atlas"\nrepos = ["app"]\n'
     )
+    _commit_native_workspace(ws)
     return ws, tip
 
 
@@ -150,16 +165,20 @@ def test_cli_lane_create_reports_the_withheld_lifecycle_hooks(tmp_path: Path) ->
     from gr2.python_cli.consent import write_consent
 
     write_consent(ws, "repos/app", src)  # re-bind the changed table
+    _commit_native_workspace(ws)
     res = runner.invoke(gr2_app.app, ["lane", "create", str(ws), "atlas", "feature",
                                       "--repos", "app", "--branch", "feat/lane"])
     assert res.exit_code == 1, res.output
     payload = json.loads(res.output[res.output.index("{"):])
-    assert payload["status"] == "refused"
+    # The visible checkout is outside protected .grip metadata, so this row
+    # reaches the intended missing-source block rather than confinement refusal.
+    assert payload["status"] == "blocked"
+    assert payload["detail"] == f"projection source does not exist: {lanes.lane_repo_root(ws, 'atlas', 'feature', 'app') / 'does/not/exist.md'}"
     assert payload["lifecycle_hooks_withheld"] == [
         "run-marker: touch {repo_root}/hook-ran.txt"
     ]
     # the hooks are withheld, not run: no hook-ran.txt anywhere in the lane
-    assert not list((ws / ".grip" / "state" / "lanes").rglob("hook-ran.txt"))
+    assert not list(lanes.lane_checkout_root(ws, "atlas", "feature").rglob("hook-ran.txt"))
 
 
 def test_cli_lane_create_records_fork_base_for_each_repo(tmp_path: Path) -> None:
@@ -195,7 +214,7 @@ def test_cli_create_project_carry_range_records_the_range(tmp_path: Path) -> Non
     ws, _tips = _workspace(tmp_path, ["app"])
     assert runner.invoke(gr2_app.app, ["lane", "create", str(ws), "atlas", "feature",
                                        "--repos", "app", "--branch", "feat/lane"]).exit_code == 0
-    lane_repo = lanes.lane_dir(ws, "atlas", "feature") / "repos" / "app"
+    lane_repo = lanes.lane_repo_root(ws, "atlas", "feature", "app")
     (lane_repo / "change.txt").write_text("lane change\n")
     _git(lane_repo, "config", "user.email", "t@e.invalid")
     _git(lane_repo, "config", "user.name", "t")
@@ -222,7 +241,7 @@ def test_cli_carry_range_reconstructs_the_exact_pinned_sha(tmp_path: Path) -> No
     ws, _tips = _workspace(tmp_path, ["app"])
     assert runner.invoke(gr2_app.app, ["lane", "create", str(ws), "atlas", "feature",
                                        "--repos", "app", "--branch", "feat/lane"]).exit_code == 0
-    lane_repo = lanes.lane_dir(ws, "atlas", "feature") / "repos" / "app"
+    lane_repo = lanes.lane_repo_root(ws, "atlas", "feature", "app")
     _git(lane_repo, "config", "user.email", "dev@layne.pro")
     _git(lane_repo, "config", "user.name", "Layne Penney")
     (lane_repo / "change.txt").write_text("lane change\n")
@@ -234,7 +253,7 @@ def test_cli_carry_range_reconstructs_the_exact_pinned_sha(tmp_path: Path) -> No
     assert res.exit_code == 0, res.output
     sha = next(l for l in res.output.splitlines() if l.startswith("gr:"))[3:].strip()
     # the objects subtree carries committer metadata, and the pin's remote holds base.
-    obj_names = grip._grip_git(ws, "ls-tree", "--name-only", f"{sha}:objects/app").stdout.split()
+    obj_names = grip._bind_git(ws, "ls-tree", "--name-only", f"{sha}:objects/app").stdout.split()
     assert "committers" in obj_names
 
     result = grip.reconstruct_project_review_lane(ws, sha, "app", tmp_path / "recon" / "app")

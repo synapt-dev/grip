@@ -80,7 +80,8 @@ def _materialized_lane(
     if fork_base:
         ns.fork_base = {r: {"branch": "main", "sha": tips[r]} for r in repos}
     assert lanes.create_lane(ns) == 0
-    lane_root = lanes.lane_dir(ws, "atlas", lane)
+    lane_root = lanes.lane_checkout_root(ws, "atlas", lane)
+    (lane_root / "repos").mkdir(parents=True)
     for r in repos:
         _git(lane_root / "repos", "clone", "-q", str(tmp_path / "src" / r), r)
         repo = lane_root / "repos" / r
@@ -90,7 +91,7 @@ def _materialized_lane(
 
 
 def _commit_lane_change(ws: Path, repos: list[str], lane: str = "feature", times: int = 1) -> None:
-    lane_root = lanes.lane_dir(ws, "atlas", lane)
+    lane_root = lanes.lane_checkout_root(ws, "atlas", lane)
     for n in range(times):
         for r in repos:
             (lane_root / "repos" / r / f"new{n}.txt").write_text(f"x{n}\n")
@@ -102,7 +103,7 @@ def _commit_lane_change(ws: Path, repos: list[str], lane: str = "feature", times
 def test_snapshot_lane_round_trips_resolved_heads(tmp_path: Path) -> None:
     ws = _materialized_lane(tmp_path, ["a", "b"])
     _commit_lane_change(ws, ["a", "b"])
-    lane_root = lanes.lane_dir(ws, "atlas", "feature")
+    lane_root = lanes.lane_checkout_root(ws, "atlas", "feature")
     doc = lanes.load_lane_doc(ws, "atlas", "feature")
 
     commit = ws_snap.snapshot_lane(ws, "atlas", "feature")
@@ -126,7 +127,7 @@ def test_snapshot_base_is_the_recorded_fork_base_not_head_parent(tmp_path: Path)
     # fork base, never HEAD^. A mutation that recomputes base from HEAD^ reds this.
     ws = _materialized_lane(tmp_path, ["a", "b"])
     _commit_lane_change(ws, ["a", "b"], times=2)
-    lane_root = lanes.lane_dir(ws, "atlas", "feature")
+    lane_root = lanes.lane_checkout_root(ws, "atlas", "feature")
     doc = lanes.load_lane_doc(ws, "atlas", "feature")
 
     commit = ws_snap.snapshot_lane(ws, "atlas", "feature")
@@ -181,7 +182,7 @@ def test_snapshot_refuses_a_dirty_repo(tmp_path: Path) -> None:
     # workspace commit must reproduce the author's actual state.
     ws = _materialized_lane(tmp_path, ["a", "b"])
     _commit_lane_change(ws, ["a", "b"])
-    lane_root = lanes.lane_dir(ws, "atlas", "feature")
+    lane_root = lanes.lane_checkout_root(ws, "atlas", "feature")
     (lane_root / "repos" / "b" / "dirty.txt").write_text("uncommitted\n")  # untracked = dirty
     with pytest.raises(ws_snap.WorkspaceSnapshotError, match="uncommitted changes"):
         ws_snap.snapshot_lane(ws, "atlas", "feature")
@@ -194,21 +195,18 @@ def test_read_workspace_commit_rejects_a_non_workspace_kind(tmp_path: Path) -> N
     # below, which isolates the kind gate specifically.
     ws = _materialized_lane(tmp_path, ["a", "b"])
     _commit_lane_change(ws, ["a", "b"])
-    lane_root = lanes.lane_dir(ws, "atlas", "feature")
-    pins = [
-        {"key": r, "repo": f"https://example.invalid/{r}.git", "path": f"repos/{r}",
-         "head": _git(lane_root / "repos" / r, "rev-parse", "HEAD").stdout.strip(),
-         "base": _git(lane_root / "repos" / r, "rev-parse", "HEAD^").stdout.strip()}
-        for r in ("a", "b")
-    ]
-    review_commit = grip.create_project_review_commit(ws, pins)
+    lane_root = lanes.lane_checkout_root(ws, "atlas", "feature")
+    # A project-review-kind commit IN THE ALPHA STORE this reader reads. `create_project_review_commit`
+    # now writes only to a native root's own .git, so the fixture builds the commit by hand.
+    review_commit = _write_grip_commit_with_kind(
+        ws, _repo_fields(ws, ["a", "b"]), "review", schema=grip._PROJECT_REVIEW_SCHEMA)
     with pytest.raises(grip.GripCorruptError):
         ws_snap.read_snapshot(ws, review_commit)
 
 
 def _repo_fields(ws: Path, repos: list[str], lane: str = "feature") -> list[dict[str, str]]:
     """Section-5 field dicts (remote/path/commit/base) drawn from a real lane."""
-    lane_root = lanes.lane_dir(ws, "atlas", lane)
+    lane_root = lanes.lane_checkout_root(ws, "atlas", lane)
     return [
         {"key": r, "remote": f"https://example.invalid/{r}.git", "path": f"repos/{r}",
          "commit": _git(lane_root / "repos" / r, "rev-parse", "HEAD").stdout.strip(),
@@ -217,7 +215,9 @@ def _repo_fields(ws: Path, repos: list[str], lane: str = "feature") -> list[dict
     ]
 
 
-def _write_grip_commit_with_kind(ws: Path, repos: list[dict[str, str]], kind: str) -> str:
+def _write_grip_commit_with_kind(
+    ws: Path, repos: list[dict[str, str]], kind: str, schema: str | None = None,
+) -> str:
     """Build a gr commit through the SAME _mktree/_hash_blob seam create_workspace_commit
     uses, but with the workspace SCHEMA and a parameterized kind blob.
 
@@ -235,7 +235,7 @@ def _write_grip_commit_with_kind(ws: Path, repos: list[dict[str, str]], kind: st
         entries.append(f"040000 tree {grip._mktree(ws, fields)}\t{repo['key']}")
     repos_tree = grip._mktree(ws, entries)
     meta_tree = grip._mktree(ws, [
-        f"100644 blob {grip._hash_blob(ws, grip._WORKSPACE_SCHEMA)}\tschema",
+        f"100644 blob {grip._hash_blob(ws, schema or grip._WORKSPACE_SCHEMA)}\tschema",
         f"100644 blob {grip._hash_blob(ws, kind)}\tkind",
     ])
     root_tree = grip._mktree(ws, [f"040000 tree {meta_tree}\t.grip", f"040000 tree {repos_tree}\trepos"])
@@ -278,7 +278,7 @@ def test_snapshot_refuses_a_real_fork_base_that_is_not_an_ancestor_of_head(tmp_p
     # instead), so only the ancestor check can refuse this — removing it reds this.
     ws = _materialized_lane(tmp_path, ["a", "b"], fork_base=False)
     _commit_lane_change(ws, ["a", "b"])
-    lane_root = lanes.lane_dir(ws, "atlas", "feature")
+    lane_root = lanes.lane_checkout_root(ws, "atlas", "feature")
     repo_a = lane_root / "repos" / "a"
     # A real commit that DESCENDS from HEAD (a child): a reachable object, but not
     # an ancestor of HEAD.

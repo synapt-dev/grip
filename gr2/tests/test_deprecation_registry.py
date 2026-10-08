@@ -123,7 +123,7 @@ def _exists(spelling: str) -> bool:
     Two kinds so far, each with the cheapest honest check:
 
       - `module <name>`: the top-level package directory with an `__init__.py`.
-      - `path <p>`: the literal appears at least once under `python_cli/`.
+      - `path <p>`: the literal appears at least once under `gr2/gr2/python_cli/`.
 
     The `path` check is deliberately loose and says so: it answers "is the literal
     still written anywhere", not "does the product still create it at runtime". A
@@ -134,7 +134,7 @@ def _exists(spelling: str) -> bool:
     if kind == "module":
         return (GR2 / rest / "__init__.py").is_file()
     if kind == "path":
-        for src in (GR2 / "python_cli").rglob("*.py"):
+        for src in (GR2 / "gr2" / "python_cli").rglob("*.py"):
             if rest in src.read_text(encoding="utf-8", errors="replace"):
                 return True
         return False

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from gr2.python_cli import app as app_module
+from gr2.python_cli import review_records as records
 from gr2.prototypes import lane_workspace_prototype as lanes
 
 
@@ -138,7 +139,7 @@ def test_python_cli_renders_the_transition_writer_outcome(tmp_path: Path, capsys
     app_module.lane_enter(workspace, "atlas", "feature", "agent:atlas", False, False, False)
 
     payload = json.loads(capsys.readouterr().out)
-    lane_root = lanes.lane_dir(workspace, "atlas", "feature")
+    lane_root = workspace / "agents" / "atlas" / "lanes" / "feature"
     assert payload == {
         "status": "ok",
         "action": "enter",
@@ -267,13 +268,15 @@ repos = ["app", "lib"]
 
 def test_materialized_lane_records_lane_kind_materialized(tmp_path: Path) -> None:
     # Every lane document carries lane_kind so a reader never infers it; the
-    # ordinary create path is "materialized" and owns a repos/ subdir.
+    # ordinary create path records the visible checkout before materialization.
     workspace = _workspace(tmp_path)
     assert lanes.create_lane(_create(workspace, "feature")) == 0
     doc = lanes.tomllib.loads(lanes.lane_file(workspace, "atlas", "feature").read_text())
     assert doc["lane_kind"] == "materialized"
     assert "bound_worktree" not in doc
-    assert (lanes.lane_dir(workspace, "atlas", "feature") / "repos").is_dir()
+    assert doc["checkout_root"] == "agents/atlas/lanes/feature"
+    assert not (workspace / doc["checkout_root"]).exists()
+    assert not (lanes.lane_dir(workspace, "atlas", "feature") / "repos").exists()
 
 
 def test_create_bound_lane_writes_bound_receipt_and_no_clone(tmp_path: Path) -> None:
@@ -399,14 +402,26 @@ def test_app_lane_create_materialized_event_payload_has_lane_kind(tmp_path: Path
     assert "bound_worktree" not in payloads[0]
 
 
-def test_app_lane_create_requires_branch_without_bind(tmp_path: Path) -> None:
-    import typer
+def test_app_lane_create_defaults_the_branch_to_the_lane_name_without_bind(tmp_path: Path, monkeypatch) -> None:
+    """Superseded rule: this row used to assert `--branch is required unless --bind`. Since tier A3 the branch of a
+    materialized lane is the lane name when it is left out (announced on stderr, checked against the remotes)."""
     workspace = _workspace(tmp_path)
-    with pytest.raises(typer.BadParameter, match="branch is required"):
+    seen: dict = {}
+
+    class _Stop(Exception):
+        pass
+
+    def capture(ns):
+        seen["branch"], seen["repos"] = ns.branch, ns.repos
+        raise _Stop
+
+    monkeypatch.setattr(app_module.lane_proto, "create_lane", capture)
+    with pytest.raises(_Stop):
         app_module.lane_create(
             workspace, "atlas", "m", repos="app", branch=None,
             lane_type="feature", source="manual", command=[], manual_hooks=False, bind=None,
         )
+    assert seen == {"branch": "m", "repos": "app"}
 
 
 # --------------------------------------------------------------------------- #
@@ -442,9 +457,13 @@ def test_bind_bound_lane_writes_a_bound_receipt_from_the_worktree(tmp_path: Path
     assert record.head == head
     assert record.base == base
     assert record.repo.startswith("local:")  # no GitHub origin -> local identity under --allow-local
-    # the receipt is written into the worktree's OWN .git (same helper as materialized)
-    receipt = wt / ".git" / "grip-review.json"
-    assert receipt.is_file()
+    receipt = records.review_record_paths(workspace, "atlas", "bound", "app", wt).current
+    git_receipt = Path(_git(wt, "rev-parse", "--path-format=absolute", "--git-path", "grip-review.json").stdout.strip())
+    workspace_receipt = workspace / ".grip" / "state" / "reviews" / "atlas" / "bound" / "app.json"
+    assert receipt == git_receipt and receipt.is_file()
+    assert records.review_record_pointer_path(wt).read_text() == str(workspace_receipt) + "\n"
+    assert not workspace_receipt.exists()
+    assert not (git_receipt.parent / "grip-review.json.publication.json").exists()
     data = _json.loads(receipt.read_text())
     assert data == {"repo": record.repo, "base": base, "head": head, "lane_kind": "bound"}
 
@@ -517,7 +536,7 @@ def test_app_lane_bind_verb_is_registered_and_binds(tmp_path: Path, capsys: pyte
     app_module.lane_bind(workspace, "atlas", "bound", base=base, allow_local=True, json_output=True)
     out = _json.loads(capsys.readouterr().out)
     assert out == {"repo": out["repo"], "base": base, "head": head, "lane_kind": "bound"}
-    assert (wt / ".git" / "grip-review.json").is_file()
+    assert records.review_record_paths(workspace, "atlas", "bound", "app", wt).current.is_file()
 
 
 def test_app_lane_bind_refuses_materialized_with_exit_2(tmp_path: Path) -> None:
@@ -650,7 +669,7 @@ def test_bind_bound_lane_reads_recorded_fork_base_when_base_omitted(tmp_path: Pa
     assert record.base == initial
     assert record.base != head_parent
     assert record.head == head
-    data = _json.loads((wt / ".git" / "grip-review.json").read_text())
+    data = _json.loads(records.review_record_paths(workspace, "atlas", "bound", "app", wt).current.read_text())
     assert data["base"] == initial  # the recorded fork base is what lands in the receipt
 
 
@@ -662,7 +681,7 @@ def test_bind_bound_lane_explicit_base_overrides_recorded_fork_base(tmp_path: Pa
     record = lanes.bind_bound_lane(workspace, "atlas", "bound", base=fork, allow_local=True)
     assert record.base == fork
     assert record.base != initial
-    data = _json.loads((wt / ".git" / "grip-review.json").read_text())
+    data = _json.loads(records.review_record_paths(workspace, "atlas", "bound", "app", wt).current.read_text())
     assert data["base"] == fork
 
 

@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package dev.synapt.grip.review.v1alpha1;
+
+// A gr2 review bind record. Stored as a form D Git tree (entry per field, named
+// NNN.W[r]_name); this file owns the numbers and names. Pre-release (v1alpha1):
+// inside this package fields may only be ADDED, and a removed number is reserved.
+// A rename or a change of meaning is a new package (v2). Field numbers stay in 1..999
+// so their zero-padded tree names sort in number order.
+message ReviewBind {
+  string schema = 1;            // the bind schema identifier the writer used
+  string kind = 2;              // "review"
+  string policy = 3;            // the policy hook's verdict over the carried bytes
+  repeated Member members = 4;  // sorted by key before writing
+  string author = 5;            // binder's Git identity name; absent in older binds
+}
+
+// One repository in the review.
+message Member {
+  string key = 1;
+  string path = 2;
+  string remote = 3;
+  string base = 4;              // live remote head of the target ref at bind time
+  string commit = 5;            // the reviewed head
+  string head_tree = 6;         // tree a reconstruction of the range must produce
+  bytes metadata = 7;           // fuller metadata of the frozen range
+  bytes range_patch = 8;        // the frozen range, as format-patch text
+  string remote_head = 9;       // observed remote head of the target ref
+  string title = 10;            // platform title text
+  string body = 11;             // platform body text
+  bytes committers = 12;        // committer identities for an exact reconstruction
+  Evidence evidence = 13;
+}
+
+// Commands the author ran, and how a failure was resolved.
+message Evidence {
+  bytes commands = 1;
+  bytes resolution = 2;
+}

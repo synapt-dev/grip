@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from gr2.python_cli.events import EventEmitError, EventType, emit_after_outcome
 
-ROOT = Path(__file__).parents[1] / "python_cli"
+ROOT = Path(__file__).parents[1] / "gr2" / "python_cli"
 
 
 def _calls(path: Path) -> list[tuple[str, str, str | None, bool]]:
@@ -90,6 +90,12 @@ def test_every_direct_site_has_the_classified_policy() -> None:
             ("lane_exit", "emit_after_outcome", "LANE_EXITED", False): 1,
             ("lane_lease_acquire", "emit_after_outcome", "LEASE_ACQUIRED", False): 1,
             ("lane_lease_release", "emit_after_outcome", "LEASE_RELEASED", False): 1,
+            ("review_bind", "emit_after_outcome", "REVIEW_BOUND", False): 1,
+            ("_emit_review_opened", "emit_after_outcome", "REVIEW_OPENED", False): 1,
+            ("review_verify", "emit", "REVIEW_VERIFIED", False): 1,
+            # the event type is the caller's (run_completed or run_refused), so the scan sees a variable
+            ("_emit_review_run", "emit_after_outcome", None, False): 1,
+            ("review_close_gr", "emit_after_outcome", "REVIEW_CLOSED", False): 1,
         }
     )
     assert actual == expected

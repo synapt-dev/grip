@@ -3,10 +3,11 @@
 - ``close`` reads the lane marker (open-gr reconstruct marker -> reconstruction teardown).
 End-to-end: a real open-gr marker routes to close_open_gr_lane and reclaims the lane;
 a lane with no marker is a PR lane and open-gr teardown refuses it."""
+import subprocess
 import pytest
 
-from python_cli import review_dispatch
-from python_cli import open_gr_review
+from gr2.python_cli import review_dispatch
+from gr2.python_cli import open_gr_review
 
 
 def _flat_output(result) -> str:
@@ -21,7 +22,7 @@ def test_review_open_legacy_pr_head_positionals_do_not_classify_owner_unit(tmp_p
     classify_open_target reads as "project". Positionals decide first, so a full
     three-positional open reaches the PR-head path and never the project refusal."""
     from typer.testing import CliRunner
-    from python_cli.app import app
+    from gr2.python_cli.app import app
 
     runner = CliRunner()
     ws = tmp_path / "ws"
@@ -37,7 +38,7 @@ def test_review_open_lone_project_id_still_refuses_with_project_message(tmp_path
     """Control: with only a lone non-hex/non-digit target (no repo/pr_number),
     classification still fires and the project-review refusal is the one raised."""
     from typer.testing import CliRunner
-    from python_cli.app import app
+    from gr2.python_cli.app import app
 
     runner = CliRunner()
     ws = tmp_path / "ws"
@@ -51,7 +52,7 @@ def test_review_open_lone_pr_number_refuses_needing_owner_unit_and_repo(tmp_path
     """A lone PR number cannot open a PR-head lane: that path needs OWNER_UNIT and
     REPO positionals too. It refuses, and NOT with the project message."""
     from typer.testing import CliRunner
-    from python_cli.app import app
+    from gr2.python_cli.app import app
 
     runner = CliRunner()
     ws = tmp_path / "ws"
@@ -80,11 +81,19 @@ def test_classify_open_target(target, kind):
 def test_close_classifies_and_routes_a_real_reconstruction_lane(tmp_path):
     lane = tmp_path / "lane"
     lane.mkdir()
-    (lane / "some-reconstructed-repo").mkdir()  # the disposable tree open-gr would create
+    member = lane / "some-reconstructed-repo"
+    member.mkdir()
+    for args in (("init", "-q"), ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "seed")):
+        subprocess.run(["git", "-C", str(member), *args], check=True, capture_output=True)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    from gr2.python_cli.review_allocation import record_created_allocation
+    record_created_allocation(workspace, lane, "workspace", "review", [member], disposable=True)
     open_gr_review.write_open_gr_marker(
         lane,
         "gr:deadbeef",
         {"recall": {"bound_head_tree": "t", "reconstructed_tree": "t"}},
+        workspace,
     )
     # decision: the marker tells close this is a reconstruction lane
     assert review_dispatch.classify_close_lane(lane) == "reconstruction"

@@ -24,7 +24,7 @@ def _gated_emit_worker(
     result_queue: object,
 ) -> None:
     """Pause each process after reading seq so an unlocked RMW races deterministically."""
-    events_path = Path(source_root) / "gr2" / "python_cli" / "events.py"
+    events_path = Path(source_root) / "gr2" / "gr2" / "python_cli" / "events.py"
     spec = importlib.util.spec_from_file_location("event_integrity_worker_events", events_path)
     assert spec is not None and spec.loader is not None
     events = importlib.util.module_from_spec(spec)
@@ -187,22 +187,15 @@ def test_emit_resolves_current_seq_at_call_time_so_a_fixture_can_force_the_windo
     target for the seam -- binding `_current_seq` at import in `emit` reddens
     this row and nothing else.
     """
-    # THE HARNESS'S NAME, not the other one. `python_cli` and `gr2.python_cli` both
-    # resolve to `python_cli/events.py` and are NOT the same module object
-    # (`[tool.setuptools.package-dir]` maps "gr2.python_cli" = "python_cli"), so
-    # each name has its own globals and a patch on one is invisible to the other.
-    # This row is written against `python_cli` because that is the name the fixture
-    # patches -- a reader caught the earlier version proving the property one name
-    # over, on a module the harness never touches.
-    from python_cli import events
-
-    import gr2.python_cli.events as _other_name
-
-    assert events is not _other_name, (
-        "the two import names have become ONE module object, so the split this "
-        "comment describes is gone and the harness's patch site is now the same as "
-        "every other caller's -- update the comment rather than deleting this row"
-    )
+    # ONE NAME. This row used to be written against the flat name `python_cli` because that
+    # name and `gr2.python_cli` were two module objects over one file (the packaging map
+    # mapped a flat directory onto a dotted name), each with its own globals, so a patch on
+    # one was invisible to the other and a reader caught an earlier version proving the
+    # property one name over. The map is retired and the directory is `gr2/python_cli`, so
+    # there is one module object and the patch site is every caller's. This row's own
+    # canary asked for the comment to be updated, not the row deleted: the spy below still
+    # proves `emit` reads through the module-level `_current_seq`.
+    from gr2.python_cli import events
 
     seen: list[Path] = []
     real = events._current_seq
@@ -244,7 +237,7 @@ def test_emit_wraps_a_read_failure_so_the_cause_chain_is_the_diagnosis(tmp_path:
 
     One process, no writers, no load.
     """
-    from python_cli import events
+    from gr2.python_cli import events
 
     real = events._current_seq
 

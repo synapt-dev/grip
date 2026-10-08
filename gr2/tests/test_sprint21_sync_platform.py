@@ -639,7 +639,7 @@ def test_pr_commands_route_through_platform_adapter(tmp_path: Path, monkeypatch)
             calls.append(("checks", (repo, number)))
             return [PRCheck(name="ci", status="COMPLETED", conclusion="SUCCESS")]
 
-    monkeypatch.setattr(app_module, "get_platform_adapter", lambda name="github": FakeAdapter())
+    monkeypatch.setattr(app_module.platform_ops, "get_platform_adapter", lambda name="github": FakeAdapter())
 
     result = runner.invoke(app, ["pr", "create", str(workspace_root), "atlas", "feat-auth", "--json"])
     assert result.exit_code == 0
@@ -719,7 +719,7 @@ def test_pr_merge_success_consumes_the_returned_completed_subset(
         group_path.write_text(json.dumps(returned))
         return returned
 
-    monkeypatch.setattr(app_module, "get_platform_adapter", lambda name="github": object())
+    monkeypatch.setattr(app_module.platform_ops, "get_platform_adapter", lambda name="github": object())
     monkeypatch.setattr(app_module.pr_ops, "merge_pr_group", merge_subset)
 
     result = runner.invoke(
@@ -782,7 +782,7 @@ def test_pr_merge_success_receipts_keep_adapter_provenance_when_membership_match
         group_path.write_text(json.dumps(returned))
         return returned
 
-    monkeypatch.setattr(app_module, "get_platform_adapter", lambda name="github": object())
+    monkeypatch.setattr(app_module.platform_ops, "get_platform_adapter", lambda name="github": object())
     monkeypatch.setattr(app_module.pr_ops, "merge_pr_group", merge_all)
 
     result = runner.invoke(
@@ -859,7 +859,7 @@ def test_pr_create_persists_group_state_by_pr_group_id(tmp_path: Path, monkeypat
         def pr_checks(self, repo: str, number: int) -> list[PRCheck]:  # pragma: no cover
             return []
 
-    monkeypatch.setattr(app_module, "get_platform_adapter", lambda name="github": FakeAdapter())
+    monkeypatch.setattr(app_module.platform_ops, "get_platform_adapter", lambda name="github": FakeAdapter())
 
     result = runner.invoke(app, ["pr", "create", str(workspace_root), "atlas", "feat-router", "--json"])
     assert result.exit_code == 0
@@ -934,7 +934,7 @@ def test_pr_status_aggregates_group_state(tmp_path: Path, monkeypatch) -> None:
         def pr_checks(self, repo: str, number: int) -> list[PRCheck]:  # pragma: no cover
             return []
 
-    monkeypatch.setattr(app_module, "get_platform_adapter", lambda name="github": FakeAdapter())
+    monkeypatch.setattr(app_module.platform_ops, "get_platform_adapter", lambda name="github": FakeAdapter())
 
     result = runner.invoke(app, ["pr", "status", str(workspace_root), "atlas", "feat-router", "--json"])
     assert result.exit_code == 0
@@ -1013,7 +1013,7 @@ def test_pr_merge_reports_partial_failure_and_preserves_state(tmp_path: Path, mo
         def pr_checks(self, repo: str, number: int) -> list[PRCheck]:  # pragma: no cover
             return []
 
-    monkeypatch.setattr(app_module, "get_platform_adapter", lambda name="github": FakeAdapter())
+    monkeypatch.setattr(app_module.platform_ops, "get_platform_adapter", lambda name="github": FakeAdapter())
 
     result = runner.invoke(app, ["pr", "merge", str(workspace_root), "atlas", "feat-router", "--json"])
     assert result.exit_code == 1
@@ -1230,7 +1230,7 @@ def test_pr_create_exits_non_zero_when_a_sibling_edit_fails(tmp_path: Path, monk
         def pr_checks(self, *args: object, **kwargs: object) -> list[PRCheck]:  # pragma: no cover
             return []
 
-    monkeypatch.setattr(app_module, "get_platform_adapter", lambda name="github": HalfLinkedAdapter())
+    monkeypatch.setattr(app_module.platform_ops, "get_platform_adapter", lambda name="github": HalfLinkedAdapter())
 
     result = runner.invoke(app, ["pr", "create", str(workspace_root), "atlas", "feat-router", "--json"])
 
@@ -1314,7 +1314,7 @@ def test_pr_create_refuses_body_and_body_file_together(tmp_path: Path, monkeypat
     precedence question: the caller is told, instead of one silently winning."""
     workspace_root = _pr_create_lane(tmp_path)
     adapter = _NeverCreateAdapter()
-    monkeypatch.setattr(app_module, "get_platform_adapter", lambda name="github": adapter)
+    monkeypatch.setattr(app_module.platform_ops, "get_platform_adapter", lambda name="github": adapter)
     body_file = tmp_path / "body.md"
     body_file.write_text("from a file\n")
 
@@ -1341,7 +1341,7 @@ def test_pr_create_refuses_a_body_file_it_cannot_read(tmp_path: Path, monkeypatc
     write, and the caller has no way to notice."""
     workspace_root = _pr_create_lane(tmp_path)
     adapter = _NeverCreateAdapter()
-    monkeypatch.setattr(app_module, "get_platform_adapter", lambda name="github": adapter)
+    monkeypatch.setattr(app_module.platform_ops, "get_platform_adapter", lambda name="github": adapter)
     unreadable = tmp_path / "a-directory"
     unreadable.mkdir()  # exists, but is not readable as text
 

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from python_cli import git_review
+from gr2.python_cli import git_review
 
 
 def _run(repo: Path, *args: str) -> None:
@@ -375,7 +375,7 @@ def test_both_doors_survive_a_stdout_that_cannot_encode_the_identity():
 # `except` bound to the other. Production has one path (the wheel ships only
 # `gr2.python_cli`) and git_review imports review_run relatively, so this is a
 # test-harness hazard only; matching the file's existing import keeps it out of reach.
-from python_cli import review_run as rr  # noqa: E402  (grouped with the run tests)
+from gr2.python_cli import review_run as rr  # noqa: E402  (grouped with the run tests)
 
 
 def _pkg_repo(

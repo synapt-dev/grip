@@ -9,6 +9,9 @@ against an independently computed hash (the bridge to the hand freeze's NORM).
 """
 from __future__ import annotations
 
+from tests.review_ref_helper import legacy_review_ref, review_ref
+from tests.native_root_helper import native_root
+
 import hashlib
 import subprocess
 from pathlib import Path
@@ -68,7 +71,7 @@ def _row(remote: str, base: str, head: str) -> dict[str, str]:
 def _grip_ws(tmp_path: Path) -> Path:
     ws = tmp_path / "ws"
     ws.mkdir()
-    grip.grip_init(ws)
+    native_root(ws)
     return ws
 
 
@@ -134,13 +137,14 @@ def test_bind_carries_frozen_set_and_verify_reproduces_objects(tmp_path):
     # head-tree is recorded so run can assert reconstruction WITHOUT the head object.
     assert r["head_tree"] == _git(work, "rev-parse", f"{head}^{{tree}}")
     assert len(r["range_sha256"]) == 64
-    # The object carries the readable range + metadata + head-tree, and evidence.
-    names = _git(ws / ".grip", "ls-tree", "--name-only", f"{commit}:objects/recall").split()
-    assert set(names) == {"range.patch", "metadata", "head-tree"}
-    rng = _git(ws / ".grip", "show", f"{commit}:objects/recall/range.patch")
-    assert "Subject:" in rng and "diff --git" in rng
-    ev = _git(ws / ".grip", "ls-tree", "--name-only", f"{commit}:evidence/recall").split()
-    assert ev == ["commands"]
+    # Decode by field number, so this checks content through the D reader.
+    from gr2.python_cli import review_field_tree as fd
+    tree = _git(ws, "rev-parse", commit + "^{tree}")
+    member = fd.read_record(ws, tree)["members"][0]
+    assert member["head_tree"] == _git(work, "rev-parse", head + "^{tree}")
+    assert b"Subject:" in member["range_patch"] and b"diff --git" in member["range_patch"]
+    assert member["metadata"]
+    assert member["evidence"] == {"commands": row["evidence"].encode()}
 
 
 def test_reconstruct_materializes_pre_push_head_and_asserts_tree(tmp_path):
@@ -175,40 +179,16 @@ def test_reconstruct_refuses_on_tree_mismatch(tmp_path):
     row["source"] = str(work)
     commit = grip.create_review_bind_commit(ws, [row])
 
-    grip_git = ws / ".grip"
+    from gr2.python_cli import review_field_tree as fd
     wrong_tree = _git(work, "rev-parse", f"{base}^{{tree}}")  # base tree != head tree (a real, wrong sha)
-    # Rebuild the objects/recall tree with a tampered head-tree, then rebuild up.
-    rng = _git(grip_git, "rev-parse", f"{commit}:objects/recall/range.patch")
-    meta = _git(grip_git, "rev-parse", f"{commit}:objects/recall/metadata")
-    bad_blob = subprocess.run(
-        ["git", "-C", str(grip_git), "hash-object", "-w", "--stdin"],
-        input=wrong_tree + "\n", capture_output=True, text=True, check=True).stdout.strip()
-    obj_tree = subprocess.run(
-        ["git", "-C", str(grip_git), "mktree"],
-        input=f"100644 blob {rng}\trange.patch\n100644 blob {meta}\tmetadata\n"
-              f"100644 blob {bad_blob}\thead-tree\n",
-        capture_output=True, text=True, check=True).stdout.strip()
-    objects_tree = subprocess.run(
-        ["git", "-C", str(grip_git), "mktree"],
-        input=f"040000 tree {obj_tree}\trecall\n",
-        capture_output=True, text=True, check=True).stdout.strip()
-    # Splice the tampered objects tree back into a full root and commit it.
-    root = _git(grip_git, "cat-file", "-p", f"{commit}^{{tree}}")
-    new_root_lines = []
-    for line in root.splitlines():
-        if line.endswith("\tobjects"):
-            mode, typ, _old, name = line.replace("\t", " ", 3).split(" ", 3)
-            new_root_lines.append(f"{mode} {typ} {objects_tree}\t{name}")
-        else:
-            mode, typ, sha, name = line.replace("\t", " ", 3).split(" ", 3)
-            new_root_lines.append(f"{mode} {typ} {sha}\t{name}")
-    new_root = subprocess.run(
-        ["git", "-C", str(grip_git), "mktree"],
-        input="\n".join(new_root_lines) + "\n", capture_output=True, text=True, check=True).stdout.strip()
+    # Replace the member's head_tree field (Member field 6) in the field tree, then commit it.
+    tree = _git(ws, "rev-parse", f"{commit}^{{tree}}")
+    bad = fd.replace_entry(ws, tree, ["004.2", "0000001", "006.2"], wrong_tree.encode())
     tampered = subprocess.run(
-        ["git", "-C", str(grip_git), "-c", "user.name=t", "-c", "user.email=t@e",
-         "commit-tree", new_root, "-m", "tampered"],
+        ["git", "-C", str(ws), "-c", "user.name=t", "-c", "user.email=t@e",
+         "commit-tree", bad, "-m", "tampered"],
         capture_output=True, text=True, check=True).stdout.strip()
+    subprocess.run(["git", "-C", str(ws), "update-ref", review_ref(tampered), tampered], check=True)
 
     with pytest.raises(GripReviewRefused) as exc:
         grip.reconstruct_review_lane(ws, tampered, "recall", tmp_path / "lane2")
@@ -286,7 +266,8 @@ def test_policy_hook_sees_carried_bytes_and_refuses_on_hit(tmp_path):
     clean = _row(remote, base, head)
     clean["source"] = str(work)
     commit = grip.create_review_bind_commit(ws, [clean], policy_hook=hook)
-    policy = _git(ws / ".grip", "show", f"{commit}:.grip/policy")
+    from gr2.python_cli import review_field_tree as fd
+    policy = fd.read_record(ws, _git(ws, "rev-parse", f"{commit}^{{tree}}"))["policy"]
     assert policy.startswith("clean:")
     assert grip.verify_review_commit(ws, commit)["tree_matches"] is True
 

@@ -11,6 +11,8 @@ git-am exit point removed from the gr2 review producer.
 """
 from __future__ import annotations
 
+from tests.native_root_helper import native_root
+
 import subprocess
 from pathlib import Path
 
@@ -55,7 +57,7 @@ def _base_remote_and_range(tmp_path: Path) -> tuple[str, str, str, str, str]:
 def _init_ws(tmp_path: Path) -> Path:
     ws = tmp_path / "ws"
     (ws / ".grip").mkdir(parents=True)
-    grip.grip_init(ws)
+    native_root(ws)
     return ws
 
 
@@ -72,7 +74,7 @@ def test_bind_from_range_carries_the_range_and_reconstructs_the_tree(tmp_path: P
     # WITNESS (kills the routing mutation): a range-bearing row carries the objects
     # subtree, exactly as a --source row does. Neuter the `elif range_patch` branch
     # in create_review_bind_commit and this key is absent.
-    assert "alpha" in grip._tree_keys(ws, commit, "objects")
+    assert grip._carries_objects(ws, commit, "alpha")
 
     lane_dir = tmp_path / "lane" / "alpha"
     result = grip.reconstruct_review_lane(ws, commit, "alpha", lane_dir)
@@ -100,7 +102,7 @@ def test_cli_bind_from_range_then_open_gr_matches_tree(tmp_path: Path) -> None:
 
     lane_dir = tmp_path / "lane"
     res2 = runner.invoke(gr2_app.app, [
-        "review", "open-gr", str(ws), sha, "--repo", "alpha",
+        "review", "open", str(ws), sha, "--repo", "alpha",
         "--lane-dir", str(lane_dir), "--enter", "--json",
     ])
     assert res2.exit_code == 0, res2.output

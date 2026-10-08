@@ -1461,16 +1461,10 @@ def test_break_19_member_found_at_its_path_not_its_name(two_member_ws: Path, tmp
 
 
 def test_break_21_tracked_non_member_root_folder_is_untouched(two_member_ws: Path) -> None:
-    """Section 12: plant a tracked, non-member `config/` with files, run every store verb,
-    and require it byte-identical with no refusal naming it. This is constraint 3 as a row,
-    and it fails the moment a verb treats a tracked root folder as a mistake -- which is
-    the failure mode the whole boundary exists to prevent.
+    """An explicitly included, tracked non-member root folder stays byte-identical.
 
-    The second half of the attempt -- with `track = ["config/"]`, `store init` un-ignores it
-    once the key is read -- cannot be written yet: `track` is not a key in the slice, so
-    there is nothing to assert it against. It is named here so a later reader does not read
-    its absence as an oversight, and review flagged that this attempt was missing from
-    the header's disclosed list as well.
+    Root inclusion is declared in .gitinclude. Tracking content with force-add does
+    not grant native commit authority over an undeclared path.
     """
     root = two_member_ws
     tracked = root / "config"
@@ -1483,10 +1477,14 @@ def test_break_21_tracked_non_member_root_folder_is_untouched(two_member_ws: Pat
     # config against it earlier fails with exit 128 and the row dies in its own setup.
     _git(root, "config", "user.email", "t@e.invalid")
     _git(root, "config", "user.name", "t")
-    # MAKE IT TRACKED, or the row proves nothing. Section 3a's allow-list leaves `config/`
-    # IGNORED, so without this the folder the row calls "tracked" does not exist as a
-    # tracked path at all and the row can pass while nothing is exercised.
-    _git(root, "add", "-f", "config")
+    # Declare root content through the owning policy, then prove it is tracked
+    # with ordinary Git staging rather than bypassing that policy with force-add.
+    from gr2.python_cli import grip_cli
+
+    with (root / ".gitinclude").open("a") as declaration:
+        declaration.write("config/\n")
+    grip_cli._regenerate_workspace_gitignore(root)
+    _git(root, "add", "config")
     _git(root, "commit", "-q", "-m", "track config/ so the claim is real")
     assert _git_out(root, "ls-files", "config"), (
         "the fixture must actually track config/, or byte-identity proves nothing"
@@ -1836,8 +1834,15 @@ def test_break_20e_another_members_NAME_coordinate_is_claimed_without_any_rename
     assert 'path = "beta-declared"' in manifest.read_text(), "fixture: beta's declared path must move"
     assert (root / "beta").is_dir(), "fixture: beta's checkout must STAY at its NAME coordinate"
 
+    # The new declared gitlink coordinate also needs root inclusion authority.
+    from gr2.python_cli import grip_cli
+
+    with (root / ".gitinclude").open("a") as declaration:
+        declaration.write("beta-declared/\n")
+    grip_cli._regenerate_workspace_gitignore(root)
     # Committed BEFORE the collision exists, so this step proves beta resolves through its NAME.
-    assert _cli("store", "commit", "-m", "record the name-placed fixture")[0] == 0
+    rc, out = _cli("store", "commit", "-m", "record the name-placed fixture")
+    assert rc == 0, out
 
     def pin_of(declared_path: str) -> str | None:
         fields = _git_out(root, "ls-tree", "HEAD", "--", declared_path).split()

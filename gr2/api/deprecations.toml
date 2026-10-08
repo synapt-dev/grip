@@ -8,8 +8,8 @@
 # sentence in a comment, and -- the reason the vocabulary exists -- it is NOT a
 # version number.
 #
-# ⚠ WHAT THIS FILE COVERS TODAY. TWELVE names are registered, and the sweep in
-# `tests/test_deprecation_registry.py` keeps the six in the first group honest.
+# ⚠ WHAT THIS FILE COVERS TODAY. THIRTEEN names are registered, and the sweep in
+# `tests/test_deprecation_registry.py` keeps the hidden aliases honest.
 #
 #   THE SIX HIDDEN ALIASES, each carrying the milestone its own site already states:
 #     `grip` `open-gr` `open-project` `close-gr` `exit-gr`  ->  release  ("dropped at 2.0 GA")
@@ -18,6 +18,7 @@
 #   AND ONE LEGACY FILE NAME: `.grip-open-gr-reconstruct.json` (the pre-rename review marker, still READ)  ->  release
 #   AND TWO HOOK VERBS' OLD SPELLINGS: `repo hooks` and `repo hook-run` (now `hooks show` and `hooks run`)  ->  release
 #   AND ONE LANE VERB'S OLD SPELLING: `lane current` (now `lane show`)  ->  release
+#   AND ONE REVIEW VERB'S OLD SPELLING: `review requirements` (now `review check`)  ->  beta
 #
 # THE TREE STILL CARRIES PROSE DEADLINES IN FOUR DISTINCT WORDINGS. Three of the four
 # are now registered as the alias they name; the FOURTH IS NOT, because it is not a
@@ -33,8 +34,8 @@
 # the moment somebody edits a docstring, while a list names what to re-check.
 # Today, in the source:
 #
-#   python_cli/app.py, python_cli/grip_cli.py, python_cli/spec_apply.py,
-#   python_cli/review_records.py, python_cli/review_dispatch.py, api/stability.toml
+#   gr2/gr2/python_cli/app.py, gr2/gr2/python_cli/grip_cli.py, gr2/gr2/python_cli/spec_apply.py,
+#   gr2/gr2/python_cli/review_records.py, gr2/gr2/python_cli/review_dispatch.py, api/stability.toml
 #
 # plus test rows that pin the wording, which are a different category and are not
 # counted here.
@@ -97,7 +98,7 @@
 # incident this registry was built from.
 #
 # NOTE ON ITS EXISTENCE CHECK, because this entry is the weaker of the two: the
-# `path` check greps for the literal under `python_cli/`, and `.grip/.git` also
+# `path` check greps for the literal under `gr2/gr2/python_cli/`, and `.grip/.git` also
 # appears in migration.py, which MUST keep that literal after `workspace init*`
 # stops creating the path. So the stale-entry gate for the `.grip/.git` entry
 # below passes for as long as migration.py exists, and the FAIL-AT-BETA gate is
@@ -119,7 +120,7 @@
 # previously said did not exist.
 
 # The `grip` sub-app: `app.add_typer(grip_app, name="grip", hidden=True)`. Its site
-# (python_cli/app.py:126) says it "stays as a hidden alias for one release so
+# (gr2/gr2/python_cli/app.py:126) says it "stays as a hidden alias for one release so
 # existing callers keep" working, and names no milestone. The four review aliases
 # below use the same phrase WITH the milestone spelled out ("for one release,
 # dropped at 2.0 GA"), so "one release" is read as GA here too. The inference is
@@ -127,7 +128,7 @@
 "alias grip" = "release"
 
 # The review reconstruction verbs, marked identically at their four sites
-# (python_cli/app.py:3012, :3075, :3237, :3309): "hidden alias for one release,
+# (gr2/gr2/python_cli/app.py:3012, :3075, :3237, :3309): "hidden alias for one release,
 # dropped at 2.0 GA".
 #
 # ⚠ `open-project` CARRIES A PRECONDITION, and it is the only one of the four that
@@ -146,13 +147,13 @@
 "alias close-gr" = "release"
 
 # The pre-rename reconstruction marker that `review close` and `review run` still READ
-# (python_cli/review_run.py, `_LEGACY_MARKERS`), so a lane opened by an earlier release
+# (gr2/gr2/python_cli/review_run.py, `_LEGACY_MARKERS`), so a lane opened by an earlier release
 # is reclaimed rather than refused. It leaves with the `open-gr`/`close-gr` aliases, on
 # the same milestone; the `path` kind checks the literal is still written in the tree.
 "path .grip-open-gr-reconstruct.json" = "release"
 
 # `grip snapshot`, the alias of `store commit`. Its own docstring carries the
-# deadline (python_cli/grip_cli.py:1715): "Hidden alias of `store commit` (design
+# deadline (gr2/gr2/python_cli/grip_cli.py:1715): "Hidden alias of `store commit` (design
 # section 5), removed at beta."
 "alias snapshot" = "beta"
 
@@ -169,3 +170,7 @@
 # prints a stored thing; `target show` and `lane lease show` already do). The old
 # spelling is a hidden alias of the same callback, keyed by its last path segment.
 "alias current" = "release"
+
+# The requirement check is `review check`; the old visible spelling remains
+# a hidden alias through alpha, removed at beta. Both run the same callback.
+"alias requirements" = "beta"

@@ -4,6 +4,7 @@ ref   refs/dev.synapt/__members__/<member>/heads/*                    reserved
 ref   refs/dev.synapt/__overlays__/<member>/...                       reserved
 # add
 arg   add paths <str>                                                 stable
+flag  add --lane                                                      stable
 flag  add --repo-path <str>                                           stable
 verb  add                                                             stable
 # apply
@@ -17,6 +18,35 @@ arg   branch name <str>                                               stable
 flag  branch --base/--from/--start-point <str>                        stable
 flag  branch --repo-path <str>                                        stable
 verb  branch                                                          stable
+# check run
+arg   check run command <str>                                         stable
+arg   check run repo <str>                                            stable
+flag  check run --head <str>                                          stable
+flag  check run --name <str>                                          stable
+flag  check run --remote <str>                                        stable
+verb  check run                                                       stable
+# check show
+arg   check show repo <str>                                           stable
+flag  check show --head <str>                                         stable
+flag  check show --json                                               stable
+flag  check show --member <str>                                       stable
+flag  check show --remote <str>                                       stable
+flag  check show --require <str>                                      stable
+json  check show .head                                                stable
+json  check show .member_key                                          stable
+json  check show .reason                                              stable
+json  check show .record_id                                           stable
+json  check show .records                                             stable
+json  check show .records[].exit_code                                 stable
+json  check show .records[].head                                      stable
+json  check show .records[].name                                      stable
+json  check show .records[].observation_id                            stable
+json  check show .records[].observed_head                             stable
+json  check show .records[].result  enum(pass,fail,error)             stable
+json  check show .records[].v  enum(1)                                stable
+json  check show .snapshot_oid                                        stable
+json  check show .status  enum(pass,fail,absent)                      stable
+verb  check show                                                      stable
 # commit
 flag  commit --amend                                                  stable
 flag  commit --lane <str>                                             stable
@@ -35,6 +65,7 @@ arg   config restore ref <str>                                        stable
 arg   config restore workspace_root <str>                             stable
 flag  config restore --json                                           stable
 flag  config restore --overlay-dir <str>                              stable
+flag  config restore --root/-C <str>                                  stable
 verb  config restore                                                  stable
 # config show
 arg   config show base_path <str>                                     stable
@@ -51,6 +82,7 @@ flag  exec run --actor <str>                                          stable
 flag  exec run --json                                                 stable
 flag  exec run --lane <str>                                           stable
 flag  exec run --repos <str>                                          stable
+flag  exec run --root/-C <str>                                        stable
 flag  exec run --ttl-seconds <str>                                    stable
 verb  exec run                                                        stable
 # exec status
@@ -60,6 +92,7 @@ arg   exec status workspace_root <str>                                stable
 flag  exec status --actor <str>                                       stable
 flag  exec status --json                                              stable
 flag  exec status --repos <str>                                       stable
+flag  exec status --root/-C <str>                                     stable
 verb  exec status                                                     stable
 # grip check
 flag  grip check --json (hidden:grip)                                 stable
@@ -127,6 +160,16 @@ json  grip migrate .members  map<str,str>                             may-change
 json  grip migrate .root_commit                                       may-change
 json  grip migrate .status  enum(dry-run,migrated)                    may-change
 verb  grip migrate (hidden:grip)                                      stable
+# grip migrate-reviews
+arg   grip migrate-reviews root <str> (hidden:grip)                   stable
+flag  grip migrate-reviews --json (hidden:grip)                       stable
+json  grip migrate-reviews .receipt                                   stable
+json  grip migrate-reviews .rows[].new_id                             stable
+json  grip migrate-reviews .rows[].old_id                             stable
+json  grip migrate-reviews .rows[].reason                             stable
+json  grip migrate-reviews .rows[].ref                                stable
+json  grip migrate-reviews .rows[].status  enum(created,present,refused) stable
+verb  grip migrate-reviews (hidden:grip)                              stable
 # grip push
 flag  grip push --json (hidden:grip)                                  stable
 json  grip push .members[].name                                       may-change
@@ -165,6 +208,7 @@ arg   hooks run workspace_root <str>                                  stable
 flag  hooks run --first-materialize                                   stable
 flag  hooks run --json                                                stable
 flag  hooks run --manual                                              stable
+flag  hooks run --root/-C <str>                                       stable
 verb  hooks run                                                       stable
 # hooks show
 arg   hooks show repo_root <str>                                      stable
@@ -186,6 +230,7 @@ arg   lane bind workspace_root <str>                                  stable
 flag  lane bind --allow-local                                         stable
 flag  lane bind --base <str>                                          stable
 flag  lane bind --json                                                stable
+flag  lane bind --root/-C <str>                                       stable
 verb  lane bind                                                       stable
 # lane create
 arg   lane create lane_name <str>                                     stable
@@ -196,13 +241,18 @@ flag  lane create --branch <str>                                      stable
 flag  lane create --command <str>                                     stable
 flag  lane create --manual-hooks                                      stable
 flag  lane create --repos <str>                                       stable
+flag  lane create --root/-C <str>                                     stable
 flag  lane create --source <str>                                      stable
 flag  lane create --type <str>                                        stable
+flag  lane create --unit <str>                                        stable
+flag  lane create --workspace-commit <str>                            stable
 verb  lane create                                                     stable
 # lane current
 arg   lane current owner_unit <str> (hidden)                          stable
 arg   lane current workspace_root <str> (hidden)                      stable
 flag  lane current --json (hidden)                                    stable
+flag  lane current --root/-C <str> (hidden)                           stable
+flag  lane current --unit <str> (hidden)                              stable
 verb  lane current (hidden)                                           stable
 # lane enter
 arg   lane enter lane_name <str>                                      stable
@@ -212,14 +262,19 @@ flag  lane enter --actor <str>                                        stable
 flag  lane enter --manual-hooks                                       stable
 flag  lane enter --notify-channel                                     stable
 flag  lane enter --recall                                             stable
+flag  lane enter --root/-C <str>                                      stable
+flag  lane enter --unit <str>                                         stable
 verb  lane enter                                                      stable
 # lane exit
 arg   lane exit owner_unit <str>                                      stable
 arg   lane exit workspace_root <str>                                  stable
 flag  lane exit --actor <str>                                         stable
+flag  lane exit --dirty <str>                                         stable
 flag  lane exit --manual-hooks                                        stable
 flag  lane exit --notify-channel                                      stable
 flag  lane exit --recall                                              stable
+flag  lane exit --root/-C <str>                                       stable
+flag  lane exit --unit <str>                                          stable
 verb  lane exit                                                       stable
 # lane lease acquire
 arg   lane lease acquire lane_name <str>                              stable
@@ -228,6 +283,7 @@ arg   lane lease acquire workspace_root <str>                         stable
 flag  lane lease acquire --actor <str>                                stable
 flag  lane lease acquire --force                                      stable
 flag  lane lease acquire --mode <str>                                 stable
+flag  lane lease acquire --root/-C <str>                              stable
 flag  lane lease acquire --ttl-seconds <str>                          stable
 verb  lane lease acquire                                              stable
 # lane lease release
@@ -235,12 +291,14 @@ arg   lane lease release lane_name <str>                              stable
 arg   lane lease release owner_unit <str>                             stable
 arg   lane lease release workspace_root <str>                         stable
 flag  lane lease release --actor <str>                                stable
+flag  lane lease release --root/-C <str>                              stable
 verb  lane lease release                                              stable
 # lane lease show
 arg   lane lease show lane_name <str>                                 stable
 arg   lane lease show owner_unit <str>                                stable
 arg   lane lease show workspace_root <str>                            stable
 flag  lane lease show --json                                          stable
+flag  lane lease show --root/-C <str>                                 stable
 verb  lane lease show                                                 stable
 # lane resolve
 arg   lane resolve operation_id <str>                                 stable
@@ -249,11 +307,15 @@ arg   lane resolve workspace_root <str>                               stable
 flag  lane resolve --actor <str>                                      stable
 flag  lane resolve --json                                             stable
 flag  lane resolve --resolution <str>                                 stable
+flag  lane resolve --root/-C <str>                                    stable
+flag  lane resolve --unit <str>                                       stable
 verb  lane resolve                                                    stable
 # lane show
 arg   lane show owner_unit <str>                                      stable
 arg   lane show workspace_root <str>                                  stable
 flag  lane show --json                                                stable
+flag  lane show --root/-C <str>                                       stable
+flag  lane show --unit <str>                                          stable
 verb  lane show                                                       stable
 # plan
 arg   plan workspace_root <str>                                       stable
@@ -264,6 +326,8 @@ arg   pr checks lane_name <str>                                       stable
 arg   pr checks owner_unit <str>                                      stable
 arg   pr checks workspace_root <str>                                  stable
 flag  pr checks --json                                                stable
+flag  pr checks --review <str>                                        stable
+flag  pr checks --root/-C <str>                                       stable
 verb  pr checks                                                       stable
 # pr create
 arg   pr create lane_name <str>                                       stable
@@ -272,9 +336,11 @@ arg   pr create workspace_root <str>                                  stable
 flag  pr create --base <str>                                          stable
 flag  pr create --body <str>                                          stable
 flag  pr create --body-file <str>                                     stable
-flag  pr create --draft                                               stable
+flag  pr create --draft/--no-draft                                    stable
 flag  pr create --json                                                stable
 flag  pr create --platform <str>                                      stable
+flag  pr create --review <str>                                        stable
+flag  pr create --root/-C <str>                                       stable
 flag  pr create --title <str>                                         stable
 verb  pr create                                                       stable
 # pr merge
@@ -284,12 +350,16 @@ arg   pr merge workspace_root <str>                                   stable
 flag  pr merge --json                                                 stable
 flag  pr merge --match-head-commit <str>                              stable
 flag  pr merge --method/-m <str>                                      stable
+flag  pr merge --review <str>                                         stable
+flag  pr merge --root/-C <str>                                        stable
 verb  pr merge                                                        stable
 # pr status
 arg   pr status lane_name <str>                                       stable
 arg   pr status owner_unit <str>                                      stable
 arg   pr status workspace_root <str>                                  stable
 flag  pr status --json                                                stable
+flag  pr status --review <str>                                        stable
+flag  pr status --root/-C <str>                                       stable
 verb  pr status                                                       stable
 # pr view
 arg   pr view lane_name <str>                                         stable
@@ -297,6 +367,8 @@ arg   pr view owner_unit <str>                                        stable
 arg   pr view workspace_root <str>                                    stable
 flag  pr view --json                                                  stable
 flag  pr view --repo <str>                                            stable
+flag  pr view --review <str>                                          stable
+flag  pr view --root/-C <str>                                         stable
 verb  pr view                                                         stable
 # prune
 flag  prune --execute                                                 stable
@@ -317,6 +389,7 @@ arg   repo hook-run workspace_root <str> (hidden)                     stable
 flag  repo hook-run --first-materialize (hidden)                      stable
 flag  repo hook-run --json (hidden)                                   stable
 flag  repo hook-run --manual (hidden)                                 stable
+flag  repo hook-run --root/-C <str> (hidden)                          stable
 verb  repo hook-run (hidden)                                          stable
 # repo hooks
 arg   repo hooks repo_root <str> (hidden)                             stable
@@ -326,6 +399,7 @@ verb  repo hooks (hidden)                                             stable
 arg   repo projection-run repo_root <str>                             stable
 arg   repo projection-run workspace_root <str>                        stable
 flag  repo projection-run --json                                      stable
+flag  repo projection-run --root/-C <str>                             stable
 verb  repo projection-run                                             stable
 # repo status
 arg   repo status workspace_root <str>                                stable
@@ -339,6 +413,7 @@ flag  review bind --base <str>                                        stable
 flag  review bind --body <str>                                        stable
 flag  review bind --from-range <str>                                  stable
 flag  review bind --head <str>                                        stable
+flag  review bind --members <str>                                     stable
 flag  review bind --path <str>                                        stable
 flag  review bind --ratified <str>                                    stable
 flag  review bind --ref <str>                                         stable
@@ -348,6 +423,13 @@ flag  review bind --rows-json <str>                                   stable
 flag  review bind --source <str>                                      stable
 flag  review bind --title <str>                                       stable
 verb  review bind                                                     stable
+# review check
+arg   review check pr_number <str>                                    stable
+arg   review check repo <str>                                         stable
+arg   review check workspace_root <str>                               stable
+flag  review check --json                                             stable
+flag  review check --root/-C <str>                                    stable
+verb  review check                                                    stable
 # review checkout-pr
 arg   review checkout-pr owner_unit <str>                             stable
 arg   review checkout-pr pr_number <str>                              stable
@@ -359,6 +441,7 @@ flag  review checkout-pr --enter                                      stable
 flag  review checkout-pr --json                                       stable
 flag  review checkout-pr --lane <str>                                 stable
 flag  review checkout-pr --manual-hooks                               stable
+flag  review checkout-pr --root/-C <str>                              stable
 verb  review checkout-pr                                              stable
 # review close
 arg   review close owner_unit <str>                                   stable
@@ -367,10 +450,12 @@ arg   review close repo <str>                                         stable
 arg   review close target <str>                                       stable
 flag  review close --json                                             stable
 flag  review close --lane <str>                                       stable
+flag  review close --workspace <str>                                  stable
 verb  review close                                                    stable
 # review close-gr
 arg   review close-gr lane_dir <str> (hidden)                         stable
 flag  review close-gr --json (hidden)                                 stable
+flag  review close-gr --workspace <str> (hidden)                      stable
 verb  review close-gr (hidden)                                        stable
 # review create-project
 arg   review create-project lane_name <str>                           stable
@@ -378,14 +463,25 @@ arg   review create-project owner_unit <str>                          stable
 arg   review create-project workspace_root <str>                      stable
 flag  review create-project --carry-range                             stable
 flag  review create-project --json                                    stable
+flag  review create-project --root/-C <str>                           stable
 verb  review create-project                                           stable
 # review exit-gr
 arg   review exit-gr owner_unit <str> (hidden)                        stable
 arg   review exit-gr review_root <str> (hidden)                       stable
 arg   review exit-gr workspace_root <str> (hidden)                    stable
 flag  review exit-gr --actor <str> (hidden)                           stable
+flag  review exit-gr --adopt-legacy (hidden)                          stable
 flag  review exit-gr --json (hidden)                                  stable
+flag  review exit-gr --root/-C <str> (hidden)                         stable
 verb  review exit-gr (hidden)                                         stable
+# review merge
+arg   review merge review_id <str>                                    stable
+arg   review merge workspace_root <str>                               stable
+flag  review merge --check <str>                                      stable
+flag  review merge --from <str>                                       stable
+flag  review merge --into <str>                                       stable
+flag  review merge --root/-C <str>                                    stable
+verb  review merge                                                    stable
 # review open
 arg   review open pr_number <str>                                     stable
 arg   review open repo <str>                                          stable
@@ -397,6 +493,7 @@ flag  review open --lane <str>                                        stable
 flag  review open --lane-dir <str>                                    stable
 flag  review open --platform <str>                                    stable
 flag  review open --repo <str>                                        stable
+flag  review open --root/-C <str>                                     stable
 flag  review open --run <str>                                         stable
 verb  review open                                                     stable
 # review open-gr
@@ -406,6 +503,7 @@ flag  review open-gr --enter (hidden)                                 stable
 flag  review open-gr --json (hidden)                                  stable
 flag  review open-gr --lane-dir <str> (hidden)                        stable
 flag  review open-gr --repo <str> (hidden)                            stable
+flag  review open-gr --root/-C <str> (hidden)                         stable
 verb  review open-gr (hidden)                                         stable
 # review open-project
 arg   review open-project commit <str> (hidden)                       stable
@@ -417,8 +515,16 @@ flag  review open-project --enter (hidden)                            stable
 flag  review open-project --json (hidden)                             stable
 flag  review open-project --local-source <str> (hidden)               stable
 flag  review open-project --prior-cwd <str> (hidden)                  stable
+flag  review open-project --root/-C <str> (hidden)                    stable
 flag  review open-project --sources-json <str> (hidden)               stable
 verb  review open-project (hidden)                                    stable
+# review publish
+arg   review publish commit <str>                                     may-change
+arg   review publish workspace_root <str>                             stable
+flag  review publish --ref <str>                                      may-change
+flag  review publish --remote <str>                                   may-change
+flag  review publish --root/-C <str>                                  stable
+verb  review publish                                                  may-change
 # review rebind
 arg   review rebind frozen_dir <str>                                  stable
 flag  review rebind --allow-public-ref                                stable
@@ -427,17 +533,26 @@ flag  review rebind --out-dir <str>                                   stable
 flag  review rebind --ref <str>                                       stable
 flag  review rebind --repo <str>                                      stable
 verb  review rebind                                                   stable
+# review receive
+arg   review receive commit <str>                                     may-change
+arg   review receive workspace_root <str>                             stable
+flag  review receive --ref <str>                                      may-change
+flag  review receive --remote <str>                                   may-change
+flag  review receive --root/-C <str>                                  stable
+verb  review receive                                                  may-change
 # review requirements
-arg   review requirements pr_number <str>                             stable
-arg   review requirements repo <str>                                  stable
-arg   review requirements workspace_root <str>                        stable
-flag  review requirements --json                                      stable
-verb  review requirements                                             stable
+arg   review requirements pr_number <str> (hidden)                    stable
+arg   review requirements repo <str> (hidden)                         stable
+arg   review requirements workspace_root <str> (hidden)               stable
+flag  review requirements --json (hidden)                             stable
+flag  review requirements --root/-C <str> (hidden)                    stable
+verb  review requirements (hidden)                                    stable
 # review run
 arg   review run lane_dir <str>                                       stable
 arg   review run pytest_args <str>                                    stable
 flag  review run --install <str>                                      stable
 flag  review run --json                                               stable
+flag  review run --no-downstream                                      stable
 flag  review run --order <str>                                        stable
 flag  review run --package <str>                                      stable
 flag  review run --python <str>                                       stable
@@ -446,10 +561,17 @@ flag  review run --runner <str>                                       stable
 flag  review run --system-site-packages                               stable
 flag  review run --test <str>                                         stable
 verb  review run                                                      stable
+# review show
+arg   review show commit <str>                                        stable
+arg   review show workspace_root <str>                                stable
+flag  review show --json                                              stable
+flag  review show --root/-C <str>                                     stable
+verb  review show                                                     stable
 # review verify
 arg   review verify commit <str>                                      stable
 arg   review verify workspace_root <str>                              stable
 flag  review verify --json                                            stable
+flag  review verify --root/-C <str>                                   stable
 verb  review verify                                                   stable
 # spec show
 arg   spec show workspace_root <str>                                  stable
@@ -533,6 +655,16 @@ json  store migrate .members  map<str,str>                            may-change
 json  store migrate .root_commit                                      may-change
 json  store migrate .status  enum(dry-run,migrated)                   may-change
 verb  store migrate                                                   may-change
+# store migrate-reviews
+arg   store migrate-reviews root <str>                                stable
+flag  store migrate-reviews --json                                    stable
+json  store migrate-reviews .receipt                                  stable
+json  store migrate-reviews .rows[].new_id                            stable
+json  store migrate-reviews .rows[].old_id                            stable
+json  store migrate-reviews .rows[].reason                            stable
+json  store migrate-reviews .rows[].ref                               stable
+json  store migrate-reviews .rows[].status  enum(created,present,refused) stable
+verb  store migrate-reviews                                           stable
 # store push
 flag  store push --json                                               may-change
 json  store push .members[].name                                      may-change

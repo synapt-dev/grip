@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from python_cli.grip import (
+from gr2.python_cli.grip import (
     GripCommitInfo,
     GripDiff,
     grip_checkout,
@@ -24,7 +24,7 @@ from python_cli.grip import (
     grip_log,
     grip_snapshot,
 )
-from python_cli.gitops import git
+from gr2.python_cli.gitops import git
 
 
 # ---------------------------------------------------------------------------

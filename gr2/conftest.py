@@ -37,11 +37,13 @@ def pytest_configure(config: pytest.Config) -> None:
     Three test files spawn ``[sys.executable, "-m", "gr2.python_cli.app", ...]`` as a child
     process. TWO of them pass ``PYTHONPATH=<gr2 dir>`` and treat that as sufficient; the third
     (``test_review_cli.py``'s ``_run_bind_real``) passes no environment at all and inherits the
-    cwd. Neither is enough: `gr2.python_cli` exists only through the packaging map
-    (``pyproject.toml``: ``"gr2.python_cli" = "python_cli"``, a flat directory mapped onto a
-    dotted name), which an EDITABLE INSTALL provides and a bare tree does not. grip#826: without
-    that install the child dies with ``No module named 'gr2.python_cli'``; measured on the fleet
-    interpreter, the three spawning files are 13 failed / 14 passed.
+    cwd. Neither WAS enough: `gr2.python_cli` used to exist only through
+    a packaging map (a flat directory mapped onto a dotted name), which an EDITABLE INSTALL
+    provided and a bare tree did not. grip#826: without that install the child died with
+    ``No module named 'gr2.python_cli'``; measured on the fleet interpreter, the three
+    spawning files were 13 failed / 14 passed. The map is retired and the directory now equals
+    the import name, so ``PYTHONPATH=<gr2 dir>`` IS sufficient; this probe stays because the
+    property it checks, "it imported FROM THIS TREE", is separate (see the next paragraph).
 
     THE RESOLVED PATH IS CHECKED, NOT JUST THAT THE IMPORT WORKED, and that half is the one that
     has actually bitten this team: an editable install of a DIFFERENT CLONE makes the import
@@ -113,17 +115,18 @@ def pytest_configure(config: pytest.Config) -> None:
         )
 
 if "gr2" not in sys.modules:
-    # Namespace with two roots: the project dir (python_cli lives flat at
-    # gr2/python_cli, imported as gr2.python_cli) and the real package dir
-    # gr2/gr2 (the 1.5.0 import-package layout: gr2.overlay, gr2.schemas).
+    # The package dir is gr2/gr2 and holds every subpackage (python_cli, prototypes, overlay,
+    # schemas), so the import name equals the directory name. This used to be a namespace
+    # with TWO roots because python_cli lived flat at gr2/python_cli and was mapped onto
+    # `gr2.python_cli` by the packaging map; the map is retired and the flat root is gone.
     _gr2 = types.ModuleType("gr2")
-    _gr2.__path__ = [str(_project_root), str(_project_root / "gr2")]
+    _gr2.__path__ = [str(_project_root / "gr2")]
     sys.modules["gr2"] = _gr2
 
 
 @pytest.fixture(autouse=True)
 def _isolated_git_config(tmp_path_factory, monkeypatch):
-    """Every gr2 test runs against a BLANK host git config by default.
+    """Every gr2 test runs against an isolated Git identity and no host options.
 
     `git review run`'s cleanup lost two review cycles to the same class of defect:
     `git status --porcelain` reads the AUTHORING MACHINE's global ignore rules
@@ -138,9 +141,9 @@ def _isolated_git_config(tmp_path_factory, monkeypatch):
     `gr2/overlay/tests/` (see the module docstring above).
 
     Three independent host-config channels, all closed:
-      - ``GIT_CONFIG_GLOBAL`` points at an EMPTY file. An *absent* variable falls
+      - ``GIT_CONFIG_GLOBAL`` points at a file containing only fixture identity. An *absent* variable falls
         back to ``~/.gitconfig`` -- exactly the ambient state this fixture exists
-        to remove -- so it must point at a real, present, empty file, not be unset.
+        to remove -- so it must point at a real, present, identity-only file, not be unset.
       - ``XDG_CONFIG_HOME`` points at an empty temp dir, removing the
         ``$XDG_CONFIG_HOME/git/ignore`` fallback git consults when
         ``core.excludesFile`` is unset (measured separately from the above: the
@@ -187,7 +190,9 @@ def _isolated_git_config(tmp_path_factory, monkeypatch):
     ever measured to behave otherwise.
     """
     blank_global = tmp_path_factory.mktemp("isolated-git-global") / "gitconfig"
-    blank_global.write_text("")
+    # Bind records the binder's configured identity. Keep that representative
+    # while excluding all ambient options and ignore rules, as before.
+    blank_global.write_text("[user]\n\tname = Fixture\n\temail = fixture@example.invalid\n")
     blank_xdg = tmp_path_factory.mktemp("isolated-git-xdg")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(blank_global))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(blank_xdg))

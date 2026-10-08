@@ -3,6 +3,8 @@ gr commit opens one exact multi-repo review; exit restores the prior lane + cwd.
 
 from __future__ import annotations
 
+from tests.native_root_helper import native_root, workspace_kind_commit
+
 import argparse
 import subprocess
 from pathlib import Path
@@ -69,7 +71,7 @@ def _world(tmp_path: Path):
         )
         + '\n[[units]]\nname = "atlas"\npath = "agents/atlas"\nrepos = ["alpha", "beta", "gamma"]\n'
     )
-    grip.grip_init(workspace)
+    native_root(workspace)
     prior_cwd = tmp_path / "home"
     prior_cwd.mkdir()
     lanes.create_lane(argparse.Namespace(
@@ -104,6 +106,12 @@ def test_open_gr_enter_materializes_pins_enters_and_writes_a_receipt(tmp_path: P
         prior_cwd=prior_cwd, allow_local=True,
     )
     assert outcome.status == "opened"
+    current = lanes.load_current_lane_doc(workspace, "atlas")["current"]
+    assert current["repo_paths"] == {
+        name: str(workspace / "reviews" / "atlas" / "review-m1" / "repos" / name)
+        for name in sources
+    }
+    assert lanes.load_lane_doc(workspace, "atlas", "review-m1")["checkout_root"] == "reviews/atlas/review-m1"
     # the three pinned heads are materialized
     for name in sources:
         assert (outcome.review_root / "repos" / name / ".git").is_dir()
@@ -140,7 +148,7 @@ def test_exit_restores_the_prior_lane_and_cwd(tmp_path: Path) -> None:
 def test_open_gr_enter_refuses_a_non_review_kind_commit(tmp_path: Path) -> None:
     # Control 1: a workspace-kind commit is refused before any materialization.
     workspace, sources, prior_cwd = _world(tmp_path)
-    wrong = grip.create_workspace_commit(workspace, [
+    wrong = workspace_kind_commit(workspace, [
         {"key": name, "remote": f"https://example.invalid/{name}.git", "path": f"repos/{name}",
          "commit": src[2], "base": src[1]}
         for name, src in sources.items()
@@ -168,6 +176,12 @@ def test_open_gr_enter_resolves_sources_from_the_recorded_remote(tmp_path: Path)
         prior_cwd=prior_cwd, allow_local=True, staging_dir=tmp_path / "staging",
     )
     assert outcome.status == "opened"
+    current = lanes.load_current_lane_doc(workspace, "atlas")["current"]
+    assert current["repo_paths"] == {
+        name: str(workspace / "reviews" / "atlas" / "review-m1" / "repos" / name)
+        for name in sources
+    }
+    assert lanes.load_lane_doc(workspace, "atlas", "review-m1")["checkout_root"] == "reviews/atlas/review-m1"
     for name in sources:
         assert (outcome.review_root / "repos" / name / ".git").is_dir()
         # each materialized head equals the pinned head, reached via the recorded remote
@@ -245,7 +259,7 @@ def _prepush_world(tmp_path: Path):
         f'[[repos]]\nname = "alpha"\npath = "sources/alpha"\nurl = "{str(origin)}"\n'
         '\n[[units]]\nname = "atlas"\npath = "agents/atlas"\nrepos = ["alpha"]\n'
     )
-    grip.grip_init(workspace)
+    native_root(workspace)
     prior_cwd = root / "home"
     prior_cwd.mkdir()
     lanes.create_lane(argparse.Namespace(
@@ -552,7 +566,7 @@ def test_review_open_project_cli_rejects_sources_json_with_local_source(tmp_path
 def test_review_open_project_cli_refuses_non_review_kind_naming_the_kind(tmp_path: Path, capsys) -> None:
     # Control: a workspace-KIND commit is refused, and the refusal names the kind found.
     workspace, sources, prior_cwd = _world(tmp_path)
-    wrong = grip.create_workspace_commit(workspace, [
+    wrong = workspace_kind_commit(workspace, [
         {"key": name, "remote": f"https://example.invalid/{name}.git", "path": f"repos/{name}",
          "commit": src[2], "base": src[1]}
         for name, src in sources.items()

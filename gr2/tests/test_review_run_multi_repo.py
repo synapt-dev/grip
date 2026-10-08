@@ -118,7 +118,9 @@ def _tamper(lane: Path, key: str) -> None:
 
 
 def _log(lane: Path, key: str) -> Path:
-    return lane / f"{key}{rr._OUTPUT_LOG_NAME}"
+    """Where a member's run log must land: spelled out here, not taken from the code under test,
+    so a writer that drifts from this name reddens the rows that read the log."""
+    return lane / f"{rr._OUTPUT_LOG_NAME}.{key}"
 
 
 # ------------------------------------------------------------------ the happy path
@@ -208,6 +210,7 @@ def test_a_refusal_at_the_first_member_leaves_the_later_one_in_not_run(tmp_path:
     receipt = json.loads((lane / rr._RECEIPT_NAME).read_text())
     assert receipt["result"] == "refused" and receipt["not_run"] == ["demo-web"]
     assert not _log(lane, "demo-web").exists()
+    assert receipt["output_log"] is None or (lane / receipt["output_log"]) == _log(lane, "demo-core")
 
 
 def test_a_member_that_selects_zero_tests_refuses(tmp_path: Path) -> None:
@@ -217,6 +220,8 @@ def test_a_member_that_selects_zero_tests_refuses(tmp_path: Path) -> None:
     assert exc.value.code == "zero_collected" and exc.value.member == "demo-core"
     receipt = json.loads((lane / rr._RECEIPT_NAME).read_text())
     assert receipt["not_run"] == ["demo-web"]
+    # pytest ran, so the refusal receipt names the log it wrote, at the member's own log name
+    assert receipt["output_log"] == _log(lane, "demo-core").name and _log(lane, "demo-core").is_file(), receipt
 
 
 def test_a_package_that_resolves_outside_the_lane_refuses_for_that_member(tmp_path: Path) -> None:
@@ -331,14 +336,23 @@ def test_cli_json_prints_the_lane_receipt_and_order_flag_is_accepted(tmp_path: P
 
 def test_close_carries_the_receipt_and_every_member_log_out(tmp_path: Path) -> None:
     lane = _lane(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    from gr2.python_cli.review_allocation import record_created_allocation
+    record_created_allocation(workspace, lane, "workspace", "review", [lane / "demo-core", lane / "demo-web"], disposable=True)
+    marker_path = lane / rr._MARKER_NAME
+    marker = json.loads(marker_path.read_text())
+    marker["workspace_root"] = str(workspace)
+    marker_path.write_text(json.dumps(marker))
     rr.run_review_lane(lane, pytest_args=["-q"])
-    code, out = _cli("review", "close", str(lane))
+    code, out = _cli("review", "close", str(lane), "--json")
     assert code == 0, out
 
-    kept = list((tmp_path / "lane.review-run").iterdir())
-    assert len(kept) == 1, kept
-    receipt = json.loads((kept[0] / rr._RECEIPT_NAME).read_text())
+    closed = json.loads(out)
+    kept = Path(closed["preserved_run"]["dir"])
+    assert kept.is_relative_to(workspace / ".grip" / "state" / "review-allocations")
+    receipt = json.loads(Path(closed["preserved_run"]["receipt"]).read_text())
     for member in receipt["members"]:
         preserved = Path(member["output_log"])
-        assert preserved.is_file() and preserved.parent == kept[0], member
+        assert preserved.is_file() and preserved.parent == kept, member
     assert not lane.exists()

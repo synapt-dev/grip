@@ -10,6 +10,8 @@ open-gr lane (so it never rm's an arbitrary path), and reclaims the tree.
 """
 from __future__ import annotations
 
+from tests.native_root_helper import native_root
+
 import json
 import subprocess
 from pathlib import Path
@@ -53,7 +55,7 @@ def _open_gr_lane(tmp_path: Path, runner: CliRunner) -> tuple[Path, str]:
     ws = tmp_path / "ws"
     (ws / ".grip").mkdir(parents=True)
     from gr2.python_cli import grip
-    grip.grip_init(ws)
+    native_root(ws)
     remote, base, head, range_patch = _base_remote_and_range(tmp_path)
     range_file = tmp_path / "range.patch"
     range_file.write_text(range_patch)
@@ -66,7 +68,7 @@ def _open_gr_lane(tmp_path: Path, runner: CliRunner) -> tuple[Path, str]:
     gr_sha = res.output.strip()[len("gr:"):]
     lane_dir = tmp_path / "lane"
     res2 = runner.invoke(gr2_app.app, [
-        "review", "open-gr", str(ws), gr_sha, "--repo", "alpha",
+        "review", "open", str(ws), gr_sha, "--repo", "alpha",
         "--lane-dir", str(lane_dir), "--enter",
     ])
     assert res2.exit_code == 0, res2.output
@@ -87,7 +89,7 @@ def test_close_gr_reclaims_the_lane(tmp_path: Path) -> None:
     runner = CliRunner()
     lane_dir, gr_sha = _open_gr_lane(tmp_path, runner)
     assert lane_dir.exists()
-    res = runner.invoke(gr2_app.app, ["review", "close-gr", str(lane_dir)])
+    res = runner.invoke(gr2_app.app, ["review", "close", str(lane_dir)])
     assert res.exit_code == 0, res.output
     assert not lane_dir.exists(), "close-gr must reclaim the open-gr lane tree"
     assert gr_sha[:12] in res.output, res.output  # names the commit it reclaimed
@@ -103,7 +105,7 @@ def test_open_gr_no_repo_single_row_puts_the_marker_at_the_tree(tmp_path: Path) 
     ws = tmp_path / "ws"
     (ws / ".grip").mkdir(parents=True)
     from gr2.python_cli import grip
-    grip.grip_init(ws)
+    native_root(ws)
     remote, base, head, range_patch = _base_remote_and_range(tmp_path)
     range_file = tmp_path / "range.patch"
     range_file.write_text(range_patch)
@@ -118,7 +120,7 @@ def test_open_gr_no_repo_single_row_puts_the_marker_at_the_tree(tmp_path: Path) 
     lane_dir = tmp_path / "lane"
     # NO --repo
     res2 = runner.invoke(gr2_app.app, [
-        "review", "open-gr", str(ws), gr_sha, "--lane-dir", str(lane_dir), "--enter",
+        "review", "open", str(ws), gr_sha, "--lane-dir", str(lane_dir), "--enter",
     ])
     assert res2.exit_code == 0, res2.output
     # the marker and the reconstructed clone are BOTH at the lane root -- not nested
@@ -128,7 +130,7 @@ def test_open_gr_no_repo_single_row_puts_the_marker_at_the_tree(tmp_path: Path) 
     # and the marker/clone alignment is exactly what `review run` and `close-gr` consume:
     marker = json.loads((lane_dir / open_gr_review._OPEN_GR_MARKER).read_text())
     assert marker["kind"] == "review-open"
-    res3 = runner.invoke(gr2_app.app, ["review", "close-gr", str(lane_dir)])
+    res3 = runner.invoke(gr2_app.app, ["review", "close", str(lane_dir)])
     assert res3.exit_code == 0, res3.output
     assert not lane_dir.exists()
 
@@ -153,7 +155,7 @@ def test_close_gr_keeps_the_review_run_receipt_and_log(tmp_path: Path) -> None:
         "output_log": rr._OUTPUT_LOG_NAME,
     }, indent=2) + "\n")
 
-    res = runner.invoke(gr2_app.app, ["review", "close-gr", str(lane_dir), "--json"])
+    res = runner.invoke(gr2_app.app, ["review", "close", str(lane_dir), "--json"])
     assert res.exit_code == 0, res.output
     assert not lane_dir.exists(), "close-gr still reclaims the lane"
 
@@ -177,7 +179,7 @@ def test_close_gr_with_no_review_run_has_nothing_to_keep(tmp_path: Path) -> None
     # exactly as before and preserves nothing (no empty sibling dir, no crash).
     runner = CliRunner()
     lane_dir, gr_sha = _open_gr_lane(tmp_path, runner)
-    res = runner.invoke(gr2_app.app, ["review", "close-gr", str(lane_dir), "--json"])
+    res = runner.invoke(gr2_app.app, ["review", "close", str(lane_dir), "--json"])
     assert res.exit_code == 0, res.output
     assert not lane_dir.exists()
     assert "preserved_run" not in json.loads(res.output)
@@ -197,7 +199,7 @@ def test_close_gr_twice_same_lane_keeps_both_runs(tmp_path: Path) -> None:
     runner = CliRunner()
     ws = tmp_path / "ws"
     (ws / ".grip").mkdir(parents=True)
-    grip.grip_init(ws)
+    native_root(ws)
     remote, base, head, range_patch = _base_remote_and_range(tmp_path)
     range_file = tmp_path / "range.patch"
     range_file.write_text(range_patch)
@@ -212,7 +214,7 @@ def test_close_gr_twice_same_lane_keeps_both_runs(tmp_path: Path) -> None:
 
     def open_run_close(created: str, tag: str) -> dict:
         ro = runner.invoke(gr2_app.app, [
-            "review", "open-gr", str(ws), gr_sha, "--repo", "alpha",
+            "review", "open", str(ws), gr_sha, "--repo", "alpha",
             "--lane-dir", str(lane_dir), "--enter",
         ])
         assert ro.exit_code == 0, ro.output
@@ -222,7 +224,7 @@ def test_close_gr_twice_same_lane_keeps_both_runs(tmp_path: Path) -> None:
             "result": "red", "failed": 1, "failed_ids": [f"tests/t.py::{tag}"],
             "output_log": rr._OUTPUT_LOG_NAME,
         }, indent=2) + "\n")
-        rc = runner.invoke(gr2_app.app, ["review", "close-gr", str(lane_dir), "--json"])
+        rc = runner.invoke(gr2_app.app, ["review", "close", str(lane_dir), "--json"])
         assert rc.exit_code == 0, rc.output
         assert not lane_dir.exists()
         return json.loads(rc.output)["preserved_run"]
@@ -253,7 +255,7 @@ def test_open_gr_enter_refuses_a_nonempty_lane_dir(tmp_path: Path) -> None:
     ws = tmp_path / "ws"
     (ws / ".grip").mkdir(parents=True)
     from gr2.python_cli import grip
-    grip.grip_init(ws)
+    native_root(ws)
     remote, base, head, range_patch = _base_remote_and_range(tmp_path)
     range_file = tmp_path / "range.patch"
     range_file.write_text(range_patch)
@@ -272,14 +274,14 @@ def test_open_gr_enter_refuses_a_nonempty_lane_dir(tmp_path: Path) -> None:
     shared.mkdir()
     (shared / "foreign.txt").write_text("keep me\n")
     res2 = runner.invoke(gr2_app.app, [
-        "review", "open-gr", str(ws), gr_sha,
+        "review", "open", str(ws), gr_sha,
         "--lane-dir", str(shared), "--enter",
     ])
     assert res2.exit_code != 0, res2.output
     assert (shared / "foreign.txt").exists(), "open-gr must not write into a non-empty dir"
     assert not (shared / open_gr_review._OPEN_GR_MARKER).exists(), "no marker written"
     # and with no marker, close-gr also refuses — the foreign file is doubly safe.
-    res3 = runner.invoke(gr2_app.app, ["review", "close-gr", str(shared)])
+    res3 = runner.invoke(gr2_app.app, ["review", "close", str(shared)])
     assert res3.exit_code != 0
     assert (shared / "foreign.txt").exists()
 
@@ -290,7 +292,7 @@ def test_close_gr_refuses_a_dir_without_the_marker(tmp_path: Path) -> None:
     plain = tmp_path / "not-a-lane"
     plain.mkdir()
     (plain / "keep.txt").write_text("do not delete me\n")
-    res = runner.invoke(gr2_app.app, ["review", "close-gr", str(plain)])
+    res = runner.invoke(gr2_app.app, ["review", "close", str(plain)])
     assert res.exit_code != 0
     assert plain.exists(), "close-gr must not remove a directory lacking the marker"
     assert (plain / "keep.txt").exists()

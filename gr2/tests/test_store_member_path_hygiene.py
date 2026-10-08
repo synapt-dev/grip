@@ -10,7 +10,7 @@ WHAT EACH ROW PINS
      base accepts it, and `store commit` then refuses it at 4 by name -- so init builds a store
      whose commit is refused. The refusal moves to init.
   2. An 8-line UNREACHABLE copy of the direct-child discovery loop sat after the new `return`
-     (gr2/python_cli/grip_cli.py:572). Dead code is asserted against behaviourally: the verb's
+     (gr2/gr2/python_cli/grip_cli.py:572). Dead code is asserted against behaviourally: the verb's
      own rows pass either way, so the row here pins the SHAPE -- the loop appears once.
   3. A member's NAME is taken from the caller's raw spelling rather than the normalised path,
      so `./core/config` named a member `.-core-config` before normalisation ran. Normalisation
@@ -120,7 +120,7 @@ def test_the_direct_child_discovery_loop_appears_once() -> None:
     one `for path in sorted(root.iterdir())` loop in the module that owns store init. It is a
     source assertion on purpose, and it fails if a future edit reintroduces a second copy.
     """
-    source = (Path(__file__).resolve().parents[1] / "python_cli" / "grip_cli.py").read_text()
+    source = (Path(__file__).resolve().parents[1] / "gr2" / "python_cli" / "grip_cli.py").read_text()
     loop = "for path in sorted(root.iterdir()):"
     assert source.count(loop) == 1, (
         f"the direct-child discovery loop appears {source.count(loop)} times; "

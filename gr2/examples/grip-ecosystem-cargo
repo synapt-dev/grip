@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""grip-ecosystem-cargo: the reference external ecosystem plugin (protocol 1), stdlib only.
+
+Invoked as ``grip-ecosystem-cargo <call>``, one JSON request on stdin, one JSON answer on stdout; the working
+directory is the member's directory. It answers ``describe`` from ``cargo metadata`` and ``plan_group`` from what
+Cargo itself allows. It is found only through the user's PATH; nothing in a member can name it.
+
+Edge kinds: Cargo's ``[dependencies]`` and ``[build-dependencies]`` are ``install`` edges (they order installs);
+``[dev-dependencies]`` are ``test`` edges (they never do), so a cycle through a dev-dependency, which Cargo allows,
+is never a group. A cycle in normal or build dependencies makes ``cargo metadata`` itself fail, and the failure
+reaches gr2 as a refusal in Cargo's own words.
+
+``cargo metadata`` writes a ``Cargo.lock`` when there is none. A plugin must not leave a new file in a member, so a
+lockfile this call created is removed again; when a lockfile exists the call uses ``--locked`` and so cannot rewrite it.
+"""
+import json
+import os
+import subprocess
+import sys
+
+PROTOCOL = 1
+SECTION = {None: "dependencies", "build": "build-dependencies", "dev": "dev-dependencies"}
+KIND = {None: "install", "build": "install", "dev": "test"}
+
+
+def answer(**kw):
+    kw.setdefault("protocol", PROTOCOL)
+    sys.stdout.write(json.dumps(kw))
+
+
+def describe(req):
+    mdir = req["dir"]
+    manifest = os.path.join(mdir, "Cargo.toml")
+    if not os.path.isfile(manifest):
+        return answer(ok=True, units=[])  # no Cargo.toml: not mine
+    lock = os.path.join(mdir, "Cargo.lock")
+    had_lock = os.path.exists(lock)
+    cmd = ["cargo", "metadata", "--format-version", "1", "--offline"] + (["--locked"] if had_lock else [])
+    try:
+        proc = subprocess.run(cmd, cwd=mdir, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return answer(ok=False, reason="cargo metadata could not run", detail=str(exc))
+    finally:
+        if not had_lock and os.path.exists(lock):
+            os.remove(lock)
+    if proc.returncode != 0:
+        lines = [l for l in proc.stderr.splitlines() if l.strip()]
+        return answer(ok=False, reason="cargo metadata failed", detail=" ".join(l.strip() for l in lines[:6]))
+    meta = json.loads(proc.stdout)
+    by_id = {p["id"]: p for p in meta["packages"]}
+    nodes = {n["id"]: n for n in meta["resolve"]["nodes"]}
+    units = []
+    for pid in meta["workspace_members"]:
+        pkg = by_id[pid]
+        pdir = os.path.dirname(pkg["manifest_path"])
+        # cargo reports real paths and the request may carry a symlinked one (/tmp, a linked workspace): compare real to real
+        rel = os.path.relpath(os.path.realpath(pkg["manifest_path"]), os.path.realpath(mdir))
+        edges = []
+        for dep in nodes[pid]["deps"]:
+            target = by_id[dep["pkg"]]["name"]
+            for dk in dep["dep_kinds"]:
+                k = dk.get("kind")
+                edges.append({"to": "cargo:" + target, "kind": KIND[k], "via": f"{req['key']}/{rel} [{SECTION[k]}]"})
+        units.append({"id": "cargo:" + pkg["name"], "dir": pdir, "edges": edges, "executes_member_code": False})
+    return answer(ok=True, units=units)
+
+
+def plan_group(req):
+    ids = ", ".join(u["id"] for u in req["units"])
+    return answer(
+        ok=False,
+        reason="cargo cannot build a cycle in normal or build dependencies",
+        detail=f"the group {ids} depends on itself through [dependencies] or [build-dependencies]; "
+        "move the shared code into a third crate, or make one edge a dev-dependency",
+    )
+
+
+def main():
+    call = sys.argv[1] if len(sys.argv) > 1 else ""
+    req = json.load(sys.stdin)
+    if call == "describe":
+        return describe(req)
+    if call == "plan_group":
+        return plan_group(req)
+    return answer(ok=False, reason=f"unknown call {call!r}")
+
+
+if __name__ == "__main__":
+    main()

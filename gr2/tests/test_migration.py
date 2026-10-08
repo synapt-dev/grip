@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -739,9 +740,9 @@ class TestRegenerateGr1Workspace:
             "p=sys.argv[2]; migration._transaction_phase_hook=lambda x: os.kill(os.getpid(), signal.SIGKILL) if x==p else None; "
             "migration.regenerate_gr1_workspace(Path(sys.argv[3]), expected_spec_sha256=sys.argv[4], receipt_path=Path(sys.argv[5]))"
         )
-        gr2_root = Path(__file__).parents[1]
+        gr2_root = Path(migration.__file__).resolve().parents[1]
         child = subprocess.run([sys.executable, "-c", program, str(gr2_root), phase, str(gr1_workspace), expected, str(receipt)])
-        assert child.returncode != 0
+        assert child.returncode == -signal.SIGKILL
         marker = tmp_path / "kill-forward.json.prepared.json"
         if phase == "marker_durable":
             assert marker.exists() and hashlib.sha256(spec_path.read_bytes()).hexdigest() == expected

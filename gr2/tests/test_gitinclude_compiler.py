@@ -308,7 +308,7 @@ def test_comments_and_blank_lines_are_accepted_and_emit_nothing():
     text, report = compile_gitignore("# a note\n\n   \n")
     assert report == [], report
     emitted = [ln for ln in text.splitlines() if not ln.startswith("#")]
-    assert emitted == ["*", "!/.gitinclude"], emitted
+    assert emitted == ["*", "!/.gitinclude", "/.gitignore"], emitted
 
 
 def test_the_report_is_returned_not_printed():

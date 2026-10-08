@@ -40,7 +40,7 @@ FIXED_ARITY = [  # RootOptionalCommand: the 17, and ContextCommand: the 6 above
     "lane/create", "lane/enter", "lane/resolve", "lane/exit", "lane/current", "lane/show", "lane/bind",
     "lane/lease/acquire", "lane/lease/release", "lane/lease/show",
     "review/check", "review/requirements", "review/checkout-pr", "review/create-project", "review/open-project",
-    "review/exit-gr", "review/open-gr", "review/merge",
+    "review/exit-gr", "review/open-gr",
     "hooks/run", "config/restore",
 ]
 OPTIONAL_TRAILING = [  # RootOptionCommand: the two execution verbs
@@ -49,9 +49,10 @@ OPTIONAL_TRAILING = [  # RootOptionCommand: the two execution verbs
 REVIEW_READER_SUBJECTS = ["pr/checks", "pr/view"]  # reconstruction-aware readers
 REVIEW_SUBJECTS = ["pr/create", "pr/status", "pr/merge", *REVIEW_READER_SUBJECTS]
 REVIEW_TARGETS = ["review/show", "review/verify"]
+REVIEW_HEADS = ["review/merge"]
 REVIEW_TRANSPORTS = ["review/publish", "review/receive"]
 REVIEW_OPENS = ["review/open"]
-ALL_ROOT_VERBS = [*FIXED_ARITY, *OPTIONAL_TRAILING, *REVIEW_SUBJECTS, *REVIEW_TARGETS, *REVIEW_TRANSPORTS, *REVIEW_OPENS]
+ALL_ROOT_VERBS = [*FIXED_ARITY, *OPTIONAL_TRAILING, *REVIEW_SUBJECTS, *REVIEW_TARGETS, *REVIEW_HEADS, *REVIEW_TRANSPORTS, *REVIEW_OPENS]
 UsageError = root_option._usage_error()
 runner = CliRunner()
 
@@ -134,8 +135,8 @@ def test_the_partition_accounts_for_every_leading_root_command() -> None:
         name for name, c in LEAVES.items()
         if _arguments(c) and _arguments(c)[0].name == "workspace_root"
         and name.split("/")[0] not in {"workspace", "spec", "sync", "store", "grip", "plan", "apply", "repo/status"}
-        and type(c).__name__ in {"RootOptionalCommand", "RootOptionCommand", "TyperCommand", "ContextCommand", "ReviewTargetCommand", "ReviewOpenCommand", "ReviewSubjectCommand", "ReviewReaderSubjectCommand"}
-        and (_arguments(c)[0].required or type(c).__name__ in {"RootOptionalCommand", "ContextCommand", "ReviewTargetCommand", "ReviewOpenCommand", "ReviewSubjectCommand", "ReviewReaderSubjectCommand"})
+        and type(c).__name__ in {"RootOptionalCommand", "RootOptionCommand", "TyperCommand", "ContextCommand", "ReviewTargetCommand", "ReviewHeadCommand", "ReviewOpenCommand", "ReviewSubjectCommand", "ReviewReaderSubjectCommand"}
+        and (_arguments(c)[0].required or type(c).__name__ in {"RootOptionalCommand", "ContextCommand", "ReviewTargetCommand", "ReviewHeadCommand", "ReviewOpenCommand", "ReviewSubjectCommand", "ReviewReaderSubjectCommand"})
     )
     by_class = {
         "RootOptionalCommand": sorted(
@@ -147,6 +148,7 @@ def test_the_partition_accounts_for_every_leading_root_command() -> None:
     assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ContextCommand") == sorted(RESOLVED)
     assert by_class["RootOptionCommand"] == sorted(OPTIONAL_TRAILING)
     assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ReviewTargetCommand") == sorted([*REVIEW_TARGETS, *REVIEW_TRANSPORTS])
+    assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ReviewHeadCommand") == sorted(REVIEW_HEADS)
     assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ReviewOpenCommand") == sorted(REVIEW_OPENS)
     assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ReviewSubjectCommand") == sorted(set(REVIEW_SUBJECTS) - set(REVIEW_READER_SUBJECTS))
     assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ReviewReaderSubjectCommand") == sorted(REVIEW_READER_SUBJECTS)
@@ -278,22 +280,22 @@ def test_the_8_do_not_judge_a_root_that_is_a_directory(verb, tmp_path, at) -> No
 
 
 def test_root_usage_matches_the_inferred_and_explicit_groups() -> None:
-    for verb in [*FIXED_ARITY, *REVIEW_SUBJECTS, *REVIEW_TARGETS, *REVIEW_TRANSPORTS, *REVIEW_OPENS]:
+    for verb in [*FIXED_ARITY, *REVIEW_SUBJECTS, *REVIEW_TARGETS, *REVIEW_HEADS, *REVIEW_TRANSPORTS, *REVIEW_OPENS]:
         assert _arguments(LEAVES[verb])[0].required is False, verb
     for verb in OPTIONAL_TRAILING:
         assert _arguments(LEAVES[verb])[0].required is True, verb
 
 
-@pytest.mark.parametrize("verb", REVIEW_TARGETS)
+@pytest.mark.parametrize("verb", [*REVIEW_TARGETS, *REVIEW_HEADS])
 def test_review_reader_root_and_target_grammar(verb, ws, at, tmp_path) -> None:
     at(ws / "sub" / "deeper")
     target = "gr:" + "a" * 40
     for args in ([], [str(ws)], ["-C", str(ws)]):
         params = _parse(verb, args, tmp_path)
-        assert _root(params) == ws.resolve() and params["commit"] is None
+        assert _root(params) == ws.resolve() and params["review_id" if verb in REVIEW_HEADS else "commit"] is None
     for args in ([target], [str(ws), target], ["-C", str(ws), target], [target, "-C", str(ws)]):
         params = _parse(verb, args, tmp_path)
-        assert _root(params) == ws.resolve() and params["commit"] == target
+        assert _root(params) == ws.resolve() and params["review_id" if verb in REVIEW_HEADS else "commit"] == target
     with pytest.raises(UsageError, match="given twice"):
         _parse(verb, [str(ws), "-C", str(ws)], tmp_path)
     at(tmp_path)
@@ -302,7 +304,7 @@ def test_review_reader_root_and_target_grammar(verb, ws, at, tmp_path) -> None:
             _parse(verb, args, tmp_path)
 
 
-@pytest.mark.parametrize("verb", REVIEW_TARGETS)
+@pytest.mark.parametrize("verb", [*REVIEW_TARGETS, *REVIEW_HEADS])
 def test_review_reader_explicit_id_keeps_its_role_despite_a_directory(verb, ws, at, tmp_path) -> None:
     inside = ws / "sub" / "deeper"
     at(inside)
@@ -311,14 +313,14 @@ def test_review_reader_explicit_id_keeps_its_role_despite_a_directory(verb, ws, 
             (inside / target).mkdir()
         for args in ([target], ["-C", str(ws), target]):
             params = _parse(verb, args, tmp_path)
-            assert _root(params) == ws.resolve() and params["commit"] == target
+            assert _root(params) == ws.resolve() and params["review_id" if verb in REVIEW_HEADS else "commit"] == target
     # A hash-named root remains selectable by an explicit root option or path.
     hash_root = inside / ("b" * 40)
     (hash_root / ".grip").mkdir(parents=True)
     (hash_root / ".grip/workspace_spec.toml").write_text("schema_version = 1\n")
     for args in (["-C", str(hash_root)], ["./" + hash_root.name]):
         params = _parse(verb, args, tmp_path)
-        assert _root(params) == hash_root.resolve() and params["commit"] is None
+        assert _root(params) == hash_root.resolve() and params["review_id" if verb in REVIEW_HEADS else "commit"] is None
 
 
 @pytest.mark.parametrize("verb", REVIEW_TARGETS)
@@ -342,6 +344,23 @@ def test_review_reader_marker_context_preserves_explicit_forms(verb, ws, at, tmp
         assert _root(params) == ws.resolve() and params["commit"] is None
     params = _parse(verb, ["gr:not-a-bind"], tmp_path)
     assert params["commit"] == "gr:not-a-bind"
+
+
+@pytest.mark.parametrize("verb", REVIEW_HEADS)
+def test_review_head_writer_uses_marker_only_for_workspace(verb, ws, at, tmp_path) -> None:
+    lane = tmp_path / "opened-lane"
+    member = lane / "alpha"
+    member.mkdir(parents=True)
+    marked = "a" * 40
+    (lane / ".grip-review-open.json").write_text(json.dumps({
+        "kind": "review-open", "workspace_root": str(ws.resolve()), "gr_commit": marked,
+    }))
+    at(member)
+    params = _parse(verb, [], tmp_path)
+    assert _root(params) == ws.resolve() and params["review_id"] is None
+    target = "gr:" + "b" * 40
+    params = _parse(verb, [target], tmp_path)
+    assert _root(params) == ws.resolve() and params["review_id"] == target
 
 
 def test_close_usage_keeps_explicit_legacy_target_and_eager_help(tmp_path, at) -> None:

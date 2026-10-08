@@ -140,8 +140,9 @@ gr2 review open gr:<full-review-id> --lane-dir /absolute/fresh-review
 The root defaults to the current workspace. Use `-C /absolute/workspace` to override
 it. Transport requires an independently supplied full 40-character lowercase
 review ID and an explicit HTTPS URL or absolute local remote path. It does not
-infer the expected ID from the remote. `--ref`, when supplied, must be exactly
-`refs/dev.synapt.grip/__reviews__/<full-review-id>`. Invalid explicit input is
+infer the expected ID from the remote. A review is published at
+`refs/dev.synapt.grip/__reviews__/v1/<full-review-id>`; `--ref`, when supplied, must be
+exactly that, or the older `refs/dev.synapt.grip/__reviews__/<full-review-id>`. Invalid explicit input is
 refused without falling back to context.
 
 Publish transfers only that review ref and confirms its returned target. Receive
@@ -181,9 +182,14 @@ Run a command at an exact full commit id in a disposable checkout, then publish
 its exit status to the repository's remote:
 
 ```sh
-gr2 check run ./repo --remote https://example.com/team/repo.git --head <full-sha> --name test -- python -m pytest
-gr2 check show ./repo --remote https://example.com/team/repo.git --head <full-sha> --json
+gr2 check run ./repo -- python -m pytest
+gr2 check show ./repo --json
 ```
+
+With no flags, the remote is the current branch's upstream (else `origin`) and the head is `HEAD`,
+as a full commit id. gr2 prints what it resolved on stderr. `--remote` (a URL, an absolute path or a
+remote's name), `--head` and `--name` override them. With no upstream and no `origin`, it refuses and
+asks for `--remote`.
 
 Absolute paths to local bare remotes also work. Observations live at
 `refs/dev.synapt.grip/__checks__/v1`, keyed by commit id. `check show` fetches a
@@ -202,6 +208,27 @@ survive and refuse readiness. Rerunning a check does not erase its earlier
 failure at that commit. Concurrent writes union observations with bounded
 compare-and-swap retries. An unmeasurable push acknowledgement is reported as
 indeterminate unless a fresh remote read confirms the observation.
+
+## Merge a bound review into plain Git remotes
+
+```sh
+gr2 review merge
+```
+
+This merges the review bound at the members' current heads, from their current branch, into the
+branch on each remote that still sits at the reviewed base, and prints what it resolved. If several
+branches sit there, it asks for `--into`. It merges only if every member's remote feature
+branch is still the reviewed head, the target is still the reviewed base, and the exact-head check
+passes. If any member fails that preflight, nothing is pushed. Merges are separate pushes, not atomic
+across repos: a member that moves after an earlier member was pushed is refused, and the run exits 4.
+
+Exit codes:
+- 0: all merged;
+- 3: none merged (refused);
+- 4: partial or unknown.
+
+A review id, `--from` and `--into` override the defaults. Zero or several matching binds, or members on
+different branches, refuse and name the value to pass.
 
 These records are attestations by writers trusted with remote access, not signed
 proof against a writer who can forge Git objects. Test output and environment

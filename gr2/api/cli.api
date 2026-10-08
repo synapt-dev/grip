@@ -480,6 +480,7 @@ arg   review merge workspace_root <str>                               stable
 flag  review merge --check <str>                                      stable
 flag  review merge --from <str>                                       stable
 flag  review merge --into <str>                                       stable
+flag  review merge --root/-C <str>                                    stable
 verb  review merge                                                    stable
 # review open
 arg   review open pr_number <str>                                     stable

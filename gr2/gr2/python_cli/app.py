@@ -4451,13 +4451,14 @@ def review_verify(
         raise typer.Exit(code=1)
 
 
-@review_app.command("merge")
+@review_app.command("merge", cls=RootOptionalCommand)
 def review_merge(
     workspace_root: Path,
     review_id: str = typer.Argument(..., help="Bound review id, gr:<sha>"),
     into: str = typer.Option("main", "--into", help="Target branch on each member's remote"),
     feature: str = typer.Option(..., "--from", help="Feature branch on each member's remote"),
     check: List[str] = typer.Option(["test"], "--check", help="Required exact-head check name (repeatable)"),
+    root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Merge a bound review into plain Git remotes: preflight every member, merge none on any failure.
 

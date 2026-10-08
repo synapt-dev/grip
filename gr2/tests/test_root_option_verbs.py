@@ -2,7 +2,7 @@
 verbs with a FIXED number of positionals, as a word that may be left out.
 
 Four command classes (`gr2/python_cli/root_option.py`):
-  * `RootOptionalCommand` (21 verbs): `--root/-C`, and one fewer positional than the verb requires means
+  * `RootOptionalCommand` (22 verbs): `--root/-C`, and one fewer positional than the verb requires means
     the root is the missing one: it is put in front from `--root/-C` or the nearest workspace above cwd.
   * `RootOptionCommand` (7 verbs, each with an OPTIONAL TRAILING positional): `--root/-C` only. One fewer
     word has two readings there (`pr status unit lane` is "root omitted" and "root = unit"), so the bare
@@ -35,12 +35,12 @@ from gr2.python_cli.app import app
 from typer.testing import CliRunner
 
 RESOLVED = ["lane/create", "lane/current", "lane/enter", "lane/exit", "lane/resolve", "lane/show"]  # ContextCommand: fixed arity, and the unit may be left out too
-FIXED_ARITY = [  # RootOptionalCommand: the 16, and ContextCommand: the 6 above
+FIXED_ARITY = [  # RootOptionalCommand: the 17, and ContextCommand: the 6 above
     "repo/hook-run", "repo/projection-run",
     "lane/create", "lane/enter", "lane/resolve", "lane/exit", "lane/current", "lane/show", "lane/bind",
     "lane/lease/acquire", "lane/lease/release", "lane/lease/show",
     "review/check", "review/requirements", "review/checkout-pr", "review/create-project", "review/open-project",
-    "review/exit-gr", "review/open-gr",
+    "review/exit-gr", "review/open-gr", "review/merge",
     "hooks/run", "config/restore",
 ]
 OPTIONAL_TRAILING = [  # RootOptionCommand: the two execution verbs

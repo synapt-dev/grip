@@ -11,7 +11,7 @@ import subprocess
 import pytest
 
 from gr2.python_cli import merge_gate
-from tests.test_review_merge_gate import check, git, merge, mains, slice2, world  # noqa: F401  (fixtures)
+from tests.test_review_merge_gate import _git_identity, check, git, merge, mains, slice2, world  # noqa: F401  (fixtures)
 
 REAL_RUN = subprocess.run
 

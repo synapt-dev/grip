@@ -25,6 +25,14 @@ def git(root, *args):
     return p.stdout.strip()
 
 
+@pytest.fixture(autouse=True)
+def _git_identity(monkeypatch):
+    """gr2 writes commits (store, bind, check records) with the ambient identity; a clean box has none."""
+    for k, v in (("GIT_AUTHOR_NAME", "Fixture"), ("GIT_AUTHOR_EMAIL", "fixture@example.invalid"),
+                 ("GIT_COMMITTER_NAME", "Fixture"), ("GIT_COMMITTER_EMAIL", "fixture@example.invalid")):
+        monkeypatch.setenv(k, v)
+
+
 @pytest.fixture
 def world(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")

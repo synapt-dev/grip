@@ -100,6 +100,10 @@ _WRITE_PATHS = ("objects", "refs", "packed-refs")
 _WALKED = ("objects", "refs", "logs")  # the trees fetch and push write into
 
 
+def _raise(exc: OSError) -> None:
+    raise exc
+
+
 def _store_inside(repo: Path, root: Path) -> bool:
     """Every place git WRITES for this member resolves (symlinks followed) inside the workspace.
 
@@ -126,9 +130,14 @@ def _store_inside(repo: Path, root: Path) -> bool:
             base = top / sink
             if os.path.islink(base):
                 return False
-            for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
-                if any(os.path.islink(os.path.join(dirpath, n)) for n in (*dirnames, *filenames)):
-                    return False
+            if not base.exists():
+                continue  # an absent optional sink (a fresh repo may have no logs/) holds nothing to redirect
+            try:  # a directory the walk cannot list could hide a link: fail closed, never skip it
+                for dirpath, dirnames, filenames in os.walk(base, followlinks=False, onerror=_raise):
+                    if any(os.path.islink(os.path.join(dirpath, n)) for n in (*dirnames, *filenames)):
+                        return False
+            except OSError:
+                return False
     return True
 
 

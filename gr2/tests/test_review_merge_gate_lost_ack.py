@@ -427,3 +427,23 @@ def test_every_git_command_the_gate_runs_disables_auto_maintenance(world, monkey
     assert seen and any("push" in c for c in seen) and any("fetch" in c for c in seen), seen
     for c in seen:
         assert "maintenance.auto=false" in c and "gc.auto=0" in c, c
+
+
+def test_an_unlistable_log_subtree_is_refused_not_skipped(world, tmp_path, monkeypatch):
+    check(world)
+    git(world["member"], "config", "core.logAllRefUpdates", "always")
+    fixed = merge_gate.uuid.UUID(int=0x41B3)
+    monkeypatch.setattr(merge_gate.uuid, "uuid4", lambda: fixed)
+    victim = tmp_path / "outside-reflog"
+    victim.write_bytes(b"victim\n")
+    logdir = world["member"] / ".git" / "logs" / "refs" / "dev.synapt.grip" / "__merge_transfers__"
+    logdir.mkdir(parents=True)
+    (logdir / fixed.hex).symlink_to(victim)
+    logdir.chmod(0o300)  # writable and searchable, NOT listable: a walk that skips errors never sees the link
+    try:
+        code, receipt = merge(world)
+    finally:
+        logdir.chmod(0o755)
+    assert receipt["members"][0]["refused"].startswith("member_store_outside_workspace"), receipt
+    assert victim.read_bytes() == b"victim\n", "the gate appended a reflog outside the workspace"
+    assert git(world["remote"], "rev-parse", "main") == world["base"]

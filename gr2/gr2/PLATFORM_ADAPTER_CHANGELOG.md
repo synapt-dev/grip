@@ -24,6 +24,7 @@ an existing adapter cannot absorb.
   to adapter API version 1; factories still take no arguments and `repo` keeps its existing value.
   Later lifecycle calls still receive the existing repo string; this field supplies creation context only.
   Lane URLs are stripped of surrounding whitespace; blank values are treated as absent.
+  A lane member URL carrying credentials is refused by member name before adapter calls or PR state writes.
 
 ## 2.0.0a7
 

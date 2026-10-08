@@ -3538,6 +3538,8 @@ def pr_create(
     for repo_name in lane_doc.get("repos", []):
         repo_spec = next(repo for repo in spec.get("repos", []) if repo.get("name") == repo_name)
         remote = str(repo_spec.get("url", "")).strip()
+        if grip.url_has_credentials(remote):
+            _refuse(f"{repo_name}: its url carries credentials; use a url without them")
         repo = _repo_slug_from_url(remote, repo_name)
         repos.append(repo)
         if remote:

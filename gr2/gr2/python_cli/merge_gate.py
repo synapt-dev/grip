@@ -92,6 +92,7 @@ def _toplevel(repo: Path) -> Path | None:
 
 
 _WRITE_PATHS = ("objects", "refs", "packed-refs")
+_WALKED = ("objects", "refs", "logs")  # the trees fetch and push write into
 
 
 def _store_inside(repo: Path, root: Path) -> bool:
@@ -109,13 +110,20 @@ def _store_inside(repo: Path, root: Path) -> bool:
         return False
     if not all((repo / line).resolve().is_relative_to(root) for line in lines):
         return False
-    # A symlink at any depth redirects a write: a symlinked DIRECTORY catches temp-file-then-rename writes
-    # (objects/xx, refs/heads/...), and a symlinked FILE catches in-place appends (logs/... reflogs).
-    # Walk without following links and refuse any link at all.
+    # Inside the trees fetch and push WRITE (objects, refs, logs, packed-refs), a symlink at any depth
+    # redirects a write: a linked DIRECTORY catches rename-into-place writes (objects/xx, refs/heads/...), a
+    # linked FILE catches in-place reflog appends. Walk those trees without following links. Elsewhere
+    # (hooks/, config) links are ordinary: our own clones install hooks as symlinks, and nothing here writes there.
     for top in {(repo / lines[0]).resolve(), (repo / lines[1]).resolve()}:
-        for dirpath, dirnames, filenames in os.walk(top, followlinks=False):
-            if any(os.path.islink(os.path.join(dirpath, n)) for n in (*dirnames, *filenames)):
+        if os.path.islink(top / "packed-refs"):
+            return False
+        for sink in _WALKED:
+            base = top / sink
+            if os.path.islink(base):
                 return False
+            for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+                if any(os.path.islink(os.path.join(dirpath, n)) for n in (*dirnames, *filenames)):
+                    return False
     return True
 
 

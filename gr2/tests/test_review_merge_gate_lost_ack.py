@@ -402,3 +402,12 @@ def test_an_ordinary_reflog_is_not_refused(world):
     git(world["member"], "config", "core.logAllRefUpdates", "always")
     code, receipt = merge(world)
     assert code == merge_gate.EXIT_MERGED, receipt
+
+
+def test_a_symlinked_hook_does_not_refuse_a_member(world, tmp_path):
+    check(world)
+    hook = tmp_path / "commit-msg-guard"
+    hook.write_text("#!/bin/sh\nexit 0\n")
+    (world["member"] / ".git" / "hooks" / "commit-msg").symlink_to(hook)  # how our own clones install guards
+    code, receipt = merge(world)
+    assert code == merge_gate.EXIT_MERGED, receipt

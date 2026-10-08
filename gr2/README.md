@@ -92,12 +92,40 @@ Not there yet:
 | `sync` | status, run |
 | `pr` | create, status, checks, merge, view |
 | `check` | run, show |
-| `review` | open, close, checkout-pr, run, check, bind, publish, receive, verify, show, merge, rebind, create-project |
+| `review` | open, close, checkout-pr, run, check, bind, publish, receive, verify, show, approve, merge, rebind, create-project |
 | `exec` | status, run |
 | `repo` | status, projection-run |
 | `hooks` | trust, revoke, status, show, run |
 | `store` | init, commit, check, push, status, log, diff, checkout, materialize, migrate, migrate-reviews |
 | `target`, `config` | stored PR target; config overlays |
+
+## Unsigned approvals
+
+Inside a workspace with one review bind matching every member's current head,
+an approver uses the workspace's Git `user.name`:
+
+```bash
+gr2 review approve
+gr2 review merge
+```
+
+The author recorded by the bind, and anyone who authored a commit in its range,
+cannot approve it. Approval names are self-declared; receipts say `signed: false`.
+Repeated approvals by the same name count once. A moved head needs a new bind
+and fresh approvals. Signing is not implemented by these commands.
+
+The workspace's `grip.toml` sets the number required before merging:
+
+```toml
+[approvals]
+required = 2
+```
+
+The default is zero; `review merge --approvals N` can raise the count for that
+run, but cannot lower the workspace policy. With zero required, the merge gate
+skips approval counting. When approvals are required, broken records or different
+chain tips across member remotes refuse before this run pushes a merge. After a refused approval append, rerun
+`review approve` to read the current chain and retry with a lease.
 
 ## Overlay substrate
 

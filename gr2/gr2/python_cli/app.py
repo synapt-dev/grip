@@ -4476,6 +4476,22 @@ def _resolve_merge_defaults(ws: Path, review_id: Optional[str], into: Optional[s
     return view["id"], into, feature
 
 
+@review_app.command("approve", cls=ReviewHeadCommand)
+def review_approve(
+    workspace_root: Path,
+    review_id: Optional[str] = typer.Argument(None, help="Review id; default is the bind at the current member heads"),
+    root: Optional[Path] = ROOT_OPTION,
+) -> None:
+    """Append an unsigned exact-head approval as git user.name, on every member remote."""
+    from . import approvals
+    try:
+        result = approvals.approve(workspace_root.resolve(), review_id)
+    except approvals.ApprovalRefused as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2)
+    typer.echo(json.dumps(result))
+
+
 @review_app.command("merge", cls=ReviewHeadCommand)
 def review_merge(
     workspace_root: Path,
@@ -4483,6 +4499,7 @@ def review_merge(
     into: Optional[str] = typer.Option(None, "--into", help="Target branch; default: the remote's default branch when it is the one branch at the reviewed base"),
     feature: Optional[str] = typer.Option(None, "--from", help="Feature branch; default: the members' current branch"),
     check: List[str] = typer.Option(["test"], "--check", help="Required exact-head check name (repeatable)"),
+    approval_count: Optional[int] = typer.Option(None, "--approvals", help="Required distinct approvers; may raise the workspace approvals.required floor, default 0"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Merge a bound review into plain Git remotes: preflight every member, push nothing if any member fails it.
@@ -4502,7 +4519,7 @@ def review_merge(
                                "refused": str(exc)}))
         raise typer.Exit(code)
     code, receipt = merge_gate.review_merge(ws, review_id, into=into, feature=feature,
-                                            required_checks=tuple(check))
+                                            required_checks=tuple(check), required_approvals=approval_count)
     typer.echo(json.dumps(receipt))
     if code:
         raise typer.Exit(code)

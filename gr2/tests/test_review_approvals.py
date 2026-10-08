@@ -431,7 +431,12 @@ def test_chain_length_limit_refuses(monkeypatch):
     record["prev"] = "d" * 64
     monkeypatch.setattr(approvals, "digest", lambda *args: "d" * 64)
     monkeypatch.setattr(approvals, "_read_link", lambda *args: record)
-    monkeypatch.setattr(approvals, "_git", lambda repo, *args, **kwargs: args[-1] + " " + f"{int(args[-1], 16)-1:040x}")
+    rid = root["review_id"].removeprefix("gr:")
+    def finite_chain(repo, *args, **kwargs):
+        value = int(args[-1], 16)
+        parent = rid if value == 1 else f"{value-1:040x}"
+        return args[-1] + " " + parent
+    monkeypatch.setattr(approvals, "_git", finite_chain)
     with pytest.raises(approvals.ApprovalRefused, match="excessive length"):
         approvals._walk(None, root, {"Author A"}, f"{20000:040x}")
 

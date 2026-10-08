@@ -1,4 +1,5 @@
 """Binder identity is in the record, not inferred from member authors."""
+# ruff: noqa: F811 -- imported pytest fixture is intentionally named in test arguments.
 from __future__ import annotations
 
 import subprocess

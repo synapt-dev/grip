@@ -33,6 +33,7 @@ from pathlib import Path
 
 from . import lane_downstream, lane_graph, lane_plugins
 from .layout import LANE_VENV
+from . import gitops
 
 # An in-repo hint read when `--install` is omitted. It lives at the REPO ROOT
 # (the lane), NOT in a pyproject table, on purpose: a repo whose importable
@@ -180,12 +181,7 @@ class ReviewRunRefused(Exception):
 
 
 def _git(repo_dir: Path, *args: str, env: dict | None = None) -> str:
-    proc = subprocess.run(
-        ["git", "-C", str(repo_dir), *args],
-        text=True,
-        capture_output=True,
-        env=env,
-    )
+    proc = gitops.run(repo_dir, *args, env=env)
     if proc.returncode != 0:
         raise ReviewRunRefused(
             "git_failed",

@@ -40,6 +40,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .clone_exec import IncompleteRemoval, rmtree_or_refuse
+from . import gitops
 
 STORE_DIRNAME = "grip"
 RECORD_FILENAME = "review.json"
@@ -56,11 +57,7 @@ class GitReviewError(RuntimeError):
 
 
 def _git(repo: Path, *args: str) -> str:
-    r = subprocess.run(
-        ["git", "-C", str(repo), *args],
-        capture_output=True,
-        text=True,
-    )
+    r = gitops.run(repo, *args)
     if r.returncode != 0:
         raise GitReviewError(f"git {' '.join(args)} failed: {r.stderr.strip()}")
     return r.stdout.strip()

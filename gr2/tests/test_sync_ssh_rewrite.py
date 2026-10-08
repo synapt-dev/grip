@@ -132,6 +132,7 @@ class TestEnsureRepoCacheUsesRewrittenUrl:
         real_run = subprocess.run
 
         def fake_run(cmd, *args, **kwargs):
+            cmd = gitops_mod.logical_argv(cmd)  # the command as written, without the shared flags
             recorded.append(list(cmd))
             if cmd[:2] == ["git", "clone"]:
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -155,6 +156,7 @@ class TestEnsureRepoCacheUsesRewrittenUrl:
         real_run = subprocess.run
 
         def fake_run(cmd, *args, **kwargs):
+            cmd = gitops_mod.logical_argv(cmd)  # the command as written, without the shared flags
             recorded.append(list(cmd))
             if cmd[:2] == ["git", "clone"]:
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -198,6 +200,7 @@ class TestEnsureRepoCacheRefreshRepointsSshOrigin:
         real_run = subprocess.run
 
         def fake_run(cmd, *args, **kwargs):
+            cmd = gitops_mod.logical_argv(cmd)  # the command as written, without the shared flags
             recorded.append(list(cmd))
             if cmd[:2] == ["git", "--git-dir"] and "update" in cmd:
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -234,6 +237,7 @@ class TestEnsureRepoCacheRefreshRepointsSshOrigin:
         real_run = subprocess.run
 
         def fake_run(cmd, *args, **kwargs):
+            cmd = gitops_mod.logical_argv(cmd)  # the command as written, without the shared flags
             recorded.append(list(cmd))
             if cmd[:2] == ["git", "--git-dir"] and "update" in cmd:
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -270,6 +274,7 @@ class TestFetchRepoSshRewrite:
         real_run = subprocess.run
 
         def fake_run(cmd, *args, **kwargs):
+            cmd = gitops_mod.logical_argv(cmd)  # the command as written, without the shared flags
             recorded.append(list(cmd))
             if cmd[:2] == ["git", "fetch"]:
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -294,6 +299,7 @@ class TestFetchRepoSshRewrite:
         assert _git(checkout, "remote", "add", "origin", "git@github.com:synapt-dev/app.git").returncode == 0
 
         def fake_run(cmd, *args, **kwargs):
+            cmd = gitops_mod.logical_argv(cmd)  # the command as written, without the shared flags
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         monkeypatch.setattr(gitops_mod.subprocess, "run", fake_run)

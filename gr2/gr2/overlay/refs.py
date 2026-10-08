@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 from gr2.overlay.types import OverlayRef
+from gr2.python_cli import gitops
 
 
 def push_overlay_ref(
@@ -14,12 +15,7 @@ def push_overlay_ref(
     overlay_ref: OverlayRef,
 ) -> None:
     refspec = f"{overlay_ref.ref_path}:{overlay_ref.ref_path}"
-    subprocess.run(
-        ["git", f"--git-dir={overlay_store}", "push", str(remote_store), refspec],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    gitops.check(gitops.run_argv(["git", f"--git-dir={overlay_store}", "push", str(remote_store), refspec]))
 
 
 def fetch_overlay_ref(
@@ -28,9 +24,4 @@ def fetch_overlay_ref(
     overlay_ref: OverlayRef,
 ) -> None:
     refspec = f"{overlay_ref.ref_path}:{overlay_ref.ref_path}"
-    subprocess.run(
-        ["git", f"--git-dir={overlay_store}", "fetch", str(remote_store), refspec],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    gitops.check(gitops.run_argv(["git", f"--git-dir={overlay_store}", "fetch", str(remote_store), refspec]))

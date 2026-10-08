@@ -219,7 +219,7 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
         from . import grip_cli
 
         if not (lane_root / ".git").exists():
-            cloned = git(workspace_root, "clone", "--no-checkout", str(workspace_root), str(lane_root))
+            cloned = gitops.clone("--no-checkout", str(workspace_root), str(lane_root), cwd=workspace_root)
             if cloned.returncode:
                 raise SystemExit(f"cannot create native lane workspace: {cloned.stderr}")
         elif gitops.current_head_sha(lane_root) != workspace_commit:
@@ -1694,7 +1694,7 @@ def _refuse_add_at_a_workspace_root_with_a_lane() -> None:
     root, entered = found
     if not entered:
         return
-    top = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, cwd=str(Path.cwd()))
+    top = gitops.run_argv(["git", "rev-parse", "--show-toplevel"], cwd=str(Path.cwd()))
     if top.returncode != 0 or Path(top.stdout.strip()).resolve() != Path(root.value).resolve():
         return
     lanes = ", ".join(f"{u}/{n}" for u, n in sorted(entered.items()))

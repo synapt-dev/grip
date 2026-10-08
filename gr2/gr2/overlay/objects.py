@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 from gr2.overlay.types import OverlayMeta, OverlayRef, OverlayTier
+from gr2.python_cli import gitops
 
 TIER_A_EXTENSIONS = frozenset({".toml", ".yml", ".json"})
 TIER_A_FILENAMES = frozenset({"COMPOSE.md"})
@@ -145,12 +146,7 @@ def _get_index_blob_oid(source_root: Path, rel_path: str) -> str | None:
 
 
 def _read_blob_from_repo(repo_root: Path, blob_oid: str) -> bytes:
-    result = subprocess.run(
-        ["git", "cat-file", "blob", blob_oid],
-        cwd=repo_root,
-        check=True,
-        capture_output=True,
-    )
+    result = gitops.check(gitops.run_argv(["git", "cat-file", "blob", blob_oid], cwd=repo_root, binary=True))
     return result.stdout
 
 
@@ -186,13 +182,7 @@ def _apply_deletions(meta_blob: str, checkout_root: Path) -> None:
             parent = target.parent
             if parent != checkout_root and not any(parent.iterdir()):
                 parent.rmdir()
-        subprocess.run(
-            ["git", "update-index", "--force-remove", rel_path],
-            cwd=checkout_root,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        gitops.check(gitops.run_argv(["git", "update-index", "--force-remove", rel_path], cwd=checkout_root))
 
 
 def _parse_deleted_paths(meta_blob: str) -> list[str]:
@@ -222,11 +212,7 @@ def _write_tree_to_disk(
         meta_part, file_path = line.split("\t", 1)
         blob_oid = meta_part.split()[2]
 
-        content = subprocess.run(
-            ["git", f"--git-dir={overlay_store}", "cat-file", "blob", blob_oid],
-            check=True,
-            capture_output=True,
-        ).stdout
+        content = gitops.check(gitops.run_argv(["git", f"--git-dir={overlay_store}", "cat-file", "blob", blob_oid], binary=True)).stdout
 
         target = target_root / file_path
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -249,49 +235,21 @@ def _apply_staged_index(
         meta_part, file_path = line.split("\t", 1)
         blob_oid = meta_part.split()[2]
 
-        content = subprocess.run(
-            ["git", f"--git-dir={overlay_store}", "cat-file", "blob", blob_oid],
-            check=True,
-            capture_output=True,
-        ).stdout
+        content = gitops.check(gitops.run_argv(["git", f"--git-dir={overlay_store}", "cat-file", "blob", blob_oid], binary=True)).stdout
 
-        result = subprocess.run(
-            ["git", "hash-object", "-w", "--stdin"],
-            cwd=checkout_root,
-            input=content,
-            check=True,
-            capture_output=True,
-        )
+        result = gitops.check(gitops.run_argv(["git", "hash-object", "-w", "--stdin"], cwd=checkout_root, input=content, binary=True))
         local_oid = result.stdout.strip().decode()
 
-        subprocess.run(
-            ["git", "update-index", "--add", "--cacheinfo", f"100644,{local_oid},{file_path}"],
-            cwd=checkout_root,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        gitops.check(gitops.run_argv(["git", "update-index", "--add", "--cacheinfo", f"100644,{local_oid},{file_path}"], cwd=checkout_root))
 
 
 def _git_output_in_repo(repo_root: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=repo_root,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    result = gitops.check(gitops.run_argv(["git", *args], cwd=repo_root))
     return result.stdout.strip()
 
 
 def _git_lines_in_repo(repo_root: Path, *args: str) -> list[str]:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=repo_root,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    result = gitops.check(gitops.run_argv(["git", *args], cwd=repo_root))
     return [line for line in result.stdout.splitlines() if line]
 
 
@@ -331,12 +289,7 @@ def _hash_blob_from_file(overlay_store: Path, file_path: Path) -> str:
 
 
 def _hash_blob_from_bytes(overlay_store: Path, data: bytes) -> str:
-    result = subprocess.run(
-        ["git", f"--git-dir={overlay_store}", "hash-object", "-w", "--stdin"],
-        input=data,
-        check=True,
-        capture_output=True,
-    )
+    result = gitops.check(gitops.run_argv(["git", f"--git-dir={overlay_store}", "hash-object", "-w", "--stdin"], input=data, binary=True))
     return result.stdout.strip().decode()
 
 
@@ -383,30 +336,14 @@ def _serialize_metadata(
 
 
 def _git_output(git_dir: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", f"--git-dir={git_dir}", *args],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    result = gitops.check(gitops.run_argv(["git", f"--git-dir={git_dir}", *args]))
     return result.stdout.strip()
 
 
 def _git_input(git_dir: Path, stdin_data: str, *args: str) -> str:
-    result = subprocess.run(
-        ["git", f"--git-dir={git_dir}", *args],
-        input=stdin_data,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    result = gitops.check(gitops.run_argv(["git", f"--git-dir={git_dir}", *args], input=stdin_data))
     return result.stdout.strip()
 
 
 def _git_run(git_dir: Path, *args: str) -> None:
-    subprocess.run(
-        ["git", f"--git-dir={git_dir}", *args],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    gitops.check(gitops.run_argv(["git", f"--git-dir={git_dir}", *args]))

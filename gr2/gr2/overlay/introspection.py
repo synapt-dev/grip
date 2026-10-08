@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from gr2.overlay.types import OverlayRef
+from gr2.python_cli import gitops
 
 GRIP_DIR = ".grip"
 
@@ -146,10 +147,5 @@ def _read_overlay_file_list(overlay_store: Path, overlay_ref: OverlayRef) -> lis
 
 
 def _git_output(git_dir: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", f"--git-dir={git_dir}", *args],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    result = gitops.check(gitops.run_argv(["git", f"--git-dir={git_dir}", *args]))
     return result.stdout.strip()

@@ -10,6 +10,8 @@ import uuid
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from . import gitops
+
 CHECK_REF = "refs/dev.synapt.grip/__checks__/v1"
 
 # Required read-adapter keys. Unknown observation metadata is preserved but
@@ -28,12 +30,7 @@ class CheckRefused(ValueError):
 
 
 def _git(repo: Path, *args: str, data: bytes | None = None) -> bytes:
-    # Never let a check transfer start background `git maintenance run --auto` work in the caller's repository.
-    p = subprocess.run(["git", "-c", "maintenance.auto=false", "-c", "gc.auto=0", "-C", str(repo), *args],
-                       input=data, capture_output=True, timeout=30)
-    if p.returncode:
-        raise CheckRefused(p.stderr.decode("utf-8", errors="replace").strip())
-    return p.stdout
+    return gitops.out_bytes(repo, *args, input=data, error=CheckRefused, timeout=30, raise_timeout=True)
 
 
 def _oid(repo: Path, value: str) -> str:
@@ -176,8 +173,9 @@ def run_check(repo: Path, remote: str, head: str, name: str, argv: Sequence[str]
         raise CheckRefused("check_name_and_command_required")
     with tempfile.TemporaryDirectory(prefix="gr2-check-") as directory:
         checkout = Path(directory) / "checkout"
-        subprocess.run(["git", "clone", "--quiet", "--no-hardlinks", "--no-checkout", str(repo), str(checkout)],
-                       check=True, capture_output=True)
+        cloned = gitops.clone("--quiet", "--no-hardlinks", "--no-checkout", str(repo), str(checkout), binary=True)
+        if cloned.returncode:
+            gitops._raise(cloned, ("clone",), CheckRefused)
         _git(checkout, "checkout", "--quiet", "--detach", head)
         before = _git(checkout, "rev-parse", "HEAD").decode().strip()
         execution = subprocess.run(list(argv), cwd=checkout, capture_output=True)
@@ -192,8 +190,7 @@ def run_check(repo: Path, remote: str, head: str, name: str, argv: Sequence[str]
 
 
 def _local_snapshot(repo: Path) -> str | None:
-    p = subprocess.run(["git", "-C", str(repo), "show-ref", "--verify", "--quiet", CHECK_REF],
-                       capture_output=True, timeout=30)
+    p = gitops.run(repo, "show-ref", "--verify", "--quiet", CHECK_REF, binary=True, timeout=30, raise_timeout=True)
     if p.returncode == 1:
         return None
     if p.returncode:

@@ -266,7 +266,7 @@ def _resolve_snapshot_or_exit(
 
 
 def _store_git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(["git", "-C", str(root), *args], text=True, capture_output=True, check=False)
+    result = gitops.run_argv(["git", "-C", str(root), *args])
     if check and result.returncode:
         raise RuntimeError(result.stderr.strip() or "git command failed")
     return result
@@ -1478,7 +1478,7 @@ def _native_store_materialize(root: Path) -> list[dict[str, str]]:
                         f"materialize will not clear it -- move or remove what is there",
                         3,
                     ) from exc
-            result = subprocess.run(["git", "clone", member["remote"], str(path)], text=True, capture_output=True, check=False)
+            result = gitops.clone(member["remote"], str(path))
             if result.returncode:
                 done = ", ".join(item["name"] for item in materialized) or "none"
                 raise NativeStoreRefusal(

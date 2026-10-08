@@ -25,6 +25,7 @@ from typing import Optional
 
 from ..prototypes import lane_workspace_prototype as lane_proto
 from .layout import grip_dir
+from . import gitops
 
 
 @dataclass(frozen=True)
@@ -177,7 +178,7 @@ def resolve_actor(
         name = git_name
         if name is None:
             try:
-                probe = subprocess.run(["git", "config", "user.name"], capture_output=True, text=True, check=False)
+                probe = gitops.run_argv(["git", "config", "user.name"])
                 name = probe.stdout.strip() if probe.returncode == 0 else ""
             except OSError:  # git is not installed or not on PATH: there is no name to use, so refuse below
                 name = ""

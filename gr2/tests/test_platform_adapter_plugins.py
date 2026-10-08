@@ -37,7 +37,10 @@ class Adapter:
         with Path(os.environ["FIXTURE_EVENTS"]).open("a") as log:
             log.write(json.dumps(dict(kind="create", request=asdict(request))) + "\\n")
         number = 1 if request.repo == "sample" else 2
-        url = "https://example.invalid/" + request.repo + "/pull/" + str(number)
+        remote = getattr(request, "remote", None)
+        target = (remote.removesuffix(".git") if remote
+                  else "https://example.invalid/" + request.repo)
+        url = target + "/pull/" + str(number)
         return PRRef(repo=request.repo, number=number, url=url)
     def edit_pr_body(self, repo, number, body):
         with Path(os.environ["FIXTURE_EVENTS"]).open("a") as log:
@@ -74,35 +77,134 @@ def factory(): return Adapter()
     return workspace, capture, env, metadata
 
 
+def _create_cli(plugin, *flags):
+    workspace, _, env, _ = plugin
+    return subprocess.run(
+        [sys.executable, "-m", "gr2.python_cli", "pr", "create", str(workspace),
+         "default", "proof", "--platform", "fixture", *flags],
+        env=env, cwd=workspace, text=True, capture_output=True,
+    )
+
+
+def test_per_member_remotes_reach_entry_point_and_stored_group(plugin):
+    workspace, _, env, _ = plugin
+    remotes = ["https://example.invalid/context-one/_git/common",
+               "https://example.invalid/context-two/_git/common"]
+    (workspace / ".grip/workspace_spec.toml").write_text(
+        f'[[repos]]\nname="sample"\nurl="{remotes[0]}"\n'
+        f'[[repos]]\nname="second"\nurl="{remotes[1]}"\n'
+    )
+    (workspace / ".grip/state/lanes/default/proof/lane.toml").write_text(
+        'repos=["sample","second"]\nlane_kind="materialized"\n'
+        '[branch_map]\nsample="feature/proof"\nsecond="feature/proof"\n'
+    )
+    subprocess.run(["git", "-C", str(workspace), "remote", "add", "origin",
+                    "https://example.invalid/ambient/decoy.git"], check=True)
+    result = _create_cli(plugin, "--json")
+    assert result.returncode == 0, result.stderr
+    events = [json.loads(line) for line in Path(env["FIXTURE_EVENTS"]).read_text().splitlines()]
+    requests = [row["request"] for row in events if row["kind"] == "create"]
+    assert [request.get("remote") for request in requests] == remotes
+    group = json.loads(result.stdout)
+    saved = json.loads(Path(group["state_path"]).read_text())
+    assert [row.get("remote") for row in saved["prs"]] == remotes
+    assert [row["url"] for row in saved["prs"]] == [
+        remotes[0] + "/pull/1", remotes[1] + "/pull/2",
+    ]
+    assert [request["repo"] for request in requests] == ["sample", "second"]
+    assert all(request["draft"] for request in requests)
+    assert [row["kind"] for row in events] == ["create", "create", "edit", "edit"]
+
+
+def test_duplicate_member_identity_refuses_before_adapter_calls(tmp_path):
+    calls = []
+    def create(request):
+        calls.append(request)
+        return platform.PRRef(request.repo, 1, "https://example.invalid/pull/1")
+
+    adapter = SimpleNamespace(
+        create_pr=create, edit_pr_body=lambda *args: None,
+    )
+    with pytest.raises(platform.AdapterError, match="duplicate.*repo"):
+        pr.create_pr_group(tmp_path, "default", "proof", "title", "main", "head",
+                           ["same", "same"], adapter, "local",
+                           remotes={"same": "https://example.invalid/selected.git"})
+    assert calls == []
+    assert not (tmp_path / ".grip").exists()
+
+
+@pytest.mark.parametrize("url_line", ["", 'url="   "\n'], ids=["missing", "whitespace"])
+def test_absent_lane_url_omits_creation_remote(plugin, url_line):
+    workspace, capture, _, _ = plugin
+    (workspace / ".grip/workspace_spec.toml").write_text(
+        '[[repos]]\nname="sample"\n' + url_line
+    )
+    result = _create_cli(plugin, "--json")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(capture.read_text())["remote"] is None
+    group = json.loads(result.stdout)
+    saved = json.loads(Path(group["state_path"]).read_text())
+    assert "remote" not in saved["prs"][0]
+
+
+@pytest.mark.parametrize("userinfo", ["user:fixture-private-token", "fixture-private-token"])
+def test_credential_lane_url_refuses_before_adapter_or_state(plugin, userinfo):
+    workspace, capture, env, _ = plugin
+    remote = f"https://{userinfo}@github.com/o/sample.git"
+    (workspace / ".grip/workspace_spec.toml").write_text(
+        f'[[repos]]\nname="sample"\nurl="{remote}"\n'
+    )
+    result = _create_cli(plugin, "--json")
+    assert result.returncode == 2, result.stderr
+    assert "sample: its url carries credentials" in result.stderr
+    assert "fixture-private-token" not in result.stdout + result.stderr
+    assert remote not in result.stdout + result.stderr
+    assert not capture.exists()
+    assert not Path(env["FIXTURE_EVENTS"]).exists()
+    assert not (workspace / ".grip/pr_groups").exists()
+    assert not (workspace / ".grip/events").exists()
+
+
+@pytest.mark.parametrize("remote", [
+    "https://github.com/o/sample.git",
+    "git@github.com:o/sample.git",
+    "ssh://git@github.com/o/sample.git",
+])
+def test_clean_lane_url_shapes_still_reach_adapter(plugin, remote):
+    workspace, capture, _, _ = plugin
+    (workspace / ".grip/workspace_spec.toml").write_text(
+        f'[[repos]]\nname="sample"\nurl="{remote}"\n'
+    )
+    result = _create_cli(plugin, "--json")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(capture.read_text())["remote"] == remote
+    saved = json.loads(Path(json.loads(result.stdout)["state_path"]).read_text())
+    assert saved["prs"][0]["remote"] == remote
+
+
+def test_duplicate_cli_identity_names_refusal_before_adapter_calls(plugin):
+    workspace, capture, env, _ = plugin
+    (workspace / ".grip/workspace_spec.toml").write_text(
+        '[[repos]]\nname="sample"\nurl="https://github.com/example/common.git"\n'
+        '[[repos]]\nname="second"\nurl="https://github.com/example/common.git"\n'
+    )
+    (workspace / ".grip/state/lanes/default/proof/lane.toml").write_text(
+        'repos=["sample","second"]\nlane_kind="materialized"\n'
+        '[branch_map]\nsample="feature/proof"\nsecond="feature/proof"\n'
+    )
+    result = _create_cli(plugin, "--json")
+    assert result.returncode == 1
+    assert "duplicate repo identity" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert not capture.exists()
+    assert not Path(env["FIXTURE_EVENTS"]).exists()
+
+
 @pytest.mark.parametrize("flags,draft", [([], True), (["--draft"], True), (["--no-draft"], False)])
 def test_external_entry_point_actual_cli_carries_policy_and_target(plugin, flags, draft):
     workspace, capture, env, _ = plugin
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "gr2.python_cli",
-            "pr",
-            "create",
-            str(workspace),
-            "default",
-            "proof",
-            "--platform",
-            "fixture",
-            "--base",
-            "integration",
-            "--title",
-            "Local proof",
-            "--body",
-            "Fixture text",
-            "--json",
-            *flags,
-        ],
-        env=env,
-        cwd=workspace,
-        text=True,
-        capture_output=True,
-    )
+    result = _create_cli(plugin, "--base", "integration", "--title", "Local proof",
+                         "--body", "Fixture text", "--json", *flags)
     assert result.returncode == 0, result.stderr
     assert json.loads(capture.read_text()) == dict(
         repo="sample",
@@ -111,6 +213,7 @@ def test_external_entry_point_actual_cli_carries_policy_and_target(plugin, flags
         head_branch="feature/proof",
         base_branch="integration",
         draft=draft,
+        remote="https://example.invalid/sample.git",
     )
     assert json.loads(result.stdout)["platform"] == "fixture"
 
@@ -195,10 +298,12 @@ def test_single_member_group_default_is_draft(tmp_path):
             calls.append(request)
             return platform.PRRef(repo=request.repo, number=1, url="https://example.invalid/pull/1")
 
-    pr.create_pr_group(
+    group = pr.create_pr_group(
         tmp_path, "default", "proof", "title", "main", "head", ["sample"], Adapter(), "local"
     )
     assert calls[0].draft is True
+    assert calls[0].remote is None
+    assert group["prs"] == [{"repo": "sample", "pr_number": 1, "url": "https://example.invalid/pull/1"}]
     assert platform.CreatePRRequest("sample", "title", "body", "head", "main").draft is True
 
 
@@ -225,32 +330,8 @@ def test_two_member_actual_cli_body_edits_do_not_publish(plugin, flags, draft):
         'repos=["sample","second"]\nlane_kind="materialized"\n'
         '[branch_map]\nsample="feature/proof"\nsecond="feature/proof"\n'
     )
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "gr2.python_cli",
-            "pr",
-            "create",
-            str(workspace),
-            "default",
-            "proof",
-            "--platform",
-            "fixture",
-            "--base",
-            "integration",
-            "--title",
-            "Local proof",
-            "--body",
-            "Fixture text",
-            "--json",
-            *flags,
-        ],
-        env=env,
-        cwd=workspace,
-        text=True,
-        capture_output=True,
-    )
+    result = _create_cli(plugin, "--base", "integration", "--title", "Local proof",
+                         "--body", "Fixture text", "--json", *flags)
     assert result.returncode == 0, result.stderr
     events = [json.loads(line) for line in Path(env["FIXTURE_EVENTS"]).read_text().splitlines()]
     assert [row["kind"] for row in events] == ["create", "create", "edit", "edit"]

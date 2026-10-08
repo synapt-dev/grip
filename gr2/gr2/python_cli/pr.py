@@ -339,10 +339,13 @@ def create_pr_group(
     body: str = "",
     draft: bool = True,
     review_target: str | None = None,
+    remotes: Mapping[str, str] | None = None,
 ) -> dict:
     """Create linked PRs across repos and emit pr.created. A group opened for a review
     records its `review_target` (gr:<sha>); that field, not a unit or lane, is how the pr
     verbs find it again."""
+    if len(set(repos)) != len(repos):
+        raise AdapterError("duplicate repo identity in PR group; use distinct member targets")
     require_adapter_capability(adapter, "create_pr")
     if len(repos) > 1:
         require_adapter_capability(adapter, "edit_pr_body")
@@ -350,6 +353,7 @@ def create_pr_group(
     prs: list[dict] = []
 
     for repo in repos:
+        remote = remotes.get(repo) if remotes is not None else None
         request = CreatePRRequest(
             repo=repo,
             title=title,
@@ -357,9 +361,13 @@ def create_pr_group(
             head_branch=head_branch,
             base_branch=base_branch,
             draft=draft,
+            remote=remote,
         )
         ref = adapter.create_pr(request)
-        prs.append({"repo": repo, "pr_number": ref.number, "url": ref.url})
+        member = {"repo": repo, "pr_number": ref.number, "url": ref.url}
+        if remote is not None:
+            member["remote"] = remote
+        prs.append(member)
 
     # THE SIBLING BLOCK. A reviewer who lands on one PR of a set has no way to reach
     # the others from it: measured on a4, both bodies read `gr2 PR group for

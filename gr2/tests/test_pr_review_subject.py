@@ -98,14 +98,35 @@ def test_instrument_rewrites_fake_remotes_locally(reviewed):
     assert "refs/heads/main" in git(reviewed["author"], "ls-remote", URL["alpha"])
 
 
+def test_review_creation_refuses_credential_remote_before_adapter_or_state(reviewed, monkeypatch):
+    remote = "https://user:fixture-private-token@github.com/o/alpha.git"
+    # Inject a credentialed resolved subject at the reader seam, bypassing bind's
+    # existing writer refusal to exercise PR creation's own host validation.
+    monkeypatch.setattr(app_mod, "resolve_review_subject", lambda *args: (
+        reviewed["target"], [dict(key="alpha", remote=remote, path="alpha",
+                                  commit=reviewed["heads"]["alpha"])],
+    ))
+    result = gr2(reviewed["author"], monkeypatch, "pr", "create", "--json")
+    assert result.exit_code == 2, result.output
+    assert "alpha" in result.output
+    assert "fixture-private-token" not in result.output
+    assert remote not in result.output
+    assert reviewed["adapter"].created == []
+    assert not (reviewed["author"] / ".grip/pr_groups").exists()
+
+
 def test_bare_pr_create_opens_one_group_for_the_review(reviewed, monkeypatch):
     made = gr2(reviewed["author"], monkeypatch, "pr", "create", "--json")
     assert made.exit_code == 0, made.output
     created = reviewed["adapter"].created
     assert sorted(r.repo for r in created) == sorted(reviewed["repos"].values())
     assert {r.head_branch for r in created} == {"feat/two-member"}
+    assert {r.repo: r.remote for r in created} == {reviewed["repos"][k]: URL[k] for k in KEYS}
     groups = [json.loads(p.read_text()) for p in (reviewed["author"] / ".grip" / "pr_groups").glob("*.json")]
     assert len(groups) == 1 and groups[0]["review_target"] == reviewed["target"]
+    assert {p["repo"]: p["remote"] for p in groups[0]["prs"]} == {
+        reviewed["repos"][k]: URL[k] for k in KEYS
+    }
 
 
 def test_bare_pr_status_reads_the_review_group(reviewed, monkeypatch):

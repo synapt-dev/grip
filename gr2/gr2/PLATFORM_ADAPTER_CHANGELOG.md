@@ -16,6 +16,16 @@ project's `CHANGELOG.md` and its GitHub releases.
 `PLATFORM_ADAPTER_API_VERSION` is the protocol's version number. It is `1`, and it changes only for a change
 an existing adapter cannot absorb.
 
+## 2.0.0a8
+
+- **`CreatePRRequest.remote`** is new (default `None`): the exact Git URL configured for the selected
+  member in the workspace spec or review bind. Created PR groups retain it as `prs[].remote` when it is
+  supplied. Direct Python callers may omit it and keep the previous stored-group shape. This is additive
+  to adapter API version 1; factories still take no arguments and `repo` keeps its existing value.
+  Later lifecycle calls still receive the existing repo string; this field supplies creation context only.
+  Lane URLs are stripped of surrounding whitespace; blank values are treated as absent.
+  A lane member URL carrying credentials is refused by member name before adapter calls or PR state writes.
+
 ## 2.0.0a7
 
 - **Registration.** Adapters register through the `gr2.platform_adapters` entry point group

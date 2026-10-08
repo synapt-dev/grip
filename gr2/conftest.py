@@ -143,7 +143,7 @@ def _isolated_git_config(tmp_path_factory, monkeypatch):
     Three independent host-config channels, all closed:
       - ``GIT_CONFIG_GLOBAL`` points at a file containing only fixture identity. An *absent* variable falls
         back to ``~/.gitconfig`` -- exactly the ambient state this fixture exists
-        to remove -- so it must point at a real, present, empty file, not be unset.
+        to remove -- so it must point at a real, present, identity-only file, not be unset.
       - ``XDG_CONFIG_HOME`` points at an empty temp dir, removing the
         ``$XDG_CONFIG_HOME/git/ignore`` fallback git consults when
         ``core.excludesFile`` is unset (measured separately from the above: the

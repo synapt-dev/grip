@@ -18,7 +18,7 @@ class CheckRefused(ValueError):
 
 
 def _git(repo: Path, *args: str, data: bytes | None = None) -> bytes:
-    p = subprocess.run(["git", "-C", str(repo), *args], input=data, capture_output=True)
+    p = subprocess.run(["git", "-C", str(repo), *args], input=data, capture_output=True, timeout=30)
     if p.returncode:
         raise CheckRefused(p.stderr.decode("utf-8", errors="replace").strip())
     return p.stdout
@@ -97,16 +97,24 @@ def _entries(repo: Path, snapshot: str | None) -> dict[str, str]:
         return {}
     entries = {}
     # Refuse unexpected tree shapes, including executable or symbolic-link blobs.
-    for raw in _git(repo, "ls-tree", "-r", "-z", snapshot).split(b"\0"):
+    for raw in _git(repo, "ls-tree", "-r", "-t", "-z", snapshot).split(b"\0"):
         if not raw:
             continue
         metadata, name = raw.split(b"\t", 1)
         mode, kind, oid = metadata.decode().split()
         path = name.decode("ascii")
+        if kind == "tree":
+            if mode != "040000" or not re.fullmatch(r"[0-9a-f]{2}", path):
+                raise CheckRefused("invalid_checks_tree")
+            if not _git(repo, "ls-tree", oid).strip():
+                raise CheckRefused("empty_checks_fanout")
+            continue
         head = path.replace("/", "")
+        size = 64 if _git(repo, "rev-parse", "--show-object-format").strip() == b"sha256" else 40
+        if not re.fullmatch(r"[0-9a-f]{%d}" % size, head):
+            raise CheckRefused("invalid_checks_head")
         if mode != "100644" or kind != "blob" or path != head[:2] + "/" + head[2:]:
             raise CheckRefused("invalid_checks_tree")
-        _oid(repo, head)
         _records(_git(repo, "cat-file", "blob", oid), head)
         entries[path] = oid
     return entries
@@ -138,7 +146,7 @@ def read_remote_check(remote: str, member: Mapping, head: str,
             result.update(status="absent", reason="required_check_absent")
         else:
             result.update(status="pass", reason="required_checks_pass")
-    except (CheckRefused, ValueError, KeyError, UnicodeError, TypeError) as exc:
+    except (CheckRefused, ValueError, KeyError, UnicodeError, TypeError, OSError, subprocess.SubprocessError) as exc:
         result["reason"] = str(exc)
     return result
 
@@ -164,13 +172,31 @@ def run_check(repo: Path, remote: str, head: str, name: str, argv: Sequence[str]
                result="pass" if execution.returncode == 0 else "fail", exit_code=execution.returncode)
     line = _line(row)
     _records(line + b"\n", head)
-    snapshot = _snapshot(repo, remote)
-    entries = _entries(repo, snapshot)
-    path = head[:2] + "/" + head[2:]
-    old_blob = entries.get(path)
-    old_lines = _git(repo, "cat-file", "blob", old_blob).splitlines() if old_blob else []
-    blob = b"\n".join(sorted(set(old_lines + [line]))) + b"\n"
-    entries[path] = _git(repo, "hash-object", "-w", "--stdin", data=blob).decode().strip()
+    return publish_observation(repo, remote, row)
+
+
+def _local_snapshot(repo: Path) -> str | None:
+    p = subprocess.run(["git", "-C", str(repo), "show-ref", "--verify", "--quiet", CHECK_REF],
+                       capture_output=True, timeout=30)
+    if p.returncode == 1:
+        return None
+    if p.returncode:
+        raise CheckRefused("cannot_measure_local_checks")
+    return _oid(repo, _git(repo, "rev-parse", "--verify", CHECK_REF).decode().strip())
+
+
+def _union(repo: Path, snapshots: Sequence[str | None], head: str, line: bytes) -> dict[str, str]:
+    combined: dict[str, set[bytes]] = {}
+    for snapshot in snapshots:
+        for path, oid in _entries(repo, snapshot).items():
+            combined.setdefault(path, set()).update(_git(repo, "cat-file", "blob", oid).splitlines())
+    combined.setdefault(head[:2] + "/" + head[2:], set()).add(line)
+    return {path: _git(repo, "hash-object", "-w", "--stdin",
+                       data=b"\n".join(sorted(lines)) + b"\n").decode().strip()
+            for path, lines in sorted(combined.items())}
+
+
+def _commit_union(repo: Path, entries: Mapping[str, str], parents: Sequence[str | None]) -> str:
     trees = {}
     for key, oid in sorted(entries.items()):
         prefix, suffix = key.split("/")
@@ -180,19 +206,44 @@ def run_check(repo: Path, remote: str, head: str, name: str, argv: Sequence[str]
         oid = _git(repo, "mktree", data="".join(leaves).encode()).decode().strip()
         root.append(f"040000 tree {oid}\t{prefix}\n")
     tree = _git(repo, "mktree", data="".join(root).encode()).decode().strip()
-    parents = ["-p", snapshot] if snapshot else []
-    commit = _git(repo, "commit-tree", tree, *parents, data=b"Record exact-head check\n").decode().strip()
-    _entries(repo, commit)  # Verify before either local or remote publication.
-    current = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", CHECK_REF], capture_output=True)
-    expected = current.stdout.decode().strip() if current.returncode == 0 else "0" * len(head)
-    if current.returncode == 0 and expected != snapshot:
-        raise CheckRefused("local_checks_diverged")
-    _git(repo, "update-ref", CHECK_REF, commit, expected)
-    # A remote race refuses without overwriting the winner. Union retry is a later hardening step.
-    _git(repo, "push", f"--force-with-lease={CHECK_REF}:{snapshot or ''}", remote, f"{commit}:{CHECK_REF}")
-    observed = read_remote_check(remote, {"path": repo, "key": "repo", "remote": remote}, head, (name,))
+    arguments = [arg for parent in dict.fromkeys(p for p in parents if p) for arg in ("-p", parent)]
+    commit = _git(repo, "commit-tree", tree, *arguments, data=b"Record exact-head check\n").decode().strip()
+    _entries(repo, commit)
+    return commit
+
+
+def publish_observation(repo: Path, remote: str, row: dict) -> dict:
+    """Storage seam for a validated executor receipt, not a manual-result CLI."""
+    head = _oid(repo, row["head"])
+    _remote(remote)
+    line = _line(row)
+    _records(line + b"\n", head)
     identity = hashlib.sha256(line).hexdigest()
-    if not any(r["observation_id"] == identity for r in observed["records"]):
-        raise CheckRefused("check_publication_unconfirmed")
-    return {"ref": CHECK_REF, "head": head, "snapshot_oid": observed["snapshot_oid"],
-            "record_id": observed["record_id"], "observation": {**row, "observation_id": identity}}
+    attempted = None
+    last_error = "checks_conflict_exhausted"
+    for _attempt in range(4):
+        snapshot = _snapshot(repo, remote)
+        local = _local_snapshot(repo)
+        entries = _union(repo, (snapshot, local, attempted), head, line)
+        commit = _commit_union(repo, entries, (snapshot, local, attempted))
+        try:
+            _git(repo, "update-ref", CHECK_REF, commit, local or "0" * len(head))
+        except CheckRefused:
+            attempted = commit
+            continue  # Re-read local CAS winner and retain both histories.
+        attempted = commit
+        try:
+            _git(repo, "push", f"--force-with-lease={CHECK_REF}:{snapshot or ''}", remote,
+                 f"{commit}:{CHECK_REF}")
+        except (CheckRefused, OSError, subprocess.SubprocessError) as exc:
+            last_error = str(exc)
+        # A failed acknowledgement can follow an applied push. A fresh read decides.
+        observed = read_remote_check(remote, {"path": repo, "key": "repo", "remote": remote}, head,
+                                     (row["name"],))
+        if any(r["observation_id"] == identity for r in observed["records"]):
+            return {"ref": CHECK_REF, "head": head, "snapshot_oid": observed["snapshot_oid"],
+                    "record_id": observed["record_id"], "observation": {**row, "observation_id": identity}}
+        if observed["status"] == "fail" and observed["reason"] != "required_check_failed":
+            raise CheckRefused("check_publication_indeterminate: " + observed["reason"])
+        # Confirmed missing observation: merge the new remote winner on the next attempt.
+    raise CheckRefused("checks_conflict_exhausted: " + last_error)

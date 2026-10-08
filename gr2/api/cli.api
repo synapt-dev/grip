@@ -18,6 +18,21 @@ arg   branch name <str>                                               stable
 flag  branch --base/--from/--start-point <str>                        stable
 flag  branch --repo-path <str>                                        stable
 verb  branch                                                          stable
+# check run
+arg   check run command <str>                                         stable
+arg   check run repo <str>                                            stable
+flag  check run --head <str>                                          stable
+flag  check run --name <str>                                          stable
+flag  check run --remote <str>                                        stable
+verb  check run                                                       stable
+# check show
+arg   check show repo <str>                                           stable
+flag  check show --head <str>                                         stable
+flag  check show --json                                               stable
+flag  check show --member <str>                                       stable
+flag  check show --remote <str>                                       stable
+flag  check show --require <str>                                      stable
+verb  check show                                                      stable
 # commit
 flag  commit --amend                                                  stable
 flag  commit --lane <str>                                             stable

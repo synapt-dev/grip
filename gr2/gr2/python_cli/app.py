@@ -4476,7 +4476,7 @@ def _resolve_merge_defaults(ws: Path, review_id: Optional[str], into: Optional[s
     return view["id"], into, feature
 
 
-@review_app.command("approve", cls=ReviewTargetCommand)
+@review_app.command("approve", cls=ReviewHeadCommand)
 def review_approve(
     workspace_root: Path,
     review_id: Optional[str] = typer.Argument(None, help="Review id; default is the bind at the current member heads"),

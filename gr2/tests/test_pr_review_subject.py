@@ -104,8 +104,12 @@ def test_bare_pr_create_opens_one_group_for_the_review(reviewed, monkeypatch):
     created = reviewed["adapter"].created
     assert sorted(r.repo for r in created) == sorted(reviewed["repos"].values())
     assert {r.head_branch for r in created} == {"feat/two-member"}
+    assert {r.repo: r.remote for r in created} == {reviewed["repos"][k]: URL[k] for k in KEYS}
     groups = [json.loads(p.read_text()) for p in (reviewed["author"] / ".grip" / "pr_groups").glob("*.json")]
     assert len(groups) == 1 and groups[0]["review_target"] == reviewed["target"]
+    assert {p["repo"]: p["remote"] for p in groups[0]["prs"]} == {
+        reviewed["repos"][k]: URL[k] for k in KEYS
+    }
 
 
 def test_bare_pr_status_reads_the_review_group(reviewed, monkeypatch):

@@ -412,6 +412,14 @@ def _refuse_remote_credentials(key: str, remote: str) -> None:
         raise GripReviewRefused("remote_credentials", key, "remove URL userinfo and use a credential helper")
 
 
+def _refuse_option_shaped_remote(key: str, remote: str) -> None:
+    """A remote git would parse as an option (``--upload-pack=<cmd>`` runs <cmd>) is refused before any git
+    call sees it. This is the rule the record reader already applies, so the writer never makes a record
+    its reader refuses. The refusal names the member and the field, never the value."""
+    if remote.startswith("-") or any(ord(c) < 32 or ord(c) == 127 for c in remote):
+        raise GripReviewRefused("invalid_field", f"{key}/remote", "begins with '-' or holds a control character")
+
+
 class GripReviewRefused(Exception):
     """A bind refusal. Carries the refusal name and the two values that disagreed."""
 
@@ -431,7 +439,7 @@ def _norm_text(value: str) -> str:
 def _remote_head(workspace: Path, remote: str, ref: str) -> str:
     """The live head of one ref on a remote, or '' if absent. A ref name like
     refs/heads/<branch>; ls-remote is read-only and needs no local ref."""
-    proc = _bind_git(workspace, "ls-remote", remote, ref)
+    proc = _bind_git(workspace, "ls-remote", "--", remote, ref)
     if proc.returncode != 0:
         raise GripReviewRefused("remote_unreadable", ref, proc.stderr.strip()[:120])
     line = proc.stdout.strip().splitlines()
@@ -442,7 +450,7 @@ def _head_present_on_remote(workspace: Path, remote: str, head: str) -> bool:
     """True if the head SHA is already an object any ref on the remote points at.
     A pre-push branch's head is present at no ref; a re-freeze of an already
     pushed head is refused unless a prior ratify receipt is named."""
-    proc = _bind_git(workspace, "ls-remote", remote)
+    proc = _bind_git(workspace, "ls-remote", "--", remote)
     if proc.returncode != 0:
         raise GripReviewRefused("remote_unreadable", remote, proc.stderr.strip()[:120])
     return any(row.split("\t", 1)[0] == head for row in proc.stdout.splitlines())
@@ -587,6 +595,7 @@ def _bind_review_rows_body(
                 raise GripReviewRefused("invalid_field", f"{key}/{name}", value)
 
         _refuse_remote_credentials(key, remote)
+        _refuse_option_shaped_remote(key, remote)
         # Refusal 1: base must be the live remote head of the target ref.
         observed = _remote_head(workspace, remote, ref)
         if base != observed:

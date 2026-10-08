@@ -206,3 +206,77 @@ def test_publish_sends_a_portable_record_off_host(world, monkeypatch):
 ])
 def test_portable_remote_classifier(remote, portable):
     assert grip._is_portable_remote(remote) is portable
+
+
+# --- A remote that git would parse as an OPTION must never reach a git argv (1.052123) -------------------------
+#
+# `git ls-remote --upload-pack=<cmd> ...` runs <cmd>. `review bind` used to hand its remote to `ls-remote` before
+# validating it, so `--remote '--upload-pack=touch S'` ran the command and only then refused (remote_unreadable).
+# Every row watches a SENTINEL file the command would create; a refusal that still created it is the defect.
+
+def option_shaped(sentinel):
+    return f"--upload-pack=touch {sentinel}"
+
+
+def test_instrument_an_option_shaped_remote_does_run_when_nothing_guards_it(world, tmp_path):
+    # Control: with no guard and no `--`, git really executes the command. Without this a green row below proves nothing.
+    sentinel = tmp_path / "RAN_CONTROL"
+    subprocess.run(["git", "ls-remote", option_shaped(sentinel), "refs/heads/main"], cwd=world["author"],
+                   capture_output=True, text=True)
+    assert sentinel.exists(), "the sentinel must be creatable, or every no-execution row below is vacuous"
+
+
+def test_bind_refuses_an_option_shaped_remote_given_by_flag_before_git_runs(world, monkeypatch, tmp_path):
+    sentinel = tmp_path / "RAN_FLAG"
+    result = bind(world, monkeypatch, option_shaped(sentinel))
+    assert result.exit_code != 0, result.output
+    assert not sentinel.exists(), "bind ran the remote as git's --upload-pack before it validated it"
+    assert "invalid_field" in result.output, result.output
+    assert reviews(world["author"]) == ""
+
+
+def test_bind_refuses_an_option_shaped_remote_from_the_manifest_before_git_runs(world, monkeypatch, tmp_path):
+    sentinel = tmp_path / "RAN_MANIFEST"
+    toml = world["author"] / "grip.toml"
+    toml.write_text(toml.read_text().replace(str(world["remote"]), option_shaped(sentinel)))
+    assert "--upload-pack" in toml.read_text()
+    result = review(world["author"], monkeypatch, "bind")
+    assert result.exit_code != 0, result.output
+    assert not sentinel.exists(), "a manifest remote reached `git ls-remote` as an option"
+    assert "invalid_field" in result.output, result.output
+    assert reviews(world["author"]) == ""
+
+
+def test_bind_refuses_a_remote_with_a_control_character(world, monkeypatch):
+    result = bind(world, monkeypatch, str(world["remote"]) + "\x01")
+    assert result.exit_code != 0, result.output
+    assert "invalid_field" in result.output, result.output
+    assert reviews(world["author"]) == ""
+
+
+def test_remote_head_never_runs_an_option_shaped_remote(world, tmp_path):
+    sentinel = tmp_path / "RAN_REMOTE_HEAD"
+    with pytest.raises(Exception):
+        grip._remote_head(world["author"], option_shaped(sentinel), "refs/heads/main")
+    assert not sentinel.exists(), "_remote_head passes its remote to ls-remote without `--`"
+
+
+def test_head_present_on_remote_never_runs_an_option_shaped_remote(world, tmp_path):
+    sentinel = tmp_path / "RAN_HEAD_PRESENT"
+    # This sink passes the remote as the ONLY ls-remote argument, so git resolves a default remote when it parses the
+    # value as an option. Give the workspace root an origin, or git fails before it runs anything and the row is vacuous.
+    git(world["author"], "remote", "add", "origin", world["remote"])
+    with pytest.raises(Exception):
+        grip._head_present_on_remote(world["author"], option_shaped(sentinel), world["head"])
+    assert not sentinel.exists(), "_head_present_on_remote passes its remote to ls-remote without `--`"
+
+
+def test_a_dash_leading_ref_is_not_an_injection_and_bind_still_refuses(world, monkeypatch, tmp_path):
+    # Control for the scope: git takes everything after the repository as a pattern, so a ref is not the sink.
+    sentinel = tmp_path / "RAN_REF"
+    result = review(world["author"], monkeypatch, "bind", "--repo", "member", "--remote", world["remote"],
+                    "--base", world["base"], "--head", world["head"], "--ref", option_shaped(sentinel),
+                    "--source", world["member"])
+    assert result.exit_code != 0, result.output
+    assert not sentinel.exists()
+    assert reviews(world["author"]) == ""

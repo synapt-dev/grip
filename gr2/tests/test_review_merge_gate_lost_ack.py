@@ -61,6 +61,40 @@ def test_a_lost_acknowledgement_on_the_first_member_does_not_stop_the_set(slice2
         assert git(m["remote"], "rev-list", "--parents", "-n", "1", "main").split()[1:] == [m["base"], m["head"]], k
 
 
+def test_a_push_timeout_after_the_push_landed_is_reconciled_from_the_remote(world, monkeypatch):
+    check(world)
+
+    def fake(cmd, *a, **kw):
+        if not _is_push(cmd):
+            return REAL_RUN(cmd, *a, **kw)
+        assert REAL_RUN(cmd, *a, **kw).returncode == 0  # the push lands, then the call runs past its timeout
+        raise subprocess.TimeoutExpired(cmd, 120)
+
+    monkeypatch.setattr(merge_gate.subprocess, "run", fake)
+    code, receipt = merge(world)
+    row = receipt["members"][0]
+    tip = git(world["remote"], "rev-parse", "main")
+    assert git(world["remote"], "rev-list", "--parents", "-n", "1", tip).split()[1:] == [world["base"], world["head"]]
+    assert row["state"] == "merged" and row["merged"] == tip and "push_error" not in row, row
+    assert code == merge_gate.EXIT_MERGED, receipt
+
+
+def test_a_push_oserror_that_never_landed_is_unconfirmed_not_a_crash(world, monkeypatch):
+    check(world)
+
+    def fake(cmd, *a, **kw):
+        if _is_push(cmd):
+            raise OSError("git vanished")
+        return REAL_RUN(cmd, *a, **kw)
+
+    monkeypatch.setattr(merge_gate.subprocess, "run", fake)
+    code, receipt = merge(world)
+    row = receipt["members"][0]
+    assert row["state"] == "unmerged" and row["push_error"].startswith("push_unconfirmed"), row
+    assert code == merge_gate.EXIT_REFUSED, receipt
+    assert git(world["remote"], "rev-parse", "main") == world["base"]
+
+
 def test_a_push_that_never_landed_reads_unmerged_with_its_error(world, monkeypatch):
     check(world)
 

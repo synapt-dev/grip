@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package dev.synapt.grip.check.v1alpha1;
+
+// The existing v1 check observation, not a new storage encoding. Observations
+// remain sorted, unique canonical JSON lines in head-keyed blobs under
+// refs/dev.synapt.grip/__checks__/v1. The package owns field numbers and meanings:
+// add fields only; reserve removed numbers; a rename or changed meaning needs
+// a new major package. No schema field is added to the existing JSON record.
+message Observation {
+  // All six fields are required by the existing JSON reader. Explicit protobuf
+  // presence preserves a zero exit code; it does not relax the reader's rules.
+  optional int32 v = 1;              // exactly 1
+  optional string head = 2;          // full lowercase commit OID, SHA-1 or SHA-256
+  optional string observed_head = 3; // executor HEAD; must equal head
+  optional string name = 4;          // nonempty after trimming; original text kept
+  optional string result = 5;        // pass, fail, error; pass iff exit_code is 0
+  optional int32 exit_code = 6;       // process status; may be negative (signal)
+  // The JSON reader accepts arbitrary integers; this typed projection covers
+  // int32 process statuses only. An out-of-range code must stay in the original
+  // JSON record and cannot be projected, rather than being narrowed or dropped.
+  // Unknown JSON metadata survives the existing reader and union unchanged.
+  // It is not enumerated by this descriptor and must be carried alongside a
+  // typed projection, rather than dropped by a protobuf JSON conversion.
+  // observation_id is derived on read from SHA-256(canonical line without LF);
+  // record_id and snapshot_oid belong to the read/publication receipt, not here.
+}

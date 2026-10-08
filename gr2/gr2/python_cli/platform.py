@@ -185,6 +185,9 @@ class CreatePRRequest:
     head_branch: str
     base_branch: str
     draft: bool = True
+    # The configured Git target, distinct from the workspace's member label.
+    # Older direct callers may omit it; adapters must not infer it from cwd.
+    remote: str | None = None
 
 
 class PlatformAdapter(Protocol):

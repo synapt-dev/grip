@@ -128,6 +128,7 @@ def test_external_entry_point_actual_cli_carries_policy_and_target(plugin, flags
         head_branch="feature/proof",
         base_branch="integration",
         draft=draft,
+        remote="https://example.invalid/sample.git",
     )
     assert json.loads(result.stdout)["platform"] == "fixture"
 

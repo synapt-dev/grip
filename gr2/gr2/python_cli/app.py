@@ -660,6 +660,7 @@ def _pr_create_for_review(workspace_root, review, platform, base_branch, draft, 
             base_branch=next(iter(bases.values())), head_branch=head, repos=repos,
             adapter=platform_ops.get_platform_adapter(platform), actor="agent:review",
             body=group_body or _default_pr_group_body("review", target, repos), draft=draft, review_target=target,
+            remotes={slug: m["remote"] for slug, (m, _) in on_host.items()},
         )
     except pr_ops.SiblingLinkError as exc:
         typer.echo(json.dumps(exc.group, indent=2))
@@ -3533,9 +3534,13 @@ def pr_create(
     adapter = platform_ops.get_platform_adapter(platform)
     branch_map = dict(lane_doc.get("branch_map", {}))
     repos: list[str] = []
+    remotes: dict[str, str] = {}
     for repo_name in lane_doc.get("repos", []):
         repo_spec = next(repo for repo in spec.get("repos", []) if repo.get("name") == repo_name)
-        repos.append(_repo_slug_from_url(str(repo_spec.get("url", "")), repo_name))
+        remote = str(repo_spec.get("url", ""))
+        repo = _repo_slug_from_url(remote, repo_name)
+        repos.append(repo)
+        remotes[repo] = remote
     if body is not None and body_file is not None:
         typer.echo("pass one of --body or --body-file, not both", err=True)
         raise typer.Exit(code=2)
@@ -3559,6 +3564,7 @@ def pr_create(
             actor=f"agent:{owner_unit}",
             body=group_body or _default_pr_group_body(owner_unit, resolved_lane, repos),
             draft=draft,
+            remotes=remotes,
         )
     except pr_ops.SiblingLinkError as exc:
         # The group is already persisted, so print it and fail: a half-linked set that

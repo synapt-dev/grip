@@ -92,7 +92,7 @@ Not there yet:
 | `sync` | status, run |
 | `pr` | create, status, checks, merge, view |
 | `check` | run, show |
-| `review` | open, close, checkout-pr, run, check, bind, publish, receive, verify, show, rebind, create-project |
+| `review` | open, close, checkout-pr, run, check, bind, publish, receive, verify, show, merge, rebind, create-project |
 | `exec` | status, run |
 | `repo` | status, projection-run |
 | `hooks` | trust, revoke, status, show, run |

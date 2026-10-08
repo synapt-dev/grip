@@ -474,6 +474,13 @@ flag  review exit-gr --adopt-legacy (hidden)                          stable
 flag  review exit-gr --json (hidden)                                  stable
 flag  review exit-gr --root/-C <str> (hidden)                         stable
 verb  review exit-gr (hidden)                                         stable
+# review merge
+arg   review merge review_id <str>                                    stable
+arg   review merge workspace_root <str>                               stable
+flag  review merge --check <str>                                      stable
+flag  review merge --from <str>                                       stable
+flag  review merge --into <str>                                       stable
+verb  review merge                                                    stable
 # review open
 arg   review open pr_number <str>                                     stable
 arg   review open repo <str>                                          stable

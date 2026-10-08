@@ -30,6 +30,7 @@ from . import execops, failures, grip, migration, spec_apply, syncops
 from . import gitinclude
 from . import gitops
 from . import check_records
+from . import merge_gate
 from . import pr as pr_ops
 from .platform import AdapterError
 from . import prune as prune_ops
@@ -4448,6 +4449,27 @@ def review_verify(
         raise typer.Exit(code=1)
     if not result.get("tree_matches"):
         raise typer.Exit(code=1)
+
+
+@review_app.command("merge")
+def review_merge(
+    workspace_root: Path,
+    review_id: str = typer.Argument(..., help="Bound review id, gr:<sha>"),
+    into: str = typer.Option("main", "--into", help="Target branch on each member's remote"),
+    feature: str = typer.Option(..., "--from", help="Feature branch on each member's remote"),
+    check: List[str] = typer.Option(["test"], "--check", help="Required exact-head check name (repeatable)"),
+) -> None:
+    """Merge a bound review into plain Git remotes: preflight every member, merge none on any failure.
+
+    Requires, per member: the remote feature branch at the reviewed head, the target at the reviewed base,
+    and a passing exact-head check. Merges are separate pushes, not atomic across repos. Exit 0 all merged,
+    3 none merged (refused), 4 partial or unknown; computed from the remote state after the run.
+    """
+    code, receipt = merge_gate.review_merge(workspace_root.resolve(), review_id, into=into, feature=feature,
+                                            required_checks=tuple(check))
+    typer.echo(json.dumps(receipt))
+    if code:
+        raise typer.Exit(code)
 
 
 @review_app.command("rebind")

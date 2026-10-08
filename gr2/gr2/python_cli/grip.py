@@ -574,8 +574,9 @@ def _bind_review_rows_body(
     from . import review_field_tree as fd
     if not rows:
         raise GripCorruptError("review bind requires at least one repository row")
+    author = _review_bind_author(workspace)
     members: list[dict[str, object]] = []
-    scan_items: list[tuple[str, str]] = []
+    scan_items: list[tuple[str, str]] = [("author", author)]
     seen: set[str] = set()
     for row in sorted(rows, key=lambda item: item.get("key", "")):
         key = row.get("key", "")
@@ -651,13 +652,26 @@ def _bind_review_rows_body(
     # the way a freeze does, and record the verdict in the object.
     policy_verdict = _run_policy_hook(policy_hook, scan_items)
 
-    record = {"schema": _REVIEW_BIND_SCHEMA, "kind": "review", "policy": policy_verdict, "members": members}
+    record = {"schema": _REVIEW_BIND_SCHEMA, "kind": "review", "policy": policy_verdict,
+              "members": members, "author": author}
     repo = _bind_dir(workspace)
     root_tree = fd.write_tree(repo, fd.encode(record))
     # Verify the tree as written before it is committed: invalid bytes never reach a commit or a ref.
     fd.verify_tree(repo, root_tree)
     commit = _bind_commit_tree(workspace, root_tree, message="grip review bind")
     return _publish_bind(workspace, commit, "grip review bind", ref=_review_ref_v1(commit))
+
+
+def _review_bind_author(workspace: Path) -> str:
+    """The binder's configured Git name, shared with the unsigned approval identity.
+    Never infer it from member commit authors or from the commit-tree fallback."""
+    proc = _bind_git(workspace, "config", "--get", "user.name")
+    name = proc.stdout.strip()
+    if proc.returncode != 0 or not name or any(ord(c) < 32 or ord(c) == 127 for c in name):
+        raise GripReviewRefused(
+            "bind_author_unavailable", str(workspace),
+            "set the binder's Git identity with git config user.name 'Your Name' in the workspace root, then retry review bind")
+    return name
 
 
 def verify_review_commit(workspace: Path, commit: str) -> dict[str, object]:
@@ -696,7 +710,7 @@ def show_review_commit(workspace: Path, commit: str) -> dict[str, object]:
     commit = _resolve_bound(workspace, commit)
     if _is_field_tree_bind(workspace, commit):
         view = _field_tree_view(workspace, commit)
-        return {"id": f"gr:{commit}", "members": [{
+        return {"id": f"gr:{commit}", **({"author": view["author"]} if "author" in view else {}), "members": [{
             "key": key, "remote": m["repo"]["remote"], "path": m["repo"]["path"],
             "base": m["repo"]["base"], "head": m["repo"]["commit"], "title": m["title"], "body": m["body"],
             "files": _range_files(None if m["objects"] is None else m["objects"]["range.patch"]),
@@ -937,7 +951,8 @@ def _decode_field_tree(repo: Path, tree: str) -> dict[str, object]:
         }
     if not members:
         raise GripCorruptError("invalid review repository tree: a bind names no member")
-    return {"tree": tree, "policy": record.get("policy", ""), "members": members}
+    return {"tree": tree, "policy": record.get("policy", ""), "members": members,
+            **({"author": record["author"]} if "author" in record else {})}
 
 
 def _carried(workspace: Path, commit: str, key: str, group: str, name: str) -> str | None:
@@ -1005,7 +1020,8 @@ def _verify_field_tree_commit(workspace: Path, commit: str) -> dict[str, object]
             row["range_sha256"] = hashlib.sha256((m["objects"]["range.patch"] or "").encode()).hexdigest()
         measured.append(row)
     return {"commit": commit, "stored_tree": view["tree"], "recomputed_tree": view["tree"],
-            "tree_matches": True, "rows": measured}
+            "tree_matches": True, "rows": measured,
+            **({"author": view["author"]} if "author" in view else {})}
 
 
 def parse_evidence(text: str) -> list[dict[str, str]]:

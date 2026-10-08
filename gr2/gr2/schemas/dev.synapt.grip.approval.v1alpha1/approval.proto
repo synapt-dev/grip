@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package dev.synapt.grip.approval.v1alpha1;
+
+// One approval link bound to a review and its exact member heads. This package
+// owns field numbers and meanings. Fields may only be added; a removed number
+// is reserved. A change of meaning or a rename requires a new major package.
+// The unsigned path needs no key or keyring. Canonical chain bytes are sorted-key
+// JSON without whitespace, encoded as UTF-8, with sig excluded when signing.
+message Approval {
+  string schema = 1;               // dev.synapt.grip.approval.v1alpha1
+  string review_id = 2;            // gr:<bind commit id>
+  repeated Member members = 3;     // exact bind members, sorted by key
+  Approver approver = 4;
+  string author = 5;               // copied from the bind, never supplied by a link
+  string verdict = 6;              // approve; block is reserved, not implemented
+  string prev = 7;                 // SHA-256 of the previous record's canonical bytes
+  string created_at = 8;           // RFC 3339 UTC
+  optional string sig = 9;         // base64 Ed25519 signature; absent means unsigned
+  optional string keyring_tip = 10; // signing keyring commit; absent means unsigned
+}
+
+message Member {
+  string key = 1;
+  string remote = 2;
+  string head_commit = 3;
+  string head_tree = 4;
+}
+
+message Approver {
+  string name = 1;
+  string key_id = 2;               // SHA-256 public-key fingerprint, empty when unsigned
+}

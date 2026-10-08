@@ -119,6 +119,11 @@ in the same JSON payload, and a missing reviewer remains a reported status with 
 
 A bare `gr2 review open <workspace>` uses the workspace's sole review bind. Its default directory is `<workspace>.review/<sha8>` in the workspace's parent directory, and the command announces that path on stderr. Give `--lane-dir` to choose another location.
 
+New review binds record the binder's Git `user.name` from the workspace root.
+Set it with `git config user.name 'Your Name'` there if Git has no configured name.
+`review show --json` and `review verify --json` include this author; older binds
+remain readable without an author field, and reading them does not invent one.
+
 
 ## Transfer a native review
 

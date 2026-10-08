@@ -30,10 +30,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PACKAGE = "dev.synapt.grip.review.v1alpha1"
-SCHEMA_COMMIT = "eb877b7d56f6a4d039446c17a8a08c34d92cb891"
+SCHEMA_COMMIT = "88babf4a0c55110a1e1badc53f07a6f0f8912f86"
 SCHEMA_SOURCE = f"{PACKAGE}@{SCHEMA_COMMIT}"
 _PROTO_RESOURCE = f"schemas/{PACKAGE}/review.proto"
-_PROTO_SHA256 = "e2d2aca05db15e08d8c9f856de66c1971cebae7c03b6d14c0eb051e467b0df14"
+_PROTO_SHA256 = "94e75f8ff703a20a2ab2cecd5226c24d25e9f8c1a1d295cdaf224ab0a2e73296"
 
 MAX_FIELD_NUMBER = 999
 # ASCII digits only and matched whole: \d admits other scripts' digits and $ admits a

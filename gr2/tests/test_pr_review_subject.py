@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -44,7 +43,9 @@ def reviewed(tmp_path, monkeypatch):
     # The rewrite lives ONLY in the workspace repo's config (where bind dials), never globally: a global
     # insteadOf also rewrites what `git remote get-url` returns, so store init would record the local path
     # as each member's remote and the pr verbs would never see a real host slug.
-    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "empty-gitconfig"))
+    isolated_config = tmp_path / "identity-gitconfig"
+    isolated_config.write_text("[user]\n\tname = Fixture\n\temail = fixture@example.invalid\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(isolated_config))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     for name in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"):
         monkeypatch.setenv(name, "http://127.0.0.1:9")

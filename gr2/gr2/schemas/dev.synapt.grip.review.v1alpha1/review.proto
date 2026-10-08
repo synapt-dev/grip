@@ -12,6 +12,7 @@ message ReviewBind {
   string kind = 2;              // "review"
   string policy = 3;            // the policy hook's verdict over the carried bytes
   repeated Member members = 4;  // sorted by key before writing
+  string author = 5;            // binder's Git identity name; absent in older binds
 }
 
 // One repository in the review.

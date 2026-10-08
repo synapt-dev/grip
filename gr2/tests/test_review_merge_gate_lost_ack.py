@@ -1,0 +1,110 @@
+"""`review_merge` after a push whose acknowledgement is lost: the remote is re-read, never assumed.
+
+A transport failure after the remote accepted the push must read `merged`; an unreachable remote during
+reconciliation reads `unknown`, the exit is 4, and no further member is pushed. The push is wrapped, not
+replaced: the real `git push` runs, and the wrapper then reports a failure and, where asked, hides the remote.
+"""
+from __future__ import annotations
+
+import subprocess
+
+import pytest
+
+from gr2.python_cli import merge_gate
+from tests.test_review_merge_gate import check, git, merge, mains, slice2, world  # noqa: F401  (fixtures)
+
+REAL_RUN = subprocess.run
+
+
+def _is_push(cmd) -> bool:
+    return isinstance(cmd, (list, tuple)) and len(cmd) > 3 and cmd[0] == "git" and "push" in cmd[:5]
+
+
+def lose_acknowledgement(monkeypatch, *, hide=None, only_first=False):
+    """Run the real push, then answer as a dropped connection. `hide` is a remote path to move away afterwards."""
+    pushes = []
+
+    def fake(cmd, *a, **kw):
+        if not _is_push(cmd) or (only_first and pushes):
+            return REAL_RUN(cmd, *a, **kw)
+        pushes.append(cmd)
+        real = REAL_RUN(cmd, *a, **kw)
+        assert real.returncode == 0, real.stderr  # the push really landed before the acknowledgement was lost
+        if hide is not None:
+            hide.rename(hide.with_name(hide.name + ".away"))
+        return subprocess.CompletedProcess(cmd, 1, real.stdout, "fatal: the remote end hung up unexpectedly")
+
+    monkeypatch.setattr(merge_gate.subprocess, "run", fake)
+    return pushes
+
+
+def test_a_lost_acknowledgement_reads_merged_never_nothing_moved(world, monkeypatch):
+    check(world)
+    pushes = lose_acknowledgement(monkeypatch)
+    code, receipt = merge(world)
+    row = receipt["members"][0]
+    tip = git(world["remote"], "rev-parse", "main")
+    assert git(world["remote"], "rev-list", "--parents", "-n", "1", tip).split()[1:] == [world["base"], world["head"]]
+    assert len(pushes) == 1
+    assert row["state"] == "merged" and row["merged"] == tip, row
+    assert row["final"] == "merged", row
+    assert "push_error" not in row, "a push that landed must not be reported as an error"
+    assert code == merge_gate.EXIT_MERGED, receipt
+
+
+def test_a_lost_acknowledgement_on_the_first_member_does_not_stop_the_set(slice2, monkeypatch):
+    lose_acknowledgement(monkeypatch, only_first=True)
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    assert [r["state"] for r in receipt["members"]] == ["merged", "merged"], receipt
+    assert code == merge_gate.EXIT_MERGED, receipt
+    for k, m in slice2["members"].items():
+        assert git(m["remote"], "rev-list", "--parents", "-n", "1", "main").split()[1:] == [m["base"], m["head"]], k
+
+
+def test_a_push_that_never_landed_reads_unmerged_with_its_error(world, monkeypatch):
+    check(world)
+
+    def fake(cmd, *a, **kw):
+        if _is_push(cmd):
+            return subprocess.CompletedProcess(cmd, 1, "", "fatal: unable to access the remote")
+        return REAL_RUN(cmd, *a, **kw)
+
+    monkeypatch.setattr(merge_gate.subprocess, "run", fake)
+    code, receipt = merge(world)
+    row = receipt["members"][0]
+    assert row["state"] == "unmerged" and "unable to access" in row["push_error"], row
+    assert code == merge_gate.EXIT_REFUSED, receipt
+    assert git(world["remote"], "rev-parse", "main") == world["base"]
+
+
+def test_an_unreachable_remote_during_reconciliation_is_unknown_and_exit_four(world, monkeypatch):
+    check(world)
+    lose_acknowledgement(monkeypatch, hide=world["remote"])
+    try:
+        code, receipt = merge(world)
+    finally:
+        away = world["remote"].with_name(world["remote"].name + ".away")
+        if away.exists():
+            away.rename(world["remote"])
+    row = receipt["members"][0]
+    assert row["state"] == "unknown" and row["final"] == "unknown", row
+    assert code == merge_gate.EXIT_PARTIAL, receipt
+    # the merge did land, which is why 3 ("nothing moved") would have been a false statement
+    tip = git(world["remote"], "rev-parse", "main")
+    assert git(world["remote"], "rev-list", "--parents", "-n", "1", tip).split()[1:] == [world["base"], world["head"]]
+
+
+def test_no_further_member_is_pushed_after_an_unknown_one(slice2, monkeypatch):
+    alpha, beta = slice2["members"]["alpha"], slice2["members"]["beta"]
+    pushes = lose_acknowledgement(monkeypatch, hide=alpha["remote"])
+    try:
+        code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    finally:
+        away = alpha["remote"].with_name(alpha["remote"].name + ".away")
+        if away.exists():
+            away.rename(alpha["remote"])
+    assert len(pushes) == 1, "only the first member may be pushed"
+    assert receipt["members"][0]["state"] == "unknown", receipt
+    assert code == merge_gate.EXIT_PARTIAL, receipt
+    assert git(beta["remote"], "rev-parse", "main") == beta["base"], "beta must not have been pushed"
+    assert git(alpha["remote"], "rev-list", "--parents", "-n", "1", "main").split()[1:] == [alpha["base"], alpha["head"]]

@@ -29,10 +29,18 @@ def _git(repo: Path, *args: str, check: bool = True) -> str:
     return proc.stdout.strip()
 
 
+def _advertised(repo: Path, remote: str, ref: str) -> str | None:
+    """The oid the remote advertises for EXACTLY ref; ls-remote patterns also match nested refs by tail."""
+    hits = [line.split("\t") for line in _git(repo, "ls-remote", remote, ref).splitlines()]
+    exact = [oid for oid, name in hits if name == ref]
+    if len(exact) > 1:
+        raise RuntimeError(f"ls-remote: {ref} advertised more than once")
+    return exact[0] if exact else None
+
+
 def _remote_tip(repo: Path, remote: str, branch: str) -> str | None:
     """Fetch one remote branch into a private ref and return its commit, None when absent."""
-    out = _git(repo, "ls-remote", "--heads", remote, f"refs/heads/{branch}")
-    if not out:
+    if _advertised(repo, remote, f"refs/heads/{branch}") is None:
         return None
     staging = f"refs/dev.synapt.grip/__merge_transfers__/{uuid.uuid4().hex}"
     try:
@@ -77,14 +85,14 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         try:
             target = _remote_tip(repo, m["remote"], into)
             feat = _remote_tip(repo, m["remote"], feature)
-            published = _git(repo, "ls-remote", m["remote"], f"refs/dev.synapt.grip/__reviews__/v1/{review_id}")
+            published = _advertised(repo, m["remote"], f"refs/dev.synapt.grip/__reviews__/v1/{review_id}")
             merged = _merged_at(repo, target, m["head"]) if target else None
             ancestor = _git(repo, "merge-base", m["head"], target) if target else ""
         except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
             # Every measurement fault, advertisement and history reads included, is a named refusal in the receipt.
             row["refused"] = f"remote_unmeasurable: {exc}"
             continue
-        if published.split("\t")[0] != review_id:
+        if published != review_id:
             row["refused"] = "review_not_on_member_remote: the remote does not hold this exact review"
             continue
         if merged:

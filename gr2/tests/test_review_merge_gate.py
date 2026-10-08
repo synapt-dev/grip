@@ -214,3 +214,14 @@ def test_refuses_a_review_not_published_on_the_member_remote(world):
     code, receipt = merge(world)
     assert code == merge_gate.EXIT_REFUSED, receipt
     assert receipt["members"][0]["refused"].startswith("review_not_on_member_remote"), receipt
+
+
+def test_a_nested_ref_with_the_same_tail_does_not_count_as_the_published_review(world):
+    check(world)
+    ref = f"{REVIEW_REF_PREFIX}{world['review'].removeprefix('gr:')}"
+    rid = git(world["remote"], "rev-parse", ref)
+    git(world["remote"], "update-ref", f"refs/decoy/{ref}", rid)  # same tail, different (nested) ref
+    git(world["remote"], "update-ref", "-d", ref)
+    code, receipt = merge(world)
+    assert code == merge_gate.EXIT_REFUSED, receipt
+    assert receipt["members"][0]["refused"].startswith("review_not_on_member_remote"), receipt

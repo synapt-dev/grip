@@ -204,12 +204,14 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         from . import approvals
         try:
             required = approvals.required_approvals(root, required_approvals)
-            approval_receipt = {"required": required, "skipped": True}
+            approval_receipt = {"required": required}
             if required:
                 approval_receipt = approvals.count_approvals(root, view["id"])
                 approval_receipt["required"] = required
                 if approval_receipt["count"] < required:
                     raise approvals.ApprovalRefused(f"approvals_insufficient: {approval_receipt['count']} of {required}")
+            else:
+                approval_receipt["skipped"] = True
         except (approvals.ApprovalRefused, grip.GripInitError, grip.GripCorruptError,
                 OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
             for r in rows:

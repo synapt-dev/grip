@@ -15,6 +15,7 @@ import sys
 import tempfile
 
 GUARDS = [
+    ("honest_skip_receipt", "review_merge", 'approval_receipt = {"required": required}', 'approval_receipt = {"required": required, "skipped": True}', "test_positive_required_read_failure_is_not_skipped"),
     ("workspace_policy_floor", "required_approvals", "return max(required, given or 0)", "return given if given is not None else required", "test_cli_count_cannot_lower_workspace_policy"),
     ("requested_count_type", "required_approvals", "if given is not None and (type(given) is not int or given < 0):", "if False:", "test_invalid_requested_count_refuses"),
     ("optional_policy_file", "required_approvals", "except FileNotFoundError:", "except FileExistsError:", "test_missing_policy_file_defaults_zero_and_merges"),

@@ -643,6 +643,22 @@ def test_zero_required_skips_an_unmeasurable_approval_chain(world, monkeypatch):
     assert git(world["remote"], "rev-list", "--parents", "-n", "1", "main").split()[1:] == [world["base"], world["head"]]
 
 
+def test_positive_required_read_failure_is_not_skipped(world, monkeypatch):
+    set_policy(world, 2)
+    calls = []
+    def unmeasurable(*args):
+        calls.append(args)
+        raise approvals.ApprovalRefused("approval_unmeasurable: receipt fixture")
+    monkeypatch.setattr(approvals, "count_approvals", unmeasurable)
+    result = runner.invoke(app, ["review", "merge"])
+    assert result.exit_code == 3, result.output
+    receipt = json.loads(result.output)
+    assert len(calls) == 1
+    assert receipt["approvals"] == {"required": 2}
+    assert receipt["members"][0]["refused"].startswith("approval_unmeasurable")
+    assert git(world["remote"], "rev-parse", "main") == world["base"]
+
+
 def test_missing_policy_file_defaults_zero_and_merges(world, tmp_path):
     # A missing file defaults the policy; a workspace without an approvals table
     # still keeps its member-discovery configuration for the real merge.

@@ -230,10 +230,12 @@ def test_single_member_group_default_is_draft(tmp_path):
             calls.append(request)
             return platform.PRRef(repo=request.repo, number=1, url="https://example.invalid/pull/1")
 
-    pr.create_pr_group(
+    group = pr.create_pr_group(
         tmp_path, "default", "proof", "title", "main", "head", ["sample"], Adapter(), "local"
     )
     assert calls[0].draft is True
+    assert calls[0].remote is None
+    assert group["prs"] == [{"repo": "sample", "pr_number": 1, "url": "https://example.invalid/pull/1"}]
     assert platform.CreatePRRequest("sample", "title", "body", "head", "main").draft is True
 
 

@@ -29,8 +29,16 @@ def _git(repo: Path, *args: str, check: bool = True) -> str:
     return proc.stdout.strip()
 
 
+def _plain_remote(remote: str) -> str:
+    """A remote git would parse as an option (e.g. --upload-pack=...) never reaches a git argv."""
+    if not remote or remote.startswith("-"):
+        raise RuntimeError("remote_option_shaped: refusing a remote that begins with '-'")
+    return remote
+
+
 def _advertised(repo: Path, remote: str, ref: str) -> str | None:
     """The oid the remote advertises for EXACTLY ref; ls-remote patterns also match nested refs by tail."""
+    _plain_remote(remote)
     hits = [line.split("\t") for line in _git(repo, "ls-remote", remote, ref).splitlines()]
     exact = [oid for oid, name in hits if name == ref]
     if len(exact) > 1:
@@ -40,6 +48,7 @@ def _advertised(repo: Path, remote: str, ref: str) -> str | None:
 
 def _remote_tip(repo: Path, remote: str, branch: str) -> str | None:
     """Fetch one remote branch into a private ref and return its commit, None when absent."""
+    _plain_remote(remote)
     if _advertised(repo, remote, f"refs/heads/{branch}") is None:
         return None
     staging = f"refs/dev.synapt.grip/__merge_transfers__/{uuid.uuid4().hex}"
@@ -77,11 +86,15 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
     grip.verify_review_commit(workspace, review_id)  # raises on a non-verifying bind
     view = grip.show_review_commit(workspace, review_id)
     rows: list[dict] = []
+    root = Path(workspace).resolve()
     for m in view["members"]:
         repo = (workspace / m["path"]).resolve()
         row = {"key": m["key"], "remote": m["remote"], "head": m["head"], "base": m["base"],
                "state": None, "merged": None, "refused": None, "check": None}
         rows.append(row)
+        if not repo.is_relative_to(root):
+            row["refused"] = f"member_path_outside_workspace: {m['path']}"
+            continue
         try:
             target = _remote_tip(repo, m["remote"], into)
             feat = _remote_tip(repo, m["remote"], feature)
@@ -153,9 +166,10 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                 except (subprocess.SubprocessError, OSError) as exc:  # a timeout is not evidence nothing moved
                     push_error = f"push_unconfirmed: {type(exc).__name__}"
                 state, merged = _state(repo, m["remote"], into, m["head"])
-                r.update(state=state, merged=merged)
-                if push_error and state != "merged":
-                    r["push_error"] = push_error
+                by = "this_run" if merged == builds[r["key"]] else ("another_writer" if merged else None)
+                r.update(state=state, merged=merged, merged_by=by)
+                if push_error and by != "this_run":
+                    r["push_error"] = push_error  # e.g. our lease lost to a writer who merged the same head
                 if state == "unknown":
                     break  # push no further members after an unresolved one
 

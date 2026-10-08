@@ -180,3 +180,49 @@ def test_a_merge_build_fault_refuses_before_any_push(world, monkeypatch):
     assert code == merge_gate.EXIT_REFUSED, receipt
     assert receipt["members"][0]["refused"].startswith("merge_build_failed"), receipt
     assert git(world["remote"], "rev-parse", "main") == world["base"]
+
+
+def test_a_same_head_merge_by_another_writer_is_attributed_to_them(world, tmp_path, monkeypatch):
+    check(world)
+    real_run = subprocess.run
+    fired = {"n": 0}
+    def run(cmd, *a, **kw):
+        if isinstance(cmd, (list, tuple)) and "push" in cmd[:5] and not fired["n"]:
+            fired["n"] = 1
+            other = tmp_path / "competitor"
+            git(tmp_path, "clone", "--no-local", "--branch", "main", world["remote"], other)
+            git(other, "fetch", "origin", "feat")
+            git(other, "merge", "--no-ff", "-m", "another writer", "FETCH_HEAD")
+            git(other, "push", "origin", "main")
+        return real_run(cmd, *a, **kw)
+    monkeypatch.setattr(merge_gate.subprocess, "run", run)
+    code, receipt = merge(world)
+    row = receipt["members"][0]
+    assert fired["n"] == 1
+    assert row["state"] == "merged" and row["merged_by"] == "another_writer", row
+    assert row.get("push_error"), row
+
+
+def test_an_option_shaped_remote_never_reaches_git(world, tmp_path):
+    marker = tmp_path / "RAN"
+    for call in (lambda r: merge_gate._advertised(world["member"], r, "refs/heads/main"),
+                 lambda r: merge_gate._remote_tip(world["member"], r, "main")):
+        with pytest.raises(RuntimeError, match="remote_option_shaped"):
+            call(f"--upload-pack=touch {marker}")
+    assert not marker.exists()
+
+
+def test_a_member_path_outside_the_workspace_is_refused(world, tmp_path, monkeypatch):
+    check(world)
+    outside = tmp_path / "outside"
+    git(tmp_path, "clone", "-q", "--no-local", world["remote"], outside)
+    real_show = merge_gate.grip.show_review_commit
+    def show(*a, **k):
+        view = real_show(*a, **k)
+        view["members"][0]["path"] = str(outside)  # an absolute path escapes the workspace
+        return view
+    monkeypatch.setattr(merge_gate.grip, "show_review_commit", show)
+    code, receipt = merge(world)
+    assert code != merge_gate.EXIT_MERGED, receipt
+    assert receipt["members"][0]["refused"].startswith("member_path_outside_workspace"), receipt
+    assert git(world["remote"], "rev-parse", "main") == world["base"]

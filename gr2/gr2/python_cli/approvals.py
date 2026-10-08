@@ -5,6 +5,7 @@ links do not accept signature fields. Each link names the bind and repeats its m
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -41,6 +42,26 @@ def canonical(record: dict) -> str:
 
 def digest(record: dict) -> str:
     return hashlib.sha256(canonical(record).encode("utf-8")).hexdigest()
+
+
+def _bind_record(workspace: Path, rid: str) -> dict:
+    """Lossless canonical JSON view of the full bind, not its decoded pin view.
+
+    Field occurrences retain numeric/wire identity and order. Raw payloads use
+    base64, including nested message bytes and unknown fields at every depth.
+    Writer field labels are not identities. The verified field tree supplies
+    its protobuf bytes without decoding away fields unknown to this version.
+    """
+    from . import review_field_tree as fd
+    tree = _git(workspace, "rev-parse", rid + "^{tree}")
+    try:
+        wire = fd.to_protobuf(workspace, tree)
+        occurrences = [{"number": n, "wire_type": wt,
+                        "payload": base64.b64encode(payload).decode("ascii")}
+                       for n, wt, payload in fd.fields(wire)]
+    except (fd.ReviewRecordError, UnicodeError, ValueError) as exc:
+        raise ApprovalRefused("approval_bind_record_unmeasurable") from exc
+    return {"format": "protobuf-fields-v1", "schema": fd.PACKAGE, "fields": occurrences}
 
 
 def current_review(workspace: Path) -> str:
@@ -216,7 +237,7 @@ def _walk(workspace: Path, root: dict, authors: set[str], tip: str | None) -> li
             raise ApprovalRefused("approval_chain_broken: expected one parent")
         record = _read_link(workspace, tip)
         name = _validate_link(record, root, authors)
-        previous = root if parents[0] == rid else _read_link(workspace, parents[0])
+        previous = _bind_record(workspace, rid) if parents[0] == rid else _read_link(workspace, parents[0])
         if record.get("prev") != digest(previous):
             raise ApprovalRefused("approval_chain_broken: prev")
         links.append({"approver": name, "key_id": "", "record_hash": digest(record), "commit": tip, "signed": False})
@@ -276,7 +297,7 @@ def approve(workspace: Path, review_id: str | None = None) -> dict:
     tips = _remote_tips(workspace, root)
     tip = _reconcile(workspace, root, authors, tips)
     _walk(workspace, root, authors, tip)
-    previous = root if tip is None else _read_link(workspace, tip)
+    previous = _bind_record(workspace, rid) if tip is None else _read_link(workspace, tip)
     record = {**root, "schema": SCHEMA, "approver": {"name": name, "key_id": ""}, "keyring_tip": "",
               "verdict": "approve", "prev": digest(previous),
               "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}

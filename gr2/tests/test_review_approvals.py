@@ -1,4 +1,6 @@
 """Unsigned approval-chain proof through the default CLI, using real bare Git remotes."""
+import base64
+import hashlib
 import json
 import subprocess
 import sys
@@ -379,6 +381,7 @@ def test_a_link_must_have_one_parent(monkeypatch):
     record["prev"] = approvals.digest(root)
     monkeypatch.setattr(approvals, "_git", lambda *args, **kwargs: "b" * 40 + " " + rid + " " + "c" * 40)
     monkeypatch.setattr(approvals, "_read_link", lambda *args: record)
+    monkeypatch.setattr(approvals, "_bind_record", lambda *args: root)
     with pytest.raises(approvals.ApprovalRefused, match="expected one parent"):
         approvals._walk(None, root, {"Author A"}, "b" * 40)
 
@@ -431,6 +434,7 @@ def test_chain_length_limit_refuses(monkeypatch):
     record["prev"] = "d" * 64
     monkeypatch.setattr(approvals, "digest", lambda *args: "d" * 64)
     monkeypatch.setattr(approvals, "_read_link", lambda *args: record)
+    monkeypatch.setattr(approvals, "_bind_record", lambda *args: root)
     rid = root["review_id"].removeprefix("gr:")
     def finite_chain(repo, *args, **kwargs):
         value = int(args[-1], 16)
@@ -483,3 +487,130 @@ def test_policy_table_must_be_a_table(tmp_path):
     (tmp_path / "grip.toml").write_text("approvals=2")
     with pytest.raises(approvals.ApprovalRefused, match="approval_policy_invalid"):
         approvals.required_approvals(tmp_path)
+
+
+def test_first_prev_hashes_full_bind_with_bytes_and_nested_unknowns(world):
+    from gr2.python_cli import review_field_tree as fd
+    workspace = world["workspace"]
+    original_tree = git(workspace, "rev-parse", world["rid"] + "^{tree}")
+    original_wire = fd.to_protobuf(workspace, original_tree)
+    changed = b""
+    for number, wt, payload in fd.fields(original_wire):
+        if number == 4:
+            payload += fd._emit(999, 2, b"\xff\x00nested-unknown")
+        changed += fd._emit(number, wt, payload)
+    changed += fd._emit(998, 2, b"\x00\xffroot-unknown")
+    tree = fd.write_tree(workspace, changed)
+    # The ordinary decoded view cannot see either unknown, but the stored record can.
+    assert fd.read_record(workspace, tree) == fd.read_record(workspace, original_tree)
+    assert approvals.digest(approvals._bind_record(workspace, world["rid"])) != approvals.digest({
+        "format": "protobuf-fields-v1", "schema": fd.PACKAGE, "fields": [
+            {"number": n, "wire_type": wt, "payload": base64.b64encode(p).decode("ascii")}
+            for n, wt, p in fd.fields(fd.to_protobuf(workspace, tree))]})
+    rid = git(workspace, "commit-tree", tree, "-m", "bind with unknown fields")
+    for line in git(workspace, "for-each-ref", "--format=%(refname) %(objectname)", "refs/dev.synapt.grip/__reviews__/").splitlines():
+        ref, oid = line.split()
+        if oid == world["rid"]:
+            git(workspace, "update-ref", "-d", ref)
+    git(workspace, "update-ref", "refs/dev.synapt.grip/__reviews__/v1/" + rid, rid)
+    world["rid"] = rid
+    published = runner.invoke(app, ["review", "publish", "gr:" + rid, "--remote", str(world["remote"])])
+    assert published.exit_code == 0, published.output
+    expected = {"format": "protobuf-fields-v1", "schema": fd.PACKAGE, "fields": [
+        {"number": n, "wire_type": wt, "payload": base64.b64encode(p).decode("ascii")}
+        for n, wt, p in fd.fields(fd.to_protobuf(workspace, tree))]}
+    assert expected["fields"][-1]["payload"] == base64.b64encode(b"\x00\xffroot-unknown").decode("ascii")
+    member = next(f for f in expected["fields"] if f["number"] == 4)
+    assert fd.fields(base64.b64decode(member["payload"]))[-1] == (999, 2, b"\xff\x00nested-unknown")
+    expected_hash = hashlib.sha256(json.dumps(expected, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
+    approved = approve_as(world, "Approver B")
+    assert approved.exit_code == 0, approved.output
+    tip = json.loads(approved.output)["tip"]
+    first = json.loads(git(world["remote"], "show", tip + ":approval.json"))
+    assert first["prev"] == expected_hash
+    assert first["prev"] != approvals.digest(approvals._context(workspace, rid)[0])
+    second = approve_as(world, "Approver C")
+    assert second.exit_code == 0, second.output
+    last = json.loads(git(world["remote"], "show", json.loads(second.output)["tip"] + ":approval.json"))
+    assert last["prev"] == approvals.digest(first)
+
+
+def _mock_context(monkeypatch, tmp_path, actual="a" * 40, measured="a" * 40):
+    from gr2.python_cli import merge_gate
+    member = {"key": "m", "path": "member", "remote": "remote.git", "base": "b" * 40, "head": "c" * 40}
+    monkeypatch.setattr(merge_gate, "_toplevel", lambda path: path)
+    monkeypatch.setattr(merge_gate, "_store_inside", lambda *args: True)
+    monkeypatch.setattr(approvals.grip, "verify_review_commit", lambda *args: {"tree_matches": True, "rows": [{"key": "m", "head_tree": measured}]})
+    monkeypatch.setattr(approvals.grip, "show_review_commit", lambda *args: {"author": "Author A", "members": [member]})
+    monkeypatch.setattr(approvals, "_git", lambda repo, *args, **kwargs: actual if args[0] == "rev-parse" else "")
+    return merge_gate
+
+
+def test_context_refuses_member_that_is_not_its_own_repo(monkeypatch, tmp_path):
+    merge_gate = _mock_context(monkeypatch, tmp_path)
+    monkeypatch.setattr(merge_gate, "_toplevel", lambda path: tmp_path)
+    with pytest.raises(approvals.ApprovalRefused, match="approval_member_repo_mismatch"):
+        approvals._context(tmp_path, "a" * 40)
+
+
+def test_context_refuses_a_head_tree_mismatch(monkeypatch, tmp_path):
+    _mock_context(monkeypatch, tmp_path, actual="d" * 40)
+    with pytest.raises(approvals.ApprovalRefused, match="approval_head_tree_unmeasurable"):
+        approvals._context(tmp_path, "a" * 40)
+
+
+def test_branch_resolver_refuses_nested_member(monkeypatch, tmp_path):
+    merge_gate = _mock_context(monkeypatch, tmp_path)
+    monkeypatch.setattr(merge_gate, "_toplevel", lambda path: tmp_path)
+    with pytest.raises(approvals.ApprovalRefused, match="approval_member_repo_mismatch"):
+        approvals.current_branch(tmp_path, "a" * 40)
+
+
+def test_branch_resolver_refuses_different_member_branches(monkeypatch, tmp_path):
+    _mock_context(monkeypatch, tmp_path)
+    monkeypatch.setattr(approvals.grip, "show_review_commit", lambda *args: {"members": [{"path": "alpha"}, {"path": "beta"}]})
+    monkeypatch.setattr(approvals, "_git", lambda repo, *args, **kwargs: repo.name)
+    with pytest.raises(approvals.ApprovalRefused, match="feature_unresolved"):
+        approvals.current_branch(tmp_path, "a" * 40)
+
+
+def test_reconcile_refuses_a_changed_post_publish_measurement(monkeypatch):
+    root, _ = _sample_link()
+    tip = "b" * 40
+    monkeypatch.setattr(approvals, "_walk", lambda *args: [])
+    monkeypatch.setattr(approvals, "_git", lambda *args, **kwargs: tip)
+    monkeypatch.setattr(approvals, "_remote_tips", lambda *args: {"remote.git": "c" * 40})
+    with pytest.raises(approvals.ApprovalRefused, match="approval_chain_divergent"):
+        approvals._reconcile(None, root, {"Author A"}, {"remote.git": tip})
+
+
+def test_missing_approver_refuses_before_remote_measurement(monkeypatch):
+    root, _ = _sample_link()
+    monkeypatch.setattr(approvals, "_context", lambda *args: (root, {"Author A"}))
+    monkeypatch.setattr(approvals, "_git", lambda *args, **kwargs: "")
+    monkeypatch.setattr(approvals, "_remote_tips", lambda *args: pytest.fail("missing identity reached remote measurement"))
+    with pytest.raises(approvals.ApprovalRefused, match="approval_identity_missing"):
+        approvals.approve(Path.cwd(), root["review_id"])
+
+
+def test_reconcile_lease_keeps_a_racing_remote_link(multi, monkeypatch):
+    made = approve_as(multi, "Approver B")
+    assert made.exit_code == 0, made.output
+    tip = json.loads(made.output)["tip"]
+    previous = json.loads(git(multi["workspace"], "show", tip + ":approval.json"))
+    record = {**previous, "approver": {"name": "Racing C", "key_id": ""}, "prev": approvals.digest(previous)}
+    competitor = _write_link(multi, record, tip)
+    beta = multi["members"]["beta"]["remote"]
+    ref = approvals.PREFIX + multi["rid"]
+    git(beta, "update-ref", "-d", ref)
+    original = approvals._git
+    def race(repo, *args, **kwargs):
+        if args[0] == "push":
+            git(multi["workspace"], "push", beta, competitor + ":" + ref)
+            monkeypatch.setattr(approvals, "_git", original)
+        return original(repo, *args, **kwargs)
+    monkeypatch.setattr(approvals, "_git", race)
+    refused = approve_as(multi, "Approver D")
+    assert refused.exit_code == 2, refused.output
+    assert git(beta, "rev-parse", ref) == competitor
+    assert git(multi["remote"], "rev-parse", ref) == tip

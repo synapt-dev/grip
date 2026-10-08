@@ -15,6 +15,17 @@ import sys
 import tempfile
 
 GUARDS = [
+    ("member_repo", "_context", "if not repo.is_relative_to(root) or merge_gate._toplevel(repo) != repo or not merge_gate._store_inside(repo, root):", "if False:", "test_context_refuses_member_that_is_not_its_own_repo"),
+    ("head_tree", "_context", "if actual_tree != tree:", "if False:", "test_context_refuses_a_head_tree_mismatch"),
+    ("branch_repo", "current_branch", "if not repo.is_relative_to(root) or merge_gate._toplevel(repo) != repo:", "if False:", "test_branch_resolver_refuses_nested_member"),
+    ("branch_unique", "current_branch", "if len(names) != 1:", "if False:", "test_branch_resolver_refuses_different_member_branches"),
+    ("reconcile_stability", "_reconcile", "if set(measured.values()) != {tip}:", "if False:", "test_reconcile_refuses_a_changed_post_publish_measurement"),
+    ("writer_identity", "approve", "if not name.strip():", "if False:", "test_missing_approver_refuses_before_remote_measurement"),
+    ("reconcile_lease", "_reconcile", 'f"--force-with-lease={ref}:{old or \'\'}"', '"--force"', "test_reconcile_lease_keeps_a_racing_remote_link"),
+    ("bind_unknown_payloads", "_bind_record", "wire = fd.to_protobuf(workspace, tree)", "wire = fd.encode(fd.read_record(workspace, tree))", "test_first_prev_hashes_full_bind_with_bytes_and_nested_unknowns"),
+    ("bind_byte_payloads", "_bind_record", "base64.b64encode(payload)", "base64.b64encode(b'')", "test_first_prev_hashes_full_bind_with_bytes_and_nested_unknowns"),
+    ("writer_bind_root", "approve", "previous = _bind_record(workspace, rid) if tip is None else _read_link(workspace, tip)", "previous = root if tip is None else _read_link(workspace, tip)", "test_first_prev_hashes_full_bind_with_bytes_and_nested_unknowns"),
+    ("reader_bind_root", "_walk", "previous = _bind_record(workspace, rid) if parents[0] == rid else _read_link(workspace, parents[0])", "previous = root if parents[0] == rid else _read_link(workspace, parents[0])", "test_first_prev_hashes_full_bind_with_bytes_and_nested_unknowns"),
     ("git_failure", "_git", "if p.returncode:", "if False:", "test_git_failure_is_not_an_empty_success"),
     ("bind_verification", "_context", 'if verified.get("tree_matches") is not True:', "if False:", "test_bind_verification_failure_stops_before_any_remote"),
     ("workspace_store", "_context", "if merge_gate._toplevel(workspace) != workspace or not merge_gate._store_inside(workspace, workspace):", "if False:", "test_workspace_store_is_checked_before_bind_reads"),

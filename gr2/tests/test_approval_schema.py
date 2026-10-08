@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import hashlib
-import importlib.resources
+from pathlib import Path
 
 import pytest
 
@@ -11,7 +11,7 @@ from gr2.python_cli import review_field_tree as review
 
 
 def test_review_descriptor_and_proto_match_the_upstream_pin():
-    root = importlib.resources.files("gr2") / "schemas" / review.PACKAGE
+    root = Path(review.__file__).resolve().parent.parent / "schemas" / review.PACKAGE
     assert hashlib.sha256((root / "review.proto").read_bytes()).hexdigest() == (
         "94e75f8ff703a20a2ab2cecd5226c24d25e9f8c1a1d295cdaf224ab0a2e73296")
     assert hashlib.sha256((root / "descriptor_set.pb").read_bytes()).hexdigest() == (
@@ -32,7 +32,7 @@ def test_approval_package_and_descriptor_match_the_upstream_pin():
     ("descriptor_set.pb", approval.descriptor_bytes),
 ])
 def test_changed_approval_resource_is_refused(monkeypatch, name, call):
-    root = importlib.resources.files("gr2") / "schemas" / approval.PACKAGE
+    root = Path(approval.__file__).resolve().parent.parent / "schemas" / approval.PACKAGE
     raw = (root / name).read_bytes()
 
     class Changed:

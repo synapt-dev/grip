@@ -19,7 +19,7 @@ def test_bind_records_workspace_git_name_and_reads_it(handoff, name):
                ref="refs/heads/main", source=str(root / "member"))
     commit = grip.create_review_bind_commit(root, [row])
     tree = git(root, "rev-parse", commit + "^{tree}")
-    assert fd.read_record(root, tree)["author"] == name
+    assert fd.read_record(root, tree).get("author") == name
     assert grip.show_review_commit(root, commit)["author"] == name
     assert grip.verify_review_commit(root, commit)["author"] == name
 

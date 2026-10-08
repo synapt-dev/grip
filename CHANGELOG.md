@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- New gr2 review binds record the binder's configured Git name. Show and verify
+  expose it; older records remain readable with their original ids. The review
+  schema adds author at field 5, and the unsigned approval schema and descriptors
+  ship as pinned offline resources.
+
 - gr2 PR creation defaults to draft at the request, group and CLI layers. Use
   `--no-draft` or Python `draft=False` for explicit non-draft creation. Body-only
   sibling edits do not publish drafts.

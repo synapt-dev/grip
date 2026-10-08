@@ -55,11 +55,11 @@ def _state(repo: Path, remote: str, into: str, head: str) -> tuple[str, str | No
     """Re-read one member from its remote: ('merged', commit) | ('unmerged', None) | ('unknown', None)."""
     try:
         tip = _remote_tip(repo, remote, into)
+        if tip is None:
+            return "unknown", None
+        merged = _merged_at(repo, tip, head)
     except (RuntimeError, subprocess.SubprocessError, OSError):
-        return "unknown", None
-    if tip is None:
-        return "unknown", None
-    merged = _merged_at(repo, tip, head)
+        return "unknown", None  # every measurement fault, history reads included, is unknown
     return ("merged", merged) if merged else ("unmerged", None)
 
 
@@ -131,14 +131,18 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                 if still != m["head"]:
                     r["refused"] = f"feature_moved_before_push: remote {feature} is {still}"
                     break  # narrows the head race; no further member is pushed
-                proc = subprocess.run(
-                    ["git", "-C", str(repo), "push", f"--force-with-lease=refs/heads/{into}:{m['base']}",
-                     m["remote"], f"{builds[r['key']]}:refs/heads/{into}"],
-                    capture_output=True, text=True, timeout=120)
+                try:
+                    proc = subprocess.run(
+                        ["git", "-C", str(repo), "push", f"--force-with-lease=refs/heads/{into}:{m['base']}",
+                         m["remote"], f"{builds[r['key']]}:refs/heads/{into}"],
+                        capture_output=True, text=True, timeout=120)
+                    push_error = proc.stderr.strip()[-300:] if proc.returncode else None
+                except (subprocess.SubprocessError, OSError) as exc:  # a timeout is not evidence nothing moved
+                    push_error = f"push_unconfirmed: {type(exc).__name__}"
                 state, merged = _state(repo, m["remote"], into, m["head"])
                 r.update(state=state, merged=merged)
-                if proc.returncode and state != "merged":
-                    r["push_error"] = proc.stderr.strip()[-300:]
+                if push_error and state != "merged":
+                    r["push_error"] = push_error
                 if state == "unknown":
                     break  # push no further members after an unresolved one
 

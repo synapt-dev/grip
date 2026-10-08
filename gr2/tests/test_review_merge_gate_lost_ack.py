@@ -18,7 +18,7 @@ REAL_RUN = subprocess.run
 
 
 def _is_push(cmd) -> bool:
-    return isinstance(cmd, (list, tuple)) and len(cmd) > 3 and cmd[0] == "git" and "push" in cmd[:5]
+    return isinstance(cmd, (list, tuple)) and len(cmd) > 3 and cmd[0] == "git" and "push" in cmd[:9]
 
 
 def lose_acknowledgement(monkeypatch, *, hide=None, only_first=False):
@@ -188,7 +188,7 @@ def test_a_same_head_merge_by_another_writer_is_attributed_to_them(world, tmp_pa
     real_run = subprocess.run
     fired = {"n": 0}
     def run(cmd, *a, **kw):
-        if isinstance(cmd, (list, tuple)) and "push" in cmd[:5] and not fired["n"]:
+        if isinstance(cmd, (list, tuple)) and "push" in cmd[:9] and not fired["n"]:
             fired["n"] = 1
             other = tmp_path / "competitor"
             git(tmp_path, "clone", "--no-local", "--branch", "main", world["remote"], other)
@@ -241,7 +241,7 @@ def test_a_bind_whose_verification_returns_false_refuses_before_any_transfer(wor
     calls = []
     real_run = subprocess.run
     def run(cmd, *a, **kw):
-        if isinstance(cmd, (list, tuple)) and any(v in cmd[:5] for v in ("fetch", "push", "ls-remote")):
+        if isinstance(cmd, (list, tuple)) and any(v in cmd[:9] for v in ("fetch", "push", "ls-remote")):
             calls.append(cmd)
         return real_run(cmd, *a, **kw)
     monkeypatch.setattr(merge_gate.subprocess, "run", run)
@@ -286,7 +286,7 @@ def test_a_later_member_moving_after_an_earlier_push_is_partial_not_none(slice2,
     fired = {"n": 0}
     def run(cmd, *a, **kw):
         result = real_run(cmd, *a, **kw)
-        if isinstance(cmd, (list, tuple)) and "push" in cmd[:5] and not fired["n"]:
+        if isinstance(cmd, (list, tuple)) and "push" in cmd[:9] and not fired["n"]:
             fired["n"] = 1  # alpha has just been pushed; beta's feature moves before its re-read
             (beta["repo"] / "late.txt").write_text("late\n")
             git(beta["repo"], "add", "late.txt")
@@ -411,3 +411,19 @@ def test_a_symlinked_hook_does_not_refuse_a_member(world, tmp_path):
     (world["member"] / ".git" / "hooks" / "commit-msg").symlink_to(hook)  # how our own clones install guards
     code, receipt = merge(world)
     assert code == merge_gate.EXIT_MERGED, receipt
+
+
+def test_every_git_command_the_gate_runs_disables_auto_maintenance(world, monkeypatch):
+    check(world)
+    seen = []
+    real_run = subprocess.run
+    def run(cmd, *a, **kw):
+        if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "git" and any(v in cmd for v in ("fetch", "push")):
+            seen.append(list(cmd))
+        return real_run(cmd, *a, **kw)
+    monkeypatch.setattr(merge_gate.subprocess, "run", run)
+    code, receipt = merge(world)
+    assert code == merge_gate.EXIT_MERGED, receipt
+    assert seen and any("push" in c for c in seen) and any("fetch" in c for c in seen), seen
+    for c in seen:
+        assert "maintenance.auto=false" in c and "gc.auto=0" in c, c

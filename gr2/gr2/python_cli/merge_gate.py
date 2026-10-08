@@ -23,8 +23,13 @@ from . import check_records, grip
 EXIT_MERGED, EXIT_REFUSED, EXIT_PARTIAL = 0, 3, 4
 
 
+# A fetch may start a detached `git maintenance run --auto`, which writes (gc.log, packs) outside any path
+# this gate checks or waits for; never let the gate's own git commands trigger background work.
+_NO_AUTO = ("-c", "maintenance.auto=false", "-c", "gc.auto=0")
+
+
 def _git(repo: Path, *args: str, check: bool = True) -> str:
-    proc = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=60)
+    proc = subprocess.run(["git", *_NO_AUTO, "-C", str(repo), *args], capture_output=True, text=True, timeout=60)
     if check and proc.returncode:
         raise RuntimeError(f"git {' '.join(args[:2])}: {proc.stderr.strip()}")
     return proc.stdout.strip()
@@ -227,7 +232,7 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                     break  # narrows the head race; no further member is pushed
                 try:
                     proc = subprocess.run(
-                        ["git", "-C", str(repo), "push", f"--force-with-lease=refs/heads/{into}:{m['base']}",
+                        ["git", *_NO_AUTO, "-C", str(repo), "push", f"--force-with-lease=refs/heads/{into}:{m['base']}",
                          m["remote"], f"{builds[r['key']]}:refs/heads/{into}"],
                         capture_output=True, text=True, timeout=120)
                     push_error = proc.stderr.strip()[-300:] if proc.returncode else None

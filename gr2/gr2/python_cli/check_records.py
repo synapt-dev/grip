@@ -28,7 +28,9 @@ class CheckRefused(ValueError):
 
 
 def _git(repo: Path, *args: str, data: bytes | None = None) -> bytes:
-    p = subprocess.run(["git", "-C", str(repo), *args], input=data, capture_output=True, timeout=30)
+    # Never let a check transfer start background `git maintenance run --auto` work in the caller's repository.
+    p = subprocess.run(["git", "-c", "maintenance.auto=false", "-c", "gc.auto=0", "-C", str(repo), *args],
+                       input=data, capture_output=True, timeout=30)
     if p.returncode:
         raise CheckRefused(p.stderr.decode("utf-8", errors="replace").strip())
     return p.stdout

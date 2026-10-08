@@ -323,3 +323,32 @@ def test_a_dot_git_file_pointing_outside_never_selects_that_store(world, tmp_pat
     assert receipt["members"][0]["refused"].startswith("member_store_outside_workspace"), receipt
     assert git(outside, "count-objects", "-v") == objects
     assert git(world["remote"], "rev-parse", "main") == world["base"]
+
+
+def test_an_objects_symlink_inside_an_inside_git_dir_is_refused(world, tmp_path, monkeypatch):
+    check(world)
+    outside = tmp_path / "outside-objects"
+    outside.mkdir()
+    git(outside, "init", "-q", "-b", "main")
+    (outside / "v.txt").write_text("victim\n")
+    git(outside, "add", "v.txt")
+    git(outside, "commit", "-q", "-m", "victim")
+    objects = world["member"] / ".git" / "objects"
+    git(world["member"], "repack", "-a", "-d", "-q")
+    for item in objects.iterdir():  # move this member's objects into the outside store, then link to it
+        target = outside / ".git" / "objects" / item.name
+        if item.is_dir():
+            target.mkdir(exist_ok=True)
+            for f in item.iterdir():
+                f.rename(target / f.name)
+        elif not target.exists():
+            item.rename(target)
+    import shutil
+    shutil.rmtree(objects)
+    objects.symlink_to(outside / ".git" / "objects")
+    assert git(world["member"], "rev-parse", "HEAD")  # the member still works through the link
+    before = git(outside, "count-objects", "-v")
+    code, receipt = merge(world)
+    assert receipt["members"][0]["refused"].startswith("member_store_outside_workspace"), receipt
+    assert git(outside, "count-objects", "-v") == before
+    assert git(world["remote"], "rev-parse", "main") == world["base"]

@@ -90,15 +90,23 @@ def _toplevel(repo: Path) -> Path | None:
     return Path(p.stdout.strip()).resolve() if p.returncode == 0 and p.stdout.strip() else None
 
 
-def _common_dir(repo: Path) -> Path | None:
-    """Where git keeps this worktree's objects; a .git FILE or SYMLINK can point it anywhere."""
+_WRITE_PATHS = ("objects", "refs", "packed-refs")
+
+
+def _store_inside(repo: Path, root: Path) -> bool:
+    """Every place git WRITES for this member resolves (symlinks followed) inside the workspace.
+
+    A .git file or symlink can point the git dir anywhere, and inside the git dir objects/ or refs/ can
+    themselves be symlinks; the common dir alone does not bound where a fetch or push lands."""
+    args = ["rev-parse", "--absolute-git-dir", "--git-common-dir", *[a for w in _WRITE_PATHS for a in ("--git-path", w)]]
     try:
-        p = subprocess.run(["git", "-C", str(repo), "rev-parse", "--git-common-dir"],
-                           capture_output=True, text=True, timeout=60)
+        p = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=60)
     except (subprocess.SubprocessError, OSError):
-        return None
-    out = p.stdout.strip()
-    return (repo / out).resolve() if p.returncode == 0 and out else None
+        return False
+    lines = p.stdout.splitlines()
+    if p.returncode or len(lines) != 2 + len(_WRITE_PATHS):
+        return False
+    return all((repo / line).resolve().is_relative_to(root) for line in lines)
 
 
 def _unmeasured(review_id: str, into: str, feature: str, reason: str) -> tuple[int, dict]:
@@ -132,8 +140,7 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         if _toplevel(repo) != repo:
             row["refused"] = f"member_repo_mismatch: {m['path']} is not its own git worktree"
             continue
-        common = _common_dir(repo)
-        if common is None or not common.is_relative_to(root):
+        if not _store_inside(repo, root):
             # gr2 members are independent clones; an object store outside the workspace is never written to.
             row["refused"] = f"member_store_outside_workspace: {m['path']}"
             continue

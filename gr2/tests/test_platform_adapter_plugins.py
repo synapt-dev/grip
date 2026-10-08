@@ -117,8 +117,12 @@ def test_per_member_remotes_reach_entry_point_and_stored_group(plugin):
 
 def test_duplicate_member_identity_refuses_before_adapter_calls(tmp_path):
     calls = []
+    def create(request):
+        calls.append(request)
+        return platform.PRRef(request.repo, 1, "https://example.invalid/pull/1")
+
     adapter = SimpleNamespace(
-        create_pr=lambda request: calls.append(request), edit_pr_body=lambda *args: None,
+        create_pr=create, edit_pr_body=lambda *args: None,
     )
     with pytest.raises(platform.AdapterError, match="duplicate.*repo"):
         pr.create_pr_group(tmp_path, "default", "proof", "title", "main", "head",

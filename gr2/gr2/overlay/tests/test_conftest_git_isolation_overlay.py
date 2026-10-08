@@ -12,12 +12,13 @@ fake.
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 
-def test_isolated_git_config_env_vars_point_at_present_empty_files_here_too(tmp_path_factory):
+def test_isolated_git_config_env_vars_point_at_present_isolated_files_here_too(tmp_path_factory):
     """Same assertion as the `tests/` copy, run from the sibling `overlay/tests/`
-    tree: the three isolation channels are set to REAL, PRESENT, EMPTY targets,
+    tree: the three isolation channels use present targets with fixture identity only,
     not merely unset. If `_isolated_git_config` lived only in `gr2/tests/conftest.py`
     (the bug this file exists to catch), every one of these would read as
     ``None``/absent here, because this directory is not a descendant of that
@@ -28,7 +29,13 @@ def test_isolated_git_config_env_vars_point_at_present_empty_files_here_too(tmp_
     assert global_path, "GIT_CONFIG_GLOBAL must be set, not absent"
     p = Path(global_path)
     assert p.is_file(), f"GIT_CONFIG_GLOBAL must point at a real file: {global_path!r}"
-    assert p.read_text() == "", f"GIT_CONFIG_GLOBAL must be empty: {global_path!r}"
+    entries = subprocess.run(
+        ["git", "config", "--file", str(p), "--list"],
+        capture_output=True, text=True, check=True,
+    ).stdout.splitlines()
+    assert entries == ["user.name=Fixture", "user.email=fixture@example.invalid"], (
+        f"GIT_CONFIG_GLOBAL must contain only fixture identity: {entries!r}"
+    )
 
     xdg_path = os.environ.get("XDG_CONFIG_HOME")
     assert xdg_path, "XDG_CONFIG_HOME must be set, not absent"

@@ -75,6 +75,8 @@ def world(tmp_path, monkeypatch):
     git(author, "clone", "--no-local", "--branch", "main", remote, "member")
     init = runner.invoke(app, ["store", "init", str(author)])
     assert init.exit_code == 0, init.output
+    git(author, "config", "user.name", "Fixture")
+    git(author, "config", "user.email", "fixture@example.invalid")
     member = author / "member"
     (member / "payload.txt").write_text("reviewed\n")
     git(member, "add", "payload.txt")

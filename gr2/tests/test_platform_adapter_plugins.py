@@ -147,6 +147,41 @@ def test_absent_lane_url_omits_creation_remote(plugin, url_line):
     assert "remote" not in saved["prs"][0]
 
 
+@pytest.mark.parametrize("userinfo", ["user:fixture-private-token", "fixture-private-token"])
+def test_credential_lane_url_refuses_before_adapter_or_state(plugin, userinfo):
+    workspace, capture, env, _ = plugin
+    remote = f"https://{userinfo}@github.com/o/sample.git"
+    (workspace / ".grip/workspace_spec.toml").write_text(
+        f'[[repos]]\nname="sample"\nurl="{remote}"\n'
+    )
+    result = _create_cli(plugin, "--json")
+    assert result.returncode == 2, result.stderr
+    assert "sample: its url carries credentials" in result.stderr
+    assert "fixture-private-token" not in result.stdout + result.stderr
+    assert remote not in result.stdout + result.stderr
+    assert not capture.exists()
+    assert not Path(env["FIXTURE_EVENTS"]).exists()
+    assert not (workspace / ".grip/pr_groups").exists()
+    assert not (workspace / ".grip/events").exists()
+
+
+@pytest.mark.parametrize("remote", [
+    "https://github.com/o/sample.git",
+    "git@github.com:o/sample.git",
+    "ssh://git@github.com/o/sample.git",
+])
+def test_clean_lane_url_shapes_still_reach_adapter(plugin, remote):
+    workspace, capture, _, _ = plugin
+    (workspace / ".grip/workspace_spec.toml").write_text(
+        f'[[repos]]\nname="sample"\nurl="{remote}"\n'
+    )
+    result = _create_cli(plugin, "--json")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(capture.read_text())["remote"] == remote
+    saved = json.loads(Path(json.loads(result.stdout)["state_path"]).read_text())
+    assert saved["prs"][0]["remote"] == remote
+
+
 def test_duplicate_cli_identity_names_refusal_before_adapter_calls(plugin):
     workspace, capture, env, _ = plugin
     (workspace / ".grip/workspace_spec.toml").write_text(

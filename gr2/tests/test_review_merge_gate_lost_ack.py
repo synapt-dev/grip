@@ -299,3 +299,27 @@ def test_a_later_member_moving_after_an_earlier_push_is_partial_not_none(slice2,
     assert rows["alpha"]["final"] == "merged", receipt
     assert rows["beta"]["refused"].startswith("feature_moved_before_push"), receipt
     assert code == merge_gate.EXIT_PARTIAL, receipt
+
+
+def test_a_dot_git_file_pointing_outside_never_selects_that_store(world, tmp_path, monkeypatch):
+    check(world)
+    outside = tmp_path / "outside-store"
+    outside.mkdir()
+    git(outside, "init", "-q", "-b", "main")
+    (outside / "v.txt").write_text("victim\n")
+    git(outside, "add", "v.txt")
+    git(outside, "commit", "-q", "-m", "victim")
+    decoy = world["author"] / "decoy"
+    decoy.mkdir()
+    (decoy / ".git").write_text(f"gitdir: {outside / '.git'}\n")  # a worktree path whose objects live outside
+    real_show = merge_gate.grip.show_review_commit
+    def show(*a, **k):
+        view = real_show(*a, **k)
+        view["members"][0]["path"] = "decoy"
+        return view
+    monkeypatch.setattr(merge_gate.grip, "show_review_commit", show)
+    objects = git(outside, "count-objects", "-v")
+    code, receipt = merge(world)
+    assert receipt["members"][0]["refused"].startswith("member_store_outside_workspace"), receipt
+    assert git(outside, "count-objects", "-v") == objects
+    assert git(world["remote"], "rev-parse", "main") == world["base"]

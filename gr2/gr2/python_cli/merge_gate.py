@@ -90,6 +90,17 @@ def _toplevel(repo: Path) -> Path | None:
     return Path(p.stdout.strip()).resolve() if p.returncode == 0 and p.stdout.strip() else None
 
 
+def _common_dir(repo: Path) -> Path | None:
+    """Where git keeps this worktree's objects; a .git FILE or SYMLINK can point it anywhere."""
+    try:
+        p = subprocess.run(["git", "-C", str(repo), "rev-parse", "--git-common-dir"],
+                           capture_output=True, text=True, timeout=60)
+    except (subprocess.SubprocessError, OSError):
+        return None
+    out = p.stdout.strip()
+    return (repo / out).resolve() if p.returncode == 0 and out else None
+
+
 def _unmeasured(review_id: str, into: str, feature: str, reason: str) -> tuple[int, dict]:
     """A local bind fault: nothing was transferred, and no member's remote state was measured."""
     return EXIT_PARTIAL, {"id": f"gr:{review_id}", "into": into, "feature": feature, "exit": EXIT_PARTIAL,
@@ -120,6 +131,11 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
             continue
         if _toplevel(repo) != repo:
             row["refused"] = f"member_repo_mismatch: {m['path']} is not its own git worktree"
+            continue
+        common = _common_dir(repo)
+        if common is None or not common.is_relative_to(root):
+            # gr2 members are independent clones; an object store outside the workspace is never written to.
+            row["refused"] = f"member_store_outside_workspace: {m['path']}"
             continue
         selected.add(m["key"])
         try:

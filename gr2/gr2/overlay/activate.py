@@ -15,6 +15,7 @@ from gr2.overlay.trust import (
     trust_config_path,
 )
 from gr2.overlay.types import OverlayRef
+from gr2.python_cli import gitops
 
 GRIP_DIR = ".grip"
 STACK_FILE = "overlay-stack.json"
@@ -187,10 +188,5 @@ def _load_managed_files(workspace_root: Path) -> dict[str, list[str]]:
 
 
 def _git_output(git_dir: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", f"--git-dir={git_dir}", *args],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    result = gitops.check(gitops.run_argv(["git", f"--git-dir={git_dir}", *args]))
     return result.stdout.strip()

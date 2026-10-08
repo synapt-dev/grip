@@ -201,7 +201,7 @@ def _is_local(location: str) -> bool:
 
 
 def _git_in(cwd: Path, *args: str, timeout: int = 600) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, timeout=timeout)
+    return gitops.run(cwd, *args, timeout=timeout, binary=True, raise_timeout=True)
 
 
 def probe_at_pin(repo_spec: dict, dest: Path, *, workspace_root: Path) -> Probe:

@@ -495,7 +495,7 @@ def _git_clone(repo_url: str, target: Path, *, branch: str, reference: Path | No
         # State isolation, not object duplication, is the invariant.
         command.extend(["--reference-if-able", str(reference)])
     command.extend(["--branch", branch, repo_url, str(target)])
-    proc = subprocess.run(command, capture_output=True, text=True, check=False)
+    proc = gitops.clone(*command[2:])
     if proc.returncode != 0:
         raise CloneExecutionError(
             f"failed to clone {repo_url} at branch {branch!r}:\n"
@@ -754,7 +754,7 @@ def _lane_clone(repo_url: str, target: Path, *, reference: Path | None) -> None:
     if reference is not None:
         command.extend(["--reference-if-able", str(reference)])
     command.extend([repo_url, str(target)])
-    proc = subprocess.run(command, capture_output=True, text=True, check=False)
+    proc = gitops.clone(*command[2:])
     if proc.returncode != 0:
         raise CloneExecutionError(
             f"failed to clone lane source {repo_url!r}:\n"

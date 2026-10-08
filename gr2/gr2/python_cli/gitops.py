@@ -9,7 +9,7 @@ _SSH_GITHUB_PREFIX = "git@github.com:"
 _HTTPS_GITHUB_PREFIX = "https://github.com/"
 
 
-class GitMissingError(Exception):
+class GitMissingError(FileNotFoundError):
     """The git executable is not on PATH (a fresh container without git). One
     sentence naming git replaces a traceback — or worse, a False answer that
     reads as 'this is not a git repository' on a machine that simply has no
@@ -45,8 +45,134 @@ def _effective_remote_url(url: str) -> str:
     return url
 
 
+# Every git call gr2 makes goes through run(): no auto maintenance (a background `git maintenance run --auto`
+# writes outside anything a caller checks or waits for), and a bound on how long it may take.
+NO_AUTO = ("-c", "maintenance.auto=false", "-c", "gc.auto=0")
+DEFAULT_TIMEOUT = 600.0
+
+
+class GitError(RuntimeError):
+    """A git command exited non-zero. Carries the return code and git's own message."""
+
+    def __init__(self, args: tuple[str, ...], returncode: int, stderr: str):
+        self.git_args, self.returncode, self.stderr = args, returncode, stderr
+        super().__init__(f"git {' '.join(args[:2])}: {stderr}".rstrip(": "))
+
+
+# Git's global options that take their value as the next word; `--opt=value` forms are one word.
+# Measured on git 2.50: each takes its value as the next word. `--exec-path` alone prints a path and exits.
+_GLOBAL_WITH_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--attr-source"}
+
+
+def command_of(argv) -> str | None:
+    """The git subcommand in a git argv, after git's own global options (`git -C x -c k=v clone ...` -> clone)."""
+    words = list(argv)[1:]
+    i = 0
+    while i < len(words) and words[i].startswith("-"):
+        i += 2 if words[i] in _GLOBAL_WITH_VALUE else 1
+    return words[i] if i < len(words) else None
+
+
+def _spawn(argv: list[str], *, cwd: Path | None, input, binary: bool, env: dict | None,
+           timeout: float | None, raise_timeout: bool) -> subprocess.CompletedProcess:
+    """The one place gr2 starts git: an expiry is rc 124 with empty output unless the caller asks for the raise.
+
+    A clone is never bounded, whichever helper asked for it: its duration scales with the repository."""
+    if command_of(argv) == "clone":
+        timeout = None
+    try:
+        return subprocess.run(argv, cwd=cwd, input=input, env=env, capture_output=True, text=not binary,
+                              check=False, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        if raise_timeout:
+            raise
+        note = f"git timed out after {timeout}s"
+        return subprocess.CompletedProcess(argv, 124, stdout=b"" if binary else "",
+                                           stderr=note.encode() if binary else note)
+    except FileNotFoundError as exc:
+        # The spawn itself failed because the git EXECUTABLE is absent (exc.filename == "git"). A nonexistent
+        # cwd raises FileNotFoundError naming the cwd, which is a different state and stays untouched.
+        if exc.filename == "git":
+            raise GitMissingError("git is not on PATH; install git, then run the verb again") from None
+        raise
+
+
+def run(
+    cwd: Path, *args: str, input: str | bytes | None = None, binary: bool = False,
+    env: dict | None = None, timeout: float | None = DEFAULT_TIMEOUT, via_cwd: bool = False,
+    raise_timeout: bool = False,
+) -> subprocess.CompletedProcess:
+    """Run one git command; never raises for a non-zero exit.
+
+    `via_cwd` runs in `cwd` (a missing directory raises FileNotFoundError naming it); otherwise `-C cwd`, so a
+    missing directory is git's own non-zero exit."""
+    argv = ["git", *NO_AUTO, *(() if via_cwd else ("-C", str(cwd))), *args]
+    return _spawn(argv, cwd=cwd if via_cwd else None, input=input, binary=binary, env=env, timeout=timeout,
+                  raise_timeout=raise_timeout)
+
+
+def run_argv(argv: list[str], *, cwd: Path | None = None, input: str | bytes | None = None, binary: bool = False,
+             env: dict | None = None, timeout: float | None = DEFAULT_TIMEOUT,
+             raise_timeout: bool = False) -> subprocess.CompletedProcess:
+    """For callers that build a git argv as a list: the same flags and bound as run(). argv[0] must be git."""
+    if not argv or argv[0] != "git":
+        raise ValueError("run_argv runs git only")
+    return _spawn(["git", *NO_AUTO, *argv[1:]], cwd=cwd, input=input, binary=binary, env=env, timeout=timeout,
+                  raise_timeout=raise_timeout)
+
+
+def clone(*args: str, cwd: Path | None = None, binary: bool = False, env: dict | None = None,
+          timeout: float | None = None) -> subprocess.CompletedProcess:
+    """`git clone <args>`: the one place gr2 clones. Unbounded by default, because a clone's
+    duration scales with the repository, not with anything gr2 controls."""
+    return run_argv(["git", "clone", *args], cwd=cwd, binary=binary, env=env, timeout=timeout)
+
+
+def logical_argv(argv) -> list[str]:
+    """`argv` without the shared no-auto flags: the git command as its caller wrote it (for tests and logs)."""
+    argv = list(argv)
+    if argv[:1] == ["git"] and argv[1:1 + len(NO_AUTO)] == list(NO_AUTO):
+        return ["git", *argv[1 + len(NO_AUTO):]]
+    return argv
+
+
+def check(proc: subprocess.CompletedProcess) -> subprocess.CompletedProcess:
+    """`check=True` for a run()/run_argv() result: raise CalledProcessError on a non-zero exit."""
+    if proc.returncode:
+        raise subprocess.CalledProcessError(proc.returncode, proc.args, proc.stdout, proc.stderr)
+    return proc
+
+
+def _raise(proc: subprocess.CompletedProcess, args: tuple[str, ...], error: type[Exception] | None) -> None:
+    if proc.returncode:
+        err = proc.stderr.decode("utf-8", errors="replace") if isinstance(proc.stderr, bytes) else proc.stderr
+        exc = GitError(args, proc.returncode, err.strip())
+        raise exc if error is None else error(str(exc))
+
+
+def out(cwd: Path, *args: str, error: type[Exception] | None = None, strip: bool = True, **kw) -> str:
+    """Text stdout of one git command; a non-zero exit raises GitError, or `error` when given."""
+    proc = run(cwd, *args, **kw)
+    _raise(proc, args, error)
+    return proc.stdout.strip() if strip else proc.stdout
+
+
+def out_bytes(cwd: Path, *args: str, error: type[Exception] | None = None, **kw) -> bytes:
+    """Raw stdout bytes of one git command (stdin may be bytes); a non-zero exit raises like out()."""
+    proc = run(cwd, *args, binary=True, **kw)
+    _raise(proc, args, error)
+    return proc.stdout
+
+
+def plain_remote(remote: str, error: type[Exception] = RuntimeError) -> str:
+    """A remote git would parse as an option (e.g. --upload-pack=...) never reaches a git argv."""
+    if not remote or remote.startswith("-"):
+        raise error("remote_option_shaped: refusing a remote that begins with '-'")
+    return remote
+
+
 def git(
-    cwd: Path, *args: str, timeout: float | None = None
+    cwd: Path, *args: str, timeout: float | None = DEFAULT_TIMEOUT
 ) -> subprocess.CompletedProcess[str]:
     """Run git. `timeout` bounds the call; an expiry is a FAILED result, not a raise.
 
@@ -58,31 +184,7 @@ def git(
     accepts and never replies blocks indefinitely, which is how a bound became
     necessary rather than nice.
     """
-    try:
-        return subprocess.run(
-            ["git", *args],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(
-            ["git", *args],
-            124,
-            stdout="",
-            stderr=f"git timed out after {timeout}s",
-        )
-    except FileNotFoundError as exc:
-        # The spawn itself failed because the git EXECUTABLE is absent
-        # (exc.filename == "git"). A nonexistent cwd raises FileNotFoundError
-        # naming the cwd, which is a different state and stays untouched.
-        if exc.filename == "git":
-            raise GitMissingError(
-                "git is not on PATH; install git, then run the verb again"
-            ) from None
-        raise
+    return run(cwd, *args, timeout=timeout, via_cwd=True)
 
 
 def is_git_repo(path: Path) -> bool:
@@ -325,24 +427,14 @@ def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | N
             raise SystemExit(f"repo cache path exists but is not a git dir: {cache_repo_root}")
 
         if effective_url != url:
-            remote_proc = subprocess.run(
-                ["git", "--git-dir", str(cache_repo_root), "remote", "set-url", "origin", effective_url],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+            remote_proc = run_argv(["git", "--git-dir", str(cache_repo_root), "remote", "set-url", "origin", effective_url])
             if remote_proc.returncode != 0:
                 raise SystemExit(
                     f"failed to repoint repo cache origin to {effective_url}:\n"
                     f"{remote_proc.stderr or remote_proc.stdout}"
                 )
 
-        proc = subprocess.run(
-            ["git", "--git-dir", str(cache_repo_root), "remote", "update", "--prune"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        proc = run_argv(["git", "--git-dir", str(cache_repo_root), "remote", "update", "--prune"])
         if proc.returncode != 0:
             raise SystemExit(f"failed to refresh repo cache {cache_repo_root}:\n{proc.stderr or proc.stdout}")
         return False
@@ -360,12 +452,7 @@ def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | N
     seed_source = str(local_source) if seed_from_local else effective_url
 
     cache_repo_root.parent.mkdir(parents=True, exist_ok=True)
-    proc = subprocess.run(
-        ["git", "clone", "--mirror", seed_source, str(cache_repo_root)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    proc = clone("--mirror", seed_source, str(cache_repo_root))
     if proc.returncode != 0:
         raise SystemExit(f"failed to seed repo cache {seed_source} -> {cache_repo_root}:\n{proc.stderr or proc.stdout}")
 
@@ -374,11 +461,8 @@ def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | N
         # later refresh (`remote update`), not necessarily the raw spec url --
         # an unreachable SSH url here would just move today's seed failure
         # to every future refresh instead.
-        remote_proc = subprocess.run(
+        remote_proc = run_argv(
             ["git", "--git-dir", str(cache_repo_root), "remote", "set-url", "origin", effective_url],
-            capture_output=True,
-            text=True,
-            check=False,
         )
         if remote_proc.returncode != 0:
             raise SystemExit(
@@ -400,11 +484,8 @@ def clone_repo(url: str, target_repo_root: Path, *, reference_repo_root: Path | 
     if target_repo_root.exists() and is_repo_root(target_repo_root):
         return False
     target_repo_root.parent.mkdir(parents=True, exist_ok=True)
-    command = ["git", "clone"]
-    if reference_repo_root is not None:
-        command.extend(["--reference-if-able", str(reference_repo_root)])
-    command.extend([url, str(target_repo_root)])
-    proc = subprocess.run(command, capture_output=True, text=True, check=False)
+    reference = ["--reference-if-able", str(reference_repo_root)] if reference_repo_root is not None else []
+    proc = clone(*reference, url, str(target_repo_root))
     if proc.returncode != 0:
         raise SystemExit(f"failed to clone {url} -> {target_repo_root}:\n{proc.stderr or proc.stdout}")
     return True
@@ -557,24 +638,14 @@ def probe_remote(url: str) -> tuple[bool, str]:
     own internal plan-building) to surface a refused remote as an ISSUE
     before ``sync run`` would hit it mid-operation."""
     effective_url = _effective_remote_url(url)
-    proc = subprocess.run(
-        ["git", "ls-remote", effective_url],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    proc = run_argv(["git", "ls-remote", effective_url])
     if proc.returncode == 0:
         return True, ""
     return False, (proc.stderr or proc.stdout).strip()
 
 
 def is_git_dir(path: Path) -> bool:
-    proc = subprocess.run(
-        ["git", "--git-dir", str(path), "rev-parse", "--is-bare-repository"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    proc = run_argv(["git", "--git-dir", str(path), "rev-parse", "--is-bare-repository"])
     return proc.returncode == 0 and proc.stdout.strip() == "true"
 
 

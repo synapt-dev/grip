@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from gr2.python_cli import check_records
+from gr2.python_cli import approval_schema, check_records
 
 # Package revisions identify the upstream copy; no new JSON encoding or runtime
 # descriptor validator is introduced by making these offline resources available.
@@ -65,5 +65,13 @@ COPIES = (
 @pytest.mark.parametrize("package,revision,name,expected", COPIES)
 def test_record_schema_copy_matches_upstream(package, revision, name, expected):
     root = Path(check_records.__file__).resolve().parent.parent / "schemas"
-    actual = hashlib.sha256((root / package / name).read_bytes()).hexdigest()
+    if package == approval_schema.PACKAGE:
+        raw = (
+            approval_schema.proto_bytes()
+            if name.endswith(".proto")
+            else approval_schema.descriptor_bytes()
+        )
+    else:
+        raw = (root / package / name).read_bytes()
+    actual = hashlib.sha256(raw).hexdigest()
     assert actual == expected, f"{package}@{revision}/{name}: {actual} != {expected}"

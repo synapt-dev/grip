@@ -8,7 +8,6 @@ import pytest
 
 from gr2.python_cli import check_records
 
-
 # Package revisions identify the upstream copy; no new JSON encoding or runtime
 # descriptor validator is introduced by making these offline resources available.
 COPIES = (

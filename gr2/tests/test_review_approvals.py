@@ -79,7 +79,7 @@ def test_default_approve_counts_two_names_and_refuses_the_author(world):
         git(workspace, "config", "user.name", name)
         result = runner.invoke(app, ["review", "approve"])
         assert result.exit_code == 0, result.output
-        receipt = json.loads(result.output)
+        receipt = json.loads(result.stdout)
         assert receipt["count"] == count, receipt
         assert receipt["signed"] is False
     observed = approvals.count_approvals(workspace, rid)
@@ -95,14 +95,14 @@ def test_default_merge_reads_workspace_policy_and_counts_two_approvers(world):
     set_policy(world, 2)
     assert approve_as(world, "Approver B").exit_code == 0
     insufficient = runner.invoke(app, ["review", "merge"])
-    receipt = json.loads(insufficient.output)
+    receipt = json.loads(insufficient.stdout)
     assert insufficient.exit_code == 3, insufficient.output
     assert receipt["members"][0]["refused"].startswith("approvals_insufficient")
     assert receipt["approvals"]["count"] == 1 and receipt["approvals"]["required"] == 2
     assert git(world["remote"], "rev-parse", "main") == world["base"]
     assert approve_as(world, "Approver C").exit_code == 0
     merged = runner.invoke(app, ["review", "merge"])
-    receipt = json.loads(merged.output)
+    receipt = json.loads(merged.stdout)
     assert merged.exit_code == 0, merged.output
     assert receipt["approvals"]["count"] == 2 and receipt["approvals"]["required"] == 2
     assert {link["approver"] for link in receipt["approvals"]["links"]} == {"Approver B", "Approver C"}
@@ -114,10 +114,10 @@ def test_duplicate_approver_counts_once_and_cannot_satisfy_two(world):
     for _ in range(2):
         result = approve_as(world, "Approver B")
         assert result.exit_code == 0, result.output
-        assert json.loads(result.output)["count"] == 1
+        assert json.loads(result.stdout)["count"] == 1
     merged = runner.invoke(app, ["review", "merge"])
     assert merged.exit_code == 3, merged.output
-    assert json.loads(merged.output)["members"][0]["refused"].startswith("approvals_insufficient")
+    assert json.loads(merged.stdout)["members"][0]["refused"].startswith("approvals_insufficient")
     assert git(world["remote"], "rev-parse", "main") == world["base"]
 
 
@@ -125,7 +125,7 @@ def test_broken_prev_refuses_without_moving_target(world):
     set_policy(world, 1)
     result = approve_as(world, "Approver B")
     assert result.exit_code == 0, result.output
-    tip = json.loads(result.output)["tip"]
+    tip = json.loads(result.stdout)["tip"]
     record = json.loads(git(world["remote"], "show", tip + ":approval.json"))
     record["prev"] = "0" * 64
     blob = approvals._git(world["workspace"], "hash-object", "-w", "--stdin", data=approvals.canonical(record))
@@ -135,7 +135,7 @@ def test_broken_prev_refuses_without_moving_target(world):
     git(world["workspace"], "push", "--force", world["remote"], damaged + ":" + ref)
     merged = runner.invoke(app, ["review", "merge"])
     assert merged.exit_code == 3, merged.output
-    assert json.loads(merged.output)["members"][0]["refused"].startswith("approval_chain_broken: prev")
+    assert json.loads(merged.stdout)["members"][0]["refused"].startswith("approval_chain_broken: prev")
     assert git(world["remote"], "rev-parse", "main") == world["base"]
 
 
@@ -149,10 +149,10 @@ def test_moved_head_cannot_reuse_the_old_chain(world):
     git(world["member"], "commit", "-m", "moved")
     git(world["member"], "push", world["remote"], "feature")
     default = runner.invoke(app, ["review", "merge"])
-    assert default.exit_code == 4 and "approval_bind_not_unique" in default.output
+    assert default.exit_code == 3 and "review_ambiguous" in default.output, default.output
     explicit = runner.invoke(app, ["review", "merge", "gr:" + world["rid"]])
     assert explicit.exit_code == 3, explicit.output
-    assert json.loads(explicit.output)["members"][0]["refused"].startswith("feature_moved")
+    assert json.loads(explicit.stdout)["members"][0]["refused"].startswith("feature_moved")
     assert git(world["remote"], "rev-parse", "main") == world["base"]
     assert git(world["remote"], "rev-parse", approvals.PREFIX + world["rid"]) == old
 
@@ -280,20 +280,20 @@ def test_divergent_remote_tips_refuse_and_approve_repairs_a_linear_partial(multi
     set_policy(multi, 1)
     result = approve_as(multi, "Approver B")
     assert result.exit_code == 0, result.output
-    tip = json.loads(result.output)["tip"]
+    tip = json.loads(result.stdout)["tip"]
     ref = approvals.PREFIX + multi["rid"]
     beta = multi["members"]["beta"]["remote"]
     git(beta, "update-ref", "-d", ref)
     before = {str(m["remote"]): git(m["remote"], "rev-parse", "main") for m in multi["members"].values()}
     merged = runner.invoke(app, ["review", "merge"])
     assert merged.exit_code == 3, merged.output
-    receipt = json.loads(merged.output)
+    receipt = json.loads(merged.stdout)
     assert all(row["refused"].startswith("approval_chain_divergent") for row in receipt["members"])
     assert str(beta) in merged.output and str(multi["remote"]) in merged.output
     assert before == {str(m["remote"]): git(m["remote"], "rev-parse", "main") for m in multi["members"].values()}
     repaired = approve_as(multi, "Approver C")
     assert repaired.exit_code == 0, repaired.output
-    receipt = json.loads(repaired.output)
+    receipt = json.loads(repaired.stdout)
     assert receipt["count"] == 2
     for m in multi["members"].values():
         assert git(m["remote"], "rev-parse", ref) == receipt["tip"]
@@ -310,7 +310,7 @@ def _write_link(world, record, parent):
 def test_forked_remote_tips_refuse_without_overwriting_either(multi):
     made = approve_as(multi, "Approver B")
     assert made.exit_code == 0, made.output
-    tip = json.loads(made.output)["tip"]
+    tip = json.loads(made.stdout)["tip"]
     previous = json.loads(git(multi["workspace"], "show", tip + ":approval.json"))
     ref = approvals.PREFIX + multi["rid"]
     forks = {}
@@ -327,7 +327,7 @@ def test_forked_remote_tips_refuse_without_overwriting_either(multi):
 def test_lease_race_refuses_then_a_fresh_attempt_appends(world, monkeypatch):
     made = approve_as(world, "Approver B")
     assert made.exit_code == 0, made.output
-    tip = json.loads(made.output)["tip"]
+    tip = json.loads(made.stdout)["tip"]
     previous = json.loads(git(world["workspace"], "show", tip + ":approval.json"))
     record = {**previous, "approver": {"name": "Racing C", "key_id": ""}, "prev": approvals.digest(previous)}
     competitor = _write_link(world, record, tip)
@@ -343,7 +343,7 @@ def test_lease_race_refuses_then_a_fresh_attempt_appends(world, monkeypatch):
     assert refused.exit_code == 2, refused.output
     assert git(world["remote"], "rev-parse", ref) == competitor
     retried = approve_as(world, "Approver D")
-    assert retried.exit_code == 0 and json.loads(retried.output)["count"] == 3, retried.output
+    assert retried.exit_code == 0 and json.loads(retried.stdout)["count"] == 3, retried.output
     assert git(world["remote"], "rev-parse", ref + "~1") == competitor
 
 
@@ -467,21 +467,23 @@ def test_tip_fetch_must_match_its_advertisement(monkeypatch):
 
 
 def test_reader_rejects_nested_member_paths(monkeypatch, tmp_path):
-    from gr2.python_cli import merge_gate
+    from gr2.python_cli import defaults
+    (tmp_path / "nested").mkdir()
     monkeypatch.setattr(approvals, "_git", lambda repo, *args, **kwargs: "a" * 40 if args[0] == "for-each-ref" else "b" * 40)
     monkeypatch.setattr(approvals.grip, "show_review_commit", lambda *args: {"members": [{"path": "nested", "head": "b" * 40}]})
-    monkeypatch.setattr(merge_gate, "_toplevel", lambda path: tmp_path)
+    monkeypatch.setattr(defaults, "_git", lambda path, *args: str(tmp_path) if args[-1] == "--show-toplevel" else "b" * 40)
     with pytest.raises(approvals.ApprovalRefused, match="approval_bind_not_unique"):
         approvals.current_review(tmp_path)
 
 
 def test_reader_refuses_several_matching_binds(monkeypatch, tmp_path):
-    from gr2.python_cli import merge_gate
+    from gr2.python_cli import defaults
     def read(repo, *args, **kwargs):
         return "a" * 40 + "\n" + "c" * 40 if args[0] == "for-each-ref" else "b" * 40
     monkeypatch.setattr(approvals, "_git", read)
     monkeypatch.setattr(approvals.grip, "show_review_commit", lambda *args: {"members": [{"path": "member", "head": "b" * 40}]})
-    monkeypatch.setattr(merge_gate, "_toplevel", lambda path: path)
+    (tmp_path / "member").mkdir()
+    monkeypatch.setattr(defaults, "_git", lambda path, *args: str(path) if args[-1] == "--show-toplevel" else "b" * 40)
     with pytest.raises(approvals.ApprovalRefused, match="approval_bind_not_unique"):
         approvals.current_review(tmp_path)
 
@@ -528,13 +530,13 @@ def test_first_prev_hashes_full_bind_with_bytes_and_nested_unknowns(world):
     expected_hash = hashlib.sha256(json.dumps(expected, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
     approved = approve_as(world, "Approver B")
     assert approved.exit_code == 0, approved.output
-    tip = json.loads(approved.output)["tip"]
+    tip = json.loads(approved.stdout)["tip"]
     first = json.loads(git(world["remote"], "show", tip + ":approval.json"))
     assert first["prev"] == expected_hash
     assert first["prev"] != approvals.digest(approvals._context(workspace, rid)[0])
     second = approve_as(world, "Approver C")
     assert second.exit_code == 0, second.output
-    last = json.loads(git(world["remote"], "show", json.loads(second.output)["tip"] + ":approval.json"))
+    last = json.loads(git(world["remote"], "show", json.loads(second.stdout)["tip"] + ":approval.json"))
     assert last["prev"] == approvals.digest(first)
 
 
@@ -563,18 +565,22 @@ def test_context_refuses_a_head_tree_mismatch(monkeypatch, tmp_path):
 
 
 def test_branch_resolver_refuses_nested_member(monkeypatch, tmp_path):
-    merge_gate = _mock_context(monkeypatch, tmp_path)
-    monkeypatch.setattr(merge_gate, "_toplevel", lambda path: tmp_path)
-    with pytest.raises(approvals.ApprovalRefused, match="approval_member_repo_mismatch"):
-        approvals.current_branch(tmp_path, "a" * 40)
+    from gr2.python_cli import defaults
+    nested = tmp_path / "member"
+    nested.mkdir()
+    monkeypatch.setattr(defaults, "_git", lambda path, *args: str(tmp_path) if args[-1] == "--show-toplevel" else "feature")
+    with pytest.raises(defaults.Unresolved, match="feature_unresolved"):
+        defaults.branch([nested], None)
 
 
 def test_branch_resolver_refuses_different_member_branches(monkeypatch, tmp_path):
-    _mock_context(monkeypatch, tmp_path)
-    monkeypatch.setattr(approvals.grip, "show_review_commit", lambda *args: {"members": [{"path": "alpha"}, {"path": "beta"}]})
-    monkeypatch.setattr(approvals, "_git", lambda repo, *args, **kwargs: repo.name)
-    with pytest.raises(approvals.ApprovalRefused, match="feature_unresolved"):
-        approvals.current_branch(tmp_path, "a" * 40)
+    from gr2.python_cli import defaults
+    repos = [tmp_path / "alpha", tmp_path / "beta"]
+    for repo in repos:
+        repo.mkdir()
+    monkeypatch.setattr(defaults, "_git", lambda path, *args: str(path) if args[-1] == "--show-toplevel" else path.name)
+    with pytest.raises(defaults.Unresolved, match="feature_unresolved"):
+        defaults.branch(repos, None)
 
 
 def test_reconcile_refuses_a_changed_post_publish_measurement(monkeypatch):
@@ -599,7 +605,7 @@ def test_missing_approver_refuses_before_remote_measurement(monkeypatch):
 def test_reconcile_lease_keeps_a_racing_remote_link(multi, monkeypatch):
     made = approve_as(multi, "Approver B")
     assert made.exit_code == 0, made.output
-    tip = json.loads(made.output)["tip"]
+    tip = json.loads(made.stdout)["tip"]
     previous = json.loads(git(multi["workspace"], "show", tip + ":approval.json"))
     record = {**previous, "approver": {"name": "Racing C", "key_id": ""}, "prev": approvals.digest(previous)}
     competitor = _write_link(multi, record, tip)
@@ -623,7 +629,7 @@ def test_cli_count_cannot_lower_workspace_policy(world):
     set_policy(world, 2)
     result = runner.invoke(app, ["review", "merge", "--approvals", "0"])
     assert result.exit_code == 3, result.output
-    receipt = json.loads(result.output)
+    receipt = json.loads(result.stdout)
     assert receipt["approvals"]["required"] == 2 and receipt["approvals"]["count"] == 0
     assert receipt["members"][0]["refused"].startswith("approvals_insufficient")
     assert git(world["remote"], "rev-parse", "main") == world["base"]
@@ -639,7 +645,7 @@ def test_zero_required_skips_an_unmeasurable_approval_chain(world, monkeypatch):
     result = runner.invoke(app, ["review", "merge"])
     assert result.exit_code == 0, result.output
     assert calls == []
-    assert json.loads(result.output)["approvals"] == {"required": 0, "skipped": True}
+    assert json.loads(result.stdout)["approvals"] == {"required": 0, "skipped": True}
     assert git(world["remote"], "rev-list", "--parents", "-n", "1", "main").split()[1:] == [world["base"], world["head"]]
 
 
@@ -652,7 +658,7 @@ def test_positive_required_read_failure_is_not_skipped(world, monkeypatch):
     monkeypatch.setattr(approvals, "count_approvals", unmeasurable)
     result = runner.invoke(app, ["review", "merge"])
     assert result.exit_code == 3, result.output
-    receipt = json.loads(result.output)
+    receipt = json.loads(result.stdout)
     assert len(calls) == 1
     assert receipt["approvals"] == {"required": 2}
     assert receipt["members"][0]["refused"].startswith("approval_unmeasurable")
@@ -675,7 +681,7 @@ def test_approve_uses_workspace_identity_from_a_member_cwd(world, monkeypatch):
     monkeypatch.chdir(world["member"])
     result = runner.invoke(app, ["review", "approve"])
     assert result.exit_code == 0, result.output
-    receipt = json.loads(result.output)
+    receipt = json.loads(result.stdout)
     assert receipt["links"][0]["approver"] == "Workspace B"
     record = json.loads(git(world["remote"], "show", receipt["tip"] + ":approval.json"))
     assert record["approver"]["name"] == "Workspace B"
@@ -686,3 +692,27 @@ def test_invalid_requested_count_refuses(tmp_path, given):
     (tmp_path / "grip.toml").write_text("[approvals]\nrequired=2\n")
     with pytest.raises(approvals.ApprovalRefused, match="requested count"):
         approvals.required_approvals(tmp_path, given)
+
+
+def test_default_approve_skips_an_unreadable_bind(world):
+    blob = approvals._git(world["workspace"], "hash-object", "-w", "--stdin", data="unreadable bind")
+    git(world["workspace"], "update-ref", "refs/dev.synapt.grip/__reviews__/v1/unreadable", blob)
+    result = approve_as(world, "Approver B")
+    assert result.exit_code == 0, result.output
+    receipt = json.loads(result.stdout)
+    assert receipt["review_id"] == "gr:" + world["rid"]
+    assert receipt["count"] == 1
+
+
+def test_merge_defaults_keep_explicit_flags_with_approval_floor(world):
+    set_policy(world, 1)
+    assert approve_as(world, "Approver B").exit_code == 0
+    git(world["member"], "checkout", "--detach", world["head"])
+    result = runner.invoke(app, ["review", "merge", "gr:" + world["rid"],
+                                 "--from", "feature", "--into", "main", "--approvals", "0"])
+    assert result.exit_code == 0, result.output
+    receipt = json.loads(result.stdout)
+    assert receipt["feature"] == "feature" and receipt["into"] == "main"
+    assert receipt["approvals"]["required"] == 1 and receipt["approvals"]["count"] == 1
+    assert "(given)" in result.stderr
+    assert git(world["remote"], "rev-parse", "main^2") == world["head"]

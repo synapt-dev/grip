@@ -65,20 +65,23 @@ def _bind_record(workspace: Path, rid: str) -> dict:
 
 
 def current_review(workspace: Path) -> str:
-    """Temporary exact-current-head resolver; never pick the most recent bind."""
+    """Use the shared exact-current-head resolver for the default approval bind."""
+    from . import defaults
+    root = workspace.resolve()
     refs = _git(workspace, "for-each-ref", "--format=%(objectname)", "refs/dev.synapt.grip/__reviews__/")
-    hits = []
-    for commit in sorted(set(refs.splitlines())):
+
+    def members_of(commit):
         view = grip.show_review_commit(workspace, commit)
-        from . import merge_gate
-        root = workspace.resolve()
-        if all((repo := (root / m["path"]).resolve()).is_relative_to(root)
-               and merge_gate._toplevel(repo) == repo
-               and _git(repo, "rev-parse", "HEAD") == m["head"] for m in view["members"]):
-            hits.append(commit)
-    if len(hits) != 1:
-        raise ApprovalRefused(f"approval_bind_not_unique: {len(hits)} binds match the current member heads")
-    return hits[0]
+        members = [(root / m["path"], m["head"]) for m in view["members"]]
+        if any(not path.resolve().is_relative_to(root) for path, _ in members):
+            raise ApprovalRefused("approval_member_repo_mismatch")
+        return members
+
+    try:
+        rid, _ = defaults.review(sorted(set(refs.splitlines())), members_of, defaults.current_head)
+        return rid
+    except defaults.Unresolved as exc:
+        raise ApprovalRefused(f"approval_bind_not_unique: {exc}") from exc
 
 
 def required_approvals(workspace: Path, given: int | None = None) -> int:
@@ -101,23 +104,6 @@ def required_approvals(workspace: Path, given: int | None = None) -> int:
     if given is not None and (type(given) is not int or given < 0):
         raise ApprovalRefused("approval_policy_invalid: requested count must be a nonnegative integer")
     return max(required, given or 0)
-
-
-def current_branch(workspace: Path, review_id: str) -> str:
-    """Temporary branch resolver until the shared defaults module lands."""
-    from . import merge_gate
-    view = grip.show_review_commit(workspace, review_id.removeprefix("gr:"))
-    names = set()
-    root = workspace.resolve()
-    for m in view["members"]:
-        repo = (root / m["path"]).resolve()
-        if not repo.is_relative_to(root) or merge_gate._toplevel(repo) != repo:
-            raise ApprovalRefused("approval_member_repo_mismatch")
-        name = _git(repo, "symbolic-ref", "--quiet", "--short", "HEAD")
-        names.add(name)
-    if len(names) != 1:
-        raise ApprovalRefused("feature_unresolved: pass --from when members are on different branches")
-    return names.pop()
 
 
 def _context(workspace: Path, review_id: str) -> tuple[dict, set[str]]:

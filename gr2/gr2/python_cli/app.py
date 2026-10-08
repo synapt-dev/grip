@@ -4499,7 +4499,7 @@ def review_merge(
     into: Optional[str] = typer.Option(None, "--into", help="Target branch; default: the remote's default branch when it is the one branch at the reviewed base"),
     feature: Optional[str] = typer.Option(None, "--from", help="Feature branch; default: the members' current branch"),
     check: List[str] = typer.Option(["test"], "--check", help="Required exact-head check name (repeatable)"),
-    approval_count: Optional[int] = typer.Option(None, "--approvals", help="Required distinct approvers, default is workspace approvals.required or 0"),
+    approval_count: Optional[int] = typer.Option(None, "--approvals", help="Required distinct approvers; may raise the workspace approvals.required floor, default 0"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Merge a bound review into plain Git remotes: preflight every member, push nothing if any member fails it.

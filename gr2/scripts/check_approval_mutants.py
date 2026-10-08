@@ -24,8 +24,8 @@ GUARDS = [
     ("merge_quorum", "review_merge", 'if approval_receipt["count"] < required:', "if False:", "test_default_merge_reads_workspace_policy_and_counts_two_approvers"),
     ("member_repo", "_context", "if not repo.is_relative_to(root) or merge_gate._toplevel(repo) != repo or not merge_gate._store_inside(repo, root):", "if False:", "test_context_refuses_member_that_is_not_its_own_repo"),
     ("head_tree", "_context", "if actual_tree != tree:", "if False:", "test_context_refuses_a_head_tree_mismatch"),
-    ("branch_repo", "current_branch", "if not repo.is_relative_to(root) or merge_gate._toplevel(repo) != repo:", "if False:", "test_branch_resolver_refuses_nested_member"),
-    ("branch_unique", "current_branch", "if len(names) != 1:", "if False:", "test_branch_resolver_refuses_different_member_branches"),
+    ("branch_repo", "branch", "if own_repo(r) else None", "if True else None", "test_branch_resolver_refuses_nested_member"),
+    ("branch_unique", "branch", "if None in found or len(found) != 1:", "if False:", "test_branch_resolver_refuses_different_member_branches"),
     ("reconcile_stability", "_reconcile", "if set(measured.values()) != {tip}:", "if False:", "test_reconcile_refuses_a_changed_post_publish_measurement"),
     ("writer_identity", "approve", "if not name.strip():", "if False:", "test_missing_approver_refuses_before_remote_measurement"),
     ("reconcile_lease", "_reconcile", 'f"--force-with-lease={ref}:{old or \'\'}"', '"--force"', "test_reconcile_lease_keeps_a_racing_remote_link"),
@@ -40,7 +40,7 @@ GUARDS = [
     ("policy_integer", "required_approvals", "if type(required) is not int or required < 0:", "if False:", "test_invalid_or_signed_policy_refuses"),
     ("policy_signed_type", "required_approvals", 'if "require_signed" in policy and type(policy["require_signed"]) is not bool:', "if False:", "test_invalid_or_signed_policy_refuses"),
     ("policy_signed", "required_approvals", 'if policy.get("require_signed"):', "if False:", "test_invalid_or_signed_policy_refuses"),
-    ("unique_current_bind", "current_review", "if len(hits) != 1:", "if False:", "test_reader_refuses_several_matching_binds"),
+    ("unique_current_bind", "review", "if len(matches) == 1:", "if len(matches) >= 1:", "test_reader_refuses_several_matching_binds"),
     ("remote_option", "_remote_tips", 'if remote.startswith("-") or any(ord(c) < 32 or ord(c) == 127 for c in remote):', "if False:", "test_option_shaped_remote_stops_before_git"),
     ("remote_multiple", "_remote_tips", "if len(hits) > 1:", "if False:", "test_duplicate_remote_advertisement_refuses"),
     ("remote_fetch_identity", "_remote_tips", 'if _git(workspace, "rev-parse", temporary) != tip:', "if False:", "test_tip_fetch_must_match_its_advertisement"),
@@ -94,7 +94,7 @@ def main():
     subject = root / "gr2/python_cli/approvals.py"
     source = subject.read_text()
     before = hashlib.sha256(subject.read_bytes()).hexdigest()
-    subjects = {name: root / ("gr2/python_cli/" + name + ".py") for name in ("approvals", "merge_gate")}
+    subjects = {name: root / ("gr2/python_cli/" + name + ".py") for name in ("approvals", "merge_gate", "defaults")}
     source_hashes = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in subjects.items()}
     env = {**os.environ, "PYTHONPATH": str(root) + os.pathsep + os.environ.get("PYTHONPATH", "")}
     env.pop("APPROVAL_MUTATION", None)
@@ -109,7 +109,7 @@ def main():
         for ident, function, target, replacement, test in GUARDS:
             if args.only and ident != args.only:
                 continue
-            module = "merge_gate" if function == "review_merge" else "approvals"
+            module = "merge_gate" if function == "review_merge" else "defaults" if function in {"branch", "review"} else "approvals"
             candidate_source = subjects[module].read_text()
             node = next(n for n in ast.parse(candidate_source).body if isinstance(n, ast.FunctionDef) and n.name == function)
             part = "".join(candidate_source.splitlines(keepends=True)[node.lineno-1:node.end_lineno])

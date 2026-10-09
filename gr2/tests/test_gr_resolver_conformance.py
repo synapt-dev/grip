@@ -214,8 +214,11 @@ def test_the_package_installs_gr_as_this_resolver() -> None:
 
 
 def test_the_launcher_runs_the_gr2_this_test_imported(tmp_path) -> None:
-    """The rows mean nothing if the launched resolver is another installed gr2: compare the two import paths."""
+    """The rows mean nothing if the launched resolver is another installed gr2: the real launcher must carry the
+    pinning line, and that line must import the module this test imported."""
     import gr2.python_cli.gr_resolver as module
+
+    assert _PRELUDE in _launcher(tmp_path, "gr").read_text(), "the launcher does not pin the imported gr2"
 
     probe = subprocess.run(
         [sys.executable, "-I", "-c", _PRELUDE + "import gr2.python_cli.gr_resolver as m; print(m.__file__)"],

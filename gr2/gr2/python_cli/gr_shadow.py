@@ -30,7 +30,8 @@ def _gr1_version(gr: str):
     """(major, minor, text) when `gr --version` reads `gr X.Y.Z`; None for any other answer; _TIMEOUT for none."""
     env = {k: v for k, v in os.environ.items() if k != "GR_RESOLVED"}
     try:
-        out = subprocess.run([gr, "--version"], capture_output=True, text=True, timeout=2, env=env).stdout
+        out = subprocess.run([gr, "--version"], capture_output=True, text=True, timeout=2, env=env,
+                             stdin=subprocess.DEVNULL).stdout
     except subprocess.TimeoutExpired:
         return _TIMEOUT
     except (OSError, subprocess.SubprocessError):

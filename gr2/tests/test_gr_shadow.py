@@ -123,3 +123,23 @@ def test_a_gr_replaced_in_place_is_judged_again(install):
     _stub(brew, "gr", "gr 1.5.1")  # same path, as `cargo install` overwrites it
     os.utime(gr, ns=(time.time_ns(), time.time_ns()))
     assert shadow_line([], str(gr2), str(prefix)) is not None
+
+
+def test_the_version_check_does_not_hand_the_callers_stdin_to_another_gr(install, tmp_path):
+    prefix, gr2, brew = install
+    seen = tmp_path / "seen"
+    brew.mkdir(parents=True, exist_ok=True)
+    (brew / "gr").write_text(f"#!/bin/sh\ncat > '{seen}'\necho 'gr 1.5.2'\n")
+    (brew / "gr").chmod(0o755)
+    read, write = os.pipe()
+    os.write(write, b"the caller's input\n")
+    os.close(write)
+    saved = os.dup(0)
+    os.dup2(read, 0)
+    try:
+        assert shadow_line([], str(gr2), str(prefix)) is not None
+    finally:
+        os.dup2(saved, 0)
+        os.close(saved)
+        os.close(read)
+    assert seen.read_text() == "", "the version check passed the caller's stdin to another gr"

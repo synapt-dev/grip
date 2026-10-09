@@ -57,6 +57,17 @@ def resolve(cwd: Path) -> tuple[str, str, str]:
         d = d.parent
 
 
+def _exec(path: str, argv: list[str], env: dict[str, str]) -> int:
+    """Run the chosen half in place of this process. On Windows `os.execve` starts a new process and this one exits
+    at once with 0, losing the half's exit code, so there the half runs as a child and its code is returned."""
+    if os.name == "nt":
+        import subprocess
+
+        return subprocess.run([path, *argv[1:]], env=env).returncode
+    os.execve(path, argv, env)
+    return 0  # unreachable: execve replaces the process
+
+
 class _FoundSelf(Exception):
     """The only executable under a half's name is this resolver: running it would resolve again, forever."""
 
@@ -102,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
         if not found_own:
             print(f"gr: this needs {invoked_as}, which is not installed", file=sys.stderr)
             return EXIT_MISSING_HALF
-        os.execve(found_own, [invoked_as, *args], dict(os.environ))
+        return _exec(found_own, [invoked_as, *args], dict(os.environ))
     resolved = os.environ.get("GR_RESOLVED")
     if resolved:
         print(f"gr: refusing to resolve twice (GR_RESOLVED={resolved})", file=sys.stderr)
@@ -129,8 +140,7 @@ def main(argv: list[str] | None = None) -> int:
     if not found:
         print(GR1_MISSING if kind == "gr1" else f"gr: this needs {kind}, which is not installed", file=sys.stderr)
         return EXIT_MISSING_HALF
-    os.execve(found, [kind, *args], {**os.environ, "GR_RESOLVED": kind})
-    return 0  # unreachable: execve replaces the process
+    return _exec(found, [kind, *args], {**os.environ, "GR_RESOLVED": kind})
 
 
 if __name__ == "__main__":

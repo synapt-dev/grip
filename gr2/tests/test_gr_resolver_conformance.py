@@ -25,6 +25,18 @@ STUB = (
 )
 
 
+def _package_root() -> str:
+    """The directory holding the gr2 package this test imported: `-I` drops PYTHONPATH, so without this the launcher
+    would run whatever gr2 the interpreter has installed while the test printed the candidate's path."""
+    import gr2.python_cli
+
+    return str(Path(gr2.python_cli.__file__).resolve().parents[2])
+
+
+_PACKAGE_ROOT = _package_root()
+_PRELUDE = f"import sys; sys.path.insert(0, {_PACKAGE_ROOT!r}); "  # the launcher and its witness share this line
+
+
 def _launcher(directory: Path, name: str) -> Path:
     """A script that runs the resolver module in a new process under the given command name.
 
@@ -38,7 +50,7 @@ def _launcher(directory: Path, name: str) -> Path:
     script = directory / name
     script.write_text(
         "#!/bin/sh\n"
-        f'exec "{sys.executable}" -I -c "import sys; sys.argv[0]=\'{script}\'; '
+        f'exec "{sys.executable}" -I -c "{_PRELUDE}sys.argv[0]=\'{script}\'; '
         'from gr2.python_cli.gr_resolver import main; sys.exit(main())" "$@"\n'
     )
     script.chmod(0o755)
@@ -199,3 +211,33 @@ def test_the_package_installs_gr_as_this_resolver() -> None:
     """The PyPI package installs `gr`, and it is this resolver: gr2 is the default where no gr1 workspace is."""
     scripts = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text())["project"]["scripts"]
     assert scripts.get("gr") == "gr2.python_cli.gr_resolver:main", scripts
+
+
+def test_the_launcher_runs_the_gr2_this_test_imported(tmp_path) -> None:
+    """The rows mean nothing if the launched resolver is another installed gr2: compare the two import paths."""
+    import gr2.python_cli.gr_resolver as module
+
+    probe = subprocess.run(
+        [sys.executable, "-I", "-c", _PRELUDE + "import gr2.python_cli.gr_resolver as m; print(m.__file__)"],
+        cwd=tmp_path, capture_output=True, text=True, check=True)
+    assert os.path.realpath(probe.stdout.strip()) == os.path.realpath(module.__file__)
+
+
+def test_on_windows_the_half_runs_as_a_child_and_its_exit_code_returns(monkeypatch) -> None:
+    """os.execve on Windows starts a new process and exits this one with 0; the half's code must come back."""
+    import gr2.python_cli.gr_resolver as module
+
+    calls = []
+
+    class Done:
+        returncode = 7
+
+    def fake_run(cmd, env):
+        calls.append((cmd, env.get("GR_RESOLVED")))
+        return Done()
+
+    monkeypatch.setattr(module.os, "name", "nt")
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(module.os, "execve", lambda *a: (_ for _ in ()).throw(AssertionError("execve on Windows")))
+    assert module._exec("C:/bin/gr2.exe", ["gr2", "status"], {"GR_RESOLVED": "gr2"}) == 7
+    assert calls == [(["C:/bin/gr2.exe", "status"], "gr2")]

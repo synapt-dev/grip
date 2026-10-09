@@ -6,7 +6,8 @@ it comes first on PATH, `gr` runs gr1 everywhere, outside any workspace too, and
 
 The line prints at most once per install: the judged `gr` is recorded in the install's own prefix, and a `gr` that was
 already judged is not judged again. A prefix that cannot be written prints nothing, because a line that could not be
-recorded would print on every run. It never prints under `--json`.
+recorded would print on every run (the record is written before `gr --version` is read for the same reason: an
+unwritable prefix would otherwise run that check on every command). It never prints under `--json`.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ def _gr1_version(gr: str) -> tuple[int, int, str] | None:
     """(major, minor, text) when `gr --version` reads `gr X.Y.Z`; None for anything else."""
     env = {k: v for k, v in os.environ.items() if k != "GR_RESOLVED"}
     try:
-        out = subprocess.run([gr, "--version"], capture_output=True, text=True, timeout=5, env=env).stdout
+        out = subprocess.run([gr, "--version"], capture_output=True, text=True, timeout=2, env=env).stdout
     except (OSError, subprocess.SubprocessError):
         return None
     m = re.match(r"gr (\d+)\.(\d+)\.\S+", out.strip())

@@ -41,12 +41,19 @@ pub fn pipe_command(executable: &Path, log: &Path) -> io::Result<String> {
         format!("'{}'", value.replace('\'', "'\\''"))
     }
     fn path(path: &Path) -> io::Result<String> {
-        let value = path
-            .to_str()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "pane capture path is not UTF-8"))?;
+        let value = path.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "pane capture path is not UTF-8",
+            )
+        })?;
         Ok(quote(value))
     }
-    let worker = format!("exec -a gr1 {} {INTERNAL_ARG} {}", path(executable)?, path(log)?);
+    let worker = format!(
+        "exec -a gr1 {} {INTERNAL_ARG} {}",
+        path(executable)?,
+        path(log)?
+    );
     Ok(format!("bash -c {}", quote(&worker)))
 }
 
@@ -95,7 +102,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("output.log");
         std::fs::write(&path, b"prefix").unwrap();
-        assert_eq!(capture(&mut Cursor::new(b"abcdefghij"), &path, 10).unwrap(), 4);
+        assert_eq!(
+            capture(&mut Cursor::new(b"abcdefghij"), &path, 10).unwrap(),
+            4
+        );
         assert_eq!(std::fs::read(&path).unwrap(), b"prefixabcd");
         let mut next = Cursor::new(b"more spinner output");
         assert_eq!(capture(&mut next, &path, 10).unwrap(), 0);
@@ -133,7 +143,7 @@ mod tests {
         struct Broken;
         impl Read for Broken {
             fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
-                Err(io::Error::new(io::ErrorKind::Other, "input failed"))
+                Err(io::Error::other("input failed"))
             }
         }
         let dir = tempfile::tempdir().unwrap();
@@ -146,6 +156,11 @@ mod tests {
     fn unusable_destination_refuses() {
         let dir = tempfile::tempdir().unwrap();
         assert!(capture(&mut Cursor::new(b"x"), dir.path(), 10).is_err());
-        assert!(capture(&mut Cursor::new(b"x"), &dir.path().join("missing/output.log"), 10).is_err());
+        assert!(capture(
+            &mut Cursor::new(b"x"),
+            &dir.path().join("missing/output.log"),
+            10
+        )
+        .is_err());
     }
 }

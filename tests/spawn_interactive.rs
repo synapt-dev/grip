@@ -57,7 +57,7 @@ fn interactive_single_agent_runs_in_foreground() {
          worktree = \".\"\nargs = [\"INTERACTIVE_FOREGROUND_OK\"]\n",
     );
 
-    let out = Command::cargo_bin("gr")
+    let out = Command::cargo_bin("gr1")
         .unwrap()
         .args(["spawn", "up", "probe", "--interactive"])
         .current_dir(ws.path())
@@ -89,7 +89,7 @@ fn interactive_fleet_refuses_and_names_single_agent_form() {
     );
 
     // No agent named + --interactive -> the whole fleet, no multiplexer.
-    let out = Command::cargo_bin("gr")
+    let out = Command::cargo_bin("gr1")
         .unwrap()
         .args(["spawn", "up", "--interactive"])
         .current_dir(ws.path())
@@ -169,7 +169,7 @@ fn no_flag_no_tmux_falls_back_and_fleet_names_tmux_absence() {
         "[agents.probe]\nrole = \"worker\"\ntool = \"echotool\"\nmodel = \"\"\n\
          worktree = \".\"\nargs = [\"AUTO_FOREGROUND_OK\"]\n",
     );
-    let out = Command::cargo_bin("gr")
+    let out = Command::cargo_bin("gr1")
         .unwrap()
         .args(["spawn", "up", "probe"])
         .current_dir(single.path())
@@ -197,7 +197,7 @@ fn no_flag_no_tmux_falls_back_and_fleet_names_tmux_absence() {
         "[agents.probe]\nrole = \"worker\"\ntool = \"echotool\"\nmodel = \"\"\nworktree = \".\"\n\
          [agents.second]\nrole = \"worker\"\ntool = \"echotool\"\nmodel = \"\"\nworktree = \".\"\n",
     );
-    let out = Command::cargo_bin("gr")
+    let out = Command::cargo_bin("gr1")
         .unwrap()
         .args(["spawn", "up"])
         .current_dir(fleet.path())

@@ -95,7 +95,7 @@ fn origin_with_manifest(manifest_body: &str) -> (TempDir, String) {
 /// `gr init <url>` then `gr sync` inside the created workspace. Returns sync's output.
 fn init_then_sync(url: &str, extra: &[&str]) -> (TempDir, std::process::Output) {
     let ws = TempDir::new().unwrap();
-    let init = Command::cargo_bin("gr")
+    let init = Command::cargo_bin("gr1")
         .unwrap()
         .args(["init", url])
         .current_dir(ws.path())
@@ -116,7 +116,7 @@ fn init_then_sync(url: &str, extra: &[&str]) -> (TempDir, std::process::Output) 
 
     let mut args = vec!["sync"];
     args.extend_from_slice(extra);
-    let out = Command::cargo_bin("gr")
+    let out = Command::cargo_bin("gr1")
         .unwrap()
         .args(&args)
         .current_dir(&workspace)

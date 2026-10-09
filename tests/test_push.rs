@@ -381,7 +381,7 @@ fn the_push_summary_names_each_repo_it_pushed_and_only_those() {
     )
     .unwrap();
 
-    let out = AssertCommand::cargo_bin("gr")
+    let out = AssertCommand::cargo_bin("gr1")
         .unwrap()
         .current_dir(&ws.workspace_root)
         .args(["push"])

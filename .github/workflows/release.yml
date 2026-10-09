@@ -75,13 +75,13 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
-          tar -czvf ../../../gitgrip-${{ matrix.name }}.tar.gz gr gitgrip
+          tar -czvf ../../../gitgrip-${{ matrix.name }}.tar.gz gr gr1 gitgrip
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
-          7z a ../../../gitgrip-${{ matrix.name }}.zip gr.exe gitgrip.exe
+          7z a ../../../gitgrip-${{ matrix.name }}.zip gr.exe gr1.exe gitgrip.exe
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

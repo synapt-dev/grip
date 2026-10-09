@@ -183,7 +183,7 @@ fn test_prune_protects_main_when_target_is_dev() {
         .output()
         .unwrap();
 
-    AssertCommand::cargo_bin("gr")
+    AssertCommand::cargo_bin("gr1")
         .unwrap()
         .current_dir(&ws.workspace_root)
         .args(["prune", "--execute", "--repo", "alpha"])
@@ -237,7 +237,7 @@ fn test_prune_protects_more_and_says_so_when_default_is_unresolvable() {
         "the removal must actually make resolution fail"
     );
 
-    AssertCommand::cargo_bin("gr")
+    AssertCommand::cargo_bin("gr1")
         .unwrap()
         .current_dir(&ws.workspace_root)
         .args(["prune", "--execute", "--repo", "alpha"])

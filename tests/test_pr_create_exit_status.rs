@@ -245,7 +245,7 @@ async fn the_shipped_binary_prints_success_false_after_a_platform_failure() {
     manifest["settings"]["target"] = serde_yaml::Value::String("dev".into());
     std::fs::write(&manifest_path, serde_yaml::to_string(&manifest).unwrap()).unwrap();
 
-    let out = AssertCommand::cargo_bin("gr")
+    let out = AssertCommand::cargo_bin("gr1")
         .unwrap()
         .current_dir(&ws.workspace_root)
         .env("GITHUB_TOKEN", "mock-test-token")
@@ -348,7 +348,7 @@ async fn the_early_no_op_return_serializes_through_the_same_helper() {
     // No branch, no commits: nothing is ahead, so `branch_groups` is empty and
     // production takes the early return rather than the terminal branch.
 
-    let out = AssertCommand::cargo_bin("gr")
+    let out = AssertCommand::cargo_bin("gr1")
         .unwrap()
         .current_dir(&ws.workspace_root)
         .env("GITHUB_TOKEN", "mock-test-token")
@@ -382,7 +382,7 @@ async fn the_early_no_op_return_serializes_through_the_same_helper() {
     // workspace in human mode must say it. Without this the witness could pass
     // while silently covering the wrong wire, which is the failure this whole
     // PR keeps rediscovering.
-    let human = AssertCommand::cargo_bin("gr")
+    let human = AssertCommand::cargo_bin("gr1")
         .unwrap()
         .current_dir(&ws.workspace_root)
         .env("GITHUB_TOKEN", "mock-test-token")

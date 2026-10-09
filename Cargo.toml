@@ -1,6 +1,6 @@
 [package]
 name = "gitgrip"
-version = "1.5.2"
+version = "1.6.0"
 edition = "2021"
 rust-version = "1.80"
 description = "Multi-repo workflow tool - manage multiple git repositories as one"
@@ -24,9 +24,17 @@ path = "src/main.rs"
 name = "gitgrip"
 path = "src/main.rs"
 
+[[bin]]
+name = "gr1"
+path = "src/main.rs"
+
 [lib]
 name = "gitgrip"
 path = "src/lib.rs"
+
+[[example]]
+name = "gr_resolver"
+path = "examples/gr_resolver.rs"
 
 [features]
 default = ["telemetry"]

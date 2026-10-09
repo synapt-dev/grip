@@ -678,13 +678,14 @@ fn run_gitgrip_command(
     args: &[String],
     cancel_flag: Option<Arc<AtomicBool>>,
 ) -> anyhow::Result<CommandOutput> {
-    let exe = std::env::current_exe().context("Failed to locate current gitgrip executable")?;
+    let mut command = crate::gr_resolver::gr1_self_command()
+        .context("Failed to locate current gitgrip executable")?;
     // Hold the spawn lock across spawn + pipe take only (see spawn_lock), then
     // release so execution stays concurrent. stdin is null so the child never
     // inherits the parent's stdin/console handles.
     let (mut child, stdout, stderr) = {
         let _spawn_guard = spawn_lock().lock().unwrap_or_else(|e| e.into_inner());
-        let mut child = Command::new(exe)
+        let mut child = command
             .args(args)
             .env("NO_COLOR", "1")
             .env("CLICOLOR", "0")
@@ -769,13 +770,14 @@ fn run_context_command(
     args: &[String],
     cancel_flag: Option<Arc<AtomicBool>>,
 ) -> anyhow::Result<ContextCommandOutput> {
-    let exe = std::env::current_exe().context("Failed to locate current gitgrip executable")?;
+    let mut command = crate::gr_resolver::gr1_self_command()
+        .context("Failed to locate current gitgrip executable")?;
     // Same spawn-serialization + null-stdin root fix as run_gitgrip_command: the
     // handle-inheritance race is process-global, so every piped-child spawn must
     // take the lock or a concurrent context spawn can still cross-inherit.
     let (mut child, stdout, stderr) = {
         let _spawn_guard = spawn_lock().lock().unwrap_or_else(|e| e.into_inner());
-        let mut child = Command::new(exe)
+        let mut child = command
             .args(args)
             .env("NO_COLOR", "1")
             .env("CLICOLOR", "0")

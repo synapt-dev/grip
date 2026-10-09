@@ -73,7 +73,7 @@ fn spawn_up_composes_tool_args_before_agent_args_at_call_site() {
     )
     .unwrap();
 
-    let out = Command::cargo_bin("gr")
+    let out = Command::cargo_bin("gr1")
         .unwrap()
         .args(["spawn", "up", "--verbose", "--config"])
         .arg(&toml)

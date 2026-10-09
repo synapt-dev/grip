@@ -22,6 +22,10 @@ Manage multiple related repositories as a single workspace with synchronized bra
 
 Inspired by Android's [repo tool](https://source.android.com/docs/setup/create/repo), gitgrip brings manifest-based multi-repo management to any project.
 
+## gr, gr1 and gr2
+
+`gr1` is this tool and `gr2` is its successor. `gr` picks one by the workspace you stand in: inside a `.gitgrip` gripspace it runs gr1, inside a gr2 workspace it runs gr2, and outside any workspace it runs gr2 when gr2 is installed (`pip install --pre gitgrip`) and gr1 otherwise. `gr --which` shows the choice and the marker that made it.
+
 ## Concepts
 
 | Term | Definition |

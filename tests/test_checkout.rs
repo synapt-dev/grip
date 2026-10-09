@@ -243,7 +243,7 @@ fn test_checkout_add_makes_the_child_checkout_independently_discoverable() {
 
     // This is Sentinel's exact grip#774 repro: run `gr env` from inside a
     // repo INSIDE the child checkout and check which workspace it reports.
-    let output = Command::cargo_bin("gr")
+    let output = Command::cargo_bin("gr1")
         .expect("gr binary should build")
         .current_dir(&checkout_repo_dir)
         .arg("env")
@@ -334,7 +334,7 @@ fn test_checkout_wins_over_a_griptree_pointer_at_an_ancestor() {
         .join("review-copy")
         .join("app");
 
-    let output = Command::cargo_bin("gr")
+    let output = Command::cargo_bin("gr1")
         .expect("gr binary should build")
         .current_dir(&checkout_repo_dir)
         .arg("env")
@@ -423,7 +423,7 @@ fn test_checkout_including_manifest_repo_leaves_it_clean_end_to_end() {
     // And discovery still works correctly from inside the OTHER materialized
     // repo in the same checkout -- proving .checkout.json (not anything
     // written into the manifest clone) is what makes this checkout resolvable.
-    let output = Command::cargo_bin("gr")
+    let output = Command::cargo_bin("gr1")
         .expect("gr binary should build")
         .current_dir(checkout_root.join("app"))
         .arg("env")
@@ -488,7 +488,7 @@ fn test_corrupted_checkout_metadata_fails_closed_not_open_to_parent() {
 
     // Sanity: gr env correctly reports the child BEFORE corruption (mirrors
     // step 2 of Sentinel's repro).
-    let good_output = Command::cargo_bin("gr")
+    let good_output = Command::cargo_bin("gr1")
         .expect("gr binary should build")
         .current_dir(&checkout_repo_dir)
         .arg("env")
@@ -512,7 +512,7 @@ fn test_corrupted_checkout_metadata_fails_closed_not_open_to_parent() {
     // Step 4: gr env again. Must NOT exit 0, and must NOT report the parent
     // workspace path -- that combination is grip#775 round 3's exact
     // reported failure mode.
-    let corrupted_output = Command::cargo_bin("gr")
+    let corrupted_output = Command::cargo_bin("gr1")
         .expect("gr binary should build")
         .current_dir(&checkout_repo_dir)
         .arg("env")
@@ -585,7 +585,7 @@ fn test_absolute_repo_path_in_metadata_cannot_escape_the_checkout() {
     let checkout_repo_dir = checkout_root.join("app");
 
     // Sanity: works correctly before corruption.
-    let good_output = Command::cargo_bin("gr")
+    let good_output = Command::cargo_bin("gr1")
         .expect("gr binary should build")
         .current_dir(&checkout_repo_dir)
         .arg("env")
@@ -611,7 +611,7 @@ fn test_absolute_repo_path_in_metadata_cannot_escape_the_checkout() {
     std::fs::write(&meta_path, serde_json::to_string_pretty(&value).unwrap())
         .expect("write tampered metadata");
 
-    let escaped_output = Command::cargo_bin("gr")
+    let escaped_output = Command::cargo_bin("gr1")
         .expect("gr binary should build")
         .current_dir(&checkout_repo_dir)
         .arg("env")

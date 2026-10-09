@@ -15,7 +15,7 @@ use common::git_helpers;
 /// Test that `gr --help` works
 #[test]
 fn test_help() {
-    let mut cmd = Command::cargo_bin("gr").unwrap();
+    let mut cmd = Command::cargo_bin("gr1").unwrap();
     cmd.arg("--help")
         .assert()
         .success()
@@ -25,7 +25,7 @@ fn test_help() {
 /// Test that `gr --version` works
 #[test]
 fn test_version() {
-    let mut cmd = Command::cargo_bin("gr").unwrap();
+    let mut cmd = Command::cargo_bin("gr1").unwrap();
     cmd.arg("--version")
         .assert()
         .success()
@@ -34,7 +34,7 @@ fn test_version() {
 
 #[test]
 fn test_checkout_help_mentions_add_mode() {
-    let mut cmd = Command::cargo_bin("gr").unwrap();
+    let mut cmd = Command::cargo_bin("gr1").unwrap();
     cmd.arg("checkout")
         .arg("--help")
         .assert()
@@ -58,7 +58,7 @@ fn test_checkout_help_mentions_add_mode() {
 fn test_status_outside_workspace() {
     let temp = TempDir::new().unwrap();
 
-    let mut cmd = Command::cargo_bin("gr").unwrap();
+    let mut cmd = Command::cargo_bin("gr1").unwrap();
     cmd.current_dir(temp.path())
         .arg("status")
         .assert()
@@ -69,7 +69,7 @@ fn test_status_outside_workspace() {
 /// Test that `gr bench --list` works
 #[test]
 fn test_bench_list() {
-    let mut cmd = Command::cargo_bin("gr").unwrap();
+    let mut cmd = Command::cargo_bin("gr1").unwrap();
     cmd.arg("bench")
         .arg("--list")
         .assert()
@@ -80,7 +80,7 @@ fn test_bench_list() {
 /// Test that `gr bench` runs benchmarks
 #[test]
 fn test_bench_run() {
-    let mut cmd = Command::cargo_bin("gr").unwrap();
+    let mut cmd = Command::cargo_bin("gr1").unwrap();
     cmd.arg("bench")
         .arg("-n")
         .arg("1")
@@ -92,7 +92,7 @@ fn test_bench_run() {
 /// Test that `gr bench --json` outputs JSON
 #[test]
 fn test_bench_json() {
-    let mut cmd = Command::cargo_bin("gr").unwrap();
+    let mut cmd = Command::cargo_bin("gr1").unwrap();
     cmd.arg("bench")
         .arg("-n")
         .arg("1")
@@ -118,7 +118,7 @@ fn test_checkout_base_uses_griptree_config() {
     let config_path = ws.workspace_root.join(".gitgrip").join("griptree.json");
     config.save(&config_path).unwrap();
 
-    let mut cmd = Command::cargo_bin("gr").unwrap();
+    let mut cmd = Command::cargo_bin("gr1").unwrap();
     cmd.current_dir(&ws.workspace_root)
         .arg("checkout")
         .arg("--base")
@@ -142,7 +142,7 @@ fn test_checkout_add_materializes_independent_child_checkout() {
         .add_repo("lib")
         .build();
 
-    let mut cmd = Command::cargo_bin("gr").unwrap();
+    let mut cmd = Command::cargo_bin("gr1").unwrap();
     cmd.current_dir(&ws.workspace_root)
         .arg("checkout")
         .arg("add")
@@ -175,7 +175,7 @@ fn test_checkout_add_respects_repo_filter() {
         .add_repo("lib")
         .build();
 
-    let mut cmd = Command::cargo_bin("gr").unwrap();
+    let mut cmd = Command::cargo_bin("gr1").unwrap();
     cmd.current_dir(&ws.workspace_root)
         .arg("checkout")
         .arg("add")
@@ -200,7 +200,7 @@ fn test_checkout_add_respects_group_filter() {
         .add_repo_with_groups("docs", vec!["docs"])
         .build();
 
-    let mut cmd = Command::cargo_bin("gr").unwrap();
+    let mut cmd = Command::cargo_bin("gr1").unwrap();
     cmd.current_dir(&ws.workspace_root)
         .arg("checkout")
         .arg("add")
@@ -222,7 +222,7 @@ fn test_checkout_add_respects_group_filter() {
 fn test_checkout_add_requires_name() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
 
-    let mut cmd = Command::cargo_bin("gr").unwrap();
+    let mut cmd = Command::cargo_bin("gr1").unwrap();
     cmd.current_dir(&ws.workspace_root)
         .arg("checkout")
         .arg("add")
@@ -237,7 +237,7 @@ fn test_checkout_add_requires_name() {
 fn test_checkout_add_errors_when_filters_match_no_repos() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
 
-    let mut cmd = Command::cargo_bin("gr").unwrap();
+    let mut cmd = Command::cargo_bin("gr1").unwrap();
     cmd.current_dir(&ws.workspace_root)
         .arg("checkout")
         .arg("add")
@@ -255,7 +255,7 @@ fn test_checkout_add_errors_when_filters_match_no_repos() {
 fn test_pr_merge_unknown_repo_is_a_process_level_refusal() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
 
-    let mut cmd = Command::cargo_bin("gr").unwrap();
+    let mut cmd = Command::cargo_bin("gr1").unwrap();
     cmd.current_dir(&ws.workspace_root)
         .arg("pr")
         .arg("merge")
@@ -275,7 +275,7 @@ fn test_pr_merge_unknown_repo_is_a_process_level_refusal() {
 fn test_pr_merge_known_repo_with_no_open_pr_is_still_success() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
 
-    let mut cmd = Command::cargo_bin("gr").unwrap();
+    let mut cmd = Command::cargo_bin("gr1").unwrap();
     cmd.current_dir(&ws.workspace_root)
         .arg("pr")
         .arg("merge")
@@ -294,7 +294,7 @@ fn test_pr_merge_known_repo_with_no_open_pr_is_still_success() {
 fn test_checkout_add_rejects_create_and_base_flags() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
 
-    let mut create_cmd = Command::cargo_bin("gr").unwrap();
+    let mut create_cmd = Command::cargo_bin("gr1").unwrap();
     create_cmd
         .current_dir(&ws.workspace_root)
         .arg("checkout")
@@ -307,7 +307,7 @@ fn test_checkout_add_rejects_create_and_base_flags() {
             "--create and --base are not valid with 'add'",
         ));
 
-    let mut base_cmd = Command::cargo_bin("gr").unwrap();
+    let mut base_cmd = Command::cargo_bin("gr1").unwrap();
     base_cmd
         .current_dir(&ws.workspace_root)
         .arg("checkout")
@@ -325,7 +325,7 @@ fn test_checkout_add_rejects_create_and_base_flags() {
 fn test_checkout_add_rejects_extra_positional_args() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
 
-    let mut cmd = Command::cargo_bin("gr").unwrap();
+    let mut cmd = Command::cargo_bin("gr1").unwrap();
     cmd.current_dir(&ws.workspace_root)
         .arg("checkout")
         .arg("add")
@@ -342,7 +342,7 @@ fn test_checkout_add_rejects_extra_positional_args() {
 fn test_checkout_add_rejects_duplicate_checkout_name() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
 
-    let mut first = Command::cargo_bin("gr").unwrap();
+    let mut first = Command::cargo_bin("gr1").unwrap();
     first
         .current_dir(&ws.workspace_root)
         .arg("checkout")
@@ -351,7 +351,7 @@ fn test_checkout_add_rejects_duplicate_checkout_name() {
         .assert()
         .success();
 
-    let mut duplicate = Command::cargo_bin("gr").unwrap();
+    let mut duplicate = Command::cargo_bin("gr1").unwrap();
     duplicate
         .current_dir(&ws.workspace_root)
         .arg("checkout")
@@ -368,7 +368,7 @@ fn test_checkout_add_rejects_duplicate_checkout_name() {
 fn test_checkout_list_shows_materialized_checkouts() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
 
-    let mut add = Command::cargo_bin("gr").unwrap();
+    let mut add = Command::cargo_bin("gr1").unwrap();
     add.current_dir(&ws.workspace_root)
         .arg("checkout")
         .arg("add")
@@ -376,7 +376,7 @@ fn test_checkout_list_shows_materialized_checkouts() {
         .assert()
         .success();
 
-    let mut list = Command::cargo_bin("gr").unwrap();
+    let mut list = Command::cargo_bin("gr1").unwrap();
     list.current_dir(&ws.workspace_root)
         .arg("checkout")
         .arg("list")
@@ -390,7 +390,7 @@ fn test_checkout_list_shows_materialized_checkouts() {
 fn test_checkout_list_reports_empty_state() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
 
-    let mut list = Command::cargo_bin("gr").unwrap();
+    let mut list = Command::cargo_bin("gr1").unwrap();
     list.current_dir(&ws.workspace_root)
         .arg("checkout")
         .arg("list")
@@ -403,7 +403,7 @@ fn test_checkout_list_reports_empty_state() {
 fn test_checkout_list_rejects_extra_positional_args() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
 
-    let mut list = Command::cargo_bin("gr").unwrap();
+    let mut list = Command::cargo_bin("gr1").unwrap();
     list.current_dir(&ws.workspace_root)
         .arg("checkout")
         .arg("list")
@@ -420,7 +420,7 @@ fn test_checkout_remove_deletes_materialized_checkout() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
     let checkout_root = ws.workspace_root.join(".grip/checkouts/sandbox");
 
-    let mut add = Command::cargo_bin("gr").unwrap();
+    let mut add = Command::cargo_bin("gr1").unwrap();
     add.current_dir(&ws.workspace_root)
         .arg("checkout")
         .arg("add")
@@ -430,7 +430,7 @@ fn test_checkout_remove_deletes_materialized_checkout() {
 
     assert!(checkout_root.is_dir());
 
-    let mut remove = Command::cargo_bin("gr").unwrap();
+    let mut remove = Command::cargo_bin("gr1").unwrap();
     remove
         .current_dir(&ws.workspace_root)
         .arg("checkout")
@@ -447,7 +447,7 @@ fn test_checkout_remove_deletes_materialized_checkout() {
 fn test_checkout_remove_errors_for_missing_checkout() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
 
-    let mut remove = Command::cargo_bin("gr").unwrap();
+    let mut remove = Command::cargo_bin("gr1").unwrap();
     remove
         .current_dir(&ws.workspace_root)
         .arg("checkout")
@@ -462,7 +462,7 @@ fn test_checkout_remove_errors_for_missing_checkout() {
 fn test_checkout_remove_rejects_extra_positional_args() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
 
-    let mut remove = Command::cargo_bin("gr").unwrap();
+    let mut remove = Command::cargo_bin("gr1").unwrap();
     remove
         .current_dir(&ws.workspace_root)
         .arg("checkout")
@@ -492,7 +492,7 @@ fn test_checkout_remove_rejects_extra_positional_args() {
 fn test_add_unknown_repo_filter_is_refused_not_silently_empty() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
 
-    let mut cmd = Command::cargo_bin("gr").unwrap();
+    let mut cmd = Command::cargo_bin("gr1").unwrap();
     cmd.current_dir(&ws.workspace_root)
         .arg("add")
         .arg(".")
@@ -509,7 +509,7 @@ fn test_add_unknown_repo_filter_is_refused_not_silently_empty() {
 fn test_commit_unknown_repo_filter_is_refused_not_silently_empty() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
 
-    let mut cmd = Command::cargo_bin("gr").unwrap();
+    let mut cmd = Command::cargo_bin("gr1").unwrap();
     cmd.current_dir(&ws.workspace_root)
         .arg("commit")
         .arg("-m")
@@ -527,7 +527,7 @@ fn test_commit_unknown_repo_filter_is_refused_not_silently_empty() {
 fn test_push_unknown_repo_filter_is_refused_not_silently_empty() {
     let ws = WorkspaceBuilder::new().add_repo("app").build();
 
-    let mut cmd = Command::cargo_bin("gr").unwrap();
+    let mut cmd = Command::cargo_bin("gr1").unwrap();
     cmd.current_dir(&ws.workspace_root)
         .arg("push")
         .arg("--repo")
@@ -555,7 +555,7 @@ fn test_add_known_repo_filter_reaches_the_work_and_stages() {
     let repo = ws.repo_path("app");
     std::fs::write(repo.join("control.txt"), "dirty\n").unwrap();
 
-    let mut cmd = Command::cargo_bin("gr").unwrap();
+    let mut cmd = Command::cargo_bin("gr1").unwrap();
     cmd.current_dir(&ws.workspace_root)
         .arg("add")
         .arg(".")

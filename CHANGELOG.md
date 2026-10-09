@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`gr` now runs gr1 or gr2, chosen by the workspace you are in, and `gr1` is
+  the explicit name for gr1.** The nearest workspace marker above the current
+  directory decides: a `.gitgrip` entry means gr1; `grip.toml` beside a `.git`,
+  or a workspace spec under the grip directory, means gr2; no marker means
+  gr2. A directory holding both runs gr1 and prints one line saying it also
+  holds a gr2 workspace. `GR2_QUIET_CONTEXT=1` silences that informational
+  line. Invoked as `gr1` or `gitgrip` it resolves nothing. With no marker and
+  gr2 not installed, `gr` runs gr1 and prints one line naming the install
+  (`pip install --pre gitgrip`); a gr2 workspace with gr2 missing refuses with exit
+  69. `gr --which` prints which half would run and why. Outside any workspace,
+  with gr2 installed, bare `gr` now runs gr2, which is why this is 1.6.0.
+
 ### Fixed
 
 - **`gr pr create` opens PRs for the branch you are on, not for every branch

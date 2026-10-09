@@ -73,3 +73,79 @@ pub fn capture(reader: &mut impl Read, path: &Path, limit: u64) -> io::Result<u6
     file.flush()?;
     Ok(written)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn cap_keeps_the_prefix_and_consumes_the_entire_stream() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("output.log");
+        let bytes = b"\x1b[2K\rspinner redraws keep arriving".repeat(1000);
+        let mut input = Cursor::new(&bytes);
+        assert_eq!(capture(&mut input, &path, 17).unwrap(), 17);
+        assert_eq!(std::fs::read(&path).unwrap(), &bytes[..17]);
+        assert_eq!(input.position(), bytes.len() as u64);
+    }
+
+    #[test]
+    fn existing_bytes_count_against_the_cap_on_each_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("output.log");
+        std::fs::write(&path, b"prefix").unwrap();
+        assert_eq!(capture(&mut Cursor::new(b"abcdefghij"), &path, 10).unwrap(), 4);
+        assert_eq!(std::fs::read(&path).unwrap(), b"prefixabcd");
+        let mut next = Cursor::new(b"more spinner output");
+        assert_eq!(capture(&mut next, &path, 10).unwrap(), 0);
+        assert_eq!(std::fs::read(&path).unwrap(), b"prefixabcd");
+        assert_eq!(next.position(), 19);
+    }
+
+    #[test]
+    fn oversized_old_log_is_not_shortened_or_appended() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("output.log");
+        let old = b"old capture already exceeds the budget";
+        std::fs::write(&path, old).unwrap();
+        let mut input = Cursor::new(b"new bytes");
+        assert_eq!(capture(&mut input, &path, 4).unwrap(), 0);
+        assert_eq!(std::fs::read(&path).unwrap(), old);
+        assert_eq!(input.position(), 9);
+    }
+
+    #[test]
+    fn another_owner_refuses_without_waiting_or_appending() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("output.log");
+        std::fs::write(&path, b"old").unwrap();
+        let owner = OpenOptions::new().append(true).open(&path).unwrap();
+        owner.try_lock_exclusive().unwrap();
+        assert!(capture(&mut Cursor::new(b"new"), &path, 10).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"old");
+        drop(owner);
+        assert_eq!(capture(&mut Cursor::new(b"new"), &path, 10).unwrap(), 3);
+    }
+
+    #[test]
+    fn read_error_is_reported_and_releases_ownership() {
+        struct Broken;
+        impl Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::new(io::ErrorKind::Other, "input failed"))
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("output.log");
+        assert!(capture(&mut Broken, &path, 10).is_err());
+        assert_eq!(capture(&mut Cursor::new(b"retry"), &path, 10).unwrap(), 5);
+    }
+
+    #[test]
+    fn unusable_destination_refuses() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(capture(&mut Cursor::new(b"x"), dir.path(), 10).is_err());
+        assert!(capture(&mut Cursor::new(b"x"), &dir.path().join("missing/output.log"), 10).is_err());
+    }
+}

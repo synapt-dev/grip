@@ -28,6 +28,7 @@ dependencies = [
 
 [project.scripts]
 gr2 = "gr2.python_cli.app:main"
+gr = "gr2.python_cli.gr_resolver:main"
 git-review = "gr2.python_cli.git_review:main"
 
 [project.optional-dependencies]

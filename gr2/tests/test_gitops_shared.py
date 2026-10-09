@@ -195,6 +195,8 @@ USER_COMMAND_SEAMS = {
     ("python_cli/execops.py", "_exec_one"),
     ("python_cli/git_review.py", "_run_pytest"), ("python_cli/git_review.py", "_run_non_pytest"),
     ("python_cli/grip.py", "_run_policy_hook"), ("python_cli/grip.py", "run_review_checks"),
+    # `gr` runs the half it chose (Windows only; elsewhere it execs), and asks the `gr` first on PATH its version.
+    ("python_cli/gr_resolver.py", "_exec"), ("python_cli/gr_shadow.py", "_gr1_version"),
     ("python_cli/hooks.py", "run_lifecycle_stage"),
     ("python_cli/lane_plugins.py", "call"),
     ("python_cli/launch_exec.py", "launch_unit"), ("python_cli/launch_exec.py", "launch_team"),

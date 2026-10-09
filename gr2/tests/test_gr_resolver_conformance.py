@@ -25,18 +25,32 @@ STUB = (
 )
 
 
+def _package_root() -> str:
+    """The directory holding the gr2 package this test imported: `-I` drops PYTHONPATH, so without this the launcher
+    would run whatever gr2 the interpreter has installed while the test printed the candidate's path."""
+    import gr2.python_cli
+
+    return str(Path(gr2.python_cli.__file__).resolve().parents[2])
+
+
+_PACKAGE_ROOT = _package_root()
+_PRELUDE = f"import sys; sys.path.insert(0, {_PACKAGE_ROOT!r}); "  # the launcher and its witness share this line
+
+
 def _launcher(directory: Path, name: str) -> Path:
     """A script that runs the resolver module in a new process under the given command name.
 
-    The package installs no `gr` command yet, so the resolver is launched through the interpreter; the name is
-    set as argv[0] so a row that invokes it as `gr1` or `gr2` reaches the same code path a real link would. `-I`
+    The resolver is launched through the interpreter (the installed console script is tested in
+    test_gr_installed_wheel.py); the name is
+    set as argv[0] (its own path, as a console script's is) so a row that invokes it as `gr1` or `gr2` reaches the
+    same code path a real link would, and the resolver can tell when a half's name points back at itself. `-I`
     keeps the current directory off the import path: a layout that is itself a gr2 checkout holds a `gr2/` directory
     that would otherwise shadow the installed package.
     """
     script = directory / name
     script.write_text(
         "#!/bin/sh\n"
-        f'exec "{sys.executable}" -I -c "import sys; sys.argv[0]=\'{name}\'; '
+        f'exec "{sys.executable}" -I -c "{_PRELUDE}sys.argv[0]=\'{script}\'; '
         'from gr2.python_cli.gr_resolver import main; sys.exit(main())" "$@"\n'
     )
     script.chmod(0o755)
@@ -74,9 +88,9 @@ def _which_norm(out: str, realroot: str) -> str:
 
 def _tool_of(stdout: str) -> str | None:
     first = (stdout.splitlines() or [""])[0]
-    m = re.match(r"STUB (gr1|gr2)\b", first) or re.match(r"(gr1|gr2)\b", first)
+    m = re.match(r"STUB (gr1|gr2|gitgrip)\b", first) or re.match(r"(gr1|gr2)\b", first)
     if m:
-        return m.group(1)
+        return "gr1" if m.group(1) == "gitgrip" else m.group(1)  # every gr1 release runs gr1 as `gitgrip`
     m = re.match(r"gr (\d)\.", first)
     return f"gr{m.group(1)}" if m else None
 
@@ -112,6 +126,8 @@ def run_table(gr: Path, table: Path = TABLE) -> tuple[int, int, list[str], list[
             for name in c.get("installed", ["gr1", "gr2"]):
                 (binp / name).write_text(STUB.format(name=name))
                 (binp / name).chmod(0o755)
+            for name in c.get("self_alias", []):  # a half's name that is really this resolver
+                os.symlink(gr, binp / name)
             _materialize(root, c["layout"])
             path = str(binp)
             if c.get("expect_which_stderr"):
@@ -124,6 +140,16 @@ def run_table(gr: Path, table: Path = TABLE) -> tuple[int, int, list[str], list[
             home.mkdir()
             env = {"HOME": str(home), "PATH": path + ":/usr/bin:/bin", **c.get("env", {})}
             exe = gr
+            if c.get("path_order"):  # run `gr` by name, as a shell would, with ours and a brew-shaped gr1 on PATH
+                ours, brew = base / f"ours{i}", base / f"brew{i}"
+                ours.mkdir()
+                brew.mkdir()
+                os.symlink(gr, ours / "gr")
+                (brew / "gr").write_text('#!/bin/sh\necho "gr 1.5.2"\n')  # what brew gitgrip 1.5.x prints
+                (brew / "gr").chmod(0o755)
+                order = [str({"ours": ours, "brew": brew}[d]) for d in c["path_order"]]
+                env["PATH"] = ":".join([*order, env["PATH"]])
+                exe = shutil.which("gr", path=env["PATH"])
             if c.get("argv0"):
                 link = base / f"argv{i}"
                 link.mkdir()
@@ -181,8 +207,40 @@ def test_the_gr_resolver_table_runs_green_through_the_module() -> None:
     assert not red, detail
 
 
-def test_the_package_declares_no_gr_console_script_yet() -> None:
-    """A `gr` command installed by this package would shadow an existing gr1 on a user's PATH; the entry point
-    ships with the Rust half, so until then the package must not declare one."""
+def test_the_package_installs_gr_as_this_resolver() -> None:
+    """The PyPI package installs `gr`, and it is this resolver: gr2 is the default where no gr1 workspace is."""
     scripts = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text())["project"]["scripts"]
-    assert "gr" not in scripts, f"pyproject declares a gr console script: {scripts['gr']}"
+    assert scripts.get("gr") == "gr2.python_cli.gr_resolver:main", scripts
+
+
+def test_the_launcher_runs_the_gr2_this_test_imported(tmp_path) -> None:
+    """The rows mean nothing if the launched resolver is another installed gr2: the real launcher must carry the
+    pinning line, and that line must import the module this test imported."""
+    import gr2.python_cli.gr_resolver as module
+
+    assert _PRELUDE in _launcher(tmp_path, "gr").read_text(), "the launcher does not pin the imported gr2"
+
+    probe = subprocess.run(
+        [sys.executable, "-I", "-c", _PRELUDE + "import gr2.python_cli.gr_resolver as m; print(m.__file__)"],
+        cwd=tmp_path, capture_output=True, text=True, check=True)
+    assert os.path.realpath(probe.stdout.strip()) == os.path.realpath(module.__file__)
+
+
+def test_on_windows_the_half_runs_as_a_child_and_its_exit_code_returns(monkeypatch) -> None:
+    """os.execve on Windows starts a new process and exits this one with 0; the half's code must come back."""
+    import gr2.python_cli.gr_resolver as module
+
+    calls = []
+
+    class Done:
+        returncode = 7
+
+    def fake_run(cmd, env):
+        calls.append((cmd, env.get("GR_RESOLVED")))
+        return Done()
+
+    monkeypatch.setattr(module.os, "name", "nt")
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(module.os, "execve", lambda *a: (_ for _ in ()).throw(AssertionError("execve on Windows")))
+    assert module._exec("C:/bin/gr2.exe", ["gr2", "status"], {"GR_RESOLVED": "gr2"}) == 7
+    assert calls == [(["C:/bin/gr2.exe", "status"], "gr2")]

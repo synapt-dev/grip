@@ -5070,6 +5070,8 @@ def main() -> None:
     # `gr` runs this half with GR_RESOLVED set so it cannot resolve twice. The guard is spent once gr2 starts;
     # kept, it would reach every process gr2 runs, and any `gr` there would refuse to resolve twice.
     os.environ.pop("GR_RESOLVED", None)
+    from .gr_shadow import note_shadow
+    note_shadow()  # at most once per install, never under --json
     try:
         app()
     except AdapterError as exc:

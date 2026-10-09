@@ -5,7 +5,7 @@
 ## Install
 
 ```bash
-uv tool install --pre gitgrip    # the PyPI package is "gitgrip"; the command is "gr2"
+uv tool install --pre gitgrip    # the PyPI package is "gitgrip"; it installs `gr` and `gr2`
 gr2 --version
 ```
 
@@ -21,7 +21,9 @@ gr2 --version
 
 Already installed 1.5.0 or 1.5.1? The install commands above leave it in place, because an installed version already satisfies them. Upgrade explicitly: `uv tool upgrade --prerelease allow gitgrip`, or `pip install --pre -U gitgrip`. To run unreleased development code instead, install from a checkout: `pip install -e gr2/` from the repository root.
 
-The Rust `gr` (gr1, 1.x) installs with `brew install synapt-dev/tap/gitgrip` or `cargo install gitgrip`. The two do not collide; you can have both installed.
+The package installs two commands. `gr2` always runs gr2. `gr` picks by the nearest workspace marker: in a gr1 workspace (`.gitgrip`) it runs gr1, and anywhere else, including outside any workspace, it runs gr2.
+
+The Rust `gr` (gr1, 1.x) installs with `brew install synapt-dev/tap/gitgrip` or `cargo install gitgrip`, as `gr` and `gitgrip`. You can have both installed. Whichever `gr` comes first on `PATH` answers: gitgrip 1.5 and earlier always run gr1, so if it comes first, type `gr2` for gr2 (`gr2` says so once). In a gr1 workspace, this package's `gr` runs gr1 through `gitgrip`. With no gr1 installed, it serves a workspace already moved with `gr2 workspace migrate-gr1`, and in one not yet moved it says how to move it.
 
 ## First five minutes
 

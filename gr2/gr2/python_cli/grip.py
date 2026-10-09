@@ -10,7 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import re
 import ipaddress
-from urllib.parse import parse_qsl, unquote, urlsplit
+import socket
+from urllib.parse import parse_qsl, urlsplit
 
 from . import gitops
 from .gitops import git
@@ -375,11 +376,12 @@ def read_workspace_commit(workspace: Path, commit: str) -> list[dict[str, str]]:
 _REVIEW_BIND_SCHEMA = "gr2-review-bind/v2"
 
 
-# Query parameter names that carry a secret, compared lowercased after percent-decoding.
+# Query parameter names that carry a secret. A name is compared lowercased with '-' read as '_' (parse_qsl has
+# already percent-decoded it). A finite list, not secret detection: a clean URL never carries any of these.
 _CREDENTIAL_PARAMS = frozenset({
-    "token", "access_token", "refresh_token", "id_token", "oauth_token", "private_token", "auth",
-    "authorization", "password", "passwd", "pass", "pwd", "secret", "client_secret", "api_key", "apikey",
-    "key", "sig", "signature", "x-access-token",
+    "token", "access_token", "refresh_token", "id_token", "oauth_token", "oauth2_token", "auth_token",
+    "private_token", "bearer", "auth", "authorization", "password", "passwd", "pass", "pwd", "secret",
+    "client_secret", "api_key", "apikey", "key", "sig", "signature", "x_access_token",
 })
 
 
@@ -397,18 +399,26 @@ def url_has_credentials(url: str) -> bool:
     if parsed.fragment or address.endswith("#"):
         return True
     for name, _value in parse_qsl(parsed.query, keep_blank_values=True):
-        if unquote(name).strip().lower() in _CREDENTIAL_PARAMS:
+        if name.strip().lower().replace("-", "_") in _CREDENTIAL_PARAMS:
             return True
     return False
 
 
 def _is_loopback_host(host: str) -> bool:
-    host = host.strip("[]").lower()
+    """This machine, by name or by any numeric spelling (127.1, 2130706433, 0x7f000001, ::ffff:127.0.0.1).
+    No DNS lookup: a name other than localhost is left to the network."""
+    host = host.strip("[]").lower().rstrip(".")
     if host == "localhost" or host.endswith(".localhost"):
         return True
     try:
-        return ipaddress.ip_address(host).is_loopback
+        address = ipaddress.ip_address(host)
+        mapped = getattr(address, "ipv4_mapped", None)
+        return address.is_loopback or bool(mapped and mapped.is_loopback)
     except ValueError:
+        pass
+    try:  # the classic IPv4 parser git's resolver also accepts: short, integer, octal and hex forms
+        return socket.inet_aton(host)[0] == 127
+    except (OSError, ValueError):
         return False
 
 

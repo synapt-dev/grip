@@ -343,6 +343,10 @@ def resolve_sources_from_pins(
     mirror_meta: dict[str, dict[str, str]] = {}
     for pin in pins:
         location = _pin_transport_location(pin.repo)
+        # A recorded remote is dialled here (mirror clone or refresh), so a credential in the pin or in the
+        # location it resolves to is refused first, by the one rule. The refusal names the member, never the URL.
+        if grip.url_has_credentials(pin.repo) or grip.url_has_credentials(location):
+            raise OpenGrReviewError(f"{pin.key}: its recorded remote carries credentials; nothing was fetched")
         mirror = root / f"{_mirror_basename(location)}.git"
         try:
             review.gitops.ensure_repo_cache(location, mirror)

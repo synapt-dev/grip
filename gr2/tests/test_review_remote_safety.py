@@ -296,6 +296,8 @@ QUERY_TOKEN = f"https://example.invalid/o/member.git?access_token={TOKEN}"
     (QUERY_TOKEN, True), (f"https://example.invalid/o/r.git?Access%5FToken={TOKEN}", True),
     (f"https://example.invalid/o/r.git?KEY={TOKEN}", True), (f"https://example.invalid/o/r.git#{TOKEN}", True),
     ("https://example.invalid/o/r.git#", True), (f"github.com:o/r.git?token={TOKEN}", True),
+    (f"https://example.invalid/o/r.git?auth_token={TOKEN}", True), (f"https://example.invalid/o/r.git?access-token={TOKEN}", True),
+    (f"https://example.invalid/o/r.git?API-KEY={TOKEN}", True), (f"https://example.invalid/o/r.git?oauth2_token={TOKEN}", True),
     ("https://example.invalid/o/r.git?ref=main", False), ("https://example.invalid/o/r.git?keys=1", False),
     ("https://example.invalid/o/r.git", False), ("git@github.com:o/r.git", False),
 ])
@@ -306,7 +308,8 @@ def test_credentials_in_the_query_or_fragment(url, carries):
 @pytest.mark.parametrize("remote", [
     "https://localhost/o/r.git", "https://LOCALHOST:8443/o/r.git", "http://127.0.0.1/o/r.git", "http://127.9.9.9/r.git",
     "https://[::1]/o/r.git", "ssh://git@localhost/o/r.git", "localhost:/abs/r.git", "git@127.0.0.1:o/r.git",
-    "git@app.localhost:o/r.git",
+    "git@app.localhost:o/r.git", "https://localhost./o/r.git", "http://127.1/o/r.git", "http://2130706433/o/r.git",
+    "http://0x7f000001/o/r.git", "git@127.1:o/r.git", "https://[::ffff:127.0.0.1]/o/r.git",
 ])
 def test_a_loopback_remote_is_not_portable(remote):
     assert grip._is_portable_remote(remote) is False
@@ -373,3 +376,31 @@ def test_reconstruct_refuses_a_credentialed_record_before_any_clone(world, monke
     assert str(refused.value).startswith("remote_credentials"), str(refused.value)
     assert TOKEN not in str(refused.value), "a refusal must never print the credential"
     assert cloned == [], "no clone may run for a credentialed record"
+
+
+def test_review_mirror_refuses_a_credentialed_pin_before_any_fetch(tmp_path, monkeypatch):
+    # open on a record that carries no objects resolves sources through the review mirror, which clones or
+    # refreshes the recorded remote; a credentialed pin must be refused before that dial.
+    from gr2.python_cli import open_gr_review, project_review
+    calls = []
+    monkeypatch.setattr(open_gr_review.review.gitops, "ensure_repo_cache", lambda *a, **k: calls.append(a))
+    pin = project_review.ProjectReviewPin(key="member", repo=QUERY_TOKEN, path="member", base="a" * 40, head="b" * 40)
+    with pytest.raises(open_gr_review.OpenGrReviewError) as refused:
+        open_gr_review.resolve_sources_from_pins([pin], cache_root=tmp_path / "cache")
+    assert "credentials" in str(refused.value) and TOKEN not in str(refused.value)
+    assert calls == [], "no mirror may be cloned or refreshed for a credentialed pin"
+    assert not (tmp_path / "cache").exists() or not any((tmp_path / "cache").iterdir())
+
+
+def test_review_mirror_still_fetches_a_clean_pin(tmp_path, monkeypatch):
+    # Control: the refusal is about the credential, not about the mirror path.
+    from gr2.python_cli import open_gr_review, project_review
+    calls = []
+    def fake(url, mirror, **k):
+        calls.append(url)
+        raise SystemExit("stop after the dial")
+    monkeypatch.setattr(open_gr_review.review.gitops, "ensure_repo_cache", fake)
+    pin = project_review.ProjectReviewPin(key="member", repo=PORTABLE, path="member", base="a" * 40, head="b" * 40)
+    with pytest.raises(open_gr_review.OpenGrReviewError):
+        open_gr_review.resolve_sources_from_pins([pin], cache_root=tmp_path / "cache")
+    assert calls == [PORTABLE]

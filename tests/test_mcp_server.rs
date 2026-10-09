@@ -80,7 +80,15 @@ impl ServerHarness {
     }
 
     fn spawn_with_deadline(cwd: &Path, envs: &[(&str, &str)], response_deadline: Duration) -> Self {
-        let exe = env!("CARGO_BIN_EXE_gitgrip");
+        Self::spawn_exe(env!("CARGO_BIN_EXE_gitgrip"), cwd, envs, response_deadline)
+    }
+
+    fn spawn_exe(
+        exe: &str,
+        cwd: &Path,
+        envs: &[(&str, &str)],
+        response_deadline: Duration,
+    ) -> Self {
         let mut cmd = Command::new(exe);
         cmd.args(["mcp", "server"]).current_dir(cwd);
         for (k, v) in envs {
@@ -372,6 +380,37 @@ fn test_mcp_server_initialize_list_and_call() {
     assert_eq!(unsupported["id"], json!(4));
     assert_eq!(unsupported["error"]["code"], json!(-32601));
 
+    server.shutdown();
+}
+
+/// The server started as `gr` (how a host config usually names it) re-runs itself for each tool as gr1. Outside any
+/// workspace with no gr2 installed, the server falls back to gr1 and serves; a tool re-run that resolved again would
+/// print the resolver's install line, and the tool result carries the re-run's stderr. GR2_QUIET_CONTEXT is forced off,
+/// or that line would be silenced and the check could not fail.
+#[cfg(unix)]
+#[test]
+fn test_mcp_server_started_as_gr_reruns_itself_as_gr1() {
+    let temp = TempDir::new().expect("create temp dir");
+    let mut server = ServerHarness::spawn_exe(
+        env!("CARGO_BIN_EXE_gr"),
+        temp.path(),
+        &[("PATH", "/usr/bin:/bin"), ("GR2_QUIET_CONTEXT", "")],
+        RESPONSE_READ_DEADLINE,
+    );
+    server.initialize();
+    server.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": { "name": "gitgrip_agent_build", "arguments": {} }
+    }));
+    let call = server.recv();
+    assert_eq!(call["id"], json!(2));
+    let text = call["result"].to_string();
+    assert!(
+        !text.contains("gr: "),
+        "the tool's re-run resolved again instead of running as gr1: {text}"
+    );
     server.shutdown();
 }
 

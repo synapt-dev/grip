@@ -236,7 +236,7 @@ jobs:
           cp tests/fixtures/agents.example.toml .gitgrip/agents.toml
 
       - name: Run spawn integration tests
-        run: GR=./target/debug/gr ./tests/spawn_graceful_shutdown.sh
+        run: GR=./target/debug/gr1 ./tests/spawn_graceful_shutdown.sh
 
   gr2_python:
     name: gr2 Python Tests (${{ matrix.python-version }})

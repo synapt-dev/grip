@@ -5,8 +5,16 @@ use gitgrip::cli::args::Cli;
 use gitgrip::cli::outcome::{error_was_reported, exit_code_for_error, render_unreported_error};
 use std::process::ExitCode;
 
+fn main() -> ExitCode {
+    // `gr` resolves gr1 or gr2 before anything else runs, and before the runtime starts threads.
+    if let Some(code) = gitgrip::gr_resolver::entry() {
+        return ExitCode::from(u8::try_from(code).unwrap_or(1));
+    }
+    gr1_main()
+}
+
 #[tokio::main]
-async fn main() -> ExitCode {
+async fn gr1_main() -> ExitCode {
     let cli = Cli::parse();
 
     // Initialize tracing — `--verbose` enables debug logging for gitgrip

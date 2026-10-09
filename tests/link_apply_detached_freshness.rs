@@ -113,7 +113,7 @@ repos:
     );
 
     let workspace = root.join("workspace");
-    let init = Command::cargo_bin("gr")
+    let init = Command::cargo_bin("gr1")
         .unwrap()
         .args([
             "init",
@@ -130,7 +130,7 @@ repos:
         String::from_utf8_lossy(&init.stdout),
         String::from_utf8_lossy(&init.stderr)
     );
-    let sync = Command::cargo_bin("gr")
+    let sync = Command::cargo_bin("gr1")
         .unwrap()
         .arg("sync")
         .current_dir(&workspace)
@@ -152,7 +152,7 @@ repos:
 }
 
 fn apply(ws: &Path) -> (Option<i32>, String) {
-    let o = Command::cargo_bin("gr")
+    let o = Command::cargo_bin("gr1")
         .unwrap()
         .args(["link", "--apply"])
         .current_dir(ws)
@@ -169,7 +169,7 @@ fn apply(ws: &Path) -> (Option<i32>, String) {
 }
 
 fn run_sync(ws: &Path) -> (Option<i32>, String) {
-    let o = Command::cargo_bin("gr")
+    let o = Command::cargo_bin("gr1")
         .unwrap()
         .arg("sync")
         .current_dir(ws)
@@ -379,7 +379,7 @@ repos:
         )],
     );
     let workspace = root.join("workspace");
-    let init = Command::cargo_bin("gr")
+    let init = Command::cargo_bin("gr1")
         .unwrap()
         .args([
             "init",
@@ -396,7 +396,7 @@ repos:
         String::from_utf8_lossy(&init.stdout),
         String::from_utf8_lossy(&init.stderr)
     );
-    let sync = Command::cargo_bin("gr")
+    let sync = Command::cargo_bin("gr1")
         .unwrap()
         .arg("sync")
         .current_dir(&workspace)

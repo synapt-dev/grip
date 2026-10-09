@@ -39,7 +39,7 @@ fn run_init_from_dirs(workspace_dir: &std::path::Path) -> std::process::Output {
             "run",
             "--quiet",
             "--bin",
-            "gr",
+            "gr1",
             "--",
             "init",
             "--from-dirs",

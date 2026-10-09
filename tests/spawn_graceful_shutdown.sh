@@ -9,7 +9,7 @@
 #
 # NOTE: requires tmux. Run manually before merging spawn-related changes:
 #
-#   cd grip && GR=./target/debug/gr ./tests/spawn_graceful_shutdown.sh
+#   cd grip && GR=./target/debug/gr1 ./tests/spawn_graceful_shutdown.sh
 #
 # Requires: tmux, gr (built), a .gitgrip/agents.toml with an explicit
 # session_name and at least one agent (CI copies tests/fixtures/agents.example.toml).
@@ -26,7 +26,7 @@ unset TMUX
 TMUX_TMPDIR="$(mktemp -d)"
 export TMUX_TMPDIR
 
-GR="${GR:-./target/debug/gr}"
+GR="${GR:-./target/debug/gr1}"
 LOG=$(mktemp)
 
 cleanup() {

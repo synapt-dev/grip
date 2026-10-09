@@ -126,7 +126,7 @@ fn test_local_workspace_status() {
     let temp = TempDir::new().unwrap();
     let workspace = create_test_workspace(&temp);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_gr"))
+    let output = Command::new(env!("CARGO_BIN_EXE_gr1"))
         .current_dir(&workspace)
         .arg("status")
         .output()
@@ -151,7 +151,7 @@ fn test_local_branch_creation() {
     let temp = TempDir::new().unwrap();
     let workspace = create_test_workspace(&temp);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_gr"))
+    let output = Command::new(env!("CARGO_BIN_EXE_gr1"))
         .current_dir(&workspace)
         .args(["branch", "feat/test-branch"])
         .output()
@@ -168,7 +168,7 @@ fn test_local_add_commit() {
     let workspace = create_test_workspace(&temp);
 
     // Create a branch
-    let _ = Command::new(env!("CARGO_BIN_EXE_gr"))
+    let _ = Command::new(env!("CARGO_BIN_EXE_gr1"))
         .current_dir(&workspace)
         .args(["branch", "feat/changes"])
         .output();
@@ -177,12 +177,12 @@ fn test_local_add_commit() {
     fs::write(workspace.join("repo1").join("new.txt"), "new file").unwrap();
 
     // Add and commit
-    let _ = Command::new(env!("CARGO_BIN_EXE_gr"))
+    let _ = Command::new(env!("CARGO_BIN_EXE_gr1"))
         .current_dir(&workspace)
         .args(["add", "."])
         .output();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_gr"))
+    let output = Command::new(env!("CARGO_BIN_EXE_gr1"))
         .current_dir(&workspace)
         .args(["commit", "-m", "Add new file"])
         .output()

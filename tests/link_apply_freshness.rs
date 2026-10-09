@@ -103,7 +103,7 @@ repos:
     );
 
     let workspace = root.join("workspace");
-    let init = Command::cargo_bin("gr")
+    let init = Command::cargo_bin("gr1")
         .unwrap()
         .args([
             "init",
@@ -125,7 +125,7 @@ repos:
     // issue uses before advancing the source. `gr init` currently treats a
     // link-application failure as a warning, so its zero exit alone is not a
     // sufficient fixture precondition.
-    let baseline_sync = Command::cargo_bin("gr")
+    let baseline_sync = Command::cargo_bin("gr1")
         .unwrap()
         .arg("sync")
         .current_dir(&workspace)
@@ -151,7 +151,7 @@ repos:
     );
 
     advance(&source, "version-two-content\n");
-    let sync = Command::cargo_bin("gr")
+    let sync = Command::cargo_bin("gr1")
         .unwrap()
         .arg("sync")
         .current_dir(&workspace)
@@ -178,7 +178,7 @@ repos:
         "fixture must be stale before apply"
     );
 
-    let apply = Command::cargo_bin("gr")
+    let apply = Command::cargo_bin("gr1")
         .unwrap()
         .args(["link", "--apply"])
         .current_dir(&workspace)
@@ -212,14 +212,14 @@ repos:
 
     // Positive control: after the named recovery path, the same command runs
     // and the destination reflects the advanced source.
-    let sync = Command::cargo_bin("gr")
+    let sync = Command::cargo_bin("gr1")
         .unwrap()
         .arg("sync")
         .current_dir(&workspace)
         .output()
         .unwrap();
     assert!(sync.status.success());
-    let apply = Command::cargo_bin("gr")
+    let apply = Command::cargo_bin("gr1")
         .unwrap()
         .args(["link", "--apply"])
         .current_dir(&workspace)

@@ -1949,12 +1949,15 @@ pub fn run_spawn_dashboard(_quiet: bool) -> anyhow::Result<()> {
     };
 
     // Build the #dev input loop using gr channel
+    // This binary, run as gr1 (`exec -a`, in a subshell so the loop survives), so a `gr`-named executable does not
+    // resolve again for a command that is gr1's by construction. The path is single-quoted for the shell.
     let gr_path = std::env::current_exe()
         .unwrap_or_else(|_| "gr".into())
         .display()
-        .to_string();
+        .to_string()
+        .replace('\'', "'\\''");
     let input_script = format!(
-        "cd {} && while IFS= read -rp $'\\033[36m#dev>\\033[0m ' msg; do [ -n \"$msg\" ] && {} channel post \"$msg\"; done",
+        "cd {} && while IFS= read -rp $'\\033[36m#dev>\\033[0m ' msg; do [ -n \"$msg\" ] && (exec -a gr1 '{}' channel post \"$msg\"); done",
         workspace_root.display(),
         gr_path
     );

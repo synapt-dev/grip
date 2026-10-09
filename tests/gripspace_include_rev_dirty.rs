@@ -44,7 +44,7 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 fn gr() -> Command {
-    let mut c = Command::cargo_bin("gr").expect("gr binary");
+    let mut c = Command::cargo_bin("gr1").expect("gr binary");
     c.env("GIT_AUTHOR_NAME", "t")
         .env("GIT_AUTHOR_EMAIL", "t@t")
         .env("GIT_COMMITTER_NAME", "t")

@@ -470,7 +470,7 @@ fn test_branch_rerun_is_not_parked_by_being_on_the_target() {
 
     // the branch state alone cannot tell "switched" from "skipped as parked" here (a parked clone stays on
     // feat/x too), so the report is what pins it
-    let out = assert_cmd::Command::cargo_bin("gr")
+    let out = assert_cmd::Command::cargo_bin("gr1")
         .unwrap()
         .current_dir(&ws.workspace_root)
         .args(["--json", "branch", "feat/x"])
@@ -564,7 +564,7 @@ fn test_branch_json_reports_the_parked_clone_and_where_each_clone_was() {
         .build();
     git_helpers::create_branch(&ws.repo_path("beta"), "hold/wip");
 
-    let out = Command::cargo_bin("gr")
+    let out = Command::cargo_bin("gr1")
         .unwrap()
         .current_dir(&ws.workspace_root)
         .args(["--json", "branch", "feat/x"])
@@ -600,7 +600,7 @@ fn gr(ws: &std::path::Path, args: &[&str]) -> (i32, String) {
 }
 
 fn gr_full(ws: &std::path::Path, args: &[&str]) -> (i32, String, String) {
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_gr"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_gr1"))
         .args(args)
         .current_dir(ws)
         .env("HOME", ws.parent().unwrap())

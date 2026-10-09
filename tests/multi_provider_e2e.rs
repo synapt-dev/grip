@@ -47,14 +47,14 @@ fn random_suffix() -> String {
 fn gr_binary() -> std::path::PathBuf {
     // Build the binary first
     let status = Command::new("cargo")
-        .args(["build", "--quiet", "--bin", "gr"])
+        .args(["build", "--quiet", "--bin", "gr1"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .status()
         .expect("Failed to build gr");
     assert!(status.success(), "Failed to build gr binary");
 
     // Return path to the binary
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/gr")
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/gr1")
 }
 
 /// Run gr command in the given workspace directory

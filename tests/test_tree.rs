@@ -246,7 +246,7 @@ fn test_tree_list_from_griptree_workspace_shows_registered_tree() {
 
     let tree_path = ws.workspace_root.parent().unwrap().join("feat-listed");
 
-    let mut cmd = Command::cargo_bin("gr").expect("gr binary should build");
+    let mut cmd = Command::cargo_bin("gr1").expect("gr binary should build");
     cmd.current_dir(&tree_path)
         .args(["tree", "list"])
         .assert()

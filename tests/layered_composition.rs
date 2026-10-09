@@ -149,7 +149,7 @@ fn composition_accumulates_across_layers_and_prefers_the_declaring_layers_file()
     );
 
     let ws = TempDir::new().unwrap();
-    let init = Command::cargo_bin("gr")
+    let init = Command::cargo_bin("gr1")
         .unwrap()
         .args(["init", top.to_str().unwrap()])
         .current_dir(ws.path())
@@ -164,7 +164,7 @@ fn composition_accumulates_across_layers_and_prefers_the_declaring_layers_file()
     );
     let workspace = ws.path().join("workspace");
 
-    let sync = Command::cargo_bin("gr")
+    let sync = Command::cargo_bin("gr1")
         .unwrap()
         .arg("sync")
         .current_dir(&workspace)

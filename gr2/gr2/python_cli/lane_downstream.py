@@ -243,7 +243,7 @@ def probe_at_pin(repo_spec: dict, dest: Path, *, workspace_root: Path) -> Probe:
             if listing.returncode != 0:
                 tried.append(f"{label}: the pin's tree could not be listed")
                 continue
-            dest.mkdir(parents=True, exist_ok=True)
+            entries: list[tuple[bytes, str]] = []
             for entry in listing.stdout.split(b"\0"):
                 if not entry:
                     continue
@@ -251,6 +251,19 @@ def probe_at_pin(repo_spec: dict, dest: Path, *, workspace_root: Path) -> Probe:
                 mode, kind, obj = meta.decode().split()[:3]
                 if kind != "blob" or mode not in ("100644", "100755"):
                     continue
+                entries.append((raw, obj))
+            objects = list(dict.fromkeys(obj for _, obj in entries))
+            if objects:
+                try:
+                    blobs = _git_in(repo, "fetch", "-q", "origin", *objects)
+                except (subprocess.TimeoutExpired, OSError) as exc:
+                    tried.append(f"{label}: root blob fetch did not finish ({type(exc).__name__})")
+                    continue
+                if blobs.returncode != 0:
+                    tried.append(f"{label}: the pin's root blobs could not be fetched")
+                    continue
+            dest.mkdir(parents=True, exist_ok=True)
+            for raw, obj in entries:
                 body = _git_in(repo, "cat-file", "blob", obj)
                 if body.returncode != 0 or len(body.stdout) > _PROBE_FILE_CAP:
                     continue

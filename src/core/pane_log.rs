@@ -12,8 +12,8 @@ use std::path::Path;
 pub const LIMIT_BYTES: u64 = 10 * 1024 * 1024;
 const INTERNAL_ARG: &str = "--internal-pane-log";
 
-/// This private worker must run before the command resolver or async runtime. It is gr1's own pipe consumer,
-/// regardless of the executable's name or the workspace in which tmux starts it.
+/// This private worker runs after gr1's program name bypasses the resolver, before the async runtime.
+/// It is gr1's own pipe consumer, regardless of the executable's filename or tmux's working directory.
 pub fn entry() -> Option<i32> {
     let mut args = std::env::args_os().skip(1);
     if args.next().as_deref() != Some(OsStr::new(INTERNAL_ARG)) {
@@ -37,17 +37,17 @@ pub fn entry() -> Option<i32> {
 
 /// Shell command for tmux pipe-pane. Reject non-UTF-8 paths instead of capturing into a lossy filename.
 pub fn pipe_command(executable: &Path, log: &Path) -> io::Result<String> {
-    fn quote(path: &Path) -> io::Result<String> {
+    fn quote(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+    fn path(path: &Path) -> io::Result<String> {
         let value = path
             .to_str()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "pane capture path is not UTF-8"))?;
-        Ok(format!("'{}'", value.replace('\'', "'\\''")))
+        Ok(quote(value))
     }
-    Ok(format!(
-        "{} {INTERNAL_ARG} {}",
-        quote(executable)?,
-        quote(log)?
-    ))
+    let worker = format!("exec -a gr1 {} {INTERNAL_ARG} {}", path(executable)?, path(log)?);
+    Ok(format!("bash -c {}", quote(&worker)))
 }
 
 /// Append up to the remaining budget. Continue consuming stdin after the cap so pane output does not block.

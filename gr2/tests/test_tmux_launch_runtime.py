@@ -89,6 +89,8 @@ def _write_tmux_proxy(
     acknowledge_kill_without_stopping: bool = False,
     unlink_socket_without_stopping: bool = False,
     pre_kill_evidence_path: Path | None = None,
+    malform_session_handles: bool = False,
+    misreport_server_pid: bool = False,
 ) -> None:
     """Record every argv then exec real tmux.
 
@@ -113,6 +115,8 @@ FAIL_KILL_SERVER = {fail_kill_server!r}
 ACKNOWLEDGE_KILL_WITHOUT_STOPPING = {acknowledge_kill_without_stopping!r}
 UNLINK_SOCKET_WITHOUT_STOPPING = {unlink_socket_without_stopping!r}
 PRE_KILL_EVIDENCE = {evidence}
+MALFORM_SESSION_HANDLES = {malform_session_handles!r}
+MISREPORT_SERVER_PID = {misreport_server_pid!r}
 args = sys.argv[1:]
 with open(LOG_PATH, "a", encoding="utf-8") as stream:
     stream.write(json.dumps(args) + "\\n")
@@ -149,6 +153,19 @@ if PRE_KILL_EVIDENCE and "kill-server" in args:
             stream,
         )
 
+if MALFORM_SESSION_HANDLES and "new-session" in args:
+    created = subprocess.run([REAL_TMUX, *args], capture_output=True, text=True, check=False)
+    sys.stdout.write(created.stdout.replace("|", "_"))
+    sys.stderr.write(created.stderr)
+    raise SystemExit(created.returncode)
+
+if MISREPORT_SERVER_PID and "new-session" in args:
+    created = subprocess.run([REAL_TMUX, *args], capture_output=True, text=True, check=False)
+    pid, _, rest = created.stdout.partition("|")
+    sys.stdout.write(f"{{int(pid) + 1}}|{{rest}}" if pid.strip().isdigit() else created.stdout)
+    sys.stderr.write(created.stderr)
+    raise SystemExit(created.returncode)
+
 if FAIL_KILL_SERVER and "kill-server" in args:
     raise SystemExit(29)
 if ACKNOWLEDGE_KILL_WITHOUT_STOPPING and "kill-server" in args:
@@ -169,10 +186,11 @@ if (
             REAL_TMUX,
             "-S",
             socket_path,
+            "-u",
             "list-panes",
             "-a",
             "-F",
-            "#{{pane_id}}\\t#{{window_id}}",
+            "#{{pane_id}}|#{{window_id}}",
         ],
         capture_output=True,
         text=True,
@@ -180,7 +198,7 @@ if (
     )
     victims = []
     for line in listed.stdout.splitlines():
-        pane_id, window_id = line.split("\\t")
+        pane_id, window_id = line.split("|")
         if target not in (pane_id, window_id):
             victims.append(pane_id)
     if victims:
@@ -311,6 +329,7 @@ class TmuxContractBase(unittest.TestCase):
         result = _tmux(
             "-S",
             str(socket_path or self.socket),
+            "-u",
             "list-panes",
             "-a",
             "-F",
@@ -355,6 +374,8 @@ class TmuxContractBase(unittest.TestCase):
         acknowledge_kill_without_stopping: bool = False,
         unlink_socket_without_stopping: bool = False,
         pre_kill_evidence_path: Path | None = None,
+        malform_session_handles: bool = False,
+        misreport_server_pid: bool = False,
     ):
         assert TMUX is not None
         proxy = self.tmp / "tmux-proxy"
@@ -369,6 +390,8 @@ class TmuxContractBase(unittest.TestCase):
             acknowledge_kill_without_stopping=acknowledge_kill_without_stopping,
             unlink_socket_without_stopping=unlink_socket_without_stopping,
             pre_kill_evidence_path=pre_kill_evidence_path,
+            malform_session_handles=malform_session_handles,
+            misreport_server_pid=misreport_server_pid,
         )
         return self._runtime(tmux_binary=str(proxy)), log
 
@@ -420,11 +443,15 @@ class TestTmuxEvidenceRetention(unittest.TestCase):
                             runtime.launch_team((object(),), workspace_root=root, env_values_by_unit={}, settle_seconds=0)
                     cleanup.assert_called_once_with(None, None)
                     self.assertFalse(hasattr(caught.exception, "__notes__"))
-                    invoke.assert_not_called()
+                    # an empty one-value reply gives no PID, so rollback stays unverified
+                    invoke.assert_called_once_with("display-message", "-p", "#{pid}", operation="server PID capture")
                 else:
                     with self.assertRaises(launch_exec.LaunchExecutionError) as caught:
                         runtime.launch_team((object(),), workspace_root=root, env_values_by_unit={}, settle_seconds=0)
-                    invoke.assert_called_once_with("kill-server", operation="rollback")
+                    self.assertEqual(
+                        [c.args for c in invoke.call_args_list],
+                        [("display-message", "-p", "#{pid}"), ("kill-server",)],
+                    )
                     note = "\n".join(caught.exception.__notes__)
                     self.assertIn("rollback failed or remains unverified", note)
                     self.assertIn(str(runtime.socket_path), note)
@@ -586,7 +613,7 @@ class TestTmuxVersionPrecondition(TmuxContractBase):
         self.assertIn("3.2", message)
         self.assertFalse(marker.exists(), "launch continued after the failed version gate")
         invocations = [json.loads(line) for line in log.read_text().splitlines()]
-        self.assertEqual(invocations, [["-S", str(self.socket), "-V"]])
+        self.assertEqual(invocations, [["-S", str(self.socket), "-u", "-V"]])
 
 
 @unittest.skipUnless(TMUX is not None and os.name == "posix", "requires tmux on POSIX")
@@ -624,6 +651,76 @@ class TestTmuxLaunchFruit(TmuxContractBase):
                 ["-S", str(self.socket)],
                 f"bare tmux operation escaped the workspace server: {args}",
             )
+            self.assertEqual(
+                args[2],
+                "-u",
+                f"tmux client did not force UTF-8, so a C-locale caller reads `_` for bytes: {args}",
+            )
+
+    def test_a_c_locale_caller_launches_a_non_ascii_workdir(self):
+        # Measured on tmux 3.7b: with LC_ALL=C the
+        # client renders each non-ASCII byte of #{pane_current_path} as `_`, so a
+        # correct pane read back as "an unexpected working directory". The client
+        # forces UTF-8 output with -u; no installed UTF-8 locale is required.
+        workspace = self.tmp / "caf\u00e9-workspace"
+        entry = self._entry("u_c", workspace=workspace)
+        with patch.dict(os.environ, {"LC_ALL": "C", "LANG": "C"}):
+            handles = self._launch([entry], workspace=workspace)
+        expected = str((workspace / entry.workdir).resolve())
+        self.assertEqual(str(Path(handles[0].workdir).resolve()), expected)
+        self.assertEqual(self._pane_rows()[0]["cwd"], expected)
+
+    def test_a_workdir_with_a_control_character_refuses_before_any_tmux_call(self):
+        # Pane observation is parsed one line per pane, and a newline, CR or other
+        # line-breaking character in a path would split its row.  C0/DEL and
+        # every character str.splitlines breaks on are refused by name before
+        # any tmux call.
+        for label, char in (("tab", "\t"), ("nel", "\u0085"), ("line-sep", "\u2028")):
+            with self.subTest(char=label):
+                workspace = self.tmp / f"ws{char}{label}"
+                entry = self._entry("u_ctl", workspace=workspace)
+                runtime, log = self._recording_runtime()
+                with self.assertRaises(launch_exec.LaunchExecutionError) as caught:
+                    self._launch([entry], runtime=runtime, workspace=workspace)
+                self.assertIn("line-break character", str(caught.exception))
+                self.assertFalse(log.exists(), "a tmux client ran before the refusal")
+                self.assertFalse(self.socket.exists())
+
+    def test_malformed_handles_still_roll_back_with_verified_ownership(self):
+        # When tmux returns a handle line the parser
+        # cannot read (tmux 3.6 under C rewrote the old TAB separator to `_`),
+        # the failure is reported as itself AND rollback verifies the server's
+        # death, because PID and socket identity were captured first from
+        # their own one-value sources.
+        entry = self._entry("u_mal")
+        runtime, log = self._recording_runtime(malform_session_handles=True)
+        with self.assertRaises(launch_exec.LaunchExecutionError) as caught:
+            self._launch([entry], runtime=runtime)
+        self.assertEqual(str(caught.exception), "tmux session creation returned malformed handle evidence")
+        self.assertFalse(
+            hasattr(caught.exception, "__notes__"),
+            f"rollback was not verified: {getattr(caught.exception, '__notes__', None)}",
+        )
+        invocations = [json.loads(line)[3:] for line in log.read_text().splitlines()]
+        commands = [args[0] for args in invocations if args]
+        self.assertLess(commands.index("display-message"), commands.index("kill-server"))
+        self.assertFalse(os.path.lexists(self.socket), "the created socket survived rollback")
+        self.assertNotEqual(_tmux("-S", str(self.socket), "list-sessions").returncode, 0)
+
+    def test_a_handle_pid_that_disagrees_with_the_server_refuses_and_rolls_back(self):
+        # The handle line's PID must equal the PID captured from the server by
+        # its own one-value query.  A disagreement refuses, and rollback still
+        # verifies the real server's death from the captured PID.
+        entry = self._entry("u_pid")
+        runtime, _log = self._recording_runtime(misreport_server_pid=True)
+        with self.assertRaises(launch_exec.LaunchExecutionError) as caught:
+            self._launch([entry], runtime=runtime)
+        self.assertIn("disagrees with the server", str(caught.exception))
+        self.assertFalse(
+            hasattr(caught.exception, "__notes__"),
+            f"rollback was not verified: {getattr(caught.exception, '__notes__', None)}",
+        )
+        self.assertFalse(os.path.lexists(self.socket), "the created socket survived rollback")
 
     def test_a_long_generated_workspace_uses_the_short_explicit_socket(self):
         long_component = "generated-session-" + ("x" * 170)

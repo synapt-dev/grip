@@ -332,6 +332,16 @@ def _tmux_client_environment() -> dict[str, str]:
     return env
 
 
+def _has_control_character(text: str) -> bool:
+    """True when ``text`` carries a C0 control, DEL, or any character that
+    ``str.splitlines`` treats as a line break (U+0085, U+2028, U+2029 among
+    them), since pane observation is parsed one line per pane."""
+    return any(
+        ord(char) < 0x20 or ord(char) == 0x7F or len(f"a{char}b".splitlines()) > 1
+        for char in text
+    )
+
+
 def _parse_tmux_version(output: str) -> tuple[int, int] | None:
     match = re.fullmatch(r"tmux\s+(\d+)\.(\d+)[a-z]?", output.strip())
     if match is None:
@@ -420,7 +430,11 @@ class TmuxPaneRuntime:
             raise LaunchExecutionError("tmux socket parent must be owned by the current user")
 
     def _invoke(self, *args: str, operation: str) -> subprocess.CompletedProcess[str]:
-        command = [self.tmux_binary, "-S", str(self.socket_path), *args]
+        # -u: tmux renders format values for the client's locale, and under
+        # LC_ALL=C (cron, launchd) every non-ASCII byte of a value such as
+        # #{pane_current_path} becomes `_` (measured on tmux
+        # 3.7b).  Forcing UTF-8 output on the client needs no installed locale.
+        command = [self.tmux_binary, "-S", str(self.socket_path), "-u", *args]
         try:
             return subprocess.run(  # noqa: S603
                 command,
@@ -475,6 +489,12 @@ class TmuxPaneRuntime:
                 raise LaunchExecutionError(
                     f"unit {entry.unit_key}: workdir {entry.workdir} does not exist -- "
                     "materialization runs before launch"
+                )
+            if _has_control_character(str(workdir)):
+                raise LaunchExecutionError(
+                    f"unit {entry.unit_key}: workdir contains a control or line-break character; pane "
+                    "observation is read one line per pane, so such a path is refused rather "
+                    "than verified"
                 )
             prepared.append(
                 _PreparedTmuxEntry(
@@ -619,6 +639,29 @@ class TmuxPaneRuntime:
             live[unit_key] = pane
         return live
 
+    def _capture_socket_identity(self) -> tuple[int, int] | None:
+        """(st_dev, st_ino) of the socket at the requested path, or None."""
+        try:
+            socket_stat = Path(self.socket_path).lstat()
+        except FileNotFoundError:
+            return None
+        if not stat.S_ISSOCK(socket_stat.st_mode):
+            return None
+        return (socket_stat.st_dev, socket_stat.st_ino)
+
+    def _capture_server_pid(self) -> int | None:
+        """The server PID from a one-value query, or None.  Never raises: a
+        missing value leaves rollback unverified, which it already reports."""
+        try:
+            result = self._invoke("display-message", "-p", "#{pid}", operation="server PID capture")
+        except LaunchExecutionError:
+            return None
+        text = (result.stdout or "").strip()
+        if result.returncode != 0 or not text.isascii() or not text.isdigit():
+            return None
+        pid = int(text)
+        return pid if pid > 0 else None
+
     def _socket_listener_is_reachable(self) -> bool:
         probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
@@ -715,14 +758,23 @@ class TmuxPaneRuntime:
         try:
             session_output = self._create_session(workspace_root)
             server_created = True
-            server_pid, session_id, bootstrap_pane = self._parse_session_handles(session_output)
-
-            socket_stat = Path(self.socket_path).lstat()
-            if not stat.S_ISSOCK(socket_stat.st_mode):
+            # Ownership evidence is captured BEFORE the multi-field parse, each
+            # from its own one-value source.  A malformed
+            # handle line then fails as itself, and rollback can still verify
+            # the exact server and socket this call created.
+            created_socket_identity = self._capture_socket_identity()
+            server_pid = self._capture_server_pid()
+            parsed_pid, session_id, bootstrap_pane = self._parse_session_handles(session_output)
+            if server_pid is None:
+                server_pid = parsed_pid
+            elif parsed_pid != server_pid:
+                raise LaunchExecutionError(
+                    "tmux session creation reported a server PID that disagrees with the server"
+                )
+            if created_socket_identity is None:
                 raise LaunchExecutionError(
                     "tmux did not create a Unix socket at the requested path"
                 )
-            created_socket_identity = (socket_stat.st_dev, socket_stat.st_ino)
             Path(self.socket_path).chmod(0o600)
 
             pane_ids = {

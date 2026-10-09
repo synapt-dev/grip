@@ -69,7 +69,9 @@ pub fn capture(reader: &mut impl Read, path: &Path, limit: u64) -> io::Result<u6
     lock_path.push(".lock");
     let owner = OpenOptions::new()
         .create(true)
-        .append(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
         .open(lock_path)?;
     // A replaced pipe can start before its predecessor sees EOF. Wait for that owner to finish rather
     // than losing capture to a try-lock race. tmux closes the previous pipe when it replaces it.
@@ -172,7 +174,9 @@ mod tests {
         std::fs::write(&path, b"old").unwrap();
         let owner = OpenOptions::new()
             .create(true)
-            .append(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
             .open(dir.path().join("output.log.lock"))
             .unwrap();
         owner.try_lock_exclusive().unwrap();

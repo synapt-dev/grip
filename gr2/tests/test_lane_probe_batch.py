@@ -58,12 +58,12 @@ def test_root_blobs_are_unique_in_one_fetch_before_any_read(tmp_path: Path, monk
     monkeypatch.setattr(ld, "_git_in", observed)
     dest = tmp_path / "probe"
     probe = ld.probe_at_pin({"name": "m", "url": str(repo), "pin": pin}, dest, workspace_root=tmp_path / "ws")
+    assert _fetch_count(trace) == 2 and read_fetches == [0, 0, 0]
     batch = [args for args in calls if args[:3] == ("fetch", "-q", "origin")]
     assert len(batch) == 1
     assert len(batch[0][3:]) == len(set(batch[0][3:])) == 2
     first_read = next(i for i, args in enumerate(calls) if args[:2] == ("cat-file", "blob"))
     assert calls.index(batch[0]) < first_read
-    assert _fetch_count(trace) == 2 and read_fetches == [0, 0, 0]
     assert probe.pin == pin and probe.source == "url" and probe.filtered
     assert sorted(p.name for p in dest.iterdir()) == ["a.toml", "run.sh", "same.toml"]
     for path in dest.iterdir():

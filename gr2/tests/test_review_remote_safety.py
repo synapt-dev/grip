@@ -282,3 +282,94 @@ def test_a_dash_leading_ref_is_not_an_injection_and_bind_still_refuses(world, mo
     assert result.exit_code != 0, result.output
     assert not sentinel.exists()
     assert reviews(world["author"]) == ""
+
+
+# --- Credentials outside userinfo, loopback remotes, and checks on receive -------------------------------------
+#
+# The userinfo rule missed a token in the query string or fragment, and a loopback remote names this machine,
+# so its path is author-local. A clean URL takes no extra step; loopback is refused only on an off-host publish.
+
+QUERY_TOKEN = f"https://example.invalid/o/member.git?access_token={TOKEN}"
+
+
+@pytest.mark.parametrize("url,carries", [
+    (QUERY_TOKEN, True), (f"https://example.invalid/o/r.git?Access%5FToken={TOKEN}", True),
+    (f"https://example.invalid/o/r.git?KEY={TOKEN}", True), (f"https://example.invalid/o/r.git#{TOKEN}", True),
+    ("https://example.invalid/o/r.git#", True), (f"github.com:o/r.git?token={TOKEN}", True),
+    ("https://example.invalid/o/r.git?ref=main", False), ("https://example.invalid/o/r.git?keys=1", False),
+    ("https://example.invalid/o/r.git", False), ("git@github.com:o/r.git", False),
+])
+def test_credentials_in_the_query_or_fragment(url, carries):
+    assert grip.url_has_credentials(url) is carries
+
+
+@pytest.mark.parametrize("remote", [
+    "https://localhost/o/r.git", "https://LOCALHOST:8443/o/r.git", "http://127.0.0.1/o/r.git", "http://127.9.9.9/r.git",
+    "https://[::1]/o/r.git", "ssh://git@localhost/o/r.git", "localhost:/abs/r.git", "git@127.0.0.1:o/r.git",
+    "git@app.localhost:o/r.git",
+])
+def test_a_loopback_remote_is_not_portable(remote):
+    assert grip._is_portable_remote(remote) is False
+
+
+def test_a_lookalike_host_stays_portable():
+    assert grip._is_portable_remote("https://localhostx.example/o/r.git") is True
+
+
+def test_bind_refuses_a_query_token_remote(world, monkeypatch):
+    assert_credential_refusal(bind(world, monkeypatch, QUERY_TOKEN))
+    assert reviews(world["author"]) == ""
+
+
+def test_publish_keeps_a_loopback_record_on_the_host(world, monkeypatch):
+    # A loopback remote is ordinary local use: bind and a local publish work; only an off-host publish refuses.
+    loopback = "https://localhost/o/member.git"
+    gitconfig = world["author"].parent / "gitconfig"
+    gitconfig.write_text(gitconfig.read_text() + f'[url "file://{world["remote"]}"]\n\tinsteadOf = {loopback}\n')
+    made = bind(world, monkeypatch, loopback)
+    assert made.exit_code == 0, made.output
+    commit = reviews(world["author"]).rsplit("/", 1)[1]
+    off_host = review(world["author"], monkeypatch, "publish", "gr:" + commit, "--remote", FOREIGN)
+    assert off_host.exit_code != 0, off_host.output
+    assert "local_path_remote" in off_host.output, off_host.output
+    assert git(world["dest"], "for-each-ref") == "", "nothing may be pushed before the refusal"
+    on_host = review(world["author"], monkeypatch, "publish", "gr:" + commit, "--remote", world["dest"])
+    assert on_host.exit_code == 0, on_host.output
+
+
+def test_receive_refuses_a_record_that_carries_credentials(world, monkeypatch, tmp_path):
+    # A credentialed record made and published with both guards off (an old or foreign writer) must not land in
+    # a receiving root: receive refuses before publishing a local review bind, and cleans its transfer ref.
+    monkeypatch.setattr(grip, "_refuse_remote_credentials", lambda key, remote: None, raising=False)
+    made = bind(world, monkeypatch, CRED)
+    assert made.exit_code == 0, made.output
+    commit = reviews(world["author"]).rsplit("/", 1)[1]
+    sent = review(world["author"], monkeypatch, "publish", "gr:" + commit, "--remote", world["dest"])
+    assert sent.exit_code == 0, sent.output
+    monkeypatch.undo()
+    world_env(world, monkeypatch)
+    receiver = tmp_path / "receiver"
+    receiver.mkdir()
+    git(receiver, "clone", "--no-local", "--branch", "main", world["remote"], "member")
+    init = runner.invoke(app, ["store", "init", str(receiver)])
+    assert init.exit_code == 0, init.output
+    got = review(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", world["dest"])
+    assert_credential_refusal(got)
+    assert reviews(receiver) == "", "a refused receive leaves no review ref"
+    assert git(receiver, "for-each-ref", "refs/dev.synapt.grip/__review_transfers__") == "", "staging is cleaned"
+
+
+def test_reconstruct_refuses_a_credentialed_record_before_any_clone(world, monkeypatch, tmp_path):
+    monkeypatch.setattr(grip, "_refuse_remote_credentials", lambda key, remote: None, raising=False)
+    made = bind(world, monkeypatch, CRED)
+    assert made.exit_code == 0, made.output
+    monkeypatch.undo()
+    world_env(world, monkeypatch)
+    commit = reviews(world["author"]).rsplit("/", 1)[1]
+    cloned = []
+    monkeypatch.setattr(grip.gitops, "clone", lambda *a, **k: cloned.append(a))
+    with pytest.raises(grip.GripReviewRefused) as refused:
+        grip.reconstruct_review_lane(world["author"], commit, "member", tmp_path / "lane")
+    assert str(refused.value).startswith("remote_credentials"), str(refused.value)
+    assert TOKEN not in str(refused.value), "a refusal must never print the credential"
+    assert cloned == [], "no clone may run for a credentialed record"

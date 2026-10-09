@@ -147,10 +147,14 @@ def test_absent_lane_url_omits_creation_remote(plugin, url_line):
     assert "remote" not in saved["prs"][0]
 
 
-@pytest.mark.parametrize("userinfo", ["user:fixture-private-token", "fixture-private-token"])
-def test_credential_lane_url_refuses_before_adapter_or_state(plugin, userinfo):
+@pytest.mark.parametrize("remote", [
+    "https://user:fixture-private-token@github.com/o/sample.git",
+    "https://fixture-private-token@github.com/o/sample.git",
+    "https://github.com/o/sample.git?access_token=fixture-private-token",
+    "https://github.com/o/sample.git#fixture-private-token",
+])
+def test_credential_lane_url_refuses_before_adapter_or_state(plugin, remote):
     workspace, capture, env, _ = plugin
-    remote = f"https://{userinfo}@github.com/o/sample.git"
     (workspace / ".grip/workspace_spec.toml").write_text(
         f'[[repos]]\nname="sample"\nurl="{remote}"\n'
     )

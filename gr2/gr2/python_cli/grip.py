@@ -9,7 +9,9 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 import re
-from urllib.parse import urlsplit
+import ipaddress
+import socket
+from urllib.parse import parse_qsl, urlsplit
 
 from . import gitops
 from .gitops import git
@@ -374,15 +376,50 @@ def read_workspace_commit(workspace: Path, commit: str) -> list[dict[str, str]]:
 _REVIEW_BIND_SCHEMA = "gr2-review-bind/v2"
 
 
+# Query parameter names that carry a secret. A name is compared lowercased with '-' read as '_' (parse_qsl has
+# already percent-decoded it). A finite list, not secret detection: a clean URL never carries any of these.
+_CREDENTIAL_PARAMS = frozenset({
+    "token", "access_token", "refresh_token", "id_token", "oauth_token", "oauth2_token", "auth_token",
+    "private_token", "bearer", "auth", "authorization", "password", "passwd", "pass", "pwd", "secret",
+    "client_secret", "api_key", "apikey", "key", "sig", "signature", "x_access_token",
+})
+
+
 def url_has_credentials(url: str) -> bool:
-    """URL userinfo other than an SSH login. Never prints the URL. The one owner of this rule:
-    store init and every review-record writer and the publisher ask it here."""
+    """URL userinfo other than an SSH login, a credential-named query parameter, or any fragment (git never
+    uses one, so it can only carry data). Never prints the URL. The one owner of this rule: store init, every
+    review-record writer, the publisher, the receiver and lane pr create ask it here."""
     head = url.split("://", 1)[0]
     address = url.split("::", 1)[1] if "::" in head else url
     parsed = urlsplit(address)
     if parsed.password is not None:
         return True
-    return parsed.username is not None and parsed.scheme.lower() not in {"ssh", "git+ssh", "ssh+git"}
+    if parsed.username is not None and parsed.scheme.lower() not in {"ssh", "git+ssh", "ssh+git"}:
+        return True
+    if parsed.fragment or address.endswith("#"):
+        return True
+    for name, _value in parse_qsl(parsed.query, keep_blank_values=True):
+        if name.strip().lower().replace("-", "_") in _CREDENTIAL_PARAMS:
+            return True
+    return False
+
+
+def _is_loopback_host(host: str) -> bool:
+    """This machine, by name or by any numeric spelling (127.1, 2130706433, 0x7f000001, ::ffff:127.0.0.1).
+    No DNS lookup: a name other than localhost is left to the network."""
+    host = host.strip("[]").lower().rstrip(".")
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+        mapped = getattr(address, "ipv4_mapped", None)
+        return address.is_loopback or bool(mapped and mapped.is_loopback)
+    except ValueError:
+        pass
+    try:  # the classic IPv4 parser git's resolver also accepts: short, integer, octal and hex forms
+        return socket.inet_aton(host)[0] == 127
+    except (OSError, ValueError):
+        return False
 
 
 _PORTABLE_SCHEMES = {"https", "http", "ssh", "git", "git+ssh", "ssh+git"}
@@ -394,8 +431,14 @@ def _is_portable_remote(url: str) -> bool:
     anything else -- an absolute or relative path, file://, a bare remote alias, a transport
     helper -- means something only on the author's host, so it must not be published off it."""
     if "://" in url:
-        return url.split("://", 1)[0].lower() in _PORTABLE_SCHEMES
-    return bool(_SCP_LIKE.match(url))
+        if url.split("://", 1)[0].lower() not in _PORTABLE_SCHEMES:
+            return False
+        # A loopback host names this machine, so its path is author-local too.
+        return not _is_loopback_host(urlsplit(url).hostname or "")
+    if not _SCP_LIKE.match(url):
+        return False
+    host = url.split(":", 1)[0].rsplit("@", 1)[-1]
+    return not _is_loopback_host(host)
 
 
 def _refuse_remote_credentials(key: str, remote: str) -> None:
@@ -1199,6 +1242,8 @@ def reconstruct_review_lane(
         raise GripReviewRefused("row_carries_no_objects", key, "reconstruction needs a carried range")
     repo = _read_repo_state(workspace, commit, bind=True)[key]
     remote, base, bound_head = repo["remote"], repo["base"], repo["commit"]
+    # A received record is checked again before its remote is dialled (a credentialed record must not clone).
+    _refuse_remote_credentials(key, remote)
     head_tree_expected = (_carried(workspace, commit, key, "objects", "head-tree") or "").strip()
     committers = _carried(workspace, commit, key, "objects", "committers")
     range_text = _carried(workspace, commit, key, "objects", "range.patch") or ""
@@ -1551,6 +1596,10 @@ def receive_review_commit(workspace: Path, commit: str, remote: str,
         if _bind_git(workspace, "cat-file", "-t", actual).stdout.strip() != "commit":
             raise GripCorruptError("fetched_review_kind_mismatch: expected a commit")
         _require_review_content(workspace, actual, canonical)
+        # A record that carries a credential in any remote is refused before a local review bind is published;
+        # the temporary transfer ref is removed on refusal (the finally below).
+        for key, fields in sorted(_read_repo_state(workspace, actual, bind=True).items()):
+            _refuse_remote_credentials(key, fields["remote"])
         for spelling in _review_refs_for(actual):
             existing = _bind_git(workspace, "rev-parse", "--verify", "--quiet", spelling)
             if existing.returncode == 0 and existing.stdout.strip() != actual:

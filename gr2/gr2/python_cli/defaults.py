@@ -135,7 +135,7 @@ def review(binds: list[str], members_of, heads_of) -> tuple[str, str]:
         return matches[0], "bind at the current heads"
     if not matches:
         skipped = f" ({len(unreadable)} unreadable bind(s) skipped)" if unreadable else ""
-        raise Unresolved("review_ambiguous: no review bind matches the members' current heads" + skipped
+        raise Unresolved("review_ambiguous: no pinned review matches the members' current heads" + skipped
                          + "; bind one, or pass the review id")
     raise Unresolved("review_ambiguous: several binds match the current heads ("
                      + ", ".join(f"gr:{m.removeprefix('gr:')}" for m in matches) + "); pass the review id")

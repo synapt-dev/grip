@@ -608,7 +608,7 @@ def _bind_review_rows_body(
     points it at the leak scanner. The verdict is recorded in the object."""
     from . import review_field_tree as fd
     if not rows:
-        raise GripCorruptError("review bind requires at least one repository row")
+        raise GripCorruptError("review pin requires at least one repository row")
     author = _review_bind_author(workspace)
     members: list[dict[str, object]] = []
     scan_items: list[tuple[str, str]] = [("author", author)]
@@ -705,7 +705,7 @@ def _review_bind_author(workspace: Path) -> str:
     if proc.returncode != 0 or not name or any(ord(c) < 32 or ord(c) == 127 for c in name):
         raise GripReviewRefused(
             "bind_author_unavailable", str(workspace),
-            "set the binder's Git identity with git config user.name 'Your Name' in the workspace root, then retry review bind")
+            "set the binder's Git identity with git config user.name 'Your Name' in the workspace root, then retry review pin")
     return name
 
 
@@ -1388,7 +1388,7 @@ def _validate_bind_store(workspace: Path, *, create: bool = False) -> tuple[list
             _validate_grip_repo(workspace)  # not a workspace at all: the existing refusal
             return None
         if not create:
-            raise ReviewStoreAbsent(f"No review bind is bound in {workspace}: nothing has been stored there yet.")
+            raise ReviewStoreAbsent(f"No review is pinned in {workspace}: nothing has been stored there yet.")
         before = {entry.name for entry in workspace.iterdir()}
         had_git = (workspace / ".git").exists()
         _set_up_native_store(workspace)
@@ -1485,7 +1485,7 @@ def _resolve_bound(workspace: Path, commit: str) -> str:
                 found = True
         if found:
             return full
-    raise ReviewStoreAbsent(f"No review bind {commit} is bound in {workspace}.")
+    raise ReviewStoreAbsent(f"No review {commit} is pinned in {workspace}.")
 
 
 def _review_transport_identity(commit: str, ref: str | None) -> tuple[str, str]:

@@ -43,10 +43,10 @@ def test_subject_maps_reviewed_heads_and_preserves_explicit_target(bound_subject
     assert rows[0]["head"] != rows[1]["head"]
     assert all(row["head"] != row["base"] for row in rows)
     assert app_module.resolve_review_subject(ws) == expected
-    assert "the only review bind" in capsys.readouterr().err
+    assert "the only pinned review" in capsys.readouterr().err
     for explicit in (target, target[3:]):
         assert app_module.resolve_review_subject(ws, explicit) == expected
-        assert "the only review bind" not in capsys.readouterr().err
+        assert "the only pinned review" not in capsys.readouterr().err
     # A live checkout may move after the bind. Subject facts stay pinned to its record.
     _git(ws / "alpha", "commit", "--allow-empty", "-qm", "after review")
     assert _git_out(ws / "alpha", "rev-parse", "HEAD") != rows[0]["head"]
@@ -61,13 +61,13 @@ def test_invalid_explicit_subject_never_falls_back(bound_subject, capsys, explic
     assert error.value.exit_code == 2
     diagnostic = capsys.readouterr().err
     assert "not_bound:" in diagnostic
-    assert "the only review bind" not in diagnostic
+    assert "the only pinned review" not in diagnostic
 
 
 def test_subject_without_bind_names_missing_input(two_member_ws):
     rc, output = _cli("store", "init", str(two_member_ws))
     assert rc == 0, output
-    with pytest.raises(typer.BadParameter, match="no review bind"):
+    with pytest.raises(typer.BadParameter, match="no pinned review"):
         app_module.resolve_review_subject(two_member_ws)
 
 

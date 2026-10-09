@@ -139,7 +139,7 @@ def test_open_with_no_target_opens_the_one_bind_into_a_lane_beside_the_workspace
     code, out = _cli("review", "open", str(ws))
     assert code == 0, out
     lane = ws.parent / f"{ws.name}.review" / gr_id[3:11]
-    assert f"gr2: target={gr_id} (the only review bind in this workspace)" in out
+    assert f"gr2: target={gr_id} (the only pinned review in this workspace)" in out
     assert f"gr2: lane-dir={lane}" in out
     assert (lane / ".git").is_dir() and not str(lane).startswith(str(ws) + "/")
 
@@ -162,7 +162,7 @@ def test_open_with_no_binds_refuses_naming_bind(two_member_ws: Path) -> None:
     assert _cli("store", "init", str(ws))[0] == 0
     code, out = _cli("review", "open", str(ws))
     out = _flat(out)
-    assert code != 0 and "no review bind to open" in out and "review bind" in out
+    assert code != 0 and "no pinned review to open" in out and "review pin" in out
 
 
 def test_an_existing_default_lane_dir_is_refused_not_reused(two_member_ws: Path) -> None:

@@ -3269,7 +3269,7 @@ def _the_one_review_bind(workspace_root: Path, verb: str = "open") -> str:
     several binds and name the invoking reader in the remedy."""
     binds = _review_call(grip.list_review_binds, workspace_root)
     if not binds:
-        raise typer.BadParameter(f"this workspace has no review bind to {verb}; make one with `review bind` first, or name the target")
+        raise typer.BadParameter(f"this workspace has no pinned review to {verb}; make one with `review pin` first, or name the target")
     if len(binds) > 1:
         listing = "; ".join(f"gr:{c} ({when})" for c, when in binds)
         raise typer.BadParameter(
@@ -3277,7 +3277,7 @@ def _the_one_review_bind(workspace_root: Path, verb: str = "open") -> str:
             f"for example `review {verb} <root> gr:<sha>`"
         )
     commit = binds[0][0]
-    typer.echo(f"gr2: target=gr:{commit} (the only review bind in this workspace)", err=True)
+    typer.echo(f"gr2: target=gr:{commit} (the only pinned review in this workspace)", err=True)
     return f"gr:{commit}"
 
 
@@ -3310,7 +3310,7 @@ def review_open(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
-    """Open a review lane. Reconstruction may omit the root and sole bind target.
+    """Open a review lane. Reconstruction may omit the root and the sole pinned review.
 
     Explicit roots and targets retain their roles. Missing or ambiguous context
     refuses instead of choosing another workspace or the latest bind. ``open``
@@ -3497,7 +3497,7 @@ def pr_create(
     lane_name: Optional[str] = typer.Argument(None, help="Lane name. Defaults to the unit's current lane."),
     platform: str = typer.Option("github", "--platform", help="Platform adapter name"),
     base_branch: Optional[str] = typer.Option(None, "--base", help="Base branch for created PRs. A lane defaults to main; a review uses each member's tracked branch."),
-    review: Optional[str] = typer.Option(None, "--review", help="Review ID (gr:<sha>) to open PRs for; defaults to the workspace's only review bind"),
+    review: Optional[str] = typer.Option(None, "--review", help="Review ID (gr:<sha>) to open PRs for; defaults to the workspace's only pinned review"),
     draft: bool = typer.Option(True, "--draft/--no-draft", help="Create drafts by default. --no-draft explicitly publishes PRs."),
     title: Optional[str] = typer.Option(None, "--title", help="Title for every PR in the group. Defaults to the lane name, which makes every PR in a set read identically; pass one when a reviewer must be able to tell the PRs apart."),
     body: Optional[str] = typer.Option(None, "--body", help="Body for every PR in the group. Defaults to a line naming the group and listing its repos."),
@@ -3874,7 +3874,7 @@ def _normalize_review_row(raw: object) -> dict:
     return row
 
 
-@review_app.command("bind")
+@review_app.command("pin")
 def review_bind(
     ctx: typer.Context,
     workspace_root: Optional[Path] = typer.Argument(None),
@@ -3892,7 +3892,7 @@ def review_bind(
     ratified: Optional[str] = typer.Option(None, "--ratified", help="Named ratify receipt id: the sanctioned fix-forward when a --head is already on the remote"),
     members: Optional[str] = typer.Option(None, "--members", help="With no rows given: bind only these members (comma-separated names)"),
 ) -> None:
-    """Bind a review gr commit for one or more repository rows; print ``gr:<commit>``.
+    """Pin a review gr commit for one or more repository rows; print ``gr:<commit>``.
 
     With no row given at all, every member whose checkout is ahead of its pin is bound, and the rows chosen are
     printed BEFORE anything is bound (a bind is a local ref, so it can be thrown away, but a run with no terminal
@@ -3979,6 +3979,10 @@ def review_bind(
         payload={"bind_commit": f"gr:{commit}", "repos": [str(r.get("key", "")) for r in rows]},
     )
     typer.echo(f"gr:{commit}")
+
+
+# `bind` is the earlier name of `review pin`; it stays as an alias with the same options and output.
+review_app.command("bind", help="Alias of `review pin`.")(review_bind)
 
 
 def _review_lane_workspace(lane_dir: Path) -> Path | None:
@@ -4068,7 +4072,7 @@ def _emit_review_opened(workspace_root: Path, sha: str, lane_dir: Path, results:
 @review_app.command("open-gr", hidden=True, cls=RootOptionalCommand)  # hidden alias for one release, dropped at 2.0 GA
 def review_open_gr(
     workspace_root: Path,
-    commit: str = typer.Argument(..., help="The review bind commit, as gr:<sha> or a bare sha"),
+    commit: str = typer.Argument(..., help="The pinned review commit, as gr:<sha> or a bare sha"),
     key: Optional[str] = typer.Option(None, "--repo", help="Repository key to materialize; omit to materialize every bound row into <lane-dir>/<key>"),
     lane_dir: Path = typer.Option(..., "--lane-dir", help="Directory to materialize into (the row's clone for one --repo, or a parent holding one subdir per row)"),
     enter: bool = typer.Option(False, "--enter", help="Materialize the reconstruction (the only open mode)"),
@@ -4403,11 +4407,11 @@ def review_receive(
 @review_app.command("show", cls=ReviewTargetCommand)
 def review_show(
     workspace_root: Path,
-    commit: Optional[str] = typer.Argument(None, help="The review bind, as gr:<sha> or a bare sha; omitted only when the workspace has exactly one bind"),
+    commit: Optional[str] = typer.Argument(None, help="The pinned review, as gr:<sha> or a bare sha; omitted only when the workspace has exactly one bind"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
-    """Show what a review bind holds: each member's repository and commit range, the title and body it was bound
+    """Show what a pinned review holds: each member's repository and commit range, the title and body it was bound
     with, and the files its range changes. Read-only; with no id, selects the workspace's sole bind."""
     if commit is None:
         commit = _the_one_review_bind(workspace_root.resolve(), "show")
@@ -4431,7 +4435,7 @@ def review_show(
 @review_app.command("verify", cls=ReviewTargetCommand)
 def review_verify(
     workspace_root: Path,
-    commit: Optional[str] = typer.Argument(None, help="The review bind commit, as gr:<sha> or a bare sha; omitted only when the workspace has exactly one bind"),
+    commit: Optional[str] = typer.Argument(None, help="The pinned review commit, as gr:<sha> or a bare sha; omitted only when the workspace has exactly one bind"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
@@ -4485,13 +4489,13 @@ def _resolve_merge_defaults(ws: Path, review_id: Optional[str], into: Optional[s
     return view["id"], into, feature
 
 
-@review_app.command("approve", cls=ReviewHeadCommand)
+@review_app.command("stamp", cls=ReviewHeadCommand)
 def review_approve(
     workspace_root: Path,
-    review_id: Optional[str] = typer.Argument(None, help="Review id; default is the bind at the current member heads"),
+    review_id: Optional[str] = typer.Argument(None, help="Review id; default is the pinned review at the current member heads"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
-    """Append an unsigned exact-head approval as git user.name, on every member remote."""
+    """Stamp the review: append an unsigned exact-head approval as git user.name, on every member remote."""
     from . import approvals
     try:
         result = approvals.approve(workspace_root.resolve(), review_id)
@@ -4499,6 +4503,10 @@ def review_approve(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2)
     typer.echo(json.dumps(result))
+
+
+# `approve` is the earlier name of `review stamp`; it stays as an alias with the same options and output.
+review_app.command("approve", help="Alias of `review stamp`.", cls=ReviewHeadCommand)(review_approve)
 
 
 @review_app.command("merge", cls=ReviewHeadCommand)
@@ -4534,7 +4542,7 @@ def review_merge(
         raise typer.Exit(code)
 
 
-@review_app.command("rebind")
+@review_app.command("repin")
 def review_rebind_cmd(
     frozen_dir: Path = typer.Argument(..., help="A frozen gate directory (freeze-public-range.sh output) to rebase onto the moved base"),
     repo: Path = typer.Option(..., "--repo", help="A clone whose origin remote hosts the target branch (used to read the live base head)"),
@@ -4543,7 +4551,7 @@ def review_rebind_cmd(
     allow_public_ref: bool = typer.Option(False, "--allow-public-ref", help="Proceed even though the intended ref is already on the remote — the sanctioned fix-forward on a branch already ratified and pushed"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Rebase a FROZEN range onto the live tip of its target ref when the base has moved.
+    """Repin: rebase a FROZEN range onto the live tip of its target ref when the base has moved.
 
     Reads the frozen base from ``<frozen_dir>/REQUEST.md`` and the live base by
     ls-remote. If the base is unchanged, prints ``base_unchanged`` and writes
@@ -4577,12 +4585,16 @@ def review_rebind_cmd(
         typer.echo(f"rebased: patch-ids held; new frozen dir at {result.out_dir}")
 
 
+# `rebind` is the earlier name of `review repin`; it stays as an alias with the same options and output.
+review_app.command("rebind", help="Alias of `review repin`.")(review_rebind_cmd)
+
+
 @pr_app.command("status", cls=ReviewSubjectCommand)
 def pr_status(
     workspace_root: Path,
     owner_unit: Optional[str] = typer.Argument(None, help="Owner unit of a lane. Omit for the current review's PRs."),
     lane_name: Optional[str] = typer.Argument(None, help="Lane name. Defaults to the unit's current lane."),
-    review: Optional[str] = typer.Option(None, "--review", help="Review ID (gr:<sha>); defaults to the workspace's only review bind"),
+    review: Optional[str] = typer.Option(None, "--review", help="Review ID (gr:<sha>); defaults to the workspace's only pinned review"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
@@ -4627,7 +4639,7 @@ def pr_checks(
     workspace_root: Path,
     owner_unit: Optional[str] = typer.Argument(None, help="Owner unit of a lane. Omit for the current review's PRs."),
     lane_name: Optional[str] = typer.Argument(None, help="Lane name. Defaults to the unit's current lane."),
-    review: Optional[str] = typer.Option(None, "--review", help="Review ID (gr:<sha>); defaults to the workspace's only review bind"),
+    review: Optional[str] = typer.Option(None, "--review", help="Review ID (gr:<sha>); defaults to the workspace's only pinned review"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
@@ -4743,7 +4755,7 @@ def pr_view(
     workspace_root: Path,
     owner_unit: Optional[str] = typer.Argument(None, help="Owner unit of a lane. Omit for the current review's PRs."),
     lane_name: Optional[str] = typer.Argument(None, help="Lane name. Defaults to the unit's current lane."),
-    review: Optional[str] = typer.Option(None, "--review", help="Review ID (gr:<sha>); defaults to the workspace's only review bind"),
+    review: Optional[str] = typer.Option(None, "--review", help="Review ID (gr:<sha>); defaults to the workspace's only pinned review"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     repo_filter: Optional[str] = typer.Option(None, "--repo", help="Restrict the view to one member"),
     root: Optional[Path] = ROOT_OPTION,
@@ -4855,7 +4867,7 @@ def pr_merge(
     workspace_root: Path,
     owner_unit: Optional[str] = typer.Argument(None, help="Owner unit of a lane. Omit to merge the current review's PRs."),
     lane_name: Optional[str] = typer.Argument(None, help="Lane name. Defaults to the unit's current lane."),
-    review: Optional[str] = typer.Option(None, "--review", help="Review ID (gr:<sha>); defaults to the workspace's only review bind"),
+    review: Optional[str] = typer.Option(None, "--review", help="Review ID (gr:<sha>); defaults to the workspace's only pinned review"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     method: Optional[str] = typer.Option(
         None,

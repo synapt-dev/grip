@@ -74,8 +74,12 @@ MIN_ARGS = 95
 #
 # 52 -> 53, `review show --json` (tier A4, I17): a review verb outside the store group, so its
 # shape is not registered in the store table either; it is one new name that documents none.
+#
+# 53 -> 54: `review repin` is the new name of `review rebind`, which stays as an alias. rebind's
+# --json payload already had no registered shape, so the new spelling is one extra residual,
+# the same way `review check` was. `pin` and `stamp` add none: their old names carried no --json.
 
-JSON_VERBS_PENDING = 53
+JSON_VERBS_PENDING = 54
 
 # The kinds a stranger BUILDS ON INDEPENDENTLY: a verb, a flag, a positional
 # and an exit code are each actionable on their own -- a caller writes

@@ -16,7 +16,7 @@ def test_review_reader_selects_only_one_bind(two_member_ws, monkeypatch, tmp_pat
     nested.mkdir()
     monkeypatch.chdir(nested)
     rc, output = _cli("review", verb, "--json")
-    assert rc == 2 and "no review bind" in output
+    assert rc == 2 and "no pinned review" in output
     rows = []
     for name in ("alpha", "beta"):
         repo = ws / name
@@ -45,7 +45,7 @@ def test_review_reader_selects_only_one_bind(two_member_ws, monkeypatch, tmp_pat
     for args in (["not-a-bind"], [str(ws), bind, "extra"]):
         result = make_cli_runner().invoke(app, ["review", verb, *args, "--json"])
         assert result.exit_code != 0
-        assert "the only review bind" not in result.stderr
+        assert "the only pinned review" not in result.stderr
     for target in (bind, bind[3:], bind[3:15]):
         if ":" not in target or os.name != "nt":
             (nested / target).mkdir()
@@ -56,8 +56,8 @@ def test_review_reader_selects_only_one_bind(two_member_ws, monkeypatch, tmp_pat
     if os.name != "nt":
         (nested / "gr:not-a-bind").mkdir()
     result = make_cli_runner().invoke(app, ["review", verb, "gr:not-a-bind", "--json"])
-    assert result.exit_code != 0 and "No review bind" in result.stderr
-    assert "the only review bind" not in result.stderr
+    assert result.exit_code != 0 and "is pinned in" in result.stderr
+    assert "the only pinned review" not in result.stderr
     if verb == "show":
         actual = json.loads(explicit)
         assert len(actual["members"]) == 2

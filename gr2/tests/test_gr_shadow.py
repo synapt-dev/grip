@@ -108,9 +108,10 @@ def test_a_timeout_is_not_a_verdict_and_is_judged_again(install, monkeypatch):
     monkeypatch.setattr(gr_shadow, "_gr1_version", lambda g: gr_shadow._TIMEOUT)
     assert shadow_line([], str(gr2), str(prefix)) is None
     assert not (prefix / MARKER).exists(), "a timeout was recorded as a verdict"
-    monkeypatch.undo()
+    monkeypatch.undo()  # restores the caller's environment too, so set what this test needs again
     monkeypatch.setenv("PATH", os.pathsep.join([str(brew), str(prefix / "bin"), "/usr/bin", "/bin"]))
     monkeypatch.setenv("XDG_STATE_HOME", str(prefix.parent / "state"))
+    monkeypatch.delenv("GR2_QUIET_CONTEXT", raising=False)
     assert gr.exists() and shadow_line([], str(gr2), str(prefix)) is not None
 
 

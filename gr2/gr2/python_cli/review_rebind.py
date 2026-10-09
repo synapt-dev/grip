@@ -181,7 +181,7 @@ def rebind(frozen_dir: Path, repo: Path, target_ref: str, out_dir: Path,
         if present:
             raise RebindRefused(
                 "intended_ref_public",
-                f"{intended} is already on {url} at {present[0][:12]}; a rebind would "
+                f"{intended} is already on {url} at {present[0][:12]}; a repin would "
                 "force-push it — pass allow_public_ref for a ratified fix-forward",
             )
 

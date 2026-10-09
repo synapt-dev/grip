@@ -270,7 +270,7 @@ def test_corrupt_content_is_not_bound_or_allocated(handoff, monkeypatch):
         pytest.fail("wrong kind reached canonical publication")
     monkeypatch.setattr(grip, "_publish_bind", no_publish)
     result = cli(receiver, monkeypatch, "receive", "gr:" + wrong_kind, "--remote", remote)
-    assert result.exit_code == 2 and "not a gr2 review bind commit" in result.output
+    assert result.exit_code == 2 and "not a gr2 pinned review commit" in result.output
     assert git(receiver, "for-each-ref", "--format=%(refname)", PREFIX) == ""
     assert authority(receiver) == original
 

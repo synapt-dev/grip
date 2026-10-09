@@ -120,8 +120,8 @@ def test_ahead_names_at_pin_on_stderr_and_stdout_only_id(two_member_ws: Path) ->
     assert _git(ws / "alpha", "merge-base", "--is-ancestor", base, head).returncode == 0
     result = _invoke("review", "bind", str(ws))
     gr_id = _assert_only_bind_stdout(result)
-    assert "beta (checkout is at its pin)" in result.stderr
-    assert "gr2: bind alpha " in result.stderr
+    assert "beta (checkout is at the workspace's pin)" in result.stderr
+    assert "gr2: pin alpha " in result.stderr
     shown = _invoke("review", "show", str(ws), gr_id, "--json")
     [row] = json.loads(shown.stdout)["members"]
     assert (row["key"], row["base"], row["head"]) == ("alpha", base, head)
@@ -161,7 +161,7 @@ def test_non_descendant_refuses(two_member_ws: Path, kind: str) -> None:
     result = _invoke("review", "bind", str(ws))
     assert result.exit_code == 2, result.output
     message = _flat(result.stderr)
-    assert "nothing to bind" in message and "alpha (checkout does not descend from its pin)" in message
+    assert "nothing to pin" in message and "alpha (checkout does not descend from the workspace's pin)" in message
     assert result.stdout == "" and _refs(ws) == before
 
 
@@ -194,7 +194,7 @@ def test_mixed_names_orphan_on_stderr_and_stdout_only_id(two_member_ws: Path) ->
     assert _git(ws / "beta", "merge-base", "--is-ancestor", beta_pin, beta_head, check=False).returncode == 1
     result = _invoke("review", "bind", str(ws))
     gr_id = _assert_only_bind_stdout(result)
-    assert "beta (checkout does not descend from its pin)" in result.stderr
+    assert "beta (checkout does not descend from the workspace's pin)" in result.stderr
     shown = _invoke("review", "show", str(ws), gr_id, "--json")
     [row] = json.loads(shown.stdout)["members"]
     assert (row["key"], row["base"], row["head"]) == ("alpha", base, head)

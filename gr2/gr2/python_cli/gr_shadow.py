@@ -24,14 +24,15 @@ from pathlib import Path
 MARKER = ".gr2-gr-shadow"
 RESOLVER_FROM = (1, 6)  # gitgrip 1.6 ships the resolver, so its `gr` applies the same table as ours
 _TIMEOUT = object()
+_VERSION_TIMEOUT_S = 2  # a gr that has not answered by then is judged again on the next run
 
 
 def _gr1_version(gr: str):
     """(major, minor, text) when `gr --version` reads `gr X.Y.Z`; None for any other answer; _TIMEOUT for none."""
     env = {k: v for k, v in os.environ.items() if k != "GR_RESOLVED"}
     try:
-        out = subprocess.run([gr, "--version"], capture_output=True, text=True, timeout=2, env=env,
-                             stdin=subprocess.DEVNULL).stdout
+        out = subprocess.run([gr, "--version"], capture_output=True, text=True,
+                             timeout=_VERSION_TIMEOUT_S, env=env, stdin=subprocess.DEVNULL).stdout
     except subprocess.TimeoutExpired:
         return _TIMEOUT
     except (OSError, subprocess.SubprocessError):

@@ -981,7 +981,8 @@ pub fn run_spawn_up(
         let log_path = log_dir.join("output.log");
         let capture_setup = (|| -> anyhow::Result<()> {
             std::fs::create_dir_all(&log_dir)?;
-            let pipe_cmd = crate::core::pane_log::pipe_command(&std::env::current_exe()?, &log_path)?;
+            let pipe_cmd =
+                crate::core::pane_log::pipe_command(&std::env::current_exe()?, &log_path)?;
             let pipe_status = Command::new("tmux")
                 .args(["pipe-pane", "-t", &target, &pipe_cmd])
                 .status()?;

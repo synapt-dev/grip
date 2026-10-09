@@ -101,6 +101,8 @@ Not there yet:
 
 `review bind`, `review approve` and `review rebind` remain as aliases of `pin`, `stamp` and `repin`.
 
+The words these commands use (lane, pin, stamp, repin, gate, review) are defined in [docs/GLOSSARY.md](docs/GLOSSARY.md).
+
 ## Stamps (unsigned approvals)
 
 Inside a workspace with one pinned review matching every member's current head,

@@ -10,6 +10,9 @@ fn main() -> ExitCode {
     if let Some(code) = gitgrip::gr_resolver::entry() {
         return ExitCode::from(u8::try_from(code).unwrap_or(1));
     }
+    if let Some(code) = gitgrip::core::pane_log::entry() {
+        return ExitCode::from(u8::try_from(code).unwrap_or(1));
+    }
     gr1_main()
 }
 

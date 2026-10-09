@@ -33,12 +33,17 @@ mod unix {
         for _ in 0..1024 {
             input.write_all(&chunk).unwrap();
         }
+        input.write_all(b"CURRENT LIVE SENTINEL").unwrap();
         drop(input);
         let output = child.wait_with_output().unwrap();
         assert!(output.status.success(), "{:?}", output);
         assert!(output.stdout.is_empty());
         assert!(output.stderr.is_empty(), "{:?}", output);
-        assert_eq!(std::fs::metadata(&log).unwrap().len(), LIMIT_BYTES);
+        assert!(std::fs::metadata(&log).unwrap().len() <= LIMIT_BYTES);
+        assert!(std::fs::metadata(odd.join("output.log.1")).unwrap().len() <= LIMIT_BYTES);
+        assert!(std::fs::read(&log)
+            .unwrap()
+            .ends_with(b"CURRENT LIVE SENTINEL"));
         assert!(!std::fs::read(&log)
             .unwrap()
             .windows(4)

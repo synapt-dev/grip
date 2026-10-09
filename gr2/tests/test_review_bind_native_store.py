@@ -181,7 +181,7 @@ def test_verify_on_a_native_root_with_nothing_bound_does_not_say_run_store_init(
     code, out = _cli("review", "verify", str(ws), "gr:" + "0" * 40)
     assert code == 2, out
     assert "store init" not in out and "grip init" not in out, out
-    assert "bind" in out, out
+    assert "pinned" in out, out
 
 
 def test_an_ordinary_root_commit_is_not_a_bound_review(two_member_ws: Path) -> None:

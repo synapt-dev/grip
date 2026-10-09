@@ -296,7 +296,7 @@ mitigation is:
 ### 5.1 Adapter protocol and capabilities
 
 Creation requests include an optional `CreatePRRequest.remote`: the exact Git
-URL configured for that member in the workspace spec or review bind. The PR
+URL configured for that member in the workspace spec or pinned review. The PR
 group saves it as `prs[].remote`. This is additive to adapter API version 1;
 factories still take no arguments, and `request.repo` keeps its existing value.
 Direct Python callers may omit the remote, in which case it is `None` and the

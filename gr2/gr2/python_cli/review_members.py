@@ -51,7 +51,7 @@ def changed_member_rows(workspace_root: Path, only: list[str] | None = None) -> 
             continue
         checkout = workspace_root / m.path
         if m.pin is None:
-            skipped.append(f"{m.name} (no usable pin recorded)")
+            skipped.append(f"{m.name} (the workspace records no usable pin)")
             continue
         if m.url is None:
             skipped.append(f"{m.name} (no remote url recorded)")
@@ -62,11 +62,11 @@ def changed_member_rows(workspace_root: Path, only: list[str] | None = None) -> 
             continue
         sha = head.stdout.strip()
         if sha == m.pin:
-            skipped.append(f"{m.name} (checkout is at its pin)")
+            skipped.append(f"{m.name} (checkout is at the workspace's pin)")
             continue
         ancestry = gitops.git(checkout, "merge-base", "--is-ancestor", m.pin, sha)
         if ancestry.returncode == 1:
-            skipped.append(f"{m.name} (checkout does not descend from its pin)")
+            skipped.append(f"{m.name} (checkout does not descend from the workspace's pin)")
             continue
         if ancestry.returncode != 0:
             skipped.append(f"{m.name} (ancestry could not be read)")

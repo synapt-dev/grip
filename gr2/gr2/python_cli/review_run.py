@@ -780,7 +780,7 @@ def _run_review_lane(
     if order is not None and list(order) != [repo.get("key", "")]:
         raise ReviewRunRefused(
             "bad_order",
-            f"--order names {list(order)}, but this lane binds one member, "
+            f"--order names {list(order)}, but this lane holds one member, "
             f"{repo.get('key', '')!r}",
         )
     bound_tree = repo.get("bound_head_tree", "")
@@ -1091,7 +1091,7 @@ def _resolve_member_order(keys: list[str], order: list[str] | None) -> list[str]
     if sorted(order) != sorted(keys):
         raise ReviewRunRefused(
             "bad_order",
-            f"--order must name every member exactly once; this lane binds {keys}, got {order}",
+            f"--order must name every member exactly once; this lane holds {keys}, got {order}",
         )
     return order
 
@@ -1323,7 +1323,7 @@ def _run_multi_member_lane(
         if package is not None or install is not None:
             raise ReviewRunRefused(
                 "member_flags_ambiguous",
-                "--package and --install name one package for one repo, and this lane binds "
+                "--package and --install name one package for one repo, and this lane holds "
                 f"{len(repos)}; declare `package` and `install` in each member's own "
                 ".review-install instead",
             )
@@ -1503,7 +1503,7 @@ def run_test_command_in_lane(
         if len(repos) > 1:
             raise ReviewRunRefused(
                 "member_runner_unsupported",
-                f"a multi-member lane runs pytest members only in this version; marker binds "
+                f"a multi-member lane runs pytest members only in this version; marker holds "
                 f"{len(repos)} repos and a non-pytest runner has no per-member form yet",
             )
         repo = repos[0]

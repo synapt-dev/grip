@@ -102,7 +102,7 @@ def test_a_record_of_another_schema_or_kind_is_not_a_bind(record_world):
     w = record_world
     for change in ({"schema": "something-else"}, {"kind": "project"}):
         commit = _bound_record(w, {**w["record"], **change})
-        with pytest.raises(grip.GripCorruptError, match="not a gr2 review bind commit"):
+        with pytest.raises(grip.GripCorruptError, match="not a gr2 pinned review commit"):
             grip.show_review_commit(w["author"], commit)
 
 

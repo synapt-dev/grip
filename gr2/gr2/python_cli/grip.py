@@ -705,7 +705,7 @@ def _review_bind_author(workspace: Path) -> str:
     if proc.returncode != 0 or not name or any(ord(c) < 32 or ord(c) == 127 for c in name):
         raise GripReviewRefused(
             "bind_author_unavailable", str(workspace),
-            "set the binder's Git identity with git config user.name 'Your Name' in the workspace root, then retry review pin")
+            "set your Git identity with git config user.name 'Your Name' in the workspace root, then retry review pin")
     return name
 
 
@@ -751,7 +751,7 @@ def show_review_commit(workspace: Path, commit: str) -> dict[str, object]:
             "files": _range_files(None if m["objects"] is None else m["objects"]["range.patch"]),
         } for key, m in sorted(view["members"].items())]}
     if _bind_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip() != _REVIEW_BIND_SCHEMA:
-        raise GripCorruptError("not a gr2 review bind commit")
+        raise GripCorruptError("not a gr2 pinned review commit")
     rows = _read_repo_state(workspace, commit, bind=True)
     members: list[dict[str, object]] = []
     for key, fields in sorted(rows.items()):
@@ -781,7 +781,7 @@ def _verify_review_commit_in_store(workspace: Path, commit: str) -> dict[str, ob
     if _is_field_tree_bind(workspace, commit):
         return _verify_field_tree_commit(workspace, commit)
     if _bind_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip() != _REVIEW_BIND_SCHEMA:
-        raise GripCorruptError("not a gr2 review bind commit")
+        raise GripCorruptError("not a gr2 pinned review commit")
 
     stored_tree = _bind_git(workspace, "rev-parse", f"{commit}^{{tree}}").stdout.strip()
     rows = _read_repo_state(workspace, commit, bind=True)
@@ -949,7 +949,7 @@ def _decode_field_tree(repo: Path, tree: str) -> dict[str, object]:
     except fd.ReviewRecordError as exc:
         raise GripCorruptError(f"invalid field tree review record: {exc}") from exc
     if record.get("schema") != _REVIEW_BIND_SCHEMA or record.get("kind") != "review":
-        raise GripCorruptError("not a gr2 review bind commit")
+        raise GripCorruptError("not a gr2 pinned review commit")
     members: dict[str, dict[str, object]] = {}
     for m in record.get("members", []):
         key = m.get("key", "")
@@ -985,7 +985,7 @@ def _decode_field_tree(repo: Path, tree: str) -> dict[str, object]:
             "objects": objects, "evidence": evidence,
         }
     if not members:
-        raise GripCorruptError("invalid review repository tree: a bind names no member")
+        raise GripCorruptError("invalid review repository tree: a pinned review names no member")
     return {"tree": tree, "policy": record.get("policy", ""), "members": members,
             **({"author": record["author"]} if "author" in record else {})}
 
@@ -1425,7 +1425,7 @@ def _guarded_bind(workspace: Path, created: tuple[list[str], str] | None, write)
                 target.unlink()
         raise
     if created is not None:
-        print(f"set up a native store at {workspace} (store init), so a review can be bound", file=sys.stderr)
+        print(f"set up a native store at {workspace} (store init), so a review can be pinned", file=sys.stderr)
     return commit
 
 
@@ -1689,9 +1689,9 @@ def _migrate_one_bind(workspace: Path, repo: Path, old: str, fd) -> dict[str, st
     headers, _, message = raw.partition(b"\n\n")
     if any(line.startswith(b"encoding ") for line in headers.splitlines()):
         # The twin keeps the message bytes; without the header they would be read as UTF-8.
-        raise GripCorruptError("legacy_commit_encoding: the bind's commit declares an encoding, which the twin would not carry")
+        raise GripCorruptError("legacy_commit_encoding: the pinned review's commit declares an encoding, which the twin would not carry")
     if not _verify_review_commit_in_store(workspace, old)["tree_matches"]:
-        raise GripCorruptError("legacy_bind_tree_mismatch: the legacy bind does not verify as written")
+        raise GripCorruptError("legacy_bind_tree_mismatch: the legacy pinned review does not verify as written")
     members: list[dict[str, object]] = []
     for key, fields in sorted(_read_repo_state(workspace, old, bind=True).items()):
         member: dict[str, object] = {

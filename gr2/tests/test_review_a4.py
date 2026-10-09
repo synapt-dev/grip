@@ -71,7 +71,7 @@ def test_a_bare_bind_binds_the_member_whose_checkout_is_not_at_its_pin(two_membe
     _unpushed_head(ws)
     code, out = _cli("review", "bind", str(ws))
     assert code == 0, out
-    assert "gr2: bind alpha " in out and "beta (checkout is at its pin)" in out
+    assert "gr2: pin alpha " in out and "beta (checkout is at the workspace's pin)" in out
     gr_id = [l for l in out.splitlines() if l.startswith("gr:")][-1]
     _, shown = _cli("review", "show", str(ws), gr_id)
     assert "alpha:" in shown and "beta:" not in shown
@@ -82,7 +82,7 @@ def test_a_bare_bind_with_every_member_at_its_pin_refuses(two_member_ws: Path) -
     assert _cli("store", "init", str(ws))[0] == 0
     code, out = _cli("review", "bind", str(ws))
     out = _flat(out)
-    assert code != 0 and "nothing to bind" in out and "--rows-json" in out
+    assert code != 0 and "nothing to pin" in out and "--rows-json" in out
     assert not [l for l in _git_out(ws, "for-each-ref", REVIEW_REF_PREFIX).splitlines() if l]
 
 
@@ -91,7 +91,7 @@ def test_members_narrows_and_names_one_that_is_not_a_member(two_member_ws: Path)
     assert _cli("store", "init", str(ws))[0] == 0
     _unpushed_head(ws)
     code, out = _cli("review", "bind", str(ws), "--members", "beta")
-    assert code != 0 and "nothing to bind" in _flat(out)
+    assert code != 0 and "nothing to pin" in _flat(out)
     code, out = _cli("review", "bind", str(ws), "--members", "alpha,ghost")
     assert code == 0 and "ghost (not a member of this workspace)" in out
 
@@ -114,7 +114,7 @@ def test_a_member_with_no_pin_is_named_not_bound(two_member_ws: Path) -> None:
         out_lines.append(line)
     toml.write_text("\n".join(out_lines) + "\n")
     code, out = _cli("review", "bind", str(ws))
-    assert code == 0 and "beta (no usable pin recorded)" in out
+    assert code == 0 and "beta (the workspace records no usable pin)" in out
 
 
 def test_the_rows_are_printed_before_anything_is_bound(two_member_ws: Path) -> None:
@@ -130,7 +130,7 @@ def test_the_rows_are_printed_before_anything_is_bound(two_member_ws: Path) -> N
     _git(other, "-c", "user.name=o", "-c", "user.email=o@e.invalid", "commit", "-q", "-m", "moved")
     _git(other, "push", "-q", "origin", "main")
     code, out = _cli("review", "bind", str(ws))
-    assert code != 0 and "gr2: bind alpha" in out
+    assert code != 0 and "gr2: pin alpha" in out
     assert not [l for l in _git_out(ws, "for-each-ref", REVIEW_REF_PREFIX).splitlines() if l]
 
 

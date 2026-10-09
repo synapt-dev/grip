@@ -1,7 +1,6 @@
-//! Bounded, append-only capture of a tmux pane's terminal stream.
+//! Bounded, rotating capture of a tmux pane's terminal stream.
 //!
-//! Keep the first 10 MiB, including any bytes already present, then drain without writing. Existing logs are
-//! never shortened or rotated. One writer owns the file at a time, including while it drains at the cap.
+//! Keep the active 10 MiB and one previous segment. A stable sibling lock owns all rotations.
 
 use fs2::FileExt;
 use std::ffi::OsStr;
@@ -57,12 +56,28 @@ pub fn pipe_command(executable: &Path, log: &Path) -> io::Result<String> {
     Ok(format!("bash -c {}", quote(&worker)))
 }
 
-/// Append up to the remaining budget. Continue consuming stdin after the cap so pane output does not block.
-/// An already oversized log is preserved unchanged; the worker does not clean up older captures.
+/// Keep receiving current output after each cap crossing. An old oversized capture rotates intact on the
+/// next write; it is replaced by a bounded segment at the following rotation.
 pub fn capture(reader: &mut impl Read, path: &Path, limit: u64) -> io::Result<u64> {
+    if limit == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zero pane log cap",
+        ));
+    }
+    let mut lock_path = path.as_os_str().to_os_string();
+    lock_path.push(".lock");
+    let owner = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(lock_path)?;
+    // A replaced pipe can start before its predecessor sees EOF. Wait for that owner to finish rather
+    // than losing capture to a try-lock race. tmux closes the previous pipe when it replaces it.
+    owner.lock_exclusive()?;
+    let mut backup = path.as_os_str().to_os_string();
+    backup.push(".1");
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    file.try_lock_exclusive()?;
-    let mut remaining = limit.saturating_sub(file.metadata()?.len());
+    let mut size = file.metadata()?.len();
     let mut written = 0;
     let mut buffer = [0_u8; 8192];
     loop {
@@ -72,10 +87,24 @@ pub fn capture(reader: &mut impl Read, path: &Path, limit: u64) -> io::Result<u6
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) => return Err(error),
         };
-        let take = remaining.min(count as u64) as usize;
-        file.write_all(&buffer[..take])?;
-        remaining -= take as u64;
-        written += take as u64;
+        let mut offset = 0;
+        while offset < count {
+            if size >= limit {
+                file.flush()?;
+                drop(file);
+                std::fs::rename(path, &backup)?;
+                file = OpenOptions::new()
+                    .create_new(true)
+                    .append(true)
+                    .open(path)?;
+                size = 0;
+            }
+            let take = (limit - size).min((count - offset) as u64) as usize;
+            file.write_all(&buffer[offset..offset + take])?;
+            size += take as u64;
+            written += take as u64;
+            offset += take;
+        }
     }
     file.flush()?;
     Ok(written)
@@ -87,13 +116,17 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
-    fn cap_keeps_the_prefix_and_consumes_the_entire_stream() {
+    fn cap_rotates_and_keeps_receiving_the_tail() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("output.log");
-        let bytes = b"\x1b[2K\rspinner redraws keep arriving".repeat(1000);
+        let bytes = b"abcdefghijklmnopqrstuvw";
         let mut input = Cursor::new(&bytes);
-        assert_eq!(capture(&mut input, &path, 17).unwrap(), 17);
-        assert_eq!(std::fs::read(&path).unwrap(), &bytes[..17]);
+        assert_eq!(capture(&mut input, &path, 10).unwrap(), 23);
+        assert_eq!(std::fs::read(&path).unwrap(), b"uvw");
+        assert_eq!(
+            std::fs::read(dir.path().join("output.log.1")).unwrap(),
+            b"klmnopqrst"
+        );
         assert_eq!(input.position(), bytes.len() as u64);
     }
 
@@ -104,38 +137,64 @@ mod tests {
         std::fs::write(&path, b"prefix").unwrap();
         assert_eq!(
             capture(&mut Cursor::new(b"abcdefghij"), &path, 10).unwrap(),
-            4
+            10
         );
-        assert_eq!(std::fs::read(&path).unwrap(), b"prefixabcd");
-        let mut next = Cursor::new(b"more spinner output");
-        assert_eq!(capture(&mut next, &path, 10).unwrap(), 0);
-        assert_eq!(std::fs::read(&path).unwrap(), b"prefixabcd");
-        assert_eq!(next.position(), 19);
+        assert_eq!(std::fs::read(&path).unwrap(), b"efghij");
+        assert_eq!(
+            std::fs::read(dir.path().join("output.log.1")).unwrap(),
+            b"prefixabcd"
+        );
+        assert_eq!(capture(&mut Cursor::new(b"klmnop"), &path, 10).unwrap(), 6);
+        assert_eq!(std::fs::read(&path).unwrap(), b"op");
+        assert_eq!(
+            std::fs::read(dir.path().join("output.log.1")).unwrap(),
+            b"efghijklmn"
+        );
     }
 
     #[test]
-    fn oversized_old_log_is_not_shortened_or_appended() {
+    fn oversized_old_log_rotates_intact_before_new_output() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("output.log");
         let old = b"old capture already exceeds the budget";
         std::fs::write(&path, old).unwrap();
-        let mut input = Cursor::new(b"new bytes");
-        assert_eq!(capture(&mut input, &path, 4).unwrap(), 0);
-        assert_eq!(std::fs::read(&path).unwrap(), old);
-        assert_eq!(input.position(), 9);
+        let mut input = Cursor::new(b"new");
+        assert_eq!(capture(&mut input, &path, 4).unwrap(), 3);
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        assert_eq!(std::fs::read(dir.path().join("output.log.1")).unwrap(), old);
+        assert_eq!(input.position(), 3);
     }
 
     #[test]
-    fn another_owner_refuses_without_waiting_or_appending() {
+    fn replacement_waits_for_stable_owner_then_captures() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("output.log");
         std::fs::write(&path, b"old").unwrap();
-        let owner = OpenOptions::new().append(true).open(&path).unwrap();
+        let owner = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.path().join("output.log.lock"))
+            .unwrap();
         owner.try_lock_exclusive().unwrap();
-        assert!(capture(&mut Cursor::new(b"new"), &path, 10).is_err());
+        let (send, recv) = std::sync::mpsc::channel();
+        let worker_path = path.clone();
+        let worker = std::thread::spawn(move || {
+            send.send(capture(&mut Cursor::new(b"new"), &worker_path, 10))
+                .unwrap();
+        });
+        assert!(recv
+            .recv_timeout(std::time::Duration::from_millis(50))
+            .is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"old");
         drop(owner);
-        assert_eq!(capture(&mut Cursor::new(b"new"), &path, 10).unwrap(), 3);
+        assert_eq!(
+            recv.recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap()
+                .unwrap(),
+            3
+        );
+        worker.join().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"oldnew");
     }
 
     #[test]

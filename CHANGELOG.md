@@ -105,6 +105,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `gr` on `PATH` on stderr. The package declares no `gr` console script, so installing it adds no `gr` to
   `PATH`; the entry point ships separately.
 
+- The `gr` resolver table gains the gr1-only install case: with no workspace marker and gr2 not installed, the Rust
+  half runs gr1 and prints one line naming the install (`pip install --pre gitgrip`); a gr2 workspace with gr2
+  missing still refuses with exit 69. `gr2` now clears `GR_RESOLVED` when it starts, so a process it runs can run
+  `gr` again instead of being refused as a second resolution.
+
 - `gr2 review run` reads each member's install order through ecosystem plugins. The built-in Python plugin
   reads `[project].dependencies` as before, and any `grip-ecosystem-<name>` executable on your own `PATH` may
   claim members of other ecosystems and order them. Plugins are read from `PATH` only, never from a member's

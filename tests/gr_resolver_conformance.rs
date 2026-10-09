@@ -134,6 +134,11 @@ mod table {
     #[cfg(unix)]
     #[test]
     fn the_gr_resolver_table_runs_green_against_the_rust_resolver() {
+        run_table(&example_binary(), false);
+    }
+
+    #[cfg(unix)]
+    fn run_table(binary: &Path, real_gr: bool) {
         let table_path =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("conformance/gr-resolver/cases.toml");
         let table: toml::Value = fs::read_to_string(&table_path).unwrap().parse().unwrap();
@@ -148,7 +153,6 @@ mod table {
         ids.dedup();
         assert_eq!(ids.len(), cases.len(), "duplicate row id");
 
-        let binary = example_binary();
         println!("resolver under test: {}", binary.display());
         let base = tempfile::tempdir().unwrap();
         let base_path = base.path().canonicalize().unwrap();
@@ -165,6 +169,7 @@ mod table {
         }
 
         let (mut ran, mut red, mut excluded) = (0usize, Vec::new(), Vec::new());
+        let (mut in_process, mut in_process_named) = (0usize, Vec::new());
         for (i, c) in cases.iter().enumerate() {
             let id = c["id"].as_str().unwrap();
             let applies = c
@@ -204,7 +209,7 @@ mod table {
             let exe = launch_dir.join(name);
             // A link, not a copy: the example binary is large and there is one launcher per row. argv[0] keeps the
             // name the row asks for, which is all the resolver reads to tell `gr` from `gr1` and `gr2`.
-            symlink(&binary, &exe).unwrap();
+            symlink(binary, &exe).unwrap();
             let cwd = root.join(c["cwd"].as_str().unwrap());
 
             let run = |args: &[&str]| {
@@ -222,10 +227,19 @@ mod table {
                 }
                 command.output().unwrap()
             };
-            let args: Vec<String> = c
+            let expect_tool = c["expect_tool"].as_str().unwrap();
+            let gr1_here = real_gr && expect_tool == "gr1";
+            let mut args: Vec<String> = c
                 .get("args")
                 .map(|v| strings(Some(v)))
                 .unwrap_or_else(|| vec!["--version".into()]);
+            if gr1_here {
+                in_process += 1;
+                if args != ["--version"] || c.get("expect_stdout").is_some() {
+                    in_process_named.push(id.to_string());
+                }
+                args = vec!["--version".into()];
+            }
             let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
             let out = run(&arg_refs);
             let stdout = String::from_utf8_lossy(&out.stdout).to_string();
@@ -233,11 +247,31 @@ mod table {
             let lines = stderr.lines().filter(|l| !l.trim().is_empty()).count();
             let rc = out.status.code().unwrap_or(-1);
             let mut fails: Vec<String> = Vec::new();
-            let expect_tool = c["expect_tool"].as_str().unwrap();
             let expect_rc = c.get("expect_rc").and_then(|v| v.as_integer());
             if expect_tool == "refuse" {
                 if Some(rc as i64) != expect_rc {
                     fails.push(format!("rc {rc} != {expect_rc:?}"));
+                }
+            } else if gr1_here {
+                let first = stdout.lines().next().unwrap_or("");
+                let version_line = (first.starts_with("gr ") || first.starts_with("gr1 "))
+                    && first
+                        .split_whitespace()
+                        .nth(1)
+                        .is_some_and(|v| v.starts_with('1'));
+                if !version_line || stdout.contains("STUB") {
+                    fails.push(format!(
+                        "gr1 did not answer in-process (stdout {:?}, stderr {:?})",
+                        stdout.trim(),
+                        stderr.trim()
+                    ));
+                }
+                let want_lines = c["expect_lines"].as_integer().unwrap() as usize;
+                if lines != want_lines {
+                    fails.push(format!("stderr lines {lines} != {want_lines}"));
+                }
+                if rc != 0 {
+                    fails.push(format!("rc {rc} != 0"));
                 }
             } else {
                 let got = tool_of(&stdout);
@@ -260,14 +294,48 @@ mod table {
                     fails.push(format!("stderr missing {sub:?} (got {:?})", stderr.trim()));
                 }
             }
-            for sub in strings(c.get("expect_stdout")) {
+            for sub in strings(c.get("expect_stdout"))
+                .into_iter()
+                .filter(|_| !gr1_here)
+            {
                 if !stdout.contains(&sub) {
                     fails.push(format!("stdout missing {sub:?} (got {:?})", stdout.trim()));
                 }
             }
+            // The PAIR: what `--which` reports must be what a plain run ran. Asserted on every row that answers (a
+            // refusal has nothing to pair, an explicit-name row never resolves), not only rows that pin `--which`.
+            let paired = expect_tool != "refuse" && c.get("argv0").is_none();
+            let which_out = if paired || c.get("expect_which").is_some() {
+                Some(run(&["--which"]))
+            } else {
+                None
+            };
+            if paired {
+                let w = which_out.as_ref().unwrap();
+                let reported = String::from_utf8_lossy(&w.stdout)
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                if reported != expect_tool {
+                    fails.push(format!(
+                        "--which reports {reported:?} but a plain run answered {expect_tool:?}"
+                    ));
+                }
+            }
             if let Some(want) = c.get("expect_which").and_then(|v| v.as_str()) {
-                let w = run(&["--which"]);
+                let w = which_out.as_ref().unwrap();
                 let got = which_norm(&String::from_utf8_lossy(&w.stdout), &real_root);
+                // In the gr binary a gr1 answer is this executable, so --which names it rather than a `gr1` on PATH.
+                let want = if gr1_here {
+                    let mut parts: Vec<&str> = want.split(' ').collect();
+                    if let Some(last) = parts.last_mut() {
+                        *last = binary.file_name().and_then(|n| n.to_str()).unwrap_or("gr");
+                    }
+                    parts.join(" ")
+                } else {
+                    want.to_string()
+                };
                 if got != want {
                     fails.push(format!("--which {got:?} != {want:?}"));
                 }
@@ -295,6 +363,18 @@ mod table {
                 excluded.join(", ")
             }
         );
+        if real_gr {
+            println!(
+                "gr1 answered in-process on {in_process} rows; {} of them carry their own args or an exec-stdout \
+                 assertion, which cannot apply in-process, checked by --version instead: {}",
+                in_process_named.len(),
+                if in_process_named.is_empty() {
+                    "none".to_string()
+                } else {
+                    in_process_named.join(", ")
+                }
+            );
+        }
         assert_eq!(
             ran,
             cases.len() - excluded.len(),

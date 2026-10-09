@@ -1382,7 +1382,7 @@ def _validate_bind_store(workspace: Path, *, create: bool = False) -> tuple[list
         if legacy.is_dir() and _alpha_state_commits(legacy):
             raise AlphaRootRefused(
                 f"{workspace} is an alpha workspace (its record is the .grip/.git snapshot store); review "
-                "binds live in a native root's own .git. Run `gr2 store migrate` to convert it, then bind."
+                "pins live in a native root's own .git. Run `gr2 store migrate` to convert it, then pin."
             )
         if not (legacy.exists() or (_layout_grip_dir(workspace) / "workspace_spec.toml").is_file()):
             _validate_grip_repo(workspace)  # not a workspace at all: the existing refusal
@@ -1762,7 +1762,7 @@ def _migrate_legacy_binds(workspace: Path) -> None:
         return  # alpha snapshots only: real alpha state, left where it is
 
     def fail(reason: str) -> GripCorruptError:
-        return GripCorruptError(f"review bind migration from .grip/.git failed, nothing was renamed: {reason}")
+        return GripCorruptError(f"pinned review migration from .grip/.git failed, nothing was renamed: {reason}")
 
     target = _free_aside_name(workspace)
     if target is None:
@@ -1792,14 +1792,14 @@ def _migrate_legacy_binds(workspace: Path) -> None:
         # The store also holds alpha snapshots, which the snapshot verbs still read from it: the
         # binds are copied into refs and the store stays where it is.
         if moved:
-            print(f"copied {moved} review binds from .grip/.git into refs/dev.synapt.grip/__reviews__; "
+            print(f"copied {moved} pinned reviews from .grip/.git into refs/dev.synapt.grip/__reviews__; "
                   ".grip/.git stays, it also holds alpha snapshots", file=sys.stderr)
         return
     try:
         legacy.rename(target)
     except OSError as exc:
         raise fail(f"renaming {legacy}: {exc}") from exc
-    print(f"migrated {len(binds)} review binds from .grip/.git into refs/dev.synapt.grip/__reviews__", file=sys.stderr)
+    print(f"migrated {len(binds)} pinned reviews from .grip/.git into refs/dev.synapt.grip/__reviews__", file=sys.stderr)
 
 
 def _free_aside_name(workspace: Path) -> Path | None:
@@ -1873,7 +1873,7 @@ def _validate_grip_repo(workspace: Path) -> None:
     if _is_native_workspace(workspace) and not (grip_dir / ".git").exists():
         raise ReviewStoreAbsent(
             f"No alpha snapshot store at {workspace}/.grip: a native root keeps its workspace "
-            "record and its review binds in the root's own .git."
+            "record and its pinned reviews in the root's own .git."
         )
     if not grip_dir.exists():
         raise GripInitError(

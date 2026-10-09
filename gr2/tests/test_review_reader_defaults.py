@@ -70,6 +70,6 @@ def test_review_reader_selects_only_one_bind(two_member_ws, monkeypatch, tmp_pat
     rc, second = _cli("review", "bind", str(ws), "--rows-json", str(rowfile))
     assert rc == 0 and second.strip() != bind, second
     rc, output = _cli("review", verb, "--json")
-    assert rc == 2 and "2 review binds exist" in output and bind in output and second.strip() in output
+    assert rc == 2 and "2 pinned reviews exist" in output and bind in output and second.strip() in output
     rc, output = _cli("review", verb, bind, "--json")
     assert rc == 0 and json.loads(output) == json.loads(explicit)

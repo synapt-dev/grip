@@ -71,7 +71,7 @@ def test_old_binds_move_into_refs_on_the_first_bind_touching_verb(two_member_ws:
 
     code, out = _cli("review", "verify", str(ws), "gr:" + ids[1])
     assert code == 0 and "tree_matches: True" in out, out
-    assert f"migrated 2 review binds from .grip/.git into {REVIEW_REF_ROOT.rstrip(chr(47))}" in out + capfd.readouterr().err
+    assert f"migrated 2 pinned reviews from .grip/.git into {REVIEW_REF_ROOT.rstrip(chr(47))}" in out + capfd.readouterr().err
     assert sorted(_refs(ws)) == sorted(_REFS + i for i in ids), "ids must keep their shas"
     assert not (ws / ".grip" / ".git").exists() and (ws / ".grip" / "legacy-store.git").is_dir()
     code, out = _cli("review", "verify", str(ws), "gr:" + ids[0])

@@ -48,7 +48,7 @@ def test_review_merge_with_no_arguments_merges_the_bind_at_the_current_heads(wor
     assert runner.invoke(app, ["check", "run", str(world["member"]), "--", sys.executable, "-c", "pass"]).exit_code == 0
     merged = runner.invoke(app, ["review", "merge"])
     assert merged.exit_code == 0, merged.output
-    assert f"review={world['review']} (bind at the current heads)" in merged.stderr
+    assert f"review={world['review']} (pinned review at the current heads)" in merged.stderr
     assert "from=feat (current branch)" in merged.stderr and "into=main (default branch at the reviewed base)" in merged.stderr
     tip = git(world["remote"], "rev-parse", "main")
     assert git(world["remote"], "rev-list", "--parents", "-n", "1", tip).split()[1:] == [world["base"], world["head"]]
@@ -91,7 +91,7 @@ def test_two_binds_at_the_current_heads_refuse_and_list_both(world, monkeypatch)
     merged = runner.invoke(app, ["review", "merge"])
     assert merged.exit_code == 3, merged.output
     reason = out(merged)["refused"]
-    assert reason.startswith("review_ambiguous: several binds") and reason.count("gr:") == 2, reason
+    assert reason.startswith("review_ambiguous: several pinned reviews") and reason.count("gr:") == 2, reason
     assert git(world["remote"], "rev-parse", "main") == world["base"]
 
 

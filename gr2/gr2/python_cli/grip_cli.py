@@ -1902,10 +1902,10 @@ def grip_migrate_cmd(
 
 @grip_app.command("migrate-reviews")
 def grip_migrate_reviews_cmd(
-    root: Path = typer.Argument(..., help="The native store root whose review binds to migrate"),
+    root: Path = typer.Argument(..., help="The native store root whose pinned reviews to migrate"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Give every legacy review bind a field tree twin at the v1 ref; legacy refs stay as they are."""
+    """Give every legacy pinned review a field tree twin at the v1 ref; legacy refs stay as they are."""
     try:
         receipt, rows = grip_mod.migrate_review_binds(root.resolve())
     except grip_mod.GripCorruptError as exc:

@@ -3273,7 +3273,7 @@ def _the_one_review_bind(workspace_root: Path, verb: str = "open") -> str:
     if len(binds) > 1:
         listing = "; ".join(f"gr:{c} ({when})" for c, when in binds)
         raise typer.BadParameter(
-            f"{len(binds)} review binds exist and `{verb}` will not choose between them: {listing}. Name one, "
+            f"{len(binds)} pinned reviews exist and `{verb}` will not choose between them: {listing}. Name one, "
             f"for example `review {verb} <root> gr:<sha>`"
         )
     commit = binds[0][0]
@@ -3298,7 +3298,7 @@ def _default_review_lane_dir(workspace_root: Path, target: str) -> Path:
 @review_app.command("open", cls=ReviewOpenCommand)
 def review_open(
     workspace_root: Path,
-    target: Optional[str] = typer.Argument(None, help="What to open: a PR number (PR-head lane), a gr:<sha> bind id (reconstruction), or a project-review id. Omitted: the workspace's one review bind"),
+    target: Optional[str] = typer.Argument(None, help="What to open: a PR number (PR-head lane), a gr:<sha> pinned review id (reconstruction), or a project-review id. Omitted: the workspace's one pinned review"),
     repo: Optional[str] = typer.Argument(None, help="PR-head only: the repository key (with an owner_unit-shaped target)"),
     pr_number: Optional[int] = typer.Argument(None, help="PR-head only: the PR number (legacy positional form)"),
     lane_name: Optional[str] = typer.Option(None, "--lane", help="Override the review lane name"),

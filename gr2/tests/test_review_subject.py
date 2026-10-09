@@ -78,7 +78,7 @@ def test_subject_with_multiple_binds_refuses_but_explicit_still_selects(bound_su
     rowfile.write_text(json.dumps(rows))
     rc, second = _cli("review", "bind", str(ws), "--rows-json", str(rowfile))
     assert rc == 0 and second.strip() != target, second
-    with pytest.raises(typer.BadParameter, match="2 review binds exist") as error:
+    with pytest.raises(typer.BadParameter, match="2 pinned reviews exist") as error:
         app_module.resolve_review_subject(ws)
     assert target in str(error.value) and second.strip() in str(error.value)
     assert app_module.resolve_review_subject(ws, target) == expected

@@ -39,7 +39,10 @@ mod unix {
         assert!(output.stdout.is_empty());
         assert!(output.stderr.is_empty(), "{:?}", output);
         assert_eq!(std::fs::metadata(&log).unwrap().len(), LIMIT_BYTES);
-        assert!(!std::fs::read(&log).unwrap().windows(4).any(|w| w == b"gr: "));
+        assert!(!std::fs::read(&log)
+            .unwrap()
+            .windows(4)
+            .any(|w| w == b"gr: "));
         assert!(!dir.path().join("SHOULD_NOT_EXIST").exists());
     }
 

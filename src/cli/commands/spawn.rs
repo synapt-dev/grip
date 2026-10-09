@@ -985,7 +985,9 @@ pub fn run_spawn_up(
             .args(["pipe-pane", "-t", &target, &pipe_cmd])
             .status()?;
         if !pipe_status.success() {
-            anyhow::bail!("pane capture setup failed for {name}: tmux pipe-pane exited {pipe_status}");
+            anyhow::bail!(
+                "pane capture setup failed for {name}: tmux pipe-pane exited {pipe_status}"
+            );
         }
 
         // Get tmux pane PID for process tracking

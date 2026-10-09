@@ -75,11 +75,11 @@ class _FoundSelf(Exception):
 def _find(kind: str) -> str | None:
     """The executable that runs `kind`: gr2 as `gr2`; gr1 as `gr1`, else as `gitgrip`. One that is this resolver
     is skipped; when it is the only one, `_FoundSelf` names it instead of a loop."""
-    own = os.path.realpath(sys.argv[0])
+    own = _own()
     selves = []
     for name in (GR1_NAMES if kind == "gr1" else (kind,)):
         found = shutil.which(name)
-        if found and os.path.realpath(found) == own:
+        if found and os.path.normcase(os.path.realpath(found)) == own:
             selves.append(found)
         elif found:
             return found
@@ -88,13 +88,21 @@ def _find(kind: str) -> str | None:
     return None
 
 
+def _own() -> str:
+    """This command's real path. On Windows argv[0] can lack the `.exe` that `shutil.which` returns."""
+    own = os.path.realpath(sys.argv[0])
+    if os.name == "nt" and not os.path.splitext(own)[1] and os.path.isfile(own + ".exe"):
+        own += ".exe"
+    return os.path.normcase(own)
+
+
 def _other_grs_on_path(own: str) -> list[str]:
-    """Every executable named `gr` on PATH that is not this command."""
+    """Every executable named `gr` on PATH that is not this command (on Windows, `gr.exe` and the rest of PATHEXT)."""
     seen, found = set(), []
     for entry in os.environ.get("PATH", "").split(os.pathsep):
-        candidate = Path(entry or ".") / "gr"
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            real = os.path.realpath(candidate)
+        candidate = shutil.which("gr", path=entry or ".")
+        if candidate:
+            real = os.path.normcase(os.path.realpath(candidate))
             if real != own and real not in seen:
                 seen.add(real)
                 found.append(str(candidate))
@@ -129,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"gr: {exc} is this resolver, not {kind}; refusing to run itself", file=sys.stderr)
         return EXIT_LOOP
     if args[:1] == ["--which"]:
-        others = _other_grs_on_path(os.path.realpath(sys.argv[0]))
+        others = _other_grs_on_path(_own())
         if others:
             print(f"gr: another `gr` is on PATH: {others[0]}; it may answer instead of this one", file=sys.stderr)
         print(f"{kind} {where or 'none'} {found or 'missing'}")

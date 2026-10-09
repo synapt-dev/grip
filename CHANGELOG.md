@@ -15,8 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   moved with `gr2 workspace migrate-gr1` (both markers) runs gr2 with one line saying why, and a gr1 workspace not
   yet moved refuses with exit 69, naming `gr2 workspace migrate-gr1` and `brew install synapt-dev/tap/gitgrip`. A
   `gr1` or `gitgrip` on `PATH` that is this resolver itself refuses with exit 70 instead of running itself. When a
-  gitgrip 1.5 or earlier `gr` comes first on `PATH`, `gr2` prints one line saying so, once per install and never
-  with `--json`.
+  gitgrip 1.5 or earlier `gr` comes first on `PATH`, `gr2` prints one line saying so, once per install (recorded
+  in the install, or in a per-user state file when the install is read-only), never with `--json` or
+  `GR2_QUIET_CONTEXT`.
 
 - **`gr spawn up` interactive fallback.** When tmux is not installed (native
   Windows, a bare container) or `--interactive` is passed, one named agent runs

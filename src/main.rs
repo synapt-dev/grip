@@ -6,6 +6,9 @@ use gitgrip::cli::outcome::{error_was_reported, exit_code_for_error, render_unre
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    if let Some(code) = gitgrip::core::pane_log::entry() {
+        return ExitCode::from(u8::try_from(code).unwrap_or(1));
+    }
     // `gr` resolves gr1 or gr2 before anything else runs, and before the runtime starts threads.
     if let Some(code) = gitgrip::gr_resolver::entry() {
         return ExitCode::from(u8::try_from(code).unwrap_or(1));

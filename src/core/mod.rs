@@ -6,6 +6,7 @@ pub mod gripspace;
 pub mod griptree;
 pub mod manifest;
 pub mod manifest_paths;
+pub mod pane_log;
 pub mod repo;
 pub mod repo_manifest;
 pub mod state;

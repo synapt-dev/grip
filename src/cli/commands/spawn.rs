@@ -978,12 +978,15 @@ pub fn run_spawn_up(
 
         // Set up pipe-pane for output streaming (#443 Mission Control)
         let log_dir = workspace_root.join(".synapt").join("logs").join(&agent_id);
-        let _ = std::fs::create_dir_all(&log_dir);
+        std::fs::create_dir_all(&log_dir)?;
         let log_path = log_dir.join("output.log");
-        let pipe_cmd = format!("cat >> {}", log_path.display());
-        let _ = Command::new("tmux")
+        let pipe_cmd = crate::core::pane_log::pipe_command(&std::env::current_exe()?, &log_path)?;
+        let pipe_status = Command::new("tmux")
             .args(["pipe-pane", "-t", &target, &pipe_cmd])
-            .status();
+            .status()?;
+        if !pipe_status.success() {
+            anyhow::bail!("pane capture setup failed for {name}: tmux pipe-pane exited {pipe_status}");
+        }
 
         // Get tmux pane PID for process tracking
         let pane_pid = Command::new("tmux")

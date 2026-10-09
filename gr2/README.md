@@ -93,13 +93,13 @@ Not there yet:
 | `pr` | create, status, checks, merge, view |
 | `check` | run, show |
 | `review` | open, close, checkout-pr, run, check, pin, publish, receive, verify, show, stamp, merge, repin, create-project, bind, approve, rebind |
-
-`review bind`, `review approve` and `review rebind` remain as aliases of `pin`, `stamp` and `repin`.
 | `exec` | status, run |
 | `repo` | status, projection-run |
 | `hooks` | trust, revoke, status, show, run |
 | `store` | init, commit, check, push, status, log, diff, checkout, materialize, migrate, migrate-reviews |
 | `target`, `config` | stored PR target; config overlays |
+
+`review bind`, `review approve` and `review rebind` remain as aliases of `pin`, `stamp` and `repin`.
 
 ## Stamps (unsigned approvals)
 

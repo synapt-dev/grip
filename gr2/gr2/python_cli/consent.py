@@ -286,7 +286,7 @@ def describe_member(
     for stage in ("on_materialize", "on_enter", "on_exit"):
         for hook in getattr(hooks, stage):
             lines.append(f"lifecycle {stage} · {hook.name} [{hook.when}]: {hook.command}")
-    for item in [*hooks.file_links, *hooks.file_copies]:
+    for item in [*hooks.file_links, *hooks.file_copies, *getattr(hooks, "file_composes", [])]:
         rendered = item.dest
         link_target: str | None = None
         if item.kind == "link":
@@ -326,24 +326,31 @@ def describe_member(
         # raise: a resolved src outside the member's own tree is refused
         # when the hook block runs, so the screen flags it here — the
         # warning's count must cover what the runtime refuses.
-        if "{" in item.src and "}" in item.src:
-            try:
-                from .hooks import render_text as _rt
+        item_srcs = list(item.parts) if item.kind == "compose" else [item.src]
+        for one_src in item_srcs:
+            src_rendered: str | None
+            if "{" in one_src and "}" in one_src:
+                try:
+                    from .hooks import render_text as _rt
 
-                src_rendered = _rt(item.src, _trust_ctx(workspace_root, repo_root, hooks, key))
-            except ValueError:
-                src_rendered = None
+                    src_rendered = _rt(one_src, _trust_ctx(workspace_root, repo_root, hooks, key))
+                except ValueError:
+                    src_rendered = None
             else:
-                src_rendered = src_rendered  # noqa: F841 - name set for clarity
-        else:
-            src_rendered = item.src
-        if src_rendered is not None:
-            src_path = Path(src_rendered)
-            src_abs = str(src_path if src_path.is_absolute() else repo_root / src_path)
-            if not Path(src_abs).resolve().is_relative_to(repo_root.resolve()):
-                flags = [*flags, "the projection source resolves outside the member's own tree"]
+                src_rendered = one_src
+            if src_rendered is not None:
+                src_path = Path(src_rendered)
+                src_abs = str(src_path if src_path.is_absolute() else repo_root / src_path)
+                if not Path(src_abs).resolve().is_relative_to(repo_root.resolve()):
+                    flags = [*flags, "the projection source resolves outside the member's own tree"]
         marker = " ESCAPE: " + "; ".join(flags) if flags else ""
-        lines.append(f"projection {item.kind} dest {rendered}{marker}")
+        if item.kind == "compose":
+            lines.append(
+                f"projection compose dest {rendered} from {len(item.parts)} part(s) "
+                f"[{item.format}]: {', '.join(item.parts)}{marker}"
+            )
+        else:
+            lines.append(f"projection {item.kind} dest {rendered}{marker}")
         if flags:
             escaped_rows.append(item.kind)
     return lines, escaped_rows
@@ -373,10 +380,12 @@ def trust_refusal_rows(
 
     ctx = _trust_ctx_for_key(workspace_root, repo_root, str(hooks.repo_name or key))
     refusals: list[str] = []
-    for item in [*hooks.file_links, *hooks.file_copies]:
+    for item in [*hooks.file_links, *hooks.file_copies, *getattr(hooks, "file_composes", [])]:
         templates = [item.dest]
         if item.kind == "link":
             templates.append(item.src)
+        elif item.kind == "compose":
+            templates.extend(item.parts)
         for template in templates:
             reason = None
             if any(token in template for token in LANE_DEPENDENT_TOKENS):

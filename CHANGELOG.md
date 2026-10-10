@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-These are gr1 changes, for the next `v1.x` patch release; the gr2 changes are in `[gr2 2.0.0a8]` below.
+These are gr1 changes, for the next `v1.x` patch release; the gr2 changes are in `[gr2 Unreleased]` below.
 
 ### Added
 
@@ -48,6 +48,17 @@ These are gr1 changes, for the next `v1.x` patch release; the gr2 changes are in
   regardless of branch, and `--repo manifest` now selects the manifest. A
   manifest with uncommitted changes but no commits ahead is no longer PR
   content.
+
+## [gr2 Unreleased]
+
+### Changed
+
+- **Review refusals name the next command.** `gr2 review merge` adds a `next` line to a refused member's
+  receipt row for an unpublished review (`gr2 review publish ...`), a missing check (`gr2 check run ...`),
+  too few approvals, a failed check, and a moved head or base. `gr2 review stamp` refused as the author says a
+  different approver stamps, and `gr2 review pin` refused for a head already on the remote names the
+  `--ratified` path or a new head. `gr2 review --help` lists the six review steps in order. Behaviour is
+  unchanged; only the refusal text and help are new.
 
 ## [gr2 2.0.0a8] - 2026-10-09
 

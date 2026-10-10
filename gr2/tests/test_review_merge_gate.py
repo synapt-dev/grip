@@ -225,3 +225,69 @@ def test_a_nested_ref_with_the_same_tail_does_not_count_as_the_published_review(
     code, receipt = merge(world)
     assert code == merge_gate.EXIT_REFUSED, receipt
     assert receipt["members"][0]["refused"].startswith("review_not_on_member_remote"), receipt
+
+
+# Each refusal names its next command, and running that command as printed gets past the refusal.
+FORBIDDEN_ADVICE = ("git config", "git_config", "user.name", "user.email", "delete", "push -d",
+                    "git_author_", "git_committer_")
+
+
+def next_argv(line, fill=()):
+    import shlex
+    assert line.startswith("next: gr2 "), line
+    argv = shlex.split(line.removeprefix("next: gr2 "))
+    if "<your test command>" in line:
+        argv = argv[:argv.index("--") + 1] + list(fill)
+    return argv
+
+
+def test_an_unpublished_review_names_publish_and_the_printed_command_gets_past_it(world):
+    check(world)
+    git(world["remote"], "update-ref", "-d", f"{REVIEW_REF_PREFIX}{world['review'].removeprefix('gr:')}")
+    code, receipt = merge(world)
+    row = receipt["members"][0]
+    assert code == merge_gate.EXIT_REFUSED and row["refused"].startswith("review_not_on_member_remote"), receipt
+    ran = runner.invoke(app, next_argv(row["next"]))
+    assert ran.exit_code == 0, ran.output
+    code, receipt = merge(world)
+    assert code == merge_gate.EXIT_MERGED, receipt
+
+
+def test_a_missing_check_names_check_run_and_the_printed_command_gets_past_it(world):
+    code, receipt = merge(world)
+    row = receipt["members"][0]
+    assert code == merge_gate.EXIT_REFUSED and row["refused"].startswith("check_absent"), receipt
+    ran = runner.invoke(app, next_argv(row["next"], [sys.executable, "-c", "pass"]))
+    assert ran.exit_code == 0, ran.output
+    code, receipt = merge(world)
+    assert code == merge_gate.EXIT_MERGED, receipt
+
+
+def test_pinning_a_head_already_pushed_names_the_non_destructive_path(world):
+    again = runner.invoke(app, ["review", "pin", "--repo", "member", "--remote", str(world["remote"]),
+                                "--base", world["base"], "--head", world["head"], "--ref", "refs/heads/main",
+                                "--source", str(world["member"])])
+    assert again.exit_code == 2 and "head_already_on_remote" in again.output, again.output
+    line = next(x for x in again.output.splitlines() if x.startswith("next: "))
+    assert "--ratified" in line and not any(f in line.lower() for f in FORBIDDEN_ADVICE), line
+
+
+def test_no_next_line_and_no_help_line_suggests_an_identity_or_delete_trick():
+    from gr2.python_cli import next_steps
+    lines = [next_steps.self_approval("/ws", "gr:abc"), next_steps.head_already_on_remote(), next_steps.REVIEW_ORDER]
+    for refused in ("review_not_on_member_remote: x", "check_absent: x", "check_fail: x", "feature_moved: x",
+                    "base_moved: x", "approvals_insufficient: 0 of 1"):
+        line = next_steps.merge_row(refused, workspace="/ws", review="gr:abc", remote="/r.git", path="/ws/m",
+                                    head="a" * 40, checks=("test",))
+        assert line, refused
+        lines.append(line)
+    for line in lines:
+        assert not any(f in line.lower() for f in FORBIDDEN_ADVICE), line
+
+
+def test_review_help_gives_the_order_of_the_steps():
+    out = runner.invoke(app, ["review", "--help"])
+    assert out.exit_code == 0, out.output
+    text = " ".join(out.output.split())
+    order = [text.index(f"gr2 review {v}") for v in ("pin", "stamp", "publish", "merge")]
+    assert order == sorted(order) and "gr2 check run" in text, out.output

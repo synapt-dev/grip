@@ -75,6 +75,9 @@ def test_default_approve_counts_two_names_and_refuses_the_author(world):
     workspace, remote, rid, base = (world[k] for k in ("workspace", "remote", "rid", "base"))
     refused = runner.invoke(app, ["review", "approve"])
     assert refused.exit_code == 2 and "self_approval" in refused.output, refused.output
+    advice = next(x for x in refused.output.splitlines() if x.startswith("next: "))
+    assert "a different approver" in advice and "gr2 review stamp" in advice, advice
+    assert not any(f in advice.lower() for f in ("git config", "git_config", "user.name", "delete")), advice
     for name, count in [("Approver B", 1), ("Approver C", 2)]:
         git(workspace, "config", "user.name", name)
         result = runner.invoke(app, ["review", "approve"])

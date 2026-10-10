@@ -26,7 +26,7 @@ from . import add as add_ops
 from .version import version_line
 from . import branch as branch_ops
 from . import commit as commit_ops
-from . import execops, failures, grip, migration, spec_apply, syncops
+from . import execops, failures, grip, migration, next_steps, spec_apply, syncops
 from . import gitinclude
 from . import gitops
 from . import check_records
@@ -115,7 +115,7 @@ def _root(
 repo_app = typer.Typer(help="Repo maintenance and inspection")
 lane_app = typer.Typer(help="Lane creation and navigation")
 lease_app = typer.Typer(help="Lane lease operations")
-review_app = typer.Typer(help="Review and reviewer requirement operations")
+review_app = typer.Typer(help="Review and reviewer requirement operations", epilog=next_steps.REVIEW_ORDER)
 check_app = typer.Typer(help="Run and read exact-head checks on a Git remote")
 pr_app = typer.Typer(help="Cross-repo PR orchestration")
 workspace_app = typer.Typer(help="Workspace bootstrap and materialization")
@@ -3799,6 +3799,8 @@ def _review_call(fn, *args, **kwargs):
             f"refused: {exc.refusal}: expected {exc.expected!r}, observed {exc.observed!r}",
             err=True,
         )
+        if exc.refusal == "head_already_on_remote":
+            typer.echo(next_steps.head_already_on_remote(), err=True)
         _echo_notes(exc)
         raise typer.Exit(code=2)
     except grip.GripCorruptError as exc:
@@ -4501,6 +4503,13 @@ def review_approve(
         result = approvals.approve(workspace_root.resolve(), review_id)
     except approvals.ApprovalRefused as exc:
         typer.echo(str(exc), err=True)
+        if str(exc) == "self_approval":
+            try:
+                rid = review_id or approvals.current_review(workspace_root.resolve())
+            except Exception:  # the next line is advice; a review id we cannot resolve still leaves the command shape
+                rid = "<review id>"
+            typer.echo(next_steps.self_approval(str(workspace_root), rid if rid.startswith(("gr:", "<")) else f"gr:{rid}"),
+                       err=True)
         raise typer.Exit(code=2)
     typer.echo(json.dumps(result))
 

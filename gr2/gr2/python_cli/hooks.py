@@ -545,6 +545,12 @@ def _json_no_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object
     return seen
 
 
+def _json_refuse_constant(name: str) -> object:
+    # NaN, Infinity and -Infinity parse in Python and are written back out as
+    # non-JSON; a settings file with one is not a settings file.
+    raise ValueError(f"{name} is not valid JSON")
+
+
 def _compose_refusal(hooks: RepoHooks, compose: FileCompose, status: str, detail: str, dest: object) -> HookRuntimeError:
     return HookRuntimeError(
         {
@@ -605,7 +611,7 @@ def _apply_compose(hooks: RepoHooks, ctx: HookContext, compose: FileCompose) -> 
         merged: object = None
         for index, (part, text) in enumerate(texts):
             try:
-                doc = json.loads(text, object_pairs_hook=_json_no_duplicate_keys)
+                doc = json.loads(text, object_pairs_hook=_json_no_duplicate_keys, parse_constant=_json_refuse_constant)
             except ValueError as exc:
                 raise _compose_refusal(
                     hooks, compose, "refused", f"compose part {part} is not valid JSON: {exc}", dest

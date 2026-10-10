@@ -251,6 +251,14 @@ class TestGateAndConfinement:
         assert payload["status"] == "refused" and "duplicate key" in payload["detail"]
         assert not (workspace / "out.txt").exists()
 
+    @pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+    def test_non_json_constants_are_refused(self, workspace: Path, literal: str):
+        row = _row(["n.json"], extra='format = "json"\n')
+        root = _member(workspace, row, **{"n.json": '{"x": %s}' % literal})
+        payload = _refusal(workspace, root)
+        assert payload["status"] == "refused" and "not valid JSON" in payload["detail"]
+        assert not (workspace / "out.txt").exists()
+
     def test_empty_parts_is_rejected_at_load(self, workspace: Path):
         root = _member(workspace, '[[files.compose]]\ndest = "{workspace_root}/o"\nparts = []\n')
         with pytest.raises(SystemExit):
@@ -266,3 +274,43 @@ class TestTrustScreen:
         assert result.exit_code == 0, result.output
         assert "projection compose dest" in result.output
         assert "a.md" in result.output and "ESCAPE" in result.output
+
+
+class TestPendingMarkerSurvivesARefusedCompose:
+    """A bound member whose first-materialize pass is refused must keep its
+    pending marker, so the next pass runs the withheld hooks once. A missing
+    part and a non-UTF-8 part are the same case: both must be a refusal the
+    materialize pass can recover from, never a raw exception."""
+
+    HOOKS = (
+        '[[lifecycle.on_materialize]]\nname = "m"\ncommand = "true"\nwhen = "first_materialize"\n\n'
+        '[[files.compose]]\ndest = "{workspace_root}/out.txt"\nparts = ["a.md", "bad.md"]\n'
+        'if_exists = "overwrite"\n'
+    )
+
+    def _pending(self, workspace: Path, bad: bytes | None) -> Path:
+        (workspace / ".grip" / "workspace_spec.toml").write_text(
+            'workspace_name = "ws"\n\n[[repos]]\nname = "seat"\npath = "seat"\nurl = "unused"\n'
+            '[[units]]\nname = "default"\npath = "default"\nrepos = ["seat"]\n'
+        )
+        root = _member(workspace, self.HOOKS, **{"a.md": "A"})
+        if bad is not None:
+            (root / "bad.md").write_bytes(bad)
+        from gr2.python_cli.spec_apply import _run_materialize_hooks
+
+        # the unbound first pass skips and writes the marker
+        _run_materialize_hooks(workspace, root, "seat", first_materialize=True)
+        return root
+
+    @pytest.mark.parametrize("bad", [None, b"\xff\xfe\x00bad"], ids=["missing-part", "non-utf8-part"])
+    def test_marker_survives_the_refusal(self, workspace: Path, bad: bytes | None):
+        from gr2.python_cli.consent import pending_marker_path
+        from gr2.python_cli.spec_apply import _run_materialize_hooks
+
+        root = self._pending(workspace, bad)
+        assert pending_marker_path(workspace, "seat").exists()
+        write_consent(workspace, "seat", root)
+        with pytest.raises(HookRuntimeError):
+            _run_materialize_hooks(workspace, root, "seat", first_materialize=False)
+        assert pending_marker_path(workspace, "seat").exists()
+        assert not (workspace / "out.txt").exists()

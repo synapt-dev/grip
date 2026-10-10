@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import yaml
 
 from . import grip
-from .gitops import git
+from .gitops import git, run as _run_git
 from .workspace_guidance import GR1_ONLY_NEXT_STEP
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 from gr2.prototypes import repo_maintenance_prototype as repo_proto
@@ -75,6 +75,164 @@ def detect_gr1_workspace(workspace_root: Path) -> dict[str, object]:
     }
 
 
+def _printable(text: str) -> str:
+    """TEXT with every non-printable character (ESC, newline, other controls, line separators) shown as
+    its backslash escape. A directory or manifest name is attacker-shaped input: raw, it can recolour the
+    terminal or end a line and forge a second `next:` row."""
+    return "".join(c if c.isprintable() else c.encode("unicode_escape").decode("ascii") for c in str(text))
+
+
+def _ro_git(path: Path, *args: str) -> tuple[int, str]:
+    """One read-only git call in PATH. Never takes an optional lock, never raises."""
+    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "LC_ALL": "C"}
+    done = _run_git(path, *args, env=env)
+    return done.returncode, done.stdout.strip()
+
+
+def _desk_checkouts(desk: Path) -> list[Path]:
+    """Every git checkout in DESK: the directory itself, then one and two levels down.
+
+    `.git` directories are never entered. This is the same reach `gr2 workspace status`
+    needs for a gr1 desk, whose repos sit one level inside it.
+    """
+    found: list[Path] = []
+    level = [desk]
+    for depth in range(3):
+        nxt: list[Path] = []
+        for directory in level:
+            if (directory / ".git").exists() or (directory / ".git").is_symlink():
+                found.append(directory)
+            if depth < 2:
+                try:
+                    nxt.extend(sorted(c for c in directory.iterdir() if c.is_dir() and c.name != ".git" and not c.is_symlink()))
+                except OSError:
+                    continue
+        level = nxt
+    return found
+
+
+def _checkout_facts(path: Path) -> dict[str, object]:
+    git_entry = path / ".git"
+    if git_entry.is_symlink():
+        kind = "symlink"
+    elif git_entry.is_dir():
+        kind = "dir"
+    else:
+        rc_git, git_dir = _ro_git(path, "rev-parse", "--git-dir")
+        _rc_common, common_dir = _ro_git(path, "rev-parse", "--git-common-dir")
+        _rc_super, superproject = _ro_git(path, "rev-parse", "--show-superproject-working-tree")
+        if superproject:
+            kind = "submodule"
+        elif rc_git == 0 and git_dir and git_dir != common_dir:
+            kind = "linked"
+        else:
+            kind = "dir"
+    rc_branch, branch = _ro_git(path, "symbolic-ref", "--short", "-q", "HEAD")
+    detached = rc_branch != 0 or not branch
+    ahead = 0
+    unreadable = False
+    rc_head, _ = _ro_git(path, "rev-parse", "-q", "--verify", "HEAD")
+    if rc_head == 0:
+        rc_ahead, count = _ro_git(path, "rev-list", "--count", "HEAD", "--not", "--remotes")
+        if rc_ahead == 0 and count.isdigit():
+            ahead = int(count)
+        else:
+            unreadable = True
+    rc_status, porcelain = _ro_git(path, "status", "--porcelain")
+    if rc_status != 0:
+        unreadable = True
+    changed = len([line for line in porcelain.splitlines() if line.strip()])
+    # The stash list belongs to the repository, not the checkout: every linked worktree of one repo
+    # shows the same list, so the caller counts it once per common git dir.
+    rc_common, common = _ro_git(path, "rev-parse", "--git-common-dir")
+    if rc_common == 0 and common:
+        common = str((path / common).resolve())
+    rc_stash, stash_out = _ro_git(path, "stash", "list")
+    if rc_stash != 0 or rc_common != 0:
+        unreadable = True
+    stash = len([line for line in stash_out.splitlines() if line.strip()])
+    return {
+        "path": path, "kind": kind, "detached": detached, "ahead": ahead, "changed": changed,
+        "unreadable": unreadable, "common": common, "stash": stash,
+    }
+
+
+def _desk_state(desk: Path) -> dict[str, str]:
+    """STATE and NEXT for one desk, read without changing anything under it.
+
+    state: `missing` (directory absent), `no-checkout` (a directory with no git checkout in
+    it), `unreadable` (git failed on a checkout, which is never reported as clean), or the
+    checkouts' sums as `clean`, `dirty N`, `ahead N`, `stash N`, or a comma-joined mix in that order.
+    next: the step that is true for what was read. `convert-clone` is offered only where
+    it will not refuse: it refuses a dirty tree, a detached HEAD, a symlinked .git and a
+    submodule member, so those say what to do first, or that there is nothing to convert.
+
+    `ahead` is the count BEFORE any conversion. The text never says what the count reads
+    afterwards: that is a different question about a different clone.
+    """
+    if not desk.exists():
+        return {"state": "missing", "next": "declared in the gr1 manifest, directory absent: nothing to convert"}
+    facts = [_checkout_facts(path) for path in _desk_checkouts(desk)]
+    if not facts:
+        return {"state": "no-checkout", "next": "no git checkout in this directory: nothing to convert"}
+
+    unreadable = [Path(f["path"]).resolve() for f in facts if f["unreadable"]]
+    if unreadable:
+        # A failed read is not a clean desk: "clean" here would say convert-clone is safe.
+        names = ", ".join(_printable(p) for p in unreadable)
+        return {"state": "unreadable", "next": f"git could not read {names}: repair it (git status in that checkout names the failure), then run gr2 workspace status"}
+    changed = sum(int(f["changed"]) for f in facts)
+    ahead = sum(int(f["ahead"]) for f in facts)
+    stashes: dict[str, int] = {}
+    for f in facts:
+        stashes[str(f["common"])] = int(f["stash"])
+    stash = sum(stashes.values())
+    parts = []
+    if changed:
+        parts.append(f"dirty {changed}")
+    if ahead:
+        parts.append(f"ahead {ahead}")
+    if stash:
+        parts.append(f"stash {stash}")
+    state = ", ".join(parts) or "clean"
+
+    clauses: list[str] = []
+    own = 0
+    for f in facts:
+        path = Path(f["path"]).resolve()
+        if f["kind"] == "dir":
+            own += 1
+        elif f["kind"] == "submodule":
+            clauses.append(f"{_printable(path)}: a submodule member of a superproject, nothing to convert")
+        elif f["kind"] == "symlink":
+            clauses.append(f"{_printable(path)}: .git is a symlink into another clone's git state; re-clone it into a new directory and copy any uncommitted work across (convert-clone refuses it)")
+        else:  # linked
+            steps = []
+            if f["changed"]:
+                steps.append("commit or stash first")
+            if f["ahead"]:
+                steps.append(
+                    f"push first ({f['ahead']} commit(s) are on no remote ref this checkout knows;"
+                    " a converted clone is their only copy)"
+                )
+            if f["stash"]:
+                steps.append(
+                    f"{f['stash']} stash entr{'y belongs' if f['stash'] == 1 else 'ies belong'}"
+                    f" to the repository and {'stays' if f['stash'] == 1 else 'stay'} in the root repo, not in the"
+                    " clone; to carry its work into the clone, run git stash apply in this checkout and commit"
+                    " it first (apply leaves the tree dirty, which convert-clone refuses; apply keeps the entry)"
+                )
+            if f["detached"]:
+                steps.append("check out a branch first (convert-clone refuses a detached HEAD)")
+            steps.append(f"gr2 workspace convert-clone {_printable(path)}")
+            clauses.append(", then ".join(steps))
+    if own and not clauses:
+        clauses.append("own clone: nothing to convert")
+    elif own:
+        clauses.append(f"{own} own clone(s): nothing to convert")
+    return {"state": state, "next": "; ".join(clauses)}
+
+
 def migrate_gr1_workspace(workspace_root: Path, *, force: bool = False) -> dict[str, object]:
     detection = detect_gr1_workspace(workspace_root)
     if not detection["detected"]:
@@ -97,9 +255,13 @@ def migrate_gr1_workspace(workspace_root: Path, *, force: bool = False) -> dict[
     snapshots = preserve_gr1_state(workspace_root, migration_dir)
     summary_path = migration_dir / "migration-summary.json"
     # The spec now declares each unit at the location gr1 named for it, so a unit
-    # whose desk is a sibling IS named there. Nothing in this command inspects a
-    # working tree, so every declared worktree is recorded: a migration that adopts
-    # nothing must not print the same receipt as one that adopts everything.
+    # whose desk is a sibling IS named there. This command does not move or change
+    # a desk, so every declared desk is recorded as NOT ADOPTED, EXCEPT the unit
+    # declared at the root itself (gr1 `worktree = "main"`, path "."): that is the
+    # workspace being adopted, not a desk. Each row carries the desk's STATE, read
+    # without changing it, and the command that is the next step, so that a clean
+    # desk, an ahead desk, a dirty desk and an absent one no longer print one line.
+    root_real = workspace_root.resolve()
     not_adopted: list[dict[str, str]] = []
     for unit in compiled["units"]:
         source = unit.get("migration_source") or {}
@@ -110,7 +272,12 @@ def migrate_gr1_workspace(workspace_root: Path, *, force: bool = False) -> dict[
         # names nothing is worse than no line.
         worktree = source.get("worktree")
         if isinstance(worktree, str) and worktree.strip():
-            not_adopted.append({"unit": str(unit["name"]), "worktree": worktree.strip()})
+            desk = (workspace_root / str(unit.get("path") or ".")).resolve()
+            if desk == root_real:
+                continue
+            row = {"unit": str(unit["name"]), "worktree": worktree.strip()}
+            row.update(_desk_state(desk))
+            not_adopted.append(row)
     not_adopted.sort(key=lambda row: (row["unit"], row["worktree"]))
     summary = {
         "source": "gr1",
@@ -1017,12 +1184,26 @@ def render_migration(payload: dict[str, object]) -> str:
     not_adopted = payload.get("not_adopted") or []
     if not_adopted:
         lines.append("NOT ADOPTED")
-        lines.extend(f"- {row['unit']}: {row['worktree']}" for row in not_adopted)
-        lines.append(
-            f"{len(not_adopted)} gr1 worktree(s) recorded in the gr1 agents manifest were not adopted"
-            " into this workspace: their contents were not inspected. Each is named in the spec"
-            " at the location gr1 declared for it."
-        )
+        stated = all("state" in row for row in not_adopted)
+        for row in not_adopted:
+            if "state" in row:
+                lines.append(f"- {row['unit']}: {row['worktree']} ({row['state']})")
+                if row.get("next"):
+                    lines.append(f"    next: {row['next']}")
+            else:
+                lines.append(f"- {row['unit']}: {row['worktree']}")
+        if stated:
+            lines.append(
+                f"{len(not_adopted)} gr1 worktree(s) recorded in the gr1 agents manifest were not adopted"
+                " into this workspace: each desk's state was read (read-only) and nothing in it was changed."
+                " Each is named in the spec at the location gr1 declared for it."
+            )
+        else:
+            lines.append(
+                f"{len(not_adopted)} gr1 worktree(s) recorded in the gr1 agents manifest were not adopted"
+                " into this workspace: their contents were not inspected. Each is named in the spec"
+                " at the location gr1 declared for it."
+            )
     lines.append("SNAPSHOTS")
     lines.extend(f"- {name}\t{path}" for name, path in payload["snapshots"].items())
     return "\n".join(lines)

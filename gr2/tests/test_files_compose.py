@@ -287,13 +287,32 @@ class TestGateAndConfinement:
         assert payload["status"] == "refused" and "deep.json" in payload["detail"]
         assert (workspace / "out.txt").read_text() == "KEEP-ME"
 
-    def test_a_nesting_that_parses_but_cannot_merge_is_a_refusal(self, workspace: Path):
-        # 3000 levels: json.loads accepts them (measured) and the recursive
-        # merge exceeds the interpreter's limit, so this row guards the merge
-        # site and not the loads site.
+    def test_a_deep_pair_is_refused_whichever_site_the_interpreter_trips(self, workspace: Path):
+        # 3000 levels: on 3.13 json.loads accepts them and the merge exceeds
+        # the limit; on 3.11 the loads itself raises. Either way the compose is
+        # a refusal that names a part and leaves the dest alone, so this row
+        # does not assert WHICH site fired (the next row pins the merge site).
         nest = '{"k": ' * 3000 + "1" + "}" * 3000
         row = _row(["a.json", "b.json"], extra='format = "json"\n')
         root = _member(workspace, row, **{"a.json": nest, "b.json": nest})
+        (workspace / "out.txt").write_text("KEEP-ME")
+        payload = _refusal(workspace, root)
+        assert payload["status"] == "refused"
+        assert "a.json" in payload["detail"] or "b.json" in payload["detail"]
+        assert (workspace / "out.txt").read_text() == "KEEP-ME"
+
+    def test_a_recursion_error_in_the_merge_is_a_refusal_naming_the_part(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Pins the merge-site catch independently of the interpreter's limits.
+        from gr2.python_cli import hooks as hooks_mod
+
+        def boom(*args, **kwargs):
+            raise RecursionError("maximum recursion depth exceeded")
+
+        monkeypatch.setattr(hooks_mod, "_json_merge", boom)
+        row = _row(["a.json", "b.json"], extra='format = "json"\n')
+        root = _member(workspace, row, **{"a.json": '{"a": 1}', "b.json": '{"b": 2}'})
         (workspace / "out.txt").write_text("KEEP-ME")
         payload = _refusal(workspace, root)
         assert payload["status"] == "refused" and "b.json" in payload["detail"]

@@ -502,6 +502,28 @@ def test_an_unstaged_upstream_edit_is_not_what_the_commit_is_judged_by(tmp_path:
     assert "stage or stash" in out, out
 
 
+def test_the_fold_keeps_crlf_line_endings_and_changes_only_the_pin_line(tmp_path: Path) -> None:
+    """A grip.toml committed with CRLF must come out of the fold with CRLF everywhere and ONE changed line."""
+    root = _store(tmp_path)
+    toml = root / "grip.toml"
+    toml.write_bytes(toml.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+    git(root, "add", "grip.toml")
+    git(root, "commit", "-m", "grip.toml with CRLF line endings")
+    old_pin = _toml_pin(root, "alpha")
+    committed_before = subprocess.run(["git", "-C", str(root), "show", "HEAD:grip.toml"], capture_output=True).stdout
+    assert b"\r\n" in committed_before and committed_before.count(b"\n") == committed_before.count(b"\r\n")
+    new = _advance(root, "alpha", push=True)
+
+    git(root, "add", "alpha")
+    result = git(root, "commit", "-m", "alpha moved", check=False)
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    committed = subprocess.run(["git", "-C", str(root), "show", "HEAD:grip.toml"], capture_output=True).stdout
+    assert committed == committed_before.replace(old_pin.encode(), new.encode()), "only the pin changed, bytes and all"
+    assert committed.count(b"\n") == committed.count(b"\r\n"), "no line ending was turned into LF"
+    assert toml.read_bytes() == committed
+
+
 def test_a_dirty_grip_toml_does_not_block_a_pathspec_commit_that_never_touches_it(tmp_path: Path) -> None:
     root = _store(tmp_path)
     toml = root / "grip.toml"

@@ -224,10 +224,11 @@ def _offline_hint(code: int) -> str:
     return " (offline? `git commit --no-verify` skips this check and pre-push checks again)" if code == 5 else ""
 
 
-def _index_toml(root: Path, index: str | None) -> str | None:
-    """The grip.toml the commit WILL carry (the staged blob), or None when none is staged."""
+def _index_toml(root: Path, index: str | None) -> bytes | None:
+    """The grip.toml the commit WILL carry (the staged blob) as BYTES, or None when none is staged. Bytes, not
+    text, so a CRLF file is compared and folded without any line ending being rewritten."""
     env = {**os.environ, "GIT_INDEX_FILE": index} if index else None
-    shown = _git(root, "show", ":grip.toml", env=env)
+    shown = subprocess.run(["git", "-C", str(root), "show", ":grip.toml"], capture_output=True, env=env)
     return shown.stdout if shown.returncode == 0 else None
 
 
@@ -276,9 +277,10 @@ def run_pre_commit(root: Path) -> int:
 
     index = _scrub_git_env()
     try:
-        staged_text = _index_toml(root, index)
-        if staged_text is None:
+        staged_bytes = _index_toml(root, index)
+        if staged_bytes is None:
             return 0
+        staged_text = staged_bytes.decode("utf-8")
         members = _members_from(staged_text)
         staged = _index_gitlinks(root, index)
         committed = _head_gitlinks(root)
@@ -301,13 +303,13 @@ def run_pre_commit(root: Path) -> int:
                     "(git commit <paths>) cannot fold them; run git commit without paths", 4,
                 )
             working = root / "grip.toml"
-            if not working.is_file() or working.read_text() != staged_text:
+            if not working.is_file() or working.read_bytes() != staged_bytes:
                 raise gc.NativeStoreRefusal(
                     f"grip.toml pins differ from the staged gitlinks ({names}) and grip.toml has edits that are "
                     "not staged; stage or stash your grip.toml edits, then commit", 4,
                 )
             folded = _fold_pins(staged_text, {m["name"]: (m["pin"], staged[m["path"]]) for m in stale})
-            working.write_text(folded)
+            working.write_bytes(folded.encode("utf-8"))
             env = {**os.environ, "GIT_INDEX_FILE": index} if index else None
             added = _git(root, "add", "grip.toml", env=env)
             if added.returncode:
@@ -315,7 +317,7 @@ def run_pre_commit(root: Path) -> int:
     except gc.NativeStoreRefusal as exc:
         print(f"gr2 store: {exc}{_offline_hint(exc.code)}", file=sys.stderr)
         return 1
-    except (RuntimeError, tomllib.TOMLDecodeError) as exc:
+    except (RuntimeError, ValueError) as exc:   # ValueError covers a TOML or UTF-8 decode failure
         print(f"gr2 store hook could not complete: {exc}", file=sys.stderr)
         return 1
     return 0

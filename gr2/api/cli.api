@@ -25,6 +25,13 @@ flag  check run --head <str>                                          stable
 flag  check run --name <str>                                          stable
 flag  check run --remote <str>                                        stable
 verb  check run                                                       stable
+# check set
+arg   check set command <str>                                         stable
+arg   check set review_id <str>                                       stable
+arg   check set workspace_root <str>                                  stable
+flag  check set --name <str>                                          stable
+flag  check set --root/-C <str>                                       stable
+verb  check set                                                       stable
 # check show
 arg   check show repo <str>                                           stable
 flag  check show --head <str>                                         stable
@@ -32,6 +39,7 @@ flag  check show --json                                               stable
 flag  check show --member <str>                                       stable
 flag  check show --remote <str>                                       stable
 flag  check show --require <str>                                      stable
+flag  check show --review <str>                                       stable
 json  check show .head                                                stable
 json  check show .member_key                                          stable
 json  check show .reason                                              stable
@@ -486,6 +494,7 @@ flag  review merge --approvals <str>                                  stable
 flag  review merge --check <str>                                      stable
 flag  review merge --from <str>                                       stable
 flag  review merge --into <str>                                       stable
+flag  review merge --no-set                                           stable
 flag  review merge --root/-C <str>                                    stable
 verb  review merge                                                    stable
 # review open

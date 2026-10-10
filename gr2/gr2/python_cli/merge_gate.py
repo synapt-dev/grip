@@ -18,7 +18,7 @@ import uuid
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from . import check_records, gitops, grip, next_steps
+from . import check_records, gitops, grip, next_steps, set_check
 
 EXIT_MERGED, EXIT_REFUSED, EXIT_PARTIAL = 0, 3, 4
 
@@ -137,8 +137,22 @@ def _unmeasured(review_id: str, into: str, feature: str, reason: str) -> tuple[i
                           "refused": reason, "members": []}
 
 
+def required_check_names(required: Sequence[str] | None, members: int, no_set: bool) -> tuple[str, ...]:
+    """What each member must hold. A review over several members requires `set` (one command over all of them)
+    instead of `test` (one command per member) when nothing is named, and still requires `set` beside whatever is named
+    unless `no_set` says otherwise; a single-member review requires `test` by default and `set` only when asked."""
+    names = tuple(required) if required is not None else (("set",) if members > 1 and not no_set else ("test",))
+    if members > 1 and not no_set and set_check.SET_CHECK_NAME not in names:
+        names += (set_check.SET_CHECK_NAME,)
+    return names
+
+
 def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature: str,
-                 required_checks: Sequence[str] = ("test",), required_approvals: int | None = None) -> tuple[int, dict]:
+                 required_checks: Sequence[str] | None = None, required_approvals: int | None = None,
+                 no_set: bool = False) -> tuple[int, dict]:
+    """required_checks names what each member's remote must hold at its reviewed head (see required_check_names for
+    the default). The name `set` is not judged by name: it must be a record `check set` wrote for THIS review and
+    THIS set of heads (set_check.judge_set_records)."""
     review_id = review_id.removeprefix("gr:")
     try:
         verified = grip.verify_review_commit(workspace, review_id)
@@ -150,6 +164,10 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         return _unmeasured(review_id, into, feature, f"bind_unreadable: {type(exc).__name__}: {exc}")
     rows: list[dict] = []
     root = Path(workspace).resolve()
+    required_checks = required_check_names(required_checks, len(view["members"]), no_set)
+    want_set = set_check.SET_CHECK_NAME in required_checks
+    plain_checks = tuple(n for n in required_checks if n != set_check.SET_CHECK_NAME)
+    expected_set_id = set_check.set_id(view["members"])
     selected: set[str] = set()  # members whose git repository IS the bound path; only these are ever touched
     for m in view["members"]:
         repo = (workspace / m["path"]).resolve()
@@ -192,10 +210,19 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         else:
             check = check_records.read_remote_check(
                 m["remote"], {"path": str(repo), "key": m["key"], "remote": m["remote"]},
-                m["head"], tuple(required_checks))
+                m["head"], plain_checks or (set_check.SET_CHECK_NAME,))
             row["check"] = {k: check.get(k) for k in ("status", "record_id", "reason")}
-            if check["status"] != "pass":
+            # A `fail` whose reason is not a verdict on a record is a transport or format fault, never a content answer.
+            fault = check["status"] == "fail" and check["reason"] != "required_check_failed"
+            if fault or (plain_checks and check["status"] != "pass"):
                 row["refused"] = f"check_{check['status']}: {check['reason']}"
+            elif want_set:
+                verdict, why = set_check.judge_set_records(check["records"], view["id"], expected_set_id)
+                row["set_check"] = {"status": verdict, "reason": why}
+                if verdict != "pass":
+                    row["refused"] = f"check_set_{verdict}: {why}"
+                else:
+                    row["state"] = "ready"
             else:
                 row["state"] = "ready"
 

@@ -55,7 +55,7 @@ def test_a_lost_acknowledgement_reads_merged_never_nothing_moved(world, monkeypa
 
 def test_a_lost_acknowledgement_on_the_first_member_does_not_stop_the_set(slice2, monkeypatch):
     lose_acknowledgement(monkeypatch, only_first=True)
-    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
     assert [r["state"] for r in receipt["members"]] == ["merged", "merged"], receipt
     assert code == merge_gate.EXIT_MERGED, receipt
     for k, m in slice2["members"].items():
@@ -133,7 +133,7 @@ def test_no_further_member_is_pushed_after_an_unknown_one(slice2, monkeypatch):
     alpha, beta = slice2["members"]["alpha"], slice2["members"]["beta"]
     pushes = lose_acknowledgement(monkeypatch, hide=alpha["remote"])
     try:
-        code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+        code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
     finally:
         away = alpha["remote"].with_name(alpha["remote"].name + ".away")
         if away.exists():
@@ -294,7 +294,7 @@ def test_a_later_member_moving_after_an_earlier_push_is_partial_not_none(slice2,
             git(beta["repo"], "push", beta["remote"], "feat")
         return result
     monkeypatch.setattr(merge_gate.subprocess, "run", run)
-    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
     rows = {r["key"]: r for r in receipt["members"]}
     assert rows["alpha"]["final"] == "merged", receipt
     assert rows["beta"]["refused"].startswith("feature_moved_before_push"), receipt

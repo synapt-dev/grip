@@ -26,7 +26,9 @@ A review goes through six steps, in this order:
   3. gr2 review publish  put the pinned review on each member remote
   4. gr2 review stamp    an approver other than the author stamps it; in their
                          own workspace, after gr2 review receive
-  5. gr2 check run       record the check at the exact head on the remote
+  5. gr2 check run       record the check at the exact head on the remote; a
+                         review over several members is checked together with
+                         gr2 check set, one command over every member
   6. gr2 review merge    merges only if heads still match the pin and check
 Each refusal along the way names the next command."""
 
@@ -60,16 +62,30 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
     """The next command for one member's merge refusal, or None when no single command answers it."""
     if refused.startswith("review_not_on_member_remote"):
         return f"next: gr2 review publish {_shown(workspace)} {_shown(review)} --remote {_shown(remote)}"
+    if refused.startswith("check_set_fail"):
+        # A recorded failure at these heads stays (a pass beside it does not erase it), so a rerun cannot clear it.
+        return ("next: the set check failed at these heads and that failure is recorded; a rerun does not clear it. "
+                "Fix the member, commit a new head, then pin, stamp, run gr2 check set on that head and publish it")
+    if refused.startswith("check_set_"):
+        # The one safe next command; a set is checked together, never member by member.
+        return f"next: gr2 check set {_shown(workspace)} {_shown(review)} -- <your combined test command>"
     if refused.startswith("check_absent"):
         # `check run --name` takes ONE name (a repeated flag keeps the last), so each required check gets its own line.
         return "\n".join(f"next: gr2 check run {_shown(path)} --remote {_shown(remote)} --head {_shown(head)}"
-                         f"{'' if n == 'test' else f' --name {_shown(n)}'} -- <your {_shown(n)} command>" for n in checks)
+                         f"{'' if n == 'test' else f' --name {_shown(n)}'} -- <your {_shown(n)} command>" for n in checks
+                         if n != "set")  # `set` is never recorded by `check run`; its refusals are check_set_*
     if refused.startswith("approvals_insufficient"):
         return (f"next: more approvers are required; each one stamps from their own checkout: "
                 f"gr2 review stamp {_shown(workspace)} {_shown(review)}")
     if refused.startswith("check_fail"):
-        return ("next: the check failed at this head; fix it, commit a new head, then pin, stamp, check and "
-                "publish that head")
+        together = ""
+        if "set" in checks and any(n != "set" for n in checks):
+            # Several members, so the member's own check may be red only because it imports its siblings.
+            together = (f"; if it fails only because this member needs the others, check them together with "
+                        f"gr2 check set {_shown(workspace)} {_shown(review)} -- <your combined test command> and merge "
+                        f"with --check set; if the member itself is broken")
+        return (f"next: the check failed at this head{together or ';'} "
+                "fix it, commit a new head, then pin, stamp, check and publish that head")
     if refused.startswith("feature_moved"):
         return ("next: the feature branch moved after the pin; pin the new head with gr2 review pin, then "
                 "stamp, check and publish it")

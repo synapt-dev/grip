@@ -181,7 +181,7 @@ def mains(s):
 
 
 def test_a_two_member_slice_merges_as_a_set(slice2):
-    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
     assert code == merge_gate.EXIT_MERGED, receipt
     for k, m in slice2["members"].items():
         parents = git(m["remote"], "rev-list", "--parents", "-n", "1", "main").split()[1:]
@@ -190,19 +190,19 @@ def test_a_two_member_slice_merges_as_a_set(slice2):
 
 def test_moving_the_last_member_refuses_the_whole_set(slice2):
     move(slice2["members"]["beta"])
-    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
     assert code == merge_gate.EXIT_REFUSED, receipt
     assert mains(slice2) == {k: m["base"] for k, m in slice2["members"].items()}, "no member may merge"
 
 
 def test_a_rerun_after_an_earlier_partial_reports_partial_not_refused(slice2):
     # alpha merged by an earlier run; then beta moves; the rerun refuses beta but the STATE is partial.
-    code, _ = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    code, _ = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
     assert code == merge_gate.EXIT_MERGED
     beta = slice2["members"]["beta"]
     git(beta["remote"], "update-ref", "refs/heads/main", beta["base"])  # undo beta's merge on the remote
     move(beta)
-    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
     assert code == merge_gate.EXIT_PARTIAL, receipt
 
 

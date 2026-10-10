@@ -288,7 +288,7 @@ def test_divergent_remote_tips_refuse_and_approve_repairs_a_linear_partial(multi
     beta = multi["members"]["beta"]["remote"]
     git(beta, "update-ref", "-d", ref)
     before = {str(m["remote"]): git(m["remote"], "rev-parse", "main") for m in multi["members"].values()}
-    merged = runner.invoke(app, ["review", "merge"])
+    merged = runner.invoke(app, ["review", "merge", "--no-set"])
     assert merged.exit_code == 3, merged.output
     receipt = json.loads(merged.stdout)
     assert all(row["refused"].startswith("approval_chain_divergent") for row in receipt["members"])

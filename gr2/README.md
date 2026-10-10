@@ -93,7 +93,7 @@ Not there yet:
 | (top level) | branch, add, commit, push, prune, status, plan, apply |
 | `sync` | status, run |
 | `pr` | create, status, checks, merge, view |
-| `check` | run, show |
+| `check` | run, show, set |
 | `review` | open, close, checkout-pr, run, check, pin, publish, receive, verify, show, stamp, merge, repin, create-project, bind, approve, rebind |
 | `exec` | status, run |
 | `repo` | status, projection-run |
@@ -237,6 +237,12 @@ checks, use `--require test --require lint`.
 The read JSON contains `status`, `record_id` (the head's record-set blob id or
 null), `snapshot_oid`, `head`, `member_key`, `records`, and `reason`. Each
 observation retains its fields and adds a SHA-256 `observation_id`.
+
+A review over several members is checked as one set. `gr2 check set <workspace> <review> -- <command>`
+reconstructs every member at its pinned head side by side (`GR2_SET_ROOT`, `GR2_REVIEW_ID` and `GR2_SET_MEMBERS`
+name them), runs the command once, and publishes one `set` observation per member remote, carrying the review and the
+identity of the set. `gr2 review merge` requires that record on a multi-member review (`--no-set` says otherwise),
+and `check show --require set --review <id>` reads a `set` record for another review as stale.
 
 A failed command is recorded and `check run` exits 1. Publication or execution
 refusals exit 2. `check show` returns `pass`, `fail` or `absent` in its JSON;

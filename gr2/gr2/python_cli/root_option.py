@@ -210,6 +210,30 @@ class ReviewHeadCommand(ReviewTargetCommand):
     marker_supplies_target = False
 
 
+class ReviewHeadTrailingCommand(ReviewHeadCommand):
+    """A review-head verb that ends in a command of its own (`check set <review> -- <command>`).
+
+    The words after ``--`` are the user's command, never a root or a review, so they are not counted as positionals
+    (counted, a ``-C`` beside any command read as a root given twice). With no review before the ``--`` the verb
+    refuses by name: the inferred root would otherwise be appended after the command.
+    """
+
+    def _scan(self, args: list[str]) -> tuple[list[int], Optional[str]]:
+        positions, root_value = super()._scan(args)
+        cut = args.index("--") if "--" in args else len(args)
+        return [p for p in positions if p < cut], root_value
+
+    def parse_args(self, ctx, args):
+        args = list(args)
+        option_tokens = args[:args.index("--")] if "--" in args else args
+        help_option = self.get_help_option(ctx)
+        asked_for_help = help_option is not None and any(word in help_option.opts for word in option_tokens)
+        positions, _ = self._scan(args)
+        if not asked_for_help and not positions:
+            ctx.fail("a review is required before the command: gr2 check set <review> -- <command>")
+        return super().parse_args(ctx, args)
+
+
 class ReviewSubjectCommand(RootOptionCommand):
     """A pr verb whose subject may be the current review.
 

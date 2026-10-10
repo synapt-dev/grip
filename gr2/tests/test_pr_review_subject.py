@@ -265,6 +265,36 @@ def test_a_rewrite_to_a_decoy_holding_the_reviewed_commit_is_refused(reviewed, m
     assert reviewed["adapter"].created == []
 
 
+def test_pr_create_refuses_a_rewrite_between_targets_that_join_to_the_same_string(reviewed, monkeypatch):
+    # THE CALL SITE, through the real `pr create`. The helper rows pin _effective_target_matches; this one
+    # pins that `pr create` asks it. The recorded target is (None, o, p, alpha) and the rewritten one is
+    # (o, p, None, alpha): same parts, same repo name, different positions, so a joined-string comparison
+    # at the call site reads them as one target and the PR would open on the wrong place. The repo name is
+    # the same on both on purpose: a name that differed would be refused for the name and prove nothing.
+    from gr2.python_cli.platform import RemoteTarget
+
+    class V2(type(reviewed["adapter"])):
+        platform_adapter_api_version = 2
+
+        def resolve_target(self, remote):
+            if remote == "positional-twin":
+                return RemoteTarget(raw=remote, host="o", org="p", project=None, repo="alpha")
+            name = remote.rsplit("/", 1)[-1].removesuffix(".git")
+            if name == "alpha":
+                return RemoteTarget(raw=remote, host=None, org="o", project="p", repo="alpha")
+            return RemoteTarget(raw=remote, host="github.com", org="o", project=None, repo=name)
+
+        def edit_pr_body(self, repo, number, body, *, target=None):
+            return None
+
+    v2 = V2()
+    monkeypatch.setattr(app_mod.platform_ops, "get_platform_adapter", lambda name: v2)
+    monkeypatch.setattr(app_mod, "_effective_remote",
+                        lambda ws, remote: "positional-twin" if remote == URL["alpha"] else remote)
+    refused(gr2(reviewed["author"], monkeypatch, "pr", "create", "--json"), "alpha", "url rewrite")
+    assert v2.created == []
+
+
 def test_a_rewrite_that_keeps_the_github_repo_is_the_same_endpoint(tmp_path):
     # https -> ssh for the same repository is a common user rewrite; it names the same repo.
     git(tmp_path, "init", "-q")

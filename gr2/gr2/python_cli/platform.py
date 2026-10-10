@@ -178,6 +178,37 @@ class PRDetail:
 
 
 @dataclass(frozen=True)
+class RemoteTarget:
+    """Where a member's Git remote routes on its hosting platform (adapter API v2).
+
+    ``raw`` is the exact configured Git URL. The other fields are the adapter's reading of it: gr2
+    never parses a hosting URL, so a platform with no organisation or no project leaves that field
+    ``None`` rather than gr2 inventing one.
+    """
+
+    raw: str
+    host: str | None = None
+    org: str | None = None
+    project: str | None = None
+    repo: str | None = None
+
+    def as_dict(self) -> dict[str, str | None]:
+        return {"raw": self.raw, "host": self.host, "org": self.org, "project": self.project, "repo": self.repo}
+
+    @classmethod
+    def from_dict(cls, value: object) -> RemoteTarget:
+        if not isinstance(value, dict) or not isinstance(value.get("raw"), str) or not value["raw"]:
+            raise AdapterError("a stored routing target needs a raw URL")
+        parts = {}
+        for key in ("host", "org", "project", "repo"):
+            item = value.get(key)
+            if item is not None and not isinstance(item, str):
+                raise AdapterError(f"a stored routing target's {key} must be text or null")
+            parts[key] = item
+        return cls(raw=value["raw"], **parts)
+
+
+@dataclass(frozen=True)
 class CreatePRRequest:
     repo: str
     title: str
@@ -188,6 +219,9 @@ class CreatePRRequest:
     # The configured Git target, distinct from the workspace's member label.
     # Older direct callers may omit it; adapters must not infer it from cwd.
     remote: str | None = None
+    # Adapter API v2 only: the member's remote as the adapter itself resolved it. ``None`` for a v1
+    # adapter and for a caller that supplied no remote.
+    target: RemoteTarget | None = None
 
 
 class PlatformAdapter(Protocol):
@@ -219,6 +253,18 @@ class PlatformAdapter(Protocol):
     def pr_checks(self, repo: str, number: int) -> list[PRCheck]: ...
 
     def edit_pr_body(self, repo: str, number: int, body: str) -> None: ...
+
+
+class PlatformAdapterV2(PlatformAdapter, Protocol):
+    """Adapter API version 2 (unreleased): the adapter resolves a member's raw remote into a target.
+
+    A version 2 adapter also accepts ``target=`` on ``pr_status``, ``merge_pr``, ``edit_pr_body``,
+    ``pr_checks``, ``pr_view`` and ``list_prs``.
+    """
+
+    platform_adapter_api_version: int
+
+    def resolve_target(self, remote: str) -> RemoteTarget: ...
 
 
 class AdapterError(RuntimeError):
@@ -567,7 +613,19 @@ class GitHubAdapter:
 
 _ADAPTER_FACTORIES: dict[str, Callable[[], PlatformAdapter]] = {}
 PLATFORM_ADAPTER_ENTRY_POINTS = "gr2.platform_adapters"
-PLATFORM_ADAPTER_API_VERSION = 1
+# The protocol being built: v2 adds RemoteTarget and target-aware lifecycle calls. UNRELEASED until the
+# release that carries it (see PLATFORM_ADAPTER_CHANGELOG.md). Omitting a declaration still means v1.
+PLATFORM_ADAPTER_API_VERSION = 2
+LEGACY_ADAPTER_API_VERSION = 1
+SUPPORTED_ADAPTER_API_VERSIONS = (1, 2)
+
+
+def adapter_api_version(adapter: object) -> int:
+    """The API version an adapter declares; an omitted declaration is the legacy v1 protocol."""
+    version = getattr(adapter, "platform_adapter_api_version", LEGACY_ADAPTER_API_VERSION)
+    if type(version) is not int or version not in SUPPORTED_ADAPTER_API_VERSIONS:
+        raise AdapterError(f"unsupported platform adapter API version: {version!r}")
+    return version
 
 
 def require_adapter_capability(adapter: PlatformAdapter, method: str) -> None:
@@ -625,12 +683,16 @@ def get_platform_adapter(name: str) -> PlatformAdapter:
             adapter = factory()
         except Exception as exc:
             raise AdapterError(f"cannot initialize platform adapter {normalized}: {exc}") from exc
-        version = getattr(adapter, "platform_adapter_api_version", PLATFORM_ADAPTER_API_VERSION)
-        if type(version) is not int or version != PLATFORM_ADAPTER_API_VERSION:
+        try:
+            adapter_api_version(adapter)
+        except AdapterError as exc:
             raise AdapterError(
-                f"unsupported platform adapter API version for {normalized}: {version!r}"
-            )
+                f"unsupported platform adapter API version for {normalized}: "
+                f"{getattr(adapter, 'platform_adapter_api_version', None)!r}"
+            ) from exc
         require_adapter_capability(adapter, "create_pr")
+        if adapter_api_version(adapter) >= 2:
+            require_adapter_capability(adapter, "resolve_target")
         return adapter
     if normalized in {"github", "gh"}:
         return GitHubAdapter()

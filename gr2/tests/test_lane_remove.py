@@ -289,3 +289,41 @@ def test_lane_list_names_a_lane_with_a_broken_record_and_still_lists_the_rest(tm
     assert "\tremovable" in rows["y"], rows["y"]
     removed = _remove(ws)
     assert removed.exit_code != 0 and "lane_record_invalid" in removed.output, removed.output
+
+
+def _two_lanes_with_a_broken_record(tmp_path: Path, break_it) -> tuple[Path, Path]:
+    """Lane x (with an unpushed commit) whose lane.toml text goes through `break_it`, beside a fine lane y."""
+    ws, repo, _ = _exited_lane_with_a_commit(tmp_path)
+    result = runner.invoke(gr2_app.app, ["lane", "create", str(ws), "atlas", "y", "--repos", "app", "--branch", "app=feat/y"])
+    assert result.exit_code == 0, result.output
+    record = lane_proto.lane_file(ws, "atlas", "x")
+    record.write_text(break_it(record.read_text()))
+    return ws, repo
+
+
+def _broken_record_rows(ws: Path, repo: Path) -> None:
+    listed = runner.invoke(gr2_app.app, ["lane", "list", str(ws)])
+    assert listed.exit_code == 0, listed.output
+    assert "lane_record_invalid" in listed.output, listed.output
+    rows = [line for line in listed.output.splitlines() if "\tremovable" in line]
+    assert any(line.split("\t")[1] == "y" for line in rows), listed.output
+    removed = _remove(ws)
+    assert removed.exit_code != 0 and "lane_record_invalid" in removed.output, removed.output
+    assert lane_proto.lane_file(ws, "atlas", "x").is_file(), "the record is kept"
+    assert repo.is_dir(), "the clone is kept"
+
+
+def test_a_lane_record_that_is_not_valid_toml_is_named_and_kept(tmp_path: Path) -> None:
+    _broken_record_rows(*_two_lanes_with_a_broken_record(tmp_path, lambda _: "this is [ not toml\n"))
+
+
+def test_a_lane_record_without_a_lane_name_is_named_and_kept(tmp_path: Path) -> None:
+    def drop_lane_name(text: str) -> str:
+        lines = text.splitlines(keepends=True)
+        assert sum(line.startswith("lane_name") for line in lines) == 1
+        return "".join(line for line in lines if not line.startswith("lane_name"))
+    _broken_record_rows(*_two_lanes_with_a_broken_record(tmp_path, drop_lane_name))
+
+
+def test_an_empty_lane_record_is_named_and_neither_record_nor_clone_is_removed(tmp_path: Path) -> None:
+    _broken_record_rows(*_two_lanes_with_a_broken_record(tmp_path, lambda _: ""))

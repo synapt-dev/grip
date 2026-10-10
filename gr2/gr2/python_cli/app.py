@@ -3113,13 +3113,19 @@ def _lane_removal_refusals(workspace_root: Path, owner_unit: str, lane_name: str
     try:
         # Both refuse a checkout path that passes through a symlink (MaterializationPlan invariant #2).
         lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
+        # A record that is not this lane's (empty, renamed, hand-edited) is never acted on: removing it would
+        # delete the record and leave its clone where nothing can find it.
+        if (lane_doc.get("owner_unit"), lane_doc.get("lane_name")) != (owner_unit, lane_name) \
+                or not isinstance(lane_doc.get("repos", []), list):
+            return [f"lane_record_invalid: {owner_unit}/{lane_name}: lane.toml does not name this lane "
+                    f"with a list of repos"]
         if lane_doc.get("lane_kind", "materialized") == "bound":
             return [f"lane_is_bound: {owner_unit}/{lane_name} uses a worktree it does not own"]
         lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)
     except spec_apply.MaterializationPlanError as exc:
         return [f"lane_path_escapes_workspace: {exc}"]
-    except SystemExit as exc:
-        # An empty checkout_root or an unknown lane_kind: name it, so `lane list` still reaches every lane after it.
+    except (SystemExit, tomllib.TOMLDecodeError, KeyError, TypeError, ValueError) as exc:
+        # Unreadable TOML, an empty checkout_root, an unknown lane_kind: name it, so `lane list` reaches every lane after it.
         return [f"lane_record_invalid: {owner_unit}/{lane_name}: {exc}"]
     refusals: list[str] = []
     current_file = lane_proto.current_lane_file(workspace_root, owner_unit)
@@ -3168,8 +3174,8 @@ def lane_list(
     typer.echo("# remote refs not fetched; gr2 lane remove fetches before it removes anything")
     typer.echo("UNIT\tLANE\tSTATE\tREASONS")
     for path in lane_proto.iter_lane_files(workspace_root, unit):
-        doc = tomllib.loads(path.read_text())
-        owner_unit, lane_name = doc["owner_unit"], doc["lane_name"]
+        # The names come from where the record lives, never from inside it, so a record that cannot be read is still listed.
+        owner_unit, lane_name = path.parent.parent.name, path.parent.name
         refusals = _lane_removal_refusals(workspace_root, owner_unit, lane_name, fetch=False)
         state = "keep" if refusals else "removable"
         typer.echo(f"{owner_unit}\t{lane_name}\t{state}\t{'; '.join(refusals) or '-'}")

@@ -274,7 +274,9 @@ def test_pinning_a_head_already_pushed_names_the_non_destructive_path(world):
 
 def test_no_next_line_and_no_help_line_suggests_an_identity_or_delete_trick():
     from gr2.python_cli import next_steps
-    lines = [next_steps.self_approval("/ws", "gr:abc"), next_steps.head_already_on_remote(), next_steps.REVIEW_ORDER]
+    lines = [next_steps.self_approval("/ws", "gr:abc"), next_steps.head_already_on_remote(), next_steps.REVIEW_ORDER,
+             next_steps.not_received("/ws", "gr:abc"),
+             next_steps.head_not_fetched("/ws/m", "/r.git", "a" * 40, "/ws", "gr:abc")]
     for refused in ("review_not_on_member_remote: x", "check_absent: x", "check_fail: x", "feature_moved: x",
                     "base_moved: x", "approvals_insufficient: 0 of 1"):
         line = next_steps.merge_row(refused, workspace="/ws", review="gr:abc", remote="/r.git", path="/ws/m",
@@ -289,7 +291,8 @@ def test_review_help_gives_the_order_of_the_steps():
     out = runner.invoke(app, ["review", "--help"])
     assert out.exit_code == 0, out.output
     text = " ".join(out.output.split())
-    order = [text.index(f"gr2 review {v}") for v in ("pin", "stamp", "publish", "merge")]
+    # publish comes before stamp: a reviewer in another workspace can only receive a published review
+    order = [text.index(f"gr2 review {v}") for v in ("pin", "publish", "stamp", "merge")]
     assert order == sorted(order) and "gr2 check run" in text, out.output
 
 
@@ -319,8 +322,8 @@ def test_review_help_keeps_each_step_on_its_own_line(use_rich):
     import re
     plain = re.sub(r"\x1b\[[0-9;]*m", "", out.stdout)  # CI forces colour; the layout is what is under test
     starts = [x.strip(" │").split("  ")[0] for x in plain.splitlines()]
-    for n, step in enumerate(("gr2 review pin", "push the head", "gr2 review stamp", "gr2 check run",
-                              "gr2 review publish", "gr2 review merge"), 1):
+    for n, step in enumerate(("gr2 review pin", "push the head", "gr2 review publish", "gr2 review stamp",
+                              "gr2 check run", "gr2 review merge"), 1):
         assert f"{n}. {step}" in starts, (use_rich, out.stdout)
 
 

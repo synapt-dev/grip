@@ -36,6 +36,10 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Changed
 
+- **`gr2`: the review steps in `gr2 review --help` put publish before stamp,** because a reviewer in another
+  workspace can only receive a published review. A stamp in a reviewer's member clone that does not hold the
+  reviewed head (a clone made before the head was pushed) now refuses as `head_not_fetched` and prints the
+  `git fetch` of that head, then the stamp; it used to end in a raw `unknown revision` error.
 - **`gr2`: review refusals name the next command.** `gr2 review merge` adds a `next` line to a refused member's
   receipt row for an unpublished review (`gr2 review publish ...`), a missing check (`gr2 check run ...`),
   too few approvals, a failed check, and a moved head or base. `gr2 review stamp` refused as the author names a

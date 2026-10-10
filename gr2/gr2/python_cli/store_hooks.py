@@ -228,7 +228,7 @@ def _index_toml(root: Path, index: str | None) -> bytes | None:
     """The grip.toml the commit WILL carry (the staged blob) as BYTES, or None when none is staged. Bytes, not
     text, so a CRLF file is compared and folded without any line ending being rewritten."""
     env = {**os.environ, "GIT_INDEX_FILE": index} if index else None
-    shown = subprocess.run(["git", "-C", str(root), "show", ":grip.toml"], capture_output=True, env=env)
+    shown = gitops.run_argv(["git", "-C", str(root), "show", ":grip.toml"], binary=True, env=env)
     return shown.stdout if shown.returncode == 0 else None
 
 

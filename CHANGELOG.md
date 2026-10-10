@@ -7,17 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+These are gr1 changes, for the next `v1.x` patch release; the gr2 changes are in `[gr2 2.0.0a8]` below.
 
-- **The PyPI package installs `gr`, and gr2 is its default.** `gr` picks by the nearest workspace marker: a gr1
-  workspace (`.gitgrip`) runs gr1, found on `PATH` as `gr1` or else as `gitgrip` (every gr1 release installs that
-  name); anywhere else, including outside any workspace, it runs gr2. With no gr1 installed, a workspace already
-  moved with `gr2 workspace migrate-gr1` (both markers) runs gr2 with one line saying why, and a gr1 workspace not
-  yet moved refuses with exit 69, naming `gr2 workspace migrate-gr1` and `brew install synapt-dev/tap/gitgrip`. A
-  `gr1` or `gitgrip` on `PATH` that is this resolver itself refuses with exit 70 instead of running itself. When a
-  gitgrip 1.5 or earlier `gr` comes first on `PATH`, `gr2` prints one line saying so, once per install (recorded
-  in the install, or in a per-user state file when the install is read-only), never with `--json` or
-  `GR2_QUIET_CONTEXT`.
+### Added
 
 - **`gr spawn up` interactive fallback.** When tmux is not installed (native
   Windows, a bare container) or `--interactive` is passed, one named agent runs
@@ -30,22 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refuses and names the single-agent form. Unix tmux behaviour is unchanged: the
   launch command is now built by one shared path used by both the pane and the
   foreground launch.
-- **`gr2`: the platform adapter protocol's changelog ships in the package.** The
-  wheel and sdist carry `gr2/PLATFORM_ADAPTER_CHANGELOG.md`, readable from an
-  install with `importlib.resources.files("gr2")`. It lists, release by release
-  since 2.0.0a1, each method, keyword, field and registration rule an
-  out-of-tree adapter implements or receives, and a test fails when the protocol
-  gains one with no entry.
 
 ### Changed
 
-- **`gr2` runs every git command in its workspace and review modules through
-  one shared helper.** Each such call carries `-c maintenance.auto=false -c
-  gc.auto=0`, so none starts background maintenance in your repository. A clone
-  is never bounded; every other call has a 600-second default, including calls
-  that had none before (an expiry is exit 124). Lane workspace cloning loses its
-  previous 600-second bound. A merge-tree timeout in `gr2 review merge` is still
-  reported as `merge_build_failed`.
+- **With only gr1 installed, `gr` runs gr1.** Outside any workspace with gr2 not installed, the `gr` in the
+  gr1 binary runs gr1 and prints one line naming the gr2 install; a gr2 workspace with gr2 missing still
+  refuses with exit 69. `gr --which` reports what a plain run would run.
+- **gr1 pane capture is bounded.** `gr spawn up` now pipes each pane's output to a capture worker that rotates
+  `output.log` at 10 MiB and keeps one previous segment as `output.log.1`, so a busy pane no longer grows its
+  log without limit. Current output keeps flowing through a rotation. A capture setup error warns and the
+  spawn continues as before. An existing oversized log rotates intact on its next write; older logs are not
+  cleaned up. A dashboard reading the log needs its reader updated to follow the rotation; deploy that update
+  before enabling the rotating capture.
 
 ### Fixed
 
@@ -60,6 +48,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   regardless of branch, and `--repo manifest` now selects the manifest. A
   manifest with uncommitted changes but no commits ahead is no longer PR
   content.
+
+## [gr2 2.0.0a8] - 2026-10-09
+
+### Added
+
+- **The PyPI package installs `gr`, and gr2 is its default.** `gr` picks by the nearest workspace marker: a gr1
+  workspace (`.gitgrip`) runs gr1, found on `PATH` as `gr1` or else as `gitgrip` (every gr1 release installs that
+  name); anywhere else, including outside any workspace, it runs gr2. With no gr1 installed, a workspace already
+  moved with `gr2 workspace migrate-gr1` (both markers) runs gr2 with one line saying why, and a gr1 workspace not
+  yet moved refuses with exit 69, naming `gr2 workspace migrate-gr1` and `brew install synapt-dev/tap/gitgrip`. A
+  `gr1` or `gitgrip` on `PATH` that is this resolver itself refuses with exit 70 instead of running itself. When a
+  gitgrip 1.5 or earlier `gr` comes first on `PATH`, `gr2` prints one line saying so, once per install (recorded
+  in the install, or in a per-user state file when the install is read-only), never with `--json` or
+  `GR2_QUIET_CONTEXT`.
+
+- **`gr2`: the platform adapter protocol's changelog ships in the package.** The
+  wheel and sdist carry `gr2/PLATFORM_ADAPTER_CHANGELOG.md`, readable from an
+  install with `importlib.resources.files("gr2")`. It lists, release by release
+  since 2.0.0a1, each method, keyword, field and registration rule an
+  out-of-tree adapter implements or receives, and a test fails when the protocol
+  gains one with no entry.
+- **Unsigned review approvals, bound to the exact member heads.** `gr2 review stamp` (alias `approve`)
+  appends an approval under the workspace's Git name to a chain stored in the remote and rooted at the
+  pinned review; `gr2 review merge` counts distinct names against `approvals.required`. An approver with
+  the same name as the pin's author or any commit author in the pinned range is refused. Approvals are not
+  signed: a name is what the approver's Git config says.
+- **Platform adapters receive the member's Git URL at PR creation.** `CreatePRRequest.remote` carries the
+  exact URL configured for the selected member, and created PR groups keep it as `prs[].remote`. This is
+  additive to adapter API version 1. Two members that resolve to the same repository are refused before
+  any PR is created.
+- **A glossary of the words gr2 uses.** `docs/GLOSSARY.md` gives each word (lane, pin, stamp, repin, gate,
+  review) a one-sentence meaning and the command that does it. No command, flag or output changes.
+
+### Changed
+
+- **`gr2 review pin`, `stamp` and `repin` are the command names.** `review bind`, `review approve` and
+  `review rebind` keep working as aliases of the same commands. Help, the README, `docs/PR-LIFECYCLE.md` and
+  the messages these verbs print now say pin, stamp and repin. Stored records, review refs, schema names and
+  `approvals.required` are unchanged. Refusal names such as `not_bound` are unchanged too, but the text
+  after them changed: a script should match the name, not the words.
+- **`gr2` runs every git command in its workspace and review modules through
+  one shared helper.** Each such call carries `-c maintenance.auto=false -c
+  gc.auto=0`, so none starts background maintenance in your repository. A clone
+  is never bounded; every other call has a 600-second default, including calls
+  that had none before (an expiry is exit 124). Lane workspace cloning loses its
+  previous 600-second bound. A merge-tree timeout in `gr2 review merge` is still
+  reported as `merge_build_failed`.
+- **`gr2` clears `GR_RESOLVED` when it starts**, so a `gr` run inside a process gr2 launched no longer
+  refuses.
+- **Downstream reads of a pinned root fetch its files in one batch** before reading them, instead of one
+  fetch per file. A failed batch tries the next pinned source.
+
+### Fixed
+
+- **A credential in a remote URL's query or fragment is refused.** A query parameter named like a credential
+  (`token`, `password`, `api_key` and similar) or any fragment now counts as a credential, as user
+  information in the URL already did. `review receive` checks a fetched record's remotes before binding it,
+  and reconstruct and opening a review through the mirror check them before any fetch. Refusals name the
+  member, never the URL. A loopback remote
+  (`localhost`, `127.0.0.0/8`, `::1`) is refused on an off-host publish; local use is unchanged.
+- **`gr2 pr create` refuses a lane member URL carrying a credential**, naming the member and not the URL,
+  before any adapter call or PR state write; a blank URL is treated as absent.
+- **`gr2`'s tmux launch reads tmux's output correctly from a C locale**, as cron and launchd run it: a launch
+  into a non-ASCII working directory no longer fails as "pane started in an unexpected working directory".
+  A working directory containing a control or line-break character is refused by name before any tmux call.
 
 ## [gr2 2.0.0a7] - 2026-10-08
 

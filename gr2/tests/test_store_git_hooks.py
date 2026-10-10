@@ -197,11 +197,15 @@ def test_a_foreign_hook_is_kept_byte_for_byte(tmp_path: Path) -> None:
     assert init.returncode == 0, f"{init.stdout}\n{init.stderr}"
     assert _hook(root, "pre-commit").read_bytes() == foreign, "the foreign hook was changed"
     assert _digest(_hook(root, "pre-commit")) == before
-    # The hook that had no owner IS installed, and the foreign one is NAMED, not silently skipped.
+    # The hook that had no owner IS installed, and the foreign one is NAMED, not silently skipped,
+    # first by init itself and again by status once the root has a commit to report on.
     assert _hook(root, "pre-push").exists()
+    assert "pre-commit" in init.stderr and "another owner" in init.stderr.lower(), init.stderr
+    configure_identity(root)
+    assert gr2(root, "commit", "-m", "first").returncode == 0
     status = gr2(root, "status", check=False)
-    assert "pre-commit" in status.stdout + status.stderr
-    assert "another owner" in (status.stdout + status.stderr).lower()
+    assert "pre-commit" in status.stderr and "another owner" in status.stderr.lower(), status.stderr
+    assert _hook(root, "pre-commit").read_bytes() == foreign, "still the foreign hook after commit and status"
 
 
 def test_init_twice_changes_no_hook_bytes(tmp_path: Path) -> None:
@@ -270,7 +274,8 @@ def test_a_pathspec_commit_of_an_unrelated_file_still_commits(tmp_path: Path) ->
     """THE CONTROL: refusing every pathspec commit would pass the row above."""
     root = _store(tmp_path)
     (root / "NOTES.md").write_text("not a member\n")
-    git(root, "add", "NOTES.md")
+    # The generated allow-list ignores files that are not declared, so the fixture forces this one in.
+    git(root, "add", "-f", "NOTES.md")
     before = _head(root)
 
     result = git(root, "commit", "-m", "notes only", "NOTES.md", check=False)
@@ -290,13 +295,27 @@ def test_a_pathspec_commit_of_an_unpushed_pin_is_still_refused_by_coverage(tmp_p
     assert "is not on origin/main; push it first" in result.stdout + result.stderr
 
 
-def test_commit_dash_a_and_amend_are_checked_like_a_plain_commit(tmp_path: Path) -> None:
+def test_commit_dash_a_is_checked_like_a_plain_commit(tmp_path: Path) -> None:
     root = _store(tmp_path)
     _advance(root, "alpha", push=False)
 
     dash_a = git(root, "commit", "-a", "-m", "dash a", check=False)
+
     assert dash_a.returncode != 0
     assert "push it first" in dash_a.stdout + dash_a.stderr
+
+
+def test_amend_is_checked_like_a_plain_commit(tmp_path: Path) -> None:
+    root = _store(tmp_path)
+    before = _head(root)
+    _advance(root, "alpha", push=False)
+    git(root, "add", "alpha")
+
+    amended = git(root, "commit", "--amend", "--no-edit", check=False)
+
+    assert amended.returncode != 0
+    assert "push it first" in amended.stdout + amended.stderr
+    assert _head(root) == before
 
 
 # ── pre-push, the backstop for a bypassed commit hook ────────────────────────────────────────────

@@ -4501,6 +4501,14 @@ def review_approve(
     from . import approvals
     try:
         result = approvals.approve(workspace_root.resolve(), review_id)
+    except grip.ReviewStoreAbsent as exc:
+        # The review was never received here (a reviewer's own workspace): a named refusal and the order that
+        # works, never a traceback.
+        typer.echo(f"refused: not_received: {exc}", err=True)
+        rid = review_id or "<review id>"
+        typer.echo(next_steps.not_received(str(workspace_root), rid if rid.startswith(("gr:", "<")) else f"gr:{rid}"),
+                   err=True)
+        raise typer.Exit(code=2)
     except approvals.ApprovalRefused as exc:
         typer.echo(str(exc), err=True)
         if str(exc) == "self_approval":

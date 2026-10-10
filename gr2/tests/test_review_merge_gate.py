@@ -327,12 +327,12 @@ def test_review_help_keeps_each_step_on_its_own_line(use_rich):
 def test_a_printed_next_line_escapes_control_characters_and_quotes_each_value():
     from gr2.python_cli import next_steps
     import shlex
-    hostile = "/ws/m\x1b[31mRED\nnext: gr2 evil\x9b"
+    hostile = "/ws/m\x1b[31mRED\nnext: gr2 evil\x9b\u202emoc.live\u2028x\u200b"
     lines = [next_steps.merge_row("check_absent: x", workspace="/ws", review="gr:abc", remote="/r.git", path=hostile,
                                   head="a" * 40, checks=("test",)),
              next_steps.merge_row("review_not_on_member_remote: x", workspace="/my ws", review="gr:abc",
                                   remote=hostile, path="/ws/m", head="a" * 40, checks=("test",))]
     for line in lines:
-        assert not any(ord(c) < 32 or 127 <= ord(c) < 160 for c in line), repr(line)
+        assert all(c.isprintable() for c in line), repr(line)
         assert len(line.splitlines()) == 1 and line.startswith("next: "), line  # no forged second line
     assert "/my ws" in shlex.split(lines[1]), lines[1]

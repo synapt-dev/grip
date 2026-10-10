@@ -11,9 +11,12 @@ import shlex
 
 
 def _shown(value: str) -> str:
-    """A value as it may appear in a printed command: control characters (C0, DEL, C1) escaped as \\xNN so
+    """A value as it may appear in a printed command: every non-printable character escaped (\\xNN, \\uNNNN) so
     a name cannot colour the terminal or start a forged line, and shell-quoted so the line runs as printed."""
-    safe = "".join(f"\\x{ord(c):02x}" if ord(c) < 32 or 127 <= ord(c) < 160 else c for c in str(value))
+    # Not only C0, DEL and C1: anything Python does not call printable (bidi overrides such as U+202E, line and
+    # paragraph separators, zero-width spaces) can reorder or split a printed line, so it is escaped too.
+    safe = "".join(c if c.isprintable() else (f"\\x{ord(c):02x}" if ord(c) < 256 else f"\\u{ord(c):04x}")
+                   for c in str(value))
     return shlex.quote(safe)
 
 REVIEW_ORDER = """\b\n\
@@ -28,8 +31,15 @@ Each refusal along the way names the next command."""
 
 
 def self_approval(workspace: str, review: str) -> str:
-    return (f"next: a different approver stamps this review from their own checkout: "
-            f"gr2 review stamp <their workspace> {_shown(review)}")
+    return (f"next: a different approver stamps it from their own workspace, after receiving it there: "
+            f"gr2 review receive <their-workspace> {_shown(review)} --remote <member-remote>, then "
+            f"gr2 review stamp <their-workspace> {_shown(review)}")
+
+
+def not_received(workspace: str, review: str) -> str:
+    return (f"next: receive the published review into this workspace, then stamp it: "
+            f"gr2 review receive {_shown(workspace)} {_shown(review)} --remote <member-remote>, then "
+            f"gr2 review stamp {_shown(workspace)} {_shown(review)}")
 
 
 def head_already_on_remote() -> str:

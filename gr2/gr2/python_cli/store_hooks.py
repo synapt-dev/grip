@@ -39,6 +39,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from . import gitops
+
 MARKER = "# gr2-store-hook v1"
 HOOK_NAMES = ("pre-commit", "pre-push")
 _ZERO = "0" * 40
@@ -55,7 +57,7 @@ _LOCATING_ENV = (
 
 
 def _git(root: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", "-C", str(root), *args], text=True, capture_output=True, env=env)
+    return gitops.run_argv(["git", "-C", str(root), *args], env=env)
 
 
 def _hooks_dir(root: Path) -> Path:

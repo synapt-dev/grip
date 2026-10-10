@@ -1449,11 +1449,7 @@ def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[
             state = "upstream"
         rows.append({"name": member["name"], "pin": member["pin"], "gitlink": gitlink, "head": head_sha, "state": state})
     porcelain = _store_git(root, "status", "--porcelain").stdout.splitlines()
-    return rows, {
-        "state": "dirty" if porcelain else "clean",
-        "porcelain": porcelain,
-        "hooks": store_hooks.hook_states(root),
-    }
+    return rows, {"state": "dirty" if porcelain else "clean", "porcelain": porcelain}
 
 
 @_refuses_moved_workspace
@@ -1741,11 +1737,12 @@ def grip_init_cmd(
         typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
     if json_output:
-        typer.echo(json.dumps({"status": "initialized", "path": str(root), "store": "native", "hooks": hook_states}))
+        typer.echo(json.dumps({"status": "initialized", "path": str(root), "store": "native"}))
     else:
         typer.echo(f"Initialized git-native store at {root}")
-        for line in store_hooks.hook_problems(root, hook_states):
-            typer.echo(line, err=True)
+    # stderr in both modes, so neither stdout contract moves
+    for line in store_hooks.hook_problems(root, hook_states):
+        typer.echo(line, err=True)
     return
 
 
@@ -1846,9 +1843,9 @@ def grip_status_cmd(
     else:
         for member in members:
             typer.echo(f"{member['name']} {member['state']} pin={member['pin']} head={member['head']}")
-        # A hook that will not run is a finding, not a pass: said on stderr so stdout stays the table.
-        for line in store_hooks.hook_problems(Path.cwd(), root_status["hooks"]):
-            typer.echo(line, err=True)
+    # A hook that will not run is a finding, not a pass: said on stderr in both modes so stdout is unchanged.
+    for line in store_hooks.hook_problems(Path.cwd(), store_hooks.hook_states(Path.cwd())):
+        typer.echo(line, err=True)
     # THE TABLE PRINTS IN EVERY CASE, and the code follows it. A diagnostic that exits 0 on
     # an inconsistency is the silent-success class: the root snapshot a clone would
     # materialize disagrees with its own pin, and a caller that only reads the exit code

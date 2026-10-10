@@ -601,3 +601,199 @@ def test_aside_disposition_returns_unreadable_when_it_cannot_enter_the_tree(tmp_
         assert verdict == repo_proto.ASIDE_UNREADABLE, f"got {verdict}: {detail}"
     finally:
         os.chmod(aside, 0o700)
+
+
+# --- remote-tracking refs after conversion -----------------------------------------------------------
+# `git clone <owner path>` copies the OWNER's branches as refs/remotes/origin/*. Restoring the real origin URL
+# leaves those refs naming a remote that does not hold them, so a commit that exists only in the owner reads
+# as already pushed, and the clone's `HEAD --not --remotes` count (the question "is anything unpushed?")
+# answers 0 where the worktree answered N.
+
+
+def _git(cwd: Path, *args: str) -> str:
+    done = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    assert done.returncode == 0, f"git {' '.join(args)} failed in {cwd}: {done.stderr}"
+    return done.stdout.strip()
+
+
+def _ahead(path: Path) -> int:
+    return int(_git(path, "rev-list", "--count", "HEAD", "--not", "--remotes"))
+
+
+def _owner_with_real_origin(tmp_path: Path) -> tuple[Path, Path]:
+    """A bare 'real' origin, and an owner clone of it whose origin URL is that real origin."""
+    seed = tmp_path / "seed"
+    _init_repo(seed)
+    origin = tmp_path / "real-origin.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(seed), str(origin))
+    owner = tmp_path / "owner"
+    _git(tmp_path, "clone", "-q", str(origin), str(owner))
+    _git(owner, "config", "user.email", "dev@layne.pro")
+    _git(owner, "config", "user.name", "Layne Penney")
+    return origin, owner
+
+
+def _commit(path: Path, name: str) -> None:
+    (path / name).write_text(name + "\n")
+    _git(path, "add", name)
+    _git(path, "commit", "-qm", name)
+
+
+def test_an_unpushed_commit_still_reads_ahead_after_conversion(tmp_path):
+    _origin, owner = _owner_with_real_origin(tmp_path)
+    desk = tmp_path / "desk"
+    _git(owner, "worktree", "add", "-q", "-b", "desk-branch", str(desk), _git(owner, "rev-parse", "--abbrev-ref", "HEAD"))
+    _commit(desk, "local-only.txt")
+    assert _ahead(desk) == 1  # the worktree's own answer, the one conversion must not change
+
+    repo_proto.convert_worktree_to_clone(desk)
+
+    assert (desk / ".git").is_dir()
+    assert _ahead(desk) == 1, "convert-clone made an unpushed commit read as pushed"
+    assert "refs/remotes/origin/desk-branch" not in _git(desk, "for-each-ref", "--format=%(refname)")
+
+
+def test_control_a_pushed_commit_reads_zero_ahead_after_conversion(tmp_path):
+    origin, owner = _owner_with_real_origin(tmp_path)
+    desk = tmp_path / "desk"
+    _git(owner, "worktree", "add", "-q", "-b", "desk-branch", str(desk), _git(owner, "rev-parse", "--abbrev-ref", "HEAD"))
+    _commit(desk, "pushed.txt")
+    _git(desk, "push", "-q", "origin", "desk-branch")
+    assert _ahead(desk) == 0
+
+    repo_proto.convert_worktree_to_clone(desk)
+
+    assert _ahead(desk) == 0
+    # and the tracking ref for it is genuinely there, because the real origin does hold it
+    refs = _git(desk, "for-each-ref", "--format=%(refname)", "refs/remotes/origin")
+    assert "refs/remotes/origin/desk-branch" in refs, refs
+
+
+def test_a_repo_with_no_origin_keeps_no_origin_tracking_refs_after_conversion(tmp_path):
+    canonical = tmp_path / "canonical"
+    _init_repo(canonical)
+    desk = tmp_path / "desk"
+    _git(canonical, "worktree", "add", "-q", "-b", "desk-branch", str(desk), "HEAD")
+    _commit(desk, "local-only.txt")
+    ahead_before = _ahead(desk)  # no remote at all: every commit counts
+    assert ahead_before == 2
+
+    repo_proto.convert_worktree_to_clone(desk)
+
+    assert _git(desk, "remote") == "", "an origin the original never had was invented"
+    assert _git(desk, "for-each-ref", "--format=%(refname)", "refs/remotes") == ""
+    assert _ahead(desk) == ahead_before
+
+
+def test_conversion_does_not_touch_the_real_origin_or_fetch_from_it(tmp_path):
+    """The repair reads the owner's tracking refs from the owner, locally: no network, nothing pushed."""
+    origin, owner = _owner_with_real_origin(tmp_path)
+    desk = tmp_path / "desk"
+    _git(owner, "worktree", "add", "-q", "-b", "desk-branch", str(desk), _git(owner, "rev-parse", "--abbrev-ref", "HEAD"))
+    _commit(desk, "local-only.txt")
+    before = _git(origin, "for-each-ref", "--format=%(refname) %(objectname)")
+    # point the restored origin at a path that does not exist: a fetch from it would fail the conversion
+    _git(owner, "remote", "set-url", "origin", str(tmp_path / "unreachable.git"))
+    repo_proto.convert_worktree_to_clone(desk)
+    assert _git(origin, "for-each-ref", "--format=%(refname) %(objectname)") == before
+    assert _git(desk, "remote", "get-url", "origin") == str(tmp_path / "unreachable.git")
+
+
+def test_a_corrupt_owner_tracking_ref_refuses_the_conversion_and_leaves_the_worktree(tmp_path):
+    """The repair reads the owner's tracking refs; if that read fails the conversion stops, names why, and
+    the worktree is untouched (the failure comes before the swap)."""
+    _origin, owner = _owner_with_real_origin(tmp_path)
+    desk = tmp_path / "desk"
+    _git(owner, "worktree", "add", "-q", "-b", "desk-branch", str(desk), _git(owner, "rev-parse", "--abbrev-ref", "HEAD"))
+    _commit(desk, "local-only.txt")
+    (owner / ".git" / "refs" / "remotes" / "origin" / "ghost").write_text("1" * 40 + "\n")
+    with pytest.raises(repo_proto.ConvertCloneError, match="could not carry the owner"):
+        repo_proto.convert_worktree_to_clone(desk)
+    assert (desk / ".git").is_file()  # still a linked worktree, not converted
+    assert (desk / "local-only.txt").exists()
+    assert not list(tmp_path.glob(".convert-staging-*"))
+
+
+def test_the_converted_clone_keeps_the_owners_origin_head_symref(tmp_path):
+    """origin/HEAD is a SYMREF. The repair deletes the copied refs and fetches the owner's back, which brings
+    origin/HEAD as a plain sha; the readers of a remote's default branch need the symref."""
+    from gr2.prototypes import lane_workspace_prototype as lane_proto
+
+    _origin, owner = _owner_with_real_origin(tmp_path)
+    base = _git(owner, "rev-parse", "--abbrev-ref", "HEAD")
+    owner_head = _git(owner, "symbolic-ref", "-q", "refs/remotes/origin/HEAD")
+    assert owner_head == f"refs/remotes/origin/{base}", owner_head  # precondition: the owner has it
+    desk = tmp_path / "desk"
+    _git(owner, "worktree", "add", "-q", "-b", "desk-branch", str(desk), base)
+
+    repo_proto.convert_worktree_to_clone(desk)
+
+    assert _git(desk, "symbolic-ref", "-q", "refs/remotes/origin/HEAD") == owner_head
+    assert _git(desk, "rev-parse", "--abbrev-ref", "origin/HEAD") == f"origin/{base}"
+    assert lane_proto._origin_default_branch(desk) == base
+
+
+def test_twin_an_owner_with_no_origin_head_gives_the_clone_none(tmp_path):
+    _origin, owner = _owner_with_real_origin(tmp_path)
+    base = _git(owner, "rev-parse", "--abbrev-ref", "HEAD")
+    _git(owner, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+    desk = tmp_path / "desk"
+    _git(owner, "worktree", "add", "-q", "-b", "desk-branch", str(desk), base)
+
+    repo_proto.convert_worktree_to_clone(desk)
+
+    refs = _git(desk, "for-each-ref", "--format=%(refname)", "refs/remotes/origin")
+    assert "refs/remotes/origin/HEAD" not in refs, refs
+    assert f"refs/remotes/origin/{base}" in refs, refs  # the other tracking refs still came
+
+
+def test_a_commit_known_only_to_another_remote_reads_unpushed_on_the_clone(tmp_path):
+    """The count is the same before and after ONLY while origin is the only remote. The clone has origin alone,
+    so a commit pushed to a second remote reads 0 on the worktree and 1 on the clone. This pins that limit
+    as it is, so the wording that describes it cannot drift to 'always the same'."""
+    origin, owner = _owner_with_real_origin(tmp_path)
+    upstream = tmp_path / "upstream.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(origin), str(upstream))
+    _git(owner, "remote", "add", "upstream", str(upstream))
+    desk = tmp_path / "desk"
+    _git(owner, "worktree", "add", "-q", "-b", "desk-branch", str(desk), _git(owner, "rev-parse", "--abbrev-ref", "HEAD"))
+    _commit(desk, "to-upstream.txt")
+    _git(desk, "push", "-q", "upstream", "desk-branch")
+    assert _ahead(desk) == 0  # the worktree sees refs/remotes/upstream/desk-branch
+
+    repo_proto.convert_worktree_to_clone(desk)
+
+    assert _ahead(desk) == 1  # the clone has origin only: it says unpushed, the safe direction
+
+
+def test_a_dangling_owner_origin_head_is_not_recreated_as_a_dangling_symref(tmp_path):
+    """The owner's origin/HEAD names a branch that is not among its tracking refs. The clone must not get a
+    symref to nothing: the target is checked before the symref is set."""
+    _origin, owner = _owner_with_real_origin(tmp_path)
+    base = _git(owner, "rev-parse", "--abbrev-ref", "HEAD")
+    _git(owner, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/not-a-branch")
+    desk = tmp_path / "desk"
+    _git(owner, "worktree", "add", "-q", "-b", "desk-branch", str(desk), base)
+
+    repo_proto.convert_worktree_to_clone(desk)
+
+    shown = subprocess.run(["git", "symbolic-ref", "-q", "refs/remotes/origin/HEAD"], cwd=desk,
+                           capture_output=True, text=True)
+    assert shown.returncode != 0, f"a dangling origin/HEAD was recreated: {shown.stdout}"
+
+
+def test_an_owner_origin_head_that_is_a_plain_ref_does_not_become_the_clones(tmp_path):
+    """A plain refs/remotes/origin/HEAD (a sha, not a symref) is not a default-branch record; the fetch would
+    bring it as-is. The clone must have no origin/HEAD at all rather than a ref the readers misread."""
+    _origin, owner = _owner_with_real_origin(tmp_path)
+    base = _git(owner, "rev-parse", "--abbrev-ref", "HEAD")
+    sha = _git(owner, "rev-parse", f"refs/remotes/origin/{base}")
+    _git(owner, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+    _git(owner, "update-ref", "refs/remotes/origin/HEAD", sha)
+    desk = tmp_path / "desk"
+    _git(owner, "worktree", "add", "-q", "-b", "desk-branch", str(desk), base)
+
+    repo_proto.convert_worktree_to_clone(desk)
+
+    refs = _git(desk, "for-each-ref", "--format=%(refname)", "refs/remotes/origin")
+    assert "refs/remotes/origin/HEAD" not in refs, refs

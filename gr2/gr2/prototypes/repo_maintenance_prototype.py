@@ -805,6 +805,40 @@ def swap_in_place(staged: Path, target: Path) -> None:
     shutil.move(str(staged), str(target))
 
 
+def _restore_tracking_refs(staging_path: Path, owner_root: Path, *, keep_origin: bool) -> None:
+    """Make the staging clone's refs/remotes/origin/* what the worktree saw, not what the clone copied.
+
+    The clone's origin refs are the owner's refs/heads/*; delete them all (no-deref, so the origin/HEAD symref
+    itself goes, not its target). When the original had an origin, bring in the owner's own origin tracking refs
+    over file://, which is local, and restore its origin/HEAD symref; when it had none there is nothing to bring
+    and none are left.
+    """
+    listed = run_git(staging_path, "for-each-ref", "--format=%(refname)", "refs/remotes/origin")
+    for ref in listed.stdout.split():
+        run_git(staging_path, "update-ref", "--no-deref", "-d", ref)
+    if not keep_origin:
+        return
+    got = run_git(
+        staging_path, "fetch", "-q", f"file://{owner_root}", "+refs/remotes/origin/*:refs/remotes/origin/*"
+    )
+    if got.returncode != 0:
+        shutil.rmtree(staging_path, ignore_errors=True)
+        raise ConvertCloneError(
+            f"could not carry the owner's remote-tracking refs into the staging clone: {got.stderr.strip()}"
+        )
+    # The fetch brings origin/HEAD back as a PLAIN ref holding a sha, and the readers of the remote's default
+    # branch (`rev-parse --abbrev-ref origin/HEAD`, `symbolic-ref refs/remotes/origin/HEAD`) need the SYMREF.
+    # Put the owner's symref back, when it has one and its target is among the refs just carried; when it
+    # has none, there is none here either.
+    run_git(staging_path, "update-ref", "--no-deref", "-d", "refs/remotes/origin/HEAD")
+    owner_head = run_git(owner_root, "symbolic-ref", "-q", "refs/remotes/origin/HEAD")
+    target = owner_head.stdout.strip()
+    if owner_head.returncode == 0 and target:
+        have = run_git(staging_path, "show-ref", "--verify", "-q", target)
+        if have.returncode == 0:
+            run_git(staging_path, "symbolic-ref", "refs/remotes/origin/HEAD", target)
+
+
 def convert_worktree_to_clone(path: Path) -> dict[str, object]:
     """Convert a linked worktree into an own clone, in place.
 
@@ -932,6 +966,12 @@ def convert_worktree_to_clone(path: Path) -> dict[str, object]:
             )
     else:
         run_git(staging_path, "remote", "remove", "origin")
+
+    # `git clone <owner path>` copied the OWNER's branches as refs/remotes/origin/*, and the real origin was just
+    # restored above, so those refs now claim the real origin holds commits that exist only in the owner. A
+    # commit the worktree knew was unpushed would read as pushed. Replace them with the refs the worktree itself
+    # was reading: the owner's own refs/remotes/origin/*, taken from the owner locally (no network).
+    _restore_tracking_refs(staging_path, canonical_repo_root, keep_origin=original_origin is not None)
 
     staging_git = staging_path / ".git"
     staging_summary = _lstat_summary(staging_git)

@@ -69,7 +69,7 @@ gr2 lane list ~/ws                                         # each lane: removabl
 gr2 lane remove ~/ws default feat-x                        # end it: its clones and record go
 ```
 
-`lane remove` refuses while the lane is entered, bound or leased, or while any of its repos holds uncommitted work, a stash, or a commit no remote has; it names each one and removes nothing. `exec run` and `lane exit` require `--actor`. Every group and verb takes `--help`; `gr2 --help` lists them all.
+`lane remove` refuses while the lane is entered or leased, or was made by `lane bind`, or while any of its repos holds uncommitted work, a stash, or a commit no remote has; it names each one and removes nothing. `exec run` and `lane exit` require `--actor`. Every group and verb takes `--help`; `gr2 --help` lists them all.
 
 ## What works today, and what is not there yet
 
@@ -91,7 +91,7 @@ Not there yet:
 |---|---|
 | `workspace` | init, init-from-topology, materialize, status, convert-clone, detect-gr1, migrate-gr1, migrate-lane-state, bootstrap-gr1, gitinclude |
 | `spec` | show, validate |
-| `lane` | create, enter, exit, show, resolve, bind, lease |
+| `lane` | create, enter, exit, show, resolve, bind, lease, list, remove |
 | (top level) | branch, add, commit, push, prune, status, plan, apply |
 | `sync` | status, run |
 | `pr` | create, status, checks, merge, view |

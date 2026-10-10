@@ -3073,7 +3073,7 @@ def _unpushed_commits(repo: Path, *, fetch: bool = True) -> list[str]:
     claim from the last fetch, and "nothing unpushed" would be read off a stale copy. Only
     `lane list` passes fetch=False, and it says in its output that it did not fetch."""
     if fetch:
-        fetched = subprocess.run(["git", "fetch", "--quiet", "--all"], cwd=repo, text=True, capture_output=True)
+        fetched = gitops.run_argv(["git", "fetch", "--quiet", "--all"], cwd=repo)
         if fetched.returncode != 0:
             raise SystemExit(f"cannot fetch in {repo}, so cannot show its commits are pushed: {fetched.stderr.strip()}")
     out = git(repo, "log", "HEAD", "--branches", "--not", "--remotes", "--format=%H").stdout

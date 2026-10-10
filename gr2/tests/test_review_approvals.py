@@ -779,3 +779,25 @@ def test_a_reviewer_who_stamps_before_receiving_gets_a_named_refusal_and_the_ord
     assert got.exit_code == 0, got.output
     stamped = runner.invoke(app, stamp)
     assert stamped.exit_code == 0, stamped.output
+
+
+def test_a_reviewer_clone_without_the_head_gets_head_not_fetched_and_the_fetch_that_works(world, tmp_path, monkeypatch):
+    import shlex
+    reviewer = tmp_path / "reviewer-ws"
+    reviewer.mkdir()
+    # --no-local: a local clone copies every object, which would hide the case a real early clone meets
+    git(reviewer, "clone", "--no-local", "--single-branch", "--branch", "main", world["remote"], "member")
+    assert runner.invoke(app, ["store", "init", str(reviewer)]).exit_code == 0
+    monkeypatch.chdir(reviewer)
+    git(reviewer, "config", "user.name", "Reviewer R")
+    git(reviewer, "config", "user.email", "r@example.invalid")
+    rid = "gr:" + world["rid"]
+    assert runner.invoke(app, ["review", "receive", str(reviewer), rid, "--remote", str(world["remote"])]).exit_code == 0
+    early = runner.invoke(app, ["review", "stamp", str(reviewer), rid])
+    assert early.exit_code == 2 and "head_not_fetched: member" in early.output, early.output
+    assert "unknown revision" not in early.output, early.output
+    line = next(x for x in early.output.splitlines() if x.startswith("next: "))
+    fetch_cmd, stamp_cmd = line[line.index("git -C"):].split(", then ")
+    subprocess.run(shlex.split(fetch_cmd), check=True, capture_output=True)
+    stamped = runner.invoke(app, shlex.split(stamp_cmd.removeprefix("gr2 ")))
+    assert stamped.exit_code == 0, stamped.output

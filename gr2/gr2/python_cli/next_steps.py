@@ -19,13 +19,14 @@ def _shown(value: str) -> str:
                    for c in str(value))
     return shlex.quote(safe)
 
-REVIEW_ORDER = """\b\n\
+REVIEW_ORDER = """\b
 A review goes through six steps, in this order:
   1. gr2 review pin      pin the head before pushing it (needs gr2 store init)
   2. push the head       gr2 push, or git push
-  3. gr2 review stamp    an approver other than the author stamps it
-  4. gr2 check run       record the check at the exact head on the remote
-  5. gr2 review publish  put the pinned review on each member remote
+  3. gr2 review publish  put the pinned review on each member remote
+  4. gr2 review stamp    an approver other than the author stamps it; in their
+                         own workspace, after gr2 review receive
+  5. gr2 check run       record the check at the exact head on the remote
   6. gr2 review merge    merges only if heads still match the pin and check
 Each refusal along the way names the next command."""
 
@@ -34,6 +35,13 @@ def self_approval(workspace: str, review: str) -> str:
     return (f"next: a different approver stamps it from their own workspace, after receiving it there: "
             f"gr2 review receive <their-workspace> {_shown(review)} --remote <member-remote>, then "
             f"gr2 review stamp <their-workspace> {_shown(review)}")
+
+
+def head_not_fetched(repo: str, remote: str, head: str, workspace: str, review: str) -> str:
+    # The head itself, not the remote's default refspec: a single-branch clone fetches only its own branch.
+    return (f"next: fetch the reviewed head into this member clone, then stamp again: "
+            f"git -C {_shown(repo)} fetch {_shown(remote)} {_shown(head)}, then "
+            f"gr2 review stamp {_shown(workspace)} {_shown(review)}")
 
 
 def not_received(workspace: str, review: str) -> str:

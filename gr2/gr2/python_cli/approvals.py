@@ -22,7 +22,11 @@ SCHEMA = approval_schema.PACKAGE
 
 
 class ApprovalRefused(RuntimeError):
-    pass
+    """A named refusal. `next_step`, when set, is the printed next line for the operator."""
+
+    def __init__(self, message: str, next_step: str | None = None) -> None:
+        super().__init__(message)
+        self.next_step = next_step
 
 
 def _git(repo: Path, *args: str, data: str | None = None, raw: bool = False) -> str:
@@ -125,6 +129,15 @@ def _context(workspace: Path, review_id: str) -> tuple[dict, set[str]]:
         repo = (root / m["path"]).resolve()
         if not repo.is_relative_to(root) or merge_gate._toplevel(repo) != repo or not merge_gate._store_inside(repo, root):
             raise ApprovalRefused(f"approval_member_repo_mismatch: {m['key']}")
+        # A reviewer's clone made before the head was pushed does not hold it: a named refusal with the
+        # fetch that fixes it, not a raw `unknown revision` from the rev-parse below.
+        try:
+            _git(repo, "cat-file", "-t", f"{m['head']}^{{commit}}")
+        except ApprovalRefused:
+            from . import next_steps
+            raise ApprovalRefused(f"head_not_fetched: {m['key']}",
+                                  next_steps.head_not_fetched(str(repo), m["remote"], m["head"], str(workspace),
+                                                              "gr:" + rid)) from None
         actual_tree = _git(repo, "rev-parse", f"{m['head']}^{{tree}}")
         tree = measured[m["key"]].get("head_tree", actual_tree)
         if actual_tree != tree:

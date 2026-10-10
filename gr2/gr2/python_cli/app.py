@@ -4511,6 +4511,8 @@ def review_approve(
         raise typer.Exit(code=2)
     except approvals.ApprovalRefused as exc:
         typer.echo(str(exc), err=True)
+        if getattr(exc, "next_step", None):
+            typer.echo(exc.next_step, err=True)
         if str(exc) == "self_approval":
             try:
                 rid = review_id or approvals.current_review(workspace_root.resolve())

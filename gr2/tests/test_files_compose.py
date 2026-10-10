@@ -222,6 +222,35 @@ class TestGateAndConfinement:
         assert _refusal(workspace, root)["status"] == "blocked"
         assert (workspace / "out.txt").read_text() == "mine"
 
+    def test_a_dest_that_is_one_of_its_own_parts_is_refused(self, workspace: Path):
+        # the row reads the file, then rewrites it: without the refusal the
+        # file grew by one part on every run.
+        root = _member(workspace, _row(["a.md", "b.md"], dest="{repo_root}/b.md"), **{"a.md": "A", "b.md": "B"})
+        payload = _refusal(workspace, root)
+        assert payload["status"] == "refused" and "own parts" in payload["detail"]
+        assert (root / "b.md").read_text() == "B"
+
+    def test_a_dest_symlinked_to_one_of_its_parts_is_refused(self, workspace: Path):
+        root = _member(workspace, _row(["a.md"]), **{"a.md": "A"})
+        (workspace / "out.txt").symlink_to(root / "a.md")
+        payload = _refusal(workspace, root)
+        assert payload["status"] == "refused" and "own parts" in payload["detail"]
+        assert (root / "a.md").read_text() == "A"
+
+    def test_a_non_utf8_part_is_a_named_refusal_not_a_traceback(self, workspace: Path):
+        root = _member(workspace, _row(["a.md", "bin.md"]), **{"a.md": "A"})
+        (root / "bin.md").write_bytes(b"\xff\xfe\x00bad")
+        payload = _refusal(workspace, root)
+        assert payload["status"] == "refused" and "bin.md" in payload["detail"] and "UTF-8" in payload["detail"]
+        assert not (workspace / "out.txt").exists()
+
+    def test_a_json_part_with_a_duplicate_key_is_refused(self, workspace: Path):
+        row = _row(["dup.json"], extra='format = "json"\n')
+        root = _member(workspace, row, **{"dup.json": '{"a": 1, "a": 2}'})
+        payload = _refusal(workspace, root)
+        assert payload["status"] == "refused" and "duplicate key" in payload["detail"]
+        assert not (workspace / "out.txt").exists()
+
     def test_empty_parts_is_rejected_at_load(self, workspace: Path):
         root = _member(workspace, '[[files.compose]]\ndest = "{workspace_root}/o"\nparts = []\n')
         with pytest.raises(SystemExit):

@@ -184,7 +184,9 @@ separator = "\n\n"            # text only; default "\n\n"
   for shared guard lists. A part that changes the kind of a shared value (an
   array replaced by `null`, a string, or an object) is refused. A part that is
   not a JSON object, or does not parse, refuses the whole compose and writes
-  nothing. `separator` is rejected with `format = "json"`. Output is two-space
+  nothing, as does a part that is not UTF-8 text or a JSON part that repeats
+  a key. A `dest` that resolves to one of its own parts is refused (it would
+  grow on every run). `separator` is rejected with `format = "json"`. Output is two-space
   indented in first-appearance key order with a trailing newline, so a re-run
   is byte-identical.
 - Parts come from the member only; reading another member's tree is not

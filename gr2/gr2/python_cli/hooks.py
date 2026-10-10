@@ -528,6 +528,23 @@ def _json_merge(base: object, extra: object, path: str, part: str) -> object:
     return extra
 
 
+def _same_file(left: Path, right: Path) -> bool:
+    """True when both paths resolve to the same file (symlinks followed)."""
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return False
+
+
+def _json_no_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    seen: dict[str, object] = {}
+    for key, value in pairs:
+        if key in seen:
+            raise ValueError(f"duplicate key {key!r}")
+        seen[key] = value
+    return seen
+
+
 def _compose_refusal(hooks: RepoHooks, compose: FileCompose, status: str, detail: str, dest: object) -> HookRuntimeError:
     return HookRuntimeError(
         {
@@ -570,12 +587,25 @@ def _apply_compose(hooks: RepoHooks, ctx: HookContext, compose: FileCompose) -> 
             raise _compose_refusal(
                 hooks, compose, "blocked", f"compose part does not exist: {part}", dest
             )
-    texts = [(part, src.read_text(encoding="utf-8")) for part, src in part_paths]
+        # A dest that IS one of its own parts would be read, then rewritten,
+        # and grow on every run ("A\n\nB" becomes "A\n\nB\n\nB").
+        if _same_file(src, dest):
+            raise _compose_refusal(
+                hooks, compose, "refused", f"compose dest is one of its own parts: {part}", dest
+            )
+    texts: list[tuple[str, str]] = []
+    for part, src in part_paths:
+        try:
+            texts.append((part, src.read_text(encoding="utf-8")))
+        except UnicodeDecodeError:
+            raise _compose_refusal(
+                hooks, compose, "refused", f"compose part {part} is not valid UTF-8 text", dest
+            ) from None
     if compose.format == "json":
         merged: object = None
         for index, (part, text) in enumerate(texts):
             try:
-                doc = json.loads(text)
+                doc = json.loads(text, object_pairs_hook=_json_no_duplicate_keys)
             except ValueError as exc:
                 raise _compose_refusal(
                     hooks, compose, "refused", f"compose part {part} is not valid JSON: {exc}", dest

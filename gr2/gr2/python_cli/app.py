@@ -3066,39 +3066,36 @@ def lane_exit(
     )
 
 
-def _unpushed_commits(repo: Path) -> list[str]:
+def _unpushed_commits(repo: Path, *, fetch: bool = True) -> list[str]:
     """Commits on HEAD or any local branch that no remote-tracking ref holds, after a fetch.
 
     A fetch that fails is a refusal, never an empty answer: without it the remote refs are a
-    claim from the last fetch, and "nothing unpushed" would be read off a stale copy."""
-    fetched = subprocess.run(["git", "fetch", "--quiet", "--all"], cwd=repo, text=True, capture_output=True)
-    if fetched.returncode != 0:
-        raise SystemExit(f"cannot fetch in {repo}, so cannot show its commits are pushed: {fetched.stderr.strip()}")
+    claim from the last fetch, and "nothing unpushed" would be read off a stale copy. Only
+    `lane list` passes fetch=False, and it says in its output that it did not fetch."""
+    if fetch:
+        fetched = subprocess.run(["git", "fetch", "--quiet", "--all"], cwd=repo, text=True, capture_output=True)
+        if fetched.returncode != 0:
+            raise SystemExit(f"cannot fetch in {repo}, so cannot show its commits are pushed: {fetched.stderr.strip()}")
     out = git(repo, "log", "HEAD", "--branches", "--not", "--remotes", "--format=%H").stdout
     return [line for line in out.splitlines() if line]
 
 
-@lane_app.command("remove", cls=ContextCommand)
-def lane_remove(
-    workspace_root: Path,
-    owner_unit: str,
-    lane_name: str,
-    root: Optional[Path] = ROOT_OPTION,
-    unit: Optional[str] = typer.Option(None, "--unit", help="The unit. Same as the UNIT argument; give one or the other."),
-    ctx: typer.Context = None,  # type: ignore[assignment]
-) -> None:
-    """End a lane: remove its clones and its record.
+def _lane_removal_refusals(workspace_root: Path, owner_unit: str, lane_name: str, *, fetch: bool = True) -> list[str]:
+    """Every reason this lane may not be removed, one line each; empty means removable.
 
-    Refused while any of its repos holds a commit that no remote has, checked over HEAD and every
-    local branch after a fetch; the refusal names each repo and commit, and nothing is removed.
-    The workspace's own clones are never touched."""
-    _announce_context(ctx)
-    workspace_root = workspace_root.resolve()
-    lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
-    if lane_doc.get("lane_kind", "materialized") == "bound":
-        typer.echo(f"refused: lane_is_bound: {owner_unit}/{lane_name} uses a worktree it does not own", err=True)
-        raise typer.Exit(code=1)
-    checkout_root = lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)
+    `lane remove` and `lane list` both read this, so the list cannot call a lane removable that remove refuses."""
+    lane_dir = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
+    state_root = lane_proto.lane_state_root(workspace_root).resolve()
+    if not lane_dir.resolve().is_relative_to(state_root) or lane_dir.is_symlink():
+        return [f"lane_path_escapes_workspace: {lane_dir} resolves to {lane_dir.resolve()}, outside {state_root}"]
+    try:
+        # Both refuse a checkout path that passes through a symlink (MaterializationPlan invariant #2).
+        lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
+        if lane_doc.get("lane_kind", "materialized") == "bound":
+            return [f"lane_is_bound: {owner_unit}/{lane_name} uses a worktree it does not own"]
+        lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)
+    except spec_apply.MaterializationPlanError as exc:
+        return [f"lane_path_escapes_workspace: {exc}"]
     refusals: list[str] = []
     current_file = lane_proto.current_lane_file(workspace_root, owner_unit)
     if current_file.exists():
@@ -3119,14 +3116,56 @@ def lane_remove(
         for sha in git(path, "stash", "list", "--format=%H").stdout.split():
             refusals.append(f"lane_has_stash: {name} {sha}")
         try:
-            refusals.extend(f"lane_has_unpushed_commit: {name} {sha}" for sha in _unpushed_commits(path))
+            refusals.extend(f"lane_has_unpushed_commit: {name} {sha}" for sha in _unpushed_commits(path, fetch=fetch))
         except SystemExit as exc:
             refusals.append(f"lane_unpushed_unknown: {name}: {exc}")
+    return refusals
+
+
+@lane_app.command("list", cls=RootOptionalCommand)
+def lane_list(
+    workspace_root: Path,
+    unit: Optional[str] = typer.Option(None, "--unit", help="Only this unit's lanes."),
+    root: Optional[Path] = ROOT_OPTION,
+) -> None:
+    """List lanes, each marked removable or keep with every reason.
+
+    Removable is a state (not entered, not bound or leased, clean, no stash, nothing unpushed), never an age.
+    The list reads remote-tracking refs WITHOUT fetching, and says so; `lane remove` fetches and checks again."""
+    workspace_root = workspace_root.resolve()
+    typer.echo("# remote refs not fetched; gr2 lane remove fetches before it removes anything")
+    typer.echo("UNIT\tLANE\tSTATE\tREASONS")
+    for path in lane_proto.iter_lane_files(workspace_root, unit):
+        doc = tomllib.loads(path.read_text())
+        owner_unit, lane_name = doc["owner_unit"], doc["lane_name"]
+        refusals = _lane_removal_refusals(workspace_root, owner_unit, lane_name, fetch=False)
+        state = "keep" if refusals else "removable"
+        typer.echo(f"{owner_unit}\t{lane_name}\t{state}\t{'; '.join(refusals) or '-'}")
+
+
+@lane_app.command("remove", cls=ContextCommand)
+def lane_remove(
+    workspace_root: Path,
+    owner_unit: str,
+    lane_name: str,
+    root: Optional[Path] = ROOT_OPTION,
+    unit: Optional[str] = typer.Option(None, "--unit", help="The unit. Same as the UNIT argument; give one or the other."),
+    ctx: typer.Context = None,  # type: ignore[assignment]
+) -> None:
+    """End a lane: remove its clones and its record.
+
+    Refused while the lane is entered, bound, or leased, or while any of its repos holds uncommitted
+    work, a stash, or a commit that no remote has (HEAD and every local branch, after a fetch). Every
+    refusal is named, and nothing is removed. The workspace's own clones are never touched."""
+    _announce_context(ctx)
+    workspace_root = workspace_root.resolve()
+    refusals = _lane_removal_refusals(workspace_root, owner_unit, lane_name)
     if refusals:
         for line in refusals:
             typer.echo(f"refused: {line}", err=True)
         typer.echo(f"nothing was removed; the lane {owner_unit}/{lane_name} is as it was", err=True)
         raise typer.Exit(code=1)
+    checkout_root = lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)
     rmtree_or_refuse(checkout_root)
     lane_dir = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
     if lane_dir.exists():

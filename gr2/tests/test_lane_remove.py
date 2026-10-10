@@ -155,3 +155,52 @@ def test_a_lane_whose_origin_cannot_be_fetched_is_not_removed(tmp_path: Path) ->
     # The remote-tracking refs still hold every commit, so a reader that skipped the fetch would say "all pushed".
     assert _git(repo, "log", "HEAD", "--branches", "--not", "--remotes", "--format=%H") == ""
     _refused_untouched(ws, repo, _remove(ws), "lane_unpushed_unknown", "app")
+
+
+def test_lane_list_names_each_lane_removable_or_why_not(tmp_path: Path) -> None:
+    """A stale lane is a STATE (exited, clean, nothing unpushed), not an age; list reads the same checks remove does."""
+    ws, _, commit = _exited_lane_with_a_commit(tmp_path)
+    result = runner.invoke(gr2_app.app, ["lane", "create", str(ws), "atlas", "y", "--repos", "app", "--branch", "app=feat/y"])
+    assert result.exit_code == 0, result.output
+
+    result = runner.invoke(gr2_app.app, ["lane", "list", str(ws)])
+
+    assert result.exit_code == 0, result.output
+    rows = {line.split("\t")[1]: line for line in result.output.splitlines() if line.startswith("atlas\t")}
+    assert set(rows) == {"x", "y"}, result.output
+    assert "\tremovable" in rows["y"], rows["y"]
+    assert "\tkeep" in rows["x"] and "lane_has_unpushed_commit" in rows["x"] and commit[:12] in rows["x"], rows["x"]
+    assert "not fetched" in result.output, "the list says it read remote refs without a fetch"
+
+
+def test_a_lane_whose_directory_escapes_the_workspace_by_symlink_is_not_removed(tmp_path: Path) -> None:
+    ws, repo = _pushed_exited_lane(tmp_path)
+    lane = lane_proto.lane_dir(ws, "atlas", "x")
+    outside = tmp_path / "outside-the-workspace"
+    lane.rename(outside)
+    lane.symlink_to(outside, target_is_directory=True)
+    assert lane.is_symlink() and (outside / "lane.toml").is_file()
+
+    result = _remove(ws)
+
+    assert result.exit_code != 0, result.output
+    assert "lane_path_escapes_workspace" in result.output, result.output
+    assert (outside / "lane.toml").is_file(), "nothing outside was touched"
+    assert (repo / ".git").exists(), "the lane's clone is untouched"
+    assert lane.is_symlink(), "the link itself is left for the operator"
+
+
+def test_a_lane_whose_checkout_escapes_the_workspace_by_symlink_is_not_removed(tmp_path: Path) -> None:
+    ws, repo = _pushed_exited_lane(tmp_path)
+    checkout = lane_proto.lane_checkout_root(ws, "atlas", "x")
+    assert checkout.resolve() != lane_proto.lane_dir(ws, "atlas", "x").resolve(), "the clone and the record are apart"
+    outside = tmp_path / "outside-checkout"
+    checkout.rename(outside)
+    checkout.symlink_to(outside, target_is_directory=True)
+
+    result = _remove(ws)
+
+    assert result.exit_code != 0, result.output
+    assert "lane_path_escapes_workspace" in result.output, result.output
+    assert (outside / "repos" / "app" / ".git").exists(), "nothing outside was touched"
+    assert lane_proto.lane_file(ws, "atlas", "x").is_file(), "the lane record is untouched"

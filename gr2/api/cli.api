@@ -308,6 +308,18 @@ arg   lane lease show workspace_root <str>                            stable
 flag  lane lease show --json                                          stable
 flag  lane lease show --root/-C <str>                                 stable
 verb  lane lease show                                                 stable
+# lane list
+arg   lane list workspace_root <str>                                  stable
+flag  lane list --root/-C <str>                                       stable
+flag  lane list --unit <str>                                          stable
+verb  lane list                                                       stable
+# lane remove
+arg   lane remove lane_name <str>                                     stable
+arg   lane remove owner_unit <str>                                    stable
+arg   lane remove workspace_root <str>                                stable
+flag  lane remove --root/-C <str>                                     stable
+flag  lane remove --unit <str>                                        stable
+verb  lane remove                                                     stable
 # lane resolve
 arg   lane resolve operation_id <str>                                 stable
 arg   lane resolve owner_unit <str>                                   stable

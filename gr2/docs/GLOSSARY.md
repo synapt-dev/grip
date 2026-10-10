@@ -4,9 +4,11 @@ The words gr2 uses for its own commands, each with the command that does it. Thi
 
 ## lane
 
-A unit of work with its own checkout. Create it, enter it to work, exit it to put it down.
+A unit of work with its own checkout. Create it, enter it to work, exit it to put it down, remove it to end it.
 
-Command: `gr2 lane create`, `gr2 lane enter`, `gr2 lane exit`.
+Command: `gr2 lane create`, `gr2 lane enter`, `gr2 lane exit`, `gr2 lane remove`, `gr2 lane list`.
+
+`lane remove` refuses while any of the lane's repos holds work that exists nowhere else: uncommitted changes, a stash, or a commit no remote has. `lane list` marks each lane removable or keep, with every reason.
 
 ## pin
 

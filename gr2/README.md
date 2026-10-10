@@ -65,9 +65,11 @@ gr2 exec run ~/ws default --actor human:you -- pytest -q   # one command, every 
 gr2 review create-project ~/ws default feat-x              # prints gr:<sha>: one object to review
 gr2 lane show ~/ws default                                 # where am I?
 gr2 lane exit ~/ws default --actor human:you
+gr2 lane list ~/ws                                         # each lane: removable, or keep and why
+gr2 lane remove ~/ws default feat-x                        # end it: its clones and record go
 ```
 
-`exec run` and `lane exit` require `--actor`. Every group and verb takes `--help`; `gr2 --help` lists them all.
+`lane remove` refuses while the lane is entered, bound or leased, or while any of its repos holds uncommitted work, a stash, or a commit no remote has; it names each one and removes nothing. `exec run` and `lane exit` require `--actor`. Every group and verb takes `--help`; `gr2 --help` lists them all.
 
 ## What works today, and what is not there yet
 

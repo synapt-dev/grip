@@ -1,4 +1,4 @@
-"""Plain `git commit` in a native store runs the store's own checks.
+"""Plain `git commit` and `git push` in a native store run the store's own checks.
 
 THE DEFECT, measured on gr2 2.0.0a8: in a native store, a plain `git add <member> && git commit`
 at the root records the member's gitlink (mode 160000), but nothing refuses a pin that is not on
@@ -7,19 +7,19 @@ the member's origin (`store commit` refuses it, exit 3, "push it first"), and no
 disagreeing and `store check` exits 4. `store init` installs no hooks.
 
 THE SPECIFIED SHAPE: `store init` installs a `pre-commit` and a `pre-push` hook that call the SAME
-engine the verbs use (`_member_coverage`, `_write_native_members`). Row C: the commit of an
-unpushed pin is refused and names the safe next step. Row D: after a plain commit the pins equal
-the gitlinks. The operator types no gr2 command after setup.
+engine the verbs use (`_member_coverage`, `_write_native_members`). A commit of an unpushed pin is
+refused and names the safe next step; after a plain commit the pins in `grip.toml` equal the
+gitlinks. The operator types no gr2 command after setup.
 
 EVERY REFUSAL ROW HAS ITS CONTROL AND ITS MUTATION. The control commits the same change once the pin is
 pushed (a hook that refuses everything would pass the refusal rows); the mutation removes the hook
 and requires the old behaviour back (a row that stays green without the hook was never about it).
 
-A HOOK NEVER OVERWRITES ANOTHER OWNER'S (Apollo, 2026-10-10): `test_a_foreign_hook_is_kept_byte_for_byte`
-installs over a pre-existing `pre-commit` and compares bytes. Three notes from the prose read of the
-design are rows here: members left DETACHED after a recursive clone, `core.hooksPath` hiding the
-installed hooks (status says so), and the fold under `git commit <pathspec>`, measured on git
-2.x as running the hook against a temporary `next-index-<pid>.lock` index.
+A HOOK NEVER OVERWRITES ANOTHER OWNER'S: `test_a_foreign_hook_is_kept_byte_for_byte` installs over a
+pre-existing `pre-commit` and compares bytes. Three further cases are rows here: members left
+DETACHED after a recursive clone, `core.hooksPath` hiding the installed hooks (status says so), and
+the fold under `git commit <pathspec>`, measured on git 2.x as running the hook against a temporary
+`next-index-<pid>.lock` index.
 
 Fixtures are real git with bare local origins and no network.
 """
@@ -83,7 +83,7 @@ def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-# ── Row C: a plain commit of an unpushed pin is refused ──────────────────────────────────────────
+# ── A plain commit of an unpushed pin is refused ──────────────────────────────────────────
 
 
 def test_a_plain_commit_of_an_unpushed_pin_is_refused_and_names_the_next_step(tmp_path: Path) -> None:
@@ -127,7 +127,7 @@ def test_without_the_hook_the_unpushed_pin_commits(tmp_path: Path) -> None:
     assert _gitlink(root, "alpha") == new
 
 
-# ── Row D: one record of the pin ─────────────────────────────────────────────────────────────────
+# ── One record of the pin ─────────────────────────────────────────────────────────────────
 
 
 def test_a_plain_commit_folds_the_toml_pins_to_the_gitlinks(tmp_path: Path) -> None:
@@ -176,7 +176,7 @@ def test_a_member_detached_after_a_recursive_clone_folds_the_same_way(tmp_path: 
 
 
 def test_a_foreign_hook_is_kept_byte_for_byte(tmp_path: Path) -> None:
-    """The self-test Apollo asked for: a pre-existing hook present when `store init` runs."""
+    """A pre-existing hook is present when `store init` runs: it must come out byte for byte."""
     root = tmp_path / "workspace"
     root.mkdir()
     for name in ("alpha", "beta"):
@@ -377,7 +377,7 @@ def test_pre_push_allows_a_covered_root(tmp_path: Path) -> None:
     assert run(tmp_path, "git", "--git-dir", str(bare), "rev-parse", "main").stdout.strip() == _head(root)
 
 
-# ── The engine is shared, and `store commit` does not run it twice ───────────────────────────────
+# ── The verbs keep their own refusals ─────────────────────────────────────────────
 
 
 def test_store_commit_still_works_and_keeps_its_own_refusal(tmp_path: Path) -> None:

@@ -11,6 +11,19 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Added
 
+- **`gr2`: `store init` installs `pre-commit` and `pre-push` hooks, so a plain `git commit` and `git push` in a native
+  store run the store's own checks.** Before this, `git add <member> && git commit` at the root recorded a member's
+  gitlink with no check that the commit was on the member's origin (`store commit` refuses that, exit 3, "push it
+  first"), and left the `pin` in `grip.toml` disagreeing with the gitlink (`store check` then exits 4). The
+  `pre-commit` hook now refuses a new pin that is not on its member's upstream, with the same message, and folds the
+  `grip.toml` pins to the staged gitlinks in the same commit. `pre-push` checks every pin at each pushed root commit,
+  which catches a commit made with `--no-verify`. A partial commit (`git commit <paths>`) is checked for coverage but
+  refuses a fold, because Git runs the hook against a temporary index there; the message says to commit without
+  paths. A hook someone else already owns is left byte for byte and named, and when `core.hooksPath` hides the
+  installed hooks, `store status` and `store init` say so on stderr. The hooks run the interpreter that wrote them,
+  not whichever `gr2` is first on `PATH`, and fail closed with a named remedy if it is gone. Hooks are cooperative
+  (`--no-verify` skips them) and a plain `git clone` does not copy them; `store init` is what installs them.
+  `store commit` is unchanged apart from skipping the hook for its own commit, having run the same checks.
 - **`gr2`: `[[files.compose]]` writes one file from ordered parts.** A member's `.gr2/hooks.toml` can name a
   `dest` (a path inside the workspace, like a copy or link `dest`) and a list of `parts`, each a path inside the
   member's own tree. With `format = "text"` (the default) the parts are joined with `separator` (default a blank

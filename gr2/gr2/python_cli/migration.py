@@ -209,7 +209,7 @@ def _desk_state(desk: Path) -> dict[str, str]:
         else:  # linked
             steps = []
             if f["changed"]:
-                steps.append("commit or stash first")
+                steps.append("commit it first (a stash stays in the root repo and does not travel to the clone)")
             if f["ahead"]:
                 steps.append(
                     f"push first ({f['ahead']} commit(s) are on no remote ref this checkout knows;"

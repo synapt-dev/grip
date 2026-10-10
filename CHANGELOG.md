@@ -56,7 +56,7 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   lists the unit gr1 declared at the root (`worktree = "main"`), which is the workspace being adopted. Every
   other row now carries its state, read without changing anything under the desk: `clean`, `dirty N`,
   `ahead N`, `stash N` (or a mix of those), `missing`, `no-checkout` or `unreadable`, and the next step.
-  `convert-clone` is named only where it will not refuse: a dirty desk says to commit or stash first, an
+  `convert-clone` is named only where it will not refuse: a dirty desk says to commit it first (a stash does not travel to the clone), an
   ahead desk says to push first (a converted clone is the only copy of those commits), a stash says it stays
   in the root repository and reaches the clone only by `git stash apply`, a commit, then convert-clone, a detached HEAD says to check out a branch, and a symlinked `.git` or a
   submodule member says there is nothing to convert. A git read that fails is `unreadable`, never `clean`.

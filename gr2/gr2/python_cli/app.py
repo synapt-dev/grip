@@ -29,7 +29,7 @@ from . import commit as commit_ops
 from . import execops, failures, grip, migration, next_steps, spec_apply, syncops
 from . import gitinclude
 from . import gitops
-from . import check_records
+from . import check_records, set_check
 from . import defaults
 from . import merge_gate
 from . import pr as pr_ops
@@ -41,7 +41,7 @@ from . import push as push_ops
 from .clone_exec import rmtree_or_refuse
 from .events import EventEmitError, EventType, emit, emit_after_outcome
 from .layout import grip_dir
-from .root_option import ROOT_OPTION, ContextCommand, ReviewTargetCommand, ReviewHeadCommand, ReviewOpenCommand, ReviewSubjectCommand, ReviewReaderSubjectCommand, RootOptionCommand, RootOptionalCommand
+from .root_option import ROOT_OPTION, ContextCommand, ReviewTargetCommand, ReviewHeadCommand, ReviewHeadTrailingCommand, ReviewOpenCommand, ReviewSubjectCommand, ReviewReaderSubjectCommand, RootOptionCommand, RootOptionalCommand
 from .gitops import (
     branch_exists,
     checkout_branch,
@@ -4583,7 +4583,8 @@ def review_merge(
     review_id: Optional[str] = typer.Argument(None, help="Pinned review id, gr:<sha>; default: the pinned review at the members' current heads"),
     into: Optional[str] = typer.Option(None, "--into", help="Target branch; default: the remote's default branch when it is the one branch at the reviewed base"),
     feature: Optional[str] = typer.Option(None, "--from", help="Feature branch; default: the members' current branch"),
-    check: List[str] = typer.Option(["test"], "--check", help="Required exact-head check name (repeatable)"),
+    check: Optional[List[str]] = typer.Option(None, "--check", help="Required exact-head check name (repeatable); default `test`, or `set` for a review over several members"),
+    no_set: bool = typer.Option(False, "--no-set", help="Do not add the `set` requirement to a review over several members"),
     approval_count: Optional[int] = typer.Option(None, "--approvals", help="Required distinct approvers; may raise the workspace approvals.required floor, default 0"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
@@ -4604,7 +4605,8 @@ def review_merge(
                                "refused": str(exc)}))
         raise typer.Exit(code)
     code, receipt = merge_gate.review_merge(ws, review_id, into=into, feature=feature,
-                                            required_checks=tuple(check), required_approvals=approval_count)
+                                            required_checks=tuple(check) if check else None,
+                                            required_approvals=approval_count, no_set=no_set)
     typer.echo(json.dumps(receipt))
     if code:
         raise typer.Exit(code)
@@ -5117,6 +5119,33 @@ def check_run(
         raise typer.Exit(1)
 
 
+@check_app.command("set", cls=ReviewHeadTrailingCommand)
+def check_set(
+    workspace_root: Path,
+    review_id: str = typer.Argument(..., help="The pinned review, gr:<sha>"),
+    command: List[str] = typer.Argument(None, help="The command to run, after --"),
+    name: str = typer.Option(set_check.SET_CHECK_NAME, "--name"),
+    root: Optional[Path] = ROOT_OPTION,
+) -> None:
+    """Run ONE command over every member of a pinned review, side by side at the pinned heads, and publish it.
+
+    Each member is reconstructed into <lane>/<key> (its tree proven equal to the pinned head's), the command runs
+    once at the lane root with GR2_SET_ROOT, GR2_REVIEW_ID and GR2_SET_MEMBERS set, and the result is published to
+    every member's remote as a check named `set` that carries this review and this set of heads. Exit 0 pass,
+    1 fail, 2 refused or not published to every member.
+    """
+    try:
+        result = set_check.run_set_check(workspace_root, review_id, name, command or [])
+    except (check_records.CheckRefused, defaults.Unresolved, subprocess.SubprocessError, OSError) as exc:
+        typer.echo(json.dumps({"status": "fail", "reason": str(exc)}))
+        raise typer.Exit(2)
+    tail = result.pop("output_tail")
+    typer.echo(json.dumps(result))
+    if result["result"] != "pass":
+        typer.echo(tail, err=True)
+        raise typer.Exit(1)
+
+
 @check_app.command("show")
 def check_show(
     repo: Path,
@@ -5124,16 +5153,26 @@ def check_show(
     head: Optional[str] = typer.Option(None, "--head", help="Commit to read; default: HEAD"),
     member: str = typer.Option("repo", "--member"),
     required: List[str] = typer.Option(["test"], "--require"),
+    review: Optional[str] = typer.Option(None, "--review", help="With --require set: count a `set` record only if it belongs to this review"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Read fresh remote observations for this exact commit."""
+    """Read fresh remote observations for this exact commit.
+
+    A `set` record written by `check set` names the review it was run for. Without --review the answer is about the
+    head alone; with it, a `set` record for another review reads as absent (reason required_check_stale)."""
     try:
         remote, head = _resolve_remote_head(repo, remote, head)
     except defaults.Unresolved as exc:
         typer.echo(json.dumps({"status": "fail", "reason": str(exc)}))
         raise typer.Exit(2)
-    result = check_records.read_remote_check(
-        remote, {"path": repo, "key": member, "remote": remote}, head, required)
+    if review is not None and set_check.SET_CHECK_NAME not in required:
+        typer.echo(json.dumps({"status": "fail", "reason": "review_applies_to_set: pass --require set with --review"}))
+        raise typer.Exit(2)
+    target = {"path": repo, "key": member, "remote": remote}
+    if review is None:
+        result = check_records.read_remote_check(remote, target, head, required)
+    else:
+        result = set_check.read_for_review(remote, target, head, required, review)
     typer.echo(json.dumps(result))
     if result["status"] == "fail":
         raise typer.Exit(2)

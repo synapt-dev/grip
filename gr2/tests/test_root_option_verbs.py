@@ -49,10 +49,14 @@ OPTIONAL_TRAILING = [  # RootOptionCommand: the two execution verbs
 REVIEW_READER_SUBJECTS = ["pr/checks", "pr/view"]  # reconstruction-aware readers
 REVIEW_SUBJECTS = ["pr/create", "pr/status", "pr/merge", *REVIEW_READER_SUBJECTS]
 REVIEW_TARGETS = ["review/show", "review/verify"]
-REVIEW_HEADS = ["review/approve", "review/merge", "review/stamp"]  # stamp is approve's new name; both stay
+REVIEW_HEADS = ["review/approve", "review/merge", "review/stamp"]
+REVIEW_HEAD_TRAILING = ["check/set"]  # a review head that ends in the user's own command; the words after `--` are not positionals  # stamp is approve's new name; both stay
 REVIEW_TRANSPORTS = ["review/publish", "review/receive"]
 REVIEW_OPENS = ["review/open"]
 ALL_ROOT_VERBS = [*FIXED_ARITY, *OPTIONAL_TRAILING, *REVIEW_SUBJECTS, *REVIEW_TARGETS, *REVIEW_HEADS, *REVIEW_TRANSPORTS, *REVIEW_OPENS]
+# REVIEW_HEAD_TRAILING stays OUT of ALL_ROOT_VERBS on purpose: the generic rows below give every verb its words with no `--`
+# and read a second word beside -C as a second root, which models arguments, not a user's own command. Its forms are
+# pinned in tests/test_set_check.py (the -C form, the positional form, and the refusal of a missing review).
 UsageError = root_option._usage_error()
 runner = CliRunner()
 
@@ -135,8 +139,8 @@ def test_the_partition_accounts_for_every_leading_root_command() -> None:
         name for name, c in LEAVES.items()
         if _arguments(c) and _arguments(c)[0].name == "workspace_root"
         and name.split("/")[0] not in {"workspace", "spec", "sync", "store", "grip", "plan", "apply", "repo/status"}
-        and type(c).__name__ in {"RootOptionalCommand", "RootOptionCommand", "TyperCommand", "ContextCommand", "ReviewTargetCommand", "ReviewHeadCommand", "ReviewOpenCommand", "ReviewSubjectCommand", "ReviewReaderSubjectCommand"}
-        and (_arguments(c)[0].required or type(c).__name__ in {"RootOptionalCommand", "ContextCommand", "ReviewTargetCommand", "ReviewHeadCommand", "ReviewOpenCommand", "ReviewSubjectCommand", "ReviewReaderSubjectCommand"})
+        and type(c).__name__ in {"RootOptionalCommand", "RootOptionCommand", "TyperCommand", "ContextCommand", "ReviewTargetCommand", "ReviewHeadCommand", "ReviewHeadTrailingCommand", "ReviewOpenCommand", "ReviewSubjectCommand", "ReviewReaderSubjectCommand"}
+        and (_arguments(c)[0].required or type(c).__name__ in {"RootOptionalCommand", "ContextCommand", "ReviewTargetCommand", "ReviewHeadCommand", "ReviewHeadTrailingCommand", "ReviewOpenCommand", "ReviewSubjectCommand", "ReviewReaderSubjectCommand"})
     )
     by_class = {
         "RootOptionalCommand": sorted(
@@ -149,10 +153,11 @@ def test_the_partition_accounts_for_every_leading_root_command() -> None:
     assert by_class["RootOptionCommand"] == sorted(OPTIONAL_TRAILING)
     assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ReviewTargetCommand") == sorted([*REVIEW_TARGETS, *REVIEW_TRANSPORTS])
     assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ReviewHeadCommand") == sorted(REVIEW_HEADS)
+    assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ReviewHeadTrailingCommand") == sorted(REVIEW_HEAD_TRAILING)
     assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ReviewOpenCommand") == sorted(REVIEW_OPENS)
     assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ReviewSubjectCommand") == sorted(set(REVIEW_SUBJECTS) - set(REVIEW_READER_SUBJECTS))
     assert sorted(n for n, c in LEAVES.items() if type(c).__name__ == "ReviewReaderSubjectCommand") == sorted(REVIEW_READER_SUBJECTS)
-    assert [n for n in leading if n not in ALL_ROOT_VERBS] == [], (
+    assert [n for n in leading if n not in [*ALL_ROOT_VERBS, *REVIEW_HEAD_TRAILING]] == [], (
         "a verb takes the workspace root as a required leading positional and is in neither class"
     )
 

@@ -190,7 +190,7 @@ GIT_SPAWNS = {("python_cli/gitops.py", "_spawn"), ("python_cli/version.py", "_cl
 # Where a spawn's argv is not a literal because it IS someone else's command: a user's check, test or install
 # command, a venv or pip step, a hook, a plugin, a launched agent, or the hosting platform's CLI.
 USER_COMMAND_SEAMS = {
-    ("python_cli/check_records.py", "run_check"),
+    ("python_cli/check_records.py", "run_check"), ("python_cli/set_check.py", "run_set_check"),
     ("python_cli/env_exec.py", "import_origin"), ("python_cli/env_exec.py", "probe_venv"),
     ("python_cli/execops.py", "_exec_one"),
     ("python_cli/git_review.py", "_run_pytest"), ("python_cli/git_review.py", "_run_non_pytest"),

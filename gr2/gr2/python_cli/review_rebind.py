@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .clone_exec import IncompleteRemoval, rmtree_or_refuse
+from . import gitops
 
 _TARGET_RE = re.compile(r"^target:[^@]*@ ([0-9a-f]{40})", re.MULTILINE)
 _INTENDED_RE = re.compile(r"^repo:.*intended ref: (\S+)", re.MULTILINE)
@@ -56,17 +57,16 @@ class RebindResult:
 
 
 def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", "-C", str(repo), *args], text=True, capture_output=True, check=check
-    )
+    proc = gitops.run(repo, *args)
+    if check and proc.returncode:
+        raise subprocess.CalledProcessError(proc.returncode, proc.args, proc.stdout, proc.stderr)
+    return proc
 
 
 def _patch_ids(patch_text: str) -> str:
     """Sorted set of stable patch-ids for a format-patch stream (rename-blind; the
     rename-aware _norm_diff equality below is the complement)."""
-    p = subprocess.run(
-        ["git", "patch-id", "--stable"], input=patch_text, text=True, capture_output=True
-    )
+    p = gitops.run(Path.cwd(), "patch-id", "--stable", input=patch_text, via_cwd=True)
     ids = sorted(line.split()[0] for line in p.stdout.splitlines() if line.strip())
     return "\n".join(ids)
 
@@ -181,7 +181,7 @@ def rebind(frozen_dir: Path, repo: Path, target_ref: str, out_dir: Path,
         if present:
             raise RebindRefused(
                 "intended_ref_public",
-                f"{intended} is already on {url} at {present[0][:12]}; a rebind would "
+                f"{intended} is already on {url} at {present[0][:12]}; a repin would "
                 "force-push it — pass allow_public_ref for a ratified fix-forward",
             )
 
@@ -195,8 +195,9 @@ def rebind(frozen_dir: Path, repo: Path, target_ref: str, out_dir: Path,
 
     clone = Path(tempfile.mkdtemp(prefix="rebind-clone."))
     try:
-        subprocess.run(["git", "clone", "--quiet", url, str(clone)],
-                       capture_output=True, text=True, check=True)
+        cloned = gitops.clone("--quiet", url, str(clone))
+        if cloned.returncode:
+            raise subprocess.CalledProcessError(cloned.returncode, cloned.args, cloned.stdout, cloned.stderr)
         _git(clone, "checkout", "--quiet", live_base)
         # `git am` writes a commit, which needs a committer identity. A fresh clone
         # inherits none, and a host with no global git config falls back to git's

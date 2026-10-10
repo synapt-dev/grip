@@ -28,6 +28,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from . import gitops
 
 PACKAGE = "dev.synapt.grip.review.v1alpha1"
 SCHEMA_COMMIT = "88babf4a0c55110a1e1badc53f07a6f0f8912f86"
@@ -265,7 +266,7 @@ def decode(buf: bytes, message: str = "ReviewBind") -> dict:
 # --- field trees -----------------------------------------------------------------
 
 def _git(repo: Path, *args: str, data: bytes | None = None) -> bytes:
-    proc = subprocess.run(["git", "-C", str(repo), *args], input=data, capture_output=True)
+    proc = gitops.run(repo, *args, input=data, binary=True)
     if proc.returncode != 0:
         raise ReviewRecordError(f"git {args[0]} failed: {proc.stderr.decode(errors='replace').strip()[:200]}")
     return proc.stdout
@@ -434,8 +435,7 @@ def verify_tree(repo: Path, tree: str, message: str = "ReviewBind") -> None:
     schema knows; occurrences run 0000001..n; and the record decodes by number. Names
     are never regenerated from the schema and compared. This checks a tree, not WHICH
     tree: binding a record to its identity is the ref writer's job."""
-    proc = subprocess.run(["git", "-C", str(repo), "fsck", "--strict", "--no-dangling", tree],
-                          capture_output=True)
+    proc = gitops.run(repo, "fsck", "--strict", "--no-dangling", tree, binary=True)
     if proc.returncode != 0:
         raise ReviewRecordError(f"fsck refused record {tree}: {proc.stderr.decode(errors='replace').strip()[:200]}")
     _check_message(repo, tree, message)

@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .gitops import git
+from . import gitops
 
 
 class PruneError(Exception):
@@ -166,14 +167,7 @@ def _patch_id(repo: Path, *diff_args: str) -> str | None:
         raise PruneError(f"git diff {' '.join(diff_args)} failed in {repo}: {diff.stderr.strip()}")
     if not diff.stdout.strip():
         return None
-    pid = subprocess.run(
-        ["git", "patch-id", "--stable"],
-        cwd=repo,
-        input=diff.stdout,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    pid = gitops.run_argv(["git", "patch-id", "--stable"], cwd=repo, input=diff.stdout)
     if pid.returncode != 0 or not pid.stdout.strip():
         return None
     return pid.stdout.split()[0]

@@ -18,28 +18,19 @@ import uuid
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from . import check_records, grip
+from . import check_records, gitops, grip
 
 EXIT_MERGED, EXIT_REFUSED, EXIT_PARTIAL = 0, 3, 4
 
 
-# A fetch may start a detached `git maintenance run --auto`, which writes (gc.log, packs) outside any path
-# this gate checks or waits for; never let the gate's own git commands trigger background work.
-_NO_AUTO = ("-c", "maintenance.auto=false", "-c", "gc.auto=0")
-
-
 def _git(repo: Path, *args: str, check: bool = True) -> str:
-    proc = subprocess.run(["git", *_NO_AUTO, "-C", str(repo), *args], capture_output=True, text=True, timeout=60)
-    if check and proc.returncode:
-        raise RuntimeError(f"git {' '.join(args[:2])}: {proc.stderr.strip()}")
+    proc = gitops.run(repo, *args, timeout=60, raise_timeout=True)  # an expiry raises, as it always did here
+    if check:
+        gitops._raise(proc, args, RuntimeError)
     return proc.stdout.strip()
 
 
-def _plain_remote(remote: str) -> str:
-    """A remote git would parse as an option (e.g. --upload-pack=...) never reaches a git argv."""
-    if not remote or remote.startswith("-"):
-        raise RuntimeError("remote_option_shaped: refusing a remote that begins with '-'")
-    return remote
+_plain_remote = gitops.plain_remote
 
 
 def _advertised(repo: Path, remote: str, ref: str) -> str | None:
@@ -89,8 +80,7 @@ def _state(repo: Path, remote: str, into: str, head: str) -> tuple[str, str | No
 def _toplevel(repo: Path) -> Path | None:
     """The worktree git actually selects for repo; a plain directory inherits its enclosing repo."""
     try:
-        p = subprocess.run(["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
-                           capture_output=True, text=True, timeout=60)
+        p = gitops.run(repo, "rev-parse", "--show-toplevel", timeout=60)
     except (subprocess.SubprocessError, OSError):
         return None
     return Path(p.stdout.strip()).resolve() if p.returncode == 0 and p.stdout.strip() else None
@@ -111,7 +101,7 @@ def _store_inside(repo: Path, root: Path) -> bool:
     themselves be symlinks; the common dir alone does not bound where a fetch or push lands."""
     args = ["rev-parse", "--absolute-git-dir", "--git-common-dir", *[a for w in _WRITE_PATHS for a in ("--git-path", w)]]
     try:
-        p = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=60)
+        p = gitops.run(repo, *args, timeout=60)
     except (subprocess.SubprocessError, OSError):
         return False
     lines = p.stdout.splitlines()
@@ -148,7 +138,7 @@ def _unmeasured(review_id: str, into: str, feature: str, reason: str) -> tuple[i
 
 
 def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature: str,
-                 required_checks: Sequence[str] = ("test",)) -> tuple[int, dict]:
+                 required_checks: Sequence[str] = ("test",), required_approvals: int | None = None) -> tuple[int, dict]:
     review_id = review_id.removeprefix("gr:")
     try:
         verified = grip.verify_review_commit(workspace, review_id)
@@ -209,6 +199,25 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
             else:
                 row["state"] = "ready"
 
+    approval_receipt = None
+    if not any(r["refused"] for r in rows):
+        from . import approvals
+        try:
+            required = approvals.required_approvals(root, required_approvals)
+            approval_receipt = {"required": required}
+            if required:
+                approval_receipt = approvals.count_approvals(root, view["id"])
+                approval_receipt["required"] = required
+                if approval_receipt["count"] < required:
+                    raise approvals.ApprovalRefused(f"approvals_insufficient: {approval_receipt['count']} of {required}")
+            else:
+                approval_receipt["skipped"] = True
+        except (approvals.ApprovalRefused, grip.GripInitError, grip.GripCorruptError,
+                OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+            for r in rows:
+                if r["state"] == "ready":
+                    r["refused"] = str(exc)
+
     if not any(r["refused"] for r in rows):
         # Build every merge before any push.
         builds = {}
@@ -217,8 +226,8 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                 continue
             repo = (workspace / m["path"]).resolve()
             try:
-                proc = subprocess.run(["git", "-C", str(repo), "merge-tree", "--write-tree", m["base"], m["head"]],
-                                      capture_output=True, text=True, timeout=60)
+                proc = gitops.run(repo, "merge-tree", "--write-tree", m["base"], m["head"], timeout=60,
+                                 raise_timeout=True)  # an expiry is a build failure, not a conflict
                 if proc.returncode:
                     r["refused"] = "merge_conflict"
                     continue
@@ -240,10 +249,9 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                     r["refused"] = f"feature_moved_before_push: remote {feature} is {still}"
                     break  # narrows the head race; no further member is pushed
                 try:
-                    proc = subprocess.run(
-                        ["git", *_NO_AUTO, "-C", str(repo), "push", f"--force-with-lease=refs/heads/{into}:{m['base']}",
-                         m["remote"], f"{builds[r['key']]}:refs/heads/{into}"],
-                        capture_output=True, text=True, timeout=120)
+                    # An expiry is rc 124 here, so it lands in push_error and the state below is re-measured.
+                    proc = gitops.run(repo, "push", f"--force-with-lease=refs/heads/{into}:{m['base']}",
+                                      m["remote"], f"{builds[r['key']]}:refs/heads/{into}", timeout=120)
                     push_error = proc.stderr.strip()[-300:] if proc.returncode else None
                 except (subprocess.SubprocessError, OSError) as exc:  # a timeout is not evidence nothing moved
                     push_error = f"push_unconfirmed: {type(exc).__name__}"
@@ -274,4 +282,5 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         code = EXIT_REFUSED
     else:
         code = EXIT_PARTIAL
-    return code, {"id": view["id"], "into": into, "feature": feature, "exit": code, "members": rows}
+    return code, {"id": view["id"], "into": into, "feature": feature, "exit": code, "members": rows,
+                  "approvals": approval_receipt}

@@ -115,6 +115,7 @@ class TestProbeRemote:
         recorded: list[list[str]] = []
 
         def fake_run(cmd, *args, **kwargs):
+            cmd = gitops_mod.logical_argv(cmd)  # the command as written, without the shared flags
             recorded.append(list(cmd))
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
@@ -146,6 +147,7 @@ class TestBuildSyncPlanDefaultNeverProbes:
         real_run = subprocess.run
 
         def fake_run(cmd, *args, **kwargs):
+            cmd = gitops_mod.logical_argv(cmd)  # the command as written, without the shared flags
             recorded.append(list(cmd))
             return real_run(cmd, *args, **kwargs)
 
@@ -182,6 +184,7 @@ class TestBuildSyncPlanProbesOnRequest:
         real_run = subprocess.run
 
         def fake_run(cmd, *args, **kwargs):
+            cmd = gitops_mod.logical_argv(cmd)  # the command as written, without the shared flags
             if cmd[:2] == ["git", "ls-remote"]:
                 recorded.append(cmd[-1])
             return real_run(cmd, *args, **kwargs)

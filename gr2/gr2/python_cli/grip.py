@@ -9,8 +9,11 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 import re
-from urllib.parse import urlsplit
+import ipaddress
+import socket
+from urllib.parse import parse_qsl, urlsplit
 
+from . import gitops
 from .gitops import git
 from .layout import GRIP_DIR, LANE_CONTROL_PREFIX, LANE_VENV, grip_dir as _layout_grip_dir
 from .workspace_guidance import missing_gr2_workspace_guidance
@@ -98,11 +101,7 @@ def _apply_range_in_lane(lane: Path, range_patch: str, committers: str | None) -
     import tempfile
 
     def _run(*args: str, env: dict | None = None) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["git", "-c", "user.name=grip-review", "-c", "user.email=review@grip",
-             "-C", str(lane), *args],
-            capture_output=True, text=True, check=False, env=env,
-        )
+        return gitops.run(lane, "-c", "user.name=grip-review", "-c", "user.email=review@grip", *args, env=env)
 
     with tempfile.TemporaryDirectory() as td:
         mbox = Path(td) / "range.patch"
@@ -157,15 +156,12 @@ def _carry_objects_from_range(workspace: Path, remote: str, base: str, range_pat
         raise GripCorruptError("project review range is empty")
     with tempfile.TemporaryDirectory() as td:
         lane = Path(td) / "recon"
-        clone = subprocess.run(["git", "clone", "--quiet", remote, str(lane)],
-                               capture_output=True, text=True, check=False)
+        clone = gitops.clone("--quiet", remote, str(lane))
         if clone.returncode != 0:
             raise GripCorruptError(f"cannot clone {remote} to derive review head-tree: {clone.stderr.strip()[:160]}")
 
         def _lg(*a: str, allow_fail: bool = False) -> subprocess.CompletedProcess[str]:
-            p = subprocess.run(["git", "-c", "user.name=grip-review", "-c",
-                                "user.email=review@grip", "-C", str(lane), *a],
-                               capture_output=True, text=True, check=False)
+            p = gitops.run(lane, "-c", "user.name=grip-review", "-c", "user.email=review@grip", *a)
             if p.returncode != 0 and not allow_fail:
                 raise GripCorruptError(f"range reconstruction failed ({' '.join(a)}): {p.stderr.strip()[:160]}")
             return p
@@ -380,15 +376,50 @@ def read_workspace_commit(workspace: Path, commit: str) -> list[dict[str, str]]:
 _REVIEW_BIND_SCHEMA = "gr2-review-bind/v2"
 
 
+# Query parameter names that carry a secret. A name is compared lowercased with '-' read as '_' (parse_qsl has
+# already percent-decoded it). A finite list, not secret detection: a clean URL never carries any of these.
+_CREDENTIAL_PARAMS = frozenset({
+    "token", "access_token", "refresh_token", "id_token", "oauth_token", "oauth2_token", "auth_token",
+    "private_token", "bearer", "auth", "authorization", "password", "passwd", "pass", "pwd", "secret",
+    "client_secret", "api_key", "apikey", "key", "sig", "signature", "x_access_token",
+})
+
+
 def url_has_credentials(url: str) -> bool:
-    """URL userinfo other than an SSH login. Never prints the URL. The one owner of this rule:
-    store init and every review-record writer and the publisher ask it here."""
+    """URL userinfo other than an SSH login, a credential-named query parameter, or any fragment (git never
+    uses one, so it can only carry data). Never prints the URL. The one owner of this rule: store init, every
+    review-record writer, the publisher, the receiver and lane pr create ask it here."""
     head = url.split("://", 1)[0]
     address = url.split("::", 1)[1] if "::" in head else url
     parsed = urlsplit(address)
     if parsed.password is not None:
         return True
-    return parsed.username is not None and parsed.scheme.lower() not in {"ssh", "git+ssh", "ssh+git"}
+    if parsed.username is not None and parsed.scheme.lower() not in {"ssh", "git+ssh", "ssh+git"}:
+        return True
+    if parsed.fragment or address.endswith("#"):
+        return True
+    for name, _value in parse_qsl(parsed.query, keep_blank_values=True):
+        if name.strip().lower().replace("-", "_") in _CREDENTIAL_PARAMS:
+            return True
+    return False
+
+
+def _is_loopback_host(host: str) -> bool:
+    """This machine, by name or by any numeric spelling (127.1, 2130706433, 0x7f000001, ::ffff:127.0.0.1).
+    No DNS lookup: a name other than localhost is left to the network."""
+    host = host.strip("[]").lower().rstrip(".")
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+        mapped = getattr(address, "ipv4_mapped", None)
+        return address.is_loopback or bool(mapped and mapped.is_loopback)
+    except ValueError:
+        pass
+    try:  # the classic IPv4 parser git's resolver also accepts: short, integer, octal and hex forms
+        return socket.inet_aton(host)[0] == 127
+    except (OSError, ValueError):
+        return False
 
 
 _PORTABLE_SCHEMES = {"https", "http", "ssh", "git", "git+ssh", "ssh+git"}
@@ -400,8 +431,14 @@ def _is_portable_remote(url: str) -> bool:
     anything else -- an absolute or relative path, file://, a bare remote alias, a transport
     helper -- means something only on the author's host, so it must not be published off it."""
     if "://" in url:
-        return url.split("://", 1)[0].lower() in _PORTABLE_SCHEMES
-    return bool(_SCP_LIKE.match(url))
+        if url.split("://", 1)[0].lower() not in _PORTABLE_SCHEMES:
+            return False
+        # A loopback host names this machine, so its path is author-local too.
+        return not _is_loopback_host(urlsplit(url).hostname or "")
+    if not _SCP_LIKE.match(url):
+        return False
+    host = url.split(":", 1)[0].rsplit("@", 1)[-1]
+    return not _is_loopback_host(host)
 
 
 def _refuse_remote_credentials(key: str, remote: str) -> None:
@@ -464,9 +501,7 @@ def _source_capture(source: str, *args: str) -> str:
     live base, so bind derives the range, the fuller metadata, and the head tree
     from the source that actually holds the head. Read-only; a failure refuses
     the bind rather than writing a partial object."""
-    proc = subprocess.run(
-        ["git", "-C", source, *args], capture_output=True, text=True, check=False
-    )
+    proc = gitops.run(Path(source), *args)
     if proc.returncode != 0:
         raise GripReviewRefused(
             "source_unreadable", f"{source} git {' '.join(args)}", proc.stderr.strip()[:160]
@@ -573,7 +608,7 @@ def _bind_review_rows_body(
     points it at the leak scanner. The verdict is recorded in the object."""
     from . import review_field_tree as fd
     if not rows:
-        raise GripCorruptError("review bind requires at least one repository row")
+        raise GripCorruptError("review pin requires at least one repository row")
     author = _review_bind_author(workspace)
     members: list[dict[str, object]] = []
     scan_items: list[tuple[str, str]] = [("author", author)]
@@ -670,7 +705,7 @@ def _review_bind_author(workspace: Path) -> str:
     if proc.returncode != 0 or not name or any(ord(c) < 32 or ord(c) == 127 for c in name):
         raise GripReviewRefused(
             "bind_author_unavailable", str(workspace),
-            "set the binder's Git identity with git config user.name 'Your Name' in the workspace root, then retry review bind")
+            "set your Git identity with git config user.name 'Your Name' in the workspace root, then retry review pin")
     return name
 
 
@@ -716,7 +751,7 @@ def show_review_commit(workspace: Path, commit: str) -> dict[str, object]:
             "files": _range_files(None if m["objects"] is None else m["objects"]["range.patch"]),
         } for key, m in sorted(view["members"].items())]}
     if _bind_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip() != _REVIEW_BIND_SCHEMA:
-        raise GripCorruptError("not a gr2 review bind commit")
+        raise GripCorruptError("not a gr2 pinned review commit")
     rows = _read_repo_state(workspace, commit, bind=True)
     members: list[dict[str, object]] = []
     for key, fields in sorted(rows.items()):
@@ -746,7 +781,7 @@ def _verify_review_commit_in_store(workspace: Path, commit: str) -> dict[str, ob
     if _is_field_tree_bind(workspace, commit):
         return _verify_field_tree_commit(workspace, commit)
     if _bind_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip() != _REVIEW_BIND_SCHEMA:
-        raise GripCorruptError("not a gr2 review bind commit")
+        raise GripCorruptError("not a gr2 pinned review commit")
 
     stored_tree = _bind_git(workspace, "rev-parse", f"{commit}^{{tree}}").stdout.strip()
     rows = _read_repo_state(workspace, commit, bind=True)
@@ -914,7 +949,7 @@ def _decode_field_tree(repo: Path, tree: str) -> dict[str, object]:
     except fd.ReviewRecordError as exc:
         raise GripCorruptError(f"invalid field tree review record: {exc}") from exc
     if record.get("schema") != _REVIEW_BIND_SCHEMA or record.get("kind") != "review":
-        raise GripCorruptError("not a gr2 review bind commit")
+        raise GripCorruptError("not a gr2 pinned review commit")
     members: dict[str, dict[str, object]] = {}
     for m in record.get("members", []):
         key = m.get("key", "")
@@ -950,7 +985,7 @@ def _decode_field_tree(repo: Path, tree: str) -> dict[str, object]:
             "objects": objects, "evidence": evidence,
         }
     if not members:
-        raise GripCorruptError("invalid review repository tree: a bind names no member")
+        raise GripCorruptError("invalid review repository tree: a pinned review names no member")
     return {"tree": tree, "policy": record.get("policy", ""), "members": members,
             **({"author": record["author"]} if "author" in record else {})}
 
@@ -1207,6 +1242,8 @@ def reconstruct_review_lane(
         raise GripReviewRefused("row_carries_no_objects", key, "reconstruction needs a carried range")
     repo = _read_repo_state(workspace, commit, bind=True)[key]
     remote, base, bound_head = repo["remote"], repo["base"], repo["commit"]
+    # A received record is checked again before its remote is dialled (a credentialed record must not clone).
+    _refuse_remote_credentials(key, remote)
     head_tree_expected = (_carried(workspace, commit, key, "objects", "head-tree") or "").strip()
     committers = _carried(workspace, commit, key, "objects", "committers")
     range_text = _carried(workspace, commit, key, "objects", "range.patch") or ""
@@ -1215,19 +1252,12 @@ def reconstruct_review_lane(
     lane_dir.parent.mkdir(parents=True, exist_ok=True)
 
     def _lg(*args: str, allow_fail: bool = False) -> subprocess.CompletedProcess[str]:
-        proc = subprocess.run(
-            ["git", "-c", "user.name=grip-review", "-c", "user.email=review@grip", "-C",
-             str(lane_dir), *args],
-            capture_output=True, text=True, check=False,
-        )
+        proc = gitops.run(lane_dir, "-c", "user.name=grip-review", "-c", "user.email=review@grip", *args)
         if proc.returncode != 0 and not allow_fail:
             raise GripReviewRefused("reconstruct_failed", " ".join(args), proc.stderr.strip()[:160])
         return proc
 
-    clone = subprocess.run(
-        ["git", "clone", "--quiet", remote, str(lane_dir)],
-        capture_output=True, text=True, check=False,
-    )
+    clone = gitops.clone("--quiet", remote, str(lane_dir))
     if clone.returncode != 0:
         raise GripReviewRefused("clone_failed", remote, clone.stderr.strip()[:160])
     if _lg("rev-parse", "--verify", f"{base}^{{commit}}", allow_fail=True).returncode != 0:
@@ -1302,7 +1332,7 @@ def _bind_git(workspace: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def _bind_run(workspace: Path, argv: list[str], *, input: str | None = None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, cwd=_bind_dir(workspace), input=input, capture_output=True, text=True, check=False, env=env)
+    return gitops.run_argv(argv, cwd=_bind_dir(workspace), input=input, env=env)
 
 
 def _bind_blob(workspace: Path, content: str) -> str:
@@ -1352,13 +1382,13 @@ def _validate_bind_store(workspace: Path, *, create: bool = False) -> tuple[list
         if legacy.is_dir() and _alpha_state_commits(legacy):
             raise AlphaRootRefused(
                 f"{workspace} is an alpha workspace (its record is the .grip/.git snapshot store); review "
-                "binds live in a native root's own .git. Run `gr2 store migrate` to convert it, then bind."
+                "pins live in a native root's own .git. Run `gr2 store migrate` to convert it, then pin."
             )
         if not (legacy.exists() or (_layout_grip_dir(workspace) / "workspace_spec.toml").is_file()):
             _validate_grip_repo(workspace)  # not a workspace at all: the existing refusal
             return None
         if not create:
-            raise ReviewStoreAbsent(f"No review bind is bound in {workspace}: nothing has been stored there yet.")
+            raise ReviewStoreAbsent(f"No review is pinned in {workspace}: nothing has been stored there yet.")
         before = {entry.name for entry in workspace.iterdir()}
         had_git = (workspace / ".git").exists()
         _set_up_native_store(workspace)
@@ -1395,7 +1425,7 @@ def _guarded_bind(workspace: Path, created: tuple[list[str], str] | None, write)
                 target.unlink()
         raise
     if created is not None:
-        print(f"set up a native store at {workspace} (store init), so a review can be bound", file=sys.stderr)
+        print(f"set up a native store at {workspace} (store init), so a review can be pinned", file=sys.stderr)
     return commit
 
 
@@ -1413,13 +1443,12 @@ def _move_aside_empty_store(workspace: Path, legacy: Path) -> None:
 def _alpha_state_commits(store: Path) -> list[str]:
     """Commits in an alpha `.grip/.git` that carry real state: a snapshot, a review bind or a project
     review. An empty store, or one holding only unlabelled commits, has none."""
-    listed = subprocess.run(["git", "--git-dir", str(store), "rev-list", "HEAD"], capture_output=True, text=True, check=False)
+    listed = gitops.run_argv(["git", "--git-dir", str(store), "rev-list", "HEAD"])
     if listed.returncode != 0:
         return []
     out = []
     for commit in listed.stdout.split():
-        schema = subprocess.run(["git", "--git-dir", str(store), "show", f"{commit}:.grip/schema"],
-                                capture_output=True, text=True, check=False).stdout.strip()
+        schema = gitops.run_argv(["git", "--git-dir", str(store), "show", f"{commit}:.grip/schema"]).stdout.strip()
         if schema in (_REVIEW_BIND_SCHEMA, _PROJECT_REVIEW_SCHEMA, _WORKSPACE_SCHEMA):
             out.append(commit)
     return out
@@ -1456,7 +1485,7 @@ def _resolve_bound(workspace: Path, commit: str) -> str:
                 found = True
         if found:
             return full
-    raise ReviewStoreAbsent(f"No review bind {commit} is bound in {workspace}.")
+    raise ReviewStoreAbsent(f"No review {commit} is pinned in {workspace}.")
 
 
 def _review_transport_identity(commit: str, ref: str | None) -> tuple[str, str]:
@@ -1567,6 +1596,10 @@ def receive_review_commit(workspace: Path, commit: str, remote: str,
         if _bind_git(workspace, "cat-file", "-t", actual).stdout.strip() != "commit":
             raise GripCorruptError("fetched_review_kind_mismatch: expected a commit")
         _require_review_content(workspace, actual, canonical)
+        # A record that carries a credential in any remote is refused before a local review bind is published;
+        # the temporary transfer ref is removed on refusal (the finally below).
+        for key, fields in sorted(_read_repo_state(workspace, actual, bind=True).items()):
+            _refuse_remote_credentials(key, fields["remote"])
         for spelling in _review_refs_for(actual):
             existing = _bind_git(workspace, "rev-parse", "--verify", "--quiet", spelling)
             if existing.returncode == 0 and existing.stdout.strip() != actual:
@@ -1642,7 +1675,7 @@ def migrate_review_binds(workspace: Path) -> tuple[Path, list[dict[str, str]]]:
 
 def _migrate_one_bind(workspace: Path, repo: Path, old: str, fd) -> dict[str, str]:
     def blob(path: str) -> bytes | None:
-        proc = subprocess.run(["git", "-C", str(repo), "cat-file", "blob", f"{old}:{path}"], capture_output=True)
+        proc = gitops.run(repo, "cat-file", "blob", f"{old}:{path}", binary=True)
         return proc.stdout if proc.returncode == 0 else None
 
     def text(path: str) -> str:
@@ -1652,13 +1685,13 @@ def _migrate_one_bind(workspace: Path, repo: Path, old: str, fd) -> dict[str, st
         except UnicodeDecodeError as exc:
             raise GripCorruptError(f"legacy_bind_not_utf8: {path} ({exc.reason})") from exc
 
-    raw = subprocess.run(["git", "-C", str(repo), "cat-file", "commit", old], capture_output=True, check=True).stdout
+    raw = gitops.out_bytes(repo, "cat-file", "commit", old, error=GripCorruptError)
     headers, _, message = raw.partition(b"\n\n")
     if any(line.startswith(b"encoding ") for line in headers.splitlines()):
         # The twin keeps the message bytes; without the header they would be read as UTF-8.
-        raise GripCorruptError("legacy_commit_encoding: the bind's commit declares an encoding, which the twin would not carry")
+        raise GripCorruptError("legacy_commit_encoding: the pinned review's commit declares an encoding, which the twin would not carry")
     if not _verify_review_commit_in_store(workspace, old)["tree_matches"]:
-        raise GripCorruptError("legacy_bind_tree_mismatch: the legacy bind does not verify as written")
+        raise GripCorruptError("legacy_bind_tree_mismatch: the legacy pinned review does not verify as written")
     members: list[dict[str, object]] = []
     for key, fields in sorted(_read_repo_state(workspace, old, bind=True).items()):
         member: dict[str, object] = {
@@ -1683,8 +1716,8 @@ def _migrate_one_bind(workspace: Path, repo: Path, old: str, fd) -> dict[str, st
     _check_field_tree(repo, tree)  # verify as written, then every reader rule; nothing published yet
     kept = [line for line in headers.splitlines() if line.startswith((b"author ", b"committer "))]
     body = b"tree " + tree.encode() + b"\n" + b"\n".join(kept) + b"\n\n" + message
-    new = subprocess.run(["git", "-C", str(repo), "hash-object", "-t", "commit", "-w", "--stdin"],
-                         input=body, capture_output=True, check=True).stdout.decode().strip()
+    new = gitops.out_bytes(repo, "hash-object", "-t", "commit", "-w", "--stdin", input=body,
+                           error=GripCorruptError).decode().strip()
     ref = _review_ref_v1(new)
     existing = _bind_git(workspace, "rev-parse", "--verify", "--quiet", ref)
     if existing.returncode == 0:
@@ -1712,7 +1745,7 @@ def _migrate_legacy_binds(workspace: Path) -> None:
     src = ["git", "--git-dir", str(legacy)]
 
     def run(argv: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False)
+        return gitops.run_argv(argv, cwd=cwd)
 
     if not _alpha_state_commits(legacy):
         _move_aside_empty_store(workspace, legacy)
@@ -1729,7 +1762,7 @@ def _migrate_legacy_binds(workspace: Path) -> None:
         return  # alpha snapshots only: real alpha state, left where it is
 
     def fail(reason: str) -> GripCorruptError:
-        return GripCorruptError(f"review bind migration from .grip/.git failed, nothing was renamed: {reason}")
+        return GripCorruptError(f"pinned review migration from .grip/.git failed, nothing was renamed: {reason}")
 
     target = _free_aside_name(workspace)
     if target is None:
@@ -1759,14 +1792,14 @@ def _migrate_legacy_binds(workspace: Path) -> None:
         # The store also holds alpha snapshots, which the snapshot verbs still read from it: the
         # binds are copied into refs and the store stays where it is.
         if moved:
-            print(f"copied {moved} review binds from .grip/.git into refs/dev.synapt.grip/__reviews__; "
+            print(f"copied {moved} pinned reviews from .grip/.git into refs/dev.synapt.grip/__reviews__; "
                   ".grip/.git stays, it also holds alpha snapshots", file=sys.stderr)
         return
     try:
         legacy.rename(target)
     except OSError as exc:
         raise fail(f"renaming {legacy}: {exc}") from exc
-    print(f"migrated {len(binds)} review binds from .grip/.git into refs/dev.synapt.grip/__reviews__", file=sys.stderr)
+    print(f"migrated {len(binds)} pinned reviews from .grip/.git into refs/dev.synapt.grip/__reviews__", file=sys.stderr)
 
 
 def _free_aside_name(workspace: Path) -> Path | None:
@@ -1840,7 +1873,7 @@ def _validate_grip_repo(workspace: Path) -> None:
     if _is_native_workspace(workspace) and not (grip_dir / ".git").exists():
         raise ReviewStoreAbsent(
             f"No alpha snapshot store at {workspace}/.grip: a native root keeps its workspace "
-            "record and its review binds in the root's own .git."
+            "record and its pinned reviews in the root's own .git."
         )
     if not grip_dir.exists():
         raise GripInitError(
@@ -1860,13 +1893,10 @@ def _validate_grip_repo(workspace: Path) -> None:
 
 
 def _hash_blob(workspace: Path, content: str) -> str:
-    proc = subprocess.run(
+    proc = gitops.run_argv(
         ["git", "hash-object", "-w", "--stdin"],
         cwd=workspace / ".grip",
         input=content,
-        capture_output=True,
-        text=True,
-        check=False,
     )
     if proc.returncode != 0:
         raise RuntimeError(f"hash-object failed: {proc.stderr}")
@@ -1875,13 +1905,10 @@ def _hash_blob(workspace: Path, content: str) -> str:
 
 def _mktree(workspace: Path, entries: list[str]) -> str:
     tree_input = "\n".join(entries) + "\n" if entries else ""
-    proc = subprocess.run(
+    proc = gitops.run_argv(
         ["git", "mktree"],
         cwd=workspace / ".grip",
         input=tree_input,
-        capture_output=True,
-        text=True,
-        check=False,
     )
     if proc.returncode != 0:
         raise RuntimeError(f"mktree failed: {proc.stderr}")
@@ -1895,12 +1922,9 @@ def _commit_tree(
     if parent:
         args.extend(["-p", parent])
     args.extend(["-m", message or "grip snapshot"])
-    proc = subprocess.run(
+    proc = gitops.run_argv(
         args,
         cwd=workspace / ".grip",
-        capture_output=True,
-        text=True,
-        check=False,
         env=_git_env(),
     )
     if proc.returncode != 0:

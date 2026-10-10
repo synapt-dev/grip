@@ -11,7 +11,7 @@ name = "gitgrip"
 # number and it is not derived from Cargo.toml. gr1 releases as crates.io/GitHub
 # `v1.x.y`; gr2 releases as PyPI `gr2/v2.x.y`. Runtime reads it via
 # importlib.metadata.version("gitgrip"), never a checked-in file.
-version = "2.0.0a7"
+version = "2.0.0a8"
 description = "Workspace layer for multi-repo work: workspaces, isolated lanes, and one grouped review per slice"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -28,6 +28,7 @@ dependencies = [
 
 [project.scripts]
 gr2 = "gr2.python_cli.app:main"
+gr = "gr2.python_cli.gr_resolver:main"
 git-review = "gr2.python_cli.git_review:main"
 
 [project.optional-dependencies]
@@ -64,7 +65,9 @@ gr2 = "gr2"
 # The pinned MaterializationPlan v1 schema ships inside the
 # gr2 package -- spec_apply verifies its bytes against the pinned SHA-256
 # at load and fails closed on any mismatch.
-gr2 = ["schemas/*.json", "schemas/*/*.proto", "schemas/*/*.pb"]
+# PLATFORM_ADAPTER_CHANGELOG.md ships too, so an out-of-tree adapter author can read the protocol's changes
+# from the installed package (tests/test_platform_adapter_changelog.py keeps it in step with the protocol).
+gr2 = ["schemas/*.json", "schemas/*/*.proto", "schemas/*/*.pb", "PLATFORM_ADAPTER_CHANGELOG.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "gr2/overlay/tests"]

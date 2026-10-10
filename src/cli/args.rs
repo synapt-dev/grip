@@ -554,7 +554,7 @@ pub enum SpawnCommands {
         /// Agent name
         agent: String,
     },
-    /// View agent output without attaching
+    /// View captured agent output without attaching (10 MiB active log plus one rotated segment)
     Logs {
         /// Agent name (required unless --all)
         agent: Option<String>,

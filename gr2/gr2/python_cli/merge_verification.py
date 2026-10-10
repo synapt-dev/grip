@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .platform import MergeMethod, MergeReceipt
+from . import gitops
 
 
 @dataclass(frozen=True)
@@ -155,13 +156,7 @@ class CompletedMerge:
 
 
 def _run_git(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", *args],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    return gitops.run(repo_root, *args, via_cwd=True)
 
 
 def verify_parent_shape(

@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
+from . import gitops
 
 REVIEW_EPHEMERAL_KIND = "review-ephemeral"
 
@@ -35,7 +36,7 @@ class ReviewEphemeralError(Exception):
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", *args], cwd=cwd, text=True, capture_output=True, check=False)
+    return gitops.run(cwd, *args, via_cwd=True)
 
 
 def review_profile_dir() -> Path | None:
@@ -114,11 +115,7 @@ def materialize_review_ephemeral(
     patterns = _pattern_lines(profile_content, touched_paths(mirror, base, head))
 
     dest.parent.mkdir(parents=True, exist_ok=True)
-    cloned = subprocess.run(
-        ["git", "clone", "--quiet", "--no-checkout", "--filter=blob:none",
-         f"file://{mirror}", str(dest)],
-        text=True, capture_output=True, check=False,
-    )
+    cloned = gitops.clone("--quiet", "--no-checkout", "--filter=blob:none", f"file://{mirror}", str(dest))
     if cloned.returncode != 0:
         raise ReviewEphemeralError(f"blobless clone from {mirror} failed: {cloned.stderr.strip()}")
 
@@ -126,10 +123,8 @@ def materialize_review_ephemeral(
     # profile would narrow to just the changed files, hiding their context, so a
     # profile-less repo stays whole-tree (blobless), matching review-clone.sh.
     if profile_content.strip() and patterns:
-        applied = subprocess.run(
-            ["git", "-C", str(dest), "sparse-checkout", "set", "--no-cone", "--stdin"],
-            input="\n".join(patterns) + "\n", text=True, capture_output=True, check=False,
-        )
+        applied = gitops.run(dest, "sparse-checkout", "set", "--no-cone", "--stdin",
+                             input="\n".join(patterns) + "\n")
         if applied.returncode != 0:
             raise ReviewEphemeralError(f"sparse-checkout set failed in {dest}: {applied.stderr.strip()}")
 

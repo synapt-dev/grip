@@ -407,6 +407,11 @@ flag  repo status --json                                              stable
 flag  repo status --policy <str>                                      stable
 flag  repo status --spec <str>                                        stable
 verb  repo status                                                     stable
+# review approve
+arg   review approve review_id <str>                                  stable
+arg   review approve workspace_root <str>                             stable
+flag  review approve --root/-C <str>                                  stable
+verb  review approve                                                  stable
 # review bind
 arg   review bind workspace_root <str>                                stable
 flag  review bind --base <str>                                        stable
@@ -477,6 +482,7 @@ verb  review exit-gr (hidden)                                         stable
 # review merge
 arg   review merge review_id <str>                                    stable
 arg   review merge workspace_root <str>                               stable
+flag  review merge --approvals <str>                                  stable
 flag  review merge --check <str>                                      stable
 flag  review merge --from <str>                                       stable
 flag  review merge --into <str>                                       stable
@@ -518,6 +524,22 @@ flag  review open-project --prior-cwd <str> (hidden)                  stable
 flag  review open-project --root/-C <str> (hidden)                    stable
 flag  review open-project --sources-json <str> (hidden)               stable
 verb  review open-project (hidden)                                    stable
+# review pin
+arg   review pin workspace_root <str>                                 stable
+flag  review pin --base <str>                                         stable
+flag  review pin --body <str>                                         stable
+flag  review pin --from-range <str>                                   stable
+flag  review pin --head <str>                                         stable
+flag  review pin --members <str>                                      stable
+flag  review pin --path <str>                                         stable
+flag  review pin --ratified <str>                                     stable
+flag  review pin --ref <str>                                          stable
+flag  review pin --remote <str>                                       stable
+flag  review pin --repo <str>                                         stable
+flag  review pin --rows-json <str>                                    stable
+flag  review pin --source <str>                                       stable
+flag  review pin --title <str>                                        stable
+verb  review pin                                                      stable
 # review publish
 arg   review publish commit <str>                                     may-change
 arg   review publish workspace_root <str>                             stable
@@ -540,6 +562,14 @@ flag  review receive --ref <str>                                      may-change
 flag  review receive --remote <str>                                   may-change
 flag  review receive --root/-C <str>                                  stable
 verb  review receive                                                  may-change
+# review repin
+arg   review repin frozen_dir <str>                                   stable
+flag  review repin --allow-public-ref                                 stable
+flag  review repin --json                                             stable
+flag  review repin --out-dir <str>                                    stable
+flag  review repin --ref <str>                                        stable
+flag  review repin --repo <str>                                       stable
+verb  review repin                                                    stable
 # review requirements
 arg   review requirements pr_number <str> (hidden)                    stable
 arg   review requirements repo <str> (hidden)                         stable
@@ -567,6 +597,11 @@ arg   review show workspace_root <str>                                stable
 flag  review show --json                                              stable
 flag  review show --root/-C <str>                                     stable
 verb  review show                                                     stable
+# review stamp
+arg   review stamp review_id <str>                                    stable
+arg   review stamp workspace_root <str>                               stable
+flag  review stamp --root/-C <str>                                    stable
+verb  review stamp                                                    stable
 # review verify
 arg   review verify commit <str>                                      stable
 arg   review verify workspace_root <str>                              stable

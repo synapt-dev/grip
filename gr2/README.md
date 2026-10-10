@@ -5,7 +5,7 @@
 ## Install
 
 ```bash
-uv tool install --pre gitgrip    # the PyPI package is "gitgrip"; the command is "gr2"
+uv tool install --pre gitgrip    # the PyPI package is "gitgrip"; it installs `gr` and `gr2`
 gr2 --version
 ```
 
@@ -21,7 +21,9 @@ gr2 --version
 
 Already installed 1.5.0 or 1.5.1? The install commands above leave it in place, because an installed version already satisfies them. Upgrade explicitly: `uv tool upgrade --prerelease allow gitgrip`, or `pip install --pre -U gitgrip`. To run unreleased development code instead, install from a checkout: `pip install -e gr2/` from the repository root.
 
-The Rust `gr` (gr1, 1.x) installs with `brew install synapt-dev/tap/gitgrip` or `cargo install gitgrip`. The two do not collide; you can have both installed.
+The package installs two commands. `gr2` always runs gr2. `gr` picks by the nearest workspace marker: in a gr1 workspace (`.gitgrip`) it runs gr1, and anywhere else, including outside any workspace, it runs gr2.
+
+The Rust `gr` (gr1, 1.x) installs with `brew install synapt-dev/tap/gitgrip` or `cargo install gitgrip`, as `gr` and `gitgrip`. You can have both installed. Whichever `gr` comes first on `PATH` answers: gitgrip 1.5 and earlier always run gr1, so if it comes first, type `gr2` for gr2 (`gr2` says so once). In a gr1 workspace, this package's `gr` runs gr1 through `gitgrip`. With no gr1 installed, it serves a workspace already moved with `gr2 workspace migrate-gr1`, and in one not yet moved it says how to move it.
 
 ## First five minutes
 
@@ -92,12 +94,44 @@ Not there yet:
 | `sync` | status, run |
 | `pr` | create, status, checks, merge, view |
 | `check` | run, show |
-| `review` | open, close, checkout-pr, run, check, bind, publish, receive, verify, show, merge, rebind, create-project |
+| `review` | open, close, checkout-pr, run, check, pin, publish, receive, verify, show, stamp, merge, repin, create-project, bind, approve, rebind |
 | `exec` | status, run |
 | `repo` | status, projection-run |
 | `hooks` | trust, revoke, status, show, run |
 | `store` | init, commit, check, push, status, log, diff, checkout, materialize, migrate, migrate-reviews |
 | `target`, `config` | stored PR target; config overlays |
+
+`review bind`, `review approve` and `review rebind` remain as aliases of `pin`, `stamp` and `repin`.
+
+The words these commands use (lane, pin, stamp, repin, gate, review) are defined in [docs/GLOSSARY.md](docs/GLOSSARY.md).
+
+## Stamps (unsigned approvals)
+
+Inside a workspace with one pinned review matching every member's current head,
+a reviewer stamps it as the workspace's Git `user.name`:
+
+```bash
+gr2 review stamp
+gr2 review merge
+```
+
+The author recorded by the pin, and anyone who authored a commit in its range,
+cannot stamp it. A stamp records an approval; approver names are self-declared and receipts say `signed: false`.
+Repeated stamps by the same name count once. A moved head needs a new pin
+and fresh stamps. Signing is not implemented by these commands.
+
+The workspace's `grip.toml` sets the number required before merging:
+
+```toml
+[approvals]
+required = 2
+```
+
+The default is zero; `review merge --approvals N` can raise the count for that
+run, but cannot lower the workspace policy. With zero required, the merge gate
+skips approval counting. When approvals are required, broken records or different
+chain tips across member remotes refuse before this run pushes a merge. After a refused stamp, rerun
+`review stamp` to read the current chain and retry with a lease.
 
 ## Overlay substrate
 
@@ -117,17 +151,17 @@ Migration: use `gr2 review check` for compiled review requirements. `review requ
 remains a hidden alias with a warning on stderr until beta. Both report `satisfied`
 in the same JSON payload, and a missing reviewer remains a reported status with exit 0.
 
-A bare `gr2 review open <workspace>` uses the workspace's sole review bind. Its default directory is `<workspace>.review/<sha8>` in the workspace's parent directory, and the command announces that path on stderr. Give `--lane-dir` to choose another location.
+A bare `gr2 review open <workspace>` uses the workspace's sole pinned review. Its default directory is `<workspace>.review/<sha8>` in the workspace's parent directory, and the command announces that path on stderr. Give `--lane-dir` to choose another location.
 
-New review binds record the binder's Git `user.name` from the workspace root.
+New pinned reviews record the author's Git `user.name` from the workspace root.
 Set it with `git config user.name 'Your Name'` there if Git has no configured name.
-`review show --json` and `review verify --json` include this author; older binds
+`review show --json` and `review verify --json` include this author; older pinned reviews
 remain readable without an author field, and reading them does not invent one.
 
 
 ## Transfer a native review
 
-Publish an existing bound review and receive it in another native workspace:
+Publish an existing pinned review and receive it in another native workspace:
 
 ```bash
 gr2 review publish gr:<full-review-id> --remote https://example.org/workspace.git
@@ -148,7 +182,7 @@ refused without falling back to context.
 Publish transfers only that review ref and confirms its returned target. Receive
 compares both the advertised and actual fetched raw target with the expected ID,
 requires a commit and recomputable review content, then creates the canonical
-local bind ref. A valid same-ID receive is idempotent. A conflicting existing ref
+local review ref. A valid same-ID receive is idempotent. A conflicting existing ref
 is refused. Object downloads may remain after refusal. The owned temporary ref
 is removed separately, and cleanup failure is reported without replacing a
 primary failure.
@@ -167,6 +201,9 @@ or cleanup authority. Opening a reconstruction remains a separate operation.
 External packages can expose a zero-argument factory through the
 `gr2.platform_adapters` entry-point group. See [the adapter contract](docs/PR-LIFECYCLE.md#51-adapter-protocol-and-capabilities)
 for registration, optional operation capabilities and merge head-pin requirements.
+What changed in that protocol, release by release, ships in the package: read it from
+an install with `importlib.resources.files("gr2") / "PLATFORM_ADAPTER_CHANGELOG.md"`,
+or in this repository at [gr2/PLATFORM_ADAPTER_CHANGELOG.md](gr2/PLATFORM_ADAPTER_CHANGELOG.md).
 Select the installed adapter with `gr2 pr create ... --platform NAME` on a
 materialized lane. The bound-lane path currently pushes and returns its receipt.
 
@@ -209,13 +246,13 @@ failure at that commit. Concurrent writes union observations with bounded
 compare-and-swap retries. An unmeasurable push acknowledgement is reported as
 indeterminate unless a fresh remote read confirms the observation.
 
-## Merge a bound review into plain Git remotes
+## Merge a pinned review into plain Git remotes
 
 ```sh
 gr2 review merge
 ```
 
-This merges the review bound at the members' current heads, from their current branch, into the
+This merges the review pinned at the members' current heads, from their current branch, into the
 branch on each remote that still sits at the reviewed base, and prints what it resolved. If several
 branches sit there, it asks for `--into`. It merges only if every member's remote feature
 branch is still the reviewed head, the target is still the reviewed base, and the exact-head check
@@ -227,7 +264,7 @@ Exit codes:
 - 3: none merged (refused);
 - 4: partial or unknown.
 
-A review id, `--from` and `--into` override the defaults. Zero or several matching binds, or members on
+A review id, `--from` and `--into` override the defaults. Zero or several matching pinned reviews, or members on
 different branches, refuse and name the value to pass.
 
 These records are attestations by writers trusted with remote access, not signed

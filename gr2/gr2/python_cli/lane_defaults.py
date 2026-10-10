@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from . import lane_downstream
+from . import gitops
 
 #: ONE budget for the whole remote check, not per repository: ten unreachable remotes must not wait ten times.
 REMOTE_CHECK_BUDGET_S = 20.0
@@ -68,10 +69,7 @@ def _ls_remote(url: str, ref: str, timeout: float) -> str | None:
     """The sha ``ref`` points at on ``url``, "" when the remote answered and has no such ref. Raises
     ``TimeoutError`` or ``OSError`` when the remote could not be asked."""
     try:
-        out = subprocess.run(
-            ["git", "ls-remote", "--", url, ref], capture_output=True, text=True, timeout=max(timeout, 0.1),
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-        )
+        out = gitops.run_argv(["git", "ls-remote", "--", url, ref], timeout=max(timeout, 0.1), env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}, raise_timeout=True)
     except subprocess.TimeoutExpired as exc:
         raise TimeoutError("did not answer in time") from exc
     if out.returncode != 0:

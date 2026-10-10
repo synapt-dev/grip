@@ -266,7 +266,7 @@ def _resolve_snapshot_or_exit(
 
 
 def _store_git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(["git", "-C", str(root), *args], text=True, capture_output=True, check=False)
+    result = gitops.run_argv(["git", "-C", str(root), *args])
     if check and result.returncode:
         raise RuntimeError(result.stderr.strip() or "git command failed")
     return result
@@ -1478,7 +1478,7 @@ def _native_store_materialize(root: Path) -> list[dict[str, str]]:
                         f"materialize will not clear it -- move or remove what is there",
                         3,
                     ) from exc
-            result = subprocess.run(["git", "clone", member["remote"], str(path)], text=True, capture_output=True, check=False)
+            result = gitops.clone(member["remote"], str(path))
             if result.returncode:
                 done = ", ".join(item["name"] for item in materialized) or "none"
                 raise NativeStoreRefusal(
@@ -1902,10 +1902,10 @@ def grip_migrate_cmd(
 
 @grip_app.command("migrate-reviews")
 def grip_migrate_reviews_cmd(
-    root: Path = typer.Argument(..., help="The native store root whose review binds to migrate"),
+    root: Path = typer.Argument(..., help="The native store root whose pinned reviews to migrate"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Give every legacy review bind a field tree twin at the v1 ref; legacy refs stay as they are."""
+    """Give every legacy pinned review a field tree twin at the v1 ref; legacy refs stay as they are."""
     try:
         receipt, rows = grip_mod.migrate_review_binds(root.resolve())
     except grip_mod.GripCorruptError as exc:

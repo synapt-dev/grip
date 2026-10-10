@@ -1,0 +1,40 @@
+{
+ "audience": "public",
+ "about": "The words gr2 uses for its own commands, each with the command that does it. docs/GLOSSARY.md is generated from this file by scripts/gen_vocabulary_glossary.py; tests/test_vocabulary.py checks every command named here against api/cli.api.",
+ "terms": [
+  {
+   "term": "lane",
+   "meaning": "A unit of work with its own checkout. Create it, enter it to work, exit it to put it down.",
+   "gr2": ["lane create", "lane enter", "lane exit"]
+  },
+  {
+   "term": "pin",
+   "meaning": "Record an exact commit. The workspace pins each repo; `review pin` pins the heads under review.",
+   "gr2": ["review pin"],
+   "note": "`review bind` is the earlier name and still works."
+  },
+  {
+   "term": "stamp",
+   "meaning": "An approval of one exact pin. If the work changes, the pin moves and the old stamp no longer matches.",
+   "gr2": ["review stamp"],
+   "note": "A stamp records an approval. Approver names are self-declared and the record is unsigned. `review approve` is the earlier name and still works."
+  },
+  {
+   "term": "repin",
+   "meaning": "Pin again. Changed work is pinned again with `review pin`; when the target base moves, `review repin` rebases a frozen range onto it.",
+   "gr2": ["review repin"],
+   "note": "`review repin` writes a new frozen directory and refuses if the range would change. `review rebind` is the earlier name and still works."
+  },
+  {
+   "term": "gate",
+   "meaning": "The merge gate: `review merge` refuses unless the pinned work is unchanged, required checks pass and enough stamps match it.",
+   "gr2": ["review merge"],
+   "note": "How many stamps are enough is a setting. With none required, the stamp count is skipped."
+  },
+  {
+   "term": "review",
+   "meaning": "A reader checks one exact pin before the work is merged; `review open` rebuilds it in a lane to read and run.",
+   "gr2": ["review"]
+  }
+ ]
+}

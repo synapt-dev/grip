@@ -185,12 +185,16 @@ class CreatePRRequest:
     head_branch: str
     base_branch: str
     draft: bool = True
+    # The configured Git target, distinct from the workspace's member label.
+    # Older direct callers may omit it; adapters must not infer it from cwd.
+    remote: str | None = None
 
 
 class PlatformAdapter(Protocol):
     """Protocol for platform-backed PR orchestration.
 
-    gr2 owns the orchestration UX. Adapters hide the hosting platform backend.
+    gr2 owns the orchestration UX. Adapters hide the hosting platform backend. What changed in this
+    protocol, release by release, ships in the package as ``gr2/PLATFORM_ADAPTER_CHANGELOG.md``.
     """
 
     name: str

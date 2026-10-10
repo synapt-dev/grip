@@ -9,6 +9,7 @@ import tomllib
 from pathlib import Path
 
 from .events import EventType, emit, emit_after_outcome
+from . import gitops
 
 
 VALID_IF_EXISTS = {"skip", "overwrite", "merge", "error"}
@@ -333,11 +334,8 @@ def apply_file_projections(hooks: RepoHooks, ctx: HookContext, *, gate: tuple[st
         # tracked file hits this on every materialization. The skip is a named
         # result so the receipt says why nothing was written.
         if dest.is_relative_to(ctx.repo_root):
-            tracked = subprocess.run(
-                ["git", "-C", str(ctx.repo_root), "ls-files",
-                 "--error-unmatch", str(dest.relative_to(ctx.repo_root))],
-                capture_output=True,
-            )
+            tracked = gitops.run_argv(["git", "-C", str(ctx.repo_root), "ls-files",
+                 "--error-unmatch", str(dest.relative_to(ctx.repo_root))], binary=True)
             if tracked.returncode == 0:
                 results.append(
                     HookResult(

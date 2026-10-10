@@ -9,6 +9,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+from . import gitops
 
 
 class ReviewRecordLocationError(ValueError):
@@ -245,10 +246,7 @@ def finish_close_recovery(paths: ReviewRecordPaths, target: Path, doc: dict) -> 
 def worktree_git_path(repo_root: Path | str, name: str) -> Path:
     """Resolve metadata in this worktree, including checkouts whose .git is a file."""
     repo = Path(repo_root).resolve()
-    proc = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "--git-path", name],
-        text=True, capture_output=True,
-    )
+    proc = gitops.run_argv(["git", "-C", str(repo), "rev-parse", "--git-path", name])
     if proc.returncode or not proc.stdout.strip():
         raise ReviewRecordLocationError(f"cannot resolve worktree Git metadata for {repo}")
     path = Path(proc.stdout.strip())

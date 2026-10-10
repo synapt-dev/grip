@@ -214,3 +214,16 @@ def test_the_readme_commands_table_omits_no_live_verb() -> None:
     for verb in sorted(top - set(groups) - listed.get("(top level)", set())):
         missing.append(f"gr2 {verb} (top level)")
     assert not missing, "the Commands table omits live verbs:\n  " + "\n  ".join(missing)
+
+
+def test_the_commands_table_is_one_unbroken_block():
+    # A non-table line between two rows ends the table for a Markdown renderer: every row after it prints as raw
+    # pipes in a paragraph, while a test that reads every line starting with `|` still passes.
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text().splitlines()
+    start = readme.index("## Commands")
+    end = next(i for i in range(start + 1, len(readme)) if readme[i].startswith("## "))
+    section = readme[start + 1:end]
+    rows = [i for i, line in enumerate(section) if line.startswith("|")]
+    assert rows, "the Commands section has no table"
+    gap = [section[i] for i in range(rows[0], rows[-1] + 1) if not section[i].startswith("|")]
+    assert gap == [], f"the Commands table is split by: {gap}"

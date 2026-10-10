@@ -475,7 +475,9 @@ def test_break_03_push_root_with_unpushed_member(two_member_ws: Path, tmp_path: 
     assert _ls_remote(url, f"refs/heads/{branch}") == "", f"the root ref ({branch}) must be ABSENT"
     # CONTROL: the same instrument on a ref that IS there
     _git(root, "branch", "-f", "controlbranch", "HEAD")
-    _git(root, "push", "-q", "origin", "controlbranch")
+    # `--no-verify`: this pushes the malformed commit on purpose, as an instrument control, and the
+    # pre-push hook would (correctly) refuse it.
+    _git(root, "push", "--no-verify", "-q", "origin", "controlbranch")
     assert _ls_remote(url, "refs/heads/controlbranch") != "", (
         "the absent check is only meaningful if ls-remote can see a present ref"
     )

@@ -316,7 +316,9 @@ def test_review_help_keeps_each_step_on_its_own_line(use_rich):
     out = subprocess.run([sys.executable, "-m", "gr2.python_cli.app", "review", "--help"],
                          capture_output=True, text=True, env=env)
     assert out.returncode == 0, out.stderr
-    starts = [x.strip(" │").split("  ")[0] for x in out.stdout.splitlines()]
+    import re
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", out.stdout)  # CI forces colour; the layout is what is under test
+    starts = [x.strip(" │").split("  ")[0] for x in plain.splitlines()]
     for n, step in enumerate(("gr2 review pin", "push the head", "gr2 review stamp", "gr2 check run",
                               "gr2 review publish", "gr2 review merge"), 1):
         assert f"{n}. {step}" in starts, (use_rich, out.stdout)

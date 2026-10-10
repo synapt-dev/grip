@@ -360,3 +360,18 @@ def test_the_rewrite_preflight_sees_a_rewrite_between_targets_that_join_to_the_s
     assert gr2_app._effective_target_matches(adapter, tmp_path, "bound") is False  # a different target
     monkeypatch.setattr(gr2_app, "_effective_remote", lambda root, remote: "bound")
     assert gr2_app._effective_target_matches(adapter, tmp_path, "bound") is True  # control: no rewrite
+
+
+def test_a_v2_adapter_without_resolve_target_is_refused_by_name_when_it_is_selected(monkeypatch):
+    from gr2.python_cli import platform as platform_ops
+
+    class NoResolver:
+        platform_adapter_api_version = 2
+
+        def create_pr(self, request):  # pragma: no cover - never reached
+            raise AssertionError("selection must refuse first")
+
+    monkeypatch.setattr(platform_ops, "_ADAPTER_FACTORIES", {})
+    platform_ops.register_platform_adapter("noresolver", NoResolver)
+    with pytest.raises(AdapterError, match="lacks required resolve_target"):
+        platform_ops.get_platform_adapter("noresolver")

@@ -691,6 +691,8 @@ def get_platform_adapter(name: str) -> PlatformAdapter:
                 f"{getattr(adapter, 'platform_adapter_api_version', None)!r}"
             ) from exc
         require_adapter_capability(adapter, "create_pr")
+        if adapter_api_version(adapter) >= 2:
+            require_adapter_capability(adapter, "resolve_target")
         return adapter
     if normalized in {"github", "gh"}:
         return GitHubAdapter()

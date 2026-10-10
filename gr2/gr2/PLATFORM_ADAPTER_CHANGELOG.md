@@ -38,6 +38,13 @@ adapter and is called exactly as before.
   `target` nor a `remote` is refused as `group_lacks_routing_context`, before any adapter call; the group is
   re-created with `gr2 pr create`. A member whose stored remote now resolves to a different target than the
   one stored is refused as `routing_target_changed`.
+- **Review verbs.** `review open` reads the PR's base branch through the adapter's own target when the adapter
+  is version 2 (`pr_status(..., target=<origin's RemoteTarget>)`), and refuses by name when the repository has
+  no origin url; a version 1 adapter is read exactly as before. Review creation resolves each member through
+  `resolve_target` and requires the effective URL (after any `url.<base>.insteadOf` rewrite) to resolve to the
+  same `(host, org, project, repo)` as the bound one.
+- **Selection refuses a version 2 adapter without `resolve_target`** by name (`platform adapter lacks required
+  resolve_target capability`), at the same point it refuses one without `create_pr`.
 
 ## 2.0.0a8
 

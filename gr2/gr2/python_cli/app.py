@@ -115,7 +115,7 @@ def _root(
 repo_app = typer.Typer(help="Repo maintenance and inspection")
 lane_app = typer.Typer(help="Lane creation and navigation")
 lease_app = typer.Typer(help="Lane lease operations")
-review_app = typer.Typer(help="Review and reviewer requirement operations", epilog=next_steps.REVIEW_ORDER)
+review_app = typer.Typer(help="Review and reviewer requirement operations.\n\n" + next_steps.REVIEW_ORDER)
 check_app = typer.Typer(help="Run and read exact-head checks on a Git remote")
 pr_app = typer.Typer(help="Cross-repo PR orchestration")
 workspace_app = typer.Typer(help="Workspace bootstrap and materialization")

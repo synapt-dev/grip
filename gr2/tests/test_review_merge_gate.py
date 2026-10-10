@@ -236,7 +236,7 @@ def next_argv(line, fill=()):
     import shlex
     assert line.startswith("next: gr2 "), line
     argv = shlex.split(line.removeprefix("next: gr2 "))
-    if "<your test command>" in line:
+    if "--" in argv and argv[-1].endswith("command>"):
         argv = argv[:argv.index("--") + 1] + list(fill)
     return argv
 
@@ -291,3 +291,32 @@ def test_review_help_gives_the_order_of_the_steps():
     text = " ".join(out.output.split())
     order = [text.index(f"gr2 review {v}") for v in ("pin", "stamp", "publish", "merge")]
     assert order == sorted(order) and "gr2 check run" in text, out.output
+
+
+def test_two_required_checks_get_one_check_run_line_each_and_both_lines_get_past_the_refusal(world):
+    code, receipt = merge_gate.review_merge(world["author"], world["review"], into="main", feature="feat",
+                                            required_checks=("lint", "test"))
+    row = receipt["members"][0]
+    assert code == merge_gate.EXIT_REFUSED and row["refused"].startswith("check_absent"), receipt
+    lines = row["next"].splitlines()
+    assert len(lines) == 2 and all(x.count("--name") <= 1 for x in lines), lines
+    assert sum("--name lint" in x for x in lines) == 1, lines
+    for line in lines:
+        ran = runner.invoke(app, next_argv(line, [sys.executable, "-c", "pass"]))
+        assert ran.exit_code == 0, ran.output
+    code, receipt = merge_gate.review_merge(world["author"], world["review"], into="main", feature="feat",
+                                            required_checks=("lint", "test"))
+    assert code == merge_gate.EXIT_MERGED, receipt
+
+
+@pytest.mark.parametrize("use_rich", ["1", "0"])
+def test_review_help_keeps_each_step_on_its_own_line(use_rich):
+    import os
+    env = dict(os.environ, TYPER_USE_RICH=use_rich, COLUMNS="100")
+    out = subprocess.run([sys.executable, "-m", "gr2.python_cli.app", "review", "--help"],
+                         capture_output=True, text=True, env=env)
+    assert out.returncode == 0, out.stderr
+    starts = [x.strip(" │").split("  ")[0] for x in out.stdout.splitlines()]
+    for n, step in enumerate(("gr2 review pin", "push the head", "gr2 review stamp", "gr2 check run",
+                              "gr2 review publish", "gr2 review merge"), 1):
+        assert f"{n}. {step}" in starts, (use_rich, out.stdout)

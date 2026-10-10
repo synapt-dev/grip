@@ -7,7 +7,7 @@ remote branch; the tests check every line for both.
 """
 from __future__ import annotations
 
-REVIEW_ORDER = """\
+REVIEW_ORDER = """\b\n\
 A review goes through six steps, in this order:
   1. gr2 review pin      pin the head before pushing it (needs gr2 store init)
   2. push the head       gr2 push, or git push
@@ -20,7 +20,7 @@ Each refusal along the way names the next command."""
 
 def self_approval(workspace: str, review: str) -> str:
     return (f"next: a different approver stamps this review from their own checkout: "
-            f"gr2 review stamp {workspace} {review}")
+            f"gr2 review stamp <their workspace> {review}")
 
 
 def head_already_on_remote() -> str:
@@ -34,8 +34,9 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
     if refused.startswith("review_not_on_member_remote"):
         return f"next: gr2 review publish {workspace} {review} --remote {remote}"
     if refused.startswith("check_absent"):
-        names = "".join(f" --name {n}" for n in checks) if checks != ("test",) else ""
-        return f"next: gr2 check run {path} --remote {remote} --head {head}{names} -- <your test command>"
+        # `check run --name` takes ONE name (a repeated flag keeps the last), so each required check gets its own line.
+        return "\n".join(f"next: gr2 check run {path} --remote {remote} --head {head}"
+                         f"{'' if n == 'test' else f' --name {n}'} -- <your {n} command>" for n in checks)
     if refused.startswith("approvals_insufficient"):
         return (f"next: more approvers are required; each one stamps from their own checkout: "
                 f"gr2 review stamp {workspace} {review}")

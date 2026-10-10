@@ -225,3 +225,114 @@ def test_a_nested_ref_with_the_same_tail_does_not_count_as_the_published_review(
     code, receipt = merge(world)
     assert code == merge_gate.EXIT_REFUSED, receipt
     assert receipt["members"][0]["refused"].startswith("review_not_on_member_remote"), receipt
+
+
+# Each refusal names its next command, and running that command as printed gets past the refusal.
+FORBIDDEN_ADVICE = ("git config", "git_config", "user.name", "user.email", "delete", "push -d",
+                    "git_author_", "git_committer_")
+
+
+def next_argv(line, fill=()):
+    import shlex
+    assert line.startswith("next: gr2 "), line
+    argv = shlex.split(line.removeprefix("next: gr2 "))
+    if "--" in argv and argv[-1].endswith("command>"):
+        argv = argv[:argv.index("--") + 1] + list(fill)
+    return argv
+
+
+def test_an_unpublished_review_names_publish_and_the_printed_command_gets_past_it(world):
+    check(world)
+    git(world["remote"], "update-ref", "-d", f"{REVIEW_REF_PREFIX}{world['review'].removeprefix('gr:')}")
+    code, receipt = merge(world)
+    row = receipt["members"][0]
+    assert code == merge_gate.EXIT_REFUSED and row["refused"].startswith("review_not_on_member_remote"), receipt
+    ran = runner.invoke(app, next_argv(row["next"]))
+    assert ran.exit_code == 0, ran.output
+    code, receipt = merge(world)
+    assert code == merge_gate.EXIT_MERGED, receipt
+
+
+def test_a_missing_check_names_check_run_and_the_printed_command_gets_past_it(world):
+    code, receipt = merge(world)
+    row = receipt["members"][0]
+    assert code == merge_gate.EXIT_REFUSED and row["refused"].startswith("check_absent"), receipt
+    ran = runner.invoke(app, next_argv(row["next"], [sys.executable, "-c", "pass"]))
+    assert ran.exit_code == 0, ran.output
+    code, receipt = merge(world)
+    assert code == merge_gate.EXIT_MERGED, receipt
+
+
+def test_pinning_a_head_already_pushed_names_the_non_destructive_path(world):
+    again = runner.invoke(app, ["review", "pin", "--repo", "member", "--remote", str(world["remote"]),
+                                "--base", world["base"], "--head", world["head"], "--ref", "refs/heads/main",
+                                "--source", str(world["member"])])
+    assert again.exit_code == 2 and "head_already_on_remote" in again.output, again.output
+    line = next(x for x in again.output.splitlines() if x.startswith("next: "))
+    assert "--ratified" in line and not any(f in line.lower() for f in FORBIDDEN_ADVICE), line
+
+
+def test_no_next_line_and_no_help_line_suggests_an_identity_or_delete_trick():
+    from gr2.python_cli import next_steps
+    lines = [next_steps.self_approval("/ws", "gr:abc"), next_steps.head_already_on_remote(), next_steps.REVIEW_ORDER]
+    for refused in ("review_not_on_member_remote: x", "check_absent: x", "check_fail: x", "feature_moved: x",
+                    "base_moved: x", "approvals_insufficient: 0 of 1"):
+        line = next_steps.merge_row(refused, workspace="/ws", review="gr:abc", remote="/r.git", path="/ws/m",
+                                    head="a" * 40, checks=("test",))
+        assert line, refused
+        lines.append(line)
+    for line in lines:
+        assert not any(f in line.lower() for f in FORBIDDEN_ADVICE), line
+
+
+def test_review_help_gives_the_order_of_the_steps():
+    out = runner.invoke(app, ["review", "--help"])
+    assert out.exit_code == 0, out.output
+    text = " ".join(out.output.split())
+    order = [text.index(f"gr2 review {v}") for v in ("pin", "stamp", "publish", "merge")]
+    assert order == sorted(order) and "gr2 check run" in text, out.output
+
+
+def test_two_required_checks_get_one_check_run_line_each_and_both_lines_get_past_the_refusal(world):
+    code, receipt = merge_gate.review_merge(world["author"], world["review"], into="main", feature="feat",
+                                            required_checks=("lint", "test"))
+    row = receipt["members"][0]
+    assert code == merge_gate.EXIT_REFUSED and row["refused"].startswith("check_absent"), receipt
+    lines = row["next"].splitlines()
+    assert len(lines) == 2 and all(x.count("--name") <= 1 for x in lines), lines
+    assert sum("--name lint" in x for x in lines) == 1, lines
+    for line in lines:
+        ran = runner.invoke(app, next_argv(line, [sys.executable, "-c", "pass"]))
+        assert ran.exit_code == 0, ran.output
+    code, receipt = merge_gate.review_merge(world["author"], world["review"], into="main", feature="feat",
+                                            required_checks=("lint", "test"))
+    assert code == merge_gate.EXIT_MERGED, receipt
+
+
+@pytest.mark.parametrize("use_rich", ["1", "0"])
+def test_review_help_keeps_each_step_on_its_own_line(use_rich):
+    import os
+    env = dict(os.environ, TYPER_USE_RICH=use_rich, COLUMNS="100")
+    out = subprocess.run([sys.executable, "-m", "gr2.python_cli.app", "review", "--help"],
+                         capture_output=True, text=True, env=env)
+    assert out.returncode == 0, out.stderr
+    import re
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", out.stdout)  # CI forces colour; the layout is what is under test
+    starts = [x.strip(" │").split("  ")[0] for x in plain.splitlines()]
+    for n, step in enumerate(("gr2 review pin", "push the head", "gr2 review stamp", "gr2 check run",
+                              "gr2 review publish", "gr2 review merge"), 1):
+        assert f"{n}. {step}" in starts, (use_rich, out.stdout)
+
+
+def test_a_printed_next_line_escapes_control_characters_and_quotes_each_value():
+    from gr2.python_cli import next_steps
+    import shlex
+    hostile = "/ws/m\x1b[31mRED\nnext: gr2 evil\x9b\u202emoc.live\u2028x\u200b"
+    lines = [next_steps.merge_row("check_absent: x", workspace="/ws", review="gr:abc", remote="/r.git", path=hostile,
+                                  head="a" * 40, checks=("test",)),
+             next_steps.merge_row("review_not_on_member_remote: x", workspace="/my ws", review="gr:abc",
+                                  remote=hostile, path="/ws/m", head="a" * 40, checks=("test",))]
+    for line in lines:
+        assert all(c.isprintable() for c in line), repr(line)
+        assert len(line.splitlines()) == 1 and line.startswith("next: "), line  # no forged second line
+    assert "/my ws" in shlex.split(lines[1]), lines[1]

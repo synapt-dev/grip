@@ -36,6 +36,13 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Changed
 
+- **`gr2`: review refusals name the next command.** `gr2 review merge` adds a `next` line to a refused member's
+  receipt row for an unpublished review (`gr2 review publish ...`), a missing check (`gr2 check run ...`),
+  too few approvals, a failed check, and a moved head or base. `gr2 review stamp` refused as the author names a
+  different approver's receive and stamp, a stamp in a workspace that never received the review refuses as
+  `not_received` (it used to end in a traceback), and `gr2 review pin` refused for a head already on the remote names the
+  `--ratified` path or a new head. `gr2 review --help` lists the six review steps in order. Behaviour is
+  unchanged; only the refusal text and help are new.
 - **With only gr1 installed, `gr` runs gr1.** Outside any workspace with gr2 not installed, the `gr` in the
   gr1 binary runs gr1 and prints one line naming the gr2 install; a gr2 workspace with gr2 missing still
   refuses with exit 69. `gr --which` reports what a plain run would run.

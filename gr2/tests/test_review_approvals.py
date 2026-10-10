@@ -75,6 +75,9 @@ def test_default_approve_counts_two_names_and_refuses_the_author(world):
     workspace, remote, rid, base = (world[k] for k in ("workspace", "remote", "rid", "base"))
     refused = runner.invoke(app, ["review", "approve"])
     assert refused.exit_code == 2 and "self_approval" in refused.output, refused.output
+    advice = next(x for x in refused.output.splitlines() if x.startswith("next: "))
+    assert "a different approver" in advice and "gr2 review stamp" in advice, advice
+    assert not any(f in advice.lower() for f in ("git config", "git_config", "user.name", "delete")), advice
     for name, count in [("Approver B", 1), ("Approver C", 2)]:
         git(workspace, "config", "user.name", name)
         result = runner.invoke(app, ["review", "approve"])
@@ -750,3 +753,29 @@ def test_default_approve_skips_canonical_blob_ref(world):
     receipt = json.loads(result.stdout)
     assert receipt["review_id"] == "gr:" + world["rid"]
     assert receipt["count"] == 1
+
+
+def test_a_reviewer_who_stamps_before_receiving_gets_a_named_refusal_and_the_order_that_works(world, tmp_path, monkeypatch):
+    import shlex
+    refused = runner.invoke(app, ["review", "approve"])
+    advice = next(x for x in refused.output.splitlines() if x.startswith("next: "))
+    assert "gr2 review receive <their-workspace>" in advice and "gr2 review stamp <their-workspace>" in advice, advice
+    reviewer = tmp_path / "reviewer-ws"
+    reviewer.mkdir()
+    git(reviewer, "clone", world["remote"], "member")
+    assert runner.invoke(app, ["store", "init", str(reviewer)]).exit_code == 0
+    monkeypatch.chdir(reviewer)
+    git(reviewer, "config", "user.name", "Reviewer R")
+    git(reviewer, "config", "user.email", "r@example.invalid")
+    rid = "gr:" + world["rid"]
+    early = runner.invoke(app, ["review", "stamp", str(reviewer), rid])
+    assert early.exit_code == 2 and "not_received" in early.output, early.output
+    assert "Traceback" not in early.output and early.exception is None or isinstance(early.exception, SystemExit), early.output
+    line = next(x for x in early.output.splitlines() if x.startswith("next: "))
+    commands = line[line.index("gr2 review receive"):].split(", then ")
+    receive, stamp = (shlex.split(c.removeprefix("gr2 ")) for c in commands)
+    receive[receive.index("<member-remote>")] = str(world["remote"])
+    got = runner.invoke(app, receive)
+    assert got.exit_code == 0, got.output
+    stamped = runner.invoke(app, stamp)
+    assert stamped.exit_code == 0, stamped.output

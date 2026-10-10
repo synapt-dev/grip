@@ -18,7 +18,7 @@ import uuid
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from . import check_records, gitops, grip
+from . import check_records, gitops, grip, next_steps
 
 EXIT_MERGED, EXIT_REFUSED, EXIT_PARTIAL = 0, 3, 4
 
@@ -262,6 +262,15 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                     r["push_error"] = push_error  # e.g. our lease lost to a writer who merged the same head
                 if state == "unknown":
                     break  # push no further members after an unresolved one
+
+    # Name the next command for each refusal that has one, so the operator need not read this file.
+    for r, m in zip(rows, view["members"]):
+        if r["refused"]:
+            step = next_steps.merge_row(r["refused"], workspace=str(root), review="gr:" + view["id"].removeprefix("gr:"),
+                                        remote=m["remote"], path=str((workspace / m["path"]).resolve()),
+                                        head=m["head"], checks=tuple(required_checks))
+            if step:
+                r["next"] = step
 
     # Exit from the remote STATE after the run.
     final = []

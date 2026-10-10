@@ -27,11 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import subprocess
 from pathlib import Path
-
-import pytest
 
 from tests.test_store_git_native_smoke import configure_identity, git, gr2, make_member, run
 
@@ -328,11 +324,17 @@ def _with_root_origin(tmp_path: Path, root: Path) -> Path:
     return bare
 
 
-def test_pre_push_refuses_a_bypassed_unpushed_pin(tmp_path: Path) -> None:
-    """`--no-verify` skips pre-commit (a named limit); pre-push is where the same pin is caught again."""
+def _root_pushed_nothing(tmp_path: Path, bare: Path) -> bool:
+    return run(tmp_path, "git", "--git-dir", str(bare), "rev-parse", "--verify", "-q", "main", check=False).returncode != 0
+
+
+def test_pre_push_refuses_a_bypassed_commit_whose_records_disagree(tmp_path: Path) -> None:
+    """`--no-verify` skips pre-commit AND its fold (a named limit), so the commit carries a gitlink the
+    document does not match. Pre-push reads the pushed commit the way `store check` does (consistency first)
+    and refuses it, which is the second chance the hook pair exists to give."""
     root = _store(tmp_path)
     bare = _with_root_origin(tmp_path, root)
-    _advance(root, "alpha", push=False)
+    _advance(root, "alpha", push=True)
     git(root, "add", "alpha")
     git(root, "commit", "--no-verify", "-m", "bypassed")
 
@@ -340,8 +342,28 @@ def test_pre_push_refuses_a_bypassed_unpushed_pin(tmp_path: Path) -> None:
     out = result.stdout + result.stderr
 
     assert result.returncode != 0, out
+    assert "disagrees with its gitlink" in out, out
+    assert _root_pushed_nothing(tmp_path, bare)
+
+
+def test_pre_push_refuses_a_bypassed_consistent_commit_that_is_not_covered(tmp_path: Path) -> None:
+    """The coverage half: the records agree (the fold was done by hand) but the pin is on no origin."""
+    root = _store(tmp_path)
+    bare = _with_root_origin(tmp_path, root)
+    old = _toml_pin(root, "alpha")
+    new = _advance(root, "alpha", push=False)
+    toml = root / "grip.toml"
+    toml.write_text(toml.read_text().replace(old, new))
+    git(root, "add", "alpha", "grip.toml")
+    git(root, "commit", "--no-verify", "-m", "bypassed but consistent")
+    assert _gitlink(root, "alpha") == _toml_pin(root, "alpha") == new
+
+    result = git(root, "push", "origin", "main", check=False)
+    out = result.stdout + result.stderr
+
+    assert result.returncode != 0, out
     assert "is not on origin/main; push it first" in out, out
-    assert run(tmp_path, "git", "--git-dir", str(bare), "rev-parse", "--verify", "-q", "main", check=False).returncode != 0
+    assert _root_pushed_nothing(tmp_path, bare)
 
 
 def test_pre_push_allows_a_covered_root(tmp_path: Path) -> None:

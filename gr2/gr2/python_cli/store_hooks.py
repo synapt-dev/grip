@@ -6,14 +6,17 @@ root records the member's gitlink, but nothing refuses a pin that is not on the 
 leaves two records of one fact disagreeing. `store init` installed no hooks.
 
 THE SHAPE: two hooks, written by `store init`, that call the SAME engine the verbs call
-(`_member_coverage`, `_write_native_members`), so a hook and a verb cannot answer one question
+(`_member_coverage`, `_claimed_member_paths`), so a hook and a verb cannot answer one question
 differently. There is no new verb and no second implementation.
 
   pre-commit   every NEW gitlink in the index must be on its member's upstream (refused with the
-               verb's own message, "... push it first"); and grip.toml's pins are folded to the staged
-               gitlinks and staged, so one commit can never carry two disagreeing records.
-  pre-push     every pin at each pushed root commit must be covered. This is the backstop for a commit
-               that skipped pre-commit (`--no-verify`, a named limit: a client hook is cooperative).
+               verb's own message, "... push it first"); and the `pin` lines of grip.toml are folded to the
+               staged gitlinks and staged, so one commit can never carry two disagreeing records. The commit
+               is judged by the grip.toml it will CARRY (the staged blob), only the pin lines are rewritten,
+               and a fold is refused when grip.toml has unstaged edits (it never rewrites what the user has
+               not staged).
+  pre-push     every pin at EVERY pushed root commit must be covered, not only the tip. This is the backstop
+               for a commit that skipped pre-commit (`--no-verify`, a named limit: a client hook is cooperative).
 
 THE LIMITS, stated here because a hook that overclaims is worse than none:
   * a hook only runs where Git runs it. `core.hooksPath` hides the installed hooks, and a plain `git
@@ -21,6 +24,8 @@ THE LIMITS, stated here because a hook that overclaims is worse than none:
   * a PARTIAL commit (`git commit <paths>`) runs the hook against a temporary `next-index-<pid>.lock`
     index (measured on this host's git), so a fold there leaves the real index disagreeing with HEAD.
     The hook checks coverage in that case and REFUSES a fold, naming the remedy.
+  * a partial commit is recognised by the temporary index's FILE NAME (`next-index-`); a caller who points
+    GIT_INDEX_FILE at some other temporary index is treated as if it were the real one.
   * not covered here: a dirty member, a credentialed member URL, and the `.gitinclude` allow-list. Those
     stay with `store commit` and `store check`.
 
@@ -32,11 +37,14 @@ entitlement semantics.
 """
 from __future__ import annotations
 
+import json
 import os
+import re
 import shlex
 import subprocess
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 
 from . import gitops
@@ -216,15 +224,62 @@ def _offline_hint(code: int) -> str:
     return " (offline? `git commit --no-verify` skips this check and pre-push checks again)" if code == 5 else ""
 
 
+def _index_toml(root: Path, index: str | None) -> str | None:
+    """The grip.toml the commit WILL carry (the staged blob), or None when none is staged."""
+    env = {**os.environ, "GIT_INDEX_FILE": index} if index else None
+    shown = _git(root, "show", ":grip.toml", env=env)
+    return shown.stdout if shown.returncode == 0 else None
+
+
+def _members_from(text: str) -> list[dict[str, str]]:
+    """The members of a grip.toml TEXT, in the shape the engine's helpers read (`remote` from `remotes.origin`)."""
+    from . import grip_cli as gc
+
+    members = tomllib.loads(text).get("members", [])
+    if not isinstance(members, list) or not members:
+        raise gc.NativeStoreRefusal("grip.toml has no members; run store init against a root that has them", 4)
+    result: list[dict[str, str]] = []
+    for member in members:
+        item = dict(member)
+        remotes = item.pop("remotes", {})
+        if not isinstance(remotes, dict) or not isinstance(remotes.get("origin"), str):
+            raise gc.NativeStoreRefusal(f"{item.get('name', 'member')} has no origin remote", 4)
+        item["remote"] = remotes["origin"]
+        result.append(item)
+    return result
+
+
+def _fold_pins(text: str, moves: dict[str, tuple[str, str]]) -> str:
+    """Rewrite ONLY the `pin = "..."` line of each moved member ({name: (old, new)}); every other byte of the
+    document, comments and keys the writer does not emit included, is kept. Refuses (None-safe) when a line cannot
+    be found exactly once, so a document this cannot fold is never half-folded."""
+    from . import grip_cli as gc
+
+    chunks = re.split(r"(?m)^(?=\[\[members\]\])", text)
+    for name, (old, new) in moves.items():
+        name_line = re.compile(r"(?m)^name\s*=\s*" + re.escape(json.dumps(name)) + r"\s*$")
+        pin_line = re.compile(r"(?m)^(pin\s*=\s*)" + re.escape(json.dumps(old)) + r"(\s*)$")
+        owners = [i for i, chunk in enumerate(chunks) if name_line.search(chunk) and len(pin_line.findall(chunk)) == 1]
+        if len(owners) != 1:
+            raise gc.NativeStoreRefusal(
+                f"cannot fold the pin of {name} into grip.toml by line; run `gr2 store commit` for this change", 4
+            )
+        chunks[owners[0]] = pin_line.sub(lambda m: m.group(1) + json.dumps(new) + m.group(2), chunks[owners[0]], count=1)
+    return "".join(chunks)
+
+
 def run_pre_commit(root: Path) -> int:
-    """0 to let the commit proceed, 1 to refuse it. Prints the refusal in the verbs' own words."""
+    """0 to let the commit proceed, 1 to refuse it. Prints the refusal in the verbs' own words.
+
+    The commit is judged by the grip.toml it will CARRY (the staged blob), never by the working-tree file."""
     from . import grip_cli as gc
 
     index = _scrub_git_env()
-    if not (root / "grip.toml").exists():
-        return 0
     try:
-        members = gc._native_members(root)
+        staged_text = _index_toml(root, index)
+        if staged_text is None:
+            return 0
+        members = _members_from(staged_text)
         staged = _index_gitlinks(root, index)
         committed = _head_gitlinks(root)
         partial = bool(index) and Path(index).name.startswith("next-index-")
@@ -245,8 +300,14 @@ def run_pre_commit(root: Path) -> int:
                     f"grip.toml pins differ from the staged gitlinks ({names}) and a partial commit "
                     "(git commit <paths>) cannot fold them; run git commit without paths", 4,
                 )
-            folded = [{**member, "pin": staged.get(member["path"], member["pin"])} for member in members]
-            gc._write_native_members(root, folded)
+            working = root / "grip.toml"
+            if not working.is_file() or working.read_text() != staged_text:
+                raise gc.NativeStoreRefusal(
+                    f"grip.toml pins differ from the staged gitlinks ({names}) and grip.toml has edits that are "
+                    "not staged; stage or stash your grip.toml edits, then commit", 4,
+                )
+            folded = _fold_pins(staged_text, {m["name"]: (m["pin"], staged[m["path"]]) for m in stale})
+            working.write_text(folded)
             env = {**os.environ, "GIT_INDEX_FILE": index} if index else None
             added = _git(root, "add", "grip.toml", env=env)
             if added.returncode:
@@ -254,29 +315,50 @@ def run_pre_commit(root: Path) -> int:
     except gc.NativeStoreRefusal as exc:
         print(f"gr2 store: {exc}{_offline_hint(exc.code)}", file=sys.stderr)
         return 1
-    except RuntimeError as exc:
+    except (RuntimeError, tomllib.TOMLDecodeError) as exc:
         print(f"gr2 store hook could not complete: {exc}", file=sys.stderr)
         return 1
     return 0
 
 
-def run_pre_push(root: Path, lines: list[str]) -> int:
-    """0 to let the push proceed. Each pushed root commit's pins must be covered by their upstreams."""
+def _pushed_commits(root: Path, local: str, remote_sha: str, remote: str) -> list[str]:
+    """Every commit the push would send, oldest first: `remote..local` when the remote tip is known here, else
+    everything `local` reaches that no remote-tracking ref already has."""
+    if remote_sha != _ZERO and _git(root, "cat-file", "-e", f"{remote_sha}^{{commit}}").returncode == 0:
+        walk = _git(root, "rev-list", "--reverse", f"{remote_sha}..{local}")
+    else:
+        known = _git(root, "remote").stdout.split()
+        spec = f"--remotes={remote}" if remote in known else "--remotes"
+        walk = _git(root, "rev-list", "--reverse", local, "--not", spec)
+    if walk.returncode:
+        raise RuntimeError(walk.stderr.strip() or "git rev-list failed")
+    return walk.stdout.split()
+
+
+def run_pre_push(root: Path, lines: list[str], remote: str = "") -> int:
+    """0 to let the push proceed. EVERY pushed root commit's pins must be covered by their upstreams (a bypassed
+    commit below the tip is checked like the tip)."""
     from . import grip_cli as gc
 
     _scrub_git_env()
+    seen: set[tuple[str, str, str, str]] = set()
     try:
         for line in lines:
             fields = line.split()
             if len(fields) < 2 or fields[1] == _ZERO:
                 continue
-            revision = fields[1]
-            if _git(root, "cat-file", "-e", f"{revision}:grip.toml").returncode:
-                continue  # not a store commit: nothing here to check
-            members = gc._native_members(root, revision=revision)
-            for member in members:
-                claimed = gc._claimed_member_paths(root, members, exclude=member)
-                gc._member_coverage(root, member, member["pin"], claimed)
+            remote_sha = fields[3] if len(fields) > 3 else _ZERO
+            for revision in _pushed_commits(root, fields[1], remote_sha, remote):
+                if _git(root, "cat-file", "-e", f"{revision}:grip.toml").returncode:
+                    continue  # not a store commit: nothing here to check
+                members = gc._native_members(root, revision=revision)
+                for member in members:
+                    key = (member["path"], member["pin"], member.get("upstream", ""), member["remote"])
+                    if key in seen:
+                        continue
+                    claimed = gc._claimed_member_paths(root, members, exclude=member)
+                    gc._member_coverage(root, member, member["pin"], claimed)
+                    seen.add(key)
     except gc.NativeStoreRefusal as exc:
         print(f"gr2 store: {exc}{_offline_hint(exc.code)}", file=sys.stderr)
         return 1
@@ -293,7 +375,7 @@ def main(argv: list[str]) -> int:
     root = Path.cwd()
     if argv[0] == "pre-commit":
         return run_pre_commit(root)
-    return run_pre_push(root, sys.stdin.read().splitlines())
+    return run_pre_push(root, sys.stdin.read().splitlines(), argv[1] if len(argv) > 1 else "")
 
 
 if __name__ == "__main__":

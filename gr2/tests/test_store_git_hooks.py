@@ -7,7 +7,7 @@ the member's origin (`store commit` refuses it, exit 3, "push it first"), and no
 disagreeing and `store check` exits 4. `store init` installs no hooks.
 
 THE SPECIFIED SHAPE: `store init` installs a `pre-commit` and a `pre-push` hook that call the SAME
-engine the verbs use (`_member_coverage`, `_write_native_members`). A commit of an unpushed pin is
+engine the verbs use (`_member_coverage`, `_claimed_member_paths`). A commit of an unpushed pin is
 refused and names the safe next step; after a plain commit the pins in `grip.toml` equal the
 gitlinks. The operator types no gr2 command after setup.
 
@@ -396,6 +396,123 @@ def test_pre_push_allows_a_covered_root(tmp_path: Path) -> None:
 
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
     assert run(tmp_path, "git", "--git-dir", str(bare), "rev-parse", "main").stdout.strip() == _head(root)
+
+
+def _bypassed_unpushed_root_below_a_covered_tip(tmp_path: Path, *, push_x: bool) -> tuple[Path, Path, str, str]:
+    """Root pushed clean. A consistent `--no-verify` root commit pins alpha X; alpha is then reset and a
+    distinct Y is pushed; a plain root commit pins Y. The pushed tip is covered, the commit below it pins X."""
+    root = _store(tmp_path)
+    bare = _with_root_origin(tmp_path, root)
+    assert git(root, "push", "origin", "main", check=False).returncode == 0
+    old = _toml_pin(root, "alpha")
+    x = _advance(root, "alpha", push=push_x)
+    toml = root / "grip.toml"
+    toml.write_text(toml.read_text().replace(old, x))
+    git(root, "add", "alpha", "grip.toml")
+    git(root, "commit", "--no-verify", "-m", "bypassed, consistent, pins X")
+    work = root / "alpha"
+    if not push_x:
+        git(work, "reset", "--hard", old)
+    (work / "y.txt").write_text("y\n")
+    git(work, "add", "y.txt")
+    git(work, "commit", "-m", "alpha Y")
+    git(work, "push", "origin", "main")
+    y = git(work, "rev-parse", "HEAD").stdout.strip()
+    git(root, "add", "alpha")
+    plain = git(root, "commit", "-m", "plain, pins Y", check=False)
+    assert plain.returncode == 0, f"{plain.stdout}\n{plain.stderr}"
+    return root, bare, x, y
+
+
+def test_pre_push_checks_every_pushed_root_commit_not_only_the_tip(tmp_path: Path) -> None:
+    """A bypassed root commit BELOW a covered tip pinned a member commit on no origin and the push exited 0."""
+    root, bare, x, _y = _bypassed_unpushed_root_below_a_covered_tip(tmp_path, push_x=False)
+
+    result = git(root, "push", "origin", "main", check=False)
+    out = result.stdout + result.stderr
+
+    assert result.returncode != 0, out
+    assert "is not on origin/main; push it first" in out, out
+    assert x[:12] in out or "alpha" in out, out
+    # THE FRUIT: nothing past the first push reached the root origin.
+    assert run(tmp_path, "git", "--git-dir", str(bare), "rev-parse", "main").stdout.strip() != _head(root)
+
+
+def test_pre_push_allows_the_same_range_once_the_lower_pin_is_on_origin(tmp_path: Path) -> None:
+    """THE CONTROL: a walker that refuses every multi-commit push would pass the row above."""
+    root, bare, _x, _y = _bypassed_unpushed_root_below_a_covered_tip(tmp_path, push_x=True)
+
+    result = git(root, "push", "origin", "main", check=False)
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert run(tmp_path, "git", "--git-dir", str(bare), "rev-parse", "main").stdout.strip() == _head(root)
+
+
+# ── The fold touches the pin lines and nothing else ─────────────────────────────────────────
+
+
+def test_a_plain_commit_with_an_unstaged_grip_toml_edit_is_refused_and_the_edit_survives(tmp_path: Path) -> None:
+    root = _store(tmp_path)
+    new = _advance(root, "alpha", push=True)
+    toml = root / "grip.toml"
+    toml.write_text(toml.read_text() + "# my note\n")
+    before_bytes, before_head = toml.read_bytes(), _head(root)
+
+    git(root, "add", "alpha")
+    result = git(root, "commit", "-m", "alpha moved", check=False)
+    out = result.stdout + result.stderr
+
+    assert result.returncode != 0, out
+    assert "grip.toml" in out and "stage or stash" in out, out
+    assert toml.read_bytes() == before_bytes, "the unstaged edit must still be in the working tree"
+    assert _head(root) == before_head
+    assert new  # the member really moved; the refusal is about the document, not coverage
+
+
+def test_the_same_edit_staged_is_kept_in_the_commit_and_the_pin_is_folded(tmp_path: Path) -> None:
+    """THE CONTROL: once the edit is staged the commit goes through, carries the comment, and folds ONLY the pin."""
+    root = _store(tmp_path)
+    new = _advance(root, "alpha", push=True)
+    toml = root / "grip.toml"
+    toml.write_text(toml.read_text() + "# my note\n")
+
+    git(root, "add", "alpha", "grip.toml")
+    result = git(root, "commit", "-m", "alpha moved", check=False)
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    committed = git(root, "show", "HEAD:grip.toml").stdout
+    assert "# my note" in committed
+    assert _toml_pin(root, "alpha") == new == _gitlink(root, "alpha")
+    assert toml.read_text() == committed, "working tree and commit agree after the fold"
+
+
+def test_an_unstaged_upstream_edit_is_not_what_the_commit_is_judged_by(tmp_path: Path) -> None:
+    """The hook measured coverage against `upstream` read from the WORKING TREE, content that is not in the commit."""
+    root = _store(tmp_path)
+    _advance(root, "alpha", push=True)
+    toml = root / "grip.toml"
+    toml.write_text(toml.read_text().replace('upstream = "origin/main"', 'upstream = "origin/unstaged-edit"', 1))
+
+    git(root, "add", "alpha")
+    result = git(root, "commit", "-m", "alpha moved", check=False)
+    out = result.stdout + result.stderr
+
+    assert result.returncode != 0, out
+    assert "unstaged-edit" not in out, f"the commit was judged by an edit that is not in it\n{out}"
+    assert "stage or stash" in out, out
+
+
+def test_a_dirty_grip_toml_does_not_block_a_pathspec_commit_that_never_touches_it(tmp_path: Path) -> None:
+    root = _store(tmp_path)
+    toml = root / "grip.toml"
+    toml.write_text(toml.read_text() + "# my note\n")
+    (root / "NOTES.md").write_text("notes\n")
+    git(root, "add", "-f", "NOTES.md")
+
+    result = git(root, "commit", "-m", "notes", "NOTES.md", check=False)
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert toml.read_text().endswith("# my note\n")
 
 
 # ── The verbs keep their own refusals ─────────────────────────────────────────────

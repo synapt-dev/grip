@@ -13,8 +13,31 @@ It covers what an out-of-tree adapter implements or receives: the `PlatformAdapt
 Each entry names the release that first carried it. The full release notes for every change are in the
 project's `CHANGELOG.md` and its GitHub releases.
 
-`PLATFORM_ADAPTER_API_VERSION` is the protocol's version number. It is `1`, and it changes only for a change
-an existing adapter cannot absorb.
+`PLATFORM_ADAPTER_API_VERSION` is the protocol's version number. It changes only for a change an existing
+adapter cannot absorb. The released version is `1`; version `2` is in this file's Unreleased section and no
+release carries it yet.
+
+## Unreleased (adapter API version 2)
+
+Nothing here is in a gr2 release. An adapter that declares no `platform_adapter_api_version` is a version 1
+adapter and is called exactly as before.
+
+- **`PLATFORM_ADAPTER_API_VERSION = 2`.** gr2 accepts a declared `1` or `2` and refuses any other value.
+  `adapter_api_version(adapter)` returns the declaration, and `1` when there is none.
+- **`RemoteTarget`** is new: `raw` (the exact configured Git URL) and the adapter's reading of it, `host`,
+  `org`, `project` and `repo`, each `None` when the platform has no such part. gr2 never parses a hosting URL.
+- **`resolve_target(remote) -> RemoteTarget`** is new and is required of a version 2 adapter: it is the only
+  place a URL is parsed.
+- **`CreatePRRequest.target`** is new (default `None`): the member's `RemoteTarget`, resolved by the adapter
+  before the first PR of a group is created. A version 2 adapter always receives it; a version 1 adapter
+  receives `None`. `CreatePRRequest.remote` is unchanged and still carries the raw URL.
+- **`target` keyword on the lifecycle calls.** For a version 2 adapter gr2 passes `target=<that member's
+  RemoteTarget>` to `pr_status`, `merge_pr`, `edit_pr_body`, `pr_checks`, `pr_view` and `list_prs`, so the adapter routes by the member's own
+  target and not by a repo string. A version 1 adapter is never passed `target`.
+- **Old groups are refused by name.** A version 2 adapter given a stored group whose member has neither a
+  `target` nor a `remote` is refused as `group_lacks_routing_context`, before any adapter call; the group is
+  re-created with `gr2 pr create`. A member whose stored remote now resolves to a different target than the
+  one stored is refused as `routing_target_changed`.
 
 ## 2.0.0a8
 

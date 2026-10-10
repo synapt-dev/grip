@@ -591,15 +591,54 @@ def _effective_remote(workspace_root: Path, remote: str) -> str:
     return got.stdout.strip() if got.returncode == 0 else ""
 
 
-def _review_members_on_host(workspace_root: Path, members: list[dict[str, str]]) -> dict[str, tuple[dict[str, str], Path]]:
+def _member_identity(adapter: object | None, remote: str) -> tuple[str | None, ...] | None:
+    """Where a member's remote routes, as a tuple whose POSITIONS carry meaning. With no v2 adapter it
+    is ("github", "owner/repo"); a v2 adapter resolves the URL itself and the identity is its
+    (host, org, project, repo). Compared as tuples: joining the parts into one string loses which part
+    was empty, so (None, "a", "b", "c") and ("a", "b", None, "c") would read as the same target.
+    None when the remote names no resolvable target."""
+    if adapter is None:
+        slug = _github_slug(remote)
+        return None if slug is None else ("github", slug)
+    try:
+        target = adapter.resolve_target(remote)  # type: ignore[attr-defined]
+    except AdapterError:
+        return None
+    if not target.repo:
+        return None
+    return (target.host, target.org, target.project, target.repo)
+
+
+def _member_slug(adapter: object | None, remote: str) -> str | None:
+    """A member's display name and group key: the identity's non-empty parts joined with `/`. For
+    messages and keys only; two remotes are the SAME target only when their `_member_identity`
+    tuples are equal."""
+    identity = _member_identity(adapter, remote)
+    if identity is None:
+        return None
+    if adapter is None:
+        return str(identity[1])
+    return "/".join(str(p) for p in identity if p)
+
+
+def _effective_target_matches(adapter: object | None, workspace_root: Path, remote: str) -> bool:
+    """True when git, after any `url.<base>.insteadOf` rewrite, dials the target the member was bound to.
+    Compared as identity tuples, never as joined display strings."""
+    effective = _member_identity(adapter, _effective_remote(workspace_root, remote))
+    return effective is not None and effective == _member_identity(adapter, remote)
+
+
+def _review_members_on_host(workspace_root: Path, members: list[dict[str, str]],
+                            adapter: object | None = None) -> dict[str, tuple[dict[str, str], Path]]:
     """Each review member's host slug and checkout, keyed by slug. Refused by name when either cannot
     be trusted: a remote naming no GitHub owner/repo, two members on one slug (one would silently drop
     out of the group), or a recorded path that leaves the workspace or is missing."""
     on_host: dict[str, tuple[dict[str, str], Path]] = {}
     for m in members:
-        slug = _github_slug(m["remote"])
+        slug = _member_slug(adapter, m["remote"])
         if slug is None:
-            _refuse(f"{m['key']}'s remote names no GitHub owner/repo, so no PR can be addressed for it")
+            _refuse(f"{m['key']}'s remote names no {'owner/repo' if adapter else 'GitHub owner/repo'} "
+                    "the platform adapter can address, so no PR can be addressed for it")
         if slug in on_host:
             _refuse(f"{m['key']} and {on_host[slug][0]['key']} are both {slug}; one PR group cannot hold two members on one repo")
         checkout = (workspace_root / m["path"]).resolve()
@@ -619,7 +658,9 @@ def _pr_create_for_review(workspace_root, review, platform, base_branch, draft, 
     target, members = resolve_review_subject(workspace_root, review)
     if pr_ops.review_pr_groups(workspace_root, target):
         _refuse(f"a PR group for review {target} already exists; read it with `gr2 pr status`")
-    on_host = _review_members_on_host(workspace_root, members)
+    adapter = platform_ops.get_platform_adapter(platform)
+    v2 = adapter if platform_ops.adapter_api_version(adapter) >= 2 else None
+    on_host = _review_members_on_host(workspace_root, members, v2)
     from . import review_members
     tracked = {m.name: m.ref for m in review_members.workspace_members(workspace_root)}
     heads, bases = {}, {}
@@ -633,8 +674,9 @@ def _pr_create_for_review(workspace_root, review, platform, base_branch, draft, 
         # Dialled from the workspace root, as review bind dials. The tip read there is evidence about
         # the PR only if git dials the same github.com repo the PR opens on: a url rewrite to any other
         # place (a decoy, a local path) would answer for bytes the platform never sees.
-        if _github_slug(_effective_remote(workspace_root, m["remote"])) != slug:
-            _refuse(f"{m['key']}: a git url rewrite sends its remote somewhere other than {slug} on github.com, "
+        if not _effective_target_matches(v2, workspace_root, m["remote"]):
+            _refuse(f"{m['key']}: a git url rewrite sends its remote somewhere other than {slug}"
+                    f"{'' if v2 else ' on github.com'}, "
                     "so the tip read here would not be the tip the PR opens on")
         seen = git(workspace_root, "ls-remote", m["remote"], f"refs/heads/{branch}", timeout=_REMOTE_TIP_TIMEOUT)
         if seen.returncode != 0:
@@ -658,7 +700,7 @@ def _pr_create_for_review(workspace_root, review, platform, base_branch, draft, 
         payload = pr_ops.create_pr_group(
             workspace_root=workspace_root, owner_unit="review", lane_name=target, title=title or head,
             base_branch=next(iter(bases.values())), head_branch=head, repos=repos,
-            adapter=platform_ops.get_platform_adapter(platform), actor="agent:review",
+            adapter=adapter, actor="agent:review",
             body=group_body or _default_pr_group_body("review", target, repos), draft=draft, review_target=target,
             remotes={slug: m["remote"] for slug, (m, _) in on_host.items()},
         )
@@ -3387,7 +3429,14 @@ def review_open(
     # Base pin = merge-base(head, base-branch tip). The base branch comes from the
     # PR itself, so the pin is what the PR is actually measured against.
     repo_slug = _repo_slug_from_url(remote_origin_url(source_repo_root) or "", repo)
-    base_branch = platform_ops.get_platform_adapter(platform).pr_status(repo_slug, pr_number).ref.base_branch or "main"
+    head_adapter = platform_ops.get_platform_adapter(platform)
+    head_route: dict[str, object] = {}
+    if platform_ops.adapter_api_version(head_adapter) >= 2:
+        origin = remote_origin_url(source_repo_root) or ""
+        if not origin:
+            _refuse(f"{repo}: no origin url, so a v2 platform adapter cannot route its PR")
+        head_route = {"target": head_adapter.resolve_target(origin)}  # type: ignore[attr-defined]
+    base_branch = head_adapter.pr_status(repo_slug, pr_number, **head_route).ref.base_branch or "main"
     git(source_repo_root, "fetch", "--quiet", "origin", base_branch)
     base_tip = git(source_repo_root, "rev-parse", "FETCH_HEAD").stdout.strip()
     merged = git(source_repo_root, "merge-base", expected_head, base_tip)
@@ -4635,10 +4684,11 @@ def pr_status(
         actor=f"agent:{owner_unit}",
     )
     statuses = []
+    routing = pr_ops.group_routing(adapter, group)
     for pr_info in group.get("prs", []):
         repo = str(pr_info["repo"])
         number = int(pr_info["pr_number"])
-        statuses.append(adapter.pr_status(repo, number).as_dict())
+        statuses.append(adapter.pr_status(repo, number, **routing[repo]).as_dict())
     payload = {
         "pr_group_id": group["pr_group_id"],
         "owner_unit": owner_unit,
@@ -4673,6 +4723,7 @@ def pr_checks(
         resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
         group_path, group = _find_pr_group(workspace_root, owner_unit, resolved_lane)
     adapter = platform_ops.get_platform_adapter(str(group.get("platform", "github")))
+    routing = pr_ops.group_routing(adapter, group)
     rows = []
     for pr_info in group.get("prs", []):
         ref = PRRef(repo=str(pr_info["repo"]), number=int(pr_info["pr_number"]), url=pr_info.get("url"))
@@ -4680,7 +4731,9 @@ def pr_checks(
             {
                 "repo": ref.repo,
                 "number": ref.number,
-                "checks": [item.as_dict() for item in adapter.pr_checks(ref.repo, int(ref.number))],
+                "checks": [
+                    item.as_dict() for item in adapter.pr_checks(ref.repo, int(ref.number), **routing[ref.repo])
+                ],
             }
         )
     payload = {
@@ -4727,6 +4780,8 @@ def _pr_view_source(workspace_root: Path, owner_unit: str, lane_name: str) -> di
                             "repo": str(item["repo"]),
                             "number": int(item["pr_number"]),
                             "branch": None,
+                            "remote": item.get("remote"),
+                            "target": item.get("target"),
                         }
                         for item in doc.get("prs", [])
                     ],
@@ -4790,7 +4845,8 @@ def pr_view(
             "source": "pr_group",
             "pr_group_id": group["pr_group_id"],
             "platform": str(group.get("platform", "github")),
-            "members": [{"repo": str(item["repo"]), "number": int(item["pr_number"]), "branch": None}
+            "members": [{"repo": str(item["repo"]), "number": int(item["pr_number"]), "branch": None,
+                         "remote": item.get("remote"), "target": item.get("target")}
                         for item in group.get("prs", [])],
         }
     else:
@@ -4816,10 +4872,17 @@ def pr_view(
         if repo_filter is not None and repo != repo_filter:
             continue
         number = member["number"]
+        try:
+            # A v2 adapter routes by the member's own target; a member it cannot route is NAMED as
+            # unread, never read through a repo string it would have to guess from.
+            route = pr_ops.member_routing(adapter, repo, member)
+        except AdapterError as exc:
+            rows.append({"repo": repo, "number": None if number is None else int(number), "unread": str(exc)})
+            continue
         if number is None:
             branch = member["branch"]
             try:
-                refs = adapter.list_prs(repo, head_branch=str(branch)) if branch else []
+                refs = adapter.list_prs(repo, head_branch=str(branch), **route) if branch else []
             except AdapterError as exc:
                 rows.append({"repo": repo, "number": None, "unread": str(exc)})
                 continue
@@ -4834,7 +4897,7 @@ def pr_view(
                 continue
             number = int(refs[0].number)
         try:
-            rows.append(adapter.pr_view(repo, int(number)).as_dict())
+            rows.append(adapter.pr_view(repo, int(number), **route).as_dict())
         except AdapterError as exc:
             # A member whose read FAILED is named. Dropping it would print a smaller
             # change than the one that exists, which is the failure a reader cannot see.

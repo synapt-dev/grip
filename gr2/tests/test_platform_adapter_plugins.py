@@ -218,6 +218,7 @@ def test_external_entry_point_actual_cli_carries_policy_and_target(plugin, flags
         base_branch="integration",
         draft=draft,
         remote="https://example.invalid/sample.git",
+        target=None,  # additive field (adapter API v2): a v1 plugin is handed None, never a guess
     )
     assert json.loads(result.stdout)["platform"] == "fixture"
 

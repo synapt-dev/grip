@@ -268,3 +268,24 @@ def test_a_stray_file_in_a_record_directory_lane_is_still_named(tmp_path: Path) 
     stray = lane_proto.lane_dir(ws, "atlas", "x") / "notes.md"
     stray.write_text("not a record file\n")
     _refused_untouched(ws, repo, _remove(ws), "lane_has_unlisted_content", "notes.md")
+
+
+def test_lane_list_names_a_lane_with_a_broken_record_and_still_lists_the_rest(tmp_path: Path) -> None:
+    """One malformed lane record must not hide every lane after it: list reports it as keep and goes on."""
+    ws, _, _ = _exited_lane_with_a_commit(tmp_path)
+    result = runner.invoke(gr2_app.app, ["lane", "create", str(ws), "atlas", "y", "--repos", "app", "--branch", "app=feat/y"])
+    assert result.exit_code == 0, result.output
+    doc = lane_proto.lane_file(ws, "atlas", "x")
+    lines = doc.read_text().splitlines(keepends=True)
+    assert sum(line.startswith("checkout_root") for line in lines) == 1
+    doc.write_text("".join('checkout_root = ""\n' if line.startswith("checkout_root") else line for line in lines))
+
+    result = runner.invoke(gr2_app.app, ["lane", "list", str(ws)])
+
+    assert result.exit_code == 0, result.output
+    rows = {line.split("\t")[1]: line for line in result.output.splitlines() if line.startswith("atlas\t")}
+    assert set(rows) == {"x", "y"}, result.output
+    assert "\tkeep" in rows["x"] and "lane_record_invalid" in rows["x"], rows["x"]
+    assert "\tremovable" in rows["y"], rows["y"]
+    removed = _remove(ws)
+    assert removed.exit_code != 0 and "lane_record_invalid" in removed.output, removed.output

@@ -3118,6 +3118,9 @@ def _lane_removal_refusals(workspace_root: Path, owner_unit: str, lane_name: str
         lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)
     except spec_apply.MaterializationPlanError as exc:
         return [f"lane_path_escapes_workspace: {exc}"]
+    except SystemExit as exc:
+        # An empty checkout_root or an unknown lane_kind: name it, so `lane list` still reaches every lane after it.
+        return [f"lane_record_invalid: {owner_unit}/{lane_name}: {exc}"]
     refusals: list[str] = []
     current_file = lane_proto.current_lane_file(workspace_root, owner_unit)
     if current_file.exists():

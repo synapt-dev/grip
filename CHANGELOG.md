@@ -17,8 +17,8 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   line, as gr1's composefile). With `format = "json"` every part must be a JSON object and the parts are merged
   in order: objects merge, a scalar from a later part replaces an earlier one, and arrays are appended in part
   order with no dedupe, so a later part can add to a shared list and cannot remove from it. A part that is not
-  UTF-8 text, is not a JSON object, does not parse (`NaN` and `Infinity` included), repeats a key, or changes the
-  kind of a shared value refuses
+  UTF-8 text, is not a JSON object, does not parse (`NaN`, `Infinity` and an overflowing number included), nests too deeply, repeats a key, cannot be
+  written as UTF-8, or changes the kind of a shared value refuses
   the whole compose and writes nothing, as does a `dest` that is one of its own parts. It uses the same consent
   record and confinement as `[[files.copy]]` and `[[files.link]]`; the part list is part of the hooks text, so
   changing it lapses consent. Parts come from the member only.

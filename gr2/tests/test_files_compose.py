@@ -259,6 +259,46 @@ class TestGateAndConfinement:
         assert payload["status"] == "refused" and "not valid JSON" in payload["detail"]
         assert not (workspace / "out.txt").exists()
 
+    @pytest.mark.parametrize("literal", ["1e999", "-1e999"])
+    def test_an_overflowing_number_is_refused(self, workspace: Path, literal: str):
+        # float() overflows to inf without calling parse_constant, so only the
+        # serialisation check catches it.
+        row = _row(["n.json"], extra='format = "json"\n')
+        root = _member(workspace, row, **{"n.json": '{"x": [%s]}' % literal})
+        (workspace / "out.txt").write_text("KEEP-ME")
+        payload = _refusal(workspace, root)
+        assert payload["status"] == "refused"
+        assert (workspace / "out.txt").read_text() == "KEEP-ME"
+
+    def test_a_lone_surrogate_escape_refuses_and_keeps_the_dest(self, workspace: Path):
+        row = _row(["s.json"], extra='format = "json"\n')
+        root = _member(workspace, row, **{"s.json": '{"x": "\\ud800"}'})
+        (workspace / "out.txt").write_text("KEEP-ME")
+        payload = _refusal(workspace, root)
+        assert payload["status"] == "refused" and "UTF-8" in payload["detail"] and "s.json" in payload["detail"]
+        assert (workspace / "out.txt").read_text() == "KEEP-ME"
+
+    def test_a_very_deeply_nested_part_is_a_refusal_not_a_recursion_error(self, workspace: Path):
+        deep = "[" * 100000 + "]" * 100000
+        row = _row(["deep.json"], extra='format = "json"\n')
+        root = _member(workspace, row, **{"deep.json": '{"x": %s}' % deep})
+        (workspace / "out.txt").write_text("KEEP-ME")
+        payload = _refusal(workspace, root)
+        assert payload["status"] == "refused" and "deep.json" in payload["detail"]
+        assert (workspace / "out.txt").read_text() == "KEEP-ME"
+
+    def test_a_nesting_that_parses_but_cannot_merge_is_a_refusal(self, workspace: Path):
+        # 3000 levels: json.loads accepts them (measured) and the recursive
+        # merge exceeds the interpreter's limit, so this row guards the merge
+        # site and not the loads site.
+        nest = '{"k": ' * 3000 + "1" + "}" * 3000
+        row = _row(["a.json", "b.json"], extra='format = "json"\n')
+        root = _member(workspace, row, **{"a.json": nest, "b.json": nest})
+        (workspace / "out.txt").write_text("KEEP-ME")
+        payload = _refusal(workspace, root)
+        assert payload["status"] == "refused" and "b.json" in payload["detail"]
+        assert (workspace / "out.txt").read_text() == "KEEP-ME"
+
     def test_empty_parts_is_rejected_at_load(self, workspace: Path):
         root = _member(workspace, '[[files.compose]]\ndest = "{workspace_root}/o"\nparts = []\n')
         with pytest.raises(SystemExit):
@@ -285,15 +325,16 @@ class TestPendingMarkerSurvivesARefusedCompose:
     HOOKS = (
         '[[lifecycle.on_materialize]]\nname = "m"\ncommand = "true"\nwhen = "first_materialize"\n\n'
         '[[files.compose]]\ndest = "{workspace_root}/out.txt"\nparts = ["a.md", "bad.md"]\n'
-        'if_exists = "overwrite"\n'
+        'if_exists = "overwrite"\n%s'
     )
 
-    def _pending(self, workspace: Path, bad: bytes | None) -> Path:
+    def _pending(self, workspace: Path, bad: bytes | None, fmt: str = "") -> Path:
         (workspace / ".grip" / "workspace_spec.toml").write_text(
             'workspace_name = "ws"\n\n[[repos]]\nname = "seat"\npath = "seat"\nurl = "unused"\n'
             '[[units]]\nname = "default"\npath = "default"\nrepos = ["seat"]\n'
         )
-        root = _member(workspace, self.HOOKS, **{"a.md": "A"})
+        a_body = "{}" if fmt else "A"
+        root = _member(workspace, self.HOOKS % fmt, **{"a.md": a_body})
         if bad is not None:
             (root / "bad.md").write_bytes(bad)
         from gr2.python_cli.spec_apply import _run_materialize_hooks
@@ -302,12 +343,18 @@ class TestPendingMarkerSurvivesARefusedCompose:
         _run_materialize_hooks(workspace, root, "seat", first_materialize=True)
         return root
 
-    @pytest.mark.parametrize("bad", [None, b"\xff\xfe\x00bad"], ids=["missing-part", "non-utf8-part"])
-    def test_marker_survives_the_refusal(self, workspace: Path, bad: bytes | None):
+    @pytest.mark.parametrize(
+        "bad",
+        [(None, ""), (b"\xff\xfe\x00bad", ""), (b'{"x": "\\ud800"}', 'format = "json"\n'),
+         (b'{"x": 1e999}', 'format = "json"\n')],
+        ids=["missing-part", "non-utf8-part", "lone-surrogate-json", "overflowing-number"],
+    )
+    def test_marker_survives_the_refusal(self, workspace: Path, bad):
+        bad, fmt = bad
         from gr2.python_cli.consent import pending_marker_path
         from gr2.python_cli.spec_apply import _run_materialize_hooks
 
-        root = self._pending(workspace, bad)
+        root = self._pending(workspace, bad, fmt)
         assert pending_marker_path(workspace, "seat").exists()
         write_consent(workspace, "seat", root)
         with pytest.raises(HookRuntimeError):

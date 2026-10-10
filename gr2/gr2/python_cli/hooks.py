@@ -551,6 +551,12 @@ def _json_refuse_constant(name: str) -> object:
     raise ValueError(f"{name} is not valid JSON")
 
 
+def _short(exc: BaseException) -> str:
+    """One line of a parser's error text, bounded."""
+    text = " ".join(str(exc).split())
+    return text[:160] or type(exc).__name__
+
+
 def _compose_refusal(hooks: RepoHooks, compose: FileCompose, status: str, detail: str, dest: object) -> HookRuntimeError:
     return HookRuntimeError(
         {
@@ -612,24 +618,56 @@ def _apply_compose(hooks: RepoHooks, ctx: HookContext, compose: FileCompose) -> 
         for index, (part, text) in enumerate(texts):
             try:
                 doc = json.loads(text, object_pairs_hook=_json_no_duplicate_keys, parse_constant=_json_refuse_constant)
-            except ValueError as exc:
+            except (ValueError, RecursionError) as exc:
                 raise _compose_refusal(
-                    hooks, compose, "refused", f"compose part {part} is not valid JSON: {exc}", dest
+                    hooks, compose, "refused", f"compose part {part} is not valid JSON: {_short(exc)}", dest
                 ) from None
             if not isinstance(doc, dict):
                 raise _compose_refusal(
                     hooks, compose, "refused", f"compose part {part} is not a JSON object", dest
                 )
+            # Each part must be writable as JSON text BY ITSELF, so the
+            # refusal can name it: a number that overflows (1e999) parses to
+            # inf without reaching parse_constant, and a lone surrogate escape
+            # ("\ud800") parses and cannot be encoded as UTF-8.
+            try:
+                json.dumps(doc, ensure_ascii=False, allow_nan=False).encode("utf-8")
+            except (ValueError, RecursionError) as exc:
+                raise _compose_refusal(
+                    hooks,
+                    compose,
+                    "refused",
+                    f"compose part {part} is not writable as UTF-8 JSON text: {_short(exc)}",
+                    dest,
+                ) from None
             if index == 0:
                 merged = doc
                 continue
             try:
                 merged = _json_merge(merged, doc, "", part)
+            except RecursionError as exc:
+                raise _compose_refusal(
+                    hooks, compose, "refused", f"compose part {part} is nested too deeply to merge", dest
+                ) from None
             except ValueError as exc:
                 raise _compose_refusal(hooks, compose, "refused", str(exc), dest) from None
-        body = json.dumps(merged, indent=2, ensure_ascii=False) + "\n"
+        try:
+            body = json.dumps(merged, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+        except (ValueError, RecursionError) as exc:
+            raise _compose_refusal(
+                hooks, compose, "refused", f"composed JSON is not writable as UTF-8 JSON text: {_short(exc)}", dest
+            ) from None
     else:
         body = compose.separator.join(text for _, text in texts)
+    # Encode BEFORE the dest is touched: a lone surrogate escape ("\ud800") is
+    # valid to the JSON parser and unencodable as UTF-8, and the write must not
+    # have emptied or replaced the dest by the time that is found out.
+    try:
+        payload = body.encode("utf-8")
+    except UnicodeEncodeError:
+        raise _compose_refusal(
+            hooks, compose, "refused", "composed text is not encodable as UTF-8 (lone surrogate)", dest
+        ) from None
 
     if dest.is_relative_to(ctx.repo_root):
         tracked = gitops.run_argv(
@@ -673,7 +711,7 @@ def _apply_compose(hooks: RepoHooks, ctx: HookContext, compose: FileCompose) -> 
             )
         dest.unlink(missing_ok=True)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(body, encoding="utf-8")
+    dest.write_bytes(payload)
     return HookResult(
         kind="projection",
         name=f"compose:{dest.name}",

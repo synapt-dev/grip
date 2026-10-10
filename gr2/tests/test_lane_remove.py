@@ -70,3 +70,88 @@ def test_the_same_lane_once_its_commit_is_pushed_is_removed(tmp_path: Path) -> N
     assert not repo.exists(), "the lane's clone is gone"
     assert not lane_proto.lane_file(ws, "atlas", "x").exists(), "the lane record is gone"
     assert _git(member, "rev-parse", "HEAD") == member_head, "the workspace's own clone is untouched"
+
+
+def _refused_untouched(ws: Path, repo: Path, result, *needles: str) -> None:
+    assert result.exit_code != 0, result.output
+    for needle in needles:
+        assert needle in result.output, (needle, result.output)
+    assert repo.is_dir(), "the lane's clone is untouched"
+    assert lane_proto.lane_file(ws, "atlas", "x").is_file(), "the lane record is untouched"
+
+
+def _pushed_exited_lane(tmp_path: Path) -> tuple[Path, Path]:
+    """The removable control state: exited, clean, every commit pushed. Each row below adds ONE thing to it."""
+    ws, repo, _ = _exited_lane_with_a_commit(tmp_path)
+    _git(repo, "push", "-q", "origin", "HEAD:refs/heads/feat/x")
+    return ws, repo
+
+
+def test_the_entered_lane_is_not_removed(tmp_path: Path) -> None:
+    ws, repo = _pushed_exited_lane(tmp_path)
+    result = runner.invoke(gr2_app.app, ["lane", "enter", str(ws), "atlas", "x", "--actor", "agent:s"])
+    assert result.exit_code == 0, result.output
+    _refused_untouched(ws, repo, _remove(ws), "lane_is_entered")
+
+
+def test_a_lane_with_uncommitted_work_is_not_removed(tmp_path: Path) -> None:
+    ws, repo = _pushed_exited_lane(tmp_path)
+    (repo / "untracked.txt").write_text("not committed anywhere\n")
+    _refused_untouched(ws, repo, _remove(ws), "lane_has_uncommitted_work", "app")
+    assert (repo / "untracked.txt").is_file()
+
+
+def test_an_unpushed_commit_on_a_branch_other_than_head_is_not_removed(tmp_path: Path) -> None:
+    ws, repo = _pushed_exited_lane(tmp_path)
+    _git(repo, "branch", "side")
+    _git(repo, "checkout", "-q", "side")
+    (repo / "g.txt").write_text("side work\n")
+    _git(repo, "add", "g.txt")
+    _git(repo, "commit", "-q", "-m", "side work")
+    side = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "feat/x")
+    assert _git(repo, "log", "HEAD", "--not", "--remotes", "--format=%H") == "", "HEAD alone looks pushed"
+    _refused_untouched(ws, repo, _remove(ws), "lane_has_unpushed_commit", side[:12])
+
+
+def test_a_lane_holding_a_stash_is_not_removed(tmp_path: Path) -> None:
+    ws, repo = _pushed_exited_lane(tmp_path)
+    (repo / "f.txt").write_text("stashed edit\n")
+    _git(repo, "stash", "push", "-q", "-m", "keep me")
+    stash = _git(repo, "rev-parse", "stash@{0}")
+    assert _git(repo, "status", "--porcelain") == ""
+    _refused_untouched(ws, repo, _remove(ws), "lane_has_stash", stash[:12])
+
+
+def test_a_lane_with_a_live_lease_is_not_removed(tmp_path: Path) -> None:
+    ws, repo = _pushed_exited_lane(tmp_path)
+    result = runner.invoke(gr2_app.app, ["lane", "lease", "acquire", str(ws), "atlas", "x",
+                                         "--actor", "agent:other", "--mode", "edit"])
+    assert result.exit_code == 0, result.output
+    _refused_untouched(ws, repo, _remove(ws), "lane_has_live_lease", "agent:other")
+
+
+def test_a_bound_lane_is_not_removed_and_its_worktree_is_untouched(tmp_path: Path) -> None:
+    ws, _, _ = _workspace_with_enter_hook(tmp_path, command="exit 0")
+    wt = ws / "wt"
+    wt.mkdir()
+    _git(wt, "init", "-q")
+    _git(wt, "config", "user.email", "t@e.invalid")
+    _git(wt, "config", "user.name", "t")
+    (wt / "f.txt").write_text("someone else's checkout\n")
+    _git(wt, "add", ".")
+    _git(wt, "commit", "-q", "-m", "init")
+    _git(wt, "checkout", "-q", "-b", "feat/x")
+    result = runner.invoke(gr2_app.app, ["lane", "create", str(ws), "atlas", "x", "--repos", "app",
+                                         "--branch", "app=feat/x", "--bind", str(wt)])
+    assert result.exit_code == 0, result.output
+    _refused_untouched(ws, wt, _remove(ws), "lane_is_bound")
+    assert (wt / ".git").is_dir()
+
+
+def test_a_lane_whose_origin_cannot_be_fetched_is_not_removed(tmp_path: Path) -> None:
+    ws, repo = _pushed_exited_lane(tmp_path)
+    _git(repo, "remote", "set-url", "origin", str(tmp_path / "no-such-origin.git"))
+    # The remote-tracking refs still hold every commit, so a reader that skipped the fetch would say "all pushed".
+    assert _git(repo, "log", "HEAD", "--branches", "--not", "--remotes", "--format=%H") == ""
+    _refused_untouched(ws, repo, _remove(ws), "lane_unpushed_unknown", "app")

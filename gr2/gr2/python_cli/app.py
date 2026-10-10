@@ -3099,15 +3099,33 @@ def lane_remove(
         typer.echo(f"refused: lane_is_bound: {owner_unit}/{lane_name} uses a worktree it does not own", err=True)
         raise typer.Exit(code=1)
     checkout_root = lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)
-    unpushed: list[tuple[str, str]] = []
+    refusals: list[str] = []
+    current_file = lane_proto.current_lane_file(workspace_root, owner_unit)
+    if current_file.exists():
+        current = json.loads(current_file.read_text()).get("current") or {}
+        if current.get("lane_name") == lane_name:
+            refusals.append(f"lane_is_entered: exit it first with gr2 lane exit "
+                            f"{shlex.quote(str(workspace_root))} {shlex.quote(owner_unit)}")
+    for lease in lane_proto.load_lane_leases(workspace_root, owner_unit, lane_name):
+        if not lane_proto.is_stale_lease(lease):
+            refusals.append(f"lane_has_live_lease: {lease.get('actor')} ({lease.get('mode')}) "
+                            f"until {lease.get('expires_at')}")
     for name in lane_doc.get("repos", []):
         path = _lane_repo_root(workspace_root, owner_unit, lane_name, name)
-        if path.exists():
-            unpushed.extend((name, sha) for sha in _unpushed_commits(path))
-    if unpushed:
-        for name, sha in unpushed:
-            typer.echo(f"refused: lane_has_unpushed_commit: {name} {sha}", err=True)
-        typer.echo(f"push the work first; the lane {owner_unit}/{lane_name} was not removed", err=True)
+        if not path.exists():
+            continue
+        if repo_dirty(path):
+            refusals.append(f"lane_has_uncommitted_work: {name} ({path})")
+        for sha in git(path, "stash", "list", "--format=%H").stdout.split():
+            refusals.append(f"lane_has_stash: {name} {sha}")
+        try:
+            refusals.extend(f"lane_has_unpushed_commit: {name} {sha}" for sha in _unpushed_commits(path))
+        except SystemExit as exc:
+            refusals.append(f"lane_unpushed_unknown: {name}: {exc}")
+    if refusals:
+        for line in refusals:
+            typer.echo(f"refused: {line}", err=True)
+        typer.echo(f"nothing was removed; the lane {owner_unit}/{lane_name} is as it was", err=True)
         raise typer.Exit(code=1)
     rmtree_or_refuse(checkout_root)
     lane_dir = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)

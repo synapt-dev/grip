@@ -3066,6 +3066,56 @@ def lane_exit(
     )
 
 
+def _unpushed_commits(repo: Path) -> list[str]:
+    """Commits on HEAD or any local branch that no remote-tracking ref holds, after a fetch.
+
+    A fetch that fails is a refusal, never an empty answer: without it the remote refs are a
+    claim from the last fetch, and "nothing unpushed" would be read off a stale copy."""
+    fetched = subprocess.run(["git", "fetch", "--quiet", "--all"], cwd=repo, text=True, capture_output=True)
+    if fetched.returncode != 0:
+        raise SystemExit(f"cannot fetch in {repo}, so cannot show its commits are pushed: {fetched.stderr.strip()}")
+    out = git(repo, "log", "HEAD", "--branches", "--not", "--remotes", "--format=%H").stdout
+    return [line for line in out.splitlines() if line]
+
+
+@lane_app.command("remove", cls=ContextCommand)
+def lane_remove(
+    workspace_root: Path,
+    owner_unit: str,
+    lane_name: str,
+    root: Optional[Path] = ROOT_OPTION,
+    unit: Optional[str] = typer.Option(None, "--unit", help="The unit. Same as the UNIT argument; give one or the other."),
+    ctx: typer.Context = None,  # type: ignore[assignment]
+) -> None:
+    """End a lane: remove its clones and its record.
+
+    Refused while any of its repos holds a commit that no remote has, checked over HEAD and every
+    local branch after a fetch; the refusal names each repo and commit, and nothing is removed.
+    The workspace's own clones are never touched."""
+    _announce_context(ctx)
+    workspace_root = workspace_root.resolve()
+    lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
+    if lane_doc.get("lane_kind", "materialized") == "bound":
+        typer.echo(f"refused: lane_is_bound: {owner_unit}/{lane_name} uses a worktree it does not own", err=True)
+        raise typer.Exit(code=1)
+    checkout_root = lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)
+    unpushed: list[tuple[str, str]] = []
+    for name in lane_doc.get("repos", []):
+        path = _lane_repo_root(workspace_root, owner_unit, lane_name, name)
+        if path.exists():
+            unpushed.extend((name, sha) for sha in _unpushed_commits(path))
+    if unpushed:
+        for name, sha in unpushed:
+            typer.echo(f"refused: lane_has_unpushed_commit: {name} {sha}", err=True)
+        typer.echo(f"push the work first; the lane {owner_unit}/{lane_name} was not removed", err=True)
+        raise typer.Exit(code=1)
+    rmtree_or_refuse(checkout_root)
+    lane_dir = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
+    if lane_dir.exists():
+        rmtree_or_refuse(lane_dir)
+    typer.echo(f"removed lane {owner_unit}/{lane_name}")
+
+
 @lane_app.command("show", cls=ContextCommand)
 @lane_app.command("current", hidden=True, cls=ContextCommand)  # hidden alias, dropped at 2.0 GA
 def lane_current(

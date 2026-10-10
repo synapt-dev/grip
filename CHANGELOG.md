@@ -17,7 +17,7 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   first"), and left the `pin` in `grip.toml` disagreeing with the gitlink (`store check` then exits 4). The
   `pre-commit` hook now refuses a new pin that is not on its member's upstream, with the same message, and folds the
   `pin` lines of `grip.toml` to the staged gitlinks in the same commit (only those lines; a fold is refused while
-  `grip.toml` has unstaged edits). `pre-push` checks every pin at every pushed root commit, not only the tip, which
+  `grip.toml` has unstaged edits as git sees them, so a clean `core.autocrlf` checkout still folds). `pre-push` checks every pin at every pushed root commit, not only the tip, which
   catches a commit made with `--no-verify`. A partial commit (`git commit <paths>`) is checked for coverage but
   refuses a fold, because Git runs the hook against a temporary index there; the message says to commit without
   paths. A hook someone else already owns is left byte for byte and named, and when `core.hooksPath` hides the

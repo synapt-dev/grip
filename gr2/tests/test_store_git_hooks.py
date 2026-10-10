@@ -524,6 +524,29 @@ def test_the_fold_keeps_crlf_line_endings_and_changes_only_the_pin_line(tmp_path
     assert toml.read_bytes() == committed
 
 
+def test_a_clean_autocrlf_checkout_is_not_an_unstaged_edit_and_the_fold_goes_through_git(tmp_path: Path) -> None:
+    """Under core.autocrlf=true the working file has CRLF and the staged blob LF while git calls the file clean:
+    that is git's own conversion, not an edit, so the fold proceeds and git converts on the way back in."""
+    root = _store(tmp_path)
+    toml = root / "grip.toml"
+    git(root, "config", "core.autocrlf", "true")
+    toml.unlink()
+    git(root, "checkout", "--", "grip.toml")
+    staged_before = subprocess.run(["git", "-C", str(root), "show", ":grip.toml"], capture_output=True).stdout
+    assert b"\r\n" in toml.read_bytes() and b"\r" not in staged_before, "fixture: a CRLF working file over an LF blob"
+    assert git(root, "status", "--porcelain", "grip.toml").stdout == "", "fixture: git calls it clean"
+    new = _advance(root, "alpha", push=True)
+
+    git(root, "add", "alpha")
+    result = git(root, "commit", "-m", "alpha moved", check=False)
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    committed = subprocess.run(["git", "-C", str(root), "show", "HEAD:grip.toml"], capture_output=True).stdout
+    assert new.encode() in committed and b"\r" not in committed, "the new pin is in the index blob, LF"
+    assert new.encode() in toml.read_bytes() and b"\r\n" in toml.read_bytes(), "the working file keeps CRLF and has the pin"
+    assert git(root, "status", "--porcelain", "grip.toml").stdout == ""
+
+
 def test_a_dirty_grip_toml_does_not_block_a_pathspec_commit_that_never_touches_it(tmp_path: Path) -> None:
     root = _store(tmp_path)
     toml = root / "grip.toml"

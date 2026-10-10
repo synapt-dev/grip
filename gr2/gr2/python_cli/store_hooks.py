@@ -226,7 +226,7 @@ def _offline_hint(code: int) -> str:
 
 def _index_toml(root: Path, index: str | None) -> bytes | None:
     """The grip.toml the commit WILL carry (the staged blob) as BYTES, or None when none is staged. Bytes, not
-    text, so a CRLF file is compared and folded without any line ending being rewritten."""
+    text, so nothing here rewrites a line ending; whether the working file was edited is git's call (`git diff`)."""
     env = {**os.environ, "GIT_INDEX_FILE": index} if index else None
     shown = gitops.run_argv(["git", "-C", str(root), "show", ":grip.toml"], binary=True, env=env)
     return shown.stdout if shown.returncode == 0 else None
@@ -303,14 +303,21 @@ def run_pre_commit(root: Path) -> int:
                     "(git commit <paths>) cannot fold them; run git commit without paths", 4,
                 )
             working = root / "grip.toml"
-            if not working.is_file() or working.read_bytes() != staged_bytes:
+            env = {**os.environ, "GIT_INDEX_FILE": index} if index else None
+            # Git decides whether the file was edited: `git diff` compares after its own line-ending conversion, so a
+            # clean core.autocrlf checkout (CRLF in the tree, LF in the blob) is not an edit, which a byte compare says.
+            edited = _git(root, "diff", "--quiet", "--", "grip.toml", env=env)
+            if edited.returncode > 1:
+                raise RuntimeError(edited.stderr.strip() or "git diff grip.toml failed")
+            if edited.returncode == 1 or not working.is_file():
                 raise gc.NativeStoreRefusal(
                     f"grip.toml pins differ from the staged gitlinks ({names}) and grip.toml has edits that are "
                     "not staged; stage or stash your grip.toml edits, then commit", 4,
                 )
-            folded = _fold_pins(staged_text, {m["name"]: (m["pin"], staged[m["path"]]) for m in stale})
+            # Fold the WORKING bytes and let `git add` convert them going in, so a CRLF file stays CRLF in the tree
+            # and a plain CRLF blob keeps its endings (no conversion: the working bytes ARE the committed bytes).
+            folded = _fold_pins(working.read_bytes().decode("utf-8"), {m["name"]: (m["pin"], staged[m["path"]]) for m in stale})
             working.write_bytes(folded.encode("utf-8"))
-            env = {**os.environ, "GIT_INDEX_FILE": index} if index else None
             added = _git(root, "add", "grip.toml", env=env)
             if added.returncode:
                 raise RuntimeError(added.stderr.strip() or "git add grip.toml failed")

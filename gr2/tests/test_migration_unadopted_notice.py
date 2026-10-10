@@ -51,9 +51,12 @@ def test_payload_names_every_recorded_but_unadopted_worktree(tmp_path: Path) -> 
     """Subject: two units, two distinct recorded worktrees, both reported."""
     _write_gr1_workspace(tmp_path, _TWO_WORKTREES)
     payload = migrate_gr1_workspace(tmp_path)
+    # Each row also carries the desk's STATE and the next step. These desks are
+    # sibling directories that do not exist on disk here, so each reads `missing`.
+    absent = "declared in the gr1 manifest, directory absent: nothing to convert"
     assert payload["not_adopted"] == [
-        {"unit": "apollo", "worktree": "desk-b"},
-        {"unit": "atlas", "worktree": "desk-a"},
+        {"unit": "apollo", "worktree": "desk-b", "state": "missing", "next": absent},
+        {"unit": "atlas", "worktree": "desk-a", "state": "missing", "next": absent},
     ]
 
 
@@ -93,7 +96,14 @@ def test_whitespace_only_worktree_is_not_reported(tmp_path: Path) -> None:
     """
     _write_gr1_workspace(tmp_path, _ONE_EMPTY_WORKTREE)
     payload = migrate_gr1_workspace(tmp_path)
-    assert payload["not_adopted"] == [{"unit": "apollo", "worktree": "desk-b"}]
+    assert payload["not_adopted"] == [
+        {
+            "unit": "apollo",
+            "worktree": "desk-b",
+            "state": "missing",
+            "next": "declared in the gr1 manifest, directory absent: nothing to convert",
+        }
+    ]
 
 
 def test_non_string_worktree_value_is_not_reported_as_a_worktree(tmp_path: Path) -> None:

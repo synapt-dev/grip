@@ -52,6 +52,16 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   spawn continues as before. An existing oversized log rotates intact on its next write; older logs are not
   cleaned up. A dashboard reading the log needs its reader updated to follow the rotation; deploy that update
   before enabling the rotating capture.
+- **`gr2`: `workspace migrate-gr1` says what each unadopted desk is.** The NOT ADOPTED receipt no longer
+  lists the unit gr1 declared at the root (`worktree = "main"`), which is the workspace being adopted. Every
+  other row now carries its state, read without changing anything under the desk: `clean`, `dirty N`,
+  `ahead N`, `stash N` (or a mix of those), `missing`, `no-checkout` or `unreadable`, and the next step.
+  `convert-clone` is named only where it will not refuse: a dirty desk says to commit or stash first, an
+  ahead desk says to push first (a converted clone is the only copy of those commits), a stash says it stays
+  in the root repository and reaches the clone only by `git stash apply`, a commit, then convert-clone, a detached HEAD says to check out a branch, and a symlinked `.git` or a
+  submodule member says there is nothing to convert. A git read that fails is `unreadable`, never `clean`.
+  Control characters in a printed path are escaped, and no next step advises deleting work. `ahead` is the count before any conversion. The summary
+  JSON rows carry the same `state` and `next`.
 
 ### Fixed
 

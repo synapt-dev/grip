@@ -152,7 +152,7 @@ def test_a_dirty_desk_reads_dirty_n_and_says_commit_or_stash_before_converting(t
     (desk / "alpha" / "scratch.txt").write_text("untracked\n")       # an untracked file
     row = _row(migrate_gr1_workspace(root), "dirtydesk")
     assert row["state"] == "dirty 2", row
-    assert "commit or stash" in row["next"], row
+    assert "commit it first" in row["next"] and "or stash" not in row["next"], row
     # convert-clone REFUSES a dirty tree, so the row must not offer it as the immediate step
     assert not row["next"].startswith("gr2 workspace convert-clone"), row
 
@@ -192,7 +192,7 @@ def test_an_ahead_and_dirty_desk_reports_both_in_a_fixed_order(tmp_path: Path) -
     (desk / "alpha" / "README.md").write_text("alpha v1\nedited\n")
     row = _row(migrate_gr1_workspace(root), "both")
     assert row["state"] == "dirty 1, ahead 1", row
-    assert "commit or stash" in row["next"], row
+    assert "commit it first" in row["next"] and "or stash" not in row["next"], row
 
 
 def test_a_detached_head_desk_says_to_check_out_a_branch_before_converting(tmp_path: Path) -> None:
@@ -349,6 +349,46 @@ def test_twin_apply_without_commit_is_refused_by_convert_clone(tmp_path: Path) -
     _git(checkout, "stash", "apply", "-q")
     with pytest.raises(repo_proto.ConvertCloneError, match="dirty"):
         repo_proto.convert_worktree_to_clone(checkout)
+
+
+def test_stashing_a_dirty_desk_converts_but_leaves_the_work_behind_so_the_row_says_commit(tmp_path: Path) -> None:
+    """Why the dirty clause says `commit` and not `commit or stash`: stash makes convert-clone accept the tree,
+    and the stashed work is then not in the clone. Both halves through the real verb."""
+    from gr2.prototypes import repo_maintenance_prototype as repo_proto
+
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    # commit: the work is the clone's HEAD
+    root, alpha = _gripspace(tmp_path / "a", _agents(dirtydesk="ws-dirty"))
+    desk = _linked_desk(tmp_path / "a", alpha, "ws-dirty")
+    (desk / "alpha" / "README.md").write_text("alpha v1\nthe work\n")
+    assert "commit it first" in _row(migrate_gr1_workspace(root), "dirtydesk")["next"]
+    _git(desk / "alpha", "add", "-A")
+    _git(desk / "alpha", "commit", "-qm", "the work")
+    repo_proto.convert_worktree_to_clone(desk / "alpha")
+    assert "the work" in (desk / "alpha" / "README.md").read_text()
+
+    # stash: it converts, and the work did not come with it
+    root2, alpha2 = _gripspace(tmp_path / "b", _agents(dirtydesk="ws-dirty"))
+    desk2 = _linked_desk(tmp_path / "b", alpha2, "ws-dirty")
+    (desk2 / "alpha" / "README.md").write_text("alpha v1\nthe work\n")
+    _git(desk2 / "alpha", "stash", "push", "-q")
+    repo_proto.convert_worktree_to_clone(desk2 / "alpha")
+    assert "the work" not in (desk2 / "alpha" / "README.md").read_text()
+    assert _git(desk2 / "alpha", "stash", "list") == ""  # nothing carried
+
+
+def test_a_dirty_desk_that_also_has_a_stash_says_commit_first_not_stash(tmp_path: Path) -> None:
+    root, alpha = _gripspace(tmp_path, _agents(both="ws-both"))
+    desk = _linked_desk(tmp_path, alpha, "ws-both")
+    (desk / "alpha" / "README.md").write_text("alpha v1\nstashed\n")
+    _git(desk / "alpha", "stash", "push", "-q")
+    (desk / "alpha" / "README.md").write_text("alpha v1\nedited\n")
+    row = _row(migrate_gr1_workspace(root), "both")
+    assert row["state"] == "dirty 1, stash 1", row
+    assert "commit it first" in row["next"] and "or stash" not in row["next"], row
+    assert row["next"].index("commit it first") < row["next"].index("git stash apply"), row
+    assert "does not travel to the clone" in row["next"], row
 
 
 def test_linked_checkouts_of_one_repo_count_its_stash_once(tmp_path: Path) -> None:

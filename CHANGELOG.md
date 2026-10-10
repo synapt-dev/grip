@@ -76,6 +76,15 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   regardless of branch, and `--repo manifest` now selects the manifest. A
   manifest with uncommitted changes but no commits ahead is no longer PR
   content.
+- **`gr2`: `workspace convert-clone` keeps an unpushed commit reading as unpushed.** The new clone's
+  remote-tracking refs were copied from the owner repository's branches while the real origin URL was restored,
+  so a commit that existed only in the owner read as already pushed: a desk that was "ahead 1" as a worktree
+  read 0 after conversion, and the clone was that commit's only copy. The clone now takes the owner's own
+  `refs/remotes/origin/*` (the refs the worktree was reading), from the owner and without the network, with
+  its `origin/HEAD` kept as a symbolic ref, so while `origin` is the only remote the count is the same before
+  and after. A commit known only to a second remote reads unpushed on the clone, which has `origin` alone. A
+  repository that had no origin keeps no origin refs, and a failed read of the owner's refs refuses the
+  conversion before anything is swapped.
 
 ## [gr2 2.0.0a8] - 2026-10-09
 

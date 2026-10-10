@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import subprocess
 from pathlib import Path
 
 from tests.test_store_git_native_smoke import configure_identity, git, gr2, make_member, run
@@ -169,6 +171,25 @@ def test_a_member_detached_after_a_recursive_clone_folds_the_same_way(tmp_path: 
     result = git(root, "commit", "-m", "alpha moved, detached", check=False)
 
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert _toml_pin(root, "alpha") == new
+
+
+def test_a_commit_run_with_git_dir_in_the_environment_still_measures_the_member(tmp_path: Path) -> None:
+    """`git --git-dir=<root>/.git --work-tree=<root> commit` hands the hook GIT_DIR and GIT_WORK_TREE. The
+    engine's `git -C <member>` calls would then aim at the ROOT repository, find no such commit there, and
+    refuse a pin that IS on its origin. The hook removes those variables before it measures a member."""
+    root = _store(tmp_path)
+    new = _advance(root, "alpha", push=True)
+    git(root, "add", "alpha")
+
+    env = {**os.environ, "GIT_DIR": str(root / ".git"), "GIT_WORK_TREE": str(root)}
+    result = subprocess.run(
+        ["git", "commit", "-m", "alpha moved, committed with GIT_DIR set"],
+        cwd=root, env=env, text=True, capture_output=True,
+    )
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert _gitlink(root, "alpha") == new
     assert _toml_pin(root, "alpha") == new
 
 

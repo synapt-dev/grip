@@ -7,10 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-These are gr1 changes, for the next `v1.x` patch release; the gr2 changes are in `[gr2 2.0.0a8]` below.
+Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for the next `v1.x` patch release. The gr2 changes already released are in `[gr2 2.0.0a8]` below.
 
 ### Added
 
+- **`gr2`: `[[files.compose]]` writes one file from ordered parts.** A member's `.gr2/hooks.toml` can name a
+  `dest` and a list of `parts`, all paths inside the member's own tree. With `format = "text"` (the default) the
+  parts are joined with `separator` (default a blank line, as gr1's composefile). With `format = "json"` every
+  part must be a JSON object and the parts are merged in order: objects merge, a scalar from a later part
+  replaces an earlier one, and arrays are appended in part order with no dedupe, so a later part can add to a
+  shared list and cannot remove from it. A part that is not a JSON object, does not parse, or changes the kind
+  of a shared value refuses the whole compose and writes nothing. It uses the same consent record and
+  confinement as `[[files.copy]]` and `[[files.link]]`; the part list is part of the hooks text, so changing it
+  lapses consent. Parts come from the member only.
 - **`gr spawn up` interactive fallback.** When tmux is not installed (native
   Windows, a bare container) or `--interactive` is passed, one named agent runs
   in the foreground of the current terminal with the same command, cwd, env, and

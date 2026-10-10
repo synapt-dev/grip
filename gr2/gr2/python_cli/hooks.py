@@ -26,6 +26,29 @@ class FileProjection:
     if_exists: str = "error"
 
 
+VALID_COMPOSE_FORMATS = {"text", "json"}
+
+
+@dataclasses.dataclass(frozen=True)
+class FileCompose:
+    """One [[files.compose]] row: ordered member-local parts written to one dest.
+
+    format "text" concatenates the parts with `separator`; format "json"
+    parses every part as a JSON object and deep-merges them in order.
+    """
+
+    dest: str
+    parts: tuple[str, ...]
+    format: str = "text"
+    separator: str = "\n\n"
+    if_exists: str = "error"
+    kind: str = "compose"
+
+    @property
+    def src(self) -> str:
+        return ", ".join(self.parts)
+
+
 @dataclasses.dataclass(frozen=True)
 class LifecycleHook:
     stage: str
@@ -51,6 +74,7 @@ class RepoHooks:
     # the table arrives pre-consented from whoever authored it and must
     # never bind — it is collected here, ignored, and REPORTED.
     ignored_consent_keys: list[str] = dataclasses.field(default_factory=list)
+    file_composes: list[FileCompose] = dataclasses.field(default_factory=list)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -60,6 +84,7 @@ class RepoHooks:
             "files": {
                 "link": [dataclasses.asdict(item) for item in self.file_links],
                 "copy": [dataclasses.asdict(item) for item in self.file_copies],
+                "compose": [dataclasses.asdict(item) for item in self.file_composes],
             },
             "lifecycle": {
                 "on_materialize": [dataclasses.asdict(item) for item in self.on_materialize],
@@ -146,6 +171,7 @@ def load_repo_hooks(repo_root: Path) -> RepoHooks | None:
         policy=dict(raw.get("policy", {})),
         path=path,
         ignored_consent_keys=ignored,
+        file_composes=_parse_composes(raw),
     )
 
 
@@ -161,6 +187,39 @@ def _parse_projections(raw: dict, kind: str) -> list[FileProjection]:
                 kind=kind,
                 src=str(item["src"]),
                 dest=str(item["dest"]),
+                if_exists=if_exists,
+            )
+        )
+    return results
+
+
+def _parse_composes(raw: dict) -> list[FileCompose]:
+    items = raw.get("files", {}).get("compose", [])
+    results: list[FileCompose] = []
+    for item in items:
+        fmt = str(item.get("format", "text"))
+        if fmt not in VALID_COMPOSE_FORMATS:
+            raise SystemExit(f"invalid format={fmt} in compose projection")
+        if "separator" in item and fmt == "json":
+            raise SystemExit("separator is not accepted with format=json in a compose projection")
+        if_exists = str(item.get("if_exists", "error"))
+        if if_exists not in VALID_IF_EXISTS:
+            raise SystemExit(f"invalid if_exists={if_exists} in compose projection")
+        parts = item.get("parts")
+        if (
+            not isinstance(parts, list)
+            or not parts
+            or not all(isinstance(part, str) and part for part in parts)
+        ):
+            raise SystemExit("a compose projection needs parts = [<member-relative path>, ...], at least one")
+        if "dest" not in item:
+            raise SystemExit("a compose projection needs a dest")
+        results.append(
+            FileCompose(
+                dest=str(item["dest"]),
+                parts=tuple(parts),
+                format=fmt,
+                separator=str(item.get("separator", "\n\n")),
                 if_exists=if_exists,
             )
         )
@@ -254,7 +313,7 @@ def apply_file_projections(hooks: RepoHooks, ctx: HookContext, *, gate: tuple[st
         # SKIP AND REPORT, like the lifecycle gate; nothing is written. A
         # bound-with-pending gate falls through and runs.
         key, state, record = gate[0], gate[1], gate[2]
-        items = [*hooks.file_links, *hooks.file_copies]
+        items = [*hooks.file_links, *hooks.file_copies, *hooks.file_composes]
         results: list[HookResult] = [
             HookResult(
                 kind="projection",
@@ -434,7 +493,234 @@ def apply_file_projections(hooks: RepoHooks, ctx: HookContext, *, gate: tuple[st
                 if_exists=item.if_exists,
             )
         )
+    for compose in hooks.file_composes:
+        results.append(_apply_compose(hooks, ctx, compose))
     return results
+
+
+def _json_merge(base: object, extra: object, path: str, part: str) -> object:
+    """Deep merge for format=json. Objects merge recursively, scalars are
+    replaced by the later part, arrays are APPENDED in part order (no dedupe):
+    a later part can add to a shared guard list and never remove from it.
+    A kind change (object/array/scalar/null) refuses, because a null or a
+    scalar over a shared array would otherwise drop it silently."""
+    if isinstance(base, dict) and isinstance(extra, dict):
+        merged = dict(base)
+        for key, value in extra.items():
+            merged[key] = (
+                _json_merge(base[key], value, f"{path}.{key}" if path else key, part)
+                if key in base
+                else value
+            )
+        return merged
+    if isinstance(base, list) and isinstance(extra, list):
+        return [*base, *extra]
+    kinds = {
+        bool: "scalar", int: "scalar", float: "scalar", str: "scalar",
+        dict: "object", list: "array", type(None): "null",
+    }
+    base_kind, extra_kind = kinds[type(base)], kinds[type(extra)]
+    if base_kind in ("object", "array", "null") or extra_kind in ("object", "array", "null"):
+        if base_kind != extra_kind:
+            raise ValueError(
+                f"part {part} gives {path or '<root>'} as {extra_kind} where an earlier part gave {base_kind}"
+            )
+    return extra
+
+
+def _same_file(left: Path, right: Path) -> bool:
+    """True when both paths resolve to the same file (symlinks followed)."""
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return False
+
+
+def _json_no_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    seen: dict[str, object] = {}
+    for key, value in pairs:
+        if key in seen:
+            raise ValueError(f"duplicate key {key!r}")
+        seen[key] = value
+    return seen
+
+
+def _json_refuse_constant(name: str) -> object:
+    # NaN, Infinity and -Infinity parse in Python and are written back out as
+    # non-JSON; a settings file with one is not a settings file.
+    raise ValueError(f"{name} is not valid JSON")
+
+
+def _short(exc: BaseException) -> str:
+    """One line of a parser's error text, bounded."""
+    text = " ".join(str(exc).split())
+    return text[:160] or type(exc).__name__
+
+
+def _compose_refusal(hooks: RepoHooks, compose: FileCompose, status: str, detail: str, dest: object) -> HookRuntimeError:
+    return HookRuntimeError(
+        {
+            "kind": "projection",
+            "projection": "compose",
+            "status": status,
+            "detail": detail,
+            "repo_hooks_path": str(hooks.path),
+            "src": compose.src,
+            "dest": str(dest),
+            "if_exists": compose.if_exists,
+        }
+    )
+
+
+def _apply_compose(hooks: RepoHooks, ctx: HookContext, compose: FileCompose) -> HookResult:
+    """Write one composed file. Everything is read, checked and built before
+    the dest is touched, so a refusal writes nothing."""
+    repo = ctx.repo_root.resolve()
+    part_paths: list[tuple[str, Path]] = []
+    for part in compose.parts:
+        src = Path(render_text(part, ctx))
+        if not src.is_absolute():
+            src = ctx.repo_root / src
+        if not src.resolve().is_relative_to(repo):
+            raise _compose_refusal(
+                hooks,
+                compose,
+                "refused",
+                f"confinement: compose part {part} resolves outside the member's own tree",
+                compose.dest,
+            )
+        part_paths.append((part, src))
+    dest = render_path(compose.dest, ctx)
+    violations = _consent_violations(compose.dest, ctx, rendered=str(dest), kind="compose")
+    if violations:
+        raise _compose_refusal(hooks, compose, "refused", "confinement: " + "; ".join(violations), dest)
+    for part, src in part_paths:
+        if not src.is_file():
+            raise _compose_refusal(
+                hooks, compose, "blocked", f"compose part does not exist: {part}", dest
+            )
+        # A dest that IS one of its own parts would be read, then rewritten,
+        # and grow on every run ("A\n\nB" becomes "A\n\nB\n\nB").
+        if _same_file(src, dest):
+            raise _compose_refusal(
+                hooks, compose, "refused", f"compose dest is one of its own parts: {part}", dest
+            )
+    texts: list[tuple[str, str]] = []
+    for part, src in part_paths:
+        try:
+            texts.append((part, src.read_text(encoding="utf-8")))
+        except UnicodeDecodeError:
+            raise _compose_refusal(
+                hooks, compose, "refused", f"compose part {part} is not valid UTF-8 text", dest
+            ) from None
+    if compose.format == "json":
+        merged: object = None
+        for index, (part, text) in enumerate(texts):
+            try:
+                doc = json.loads(text, object_pairs_hook=_json_no_duplicate_keys, parse_constant=_json_refuse_constant)
+            except (ValueError, RecursionError) as exc:
+                raise _compose_refusal(
+                    hooks, compose, "refused", f"compose part {part} is not valid JSON: {_short(exc)}", dest
+                ) from None
+            if not isinstance(doc, dict):
+                raise _compose_refusal(
+                    hooks, compose, "refused", f"compose part {part} is not a JSON object", dest
+                )
+            # Each part must be writable as JSON text BY ITSELF, so the
+            # refusal can name it: a number that overflows (1e999) parses to
+            # inf without reaching parse_constant, and a lone surrogate escape
+            # ("\ud800") parses and cannot be encoded as UTF-8.
+            try:
+                json.dumps(doc, ensure_ascii=False, allow_nan=False).encode("utf-8")
+            except (ValueError, RecursionError) as exc:
+                raise _compose_refusal(
+                    hooks,
+                    compose,
+                    "refused",
+                    f"compose part {part} is not writable as UTF-8 JSON text: {_short(exc)}",
+                    dest,
+                ) from None
+            if index == 0:
+                merged = doc
+                continue
+            try:
+                merged = _json_merge(merged, doc, "", part)
+            except RecursionError as exc:
+                raise _compose_refusal(
+                    hooks, compose, "refused", f"compose part {part} is nested too deeply to merge", dest
+                ) from None
+            except ValueError as exc:
+                raise _compose_refusal(hooks, compose, "refused", str(exc), dest) from None
+        try:
+            body = json.dumps(merged, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+        except (ValueError, RecursionError) as exc:
+            raise _compose_refusal(
+                hooks, compose, "refused", f"composed JSON is not writable as UTF-8 JSON text: {_short(exc)}", dest
+            ) from None
+    else:
+        body = compose.separator.join(text for _, text in texts)
+    # Encode BEFORE the dest is touched: a lone surrogate escape ("\ud800") is
+    # valid to the JSON parser and unencodable as UTF-8, and the write must not
+    # have emptied or replaced the dest by the time that is found out.
+    try:
+        payload = body.encode("utf-8")
+    except UnicodeEncodeError:
+        raise _compose_refusal(
+            hooks, compose, "refused", "composed text is not encodable as UTF-8 (lone surrogate)", dest
+        ) from None
+
+    if dest.is_relative_to(ctx.repo_root):
+        tracked = gitops.run_argv(
+            ["git", "-C", str(ctx.repo_root), "ls-files", "--error-unmatch", str(dest.relative_to(ctx.repo_root))],
+            binary=True,
+        )
+        if tracked.returncode == 0:
+            return HookResult(
+                kind="projection",
+                name=f"compose:{dest.name}",
+                status="skipped",
+                detail="destination is tracked by the repo; projections never modify tracked paths",
+                src=compose.src,
+                dest=str(dest),
+                if_exists=compose.if_exists,
+            )
+    if dest.exists() or dest.is_symlink():
+        if compose.if_exists == "skip":
+            return HookResult(
+                kind="projection",
+                name=f"compose:{dest.name}",
+                status="skipped",
+                detail=f"destination already exists and if_exists=skip: {dest}",
+                src=compose.src,
+                dest=str(dest),
+                if_exists=compose.if_exists,
+            )
+        if compose.if_exists in ("error", "merge"):
+            raise _compose_refusal(
+                hooks,
+                compose,
+                "blocked",
+                f"projection conflict at {dest}"
+                if compose.if_exists == "error"
+                else f"merge projections not implemented yet for {dest}",
+                dest,
+            )
+        if dest.is_dir() and not dest.is_symlink():
+            raise _compose_refusal(
+                hooks, compose, "blocked", f"refusing to overwrite directory projection target: {dest}", dest
+            )
+        dest.unlink(missing_ok=True)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(payload)
+    return HookResult(
+        kind="projection",
+        name=f"compose:{dest.name}",
+        status="applied",
+        detail=f"compose {len(texts)} part(s) as {compose.format} -> {dest}",
+        src=compose.src,
+        dest=str(dest),
+        if_exists=compose.if_exists,
+    )
 
 
 def run_materialize_hook_block(

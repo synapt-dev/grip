@@ -7,10 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-These are gr1 changes, for the next `v1.x` patch release; the gr2 changes are in `[gr2 Unreleased]` below.
+Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for the next `v1.x` patch release. The gr2 changes already released are in `[gr2 2.0.0a8]` below.
 
 ### Added
 
+- **`gr2`: `[[files.compose]]` writes one file from ordered parts.** A member's `.gr2/hooks.toml` can name a
+  `dest` (a path inside the workspace, like a copy or link `dest`) and a list of `parts`, each a path inside the
+  member's own tree. With `format = "text"` (the default) the parts are joined with `separator` (default a blank
+  line, as gr1's composefile). With `format = "json"` every part must be a JSON object and the parts are merged
+  in order: objects merge, a scalar from a later part replaces an earlier one, and arrays are appended in part
+  order with no dedupe, so a later part can add to a shared list and cannot remove from it. A part that is not
+  UTF-8 text, is not a JSON object, does not parse (`NaN`, `Infinity` and an overflowing number included), nests too deeply, repeats a key, cannot be
+  written as UTF-8, or changes the kind of a shared value refuses
+  the whole compose and writes nothing, as does a `dest` that is one of its own parts. It uses the same consent
+  record and confinement as `[[files.copy]]` and `[[files.link]]`; the part list is part of the hooks text, so
+  changing it lapses consent. Parts come from the member only.
 - **`gr spawn up` interactive fallback.** When tmux is not installed (native
   Windows, a bare container) or `--interactive` is passed, one named agent runs
   in the foreground of the current terminal with the same command, cwd, env, and
@@ -25,6 +36,12 @@ These are gr1 changes, for the next `v1.x` patch release; the gr2 changes are in
 
 ### Changed
 
+- **`gr2`: review refusals name the next command.** `gr2 review merge` adds a `next` line to a refused member's
+  receipt row for an unpublished review (`gr2 review publish ...`), a missing check (`gr2 check run ...`),
+  too few approvals, a failed check, and a moved head or base. `gr2 review stamp` refused as the author says a
+  different approver stamps, and `gr2 review pin` refused for a head already on the remote names the
+  `--ratified` path or a new head. `gr2 review --help` lists the six review steps in order. Behaviour is
+  unchanged; only the refusal text and help are new.
 - **With only gr1 installed, `gr` runs gr1.** Outside any workspace with gr2 not installed, the `gr` in the
   gr1 binary runs gr1 and prints one line naming the gr2 install; a gr2 workspace with gr2 missing still
   refuses with exit 69. `gr --which` reports what a plain run would run.
@@ -48,17 +65,6 @@ These are gr1 changes, for the next `v1.x` patch release; the gr2 changes are in
   regardless of branch, and `--repo manifest` now selects the manifest. A
   manifest with uncommitted changes but no commits ahead is no longer PR
   content.
-
-## [gr2 Unreleased]
-
-### Changed
-
-- **Review refusals name the next command.** `gr2 review merge` adds a `next` line to a refused member's
-  receipt row for an unpublished review (`gr2 review publish ...`), a missing check (`gr2 check run ...`),
-  too few approvals, a failed check, and a moved head or base. `gr2 review stamp` refused as the author says a
-  different approver stamps, and `gr2 review pin` refused for a head already on the remote names the
-  `--ratified` path or a new head. `gr2 review --help` lists the six review steps in order. Behaviour is
-  unchanged; only the refusal text and help are new.
 
 ## [gr2 2.0.0a8] - 2026-10-09
 

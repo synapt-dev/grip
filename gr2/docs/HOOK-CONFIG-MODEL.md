@@ -155,6 +155,43 @@ allow_lane_kinds = ["feature", "review"]
 preferred_exec = ["pytest -q"]
 ```
 
+### 3.0.1 `[[files.compose]]`
+
+One file written from ordered, member-local parts (gr1's composefile):
+
+```toml
+[[files.compose]]
+dest = "{workspace_root}/settings.json"
+format = "json"                # "text" (default) or "json"
+parts = ["settings.shared.json", "settings.seat-lumen.json"]
+if_exists = "overwrite"
+
+[[files.compose]]
+dest = "{workspace_root}/CLAUDE.md"
+parts = ["CLAUDE.shared.md", "CLAUDE.seat-lumen.md"]
+separator = "\n\n"            # text only; default "\n\n"
+```
+
+- Every part is a path inside the member's own tree; a part that resolves
+  outside it is refused even when consent is granted, and a missing part
+  blocks. The dest has the same confinement and consent as copy and link, and
+  the part list is part of the hooks text, so changing it lapses consent.
+- `format = "text"` joins the parts with `separator`.
+- `format = "json"` parses every part as a JSON object and merges them in
+  order: objects merge recursively, scalars are replaced by the later part,
+  and **arrays are appended in part order, with no dedupe**. A later part can
+  add to an earlier part's list and cannot remove from it, which is the point
+  for shared guard lists. A part that changes the kind of a shared value (an
+  array replaced by `null`, a string, or an object) is refused. A part that is
+  not a JSON object, or does not parse, refuses the whole compose and writes
+  nothing, as does a part that is not UTF-8 text or a JSON part that repeats
+  a key or carries `NaN`/`Infinity`. A `dest` that resolves to one of its own parts is refused (it would
+  grow on every run). `separator` is rejected with `format = "json"`. Output is two-space
+  indented in first-appearance key order with a trailing newline, so a re-run
+  is byte-identical.
+- Parts come from the member only; reading another member's tree is not
+  supported.
+
 ### 3.1 Supported Sections
 
 Initial sections:
@@ -162,6 +199,7 @@ Initial sections:
 - `[repo]`
 - `[[files.link]]`
 - `[[files.copy]]`
+- `[[files.compose]]`
 - `[[lifecycle.on_materialize]]`
 - `[[lifecycle.on_enter]]`
 - `[[lifecycle.on_exit]]`

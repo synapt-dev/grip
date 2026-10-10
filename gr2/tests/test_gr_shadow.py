@@ -33,6 +33,9 @@ def install(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", os.pathsep.join([str(brew), str(ours), "/usr/bin", "/bin"]))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))  # never the real home
     monkeypatch.delenv("GR2_QUIET_CONTEXT", raising=False)
+    # A fresh stub on a busy host can take longer than the 2 s product bound to answer; the tests
+    # judge the answer, not the host's speed, so a slow start must not read as a timeout.
+    monkeypatch.setattr(gr_shadow, "_VERSION_TIMEOUT_S", 30)
     return prefix, gr2, brew
 
 
@@ -112,6 +115,7 @@ def test_a_timeout_is_not_a_verdict_and_is_judged_again(install, monkeypatch):
     monkeypatch.setenv("PATH", os.pathsep.join([str(brew), str(prefix / "bin"), "/usr/bin", "/bin"]))
     monkeypatch.setenv("XDG_STATE_HOME", str(prefix.parent / "state"))
     monkeypatch.delenv("GR2_QUIET_CONTEXT", raising=False)
+    monkeypatch.setattr(gr_shadow, "_VERSION_TIMEOUT_S", 30)
     assert gr.exists() and shadow_line([], str(gr2), str(prefix)) is not None
 
 

@@ -204,3 +204,67 @@ def test_a_lane_whose_checkout_escapes_the_workspace_by_symlink_is_not_removed(t
     assert "lane_path_escapes_workspace" in result.output, result.output
     assert (outside / "repos" / "app" / ".git").exists(), "nothing outside was touched"
     assert lane_proto.lane_file(ws, "atlas", "x").is_file(), "the lane record is untouched"
+
+
+def test_a_git_repo_under_the_checkout_root_that_is_not_a_listed_repo_is_not_removed(tmp_path: Path) -> None:
+    """The removal reaches the whole checkout root, so the check must too: an extra repo there can hold the only copy."""
+    ws, repo = _pushed_exited_lane(tmp_path)
+    extra = lane_proto.lane_checkout_root(ws, "atlas", "x") / "scratch"
+    extra.mkdir()
+    _git(extra, "init", "-q")
+    _git(extra, "config", "user.email", "t@e.invalid")
+    _git(extra, "config", "user.name", "t")
+    (extra / "only-copy.txt").write_text("exists nowhere else\n")
+    _git(extra, "add", ".")
+    _git(extra, "commit", "-q", "-m", "only copy")
+    only = _git(extra, "rev-parse", "HEAD")
+
+    _refused_untouched(ws, repo, _remove(ws), "lane_has_unlisted_content", "scratch")
+    assert _git(extra, "rev-parse", "HEAD") == only
+
+
+def test_a_file_beside_the_listed_repos_is_named_and_not_removed(tmp_path: Path) -> None:
+    ws, repo = _pushed_exited_lane(tmp_path)
+    stray = lane_proto.lane_checkout_root(ws, "atlas", "x") / "repos" / "notes.md"
+    stray.write_text("written in the lane, outside any repo\n")
+    _refused_untouched(ws, repo, _remove(ws), "lane_has_unlisted_content", "notes.md")
+    assert stray.is_file()
+
+
+def test_a_commit_reachable_only_from_a_local_tag_is_not_removed(tmp_path: Path) -> None:
+    ws, repo = _pushed_exited_lane(tmp_path)
+    _git(repo, "checkout", "-q", "--detach")
+    (repo / "t.txt").write_text("tagged only\n")
+    _git(repo, "add", "t.txt")
+    _git(repo, "commit", "-q", "-m", "tagged only")
+    tagged = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "tag", "keep-me")
+    _git(repo, "checkout", "-q", "feat/x")
+    assert _git(repo, "log", "HEAD", "--branches", "--not", "--remotes", "--format=%H") == "", "branches alone look pushed"
+    _refused_untouched(ws, repo, _remove(ws), "lane_has_unpushed_commit", tagged[:12])
+
+
+def _legacy_lane(tmp_path: Path) -> tuple[Path, Path]:
+    """A lane with no recorded checkout_root: its clones live in the record directory beside lane.toml."""
+    ws, _ = _pushed_exited_lane(tmp_path)
+    checkout = lane_proto.lane_checkout_root(ws, "atlas", "x")
+    record = lane_proto.lane_dir(ws, "atlas", "x")
+    (checkout / "repos").rename(record / "repos")
+    doc = lane_proto.lane_file(ws, "atlas", "x")
+    doc.write_text("".join(line for line in doc.read_text().splitlines(keepends=True) if not line.startswith("checkout_root")))
+    assert lane_proto.lane_checkout_root(ws, "atlas", "x").resolve() == record.resolve()
+    return ws, record / "repos" / "app"
+
+
+def test_a_lane_whose_clones_live_in_its_record_directory_is_removed(tmp_path: Path) -> None:
+    ws, repo = _legacy_lane(tmp_path)
+    result = _remove(ws)
+    assert result.exit_code == 0, result.output
+    assert not repo.exists() and not lane_proto.lane_file(ws, "atlas", "x").exists()
+
+
+def test_a_stray_file_in_a_record_directory_lane_is_still_named(tmp_path: Path) -> None:
+    ws, repo = _legacy_lane(tmp_path)
+    stray = lane_proto.lane_dir(ws, "atlas", "x") / "notes.md"
+    stray.write_text("not a record file\n")
+    _refused_untouched(ws, repo, _remove(ws), "lane_has_unlisted_content", "notes.md")

@@ -69,7 +69,7 @@ gr2 lane list ~/ws                                         # each lane: removabl
 gr2 lane remove ~/ws default feat-x                        # end it: its clones and record go
 ```
 
-`lane remove` refuses while the lane is entered or leased, or was made by `lane bind`, or while any of its repos holds uncommitted work, a stash, or a commit no remote has; it names each one and removes nothing. `exec run` and `lane exit` require `--actor`. Every group and verb takes `--help`; `gr2 --help` lists them all.
+`lane remove` refuses while the lane is entered or leased, or was made by `lane bind`, while any of its repos holds uncommitted work, a stash, or a commit no remote has (on any branch or tag), or while its checkout holds anything that is not one of its repos; it names each one and removes nothing. `exec run` and `lane exit` require `--actor`. Every group and verb takes `--help`; `gr2 --help` lists them all.
 
 ## What works today, and what is not there yet
 

@@ -8,7 +8,7 @@ A unit of work with its own checkout. Create it, enter it to work, exit it to pu
 
 Command: `gr2 lane create`, `gr2 lane enter`, `gr2 lane exit`, `gr2 lane remove`, `gr2 lane list`.
 
-`lane remove` refuses while any of the lane's repos holds work that exists nowhere else: uncommitted changes, a stash, or a commit no remote has. `lane list` marks each lane removable or keep, with every reason.
+`lane remove` refuses while the lane holds work found nowhere else: uncommitted changes, a stash, an unpushed commit, or anything in its checkout that is not one of its repos. `lane list` marks each lane removable or keep.
 
 ## pin
 

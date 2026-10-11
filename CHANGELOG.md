@@ -22,9 +22,20 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   merging workspace's committed `grip.toml`, requires a passing record whose root commit pins every member and pins this
   review's member at this review's head, and refuses a record made for a different member list, so an edited set does
   not ride an old record. A member in no set merges as before. `store commit` now keeps hand-written `[[sets]]` tables
-  when it regenerates `grip.toml`; it dropped them before. Known limit: one review cannot see the other members'
-  reviews, so the gate does not yet check that the other members' pins are heads under review or already merged. Adds
-  two flags to `check set` (`--root-commit`, `--set`); no change to existing forms.
+  when it regenerates `grip.toml`; it dropped them before. Adds two flags to `check set` (`--root-commit`, `--set`); no
+  change to existing forms.
+- **`gr2`: a declared set's other members must be pinned at a head somebody reviewed or merged, and a `mode = "full"`
+  workspace is refused by name.** The set record vouches for the pins a root commit records, but in a compat workspace
+  that commit holds a gitlink and not the member's content, so a member pinned at a commit that exists only in a clone,
+  or was pushed and never read, let another member's merge proceed. `review merge` now also requires, for every other
+  member of the set, that the pin is already merged, on that member's remote, into the branch this merge targets
+  (`--into`, `main` by default), or that a review published on that remote names the member at exactly that head; a commit that merely exists remotely is refused too, as
+  `declared_set_pin_unreviewed`, and a pin whose remote cannot be read is refused as `declared_set_pin_unmeasured`
+  (a remote advertising more than 200 reviews is one of those, never a silent partial read). The set check and the
+  gate also read `mode` from `grip.toml` and refuse `declared_set_mode_full` when it says `full`, because a full-mode
+  member entry points at a field record and not a member commit, and this reader would take its id for a pin; a `mode`
+  that is neither `compat` nor `full` is an invalid declaration. Compat only: judging a layered pin in full mode waits
+  for the full-mode record. No new flags or verbs.
 - **`gr2`: a native store writes `.gitmodules` from `grip.toml`, so `git clone --recurse-submodules` fills every member at
   its pin.** Before this, a store recorded each member as a gitlink and its origin only in `grip.toml`, so a recursive
   clone exited 0 and left every member directory empty, because git learns where a gitlink comes from only through

@@ -183,6 +183,8 @@ def run_declared_set_check(workspace: Path, set_name: str, root_commit: str, arg
     if dset is None:
         raise check_records.CheckRefused(
             f"declared_set_unknown: {set_name!r} is not declared at {commit[:12]}; declared: {[s.name for s in declaration.sets]}")
+    if (full := declared_sets.mode_refusal(declaration)):
+        raise check_records.CheckRefused(full)
     pins, missing = declared_sets.gitlinks(root, commit, declaration, dset)
     if missing:
         raise check_records.CheckRefused(

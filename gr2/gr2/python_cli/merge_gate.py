@@ -77,6 +77,50 @@ def _state(repo: Path, remote: str, into: str, head: str) -> tuple[str, str | No
     return ("merged", merged) if merged else ("unmerged", None)
 
 
+_REVIEW_REF_PREFIX = "refs/dev.synapt.grip/__reviews__/"
+_REVIEW_SCAN_CAP = 200  # reviews read per member remote; over it is a named refusal, never a silent partial read
+
+
+def _pin_tie(root: Path, declaration: declared_sets.Declaration, into: str):
+    """The tie for the OTHER members of a declared set: `tie(member, pin)` returns None when that pin is merged into
+    the member's target on its remote, or when a review published on that remote names the member at exactly that
+    head; otherwise the named refusal.
+
+    The set record vouches for the pins a root commit records, but in a compat workspace that commit holds a gitlink,
+    not the member's content, so a pin that exists only in a clone, or was pushed and never read, passes the record
+    without anyone having read it. Reviewed means a published review names this head, not that the commit exists."""
+    def tie(name: str, pin: str) -> str | None:
+        info = declaration.members[name]
+        repo, remote, short = (root / info["path"]).resolve(), info["remote"], pin[:12]
+        if not remote or not repo.is_relative_to(root) or _toplevel(repo) != repo or not _store_inside(repo, root):
+            return (f"declared_set_pin_unmeasured: {name} has no readable repository and remote here, so its pin "
+                    f"{short} cannot be tied to a merged or reviewed head")
+        try:
+            tip = _remote_tip(repo, remote, into)
+            if tip and gitops.run(repo, "merge-base", "--is-ancestor", pin, tip).returncode == 0:
+                return None
+            refs = [line.split("\t")[1] for line in _git(repo, "ls-remote", remote, f"{_REVIEW_REF_PREFIX}*").splitlines()
+                    if "\t" in line and line.split("\t")[1].startswith(_REVIEW_REF_PREFIX)]
+            if len(refs) > _REVIEW_SCAN_CAP:
+                return (f"declared_set_pin_unmeasured: {name}'s remote advertises {len(refs)} reviews, over the "
+                        f"{_REVIEW_SCAN_CAP} this gate reads; its pin {short} cannot be tied to a reviewed head")
+            for ref in refs:
+                staging = f"refs/dev.synapt.grip/__merge_transfers__/{uuid.uuid4().hex}"
+                try:
+                    _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", remote, f"{ref}:{staging}")
+                    state = grip._read_repo_state(repo, staging, bind=True)
+                finally:
+                    _git(repo, "update-ref", "-d", staging, check=False)
+                for key, fields in state.items():
+                    if fields.get("commit") == pin and declaration.member_name(key, fields.get("path", "")) == name:
+                        return None
+        except (RuntimeError, subprocess.SubprocessError, OSError, grip.GripCorruptError) as exc:
+            return f"declared_set_pin_unmeasured: {name}'s pin {short} could not be read from its remote: {exc}"
+        return (f"declared_set_pin_unreviewed: {name} is pinned at {short}, which is neither merged into {into} nor "
+                f"named by a review published on its remote")
+    return tie
+
+
 def _toplevel(repo: Path) -> Path | None:
     """The worktree git actually selects for repo; a plain directory inherits its enclosing repo."""
     try:
@@ -240,7 +284,8 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                 if declared["status"] == "fail" and declared["reason"] != "required_check_failed":
                     why = f"declared_set_unmeasured: {declared['reason']}"
                 else:
-                    why = declared_sets.judge(root, declaration, dset, member_name, m["head"], declared["records"])
+                    why = declared_sets.judge(root, declaration, dset, member_name, m["head"], declared["records"],
+                                              _pin_tie(root, declaration, into))
                 row["declared_set"] = {"set": dset.name, "refused": why}
                 if why:
                     row["refused"], row["state"] = why, None

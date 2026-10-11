@@ -20,7 +20,7 @@ import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 from . import gitops
 
@@ -42,6 +42,7 @@ class DeclaredSet:
 class Declaration:
     sets: tuple[DeclaredSet, ...]
     members: Mapping[str, Mapping[str, str]]  # name -> {"path": ..., "remote": ...}
+    mode: str = "compat"  # grip.toml `mode`: a full-mode entry is not a member commit, so this reader refuses it by name
 
     def set_named(self, name: str) -> DeclaredSet | None:
         return next((s for s in self.sets if s.name == name), None)
@@ -61,6 +62,9 @@ class Declaration:
 def parse(document: Mapping) -> Declaration:
     """The declaration in a parsed grip.toml document. Refuses at read: a set naming an unknown member, a member in
     two sets (which would leave it unclear which record is required), a repeated or empty set, a malformed entry."""
+    mode = document.get("mode", "compat")
+    if mode not in ("compat", "full"):
+        raise DeclaredSetError(f'mode must be "compat" or "full", got {mode!r}')
     members: dict[str, dict[str, str]] = {}
     for member in document.get("members", []) or []:
         remotes = member.get("remotes", {}) if isinstance(member, Mapping) else {}
@@ -70,7 +74,7 @@ def parse(document: Mapping) -> Declaration:
         members[member["name"]] = {"path": posixpath.normpath(member["path"]), "remote": origin if isinstance(origin, str) else ""}
     raw = document.get("sets", [])
     if raw in (None, []):
-        return Declaration((), members)
+        return Declaration((), members, mode)
     if not isinstance(raw, list):
         raise DeclaredSetError("sets must be an array of [[sets]] tables")
     sets: list[DeclaredSet] = []
@@ -98,7 +102,7 @@ def parse(document: Mapping) -> Declaration:
                 )
             owner[member] = name
         sets.append(DeclaredSet(name, tuple(sorted(listed))))
-    return Declaration(tuple(sets), members)
+    return Declaration(tuple(sets), members, mode)
 
 
 def _blob(root: Path, revision: str) -> str | None:
@@ -135,13 +139,30 @@ def gitlinks(root: Path, revision: str, declaration: Declaration, dset: Declared
     return pins, missing
 
 
+def mode_refusal(declaration: Declaration) -> str | None:
+    """The named refusal for a workspace whose grip.toml says `mode = "full"`, else None.
+
+    A full-mode grip tree keeps a mode-160000 entry per member, but it points at a FIELD-COMMIT, not a member commit.
+    Every reader here takes a 160000 entry for the member's pin, so on a full-mode tree it would compare a field-commit
+    id against a review head and refuse for the wrong reason (or pass a record over ids that are not pins). It refuses
+    by name until a reader that knows the field-tree exists."""
+    if declaration.mode == "full":
+        return ('declared_set_mode_full: grip.toml says mode = "full", where a member entry is a field-commit and not '
+                "a member commit; declared sets are judged in compat mode only")
+    return None
+
+
 def judge(root: Path, declaration: Declaration, dset: DeclaredSet, member: str, head: str,
-          rows: Sequence[Mapping]) -> str | None:
+          rows: Sequence[Mapping], tie: Callable[[str, str], str | None] | None = None) -> str | None:
     """None when a `declared_set` record covers this member at this head, else the named refusal.
 
     Judged against the workspace, never against the record's own claims: the root commit must exist here, pin every
-    member of the set as it is declared NOW, and pin this review's member at this head."""
-    named = [r for r in rows if r.get("name") == DECLARED_SET_CHECK and r.get("set_name") == dset.name]
+    member of the set as it is declared NOW, and pin this review's member at this head. `tie`, when given, is asked
+    about every OTHER member of the set and the head the root commit pins it at (member name, pin), and returns the
+    named refusal for a pin nobody reviewed or merged, else None."""
+    if (full := mode_refusal(declaration)):
+        return full
+    named =[r for r in rows if r.get("name") == DECLARED_SET_CHECK and r.get("set_name") == dset.name]
     if not named:
         return (f"declared_set_absent: {member} belongs to set {dset.name!r}, which needs one record over all of "
                 f"{list(dset.members)}; commit the workspace with every pin, run `check set --root-commit <sha>`, then merge")
@@ -160,7 +181,7 @@ def judge(root: Path, declaration: Declaration, dset: DeclaredSet, member: str, 
             reasons.append(f"declared_set_fail: the set check for {dset.name!r} failed over these same pins at another "
                            f"root commit; a pass at {commit[:12]} does not outvote it, change a pin and run it again")
         else:
-            reasons.append(_judge_one(Path(root), declaration, dset, member, head, group[0]))
+            reasons.append(_judge_one(Path(root), declaration, dset, member, head, group[0], tie))
     return None if None in reasons else reasons[0]
 
 
@@ -170,7 +191,8 @@ def _pins_of(row: Mapping) -> tuple | None:
     return tuple(listed) if isinstance(listed, list) else None
 
 
-def _judge_one(root: Path, declaration: Declaration, dset: DeclaredSet, member: str, head: str, row: Mapping) -> str | None:
+def _judge_one(root: Path, declaration: Declaration, dset: DeclaredSet, member: str, head: str, row: Mapping,
+               tie: Callable[[str, str], str | None] | None = None) -> str | None:
     recorded = row.get("declared_members")
     if not isinstance(recorded, list) or sorted(recorded) != list(dset.members):
         return (f"declared_set_changed: set {dset.name!r} is declared as {list(dset.members)} now and the record "
@@ -188,4 +210,8 @@ def _judge_one(root: Path, declaration: Declaration, dset: DeclaredSet, member: 
     if pins[member] != head:
         return (f"declared_set_head_mismatch: root commit {commit[:12]} pins {member} at {pins[member]}, "
                 f"this review is at {head}")
+    if tie is not None:
+        for other in dset.members:
+            if other != member and (why := tie(other, pins[other])):
+                return why
     return None

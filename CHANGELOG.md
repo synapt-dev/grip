@@ -11,6 +11,10 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Added
 
+- **`gr2`: `api/skill.md` is an agent skill for the review flow generated from gr2's own code.** Each verb's
+  help line, each option with its help and its default, and, for every refusal code gr2 prints, the next step it
+  prints beside it; only the short framing in `api/skill.intro.md` is hand-written. `scripts/dump_skill.py` renders
+  it and `tests/test_skill_dump.py` fails when the committed file no longer matches the code.
 - **`gr2`: a store can declare sets of members that merge together, and `review merge` refuses a member of a declared
   set until one joint check covers the whole set.** Before this, a joint check was required only when a single review
   named more than one member, so five single-member reviews of one change never formed a multi-member review and merge

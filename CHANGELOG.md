@@ -25,6 +25,11 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   not whichever `gr2` is first on `PATH`, and fail closed with a named remedy if it is gone. Hooks are cooperative
   (`--no-verify` skips them) and a plain `git clone` does not copy them; `store init` is what installs them.
   `store commit` is unchanged apart from skipping the hook for its own commit, having run the same checks.
+- **`gr2`: a symlink in a hook slot is another owner's, and `store status` names a hook whose interpreter is gone.**
+  `store init` checked a hook slot with `exists()`, which follows a link and calls a dangling one free, so it wrote
+  its hook over a symlink whose target did not exist. It now leaves a symlink alone and names it, as it does a
+  file, unless the link leads to one of the store's own hooks. `store status` also says when an installed hook records an interpreter that no longer exists, since that hook
+  refuses every git commit or push until `store init` rewrites it.
 - **`gr2`: `[[files.compose]]` writes one file from ordered parts.** A member's `.gr2/hooks.toml` can name a
   `dest` (a path inside the workspace, like a copy or link `dest`) and a list of `parts`, each a path inside the
   member's own tree. With `format = "text"` (the default) the parts are joined with `separator` (default a blank

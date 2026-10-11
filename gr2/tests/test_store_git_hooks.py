@@ -225,6 +225,55 @@ def test_a_foreign_hook_is_kept_byte_for_byte(tmp_path: Path) -> None:
     assert _hook(root, "pre-commit").read_bytes() == foreign, "still the foreign hook after commit and status"
 
 
+def test_a_dangling_symlink_in_a_hook_slot_is_another_owners_and_is_left_alone(tmp_path: Path) -> None:
+    """`exists()` follows a link and calls a dangling one free, so init wrote the hook over it: the slot is still
+    someone's, named by init and by status, and the link stays."""
+    root = _store(tmp_path)
+    slot = _hook(root, "pre-push")
+    slot.unlink()
+    slot.symlink_to(tmp_path / "gone" / "their-push.sh")
+    assert slot.is_symlink() and not slot.exists(), "fixture: a dangling link"
+
+    init = gr2(root, "init", check=False)
+
+    assert init.returncode == 0, f"{init.stdout}\n{init.stderr}"
+    assert slot.is_symlink() and not slot.exists(), "the link was replaced"
+    assert "pre-push" in init.stderr and "another owner" in init.stderr.lower(), init.stderr
+    status = gr2(root, "status", check=False)
+    assert "pre-push" in status.stderr and "another owner" in status.stderr.lower(), status.stderr
+
+
+def test_a_live_symlink_to_a_foreign_hook_keeps_the_link_and_the_target(tmp_path: Path) -> None:
+    """THE CONTROL for the row above: a link whose target exists was already left alone."""
+    root = _store(tmp_path)
+    target = tmp_path / "their-hook.sh"
+    target.write_bytes(b"#!/bin/sh\n# theirs\nexit 0\n")
+    target.chmod(0o755)
+    slot = _hook(root, "pre-commit")
+    slot.unlink()
+    slot.symlink_to(target)
+
+    init = gr2(root, "init", check=False)
+
+    assert init.returncode == 0, f"{init.stdout}\n{init.stderr}"
+    assert slot.is_symlink() and target.read_bytes() == b"#!/bin/sh\n# theirs\nexit 0\n"
+    assert "pre-commit" in init.stderr and "another owner" in init.stderr.lower(), init.stderr
+
+
+def test_status_names_a_hook_whose_recorded_interpreter_is_gone(tmp_path: Path) -> None:
+    """The hook refuses every commit with a named remedy when its interpreter is missing; status says so first."""
+    root = _store(tmp_path)
+    hook = _hook(root, "pre-commit")
+    lines = hook.read_text().splitlines(keepends=True)
+    assert sum(line.startswith("PY=") for line in lines) == 1
+    hook.write_text("".join("PY=/nonexistent/gr2-python\n" if line.startswith("PY=") else line for line in lines))
+
+    status = gr2(root, "status", check=False)
+
+    assert "pre-commit" in status.stderr and "/nonexistent/gr2-python" in status.stderr, status.stderr
+    assert "missing" in status.stderr, status.stderr
+
+
 def test_init_twice_changes_no_hook_bytes(tmp_path: Path) -> None:
     root = _store(tmp_path)
     before = {name: _digest(_hook(root, name)) for name in HOOKS}
@@ -396,6 +445,21 @@ def test_pre_push_allows_a_covered_root(tmp_path: Path) -> None:
 
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
     assert run(tmp_path, "git", "--git-dir", str(bare), "rev-parse", "main").stdout.strip() == _head(root)
+
+
+def test_pre_push_lets_a_ref_delete_through(tmp_path: Path) -> None:
+    """A delete sends an all-zero local sha: there is no commit to check, and walking it would fail the push."""
+    root = _store(tmp_path)
+    bare = _with_root_origin(tmp_path, root)
+    assert git(root, "push", "origin", "main", check=False).returncode == 0
+    git(root, "branch", "scratch")
+    assert git(root, "push", "origin", "scratch", check=False).returncode == 0
+
+    result = git(root, "push", "origin", ":refs/heads/scratch", check=False)
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    gone = run(tmp_path, "git", "--git-dir", str(bare), "show-ref", "--verify", "-q", "refs/heads/scratch", check=False)
+    assert gone.returncode != 0, "the branch is deleted on the remote"
 
 
 def _bypassed_unpushed_root_below_a_covered_tip(tmp_path: Path, *, push_x: bool) -> tuple[Path, Path, str, str]:

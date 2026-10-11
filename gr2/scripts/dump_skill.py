@@ -39,7 +39,9 @@ NO_HELP = "(no help text in the code)"
 
 
 def _default(value: object) -> str:
-    if value in (None, False, "", (), []):
+    # By identity and type, not `in (None, False, ...)`: 0 == False, so a membership
+    # test hid a real 0.
+    if value is None or value is False or (isinstance(value, (str, list, tuple)) and not value):
         return ""
     if isinstance(value, (list, tuple)):
         return f" [default: {', '.join(map(str, value))}]"

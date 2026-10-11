@@ -473,6 +473,17 @@ def has_foreign_gitmodules(root: Path) -> bool:
     return staged.returncode == 0 and not staged.stdout.startswith(_GITMODULES_HEADER)
 
 
+def _existing_sets(root: Path) -> list[dict]:
+    """The `[[sets]]` tables of the grip.toml on disk, verbatim; none when there is no readable document."""
+    try:
+        document = tomllib.loads((root / "grip.toml").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return []
+    sets = document.get("sets", [])
+    return [dict(s) for s in sets if isinstance(s, dict) and isinstance(s.get("name"), str)
+            and isinstance(s.get("members"), list)] if isinstance(sets, list) else []
+
+
 def _write_native_members(root: Path, members: list[dict[str, str]]) -> None:
     lines = ["schema_version = 1", f"workspace_name = {json.dumps(root.name)}", ""]
     for member in members:
@@ -486,6 +497,15 @@ def _write_native_members(root: Path, members: list[dict[str, str]]) -> None:
             'mode = "full"',
             "[members.remotes]",
             f"origin = {json.dumps(member['remote'])}",
+            "",
+        ])
+    # `[[sets]]` is the owner's declaration (hand-edited), not something this writer derives from the members: carry it
+    # through, or the first `store commit` would drop every declared set the gate reads.
+    for declared in _existing_sets(root):
+        lines.extend([
+            "[[sets]]",
+            f"name = {json.dumps(declared['name'])}",
+            f"members = {json.dumps(declared['members'])}",
             "",
         ])
     (root / "grip.toml").write_text("\n".join(lines))

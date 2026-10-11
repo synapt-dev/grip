@@ -11,6 +11,20 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Added
 
+- **`gr2`: a store can declare sets of members that merge together, and `review merge` refuses a member of a declared
+  set until one joint check covers the whole set.** Before this, a joint check was required only when a single review
+  named more than one member, so five single-member reviews of one change never formed a multi-member review and merge
+  one of five went through with no joint check. A top-level `[[sets]]` table in the tracked `grip.toml` (`name`,
+  `members`) names the set; a set naming an unknown member, a member in two sets, a repeated set, or an empty set is
+  refused at read. `gr2 check set <workspace> --root-commit <sha> --set <name> -- <command>` clones every member of the
+  set at the pin the root commit records, runs the command once over all of them, and records one `declared_set` result
+  per member remote; it refuses a root commit that does not pin every member, naming the missing one. The gate reads the
+  merging workspace's committed `grip.toml`, requires a passing record whose root commit pins every member and pins this
+  review's member at this review's head, and refuses a record made for a different member list, so an edited set does
+  not ride an old record. A member in no set merges as before. `store commit` now keeps hand-written `[[sets]]` tables
+  when it regenerates `grip.toml`; it dropped them before. Known limit: one review cannot see the other members'
+  reviews, so the gate does not yet check that the other members' pins are heads under review or already merged. Adds
+  two flags to `check set` (`--root-commit`, `--set`); no change to existing forms.
 - **`gr2`: a native store writes `.gitmodules` from `grip.toml`, so `git clone --recurse-submodules` fills every member at
   its pin.** Before this, a store recorded each member as a gitlink and its origin only in `grip.toml`, so a recursive
   clone exited 0 and left every member directory empty, because git learns where a gitlink comes from only through

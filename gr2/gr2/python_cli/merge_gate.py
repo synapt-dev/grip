@@ -18,7 +18,7 @@ import uuid
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from . import check_records, gitops, grip, next_steps, set_check
+from . import check_records, declared_sets, gitops, grip, next_steps, set_check
 
 EXIT_MERGED, EXIT_REFUSED, EXIT_PARTIAL = 0, 3, 4
 
@@ -164,6 +164,10 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         return _unmeasured(review_id, into, feature, f"bind_unreadable: {type(exc).__name__}: {exc}")
     rows: list[dict] = []
     root = Path(workspace).resolve()
+    try:
+        declaration = declared_sets.read(root)  # the committed grip.toml: a set is declared once, for every workspace
+    except declared_sets.DeclaredSetError as exc:
+        return _unmeasured(review_id, into, feature, f"declared_sets_invalid: {exc}")
     required_checks = required_check_names(required_checks, len(view["members"]), no_set)
     want_set = set_check.SET_CHECK_NAME in required_checks
     plain_checks = tuple(n for n in required_checks if n != set_check.SET_CHECK_NAME)
@@ -225,6 +229,21 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                     row["state"] = "ready"
             else:
                 row["state"] = "ready"
+            member_name = declaration.member_name(m["key"], m["path"])
+            dset = declaration.set_of(member_name) if member_name else None
+            if dset is not None and not row["refused"]:
+                # A member of a declared set merges only with the set's own record, even as the only member of
+                # its review: five single-member reviews of one change are not five independent changes.
+                declared = check_records.read_remote_check(
+                    m["remote"], {"path": str(repo), "key": m["key"], "remote": m["remote"]}, m["head"],
+                    (declared_sets.DECLARED_SET_CHECK,))
+                if declared["status"] == "fail" and declared["reason"] != "required_check_failed":
+                    why = f"declared_set_unmeasured: {declared['reason']}"
+                else:
+                    why = declared_sets.judge(root, declaration, dset, member_name, m["head"], declared["records"])
+                row["declared_set"] = {"set": dset.name, "refused": why}
+                if why:
+                    row["refused"], row["state"] = why, None
 
     approval_receipt = None
     if not any(r["refused"] for r in rows):

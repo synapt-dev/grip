@@ -118,8 +118,12 @@ def _validate(repo: Path, record: dict) -> None:
         if not covered.startswith("refs/heads/") or not well_formed:
             raise FieldTreeError(f"covered_by {covered[:80]!r} is not a refs/heads/ ref name")
     url = record["url"]
-    if url and (url.lower().startswith("ext::") or grip_mod.url_has_credentials(url)):
-        raise FieldTreeError("url uses the ext transport or carries credentials; remove them and use a credential helper")
+    transport = grip_mod.url_transport_refusal(url) if url else None
+    if transport is not None:
+        raise FieldTreeError(f"url uses the {transport[:40]!r} transport, which runs a program on the reader's machine; "
+                             f"use an https, http, ssh, git or file url")
+    if url and grip_mod.url_has_credentials(url):
+        raise FieldTreeError("url carries credentials; remove them and use a credential helper")
 
 
 def root_commit(repo: Path, message: str = "grip root") -> str:

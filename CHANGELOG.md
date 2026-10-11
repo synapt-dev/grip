@@ -143,6 +143,12 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   carries `protocol.allow=never` with https, http, ssh and git allowed, and `file` left at git's own `user` default, so a
   plain path or `file://` url clones as before and a file-path submodule is still not fetched on recursion. Setting
   `GIT_ALLOW_PROTOCOL` in the environment still overrides the list.
+- **`gr2`: a member url whose transport is not https, http, ssh, git or file is refused by name where it is read,
+  before any git call.** A full-mode record's url fails its read (`url uses the 'pwn' transport, ...`), and a compat
+  member whose `grip.toml` remote names such a transport stops `store materialize` with exit 4 (`<member> remote
+  <name> uses the 'pwn' transport, ...`). The names match exactly, as git matches them, so `FILE://` and `HTTPS://`
+  are refused too: git runs a helper named `git-remote-FILE` for the first. This holds when `GIT_ALLOW_PROTOCOL`
+  in the environment has turned git's own list off.
 - **`gr2`: `spec show` on a native root shows its `grip.toml` instead of a traceback.** A native root has `grip.toml` and no
   `.grip/workspace_spec.toml`; text mode read the spec file directly and printed a `FileNotFoundError` traceback, and
   `--json` refused with `gr2 workspace init` advice that is wrong for a native root. The workspace spec is still shown

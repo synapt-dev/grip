@@ -431,6 +431,16 @@ def _native_members(root: Path, revision: str | None = None) -> list[dict[str, s
         if not isinstance(remotes, dict) or not isinstance(remotes.get("origin"), str):
             raise NativeStoreRefusal(f"{item.get('name', 'member')} has no origin remote", 4)
         item["remote"] = remotes["origin"]
+        # Refused at the read, before any verb hands a url to git: a `<name>::` or unknown-scheme url runs a program
+        # (owner: grip.url_transport_refusal; gitops.TRANSPORTS is the second layer).
+        for remote_name, remote_url in remotes.items():
+            transport = grip_mod.url_transport_refusal(remote_url) if isinstance(remote_url, str) else None
+            if transport is not None:
+                raise NativeStoreRefusal(
+                    f"{item.get('name', 'member')} remote {remote_name} uses the {transport[:40]!r} transport, which "
+                    f"runs a program on this machine; use an https, http, ssh, git or file url",
+                    4,
+                )
         if revision is not None:
             item["path"] = _normalise_member_path(root, str(item["path"]))
             if any(previous["name"] == item["name"] or previous["path"] == item["path"] for previous in result):

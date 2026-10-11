@@ -14,6 +14,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 GR2 = Path(__file__).resolve().parents[1]
 SKILL = GR2 / "api" / "skill.md"
 GENERATOR = GR2 / "scripts" / "dump_skill.py"
@@ -81,17 +83,29 @@ def test_a_real_zero_default_is_printed_and_an_empty_one_is_not():
         assert default(empty) == "", empty
 
 
-def test_the_skill_is_told_apart_from_the_gitgrip_skill():
-    """Two similar skills installed together conflict, and the model picks by name and
-    description alone, so this one names gr2 first and says it is not gitgrip's `gr`."""
+def _frontmatter(path):
+    # Parsed as YAML, the way a skill loader reads it: an unquoted ": " in a value is an
+    # error there, and a split on the first colon would hide it.
     import yaml
 
-    def frontmatter(path):
-        # Parsed as YAML, the way a skill loader reads it: an unquoted ": " in a value is an
-        # error there, and a split on the first colon would hide it.
-        return yaml.safe_load(path.read_text(encoding="utf-8").split("---")[1])
+    return yaml.safe_load(path.read_text(encoding="utf-8").split("---")[1])
 
-    ours = frontmatter(GR2 / "api" / "skill.intro.md")
-    theirs = frontmatter(GR2.parent / "docs" / "SKILL.md")
-    assert ours["name"] != theirs["name"]
+
+GITGRIP_SKILL = GR2.parent / "docs" / "SKILL.md"
+
+
+def test_the_skill_says_it_is_for_gr2_not_gitgrip():
+    """Two similar skills installed together conflict, and the model picks by name and
+    description alone, so this one names gr2 first and says it is not gitgrip's `gr`."""
+    ours = _frontmatter(GR2 / "api" / "skill.intro.md")
     assert ours["description"].startswith("For the gr2 command (not the gr command of gitgrip)")
+
+
+def test_the_skill_name_differs_from_the_gitgrip_skill():
+    # gitgrip's skill lives outside gr2/, so a gr2-only tree (an archive of gr2/ alone) has
+    # nothing to compare against: that is a skip with its reason, never a pass. The skip keys
+    # on the REPO being absent (no Cargo.toml beside gr2/), not on the file: inside a real
+    # checkout a deleted docs/SKILL.md must fail here, not skip quietly.
+    if not (GR2.parent / "Cargo.toml").is_file():
+        pytest.skip(f"{GR2.parent} is not the grip repo (a gr2-only tree), so {GITGRIP_SKILL} is not here")
+    assert _frontmatter(GR2 / "api" / "skill.intro.md")["name"] != _frontmatter(GITGRIP_SKILL)["name"]

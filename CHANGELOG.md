@@ -11,6 +11,15 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Added
 
+- **`gr2`: a native store writes `.gitmodules` from `grip.toml`, so `git clone --recurse-submodules` fills every member at
+  its pin.** Before this, a store recorded each member as a gitlink and its origin only in `grip.toml`, so a recursive
+  clone exited 0 and left every member directory empty, because git learns where a gitlink comes from only through
+  `.gitmodules`. `store commit` and the `pre-commit` hook now generate the file from each member's path and origin URL
+  (never hand-kept: its first line says so), stage it beside `grip.toml`, and rewrite a hand edit. A `.gitmodules` that gr2
+  did not write (an adopted superproject's own) is left alone and nothing is generated beside it,
+  and `store status` and `store init` say so on stderr, since a recursive clone will not fill from `grip.toml` there. A local-path origin still needs `-c protocol.file.allow=always` on
+  the clone, which is git's own rule, not the store's.
+
 - **`gr2`: `store init` installs `pre-commit` and `pre-push` hooks, so a plain `git commit` and `git push` in a native
   store run the store's own checks.** Before this, `git add <member> && git commit` at the root recorded a member's
   gitlink with no check that the commit was on the member's origin (`store commit` refuses that, exit 3, "push it

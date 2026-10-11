@@ -334,7 +334,7 @@ def test_fresh_init_generates_the_allow_list_and_the_root_ends_clean(ws: Path) -
 
     assert _cli("store", "commit", "-m", "first")[0] == 0
     tracked = _git_out(ws, "ls-tree", "HEAD", "--name-only").splitlines()
-    assert sorted(tracked) == [".gitinclude", "alpha", "beta", "grip.toml"], tracked
+    assert sorted(tracked) == [".gitinclude", ".gitmodules", "alpha", "beta", "grip.toml"], tracked
     assert _git_out(ws, "status", "--porcelain") == "", (
         "the whole point of the allow-list: a committed root is clean, not venv-noise"
     )

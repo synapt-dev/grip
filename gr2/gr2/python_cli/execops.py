@@ -327,6 +327,10 @@ def run_exec(
 
     result_dicts = [r.to_dict() for r in exec_results]
     failed_repos = [r.repo for r in exec_results if not r.succeeded]
+    # fail_fast stops at the first failure (the lane's policy); the repos it never
+    # reached are named, never left out of the receipt.
+    ran = {r.repo for r in exec_results}
+    not_run = [str(row["repo"]) for row in rows if str(row["repo"]) not in ran]
 
     if overall == "success":
         emit_after_outcome(
@@ -362,7 +366,11 @@ def run_exec(
         "lane": resolved_lane,
         "command": command,
         "results": result_dicts,
+        "not_run": not_run,
     }
+
+
+TAIL_LINES = 5
 
 
 def render_exec_run(payload: dict[str, object]) -> str:
@@ -376,8 +384,20 @@ def render_exec_run(payload: dict[str, object]) -> str:
         f"command = {' '.join(payload['command'])}",
         "REPO\tSTATUS\tRETURNCODE\tCWD",
     ]
+    failed = None
     for result in payload["results"]:
         lines.append(
             f"{result['repo']}\t{result['status']}\t{result['returncode']}\t{result['cwd']}"
         )
+        if result["status"] != "ok":
+            failed = failed or result["repo"]
+            # The why, on the screen: the last lines of both streams, each labelled. A test
+            # runner reports its failures on stdout (pytest's FAILED lines), so stderr alone
+            # can show an unrelated warning as the reason.
+            for stream in ("stdout", "stderr"):
+                for line in str(result.get(stream) or "").strip().splitlines()[-TAIL_LINES:]:
+                    lines.append(f"  {result['repo']} {stream}: {line}")
+    not_run = payload.get("not_run") or []
+    if not_run:
+        lines.append(f"not run: {', '.join(not_run)} (fail_fast stopped after {failed})")
     return "\n".join(lines)

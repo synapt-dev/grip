@@ -560,7 +560,7 @@ def _url_has_credentials(url: str) -> bool:
 
 def _credential_refusal(name: str) -> NativeStoreRefusal:
     return NativeStoreRefusal(
-        f"{name} origin contains credentials; remove URL userinfo and use a credential helper", 4
+        f"{name} origin contains credentials or cannot be parsed; remove URL userinfo and use a credential helper", 4
     )
 
 

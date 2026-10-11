@@ -387,11 +387,14 @@ _CREDENTIAL_PARAMS = frozenset({
 
 def url_has_credentials(url: str) -> bool:
     """URL userinfo other than an SSH login, a credential-named query parameter, or any fragment (git never
-    uses one, so it can only carry data). Never prints the URL. The one owner of this rule: store init, every
+    uses one, so it can only carry data). A URL that cannot be parsed is refused too (it fails closed). Never prints the URL. The one owner of this rule: store init, every
     review-record writer, the publisher, the receiver and lane pr create ask it here."""
     head = url.split("://", 1)[0]
     address = url.split("::", 1)[1] if "::" in head else url
-    parsed = urlsplit(address)
+    try:
+        parsed = urlsplit(address)
+    except ValueError:  # a malformed bracketed host: a URL that cannot be parsed cannot be shown clean
+        return True
     if parsed.password is not None:
         return True
     if parsed.username is not None and parsed.scheme.lower() not in {"ssh", "git+ssh", "ssh+git"}:
@@ -446,7 +449,8 @@ def _refuse_remote_credentials(key: str, remote: str) -> None:
     userinfo is refused at every writer, before any git call can dial it. The refusal names the
     member, never the URL."""
     if url_has_credentials(remote):
-        raise GripReviewRefused("remote_credentials", key, "remove URL userinfo and use a credential helper")
+        raise GripReviewRefused("remote_credentials", key,
+                                "the remote cannot be parsed or carries URL userinfo; use a credential helper")
 
 
 def _refuse_option_shaped_remote(key: str, remote: str) -> None:

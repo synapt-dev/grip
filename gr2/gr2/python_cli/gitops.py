@@ -47,7 +47,12 @@ def _effective_remote_url(url: str) -> str:
 
 # Every git call gr2 makes goes through run(): no auto maintenance (a background `git maintenance run --auto`
 # writes outside anything a caller checks or waits for), and a bound on how long it may take.
-NO_AUTO = ("-c", "maintenance.auto=false", "-c", "gc.auto=0")
+# And a transport allow-list: git runs any installed `git-remote-<name>` for a `<name>::<address>` url, and a
+# member url in grip.toml or a record reaches `git clone`. Written as config, not GIT_ALLOW_PROTOCOL, because
+# that variable makes each listed protocol `always` and so loosens git's `file=user` default for submodules.
+TRANSPORTS = ("-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "protocol.http.allow=always",
+              "-c", "protocol.ssh.allow=always", "-c", "protocol.git.allow=always", "-c", "protocol.file.allow=user")
+NO_AUTO = ("-c", "maintenance.auto=false", "-c", "gc.auto=0", *TRANSPORTS)
 DEFAULT_TIMEOUT = 600.0
 
 

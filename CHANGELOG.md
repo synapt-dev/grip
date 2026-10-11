@@ -126,6 +126,12 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **`gr2`: git runs only the https, http, ssh, git and file transports, so a member url shaped `<name>::<address>` no
+  longer runs an installed `git-remote-<name>` program.** Git hands such a url to whatever helper of that name is on
+  `PATH`, and a member's origin in `grip.toml` reaches `git clone` in `store materialize`. Every git command gr2 runs now
+  carries `protocol.allow=never` with https, http, ssh and git allowed, and `file` left at git's own `user` default, so a
+  plain path or `file://` url clones as before and a file-path submodule is still not fetched on recursion. Setting
+  `GIT_ALLOW_PROTOCOL` in the environment still overrides the list.
 - **`gr2`: `store commit` writes a `grip.toml` that reads back when a member path or a hand-written `[[sets]]` table
   holds a character outside the Basic Multilingual Plane, a TOML date, or a datetime.** Strings were written with
   `json.dumps`, which spells such a character as a surrogate pair that TOML refuses, so the next read of the committed

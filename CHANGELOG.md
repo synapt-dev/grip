@@ -18,7 +18,7 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 - **`gr2`: a workspace can declare `mode = "full"`, and `store commit` records each covered member as a field
   record that a plain clone carries.** The member's entry in the root tree is a gitlink to a commit whose tree is the record
   (pin, url, tracked ref, and the remote ref that covers the pin), and that commit is a parent of the root commit, so a
-  clone or pull brings it along. A pin no remote ref covers is refused by name (`full_mode_pin_uncovered`); no
+  clone or pull brings it along. A pin no remote ref covers is carried by a layer (below); no
   `.gitmodules` is written. `materialize` fetches the covering ref before it checks the pin out. Readers that take a root
   entry for the member's pin (a plain `git commit` through the hook, the superproject scan) refuse a full-mode root by name
   (`full_mode_hook`, `full_mode_unsupported`) rather than misread a record id as a pin; `store check` and `store status`
@@ -26,6 +26,14 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   url or pin that git would take for an option, a ref outside `refs/heads/`, a non-hex pin, or a url with credentials or
   the `ext::` transport is refused. A compat store that flips to full drops the `.gitmodules` gr2 wrote. Compat
   workspaces are unchanged.
+- **`gr2`: in a full-mode workspace, a member commit no remote holds is carried by a layer in the member's record.**
+  Before this, `store commit` refused such a member (`full_mode_pin_uncovered`). Now the record holds one git bundle, the
+  commits the pin has that the member's upstream lacks, as an occurrence of a repeated `layers` field, and `materialize`
+  fetches it into the clone before it checks the pin out, so a pin on no remote can be rebuilt from the workspace remote
+  plus the member's url. `store check` accepts a layered pin when the last layer's head is that pin
+  (`full_mode_layer_does_not_carry_pin` otherwise), a record whose layer is not a git bundle, or is over 64 MiB (checked by size before the layer is read), is refused where it is read, and `store commit` refuses such a layer by name (`full_mode_layer_too_large`) so the store never holds a record its own check refuses,
+  and the pre-push hook allows a root with layered members under the same check. An unchanged layered member keeps its
+  record. Compat workspaces are unchanged.
 - **`gr2`: a store can declare sets of members that merge together, and `review merge` refuses a member of a declared
   set until one joint check covers the whole set.** Before this, a joint check was required only when a single review
   named more than one member, so five single-member reviews of one change never formed a multi-member review and merge

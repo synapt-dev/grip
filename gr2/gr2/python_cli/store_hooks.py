@@ -37,6 +37,7 @@ entitlement semantics.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -437,7 +438,7 @@ def run_pre_push(root: Path, lines: list[str], remote: str = "") -> int:
     from . import grip_cli as gc
 
     _scrub_git_env()
-    seen: set[tuple[str, str, str, str]] = set()
+    seen: set[tuple[str, str, str, str, str]] = set()
     try:
         for line in lines:
             fields = line.split()
@@ -448,9 +449,22 @@ def run_pre_push(root: Path, lines: list[str], remote: str = "") -> int:
                 if _git(root, "cat-file", "-e", f"{revision}:grip.toml").returncode:
                     continue  # not a store commit: nothing here to check
                 members = gc._native_members(root, revision=revision)
+                full = gc._workspace_mode(tomllib.loads(_git(root, "show", f"{revision}:grip.toml").stdout)) == "full"
                 for member in members:
-                    key = (member["path"], member["pin"], member.get("upstream", ""), member["remote"])
+                    record = gc._field_record(root, member, revision) if full else None
+                    # The layers are part of what was measured: two commits with one pin and different layers are two
+                    # answers, so a layered record is keyed by one digest PER layer. A digest of the joined bytes
+                    # would make the lists [A, B] and [A+B] one key, and the second would be skipped unmeasured.
+                    layers = "|".join(hashlib.sha256(layer).hexdigest() for layer in record["layers"]) if record else ""
+                    key = (member["path"], member["pin"], member.get("upstream", ""), member["remote"], layers)
                     if key in seen:
+                        continue
+                    if record and record["layers"]:
+                        # A layered pin is on no remote by design: the layers travel in the root, so the push is
+                        # allowed when the last layer's header names the pin as its head, and refused by name when it
+                        # does not. The header is what is checked here; `materialize` is what applies the pack.
+                        gc._layer_carries(root, member, record["layers"])
+                        seen.add(key)
                         continue
                     claimed = gc._claimed_member_paths(root, members, exclude=member)
                     gc._member_coverage(root, member, member["pin"], claimed)

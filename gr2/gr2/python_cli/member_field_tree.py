@@ -9,9 +9,12 @@ grip commit carries it as a parent, so every plain clone and pull holds the reco
 member's path.
 
 Field numbers are the field schema's (package v1alpha1, named above). This module
-writes and reads the fields a covered pin needs: schema (1), kind (2), pin (3), url (4), ref (5), covered_by (6),
-ref_defaulted (12) and covered_test (13). Layers, hooks, records and config are not written yet; a reader that meets
-an entry it does not know ignores it, and refuses a tree whose schema entry names another package.
+writes and reads the fields a pin needs: schema (1), kind (2), pin (3), url (4), ref (5), covered_by (6), layers (7),
+ref_defaulted (12) and covered_test (13). A LAYER is a git bundle, stored as one occurrence of the repeated ``layers``
+entry (a tree of blobs named 0000001..n, so the order of the occurrences is the order to apply them in). It carries the
+commits a pin needs that no remote holds, so a pin that is on no remote can still be rebuilt from the record plus the
+member's url. Hooks, records and config are not written yet; a reader that meets an entry it does not know ignores it,
+and refuses a tree whose schema entry names another package.
 """
 from __future__ import annotations
 
@@ -25,6 +28,10 @@ PACKAGE = "dev.synapt.grip.field.v1alpha1"
 KIND_REPO, KIND_GRIP = 1, 2
 COVER_REACHABLE, COVER_LANDED_BY_PATCH = 1, 2
 
+_REPEATED = {7}   # field numbers stored as a tree of occurrences
+BUNDLE_HEADERS = (b"# v2 git bundle\n", b"# v3 git bundle\n")
+MAX_LAYER_BYTES = 64 * 1024 * 1024   # a layer is a handful of commits; a record is written by anyone with push access
+
 # number -> (name, wire type, record key). Wire type 2 is a string, 0 a varint.
 _FIELDS = {
     1: ("schema", 2, "schema"),
@@ -33,6 +40,7 @@ _FIELDS = {
     4: ("url", 2, "url"),
     5: ("ref", 2, "ref"),
     6: ("covered_by", 2, "covered_by"),
+    7: ("layers", 2, "layers"),
     12: ("ref_defaulted", 0, "ref_defaulted"),
     13: ("covered_test", 0, "covered_test"),
 }
@@ -49,6 +57,13 @@ def write(repo: Path, record: dict) -> str:
     entries: list[rft.Entry] = []
     for number, (name, wire, key) in sorted(_FIELDS.items()):
         value = values.get(key)
+        if number in _REPEATED:
+            if not value:
+                continue
+            occurrences = [("100644", "blob", rft._blob(repo, bytes(item)), f"{i:07d}") for i, item in enumerate(value, 1)]
+            field = rft.Field(number, name, "bytes", True)
+            entries.append(("040000", "tree", rft._mktree(repo, occurrences), rft.entry_name(field, number, wire, True)))
+            continue
         if value in (None, "", 0, False):
             continue
         if wire == 2:
@@ -62,7 +77,7 @@ def write(repo: Path, record: dict) -> str:
 
 def read(repo: Path, tree: str) -> dict:
     """The record in ``tree``, decoded by field NUMBER (the name is a hint). Refuses a tree for another package."""
-    out: dict = dict(schema="", kind=0, pin="", url="", ref="", covered_by="", ref_defaulted=False, covered_test=0)
+    out: dict = dict(schema="", kind=0, pin="", url="", ref="", covered_by="", layers=[], ref_defaulted=False, covered_test=0)
     try:
         entries = rft._ls(repo, tree)   # a tree object this clone does not hold is a git failure, not a record
     except rft.ReviewRecordError as exc:
@@ -74,6 +89,22 @@ def read(repo: Path, tree: str) -> dict:
             raise FieldTreeError(str(exc)) from exc
         spec = _FIELDS.get(number)
         if spec is None:
+            continue
+        if number in _REPEATED:
+            if kind != "tree" or not repeated or wire != spec[1]:
+                raise FieldTreeError(f"entry {name!r} is not the {spec[0]} field this schema defines")
+            try:
+                kids = rft._occurrences(repo, name, oid)
+                blobs = []
+                for index, kid in enumerate(kids, 1):
+                    # The size is asked for first, so a record cannot make this read load what it will then refuse.
+                    size = int(rft._git(repo, "cat-file", "-s", kid[2]))
+                    if size > MAX_LAYER_BYTES:
+                        raise FieldTreeError(f"layer {index} is {size} bytes, over the {MAX_LAYER_BYTES} a layer may carry")
+                    blobs.append(rft._git(repo, "cat-file", "blob", kid[2]))
+                out[spec[2]] = blobs
+            except rft.ReviewRecordError as exc:
+                raise FieldTreeError(str(exc)) from exc
             continue
         if kind != "blob" or repeated or wire != spec[1]:
             raise FieldTreeError(f"entry {name!r} is not the {spec[0]} field this schema defines")
@@ -108,6 +139,9 @@ def _validate(repo: Path, record: dict) -> None:
         value = record[key]
         if value and (value.startswith("-") or any(ch.isspace() or ord(ch) < 32 for ch in value)):
             raise FieldTreeError(f"{key} {value[:80]!r} is shaped like an option or carries whitespace or control bytes")
+    for index, layer in enumerate(record["layers"], 1):
+        if not layer.startswith(BUNDLE_HEADERS):
+            raise FieldTreeError(f"layer {index} is not a git bundle")
     covered = record["covered_by"]
     if covered:
         try:

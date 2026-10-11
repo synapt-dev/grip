@@ -28,7 +28,7 @@ def test_native_store_commits_include_and_regenerates_on_independent_checkout(tm
     assert grip_cli._native_store_commit(root, 'workspace')
     _git(root,'add','-A')
     assert _git(root,'diff','--cached','--name-only') == ''
-    assert set(_git(root,'ls-tree','-r','--name-only','HEAD').splitlines()) == {'.gitinclude','grip.toml','nested/component','note'}
+    assert set(_git(root,'ls-tree','-r','--name-only','HEAD').splitlines()) == {'.gitinclude','.gitmodules','grip.toml','nested/component','note'}
     commit = _git(root,'rev-parse','HEAD')
     receiver = tmp_path/'receiver';_git(tmp_path,'clone',str(root),str(receiver))
     assert not (receiver/'.gitignore').exists()

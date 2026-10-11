@@ -98,11 +98,29 @@ def hook_script(name: str) -> str:
     )
 
 
+def _occupied(path: Path) -> bool:
+    """Is anything at this name? `exists()` follows a symlink and calls a dangling one free, so a link whose
+    target is gone would be written over; `lexists` asks about the name itself."""
+    return os.path.lexists(path)
+
+
 def _is_ours(path: Path) -> bool:
     try:
         return MARKER in path.read_text(encoding="utf-8", errors="replace").splitlines()[1]
     except (OSError, IndexError):
         return False
+
+
+def _recorded_interpreter(path: Path) -> str | None:
+    """The interpreter an installed hook will run, read from its own `PY=` line, or None when it cannot be read."""
+    try:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("PY="):
+                words = shlex.split(line[3:])
+                return words[0] if words else None
+    except (OSError, ValueError):
+        return None
+    return None
 
 
 def _write_atomically(path: Path, text: str) -> None:
@@ -129,7 +147,7 @@ def hook_states(root: Path) -> dict[str, str]:
     states: dict[str, str] = {}
     for name in HOOK_NAMES:
         path = _hooks_dir(root) / name
-        if not path.exists():
+        if not _occupied(path):
             states[name] = "absent"
         elif _is_ours(path):
             states[name] = "installed"
@@ -149,7 +167,7 @@ def install_store_hooks(root: Path) -> dict[str, str]:
     for name in HOOK_NAMES:
         path = _hooks_dir(root) / name
         text = hook_script(name)
-        if path.exists() and not _is_ours(path):
+        if _occupied(path) and not _is_ours(path):
             result[name] = "foreign"
         elif path.exists() and path.read_text(encoding="utf-8", errors="replace") == text and os.access(path, os.X_OK):
             result[name] = "installed"
@@ -178,6 +196,14 @@ def hook_problems(root: Path, states: dict[str, str]) -> list[str]:
             )
         elif state == "absent":
             lines.append(f"hooks: {name} is not installed; run gr2 store init to install it")
+        elif state == "installed":
+            interpreter = _recorded_interpreter(_hooks_dir(root) / name)
+            if interpreter and not os.access(interpreter, os.X_OK):
+                verb = "commit" if name == "pre-commit" else "push"
+                lines.append(
+                    f"hooks: {name} records interpreter {interpreter}, which is missing, so it refuses every git "
+                    f"{verb} until `gr2 store init` rewrites it"
+                )
     return lines
 
 

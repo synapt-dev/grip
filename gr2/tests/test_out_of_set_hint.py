@@ -88,7 +88,59 @@ def test_a_common_removed_name_never_prints_a_wall(tmp_path, monkeypatch):
     lines = set_hints.out_of_set_hints(w["author"], w["root"], "money")
     print("\n".join(lines))
     assert len(lines) == set_hints.MAX_LINES + 1, lines
-    # nine hits: the eight common names, plus `amount`, which the consumer still moves off against main
+    # nine hits: the eight common names, plus `amount`, which the consumer still moves off against main; `amount` is
+    # a plain word, so the identifier-shaped names fill the five lines and it is one of the four not shown
     assert lines[-1] == "hint: 4 more out-of-set name(s) not shown"
-    assert sum("reader_00.txt, reader_01.txt, reader_02.txt and 9 more" in line for line in lines[:-1]) == set_hints.MAX_LINES - 1, lines
+    assert sum("reader_00.txt, reader_01.txt, reader_02.txt and 9 more" in line for line in lines[:-1]) == set_hints.MAX_LINES, lines
     assert max(len(line) for line in lines) < 300, lines
+
+
+def _producer_changes(w, before, after, ui_text, keep=None):
+    producer, ui = w["members"]["producer"]["repo"], w["members"]["ui"]["repo"]
+    (producer / "order.py").write_text(before)
+    if keep is not None:
+        (producer / "keep.txt").write_text(keep)
+    git(producer, "add", ".")
+    git(producer, "commit", "-qm", "order")
+    git(producer, "push", "-q", "origin", "feat")
+    (ui / "view.py").write_text(ui_text)
+    git(ui, "add", ".")
+    git(ui, "commit", "-qm", "ui reads")
+    git(ui, "push", "-q", "origin", "feat")
+    store_commit(w["author"], "before")
+    (producer / "order.py").write_text(after)
+    git(producer, "commit", "-qam", "change")
+    git(producer, "push", "-q", "origin", "feat")
+    w["root"] = store_commit(w["author"], "after")
+    return set_hints.out_of_set_hints(w["author"], w["root"], "money")
+
+
+def test_a_rename_is_not_crowded_out_by_the_words_of_a_deleted_comment(tmp_path, monkeypatch):
+    # In alphabetical order, `add`, `all`, `also`, `amount`, `and` from a deleted comment would fill the five
+    # lines and drop the real rename into "more not shown".
+    w = _world(tmp_path, monkeypatch, consumer_adapted=True, in_set=["producer", "consumer"])
+    lines = _producer_changes(w, "# all of the old one, and also any add-on\nzeta_total = 1\n", "zetaTotalCents = 100\n",
+                              "# and also all of any one old add-on here\nprint(order.zeta_total)\n")
+    assert "`zeta_total`" in lines[0], lines
+
+
+def test_a_word_the_set_member_still_uses_was_not_moved_off(tmp_path, monkeypatch):
+    w = _world(tmp_path, monkeypatch, consumer_adapted=True, in_set=["producer", "consumer"])
+    lines = _producer_changes(w, "# also the old one\nzeta_total = 1\n", "zetaTotalCents = 100\n",
+                              "# also\nprint(order.zeta_total)\n", keep="also kept here\n")
+    named = [line.split("`")[1] for line in lines if "`" in line]
+    assert "zeta_total" in named and "also" not in named, lines
+
+
+def test_an_error_inside_the_hint_changes_nothing(tmp_path, monkeypatch):
+    # The no-hint-on-error path, with its own row.
+    w = _world(tmp_path, monkeypatch, consumer_adapted=True, in_set=["producer", "consumer"])
+    control = check_set(w)
+    assert hint_lines(control), control.stderr
+
+    def boom(*a, **k):
+        raise RuntimeError("forced")
+
+    monkeypatch.setattr(set_hints, "_removed_names", boom)
+    out = check_set(w)
+    assert out.exit_code == control.exit_code and hint_lines(out) == [] and out.stdout == control.stdout

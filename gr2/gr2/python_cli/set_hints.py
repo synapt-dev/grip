@@ -7,9 +7,12 @@ gate green and stay broken. This module says so out loud, beside the gate, witho
 What it looks for: identifiers on a set member's removed lines that none of its added lines keeps (its change runs
 from the gitlink at the root commit's first parent, or, when that is absent or the same, from the merge-base with the
 member clone's origin/HEAD, to the gitlink at the root commit), searched as whole words at the
-pinned head of every member in no declared set. It is lexical, so it is wrong both ways: a unit or type change
-under the same name is invisible, and a common removed name can hit everywhere. That is why it is printed and
-capped, never written into a receipt, and never changes an exit code; any error yields no hint.
+pinned head of every member in no declared set. A name the set member still uses anywhere at its own head was not
+moved off (this drops the English of a deleted comment), and identifier-shaped names (an underscore, a digit or an
+inner capital) are listed before plain words so a real rename is not crowded out of the cap. It is still lexical,
+so it is wrong both ways: a unit or type change under the same name is invisible, and a common removed name can
+hit everywhere. That is why it is printed and capped, never written into a receipt, and never changes an exit
+code; any error yields no hint.
 """
 from __future__ import annotations
 
@@ -37,11 +40,25 @@ def _removed_names(repo: Path, base: str, head: str) -> set[str]:
     return minus - plus
 
 
-def _paths_naming(repo: Path, word: str, head: str) -> list[str]:
-    found = gitops.run(repo, "grep", "-w", "-F", "-l", "-e", word, head)
+def _paths_by_name(repo: Path, names: list[str], head: str) -> dict[str, list[str]]:
+    """Every path at `head` naming each of `names` as a whole word, in ONE git grep, not one per name."""
+    if not names:
+        return {}
+    patterns = [arg for name in names for arg in ("-e", name)]
+    found = gitops.run(repo, "grep", "-w", "-F", "-o", *patterns, head)
     if found.returncode:
-        return []
-    return sorted(line.split(":", 1)[1] for line in found.stdout.splitlines() if ":" in line)
+        return {}
+    by_name: dict[str, set[str]] = {}
+    for line in found.stdout.splitlines():
+        path, sep, name = line.removeprefix(f"{head}:").rpartition(":")
+        if sep:
+            by_name.setdefault(name, set()).add(path)
+    return {name: sorted(paths) for name, paths in by_name.items()}
+
+
+def _identifier_first(name: str) -> tuple[bool, str]:
+    shaped = "_" in name or any(c.isdigit() for c in name) or any(c.isupper() for c in name[1:])
+    return (not shaped, name)
 
 
 def _merge_base_with_default(repo: Path, head: str) -> str | None:
@@ -81,8 +98,11 @@ def out_of_set_hints(workspace: Path, root_commit: str, set_name: str) -> list[s
                 base = _merge_base_with_default(repo, head)
             if not base or base == head:
                 continue
-            for name in _removed_names(repo, base, head):
-                moved_off.setdefault(name, []).append(member)
+            removed = sorted(_removed_names(repo, base, head))
+            still_named = _paths_by_name(repo, removed, head)
+            for name in removed:
+                if name not in still_named:
+                    moved_off.setdefault(name, []).append(member)
         if not moved_off:
             return []
         reader_heads = _pins(root, root_commit, declaration, outside)
@@ -91,10 +111,9 @@ def out_of_set_hints(workspace: Path, root_commit: str, set_name: str) -> list[s
             if reader not in reader_heads:
                 continue
             repo = root / declaration.members[reader]["path"]
-            for name in sorted(moved_off):
-                paths = _paths_naming(repo, name, reader_heads[reader])
-                if paths:
-                    hits.append((reader, name, paths))
+            named = _paths_by_name(repo, sorted(moved_off), reader_heads[reader])
+            hits.extend((reader, name, paths) for name, paths in named.items())
+        hits.sort(key=lambda hit: (*_identifier_first(hit[1]), hit[0]))
     except Exception:  # a hint never changes what the gate decided, so it never raises either
         return []
     lines = []

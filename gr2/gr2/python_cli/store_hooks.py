@@ -207,6 +207,21 @@ def hook_problems(root: Path, states: dict[str, str]) -> list[str]:
     return lines
 
 
+def gitmodules_problems(root: Path) -> list[str]:
+    """The line that explains why a recursive clone will not fill from grip.toml, for `store init` and `store status`.
+
+    A `.gitmodules` that gr2 did not write is left alone (an adopted superproject's own), and saying nothing would leave
+    the recursive-clone gap unexplained."""
+    from . import grip_cli as gc
+
+    if not gc.has_foreign_gitmodules(root):
+        return []
+    return [
+        ".gitmodules exists and is not gr2's, so a recursive clone will not fill from grip.toml; "
+        "move its entries into grip.toml and remove it, and gr2 will generate it"
+    ]
+
+
 # ── the engine, shared with the verbs ────────────────────────────────────────────────────────────
 
 
@@ -295,6 +310,31 @@ def _fold_pins(text: str, moves: dict[str, tuple[str, str]]) -> str:
     return "".join(chunks)
 
 
+def _sync_gitmodules(root: Path, members: list[dict[str, str]], index: str | None, *, env_partial: bool) -> None:
+    """Stage the `.gitmodules` that the commit's own grip.toml generates, so the two cannot drift.
+
+    A file gr2 did not write (an adopted superproject's own) is left alone and nothing is generated beside it. A partial
+    commit cannot carry the regenerated file."""
+    from . import grip_cli as gc
+
+    if gc.has_foreign_gitmodules(root):
+        return
+    wanted = gc.render_gitmodules(members)
+    env = {**os.environ, "GIT_INDEX_FILE": index} if index else None
+    shown = _git(root, "show", ":.gitmodules", env=env)
+    if shown.returncode == 0 and shown.stdout == wanted:
+        return
+    if env_partial:
+        raise gc.NativeStoreRefusal(
+            ".gitmodules differs from what grip.toml generates and a partial commit (git commit <paths>) cannot "
+            "carry it; run git commit without paths", 4,
+        )
+    (root / ".gitmodules").write_text(wanted, encoding="utf-8")
+    added = _git(root, "add", "-f", ".gitmodules", env=env)
+    if added.returncode:
+        raise RuntimeError(added.stderr.strip() or "git add .gitmodules failed")
+
+
 def run_pre_commit(root: Path) -> int:
     """0 to let the commit proceed, 1 to refuse it. Prints the refusal in the verbs' own words.
 
@@ -311,6 +351,7 @@ def run_pre_commit(root: Path) -> int:
         staged = _index_gitlinks(root, index)
         committed = _head_gitlinks(root)
         partial = bool(index) and Path(index).name.startswith("next-index-")
+        _sync_gitmodules(root, members, index, env_partial=partial)
         stale: list[dict[str, str]] = []
         for member in members:
             sha = staged.get(member["path"])

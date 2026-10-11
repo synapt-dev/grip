@@ -66,3 +66,19 @@ def test_binder_identity_read_fault_refuses(handoff, monkeypatch):
     monkeypatch.setattr(grip, "_bind_git", fault)
     with pytest.raises(grip.GripReviewRefused, match="bind_author_unavailable"):
         grip._review_bind_author(root)
+
+
+def test_the_author_refusal_puts_the_requirement_in_expected_and_the_state_in_observed(handoff, monkeypatch):
+    """The two values were swapped (the workspace path as `expected`, the advice as `observed`), the advice named
+    `review pin` for a caller that ran bind, and an author set only in the environment was silently not read."""
+    root, _, _, _, _, _ = handoff
+    git(root, "config", "user.name", "")
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Env Author")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "Env Author")
+    with pytest.raises(grip.GripReviewRefused) as exc:
+        grip._review_bind_author(root)
+    assert exc.value.refusal == "bind_author_unavailable"
+    assert "user.name" in exc.value.expected and str(root) not in exc.value.expected
+    assert str(root) in exc.value.observed and "git config user.name" in exc.value.observed
+    assert "GIT_AUTHOR_NAME is not read" in exc.value.observed
+    assert "review pin" not in str(exc.value) and "review bind" not in str(exc.value)

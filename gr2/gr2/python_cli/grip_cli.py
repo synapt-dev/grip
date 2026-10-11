@@ -1215,7 +1215,29 @@ def _member_coverage(
         )
 
 
-def _field_commit(root: Path, member: dict[str, str]) -> str:
+def _layer_for(root: Path, member: dict[str, str], path: Path, head: str) -> list[bytes]:
+    """The layers that carry ``head``, a pin no remote holds: one bundle of the commits ``head`` has that the member's
+    upstream lacks. The same pin and upstream give the same bundle bytes (measured on this git), which is what lets an
+    unchanged member keep its field-commit."""
+    from . import member_field_tree as mft
+
+    upstream = member["upstream"]
+    if upstream.startswith("-"):
+        raise NativeStoreRefusal(f"{member['name']} upstream {upstream!r} is shaped like an option", 4)
+    made = gitops.run(path, "bundle", "create", "-", "HEAD", "--not", upstream, binary=True)
+    if made.returncode or not made.stdout.startswith(mft.BUNDLE_HEADERS):
+        raise NativeStoreRefusal(
+            f"full_mode_layer_failed: {member['name']} pin {head} is not on {upstream} and a layer cannot be made from "
+            f"it: {made.stderr.decode(errors='replace').strip()[:160]}", 5)
+    if len(made.stdout) > mft.MAX_LAYER_BYTES:
+        # Refused here, at the write, so the store is never left holding a record its own check and push refuse.
+        raise NativeStoreRefusal(
+            f"full_mode_layer_too_large: {member['name']} pin {head} needs a layer of {len(made.stdout)} bytes, over the "
+            f"{mft.MAX_LAYER_BYTES} a layer may carry; push those commits to {upstream} first", 3)
+    return [made.stdout]
+
+
+def _field_commit(root: Path, member: dict[str, str], layers: list[bytes] | None = None) -> str:
     """The field-commit for a covered member in a full-mode workspace: its record is the pin, the member's url and
     tracked ref, and the remote ref that covers the pin. The one the last root commit holds is kept when the record did
     not move, so a member that did not change keeps the same field-commit id."""
@@ -1223,7 +1245,8 @@ def _field_commit(root: Path, member: dict[str, str]) -> str:
 
     branch = member["upstream"].partition("/")[2]
     record = dict(kind=mft.KIND_REPO, pin=member["pin"], url=member["remote"], ref=member.get("ref", "main"),
-                  covered_by=f"refs/heads/{branch}", covered_test=mft.COVER_REACHABLE)
+                  covered_by="" if layers else f"refs/heads/{branch}",
+                  covered_test=0 if layers else mft.COVER_REACHABLE, layers=layers or [])
     link = _store_git(root, "ls-tree", "HEAD", "--", member["path"], check=False).stdout.split()
     previous = link[2] if len(link) >= 3 and link[0] == "160000" else None
     return mft.commit(root, record, f"field: {member['name']} @ {member['pin'][:7]}", previous)
@@ -1245,9 +1268,9 @@ def _field_record(root: Path, member: dict[str, str], revision: str = "HEAD") ->
     try:
         return mft.read(root, f"{link[2]}^{{tree}}")
     except (mft.FieldTreeError, RuntimeError, subprocess.SubprocessError, OSError) as exc:
-        raise NativeStoreRefusal(
-            f"{member['name']} field record cannot be read: {exc}; a shallow clone does not carry it, "
-            f"so run `git fetch --unshallow`", 4) from exc
+        # The unshallow advice is for a record this clone does not hold (a git failure), not for one it holds and refuses.
+        hint = "; a shallow clone does not carry it, so run `git fetch --unshallow`" if str(exc).startswith("git ") else ""
+        raise NativeStoreRefusal(f"{member['name']} field record cannot be read: {exc}{hint}", 4) from exc
 
 
 def _recorded_pin(root: Path, member: dict[str, str], full: bool, revision: str = "HEAD") -> str | None:
@@ -1259,12 +1282,13 @@ def _recorded_pin(root: Path, member: dict[str, str], full: bool, revision: str 
     return tree[2] if len(tree) >= 3 else None
 
 
-def _full_member_record(root: Path, member: dict[str, str]) -> tuple[dict[str, str], str]:
-    """The member as the field-commit at HEAD records it (its pin and url), and the remote ref that covers the pin."""
+def _full_member_record(root: Path, member: dict[str, str]) -> tuple[dict[str, str], str, list[bytes]]:
+    """The member as the field-commit at HEAD records it (its pin and url), the remote ref that covers the pin, and
+    the layers that carry it when no remote does."""
     record = _field_record(root, member)
     if record is None:
         raise NativeStoreRefusal(f"{member['name']} has no field-commit at {member['path']} in the root commit", 5)
-    return {**member, "pin": record["pin"], "remote": record["url"] or member["remote"]}, record["covered_by"]
+    return {**member, "pin": record["pin"], "remote": record["url"] or member["remote"]}, record["covered_by"], record["layers"]
 
 
 def _commit_with_carried(root: Path, message: str, carried: list[str]) -> None:
@@ -1293,6 +1317,7 @@ def _native_store_commit(root: Path, message: str) -> bool:
     members = _native_members(root)
     _refuse_symlinked_members(root, members)
     changed: list[dict[str, str]] = []
+    layers_by_member: dict[str, list[bytes]] = {}
     for member in members:
         if _url_has_credentials(member["remote"]):
             raise _credential_refusal(member["name"])
@@ -1322,11 +1347,9 @@ def _native_store_commit(root: Path, message: str) -> bool:
         except NativeStoreRefusal as exc:
             if not full or exc.code != 3:
                 raise
-            # Full mode holds an uncovered pin in a workspace-local layer, which is not built yet: name that, never
-            # record a pin nothing can fetch and never drop the member quietly.
-            raise NativeStoreRefusal(
-                f"full_mode_pin_uncovered: {member['name']} pin {head} is not on {member['upstream']}; a "
-                f"workspace-local layer is not built yet, so push it first", 3) from exc
+            # Full mode holds a pin no remote has in a LAYER: a bundle of the commits the member's upstream lacks,
+            # stored in the record, so the pin can be rebuilt from the record plus the member's url.
+            layers_by_member[member["name"]] = _layer_for(root, member, path, head)
         changed.append({**member, "pin": head})
     has_declaration = _regenerate_workspace_gitignore(root)
     if has_declaration:
@@ -1363,7 +1386,7 @@ def _native_store_commit(root: Path, message: str) -> bool:
     for member in changed:
         entry = member["pin"]
         if full:
-            entry = _field_commit(root, member)
+            entry = _field_commit(root, member, layers_by_member.get(member["name"], []))
             carried.append(entry)
         _store_git(root, "update-index", "--add", "--cacheinfo", f"160000,{entry},{member['path']}")
     # NOTHING STAGED IS A NO-OP, NOT A FAILURE. When every pin already equals the
@@ -1413,9 +1436,29 @@ def _native_store_check(root: Path) -> list[dict[str, str]]:
         # §5a's input is the RECORDED PIN, not the member's current HEAD: this verb asks
         # whether the pin the root publishes is still covered, and a member whose HEAD has
         # moved is `unpinned` (a status observation) whose recorded pin may be fine.
+        record = _field_record(root, member) if full else None
+        if record and record["layers"]:
+            # A layered pin is on no remote by design; it is covered when the record's layers carry it.
+            _layer_carries(root, member, record["layers"])
+            checked.append({"name": member["name"], "pin": member["pin"], "upstream": member["upstream"], "state": "layer"})
+            continue
         _member_coverage(root, member, member["pin"], claimed)
         checked.append({"name": member["name"], "pin": member["pin"], "upstream": member["upstream"], "state": "upstream"})
     return checked
+
+
+def _layer_carries(root: Path, member: dict[str, str], layers: list[bytes]) -> None:
+    """Refuse a layered record whose last layer does not carry the pin the record names."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="gr2-layer-") as tmp:
+        bundle = Path(tmp) / "layer.bundle"
+        bundle.write_bytes(layers[-1])
+        heads = gitops.run(root, "bundle", "list-heads", str(bundle), binary=True)
+    carried = {line.split()[0] for line in heads.stdout.decode(errors="replace").splitlines() if line.split()}
+    if heads.returncode or member["pin"] not in carried:
+        raise NativeStoreRefusal(
+            f"full_mode_layer_does_not_carry_pin: {member['name']} pin {member['pin']} is not the head of its last layer", 3)
 
 
 @_refuses_moved_workspace
@@ -1708,6 +1751,22 @@ def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[
     return rows, {"state": "dirty" if porcelain else "clean", "porcelain": porcelain}
 
 
+def _apply_layer(path: Path, member: dict[str, str], number: int, layer: bytes, done: list[dict[str, str]]) -> None:
+    """Fetch one layer (a git bundle) into the member's checkout. The bundle is a file git reads, never a ref name or a
+    command; what it carries is only objects, and the pin the record names is what is checked out afterwards."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="gr2-layer-") as tmp:
+        bundle = Path(tmp) / "layer.bundle"
+        bundle.write_bytes(layer)
+        fetched = gitops.run(path, "fetch", "--quiet", str(bundle), "HEAD", binary=True)
+    if fetched.returncode:
+        names = ", ".join(item["name"] for item in done) or "none"
+        raise NativeStoreRefusal(
+            f"full_mode_layer_unusable: {member['name']} layer {number} cannot be applied: "
+            f"{fetched.stderr.decode(errors='replace').strip()[:160]}; done: {names}", 3)
+
+
 @_refuses_moved_workspace
 def _native_store_materialize(root: Path) -> list[dict[str, str]]:
     materialized: list[dict[str, str]] = []
@@ -1715,8 +1774,9 @@ def _native_store_materialize(root: Path) -> list[dict[str, str]]:
     members = _native_members(root)
     for member in members:
         covered_by = ""
+        layers: list[bytes] = []
         if full:   # the record, not grip.toml, says what to fetch: the field-commit the grip tree holds for this member
-            member, covered_by = _full_member_record(root, member)
+            member, covered_by, layers = _full_member_record(root, member)
         if _url_has_credentials(member["remote"]):
             raise _credential_refusal(member["name"])
         # THE WORKING ROOT, resolved the way the other four verbs resolve it -- but NOT
@@ -1756,7 +1816,14 @@ def _native_store_materialize(root: Path) -> list[dict[str, str]]:
             raise NativeStoreRefusal(
                 f"{member['name']} covering ref {covered_by} cannot be fetched from origin; done: {done}", 3
             )
+        for number, layer in enumerate(layers, 1):
+            _apply_layer(path, member, number, layer, materialized)
         checkout = _store_git(path, "checkout", "--detach", member["pin"], check=False)
+        if checkout.returncode and layers:
+            done = ", ".join(item["name"] for item in materialized) or "none"
+            raise NativeStoreRefusal(
+                f"full_mode_layer_does_not_carry_pin: {member['name']} pin {member['pin']} is not in its layers or "
+                f"on {member['remote']}; done: {done}", 3)
         if checkout.returncode:
             done = ", ".join(item["name"] for item in materialized) or "none"
             raise NativeStoreRefusal(

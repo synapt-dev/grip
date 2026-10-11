@@ -6,8 +6,8 @@ url, the tracked ref and the remote ref that covers the pin), and that field-com
 A plain clone and a plain pull therefore carry every record while git materializes nothing under a member's path, and
 `git log --first-parent` is the workspace's own history.
 
-Smallest proof first: one covered pin per member, no layer. A pin that is not on its remote is refused by name, never
-silently dropped, until the layer exists.
+Smallest proof first: one covered pin per member. A pin that is on no remote is carried by a layer (see
+test_store_full_mode_layers).
 """
 from __future__ import annotations
 
@@ -109,7 +109,7 @@ def test_the_record_reads_back_whole(tmp_path):
 
     remote = git(root / "alpha", "remote", "get-url", "origin").stdout.strip()
     assert record == dict(schema=mft.PACKAGE, kind=mft.KIND_REPO, pin=_member_head(root, "alpha"), url=remote,
-                          ref="main", covered_by="refs/heads/main", ref_defaulted=False, covered_test=mft.COVER_REACHABLE)
+                          ref="main", covered_by="refs/heads/main", layers=[], ref_defaulted=False, covered_test=mft.COVER_REACHABLE)
 
 
 def test_an_unchanged_pin_keeps_the_same_field_commit(tmp_path):
@@ -133,16 +133,6 @@ def test_materialize_in_a_fresh_clone_checks_out_each_pin_from_its_url_and_cover
     assert done.returncode == 0, f"{done.stdout}\n{done.stderr}"
     for name, pin in pins.items():
         assert git(fresh / name, "rev-parse", "HEAD").stdout.strip() == pin
-
-
-def test_a_pin_that_is_on_no_remote_is_refused_by_name_not_dropped(tmp_path):
-    root = _full_store(tmp_path)
-    _advance(root, "alpha", push=False)
-
-    refused = gr2(root, "commit", "-m", "alpha only local", check=False)
-
-    assert refused.returncode != 0
-    assert "full_mode_pin_uncovered" in f"{refused.stdout}{refused.stderr}", (refused.stdout, refused.stderr)
 
 
 def test_compat_mode_is_unchanged(tmp_path):

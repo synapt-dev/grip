@@ -19,6 +19,7 @@ from . import config as config_mod
 from .check_records import JSON_SHAPES as CHECK_JSON_SHAPES
 from . import gitops
 from . import grip as grip_mod
+from . import store_hooks
 from .gitops import git, repo_dirty
 from .layout import MOVED_MARKER, grip_dir
 from .root_option import ROOT_OPTION, RootOptionalCommand
@@ -935,11 +936,12 @@ def _write_gitignore(root: Path, members: list[dict[str, str]]) -> None:
 
 
 @_refuses_moved_workspace
-def _native_store_init(root: Path, member_paths: list[str] | None = None) -> None:
+def _native_store_init(root: Path, member_paths: list[str] | None = None) -> dict[str, str]:
+    """Initialize the store and return the per-hook install states (`installed`, `foreign`, `hidden`)."""
     if (root / ".git").exists() and (root / "grip.toml").exists():
         _refuse_init_disagreement(root)
         _regenerate_workspace_gitignore(root)
-        return
+        return store_hooks.install_store_hooks(root)
     # ⚠ A STORE ROOT MUST BE ITS OWN REPO. Measured 2026-09-28: before this check, `store
     # init` inside another repo's worktree returned 0 and created a NESTED repo, so the
     # root's commits lived inside a parent that would track them as ordinary files. Design
@@ -982,6 +984,9 @@ def _native_store_init(root: Path, member_paths: list[str] | None = None) -> Non
     # gr2's per-desk state lives under `.grip/` and is never tracked. An adopted root keeps its
     # owner's `.gitignore`, so the root's own `.git/info/exclude` carries the line (local to the clone).
     grip_mod.exclude_grip_state(root)
+    # Plain `git commit` and `git push` run the store's checks (see store_hooks). Installed
+    # last, so a refusal above never leaves hooks in a root that did not become a store.
+    return store_hooks.install_store_hooks(root)
 
 
 def _git_detail(proc: subprocess.CompletedProcess[str]) -> str:
@@ -1122,7 +1127,9 @@ def _native_store_commit(root: Path, message: str) -> bool:
         return False
     if staged.returncode != 1:
         raise RuntimeError(staged.stderr.strip() or "git diff --cached failed")
-    _store_git(root, "-c", "user.name=gr2", "-c", "user.email=gr2@example.invalid", "commit", "-m", message)
+    # `--no-verify`: this verb has just run the same checks the pre-commit hook runs (coverage and the
+    # pin write above), so the hook would repeat a network fetch per member for no new answer.
+    _store_git(root, "-c", "user.name=gr2", "-c", "user.email=gr2@example.invalid", "commit", "--no-verify", "-m", message)
     return True
 
 
@@ -1717,7 +1724,7 @@ def grip_init_cmd(
     """Initialize a native store at cwd or the supplied root."""
     root = Path.cwd() if workspace_root is None else workspace_root.resolve()
     try:
-        _native_store_init(root, member_paths=member_paths)
+        hook_states = _native_store_init(root, member_paths=member_paths)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
@@ -1733,6 +1740,9 @@ def grip_init_cmd(
         typer.echo(json.dumps({"status": "initialized", "path": str(root), "store": "native"}))
     else:
         typer.echo(f"Initialized git-native store at {root}")
+    # stderr in both modes, so neither stdout contract moves
+    for line in store_hooks.hook_problems(root, hook_states):
+        typer.echo(line, err=True)
     return
 
 
@@ -1833,6 +1843,9 @@ def grip_status_cmd(
     else:
         for member in members:
             typer.echo(f"{member['name']} {member['state']} pin={member['pin']} head={member['head']}")
+    # A hook that will not run is a finding, not a pass: said on stderr in both modes so stdout is unchanged.
+    for line in store_hooks.hook_problems(Path.cwd(), store_hooks.hook_states(Path.cwd())):
+        typer.echo(line, err=True)
     # THE TABLE PRINTS IN EVERY CASE, and the code follows it. A diagnostic that exits 0 on
     # an inconsistency is the silent-success class: the root snapshot a clone would
     # materialize disagrees with its own pin, and a caller that only reads the exit code

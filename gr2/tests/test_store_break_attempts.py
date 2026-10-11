@@ -456,8 +456,10 @@ def test_break_03_push_root_with_unpushed_member(two_member_ws: Path, tmp_path: 
     _git(root, "update-index", "--add", "--cacheinfo", f"160000,{uncovered},alpha")
     # v5, same class as the witnesses file: the root repo carries no identity by design, so
     # the production -c identity is supplied explicitly rather than borrowed from the desk.
+    # `--no-verify`: this row BUILDS the malformed root a verb must refuse; the installed pre-commit
+    # hook would (correctly) refuse the setup commit itself.
     _git(root, "-c", "user.name=gr2", "-c", "user.email=gr2@example.invalid",
-         "commit", "-q", "-m", "malformed root: a pin its upstream does not have")
+         "commit", "--no-verify", "-q", "-m", "malformed root: a pin its upstream does not have")
 
     rc, out = _cli("store", "push", "--json")
     assert rc == 3, (
@@ -473,7 +475,9 @@ def test_break_03_push_root_with_unpushed_member(two_member_ws: Path, tmp_path: 
     assert _ls_remote(url, f"refs/heads/{branch}") == "", f"the root ref ({branch}) must be ABSENT"
     # CONTROL: the same instrument on a ref that IS there
     _git(root, "branch", "-f", "controlbranch", "HEAD")
-    _git(root, "push", "-q", "origin", "controlbranch")
+    # `--no-verify`: this pushes the malformed commit on purpose, as an instrument control, and the
+    # pre-push hook would (correctly) refuse it.
+    _git(root, "push", "--no-verify", "-q", "origin", "controlbranch")
     assert _ls_remote(url, "refs/heads/controlbranch") != "", (
         "the absent check is only meaningful if ls-remote can see a present ref"
     )
@@ -643,7 +647,8 @@ def test_break_07_gitlink_and_pin_disagree(two_member_ws: Path) -> None:
     # it. Measured surfaces at the probe: `ls-files -s alpha` -> 1111... , `ls-tree HEAD
     # alpha` -> 6b6066e0, verb output -> gitlink 6b6066e0 vs pin 0000....
     _git(root, "add", "grip.toml")
-    _git(root, "commit", "-q", "-m", "malformed root: a gitlink its pin disagrees with")
+    # `--no-verify`: the fixture builds the disagreement on purpose, and the hook folds it away otherwise.
+    _git(root, "commit", "--no-verify", "-q", "-m", "malformed root: a gitlink its pin disagrees with")
     assert _git_out(root, "rev-parse", "HEAD:alpha") == "1" * 40, (
         "the fixture must put the sentinel gitlink in the COMMITTED tree, or the row "
         "measures the index surface the verb does not read"

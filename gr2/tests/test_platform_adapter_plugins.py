@@ -152,6 +152,7 @@ def test_absent_lane_url_omits_creation_remote(plugin, url_line):
     "https://fixture-private-token@github.com/o/sample.git",
     "https://github.com/o/sample.git?access_token=fixture-private-token",
     "https://github.com/o/sample.git#fixture-private-token",
+    "https://[bad/o/sample.git",
 ])
 def test_credential_lane_url_refuses_before_adapter_or_state(plugin, remote):
     workspace, capture, env, _ = plugin

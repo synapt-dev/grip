@@ -83,6 +83,7 @@ def test_break_14_init_refuses_remote_userinfo(tmp_path: Path) -> None:
         "https://layne@bitbucket.example.test/alpha.git",
         "ssh://user:pass@example.test/alpha.git",
         "https::https://ghp_FAKEFAKE@example.test/alpha.git",
+        "https://[bad/o/alpha.git",
     ):
         git(marked / "alpha", "remote", "set-url", "origin", url)
         refused_password = gr2(marked, "init", check=False)

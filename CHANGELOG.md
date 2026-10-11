@@ -15,6 +15,17 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   help line, each option with its help and its default, and, for every refusal code gr2 prints, the next step it
   prints beside it; only the short framing in `api/skill.intro.md` is hand-written. `scripts/dump_skill.py` renders
   it and `tests/test_skill_dump.py` fails when the committed file no longer matches the code.
+- **`gr2`: a workspace can declare `mode = "full"`, and `store commit` records each covered member as a field
+  record that a plain clone carries.** The member's entry in the root tree is a gitlink to a commit whose tree is the record
+  (pin, url, tracked ref, and the remote ref that covers the pin), and that commit is a parent of the root commit, so a
+  clone or pull brings it along. A pin no remote ref covers is refused by name (`full_mode_pin_uncovered`); no
+  `.gitmodules` is written. `materialize` fetches the covering ref before it checks the pin out. Readers that take a root
+  entry for the member's pin (a plain `git commit` through the hook, the superproject scan) refuse a full-mode root by name
+  (`full_mode_hook`, `full_mode_unsupported`) rather than misread a record id as a pin; `store check` and `store status`
+  read the record's pin, and `store diff` names the empty root commit. A record is validated where it is read: a ref,
+  url or pin that git would take for an option, a ref outside `refs/heads/`, a non-hex pin, or a url with credentials or
+  the `ext::` transport is refused. A compat store that flips to full drops the `.gitmodules` gr2 wrote. Compat
+  workspaces are unchanged.
 - **`gr2`: a store can declare sets of members that merge together, and `review merge` refuses a member of a declared
   set until one joint check covers the whole set.** Before this, a joint check was required only when a single review
   named more than one member, so five single-member reviews of one change never formed a multi-member review and merge

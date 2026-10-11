@@ -6,6 +6,7 @@ dependencies (gr2.prototypes, lane_workspace_prototype, etc.).
 
 from __future__ import annotations
 
+import datetime
 import json
 import re
 import shutil
@@ -486,9 +487,29 @@ def _existing_sets(root: Path) -> list[dict]:
     return [dict(s) for s in sets if isinstance(s, dict)] if isinstance(sets, list) else []
 
 
+_TOML_SHORT_ESCAPES = {"\b": "\\b", "\t": "\\t", "\n": "\\n", "\f": "\\f", "\r": "\\r", '"': '\\"', "\\": "\\\\"}
+
+
+def _toml_str(text: str) -> str:
+    """A TOML basic string that is pure ASCII, so no reader has an encoding question (git's output is decoded with the
+    locale encoding). JSON is not usable here: it writes a character outside the Basic Multilingual Plane as a
+    surrogate pair, which TOML refuses, where TOML spells it as a single ``\\UXXXXXXXX``."""
+    out = ['"']
+    for ch in text:
+        code = ord(ch)
+        if ch in _TOML_SHORT_ESCAPES:
+            out.append(_TOML_SHORT_ESCAPES[ch])
+        elif code < 0x20 or code >= 0x7F:
+            out.append(f"\\u{code:04x}" if code <= 0xFFFF else f"\\U{code:08x}")
+        else:
+            out.append(ch)
+    out.append('"')
+    return "".join(out)
+
+
 def _toml_key(key: object) -> str:
     text = str(key)
-    return text if re.fullmatch(r"[A-Za-z0-9_-]+", text) else json.dumps(text)
+    return text if re.fullmatch(r"[A-Za-z0-9_-]+", text) else _toml_str(text)
 
 
 def _toml_value(value: object) -> str:
@@ -498,27 +519,29 @@ def _toml_value(value: object) -> str:
     if isinstance(value, (int, float)):
         return repr(value)
     if isinstance(value, str):
-        return json.dumps(value)
+        return _toml_str(value)
+    if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+        return value.isoformat()
     if isinstance(value, list):
         return "[" + ", ".join(_toml_value(v) for v in value) + "]"
     if isinstance(value, dict):
-        return "{ " + ", ".join(f"{json.dumps(str(k))} = {_toml_value(v)}" for k, v in value.items()) + " }"
+        return "{ " + ", ".join(f"{_toml_key(k)} = {_toml_value(v)}" for k, v in value.items()) + " }"
     raise ValueError(f"cannot carry a [[sets]] value of type {type(value).__name__} through `store commit`")
 
 
 def _write_native_members(root: Path, members: list[dict[str, str]]) -> None:
-    lines = ["schema_version = 1", f"workspace_name = {json.dumps(root.name)}", ""]
+    lines = ["schema_version = 1", f"workspace_name = {_toml_str(root.name)}", ""]
     for member in members:
         lines.extend([
             "[[members]]",
-            f"name = {json.dumps(member['name'])}",
-            f"path = {json.dumps(member['path'])}",
-            f"upstream = {json.dumps(member.get('upstream', 'origin/main'))}",
-            f"ref = {json.dumps(member.get('ref', 'main'))}",
-            f"pin = {json.dumps(member['pin'])}",
+            f"name = {_toml_str(member['name'])}",
+            f"path = {_toml_str(member['path'])}",
+            f"upstream = {_toml_str(member.get('upstream', 'origin/main'))}",
+            f"ref = {_toml_str(member.get('ref', 'main'))}",
+            f"pin = {_toml_str(member['pin'])}",
             'mode = "full"',
             "[members.remotes]",
-            f"origin = {json.dumps(member['remote'])}",
+            f"origin = {_toml_str(member['remote'])}",
             "",
         ])
     # `[[sets]]` is the owner's declaration (hand-edited), not something this writer derives from the members: carry it
@@ -527,7 +550,7 @@ def _write_native_members(root: Path, members: list[dict[str, str]]) -> None:
         lines.append("[[sets]]")
         lines.extend(f"{_toml_key(key)} = {_toml_value(value)}" for key, value in declared.items())
         lines.append("")
-    (root / "grip.toml").write_text("\n".join(lines))
+    (root / "grip.toml").write_text("\n".join(lines), encoding="utf-8")
 
 
 def _url_has_credentials(url: str) -> bool:

@@ -137,6 +137,12 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **`gr2`: a failed venv create in `review run` names its reason and leaves no half-built venv, and a refused run's receipt
+  is named by the lane's commit.** `venv_failed` printed an empty reason when the cause was on stdout (ensurepip's
+  failure is), and the half-built `<lane>/.venv` it left was reused by the next run until the lane was closed and
+  reopened. Both streams are now read (the exit status when there is no text), and a venv directory the failed create
+  made is removed; one that existed before is left alone. The receipt `close` keeps for a refused run was named
+  `unknown-<time>`; it now carries the commit from the lane's marker.
 - **`gr2`: git runs only the https, http, ssh, git and file transports, so a member url shaped `<name>::<address>` no
   longer runs an installed `git-remote-<name>` program.** Git hands such a url to whatever helper of that name is on
   `PATH`, and a member's origin in `grip.toml` reaches `git clone` in `store materialize`. Every git command gr2 runs now

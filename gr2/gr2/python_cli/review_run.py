@@ -678,6 +678,13 @@ def resolve_run_lane(lane_dir: Path | None, *, cwd: Path | None = None) -> Path:
 _NOT_A_LANE_CODES = frozenset({"no_marker", "not_open_gr"})
 
 
+def _marker_gr_commit(lane_dir: Path) -> str:
+    try:
+        return str(_read_marker(lane_dir).get("gr_commit") or "")
+    except (ReviewRunRefused, OSError, ValueError):
+        return ""
+
+
 def _write_refusal_receipt(lane_dir: Path, exc: "ReviewRunRefused") -> None:
     """Persist WHY a run refused so the refusal is not invisible on disk (review-run
     door 2): close-gr carries the receipt out of the lane, and `review run --json` has
@@ -689,6 +696,8 @@ def _write_refusal_receipt(lane_dir: Path, exc: "ReviewRunRefused") -> None:
         "result": "refused",
         "refusal_code": exc.code,
         "refusal_detail": exc.detail,
+        # The lane's marker knows the commit, so the receipt `close` keeps is named by it, not `unknown-<time>`.
+        "gr_commit": _marker_gr_commit(lane_dir),
         # A refusal after pytest ran (unparseable_summary, zero_collected) has already
         # written the log; name it when present so close-gr carries it out too.
         "output_log": _OUTPUT_LOG_NAME if (lane_dir / _OUTPUT_LOG_NAME).exists() else None,
@@ -849,10 +858,27 @@ def _create_lane_venv(
     if system_site_packages:
         venv_cmd.append("--system-site-packages")
     venv_cmd.append(str(venv_dir))
+    existed = venv_dir.exists()
     proc = subprocess.run(venv_cmd, text=True, capture_output=True)
     if proc.returncode != 0:
-        raise ReviewRunRefused("venv_failed", f"venv create failed: {proc.stderr.strip()}")
+        raise venv_failure(proc, venv_dir, existed=existed)
     return venv_dir, venv_dir / "bin" / "python"
+
+
+def venv_failure(proc: "subprocess.CompletedProcess[str]", venv_dir: Path, *, existed: bool) -> "ReviewRunRefused":
+    """The refusal for a failed `python -m venv`. Its reason can be on stdout (ensurepip's failure is), so both streams are
+    read, and with neither the exit status is named. A directory the failed create half-built is removed so the next run
+    builds a venv instead of reusing one with no pip; a venv that existed before this call is not this call's to remove."""
+    from .clone_exec import IncompleteRemoval, rmtree_or_refuse
+
+    leftover = ""
+    if not existed:
+        try:
+            rmtree_or_refuse(venv_dir)
+        except IncompleteRemoval as exc:
+            leftover = f"\n{exc}; remove it before running again"
+    reason = "\n".join(part for part in (proc.stderr.strip(), proc.stdout.strip()) if part) or f"exit status {proc.returncode}, no output"
+    return ReviewRunRefused("venv_failed", f"venv create failed: {reason}{leftover}")
 
 
 def _run_member_steps(

@@ -7,9 +7,10 @@ gate green and stay broken. This module says so out loud, beside the gate, witho
 What it looks for: identifiers on a set member's removed lines that none of its added lines keeps (its change runs
 from the gitlink at the root commit's first parent, or, when that is absent or the same, from the merge-base with the
 member clone's origin/HEAD, to the gitlink at the root commit), searched as whole words at the
-pinned head of every member in no declared set. A name the set member still uses anywhere at its own head was not
-moved off (this drops the English of a deleted comment), and identifier-shaped names (an underscore, a digit or an
-inner capital) are listed before plain words so a real rename is not crowded out of the cap. It is still lexical,
+pinned head of every member in no declared set. Identifier-shaped names (an underscore, a digit or an inner
+capital) are always kept and listed first, so a real rename is not crowded out of the cap; a plain word the set
+member still uses anywhere at its own head was not moved off (this drops the English of a deleted comment), which
+also drops a plain-word rename whose old name survives in the set member. It is still lexical,
 so it is wrong both ways: a unit or type change under the same name is invisible, and a common removed name can
 hit everywhere. That is why it is printed and capped, never written into a receipt, and never changes an exit
 code; any error yields no hint.
@@ -41,11 +42,11 @@ def _removed_names(repo: Path, base: str, head: str) -> set[str]:
 
 
 def _paths_by_name(repo: Path, names: list[str], head: str) -> dict[str, list[str]]:
-    """Every path at `head` naming each of `names` as a whole word, in ONE git grep, not one per name."""
+    """Every path at `head` naming each of `names` as a whole word, in ONE git grep, not one per name. The names go
+    in on stdin (`-f -`), so a large removal never meets the argument-length limit."""
     if not names:
         return {}
-    patterns = [arg for name in names for arg in ("-e", name)]
-    found = gitops.run(repo, "grep", "-w", "-F", "-o", *patterns, head)
+    found = gitops.run(repo, "grep", "-w", "-F", "-o", "-f", "-", head, input="".join(f"{n}\n" for n in names))
     if found.returncode:
         return {}
     by_name: dict[str, set[str]] = {}
@@ -56,9 +57,13 @@ def _paths_by_name(repo: Path, names: list[str], head: str) -> dict[str, list[st
     return {name: sorted(paths) for name, paths in by_name.items()}
 
 
+def _shaped(name: str) -> bool:
+    """An identifier, not a word: an underscore, a digit or an inner capital."""
+    return "_" in name or any(c.isdigit() for c in name) or any(c.isupper() for c in name[1:])
+
+
 def _identifier_first(name: str) -> tuple[bool, str]:
-    shaped = "_" in name or any(c.isdigit() for c in name) or any(c.isupper() for c in name[1:])
-    return (not shaped, name)
+    return (not _shaped(name), name)
 
 
 def _merge_base_with_default(repo: Path, head: str) -> str | None:
@@ -99,9 +104,9 @@ def out_of_set_hints(workspace: Path, root_commit: str, set_name: str) -> list[s
             if not base or base == head:
                 continue
             removed = sorted(_removed_names(repo, base, head))
-            still_named = _paths_by_name(repo, removed, head)
+            still_named = _paths_by_name(repo, [n for n in removed if not _shaped(n)], head)
             for name in removed:
-                if name not in still_named:
+                if _shaped(name) or name not in still_named:
                     moved_off.setdefault(name, []).append(member)
         if not moved_off:
             return []

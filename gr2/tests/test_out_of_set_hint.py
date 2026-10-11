@@ -144,3 +144,23 @@ def test_an_error_inside_the_hint_changes_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(set_hints, "_removed_names", boom)
     out = check_set(w)
     assert out.exit_code == control.exit_code and hint_lines(out) == [] and out.stdout == control.stdout
+
+
+def test_an_identifier_the_set_member_still_mentions_elsewhere_is_still_hinted(tmp_path, monkeypatch):
+    # A stale doc, a changelog line or a fixture in the producer still names the old field; the still-used filter is
+    # for plain words only, so the rename it exists to report is not silenced.
+    w = _world(tmp_path, monkeypatch, consumer_adapted=True, in_set=["producer", "consumer"])
+    lines = _producer_changes(w, "zeta_total = 1\n", "zetaTotalCents = 100\n", "print(order.zeta_total)\n",
+                              keep="Read `zeta_total` for the total.\n")
+    assert "`zeta_total`" in lines[0], lines
+
+
+def test_a_removal_too_large_for_an_argv_is_still_searched(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    (repo / "reader.py").write_text("print(needle_name)\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "reader")
+    names = [f"removed_name_{i:07d}_padding" for i in range(70000)] + ["needle_name"]  # about 2 MB of names
+    assert set_hints._paths_by_name(repo, names, "HEAD") == {"needle_name": ["reader.py"]}

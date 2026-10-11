@@ -148,13 +148,26 @@ def judge(root: Path, declaration: Declaration, dset: DeclaredSet, member: str, 
     by_commit: dict[str, list[Mapping]] = {}
     for row in named:
         by_commit.setdefault(str(row.get("root_commit")), []).append(row)
+    # A failure belongs to the PINS it was run over, not to the commit id that carried them: an empty commit gives the
+    # same pins a new id, and a pass there must not outvote the failure (the per-member `test` check is sticky the same
+    # way). A failure at pins that have since changed is outvotable: that is fixing the code and running the check again.
+    failed_pins = {_pins_of(r) for r in named if r.get("result") != "pass"}
     reasons: list[str | None] = []
     for commit, group in by_commit.items():
         if any(r.get("result") != "pass" for r in group):
             reasons.append(f"declared_set_fail: the set check for {dset.name!r} failed at root commit {commit[:12]}")
+        elif _pins_of(group[0]) in failed_pins:
+            reasons.append(f"declared_set_fail: the set check for {dset.name!r} failed over these same pins at another "
+                           f"root commit; a pass at {commit[:12]} does not outvote it, change a pin and run it again")
         else:
             reasons.append(_judge_one(Path(root), declaration, dset, member, head, group[0]))
     return None if None in reasons else reasons[0]
+
+
+def _pins_of(row: Mapping) -> tuple | None:
+    """The head list a record was made over, as a comparable key (None when the record carries no readable list)."""
+    listed = row.get("heads")
+    return tuple(listed) if isinstance(listed, list) else None
 
 
 def _judge_one(root: Path, declaration: Declaration, dset: DeclaredSet, member: str, head: str, row: Mapping) -> str | None:

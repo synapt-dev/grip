@@ -7,6 +7,7 @@ dependencies (gr2.prototypes, lane_workspace_prototype, etc.).
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import tomllib
@@ -480,8 +481,29 @@ def _existing_sets(root: Path) -> list[dict]:
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         return []
     sets = document.get("sets", [])
-    return [dict(s) for s in sets if isinstance(s, dict) and isinstance(s.get("name"), str)
-            and isinstance(s.get("members"), list)] if isinstance(sets, list) else []
+    # Every table, malformed ones included: carrying a bad entry through lets the reader refuse it by name, where
+    # dropping it would turn a hand-edit mistake into a deleted declaration with no word.
+    return [dict(s) for s in sets if isinstance(s, dict)] if isinstance(sets, list) else []
+
+
+def _toml_key(key: object) -> str:
+    text = str(key)
+    return text if re.fullmatch(r"[A-Za-z0-9_-]+", text) else json.dumps(text)
+
+
+def _toml_value(value: object) -> str:
+    """A TOML literal for a value the reader found in a hand-written table."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, str):
+        return json.dumps(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+    if isinstance(value, dict):
+        return "{ " + ", ".join(f"{json.dumps(str(k))} = {_toml_value(v)}" for k, v in value.items()) + " }"
+    raise ValueError(f"cannot carry a [[sets]] value of type {type(value).__name__} through `store commit`")
 
 
 def _write_native_members(root: Path, members: list[dict[str, str]]) -> None:
@@ -502,12 +524,9 @@ def _write_native_members(root: Path, members: list[dict[str, str]]) -> None:
     # `[[sets]]` is the owner's declaration (hand-edited), not something this writer derives from the members: carry it
     # through, or the first `store commit` would drop every declared set the gate reads.
     for declared in _existing_sets(root):
-        lines.extend([
-            "[[sets]]",
-            f"name = {json.dumps(declared['name'])}",
-            f"members = {json.dumps(declared['members'])}",
-            "",
-        ])
+        lines.append("[[sets]]")
+        lines.extend(f"{_toml_key(key)} = {_toml_value(value)}" for key, value in declared.items())
+        lines.append("")
     (root / "grip.toml").write_text("\n".join(lines))
 
 

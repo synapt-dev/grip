@@ -155,6 +155,55 @@ def test_a_failing_set_check_is_recorded_and_the_merge_refuses(world):
     assert untouched(world)
 
 
+def _same_pins_new_commit(world):
+    """An empty commit: the same gitlinks under a new commit id."""
+    git(world["author"], "commit", "-q", "--no-verify", "--allow-empty", "-m", "same pins, new commit")
+    again = git(world["author"], "rev-parse", "HEAD")
+    assert again != world["root"]
+    return again
+
+
+def test_a_pass_at_another_commit_with_the_same_pins_does_not_outvote_a_failure(world):
+    """A failure belongs to the pins it ran over; an empty commit gives the same pins a new id, and a retry there is not a fix."""
+    assert record(world, FAIL)["result"] == "fail"
+    again = _same_pins_new_commit(world)
+    assert record(world, PASS, commit=again)["result"] == "pass"
+
+    code, receipt = merge(world, "alpha")
+
+    assert code == merge_gate.EXIT_REFUSED and receipt["members"][0]["refused"].startswith("declared_set_fail"), receipt
+    assert untouched(world)
+
+
+def test_a_failure_at_another_commit_with_the_same_pins_outvotes_an_earlier_pass(world):
+    assert record(world, PASS)["result"] == "pass"
+    again = _same_pins_new_commit(world)
+    assert record(world, FAIL, commit=again)["result"] == "fail"
+
+    code, receipt = merge(world, "alpha")
+
+    assert code == merge_gate.EXIT_REFUSED and receipt["members"][0]["refused"].startswith("declared_set_fail"), receipt
+
+
+def test_a_failure_over_pins_that_have_since_changed_does_not_block_a_pass(world):
+    """Fixing the code moves a pin; the failure at the old pins stays on record and a pass at the new ones stands."""
+    author = world["author"]
+    heads = sorted(f"{n}:{world['members'][n]['head']}" for n in SET)
+    old = sorted(f"{n}:{world['members'][n]['base'] if n == 'beta' else world['members'][n]['head']}" for n in SET)
+    rows = [
+        dict(name=declared_sets.DECLARED_SET_CHECK, result="fail", set_name="core", root_commit="1" * 40,
+             declared_members=sorted(SET), heads=old),
+        dict(name=declared_sets.DECLARED_SET_CHECK, result="pass", set_name="core", root_commit=world["root"],
+             declared_members=sorted(SET), heads=heads),
+    ]
+    declaration = declared_sets.read(author)
+
+    why = declared_sets.judge(author, declaration, declaration.set_named("core"), "alpha",
+                              world["members"]["alpha"]["head"], rows)
+
+    assert why is None, why
+
+
 # ── what the record must cover ───────────────────────────────────────────────────────────────────────────────────────
 
 
@@ -258,6 +307,19 @@ def test_store_commit_keeps_the_declared_sets_it_did_not_write(world):
 
     assert [(s.name, list(s.members)) for s in kept.sets] == [("core", sorted(SET))], kept
     assert "[[sets]]" in git(world["author"], "show", "HEAD:grip.toml")
+
+
+def test_store_commit_carries_a_malformed_set_so_the_reader_refuses_it_by_name(world):
+    """A hand-edit mistake must not become a deleted declaration: the bad table is committed as written and refused."""
+    author = world["author"]
+    text = (author / "grip.toml").read_text()
+    (author / "grip.toml").write_text(text.rstrip("\n") + '\n\n[[sets]]\nname = "bad"\nmembers = "alpha"\n')
+
+    store_commit(author, "a set with a members string")
+
+    assert 'name = "bad"' in git(author, "show", "HEAD:grip.toml")
+    with pytest.raises(declared_sets.DeclaredSetError, match="'bad'"):
+        declared_sets.read(author)
 
 
 MEMBERS = [{"name": n, "path": n, "remotes": {"origin": f"/r/{n}"}} for n in ("a", "b", "c")]

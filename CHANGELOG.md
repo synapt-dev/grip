@@ -155,6 +155,15 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   when the root has one (also when it carries both documents); otherwise `grip.toml` (as JSON with `--json`); a root with
   neither, or a `grip.toml` that cannot be read as UTF-8 (or, with `--json`, parsed), is a named refusal. `--json` also prints a TOML date, datetime or time as its string instead
   of a `TypeError`, for either document.
+
+- **`gr2`: `exec run` names the lane repos it did not run, and shows why the failed one failed.** A lane's
+  `fail_fast` stops the run at the first failing repo, and that policy stays; but the table listed only the repos that
+  ran, and the failing command's output was only in the JSON payload, so a run whose first repo lacked pytest showed
+  `failed 1` and nothing about why, or that two repos never ran. The payload now carries `not_run` (the selected repos
+  the run never reached, in lane order), the text adds `not run: ... (fail_fast stopped after <repo>)`, and under each
+  failed repo it shows the last five lines of its stdout and of its stderr, each labelled: a test runner reports its
+  failures on stdout, so stderr alone can show an unrelated warning as the reason.
+
 - **`gr2`: `store commit` writes a `grip.toml` that reads back when a member path or a hand-written `[[sets]]` table
   holds a character outside the Basic Multilingual Plane, a TOML date, or a datetime.** Strings were written with
   `json.dumps`, which spells such a character as a surrogate pair that TOML refuses, so the next read of the committed

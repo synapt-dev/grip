@@ -650,7 +650,13 @@ def resolve_run_lane(lane_dir: Path | None, *, cwd: Path | None = None) -> Path:
     if lane_dir is not None:
         candidates = [Path(lane_dir).resolve()]
     else:
-        here = (cwd or Path.cwd()).resolve()
+        try:
+            here = (cwd or Path.cwd()).resolve()
+        except OSError:  # Path.cwd() raises FileNotFoundError when the working directory was deleted
+            raise ReviewRunRefused(
+                "no_review_context",
+                "the working directory no longer exists; cd into a lane opened by `review open` or pass LANE_DIR",
+            ) from None
         candidates = [p for p in (here, *here.parents) if find_marker(p) is not None]
         if not candidates:
             raise ReviewRunRefused(

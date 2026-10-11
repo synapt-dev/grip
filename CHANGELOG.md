@@ -143,6 +143,12 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   carries `protocol.allow=never` with https, http, ssh and git allowed, and `file` left at git's own `user` default, so a
   plain path or `file://` url clones as before and a file-path submodule is still not fetched on recursion. Setting
   `GIT_ALLOW_PROTOCOL` in the environment still overrides the list.
+- **`gr2`: `spec show` on a native root shows its `grip.toml` instead of a traceback.** A native root has `grip.toml` and no
+  `.grip/workspace_spec.toml`; text mode read the spec file directly and printed a `FileNotFoundError` traceback, and
+  `--json` refused with `gr2 workspace init` advice that is wrong for a native root. The workspace spec is still shown
+  when the root has one (also when it carries both documents); otherwise `grip.toml` (as JSON with `--json`); a root with
+  neither, or a `grip.toml` that cannot be read as UTF-8 (or, with `--json`, parsed), is a named refusal. `--json` also prints a TOML date, datetime or time as its string instead
+  of a `TypeError`, for either document.
 - **`gr2`: `store commit` writes a `grip.toml` that reads back when a member path or a hand-written `[[sets]]` table
   holds a character outside the Basic Multilingual Plane, a TOML date, or a datetime.** Strings were written with
   `json.dumps`, which spells such a character as a surrogate pair that TOML refuses, so the next read of the committed

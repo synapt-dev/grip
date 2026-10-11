@@ -55,3 +55,43 @@ def test_options_without_help_do_not_grow():
     assert count <= MAX_OPTIONS_WITHOUT_HELP, (
         f"{count} options have no help text (limit {MAX_OPTIONS_WITHOUT_HELP}); "
         "add help to the new option")
+
+
+# The exact codes, written out by hand: a floor let a renamed row pass. Change this set
+# in the same PR as next_steps.py, in front of a reader.
+EXPECTED_CODES = {
+    "approvals_insufficient", "base_moved", "check_absent", "check_fail", "check_set*",
+    "check_set_fail",
+    "feature_moved", "head_already_on_remote", "head_not_fetched", "not_received",
+    "review_not_on_member_remote", "self_approval",
+}
+
+
+def test_the_refusal_codes_are_exactly_the_expected_set():
+    codes = {code for code, _ in _generator().refusal_rows()}
+    assert codes == EXPECTED_CODES, (
+        f"missing {sorted(EXPECTED_CODES - codes)}, unexpected {sorted(codes - EXPECTED_CODES)}")
+
+
+def test_a_real_zero_default_is_printed_and_an_empty_one_is_not():
+    default = _generator()._default
+    assert default(0) == " [default: 0]"
+    assert default(0.0) == " [default: 0.0]"
+    for empty in (None, False, "", (), []):
+        assert default(empty) == "", empty
+
+
+def test_the_skill_is_told_apart_from_the_gitgrip_skill():
+    """Two similar skills installed together conflict, and the model picks by name and
+    description alone, so this one names gr2 first and says it is not gitgrip's `gr`."""
+    import yaml
+
+    def frontmatter(path):
+        # Parsed as YAML, the way a skill loader reads it: an unquoted ": " in a value is an
+        # error there, and a split on the first colon would hide it.
+        return yaml.safe_load(path.read_text(encoding="utf-8").split("---")[1])
+
+    ours = frontmatter(GR2 / "api" / "skill.intro.md")
+    theirs = frontmatter(GR2.parent / "docs" / "SKILL.md")
+    assert ours["name"] != theirs["name"]
+    assert ours["description"].startswith("For the gr2 command (not the gr command of gitgrip)")

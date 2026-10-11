@@ -1,6 +1,6 @@
 ---
 name: gr2-review
-description: Review and merge one change across several Git repositories with gr2: pin the exact heads, publish the review, collect approvals and checks at those heads, and merge all members or none.
+description: "For the gr2 command (not the gr command of gitgrip). Review and merge one change across several Git repositories with gr2: pin the exact heads, publish the review, collect approvals and checks at those heads, and merge all members or none."
 ---
 
 # gr2 review flow

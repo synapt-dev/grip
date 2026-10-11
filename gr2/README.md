@@ -89,7 +89,7 @@ Not there yet:
 
 | Group | Verbs |
 |---|---|
-| `workspace` | init, init-from-topology, materialize, status, convert-clone, detect-gr1, migrate-gr1, migrate-lane-state, bootstrap-gr1, gitinclude |
+| `workspace` | init, init-from-topology, materialize, status, convert-clone, detect-gr1, migrate-gr1, retire-gr1, migrate-lane-state, bootstrap-gr1, gitinclude |
 | `spec` | show, validate |
 | `lane` | create, enter, exit, show, resolve, bind, lease, list, remove |
 | (top level) | branch, add, commit, push, prune, status, plan, apply |

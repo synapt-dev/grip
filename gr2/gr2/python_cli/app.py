@@ -1556,6 +1556,30 @@ def workspace_migrate_gr1(
             typer.echo(f"\nSpec validation failed: {len(payload.get('validation_errors', []))} error(s).")
 
 
+@workspace_app.command("retire-gr1")
+def workspace_retire_gr1(
+    workspace_root: Optional[Path] = typer.Argument(None),
+    break_gr1_spawn: bool = typer.Option(
+        False,
+        "--break-gr1-spawn",
+        help="Move .gitgrip even though gr1 spawn state (agents.toml, spawn/) is present",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """End coexistence: move .gitgrip aside (never deleted) so `gr` resolves to gr2."""
+    workspace_root = _resolve_workspace_root(workspace_root)
+    try:
+        payload = migration.retire_gr1_workspace(workspace_root, break_gr1_spawn=break_gr1_spawn)
+    except migration.RetireGr1Refused as exc:
+        typer.echo(f"retire-gr1 refused: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        typer.echo(f"Moved {workspace_root / '.gitgrip'} to {payload['retired_to']}; `gr` now resolves to gr2 here.")
+        typer.echo(f"To undo: {payload['undo']}")
+
+
 @workspace_app.command("migrate-lane-state")
 def workspace_migrate_lane_state(
     workspace_root: Optional[Path] = typer.Argument(None),

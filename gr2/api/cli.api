@@ -819,6 +819,11 @@ arg   workspace migrate-lane-state workspace_root <str>               stable
 flag  workspace migrate-lane-state --json                             stable
 flag  workspace migrate-lane-state --receipt <str>                    stable
 verb  workspace migrate-lane-state                                    stable
+# workspace retire-gr1
+arg   workspace retire-gr1 workspace_root <str>                       stable
+flag  workspace retire-gr1 --break-gr1-spawn                          stable
+flag  workspace retire-gr1 --json                                     stable
+verb  workspace retire-gr1                                            stable
 # workspace status
 arg   workspace status workspace_root <str>                           stable
 flag  workspace status --json                                         stable

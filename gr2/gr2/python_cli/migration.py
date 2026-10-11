@@ -4,6 +4,7 @@ import json
 import hashlib
 import os
 import re
+import shlex
 import shutil
 import stat
 import tempfile
@@ -294,6 +295,53 @@ def migrate_gr1_workspace(workspace_root: Path, *, force: bool = False) -> dict[
         **summary,
         "units": [unit["name"] for unit in compiled["units"]],
         "repos": [repo["name"] for repo in compiled["repos"]],
+    }
+
+
+class RetireGr1Refused(Exception):
+    """retire-gr1 will not move .gitgrip; the message says why and what it would break."""
+
+
+_SPAWN_BREAKS = "gr1 spawn, status and every gr1 verb here stop working"
+
+
+def retire_gr1_workspace(
+    workspace_root: Path, *, break_gr1_spawn: bool = False, stamp: str | None = None
+) -> dict[str, object]:
+    """End coexistence: move .gitgrip aside (never delete) so `gr` resolves to gr2.
+
+    Refuses unless migrate-gr1 has run (phase coexistence), when gr1 spawn state
+    (.gitgrip/agents.toml or .gitgrip/spawn) is present and break_gr1_spawn is False,
+    and when the target name is already taken.
+    """
+    import datetime
+
+    status = workspace_status(workspace_root)
+    if status["phase"] == "gr2-only":
+        raise RetireGr1Refused("phase is gr2-only: there is no .gitgrip here (already retired, or never gr1); nothing to move")
+    if status["phase"] != "coexistence":
+        raise RetireGr1Refused(
+            f"workspace phase is {status['phase']!r}, not coexistence; run "
+            "`gr2 workspace migrate-gr1` first so .grip/workspace_spec.toml exists"
+        )
+    gitgrip = workspace_root / ".gitgrip"
+    present = [name for name in ("agents.toml", "spawn") if (gitgrip / name).exists()]
+    if present and not break_gr1_spawn:
+        raise RetireGr1Refused(
+            f".gitgrip/{' and .gitgrip/'.join(present)} present. Moving .gitgrip aside: "
+            f"{_SPAWN_BREAKS}. gr2 has no spawn port yet. "
+            "Pass --break-gr1-spawn to move it anyway."
+        )
+    stamp = stamp or datetime.date.today().strftime("%Y%m%d")
+    target = workspace_root / f".gitgrip.retired-{stamp}"
+    if target.exists() or target.is_symlink():
+        raise RetireGr1Refused(f"{target} already exists; move or remove it first (nothing was changed)")
+    gitgrip.rename(target)
+    return {
+        "workspace_root": str(workspace_root),
+        "retired_to": str(target),
+        "broke_gr1_spawn": bool(present),
+        "undo": f"mv {shlex.quote(str(target))} {shlex.quote(str(gitgrip))}",
     }
 
 

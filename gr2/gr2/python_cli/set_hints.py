@@ -1,0 +1,108 @@
+"""A hint, printed and never recorded: a member in NO declared set still names something a set moved off.
+
+The merge gate is exact over a declared set and, by design, silent about members outside every set: a set is
+declared in grip.toml, never inferred from what a commit moves. So a consumer outside the set can merge with every
+gate green and stay broken. This module says so out loud, beside the gate, without changing it.
+
+What it looks for: identifiers on a set member's removed lines that none of its added lines keeps (its change runs
+from the gitlink at the root commit's first parent, or, when that is absent or the same, from the merge-base with the
+member clone's origin/HEAD, to the gitlink at the root commit), searched as whole words at the
+pinned head of every member in no declared set. It is lexical, so it is wrong both ways: a unit or type change
+under the same name is invisible, and a common removed name can hit everywhere. That is why it is printed and
+capped, never written into a receipt, and never changes an exit code; any error yields no hint.
+"""
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+from . import declared_sets, gitops
+
+_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
+MAX_LINES = 5
+MAX_PATHS = 3
+
+
+def _removed_names(repo: Path, base: str, head: str) -> set[str]:
+    diff = gitops.run(repo, "diff", "-U0", "--no-color", "--no-ext-diff", base, head)
+    if diff.returncode:
+        return set()
+    minus: set[str] = set()
+    plus: set[str] = set()
+    for line in diff.stdout.splitlines():
+        if line.startswith("-") and not line.startswith("---"):
+            minus.update(_IDENT.findall(line[1:]))
+        elif line.startswith("+") and not line.startswith("+++"):
+            plus.update(_IDENT.findall(line[1:]))
+    return minus - plus
+
+
+def _paths_naming(repo: Path, word: str, head: str) -> list[str]:
+    found = gitops.run(repo, "grep", "-w", "-F", "-l", "-e", word, head)
+    if found.returncode:
+        return []
+    return sorted(line.split(":", 1)[1] for line in found.stdout.splitlines() if ":" in line)
+
+
+def _merge_base_with_default(repo: Path, head: str) -> str | None:
+    """Where the member's change starts when the root commit's parent does not say: its merge-base with the clone's
+    record of the remote default branch (origin/HEAD, which `git clone` sets)."""
+    base = gitops.run(repo, "merge-base", head, "refs/remotes/origin/HEAD")
+    return base.stdout.strip() or None if base.returncode == 0 else None
+
+
+def _pins(root: Path, revision: str, declaration: declared_sets.Declaration, names) -> dict[str, str]:
+    pins, _missing = declared_sets.gitlinks(root, revision, declaration, declared_sets.DeclaredSet("", tuple(names)))
+    return pins
+
+
+def out_of_set_hints(workspace: Path, root_commit: str, set_name: str) -> list[str]:
+    """Hint lines for set `set_name` at `root_commit`, at most MAX_LINES plus one line naming how many were left out."""
+    try:
+        root = Path(workspace).resolve()
+        declaration = declared_sets.read(root, root_commit)
+        dset = declaration.set_named(set_name)
+        if dset is None:
+            return []
+        in_a_set = {m for s in declaration.sets for m in s.members}
+        outside = sorted(m for m in declaration.members if m not in in_a_set)
+        if not outside:
+            return []
+        heads = _pins(root, root_commit, declaration, dset.members)
+        parents = _pins(root, f"{root_commit}^", declaration, dset.members)
+        moved_off: dict[str, list[str]] = {}
+        for member in dset.members:
+            head = heads.get(member)
+            if not head:
+                continue
+            repo = root / declaration.members[member]["path"]
+            base = parents.get(member)
+            if not base or base == head:
+                base = _merge_base_with_default(repo, head)
+            if not base or base == head:
+                continue
+            for name in _removed_names(repo, base, head):
+                moved_off.setdefault(name, []).append(member)
+        if not moved_off:
+            return []
+        reader_heads = _pins(root, root_commit, declaration, outside)
+        hits = []
+        for reader in outside:
+            if reader not in reader_heads:
+                continue
+            repo = root / declaration.members[reader]["path"]
+            for name in sorted(moved_off):
+                paths = _paths_naming(repo, name, reader_heads[reader])
+                if paths:
+                    hits.append((reader, name, paths))
+    except Exception:  # a hint never changes what the gate decided, so it never raises either
+        return []
+    lines = []
+    for reader, name, paths in hits[:MAX_LINES]:
+        shown = ", ".join(paths[:MAX_PATHS]) + (f" and {len(paths) - MAX_PATHS} more" if len(paths) > MAX_PATHS else "")
+        lines.append(f"hint: {reader} is in no declared set and still names `{name}` in {shown}; "
+                     f"set {set_name} moved off it ({', '.join(moved_off[name])}). Declare {reader} into the set "
+                     f"if it reads what the set changes.")
+    if len(hits) > MAX_LINES:
+        lines.append(f"hint: {len(hits) - MAX_LINES} more out-of-set name(s) not shown")
+    return lines

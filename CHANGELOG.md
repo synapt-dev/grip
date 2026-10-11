@@ -11,6 +11,11 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Added
 
+- **`gr2`: `check set` and `review merge` print a hint when a member outside every declared set still names
+  something the set moved off.** A member in no declared set merges as before, so a consumer outside the set could
+  merge with every gate green and stay broken. The hint names the member, the identifier and up to three paths, on
+  stderr, at most five lines. It is a whole-word text match, so it can miss a change that keeps its name and can
+  flag a common one: it is never written into a receipt and never changes an exit code.
 - **`gr2`: `api/skill.md` is an agent skill for the review flow generated from gr2's own code.** Each verb's
   help line, each option with its help and its default, and, for every refusal code gr2 prints, the next step it
   prints beside it; only the short framing in `api/skill.intro.md` is hand-written. `scripts/dump_skill.py` renders

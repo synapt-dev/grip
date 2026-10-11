@@ -111,6 +111,12 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **`gr2`: `store commit` writes a `grip.toml` that reads back when a member path or a hand-written `[[sets]]` table
+  holds a character outside the Basic Multilingual Plane, a TOML date, or a datetime.** Strings were written with
+  `json.dumps`, which spells such a character as a surrogate pair that TOML refuses, so the next read of the committed
+  file failed; a date or datetime in a hand-written table had no literal and stopped the commit with a ValueError. Strings
+  and keys are now written as TOML escapes (`\uXXXX`, `\UXXXXXXXX`), so the file stays pure ASCII and no reader has an
+  encoding question, and dates and times are written as TOML date and time literals.
 - **`gr pr create` opens PRs for the branch you are on, not for every branch
   some repo happens to sit on.** It used to open one PR per branch group under
   the single `-t` title, so a repo (the manifest included) parked on an old

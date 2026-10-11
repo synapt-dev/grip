@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import time
 
 import pytest
@@ -117,6 +118,32 @@ def test_a_timeout_is_not_a_verdict_and_is_judged_again(install, monkeypatch):
     monkeypatch.delenv("GR2_QUIET_CONTEXT", raising=False)
     monkeypatch.setattr(gr_shadow, "_VERSION_TIMEOUT_S", 30)
     assert gr.exists() and shadow_line([], str(gr2), str(prefix)) is not None
+
+
+def test_a_gr_that_outlasts_the_real_bound_is_a_timeout_and_records_nothing(install, monkeypatch):
+    """The real path: a stub that sleeps past the bound is killed, read as _TIMEOUT, and never recorded, so it is
+    judged again. test_a_timeout_is_not_a_verdict... patches _gr1_version and never reaches the subprocess clause."""
+    prefix, gr2, brew = install
+    slow = _stub(brew, "gr", "gr 1.5.2", delay=2)
+    monkeypatch.setattr(gr_shadow, "_VERSION_TIMEOUT_S", 0.5)
+    assert gr_shadow._gr1_version(str(slow)) is gr_shadow._TIMEOUT
+    assert shadow_line([], str(gr2), str(prefix)) is None
+    assert not (prefix / MARKER).exists(), "a timeout was recorded as a verdict"
+    assert not gr_shadow._user_state(str(prefix)).exists(), "a timeout was recorded in the user state"
+
+
+def test_the_user_facing_bound_is_two_seconds_and_is_what_the_version_check_runs_with(monkeypatch):
+    """No fixture, so the module constant is the shipped one; the fixture raises it for the other rows."""
+    seen = {}
+
+    def run(cmd, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(cmd, 0, stdout="gr 1.5.2\n", stderr="")
+
+    monkeypatch.setattr(gr_shadow.subprocess, "run", run)
+    assert gr_shadow._gr1_version("gr")[:2] == (1, 5)
+    assert gr_shadow._VERSION_TIMEOUT_S == 2
+    assert seen["timeout"] == 2, "the version check does not run with the 2 s bound"
 
 
 def test_a_gr_replaced_in_place_is_judged_again(install):

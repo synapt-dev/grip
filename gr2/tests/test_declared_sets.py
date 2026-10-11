@@ -235,6 +235,20 @@ def test_a_record_pinning_another_head_for_this_member_is_refused(world):
     assert "alpha" in why
 
 
+def test_a_record_whose_heads_are_not_what_its_root_commit_pins_is_refused(world):
+    """The record's own head list is checked against the commit it names; a forged list describes another commit."""
+    author, alpha = world["author"], world["members"]["alpha"]
+    heads = {n: world["members"][n]["head"] for n in SET}
+    heads["beta"] = "0" * 40
+    row = dict(name=declared_sets.DECLARED_SET_CHECK, result="pass", set_name="core", root_commit=world["root"],
+               declared_members=sorted(SET), heads=sorted(f"{n}:{h}" for n, h in heads.items()))
+    declaration = declared_sets.read(author)
+
+    why = declared_sets.judge(author, declaration, declaration.set_named("core"), "alpha", alpha["head"], [row])
+
+    assert why is not None and why.startswith("declared_set_record_disagrees"), why
+
+
 # ── the declaration ──────────────────────────────────────────────────────────────────────────────────────────────────
 
 

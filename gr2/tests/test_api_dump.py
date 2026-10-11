@@ -79,7 +79,7 @@ MIN_ARGS = 95
 # --json payload already had no registered shape, so the new spelling is one extra residual,
 # the same way `review check` was. `pin` and `stamp` add none: their old names carried no --json.
 
-JSON_VERBS_PENDING = 54
+JSON_VERBS_PENDING = 55
 
 # The kinds a stranger BUILDS ON INDEPENDENTLY: a verb, a flag, a positional
 # and an exit code are each actionable on their own -- a caller writes

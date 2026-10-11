@@ -407,6 +407,24 @@ def url_has_credentials(url: str) -> bool:
     return False
 
 
+# Git runs a program named `git-remote-<name>` for a `<name>::<address>` url, and for a `<scheme>://` url whose scheme
+# it has no built-in transport for. The name is git's own scheme grammar, matched from the start of the url; git
+# lets it start with a digit (`1pwn::x` runs git-remote-1pwn), so this class does too.
+_URL_TRANSPORT = re.compile(r"([A-Za-z0-9][A-Za-z0-9+.-]*)(?:::|://)")
+_ALLOWED_TRANSPORTS = frozenset({"https", "http", "ssh", "git", "file", "git+ssh", "ssh+git"})
+
+
+def url_transport_refusal(url: str) -> str | None:
+    """The transport name when `url` would make git run a remote helper other than https, http, ssh, git or file,
+    else None. Matched exactly, as git matches it: `FILE://x` is not the file transport but a helper named
+    `git-remote-FILE`. A plain or Windows path and an scp-like `user@host:path` name no transport. The read-time half
+    of the rule; the other half is the `protocol.allow` list every gr2 git call carries (gitops.TRANSPORTS)."""
+    match = _URL_TRANSPORT.match(url)
+    if match is None or match.group(1) in _ALLOWED_TRANSPORTS:
+        return None
+    return match.group(1)
+
+
 def _is_loopback_host(host: str) -> bool:
     """This machine, by name or by any numeric spelling (127.1, 2130706433, 0x7f000001, ::ffff:127.0.0.1).
     No DNS lookup: a name other than localhost is left to the network."""

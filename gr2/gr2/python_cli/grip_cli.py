@@ -1173,6 +1173,75 @@ def _require_root_commit(root: Path) -> None:
         raise NativeStoreRefusal("no root commit yet; run store commit", 5)
 
 
+COVERAGE_REACHABLE, COVERAGE_LANDED, COVERAGE_UNCOVERED = "reachable", "landed_by_patch", "uncovered"
+
+
+def _patch_ids(path: Path, *rev_args: str) -> list[tuple[str, str]]:
+    """[(patch-id, patch-id of the REVERSED change)] for the non-merge commits ``git rev-list`` names with ``rev_args``,
+    in the order it lists them. ``--verbatim``, not ``--stable``: the stable id strips whitespace, so an
+    indentation-only change and its revert hash the same and a revert could never un-land it. ``--verbatim`` keeps
+    whitespace and is order-independent like ``--stable``. A git without it yields no id, which reads uncovered."""
+    commits = _store_git(path, "rev-list", "--no-merges", *rev_args, check=False).stdout.split()
+    found: list[tuple[str, str]] = []
+    for commit in commits:
+        pair = []
+        # The reversed change is the diff from the commit back to its parent: `show -R` swaps the a/ b/ path prefixes
+        # in the header, so its patch-id never matches the one a real revert commit has.
+        for args in (("show", "--format=", "--no-ext-diff", commit), ("diff", "--no-ext-diff", commit, f"{commit}^")):
+            shown = gitops.run(path, *args)
+            ident = gitops.run(path, "patch-id", "--verbatim", input=shown.stdout).stdout.split()
+            pair.append(ident[0] if shown.returncode == 0 and ident else "")
+        if all(pair):
+            found.append((pair[0], pair[1]))
+    return found
+
+
+def _coverage_of(path: Path, pin: str, upstream: str) -> str:
+    """Whether ``upstream`` carries the WORK of ``pin``: ``reachable`` (the commit itself is an ancestor),
+    ``landed_by_patch`` (the same change is on upstream under other commits: a rebase-merge matches commit by commit, a
+    squash-merge matches the combined diff), or ``uncovered``. Containment only opens the question; the patch-id read
+    closes it, because a squash or rebase leaves the commit object behind and the work landed. A change counts as
+    landed only if the LAST thing upstream did with it was land it: upstream's commits are replayed in order, a commit
+    carrying the change's patch-id lands it and one carrying the reversed patch-id (a revert) un-lands it.
+
+    A merge commit in the pin's range can carry content of its own (a conflict resolution, or a file added in the
+    merge), and the commit-by-commit read never sees it. So a range holding any merge, or one whose merges cannot be
+    listed, is answered from the combined diff alone, which includes that content."""
+    if not _store_git(path, "merge-base", "--is-ancestor", pin, upstream, check=False).returncode:
+        return COVERAGE_REACHABLE
+    base = _store_git(path, "merge-base", pin, upstream, check=False).stdout.strip()
+    if not base:
+        return COVERAGE_UNCOVERED
+    theirs = _patch_ids(path, "--reverse", f"{base}..{upstream}")
+    if not theirs:
+        return COVERAGE_UNCOVERED
+    merges = _store_git(path, "rev-list", "--merges", f"{base}..{pin}", check=False)
+    has_merge = bool(merges.returncode) or bool(merges.stdout.strip())
+
+    def net_landed(want: str, undo: str) -> bool:
+        state = False
+        for ident, reverse in theirs:
+            if ident == want:
+                state = True
+            elif ident == undo:
+                state = False
+        return state
+
+    if not has_merge:
+        mine = _patch_ids(path, f"{base}..{pin}")
+        if not mine:
+            return COVERAGE_UNCOVERED
+        if all(net_landed(ident, reverse) for ident, reverse in mine):
+            return COVERAGE_LANDED
+    whole = gitops.run(path, "diff", "--no-ext-diff", base, pin)
+    undone = gitops.run(path, "diff", "--no-ext-diff", pin, base)
+    combined = gitops.run(path, "patch-id", "--verbatim", input=whole.stdout).stdout.split()
+    reverse = gitops.run(path, "patch-id", "--verbatim", input=undone.stdout).stdout.split()
+    if whole.returncode or undone.returncode or not combined or not reverse:
+        return COVERAGE_UNCOVERED
+    return COVERAGE_LANDED if net_landed(combined[0], reverse[0]) else COVERAGE_UNCOVERED
+
+
 def _member_coverage(
     root: Path, member: dict[str, str], sha: str, claimed: set[Path]
 ) -> None:
@@ -1209,7 +1278,12 @@ def _member_coverage(
         raise NativeStoreRefusal(f"{member['name']} has invalid upstream {upstream!r}", 4)
     if _store_git(path, "fetch", remote, check=False).returncode:
         raise NativeStoreRefusal(f"{member['name']} cannot fetch {remote}", 5)
-    if _store_git(path, "merge-base", "--is-ancestor", sha, upstream, check=False).returncode:
+    answer = _coverage_of(path, sha, upstream)
+    if answer == COVERAGE_LANDED:
+        raise NativeStoreRefusal(
+            f"{member['name']} pin {sha} landed on {upstream} under a different commit (squash or rebase); "
+            f"re-pin to the tip of {upstream}, do not push it", 3)
+    if answer != COVERAGE_REACHABLE:
         raise NativeStoreRefusal(
             f"{member['name']} pin {sha} is not on {upstream}; push it first", 3
         )
@@ -1813,9 +1887,18 @@ def _native_store_materialize(root: Path) -> list[dict[str, str]]:
                 )
         if covered_by and _store_git(path, "fetch", "origin", covered_by, check=False).returncode:
             done = ", ".join(item["name"] for item in materialized) or "none"
-            raise NativeStoreRefusal(
-                f"{member['name']} covering ref {covered_by} cannot be fetched from origin; done: {done}", 3
-            )
+            # A layered record names no covering ref, so only an unlayered record reaches this line. A clone that
+            # already holds the pin needs nothing from the ref; otherwise ask the remote, because a failed fetch also
+            # means an unreachable or unauthenticated origin, and only an answered, empty ls-remote says "gone".
+            if _store_git(path, "cat-file", "-e", f"{member['pin']}^{{commit}}", check=False).returncode:
+                asked = _store_git(path, "ls-remote", "origin", covered_by, check=False)
+                if asked.returncode == 0 and not asked.stdout.strip():
+                    raise NativeStoreRefusal(
+                        f"full_mode_covering_ref_vanished: {member['name']} covering ref {covered_by} is gone from origin "
+                        f"(a merged branch is usually deleted) and pin {member['pin']} is not in the clone; "
+                        f"re-pin the member to a commit on origin and run store commit; done: {done}", 3)
+                raise NativeStoreRefusal(
+                    f"{member['name']} covering ref {covered_by} cannot be fetched from origin; done: {done}", 3)
         for number, layer in enumerate(layers, 1):
             _apply_layer(path, member, number, layer, materialized)
         checkout = _store_git(path, "checkout", "--detach", member["pin"], check=False)

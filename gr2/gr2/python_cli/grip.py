@@ -726,8 +726,9 @@ def _review_bind_author(workspace: Path) -> str:
     name = proc.stdout.strip()
     if proc.returncode != 0 or not name or any(ord(c) < 32 or ord(c) == 127 for c in name):
         raise GripReviewRefused(
-            "bind_author_unavailable", str(workspace),
-            "set your Git identity with git config user.name 'Your Name' in the workspace root, then retry review pin")
+            "bind_author_unavailable", "a Git user.name in the workspace root",
+            f"none set in {workspace}; run git config user.name 'Your Name' there (GIT_AUTHOR_NAME is not read), "
+            "then retry")
     return name
 
 

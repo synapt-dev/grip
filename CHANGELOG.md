@@ -151,6 +151,14 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   reopened. Both streams are now read (the exit status when there is no text), and a venv directory the failed create
   made is removed; one that existed before is left alone. The receipt `close` keeps for a refused run was named
   `unknown-<time>`; it now carries the commit from the lane's marker.
+- **`gr2`: the refusal for a missing Git author name reads the right way round.** `review bind` with no `user.name` in the workspace root
+  printed the workspace path as what was expected and the advice as what was observed, named `review pin` for a caller that ran bind, and
+  said nothing about `GIT_AUTHOR_NAME` in the environment, which is not read. It now names the requirement, the state, the exact
+  command and that the environment variable does not count.
+- **`gr2`: a `package` that is not an import name is refused by name in `review run`.** `package = .` in a repo's `.review-install` (or
+  `--package .`) reached `python -c "import . as _m"` and came back as a raw `SyntaxError` inside an `import_failed` refusal. A value
+  that is not a dotted Python name (a path, a directory, a keyword, a value with a space or a `;`) is now refused before any import, saying
+  that `package` names the module the install provides.
 - **`gr2`: git runs only the https, http, ssh, git and file transports, so a member url shaped `<name>::<address>` no
   longer runs an installed `git-remote-<name>` program.** Git hands such a url to whatever helper of that name is on
   `PATH`, and a member's origin in `grip.toml` reaches `git clone` in `store materialize`. Every git command gr2 runs now

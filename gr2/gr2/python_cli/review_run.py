@@ -20,6 +20,7 @@ cannot be parsed, is a REFUSAL, not a green.
 from __future__ import annotations
 
 import json
+import keyword
 import os
 import re
 import shlex
@@ -403,6 +404,12 @@ def resolve_import_file(venv_python: Path, package: str, env: dict) -> str:
     what `assert_import_under_lane` then verifies. `-I` isolates the CHECK only; the
     RUN is isolated by `scrubbed_python_env` (a `PYTHONPATH` shadow is neutralized for
     pytest there, not here)."""
+    if not all(part.isidentifier() and not keyword.iskeyword(part) for part in package.split(".")):
+        raise ReviewRunRefused(
+            "import_failed",
+            f"package {package!r} is not an import name: `package` names the module the install provides (a dotted "
+            "Python name such as demo_pkg), not a path or a directory",
+        )
     proc = subprocess.run(
         [str(venv_python), "-I", "-c", f"import {package} as _m; print(_m.__file__ or '')"],
         text=True,

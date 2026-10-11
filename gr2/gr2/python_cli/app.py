@@ -4792,6 +4792,10 @@ def review_merge(
                                             required_checks=tuple(check) if check else None,
                                             required_approvals=approval_count, no_set=no_set)
     typer.echo(json.dumps(receipt))
+    from . import set_hints
+    for set_name in sorted({(m.get("declared_set") or {}).get("set") for m in receipt.get("members", [])} - {None}):
+        for line in set_hints.out_of_set_hints(ws, "HEAD", set_name):
+            typer.echo(line, err=True)
     if code:
         raise typer.Exit(code)
 
@@ -5336,6 +5340,10 @@ def check_set(
         raise typer.Exit(2)
     tail = result.pop("output_tail")
     typer.echo(json.dumps(result))
+    if root_commit is not None:
+        from . import set_hints
+        for line in set_hints.out_of_set_hints(workspace_root, result["root_commit"], set_name):
+            typer.echo(line, err=True)
     if result["result"] != "pass":
         typer.echo(tail, err=True)
         raise typer.Exit(1)

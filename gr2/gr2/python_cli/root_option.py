@@ -210,6 +210,11 @@ class ReviewHeadCommand(ReviewTargetCommand):
     marker_supplies_target = False
 
 
+#: What the review slot of `check set` holds when the subject is a root commit (`--root-commit`) and not a review. The
+#: caller never types it: the command class supplies it, so the words after `--` stay the user's command.
+ROOT_COMMIT_SUBJECT = "root-commit"
+
+
 class ReviewHeadTrailingCommand(ReviewHeadCommand):
     """A review-head verb that ends in a command of its own (`check set <review> -- <command>`).
 
@@ -228,7 +233,13 @@ class ReviewHeadTrailingCommand(ReviewHeadCommand):
         option_tokens = args[:args.index("--")] if "--" in args else args
         help_option = self.get_help_option(ctx)
         asked_for_help = help_option is not None and any(word in help_option.opts for word in option_tokens)
-        positions, _ = self._scan(args)
+        positions, root_value = self._scan(args)
+        if not asked_for_help and any(w == "--root-commit" or w.startswith("--root-commit=") for w in option_tokens):
+            if len(positions) + (root_value is not None) != 1:
+                ctx.fail("--root-commit takes the workspace root and no review: "
+                         "gr2 check set <workspace> --root-commit <sha> --set <name> -- <command>")
+            args.insert(args.index("--") if "--" in args else len(args), ROOT_COMMIT_SUBJECT)
+            return super().parse_args(ctx, args)
         if not asked_for_help and not positions:
             ctx.fail("a review is required before the command: gr2 check set <review> -- <command>")
         return super().parse_args(ctx, args)

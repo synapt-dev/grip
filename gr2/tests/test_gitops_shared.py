@@ -191,6 +191,7 @@ GIT_SPAWNS = {("python_cli/gitops.py", "_spawn"), ("python_cli/version.py", "_cl
 # command, a venv or pip step, a hook, a plugin, a launched agent, or the hosting platform's CLI.
 USER_COMMAND_SEAMS = {
     ("python_cli/check_records.py", "run_check"), ("python_cli/set_check.py", "run_set_check"),
+    ("python_cli/set_check.py", "run_declared_set_check"),
     ("python_cli/env_exec.py", "import_origin"), ("python_cli/env_exec.py", "probe_venv"),
     ("python_cli/execops.py", "_exec_one"),
     ("python_cli/git_review.py", "_run_pytest"), ("python_cli/git_review.py", "_run_non_pytest"),
@@ -310,6 +311,7 @@ def _one_member_merge(monkeypatch, tmp_path, merge_tree):
     monkeypatch.setattr(merge_gate.check_records, "read_remote_check",
                         lambda *a, **k: {"status": "pass", "record_id": "d" * 40, "reason": "ok"})
     monkeypatch.setattr(merge_gate, "_state", lambda *a: ("unmerged", None))
+    monkeypatch.setattr(merge_gate.declared_sets, "read", lambda *a, **k: merge_gate.declared_sets.Declaration((), {}))
     calls = []
 
     def spawn(argv, **kw):

@@ -18,7 +18,7 @@ import tempfile
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from . import check_records, grip
+from . import check_records, gitops, grip
 
 SET_CHECK_NAME = "set"
 _KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
@@ -157,3 +157,73 @@ def run_set_check(workspace: Path, review_id: str, name: str, argv: Sequence[str
             f"set_publication_incomplete: published to {[p['key'] for p in published]}, failed at {failed[0]}: {failed[1]}")
     return {"review": review, "set_id": sid, "name": name, "result": result, "exit_code": execution.returncode,
             "members": published, "output_tail": _tail(execution.stdout + execution.stderr)}
+
+
+def run_declared_set_check(workspace: Path, set_name: str, root_commit: str, argv: Sequence[str]) -> dict:
+    """The check for a DECLARED set (`[[sets]]` in the store's grip.toml): one command over every member of the set
+    at the heads a root commit pins, then one record per member remote naming that root commit.
+
+    The subject is the root commit, not a review: its gitlinks name the heads, so the record is one statement for
+    the whole set and no per-review record can stand in for it. It lists the set's members as declared AT that
+    commit, and refuses before running anything when the commit does not pin every one of them."""
+    from . import declared_sets
+
+    root = Path(workspace).resolve()
+    if not argv:
+        raise check_records.CheckRefused("check_name_and_command_required")
+    resolved = gitops.run(root, "rev-parse", "--verify", "-q", f"{root_commit}^{{commit}}")
+    if resolved.returncode or not resolved.stdout.strip():
+        raise check_records.CheckRefused(f"root_commit_unknown: {root_commit!r} is not a commit of this workspace")
+    commit = resolved.stdout.strip()
+    try:
+        declaration = declared_sets.read(root, commit)
+    except declared_sets.DeclaredSetError as exc:
+        raise check_records.CheckRefused(f"declared_sets_invalid: {exc}") from exc
+    dset = declaration.set_named(set_name)
+    if dset is None:
+        raise check_records.CheckRefused(
+            f"declared_set_unknown: {set_name!r} is not declared at {commit[:12]}; declared: {[s.name for s in declaration.sets]}")
+    pins, missing = declared_sets.gitlinks(root, commit, declaration, dset)
+    if missing:
+        raise check_records.CheckRefused(
+            f"declared_set_member_unpinned: root commit {commit[:12]} does not pin {missing} of set {set_name!r}")
+    repos: dict[str, Path] = {}
+    for member, head in pins.items():
+        repo = (root / declaration.members[member]["path"]).resolve()
+        if not repo.is_relative_to(root):
+            raise check_records.CheckRefused(f"member_path_outside_workspace: {declaration.members[member]['path']}")
+        check_records._oid(repo, head)  # a full commit id that this member's repo holds
+        check_records._remote(declaration.members[member]["remote"])
+        repos[member] = repo
+    with tempfile.TemporaryDirectory(prefix="gr2-declared-set-") as directory:
+        lane = Path(directory)
+        for member, head in pins.items():
+            cloned = gitops.clone("--quiet", "--no-hardlinks", "--no-checkout", str(repos[member]), str(lane / member), binary=True)
+            if cloned.returncode:
+                gitops._raise(cloned, ("clone",), check_records.CheckRefused)
+            check_records._git(lane / member, "checkout", "--quiet", "--detach", head)
+        env = {**os.environ, "GR2_SET_ROOT": str(lane), "GR2_SET_NAME": set_name, "GR2_ROOT_COMMIT": commit,
+               "GR2_SET_MEMBERS": json.dumps({m: str(lane / m) for m in pins}, sort_keys=True)}
+        execution = subprocess.run(list(argv), cwd=lane, env=env, capture_output=True)
+        after = {m: check_records._git(lane / m, "rev-parse", "HEAD").decode().strip() for m in pins}
+    if after != pins:
+        raise check_records.CheckRefused("check_execution_head_changed")
+    result = "pass" if execution.returncode == 0 else "fail"
+    listing = sorted(f"{m}:{h}" for m, h in pins.items())
+    published, failed = [], None
+    for member, head in pins.items():
+        row = dict(v=1, head=head, observed_head=head, name=declared_sets.DECLARED_SET_CHECK, result=result,
+                   exit_code=execution.returncode, set_name=set_name, root_commit=commit,
+                   declared_members=list(dset.members), heads=listing)
+        try:
+            out = check_records.publish_observation(repos[member], declaration.members[member]["remote"], row)
+        except (check_records.CheckRefused, subprocess.SubprocessError, OSError) as exc:
+            failed = (member, str(exc))
+            break
+        published.append({"member": member, "head": head, "record_id": out["record_id"],
+                          "observation_id": out["observation"]["observation_id"]})
+    if failed:
+        raise check_records.CheckRefused(
+            f"set_publication_incomplete: published to {[p['member'] for p in published]}, failed at {failed[0]}: {failed[1]}")
+    return {"set": set_name, "root_commit": commit, "name": declared_sets.DECLARED_SET_CHECK, "result": result,
+            "exit_code": execution.returncode, "members": published, "output_tail": _tail(execution.stdout + execution.stderr)}

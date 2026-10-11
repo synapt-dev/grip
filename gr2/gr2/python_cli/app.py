@@ -41,7 +41,7 @@ from . import push as push_ops
 from .clone_exec import rmtree_or_refuse
 from .events import EventEmitError, EventType, emit, emit_after_outcome
 from .layout import grip_dir
-from .root_option import ROOT_OPTION, ContextCommand, ReviewTargetCommand, ReviewHeadCommand, ReviewHeadTrailingCommand, ReviewOpenCommand, ReviewSubjectCommand, ReviewReaderSubjectCommand, RootOptionCommand, RootOptionalCommand
+from .root_option import ROOT_COMMIT_SUBJECT, ROOT_OPTION, ContextCommand, ReviewTargetCommand, ReviewHeadCommand, ReviewHeadTrailingCommand, ReviewOpenCommand, ReviewSubjectCommand, ReviewReaderSubjectCommand, RootOptionCommand, RootOptionalCommand
 from .gitops import (
     branch_exists,
     checkout_branch,
@@ -5295,6 +5295,10 @@ def check_set(
     review_id: str = typer.Argument(..., help="The pinned review, gr:<sha>"),
     command: List[str] = typer.Argument(None, help="The command to run, after --"),
     name: str = typer.Option(set_check.SET_CHECK_NAME, "--name"),
+    root_commit: Optional[str] = typer.Option(
+        None, "--root-commit",
+        help="Check a DECLARED set (a [[sets]] table in grip.toml) at this root commit instead of a review"),
+    set_name: Optional[str] = typer.Option(None, "--set", help="With --root-commit: the declared set to check"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Run ONE command over every member of a pinned review, side by side at the pinned heads, and publish it.
@@ -5305,7 +5309,14 @@ def check_set(
     1 fail, 2 refused or not published to every member.
     """
     try:
-        result = set_check.run_set_check(workspace_root, review_id, name, command or [])
+        if root_commit is not None:
+            if review_id != ROOT_COMMIT_SUBJECT or not set_name:
+                raise check_records.CheckRefused("declared_set_check_needs_a_set: gr2 check set <workspace> --root-commit <sha> --set <name> -- <command>")
+            result = set_check.run_declared_set_check(workspace_root, set_name, root_commit, command or [])
+        elif set_name is not None:
+            raise check_records.CheckRefused("set_applies_to_root_commit: pass --root-commit with --set")
+        else:
+            result = set_check.run_set_check(workspace_root, review_id, name, command or [])
     except (check_records.CheckRefused, defaults.Unresolved, subprocess.SubprocessError, OSError) as exc:
         typer.echo(json.dumps({"status": "fail", "reason": str(exc)}))
         raise typer.Exit(2)

@@ -30,7 +30,9 @@ arg   check set command <str>                                         stable
 arg   check set review_id <str>                                       stable
 arg   check set workspace_root <str>                                  stable
 flag  check set --name <str>                                          stable
+flag  check set --root-commit <str>                                   stable
 flag  check set --root/-C <str>                                       stable
+flag  check set --set <str>                                           stable
 verb  check set                                                       stable
 # check show
 arg   check show repo <str>                                           stable

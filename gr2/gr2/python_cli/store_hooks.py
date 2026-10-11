@@ -335,6 +335,20 @@ def _sync_gitmodules(root: Path, members: list[dict[str, str]], index: str | Non
         raise RuntimeError(added.stderr.strip() or "git add .gitmodules failed")
 
 
+def _staged_mode(staged_text: str) -> str:
+    """The workspace mode the staged grip.toml carries; a bad `mode` value is refused by name (exit 4), and text that
+    is not TOML is left to the member reader that refuses it."""
+    import tomllib
+
+    from . import grip_cli as gc
+
+    try:
+        document = tomllib.loads(staged_text)
+    except tomllib.TOMLDecodeError:
+        return "compat"
+    return gc._workspace_mode(document)
+
+
 def run_pre_commit(root: Path) -> int:
     """0 to let the commit proceed, 1 to refuse it. Prints the refusal in the verbs' own words.
 
@@ -347,6 +361,12 @@ def run_pre_commit(root: Path) -> int:
         if staged_bytes is None:
             return 0
         staged_text = staged_bytes.decode("utf-8")
+        if _staged_mode(staged_text) == "full":
+            # A full-mode commit carries field-commits as parents, which `git commit` cannot make: only `store commit`
+            # can, so this hook refuses before it reads a staged gitlink as a member's pin.
+            raise gc.NativeStoreRefusal(
+                'full_mode_hook: this workspace\'s grip.toml says mode = "full"; commit through `gr2 store commit`, '
+                "which records each member's field-commit as a parent", 4)
         members = _members_from(staged_text)
         staged = _index_gitlinks(root, index)
         committed = _head_gitlinks(root)

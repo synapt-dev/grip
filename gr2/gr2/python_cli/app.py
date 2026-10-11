@@ -961,10 +961,24 @@ def _is_scannable_child(child: Path) -> bool:
     return repo_proto.is_own_toplevel(child)
 
 
+def _root_gitlink_pins(workspace_root: Path) -> dict[str, str]:
+    """The root's gitlink pins, for a compat workspace. A full-mode root is refused by name: its entries are
+    field-commits, so reading them as pins would report every member as moved."""
+    from . import workspace_mode
+
+    try:
+        mode = workspace_mode.of_root(workspace_root, "HEAD")
+    except workspace_mode.WorkspaceModeError as exc:
+        raise SystemExit(str(exc)) from exc
+    if mode == "full":
+        raise SystemExit(workspace_mode.full_mode_refusal(f"the superproject scan of {workspace_root}"))
+    return repo_proto.root_gitlink_pins(workspace_root)
+
+
 def _scan_existing_repos(workspace_root: Path) -> list[dict[str, object]]:
     repos: list[dict[str, object]] = []
     # Read once, not per repo: the root's own declarations about its members.
-    pins = repo_proto.root_gitlink_pins(workspace_root)
+    pins = _root_gitlink_pins(workspace_root)
     declared_refs = repo_proto.root_submodule_branches(workspace_root)
     modules = repo_proto.root_submodule_declarations(workspace_root)
 
@@ -1209,7 +1223,7 @@ def _require_superproject(workspace_root: Path) -> None:
     not assumed -- because a ``.gitmodules`` is a lookup table that the tree's
     160000 entries are what actually reference.
     """
-    if repo_proto.root_gitlink_pins(workspace_root):
+    if _root_gitlink_pins(workspace_root):
         return
     if repo_proto.root_submodule_declarations(workspace_root):
         # Name this case when it applies: a user who has a .gitmodules has
@@ -1260,7 +1274,7 @@ def _superproject_report(workspace_root: Path) -> dict[str, int] | None:
     it, which is what makes it a member, and whether its working tree exists yet
     is an observation about the moment.
     """
-    pinned = repo_proto.root_gitlink_pins(workspace_root)
+    pinned = _root_gitlink_pins(workspace_root)
     if not pinned:
         return None
 

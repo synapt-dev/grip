@@ -99,6 +99,10 @@ def test_a_relative_local_url_is_recorded_absolute(tmp_path: Path, monkeypatch: 
     origin = _members(tmp_path / "work")["alpha"]["remotes"]["origin"]
     assert origin == str((tmp_path / "remotes" / "alpha.git").resolve()), origin
 
+    # The rerun with the same relative url is the same member, not "another origin".
+    rc, out = _cli("store", "init", "work", "--clone", "alpha=remotes/alpha.git")
+    assert rc == 0, out
+
 
 def test_clone_mixes_with_an_existing_member_path(tmp_path: Path) -> None:
     """--clone adds to the named members; a checkout already in place is named with --member as before."""

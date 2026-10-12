@@ -602,7 +602,25 @@ def _toml_value(value: object) -> str:
         return "[" + ", ".join(_toml_value(v) for v in value) + "]"
     if isinstance(value, dict):
         return "{ " + ", ".join(f"{_toml_key(k)} = {_toml_value(v)}" for k, v in value.items()) + " }"
-    raise ValueError(f"cannot carry a [[sets]] value of type {type(value).__name__} through `store commit`")
+    raise ValueError(f"cannot carry a grip.toml value of type {type(value).__name__} through `store commit`")
+
+
+#: What `_write_native_members` derives (or carries by name) itself. Every other key in the record is the owner's
+#: declaration and is carried through verbatim (`[approvals]` was once dropped here, so the review gate read
+#: `required = 0` from the second feature on).
+_WRITER_OWNS = frozenset({"schema_version", "workspace_name", "mode", "members", "sets"})
+
+
+def _existing_document(root: Path) -> dict:
+    """The grip.toml on disk as a document; empty when there is none or it cannot be read."""
+    try:
+        return tomllib.loads((root / "grip.toml").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return {}
+
+
+def _is_table_array(value: object) -> bool:
+    return isinstance(value, list) and bool(value) and all(isinstance(v, dict) for v in value)
 
 
 def _existing_mode(root: Path) -> str:
@@ -614,11 +632,20 @@ def _existing_mode(root: Path) -> str:
 
 
 def _write_native_members(root: Path, members: list[dict[str, str]]) -> None:
-    lines = ["schema_version = 1", f"workspace_name = {_toml_str(root.name)}"]
+    document = _existing_document(root)
+    # The record's name, not this checkout's directory name: a second machine's clone sits in a directory of its own
+    # choosing, and its first commit renamed the workspace to it. Derived only when there is no record.
+    recorded_name = document.get("workspace_name")
+    name = recorded_name if isinstance(recorded_name, str) and recorded_name.strip() else root.name
+    lines = ["schema_version = 1", f"workspace_name = {_toml_str(name)}"]
     # `mode` is the owner's declaration, like `[[sets]]`: carried through, or the first `store commit` would turn a
     # full-mode workspace back into a compat one. Top-level, so it comes before the first table.
     if _existing_mode(root) == "full":
         lines.append('mode = "full"')
+    carried = {k: v for k, v in document.items() if k not in _WRITER_OWNS}
+    # Other top-level values also come before the first table, or TOML would read them as the table's keys.
+    lines.extend(f"{_toml_key(k)} = {_toml_value(v)}" for k, v in carried.items()
+                 if not isinstance(v, dict) and not _is_table_array(v))
     lines.append("")
     for member in members:
         lines.extend([
@@ -639,6 +666,18 @@ def _write_native_members(root: Path, members: list[dict[str, str]]) -> None:
         lines.append("[[sets]]")
         lines.extend(f"{_toml_key(key)} = {_toml_value(value)}" for key, value in declared.items())
         lines.append("")
+    # Every table the owner declared (`[approvals]` among them), and every array of tables, carried verbatim. A nested
+    # table is written inline, which TOML reads back as the same value.
+    for key, value in carried.items():
+        if isinstance(value, dict):
+            lines.append(f"[{_toml_key(key)}]")
+            lines.extend(f"{_toml_key(k)} = {_toml_value(v)}" for k, v in value.items())
+            lines.append("")
+        elif _is_table_array(value):
+            for table in value:
+                lines.append(f"[[{_toml_key(key)}]]")
+                lines.extend(f"{_toml_key(k)} = {_toml_value(v)}" for k, v in table.items())
+                lines.append("")
     (root / "grip.toml").write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -2397,13 +2436,31 @@ def _native_store_materialize(root: Path) -> list[dict[str, str]]:
         if branch is None:
             row["detached"] = why
         materialized.append(row)
+    # The root's own files first: a --no-checkout clone gets its committed index back here, so the registration below
+    # sees every member's gitlink there too, the same as a normal clone.
+    _restore_root_files(root)
     # Registered only where the root's index holds the member's gitlink: init and every plain `git submodule` verb
-    # match paths against the index, so in a root cloned with --no-checkout (empty index) there is nothing plain git
-    # could act on, and registering would only fail the verb after its work was done.
+    # match paths against the index, and registering a path the index lacks would only fail the verb after its work
+    # was done.
     if not full and not has_foreign_gitmodules(root):
         _register_submodules(root, [m["path"] for m in members
                                     if _store_git(root, "ls-files", "-s", "--", m["path"]).stdout.startswith("160000 ")])
     return materialized
+
+
+def _restore_root_files(root: Path) -> None:
+    """Give a root cloned with `--no-checkout` its own committed files (grip.toml, .gitinclude, .gitmodules).
+
+    Materialize reads the spec from HEAD and populates the members, but never wrote the root's own files, so the next
+    `store commit` worked from no grip.toml: it renamed the workspace to the clone's directory, dropped `[approvals]`,
+    and staged `.gitinclude` as deleted. Only an EMPTY index is filled, and checkout-index writes only
+    files that are absent, so a root that already holds a checkout or staged work is left exactly as it is."""
+    if _store_git(root, "rev-parse", "-q", "--verify", "HEAD", check=False).returncode:
+        return
+    if _store_git(root, "ls-files", check=False).stdout.strip():
+        return
+    _store_git(root, "read-tree", "HEAD")
+    _store_git(root, "checkout-index", "--all", "--quiet")
 
 
 @_refuses_moved_workspace

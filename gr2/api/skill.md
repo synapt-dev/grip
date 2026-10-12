@@ -160,7 +160,7 @@ next: pin a head before you push it. For this head, either commit a new head and
 
 ### head_not_fetched
 
-next: fetch the reviewed head into this member clone, then stamp again: git -C '<repo>' fetch '<remote>' '<head>', then gr2 review stamp '<workspace>' '<review>'
+next: the member remote '<remote>' does not serve the reviewed head '<head>'; once the author has pushed it there, stamp again: gr2 review stamp '<workspace>' '<review>'
 
 ### not_received
 

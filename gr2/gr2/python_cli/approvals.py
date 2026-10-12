@@ -129,8 +129,12 @@ def _context(workspace: Path, review_id: str) -> tuple[dict, set[str]]:
         repo = (root / m["path"]).resolve()
         if not repo.is_relative_to(root) or merge_gate._toplevel(repo) != repo or not merge_gate._store_inside(repo, root):
             raise ApprovalRefused(f"approval_member_repo_mismatch: {m['key']}")
-        # A reviewer's clone made before the head was pushed does not hold it: a named refusal with the
-        # fetch that fixes it, not a raw `unknown revision` from the rev-parse below.
+        # A reviewer's clone made before the head was pushed does not hold it, so the exact reviewed head is
+        # fetched from the member remote the review names (the remote the approval chain is read from below).
+        # Only when that remote cannot serve it: a named refusal with the next step, not a raw `unknown revision`.
+        if gitops.run(repo, "cat-file", "-e", f"{m['head']}^{{commit}}").returncode:
+            gitops.run(repo, "fetch", "-q", "--no-tags", "--no-write-fetch-head", "--", m["remote"], m["head"],
+                       timeout=60)
         try:
             _git(repo, "cat-file", "-t", f"{m['head']}^{{commit}}")
         except ApprovalRefused:

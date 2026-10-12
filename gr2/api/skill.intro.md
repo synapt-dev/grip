@@ -17,4 +17,6 @@ The order matters, because each step refuses until the one before it is done:
 6. `gr2 check run` at the exact reviewed head (and `gr2 check set` when the review covers several members), then `gr2 check show` to read what is recorded.
 7. `gr2 review merge`: every member passes its preflight or nothing is pushed.
 
+To inspect members, run `gr2 store status` (`--json` for a program), not plain git in each one: it answers, per member and in one line, the branch, head, pin, commits ahead of and behind its upstream, and the number of uncommitted entries.
+
 When a step refuses, gr2 prints `refused: <code>` and the next step. Both are listed at the end of this file. Run `gr2 <verb> --help` for the installed version; the command's own help wins over this file.

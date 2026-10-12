@@ -33,7 +33,7 @@ INTRO = GR2 / "api" / "skill.intro.md"
 
 # The review flow, in the order an operator meets it. A curated list, not the whole app:
 # the skill is for one job.
-VERBS = ["store init", "review pin", "push", "review publish", "review receive", "review stamp",
+VERBS = ["store init", "store status", "review pin", "push", "review publish", "review receive", "review stamp",
          "check run", "check show", "review merge"]
 NO_HELP = "(no help text in the code)"
 

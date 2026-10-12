@@ -1256,6 +1256,13 @@ def _native_store_init(root: Path, member_paths: list[str] | None = None,
     if clones:
         clones = [(name, _clone_url(url)) for name, url in clones]
         todo = _plan_clones(root, clones)
+        # The --member paths are checked BEFORE anything is cloned, like every other refusal decidable up front:
+        # `--clone a=<url> --member nope` used to clone a and only then refuse nope, leaving a stray a/. A path
+        # --clone itself creates is skipped here; it cannot be a checkout until it is cloned.
+        cloned_names = {name for name, _ in clones}
+        named = [p for p in (member_paths or []) if str(PurePosixPath(p.strip())) not in cloned_names]
+        if named:  # mut:earlymember
+            _discover_members(root, declared=named)
         if not (root / ".git").exists():
             _refuse_enclosing_repo(root)
         root.mkdir(parents=True, exist_ok=True)

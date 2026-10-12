@@ -165,6 +165,19 @@ def test_a_non_empty_folder_at_the_name_refuses(tmp_path: Path) -> None:
     assert not (root / "grip.toml").exists()
 
 
+def test_a_member_path_that_is_not_a_checkout_refuses_before_any_clone(tmp_path: Path) -> None:
+    # `--member nope` was refused only AFTER alpha was cloned, so the root kept a stray alpha/ and no grip.toml.
+    # A --member path is checked before anything is cloned, like every other refusal that can be decided up
+    # front; a name --clone itself creates is not checked early (it does not exist yet).
+    alpha = _bare_remote(tmp_path, "alpha")
+    root = tmp_path / "work"
+    rc, out = _cli("store", "init", str(root), "--clone", f"alpha={alpha}", "--member", "nope")
+    assert rc == 4, out
+    assert "nope" in out, out
+    assert not (root / "alpha").exists(), "alpha was cloned before the --member refusal"
+    assert not (root / "grip.toml").exists()
+
+
 def test_a_url_with_credentials_refuses_without_printing_it(tmp_path: Path) -> None:
     root = tmp_path / "work"
     rc, out = _cli("store", "init", str(root), "--clone", "alpha=https://user:s3cret@example.invalid/alpha.git")

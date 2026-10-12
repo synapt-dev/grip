@@ -321,6 +321,17 @@ arg   lane list workspace_root <str>                                  stable
 flag  lane list --root/-C <str>                                       stable
 flag  lane list --unit <str>                                          stable
 verb  lane list                                                       stable
+# lane push
+arg   lane push lane_name <str>                                       stable
+arg   lane push owner_unit <str>                                      stable
+arg   lane push workspace_root <str>                                  stable
+flag  lane push --force-with-lease                                    stable
+flag  lane push --json                                                stable
+flag  lane push --remote <str>                                        stable
+flag  lane push --root/-C <str>                                       stable
+flag  lane push --set-upstream/-u                                     stable
+flag  lane push --unit <str>                                          stable
+verb  lane push                                                       stable
 # lane remove
 arg   lane remove lane_name <str>                                     stable
 arg   lane remove owner_unit <str>                                    stable

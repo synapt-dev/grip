@@ -34,11 +34,11 @@ from gr2.python_cli import root_option
 from gr2.python_cli.app import app
 from typer.testing import CliRunner
 
-RESOLVED = ["lane/create", "lane/current", "lane/enter", "lane/exit", "lane/remove", "lane/resolve", "lane/show"]  # ContextCommand: fixed arity, and the unit may be left out too
+RESOLVED = ["lane/create", "lane/current", "lane/enter", "lane/exit", "lane/push", "lane/remove", "lane/resolve", "lane/show"]  # ContextCommand: fixed arity, and the unit may be left out too
 FIXED_ARITY = [  # RootOptionalCommand: the 18, and ContextCommand: the 7 above
     "repo/hook-run", "repo/projection-run",
     "lane/create", "lane/enter", "lane/resolve", "lane/exit", "lane/current", "lane/show", "lane/bind",
-    "lane/list", "lane/remove",
+    "lane/list", "lane/remove", "lane/push",
     "lane/lease/acquire", "lane/lease/release", "lane/lease/show",
     "review/check", "review/requirements", "review/checkout-pr", "review/create-project", "review/open-project",
     "review/exit-gr", "review/open-gr",

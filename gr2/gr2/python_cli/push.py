@@ -25,6 +25,8 @@ class PushReceipt:
     remote_sha: str
     set_upstream: bool
     force_with_lease: bool
+    # git sent nothing: the remote already had the head ("Everything up-to-date")
+    up_to_date: bool = False
 
 
 def _current_branch(repo: Path) -> str:
@@ -171,4 +173,93 @@ def push_current_branch(
         remote_sha=remote_sha,
         set_upstream=set_upstream,
         force_with_lease=force_with_lease,
+        up_to_date="Everything up-to-date" in f"{pushed.stderr}{pushed.stdout}",
     )
+
+
+@dataclass(frozen=True)
+class LaneRepoPush:
+    """One repo's row in a lane push: `pushed`, `up_to_date` or `failed`. `uncovered` carries the
+    sentence when the push landed but the head is not on the lane's branch at its remote."""
+
+    repo: str
+    status: str
+    remote: str | None = None
+    branch: str | None = None
+    sha: str | None = None
+    error: str | None = None
+    uncovered: str | None = None
+
+
+def _lane_branch_covers(repo: Path, receipt: PushReceipt, lane_branch: str) -> bool:
+    """Is the pushed head on the lane's branch at the remote it went to?
+
+    When the repo pushed the lane's branch itself, the push's own `ls-remote` already proved the
+    remote ref equals the head, so the answer costs nothing more. Only a repo on ANOTHER branch asks
+    the remote once about the lane's branch; a head whose object the remote branch does not reach
+    (or a branch the remote does not have) is not covered."""
+    if receipt.branch == lane_branch:
+        return True
+    listed = git(repo, "ls-remote", "--heads", receipt.remote, f"refs/heads/{lane_branch}")
+    if listed.returncode != 0 or not listed.stdout.strip():
+        return False
+    tip = listed.stdout.split()[0]
+    return git(repo, "merge-base", "--is-ancestor", receipt.local_sha, tip).returncode == 0
+
+
+def push_lane(
+    workspace_root: Path,
+    owner_unit: str,
+    lane_name: str,
+    *,
+    remote: str | None = None,
+    set_upstream: bool = False,
+    force_with_lease: bool = False,
+) -> list[LaneRepoPush]:
+    """Push every repo of a lane through `push_current_branch`, one row per repo.
+
+    Pushes to N remotes cannot be atomic: a repo that fails is recorded and the repos already
+    pushed stay pushed; the rows say which landed. After each successful push, the coverage question
+    the store's root push will ask is asked here, so a lane push cannot report success that the
+    root push later refuses."""
+    from gr2.prototypes import lane_workspace_prototype as lane_proto
+
+    from .commit import _lane_repo_targets
+
+    doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
+    if doc.get("lane_kind") == "review-ephemeral":
+        raise PushError(
+            f"lane {owner_unit}/{lane_name} is a review-ephemeral lane (read-only, disposable): "
+            "it cannot be pushed. A review lane never becomes a work lane."
+        )
+    branch_map = doc.get("branch_map", {}) or {}
+    rows: list[LaneRepoPush] = []
+    for key, repo_root in _lane_repo_targets(workspace_root, owner_unit, lane_name, doc):
+        try:
+            receipt = push_current_branch(
+                repo_root,
+                remote=remote,
+                set_upstream=set_upstream,
+                force_with_lease=force_with_lease,
+            )
+        except PushError as exc:
+            rows.append(LaneRepoPush(key, "failed", error=str(exc)))
+            continue
+        lane_branch = branch_map.get(key) or receipt.branch
+        uncovered = None
+        if not _lane_branch_covers(repo_root, receipt, lane_branch):
+            uncovered = (
+                f"{key} head {receipt.local_sha} is not on {receipt.remote}/{lane_branch}; "
+                "push it first"
+            )
+        rows.append(
+            LaneRepoPush(
+                key,
+                "up_to_date" if receipt.up_to_date else "pushed",
+                remote=receipt.remote,
+                branch=receipt.branch,
+                sha=receipt.local_sha,
+                uncovered=uncovered,
+            )
+        )
+    return rows

@@ -117,6 +117,18 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Changed
 
+- **`gr2`: `store materialize` leaves each member on a branch at its pin, not on a detached HEAD.** The branch is the
+  member's recorded `ref` (or, with none, the one its `upstream` names: `origin/main` gives `main`), set to track that
+  upstream, so work continues without a branch command per member. The branch is moved only when that drops no commit
+  that exists only in this clone; a branch with commits no remote holds is left where it is, the member stays detached
+  at the pin, and materialize says so on stderr with the command to continue. `--json` rows now carry `branch` (and
+  `detached` with the reason when there is none) and `path`.
+- **`gr2`: `store commit` records the committer's own git identity, not a fixed `gr2` one.** A store commit used to
+  force `gr2 <gr2@example.invalid>` as author and committer, while a plain `git commit` in the same native store carried
+  the operator's identity. It now asks git, under `user.useConfigOnly`, whether config or the `GIT_AUTHOR_*` /
+  `GIT_COMMITTER_*` variables name both the author and the committer; if so it passes no override, and otherwise it
+  uses the `gr2` pair, which those variables still override for the side they name. Git's own guess (account name,
+  host name) is never used. Both store-commit paths: `commit`, and `commit-tree` in full mode.
 - **`gr2`: the review steps in `gr2 review --help` put publish before stamp,** because a reviewer in another
   workspace can only receive a published review. A stamp in a reviewer's member clone that does not hold the
   reviewed head (a clone made before the head was pushed) now refuses as `head_not_fetched` and prints the

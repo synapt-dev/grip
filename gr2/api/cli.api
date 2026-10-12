@@ -108,7 +108,7 @@ verb  exec status                                                     stable
 flag  grip check --json (hidden:grip)                                 stable
 json  grip check .members[].name                                      may-change
 json  grip check .members[].pin                                       may-change
-json  grip check .members[].state  enum(upstream)                     may-change
+json  grip check .members[].state  enum(upstream,layer)               may-change
 json  grip check .members[].upstream                                  may-change
 json  grip check .status  enum(checked)                               may-change
 verb  grip check (hidden:grip)                                        stable
@@ -184,7 +184,7 @@ verb  grip migrate-reviews (hidden:grip)                              stable
 flag  grip push --json (hidden:grip)                                  stable
 json  grip push .members[].name                                       may-change
 json  grip push .members[].pin                                        may-change
-json  grip push .members[].state  enum(upstream)                      may-change
+json  grip push .members[].state  enum(upstream,layer)                may-change
 json  grip push .members[].upstream                                   may-change
 json  grip push .root_branch                                          may-change
 json  grip push .root_commit                                          may-change
@@ -202,7 +202,7 @@ json  grip status .members[].gitlink                                  may-change
 json  grip status .members[].head                                     may-change
 json  grip status .members[].name                                     may-change
 json  grip status .members[].pin                                      may-change
-json  grip status .members[].state  enum(upstream,stale,missing,unpinned,cannot-measure) may-change
+json  grip status .members[].state  enum(upstream,layer,stale,missing,unpinned,cannot-measure) may-change
 json  grip status .root.porcelain                                     may-change
 json  grip status .root.state  enum(clean,dirty)                      may-change
 json  grip status .status  enum(status)                               may-change
@@ -651,7 +651,7 @@ exit  store 5 cannot-measure prefix:"cannot complete this store verb: " may-chan
 flag  store check --json                                              may-change
 json  store check .members[].name                                     may-change
 json  store check .members[].pin                                      may-change
-json  store check .members[].state  enum(upstream)                    may-change
+json  store check .members[].state  enum(upstream,layer)              may-change
 json  store check .members[].upstream                                 may-change
 json  store check .status  enum(checked)                              may-change
 verb  store check                                                     may-change
@@ -727,7 +727,7 @@ verb  store migrate-reviews                                           stable
 flag  store push --json                                               may-change
 json  store push .members[].name                                      may-change
 json  store push .members[].pin                                       may-change
-json  store push .members[].state  enum(upstream)                     may-change
+json  store push .members[].state  enum(upstream,layer)               may-change
 json  store push .members[].upstream                                  may-change
 json  store push .root_branch                                         may-change
 json  store push .root_commit                                         may-change
@@ -745,7 +745,7 @@ json  store status .members[].gitlink                                 may-change
 json  store status .members[].head                                    may-change
 json  store status .members[].name                                    may-change
 json  store status .members[].pin                                     may-change
-json  store status .members[].state  enum(upstream,stale,missing,unpinned,cannot-measure) may-change
+json  store status .members[].state  enum(upstream,layer,stale,missing,unpinned,cannot-measure) may-change
 json  store status .root.porcelain                                    may-change
 json  store status .root.state  enum(clean,dirty)                     may-change
 json  store status .status  enum(status)                              may-change

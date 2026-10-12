@@ -13,7 +13,7 @@ import pytest
 
 from gr2.python_cli import member_field_tree as mft
 from tests.test_store_full_mode_carrier import _advance, _full_store, _gitlink, _member_head
-from tests.test_store_git_native_smoke import configure_identity, git, gr2
+from tests.test_store_git_native_smoke import configure_identity, git, gr2, make_member
 
 
 def _record(root: Path, member: str) -> dict:
@@ -269,3 +269,106 @@ def test_a_record_with_an_oversize_layer_is_refused_without_advising_unshallow(t
 
     out = f"{checked.stdout}{checked.stderr}"
     assert checked.returncode == 4 and "over the" in out and "unshallow" not in out, (checked.returncode, out[-300:])
+
+
+def test_status_names_a_layered_pin_layer_the_word_check_uses(tmp_path):
+    """A healthy layered member read `missing` beside pin == head, and two operators
+    could not tell what it meant. Status and check must use one word for one member."""
+    root, pin = _layered_store(tmp_path)
+
+    status = gr2(root, "status", "--json")
+    checked = gr2(root, "check", "--json")
+
+    assert status.returncode == 0, f"{status.stdout}\n{status.stderr}"
+    rows = {m["name"]: m for m in json.loads(status.stdout)["members"]}
+    assert rows["alpha"]["state"] == "layer", rows["alpha"]
+    assert rows["alpha"]["pin"] == rows["alpha"]["head"] == pin
+    assert rows["beta"]["state"] == "upstream", "the control member must read differently"
+    assert {m["name"]: m["state"] for m in json.loads(checked.stdout)["members"]}["alpha"] == rows["alpha"]["state"]
+
+
+def test_status_explains_each_state_word_in_the_human_table(tmp_path):
+    root, _ = _layered_store(tmp_path)
+
+    out = gr2(root, "status").stdout
+    alpha = next(line for line in out.splitlines() if line.startswith("alpha "))
+
+    assert alpha.startswith("alpha layer ") and "the record's layers carry the pin" in alpha, alpha
+
+
+def test_status_reads_missing_when_the_layers_do_not_carry_a_pin_no_remote_has(tmp_path):
+    """The other side of #1207: in full mode, `layer` only when the layers carry the pin. A record
+    whose layer is a real bundle of a DIFFERENT commit, for a pin no remote has, is still `missing`
+    (built the way the refusal row above builds it)."""
+    root, pin = _layered_store(tmp_path)
+    git(root / "alpha", "switch", "-q", "-c", "other", "origin/main")
+    (root / "alpha" / "other.txt").write_text("other\n")
+    git(root / "alpha", "add", "other.txt")
+    git(root / "alpha", "commit", "-m", "a different commit")
+    raw = _bundle_bytes(root / "alpha", "HEAD")
+    git(root / "alpha", "switch", "-q", "--detach", pin)
+    _record_with_layers(root, [raw], pin=pin)
+
+    status = gr2(root, "status", "--json")
+
+    rows = {m["name"]: m for m in json.loads(status.stdout)["members"]}
+    assert rows["alpha"]["state"] == "missing", rows["alpha"]
+
+
+def test_the_state_words_status_and_check_emit_are_in_their_published_schemas(tmp_path):
+    """A caller validating against `JSON_SHAPES` must not meet a word the schema omits: both verbs emit `layer`."""
+    import re
+
+    from gr2.python_cli.grip_cli import JSON_SHAPES
+
+    root, _ = _layered_store(tmp_path)
+    for verb in ("status", "check"):
+        emitted = {m["state"] for m in json.loads(gr2(root, verb, "--json").stdout)["members"]}
+        line = next(p for p in JSON_SHAPES[f"store {verb}"] if p.startswith(".members[].state"))
+        published = set(re.search(r"enum\((.*)\)", line).group(1).split(","))
+        assert "layer" in emitted and emitted <= published, (verb, emitted, published)
+    # push returns check's own rows (`_native_store_push` calls `_native_store_check`), so it publishes the same enum.
+    state = [p for p in JSON_SHAPES["store push"] if p.startswith(".members[].state")]
+    assert state == [p for p in JSON_SHAPES["store check"] if p.startswith(".members[].state")]
+
+
+def test_status_reads_missing_for_a_layered_record_once_the_root_is_switched_out_of_full_mode(tmp_path):
+    """The `full and` guard is reachable: a full-mode root whose grip.toml is switched to compat
+    without a commit still has HEAD's layered record. Outside full mode a layer is not a recorded carrier, so the
+    member reads `missing`, not `layer`."""
+    root, _ = _layered_store(tmp_path)
+    toml = root / "grip.toml"
+    head, sep, rest = toml.read_text(encoding="utf-8").partition("[[members]]")
+    assert head.count('mode = "full"') == 1, "the workspace mode line, above the members"
+    toml.write_text(head.replace('mode = "full"', 'mode = "compat"') + sep + rest, encoding="utf-8")
+
+    # Exit 4: outside full mode the gitlink (a field-commit) no longer equals the pin, and status says so.
+    status = gr2(root, "status", "--json", check=False)
+
+    assert status.returncode == 4, f"{status.stdout}\n{status.stderr}"
+    rows = {m["name"]: m for m in json.loads(status.stdout)["members"]}
+    assert rows["alpha"]["state"] == "missing", rows["alpha"]
+
+
+def test_status_in_a_compat_store_reads_missing_for_a_rewound_upstream_without_reading_a_record(tmp_path):
+    """The `full and` guard's other job: in a compat store the gitlink names the member's own
+    commit, which the root does not hold, so reading a field record there refuses. Without the guard, status
+    exits 4 with advice to unshallow; with it, a pin the rewound upstream lacks reads `missing`."""
+    root = tmp_path / "workspace"
+    root.mkdir()
+    for name in ("alpha", "beta"):
+        remote, _ = make_member(tmp_path, name)
+        git(root, "clone", str(remote), name)
+        configure_identity(root / name)
+    assert gr2(root, "init").returncode == 0
+    configure_identity(root)
+    before = _member_head(root, "alpha")
+    pin = _advance(root, "alpha", push=True)
+    gr2(root, "commit", "-m", "alpha pushed")
+    git(root / "alpha", "push", "--force", "origin", f"{before}:main")   # the upstream rewound behind the pin
+
+    status = gr2(root, "status", "--json", check=False)
+
+    assert status.returncode == 0, f"{status.stdout}\n{status.stderr}"
+    rows = {m["name"]: m for m in json.loads(status.stdout)["members"]}
+    assert rows["alpha"]["pin"] == pin and rows["alpha"]["state"] == "missing", rows["alpha"]

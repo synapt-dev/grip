@@ -276,6 +276,14 @@ def _store_git(root: Path, *args: str, check: bool = True) -> subprocess.Complet
     return result
 
 
+def _store_git_input(root: Path, data: str, *args: str) -> str:
+    """One git command fed ``data`` on stdin, through the shared spawn; its stripped stdout, or a refusal."""
+    result = gitops.run(root, *args, input=data)
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or "git command failed")
+    return result.stdout.strip()
+
+
 class NativeStoreRefusal(RuntimeError):
     """A native-store refusal with a stable CLI status."""
 
@@ -1311,6 +1319,58 @@ def _layer_for(root: Path, member: dict[str, str], path: Path, head: str) -> lis
     return [made.stdout]
 
 
+REVIEW_REF_ROOT = "refs/dev.synapt.grip/__reviews__/"
+APPROVAL_REF_ROOT = "refs/dev.synapt.grip/__approvals__/v1/"
+
+
+def _member_records(root: Path, member: dict[str, str]) -> list[str]:
+    """The record trees the member's field-commit carries, each in the format
+    its own reader already validates, so no new format is invented here:
+
+    - a REVIEW bound in this root that names this member's path at this member's pin: the review commit's tree;
+    - each APPROVAL link of a carried review (``__approvals__/v1/<review>`` in the root): the link's tree, which holds
+      only ``approval.json``. Links chain by content digest (``prev``), not by commit id, so the trees alone keep the
+      chain. An approval is about a review, so one whose review is not carried is not carried either;
+    - the CHECK observations for the pin, from the member checkout's ``__checks__/v1``: a checks tree holding only the
+      pin's ``<hh>/<rest>`` entry, the shape ``check_records`` reads. A check is about a head, so it needs no review.
+
+    A commit cannot sit in a tree except as a gitlink, which no clone transfers, so every occurrence is a tree. Sorted,
+    so the same records give the same field-commit and an unchanged member keeps its id."""
+    from . import grip as grip_mod
+    from . import check_records
+
+    listed = _store_git(root, "for-each-ref", "--format=%(objectname)", REVIEW_REF_ROOT, check=False).stdout.split()
+    trees: set[str] = set()
+    for commit in listed:
+        try:
+            view = grip_mod.show_review_commit(root, commit)
+        except (grip_mod.GripCorruptError, grip_mod.ReviewStoreAbsent):
+            # a ref under the review root that does not name a bind (or names one it does not point at) is not a review
+            # record; any other failure (no store, a git read that fails) is raised, never read as "no records"
+            continue
+        if not any(m["path"] == member["path"] and m["head"] == member["pin"] for m in view["members"]):
+            continue
+        trees.add(_store_git(root, "rev-parse", f"{commit}^{{tree}}").stdout.strip())
+        approval_ref = f"{APPROVAL_REF_ROOT}{commit}"
+        tip = _store_git(root, "rev-parse", "--verify", "-q", approval_ref, check=False).stdout.strip()
+        if tip:
+            for link in _store_git(root, "rev-list", "--first-parent", tip, f"^{commit}").stdout.split():
+                trees.add(_store_git(root, "rev-parse", f"{link}^{{tree}}").stdout.strip())
+    checkout = root / member["path"]
+    if (checkout / ".git").exists():
+        key = member["pin"][:2] + "/" + member["pin"][2:]
+        found = _store_git(checkout, "rev-parse", "--verify", "-q", f"{check_records.CHECK_REF}:{key}",
+                           check=False).stdout.strip()
+        if found:
+            # The blob lives in the member's objects; the field-commit is written in the root's, so copy it across.
+            rows = _store_git(checkout, "cat-file", "blob", found).stdout
+            blob = _store_git_input(root, rows, "hash-object", "-w", "--stdin")
+            leaf = _store_git_input(root, f"100644 blob {blob}\t{member['pin'][2:]}\n", "mktree")
+            fan = _store_git_input(root, f"040000 tree {leaf}\t{member['pin'][:2]}\n", "mktree")
+            trees.add(fan)
+    return sorted(trees)
+
+
 def _field_commit(root: Path, member: dict[str, str], layers: list[bytes] | None = None) -> str:
     """The field-commit for a covered member in a full-mode workspace: its record is the pin, the member's url and
     tracked ref, and the remote ref that covers the pin. The one the last root commit holds is kept when the record did
@@ -1318,12 +1378,41 @@ def _field_commit(root: Path, member: dict[str, str], layers: list[bytes] | None
     from . import member_field_tree as mft
 
     branch = member["upstream"].partition("/")[2]
-    record = dict(kind=mft.KIND_REPO, pin=member["pin"], url=member["remote"], ref=member.get("ref", "main"),
-                  covered_by="" if layers else f"refs/heads/{branch}",
-                  covered_test=0 if layers else mft.COVER_REACHABLE, layers=layers or [])
     link = _store_git(root, "ls-tree", "HEAD", "--", member["path"], check=False).stdout.split()
     previous = link[2] if len(link) >= 3 and link[0] == "160000" else None
+    # A clone holds neither the root's review refs nor the member's check ref, so the records found HERE can be fewer
+    # than the ones the root already carries for this very pin. Those are kept: records about a pin are only added.
+    records = set(_member_records(root, member)) | _prior_records(root, previous, member["pin"])
+    record = dict(kind=mft.KIND_REPO, pin=member["pin"], url=member["remote"], ref=member.get("ref", "main"),
+                  covered_by="" if layers else f"refs/heads/{branch}",
+                  covered_test=0 if layers else mft.COVER_REACHABLE, layers=layers or [],
+                  records=sorted(records))
     return mft.commit(root, record, f"field: {member['name']} @ {member['pin'][:7]}", previous)
+
+
+def _prior_records(root: Path, previous: str | None, pin: str) -> set[str]:
+    """The records the root's current entry for a member carries, when that entry is a field-commit for ``pin``.
+    Anything else (no entry, a compat gitlink to the member's own commit, which this root does not hold, a record for
+    another pin) contributes nothing: those are not this pin's records."""
+    from . import member_field_tree as mft
+
+    if not previous:
+        return set()
+    if _store_git(root, "cat-file", "-t", previous, check=False).stdout.strip() != "commit":
+        # A compat gitlink names the member's own commit, which no root holds, so absence is normal there. In a SHALLOW
+        # clone it can be the field-commit itself that is missing, and committing would drop its records unseen.
+        if _store_git(root, "rev-parse", "--is-shallow-repository", check=False).stdout.strip() == "true":
+            raise NativeStoreRefusal(f"the record this clone last committed for pin {pin[:12]} is not in the clone; "
+                                     f"a shallow clone does not carry it, so run `git fetch --unshallow`", 4)
+        return set()
+    tree = _store_git(root, "rev-parse", "--verify", "-q", f"{previous}^{{tree}}", check=False).stdout.strip()
+    if not tree:
+        return set()
+    try:
+        prior = mft.read(root, tree)
+    except mft.FieldTreeError:
+        return set()   # not a field record (a compat gitlink's own commit tree)
+    return set(prior["records"]) if prior["pin"] == pin else set()
 
 
 _EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
@@ -1463,6 +1552,8 @@ def _native_store_commit(root: Path, message: str) -> bool:
             entry = _field_commit(root, member, layers_by_member.get(member["name"], []))
             carried.append(entry)
         _store_git(root, "update-index", "--add", "--cacheinfo", f"160000,{entry},{member['path']}")
+    if full and changed:
+        _keep_member_paths_owned(root, changed)
     # NOTHING STAGED IS A NO-OP, NOT A FAILURE. When every pin already equals the
     # gitlink the root last committed, `git commit` exits 1 with "nothing to commit" on STDOUT
     # and an empty stderr, which `_store_git` renders as the bare "git command failed" and the
@@ -1841,11 +1932,37 @@ def _apply_layer(path: Path, member: dict[str, str], number: int, layer: bytes, 
             f"{fetched.stderr.decode(errors='replace').strip()[:160]}; done: {names}", 3)
 
 
+def _own_member_paths(root: Path, members: list[dict[str, str]]) -> None:
+    """In a full-mode root the member's gitlink points at
+    its FIELD-COMMIT, so a checkout at the member's path differs from it by construction and the root's `git status`
+    would show the member as modified. The root marks each member path skip-worktree through sparse-checkout, with the
+    pattern '!/<path>' (no trailing slash: a gitlink is a file entry, and a slash pattern matches directories only),
+    and sets sparse.expectFilesOutsideOfPatterns so git does not clear skip-worktree when the member's checkout appears
+    there. Both are set BEFORE any member is cloned in. info/exclude does nothing here: the gitlink is tracked.
+    Measured on git 2.50."""
+    _store_git(root, "config", "sparse.expectFilesOutsideOfPatterns", "true")
+    patterns = ["/*", *[f"!/{m['path'].strip('/')}" for m in members]]
+    _store_git(root, "sparse-checkout", "set", "--no-cone", *patterns)
+
+
+
+def _keep_member_paths_owned(root: Path, members: list[dict[str, str]]) -> None:
+    """`update-index --cacheinfo` writes a fresh index entry, and a fresh entry carries no skip-worktree bit, so a root
+    that materialize made the owner of its member paths would show each member as modified again after one commit
+    (and sparse.expectFilesOutsideOfPatterns then keeps git from setting the bit back). A root that owns its member
+    paths sets them skip-worktree again here; a root materialize never touched is left as it was."""
+    owned = _store_git(root, "config", "--get", "sparse.expectFilesOutsideOfPatterns", check=False).stdout.strip()
+    if owned != "true":
+        return
+    _store_git(root, "update-index", "--skip-worktree", "--", *[m["path"] for m in members])
+
 @_refuses_moved_workspace
 def _native_store_materialize(root: Path) -> list[dict[str, str]]:
     materialized: list[dict[str, str]] = []
     full = _workspace_mode(_grip_document(root)) == "full"
     members = _native_members(root)
+    if full:
+        _own_member_paths(root, members)
     for member in members:
         covered_by = ""
         layers: list[bytes] = []

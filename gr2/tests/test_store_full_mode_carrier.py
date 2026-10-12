@@ -109,7 +109,8 @@ def test_the_record_reads_back_whole(tmp_path):
 
     remote = git(root / "alpha", "remote", "get-url", "origin").stdout.strip()
     assert record == dict(schema=mft.PACKAGE, kind=mft.KIND_REPO, pin=_member_head(root, "alpha"), url=remote,
-                          ref="main", covered_by="refs/heads/main", layers=[], ref_defaulted=False, covered_test=mft.COVER_REACHABLE)
+                          ref="main", covered_by="refs/heads/main", layers=[], records=[], ref_defaulted=False,
+                          covered_test=mft.COVER_REACHABLE)
 
 
 def test_an_unchanged_pin_keeps_the_same_field_commit(tmp_path):

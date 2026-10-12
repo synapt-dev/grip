@@ -8,13 +8,14 @@ A FIELD-COMMIT is a commit whose tree is that record. The grip tree's entry for 
 grip commit carries it as a parent, so every plain clone and pull holds the record while git materializes nothing at the
 member's path.
 
-Field numbers are the field schema's (package v1alpha1, named above). This module
-writes and reads the fields a pin needs: schema (1), kind (2), pin (3), url (4), ref (5), covered_by (6), layers (7),
-ref_defaulted (12) and covered_test (13). A LAYER is a git bundle, stored as one occurrence of the repeated ``layers``
-entry (a tree of blobs named 0000001..n, so the order of the occurrences is the order to apply them in). It carries the
-commits a pin needs that no remote holds, so a pin that is on no remote can still be rebuilt from the record plus the
-member's url. Hooks, records and config are not written yet; a reader that meets an entry it does not know ignores it,
-and refuses a tree whose schema entry names another package.
+Field numbers are the field schema's (package v1alpha1, named above). This module writes and reads the fields a pin
+needs: schema (1), kind (2), pin (3), url (4), ref (5), covered_by (6), layers (7), records (9), ref_defaulted (12) and
+covered_test (13). A LAYER is a git bundle, stored as one occurrence of the repeated ``layers`` entry (a tree of
+blobs named 0000001..n, so the order of the occurrences is the order to apply them in). It carries the commits a pin
+needs that no remote holds, so a pin that is on no remote can still be rebuilt from the record plus the member's url.
+A RECORD is a tree, stored as one occurrence of the repeated ``records`` entry: a review, an approval or a check about
+the member's pin, each in the shape its own reader takes. Hooks (8) and config (10) are not written yet; a reader that
+meets an entry it does not know ignores it, and refuses a tree whose schema entry names another package.
 """
 from __future__ import annotations
 
@@ -28,7 +29,9 @@ PACKAGE = "dev.synapt.grip.field.v1alpha1"
 KIND_REPO, KIND_GRIP = 1, 2
 COVER_REACHABLE, COVER_LANDED_BY_PATCH = 1, 2
 
-_REPEATED = {7}   # field numbers stored as a tree of occurrences
+RECORDS_FIELD = 9   # the spec's 009.2r_records/; 8 is reserved for hooks, 10 for config, 11 is unassigned
+_REPEATED = {7, RECORDS_FIELD}   # field numbers stored as a tree of occurrences
+_TREE_OCCURRENCES = {RECORDS_FIELD}   # repeated fields whose occurrences are trees (a record), not blobs
 BUNDLE_HEADERS = (b"# v2 git bundle\n", b"# v3 git bundle\n")
 MAX_LAYER_BYTES = 64 * 1024 * 1024   # a layer is a handful of commits; a record is written by anyone with push access
 
@@ -41,6 +44,7 @@ _FIELDS = {
     5: ("ref", 2, "ref"),
     6: ("covered_by", 2, "covered_by"),
     7: ("layers", 2, "layers"),
+    RECORDS_FIELD: ("records", 2, "records"),
     12: ("ref_defaulted", 0, "ref_defaulted"),
     13: ("covered_test", 0, "covered_test"),
 }
@@ -51,8 +55,8 @@ class FieldTreeError(ValueError):
 
 
 def write(repo: Path, record: dict) -> str:
-    """The tree id of ``record`` (keys: kind, pin, url, ref, covered_by, ref_defaulted, covered_test; the schema entry
-    is always this package). A field at its default is not written."""
+    """The tree id of ``record`` (keys: kind, pin, url, ref, covered_by, layers, records, ref_defaulted, covered_test;
+    the schema entry is always this package). A field at its default is not written; ``records`` holds tree ids."""
     values = {**record, "schema": PACKAGE}
     entries: list[rft.Entry] = []
     for number, (name, wire, key) in sorted(_FIELDS.items()):
@@ -60,7 +64,11 @@ def write(repo: Path, record: dict) -> str:
         if number in _REPEATED:
             if not value:
                 continue
-            occurrences = [("100644", "blob", rft._blob(repo, bytes(item)), f"{i:07d}") for i, item in enumerate(value, 1)]
+            if number in _TREE_OCCURRENCES:
+                occurrences = [("040000", "tree", str(item), f"{i:07d}") for i, item in enumerate(value, 1)]
+            else:
+                occurrences = [("100644", "blob", rft._blob(repo, bytes(item)), f"{i:07d}")
+                               for i, item in enumerate(value, 1)]
             field = rft.Field(number, name, "bytes", True)
             entries.append(("040000", "tree", rft._mktree(repo, occurrences), rft.entry_name(field, number, wire, True)))
             continue
@@ -77,7 +85,8 @@ def write(repo: Path, record: dict) -> str:
 
 def read(repo: Path, tree: str) -> dict:
     """The record in ``tree``, decoded by field NUMBER (the name is a hint). Refuses a tree for another package."""
-    out: dict = dict(schema="", kind=0, pin="", url="", ref="", covered_by="", layers=[], ref_defaulted=False, covered_test=0)
+    out: dict = dict(schema="", kind=0, pin="", url="", ref="", covered_by="", layers=[], records=[],
+                     ref_defaulted=False, covered_test=0)
     try:
         entries = rft._ls(repo, tree)   # a tree object this clone does not hold is a git failure, not a record
     except rft.ReviewRecordError as exc:
@@ -93,6 +102,15 @@ def read(repo: Path, tree: str) -> dict:
         if number in _REPEATED:
             if kind != "tree" or not repeated or wire != spec[1]:
                 raise FieldTreeError(f"entry {name!r} is not the {spec[0]} field this schema defines")
+            if number in _TREE_OCCURRENCES:
+                try:
+                    kids = rft._occurrences(repo, name, oid)
+                except rft.ReviewRecordError as exc:
+                    raise FieldTreeError(str(exc)) from exc
+                if any(kid[1] != "tree" for kid in kids):
+                    raise FieldTreeError(f"entry {name!r} holds an occurrence that is not a record tree")
+                out[spec[2]] = [kid[2] for kid in kids]
+                continue
             try:
                 kids = rft._occurrences(repo, name, oid)
                 blobs = []

@@ -241,8 +241,8 @@ def test_push_publishes_the_root_ref_and_refuses_on_coverage(ws: Path, tmp_path:
     (ws / "grip.toml").write_text(text.replace(pin, moved))
     _git(ws, "add", "grip.toml")
     _git(ws, "update-index", "--add", "--cacheinfo", f"160000,{moved},alpha")
-    # v5: the ROOT repo has no identity BY DESIGN -- production supplies one per commit
-    # (grip_cli.py:667 carries -c user.name=gr2 -c user.email=gr2@example.invalid). A bare
+    # v5: the ROOT repo has no identity BY DESIGN -- production then supplies one per commit
+    # (store commit falls back to -c user.name=gr2 -c user.email=gr2@example.invalid when git names nobody). A bare
     # commit here leaned on the AMBIENT identity, which exists on a desk and not in CI, so
     # the row was green locally and exit-128 in CI. Give it the identity production gives.
     # `--no-verify`: this row BUILDS the malformed root a verb must refuse, so it skips the hook that would
@@ -775,3 +775,66 @@ def test_no_test_passes_a_workspace_positional_to_a_ported_verb() -> None:
         "cwd and take no positional; typer refuses the call at the parser):\n  " + "\n  ".join(hits)
     )
 
+
+
+# ---------------------------------------------------------------------------
+# commit identity
+# ---------------------------------------------------------------------------
+
+
+def _no_ambient_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only the identity a row sets exists: no global or system config, no identity env."""
+    empty = tmp_path / "empty-gitconfig"
+    empty.write_text("")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    for var in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_store_commit_carries_the_committers_own_identity(
+    ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A store commit is authored by whoever git names in this root, as a plain `git commit` here would be."""
+    _no_ambient_identity(tmp_path, monkeypatch)
+    assert _cli("store", "init", str(ws))[0] == 0
+    _git(ws, "config", "user.name", "Op Erator")
+    _git(ws, "config", "user.email", "op@example.test")
+
+    rc, out = _cli("store", "commit", "-m", "first")
+
+    assert rc == 0, out
+    assert _git_out(ws, "log", "-1", "--format=%an <%ae>|%cn <%ce>") == (
+        "Op Erator <op@example.test>|Op Erator <op@example.test>"
+    )
+
+
+def test_store_commit_falls_back_to_gr2_only_when_git_names_nobody(
+    ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no identity anywhere a plain commit may fail; the store commit still records, as gr2."""
+    _no_ambient_identity(tmp_path, monkeypatch)
+    assert _cli("store", "init", str(ws))[0] == 0
+    assert _git(ws, "config", "user.name", check=False).returncode != 0, "the root must start with no identity"
+
+    rc, out = _cli("store", "commit", "-m", "first")
+
+    assert rc == 0, out
+    assert _git_out(ws, "log", "-1", "--format=%an <%ae>") == "gr2 <gr2@example.invalid>"
+
+
+def test_a_committer_named_only_by_env_does_not_let_git_guess_the_author(
+    ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GIT_COMMITTER_* names only the committer. The author is then gr2, never git's guess from the account and host."""
+    _no_ambient_identity(tmp_path, monkeypatch)
+    assert _cli("store", "init", str(ws))[0] == 0
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "Env Op")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "env@example.test")
+
+    rc, out = _cli("store", "commit", "-m", "first")
+
+    assert rc == 0, out
+    assert _git_out(ws, "log", "-1", "--format=%an <%ae>|%cn <%ce>") == (
+        "gr2 <gr2@example.invalid>|Env Op <env@example.test>"
+    )

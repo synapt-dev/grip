@@ -191,6 +191,15 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **`gr2`: `store commit` keeps what the record declares; `store materialize` gives a `--no-checkout` root its own
+  files.** `store commit` rebuilt `grip.toml` from the members alone. It renamed the workspace to the checkout's
+  directory and dropped every key and table it did not know, `[approvals]` among them, so after the first commit
+  the review gate read `required = 0` and `review merge` merged on no approvals with exit 0. It now carries
+  `workspace_name` and every key and table it does not derive, and still writes only the members. And materialize
+  never wrote the root's own files after a `--no-checkout` clone, so the next commit started from no `grip.toml` and
+  staged `.gitinclude` as deleted. When the root has no index file, which is the `--no-checkout` case, it now
+  restores the committed index and writes only the files absent from disk, before it registers the members; an index
+  the operator emptied is their staged work and is left as it is, and a file already on disk is never replaced.
 - **`gr2`: `review pin` refuses the set when a changed member's ancestry cannot be read.** Such a member was
   skipped with `not pinned: ... (ancestry could not be read)` while the other members were pinned and an id printed,
   so a later merge could land part of a change set with exit 0. The pin now exits 2, names the member with its pin,

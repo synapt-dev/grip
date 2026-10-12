@@ -492,20 +492,28 @@ def _config_quote(value: str) -> str:
 
 
 def render_gitmodules(members: list[dict[str, str]]) -> str:
-    """The `.gitmodules` text for these members: each one's path and origin URL, so a plain recursive clone fills them.
+    """The `.gitmodules` text for these members: each one's path and origin URL, so a plain recursive clone fills them,
+    and the branch its upstream names, so a plain `git submodule update --remote` follows the recorded branch instead
+    of the remote's HEAD. The branch is the UPSTREAM's (`origin/feat/greet` -> `feat/greet`), not the local `ref`:
+    `submodule.<name>.branch` names a branch on the member's remote. A member with no `<remote>/<branch>` upstream
+    gets no branch line.
 
     Never hand-kept: the first line says so, which is also how a file gr2 did not write is told apart."""
     chunks = [_GITMODULES_HEADER]
     for member in members:
-        for key in ("name", "path", "remote"):
-            if "\n" in member[key] or "\r" in member[key]:
+        for key in ("name", "path", "remote", "upstream"):
+            value = member.get(key, "")
+            if "\n" in value or "\r" in value:
                 raise NativeStoreRefusal(f"{member['name']!r} {key} contains a line break; .gitmodules cannot carry it", 4)
         if _url_has_credentials(member["remote"]):
             raise _credential_refusal(member["name"])
+        _, separator, tracked = member.get("upstream", "").partition("/")
+        branch = f"\tbranch = {_config_quote(tracked)}\n" if separator and tracked else ""
         chunks.append(
             f"[submodule {_config_quote(member['name'])}]\n"
             f"\tpath = {_config_quote(member['path'])}\n"
             f"\turl = {_config_quote(member['remote'])}\n"
+            f"{branch}"
         )
     return "".join(chunks)
 

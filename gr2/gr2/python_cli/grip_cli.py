@@ -1723,8 +1723,39 @@ def _commit_with_carried(root: Path, message: str, carried: list[str]) -> None:
     _store_git(root, "update-ref", "-m", f"commit: {message}", "HEAD", made)
 
 
+def _refuse_pin_rewind(member: dict, path: Path, head: str) -> None:
+    """Refuse (3) a pin that would move BACKWARDS: HEAD is behind the recorded pin, or lacks it entirely.
+
+    Found in review: a stale checkout's HEAD was recorded over a newer pin, rc 0, and the push undid another
+    workspace's recorded merge. A checkout ahead of its pin, or on the pin, is not this; one that diverged
+    from it is left to the coverage check.
+    """
+    recorded = member.get("pin")
+    if not recorded or recorded == head:
+        return
+    name = member["name"]
+    hint = "run `gr2 store materialize` to bring the checkout to the pin, or pass --allow-rewind to record it anyway"
+    if _store_git(path, "cat-file", "-e", f"{recorded}^{{commit}}", check=False).returncode:
+        raise NativeStoreRefusal(
+            f"{name}: the recorded pin {recorded[:12]} is not in this checkout (HEAD {head[:12]}), so recording "
+            f"HEAD could undo it; {hint}",
+            3,
+        )
+    behind = _store_git(path, "merge-base", "--is-ancestor", head, recorded, check=False)
+    if behind.returncode == 0:
+        raise NativeStoreRefusal(
+            f"{name}: HEAD {head[:12]} is behind the recorded pin {recorded[:12]}; recording it would undo "
+            f"commits already in the store; {hint}",
+            3,
+        )
+    if behind.returncode != 1:
+        raise RuntimeError(f"cannot compare {name}'s HEAD with its recorded pin: {_git_detail(behind)}")
+
+
 @_refuses_moved_workspace
-def _native_store_commit(root: Path, message: str, layered: list[str] | None = None) -> bool:
+def _native_store_commit(
+    root: Path, message: str, layered: list[str] | None = None, allow_rewind: bool = False
+) -> bool:
     """Record the pins; True when a root commit was made, False when there was nothing to record.
 
     `layered`, when given, receives the name of each member whose pin is on no remote and is therefore carried as a
@@ -1780,6 +1811,8 @@ def _native_store_commit(root: Path, message: str, layered: list[str] | None = N
             moved = {**member, "ref": ref, "upstream": upstream}
             if _member_covers(root, moved, head, claimed):
                 member, moved = moved, None
+        if not allow_rewind:
+            _refuse_pin_rewind(member, path, head)
         try:
             _member_coverage(root, member, head, claimed)
         except NativeStoreRefusal as exc:
@@ -2775,6 +2808,9 @@ def grip_init_cmd(
 def grip_commit_cmd(
     message: str = typer.Option(..., "--message", "-m"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    allow_rewind: bool = typer.Option(
+        False, "--allow-rewind", help="Record a member pin that is behind the one already recorded"
+    ),
 ) -> None:
     """Record member pins in the root git tree.
 
@@ -2784,7 +2820,7 @@ def grip_commit_cmd(
     """
     layered: list[str] = []
     try:
-        committed = _native_store_commit(Path.cwd(), message, layered)
+        committed = _native_store_commit(Path.cwd(), message, layered, allow_rewind=allow_rewind)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
@@ -3014,6 +3050,9 @@ def grip_migrate_reviews_cmd(
 def grip_snapshot_cmd(
     message: str = typer.Option(..., "--message", "-m", help="Snapshot message"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    allow_rewind: bool = typer.Option(
+        False, "--allow-rewind", help="Record a member pin that is behind the one already recorded"
+    ),
 ) -> None:
     """Hidden alias of `store commit` (design section 5), removed at beta.
 
@@ -3031,7 +3070,7 @@ def grip_snapshot_cmd(
     """
     layered: list[str] = []
     try:
-        committed = _native_store_commit(Path.cwd(), message, layered)
+        committed = _native_store_commit(Path.cwd(), message, layered, allow_rewind=allow_rewind)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)

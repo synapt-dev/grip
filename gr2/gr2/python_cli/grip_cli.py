@@ -284,6 +284,18 @@ def _store_git_input(root: Path, data: str, *args: str) -> str:
     return result.stdout.strip()
 
 
+def _commit_identity_args(root: Path) -> list[str]:
+    """The `-c user.*` overrides a store commit needs: none when git can name BOTH the author and the committer
+    from config or the GIT_AUTHOR_*/GIT_COMMITTER_* variables, so the store commit carries the same identity a
+    plain `git commit` in this root does. Asked of git itself under user.useConfigOnly, so its own guess (a name
+    from the account, an email from the host name) never counts; otherwise the gr2 placeholder, which the
+    identity variables still override for whichever side they name."""
+    for ident in ("GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"):
+        if _store_git(root, "-c", "user.useConfigOnly=true", "var", ident, check=False).returncode:
+            return ["-c", "user.name=gr2", "-c", "user.email=gr2@example.invalid"]
+    return []
+
+
 class NativeStoreRefusal(RuntimeError):
     """A native-store refusal with a stable CLI status."""
 
@@ -1468,7 +1480,7 @@ def _commit_with_carried(root: Path, message: str, carried: list[str]) -> None:
     """Make the root commit from the index with every member's field-commit as an extra parent, so a plain clone or
     pull carries each record. `git commit` cannot add parents, so this is `commit-tree` and a ref update."""
     tree = _store_git(root, "write-tree").stdout.strip()
-    args = ["-c", "user.name=gr2", "-c", "user.email=gr2@example.invalid", "commit-tree", tree]
+    args = [*_commit_identity_args(root), "commit-tree", tree]
     head = _store_git(root, "rev-parse", "--verify", "HEAD", check=False)
     from . import member_field_tree as mft
 
@@ -1587,7 +1599,7 @@ def _native_store_commit(root: Path, message: str, layered: list[str] | None = N
     if full:
         _commit_with_carried(root, message, carried)
         return True
-    _store_git(root, "-c", "user.name=gr2", "-c", "user.email=gr2@example.invalid", "commit", "--no-verify", "-m", message)
+    _store_git(root, *_commit_identity_args(root), "commit", "--no-verify", "-m", message)
     return True
 
 

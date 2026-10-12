@@ -6,8 +6,11 @@ receipt the run itself returned, so a store write that is skipped cannot pass.
 from __future__ import annotations
 
 import json
+import subprocess
 
-from gr2.python_cli import check_records, merge_gate
+import pytest
+
+from gr2.python_cli import check_records, merge_gate, merge_receipts
 from gr2.python_cli.app import app
 from tests.test_review_merge_gate import (  # noqa: F401  (fixtures)
     _git_identity, check, git, merge, move, runner, slice2, world,
@@ -106,3 +109,23 @@ def test_a_failed_receipt_write_never_changes_the_exit(world, monkeypatch):
     assert code == merge_gate.EXIT_MERGED, receipt
     assert receipt["stored"].startswith("receipt_not_stored:"), receipt
     assert show(world["author"], world["review"])["merge"] is None
+
+
+@pytest.mark.parametrize("content", ["not json\n", "[]\n", '{"members": "x"}\n', '{"members": [{"key": 1}]}\n',
+                                     '{"members": [{"key": "a", "refusal": "x"}]}\n'])
+def test_an_unreadable_receipt_is_a_named_corrupt_error_not_a_traceback(world, content):
+    """Invalid JSON, and valid JSON that is not a receipt, both read as corrupt: exit 2, never a traceback."""
+    check(world)
+    assert merge(world)[0] == merge_gate.EXIT_MERGED
+    author, sha = world["author"], world["review"].removeprefix("gr:")
+    ref = merge_receipts.MERGE_REF_PREFIX + sha
+    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=author, input=content,
+                          capture_output=True, text=True, check=True).stdout.strip()
+    tree = subprocess.run(["git", "mktree"], cwd=author, input=f"100644 blob {blob}\treceipt.json\n",
+                          capture_output=True, text=True, check=True).stdout.strip()
+    bad = git(author, "commit-tree", tree, "-p", git(author, "rev-parse", ref), "-m", "corrupt")
+    git(author, "update-ref", ref, bad)
+    for args in (["--json"], []):
+        out = runner.invoke(app, ["review", "show", world["review"], *args])
+        assert out.exit_code == 2, out.output
+        assert "corrupt" in out.output and "Traceback" not in out.output, out.output

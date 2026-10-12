@@ -37,6 +37,16 @@ def record(workspace: Path, review_id: str, receipt: dict) -> str:
     return commit
 
 
+def _shaped(receipt: object) -> dict:
+    """The receipt if it has the shape `review show` reads; valid JSON of any other shape is as corrupt as invalid JSON."""
+    members = receipt.get("members") if isinstance(receipt, dict) else None
+    if not isinstance(members, list) or not all(
+            isinstance(m, dict) and isinstance(m.get("key"), str)
+            and (m.get("refusal") is None or isinstance(m.get("refusal"), dict)) for m in members):
+        raise ValueError("not a merge receipt")
+    return receipt
+
+
 def runs(workspace: Path, review_id: str) -> list[dict]:
     """Every stored receipt for the review, oldest first; [] when it was never merged."""
     ref = _ref(review_id)
@@ -49,7 +59,7 @@ def runs(workspace: Path, review_id: str) -> list[dict]:
         try:
             if proc.returncode != 0:
                 raise ValueError(f"no {_BLOB}")
-            out.append(json.loads(proc.stdout))
+            out.append(_shaped(json.loads(proc.stdout)))
         except ValueError as exc:  # json's decode error is a ValueError too
             raise grip.GripCorruptError(f"merge receipt {c} under {ref} is unreadable: {exc}") from exc
     return out

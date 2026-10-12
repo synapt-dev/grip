@@ -372,3 +372,82 @@ def test_status_in_a_compat_store_reads_missing_for_a_rewound_upstream_without_r
     assert status.returncode == 0, f"{status.stdout}\n{status.stderr}"
     rows = {m["name"]: m for m in json.loads(status.stdout)["members"]}
     assert rows["alpha"]["pin"] == pin and rows["alpha"]["state"] == "missing", rows["alpha"]
+
+
+def test_commit_says_which_member_it_carried_as_a_layer(tmp_path):
+    """An operator read `store commit` as origin-covered only, saw nothing about a layer, and
+    declined a task gr2 had already done. The verb names each member it carried as a layer."""
+    root = _full_store(tmp_path)
+    pin = _advance(root, "alpha", push=False)
+
+    done = gr2(root, "commit", "-m", "alpha only local")
+
+    assert done.returncode == 0, f"{done.stdout}\n{done.stderr}"
+    assert f"alpha: pin {pin[:12]} is on no remote; carried as a layer in the record" in done.stdout, done.stdout
+    assert "beta" not in done.stdout, "a covered member gets no layer line"
+
+
+def test_commit_json_lists_the_layered_members(tmp_path):
+    root = _full_store(tmp_path)
+    _advance(root, "alpha", push=False)
+
+    done = gr2(root, "commit", "-m", "alpha only local", "--json")
+
+    assert json.loads(done.stdout)["layered"] == ["alpha"]
+
+
+def test_commit_of_covered_pins_says_nothing_about_layers(tmp_path):
+    """The control: a pushed pin writes no layer, so the verb names none."""
+    root = _full_store(tmp_path)
+    _advance(root, "alpha", push=True)
+
+    done = gr2(root, "commit", "-m", "alpha pushed", "--json")
+
+    assert done.returncode == 0, f"{done.stdout}\n{done.stderr}"
+    assert json.loads(done.stdout)["layered"] == []
+
+
+def test_commit_help_says_what_full_mode_does_with_an_uncovered_pin(tmp_path):
+    root = _full_store(tmp_path)
+
+    text = " ".join(gr2(root, "commit", "--help").stdout.split())
+
+    assert "origin-covered member pins" not in text
+    assert "full mode" in text and "layer" in text
+
+
+def test_a_later_commit_that_moves_only_another_member_still_names_the_layered_one(tmp_path):
+    """`layered` is state, not delta: alpha's work is still recorded only as a layer after a commit that moved only
+    beta, so the verb names alpha again (the operator's question is whether the work is recorded)."""
+    root = _full_store(tmp_path)
+    _advance(root, "alpha", push=False)
+    assert gr2(root, "commit", "-m", "alpha only local").returncode == 0
+    _advance(root, "beta", push=True)
+
+    done = gr2(root, "commit", "-m", "beta pushed", "--json")
+
+    assert done.returncode == 0, f"{done.stdout}\n{done.stderr}"
+    assert json.loads(done.stdout)["layered"] == ["alpha"]
+
+
+def test_the_snapshot_alias_prints_the_layer_line_too(tmp_path):
+    root = _full_store(tmp_path)
+    pin = _advance(root, "alpha", push=False)
+
+    done = gr2(root, "snapshot", "-m", "alpha only local")
+
+    assert done.returncode == 0, f"{done.stdout}\n{done.stderr}"
+    assert f"alpha: pin {pin[:12]} is on no remote; carried as a layer in the record" in done.stdout, done.stdout
+
+
+def test_a_no_op_commit_names_no_layered_member(tmp_path):
+    """Nothing recorded, nothing named: a second commit with alpha still layered and nothing changed is `unchanged`,
+    and `layered` is empty, because the verb wrote no record."""
+    root = _full_store(tmp_path)
+    _advance(root, "alpha", push=False)
+    assert gr2(root, "commit", "-m", "alpha only local").returncode == 0
+
+    again = gr2(root, "commit", "-m", "nothing new", "--json")
+
+    assert again.returncode == 0, f"{again.stdout}\n{again.stderr}"
+    assert json.loads(again.stdout) == {"status": "unchanged", "root_commit": json.loads(again.stdout)["root_commit"], "layered": []}

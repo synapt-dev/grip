@@ -501,7 +501,9 @@ def render_gitmodules(members: list[dict[str, str]]) -> str:
 
     A member with a branch line also gets `update = merge`, so that same plain `update --remote` advances the branch the
     member is on instead of leaving it detached at the tip: a fast-forward when nothing is local, a merge that keeps a
-    local-only commit when something is. With no branch line there is no branch to stay on, so no update line.
+    local-only commit when something is. A local commit that conflicts with the tip stops the update with git's merge
+    conflict inside the member, to finish or abort there. With no branch line there is no branch to stay on, so no
+    update line.
 
     Never hand-kept: the first line says so, which is also how a file gr2 did not write is told apart."""
     chunks = [_GITMODULES_HEADER]

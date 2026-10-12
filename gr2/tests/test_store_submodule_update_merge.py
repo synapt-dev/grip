@@ -64,6 +64,24 @@ def test_a_local_only_commit_is_kept_on_the_branch(tmp_path: Path) -> None:
     assert _contains(member, mine) and _contains(member, tip)
 
 
+def test_a_local_commit_that_conflicts_stops_the_update_mid_merge_in_the_member(tmp_path: Path) -> None:
+    """`update = merge` is git's merge: a local commit that conflicts with the tip stops the update with git's merge
+    conflict inside the member, on its branch, the local commit still there, to finish or abort in the member."""
+    root = _store(tmp_path, _on_dev)
+    member = root / "beta"
+    (member / "f").write_text("mine, conflicting\n")   # _push_one writes this same file on the remote
+    git(member, "commit", "-q", "-am", "local, conflicts with the tip")
+    mine = git(member, "rev-parse", "HEAD").stdout.strip()
+    _push_one(tmp_path, "dev")
+
+    moved = _update_remote(root)
+
+    assert moved.returncode != 0, f"{moved.stdout}\n{moved.stderr}"
+    assert git(member, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).returncode == 0, "not mid-merge"
+    assert _branch(member) == "dev"
+    assert git(member, "rev-parse", "HEAD").stdout.strip() == mine
+
+
 def test_the_update_line_is_written_and_registered(tmp_path: Path) -> None:
     root = _store(tmp_path, _on_dev)
     assert git(root, "config", "-f", ".gitmodules", "--get", "submodule.beta.update").stdout.strip() == "merge"

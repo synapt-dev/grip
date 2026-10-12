@@ -871,3 +871,108 @@ def test_a_full_mode_store_commit_carries_the_committers_own_identity(
     assert _git_out(root, "log", "-1", "--format=%an <%ae>|%cn <%ce>") == (
         "Smoke <smoke@example.test>|Smoke <smoke@example.test>"
     )
+
+
+# ---------------------------------------------------------------------------
+# push --to: the root's remote, set by gr2
+# ---------------------------------------------------------------------------
+
+
+def _committed_root_without_origin(ws: Path, tmp_path: Path) -> Path:
+    remote = tmp_path / "root.git"
+    subprocess.run(["git", "init", "-q", "-b", "main", "--bare", str(remote)], check=True)
+    assert _cli("store", "init", str(ws))[0] == 0
+    assert _cli("store", "commit", "-m", "first")[0] == 0
+    assert _git(ws, "remote", "get-url", "origin", check=False).returncode != 0, "the root must start with no origin"
+    return remote
+
+
+def test_push_with_no_origin_names_the_flag_and_pushes_nothing(ws: Path, tmp_path: Path) -> None:
+    remote = _committed_root_without_origin(ws, tmp_path)
+
+    rc, out = _cli("store", "push")
+
+    assert rc == 5, out
+    assert "gr2 store push --to <url>" in out, out
+    assert _ls_remote(remote.as_uri(), "refs/heads/main") == ""
+
+
+def test_push_to_records_origin_and_publishes_the_root(ws: Path, tmp_path: Path) -> None:
+    """The proof the card asks for: a fresh store pushed with no raw git typed."""
+    remote = _committed_root_without_origin(ws, tmp_path)
+
+    rc, out = _cli("store", "push", "--to", remote.as_uri(), "--json")
+
+    assert rc == 0, out
+    payload = json.loads(out)
+    assert payload["origin_recorded"] is True, out
+    assert _git_out(ws, "remote", "get-url", "origin") == remote.as_uri()
+    assert _ls_remote(remote.as_uri(), "refs/heads/main") == _git_out(ws, "rev-parse", "HEAD")
+
+    # Control on the same root: a second push needs no flag, and records nothing new.
+    rc, out = _cli("store", "push", "--json")
+    assert rc == 0, out
+    assert json.loads(out)["origin_recorded"] is False, out
+
+
+def test_push_to_never_repoints_an_existing_origin(ws: Path, tmp_path: Path) -> None:
+    remote = _committed_root_without_origin(ws, tmp_path)
+    _git(ws, "remote", "add", "origin", remote.as_uri())
+    other = tmp_path / "other.git"
+    subprocess.run(["git", "init", "-q", "-b", "main", "--bare", str(other)], check=True)
+
+    rc, out = _cli("store", "push", "--to", other.as_uri())
+
+    assert rc == 4, out
+    assert "does not repoint origin" in out, out
+    assert _git_out(ws, "remote", "get-url", "origin") == remote.as_uri()
+    assert _ls_remote(other.as_uri(), "refs/heads/main") == ""
+    assert _ls_remote(remote.as_uri(), "refs/heads/main") == ""
+
+    # The same URL as the recorded origin is not a repoint: it pushes.
+    rc, out = _cli("store", "push", "--to", remote.as_uri())
+    assert rc == 0, out
+    assert _ls_remote(remote.as_uri(), "refs/heads/main") == _git_out(ws, "rev-parse", "HEAD")
+
+
+@pytest.mark.parametrize("bad, code", [
+    ("https://user:secret@example.invalid/root.git", 4),
+    ("ext::sh -c touch% /tmp/pwned", 4),
+    ("--upload-pack=touch /tmp/pwned", 2),
+])
+def test_push_to_refuses_before_recording_anything(ws: Path, tmp_path: Path, bad: str, code: int) -> None:
+    _committed_root_without_origin(ws, tmp_path)
+
+    rc, out = _cli("store", "push", "--to", bad)
+
+    assert rc == code, out
+    assert "secret" not in out, out
+    assert _git(ws, "remote", "get-url", "origin", check=False).returncode != 0, "nothing may be recorded"
+
+
+def test_a_failed_first_push_takes_back_the_origin_it_recorded(ws: Path, tmp_path: Path) -> None:
+    """A typo in --to must not strand the root on a bad origin: the corrected --to is a first record, not a repoint."""
+    remote = _committed_root_without_origin(ws, tmp_path)
+    typo = tmp_path / "no-such-root.git"
+
+    rc, out = _cli("store", "push", "--to", typo.as_uri())
+
+    assert rc == 5, out
+    assert _git(ws, "remote", "get-url", "origin", check=False).returncode != 0, "the failed push left its origin"
+
+    rc, out = _cli("store", "push", "--to", remote.as_uri())
+    assert rc == 0, out
+    assert _git_out(ws, "remote", "get-url", "origin") == remote.as_uri()
+    assert _ls_remote(remote.as_uri(), "refs/heads/main") == _git_out(ws, "rev-parse", "HEAD")
+
+
+def test_a_failed_push_keeps_an_origin_this_push_did_not_record(ws: Path, tmp_path: Path) -> None:
+    """Control: only the origin --to recorded is taken back; one the owner set stays, even when its push fails."""
+    _committed_root_without_origin(ws, tmp_path)
+    mine = (tmp_path / "owner-set.git").as_uri()
+    _git(ws, "remote", "add", "origin", mine)
+
+    rc, out = _cli("store", "push")
+
+    assert rc == 5, out
+    assert _git_out(ws, "remote", "get-url", "origin") == mine

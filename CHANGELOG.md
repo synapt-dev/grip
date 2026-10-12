@@ -11,6 +11,12 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Added
 
+- **`gr2`: after `store commit` or `store materialize`, plain `git submodule update --remote <member>` needs no
+  hand-run `git submodule init`.** Each member is registered in the root's own config from the `.gitmodules` gr2
+  writes. Unregistered, git printed "not initialized", left the member where it was and exited 0. Nothing is
+  registered in a full-mode store or from an adopted superproject's own `.gitmodules`, nor in a root cloned with
+  `--no-checkout`, whose empty index no plain `git submodule` verb can act on. A member git refuses to register is
+  named on stderr with the hand step; the verb still succeeds.
 - **`gr2`: `store status` answers, per member, what operators otherwise ask with plain git.** Each row now
   carries `branch` (null when detached), `ahead` / `behind` its recorded upstream (counted after the fetch status
   already makes; null when the upstream could not be measured) and `dirty` (the member's own uncommitted entries).

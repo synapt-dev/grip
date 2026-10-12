@@ -838,3 +838,36 @@ def test_a_committer_named_only_by_env_does_not_let_git_guess_the_author(
     assert _git_out(ws, "log", "-1", "--format=%an <%ae>|%cn <%ce>") == (
         "gr2 <gr2@example.invalid>|Env Op <env@example.test>"
     )
+
+
+def test_an_author_named_only_by_env_does_not_let_git_guess_the_committer(
+    ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mirror: GIT_AUTHOR_* names only the author, so the committer is gr2, never git's guess."""
+    _no_ambient_identity(tmp_path, monkeypatch)
+    assert _cli("store", "init", str(ws))[0] == 0
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Env Au")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "au@example.test")
+
+    rc, out = _cli("store", "commit", "-m", "first")
+
+    assert rc == 0, out
+    assert _git_out(ws, "log", "-1", "--format=%an <%ae>|%cn <%ce>") == (
+        "Env Au <au@example.test>|gr2 <gr2@example.invalid>"
+    )
+
+
+def test_a_full_mode_store_commit_carries_the_committers_own_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Full mode records through commit-tree, the second store-commit path; it names the same identity."""
+    from tests.test_store_full_mode_carrier import _full_store
+
+    _no_ambient_identity(tmp_path, monkeypatch)
+    root = _full_store(tmp_path)   # sets the root's identity to Smoke and records one commit
+
+    parents = _git_out(root, "rev-list", "--parents", "-n", "1", "HEAD").split()[1:]
+    assert len(parents) > 1, "a full-mode commit carries its field commits as parents (the commit-tree path)"
+    assert _git_out(root, "log", "-1", "--format=%an <%ae>|%cn <%ce>") == (
+        "Smoke <smoke@example.test>|Smoke <smoke@example.test>"
+    )

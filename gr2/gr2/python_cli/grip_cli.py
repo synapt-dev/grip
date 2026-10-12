@@ -547,12 +547,20 @@ def _register_submodules(root: Path, paths: list[str]) -> None:
     own `submodule.<name>.*` config and reaches no network. Callers skip a full-mode root and a foreign `.gitmodules`.
 
     A convenience, never a gate: each member is registered on its own, and one git refuses (a name git calls
-    suspicious, such as one carrying `..`) is named on stderr with the hand step, while the verb goes on."""
+    suspicious, such as one carrying `..`) is named on stderr with the hand step, while the verb goes on.
+
+    A NEW registration is said on stderr too. Git cannot tell a member never registered from one a user removed with
+    `git submodule deinit` (both leave no config), so registering again is the rule, and saying so is what keeps it from
+    silently undoing that choice. Git reports a new registration itself ("registered for path"); a member already
+    registered prints nothing."""
     for path in paths:
         done = _store_git(root, "submodule", "init", "--", path, check=False)
         if done.returncode:
             typer.echo(f"{path}: not registered as a submodule ({_git_detail(done)}); plain `git submodule` verbs "
                        f"need `git submodule init {path}` first", err=True)
+        elif "registered for path" in done.stderr:
+            typer.echo(f"{path}: registered as a submodule, so plain `git submodule` verbs act on it "
+                       f"(`git submodule deinit {path}` lasts until the next store commit)", err=True)
 
 
 def _existing_sets(root: Path) -> list[dict]:

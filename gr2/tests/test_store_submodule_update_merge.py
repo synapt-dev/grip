@@ -83,3 +83,19 @@ def test_control_without_the_update_mode_the_member_is_left_detached(tmp_path: P
 
     assert _branch(root / "beta") == "<detached>"
     assert git(root / "beta", "rev-parse", "HEAD").stdout.strip() == tip
+
+
+def test_registering_again_after_a_deinit_is_said_on_stderr(tmp_path: Path) -> None:
+    """Git cannot tell a deinit from never-registered, so store commit registers again; it must say so, never silently
+    undo the user's choice."""
+    from tests.test_store_git_native_smoke import gr2
+
+    root = _store(tmp_path, _on_dev)
+    quiet = gr2(root, "commit", "-m", "nothing new")   # control: already registered, nothing to say
+    assert "registered as a submodule" not in quiet.stderr, quiet.stderr
+    git(root, "config", "--remove-section", "submodule.beta")   # what `git submodule deinit` leaves in config
+
+    again = gr2(root, "commit", "-m", "nothing new")
+
+    assert git(root, "config", "--get", "submodule.beta.url", check=False).returncode == 0
+    assert "beta: registered as a submodule" in again.stderr, again.stderr

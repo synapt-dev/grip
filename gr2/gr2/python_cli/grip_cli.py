@@ -1912,6 +1912,7 @@ def _native_store_checkout(root: Path, revision: str) -> tuple[str, list[dict[st
 STORE_STATUS_NOTES = {
     "layer": "  (the record's layers carry the pin; no remote has it, by design in full mode)",
     "missing": "  (the upstream branch does not contain the pin, and no layer carries it)",
+    "no-pin": "  (grip.toml records no pin for this member; gr2 store commit records one)",
     "stale": "  (the upstream has moved past the pin)",
     "unpinned": "  (the checkout has moved off the pin)",
 }
@@ -1941,16 +1942,23 @@ def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[
         # copy happens to be.
         path = _native_member_working_root(root, member, claimed)
         gitlink = _recorded_pin(root, member, full)
+        pin = member.get("pin") or None
         top = _store_git(path, "rev-parse", "--show-toplevel", check=False)
         is_checkout = top.returncode == 0 and Path(top.stdout.strip()).resolve() == path.resolve()
         if not is_checkout:
-            rows.append({"name": member["name"], "pin": member["pin"], "gitlink": gitlink, "head": None, "state": "cannot-measure"})
+            rows.append({"name": member["name"], "pin": pin, "gitlink": gitlink, "head": None, "state": "cannot-measure"})
             continue
         head = _store_git(path, "rev-parse", "HEAD", check=False)
         if head.returncode:
-            rows.append({"name": member["name"], "pin": member["pin"], "gitlink": gitlink, "head": None, "state": "cannot-measure"})
+            rows.append({"name": member["name"], "pin": pin, "gitlink": gitlink, "head": None, "state": "cannot-measure"})
             continue
         head_sha = head.stdout.strip()
+        if pin is None:
+            # A member whose pin line was removed by hand (an operator can drop pins while moving upstreams)
+            # is a named row, not a traceback: there is nothing to compare, so the row says so and the
+            # command exits 4 below, as for any other disagreement between the document and the snapshot.
+            rows.append({"name": member["name"], "pin": None, "gitlink": gitlink, "head": head_sha, "state": "no-pin"})
+            continue
         remote, separator, branch = member["upstream"].partition("/")
         fetched = _store_git(path, "fetch", remote, check=False) if separator else None
         if not separator or not remote or not branch or fetched is None or fetched.returncode:
@@ -2452,9 +2460,12 @@ def grip_status_cmd(
     # an inconsistency is the silent-success class: the root snapshot a clone would
     # materialize disagrees with its own pin, and a caller that only reads the exit code
     # would take that snapshot as good. 4 outranks 5, and neither outranks the table.
-    disagreed = [member for member in members if member["gitlink"] != member["pin"]]
+    disagreed = [member for member in members if member["pin"] is None or member["gitlink"] != member["pin"]]
     if disagreed:
         for member in disagreed:
+            if member["pin"] is None:
+                typer.echo(f"{member['name']}: grip.toml has no pin; run gr2 store commit to record one", err=True)
+                continue
             typer.echo(
                 f"{member['name']} gitlink {member['gitlink'] or '<missing>'} disagrees with pin {member['pin']}",
                 err=True,

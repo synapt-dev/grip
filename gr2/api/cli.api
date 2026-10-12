@@ -142,6 +142,7 @@ json  grip diff .ref_b                                                may-change
 verb  grip diff (hidden:grip)                                         stable
 # grip init
 arg   grip init workspace_root <str> (hidden:grip)                    stable
+flag  grip init --clone <str> (hidden:grip)                           stable
 flag  grip init --json (hidden:grip)                                  stable
 flag  grip init --member <str> (hidden:grip)                          stable
 json  grip init .path                                                 may-change
@@ -689,6 +690,7 @@ json  store diff .ref_b                                               may-change
 verb  store diff                                                      may-change
 # store init
 arg   store init workspace_root <str>                                 may-change
+flag  store init --clone <str>                                        stable
 flag  store init --json                                               may-change
 flag  store init --member <str>                                       may-change
 json  store init .path                                                may-change

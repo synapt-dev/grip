@@ -1128,9 +1128,146 @@ def _write_gitignore(root: Path, members: list[dict[str, str]]) -> None:
     _regenerate_workspace_gitignore(root)
 
 
+def _parse_clone_values(values: list[str]) -> list[tuple[str, str]]:
+    """(name, url) for each `--clone NAME=URL`, or a usage error naming every bad value.
+
+    A NAME is one path segment, because the member is cloned at `<root>/<NAME>` and recorded with
+    that path: no separator, no leading dot or dash, not `..`. Checked before anything touches the
+    disk, so a typo never leaves a half-made root behind.
+    """
+    parsed: list[tuple[str, str]] = []
+    problems: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        name, sep, url = value.partition("=")
+        name, url = name.strip(), url.strip()
+        if not sep or not name or not url:
+            problems.append(f"{value!r} is not NAME=URL")
+            continue
+        if "/" in name or "\\" in name or name.startswith((".", "-")):
+            problems.append(f"member name {name!r} must be one path segment, not starting with '.' or '-'")
+            continue
+        if name in seen:
+            problems.append(f"member name {name!r} is given twice")
+            continue
+        seen.add(name)
+        parsed.append((name, url))
+    if problems:
+        raise NativeStoreRefusal("cannot use these --clone values: " + "; ".join(problems), 2)
+    return parsed
+
+
+def _clone_url(url: str) -> str:
+    """The url as it will be recorded: a local path that exists is made absolute, everything else is kept as given.
+
+    A relative origin would resolve against whatever directory a later clone of the store runs in.
+    """
+    if "://" in url or (":" in url.split("/", 1)[0]):
+        return url
+    local = Path(url).expanduser()
+    return str(local.resolve()) if local.exists() else url
+
+
+def _plan_clones(root: Path, clones: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The clones still to make, after every refusal that can be decided before the first one runs.
+
+    A checkout already at the name with the SAME origin is adopted (the rerun after a failed clone);
+    another origin, or a folder with something in it, refuses at 4. A url carrying credentials refuses
+    without being printed. On a root that is already a store, every name must already be a member with
+    that origin: adding a member to an existing store is not this verb.
+    """
+    for name, url in clones:
+        if _url_has_credentials(url):
+            raise _credential_refusal(name)
+    existing_store = (root / ".git").exists() and (root / "grip.toml").exists()
+    recorded = {}
+    if existing_store:
+        recorded = {
+            str(entry.get("name")): (entry.get("remotes") or {}).get("origin")
+            for entry in _grip_document(root).get("members", [])
+            if isinstance(entry, dict)
+        }
+    todo: list[tuple[str, str]] = []
+    problems: list[str] = []
+    for name, url in clones:
+        if existing_store and recorded.get(name) != url:
+            problems.append(
+                f"{name} is not a member of this store with origin {url}; adding a member to an existing store "
+                f"is not store init"
+            )
+            continue
+        path = root / name
+        if path.exists() and not path.is_dir():
+            problems.append(f"{name}: {path} is a file, not a checkout")
+        elif path.is_dir() and _is_member_checkout(root, name):
+            origin = _store_git(path, "remote", "get-url", "origin", check=False)
+            have = _clone_url(origin.stdout.strip()) if origin.returncode == 0 else None
+            if have != url:
+                problems.append(f"{name}: the checkout at {path} has another origin; move it or name that origin")
+        elif path.is_dir() and any(path.iterdir()):
+            problems.append(f"{name}: {path} holds files and is not a checkout; init will not clone over it")
+        else:
+            todo.append((name, url))
+    if problems:
+        raise NativeStoreRefusal("cannot clone these members: " + "; ".join(problems), 4)
+    return todo
+
+
+def _make_clones(root: Path, todo: list[tuple[str, str]]) -> None:
+    """Clone each planned member at its name. A failure names the member and the ones already done."""
+    done: list[str] = []
+    for name, url in todo:
+        result = gitops.clone(url, str(root / name))
+        if result.returncode:
+            raise NativeStoreRefusal(
+                f"{STORE_INCOMPLETE_PREFIX}{name} could not be cloned from its url "
+                f"({_git_detail(result)}); done: {', '.join(done) or 'none'}; nothing was recorded, "
+                f"so rerun the same command once the url is fixed",
+                5,
+            )
+        done.append(name)
+
+
+def _refuse_enclosing_repo(root: Path) -> None:
+    """Exit 4 when `root` sits inside another repository's worktree. A root that does not exist yet is
+    judged by its nearest existing parent, so `--clone` can refuse before it creates anything."""
+    probe = root
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    enclosing = _store_git(probe, "rev-parse", "--show-toplevel", check=False)
+    if enclosing.returncode == 0:
+        top = Path(enclosing.stdout.strip()).resolve()
+        if top != root.resolve():
+            raise NativeStoreRefusal(
+                f"{root} is inside another repository's worktree ({top}); a store root is "
+                f"its own repo -- clone or move the workspace out before store init",
+                4,
+            )
+
+
 @_refuses_moved_workspace
-def _native_store_init(root: Path, member_paths: list[str] | None = None) -> dict[str, str]:
-    """Initialize the store and return the per-hook install states (`installed`, `foreign`, `hidden`)."""
+def _native_store_init(root: Path, member_paths: list[str] | None = None,
+                      clones: list[tuple[str, str]] | None = None) -> dict[str, str]:
+    """Initialize the store and return the per-hook install states (`installed`, `foreign`, `hidden`).
+
+    `clones` are `(name, url)` members cloned at `<root>/<name>` first and then named like `--member`
+    paths, so the record they get is the one an existing checkout would get.
+    """
+    if clones:
+        clones = [(name, _clone_url(url)) for name, url in clones]
+        todo = _plan_clones(root, clones)
+        # The --member paths are checked BEFORE anything is cloned, like every other refusal decidable up front:
+        # `--clone a=<url> --member nope` used to clone a and only then refuse nope, leaving a stray a/. A path
+        # --clone itself creates is skipped here; it cannot be a checkout until it is cloned.
+        cloned_names = {name for name, _ in clones}
+        named = [p for p in (member_paths or []) if str(PurePosixPath(p.strip())) not in cloned_names]
+        if named:  # mut:earlymember
+            _discover_members(root, declared=named)
+        if not (root / ".git").exists():
+            _refuse_enclosing_repo(root)
+        root.mkdir(parents=True, exist_ok=True)
+        _make_clones(root, todo)
+        member_paths = [*(member_paths or []), *(name for name, _ in clones)]
     if (root / ".git").exists() and (root / "grip.toml").exists():
         _refuse_init_disagreement(root)
         _regenerate_workspace_gitignore(root)
@@ -1141,15 +1278,7 @@ def _native_store_init(root: Path, member_paths: list[str] | None = None) -> dic
     # section 5 names this refusal (exit 4). `rev-parse --show-toplevel` succeeding on a root
     # that has no `.git` of its own is the measurement: the answer comes back as the
     # enclosing repo, which is never the root.
-    enclosing = _store_git(root, "rev-parse", "--show-toplevel", check=False)
-    if enclosing.returncode == 0:
-        top = Path(enclosing.stdout.strip()).resolve()
-        if top != root.resolve():
-            raise NativeStoreRefusal(
-                f"{root} is inside another repository's worktree ({top}); a store root is "
-                f"its own repo -- clone or move the workspace out before store init",
-                4,
-            )
+    _refuse_enclosing_repo(root)
     members = _discover_members(root, declared=member_paths)
     if not members:
         raise NativeStoreRefusal("no sibling git repositories found to store", 4)
@@ -2471,12 +2600,21 @@ def grip_init_cmd(
             "is not a checkout refuses the verb."
         ),
     ),
+    clone_values: list[str] | None = typer.Option(
+        None,
+        "--clone",
+        help=(
+            "Declare a member from a url: NAME=URL clones it at <root>/NAME and records it "
+            "(repeatable). The root is created when it does not exist."
+        ),
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Initialize a native store at cwd or the supplied root."""
     root = Path.cwd() if workspace_root is None else workspace_root.resolve()
     try:
-        hook_states = _native_store_init(root, member_paths=member_paths)
+        clones = _parse_clone_values(clone_values) if clone_values else None
+        hook_states = _native_store_init(root, member_paths=member_paths, clones=clones)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)

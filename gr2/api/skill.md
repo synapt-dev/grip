@@ -31,6 +31,7 @@ Initialize a native store at cwd or the supplied root.
 
 - `<workspace_root>` (optional)
 - `--member`: Declare a member checkout by its path relative to the root (repeatable). Named paths win over the root's own spec and over sibling discovery; a named path that is not a checkout refuses the verb.
+- `--clone`: Declare a member from a url: NAME=URL clones it at <root>/NAME and records it (repeatable). The root is created when it does not exist.
 - `--json`: Emit machine-readable JSON
 
 ### gr2 store status

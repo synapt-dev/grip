@@ -17,6 +17,13 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   The text line reads, in a fixed order with short shas: `<name> <state> branch= head= pin= ahead= behind= dirty=`.
   Status reads the member and root working trees with `GIT_OPTIONAL_LOCKS=0`, so inspecting a workspace no longer
   rewrites a member's index. `api/skill.md` names `store status` as the way to inspect members.
+- **`gr2`: `store init --clone NAME=URL` declares a member from a url in a fresh grip.** Each value clones the
+  member at `<root>/NAME` and records it, creating the root when it does not exist, so N members from bare remotes
+  cost one command instead of N clones and an init. Refusals that can be decided before cloning come first: a malformed
+  value or a repeated name exits 2; a url with credentials (never printed), a checkout at the name with another origin,
+  a non-empty folder at the name, or a new name on a root that is already a store exits 4. A clone that fails exits 5,
+  names the member and the ones already cloned, and writes no `grip.toml`; the same command rerun adopts the members
+  already cloned from the same url. A local-path url is recorded absolute.
 - **`gr2`: `check set` and `review merge` print a hint when a member outside every declared set still names
   something the set moved off.** A member in no declared set merges as before, so a consumer outside the set could
   merge with every gate green and stay broken. The hint names the member, the identifier and up to three paths, on

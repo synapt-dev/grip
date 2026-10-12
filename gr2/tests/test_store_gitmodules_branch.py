@@ -11,7 +11,11 @@ THE RULE, with each edge decided here:
     member's remote, and a local `mine` tracking `origin/main` must follow `main` (row 2);
   * a branch name containing `/` is kept whole (`origin/feat/greet` -> `feat/greet`, row 3);
   * a member detached at init records the default upstream, `origin/main`, and declares `main` (row 4);
-  * an upstream with a line break is refused like the other fields, since `.gitmodules` cannot carry it (row 5).
+  * an upstream with a line break is refused like the other fields, since `.gitmodules` cannot carry it (row 5);
+  * `workspace init --from-superproject` reads the `.gitmodules` branch as the member's declared branch. A member
+    attached to a local branch whose upstream IS that declared branch keeps its local name (`mine` tracking
+    `origin/main` stays `mine`, row 6): the line names the remote branch, so the two agree and only the name differs.
+    When the attached branch tracks something else, the declaration still outranks it, as ruled (row 7).
 
 Fixtures are real git with bare local origins and no network. Git refuses a local-path submodule URL by default,
 so the `update --remote` row names `protocol.file.allow`.
@@ -22,7 +26,10 @@ from pathlib import Path
 
 import pytest
 
+from gr2.prototypes import repo_maintenance_prototype as repo_proto
+from gr2.python_cli.app import app
 from gr2.python_cli.grip_cli import NativeStoreRefusal, render_gitmodules
+from tests.conftest import make_cli_runner
 from tests.test_store_git_native_smoke import configure_identity, git, gr2, run
 
 
@@ -104,3 +111,24 @@ def test_an_upstream_with_a_line_break_is_refused() -> None:
     member = {"name": "beta", "path": "beta", "remote": "https://example.invalid/beta.git", "upstream": "origin/x\ny"}
     with pytest.raises(NativeStoreRefusal, match="upstream contains a line break"):
         render_gitmodules([member])
+
+
+def _workspace_ref(root: Path) -> str:
+    done = make_cli_runner().invoke(app, ["workspace", "init", str(root), "--from-superproject"])
+    assert done.exit_code == 0, done.output
+    return repo_proto.read_workspace_spec(root / ".grip" / "workspace_spec.toml").repos[0].ref
+
+
+def test_workspace_init_keeps_a_local_branch_that_tracks_the_declared_branch(tmp_path: Path) -> None:
+    root = _store(tmp_path, lambda m: git(m, "checkout", "-q", "-b", "mine", "--track", "origin/main"))
+    assert _declared_branch(root) == "main"  # the precondition: the line names the remote branch
+    assert _workspace_ref(root) == "mine"
+
+
+def test_workspace_init_keeps_the_declared_branch_when_the_local_branch_tracks_another(tmp_path: Path) -> None:
+    """The twin: `mine` re-pointed at origin/dev after the store recorded origin/main. The declaration (main) and the
+    attached branch now disagree, and the ruled precedence holds: the declared branch is recorded."""
+    root = _store(tmp_path, lambda m: git(m, "checkout", "-q", "-b", "mine", "--track", "origin/main"))
+    git(root / "beta", "branch", "-q", "--set-upstream-to", "origin/dev", "mine")
+    assert _declared_branch(root) == "main"
+    assert _workspace_ref(root) == "main"

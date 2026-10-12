@@ -781,8 +781,8 @@ def test_a_reviewer_who_stamps_before_receiving_gets_a_named_refusal_and_the_ord
     assert stamped.exit_code == 0, stamped.output
 
 
-def test_a_reviewer_clone_without_the_head_gets_head_not_fetched_and_the_fetch_that_works(world, tmp_path, monkeypatch):
-    import shlex
+def _reviewer_without_the_head(world, tmp_path, monkeypatch):
+    """A reviewer's own workspace whose member clone was made before the head was pushed, then the review received."""
     reviewer = tmp_path / "reviewer-ws"
     reviewer.mkdir()
     # --no-local: a local clone copies every object, which would hide the case a real early clone meets
@@ -793,11 +793,45 @@ def test_a_reviewer_clone_without_the_head_gets_head_not_fetched_and_the_fetch_t
     git(reviewer, "config", "user.email", "r@example.invalid")
     rid = "gr:" + world["rid"]
     assert runner.invoke(app, ["review", "receive", str(reviewer), rid, "--remote", str(world["remote"])]).exit_code == 0
+    assert subprocess.run(["git", "-C", str(reviewer / "member"), "cat-file", "-e", world["head"] + "^{commit}"],
+                          capture_output=True).returncode != 0, "precondition: the reviewer's clone lacks the head"
+    return reviewer, rid
+
+
+def test_a_reviewer_clone_without_the_head_stamps_after_receive_with_no_hand_fetch(world, tmp_path, monkeypatch):
+    """The reader's probe from the three-reviewer walk: receive, then stamp. stamp fetches the exact reviewed head from
+    the member remote the review names (the remote it already reads the approval chain from), so a reviewer runs no
+    git fetch per member."""
+    reviewer, rid = _reviewer_without_the_head(world, tmp_path, monkeypatch)
+
+    stamped = runner.invoke(app, ["review", "stamp", str(reviewer), rid])
+
+    assert stamped.exit_code == 0, stamped.output
+    receipt = json.loads(stamped.stdout)
+    assert receipt["count"] == 1 and receipt["links"][0]["approver"] == "Reviewer R", receipt
+
+
+def test_stamp_fetches_from_the_remote_the_review_names_not_the_clones_origin(world, tmp_path, monkeypatch):
+    reviewer, rid = _reviewer_without_the_head(world, tmp_path, monkeypatch)
+    git(reviewer / "member", "remote", "set-url", "origin", str(tmp_path / "nowhere.git"))
+
+    stamped = runner.invoke(app, ["review", "stamp", str(reviewer), rid])
+
+    assert stamped.exit_code == 0, stamped.output
+
+
+def test_a_head_the_member_remote_no_longer_has_still_refuses_head_not_fetched(world, tmp_path, monkeypatch):
+    """The fetch is asked of the remote, not assumed: when the remote no longer has the head, stamp refuses by name
+    with the next step, and never with a raw `unknown revision`."""
+    reviewer, rid = _reviewer_without_the_head(world, tmp_path, monkeypatch)
+    git(world["remote"], "update-ref", "-d", "refs/heads/feature")
+    git(world["remote"], "reflog", "expire", "--expire=now", "--all")
+    git(world["remote"], "gc", "-q", "--prune=now")
+    assert subprocess.run(["git", "-C", str(world["remote"]), "cat-file", "-e", world["head"] + "^{commit}"],
+                          capture_output=True).returncode != 0, "precondition: the remote lacks the head"
+
     early = runner.invoke(app, ["review", "stamp", str(reviewer), rid])
+
     assert early.exit_code == 2 and "head_not_fetched: member" in early.output, early.output
     assert "unknown revision" not in early.output, early.output
-    line = next(x for x in early.output.splitlines() if x.startswith("next: "))
-    fetch_cmd, stamp_cmd = line[line.index("git -C"):].split(", then ")
-    subprocess.run(shlex.split(fetch_cmd), check=True, capture_output=True)
-    stamped = runner.invoke(app, shlex.split(stamp_cmd.removeprefix("gr2 ")))
-    assert stamped.exit_code == 0, stamped.output
+    assert any(x.startswith("next: ") for x in early.output.splitlines()), early.output

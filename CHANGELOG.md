@@ -162,6 +162,13 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **`gr2`: `review stamp` fetches the reviewed head a reviewer's member clone does not hold.** A reviewer who ran
+  `review receive` and then `review stamp` was refused with `head_not_fetched` and told to run `git fetch` in each
+  member, so a review over several members cost every reviewer one hand fetch per member. stamp now fetches the exact
+  reviewed head from the member remote the review names (the remote it already reads the approval chain from, not the
+  clone's own `origin`), and refuses with `head_not_fetched` only when that remote cannot serve it; its next step now
+  says the author must push the head there first, since a hand fetch would fail the same way.
+
 - **`gr2`: a failed venv create in `review run` names its reason and leaves no half-built venv, and a refused run's receipt
   is named by the lane's commit.** `venv_failed` printed an empty reason when the cause was on stdout (ensurepip's
   failure is), and the half-built `<lane>/.venv` it left was reused by the next run until the lane was closed and

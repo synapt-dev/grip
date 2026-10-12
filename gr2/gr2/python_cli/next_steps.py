@@ -40,10 +40,10 @@ def self_approval(workspace: str, review: str) -> str:
 
 
 def head_not_fetched(repo: str, remote: str, head: str, workspace: str, review: str) -> str:
-    # The head itself, not the remote's default refspec: a single-branch clone fetches only its own branch.
-    return (f"next: fetch the reviewed head into this member clone, then stamp again: "
-            f"git -C {_shown(repo)} fetch {_shown(remote)} {_shown(head)}, then "
-            f"gr2 review stamp {_shown(workspace)} {_shown(review)}")
+    # stamp has already asked the member remote for the exact head, so a hand fetch would fail the same way: the head
+    # has to reach that remote first.
+    return (f"next: the member remote {_shown(remote)} does not serve the reviewed head {_shown(head)}; once the "
+            f"author has pushed it there, stamp again: gr2 review stamp {_shown(workspace)} {_shown(review)}")
 
 
 def not_received(workspace: str, review: str) -> str:

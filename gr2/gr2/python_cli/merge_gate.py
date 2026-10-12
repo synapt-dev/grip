@@ -18,7 +18,7 @@ import uuid
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from . import check_records, declared_sets, gitops, grip, next_steps, set_check
+from . import check_records, declared_sets, gitops, grip, merge_receipts, next_steps, set_check
 
 EXIT_MERGED, EXIT_REFUSED, EXIT_PARTIAL = 0, 3, 4
 
@@ -243,6 +243,8 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
             # Every measurement fault, advertisement and history reads included, is a named refusal in the receipt.
             row["refused"] = f"remote_unmeasurable: {exc}"
             continue
+        row["records"] = {"review": f"refs/dev.synapt.grip/__reviews__/v1/{review_id}" if published == review_id else None,
+                          "checks": check_records.CHECK_REF}
         if published != review_id:
             row["refused"] = "review_not_on_member_remote: the remote does not hold this exact review"
             continue
@@ -251,8 +253,10 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
             continue
         if feat != m["head"]:
             row["refused"] = f"feature_moved: remote {feature} is {feat}, reviewed {m['head']}"
+            row["_heads"] = (m["head"], feat)
         elif target != m["base"]:
             row["refused"] = f"base_moved: remote {into} is {target}, reviewed base {m['base']}"
+            row["_heads"] = (m["base"], target)
         elif ancestor != target:
             row["refused"] = "base_not_ancestor_of_head"
         else:
@@ -338,6 +342,7 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                     still = None
                 if still != m["head"]:
                     r["refused"] = f"feature_moved_before_push: remote {feature} is {still}"
+                    r["_heads"] = (m["head"], still)
                     break  # narrows the head race; no further member is pushed
                 try:
                     # An expiry is rc 124 here, so it lands in push_error and the state below is re-measured.
@@ -382,5 +387,18 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         code = EXIT_REFUSED
     else:
         code = EXIT_PARTIAL
-    return code, {"id": view["id"], "into": into, "feature": feature, "exit": code, "members": rows,
-                  "approvals": approval_receipt}
+    # Beside the `refused` string, the same refusal as fields: the code, the member, and both heads when the refusal
+    # is a moved ref (expected is what was reviewed, observed is what the remote holds now).
+    for r in rows:
+        expected, observed = r.pop("_heads", (None, None))
+        r.setdefault("records", None)
+        r["refusal"] = None if not r["refused"] else {
+            "code": r["refused"].split(":", 1)[0], "member": r["key"], "expected": expected, "observed": observed}
+    receipt = {"id": view["id"], "into": into, "feature": feature, "exit": code, "members": rows,
+               "approvals": approval_receipt}
+    try:
+        # Kept for `review show`, so the receipt outlives this run's stdout; a failed write never changes the exit.
+        merge_receipts.record(root, view["id"], receipt)
+    except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+        receipt["stored"] = f"receipt_not_stored: {exc}"
+    return code, receipt

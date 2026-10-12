@@ -11,6 +11,12 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Added
 
+- **`gr2`: `store status` answers, per member, what operators otherwise ask with plain git.** Each row now
+  carries `branch` (null when detached), `ahead` / `behind` its recorded upstream (counted after the fetch status
+  already makes; null when the upstream could not be measured) and `dirty` (the member's own uncommitted entries).
+  The text line reads, in a fixed order with short shas: `<name> <state> branch= head= pin= ahead= behind= dirty=`.
+  Status reads the member and root working trees with `GIT_OPTIONAL_LOCKS=0`, so inspecting a workspace no longer
+  rewrites a member's index. `api/skill.md` names `store status` as the way to inspect members.
 - **`gr2`: `check set` and `review merge` print a hint when a member outside every declared set still names
   something the set moved off.** A member in no declared set merges as before, so a consumer outside the set could
   merge with every gate green and stay broken. The hint names the member, the identifier and up to three paths, on

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -2004,6 +2005,32 @@ STORE_STATUS_NOTES = {
 }
 
 
+def _member_inspection(path: Path, upstream: str | None) -> dict[str, object]:
+    """What an operator otherwise asks each member with plain git: the branch it is on (null when detached), commits
+    ahead of and behind ``upstream`` (null when no upstream could be measured; the caller passes one only after its
+    fetch succeeded, so this adds no network read), and how many entries its own ``status --porcelain`` lists.
+
+    The porcelain read runs with GIT_OPTIONAL_LOCKS=0: the member's checkout belongs to the operator, and a plain
+    status refreshes stale stat data by REWRITING the member's index, so an inspection would otherwise write."""
+    branch = _store_git(path, "symbolic-ref", "-q", "--short", "HEAD", check=False)
+    ahead = behind = None
+    if upstream is not None:
+        counts = _store_git(path, "rev-list", "--left-right", "--count", f"HEAD...{upstream}", check=False)
+        parts = counts.stdout.split()
+        if counts.returncode == 0 and len(parts) == 2:
+            ahead, behind = int(parts[0]), int(parts[1])
+    porcelain = gitops.run(path, "status", "--porcelain", env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
+    return {
+        "branch": (branch.stdout.strip() or None) if branch.returncode == 0 else None,
+        "ahead": ahead,
+        "behind": behind,
+        "dirty": len(porcelain.stdout.splitlines()) if porcelain.returncode == 0 else None,
+    }
+
+
+_NOT_INSPECTED = {"branch": None, "ahead": None, "behind": None, "dirty": None}
+
+
 @_refuses_moved_workspace
 def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[str, object]]:
     """Render every member's working state without stopping at the first bad row.
@@ -2032,22 +2059,26 @@ def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[
         top = _store_git(path, "rev-parse", "--show-toplevel", check=False)
         is_checkout = top.returncode == 0 and Path(top.stdout.strip()).resolve() == path.resolve()
         if not is_checkout:
-            rows.append({"name": member["name"], "pin": pin, "gitlink": gitlink, "head": None, "state": "cannot-measure"})
+            rows.append({"name": member["name"], "pin": pin, "gitlink": gitlink, "head": None, "state": "cannot-measure",
+                         **_NOT_INSPECTED})
             continue
         head = _store_git(path, "rev-parse", "HEAD", check=False)
         if head.returncode:
-            rows.append({"name": member["name"], "pin": pin, "gitlink": gitlink, "head": None, "state": "cannot-measure"})
+            rows.append({"name": member["name"], "pin": pin, "gitlink": gitlink, "head": None, "state": "cannot-measure",
+                         **_NOT_INSPECTED})
             continue
         head_sha = head.stdout.strip()
         if pin is None:
             # A member whose pin line was removed by hand (an operator can drop pins while moving upstreams)
             # is a named row, not a traceback: there is nothing to compare, so the row says so and the
             # command exits 4 below, as for any other disagreement between the document and the snapshot.
-            rows.append({"name": member["name"], "pin": None, "gitlink": gitlink, "head": head_sha, "state": "no-pin"})
+            rows.append({"name": member["name"], "pin": None, "gitlink": gitlink, "head": head_sha, "state": "no-pin",
+                         **_member_inspection(path, None)})
             continue
         remote, separator, branch = member["upstream"].partition("/")
         fetched = _store_git(path, "fetch", remote, check=False) if separator else None
-        if not separator or not remote or not branch or fetched is None or fetched.returncode:
+        measured = bool(separator and remote and branch and fetched is not None and not fetched.returncode)
+        if not measured:
             state = "cannot-measure"
         elif _store_git(path, "merge-base", "--is-ancestor", member["pin"], member["upstream"], check=False).returncode:
             # Full mode records a pin no remote has in LAYERS, so "upstream lacks the pin" is the
@@ -2060,8 +2091,14 @@ def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[
             state = "stale"
         else:
             state = "upstream"
-        rows.append({"name": member["name"], "pin": member["pin"], "gitlink": gitlink, "head": head_sha, "state": state})
-    porcelain = _store_git(root, "status", "--porcelain").stdout.splitlines()
+        rows.append({"name": member["name"], "pin": member["pin"], "gitlink": gitlink, "head": head_sha, "state": state,
+                     **_member_inspection(path, member["upstream"] if measured else None)})
+    # The root's status recurses into every member gitlink and the child status would refresh that member's index,
+    # so the root read carries GIT_OPTIONAL_LOCKS=0 too (git passes it to the child).
+    root_read = gitops.run(root, "status", "--porcelain", env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
+    if root_read.returncode:
+        raise RuntimeError(root_read.stderr.strip() or "git command failed")
+    porcelain = root_read.stdout.splitlines()
     return rows, {"state": "dirty" if porcelain else "clean", "porcelain": porcelain}
 
 
@@ -2547,11 +2584,25 @@ def grip_push_cmd(
         typer.echo(f"Pushed root {payload['root_branch']} at {payload['root_commit']}")
 
 
+def _store_status_line(member: dict) -> str:
+    """One member, at a glance, in a fixed order: branch, head, pin (short shas), ahead, behind, dirty. `-` is a
+    detached HEAD or an absent sha; `?` is a count that could not be measured."""
+    def short(sha: object) -> str:
+        return str(sha)[:7] if sha else "-"
+
+    def count(value: object) -> str:
+        return "?" if value is None else str(value)
+
+    return (f"{member['name']} {member['state']} branch={member.get('branch') or '-'} head={short(member['head'])} "
+            f"pin={short(member['pin'])} ahead={count(member.get('ahead'))} behind={count(member.get('behind'))} "
+            f"dirty={count(member.get('dirty'))}")
+
+
 @grip_app.command("status")
 def grip_status_cmd(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Show every member's pin and working HEAD."""
+    """Show each member's branch, head, pin, ahead/behind its upstream, and uncommitted entries."""
     try:
         members, root_status = _native_store_status(Path.cwd())
     except NativeStoreRefusal as exc:
@@ -2570,7 +2621,7 @@ def grip_status_cmd(
     else:
         for member in members:
             note = STORE_STATUS_NOTES.get(member["state"], "")
-            typer.echo(f"{member['name']} {member['state']} pin={member['pin']} head={member['head']}{note}")
+            typer.echo(_store_status_line(member) + note)
     # A hook that will not run is a finding, not a pass: said on stderr in both modes so stdout is unchanged.
     for line in store_hooks.hook_problems(Path.cwd(), store_hooks.hook_states(Path.cwd())):
         typer.echo(line, err=True)

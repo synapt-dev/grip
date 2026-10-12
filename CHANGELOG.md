@@ -124,8 +124,9 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   `main`'s tip. An existing store gains the lines at its next `store commit`, or at the next plain `git commit` once the
   installed hook runs the new gr2; nothing else in the file changes. An upstream containing a line break is refused,
   like the other fields. `workspace init --from-superproject`, which reads that line as a member's declared branch,
-  keeps the member's local branch name when that branch tracks the declared branch (`mine` tracking `origin/main`
-  stays `mine`); a local branch tracking anything else still yields to the declaration.
+  keeps the member's local branch name when that branch is configured to track origin's declared branch (`mine`
+  tracking `origin/main` stays `mine`); any other upstream, including the same name on another remote, still yields
+  to the declaration.
 - **`gr2`: `store materialize` leaves each member on a branch at its pin, not on a detached HEAD.** The branch is the
   member's recorded `ref` (or, with none, the one its `upstream` names: `origin/main` gives `main`), set to track that
   upstream, so work continues without a branch command per member. The branch is moved only when that drops no commit

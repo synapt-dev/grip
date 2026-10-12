@@ -508,8 +508,9 @@ def declared_repo_state(
 
     1. ``declared_ref``, from the workspace's own ``.gitmodules`` when the
        caller supplies it -- under the member's LOCAL name when its head is
-       attached to a branch whose upstream is that declared branch, since
-       ``.gitmodules`` names a remote branch.
+       attached to a branch configured to track origin's declared branch
+       (``branch.<local>.remote`` = origin, ``.merge`` = the declared branch),
+       since ``.gitmodules`` names a branch on origin.
     2. the branch the repo is on, when its head is attached.
     3. the remote's default from ``refs/remotes/origin/HEAD``, which git sets
        when it clones -- resolved rather than invented, and used for the
@@ -536,14 +537,16 @@ def declared_repo_state(
     ref: str | None = None
     if declared_ref:
         ref = declared_ref
-        # `.gitmodules` names a branch on the member's REMOTE. A member attached to a local branch whose upstream is
-        # that branch agrees with the declaration under its own name (`mine` tracking `origin/main`, declared `main`),
-        # so the local name is the branch of record. An attached branch tracking anything else does not agree, and the
-        # declaration still outranks it.
+        # `.gitmodules` names a branch on the member's ORIGIN. A member attached to a local branch configured to track
+        # exactly that branch (`branch.<local>.remote` is origin and `.merge` is refs/heads/<declared>) agrees with the
+        # declaration under its own name (`mine` tracking `origin/main`, declared `main`), so the local name is the
+        # branch of record. Any other upstream, including the same name on another remote (`fork/main`), does not agree,
+        # and the declaration still outranks it. Read as configured, so a remapped fetch refspec cannot fool it.
         if is_attached:
             local = attached.stdout.strip().removeprefix("refs/heads/")
-            upstream = run_git(path, "rev-parse", "--abbrev-ref", f"{local}@{{upstream}}")
-            if upstream.returncode == 0 and upstream.stdout.strip().partition("/")[2] == declared_ref:
+            remote = run_git(path, "config", "--get", f"branch.{local}.remote")
+            merge = run_git(path, "config", "--get", f"branch.{local}.merge")
+            if remote.stdout.strip() == "origin" and merge.stdout.strip() == f"refs/heads/{declared_ref}":
                 ref = local
     elif is_attached:
         ref = attached.stdout.strip().removeprefix("refs/heads/")

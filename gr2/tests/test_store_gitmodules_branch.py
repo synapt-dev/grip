@@ -15,7 +15,9 @@ THE RULE, with each edge decided here:
   * `workspace init --from-superproject` reads the `.gitmodules` branch as the member's declared branch. A member
     attached to a local branch whose upstream IS that declared branch keeps its local name (`mine` tracking
     `origin/main` stays `mine`, row 6): the line names the remote branch, so the two agree and only the name differs.
-    When the attached branch tracks something else, the declaration still outranks it, as ruled (row 7).
+    When the attached branch tracks something else, the declaration still outranks it, as ruled (row 7), and that
+    includes the same branch name on ANOTHER remote: `.gitmodules` declares origin's branch, so `mine` tracking
+    `fork/main` is not `main` (row 8).
 
 Fixtures are real git with bare local origins and no network. Git refuses a local-path submodule URL by default,
 so the `update --remote` row names `protocol.file.allow`.
@@ -130,5 +132,19 @@ def test_workspace_init_keeps_the_declared_branch_when_the_local_branch_tracks_a
     attached branch now disagree, and the ruled precedence holds: the declared branch is recorded."""
     root = _store(tmp_path, lambda m: git(m, "checkout", "-q", "-b", "mine", "--track", "origin/main"))
     git(root / "beta", "branch", "-q", "--set-upstream-to", "origin/dev", "mine")
+    assert _declared_branch(root) == "main"
+    assert _workspace_ref(root) == "main"
+
+
+def test_workspace_init_keeps_the_declared_branch_when_the_local_branch_tracks_another_remote(tmp_path: Path) -> None:
+    """`mine` tracking `fork/main`: the branch NAME matches the declaration, but the remote does not."""
+    def setup(member: Path) -> None:
+        run(tmp_path, "git", "clone", "-q", "--bare", str(tmp_path / "beta.git"), str(tmp_path / "fork.git"))
+        git(member, "remote", "add", "fork", str(tmp_path / "fork.git"))
+        git(member, "fetch", "-q", "fork")
+        git(member, "checkout", "-q", "-b", "mine", "--track", "origin/main")
+    root = _store(tmp_path, setup)
+    git(root / "beta", "branch", "-q", "--set-upstream-to", "fork/main", "mine")
+    assert git(root / "beta", "rev-parse", "--abbrev-ref", "mine@{upstream}").stdout.strip() == "fork/main"
     assert _declared_branch(root) == "main"
     assert _workspace_ref(root) == "main"

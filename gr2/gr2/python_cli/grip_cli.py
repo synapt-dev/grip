@@ -2019,6 +2019,34 @@ def _keep_member_paths_owned(root: Path, members: list[dict[str, str]]) -> None:
         return
     _store_git(root, "update-index", "--skip-worktree", "--", *[m["path"] for m in members])
 
+def _land_on_upstream_branch(path: Path, member: dict[str, str]) -> tuple[str | None, str]:
+    """Put a member that sits detached at its pin onto its recorded branch (`ref`), tracking its `upstream`.
+
+    `store init` records both facts as the member states them, and they can differ (a local `mine` tracking
+    `origin/main`); with no `ref` the upstream's branch name is used. Returns the branch, or None and why the member
+    stays detached. The branch moves only when that drops no commit that exists only here: `rev-list <branch> --not
+    <pin> --remotes` must be empty. A fresh clone's branch (at the upstream tip, past or behind the pin) passes, and
+    so does one whose local commits are all pushed. A branch carrying a commit no remote holds is left exactly where
+    it is."""
+    remote, separator, tracked = member.get("upstream", "").partition("/")
+    if not separator or not remote or not tracked:
+        return None, f"no upstream branch is recorded (upstream {member.get('upstream')!r})"
+    branch = member.get("ref") or tracked
+    existing = _store_git(path, "rev-parse", "--verify", "-q", f"refs/heads/{branch}", check=False)
+    if existing.returncode == 0:
+        only_here = _store_git(path, "rev-list", existing.stdout.strip(), "--not", member["pin"], "--remotes", check=False)
+        if only_here.returncode:
+            return None, f"could not read local {branch}"
+        count = len(only_here.stdout.split())
+        if count:
+            return None, f"local {branch} has {count} commit(s) no remote holds, so it was not moved"
+    if _store_git(path, "checkout", "-q", "-B", branch, check=False).returncode:
+        return None, f"could not put {branch} at the pin"
+    _store_git(path, "config", f"branch.{branch}.remote", remote)
+    _store_git(path, "config", f"branch.{branch}.merge", f"refs/heads/{tracked}")
+    return branch, ""
+
+
 @_refuses_moved_workspace
 def _native_store_materialize(root: Path) -> list[dict[str, str]]:
     materialized: list[dict[str, str]] = []
@@ -2092,9 +2120,12 @@ def _native_store_materialize(root: Path) -> list[dict[str, str]]:
             raise NativeStoreRefusal(
                 f"{member['name']} pin {member['pin']} cannot be served by origin; done: {done}", 3
             )
-        materialized.append(
-            {"name": member["name"], "pin": member["pin"], "head": _store_git(path, "rev-parse", "HEAD").stdout.strip()}
-        )
+        branch, why = _land_on_upstream_branch(path, member)
+        row = {"name": member["name"], "pin": member["pin"], "head": _store_git(path, "rev-parse", "HEAD").stdout.strip(),
+               "branch": branch, "path": str(path)}
+        if branch is None:
+            row["detached"] = why
+        materialized.append(row)
     return materialized
 
 
@@ -2497,6 +2528,13 @@ def grip_materialize_cmd(
         typer.echo(json.dumps({"status": "materialized", "members": members}))
     else:
         typer.echo(f"Materialized {len(members)} member(s)")
+        for member in members:
+            if member["branch"] is None:
+                typer.echo(
+                    f"{member['name']}: left detached at {member['pin'][:12]}: {member['detached']}; "
+                    f"to work on a branch: git -C {member['path']} switch -c <branch>",
+                    err=True,
+                )
 
 
 @grip_app.command("migrate")

@@ -191,6 +191,11 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **`gr2`: `review pin` refuses the set when a changed member's ancestry cannot be read.** Such a member was
+  skipped with `not pinned: ... (ancestry could not be read)` while the other members were pinned and an id printed,
+  so a later merge could land part of a change set with exit 0. The pin now exits 2, names the member with its pin,
+  its checkout head and git's message, and mints no id. A checkout that does not descend from its pin is unchanged.
+
 - **`gr2`: `review stamp` fetches the reviewed head a reviewer's member clone does not hold.** A reviewer who ran
   `review receive` and then `review stamp` was refused with `head_not_fetched` and told to run `git fetch` in each
   member, so a review over several members cost every reviewer one hand fetch per member. stamp now fetches the exact

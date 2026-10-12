@@ -4161,6 +4161,14 @@ def review_bind(
             )
         except (lane_downstream.MembersUnreadable, lane_downstream.PinConflict) as exc:
             raise typer.BadParameter(f"{exc}; fix the file, or name the row with --repo/--remote/--base/--head or --rows-json")
+        if choice.refused:
+            raise typer.BadParameter(
+                f"cannot pin: {'; '.join(choice.refused)}. That member's checkout differs from the workspace's pin and "
+                "cannot be compared with it, so it may carry part of this change, and binding the other members "
+                "alone could review part of the change set; "
+                "no review id was minted. Make the pin readable in that checkout (gr2 store materialize, or fetch "
+                "the pin) and pin again, or name the rows with --repo/--remote/--base/--head or --rows-json"
+            )
         if not choice.rows:
             why = "; ".join(choice.skipped) or "every member's checkout is at the workspace's pin"
             raise typer.BadParameter(

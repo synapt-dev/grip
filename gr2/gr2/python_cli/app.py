@@ -3228,7 +3228,7 @@ def lane_push(
     and an `ls-remote` check that the remote ref equals the head), one line per repo: pushed, up to
     date, or FAILED. Exit 1 when any push failed; the repos that landed are not rolled back. Exit 3
     when every push landed but a head is not on the lane's branch at its remote (the store's root
-    push would refuse that pin)."""
+    push would refuse that pin), or that could not be read."""
     _announce_context(ctx)
     workspace_root = workspace_root.resolve()
     try:

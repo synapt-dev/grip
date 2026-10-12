@@ -26,7 +26,8 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 - **`gr2`: `lane push` pushes every repo of a lane in one command.** Each repo goes through the same path as
   `gr2 push`, and prints one line: `pushed`, `up to date` (git sent nothing, read from `--porcelain`, so it does not
   depend on git's language) or `FAILED`. A failed push exits 1 and names the repo; the repos that landed are not
-  rolled back. Exit 3 means every push landed but a head is not on the lane's branch at its remote.
+  rolled back. Exit 3 means every push landed but a head is not on the lane's branch at its remote, or that could not be
+  read.
   `--force-with-lease` uses each repo's own last-fetched remote head, never a plain force. `--json` prints one row
   per repo.
 - **`gr2`: `store init --clone NAME=URL` declares a member from a url in a fresh grip.** Each value clones the

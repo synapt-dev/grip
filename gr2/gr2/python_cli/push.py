@@ -25,7 +25,7 @@ class PushReceipt:
     remote_sha: str
     set_upstream: bool
     force_with_lease: bool
-    # git sent nothing: the remote already had the head ("Everything up-to-date")
+    # git sent nothing: the remote already had the head (porcelain flag '=' on every ref)
     up_to_date: bool = False
 
 
@@ -134,6 +134,12 @@ def _refuse_review_ephemeral_repo(repo: Path) -> None:
         )
 
 
+def _porcelain_up_to_date(stdout: str) -> bool:
+    """True when `git push --porcelain` reports every ref as already on the remote ('=' flag)."""
+    flags = [line.split("\t", 1)[0] for line in stdout.splitlines() if "\t" in line]
+    return bool(flags) and all(flag == "=" for flag in flags)
+
+
 def push_current_branch(
     repo: Path,
     *,
@@ -147,7 +153,9 @@ def push_current_branch(
     selected_remote = _select_remote(repo, branch, remote)
     local_sha = _head_sha(repo)
 
-    args = ["push"]
+    # --porcelain: the per-ref flag ('=' for a ref the remote already had) is fixed text, unlike
+    # the "Everything up-to-date" sentence, which git translates under a non-English locale.
+    args = ["push", "--porcelain"]
     if set_upstream:
         args.append("--set-upstream")
     if force_with_lease:
@@ -158,7 +166,9 @@ def push_current_branch(
     except OSError as exc:
         raise PushError(f"failed to launch git push in {repo}: {exc}") from exc
     if pushed.returncode != 0:
-        detail = (pushed.stderr or pushed.stdout).strip()
+        # --porcelain puts the per-ref reason ("[rejected] (fetch first)") on stdout and git's
+        # error and hints on stderr; the refusal carries both.
+        detail = "\n".join(part for part in (pushed.stdout.strip(), pushed.stderr.strip()) if part)
         raise PushError(detail or f"git push failed with exit {pushed.returncode}")
 
     remote_sha = _remote_branch_sha(repo, selected_remote, branch)
@@ -173,7 +183,7 @@ def push_current_branch(
         remote_sha=remote_sha,
         set_upstream=set_upstream,
         force_with_lease=force_with_lease,
-        up_to_date="Everything up-to-date" in f"{pushed.stderr}{pushed.stdout}",
+        up_to_date=_porcelain_up_to_date(pushed.stdout),
     )
 
 

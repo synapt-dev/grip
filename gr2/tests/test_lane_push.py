@@ -104,6 +104,39 @@ def test_a_second_run_reports_up_to_date_and_sends_nothing(tmp_path: Path) -> No
     assert "pushed" not in again.output, again.output
 
 
+def test_up_to_date_does_not_depend_on_the_language_git_speaks(tmp_path: Path, monkeypatch) -> None:
+    """A git that prints its messages in another language still reports a rerun as up to date.
+
+    git translates "Everything up-to-date" under a non-English locale, so the label cannot read
+    that sentence. A shim on PATH stands in for a translated git: it runs the real git and
+    rewrites the English sentence on stderr, which is what a German git prints instead.
+    """
+    import os
+    import shutil
+    import stat
+
+    ws, repos = _lane(tmp_path)
+    assert _push(ws).exit_code == 0
+    real = shutil.which("git")
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    script = shim / "git"
+    script.write_text(
+        "#!/bin/sh\n"
+        f"{real} \"$@\" 2>{tmp_path}/err; rc=$?\n"
+        f"sed 's/Everything up-to-date/Alles ist aktuell/' {tmp_path}/err >&2\n"
+        "exit $rc\n"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", f"{shim}{os.pathsep}{os.environ['PATH']}")
+    again = _push(ws)
+    assert again.exit_code == 0, again.output
+    for name, repo in repos.items():
+        head = _git(repo, "rev-parse", "HEAD")
+        assert f"{name}: up to date at {head}" in again.output, again.output
+    assert "pushed" not in again.output, again.output
+
+
 def test_a_rejected_push_exits_1_and_names_it_while_the_others_land(tmp_path: Path) -> None:
     ws, repos = _lane(tmp_path)
     assert _push(ws).exit_code == 0
@@ -113,6 +146,7 @@ def test_a_rejected_push_exits_1_and_names_it_while_the_others_land(tmp_path: Pa
     result = _push(ws)
     assert result.exit_code == 1, result.output
     assert "beta: FAILED" in result.output, result.output
+    assert "[rejected]" in result.output, result.output  # git's per-ref reason, not only its hints
     assert _remote_sha(tmp_path, "beta") == theirs  # nothing overwritten
     for name in ("alpha", "gamma"):
         head = _git(repos[name], "rev-parse", "HEAD")

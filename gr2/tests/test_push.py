@@ -175,7 +175,7 @@ def test_acknowledged_push_without_matching_receipt_evidence_refuses(
             return subprocess.CompletedProcess(["git", *args], 0, "upstream\n", "")
         if args == ("rev-parse", "--verify", "HEAD"):
             return subprocess.CompletedProcess(["git", *args], 0, "a" * 40 + "\n", "")
-        if args[:2] == ("push", "upstream"):
+        if args[:3] == ("push", "--porcelain", "upstream"):
             return subprocess.CompletedProcess(["git", *args], 0, "", "")
         if args[:3] == ("ls-remote", "--heads", "upstream"):
             return subprocess.CompletedProcess(["git", *args], 0, "", "")

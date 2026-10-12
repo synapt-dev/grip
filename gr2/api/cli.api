@@ -184,10 +184,12 @@ json  grip migrate-reviews .rows[].status  enum(created,present,refused) stable
 verb  grip migrate-reviews (hidden:grip)                              stable
 # grip push
 flag  grip push --json (hidden:grip)                                  stable
+flag  grip push --to <str> (hidden:grip)                              stable
 json  grip push .members[].name                                       may-change
 json  grip push .members[].pin                                        may-change
 json  grip push .members[].state  enum(upstream,layer)                may-change
 json  grip push .members[].upstream                                   may-change
+json  grip push .origin_recorded  bool                                may-change
 json  grip push .root_branch                                          may-change
 json  grip push .root_commit                                          may-change
 json  grip push .status  enum(pushed)                                 may-change
@@ -729,10 +731,12 @@ json  store migrate-reviews .rows[].status  enum(created,present,refused) stable
 verb  store migrate-reviews                                           stable
 # store push
 flag  store push --json                                               may-change
+flag  store push --to <str>                                           may-change
 json  store push .members[].name                                      may-change
 json  store push .members[].pin                                       may-change
 json  store push .members[].state  enum(upstream,layer)               may-change
 json  store push .members[].upstream                                  may-change
+json  store push .origin_recorded  bool                               may-change
 json  store push .root_branch                                         may-change
 json  store push .root_commit                                         may-change
 json  store push .status  enum(pushed)                                may-change

@@ -1713,15 +1713,57 @@ def _layer_carries(root: Path, member: dict[str, str], layers: list[bytes]) -> N
 
 
 @_refuses_moved_workspace
-def _native_store_push(root: Path) -> dict[str, object]:
+def _root_origin_for_push(root: Path, to: str | None) -> str | None:
+    """The root's origin, recording ``to`` as origin when the root has none. Returns the URL it recorded, else None.
+
+    No gr2 verb set the root's remote, so every operator in the store-phase proof typed `git remote add origin`
+    by hand, or bypassed gr2 with a raw `git push`. ``--to`` records it once; a root that already
+    has an origin is never repointed, because a push to a different place than the root's record says is a
+    surprise nobody asked for."""
+    current = _store_git(root, "remote", "get-url", "origin", check=False)
+    have = current.stdout.strip() if current.returncode == 0 else ""
+    if to is None:
+        if not have:
+            raise NativeStoreRefusal(
+                "the root has no origin remote, so there is nowhere to push; record one and push with "
+                "`gr2 store push --to <url>`", 5)
+        return None
+    if to.startswith("-"):
+        raise NativeStoreRefusal("--to must be a URL or path, not an option", 2)
+    if _url_has_credentials(to):
+        raise _credential_refusal("--to")
+    transport = grip_mod.url_transport_refusal(to)
+    if transport is not None:
+        raise NativeStoreRefusal(
+            f"--to uses the {transport[:40]!r} transport, which gr2 does not run; use https, ssh, git or a path", 4)
+    if have:
+        if have != to:
+            raise NativeStoreRefusal(
+                f"the root's origin is already {have}; --to names {to}. gr2 does not repoint origin. "
+                f"Run `gr2 store push` to push to the recorded origin", 4)
+        return None
+    _store_git(root, "remote", "add", "origin", to)
+    return to
+
+
+def _native_store_push(root: Path, to: str | None = None) -> dict[str, object]:
     """Push only the checked root record. Member publication is a prior verb."""
     members = _native_store_check(root)
     branch = _store_git(root, "symbolic-ref", "--short", "HEAD").stdout.strip()
-    _store_git(root, "push", "origin", branch)
+    recorded = _root_origin_for_push(root, to)
+    try:
+        _store_git(root, "push", "origin", branch)
+    except Exception:
+        # The origin this push recorded is taken back when the push fails (a typo in --to), so the corrected
+        # `--to` is a first record, not a repoint, and no raw `git remote` step is needed to recover.
+        if recorded is not None:
+            _store_git(root, "remote", "remove", "origin", check=False)
+        raise
     return {
         "status": "pushed",
         "root_branch": branch,
         "root_commit": _store_git(root, "rev-parse", "HEAD").stdout.strip(),
+        "origin_recorded": recorded is not None,
         "members": members,
     }
 
@@ -2304,6 +2346,7 @@ _STORE_JSON_SHAPES: dict[str, tuple[str, ...]] = {
         ".status  enum(pushed)",
         ".root_branch",
         ".root_commit",
+        ".origin_recorded  bool",
         ".members[].name",
         ".members[].pin",
         ".members[].upstream",
@@ -2480,11 +2523,13 @@ def grip_check_cmd(
 
 @grip_app.command("push")
 def grip_push_cmd(
+    to: str | None = typer.Option(
+        None, "--to", help="Record this URL or path as the root's origin when it has none, then push"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Check then push only the root branch, never member branches."""
     try:
-        payload = _native_store_push(Path.cwd())
+        payload = _native_store_push(Path.cwd(), to)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)

@@ -2453,14 +2453,24 @@ def _restore_root_files(root: Path) -> None:
 
     Materialize reads the spec from HEAD and populates the members, but never wrote the root's own files, so the next
     `store commit` worked from no grip.toml: it renamed the workspace to the clone's directory, dropped `[approvals]`,
-    and staged `.gitinclude` as deleted. Only an EMPTY index is filled, and checkout-index writes only
-    files that are absent, so a root that already holds a checkout or staged work is left exactly as it is."""
+    and staged `.gitinclude` as deleted. Only a root with NO index file is filled: a `--no-checkout` clone has none,
+    while an index the operator emptied (`git rm -r --cached .`) is still a file, and is their staged work. And only
+    the files that are absent are written, so a file already on disk is never replaced and never fails the verb."""
     if _store_git(root, "rev-parse", "-q", "--verify", "HEAD", check=False).returncode:
         return
-    if _store_git(root, "ls-files", check=False).stdout.strip():
+    index = Path(_store_git(root, "rev-parse", "--git-path", "index").stdout.strip())
+    if (index if index.is_absolute() else root / index).exists():
         return
     _store_git(root, "read-tree", "HEAD")
-    _store_git(root, "checkout-index", "--all", "--quiet")
+    absent = []
+    for line in _store_git(root, "ls-files", "-s", "-z").stdout.split("\0"):
+        if not line:
+            continue
+        meta, path = line.split("\t", 1)
+        if not meta.startswith("160000 ") and not os.path.lexists(root / path):
+            absent.append(path)
+    if absent:
+        _store_git(root, "checkout-index", "--", *absent)
 
 
 @_refuses_moved_workspace

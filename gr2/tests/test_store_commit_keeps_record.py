@@ -121,3 +121,32 @@ def test_a_no_checkout_clone_gets_the_roots_own_files_back(tmp_path: Path) -> No
     for name in ("grip.toml", ".gitinclude", ".gitmodules"):
         assert (fresh / name).read_bytes() == git(fresh, "show", f"HEAD:{name}").stdout.encode(), name
     assert git(fresh, "status", "--porcelain").stdout == "", git(fresh, "status", "--short").stdout
+
+
+def test_materialize_leaves_an_index_the_operator_emptied_alone(tmp_path: Path) -> None:
+    """An emptied index is still a file, and is staged work: `git rm -r --cached .` in a normal clone. Only a root with
+    NO index file (a `--no-checkout` clone) is restored. Found in review: the first guard read "empty" as "absent"."""
+    _, _ = _root_with_declarations(tmp_path)
+    clone = tmp_path / "normal"
+    run(tmp_path, "git", "clone", "-q", str(tmp_path / "root.git"), str(clone))
+    git(clone, "rm", "-r", "-q", "--cached", ".")
+    assert git(clone, "ls-files").stdout == "", "precondition: the operator's index is empty"
+    staged = git(clone, "diff", "--cached", "--name-status").stdout
+
+    done = gr2(clone, "materialize", check=False)
+
+    assert done.returncode == 0, f"{done.stdout}\n{done.stderr}"
+    assert git(clone, "ls-files").stdout == "", "materialize refilled an index the operator had emptied"
+    assert git(clone, "diff", "--cached", "--name-status").stdout == staged, "the staged removals changed"
+
+
+def test_a_no_checkout_root_with_a_stray_file_gets_the_others_and_keeps_the_stray(tmp_path: Path) -> None:
+    """A file already on disk is never replaced and never fails the verb; the absent ones are still written."""
+    _, fresh = _root_with_declarations(tmp_path)
+    (fresh / ".gitinclude").write_text("stray\n")
+
+    done = gr2(fresh, "materialize", check=False)
+
+    assert done.returncode == 0, f"{done.stdout}\n{done.stderr}"
+    assert (fresh / ".gitinclude").read_text() == "stray\n", "a file already on disk was replaced"
+    assert (fresh / "grip.toml").read_bytes() == git(fresh, "show", "HEAD:grip.toml").stdout.encode()

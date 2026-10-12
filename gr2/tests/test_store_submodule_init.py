@@ -60,9 +60,10 @@ def test_after_store_materialize_a_plain_update_remote_needs_no_init(tmp_path: P
     assert git(fresh / "beta", "rev-parse", "HEAD").stdout.strip() == dev_tip
 
 
-def test_a_root_cloned_without_a_checkout_materializes_and_registers_nothing(tmp_path: Path) -> None:
-    """With --no-checkout the root's index is empty, so no plain `git submodule` verb can name a member there.
-    Materialize still succeeds and registers nothing, rather than failing after its work is done."""
+def test_a_root_cloned_without_a_checkout_gets_its_index_back_and_registers_its_members(tmp_path: Path) -> None:
+    """A --no-checkout clone has no index, so no plain `git submodule` verb could name a member there. Materialize now
+    restores the root's committed index and files first, so the members are registered as in a normal clone, with no
+    refusal printed."""
     root = _store(tmp_path, _on_dev)
     root_remote = tmp_path / "root.git"
     run(tmp_path, "git", "init", "-q", "--bare", str(root_remote))
@@ -74,8 +75,8 @@ def test_a_root_cloned_without_a_checkout_materializes_and_registers_nothing(tmp
 
     done = gr2(fresh, "materialize")
     assert done.returncode == 0
-    assert not _registered(fresh, "beta")
-    assert "not registered" not in done.stderr, done.stderr   # skipped, not attempted and refused
+    assert _registered(fresh, "beta"), "the restored index names the member, so it is registered"
+    assert "not registered" not in done.stderr, done.stderr
 
 
 def test_control_without_the_registration_plain_git_refuses(tmp_path: Path) -> None:

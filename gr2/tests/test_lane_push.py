@@ -229,3 +229,18 @@ def test_coverage_reuses_the_push_receipt_with_no_extra_round_trip(
     assert _push(ws).exit_code == 0
     assert sum(1 for a in calls if a[:1] == ("ls-remote",)) == len(REPOS), calls
     assert not any(a[:1] == ("fetch",) for a in calls), calls
+
+
+def test_a_review_ephemeral_lane_refuses_and_pushes_nothing(tmp_path: Path) -> None:
+    """A review lane is read-only and disposable: it never becomes a work lane, so it is never pushed."""
+    ws, _repos = _lane(tmp_path)
+    doc = lanes.lane_file(ws, "atlas", "feature")
+    text = doc.read_text()
+    assert text.count('lane_kind = "') == 1, text  # the fixture's precondition: one kind line to rewrite
+    head, _, rest = text.partition('lane_kind = "')
+    doc.write_text(head + 'lane_kind = "review-ephemeral"' + rest[rest.index('"'):][1:])
+    result = _push(ws)
+    assert result.exit_code == 1, result.output
+    assert "review-ephemeral lane" in result.output and "cannot be pushed" in result.output, result.output
+    for name in REPOS:
+        assert _remote_sha(tmp_path, name) == "", name

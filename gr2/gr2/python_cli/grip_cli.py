@@ -2443,6 +2443,23 @@ def _native_store_materialize(root: Path) -> list[dict[str, str]]:
                     f"{member['name']} covering ref {covered_by} cannot be fetched from origin; done: {done}", 3)
         for number, layer in enumerate(layers, 1):
             _apply_layer(path, member, number, layer, materialized)
+        if _store_git(path, "cat-file", "-e", f"{member['pin']}^{{commit}}", check=False).returncode:
+            # An existing clone holds only what it last fetched, so a pin another workspace recorded since is fetched
+            # here. A root pull may fetch it on the side (git's on-demand submodule fetch), but not on the first pull
+            # from a root that had no .gitmodules, and never with fetch.recurseSubmodules=false. Every branch of origin
+            # is named explicitly, because a clone with a narrowed refspec (a --single-branch clone) never fetches the
+            # branch that carries the pin; they land in origin's remote-tracking refs, as a full clone's own fetch puts
+            # them (git takes no glob without a destination), and no local branch moves. Never by sha: origin
+            # can still hold a commit no branch reaches (an upstream force-pushed over the pin), and that pin is not
+            # served. "cannot be served by origin" below is then true, because origin was asked; a fetch that could
+            # not reach origin says so here.
+            fetched = _store_git(path, "fetch", "-q", "origin", "+refs/heads/*:refs/remotes/origin/*", check=False)
+            if fetched.returncode:
+                done = ", ".join(item["name"] for item in materialized) or "none"
+                reason = (fetched.stderr or "").strip().splitlines()[:1]
+                raise NativeStoreRefusal(
+                    f"{member['name']} pin {member['pin']} is not in the clone and origin could not be asked"
+                    f" ({reason[0] if reason else 'git fetch failed'}); done: {done}", 3)
         checkout = _store_git(path, "checkout", "--detach", member["pin"], check=False)
         if checkout.returncode and layers:
             done = ", ".join(item["name"] for item in materialized) or "none"

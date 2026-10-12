@@ -499,6 +499,10 @@ def render_gitmodules(members: list[dict[str, str]]) -> str:
     `submodule.<name>.branch` names a branch on the member's remote. A member with no `<remote>/<branch>` upstream
     gets no branch line.
 
+    A member with a branch line also gets `update = merge`, so that same plain `update --remote` advances the branch the
+    member is on instead of leaving it detached at the tip: a fast-forward when nothing is local, a merge that keeps a
+    local-only commit when something is. With no branch line there is no branch to stay on, so no update line.
+
     Never hand-kept: the first line says so, which is also how a file gr2 did not write is told apart."""
     chunks = [_GITMODULES_HEADER]
     for member in members:
@@ -509,7 +513,7 @@ def render_gitmodules(members: list[dict[str, str]]) -> str:
         if _url_has_credentials(member["remote"]):
             raise _credential_refusal(member["name"])
         _, separator, tracked = member.get("upstream", "").partition("/")
-        branch = f"\tbranch = {_config_quote(tracked)}\n" if separator and tracked else ""
+        branch = f"\tbranch = {_config_quote(tracked)}\n\tupdate = merge\n" if separator and tracked else ""
         chunks.append(
             f"[submodule {_config_quote(member['name'])}]\n"
             f"\tpath = {_config_quote(member['path'])}\n"

@@ -31,7 +31,7 @@ from . import gitinclude
 from . import gitops
 from . import check_records, set_check
 from . import defaults
-from . import merge_gate
+from . import merge_gate, merge_receipts
 from . import pr as pr_ops
 from .platform import AdapterError
 from . import prune as prune_ops
@@ -4651,9 +4651,13 @@ def review_show(
     if commit is None:
         commit = _the_one_review_bind(workspace_root.resolve(), "show")
     result = _review_call(grip.show_review_commit, workspace_root.resolve(), _strip_gr_prefix(commit))
+    runs = _review_call(merge_receipts.runs, workspace_root.resolve(), str(result["id"]))
+    result["merge"] = runs[-1] if runs else None  # the latest `review merge` run's receipt, or null when never merged
+    result["merge_runs"] = len(runs)
     if json_output:
         typer.echo(json.dumps(result, indent=2, default=str))
         return
+    merged_rows = {r["key"]: r for r in (result["merge"] or {}).get("members", [])}
     members = result["members"]
     typer.echo(f"{result['id']}  ({len(members)} member{'s' if len(members) != 1 else ''})")
     for m in members:
@@ -4665,6 +4669,10 @@ def review_show(
             typer.echo("  body: " + body.replace("\n", "\n        "))
         files = m["files"]
         typer.echo("  files: " + (", ".join(files) if files else "(none)" if files == [] else "(not recorded)"))
+        row = merged_rows.get(m["key"])
+        if row is not None:
+            typer.echo(f"  merge: {row['refusal']['code']} (refused)" if row.get("refusal")
+                       else f"  merge: {row.get('final')} {str(row.get('merged') or '')[:12]}".rstrip())
 
 
 @review_app.command("verify", cls=ReviewTargetCommand)

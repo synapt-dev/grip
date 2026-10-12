@@ -244,3 +244,48 @@ def test_a_review_ephemeral_lane_refuses_and_pushes_nothing(tmp_path: Path) -> N
     assert "review-ephemeral lane" in result.output and "cannot be pushed" in result.output, result.output
     for name in REPOS:
         assert _remote_sha(tmp_path, name) == "", name
+
+
+def _gamma_off_branch_behind_the_remote(tmp_path: Path, ws: Path, repos: dict[str, Path]) -> tuple[str, str]:
+    """gamma's head is on the remote lane branch, a teammate has pushed past it, and gamma has not fetched.
+    gamma then pushes from another branch, so coverage asks about a lane tip this clone does not hold."""
+    assert _push(ws).exit_code == 0
+    head = _git(repos["gamma"], "rev-parse", "HEAD")
+    theirs = _move_remote(tmp_path, "gamma")
+    _git(repos["gamma"], "checkout", "-q", "-b", "feat/other")
+    probe = subprocess.run(["git", "cat-file", "-e", theirs], cwd=repos["gamma"], capture_output=True)
+    assert probe.returncode != 0, "the fixture needs the teammate's tip absent from gamma's clone"
+    return head, theirs
+
+
+def test_a_head_behind_a_lane_tip_this_clone_has_not_fetched_is_covered(tmp_path: Path) -> None:
+    """The remote lane branch holds the head under a teammate's newer commit. The coverage question reads
+    ancestry against that tip, so the tip is fetched (that ref only) rather than the head called uncovered."""
+    ws, repos = _lane(tmp_path)
+    head, theirs = _gamma_off_branch_behind_the_remote(tmp_path, ws, repos)
+    result = _push(ws, "-u")
+    assert result.exit_code == 0, result.output
+    assert "gamma head" not in result.output and "cannot tell" not in result.output, result.output
+    assert _remote_sha(tmp_path, "gamma", "feat/other") == head
+    assert _remote_sha(tmp_path, "gamma") == theirs, "coverage reads the lane branch; it never writes it"
+
+
+def test_a_lane_tip_that_cannot_be_fetched_says_cannot_tell(tmp_path: Path, monkeypatch) -> None:
+    """When the missing tip cannot be fetched, the line says the coverage could not be read, never "push it
+    first", and the verb exits 3: success is not proven."""
+    from gr2.python_cli import push as push_ops
+
+    ws, repos = _lane(tmp_path)
+    head, _theirs = _gamma_off_branch_behind_the_remote(tmp_path, ws, repos)
+    real = push_ops.git
+
+    def no_fetch(repo, *args, **kw):
+        if args[:1] == ("fetch",):
+            return subprocess.CompletedProcess(args, 128, "", "fatal: unable to access remote")
+        return real(repo, *args, **kw)
+
+    monkeypatch.setattr(push_ops, "git", no_fetch)
+    result = _push(ws, "-u")
+    assert result.exit_code == 3, result.output
+    said = f"gamma cannot tell whether head {head} is on origin/{BRANCH}: its tip could not be fetched"
+    assert said in result.output and "push it first" not in result.output, result.output

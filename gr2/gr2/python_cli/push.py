@@ -201,20 +201,34 @@ class LaneRepoPush:
     uncovered: str | None = None
 
 
-def _lane_branch_covers(repo: Path, receipt: PushReceipt, lane_branch: str) -> bool:
-    """Is the pushed head on the lane's branch at the remote it went to?
+def _lane_branch_uncovered(repo: Path, receipt: PushReceipt, lane_branch: str) -> str | None:
+    """Why the pushed head is not on the lane's branch at the remote it went to, or None when it is.
 
     When the repo pushed the lane's branch itself, the push's own `ls-remote` already proved the
     remote ref equals the head, so the answer costs nothing more. Only a repo on ANOTHER branch asks
-    the remote once about the lane's branch; a head whose object the remote branch does not reach
-    (or a branch the remote does not have) is not covered."""
+    the remote once about the lane's branch. When that tip is not in this clone (a teammate pushed
+    past the head and this clone has not fetched), the ancestry cannot be read locally, so exactly
+    that ref is fetched and the question asked again; a fetch that fails says it cannot tell, never
+    that the head must be pushed."""
     if receipt.branch == lane_branch:
-        return True
+        return None
+    where = f"{receipt.remote}/{lane_branch}"
+    not_on = f"head {receipt.local_sha} is not on {where}; push it first"
     listed = git(repo, "ls-remote", "--heads", receipt.remote, f"refs/heads/{lane_branch}")
-    if listed.returncode != 0 or not listed.stdout.strip():
-        return False
+    if listed.returncode != 0:
+        return f"cannot tell whether head {receipt.local_sha} is on {where}: ls-remote failed"
+    if not listed.stdout.strip():
+        return not_on
     tip = listed.stdout.split()[0]
-    return git(repo, "merge-base", "--is-ancestor", receipt.local_sha, tip).returncode == 0
+    ancestry = git(repo, "merge-base", "--is-ancestor", receipt.local_sha, tip)
+    if ancestry.returncode not in (0, 1):
+        fetched = git(repo, "fetch", "--no-tags", "--no-write-fetch-head", receipt.remote, f"refs/heads/{lane_branch}")
+        if fetched.returncode != 0:
+            return f"cannot tell whether head {receipt.local_sha} is on {where}: its tip could not be fetched"
+        ancestry = git(repo, "merge-base", "--is-ancestor", receipt.local_sha, tip)
+        if ancestry.returncode not in (0, 1):
+            return f"cannot tell whether head {receipt.local_sha} is on {where}: ancestry could not be read"
+    return None if ancestry.returncode == 0 else not_on
 
 
 def push_lane(
@@ -256,12 +270,8 @@ def push_lane(
             rows.append(LaneRepoPush(key, "failed", error=str(exc)))
             continue
         lane_branch = branch_map.get(key) or receipt.branch
-        uncovered = None
-        if not _lane_branch_covers(repo_root, receipt, lane_branch):
-            uncovered = (
-                f"{key} head {receipt.local_sha} is not on {receipt.remote}/{lane_branch}; "
-                "push it first"
-            )
+        why = _lane_branch_uncovered(repo_root, receipt, lane_branch)
+        uncovered = f"{key} {why}" if why else None
         rows.append(
             LaneRepoPush(
                 key,

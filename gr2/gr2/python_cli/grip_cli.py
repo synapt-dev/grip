@@ -1612,6 +1612,18 @@ def _native_store_check(root: Path) -> list[dict[str, str]]:
     return checked
 
 
+def _layers_carry_pin(root: Path, member: dict[str, str]) -> bool:
+    """True when the member's record at HEAD carries its pin in layers: `check`'s `layer` test, as a reading."""
+    record = _field_record(root, member)
+    if not record or not record["layers"]:
+        return False
+    try:
+        _layer_carries(root, member, record["layers"])
+    except NativeStoreRefusal:
+        return False
+    return True
+
+
 def _layer_carries(root: Path, member: dict[str, str], layers: list[bytes]) -> None:
     """Refuse a layered record whose last layer does not carry the pin the record names."""
     import tempfile
@@ -1865,6 +1877,16 @@ def _native_store_checkout(root: Path, revision: str) -> tuple[str, list[dict[st
     return sha, restored
 
 
+# What each state means, said once beside the word in the human table (two operators
+# met `missing` beside pin == head and neither could tell what it referred to). JSON is unchanged.
+STORE_STATUS_NOTES = {
+    "layer": "  (the record's layers carry the pin; no remote has it, by design in full mode)",
+    "missing": "  (the upstream branch does not contain the pin, and no layer carries it)",
+    "stale": "  (the upstream has moved past the pin)",
+    "unpinned": "  (the checkout has moved off the pin)",
+}
+
+
 @_refuses_moved_workspace
 def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[str, object]]:
     """Render every member's working state without stopping at the first bad row.
@@ -1904,7 +1926,10 @@ def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[
         if not separator or not remote or not branch or fetched is None or fetched.returncode:
             state = "cannot-measure"
         elif _store_git(path, "merge-base", "--is-ancestor", member["pin"], member["upstream"], check=False).returncode:
-            state = "missing"
+            # Full mode records a pin no remote has in LAYERS, so "upstream lacks the pin" is the
+            # designed state there, not a loss: `check` calls it `layer`, and status must say the same
+            # word for the same member (a healthy layered member used to read `missing`).
+            state = "layer" if full and _layers_carry_pin(root, member) else "missing"
         elif head_sha != member["pin"]:
             state = "unpinned"
         elif _store_git(path, "rev-parse", member["upstream"], check=False).stdout.strip() != member["pin"]:
@@ -2158,7 +2183,7 @@ _STORE_JSON_SHAPES: dict[str, tuple[str, ...]] = {
         ".members[].name",
         ".members[].pin",
         ".members[].upstream",
-        ".members[].state  enum(upstream)",
+        ".members[].state  enum(upstream,layer)",
     ),
     "push": (
         ".status  enum(pushed)",
@@ -2167,7 +2192,7 @@ _STORE_JSON_SHAPES: dict[str, tuple[str, ...]] = {
         ".members[].name",
         ".members[].pin",
         ".members[].upstream",
-        ".members[].state  enum(upstream)",
+        ".members[].state  enum(upstream,layer)",
     ),
     "status": (
         ".status  enum(status)",
@@ -2175,7 +2200,7 @@ _STORE_JSON_SHAPES: dict[str, tuple[str, ...]] = {
         ".members[].pin",
         ".members[].gitlink",
         ".members[].head",
-        ".members[].state  enum(upstream,stale,missing,unpinned,cannot-measure)",
+        ".members[].state  enum(upstream,layer,stale,missing,unpinned,cannot-measure)",
         ".root.state  enum(clean,dirty)",
         ".root.porcelain",
     ),
@@ -2376,7 +2401,8 @@ def grip_status_cmd(
         typer.echo(json.dumps({"status": "status", "members": members, "root": root_status}))
     else:
         for member in members:
-            typer.echo(f"{member['name']} {member['state']} pin={member['pin']} head={member['head']}")
+            note = STORE_STATUS_NOTES.get(member["state"], "")
+            typer.echo(f"{member['name']} {member['state']} pin={member['pin']} head={member['head']}{note}")
     # A hook that will not run is a finding, not a pass: said on stderr in both modes so stdout is unchanged.
     for line in store_hooks.hook_problems(Path.cwd(), store_hooks.hook_states(Path.cwd())):
         typer.echo(line, err=True)

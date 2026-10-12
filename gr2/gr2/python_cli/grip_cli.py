@@ -1272,6 +1272,19 @@ def _coverage_of(path: Path, pin: str, upstream: str) -> str:
     return COVERAGE_LANDED if net_landed(combined[0], reverse[0]) else COVERAGE_UNCOVERED
 
 
+def _member_covers(root: Path, member: dict[str, str], sha: str, claimed: set[Path]) -> bool:
+    """`_member_coverage` as a question: True when the member's upstream covers ``sha``, False on
+    its exit-3 answers (not on the upstream, or landed under other commits). Every other refusal (an
+    invalid upstream, a fetch that fails) is raised, never read as an answer."""
+    try:
+        _member_coverage(root, member, sha, claimed)
+    except NativeStoreRefusal as exc:
+        if exc.code != 3:
+            raise
+        return False
+    return True
+
+
 def _member_coverage(
     root: Path, member: dict[str, str], sha: str, claimed: set[Path]
 ) -> None:
@@ -1533,11 +1546,34 @@ def _native_store_commit(root: Path, message: str, layered: list[str] | None = N
                 f"{member['name']} is dirty; commit or stash changes first", 3
             )
         head = _store_git(path, "rev-parse", "HEAD").stdout.strip()
+        # THE BRANCH THE MEMBER MOVED TO, read before coverage. The record kept the
+        # branch from init, so a member moved from feat/greet to merged main was checked against
+        # origin/feat/greet: compat mode refused a pushed merge commit ("not on origin/feat/greet;
+        # push it first"), full mode carried it as a layer it did not need, and grip.toml's ref
+        # disagreed with its pin. Same reader as init, and ONLY when the branch CHANGED: a member
+        # still on its recorded ref keeps its recorded upstream, which the owner may have declared
+        # by hand (break 08). A DETACHED member (what materialize leaves) keeps its record too:
+        # that reader's detached default is main/origin/main.
+        # The moved branch is adopted ONLY when its upstream covers the pin: a member that ran
+        # `git checkout -b wip` with no new commit is still covered by its recorded upstream, and
+        # adopting origin/wip (which does not exist) would refuse a pin the record already covers.
+        on = _store_git(path, "branch", "--show-current", check=False).stdout.strip()
+        moved = None
+        if on and on != member.get("ref"):
+            ref, upstream = _infer_member_branch(path)
+            moved = {**member, "ref": ref, "upstream": upstream}
+            if _member_covers(root, moved, head, claimed):
+                member, moved = moved, None
         try:
             _member_coverage(root, member, head, claimed)
         except NativeStoreRefusal as exc:
+            if moved is not None and exc.code == 3:
+                # neither upstream covers the pin: name the branch the member is on as well
+                exc = NativeStoreRefusal(
+                    f"{member['name']} pin {head} is not on {moved['upstream']} (it is on {on}) "
+                    f"or on its recorded upstream {member['upstream']}; push it first", 3)
             if not full or exc.code != 3:
-                raise
+                raise exc from None
             # Full mode holds a pin no remote has in a LAYER: a bundle of the commits the member's upstream lacks,
             # stored in the record, so the pin can be rebuilt from the record plus the member's url.
             layers_by_member[member["name"]] = _layer_for(root, member, path, head)

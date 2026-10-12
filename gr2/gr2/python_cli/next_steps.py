@@ -7,6 +7,7 @@ remote branch; the tests check every line for both.
 """
 from __future__ import annotations
 
+import re
 import shlex
 
 
@@ -87,8 +88,14 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
         return (f"next: the check failed at this head{together or ';'} "
                 "fix it, commit a new head, then pin, stamp, check and publish that head")
     if refused.startswith("feature_moved"):
-        return ("next: the feature branch moved after the pin; pin the new head with gr2 review pin, then "
-                "stamp, check and publish it")
+        # Name the check over the moved set, then the two real ways to merge it. "Pin the new head" alone pointed
+        # at head_already_on_remote, which refuses a head already pushed, so the two refusals pointed at each other.
+        moved = re.match(r"feature_moved: remote (\S+) is ", refused)
+        branch = moved.group(1).removeprefix("refs/heads/") if moved else "<branch>"
+        return (f"next: the feature branch moved after the pin; to check the set as it is now: gr2 check set "
+                f"{_shown(workspace)} {_shown(review)} --at-remote-heads {_shown(branch)} -- <your combined test command>. "
+                "To merge it, commit a new head and pin it before you push, or pin this head with "
+                "--ratified <receipt id> naming the ratify that covers it")
     if refused.startswith("base_moved"):
         return "next: the target moved after the pin; pin again on the new base with gr2 review pin"
     return None

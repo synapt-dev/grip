@@ -152,7 +152,7 @@ next: the set check failed at these heads and that failure is recorded; a rerun 
 
 ### feature_moved
 
-next: the feature branch moved after the pin; pin the new head with gr2 review pin, then stamp, check and publish it
+next: the feature branch moved after the pin; to check the set as it is now: gr2 check set '<workspace>' '<review>' --at-remote-heads '<branch>' -- <your combined test command>. To merge it, commit a new head and pin it before you push, or pin this head with --ratified <receipt id> naming the ratify that covers it
 
 ### head_already_on_remote
 

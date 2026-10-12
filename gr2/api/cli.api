@@ -29,6 +29,7 @@ verb  check run                                                       stable
 arg   check set command <str>                                         stable
 arg   check set review_id <str>                                       stable
 arg   check set workspace_root <str>                                  stable
+flag  check set --at-remote-heads <str>                               stable
 flag  check set --name <str>                                          stable
 flag  check set --root-commit <str>                                   stable
 flag  check set --root/-C <str>                                       stable

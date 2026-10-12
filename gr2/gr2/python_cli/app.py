@@ -5317,6 +5317,10 @@ def check_set(
         None, "--root-commit",
         help="Check a DECLARED set (a [[sets]] table in grip.toml) at this root commit instead of a review"),
     set_name: Optional[str] = typer.Option(None, "--set", help="With --root-commit: the declared set to check"),
+    at_remote_heads: Optional[str] = typer.Option(
+        None, "--at-remote-heads",
+        help="Check the review's members at the head this branch names on each member's remote NOW (after a move); "
+             "recorded as remote_set, which no merge reads"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Run ONE command over every member of a pinned review, side by side at the pinned heads, and publish it.
@@ -5327,7 +5331,11 @@ def check_set(
     1 fail, 2 refused or not published to every member.
     """
     try:
-        if root_commit is not None:
+        if at_remote_heads is not None:
+            if root_commit is not None or set_name is not None:
+                raise check_records.CheckRefused("at_remote_heads_takes_a_review: gr2 check set <workspace> gr:<id> --at-remote-heads <branch> -- <command>")
+            result = set_check.run_set_check_at_remote_heads(workspace_root, review_id, at_remote_heads, command or [])
+        elif root_commit is not None:
             if review_id != ROOT_COMMIT_SUBJECT or not set_name:
                 raise check_records.CheckRefused("declared_set_check_needs_a_set: gr2 check set <workspace> --root-commit <sha> --set <name> -- <command>")
             result = set_check.run_declared_set_check(workspace_root, set_name, root_commit, command or [])
@@ -5340,6 +5348,9 @@ def check_set(
         raise typer.Exit(2)
     tail = result.pop("output_tail")
     typer.echo(json.dumps(result))
+    if at_remote_heads is not None:
+        for m in result["members"]:
+            typer.echo(f"{m['key']}: {m['head']}" + (f" (moved from {m['pinned_head']})" if m["moved"] else ""), err=True)
     if root_commit is not None:
         from . import set_hints
         for line in set_hints.out_of_set_hints(workspace_root, result["root_commit"], set_name):

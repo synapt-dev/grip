@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -228,4 +229,91 @@ def run_declared_set_check(workspace: Path, set_name: str, root_commit: str, arg
         raise check_records.CheckRefused(
             f"set_publication_incomplete: published to {[p['member'] for p in published]}, failed at {failed[0]}: {failed[1]}")
     return {"set": set_name, "root_commit": commit, "name": declared_sets.DECLARED_SET_CHECK, "result": result,
+            "exit_code": execution.returncode, "members": published, "output_tail": _tail(execution.stdout + execution.stderr)}
+
+
+REMOTE_SET_CHECK_NAME = "remote_set"
+
+
+def _fetch_remote_head(repo: Path, remote: str, branch: str) -> str:
+    """The commit `branch` names on `remote` now, fetched into `repo`. One fetch, so the head named is the head run.
+
+    The fetch lands on a transient staging ref (the pattern check records use) and the ref is removed after; the
+    objects stay, and no branch, tag or FETCH_HEAD of the member moves."""
+    staging = f"refs/dev.synapt.grip/__remote_head_transfers__/{uuid.uuid4().hex}"
+    fetched = gitops.run(repo, "fetch", "--no-tags", "--no-write-fetch-head", remote, f"refs/heads/{branch}:{staging}")
+    if fetched.returncode:
+        raise check_records.CheckRefused(f"remote_branch_absent: {branch!r} could not be fetched from {remote}")
+    head = gitops.run(repo, "rev-parse", "--verify", "-q", f"{staging}^{{commit}}").stdout.strip()
+    gitops.run(repo, "update-ref", "-d", staging)
+    if not head:
+        raise check_records.CheckRefused(f"remote_branch_absent: {branch!r} on {remote} is not a commit")
+    return head
+
+
+def run_set_check_at_remote_heads(workspace: Path, review_id: str, branch: str, argv: Sequence[str]) -> dict:
+    """One command over every member of a review at the head `branch` names on that member's remote NOW.
+
+    For the set after a move: the review names WHICH members and where each lives, the remotes name the heads. The
+    result is recorded on every member remote as `remote_set` with the heads it ran over. That name is read by
+    neither merge gate, so it neither satisfies nor blocks a merge; to merge a moved set, record it (a new pin)."""
+    workspace = Path(workspace)
+    root = workspace.resolve()
+    review_id = review_id.removeprefix("gr:")
+    if not argv:
+        raise check_records.CheckRefused("check_name_and_command_required")
+    # `refs/heads/<b>`, not `--branch <b>`: `--branch` expands `@{-1}` to the root's previous branch and passes it.
+    if branch.startswith("-") or gitops.run(root, "check-ref-format", f"refs/heads/{branch}").returncode:
+        raise check_records.CheckRefused(f"branch_name_invalid: {branch!r}")
+    try:
+        view = grip.show_review_commit(workspace, review_id)
+    except (grip.GripInitError, grip.GripCorruptError, grip.GripReviewRefused, RuntimeError, OSError, ValueError,
+            KeyError, subprocess.SubprocessError) as exc:
+        raise check_records.CheckRefused(f"bind_unreadable: {type(exc).__name__}: {exc}") from exc
+    review, members = view["id"], view["members"]
+    if not members:
+        raise check_records.CheckRefused("review_has_no_members")
+    repos: dict[str, Path] = {}
+    for m in members:
+        if not _KEY.fullmatch(m["key"]) or m["key"].endswith(".git"):
+            raise check_records.CheckRefused(f"member_key_unsafe: {m['key']!r} cannot name a directory in the lane")
+        repo = (workspace / m["path"]).resolve()
+        if not repo.is_relative_to(root):
+            raise check_records.CheckRefused(f"member_path_outside_workspace: {m['path']}")
+        check_records._remote(m["remote"])
+        repos[m["key"]] = repo
+    heads = {m["key"]: _fetch_remote_head(repos[m["key"]], m["remote"], branch) for m in members}
+    with tempfile.TemporaryDirectory(prefix="gr2-remote-set-") as directory:
+        lane = Path(directory)
+        for key, head in heads.items():
+            # The staging ref is gone by now, so `head` is unreferenced in the member. It reaches the lane only because
+            # a clone from a LOCAL PATH copies the whole object store; a `file://` url or a `--depth` would drop it.
+            cloned = gitops.clone("--quiet", "--no-hardlinks", "--no-checkout", str(repos[key]), str(lane / key), binary=True)
+            if cloned.returncode:
+                gitops._raise(cloned, ("clone",), check_records.CheckRefused)
+            check_records._git(lane / key, "checkout", "--quiet", "--detach", head)
+        env = {**os.environ, "GR2_SET_ROOT": str(lane), "GR2_REVIEW_ID": review, "GR2_SET_BRANCH": branch,
+               "GR2_SET_MEMBERS": json.dumps({k: str(lane / k) for k in heads}, sort_keys=True)}
+        execution = subprocess.run(list(argv), cwd=lane, env=env, capture_output=True)
+        after = {k: check_records._git(lane / k, "rev-parse", "HEAD").decode().strip() for k in heads}
+    if after != heads:
+        raise check_records.CheckRefused("check_execution_head_changed")
+    result = "pass" if execution.returncode == 0 else "fail"
+    listing = sorted(f"{k}:{h}" for k, h in heads.items())
+    published, failed = [], None
+    for m in members:
+        key, head = m["key"], heads[m["key"]]
+        row = dict(v=1, head=head, observed_head=head, name=REMOTE_SET_CHECK_NAME, result=result,
+                   exit_code=execution.returncode, review=review, branch=branch, heads=listing)
+        try:
+            out = check_records.publish_observation(repos[key], m["remote"], row)
+        except (check_records.CheckRefused, subprocess.SubprocessError, OSError) as exc:
+            failed = (key, str(exc))
+            break
+        published.append({"key": key, "head": head, "pinned_head": m["head"], "moved": head != m["head"],
+                          "record_id": out["record_id"], "observation_id": out["observation"]["observation_id"]})
+    if failed:
+        raise check_records.CheckRefused(
+            f"set_publication_incomplete: published to {[p['key'] for p in published]}, failed at {failed[0]}: {failed[1]}")
+    return {"review": review, "branch": branch, "name": REMOTE_SET_CHECK_NAME, "result": result,
             "exit_code": execution.returncode, "members": published, "output_tail": _tail(execution.stdout + execution.stderr)}

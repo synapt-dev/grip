@@ -23,6 +23,9 @@ class Member(NamedTuple):
 class Choice(NamedTuple):
     rows: list[dict]
     skipped: list[str]  # "name (reason)" for every member not chosen, so a short list never reads as a complete one
+    # "name (reason)" for every member whose checkout moved but could not be measured. The caller refuses the whole
+    # set on any of these: binding the others would mint one review for part of a change set.
+    refused: list[str] = []
 
 
 def _text(value: object) -> str | None:
@@ -39,11 +42,14 @@ def workspace_members(workspace_root: Path) -> list[Member]:
 
 def changed_member_rows(workspace_root: Path, only: list[str] | None = None) -> Choice:
     """One bind row per member whose pin is an ancestor of its distinct checkout head. A member with no pin, no url, no checkout
-    or an unreadable head is not chosen and is named with the reason. ``only`` narrows to the named members and
+    or an unreadable head is not chosen and is named with the reason. A member whose head differs from its pin but
+    whose ancestry cannot be read (the pin is not in the checkout, say) is named in ``refused``: it may carry a change
+    this function cannot measure, so the caller must not bind the rest without it. ``only`` narrows to the named members and
     names any that the workspace does not declare."""
     members = workspace_members(workspace_root)
     declared = {m.name for m in members}
     rows: list[dict] = []
+    refused: list[str] = []
     skipped: list[str] = [f"{n} (not a member of this workspace)" for n in (only or []) if n not in declared]
     for m in members:
         if only is not None and m.name not in only:
@@ -69,10 +75,12 @@ def changed_member_rows(workspace_root: Path, only: list[str] | None = None) -> 
             skipped.append(f"{m.name} (checkout does not descend from the workspace's pin)")
             continue
         if ancestry.returncode != 0:
-            skipped.append(f"{m.name} (ancestry could not be read)")
+            detail = (ancestry.stderr or ancestry.stdout or "").strip().splitlines()
+            refused.append(f"{m.name} (ancestry could not be read): pin {m.pin[:12]}, checkout {sha[:12]}"
+                           + (f", git said: {detail[0]}" if detail else ""))
             continue
         rows.append({
             "key": m.name, "remote": m.url, "path": m.path, "head": sha, "base": m.pin,
             "ref": m.ref if m.ref and m.ref.startswith("refs/") else f"refs/heads/{m.ref or 'main'}", "title": "", "body": "", "source": str(checkout.resolve()),
         })
-    return Choice(rows, skipped)
+    return Choice(rows, skipped, refused)

@@ -116,6 +116,19 @@ def run(
                   raise_timeout=raise_timeout)
 
 
+def start(cwd: Path, *args: str) -> subprocess.Popen:
+    """One long-lived git process with binary pipes on stdin and stdout, for a caller that streams many
+    requests through one command (``cat-file --batch``). The same flags as run(); no timeout, because the
+    caller owns its lifetime and must close it. stderr is discarded: batch commands answer on stdout."""
+    try:
+        return subprocess.Popen(["git", *NO_AUTO, "-C", str(cwd), *args],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except FileNotFoundError as exc:
+        if exc.filename == "git":
+            raise GitMissingError("git is not on PATH; install git, then run the verb again") from None
+        raise
+
+
 def run_argv(argv: list[str], *, cwd: Path | None = None, input: str | bytes | None = None, binary: bool = False,
              env: dict | None = None, timeout: float | None = DEFAULT_TIMEOUT,
              raise_timeout: bool = False) -> subprocess.CompletedProcess:

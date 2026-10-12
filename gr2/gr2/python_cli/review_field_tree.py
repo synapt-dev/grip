@@ -134,6 +134,15 @@ def schema() -> dict[str, dict[int, Field]]:
     return _schema
 
 
+Schema = dict[str, dict[int, Field]]
+
+
+def _spec(schema_: Schema | None, message: str) -> dict[int, Field]:
+    """One message of ``schema_`` (a parse_proto result), or of the pinned review schema
+    when none is given. A caller that passes its own schema owns its provenance."""
+    return (schema() if schema_ is None else schema_)[message]
+
+
 # --- protobuf wire format -------------------------------------------------------
 
 def _varint(n: int) -> bytes:
@@ -213,10 +222,10 @@ def _emit(number: int, wt: int, payload: bytes) -> bytes:
 
 # --- record dict <-> protobuf ------------------------------------------------------
 
-def encode(record: dict, message: str = "ReviewBind") -> bytes:
+def encode(record: dict, message: str = "ReviewBind", schema: Schema | None = None) -> bytes:
     """Canonical protobuf for a record dict: fields in number order, proto3 defaults
     (empty string/bytes, absent message) omitted, members sorted by key."""
-    spec = schema()[message]
+    spec = _spec(schema, message)
     unknown = set(record) - {f.name for f in spec.values()}
     if unknown:
         raise ReviewRecordError(f"{message} has no field(s) {sorted(unknown)}")
@@ -233,7 +242,7 @@ def encode(record: dict, message: str = "ReviewBind") -> bytes:
             values = [values]
         for v in values:
             if f.message:
-                out += _emit(number, 2, encode(v, f.type))
+                out += _emit(number, 2, encode(v, f.type, schema))
             elif f.wire_type == 2:
                 out += _emit(number, 2, v.encode("utf-8") if isinstance(v, str) else bytes(v))
             else:
@@ -241,17 +250,17 @@ def encode(record: dict, message: str = "ReviewBind") -> bytes:
     return out
 
 
-def decode(buf: bytes, message: str = "ReviewBind") -> dict:
+def decode(buf: bytes, message: str = "ReviewBind", schema: Schema | None = None) -> dict:
     """Known fields by number. An unknown number is ignored here; it is never lost from
     a stored record, because the tree, not this dict, is the record."""
-    spec = schema()[message]
+    spec = _spec(schema, message)
     out: dict = {}
     for number, wt, payload in fields(buf):
         f = spec.get(number)
         if f is None or wt != f.wire_type:
             continue
         if f.message:
-            v = decode(payload, f.type)
+            v = decode(payload, f.type, schema)
         elif f.type == "string":
             v = payload.decode("utf-8")
         else:
@@ -297,6 +306,96 @@ def _ls(repo: Path, tree: str) -> list[Entry]:
     return out
 
 
+# --- readers: how a stored record's objects are fetched ------------------------------
+# A reader has ls(tree) -> entries, exactly as ls-tree reports them, and blob(oid) ->
+# bytes. The readers differ only in how many git processes they start, never in what
+# they return.
+
+class GitReader:
+    """One git process per object read: ``ls-tree`` per tree, ``cat-file`` per blob."""
+
+    def __init__(self, repo: Path):
+        self.repo = Path(repo)
+
+    def ls(self, tree: str) -> list[Entry]:
+        return _ls(self.repo, tree)
+
+    def blob(self, oid: str) -> bytes:
+        return _git(self.repo, "cat-file", "blob", oid)
+
+    def close(self) -> None:
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+class BatchReader(GitReader):
+    """Two git processes for a whole record: one ``ls-tree -r -t`` per root tree, indexed
+    by tree id so every subtree it names is listed without another process, and one
+    long-lived ``cat-file --batch`` for every blob. Close it (or use it as a context
+    manager) to end the batch process."""
+
+    def __init__(self, repo: Path):
+        super().__init__(repo)
+        self._trees: dict[str, list[Entry]] = {}
+        self._cat: subprocess.Popen | None = None
+
+    def ls(self, tree: str) -> list[Entry]:
+        if tree not in self._trees:
+            self._index(tree)
+        return list(self._trees[tree])
+
+    def _index(self, root: str) -> None:
+        tree_at = {"": root}
+        rows: list[tuple[str, Entry]] = []
+        for line in _git(self.repo, "ls-tree", "-r", "-t", "-z", root).split(b"\0"):
+            if not line:
+                continue
+            meta, raw = line.split(b"\t", 1)
+            mode, kind, oid = meta.decode().split()
+            parent, _, name = raw.decode("utf-8", errors="surrogateescape").rpartition("/")
+            rows.append((parent, (mode, kind, oid, name)))
+            if kind == "tree":
+                tree_at[f"{parent}/{name}" if parent else name] = oid
+        listed: dict[str, list[Entry]] = {path: [] for path in tree_at}
+        for parent, entry in rows:
+            listed[parent].append(entry)
+        # One tree id at two paths has the same entries at both: either listing serves.
+        for path, oid in tree_at.items():
+            self._trees[oid] = listed[path]
+
+    def blob(self, oid: str) -> bytes:
+        if self._cat is None:
+            self._cat = gitops.start(self.repo, "cat-file", "--batch")
+        self._cat.stdin.write(oid.encode() + b"\n")
+        self._cat.stdin.flush()
+        header = self._cat.stdout.readline().split()
+        if len(header) == 3 and header[1] != b"blob":
+            # a present object of another kind still sends its body: read it off the stream, so a refusal
+            # leaves the reader serving the next request (a "missing" header has two fields and no body)
+            self._cat.stdout.read(int(header[2]) + 1)
+        if len(header) != 3 or header[1] != b"blob":
+            raise ReviewRecordError(f"git cat-file blob failed: {oid} is "
+                                    f"{header[1].decode(errors='replace') if len(header) > 1 else 'unreadable'}, not a blob")
+        size = int(header[2])
+        data = self._cat.stdout.read(size + 1)
+        if len(data) != size + 1:
+            self.close()  # the stream stopped mid-object; nothing after it can be trusted
+            raise ReviewRecordError(f"git cat-file blob failed: {oid} truncated")
+        return data[:size]
+
+    def close(self) -> None:
+        if self._cat is not None:
+            self._cat.stdin.close()
+            self._cat.wait()
+            self._cat.stdout.close()
+            self._cat = None
+
+
 def entry_name(f: Field | None, number: int, wt: int, repeated: bool) -> str:
     if not 1 <= number <= MAX_FIELD_NUMBER:
         raise ReviewRecordError(f"field number {number} is outside 1..{MAX_FIELD_NUMBER}")
@@ -313,18 +412,18 @@ def parse_entry(name: str) -> tuple[int, int, bool]:
     return number, int(m.group(2)), bool(m.group(3))
 
 
-def _occurrences(repo: Path, name: str, oid: str) -> list[Entry]:
+def _occurrences(repo: Path, name: str, oid: str, reader: GitReader | None = None) -> list[Entry]:
     """A repeated entry's occurrences, which must be exactly 0000001..n in order."""
-    kids = _ls(repo, oid)
+    kids = (reader or GitReader(repo)).ls(oid)
     want = [f"{i:07d}" for i in range(1, len(kids) + 1)]
     if not kids or [k[3] for k in kids] != want:
         raise ReviewRecordError(f"{name}: occurrences must be exactly 0000001..n, got {[k[3] for k in kids]}")
     return kids
 
 
-def write_tree(repo: Path, buf: bytes, message: str = "ReviewBind") -> str:
-    """Store protobuf bytes as a field tree, names from the current schema."""
-    spec = schema()[message]
+def write_tree(repo: Path, buf: bytes, message: str = "ReviewBind", schema: Schema | None = None) -> str:
+    """Store protobuf bytes as a field tree, names from ``schema`` (default: the review schema)."""
+    spec = _spec(schema, message)
     grouped: dict[tuple[int, int], list[bytes]] = {}
     for number, wt, payload in fields(buf):
         grouped.setdefault((number, wt), []).append(payload)
@@ -337,7 +436,7 @@ def write_tree(repo: Path, buf: bytes, message: str = "ReviewBind") -> str:
 
         def leaf(p: bytes) -> tuple[str, str, str]:
             if nested:
-                return _TREE_MODE, "tree", write_tree(repo, p, f.type)
+                return _TREE_MODE, "tree", write_tree(repo, p, f.type, schema)
             return _BLOB_MODE, "blob", _blob(repo, p)
 
         repeated = (f.repeated if f is not None else False) or len(payloads) > 1
@@ -349,29 +448,32 @@ def write_tree(repo: Path, buf: bytes, message: str = "ReviewBind") -> str:
     return _mktree(repo, entries)
 
 
-def write_record(repo: Path, record: dict) -> str:
-    return write_tree(repo, encode(record))
+def write_record(repo: Path, record: dict, message: str = "ReviewBind", schema: Schema | None = None) -> str:
+    return write_tree(repo, encode(record, message, schema), message, schema)
 
 
-def to_protobuf(repo: Path, tree: str) -> bytes:
+def to_protobuf(repo: Path, tree: str, reader: GitReader | None = None) -> bytes:
     """Derive protobuf from a stored tree, by number, in entry order. Needs no schema:
-    a tree is a message, a blob is a payload. Unknown entries are re-emitted too."""
+    a tree is a message, a blob is a payload. Unknown entries are re-emitted too.
+    ``reader`` fetches the objects (default: one git process per object)."""
+    reader = reader or GitReader(repo)
     out = b""
-    for mode, kind, oid, name in _ls(repo, tree):
+    for mode, kind, oid, name in reader.ls(tree):
         number, wt, repeated = parse_entry(name)
-        kids = _occurrences(repo, name, oid) if repeated else [(mode, kind, oid, name)]
+        kids = _occurrences(repo, name, oid, reader) if repeated else [(mode, kind, oid, name)]
         for _, k, o, _ in kids:
-            payload = to_protobuf(repo, o) if k == "tree" else _git(repo, "cat-file", "blob", o)
+            payload = to_protobuf(repo, o, reader) if k == "tree" else reader.blob(o)
             check_payload(wt, payload)
             out += _emit(number, wt, payload)
     return out
 
 
-def read_record(repo: Path, tree: str) -> dict:
+def read_record(repo: Path, tree: str, message: str = "ReviewBind", schema: Schema | None = None,
+                reader: GitReader | None = None) -> dict:
     """The known fields, as a VIEW. Never write this dict back as the record: it does not
     carry unknown entries, so write_record(read_record(t)) loses them. Edit a stored
     record with replace_entry."""
-    return decode(to_protobuf(repo, tree))
+    return decode(to_protobuf(repo, tree, reader), message, schema)
 
 
 def replace_entry(repo: Path, tree: str, path: list[str], payload: bytes) -> str:
@@ -398,10 +500,11 @@ def replace_entry(repo: Path, tree: str, path: list[str], payload: bytes) -> str
     return _mktree(repo, out)
 
 
-def _check_message(repo: Path, tree: str, message: str | None) -> None:
-    spec = schema()[message] if message else {}
+def _check_message(repo: Path, tree: str, message: str | None, schema: Schema | None,
+                   reader: GitReader) -> None:
+    spec = _spec(schema, message) if message else {}
     seen: set[int] = set()
-    for mode, kind, oid, name in _ls(repo, tree):
+    for mode, kind, oid, name in reader.ls(tree):
         number, wt, repeated = parse_entry(name)
         if number in seen:
             raise ReviewRecordError(f"field {number} has more than one entry")
@@ -413,7 +516,7 @@ def _check_message(repo: Path, tree: str, message: str | None) -> None:
         if repeated:
             if kind != "tree":
                 raise ReviewRecordError(f"{name}: a repeated entry is a tree of occurrences")
-            kids = _occurrences(repo, name, oid)
+            kids = _occurrences(repo, name, oid, reader)
         else:
             kids = [(mode, kind, oid, name)]
         for kmode, k, o, kname in kids:
@@ -425,10 +528,11 @@ def _check_message(repo: Path, tree: str, message: str | None) -> None:
             if f is not None and (k == "tree") != f.message:
                 raise ReviewRecordError(f"{name}: {f.type} is stored as a {'tree' if f.message else 'blob'}")
             if k == "tree":
-                _check_message(repo, o, f.type if f is not None else None)
+                _check_message(repo, o, f.type if f is not None else None, schema, reader)
 
 
-def verify_tree(repo: Path, tree: str, message: str = "ReviewBind") -> None:
+def verify_tree(repo: Path, tree: str, message: str = "ReviewBind", schema: Schema | None = None,
+                reader: GitReader | None = None) -> None:
     """Check the record AS WRITTEN: every object re-hashes from its own content
     (``git fsck --strict``); every entry is a plain blob or tree with a field tree name,
     one per field number, its wire type and repetition agreeing with any field the
@@ -438,5 +542,6 @@ def verify_tree(repo: Path, tree: str, message: str = "ReviewBind") -> None:
     proc = gitops.run(repo, "fsck", "--strict", "--no-dangling", tree, binary=True)
     if proc.returncode != 0:
         raise ReviewRecordError(f"fsck refused record {tree}: {proc.stderr.decode(errors='replace').strip()[:200]}")
-    _check_message(repo, tree, message)
-    decode(to_protobuf(repo, tree), message)
+    reader = reader or GitReader(repo)
+    _check_message(repo, tree, message, schema, reader)
+    decode(to_protobuf(repo, tree, reader), message, schema)

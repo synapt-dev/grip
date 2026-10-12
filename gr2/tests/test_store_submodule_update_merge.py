@@ -14,10 +14,15 @@ Fixtures are real git with bare local origins and no network; the `update --remo
 """
 from __future__ import annotations
 
+import os
+import shutil
+import sys
 from pathlib import Path
 
+import pytest
+
 from tests.test_store_gitmodules_branch import _on_dev, _push_one, _store
-from tests.test_store_git_native_smoke import git, run
+from tests.test_store_git_native_smoke import configure_identity, git, run
 
 
 def _update_remote(root: Path):
@@ -99,3 +104,51 @@ def test_registering_again_after_a_deinit_is_said_on_stderr(tmp_path: Path) -> N
 
     assert git(root, "config", "--get", "submodule.beta.url", check=False).returncode == 0
     assert "beta: registered as a submodule" in again.stderr, again.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the git stand-in is a POSIX shell script")
+def test_a_new_registration_is_said_whatever_words_git_uses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A translated git words "registered for path" in its own language, so the new registration is read from the
+    root's config, not from git's message. The stand-in rewrites that message the way a translation would."""
+    from tests.test_store_git_native_smoke import gr2
+
+    root = _store(tmp_path, _on_dev)
+    git(root, "config", "--remove-section", "submodule.beta")
+    real = shutil.which("git")
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    (shim / "git").write_text(
+        "#!/bin/sh\n"
+        f"exec 3>&1\n\"{real}\" \"$@\" 2>&1 1>&3 3>&- | sed 's/registered for path/für Pfad eingetragen/' 1>&2\n"
+    )
+    (shim / "git").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{shim}{os.pathsep}{os.environ['PATH']}")
+    probe = run(root, "git", "submodule", "init", "--", "beta")
+    assert "für Pfad eingetragen" in probe.stderr, probe.stderr   # the stand-in is the git that ran
+    git(root, "config", "--remove-section", "submodule.beta")
+
+    again = gr2(root, "commit", "-m", "nothing new")
+
+    assert "beta: registered as a submodule" in again.stderr, again.stderr
+
+
+def test_only_the_member_registered_again_is_named(tmp_path: Path) -> None:
+    """With the first member re-registered, a member after it that was registered all along says nothing: each
+    member's line answers for that member alone."""
+    from tests.test_store_git_native_smoke import gr2
+
+    def two_members(member: Path) -> None:
+        _on_dev(member)
+        run(member.parent, "git", "clone", "-q", str(tmp_path / "beta.git"), "alpha")
+        configure_identity(member.parent / "alpha")
+        _on_dev(member.parent / "alpha")
+
+    root = _store(tmp_path, two_members)
+    for name in ("alpha", "beta"):   # precondition: both registered by the first commit
+        assert git(root, "config", "--get", f"submodule.{name}.url", check=False).returncode == 0, name
+    git(root, "config", "--remove-section", "submodule.alpha")
+
+    again = gr2(root, "commit", "-m", "nothing new")
+
+    assert "alpha: registered as a submodule" in again.stderr, again.stderr
+    assert "beta: registered as a submodule" not in again.stderr, again.stderr

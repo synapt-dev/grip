@@ -540,6 +540,12 @@ def has_foreign_gitmodules(root: Path) -> bool:
     return staged.returncode == 0 and not staged.stdout.startswith(_GITMODULES_HEADER)
 
 
+def _registered_submodule_urls(root: Path) -> set[str]:
+    """The `submodule.<name>.url` keys in the root's own config: what `git submodule init` writes and `deinit` removes."""
+    found = _store_git(root, "config", "--local", "--name-only", "--get-regexp", r"^submodule\..*\.url$", check=False)
+    return set(found.stdout.splitlines())
+
+
 def _register_submodules(root: Path, paths: list[str]) -> None:
     """`git submodule init -- <paths>`: register each member from the `.gitmodules` gr2 owns, so plain
     `git submodule update --remote <member>` works with no hand-run init. Unregistered, git 2.50 prints "not
@@ -551,14 +557,18 @@ def _register_submodules(root: Path, paths: list[str]) -> None:
 
     A NEW registration is said on stderr too. Git cannot tell a member never registered from one a user removed with
     `git submodule deinit` (both leave no config), so registering again is the rule, and saying so is what keeps it from
-    silently undoing that choice. Git reports a new registration itself ("registered for path"); a member already
-    registered prints nothing."""
+    silently undoing that choice. A new registration is read from the root's config (a `submodule.<name>.url` that
+    was not there before the init), never from git's message, which a translated git words differently."""
+    registered = _registered_submodule_urls(root)
     for path in paths:
         done = _store_git(root, "submodule", "init", "--", path, check=False)
         if done.returncode:
             typer.echo(f"{path}: not registered as a submodule ({_git_detail(done)}); plain `git submodule` verbs "
                        f"need `git submodule init {path}` first", err=True)
-        elif "registered for path" in done.stderr:
+            continue
+        now = _registered_submodule_urls(root)
+        new, registered = now - registered, now
+        if new:
             typer.echo(f"{path}: registered as a submodule, so plain `git submodule` verbs act on it "
                        f"(`git submodule deinit {path}` lasts until the next store commit)", err=True)
 

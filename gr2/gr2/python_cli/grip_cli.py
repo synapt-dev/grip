@@ -536,6 +536,21 @@ def has_foreign_gitmodules(root: Path) -> bool:
     return staged.returncode == 0 and not staged.stdout.startswith(_GITMODULES_HEADER)
 
 
+def _register_submodules(root: Path, paths: list[str]) -> None:
+    """`git submodule init -- <paths>`: register each member from the `.gitmodules` gr2 owns, so plain
+    `git submodule update --remote <member>` works with no hand-run init. Unregistered, git 2.50 prints "not
+    initialized", leaves the member where it was and EXITS 0, so the gap read as success. Init writes only the root's
+    own `submodule.<name>.*` config and reaches no network. Callers skip a full-mode root and a foreign `.gitmodules`.
+
+    A convenience, never a gate: each member is registered on its own, and one git refuses (a name git calls
+    suspicious, such as one carrying `..`) is named on stderr with the hand step, while the verb goes on."""
+    for path in paths:
+        done = _store_git(root, "submodule", "init", "--", path, check=False)
+        if done.returncode:
+            typer.echo(f"{path}: not registered as a submodule ({_git_detail(done)}); plain `git submodule` verbs "
+                       f"need `git submodule init {path}` first", err=True)
+
+
 def _existing_sets(root: Path) -> list[dict]:
     """The `[[sets]]` tables of the grip.toml on disk, verbatim; none when there is no readable document."""
     try:
@@ -1756,6 +1771,10 @@ def _native_store_commit(root: Path, message: str, layered: list[str] | None = N
         _store_git(root, "update-index", "--add", "--cacheinfo", f"160000,{entry},{member['path']}")
     if full and changed:
         _keep_member_paths_owned(root, changed)
+    # Registered here, once every member's gitlink is in the index (init matches its paths against the index), and
+    # before the no-op return, so a commit with nothing new still registers a store made before this rule.
+    if not full and not has_foreign_gitmodules(root):
+        _register_submodules(root, [m["path"] for m in members])
     # NOTHING STAGED IS A NO-OP, NOT A FAILURE. When every pin already equals the
     # gitlink the root last committed, `git commit` exits 1 with "nothing to commit" on STDOUT
     # and an empty stderr, which `_store_git` renders as the bare "git command failed" and the
@@ -2378,6 +2397,12 @@ def _native_store_materialize(root: Path) -> list[dict[str, str]]:
         if branch is None:
             row["detached"] = why
         materialized.append(row)
+    # Registered only where the root's index holds the member's gitlink: init and every plain `git submodule` verb
+    # match paths against the index, so in a root cloned with --no-checkout (empty index) there is nothing plain git
+    # could act on, and registering would only fail the verb after its work was done.
+    if not full and not has_foreign_gitmodules(root):
+        _register_submodules(root, [m["path"] for m in members
+                                    if _store_git(root, "ls-files", "-s", "--", m["path"]).stdout.startswith("160000 ")])
     return materialized
 
 

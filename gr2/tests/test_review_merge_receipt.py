@@ -112,7 +112,8 @@ def test_a_failed_receipt_write_never_changes_the_exit(world, monkeypatch):
 
 
 @pytest.mark.parametrize("content", ["not json\n", "[]\n", '{"members": "x"}\n', '{"members": [{"key": 1}]}\n',
-                                     '{"members": [{"key": "a", "refusal": "x"}]}\n'])
+                                     '{"members": [{"key": "a", "refusal": "x"}]}\n',
+                                     '{"members": [{"key": "a", "refusal": {"x": 1}}]}\n'])
 def test_an_unreadable_receipt_is_a_named_corrupt_error_not_a_traceback(world, content):
     """Invalid JSON, and valid JSON that is not a receipt, both read as corrupt: exit 2, never a traceback."""
     check(world)
@@ -128,4 +129,5 @@ def test_an_unreadable_receipt_is_a_named_corrupt_error_not_a_traceback(world, c
     for args in (["--json"], []):
         out = runner.invoke(app, ["review", "show", world["review"], *args])
         assert out.exit_code == 2, out.output
-        assert "corrupt" in out.output and "Traceback" not in out.output, out.output
+        assert "corrupt" in out.output, out.output
+        assert out.exception is None or isinstance(out.exception, SystemExit), repr(out.exception)

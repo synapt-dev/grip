@@ -42,7 +42,9 @@ def _shaped(receipt: object) -> dict:
     members = receipt.get("members") if isinstance(receipt, dict) else None
     if not isinstance(members, list) or not all(
             isinstance(m, dict) and isinstance(m.get("key"), str)
-            and (m.get("refusal") is None or isinstance(m.get("refusal"), dict)) for m in members):
+            and (m.get("refusal") is None
+                 or (isinstance(m.get("refusal"), dict) and isinstance(m["refusal"].get("code"), str)))
+            for m in members):
         raise ValueError("not a merge receipt")
     return receipt
 

@@ -117,6 +117,13 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Changed
 
+- **`gr2`: the generated `.gitmodules` names each member's branch, so `git submodule update --remote` follows it.**
+  Each member's entry now carries `branch = <the branch its upstream names>` (`origin/feat/greet` gives `feat/greet`;
+  the upstream's branch, not the local `ref`, because the setting names a branch on the member's remote). Before, the
+  file carried only `path` and `url`, so plain git followed the remote's HEAD and moved a member recorded on `dev` to
+  `main`'s tip. An existing store gains the lines at its next `store commit`, or at the next plain `git commit` once the
+  installed hook runs the new gr2; nothing else in the file changes. An upstream containing a line break is refused,
+  like the other fields.
 - **`gr2`: `store materialize` leaves each member on a branch at its pin, not on a detached HEAD.** The branch is the
   member's recorded `ref` (or, with none, the one its `upstream` names: `origin/main` gives `main`), set to track that
   upstream, so work continues without a branch command per member. The branch is moved only when that drops no commit

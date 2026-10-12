@@ -80,7 +80,7 @@ def test_json_reports_unchanged_with_the_current_head(tmp_path: Path) -> None:
 
     assert second.returncode == 0, f"{second.stdout}\n{second.stderr}"
     payload = json.loads(second.stdout)
-    assert payload == {"status": "unchanged", "root_commit": head}, payload
+    assert payload == {"status": "unchanged", "root_commit": head, "layered": []}, payload
 
 
 def test_a_real_change_is_still_recorded(tmp_path: Path) -> None:
@@ -108,7 +108,7 @@ def test_a_real_change_is_still_recorded(tmp_path: Path) -> None:
 
     # And the very next commit, with nothing new, is the no-op again.
     third = gr2(root, "commit", "-m", "third", "--json")
-    assert json.loads(third.stdout) == {"status": "unchanged", "root_commit": _head(root)}
+    assert json.loads(third.stdout) == {"status": "unchanged", "root_commit": _head(root), "layered": []}
 
 
 def test_an_untracked_root_file_alone_is_still_unchanged(tmp_path: Path) -> None:
@@ -121,7 +121,7 @@ def test_an_untracked_root_file_alone_is_still_unchanged(tmp_path: Path) -> None
     second = gr2(root, "commit", "-m", "second", "--json", check=False)
 
     assert second.returncode == 0, f"{second.stdout}\n{second.stderr}"
-    assert json.loads(second.stdout) == {"status": "unchanged", "root_commit": head}
+    assert json.loads(second.stdout) == {"status": "unchanged", "root_commit": head, "layered": []}
     assert _head(root) == head
 
 
@@ -133,5 +133,5 @@ def test_the_hidden_snapshot_alias_is_a_no_op_too(tmp_path: Path) -> None:
     second = gr2(root, "snapshot", "-m", "again", "--json", check=False)
 
     assert second.returncode == 0, f"{second.stdout}\n{second.stderr}"
-    assert json.loads(second.stdout) == {"status": "unchanged", "root_commit": head}
+    assert json.loads(second.stdout) == {"status": "unchanged", "root_commit": head, "layered": []}
     assert _head(root) == head

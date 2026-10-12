@@ -1021,6 +1021,16 @@ def _refuse_init_disagreement(root: Path, members: list[dict[str, str]] | None =
 
 STORE_INCOMPLETE_PREFIX = "cannot complete this store verb: "
 STORE_COMMIT_UNCHANGED = "Nothing to record: every pin already matches the root's last commit."
+
+
+def _echo_layered(layered: list[str]) -> None:
+    """One line per member whose pin went into the record as a layer."""
+    import typer
+
+    root = Path.cwd()
+    pins = {m["name"]: m["pin"] for m in _native_members(root)}
+    for name in layered:
+        typer.echo(f"{name}: pin {pins[name][:12]} is on no remote; carried as a layer in the record")
 """Section 5's exit table has no room for an internal error.
 
 For the whole `store` group the table is 0 ok, 2 usage, 3 refused on coverage or cleanliness,
@@ -1473,8 +1483,14 @@ def _commit_with_carried(root: Path, message: str, carried: list[str]) -> None:
 
 
 @_refuses_moved_workspace
-def _native_store_commit(root: Path, message: str) -> bool:
-    """Record the pins; True when a root commit was made, False when there was nothing to record."""
+def _native_store_commit(root: Path, message: str, layered: list[str] | None = None) -> bool:
+    """Record the pins; True when a root commit was made, False when there was nothing to record.
+
+    `layered`, when given, receives the name of each member whose pin is on no remote and is therefore carried as a
+    layer in the record a commit made: STATE, not this commit's delta. A layer an earlier commit wrote and this one
+    keeps is named again, because the operator's question is "is my work recorded?" (the verb must say so, or an
+    operator reads it as origin-only).
+    """
     _refuse_beta(root)
     full = _workspace_mode(_grip_document(root)) == "full"
     members = _native_members(root)
@@ -1564,6 +1580,8 @@ def _native_store_commit(root: Path, message: str) -> bool:
         return False
     if staged.returncode != 1:
         raise RuntimeError(staged.stderr.strip() or "git diff --cached failed")
+    if layered is not None:
+        layered.extend(m["name"] for m in changed if m["name"] in layers_by_member)
     # `--no-verify`: this verb has just run the same checks the pre-commit hook runs (coverage and the
     # pin write above), so the hook would repeat a network fetch per member for no new answer.
     if full:
@@ -2172,11 +2190,13 @@ _STORE_JSON_SHAPES: dict[str, tuple[str, ...]] = {
     "commit": (
         ".status  enum(committed,unchanged)",
         ".root_commit",
+        ".layered[]",
     ),
     # The hidden alias of `store commit` (section 5), so it emits commit's shape.
     "snapshot": (
         ".status  enum(committed,unchanged)",
         ".root_commit",
+        ".layered[]",
     ),
     "check": (
         ".status  enum(checked)",
@@ -2310,9 +2330,15 @@ def grip_commit_cmd(
     message: str = typer.Option(..., "--message", "-m"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Record origin-covered member pins in the root git tree."""
+    """Record member pins in the root git tree.
+
+    A pin some remote has is recorded as a gitlink. In full mode a pin no remote has is also recorded: the
+    commits its upstream lacks are carried as a layer in the member's record, so `store push` and a clone
+    plus `store materialize` rebuild it on another machine without pushing the member.
+    """
+    layered: list[str] = []
     try:
-        committed = _native_store_commit(Path.cwd(), message)
+        committed = _native_store_commit(Path.cwd(), message, layered)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
@@ -2326,9 +2352,11 @@ def grip_commit_cmd(
         raise typer.Exit(code=5)
     if json_output:
         root_commit = _store_git(Path.cwd(), "rev-parse", "HEAD").stdout.strip()
-        typer.echo(json.dumps({"status": "committed" if committed else "unchanged", "root_commit": root_commit}))
+        typer.echo(json.dumps({"status": "committed" if committed else "unchanged", "root_commit": root_commit, "layered": layered}))
     elif not committed:
         typer.echo(STORE_COMMIT_UNCHANGED)
+    else:
+        _echo_layered(layered)
 
 
 @grip_app.command("check")
@@ -2518,8 +2546,9 @@ def grip_snapshot_cmd(
     commit and carries only commit's flags. This UNWIRES the verb; it does not delete the
     alpha writer, because `store migrate` (section 6a) reads that store and is a later step.
     """
+    layered: list[str] = []
     try:
-        committed = _native_store_commit(Path.cwd(), message)
+        committed = _native_store_commit(Path.cwd(), message, layered)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
@@ -2528,11 +2557,12 @@ def grip_snapshot_cmd(
         raise typer.Exit(code=5)
     root_commit = _store_git(Path.cwd(), "rev-parse", "HEAD").stdout.strip()
     if json_output:
-        typer.echo(json.dumps({"status": "committed" if committed else "unchanged", "root_commit": root_commit}))
+        typer.echo(json.dumps({"status": "committed" if committed else "unchanged", "root_commit": root_commit, "layered": layered}))
     elif not committed:
         typer.echo(STORE_COMMIT_UNCHANGED)
     else:
         typer.echo(f"grip snapshot {root_commit[:12]}")
+        _echo_layered(layered)
 
 
 @grip_app.command("log")

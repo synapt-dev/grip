@@ -124,6 +124,7 @@ verb  grip checkout (hidden:grip)                                     stable
 # grip commit
 flag  grip commit --json (hidden:grip)                                stable
 flag  grip commit --message/-m <str> (hidden:grip)                    stable
+json  grip commit .layered[]                                          may-change
 json  grip commit .root_commit                                        may-change
 json  grip commit .status  enum(committed,unchanged)                  may-change
 verb  grip commit (hidden:grip)                                       stable
@@ -193,6 +194,7 @@ verb  grip push (hidden:grip)                                         stable
 # grip snapshot
 flag  grip snapshot --json (hidden:grip)                              stable
 flag  grip snapshot --message/-m <str> (hidden:grip)                  stable
+json  grip snapshot .layered[]                                        may-change
 json  grip snapshot .root_commit                                      may-change
 json  grip snapshot .status  enum(committed,unchanged)                may-change
 verb  grip snapshot (hidden:grip)                                     stable
@@ -667,6 +669,7 @@ verb  store checkout                                                  may-change
 # store commit
 flag  store commit --json                                             may-change
 flag  store commit --message/-m <str>                                 may-change
+json  store commit .layered[]                                         may-change
 json  store commit .root_commit                                       may-change
 json  store commit .status  enum(committed,unchanged)                 may-change
 verb  store commit                                                    may-change
@@ -736,6 +739,7 @@ verb  store push                                                      may-change
 # store snapshot
 flag  store snapshot --json (hidden)                                  may-change
 flag  store snapshot --message/-m <str> (hidden)                      may-change
+json  store snapshot .layered[]                                       may-change
 json  store snapshot .root_commit                                     may-change
 json  store snapshot .status  enum(committed,unchanged)               may-change
 verb  store snapshot (hidden)                                         may-change

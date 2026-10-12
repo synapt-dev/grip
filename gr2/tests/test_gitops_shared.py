@@ -186,7 +186,10 @@ def _spawns_in_source(src: str):
 
 # Where git itself is started: the one shared spawn, and version.py's resolved-binary read (a stranger's machine
 # with no git degrades to a less specific version string instead of failing).
-GIT_SPAWNS = {("python_cli/gitops.py", "_spawn"), ("python_cli/version.py", "_clone_short_sha")}
+# gitops.start is the one long-lived spawn (a streaming `cat-file --batch`): the same flags as _spawn and the same
+# missing-git error, but a Popen whose lifetime the caller owns, which subprocess.run cannot hold.
+GIT_SPAWNS = {("python_cli/gitops.py", "_spawn"), ("python_cli/gitops.py", "start"),
+              ("python_cli/version.py", "_clone_short_sha")}
 # Where a spawn's argv is not a literal because it IS someone else's command: a user's check, test or install
 # command, a venv or pip step, a hook, a plugin, a launched agent, or the hosting platform's CLI.
 USER_COMMAND_SEAMS = {

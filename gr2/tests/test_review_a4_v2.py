@@ -243,3 +243,15 @@ def test_unreadable_ancestry_refuses_the_whole_set(two_member_ws: Path, monkeypa
     assert "beta (ancestry could not be read" in message and "no review id was minted" in message
     assert "gr2: pin alpha" not in result.stderr
     assert result.stdout == "" and _refs(ws) == before
+
+
+def test_choice_refused_default_is_immutable() -> None:
+    """A NamedTuple default is one object shared by every instance, so `refused` defaults to an immutable tuple:
+    appending to one Choice's default must not be possible, let alone reach another Choice."""
+    from gr2.python_cli.review_members import Choice
+
+    first, second = Choice([], []), Choice([], [])
+    assert first.refused == () and second.refused == ()
+    with pytest.raises(AttributeError):
+        first.refused.append("x (leaked)")  # type: ignore[attr-defined]
+    assert second.refused == ()

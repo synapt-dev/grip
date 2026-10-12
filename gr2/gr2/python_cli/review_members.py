@@ -25,7 +25,7 @@ class Choice(NamedTuple):
     skipped: list[str]  # "name (reason)" for every member not chosen, so a short list never reads as a complete one
     # "name (reason)" for every member whose checkout moved but could not be measured. The caller refuses the whole
     # set on any of these: binding the others would mint one review for part of a change set.
-    refused: list[str] = []
+    refused: tuple[str, ...] = ()
 
 
 def _text(value: object) -> str | None:
@@ -83,4 +83,4 @@ def changed_member_rows(workspace_root: Path, only: list[str] | None = None) -> 
             "key": m.name, "remote": m.url, "path": m.path, "head": sha, "base": m.pin,
             "ref": m.ref if m.ref and m.ref.startswith("refs/") else f"refs/heads/{m.ref or 'main'}", "title": "", "body": "", "source": str(checkout.resolve()),
         })
-    return Choice(rows, skipped, refused)
+    return Choice(rows, skipped, tuple(refused))

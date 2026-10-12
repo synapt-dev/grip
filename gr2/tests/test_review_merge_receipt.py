@@ -94,3 +94,15 @@ def test_the_text_form_prints_one_merge_line_per_member(world):
     assert out.exit_code == 0, out.output
     tip = git(world["remote"], "rev-parse", "main")
     assert f"merge: merged {tip[:12]}" in out.output, out.output
+
+
+def test_a_failed_receipt_write_never_changes_the_exit(world, monkeypatch):
+    check(world)
+
+    def refuse(*a, **k):
+        raise RuntimeError("update-ref refused")
+    monkeypatch.setattr(merge_gate.merge_receipts, "record", refuse)
+    code, receipt = merge(world)
+    assert code == merge_gate.EXIT_MERGED, receipt
+    assert receipt["stored"].startswith("receipt_not_stored:"), receipt
+    assert show(world["author"], world["review"])["merge"] is None

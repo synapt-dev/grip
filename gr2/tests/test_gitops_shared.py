@@ -312,6 +312,7 @@ def _one_member_merge(monkeypatch, tmp_path, merge_tree):
                         lambda *a, **k: {"status": "pass", "record_id": "d" * 40, "reason": "ok"})
     monkeypatch.setattr(merge_gate, "_state", lambda *a: ("unmerged", None))
     monkeypatch.setattr(merge_gate.declared_sets, "read", lambda *a, **k: merge_gate.declared_sets.Declaration((), {}))
+    monkeypatch.setattr(merge_gate.merge_receipts, "record", lambda *a, **k: "0" * 40)  # its git is not merge-tree's
     calls = []
 
     def spawn(argv, **kw):

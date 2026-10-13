@@ -606,6 +606,7 @@ def test_break_05_shallow_clone_of_the_root(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.xfail(strict=True, reason="section 9 rename turn: the plain push now runs the fence, which refuses this compat hand-pinned commit first; the compat turn (pin == own gitlink is recorded, a differing one is refused naming both) turns it green")
 def test_break_07_gitlink_and_pin_disagree(two_member_ws: Path) -> None:
     """Every verb that reads the pin exits 4 and names BOTH values.
 

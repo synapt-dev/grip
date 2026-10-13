@@ -431,7 +431,7 @@ def run_pre_commit(root: Path) -> int:
         if staged_bytes is None:
             return 0
         staged_text = staged_bytes.decode("utf-8")
-        # THE FENCE (section 9), the same function and the same reader `store push --atomic` uses: the pins the commit
+        # THE FENCE (section 9), the same function and the same reader `store push` uses: the pins the commit
         # will RECORD (the staged grip.toml). The hook sees one commit, so it judges that commit's own edit (against
         # HEAD); the push judges the whole range since the shadow, and backstops a commit made past the hook. Before
         # the compat fold, so a hand-edited pin line is refused by name; compat's gitlink-bump fold is left as it was.

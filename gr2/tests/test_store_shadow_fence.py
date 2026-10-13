@@ -2,8 +2,8 @@
 
 A hand commit on the branch is fenced by the pins it RECORDS (`<commit>:grip.toml`), compared with the pins the shadow
 records, never by the root gitlink at a member path. ONE function (`_refuse_unrecorded_pins`) is called by the
-pre-commit hook and by `store push --atomic`, so the two cannot disagree.
-- (a) a hand commit to a tracked non-pin file passes the hook, pushes atomically, and the shadow advances to it.
+pre-commit hook and by `store push`, so the two cannot disagree.
+- (a) a hand commit to a tracked non-pin file passes the hook, pushes (one atomic push), and the shadow advances to it.
 - (b) a hand-edited pin in grip.toml is refused at commit AND at push, naming the member; neither ref moves.
 - (c) full mode: the root gitlink is the member's field commit and differs from its recorded pin, and the fence still
   passes a hand commit.
@@ -50,10 +50,10 @@ def _hand_pin(root: Path, member: str, mode: str) -> str:
 @pytest.mark.parametrize("mode", MODES)
 def test_fence_a_hand_commit_to_a_non_pin_file_pushes_and_advances_the_shadow(tmp_path, mode):
     root, origin = _store(tmp_path, mode)
-    gr2(root, "push", "--atomic")
+    gr2(root, "push")
 
     hand = _hand_note(root)
-    result = gr2(root, "push", "--atomic", check=False)
+    result = gr2(root, "push", check=False)
 
     assert result.returncode == 0, result.stderr
     remote = _refs(origin)
@@ -64,7 +64,7 @@ def test_fence_a_hand_commit_to_a_non_pin_file_pushes_and_advances_the_shadow(tm
 @pytest.mark.parametrize("mode", MODES)
 def test_fence_b_hand_edited_pin_is_refused_at_commit_naming_the_member(tmp_path, mode):
     root, origin = _store(tmp_path, mode)
-    gr2(root, "push", "--atomic")
+    gr2(root, "push")
     head, local, remote = git(root, "rev-parse", "HEAD").stdout.strip(), _refs(root), _refs(origin)
     _hand_pin(root, "alpha", mode)
 
@@ -79,12 +79,12 @@ def test_fence_b_hand_edited_pin_is_refused_at_commit_naming_the_member(tmp_path
 @pytest.mark.parametrize("mode", MODES)
 def test_fence_b_hand_edited_pin_is_refused_at_push_naming_the_member(tmp_path, mode):
     root, origin = _store(tmp_path, mode)
-    gr2(root, "push", "--atomic")
+    gr2(root, "push")
     shadow, remote = _refs(root)[SHADOW], _refs(origin)
     _hand_pin(root, "alpha", mode)
     git(root, "commit", "--no-verify", "-m", "hand pin past the hook")
 
-    result = gr2(root, "push", "--atomic", check=False)
+    result = gr2(root, "push", check=False)
 
     assert result.returncode != 0
     assert "pin edited by hand" in result.stderr and "alpha" in result.stderr, result.stderr
@@ -94,14 +94,34 @@ def test_fence_b_hand_edited_pin_is_refused_at_push_naming_the_member(tmp_path, 
 
 def test_fence_c_reads_recorded_pins_not_the_gitlink_in_full_mode(tmp_path):
     root, origin = _store(tmp_path, "full")
-    gr2(root, "push", "--atomic")
+    gr2(root, "push")
     pins = {name: git(root, "show", "HEAD:grip.toml").stdout.split(f'name = "{name}"', 1)[1]
             .split('pin = "', 1)[1].split('"', 1)[0] for name in ("alpha", "beta")}
     links = {name: git(root, "ls-tree", "HEAD", "--", name).stdout.split()[2] for name in ("alpha", "beta")}
     assert all(links[n] != pins[n] for n in pins), ("the row needs gitlink != recorded pin (the field commit)", links, pins)
 
     hand = _hand_note(root)
-    result = gr2(root, "push", "--atomic", check=False)
+    result = gr2(root, "push", check=False)
 
     assert result.returncode == 0, result.stderr
     assert _refs(origin).get(SHADOW) == hand
+
+
+@pytest.mark.xfail(strict=True, reason="compat fold at the push (a compat pin the hook "
+                   "folded counts as recorded when grip.toml's pin equals the commit's own gitlink) lands in the compat "
+                   "turn; until then the plain push's fence refuses the fold")
+def test_fence_d_compat_hand_gitlink_bump_folded_by_the_hook_pushes(tmp_path):
+    root, origin = _store(tmp_path, "compat")
+    gr2(root, "push")
+    _advance(root, "alpha")
+    new = git(root / "alpha", "rev-parse", "HEAD").stdout.strip()
+    git(root, "add", "alpha")  # the hand gitlink bump; the hook folds grip.toml's pin to it
+    git(root, "commit", "-m", "hand bump")
+    assert f'pin = "{new}"' in git(root, "show", "HEAD:grip.toml").stdout, "the hook folded the pin"
+    head = git(root, "rev-parse", "HEAD").stdout.strip()
+
+    result = gr2(root, "push", check=False)
+
+    assert result.returncode == 0, result.stderr
+    remote = _refs(origin)
+    assert remote.get("refs/heads/main") == head and remote.get(SHADOW) == head, remote

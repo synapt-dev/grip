@@ -1992,14 +1992,20 @@ def _refuse_pin_rewind(
 
 
 # SECTION 9 (S1): HEAD is the shadow. Every commit the verb makes gets a second name in the store's own namespace,
-# `refs/dev.synapt.grip/__shadows__/v1/<branch>`, set to the SAME commit: one commit, two names. A commit on the
+# `refs/dev.synapt.grip/__branches__/<branch>/SHADOW`, set to the SAME commit: one commit, two names. A commit on the
 # branch that the shadow does not name was not made through the verb (a hand commit), which is what the fence reads.
-SHADOW_REF_PREFIX = "refs/dev.synapt.grip/__shadows__/v1/"
+# The name: a plural keyword names the collection, the bare name under it the one, a moving
+# head ends in SHADOW, and no version. The root is gr2's own store root; PROVISIONAL until Apollo confirms it, and
+# this constant is the only place it is spelled.
+SHADOW_REF_ROOT = "refs/dev.synapt.grip/__branches__/"
+
+
+def _shadow_ref_for(branch: str) -> str:
+    return f"{SHADOW_REF_ROOT}{branch}/SHADOW"
 
 
 def _shadow_ref(root: Path) -> str:
-    branch = _store_git(root, "symbolic-ref", "--short", "HEAD").stdout.strip()
-    return SHADOW_REF_PREFIX + branch
+    return _shadow_ref_for(_store_git(root, "symbolic-ref", "--short", "HEAD").stdout.strip())
 
 
 def _name_shadow(root: Path, was: str) -> None:
@@ -2014,7 +2020,7 @@ def _shadow_value(root: Path) -> str:
     branch = _store_git(root, "symbolic-ref", "--short", "-q", "HEAD", check=False).stdout.strip()
     if not branch:
         return ""
-    return _store_git(root, "rev-parse", "--verify", "-q", SHADOW_REF_PREFIX + branch, check=False).stdout.strip()
+    return _store_git(root, "rev-parse", "--verify", "-q", _shadow_ref_for(branch), check=False).stdout.strip()
 
 
 def _recorded_pins(text: str) -> dict[str, str]:
@@ -2023,7 +2029,7 @@ def _recorded_pins(text: str) -> dict[str, str]:
 
 
 def _refuse_unrecorded_pins(root: Path, pins: dict[str, str], base: str) -> None:
-    """THE FENCE (section 9), the one check the pre-commit hook and `store push --atomic` both call. `pins` are the
+    """THE FENCE (section 9), the one check the pre-commit hook and `store push` both call. `pins` are the
     pins a commit RECORDS (its grip.toml); a pin that differs from the one `base` records (the shadow at the push,
     HEAD at the hook) was edited by hand, so it is refused by the member's name. Never compare a root gitlink: in full mode the gitlink at a member path is
     the member's field commit, not its pin (#1233 v3 failed 47 full-mode rows on that). A commit whose pins equal the
@@ -2287,11 +2293,12 @@ def _root_origin_for_push(root: Path, to: str | None) -> str | None:
     return to
 
 
-def _atomic_push(root: Path, tip: str, refs: list[str]) -> None:
-    """ONE `git push --atomic` naming `tip` under every ref, so the remote moves all of them or none. A refusal names
+def _atomic_push(root: Path, refspecs: list[tuple[str, str]]) -> None:
+    """ONE `git push --atomic` of every (commit, ref), so the remote moves all of them or none. A refusal names
     each rejected ref with git's reason, plus the remote's own lines (a pre-receive hook declines every ref in the
     push, so only its message says which one it refused)."""
-    proc = _store_git(root, "push", "--porcelain", "--atomic", "origin", *[f"{tip}:{ref}" for ref in refs], check=False)
+    proc = _store_git(root, "push", "--porcelain", "--atomic", "origin", *[f"{sha}:{ref}" for sha, ref in refspecs],
+                      check=False)
     if proc.returncode == 0:
         return
     rejected = [line.split("\t") for line in proc.stdout.splitlines() if line.startswith("!")]
@@ -2301,12 +2308,35 @@ def _atomic_push(root: Path, tip: str, refs: list[str]) -> None:
                        + (f" ({remote})" if remote else ""))
 
 
+def _same_repo_member_refs(root: Path, branch: str) -> list[tuple[str, str, str]]:
+    """(name, pin, ref) for each member HEAD records whose origin IS the root's origin (the same url string, compared
+    exactly), its pin under `refs/heads/<ref>`. The pin is fetched from the member's checkout into the root first: the
+    push sends root objects, and the member's commits live in the member's own clone."""
+    origin = _store_git(root, "remote", "get-url", "origin").stdout.strip()
+    members = _native_members(root, "HEAD")
+    found: list[tuple[str, str, str]] = []
+    for member in members:
+        if member["remote"] != origin:
+            continue
+        ref = f"refs/heads/{member['ref']}"
+        if member["ref"] == branch:
+            raise NativeStoreRefusal(
+                f"{member['name']} lives in the root's repository on the root's own branch {branch}; one push "
+                f"cannot move {ref} to both the root commit and the member's pin", 4)
+        claimed = _claimed_member_paths(root, members, exclude=member)
+        path = _native_member_working_root(root, member, claimed)
+        _store_git(root, "fetch", "-q", "--no-tags", "--no-write-fetch-head", str(path), member["pin"])
+        found.append((member["name"], member["pin"], ref))
+    return found
+
+
 def _native_store_push(root: Path, to: str | None = None, atomic: bool = False) -> dict[str, object]:
     """Push only the checked root record. Member publication is a prior verb.
 
-    `atomic`: the branch and its shadow ref (section 9, S1) go in ONE `git push --atomic`, both naming the branch
-    tip, so origin never holds a branch the shadow does not name."""
-    shadow = _shadow_value(root) if atomic else ""
+    The branch and its shadow ref (section 9, S1) go in ONE `git push --atomic`, always, both naming the branch tip,
+    so origin never holds a branch the shadow does not name. `atomic` adds the same-repo members' refs (members whose
+    origin is the root's) to that same push, so the root record and the member refs it pins move together or not."""
+    shadow = _shadow_value(root)
     if shadow and shadow != _store_git(root, "rev-parse", "HEAD").stdout.strip():
         # THE FENCE first, so a hand-edited pin gets its own name and not a later reader's: a hand commit whose
         # recorded pins equal the shadow's pushes, and the shadow advances to it in the same atomic push (the implicit
@@ -2317,12 +2347,11 @@ def _native_store_push(root: Path, to: str | None = None, atomic: bool = False) 
     recorded = _root_origin_for_push(root, to)
     tip = _store_git(root, "rev-parse", "HEAD").stdout.strip()
     try:
-        if atomic:
-            _atomic_push(root, tip, [f"refs/heads/{branch}", _shadow_ref(root)])
-            if shadow != tip:
-                _store_git(root, "update-ref", "-m", "store push: shadow", _shadow_ref(root), tip, shadow or "0" * len(tip))
-        else:
-            _store_git(root, "push", "origin", branch)
+        same_repo = _same_repo_member_refs(root, branch) if atomic else []
+        _atomic_push(root, [(tip, f"refs/heads/{branch}"), (tip, _shadow_ref(root)),
+                            *[(pin, ref) for _, pin, ref in same_repo]])
+        if shadow != tip:
+            _store_git(root, "update-ref", "-m", "store push: shadow", _shadow_ref(root), tip, shadow or "0" * len(tip))
     except Exception:
         # The origin this push recorded is taken back when the push fails (a typo in --to), so the corrected
         # `--to` is a first record, not a repoint, and no raw `git remote` step is needed to recover.
@@ -2333,7 +2362,8 @@ def _native_store_push(root: Path, to: str | None = None, atomic: bool = False) 
         "status": "pushed",
         "root_branch": branch,
         "root_commit": tip,
-        "shadow": _shadow_ref(root) if atomic else None,
+        "shadow": _shadow_ref(root),
+        "member_refs": [{"name": name, "pin": pin, "ref": ref} for name, pin, ref in same_repo],
         "origin_recorded": recorded is not None,
         "members": members,
     }
@@ -3207,10 +3237,11 @@ def grip_push_cmd(
     to: str | None = typer.Option(
         None, "--to", help="Record this URL or path as the root's origin when it has none, then push"),
     atomic: bool = typer.Option(
-        False, "--atomic", help="Push the branch and its shadow ref in one atomic push: both move, or neither"),
+        False, "--atomic", help="Also push the same-repo members' refs (members whose origin is the root's) in the same atomic push "
+             "as the branch and its shadow: all move, or none"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Check then push only the root branch, never member branches."""
+    """Check, then push the root branch and its shadow in one atomic push; --atomic adds same-repo member refs."""
     try:
         payload = _native_store_push(Path.cwd(), to, atomic)
     except NativeStoreRefusal as exc:

@@ -813,6 +813,8 @@ def _consent_gate(
         if not _consent.take_pending_marker(ctx.workspace_root, key):
             return None
         return (key, "bound", record, True)
+    if state == "invalid":   # not a plain workspace-relative key: skip, write nothing
+        return (key, state, record, False)
     _consent.write_pending_marker(ctx.workspace_root, key)
     return (key, state, record, False)
 

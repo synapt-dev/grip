@@ -2322,6 +2322,21 @@ def repo_status(
             typer.echo(line)
 
 
+def _contained_member(workspace_root: Path, path: str, member: str) -> str:
+    """The member's workspace-relative key, refused unless it is a plain relative path that resolves
+    inside the workspace."""
+    from .consent import plain_relative_key
+
+    try:
+        rel = plain_relative_key(path)
+    except ValueError as exc:
+        raise SystemExit(f"member '{member}': {exc}") from None
+    resolved = (workspace_root / rel).resolve()
+    if not resolved.is_relative_to(workspace_root.resolve()):
+        raise SystemExit(f"member '{member}' resolves outside the workspace ({resolved}); refused")
+    return rel
+
+
 def _resolve_member_root(workspace_root: Path, member: str) -> tuple[Path, str]:
     """A member argument is a repo NAME from the workspace spec or a
     workspace-relative path. Returns (repo_root, consent_key)."""
@@ -2333,7 +2348,7 @@ def _resolve_member_root(workspace_root: Path, member: str) -> tuple[Path, str]:
             doc = {}
         for repo in doc.get("repos", []):
             if str(repo.get("name", "")) == member and repo.get("path"):
-                rel = str(repo["path"]).strip("/")
+                rel = _contained_member(workspace_root, str(repo["path"]), member)
                 root = workspace_root / rel
                 if not root.is_dir():
                     raise SystemExit(
@@ -2343,7 +2358,8 @@ def _resolve_member_root(workspace_root: Path, member: str) -> tuple[Path, str]:
                 return root, rel
     root = workspace_root / member
     if root.is_dir():
-        return root, member.strip("/")
+        rel = _contained_member(workspace_root, member, member)
+        return workspace_root / rel, rel
     raise SystemExit(
         f"member '{member}' not found: it is neither a workspace spec repo name "
         f"nor a directory under {workspace_root}"

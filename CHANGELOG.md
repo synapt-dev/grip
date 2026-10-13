@@ -285,7 +285,11 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   same check, so a plain `git commit` of the member is refused the same way and names
   `gr2 store commit --allow-rewind`. Both compare against the pin the root commit's `grip.toml` records, so editing the pin line in
   `grip.toml` back to an older commit does not hide the rewind. The recorded pin is found by the member's path, so renaming
-  the member in the working `grip.toml` does not hide it either.
+  the member in the working `grip.toml` does not hide it either. Nor does respelling its path (`./alpha`, `alpha/`): the plain `git commit`
+  hook pairs a member with its staged gitlink by the path as git spells it, where it used to commit such a rewind at rc 0,
+  and, for a member that moved forward, to record the new gitlink beside the old pin. A changed gitlink that no member
+  claims (a spelling the fold leaves alone, such as `Alpha` or `./alpha/../alpha`), or that two members claim, is
+  refused rather than skipped (the hook exits 1, so `git commit` fails, naming the gitlink and the member paths), and `.gitmodules` records the path as git spells it.
 - **`gr2`: a failed venv create in `review run` names its reason and leaves no half-built venv, and a refused run's receipt
   is named by the lane's commit.** `venv_failed` printed an empty reason when the cause was on stdout (ensurepip's
   failure is), and the half-built `<lane>/.venv` it left was reused by the next run until the lane was closed and

@@ -50,7 +50,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from . import gitops
 
@@ -230,6 +230,33 @@ def gitmodules_problems(root: Path) -> list[str]:
 # ── the engine, shared with the verbs ────────────────────────────────────────────────────────────
 
 
+def _git_path(path: object) -> str:
+    """A member path as git spells its gitlink: `./alpha` and `alpha/` are both `alpha`."""
+    return str(PurePosixPath(str(path)))
+
+
+def _refuse_unclaimed_gitlinks(members: list[dict[str, str]], staged: dict[str, str], committed: dict[str, str]) -> None:
+    """Refuse (4) a staged gitlink that changed and is not claimed by exactly one member. Pairing goes by `_git_path`,
+    which folds `./alpha` and `alpha/` but not every spelling a hand-edited grip.toml can hold (`Alpha` on a
+    case-folding filesystem, `./alpha/../alpha`); a changed gitlink no member claims would otherwise skip every check."""
+    from . import grip_cli as gc
+
+    paths = [_git_path(member["path"]) for member in members]
+    for link, sha in sorted(staged.items()):
+        if committed.get(link) == sha:
+            continue
+        owners = paths.count(link)
+        if owners == 0:
+            listed = ", ".join(repr(str(member["path"])) for member in members)
+            raise gc.NativeStoreRefusal(
+                f"the commit changes the gitlink {link!r}, but grip.toml has no member at path {link!r} "
+                f"(its member paths are {listed}); fix the member's path in grip.toml, then commit", 4)
+        if owners > 1:
+            raise gc.NativeStoreRefusal(
+                f"the commit changes the gitlink {link!r}, and {owners} members of grip.toml name that path; "
+                "give each member its own path, then commit", 4)
+
+
 def _index_gitlinks(root: Path, index: str | None) -> dict[str, str]:
     env = {**os.environ, "GIT_INDEX_FILE": index} if index else None
     links: dict[str, str] = {}
@@ -346,7 +373,7 @@ def _refuse_unreadable_fold(
     except ValueError as exc:   # tomllib.TOMLDecodeError is a ValueError
         raise gc.NativeStoreRefusal(f"the folded grip.toml does not parse ({exc}); run `gr2 store commit` for this change", 4) from None
     for m in stale:
-        want = {"pin": staged[m["path"]], **{k: adopted[m["name"]][k] for k in ("ref", "upstream") if m["name"] in adopted}}
+        want = {"pin": staged[_git_path(m["path"])], **{k: adopted[m["name"]][k] for k in ("ref", "upstream") if m["name"] in adopted}}
         got = members.get(m["name"], {})
         if any(got.get(k) != v for k, v in want.items()):
             raise gc.NativeStoreRefusal(
@@ -414,14 +441,16 @@ def run_pre_commit(root: Path) -> int:
         staged = _index_gitlinks(root, index)
         committed = _head_gitlinks(root)
         partial = bool(index) and Path(index).name.startswith("next-index-")
+        _refuse_unclaimed_gitlinks(members, staged, committed)   # BEFORE any write
         _sync_gitmodules(root, members, index, env_partial=partial)
         stale: list[dict[str, str]] = []
         adopted: dict[str, dict[str, str]] = {}
         for member in members:
-            sha = staged.get(member["path"])
+            # Git names a gitlink `alpha`; grip.toml may spell it `./alpha` or `alpha/`, so pair on git's spelling.
+            sha = staged.get(_git_path(member["path"]))
             if sha is None:
                 continue
-            if committed.get(member["path"]) != sha:
+            if committed.get(_git_path(member["path"])) != sha:
                 claimed = gc._claimed_member_paths(root, members, exclude=member)
                 # the same rule `store commit` applies: a moved branch whose upstream covers the pin is adopted, and a
                 # pin that would move backwards is refused, so a plain `git commit` cannot record a pin the verb refuses
@@ -454,7 +483,7 @@ def run_pre_commit(root: Path) -> int:
                 )
             # Fold the WORKING bytes and let `git add` convert them going in, so a CRLF file stays CRLF in the tree
             # and a plain CRLF blob keeps its endings (no conversion: the working bytes ARE the committed bytes).
-            folded = _fold_pins(working.read_bytes().decode("utf-8"), {m["name"]: (m["pin"], staged[m["path"]]) for m in stale})
+            folded = _fold_pins(working.read_bytes().decode("utf-8"), {m["name"]: (m["pin"], staged[_git_path(m["path"])]) for m in stale})
             for m in stale:
                 for key in ("ref", "upstream"):
                     if m["name"] in adopted and adopted[m["name"]].get(key) != m.get(key):

@@ -2024,8 +2024,15 @@ def _shadow_value(root: Path) -> str:
 
 
 def _recorded_pins(text: str) -> dict[str, str]:
-    """The pins a grip.toml TEXT records, {name: pin}."""
-    return {str(member["name"]): str(member["pin"]) for member in tomllib.loads(text).get("members", [])}
+    """The pins a grip.toml TEXT records, {name: pin}. A member with no pin line was edited by hand (the verb always
+    writes one): it is refused by name here, the one reader the hook and `store push` share, not raised as a KeyError."""
+    members = tomllib.loads(text).get("members", [])
+    unpinned = sorted(str(member.get("name", "?")) for member in members if "pin" not in member)
+    if unpinned:
+        raise NativeStoreRefusal(
+            f"pin line removed by hand, not recorded by the verb: {', '.join(unpinned)}; record pins through "
+            f"`gr2 store commit`", 4)
+    return {str(member["name"]): str(member["pin"]) for member in members}
 
 
 def _gitlink_may_be_pin(mode: str) -> bool:
@@ -2430,9 +2437,7 @@ def _native_members_at(root: Path, revision: str) -> dict[str, str]:
         raise NativeStoreRefusal(
             f"{revision} is the empty root commit that holds the first-parent place in a full-mode workspace; "
             f"it records no members, so name a commit that carries grip.toml", 5)
-    text = _store_git(root, "show", f"{revision}:grip.toml").stdout
-    document = tomllib.loads(text)
-    return {str(member["name"]): str(member["pin"]) for member in document.get("members", [])}
+    return _recorded_pins(_store_git(root, "show", f"{revision}:grip.toml").stdout)
 
 
 @_refuses_moved_workspace

@@ -133,14 +133,21 @@ def _refuse_local_work(target: Path, allocation: dict) -> None:
                                     f"{(proc.stderr or proc.stdout).strip()}; close refused")
         return proc.stdout
 
+    from .review_run import _INSTALL_OUTPUT_TOPS
     from .review_runners import RUNNER_CREATED_PATHS
     # A runner's own outputs (cargo's target/ and Cargo.lock, ...) are the review's, exactly as
     # `review run` treats them; the receipt names the runner that wrote them.
     try:
-        runner = json.loads((target / _RUN_RECEIPT_NAME).read_text()).get("runner")
-    except (OSError, ValueError, AttributeError):
-        runner = None
-    created = RUNNER_CREATED_PATHS.get(runner or "", {})
+        receipt = json.loads((target / _RUN_RECEIPT_NAME).read_text())
+    except (OSError, ValueError):
+        receipt = None
+    if not isinstance(receipt, dict):
+        receipt = {}
+    runner = receipt.get("runner")
+    created = RUNNER_CREATED_PATHS.get(runner if isinstance(runner, str) else "", {})
+    # What `review run` admits as an install's own output (setuptools' top-level `build/`), from its one
+    # list, and only once a run has written its receipt: before any run, a `build/` is not the review's.
+    install_tops = _INSTALL_OUTPUT_TOPS if receipt.get("kind") == "review-run" else ()
     found: list[str] = []
     members = [target / item["path"] for item in allocation["members"]]
     if not (target / ".git").exists():
@@ -164,7 +171,8 @@ def _refuse_local_work(target: Path, allocation: dict) -> None:
         for line in ask(path, "status", "--porcelain", "--untracked-files=all").splitlines():
             if line.startswith("?? ") and _is_allowlisted_untracked(
                     line[3:], extra_names=created.get("names", frozenset()),
-                    extra_tops=created.get("tops", ()), extra_segments=created.get("segments", frozenset())):
+                    extra_tops=(*created.get("tops", ()), *install_tops),
+                    extra_segments=created.get("segments", frozenset())):
                 continue
             found.append(f"uncommitted work in {path}: {line}")
         stashes = ask(path, "stash", "list", "--format=%H").split()

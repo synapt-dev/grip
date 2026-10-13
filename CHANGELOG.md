@@ -215,6 +215,11 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **`gr2`: `review close` no longer refuses the `build/` a green `review run` left in a member.** A non-editable
+  `pip install` of a setuptools member writes `build/` into it, and `review run` already admits a member's top-level
+  `build/` as install output; close did not, so it called that `build/` uncommitted work and exited 2 after a green
+  run (the tutorial's gr2 walk ended there on 2.0.0a8). Close now admits it from the same list, and only once a run
+  has written its receipt; a `build/` in a lane no run has touched, or one below a member's top level, still refuses.
 - **`gr2`: the store's pre-commit hook and `store commit` record a member pin by one rule.** A pin pushed to a
   feature branch but not to the declared upstream was recorded by `store commit` (which adopts the branch whose
   upstream covers it) and refused by a plain `git commit` with "push it first". Both now adopt the branch, the hook

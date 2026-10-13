@@ -290,3 +290,53 @@ def test_a_file_named_venv_at_the_root_is_work(tmp_path: Path):
     result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
     assert result.exit_code != 0 and ".venv" in _text(result), _text(result)
     assert (lane / ".venv").read_text() == "user notes\n"
+
+
+# ---- what `review run` leaves in a lane is the review's: the install's build/
+
+
+def _run_receipt(lane: Path, downstream: dict | None = None) -> None:
+    receipt = {"kind": "review-run", "created": "2026-10-13T00:00:00+00:00", "result": "green"}
+    if downstream is not None:
+        receipt["downstream"] = downstream
+    (lane / review_run._RECEIPT_NAME).write_text(json.dumps(receipt) + "\n")
+
+
+def _build_output(member: Path, rel: str = "build/lib/demo_core/__init__.py") -> Path:
+    path = member / rel
+    path.parent.mkdir(parents=True)
+    path.write_text("# what setuptools copies on a non-editable pip install\n")
+    return path
+
+
+def test_the_build_dir_a_run_left_in_a_member_does_not_block_close(tmp_path: Path):
+    """A non-editable `pip install <member>` writes `build/` into the member; `review run` admits it as
+    install output, so close must too. Before, the tutorial's `review close` exited 2 after a green run."""
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    _run_receipt(lane)
+    _build_output(lane / "demo-core")
+    _build_output(lane / "demo-web", "build/lib/demo_web/app.py")
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code == 0, _text(result)
+    assert not lane.exists()
+
+
+def test_a_build_dir_in_a_lane_no_run_has_touched_is_still_work(tmp_path: Path):
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    kept = _build_output(lane / "demo-core")
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code != 0 and "build/" in _text(result), _text(result)
+    assert kept.is_file()
+
+
+def test_a_build_dir_below_the_member_top_is_still_work(tmp_path: Path):
+    """Only the member's top-level `build/` is install output; a `conftest.py` deeper down is not."""
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    _run_receipt(lane)
+    kept = _build_output(lane / "demo-core", "src/build/conftest.py")
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code != 0 and "src/build/" in _text(result), _text(result)
+    assert kept.is_file()

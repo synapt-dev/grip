@@ -144,3 +144,31 @@ def test_control_a_checkout_ahead_of_its_pin_commits_as_before(ws: Path) -> None
 
     assert rc == 0, out
     assert _pin(ws, "alpha") == ahead
+
+
+def test_a_shallow_checkout_that_does_not_reach_its_pin_says_it_cannot_tell(ws: Path, tmp_path: Path) -> None:
+    """A shallow clone can be AHEAD of a pin older than its depth and still lack the pin's object. A missing pin
+    says nothing about direction there, so the refusal says it cannot tell and names `git fetch --unshallow`,
+    never `gr2 store materialize`, which would move a checkout that is ahead back to the pin."""
+    import shutil
+
+    alpha = ws / "alpha"
+    recorded = _pin(ws, "alpha")
+    url = _git_out(alpha, "remote", "get-url", "origin")
+    other = tmp_path / "other"
+    subprocess.run(["git", "clone", "-q", url, str(other)], capture_output=True, check=True)
+    _git(other, "config", "user.email", "o@e.invalid")
+    _git(other, "config", "user.name", "o")
+    for i in range(3):
+        _commit_and_push(other, f"later-{i}.txt")
+    shutil.rmtree(alpha)
+    subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{url}", str(alpha)], capture_output=True, check=True)
+    assert _git(alpha, "cat-file", "-e", f"{recorded}^{{commit}}", check=False).returncode != 0  # past the depth
+    root_before = _git_out(ws, "rev-parse", "HEAD")
+
+    rc, out = _cli("store", "commit", "-m", "alpha advanced")
+
+    assert rc == 3, out
+    assert "cannot tell" in out and "git fetch --unshallow" in out and recorded[:12] in out, out
+    assert "gr2 store materialize" not in out, out
+    assert _pin(ws, "alpha") == recorded and _git_out(ws, "rev-parse", "HEAD") == root_before

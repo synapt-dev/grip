@@ -1728,7 +1728,8 @@ def _refuse_pin_rewind(member: dict, path: Path, head: str) -> None:
 
     Found in review: a stale checkout's HEAD was recorded over a newer pin, rc 0, and the push undid another
     workspace's recorded merge. A checkout ahead of its pin, or on the pin, is not this; one that diverged
-    from it is left to the coverage check.
+    from it is left to the coverage check. A missing pin in a full clone means HEAD cannot descend from it; in a
+    shallow clone it may, so there the refusal says it cannot tell and names `git fetch --unshallow`.
     """
     recorded = member.get("pin")
     if not recorded or recorded == head:
@@ -1736,6 +1737,16 @@ def _refuse_pin_rewind(member: dict, path: Path, head: str) -> None:
     name = member["name"]
     hint = "run `gr2 store materialize` to bring the checkout to the pin, or pass --allow-rewind to record it anyway"
     if _store_git(path, "cat-file", "-e", f"{recorded}^{{commit}}", check=False).returncode:
+        shallow = _store_git(path, "rev-parse", "--is-shallow-repository", check=False).stdout.strip() == "true"
+        if shallow:
+            # A shallow checkout can descend from a pin older than its depth and still lack it, so a missing pin
+            # says nothing about direction there; materialize would be the wrong advice for a checkout ahead.
+            raise NativeStoreRefusal(
+                f"{name}: cannot tell whether HEAD {head[:12]} is behind the recorded pin {recorded[:12]}: this "
+                f"checkout is shallow and does not reach it; run `git fetch --unshallow` in {member['path']} and "
+                f"commit again, or pass --allow-rewind to record HEAD anyway",
+                3,
+            )
         raise NativeStoreRefusal(
             f"{name}: the recorded pin {recorded[:12]} is not in this checkout (HEAD {head[:12]}), so recording "
             f"HEAD could undo it; {hint}",

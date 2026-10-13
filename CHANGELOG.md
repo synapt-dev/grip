@@ -57,6 +57,19 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   manifest with uncommitted changes but no commits ahead is no longer PR
   content.
 
+- **`gr2`: `review close` closes a lane `review checkout-pr` made.** `checkout-pr` materialized its lane without
+  writing the review record that `review open` writes, so `review close WORKSPACE OWNER REPO PR` refused every such
+  lane ("lacks an owned .git directory or the review record") and the lane could not be removed through gr2. It now
+  records the same `(repo, base, head, lane_kind)` receipt: the head is the PR head it fetched, and it refuses to
+  record a lane that is not at that commit; the base comes from the one rule `review open` also uses. That record
+  is worked out before any lane state is written, so a refusal leaves nothing behind. Close is unchanged, so a lane
+  holding a reviewer's commit still refuses. `checkout-pr` takes `--platform` (default `github`), as `review open`
+  does, naming the adapter it asks. Behaviour changes: `checkout-pr` now asks that platform for the PR's base branch,
+  a `--branch` checkout included, and refuses when it cannot give it; like `review open`, it refuses an origin that
+  is a local path; and running it again after the PR's head moved now exits 2 instead of exiting 0 with the lane
+  still at the old head (the refusal prints the one `review close` command, workspace, PR and `--lane` filled in,
+  that drops that lane as printed; then check it out again).
+
 ## [gr2 2.0.0a9] - 2026-10-13
 
 ### Added

@@ -493,6 +493,7 @@ flag  review checkout-pr --enter                                      stable
 flag  review checkout-pr --json                                       stable
 flag  review checkout-pr --lane <str>                                 stable
 flag  review checkout-pr --manual-hooks                               stable
+flag  review checkout-pr --platform <str>                             stable
 flag  review checkout-pr --root/-C <str>                              stable
 verb  review checkout-pr                                              stable
 # review close

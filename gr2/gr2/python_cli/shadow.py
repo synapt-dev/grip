@@ -147,18 +147,21 @@ def _tree_with_pins(repo: Path, base_tree: str, pins: dict[str, str]) -> str:
 
 
 def cut(repo: Path, stook: str, members: list[str], *, org: str, remote: str = "origin",
-        message: str = "shadow", allow_rewind: bool = False) -> Cut:
+        message: str = "shadow", allow_rewind: bool = False, local: frozenset[str] = frozenset()) -> Cut:
     """Cut the SHADOW beside ``stook`` over ``members`` (STOOK refs in this repository).
 
     Lease 2: every member the previous SHADOW pinned must fast-forward to its new pin, checked by a local walk;
     a rewind or a rewrite is refused by member and both shas unless ``allow_rewind``, which records each one in
-    the new SHADOW's message as an ``Allow-Rewind:`` line. New and removed members are allowed and named."""
+    the new SHADOW's message as an ``Allow-Rewind:`` line. New and removed members are allowed and named.
+    A member in ``local`` (an on-demand close pushes it beside the SHADOW) is pinned at its local value, not the
+    tracking tree's, so the SHADOW pins what the close lands (A10)."""
     shadow = shadow_of(stook)
     tracking.tracking_ref(stook, org=org, remote=remote)       # the namespace and names are checked here
     paths = [_member_path(m, org) for m in members]
     if len(set(paths)) != len(paths):
         raise ValueError("a member is named twice")
-    pins = {p: resolve(repo, m, org=org, remote=remote) for p, m in zip(paths, members)}
+    pins = {p: _run(repo, "rev-parse", f"{m}^{{commit}}").strip() if m in local else
+            resolve(repo, m, org=org, remote=remote) for p, m in zip(paths, members)}
     tip = _value(repo, stook)
     if tip is None:
         raise ValueError(f"no STOOK at {stook}")

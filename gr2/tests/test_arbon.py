@@ -10,6 +10,8 @@ A6 a rheon that is not one lowercase ref component is refused before anything is
 A7 recurse=on-demand refuses a member this clone holds no value for, by name;
 A8 a remote without atomic push support refuses the close (never degrades to per-ref) and moves nothing.
 A9 allow_rewind reaches the members alone: a locally rewritten SHADOW is refused under it and origin is unchanged.
+A10 under allow_rewind an on-demand member rewound here lands, with the SHADOW pinning it and naming it in an
+    Allow-Rewind line; without the flag it is refused and origin is unchanged.
 """
 from __future__ import annotations
 
@@ -205,3 +207,24 @@ def test_a9_allow_rewind_never_lets_a_rewritten_shadow_through(ab, world):
     assert git(origin, "for-each-ref") == before
     assert on(origin, SHADOW) == c.shadow and on(origin, arbon) is None
     assert git(me, "for-each-ref", "--format=%(refname)", arbon) == ""
+
+
+def test_a10_allow_rewind_lands_an_on_demand_member_rewound_here(ab, world):
+    """A10: the members' flag reaches the on-demand member refs. A member rewound in this clone lands on origin
+    under allow_rewind=True, with the SHADOW carrying its Allow-Rewind line; A9 still holds for the SHADOW itself."""
+    origin, _, me, tips = world
+    git(me, "update-ref", stook("a"), tips["a"])
+    a2 = append(me, "a", "2")
+    c9 = ab.close(me, TEAM, "9", [stook("a")], org=ORG, recurse="on-demand")
+    assert on(origin, stook("a")) == a2 == git(me, "rev-parse", f"{c9.shadow}:pins/__agents__/a")   # pins what landed
+    git(me, "update-ref", stook("a"), tips["a"])            # rewound here, one behind origin
+    lp = importlib.import_module("gr2.python_cli.leased_push")
+    before = git(origin, "for-each-ref")
+    with pytest.raises(lp.PushRefused) as e:                # without the flag the rewind is refused
+        ab.close(me, TEAM, "10", [stook("a")], org=ORG, recurse="on-demand", snapshot=False)
+    assert e.value.ref == stook("a") and "rewind" in e.value.why
+    assert git(origin, "for-each-ref") == before
+    c = ab.close(me, TEAM, "10", [stook("a")], org=ORG, recurse="on-demand", allow_rewind=True)
+    assert on(origin, stook("a")) == tips["a"]
+    assert on(origin, SHADOW) == c.shadow and on(origin, f"refs/{ORG}/__teams__/t/__arbons__/10") == c.arbon
+    assert f"Allow-Rewind: __agents__/a rewind {a2} -> {tips['a']}" in git(origin, "log", "-1", "--format=%B", c.shadow)

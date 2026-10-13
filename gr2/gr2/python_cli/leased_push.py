@@ -5,7 +5,7 @@
 - the remote's current value of each ref (one ``ls-remote``) must equal what the tracking tree recorded at the
   last fetch: a stale tracking ref is refused by name and both values, and nothing is pushed;
 - each tracked ref must fast-forward to its local value; a rewind is refused by name and both values unless
-  ``allow_rewind``.
+  ``allow_rewind`` takes it: True for every ref, or a set of refs (only those may rewind).
 The push itself leases every ref on the tracked value (``--force-with-lease=<ref>:<value>``, empty when the ref
 is new), so a writer that moves a ref between the check and the push still turns the push away, and with
 ``atomic`` (the default) no ref moves unless all do. After it lands, git itself moves the tracking refs to the
@@ -48,10 +48,11 @@ def _remote_values(repo: Path, remote: str, refs: list[str]) -> dict[str, str]:
 
 
 def push(repo: Path, refs: list[str], *, org: str, remote: str = "origin", atomic: bool = True,
-         allow_rewind: bool = False) -> dict[str, str]:
+         allow_rewind: bool | set[str] | frozenset[str] = False) -> dict[str, str]:
     """Push ``refs`` (full names under ``refs/<org>/``) leased on the tracking tree; returns {ref: pushed value}."""
     if not refs:
         raise ValueError("nothing to push")
+    may_rewind = (lambda r: allow_rewind) if isinstance(allow_rewind, bool) else frozenset(allow_rewind).__contains__
     tracked = {r: tracking.tracked(repo, r, org=org, remote=remote) for r in refs}   # names checked here
     local = {}
     for r in refs:
@@ -65,7 +66,7 @@ def push(repo: Path, refs: list[str], *, org: str, remote: str = "origin", atomi
                                  f"the last fetch recorded {tracked[r] or 'nothing'}; fetch first")
     for r in refs:
         old = tracked[r]
-        if old and old != local[r] and not allow_rewind and \
+        if old and old != local[r] and not may_rewind(r) and \
                 gitops.run(repo, "merge-base", "--is-ancestor", old, local[r]).returncode != 0:
             kind = "rewind" if gitops.run(repo, "merge-base", "--is-ancestor", local[r], old).returncode == 0 else "rewrite"
             raise PushRefused(r, f"{kind}: {local[r]} does not descend from the remote's {old} (allow_rewind to take it)")

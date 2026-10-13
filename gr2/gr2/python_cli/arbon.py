@@ -104,7 +104,8 @@ def close(repo: Path, stook: str, rheon: str, members: list[str], *, org: str, r
                 raise leased_push.PushRefused(m, "on-demand: this clone holds no value for the member")
         member_refs = list(members)
     if snapshot:
-        sh.cut(repo, stook, members, org=org, remote=remote, allow_rewind=allow_rewind)
+        sh.cut(repo, stook, members, org=org, remote=remote, allow_rewind=allow_rewind,
+               local=frozenset(member_refs))
     shadow_ref = sh.shadow_of(stook)
     shadow_commit = _value(repo, f"{shadow_ref}^{{commit}}")
     if not shadow_commit:
@@ -113,8 +114,9 @@ def close(repo: Path, stook: str, rheon: str, members: list[str], *, org: str, r
         check_members(repo, shadow_commit, org=org, remote=remote)
     tag = arbon(repo, stook, rheon, message=message)
     try:
+        rewindable = set(member_refs) if allow_rewind else False
         pushed = leased_push.push(repo, [stook, shadow_ref, ref] + member_refs, org=org, remote=remote,
-                                  atomic=True, allow_rewind=False)    # allow_rewind is the members' flag, cut's alone (A9)
+                                  atomic=True, allow_rewind=rewindable)  # the members' flag: on-demand members only (A9, A10)
     except Exception:
         gitops.run(repo, "update-ref", "-d", ref, tag)     # nothing reached the remote; the close can be retried
         raise

@@ -16,7 +16,17 @@ import pytest
 from typer.testing import CliRunner
 
 from gr2.python_cli.app import app
-from gr2.python_cli.consent import _exact_name_exists, consent_state, plain_relative_key, write_consent
+from gr2.python_cli import consent as consent_mod
+from gr2.python_cli.consent import (
+    PENDING_DIR,
+    _exact_name_exists,
+    consent_state,
+    pending_marker_path,
+    plain_relative_key,
+    take_pending_marker,
+    write_consent,
+    write_pending_marker,
+)
 from gr2.python_cli.hooks import HookContext, run_lifecycle_stage
 from tests.test_hooks_consent import HOOKS_TOML, _make_hooks
 
@@ -147,3 +157,59 @@ def test_a_differently_spelled_spec_path_does_not_run_the_hook(ws: Path, tmp_pat
     run_lifecycle_stage(_make_hooks(), "on_enter", _ctx(ws, "other"), repo_dirty=False, first_materialize=False)
 
     assert not (other / "marker").exists()
+
+
+def test_taking_a_pending_marker_consults_the_exact_name_check(ws: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Runs on every filesystem: with the exact-name check answering no, a marker that exists is not taken, and the
+    check was asked about that marker under the pending store."""
+    write_pending_marker(ws, "repos/a")
+    path = pending_marker_path(ws, "repos/a")
+    asked = []
+
+    def no(base: Path, target: Path) -> bool:
+        asked.append((base, target))
+        return False
+
+    monkeypatch.setattr(consent_mod, "_exact_name_exists", no)
+    assert take_pending_marker(ws, "repos/a") is False
+    assert path.exists()
+    assert asked == [(ws / PENDING_DIR, path)]
+    monkeypatch.undo()
+    assert take_pending_marker(ws, "repos/a") is True   # control: the real check finds it under its exact name
+    assert not path.exists()
+
+
+def _aliased_key(tmp_path: Path, ws: Path, spelled: str) -> tuple[str, str]:
+    """(the key a marker is written under, a differently spelled key for the same name); skips where they stay distinct."""
+    if spelled == "NFD":
+        nfc = unicodedata.normalize("NFC", "caf\u00e9")
+        if not _filesystem_matches(tmp_path, nfc, unicodedata.normalize("NFD", nfc)):
+            pytest.skip("this filesystem distinguishes Unicode normalization forms")
+        return f"repos/{nfc}", f"repos/{unicodedata.normalize('NFD', nfc)}"
+    if not _filesystem_matches(tmp_path, "Probe", "PROBE"):
+        pytest.skip("this filesystem is case-sensitive")
+    return "repos/a", "REPOS/A"
+
+
+@pytest.mark.parametrize("spelled", ["case", "NFD"])
+def test_a_differently_spelled_key_does_not_take_another_members_marker(ws: Path, tmp_path: Path, spelled: str) -> None:
+    """Only meaningful where the filesystem matches names loosely, so it skips (and says so) elsewhere."""
+    key, alias = _aliased_key(tmp_path, ws, spelled)
+    write_pending_marker(ws, key)
+    path = pending_marker_path(ws, key)
+    before = path.read_bytes()
+
+    assert take_pending_marker(ws, alias) is False
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("spelled", ["case", "NFD"])
+def test_a_differently_spelled_key_never_overwrites_another_members_marker(ws: Path, tmp_path: Path, spelled: str) -> None:
+    """Only meaningful where the filesystem matches names loosely, so it skips (and says so) elsewhere."""
+    key, alias = _aliased_key(tmp_path, ws, spelled)
+    write_pending_marker(ws, key)
+    path = pending_marker_path(ws, key)
+    before = path.read_bytes()
+
+    assert write_pending_marker(ws, alias) is False
+    assert path.read_bytes() == before

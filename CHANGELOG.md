@@ -11,6 +11,13 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Added
 
+- **`gr2`: `gr2 proto json` prints a protobuf record as JSON, and `git diff` can show it.** It reads a file of
+  protobuf bytes, a blob, or a field tree. Without a schema, keys are field numbers and a length-delimited value
+  prints as text or `{"bytes_b64": ...}`, never guessed as nested; `--message` names fields from the bundled
+  review schema. Set `*.pb diff=protoblob` and `diff.protoblob.textconv = gr2 proto json --textconv`, and `git diff`
+  shows JSON. Bytes that are not protobuf are refused; under `--textconv` they print a one-line marker with the
+  file's sha256 and exit 0, so one bad file never stops the whole diff. A field number of 0 is now refused by the
+  field tree decoder, as protobuf requires.
 - **`gr spawn up` interactive fallback.** When tmux is not installed (native
   Windows, a bare container) or `--interactive` is passed, one named agent runs
   in the foreground of the current terminal with the same command, cwd, env, and

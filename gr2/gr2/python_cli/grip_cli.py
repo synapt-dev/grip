@@ -1793,13 +1793,13 @@ def _committed_pin(root: Path, member: dict) -> str | None:
     line set back to an older sha is not the record; the working pin is used only when HEAD records none (a first
     commit, or the empty root commit of a full-mode workspace). The record is found by the member's PATH, not its name:
     a name is a label the working file can change, while the path is where the member's commits live."""
-    want = str(member["path"]).strip("/")
+    want = str(PurePosixPath(str(member["path"])))
     try:
         members = tomllib.loads(_store_git(root, "show", "HEAD:grip.toml").stdout).get("members", [])
     except (RuntimeError, tomllib.TOMLDecodeError):
         members = []
     committed = next((str(m["pin"]) for m in members if isinstance(m, dict) and m.get("pin")
-                      and str(m.get("path", "")).strip("/") == want), None)
+                      and str(PurePosixPath(str(m.get("path", "")))) == want), None)
     return committed or member.get("pin")
 
 

@@ -372,3 +372,48 @@ def test_full_mode_refuses_a_checkout_behind_its_pin_and_never_carries_it_as_a_l
     assert done.returncode == 3, done.stdout + done.stderr
     assert "behind the recorded pin" in done.stderr and recorded[:12] in done.stderr, done.stderr
     assert _git_out(root, "rev-parse", "HEAD") == root_before
+
+
+def _respell_path(root: Path, old: str, new: str) -> None:
+    text = (root / "grip.toml").read_text(encoding="utf-8")
+    line = f'path = "{old}"'
+    assert text.count(line) == 1
+    (root / "grip.toml").write_text(text.replace(line, f'path = "{new}"'), encoding="utf-8")
+
+
+@pytest.mark.parametrize("spelling", ["./alpha", "alpha/"])
+def test_a_respelled_member_path_with_its_pin_set_back_is_refused_by_the_verb(ws: Path, spelling: str) -> None:
+    """The record is found by the member's path as git spells it, so `./alpha` and `alpha/` are still alpha. Before
+    the fix `./alpha` missed the record, read the set-back working pin as the recorded one, and was stopped only by
+    the later .gitinclude check (4), by accident; the hook row below committed it at rc 0."""
+    alpha = ws / "alpha"
+    recorded = _pin(ws, "alpha")
+    _git(alpha, "reset", "-q", "--hard", "HEAD~1")
+    behind = _git_out(alpha, "rev-parse", "HEAD")
+    _set_pin_line(ws, recorded, behind)
+    _respell_path(ws, "alpha", spelling)
+    root_before = _git_out(ws, "rev-parse", "HEAD")
+
+    rc, out = _cli("store", "commit", "-m", "respelled and set back")
+
+    assert rc == 3, out
+    assert recorded[:12] in out and behind[:12] in out, out
+    assert _git_out(ws, "rev-parse", "HEAD") == root_before
+
+
+@pytest.mark.parametrize("spelling", ["./alpha", "alpha/"])
+def test_a_respelled_member_path_with_its_pin_set_back_is_refused_by_the_hook(ws: Path, spelling: str) -> None:
+    alpha = ws / "alpha"
+    recorded = _pin(ws, "alpha")
+    _git(alpha, "reset", "-q", "--hard", "HEAD~1")
+    behind = _git_out(alpha, "rev-parse", "HEAD")
+    _set_pin_line(ws, recorded, behind)
+    _respell_path(ws, "alpha", spelling)
+    root_before = _git_out(ws, "rev-parse", "HEAD")
+    _git(ws, "add", "alpha", "grip.toml")
+
+    done = _git(ws, "commit", "-q", "-m", "respelled and set back", check=False)
+
+    assert done.returncode != 0, done.stdout + done.stderr
+    assert "behind the recorded pin" in done.stderr, done.stderr
+    assert _git_out(ws, "rev-parse", "HEAD") == root_before

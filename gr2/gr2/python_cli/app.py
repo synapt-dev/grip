@@ -4916,13 +4916,28 @@ def review_merge(
                                "into": into, "feature": feature, "exit": code, "members": [],
                                "refused": str(exc)}))
         raise typer.Exit(code)
+    # The out-of-set hints read where each member's change starts from its merge-base with origin/HEAD, so they are
+    # computed BEFORE the merge moves that tracking ref onto the merge (which contains the change), and printed after.
+    from . import declared_sets, set_hints
+    try:
+        hints = {s.name: set_hints.out_of_set_hints(ws, "HEAD", s.name) for s in declared_sets.read(ws).sets}
+    except Exception as exc:  # a hint never changes what the gate decides, and is never dropped silently
+        hints = {}
+        hint_error = f"out-of-set hints could not be read: {exc}"
+    else:
+        hint_error = None
     code, receipt = merge_gate.review_merge(ws, review_id, into=into, feature=feature,
                                             required_checks=tuple(check) if check else None,
                                             required_approvals=approval_count, no_set=no_set)
     typer.echo(json.dumps(receipt))
-    from . import set_hints
+    for stale in receipt.get("tracking_stale", []):
+        typer.echo(f"{stale['member']}: merged on its remote, but this clone's tracking ref still names the old tip "
+                   f"({stale.get('reason')}), so `store commit` would record the pre-merge pin; run: {stale['command']}",
+                   err=True)
+    if hint_error:
+        typer.echo(hint_error, err=True)
     for set_name in sorted({(m.get("declared_set") or {}).get("set") for m in receipt.get("members", [])} - {None}):
-        for line in set_hints.out_of_set_hints(ws, "HEAD", set_name):
+        for line in hints.get(set_name, []):
             typer.echo(line, err=True)
     if code:
         raise typer.Exit(code)

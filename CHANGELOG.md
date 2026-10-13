@@ -257,6 +257,12 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   reviewed head from the member remote the review names (the remote it already reads the approval chain from, not the
   clone's own `origin`), and refuses with `head_not_fetched` only when that remote cannot serve it; its next step now
   says the author must push the head there first, since a hand fetch would fail the same way.
+- **`gr2`: `review merge` moves the author's tracking ref to the merge it pushed.** The merge was pushed by URL and
+  the clone's `origin/<into>` stayed at the pre-merge base, so `gr2 branch <into> --base origin/<into>` reset to the old
+  tip with exit 0 and `store commit` recorded the pre-merge pins with exit 0; the next author then pinned on a stale
+  base. After the run, each merged member's tracking ref is fetched by name from the clone's remote for that URL. A
+  fetch that fails there leaves the merge standing and is never silent: the member and the exact command are listed in
+  the receipt's `tracking_stale` and printed on stderr.
 - **`gr2`: `store materialize` fetches a pin an existing member clone does not hold yet.** After another workspace
   merged and recorded the merge with `store commit` and `store push`, a second workspace's `store materialize`
   refused with `<member> pin <sha> cannot be served by origin` at exit 3 while origin held that commit: an existing

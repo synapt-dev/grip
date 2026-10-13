@@ -432,3 +432,68 @@ def test_a_respelled_member_path_moving_forward_is_folded_by_the_hook(ws: Path, 
     assert done.returncode == 0, done.stdout + done.stderr
     assert _pin(ws, "alpha") == ahead
     assert _git_out(ws, "rev-parse", "HEAD:alpha") == ahead
+    # .gitmodules carries git's spelling too: git never folds a .gitmodules path, so `./alpha` there maps no submodule.
+    assert 'path = "alpha"' in _git_out(ws, "show", "HEAD:.gitmodules")
+    assert _git(ws, "submodule", "status", check=False).returncode == 0
+
+
+@pytest.mark.parametrize("spelling", ["Alpha", "./alpha/../alpha"])
+def test_a_spelling_the_fold_misses_is_refused_by_the_hook_not_skipped(ws: Path, spelling: str) -> None:
+    """`_git_path` does not fold case or `..`, so these pair with no gitlink. The hook refuses a changed gitlink that no
+    member claims, instead of skipping it: before, a set-back pin under either spelling committed at rc 0. On a
+    case-folding filesystem `Alpha` still opens the member's checkout."""
+    alpha = ws / "alpha"
+    recorded = _pin(ws, "alpha")
+    _git(alpha, "reset", "-q", "--hard", "HEAD~1")
+    behind = _git_out(alpha, "rev-parse", "HEAD")
+    _set_pin_line(ws, recorded, behind)
+    _respell_path(ws, "alpha", spelling)
+    root_before = _git_out(ws, "rev-parse", "HEAD")
+    _git(ws, "add", "alpha", "grip.toml")
+
+    done = _git(ws, "commit", "-q", "-m", "respelled and set back", check=False)
+
+    assert done.returncode != 0, done.stdout + done.stderr
+    assert "no member at path 'alpha'" in done.stderr, done.stderr
+    assert _git_out(ws, "rev-parse", "HEAD") == root_before
+    assert _git_out(ws, "rev-parse", "HEAD:alpha") == recorded
+
+
+def test_the_hook_refusing_an_unclaimed_gitlink_exits_1_and_writes_nothing(ws: Path) -> None:
+    """The hook process itself, run directly: a refusal is exit 1 whatever the refusal's own code, and it comes before any
+    write, so the index, `.gitmodules` and `grip.toml` are byte-for-byte what they were."""
+    alpha = ws / "alpha"
+    recorded = _pin(ws, "alpha")
+    _git(alpha, "reset", "-q", "--hard", "HEAD~1")
+    _set_pin_line(ws, recorded, _git_out(alpha, "rev-parse", "HEAD"))
+    _respell_path(ws, "alpha", "Alpha")
+    _git(ws, "add", "alpha", "grip.toml")
+    gitmodules = ws / ".gitmodules"
+
+    def snapshot() -> tuple[str, str, str]:
+        return (gitmodules.read_text(encoding="utf-8") if gitmodules.exists() else "<absent>",
+                _git_out(ws, "ls-files", "-s"), (ws / "grip.toml").read_text(encoding="utf-8"))
+
+    before = snapshot()
+    hook = Path(_git_out(ws, "rev-parse", "--path-format=absolute", "--git-path", "hooks/pre-commit"))
+    assert hook.exists(), hook
+
+    done = subprocess.run([str(hook)], cwd=ws, text=True, capture_output=True)
+
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert "no member at path 'alpha'" in done.stderr, done.stderr
+    assert snapshot() == before
+
+
+def test_two_members_naming_one_path_are_refused_by_the_hook(ws: Path) -> None:
+    """`beta` respelled as `./alpha` makes two members claim the gitlink `alpha`; the hook refuses rather than pick one."""
+    _commit_and_push(ws / "alpha", "next.txt")
+    _respell_path(ws, "beta", "./alpha")
+    root_before = _git_out(ws, "rev-parse", "HEAD")
+    _git(ws, "add", "alpha", "grip.toml")
+
+    done = _git(ws, "commit", "-q", "-m", "two members, one path", check=False)
+
+    assert done.returncode != 0, done.stdout + done.stderr
+    assert "2 members of grip.toml name that path" in done.stderr, done.stderr
+    assert _git_out(ws, "rev-parse", "HEAD") == root_before

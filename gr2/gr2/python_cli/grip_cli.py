@@ -524,7 +524,7 @@ def render_gitmodules(members: list[dict[str, str]]) -> str:
         branch = f"\tbranch = {_config_quote(tracked)}\n\tupdate = merge\n" if separator and tracked else ""
         chunks.append(
             f"[submodule {_config_quote(member['name'])}]\n"
-            f"\tpath = {_config_quote(member['path'])}\n"
+            f"\tpath = {_config_quote(str(PurePosixPath(member['path'])))}\n"   # git's spelling: it never folds `./a` or `a/`
             f"\turl = {_config_quote(member['remote'])}\n"
             f"{branch}"
         )

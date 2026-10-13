@@ -235,6 +235,28 @@ def _git_path(path: object) -> str:
     return str(PurePosixPath(str(path)))
 
 
+def _refuse_unclaimed_gitlinks(members: list[dict[str, str]], staged: dict[str, str], committed: dict[str, str]) -> None:
+    """Refuse (4) a staged gitlink that changed and is not claimed by exactly one member. Pairing goes by `_git_path`,
+    which folds `./alpha` and `alpha/` but not every spelling a hand-edited grip.toml can hold (`Alpha` on a
+    case-folding filesystem, `./alpha/../alpha`); a changed gitlink no member claims would otherwise skip every check."""
+    from . import grip_cli as gc
+
+    paths = [_git_path(member["path"]) for member in members]
+    for link, sha in sorted(staged.items()):
+        if committed.get(link) == sha:
+            continue
+        owners = paths.count(link)
+        if owners == 0:
+            listed = ", ".join(repr(str(member["path"])) for member in members)
+            raise gc.NativeStoreRefusal(
+                f"the commit changes the gitlink {link!r}, but grip.toml has no member at path {link!r} "
+                f"(its member paths are {listed}); fix the member's path in grip.toml, then commit", 4)
+        if owners > 1:
+            raise gc.NativeStoreRefusal(
+                f"the commit changes the gitlink {link!r}, and {owners} members of grip.toml name that path; "
+                "give each member its own path, then commit", 4)
+
+
 def _index_gitlinks(root: Path, index: str | None) -> dict[str, str]:
     env = {**os.environ, "GIT_INDEX_FILE": index} if index else None
     links: dict[str, str] = {}
@@ -419,6 +441,7 @@ def run_pre_commit(root: Path) -> int:
         staged = _index_gitlinks(root, index)
         committed = _head_gitlinks(root)
         partial = bool(index) and Path(index).name.startswith("next-index-")
+        _refuse_unclaimed_gitlinks(members, staged, committed)   # BEFORE any write
         _sync_gitmodules(root, members, index, env_partial=partial)
         stale: list[dict[str, str]] = []
         adopted: dict[str, dict[str, str]] = {}

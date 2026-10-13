@@ -43,9 +43,10 @@ def _follow(member: Path, branch: str) -> None:
     git(member, "checkout", "-q", "-b", branch, "--track", f"origin/{branch}")
 
 
-def _record(root: Path) -> tuple[str, str]:
-    """What a root commit recorded for beta: its gitlink and the committed grip.toml."""
-    return git(root, "ls-tree", "HEAD", "beta").stdout.split()[2], git(root, "show", "HEAD:grip.toml").stdout
+def _record(root: Path) -> tuple[str, str, str]:
+    """What a root commit recorded for beta: its gitlink, the committed grip.toml and the committed .gitmodules."""
+    return (git(root, "ls-tree", "HEAD", "beta").stdout.split()[2], git(root, "show", "HEAD:grip.toml").stdout,
+            git(root, "show", "HEAD:.gitmodules", check=False).stdout)
 
 
 def test_a_pin_pushed_to_a_feature_branch_commits_through_the_hook_as_through_the_verb(tmp_path: Path) -> None:
@@ -63,7 +64,7 @@ def test_a_pin_pushed_to_a_feature_branch_commits_through_the_hook_as_through_th
     assert verb.returncode == 0, verb.stderr
     assert hook.returncode == 0, hook.stderr
     assert _record(by_hook)[0] == head
-    assert _record(by_hook) == _record(by_verb)   # same pin, and the same grip.toml (ref and upstream included)
+    assert _record(by_hook) == _record(by_verb)   # same pin, grip.toml (ref and upstream) and .gitmodules
 
 
 def test_control_a_pin_on_no_remote_branch_is_refused_by_both(tmp_path: Path) -> None:
@@ -111,7 +112,7 @@ def test_the_hook_judges_the_staged_pin_when_the_checkout_has_moved_on(tmp_path:
     hook = run(root, "git", "commit", "-q", "-m", "pin staged", check=False)
 
     assert hook.returncode == 0, hook.stderr
-    gitlink, toml = _record(root)
+    gitlink, toml, _ = _record(root)
     assert gitlink == staged
     assert "feat/x" in toml, toml
 
@@ -129,3 +130,18 @@ def test_a_staged_pushed_pin_with_the_checkout_on_a_branch_with_no_upstream_is_r
 
     assert hook.returncode != 0, hook.stderr
     assert "push it first" not in hook.stderr and "origin/feat/x" in hook.stderr, hook.stderr
+
+
+def test_the_verb_declares_an_adopted_branch_in_gitmodules_as_in_grip_toml(tmp_path: Path) -> None:
+    """Measured on dev 883c7810: after adopting feat/x, `store commit` wrote ref = "feat/x" to grip.toml and left
+    branch = "dev" in .gitmodules, rendered from the members before adoption; one record, two answers."""
+    root = _cloned(tmp_path)
+    gr2(root, "materialize")
+    _feature_commit(root / "beta", "feat/x", push=True)
+
+    assert gr2(root, "commit", "-m", "pin feat/x", check=False).returncode == 0
+
+    declared = git(root, "config", "-f", ".gitmodules", "--get", "submodule.beta.branch").stdout.strip()
+    toml = git(root, "show", "HEAD:grip.toml").stdout
+    assert 'ref = "feat/x"' in toml, toml
+    assert declared == "feat/x", declared

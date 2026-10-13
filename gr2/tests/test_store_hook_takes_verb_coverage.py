@@ -79,3 +79,53 @@ def test_control_a_pin_on_no_remote_branch_is_refused_by_both(tmp_path: Path) ->
     assert verb.returncode != 0 and hook.returncode != 0, (verb.stderr, hook.stderr)
     assert "push it first" in hook.stderr, hook.stderr
     assert _record(by_verb) == before
+
+
+def test_a_pushed_pin_no_branch_adopts_is_refused_naming_where_it_is_by_both(tmp_path: Path) -> None:
+    """Detached at a pin that is on origin/feat/x: no branch to adopt, so both paths refuse; but the pin IS pushed,
+    so the refusal names the remote branch that holds it, never "push it first"."""
+    by_verb = _cloned(tmp_path)
+    gr2(by_verb, "materialize")
+    head = _feature_commit(by_verb / "beta", "feat/x", push=True)
+    git(by_verb / "beta", "checkout", "-q", "--detach", head)
+
+    verb = gr2(by_verb, "commit", "-m", "pin detached", check=False)
+    git(by_verb, "add", "beta")
+    hook = run(by_verb, "git", "commit", "-q", "-m", "pin detached", check=False)
+
+    for said in (verb, hook):
+        assert said.returncode != 0, said.stderr
+        assert "push it first" not in said.stderr, said.stderr
+        assert "origin/feat/x" in said.stderr, said.stderr
+
+
+def test_the_hook_judges_the_staged_pin_when_the_checkout_has_moved_on(tmp_path: Path) -> None:
+    """Staged: the feat/x head that is on origin/feat/x. Then the member commits once more, locally. The hook judges
+    what the root commit will carry (the staged pin) and adopts feat/x, whose upstream covers it."""
+    root = _cloned(tmp_path)
+    gr2(root, "materialize")
+    staged = _feature_commit(root / "beta", "feat/x", push=True)
+    git(root, "add", "beta")
+    git(root / "beta", "commit", "-q", "--allow-empty", "-m", "local only")
+
+    hook = run(root, "git", "commit", "-q", "-m", "pin staged", check=False)
+
+    assert hook.returncode == 0, hook.stderr
+    gitlink, toml = _record(root)
+    assert gitlink == staged
+    assert "feat/x" in toml, toml
+
+
+def test_a_staged_pushed_pin_with_the_checkout_on_a_branch_with_no_upstream_is_refused_naming_where_it_is(
+    tmp_path: Path,
+) -> None:
+    root = _cloned(tmp_path)
+    gr2(root, "materialize")
+    _feature_commit(root / "beta", "feat/x", push=True)
+    git(root, "add", "beta")
+    git(root / "beta", "checkout", "-q", "-b", "scratch")
+
+    hook = run(root, "git", "commit", "-q", "-m", "pin staged", check=False)
+
+    assert hook.returncode != 0, hook.stderr
+    assert "push it first" not in hook.stderr and "origin/feat/x" in hook.stderr, hook.stderr

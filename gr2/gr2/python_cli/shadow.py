@@ -16,6 +16,7 @@ a repository boundary would carry one repository's history into another; they ke
 from __future__ import annotations
 
 from pathlib import Path
+from typing import NamedTuple
 
 from . import gitops
 from . import tracking
@@ -29,6 +30,27 @@ class Dangling(ValueError):
 
 class ShadowMoved(RuntimeError):
     """The SHADOW ref moved while this cut was being made (a second cutter); nothing was written."""
+
+
+class CannotVerify(RuntimeError):
+    """A member's ancestry could not be walked because an object is not held here, even after a fetch (a
+    partial clone, or offline); never treated as a pass. Nothing was written."""
+
+
+class MemberRewound(RuntimeError):
+    """A member's new pin does not descend from the pin the previous SHADOW recorded; nothing was written."""
+
+    def __init__(self, member: str, kind: str, old: str, new: str):
+        super().__init__(f"{member}: {kind}: {new} does not descend from the previous shadow's {old} "
+                         f"(allow_rewind to take it; it is recorded in the shadow)")
+        self.member, self.kind, self.old, self.new = member, kind, old, new
+
+
+class Cut(NamedTuple):
+    commit: str
+    added: list[str]       # members the previous shadow did not pin
+    removed: list[str]     # members the previous shadow pinned and this one does not
+    rewound: list[str]     # members taken backwards or sideways under allow_rewind (recorded in the message)
 
 
 def _run(repo: Path, *args: str, data: str | None = None):
@@ -66,6 +88,42 @@ def resolve(repo: Path, member: str, *, org: str, remote: str = "origin") -> str
     raise Dangling(f"member {member} has no pushed SHADOW or STOOK on {remote}; fetch, or push it first")
 
 
+def _held(repo: Path, sha: str) -> bool:
+    return gitops.run(repo, "cat-file", "-e", f"{sha}^{{commit}}").returncode == 0
+
+
+def _walk(repo: Path, member: str, old: str, new: str, remote: str) -> str:
+    """same, ff, rewind or rewrite, by a LOCAL ancestry walk (lease 2). A commit not
+    held is fetched from the remote first; if it is still not held the walk refuses, offline included."""
+    if old == new:
+        return "same"
+    for sha in (old, new):
+        if not _held(repo, sha):
+            got = gitops.run(repo, "fetch", "-q", "--no-tags", remote, sha)
+            if not _held(repo, sha):
+                raise CannotVerify(f"cannot verify {member}: {sha} not held"
+                                   f" (fetch from {remote}: {(got.stderr or 'nothing fetched').strip()[:160]})")
+    def descends(a: str, b: str) -> bool:
+        proc = gitops.run(repo, "merge-base", "--is-ancestor", a, b)
+        if proc.returncode not in (0, 1):
+            raise CannotVerify(f"cannot verify {member}: the walk from {a} to {b} stopped: {proc.stderr.strip()[:160]}")
+        return proc.returncode == 0
+    if descends(old, new):
+        return "ff"
+    return "rewind" if descends(new, old) else "rewrite"
+
+
+def _pins_of(repo: Path, commit: str) -> dict[str, str]:
+    out = gitops.run(repo, "ls-tree", "-r", f"{commit}:{PINS}")
+    if out.returncode:
+        return {}
+    pins = {}
+    for line in out.stdout.splitlines():
+        meta, path = line.split("\t", 1)
+        pins[path] = meta.split()[2]
+    return pins
+
+
 def _tree_with_pins(repo: Path, base_tree: str, pins: dict[str, str]) -> str:
     """base_tree plus a ``pins`` tree of gitlinks, nested by path component."""
     def build(entries: dict[str, str]) -> str:
@@ -89,8 +147,12 @@ def _tree_with_pins(repo: Path, base_tree: str, pins: dict[str, str]) -> str:
 
 
 def cut(repo: Path, stook: str, members: list[str], *, org: str, remote: str = "origin",
-        message: str = "shadow") -> str:
-    """Cut the SHADOW beside ``stook`` over ``members`` (STOOK refs in this repository); returns its commit."""
+        message: str = "shadow", allow_rewind: bool = False) -> Cut:
+    """Cut the SHADOW beside ``stook`` over ``members`` (STOOK refs in this repository).
+
+    Lease 2: every member the previous SHADOW pinned must fast-forward to its new pin, checked by a local walk;
+    a rewind or a rewrite is refused by member and both shas unless ``allow_rewind``, which records each one in
+    the new SHADOW's message as an ``Allow-Rewind:`` line. New and removed members are allowed and named."""
     shadow = shadow_of(stook)
     tracking.tracking_ref(stook, org=org, remote=remote)       # the namespace and names are checked here
     paths = [_member_path(m, org) for m in members]
@@ -101,6 +163,17 @@ def cut(repo: Path, stook: str, members: list[str], *, org: str, remote: str = "
     if tip is None:
         raise ValueError(f"no STOOK at {stook}")
     old = _value(repo, shadow)
+    prev = _pins_of(repo, old) if old else {}
+    rewound = []
+    for path, new in pins.items():
+        if path in prev:
+            kind = _walk(repo, path, prev[path], new, remote)
+            if kind in ("rewind", "rewrite"):
+                if not allow_rewind:
+                    raise MemberRewound(path, kind, prev[path], new)
+                rewound.append(f"Allow-Rewind: {path} {kind} {prev[path]} -> {new}")
+    if rewound:
+        message = message.rstrip("\n") + "\n\n" + "\n".join(rewound) + "\n"
     tree = _tree_with_pins(repo, _run(repo, "rev-parse", f"{tip}^{{tree}}").strip(), pins)
     parents = ([old] if old else []) + [tip] + [s for s in dict.fromkeys(pins.values()) if s not in (old, tip)]
     args = ["commit-tree", tree, "-m", message]
@@ -110,4 +183,5 @@ def cut(repo: Path, stook: str, members: list[str], *, org: str, remote: str = "
     proc = gitops.run(repo, "update-ref", shadow, sha, old or "0" * 40)
     if proc.returncode:
         raise ShadowMoved(f"{shadow} moved during the cut: {proc.stderr.strip()[:200]}")
-    return sha
+    return Cut(sha, sorted(set(pins) - set(prev)) if old else sorted(pins), sorted(set(prev) - set(pins)),
+               [r.split()[1] for r in rewound])

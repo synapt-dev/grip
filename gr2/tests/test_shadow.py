@@ -93,7 +93,7 @@ def parents(repo: Path, sha: str) -> list[str]:
 
 def test_h1_tree_is_the_stook_plus_pins_and_parents_are_the_stook_then_members(sh, world):
     _, _, me, tips = world
-    sha = sh.cut(me, TEAM, [stook("a"), stook("b")], org=ORG)
+    sha = sh.cut(me, TEAM, [stook("a"), stook("b")], org=ORG).commit
     assert git(me, "rev-parse", f"refs/{ORG}/__teams__/t/SHADOW") == sha
     team_tip = git(me, "rev-parse", TEAM)
     assert parents(me, sha) == [team_tip, tips["a"], tips["b"]]
@@ -108,7 +108,7 @@ def test_h2_an_unpushed_local_write_is_not_pinned(sh, world):
     _, _, me, tips = world
     git(me, "update-ref", stook("a"), tips["a"])
     append(me, "a", "local-only")                           # ahead of what the remote has
-    sha = sh.cut(me, TEAM, [stook("a")], org=ORG)
+    sha = sh.cut(me, TEAM, [stook("a")], org=ORG).commit
     assert git(me, "rev-parse", f"{sha}:pins/__agents__/a") == tips["a"]
 
 
@@ -120,14 +120,14 @@ def test_h3_a_members_pushed_shadow_is_pinned_in_place_of_its_stook(sh, world):
     git(w, "update-ref", f"refs/{ORG}/__agents__/a/SHADOW", a_shadow)
     push(w, f"refs/{ORG}/__agents__/a/SHADOW")
     git(me, "fetch", "-q", "origin")
-    sha = sh.cut(me, TEAM, [stook("a"), stook("b")], org=ORG)
+    sha = sh.cut(me, TEAM, [stook("a"), stook("b")], org=ORG).commit
     assert git(me, "rev-parse", f"{sha}:pins/__agents__/a") == a_shadow
     assert git(me, "rev-parse", f"{sha}:pins/__agents__/b") == tips["b"]
 
 
 def test_h4_a_shadow_pushed_alone_carries_every_member(sh, world, tmp_path):
     _, _, me, tips = world
-    sha = sh.cut(me, TEAM, [stook("a"), stook("b")], org=ORG)
+    sha = sh.cut(me, TEAM, [stook("a"), stook("b")], org=ORG).commit
     fresh = tmp_path / "fresh.git"
     subprocess.run(["git", "init", "-q", "--bare", str(fresh)], check=True)
     git(me, "push", "-q", str(fresh), f"refs/{ORG}/__teams__/t/SHADOW:refs/{ORG}/__teams__/t/SHADOW")
@@ -148,9 +148,9 @@ def test_h5_a_dangling_member_is_refused_with_nothing_written(sh, world):
 
 def test_h6_a_second_cut_takes_the_first_as_its_first_parent(sh, world):
     _, _, me, _ = world
-    first = sh.cut(me, TEAM, [stook("a")], org=ORG)
+    first = sh.cut(me, TEAM, [stook("a")], org=ORG).commit
     git(me, "update-ref", TEAM, append(me, "t", "2"))
-    second = sh.cut(me, TEAM, [stook("a")], org=ORG)
+    second = sh.cut(me, TEAM, [stook("a")], org=ORG).commit
     assert parents(me, second)[0] == first
 
 

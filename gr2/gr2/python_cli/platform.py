@@ -256,7 +256,7 @@ class PlatformAdapter(Protocol):
 
 
 class PlatformAdapterV2(PlatformAdapter, Protocol):
-    """Adapter API version 2 (unreleased): the adapter resolves a member's raw remote into a target.
+    """Adapter API version 2 (from 2.0.0a9): the adapter resolves a member's raw remote into a target.
 
     A version 2 adapter also accepts ``target=`` on ``pr_status``, ``merge_pr``, ``edit_pr_body``,
     ``pr_checks``, ``pr_view`` and ``list_prs``.
@@ -613,8 +613,8 @@ class GitHubAdapter:
 
 _ADAPTER_FACTORIES: dict[str, Callable[[], PlatformAdapter]] = {}
 PLATFORM_ADAPTER_ENTRY_POINTS = "gr2.platform_adapters"
-# The protocol being built: v2 adds RemoteTarget and target-aware lifecycle calls. UNRELEASED until the
-# release that carries it (see PLATFORM_ADAPTER_CHANGELOG.md). Omitting a declaration still means v1.
+# v2 adds RemoteTarget and target-aware lifecycle calls. First carried by 2.0.0a9; later 2.0.0a releases may
+# add to it (see PLATFORM_ADAPTER_CHANGELOG.md). Omitting a declaration still means v1.
 PLATFORM_ADAPTER_API_VERSION = 2
 LEGACY_ADAPTER_API_VERSION = 1
 SUPPORTED_ADAPTER_API_VERSIONS = (1, 2)

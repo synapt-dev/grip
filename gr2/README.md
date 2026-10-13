@@ -97,6 +97,7 @@ Not there yet:
 | `sync` | status, run |
 | `pr` | create, status, checks, merge, view |
 | `check` | run, show, set |
+| `proto` | json |
 | `review` | open, close, checkout-pr, run, check, pin, publish, receive, verify, show, stamp, merge, repin, create-project, bind, approve, rebind |
 | `exec` | status, run |
 | `repo` | status, projection-run |

@@ -411,6 +411,12 @@ flag  pr view --repo <str>                                            stable
 flag  pr view --review <str>                                          stable
 flag  pr view --root/-C <str>                                         stable
 verb  pr view                                                         stable
+# proto json
+arg   proto json target <str>                                         stable
+flag  proto json --message <str>                                      stable
+flag  proto json --repo-path <str>                                    stable
+flag  proto json --textconv                                           stable
+verb  proto json                                                      stable
 # prune
 flag  prune --execute                                                 stable
 flag  prune --remote <str>                                            stable

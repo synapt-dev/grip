@@ -144,6 +144,33 @@ app.add_typer(hooks_app, name="hooks")
 app.add_typer(grip_app, name="store")
 app.add_typer(grip_app, name="grip", hidden=True)
 app.add_typer(config_cli_app, name="config")
+proto_app = typer.Typer(help="Render stored protobuf records")
+app.add_typer(proto_app, name="proto")
+
+
+@proto_app.command("json")
+def proto_json_cmd(
+    target: str = typer.Argument(..., help="A file of protobuf bytes (what git hands a textconv), or a blob, field tree, or rev:path"),
+    message: Optional[str] = typer.Option(None, "--message", help="Name fields from the bundled review schema, e.g. ReviewBind"),
+    repo_path: Path | None = typer.Option(None, "--repo-path", help="Repo that holds an object target (defaults to cwd)"),
+    textconv: bool = typer.Option(False, "--textconv", help="For git: print a one-line marker and exit 0 on bytes that are not protobuf, so one bad file never stops a diff"),
+) -> None:
+    """Print one protobuf record as JSON, keys by field number unless --message names them.
+
+    As a git textconv: `*.pb diff=protoblob` in .gitattributes and
+    `git config diff.protoblob.textconv "gr2 proto json --textconv"`; then git diff shows JSON.
+    """
+    from . import proto_json
+    from .review_field_tree import ReviewRecordError
+    try:
+        buf = proto_json.load(target, repo_path or Path.cwd())
+        typer.echo(proto_json.dumps(proto_json.render(buf, message)), nl=False)
+    except ReviewRecordError as exc:
+        if textconv:
+            typer.echo(proto_json.textconv_marker(target, exc), nl=False)
+            return
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
 
 def _workspace_repo_spec(workspace_root: Path, repo_name: str) -> dict[str, object]:

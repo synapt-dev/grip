@@ -14,7 +14,9 @@ The rules:
 - Unknown entries are carried byte for byte, name included.
 - An edit replaces one entry and leaves every other object as written.
 - Verify checks the objects as written; it never rebuilds names from the schema.
-- The tree IS the record; protobuf binary is derived on request and never stored.
+- One stored form per message, declared by the schema (field tree by default; one
+  canonical protobuf blob when the message declares `leaf` at its top); never convert
+  a stored record between forms. `gr2 proto json` renders either form as JSON.
 
 The schema has one owner outside gr2, one branch per package. gr2 carries a copy,
 pinned to the commit of that branch it came from (SCHEMA_COMMIT) and to its
@@ -197,6 +199,8 @@ def fields(buf: bytes) -> list[tuple[int, int, bytes]]:
     while i < len(buf):
         key, i = _read_varint(buf, i)
         number, wt = key >> 3, key & 7
+        if number == 0:
+            raise ReviewRecordError("field number 0 is not a protobuf field")
         if wt == 0:
             _, j = _read_varint(buf, i)
         elif wt == 1:

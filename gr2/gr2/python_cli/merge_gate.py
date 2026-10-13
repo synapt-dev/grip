@@ -77,19 +77,46 @@ def _state(repo: Path, remote: str, into: str, head: str) -> tuple[str, str | No
     return ("merged", merged) if merged else ("unmerged", None)
 
 
-def _refresh_tracking(repo: Path, remote: str, into: str) -> str | None:
-    """Bring the clone's own remote-tracking ref for `into` up to the remote after a merge; None, or the command that
-    failed. The merge was pushed by URL, so the clone's tracking ref did not move, and a `gr2 branch <into> --base
-    <name>/<into>` followed by `store commit` recorded the PRE-merge pin with exit 0. Fetched by name with an explicit
-    refspec (a narrowed clone has no refspec for it), never by sha. A clone with no remote at this URL has no tracking
-    ref to leave behind, so there is nothing to do."""
+def _url_key(url: str, base: Path) -> tuple[str, str]:
+    """One repository, however its URL is spelled: (host, path) for a network URL, ("", realpath) for a local one.
+
+    A `file://` scheme, a trailing '/', and a trailing '.git' on a network path do not change the repository, and
+    neither does the user or port in front of the host, so an SSH spelling (`git@host:org/x.git`, `ssh://...`) and
+    an HTTPS one (`https://host/org/x`) of the same repository give the same key. A relative local path resolves
+    against `base`, the clone, which is where git resolves it."""
+    u = url.strip()
+    if u.startswith("file://"):
+        u = u[len("file://"):]
+    if "://" in u:
+        hostpart, _, path = u.split("://", 1)[1].partition("/")
+        return hostpart.rsplit("@", 1)[-1].split(":", 1)[0].lower(), path.strip("/").removesuffix(".git")
+    head, sep, tail = u.partition(":")
+    if sep and head and "/" not in head:  # git's scp-like form: a colon before any slash
+        return head.rsplit("@", 1)[-1].lower(), tail.strip("/").removesuffix(".git")
+    return "", os.path.realpath(u if os.path.isabs(u) else base / u)
+
+
+def _refresh_tracking(repo: Path, remote: str, into: str) -> dict | None:
+    """Bring the clone's own remote-tracking ref for `into` up to the remote after a merge; None, or the miss as
+    {command, reason}. The merge was pushed by URL, so the clone's tracking ref did not move, and a `gr2 branch <into>
+    --base <name>/<into>` followed by `store commit` recorded the PRE-merge pin with exit 0. The clone's remote is
+    found by URL compared as one repository (`_url_key`), not as one string, and fetched by name with an explicit
+    refspec (a narrowed clone has no refspec for it), never by sha. Only a clone with no remotes at all has no
+    tracking ref to leave behind; one whose remotes all name other URLs is listed, never passed over."""
     names = _git(repo, "remote", check=False).split()
-    name = next((n for n in names if _git(repo, "remote", "get-url", n, check=False) == remote), None)
-    if name is None:
+    if not names:
         return None
+    want = _url_key(remote, repo)
+    urls = {n: _git(repo, "remote", "get-url", n, check=False) for n in names}
+    name = next((n for n in names if urls[n] and _url_key(urls[n], repo) == want), None)
+    if name is None:
+        target = "origin" if "origin" in names else names[0]
+        return {"command": f"git -C {repo} fetch --no-tags {remote} +refs/heads/{into}:refs/remotes/{target}/{into}",
+                "reason": f"no remote of this clone names {remote}"}
     spec = f"+refs/heads/{into}:refs/remotes/{name}/{into}"
     proc = gitops.run(repo, "fetch", "--no-tags", "-q", name, spec, timeout=120)
-    return None if proc.returncode == 0 else f"git -C {repo} fetch --no-tags {name} {spec}"
+    return None if proc.returncode == 0 else {"command": f"git -C {repo} fetch --no-tags {name} {spec}",
+                                              "reason": "the fetch failed"}
 
 
 _REVIEW_REF_PREFIX = "refs/dev.synapt.grip/__reviews__/"
@@ -406,9 +433,10 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         try:
             failed = _refresh_tracking(repo, m["remote"], into)
         except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
-            failed = f"git -C {repo} fetch --no-tags <remote> +refs/heads/{into}:refs/remotes/<remote>/{into} ({exc})"
+            failed = {"command": f"git -C {repo} fetch --no-tags <remote> +refs/heads/{into}:refs/remotes/<remote>/{into}",
+                      "reason": f"the clone could not be read: {exc}"}
         if failed:
-            tracking_stale.append({"member": m["key"], "command": failed})
+            tracking_stale.append({"member": m["key"], **failed})
     if all(s == "merged" for s in final):
         code = EXIT_MERGED
     elif all(s == "unmerged" for s in final):

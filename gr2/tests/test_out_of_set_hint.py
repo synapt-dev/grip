@@ -67,6 +67,21 @@ def test_review_merge_prints_the_hint_and_the_receipt_and_exit_are_unchanged(tmp
     assert "hint" not in out.stdout and receipt["exit"] == 0 and receipt["members"][0]["merged"], receipt
 
 
+def test_a_hint_that_cannot_be_read_is_named_on_stderr_and_the_merge_is_unchanged(tmp_path, monkeypatch):
+    w = _world(tmp_path, monkeypatch, consumer_adapted=True, in_set=["producer", "consumer"])
+    assert check_set(w).exit_code == 0
+
+    def broken(*_a, **_k):
+        raise RuntimeError("hint source unreadable")
+    monkeypatch.setattr(set_hints, "out_of_set_hints", broken)
+    out = runner.invoke(app, ["review", "merge", w["members"]["producer"]["review"], "--from", "feat",
+                              "--into", "main"], catch_exceptions=False)
+
+    assert out.exit_code == 0, out.output
+    assert json.loads(out.stdout)["members"][0]["merged"]
+    assert "out-of-set hints could not be read: hint source unreadable" in out.stderr, out.stderr
+    assert hint_lines(out) == []
+
 def test_a_common_removed_name_never_prints_a_wall(tmp_path, monkeypatch):
     w = _world(tmp_path, monkeypatch, consumer_adapted=True, in_set=["producer", "consumer"])
     names = [f"common_name_{i}" for i in range(set_hints.MAX_LINES + 3)]

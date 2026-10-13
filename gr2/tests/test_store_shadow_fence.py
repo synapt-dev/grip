@@ -1,8 +1,10 @@
-"""Section 9, the fence rows (full-mode push plan, 2026-10-12, with Apollo's precision of 2026-10-13).
+"""Section 9, the fence rows (full-mode push plan, 2026-10-12).
 
 A hand commit on the branch is fenced by the pins it RECORDS (`<commit>:grip.toml`), compared with the pins the shadow
 records, never by the root gitlink at a member path. ONE function (`_refuse_unrecorded_pins`) is called by the
-pre-commit hook and by `store push`, so the two cannot disagree.
+pre-commit hook and by `store push`. In full mode the two agree. In compat they can differ on purpose: the hook
+judges a commit before its gitlink fold, so a commit whose grip.toml pin and gitlink move together is refused at the
+hook ("pin edited by hand") yet pushes when made past it, because it is byte for byte the commit the fold makes.
 - (a) a hand commit to a tracked non-pin file passes the hook, pushes (one atomic push), and the shadow advances to it.
 - (b) a hand-edited pin in grip.toml is refused at commit AND at push, naming the member; neither ref moves.
 - (c) full mode: the root gitlink is the member's field commit and differs from its recorded pin, and the fence still

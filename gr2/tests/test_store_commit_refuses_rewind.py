@@ -275,3 +275,44 @@ def test_an_edited_pin_line_does_not_hide_a_rewind_from_the_hook(ws: Path) -> No
     assert done.returncode != 0, done.stdout + done.stderr
     assert "behind the recorded pin" in done.stderr, done.stderr
     assert _git_out(ws, "rev-parse", "HEAD") == root_before
+
+
+def _rename_member(root: Path, old: str, new: str) -> None:
+    text = (root / "grip.toml").read_text(encoding="utf-8")
+    line = f'name = "{old}"'
+    assert text.count(line) == 1
+    (root / "grip.toml").write_text(text.replace(line, f'name = "{new}"'), encoding="utf-8")
+
+
+def test_a_renamed_member_with_its_pin_set_back_is_refused_by_the_verb(ws: Path) -> None:
+    """The record is found by the member's path, so a new name in the working grip.toml does not hide a rewind."""
+    alpha = ws / "alpha"
+    recorded = _pin(ws, "alpha")
+    _git(alpha, "reset", "-q", "--hard", "HEAD~1")
+    behind = _git_out(alpha, "rev-parse", "HEAD")
+    _set_pin_line(ws, recorded, behind)
+    _rename_member(ws, "alpha", "alpha2")
+    root_before = _git_out(ws, "rev-parse", "HEAD")
+
+    rc, out = _cli("store", "commit", "-m", "renamed and set back")
+
+    assert rc == 3, out
+    assert recorded[:12] in out and behind[:12] in out, out
+    assert _git_out(ws, "rev-parse", "HEAD") == root_before
+
+
+def test_a_renamed_member_with_its_pin_set_back_is_refused_by_the_hook(ws: Path) -> None:
+    alpha = ws / "alpha"
+    recorded = _pin(ws, "alpha")
+    _git(alpha, "reset", "-q", "--hard", "HEAD~1")
+    behind = _git_out(alpha, "rev-parse", "HEAD")
+    _set_pin_line(ws, recorded, behind)
+    _rename_member(ws, "alpha", "alpha2")
+    root_before = _git_out(ws, "rev-parse", "HEAD")
+    _git(ws, "add", "alpha", "grip.toml")
+
+    done = _git(ws, "commit", "-q", "-m", "renamed and set back", check=False)
+
+    assert done.returncode != 0, done.stdout + done.stderr
+    assert "behind the recorded pin" in done.stderr, done.stderr
+    assert _git_out(ws, "rev-parse", "HEAD") == root_before

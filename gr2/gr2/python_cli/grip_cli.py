@@ -2038,10 +2038,10 @@ def _recorded_pins(text: str) -> dict[str, str]:
 
 
 def _gitlink_may_be_pin(mode: str) -> bool:
-    """THE MODE SPLIT, in one place: may a commit's own gitlink count as the pin it
+    """THE MODE SPLIT, in one place (a design decision): may a commit's own gitlink count as the pin it
     records? Compat: yes, the gitlink IS the pin, so a pin the hook folded to it is recorded. Full: no, the gitlink is
     the member's field commit and only the verb records a pin. If full mode's gitlink becomes the member's real commit
-    (Apollo's 6.4, Layne's call), this returns True for both and the split is gone."""
+    (an open design question), this returns True for both and the split is gone."""
     return mode != "full"
 
 

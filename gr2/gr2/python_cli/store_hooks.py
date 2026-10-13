@@ -431,12 +431,23 @@ def run_pre_commit(root: Path) -> int:
         if staged_bytes is None:
             return 0
         staged_text = staged_bytes.decode("utf-8")
+        # THE FENCE (section 9), the same function and the same reader `store push --atomic` uses: the pins the commit
+        # will RECORD (the staged grip.toml). The hook sees one commit, so it judges that commit's own edit (against
+        # HEAD); the push judges the whole range since the shadow, and backstops a commit made past the hook. Before
+        # the compat fold, so a hand-edited pin line is refused by name; compat's gitlink-bump fold is left as it was.
+        shadow = gc._shadow_value(root)
+        if shadow:
+            gc._refuse_unrecorded_pins(root, gc._recorded_pins(staged_text), "HEAD")
         if _staged_mode(staged_text) == "full":
-            # A full-mode commit carries field-commits as parents, which `git commit` cannot make: only `store commit`
-            # can, so this hook refuses before it reads a staged gitlink as a member's pin.
+            # full_mode_hook, NARROWED: a hand commit that leaves every recorded pin unchanged (a root README) passes
+            # the fence above and is let through. Never read a staged gitlink here: in full mode it is the member's
+            # field commit, not its pin. With no shadow there is nothing to fence against, so it still refuses.
+            if shadow:
+                return 0
             raise gc.NativeStoreRefusal(
-                'full_mode_hook: this workspace\'s grip.toml says mode = "full"; commit through `gr2 store commit`, '
-                "which records each member's field-commit as a parent", 4)
+                'full_mode_hook: this workspace\'s grip.toml says mode = "full" and the branch has no shadow to '
+                "fence against; commit through `gr2 store commit`, which records each member's field-commit as a "
+                "parent", 4)
         members = _members_from(staged_text)
         staged = _index_gitlinks(root, index)
         committed = _head_gitlinks(root)

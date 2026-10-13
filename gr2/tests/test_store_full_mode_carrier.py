@@ -167,8 +167,11 @@ def test_a_selected_workspace_commit_agrees_with_the_field_record_not_the_raw_en
     assert {m["name"]: m["pin"] for m in members} == {n: _member_head(root, n) for n in ("alpha", "beta")}
 
 
-def test_a_plain_git_commit_is_refused_by_the_hook_by_name_in_full_mode(tmp_path):
+def test_a_plain_git_commit_is_refused_by_the_hook_by_name_in_full_mode_with_no_shadow(tmp_path):
+    # Section 9 narrowed the hook: with a shadow, a hand commit that edits no pin passes (test_store_shadow_fence.py).
+    # With no shadow there is nothing to fence against, so the hook still refuses every hand commit by name.
     root = _full_store(tmp_path)
+    git(root, "update-ref", "-d", "refs/dev.synapt.grip/__shadows__/v1/main")
 
     refused = git(root, "commit", "--allow-empty", "-m", "plain", check=False)
 

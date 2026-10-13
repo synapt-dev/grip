@@ -2009,6 +2009,37 @@ def _name_shadow(root: Path, was: str) -> None:
     _store_git(root, "update-ref", "-m", "store commit: shadow", _shadow_ref(root), head, was or "0" * len(head))
 
 
+def _shadow_value(root: Path) -> str:
+    """The commit the branch's shadow names, empty when the branch has none yet (or HEAD names no branch)."""
+    branch = _store_git(root, "symbolic-ref", "--short", "-q", "HEAD", check=False).stdout.strip()
+    if not branch:
+        return ""
+    return _store_git(root, "rev-parse", "--verify", "-q", SHADOW_REF_PREFIX + branch, check=False).stdout.strip()
+
+
+def _recorded_pins(text: str) -> dict[str, str]:
+    """The pins a grip.toml TEXT records, {name: pin}."""
+    return {str(member["name"]): str(member["pin"]) for member in tomllib.loads(text).get("members", [])}
+
+
+def _refuse_unrecorded_pins(root: Path, pins: dict[str, str], base: str) -> None:
+    """THE FENCE (section 9), the one check the pre-commit hook and `store push --atomic` both call. `pins` are the
+    pins a commit RECORDS (its grip.toml); a pin that differs from the one `base` records (the shadow at the push,
+    HEAD at the hook) was edited by hand, so it is refused by the member's name. Never compare a root gitlink: in full mode the gitlink at a member path is
+    the member's field commit, not its pin (#1233 v3 failed 47 full-mode rows on that). A commit whose pins equal the
+    base's carries nothing unresolved (a hand README commit), and passes."""
+    shown = _store_git(root, "show", f"{base}:grip.toml", check=False)
+    if shown.returncode:
+        return  # the base records no grip.toml: there is nothing to compare against
+    recorded = _recorded_pins(shown.stdout)
+    moved = [f"{name} ({recorded.get(name, 'none')[:12]} -> {pin[:12]})" for name, pin in sorted(pins.items())
+             if recorded.get(name) != pin]
+    if moved:
+        raise NativeStoreRefusal(
+            f"pin edited by hand, not recorded by the verb: {', '.join(moved)}; record pins through `gr2 store commit`",
+            4)
+
+
 @_refuses_moved_workspace
 def _native_store_commit(
     root: Path, message: str, layered: list[str] | None = None, allow_rewind: bool = False
@@ -2275,6 +2306,12 @@ def _native_store_push(root: Path, to: str | None = None, atomic: bool = False) 
 
     `atomic`: the branch and its shadow ref (section 9, S1) go in ONE `git push --atomic`, both naming the branch
     tip, so origin never holds a branch the shadow does not name."""
+    shadow = _shadow_value(root) if atomic else ""
+    if shadow and shadow != _store_git(root, "rev-parse", "HEAD").stdout.strip():
+        # THE FENCE first, so a hand-edited pin gets its own name and not a later reader's: a hand commit whose
+        # recorded pins equal the shadow's pushes, and the shadow advances to it in the same atomic push (the implicit
+        # --snapshot); one that edits a pin is refused before anything moves.
+        _refuse_unrecorded_pins(root, _native_members_at(root, "HEAD"), shadow)
     members = _native_store_check(root)
     branch = _store_git(root, "symbolic-ref", "--short", "HEAD").stdout.strip()
     recorded = _root_origin_for_push(root, to)
@@ -2282,6 +2319,8 @@ def _native_store_push(root: Path, to: str | None = None, atomic: bool = False) 
     try:
         if atomic:
             _atomic_push(root, tip, [f"refs/heads/{branch}", _shadow_ref(root)])
+            if shadow != tip:
+                _store_git(root, "update-ref", "-m", "store push: shadow", _shadow_ref(root), tip, shadow or "0" * len(tip))
         else:
             _store_git(root, "push", "origin", branch)
     except Exception:

@@ -417,3 +417,18 @@ def test_a_respelled_member_path_with_its_pin_set_back_is_refused_by_the_hook(ws
     assert done.returncode != 0, done.stdout + done.stderr
     assert "behind the recorded pin" in done.stderr, done.stderr
     assert _git_out(ws, "rev-parse", "HEAD") == root_before
+
+
+@pytest.mark.parametrize("spelling", ["./alpha", "alpha/"])
+def test_a_respelled_member_path_moving_forward_is_folded_by_the_hook(ws: Path, spelling: str) -> None:
+    """A respelled path whose checkout is AHEAD is paired with its gitlink and its pin folded. Before the fix the hook
+    found no gitlink for `./alpha` or `alpha/`, so the commit recorded the new gitlink and kept the old pin, rc 0."""
+    ahead = _commit_and_push(ws / "alpha", "next.txt")
+    _respell_path(ws, "alpha", spelling)
+    _git(ws, "add", "alpha", "grip.toml")
+
+    done = _git(ws, "commit", "-q", "-m", "respelled and moved on", check=False)
+
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert _pin(ws, "alpha") == ahead
+    assert _git_out(ws, "rev-parse", "HEAD:alpha") == ahead

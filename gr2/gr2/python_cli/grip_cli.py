@@ -1723,6 +1723,17 @@ def _commit_with_carried(root: Path, message: str, carried: list[str]) -> None:
     _store_git(root, "update-ref", "-m", f"commit: {message}", "HEAD", made)
 
 
+def _committed_pin(root: Path, member: dict) -> str | None:
+    """The member's pin as the root commit records it (HEAD:grip.toml). grip.toml in the work tree is editable, so a pin
+    line set back to an older sha is not the record; the working pin is used only when HEAD records none (a first
+    commit, or the empty root commit of a full-mode workspace)."""
+    try:
+        committed = _native_members_at(root, "HEAD").get(str(member["name"]))
+    except (NativeStoreRefusal, RuntimeError, tomllib.TOMLDecodeError):
+        committed = None
+    return committed or member.get("pin")
+
+
 def _refuse_pin_rewind(
     member: dict, path: Path, head: str, recorded_ref: str | None = None, allow: str = "pass --allow-rewind"
 ) -> None:
@@ -1840,7 +1851,7 @@ def _native_store_commit(
             if _member_covers(root, moved, head, claimed):
                 member, moved = moved, None
         if not allow_rewind:
-            _refuse_pin_rewind(member, path, head, recorded_ref)
+            _refuse_pin_rewind({**member, "pin": _committed_pin(root, member)}, path, head, recorded_ref)
         try:
             _member_coverage(root, member, head, claimed)
         except NativeStoreRefusal as exc:

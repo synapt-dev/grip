@@ -386,7 +386,8 @@ def run_pre_commit(root: Path) -> int:
             if committed.get(member["path"]) != sha:
                 # The verb's own rewind check, so a plain `git commit` cannot record a pin the verb refuses.
                 gc._refuse_pin_rewind(
-                    member, root / member["path"], sha, allow="commit through `gr2 store commit --allow-rewind`"
+                    {**member, "pin": gc._committed_pin(root, member)}, root / member["path"], sha,
+                    allow="commit through `gr2 store commit --allow-rewind`",
                 )
                 claimed = gc._claimed_member_paths(root, members, exclude=member)
                 gc._member_coverage(root, member, sha, claimed)

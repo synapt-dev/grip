@@ -237,3 +237,41 @@ def test_control_a_plain_git_commit_of_a_checkout_ahead_folds_the_pin(ws: Path) 
 
     assert done.returncode == 0, done.stdout + done.stderr
     assert _pin(ws, "alpha") == ahead
+
+
+def _set_pin_line(root: Path, old: str, new: str) -> None:
+    text = (root / "grip.toml").read_text(encoding="utf-8")
+    assert text.count(old) == 1
+    (root / "grip.toml").write_text(text.replace(old, new), encoding="utf-8")
+
+
+def test_an_edited_pin_line_does_not_hide_a_rewind_from_the_verb(ws: Path) -> None:
+    """The recorded pin is the one the root commit holds; grip.toml's pin line is editable, so it is not the record."""
+    alpha = ws / "alpha"
+    recorded = _pin(ws, "alpha")
+    _git(alpha, "reset", "-q", "--hard", "HEAD~1")
+    behind = _git_out(alpha, "rev-parse", "HEAD")
+    _set_pin_line(ws, recorded, behind)
+    root_before = _git_out(ws, "rev-parse", "HEAD")
+
+    rc, out = _cli("store", "commit", "-m", "pin line edited back")
+
+    assert rc == 3, out
+    assert recorded[:12] in out and behind[:12] in out, out
+    assert _git_out(ws, "rev-parse", "HEAD") == root_before
+
+
+def test_an_edited_pin_line_does_not_hide_a_rewind_from_the_hook(ws: Path) -> None:
+    alpha = ws / "alpha"
+    recorded = _pin(ws, "alpha")
+    _git(alpha, "reset", "-q", "--hard", "HEAD~1")
+    behind = _git_out(alpha, "rev-parse", "HEAD")
+    _set_pin_line(ws, recorded, behind)   # the pin line set back by hand, its gitlink staged too
+    root_before = _git_out(ws, "rev-parse", "HEAD")
+    _git(ws, "add", "alpha", "grip.toml")
+
+    done = _git(ws, "commit", "-q", "-m", "pin line edited back", check=False)
+
+    assert done.returncode != 0, done.stdout + done.stderr
+    assert "behind the recorded pin" in done.stderr, done.stderr
+    assert _git_out(ws, "rev-parse", "HEAD") == root_before

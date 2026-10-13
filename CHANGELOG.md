@@ -206,6 +206,54 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   record and confinement as `[[files.copy]]` and `[[files.link]]`; the part list is part of the hooks text, so
   changing it lapses consent. Parts come from the member only.
 
+- **`lane remove` ends a lane, and `lane list` shows which lanes can end.** `lane remove <root> <unit> <lane>`
+  removes the lane's clones and its record and never touches the workspace's own clones. It refuses, naming every
+  reason and removing nothing, while the lane is entered or leased, while any of its repos holds uncommitted or
+  untracked work, a stash, or a commit no remote has (checked after a fetch; a failed fetch refuses), while its
+  checkout holds anything that is not one of its repos, or while its record or checkout reaches outside the
+  workspace through a symlink. `lane list <root>` prints each lane as `removable` or `keep` with its reasons, from
+  the same check, without fetching; a lane whose record cannot be read is listed with that reason and the other
+  lanes are still listed. A file the repo's ignore rules cover (a local `.env`, a build directory) is removed with
+  the lane.
+
+- **`workspace retire-gr1` ends gr1 coexistence after `workspace migrate-gr1`.** It moves `.gitgrip` aside to
+  `.gitgrip.retired-<date>`, never deletes it, and prints the one command that moves it back, so `gr` runs gr2 in
+  that workspace. It refuses a workspace that is not in coexistence, one already gr2-only, and an existing target
+  name. It also refuses while `.gitgrip` holds gr1's spawn configuration, because moving it stops gr1's spawn and
+  status there; `--break-gr1-spawn` is the deliberate way past that refusal.
+
+- **`check set --at-remote-heads <branch>` checks a review's members as their remotes have them now.** After a
+  member's branch moved, `review merge` refuses `feature_moved` and `review pin` refuses a head that is already
+  pushed. This check reads each member's head from `<branch>` on its own remote, runs the command once over the
+  members side by side, prints `(moved from <pinned head>)` where a head moved, and records the result as
+  `remote_set` without moving any branch or tag. No merge gate reads that result: it answers whether the set passes
+  now, not whether it may merge. The `feature_moved` refusal now names this check.
+
+- **`store push --to <url>` records the root's origin when it has none.** A fresh store's first push no longer
+  fails on a missing `origin` or needs `git remote add`. An existing origin is never repointed: a different `--to`
+  is refused and nothing is pushed. A URL with credentials or a transport gr2 does not run is refused before
+  anything is recorded, and if that first push fails the recorded origin is removed again. Without `--to`, a root
+  with no origin is refused with a message naming `--to`. `--json` adds `origin_recorded`.
+
+- **`review merge` keeps its receipt, and `review show` prints it.** Every run, merged, refused or partial, is
+  stored on a local ref of the workspace root, and a rerun appends rather than overwrites. `review show --json` adds
+  `merge` (the latest run's receipt, or `null`) and `merge_runs`; the text form adds one `merge:` line per member
+  with its final state and merge commit, or its refusal code.
+
+- **Agent records: each agent appends to its own record, and a fold reads them all.** A Python API in
+  `gr2.python_cli.agent_record`. `append` writes an event to `refs/<org>/__agents__/<agent>/<ref>` with a
+  compare-and-swap and retries, so writers need no shared lock; `fold` returns the last value per key and field by
+  commit ancestry, never by timestamp, and names two writes neither of which saw the other as a conflict. An org,
+  agent or ref name that is not one lowercase ref component is refused before anything is written.
+
+- **`check set` runs one command over every member of a review, and `review merge` requires its record.** A test
+  that needs the sibling repositories cannot pass in one member's isolated checkout. `gr2 check set <workspace>
+  <review> -- <command>` rebuilds each member at its pinned head side by side, runs the command once, and records
+  one `set` result for the review. On a multi-member review `review merge` now requires that record by default;
+  `--no-set` drops the requirement and `--check` adds to it. A failed set stays recorded at those heads until a new
+  head is pinned, and a command that moves a member's HEAD is refused with nothing recorded. `check show --require
+  set` judges the record the way the merge gate does.
+
 ### Changed
 
 - **The agent-record fold costs linear time in the writes at a fixed number of writers, not quadratic.** It found each (key, field)
@@ -262,6 +310,41 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   submodule member says there is nothing to convert. A git read that fails is `unreadable`, never `clean`.
   Control characters in a printed path are escaped, and no next step advises deleting work. `ahead` is the count before any conversion. The summary
   JSON rows carry the same `state` and `next`.
+
+- **`store commit` follows a member that moved to another branch.** When an attached member is on a branch other
+  than its recorded ref (a feature branch merged into main, say), `store commit` adopts that branch when its
+  upstream covers the pin, instead of checking the pin against the old upstream and refusing it or carrying it as a
+  layer. A new branch whose upstream does not cover the pin is not adopted, and a detached member keeps its
+  record. When neither upstream covers the pin, the refusal names the branch the member is on as well as the
+  recorded upstream.
+
+- **A pin whose work landed under other commits reads as landed, not as unpushed.** `store check` and `store
+  commit` used to call a pin covered only when it was an ancestor of the member's upstream, so a squash- or
+  rebase-merged pull request was refused with "push it first". A pin whose every commit beyond the merge-base has
+  its patch on the upstream (a merge in the range read whole, a later revert un-landing it) is now refused with a
+  message saying it landed on the upstream under a different commit, to re-pin to the upstream's tip and not to push
+  it. `store materialize` names a covering ref that has vanished (a merged branch, deleted) when that is why its
+  fetch failed.
+
+- **`store commit` says which member it carried as a layer.** In full mode, a pin no remote has is recorded by
+  carrying the missing commits as a layer; `store commit` now prints one line per such member, `--json` adds
+  `layered`, and the help says what full mode does with an uncovered pin.
+
+- **`store status` reads `layer` for a pin its record's layers carry, the word `store check` uses.** In full mode
+  that member used to read `missing`. The table explains each state word beside it, and the published JSON shapes of
+  `store status`, `store check` and `store push` include `layer`.
+
+- **In full mode, the records about a member's pin travel with the root, and the member path stays clean.** The
+  member's field-commit carries the reviews bound at its pin, their approvals and the checks on the pin, so a plain
+  `git clone` of the root holds them without fetching custom refs; a commit made in a clone keeps the records the
+  root already carries. `store materialize` marks each member path skip-worktree, so the root's `git status` no
+  longer shows a member as modified.
+
+- **Hook consent keys are plain workspace-relative paths.** A member key with an empty, `.` or `..` part or a
+  leading `/` is refused, and a consent record is read only under its exact name, so a filesystem that ignores case
+  or Unicode normalization gives the same answer. Such a key reads as invalid at the hook gate, so the member's
+  hooks do not run. `hooks trust` refuses a member argument that is not a plain relative path or that resolves
+  outside the workspace, before anything is shown or written.
 
 ### Fixed
 
@@ -431,6 +514,19 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   and after. A commit known only to a second remote reads unpushed on the clone, which has `origin` alone. A
   repository that had no origin keeps no origin refs, and a failed read of the owner's refs refuses the
   conversion before anything is swapped.
+
+- **A remote URL that cannot be parsed is refused by name, not a traceback.** A malformed URL (a bracketed host
+  with no closing bracket, say) is now refused wherever gr2 checks a remote for credentials (`store init`, the
+  review-record writers, `review open`, `lane pr create`), naming the member and never printing the URL.
+
+- **`store status` names a member with no pin instead of crashing.** A member whose `pin` line was removed from
+  `grip.toml` made `store status` stop with a `KeyError` traceback. That member is now its own row, state `no-pin`,
+  every other member still prints, and the command exits 4 naming the member and `store commit`.
+
+- **`review run` from a deleted working directory is a named refusal, not a traceback.** With no lane argument,
+  a working directory removed out from under the shell made `review run` print a Python traceback. It now refuses
+  as `no_review_context` (exit 2), says the directory no longer exists, and names both ways out: `cd` into a lane,
+  or pass the lane directory.
 
 ## [gr2 2.0.0a8] - 2026-10-09
 

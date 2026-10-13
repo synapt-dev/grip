@@ -1723,8 +1723,77 @@ def _commit_with_carried(root: Path, message: str, carried: list[str]) -> None:
     _store_git(root, "update-ref", "-m", f"commit: {message}", "HEAD", made)
 
 
+def _committed_pin(root: Path, member: dict) -> str | None:
+    """The member's pin as the root commit records it (HEAD:grip.toml). grip.toml in the work tree is editable, so a pin
+    line set back to an older sha is not the record; the working pin is used only when HEAD records none (a first
+    commit, or the empty root commit of a full-mode workspace)."""
+    try:
+        committed = _native_members_at(root, "HEAD").get(str(member["name"]))
+    except (NativeStoreRefusal, RuntimeError, tomllib.TOMLDecodeError):
+        committed = None
+    return committed or member.get("pin")
+
+
+def _refuse_pin_rewind(
+    member: dict, path: Path, head: str, recorded_ref: str | None = None, allow: str = "pass --allow-rewind"
+) -> None:
+    """Refuse (3) a pin that would move BACKWARDS: HEAD is behind the recorded pin, or lacks it entirely.
+
+    Found in review: a stale checkout's HEAD was recorded over a newer pin, rc 0, and the push undid another
+    workspace's recorded merge. A checkout ahead of its pin, or on the pin, is not this; one that diverged
+    from it is left to the coverage check. A missing pin in a full clone means HEAD cannot descend from it; in a
+    shallow clone it may, so there the refusal says it cannot tell and names `git fetch --unshallow`.
+    `allow` is how the caller records the older pin anyway: the flag for the verb, the verb for a hook.
+    """
+    recorded = member.get("pin")
+    if not recorded or recorded == head:
+        return
+    name = member["name"]
+    hint = f"run `gr2 store materialize` to bring the checkout to the pin, or {allow} to record it anyway"
+    if _store_git(path, "cat-file", "-e", f"{recorded}^{{commit}}", check=False).returncode:
+        shallow = _store_git(path, "rev-parse", "--is-shallow-repository", check=False).stdout.strip() == "true"
+        if shallow:
+            # A shallow checkout can descend from a pin older than its depth and still lack it, so a missing pin
+            # says nothing about direction there; materialize would be the wrong advice for a checkout ahead.
+            raise NativeStoreRefusal(
+                f"{name}: cannot tell whether HEAD {head[:12]} is behind the recorded pin {recorded[:12]}: this "
+                f"checkout is shallow and does not reach it; run `git fetch --unshallow` in {member['path']} and "
+                f"commit again, or {allow} to record HEAD anyway",
+                3,
+            )
+        raise NativeStoreRefusal(
+            f"{name}: the recorded pin {recorded[:12]} is not in this checkout (HEAD {head[:12]}), so recording "
+            f"HEAD could undo it; {hint}",
+            3,
+        )
+    behind = _store_git(path, "merge-base", "--is-ancestor", head, recorded, check=False)
+    if behind.returncode == 0:
+        raise NativeStoreRefusal(
+            f"{name}: HEAD {head[:12]} is behind the recorded pin {recorded[:12]}; recording it would undo "
+            f"commits already in the store; {hint}",
+            3,
+        )
+    if behind.returncode != 1:
+        raise RuntimeError(f"cannot compare {name}'s HEAD with its recorded pin: {_git_detail(behind)}")
+    if recorded_ref and member.get("ref") != recorded_ref:
+        # A member switched to another branch is adopted when that branch's upstream covers HEAD, but the record
+        # then forgets the old pin: if HEAD does not contain it, its commits leave the record with exit 0.
+        contains = _store_git(path, "merge-base", "--is-ancestor", recorded, head, check=False)
+        if contains.returncode == 1:
+            raise NativeStoreRefusal(
+                f"{name}: HEAD {head[:12]} on {member.get('ref')} does not contain the recorded pin {recorded[:12]} "
+                f"(on {recorded_ref}); recording the switch would drop that pin's commits from the store; merge or "
+                f"rebase onto the pin first, or {allow} to record the switch anyway",
+                3,
+            )
+        if contains.returncode != 0:
+            raise RuntimeError(f"cannot compare {name}'s HEAD with its recorded pin: {_git_detail(contains)}")
+
+
 @_refuses_moved_workspace
-def _native_store_commit(root: Path, message: str, layered: list[str] | None = None) -> bool:
+def _native_store_commit(
+    root: Path, message: str, layered: list[str] | None = None, allow_rewind: bool = False
+) -> bool:
     """Record the pins; True when a root commit was made, False when there was nothing to record.
 
     `layered`, when given, receives the name of each member whose pin is on no remote and is therefore carried as a
@@ -1774,12 +1843,15 @@ def _native_store_commit(root: Path, message: str, layered: list[str] | None = N
         # `git checkout -b wip` with no new commit is still covered by its recorded upstream, and
         # adopting origin/wip (which does not exist) would refuse a pin the record already covers.
         on = _store_git(path, "branch", "--show-current", check=False).stdout.strip()
+        recorded_ref = member.get("ref")
         moved = None
         if on and on != member.get("ref"):
             ref, upstream = _infer_member_branch(path)
             moved = {**member, "ref": ref, "upstream": upstream}
             if _member_covers(root, moved, head, claimed):
                 member, moved = moved, None
+        if not allow_rewind:
+            _refuse_pin_rewind({**member, "pin": _committed_pin(root, member)}, path, head, recorded_ref)
         try:
             _member_coverage(root, member, head, claimed)
         except NativeStoreRefusal as exc:
@@ -2775,6 +2847,9 @@ def grip_init_cmd(
 def grip_commit_cmd(
     message: str = typer.Option(..., "--message", "-m"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    allow_rewind: bool = typer.Option(
+        False, "--allow-rewind", help="Record a member pin that is behind the one already recorded"
+    ),
 ) -> None:
     """Record member pins in the root git tree.
 
@@ -2784,7 +2859,7 @@ def grip_commit_cmd(
     """
     layered: list[str] = []
     try:
-        committed = _native_store_commit(Path.cwd(), message, layered)
+        committed = _native_store_commit(Path.cwd(), message, layered, allow_rewind=allow_rewind)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
@@ -3014,6 +3089,9 @@ def grip_migrate_reviews_cmd(
 def grip_snapshot_cmd(
     message: str = typer.Option(..., "--message", "-m", help="Snapshot message"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    allow_rewind: bool = typer.Option(
+        False, "--allow-rewind", help="Record a member pin that is behind the one already recorded"
+    ),
 ) -> None:
     """Hidden alias of `store commit` (design section 5), removed at beta.
 
@@ -3031,7 +3109,7 @@ def grip_snapshot_cmd(
     """
     layered: list[str] = []
     try:
-        committed = _native_store_commit(Path.cwd(), message, layered)
+        committed = _native_store_commit(Path.cwd(), message, layered, allow_rewind=allow_rewind)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)

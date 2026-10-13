@@ -123,6 +123,7 @@ json  grip checkout .root_commit                                      may-change
 json  grip checkout .status  enum(checked-out)                        may-change
 verb  grip checkout (hidden:grip)                                     stable
 # grip commit
+flag  grip commit --allow-rewind (hidden:grip)                        stable
 flag  grip commit --json (hidden:grip)                                stable
 flag  grip commit --message/-m <str> (hidden:grip)                    stable
 json  grip commit .layered[]                                          may-change
@@ -196,6 +197,7 @@ json  grip push .root_commit                                          may-change
 json  grip push .status  enum(pushed)                                 may-change
 verb  grip push (hidden:grip)                                         stable
 # grip snapshot
+flag  grip snapshot --allow-rewind (hidden:grip)                      stable
 flag  grip snapshot --json (hidden:grip)                              stable
 flag  grip snapshot --message/-m <str> (hidden:grip)                  stable
 json  grip snapshot .layered[]                                        may-change
@@ -682,6 +684,7 @@ json  store checkout .root_commit                                     may-change
 json  store checkout .status  enum(checked-out)                       may-change
 verb  store checkout                                                  may-change
 # store commit
+flag  store commit --allow-rewind                                     may-change
 flag  store commit --json                                             may-change
 flag  store commit --message/-m <str>                                 may-change
 json  store commit .layered[]                                         may-change
@@ -755,6 +758,7 @@ json  store push .root_commit                                         may-change
 json  store push .status  enum(pushed)                                may-change
 verb  store push                                                      may-change
 # store snapshot
+flag  store snapshot --allow-rewind (hidden)                          may-change
 flag  store snapshot --json (hidden)                                  may-change
 flag  store snapshot --message/-m <str> (hidden)                      may-change
 json  store snapshot .layered[]                                       may-change

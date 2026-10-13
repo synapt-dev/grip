@@ -57,6 +57,7 @@ may-change = [
   "verb store commit",
   "flag store commit --json",
   "flag store commit --message/-m <str>",
+  "flag store commit --allow-rewind",
   "verb store diff",
   "flag store diff --json",
   "arg store diff ref_a <str>",
@@ -84,6 +85,7 @@ may-change = [
   "verb store snapshot",
   "flag store snapshot --json",
   "flag store snapshot --message/-m <str>",
+  "flag store snapshot --allow-rewind",
   "verb store status",
   "flag store status --json",
   # The group's exit table travels WITH its verbs rather than being promised on

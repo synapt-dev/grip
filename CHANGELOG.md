@@ -248,6 +248,17 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   says origin could not be asked and gives git's reason, instead of "cannot be served by origin". A clone that
   already holds its pin fetches nothing.
 
+- **`gr2`: `store commit` no longer moves a member's pin backwards.** A checkout that is behind its recorded
+  pin, or that never fetched it, was recorded anyway with exit 0, so one workspace's commit could undo another
+  workspace's recorded merge. It now exits 3, names the member and both commits, and says to run
+  `gr2 store materialize` first; `--allow-rewind` records the older pin on purpose. A checkout ahead of its pin
+  commits as before. A shallow checkout that does not reach its pin is refused with "cannot tell" and
+  `git fetch --unshallow`, never materialize, since it may be ahead of a pin older than its depth.
+  A member switched to another branch whose HEAD does not contain the recorded pin is refused the same way,
+  since recording the switch would drop that pin's commits from the store. The store's pre-commit hook runs the
+  same check, so a plain `git commit` of the member is refused the same way and names
+  `gr2 store commit --allow-rewind`. Both compare against the pin the root commit's `grip.toml` records, so editing the pin line in
+  `grip.toml` back to an older commit does not hide the rewind.
 - **`gr2`: a failed venv create in `review run` names its reason and leaves no half-built venv, and a refused run's receipt
   is named by the lane's commit.** `venv_failed` printed an empty reason when the cause was on stdout (ensurepip's
   failure is), and the half-built `<lane>/.venv` it left was reused by the next run until the lane was closed and

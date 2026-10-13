@@ -210,6 +210,13 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **`gr2`: the store's pre-commit hook and `store commit` record a member pin by one rule.** A pin pushed to a
+  feature branch but not to the declared upstream was recorded by `store commit` (which adopts the branch whose
+  upstream covers it) and refused by a plain `git commit` with "push it first". Both now adopt the branch, the hook
+  folds its ref and upstream into `grip.toml`, and `store commit` declares the adopted branch in `.gitmodules` too.
+  A pin its upstream does not reach is named on the remote branches that hold it; "push it first" is kept for a
+  pin no remote branch holds. The hook also refuses a switch to a branch that drops the recorded pin, as
+  `store commit` does.
 - **`gr2`: a name git cannot hold as a ref is refused before anything is written.** `store init --clone NAME=URL`,
   `lane create` (the lane name and each `--branch` value), `branch` and `target set` now check the name first: it
   must be what `git check-ref-format --allow-onelevel` accepts, printable, and not start with `-`. Names such as

@@ -2363,15 +2363,38 @@ def _atomic_push(root: Path, refspecs: list[tuple[str, str]]) -> bool:
                        + (f" ({remote})" if remote else ""))
 
 
+def _normalised_origin(url: str) -> str:
+    """The url with one trailing `/` and then one `.git` stripped and the host case-folded (`scheme://host/...` or
+    scp-like `user@host:path`). Used only to REFUSE an alias, never to include one."""
+    url = url[:-1] if url.endswith("/") else url
+    url = url[:-4] if url.endswith(".git") else url
+    scheme = re.match(r"^([A-Za-z][A-Za-z0-9+.-]*://)([^/]*)(.*)$", url)
+    if scheme:
+        return scheme.group(1) + scheme.group(2).lower() + scheme.group(3)
+    scp = re.match(r"^([^/:@]+@)?([^/:]+):(?!//)(.*)$", url)
+    if scp and not re.match(r"^[A-Za-z]:[\\/]", url):
+        return (scp.group(1) or "") + scp.group(2).lower() + ":" + scp.group(3)
+    return url
+
+
 def _same_repo_member_refs(root: Path, branch: str) -> list[tuple[str, str, str]]:
     """(name, pin, ref) for each member HEAD records whose origin IS the root's origin (the same url string, compared
     exactly), its pin under `refs/heads/<ref>`. The pin is fetched from the member's checkout into the root first: the
-    push sends root objects, and the member's commits live in the member's own clone."""
+    push sends root objects, and the member's commits live in the member's own clone.
+
+    Inclusion stays exact-string. A member whose origin differs from the root's only as an
+    alias (a trailing `/`, a `.git`, the host's case) is REFUSED, exit 4, naming the member and both strings: it is
+    very likely the same repository, and leaving it out silently would publish a root record whose pinned ref did not
+    move with it. A member in a genuinely different repository is still left out silently."""
     origin = _store_git(root, "remote", "get-url", "origin").stdout.strip()
     members = _native_members(root, "HEAD")
     found: list[tuple[str, str, str]] = []
     for member in members:
         if member["remote"] != origin:
+            if _normalised_origin(member["remote"]) == _normalised_origin(origin):
+                raise NativeStoreRefusal(
+                    f"{member['name']}'s origin {member['remote']!r} names the root's origin {origin!r} by another "
+                    f"string; --atomic includes only an exact match, so record one url for both and push again", 4)
             continue
         ref = f"refs/heads/{member['ref']}"
         if member["ref"] == branch:

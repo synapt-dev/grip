@@ -155,6 +155,11 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Changed
 
+- **`gr2`: the agent-record fold costs linear time in the writes at a fixed number of writers, not quadratic.** It found each (key, field)
+  group's kept writes with its own walk over the group's shared history, so the walks together grew as groups times
+  history: 18.6M parent lookups and 4.9 s at 10,000 writes on a synthetic store. It now reads them off one clock per
+  fold, the least first-parent depth each commit reaches on each ref, which is exact because a ref has one writer: 2N
+  lookups and 2.0 s at the same size, with identical output at every size measured. A SAW commit merges its parents' clocks, so that merge work still grows with the number of writers.
 - **`gr2`: the generated `.gitmodules` names each member's branch, so `git submodule update --remote` follows it.**
   Each member's entry now carries `branch = <the branch its upstream names>` (`origin/feat/greet` gives `feat/greet`;
   the upstream's branch, not the local `ref`, because the setting names a branch on the member's remote). Before, the

@@ -163,16 +163,73 @@ def _events(repo: Path, reader: fd.BatchReader, tips: dict[str, tuple[str, str]]
     return out
 
 
-def _kept(parents: dict[str, list[str]], writes: list[str]) -> list[str]:
-    """The writes no other write descends from: one walk over the strict ancestors of all of them,
-    so a (key, field) costs one pass over its history, not one per pair of writes."""
-    seen, todo = set(), [p for w in writes for p in parents.get(w, ())]
-    while todo:
-        c = todo.pop()
-        if c not in seen:
-            seen.add(c)
-            todo.extend(parents.get(c, ()))
-    return [w for w in writes if w not in seen]
+def _depths(tips: dict[str, tuple[str, str]], first: dict[str, str]) -> dict[str, tuple[str, int]]:
+    """commit -> (tip, its first-parent depth below that tip), for every commit on a tip's first-parent chain.
+    A commit two chains share is placed once, on the first tip that reaches it."""
+    at: dict[str, tuple[str, int]] = {}
+    for tip in tips:
+        c, d = tip, 0
+        while c is not None and c not in at:
+            at[c], c, d = (tip, d), first.get(c), d + 1
+    return at
+
+
+def _clock(parents: dict[str, list[str]], tips: dict[str, tuple[str, str]],
+           at: dict[str, tuple[str, int]]) -> dict[str, dict[str, int]]:
+    """commit -> {tip: the least first-parent depth below that tip it reaches}. One ref has one
+    writer, so what a commit reaches of a ref is a prefix of its chain: one depth says all of it.
+    Built once per fold, one visit per commit, so the cost of finding the kept writes is linear in
+    the history, not in history x (key, field) groups. A commit on no folded chain (reached only
+    through a parent from elsewhere) adds no entry of its own and passes its parents' on."""
+    clock: dict[str, dict[str, int]] = {}
+    for root in tips:
+        stack = [(root, False)]
+        while stack:
+            c, done = stack.pop()
+            if c in clock:
+                continue
+            ps = parents.get(c, ())
+            if not done:
+                stack.append((c, True))
+                stack.extend((p, False) for p in ps if p not in clock)
+                continue
+            mine: dict[str, int] = {}
+            for p in ps:
+                for t, d in clock[p].items():
+                    if d < mine.get(t, 1 << 62):
+                        mine[t] = d
+            if c in at:
+                t, d = at[c]
+                mine[t] = min(d, mine.get(t, d))
+            clock[c] = mine
+    return clock
+
+
+def _kept(writes: list[str], clock: dict[str, dict[str, int]], at: dict[str, tuple[str, int]]) -> list[str]:
+    """The writes no other write of the group reaches, read off the clock. A write y reaches w when y's
+    clock holds w's tip at a depth no greater than w's own. Per tip the two least depths any write
+    reaches are kept (two, so a write's own entry can be set aside): |writes| x tips, no walk."""
+    best: dict[str, list[tuple[int, str]]] = {}
+    for y in writes:
+        for t, d in clock[y].items():
+            b = best.setdefault(t, [])
+            b.append((d, y))
+            b.sort()
+            del b[2:]
+    return [w for w in writes if not any(y != w and d <= at[w][1] for d, y in best.get(at[w][0], ()))]
+
+
+def _graph(repo: Path, tips: dict[str, tuple[str, str]]) -> dict[str, list[str]]:
+    """commit -> its parents, for everything the tips reach, from one rev-list."""
+    proc = _run(repo, "rev-list", "--parents", "--stdin", data="".join(f"{c}\n" for c in tips).encode())
+    if proc.returncode != 0:
+        raise AppendError(f"rev-list failed: {proc.stderr.decode(errors='replace').strip()[:200]}")
+    parents: dict[str, list[str]] = {}
+    for line in proc.stdout.decode().splitlines():
+        c, *ps = line.split()
+        parents[c] = ps
+    return parents
+
 
 def fold(repo: Path, ref: str = "STOOK", *, org: str, message: str,
          schema: fd.Schema | None = None) -> dict[tuple[str, str], str]:
@@ -191,22 +248,18 @@ def fold(repo: Path, ref: str = "STOOK", *, org: str, message: str,
         tips[commit] = (commit, tree)
     if not tips:
         return {}
-    proc = _run(repo, "rev-list", "--parents", "--stdin", data="".join(f"{c}\n" for c in tips).encode())
-    if proc.returncode != 0:
-        raise AppendError(f"rev-list failed: {proc.stderr.decode(errors='replace').strip()[:200]}")
-    parents = {}
-    for line in proc.stdout.decode().splitlines():
-        c, *ps = line.split()
-        parents[c] = ps
+    parents = _graph(repo, tips)
     first = {c: ps[0] for c, ps in parents.items() if ps}
     with fd.BatchReader(repo) as reader:
         events = _events(repo, reader, tips, first, message, schema)
     groups: dict[tuple[str, str], list[str]] = {}
     for commit, ev in events.items():
         groups.setdefault((ev["key"], ev["field"]), []).append(commit)
+    at = _depths(tips, first)
+    clock = _clock(parents, tips, at)
     out = {}
     for (key, field), writes in groups.items():
-        kept = _kept(parents, writes)
+        kept = _kept(writes, clock, at)
         if len(kept) == 1:
             ev = events[kept[0]]
             out[(key, field)] = f"{key} {field} = {ev['value']} (by {ev['by']})"

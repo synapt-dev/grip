@@ -547,8 +547,21 @@ def recall_lane_events_file(workspace_root: Path) -> Path:
     return events_dir(workspace_root) / "recall_lane_history.jsonl"
 
 
+class WorkspaceSpecMissing(SystemExit):
+    """The root has no `.grip/workspace_spec.toml`. A SystemExit, so every verb that reaches the seam refuses in one
+    line with exit 1, under the console script and under a test runner alike, with no handler at each call site; and
+    so a caller that degrades on a missing spec (`except SystemExit`, as commit does) keeps working. Before, the bare
+    open raised FileNotFoundError, a traceback on a native root and on a gr1 desk not yet adopted."""
+
+
 def load_workspace_spec(workspace_root: Path) -> dict:
-    with (workspace_root / ".grip" / "workspace_spec.toml").open("rb") as fh:
+    try:
+        fh = (workspace_root / ".grip" / "workspace_spec.toml").open("rb")
+    except FileNotFoundError:
+        from gr2.python_cli.workspace_guidance import missing_workspace_spec_message
+
+        raise WorkspaceSpecMissing(missing_workspace_spec_message(workspace_root)) from None
+    with fh:
         return tomllib.load(fh)
 
 

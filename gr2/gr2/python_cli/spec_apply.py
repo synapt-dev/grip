@@ -87,10 +87,10 @@ def repo_cache_path(workspace_root: Path, repo_name: str) -> Path:
 def load_workspace_spec_doc(workspace_root: Path) -> dict[str, object]:
     spec_path = workspace_spec_path(workspace_root)
     if not spec_path.exists():
-        raise SystemExit(
-            f"workspace spec not found: {spec_path}\n"
-            "run `gr2 workspace init <path>` first or create .grip/workspace_spec.toml explicitly"
-        )
+        from gr2.prototypes.lane_workspace_prototype import WorkspaceSpecMissing
+        from .workspace_guidance import missing_workspace_spec_message
+
+        raise WorkspaceSpecMissing(missing_workspace_spec_message(workspace_root))
     with spec_path.open("rb") as fh:
         return tomllib.load(fh)
 

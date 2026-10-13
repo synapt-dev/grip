@@ -313,6 +313,9 @@ class PinRewindRefusal(NativeStoreRefusal):
 
 #: A moved workspace tracks `MOVED_MARKER` at its root, or holds its state under this ref: either
 #: one means a newer gr2 owns this workspace and this one must not touch it.
+#: gr2's own store ref root. The older store constants (reviews, approvals, checks, merge receipts, moved state)
+#: each spell it; new store refs are built from this one.
+GRIP_REF_ROOT = "refs/dev.synapt.grip/"
 MOVED_STATE_REF = "refs/dev.synapt.grip/__state__/v1"
 
 
@@ -1994,10 +1997,9 @@ def _refuse_pin_rewind(
 # SECTION 9 (S1): HEAD is the shadow. Every commit the verb makes gets a second name in the store's own namespace,
 # `refs/dev.synapt.grip/__branches__/<branch>/SHADOW`, set to the SAME commit: one commit, two names. A commit on the
 # branch that the shadow does not name was not made through the verb (a hand commit), which is what the fence reads.
-# The name: a plural keyword names the collection, the bare name under it the one, a moving
-# head ends in SHADOW, and no version. The root is gr2's own store root; PROVISIONAL until Apollo confirms it, and
-# this constant is the only place it is spelled.
-SHADOW_REF_ROOT = "refs/dev.synapt.grip/__branches__/"
+# The name: a plural keyword names the collection, the bare name under it the one, a moving head ends in SHADOW, and
+# no version, under gr2's own store root.
+SHADOW_REF_ROOT = f"{GRIP_REF_ROOT}__branches__/"
 
 
 def _shadow_ref_for(branch: str) -> str:

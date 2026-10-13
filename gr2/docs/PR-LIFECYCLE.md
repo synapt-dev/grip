@@ -62,7 +62,13 @@ Format: `pg_` prefix + 8-char hex.
 
 ### 2.2 PR Group State
 
-A PR group has an aggregate state derived from its children:
+A PR group has an aggregate state derived from its children.
+
+**As built**, `gr2 pr status` reports `group_state` from each child PR's
+state alone: `empty` (no child PRs), `merged` (all merged), `partially_merged`
+(some merged), `open` (every child's state is `OPEN`, `MERGEABLE` or `CLEAN`),
+or `mixed`. The table below is the **design**: its check and review rows
+(`checks_*`, `review_required`, `approved`, `mergeable`) are not computed yet.
 
 | Group State | Condition |
 |-------------|-----------|
@@ -150,12 +156,16 @@ Flow:
 
 1. Find the PR group for the lane (scan `.grip/pr_groups/` for matching
    `lane_name` and `owner_unit`).
-2. For each child PR, call `PlatformAdapter.get_pr(repo, pr_number)`.
-3. For each child PR, call `PlatformAdapter.get_checks(repo, pr_number)`.
-4. For each child PR, call `PlatformAdapter.get_reviews(repo, pr_number)`.
-5. Aggregate into group state.
-6. Evaluate review requirements from compiled workspace constraints.
-7. Print summary table:
+2. For each child PR, call `PlatformAdapter.pr_status(repo, pr_number)`. Its
+   result carries the PR's state, head commit and checks.
+3. Aggregate the child states into the group state (section 2.2, as built).
+4. Print the result.
+
+As built, the result is printed as JSON (`pr_group_id`, `owner_unit`,
+`lane_name`, `group_state`, `statuses`, `state_path`), with or without
+`--json`. Reviews are not read and review requirements are not evaluated here
+(section 7.2). The summary table below, with its Reviews and Mergeable
+columns, is the **design**:
 
 ```
 PR Group pg_8a3f1b2c: feat: hook/event contract
@@ -170,7 +180,9 @@ Lane: apollo/design/hook-event-contract -> sprint-20
 ```
 
 If any child PR has status changes since the last cached state, emit
-`pr.status_changed` events.
+`pr.status_changed` events. When every check on a child PR has completed, emit
+`pr.checks_passed`, or `pr.checks_failed` if any completed check did not
+succeed.
 
 ### 3.3 `gr2 pr merge`
 
@@ -220,12 +232,13 @@ gr2 pr checks <workspace_root> <owner_unit> [<lane_name>]
 Flow:
 
 1. Find the PR group.
-2. For each child PR, call `PlatformAdapter.get_checks(repo, pr_number)`.
+2. For each child PR, call `PlatformAdapter.pr_checks(repo, pr_number)`.
 3. Print status per repo.
 
-`--watch` mode: Poll every 30 seconds and update the display. Emit
-`pr.checks_passed` or `pr.checks_failed` events when the aggregate state
-changes.
+`--watch` mode (**design**, not built): poll every 30 seconds and update the
+display. As built, `gr2 pr checks` reads once and emits no events; the
+`pr.checks_passed` and `pr.checks_failed` events come from `gr2 pr status`
+(section 3.2).
 
 ### 3.5 `gr2 pr list`
 
@@ -321,8 +334,10 @@ class PlatformAdapter(Protocol):
     def edit_pr_body(self, repo: str, number: int, body: str) -> None: ...
 ```
 
-`PLATFORM_ADAPTER_API_VERSION = 1` names this contract. Plugins can declare
-`platform_adapter_api_version = 1`. An omitted declaration retains compatibility
+`PLATFORM_ADAPTER_API_VERSION` names this contract; it is `2` from 2.0.0a9, and the version 2 additions
+(`resolve_target`, `RemoteTarget`, the `target` keyword) are in the package's `PLATFORM_ADAPTER_CHANGELOG.md`.
+Plugins can declare `platform_adapter_api_version = 1` or `2`; a version 1 adapter is called as above. An
+omitted declaration retains compatibility
 through operation-specific capability checks. An unsupported declared version
 refuses. A declaration is a contract, not certification of provider behavior.
 
@@ -459,15 +474,20 @@ billing = 2
 
 ### 7.2 Evaluation
 
-`gr2 pr status` evaluates review requirements per repo:
+**Design** (not built): `gr2 pr status` evaluates review requirements per repo:
 
 1. Get reviews from PlatformAdapter.
 2. Count approvals (excluding stale reviews on outdated commits).
 3. Compare against compiled requirement.
 4. Report satisfied/unsatisfied per repo.
 
-This already exists in the Python CLI as `gr2 review requirements`. The PR
-lifecycle integrates it into the `mergeable` gate.
+The PR lifecycle would then integrate it into the `mergeable` gate.
+
+**As built**, the check is `gr2 review check` (the older name
+`gr2 review requirements` is a deprecated alias). For one `repo#N` it counts
+the distinct owner units of local review lanes whose PR associations name that
+PR, and compares the count with `required_reviewers` for the repo. It does not
+read reviews from the PlatformAdapter, and `gr2 pr status` does not call it.
 
 ### 7.3 Boundary
 

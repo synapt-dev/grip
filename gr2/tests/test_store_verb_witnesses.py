@@ -241,12 +241,14 @@ def test_push_publishes_the_root_ref_and_refuses_on_coverage(ws: Path, tmp_path:
     (ws / "grip.toml").write_text(text.replace(pin, moved))
     _git(ws, "add", "grip.toml")
     _git(ws, "update-index", "--add", "--cacheinfo", f"160000,{moved},alpha")
-    # v5: the ROOT repo has no identity BY DESIGN -- production supplies one per commit
-    # (grip_cli.py:667 carries -c user.name=gr2 -c user.email=gr2@example.invalid). A bare
+    # v5: the ROOT repo has no identity BY DESIGN -- production then supplies one per commit
+    # (store commit falls back to -c user.name=gr2 -c user.email=gr2@example.invalid when git names nobody). A bare
     # commit here leaned on the AMBIENT identity, which exists on a desk and not in CI, so
     # the row was green locally and exit-128 in CI. Give it the identity production gives.
+    # `--no-verify`: this row BUILDS the malformed root a verb must refuse, so it skips the hook that would
+    # refuse the setup commit itself.
     _git(ws, "-c", "user.name=gr2", "-c", "user.email=gr2@example.invalid",
-         "commit", "-q", "-m", "malformed root: a pin its upstream does not have")
+         "commit", "--no-verify", "-q", "-m", "malformed root: a pin its upstream does not have")
     root_before = _git_out(ws, "rev-parse", "HEAD")
     rc, out = _cli("store", "push", "--json")
     assert rc == 3, f"an uncovered pin must refuse the push with 3, got {rc}: {out}"
@@ -332,7 +334,7 @@ def test_fresh_init_generates_the_allow_list_and_the_root_ends_clean(ws: Path) -
 
     assert _cli("store", "commit", "-m", "first")[0] == 0
     tracked = _git_out(ws, "ls-tree", "HEAD", "--name-only").splitlines()
-    assert sorted(tracked) == [".gitinclude", "alpha", "beta", "grip.toml"], tracked
+    assert sorted(tracked) == [".gitinclude", ".gitmodules", "alpha", "beta", "grip.toml"], tracked
     assert _git_out(ws, "status", "--porcelain") == "", (
         "the whole point of the allow-list: a committed root is clean, not venv-noise"
     )
@@ -682,9 +684,11 @@ def test_log_reports_pin_changes_per_root_commit(ws: Path) -> None:
 
 def test_snapshot_is_a_hidden_alias_of_commit(ws: Path) -> None:
     assert _cli("store", "init", str(ws))[0] == 0
-    rc, out = _cli("store", "snapshot", "-m", "first", "--json")
-    assert rc == 0, out
-    assert json.loads(out)["status"] == "committed", out
+    result = make_cli_runner().invoke(app, ["store", "snapshot", "-m", "first", "--json"])
+    out = (result.stdout or "") + (result.stderr or "")
+    assert result.exit_code == 0, out
+    # stdout alone: a first commit names each member it registers on stderr, beside the JSON
+    assert json.loads(result.stdout)["status"] == "committed", out
     assert _git_out(ws, "ls-tree", "HEAD", "alpha").split()[2] == _git_out(
         ws / "alpha", "rev-parse", "HEAD"
     )
@@ -773,3 +777,204 @@ def test_no_test_passes_a_workspace_positional_to_a_ported_verb() -> None:
         "cwd and take no positional; typer refuses the call at the parser):\n  " + "\n  ".join(hits)
     )
 
+
+
+# ---------------------------------------------------------------------------
+# commit identity
+# ---------------------------------------------------------------------------
+
+
+def _no_ambient_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only the identity a row sets exists: no global or system config, no identity env."""
+    empty = tmp_path / "empty-gitconfig"
+    empty.write_text("")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    for var in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_store_commit_carries_the_committers_own_identity(
+    ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A store commit is authored by whoever git names in this root, as a plain `git commit` here would be."""
+    _no_ambient_identity(tmp_path, monkeypatch)
+    assert _cli("store", "init", str(ws))[0] == 0
+    _git(ws, "config", "user.name", "Op Erator")
+    _git(ws, "config", "user.email", "op@example.test")
+
+    rc, out = _cli("store", "commit", "-m", "first")
+
+    assert rc == 0, out
+    assert _git_out(ws, "log", "-1", "--format=%an <%ae>|%cn <%ce>") == (
+        "Op Erator <op@example.test>|Op Erator <op@example.test>"
+    )
+
+
+def test_store_commit_falls_back_to_gr2_only_when_git_names_nobody(
+    ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no identity anywhere a plain commit may fail; the store commit still records, as gr2."""
+    _no_ambient_identity(tmp_path, monkeypatch)
+    assert _cli("store", "init", str(ws))[0] == 0
+    assert _git(ws, "config", "user.name", check=False).returncode != 0, "the root must start with no identity"
+
+    rc, out = _cli("store", "commit", "-m", "first")
+
+    assert rc == 0, out
+    assert _git_out(ws, "log", "-1", "--format=%an <%ae>") == "gr2 <gr2@example.invalid>"
+
+
+def test_a_committer_named_only_by_env_does_not_let_git_guess_the_author(
+    ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GIT_COMMITTER_* names only the committer. The author is then gr2, never git's guess from the account and host."""
+    _no_ambient_identity(tmp_path, monkeypatch)
+    assert _cli("store", "init", str(ws))[0] == 0
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "Env Op")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "env@example.test")
+
+    rc, out = _cli("store", "commit", "-m", "first")
+
+    assert rc == 0, out
+    assert _git_out(ws, "log", "-1", "--format=%an <%ae>|%cn <%ce>") == (
+        "gr2 <gr2@example.invalid>|Env Op <env@example.test>"
+    )
+
+
+def test_an_author_named_only_by_env_does_not_let_git_guess_the_committer(
+    ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mirror: GIT_AUTHOR_* names only the author, so the committer is gr2, never git's guess."""
+    _no_ambient_identity(tmp_path, monkeypatch)
+    assert _cli("store", "init", str(ws))[0] == 0
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Env Au")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "au@example.test")
+
+    rc, out = _cli("store", "commit", "-m", "first")
+
+    assert rc == 0, out
+    assert _git_out(ws, "log", "-1", "--format=%an <%ae>|%cn <%ce>") == (
+        "Env Au <au@example.test>|gr2 <gr2@example.invalid>"
+    )
+
+
+def test_a_full_mode_store_commit_carries_the_committers_own_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Full mode records through commit-tree, the second store-commit path; it names the same identity."""
+    from tests.test_store_full_mode_carrier import _full_store
+
+    _no_ambient_identity(tmp_path, monkeypatch)
+    root = _full_store(tmp_path)   # sets the root's identity to Smoke and records one commit
+
+    parents = _git_out(root, "rev-list", "--parents", "-n", "1", "HEAD").split()[1:]
+    assert len(parents) > 1, "a full-mode commit carries its field commits as parents (the commit-tree path)"
+    assert _git_out(root, "log", "-1", "--format=%an <%ae>|%cn <%ce>") == (
+        "Smoke <smoke@example.test>|Smoke <smoke@example.test>"
+    )
+
+
+# ---------------------------------------------------------------------------
+# push --to: the root's remote, set by gr2
+# ---------------------------------------------------------------------------
+
+
+def _committed_root_without_origin(ws: Path, tmp_path: Path) -> Path:
+    remote = tmp_path / "root.git"
+    subprocess.run(["git", "init", "-q", "-b", "main", "--bare", str(remote)], check=True)
+    assert _cli("store", "init", str(ws))[0] == 0
+    assert _cli("store", "commit", "-m", "first")[0] == 0
+    assert _git(ws, "remote", "get-url", "origin", check=False).returncode != 0, "the root must start with no origin"
+    return remote
+
+
+def test_push_with_no_origin_names_the_flag_and_pushes_nothing(ws: Path, tmp_path: Path) -> None:
+    remote = _committed_root_without_origin(ws, tmp_path)
+
+    rc, out = _cli("store", "push")
+
+    assert rc == 5, out
+    assert "gr2 store push --to <url>" in out, out
+    assert _ls_remote(remote.as_uri(), "refs/heads/main") == ""
+
+
+def test_push_to_records_origin_and_publishes_the_root(ws: Path, tmp_path: Path) -> None:
+    """The proof the card asks for: a fresh store pushed with no raw git typed."""
+    remote = _committed_root_without_origin(ws, tmp_path)
+
+    rc, out = _cli("store", "push", "--to", remote.as_uri(), "--json")
+
+    assert rc == 0, out
+    payload = json.loads(out)
+    assert payload["origin_recorded"] is True, out
+    assert _git_out(ws, "remote", "get-url", "origin") == remote.as_uri()
+    assert _ls_remote(remote.as_uri(), "refs/heads/main") == _git_out(ws, "rev-parse", "HEAD")
+
+    # Control on the same root: a second push needs no flag, and records nothing new.
+    rc, out = _cli("store", "push", "--json")
+    assert rc == 0, out
+    assert json.loads(out)["origin_recorded"] is False, out
+
+
+def test_push_to_never_repoints_an_existing_origin(ws: Path, tmp_path: Path) -> None:
+    remote = _committed_root_without_origin(ws, tmp_path)
+    _git(ws, "remote", "add", "origin", remote.as_uri())
+    other = tmp_path / "other.git"
+    subprocess.run(["git", "init", "-q", "-b", "main", "--bare", str(other)], check=True)
+
+    rc, out = _cli("store", "push", "--to", other.as_uri())
+
+    assert rc == 4, out
+    assert "does not repoint origin" in out, out
+    assert _git_out(ws, "remote", "get-url", "origin") == remote.as_uri()
+    assert _ls_remote(other.as_uri(), "refs/heads/main") == ""
+    assert _ls_remote(remote.as_uri(), "refs/heads/main") == ""
+
+    # The same URL as the recorded origin is not a repoint: it pushes.
+    rc, out = _cli("store", "push", "--to", remote.as_uri())
+    assert rc == 0, out
+    assert _ls_remote(remote.as_uri(), "refs/heads/main") == _git_out(ws, "rev-parse", "HEAD")
+
+
+@pytest.mark.parametrize("bad, code", [
+    ("https://user:secret@example.invalid/root.git", 4),
+    ("ext::sh -c touch% /tmp/pwned", 4),
+    ("--upload-pack=touch /tmp/pwned", 2),
+])
+def test_push_to_refuses_before_recording_anything(ws: Path, tmp_path: Path, bad: str, code: int) -> None:
+    _committed_root_without_origin(ws, tmp_path)
+
+    rc, out = _cli("store", "push", "--to", bad)
+
+    assert rc == code, out
+    assert "secret" not in out, out
+    assert _git(ws, "remote", "get-url", "origin", check=False).returncode != 0, "nothing may be recorded"
+
+
+def test_a_failed_first_push_takes_back_the_origin_it_recorded(ws: Path, tmp_path: Path) -> None:
+    """A typo in --to must not strand the root on a bad origin: the corrected --to is a first record, not a repoint."""
+    remote = _committed_root_without_origin(ws, tmp_path)
+    typo = tmp_path / "no-such-root.git"
+
+    rc, out = _cli("store", "push", "--to", typo.as_uri())
+
+    assert rc == 5, out
+    assert _git(ws, "remote", "get-url", "origin", check=False).returncode != 0, "the failed push left its origin"
+
+    rc, out = _cli("store", "push", "--to", remote.as_uri())
+    assert rc == 0, out
+    assert _git_out(ws, "remote", "get-url", "origin") == remote.as_uri()
+    assert _ls_remote(remote.as_uri(), "refs/heads/main") == _git_out(ws, "rev-parse", "HEAD")
+
+
+def test_a_failed_push_keeps_an_origin_this_push_did_not_record(ws: Path, tmp_path: Path) -> None:
+    """Control: only the origin --to recorded is taken back; one the owner set stays, even when its push fails."""
+    _committed_root_without_origin(ws, tmp_path)
+    mine = (tmp_path / "owner-set.git").as_uri()
+    _git(ws, "remote", "add", "origin", mine)
+
+    rc, out = _cli("store", "push")
+
+    assert rc == 5, out
+    assert _git_out(ws, "remote", "get-url", "origin") == mine

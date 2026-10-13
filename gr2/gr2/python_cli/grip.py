@@ -387,11 +387,14 @@ _CREDENTIAL_PARAMS = frozenset({
 
 def url_has_credentials(url: str) -> bool:
     """URL userinfo other than an SSH login, a credential-named query parameter, or any fragment (git never
-    uses one, so it can only carry data). Never prints the URL. The one owner of this rule: store init, every
+    uses one, so it can only carry data). A URL that cannot be parsed is refused too (it fails closed). Never prints the URL. The one owner of this rule: store init, every
     review-record writer, the publisher, the receiver and lane pr create ask it here."""
     head = url.split("://", 1)[0]
     address = url.split("::", 1)[1] if "::" in head else url
-    parsed = urlsplit(address)
+    try:
+        parsed = urlsplit(address)
+    except ValueError:  # a malformed bracketed host: a URL that cannot be parsed cannot be shown clean
+        return True
     if parsed.password is not None:
         return True
     if parsed.username is not None and parsed.scheme.lower() not in {"ssh", "git+ssh", "ssh+git"}:
@@ -402,6 +405,24 @@ def url_has_credentials(url: str) -> bool:
         if name.strip().lower().replace("-", "_") in _CREDENTIAL_PARAMS:
             return True
     return False
+
+
+# Git runs a program named `git-remote-<name>` for a `<name>::<address>` url, and for a `<scheme>://` url whose scheme
+# it has no built-in transport for. The name is git's own scheme grammar, matched from the start of the url; git
+# lets it start with a digit (`1pwn::x` runs git-remote-1pwn), so this class does too.
+_URL_TRANSPORT = re.compile(r"([A-Za-z0-9][A-Za-z0-9+.-]*)(?:::|://)")
+_ALLOWED_TRANSPORTS = frozenset({"https", "http", "ssh", "git", "file", "git+ssh", "ssh+git"})
+
+
+def url_transport_refusal(url: str) -> str | None:
+    """The transport name when `url` would make git run a remote helper other than https, http, ssh, git or file,
+    else None. Matched exactly, as git matches it: `FILE://x` is not the file transport but a helper named
+    `git-remote-FILE`. A plain or Windows path and an scp-like `user@host:path` name no transport. The read-time half
+    of the rule; the other half is the `protocol.allow` list every gr2 git call carries (gitops.TRANSPORTS)."""
+    match = _URL_TRANSPORT.match(url)
+    if match is None or match.group(1) in _ALLOWED_TRANSPORTS:
+        return None
+    return match.group(1)
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -446,7 +467,8 @@ def _refuse_remote_credentials(key: str, remote: str) -> None:
     userinfo is refused at every writer, before any git call can dial it. The refusal names the
     member, never the URL."""
     if url_has_credentials(remote):
-        raise GripReviewRefused("remote_credentials", key, "remove URL userinfo and use a credential helper")
+        raise GripReviewRefused("remote_credentials", key,
+                                "the remote cannot be parsed or carries URL userinfo; use a credential helper")
 
 
 def _refuse_option_shaped_remote(key: str, remote: str) -> None:
@@ -704,8 +726,9 @@ def _review_bind_author(workspace: Path) -> str:
     name = proc.stdout.strip()
     if proc.returncode != 0 or not name or any(ord(c) < 32 or ord(c) == 127 for c in name):
         raise GripReviewRefused(
-            "bind_author_unavailable", str(workspace),
-            "set your Git identity with git config user.name 'Your Name' in the workspace root, then retry review pin")
+            "bind_author_unavailable", "a Git user.name in the workspace root",
+            f"none set in {workspace}; run git config user.name 'Your Name' there (GIT_AUTHOR_NAME is not read), "
+            "then retry")
     return name
 
 

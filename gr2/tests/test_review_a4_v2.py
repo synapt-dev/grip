@@ -198,3 +198,60 @@ def test_mixed_names_orphan_on_stderr_and_stdout_only_id(two_member_ws: Path) ->
     shown = _invoke("review", "show", str(ws), gr_id, "--json")
     [row] = json.loads(shown.stdout)["members"]
     assert (row["key"], row["base"], row["head"]) == ("alpha", base, head)
+
+
+def _beta_ahead(ws: Path) -> str:
+    beta = ws / "beta"
+    (beta / "beta-change.txt").write_text("beta under review\n")
+    _git(beta, "add", ".")
+    _git(beta, "commit", "-q", "-m", "beta's half of the change")
+    return _git_out(beta, "rev-parse", "HEAD")
+
+
+@pytest.mark.parametrize("broken_member", [None, "beta"])
+def test_unreadable_ancestry_refuses_the_whole_set(two_member_ws: Path, monkeypatch: pytest.MonkeyPatch,
+                                                   broken_member: str | None) -> None:
+    """A changed member whose ancestry cannot be read refuses the pin, naming it, and mints no id.
+
+    Both members carry a change. The control (nothing broken) binds both rows. With beta's ancestry unreadable,
+    the old path bound alpha alone and printed an id for a partial set, which a later merge landed rc 0."""
+    ws = two_member_ws
+    _init(ws)
+    _, a_base, a_head = _unpushed_head(ws)
+    b_head = _beta_ahead(ws)
+    original = gitops.git
+    calls = []
+
+    def broken(cwd, *args):
+        if broken_member and args[:2] == ("merge-base", "--is-ancestor") and Path(cwd).name == broken_member:
+            calls.append(Path(cwd).name)
+            return subprocess.CompletedProcess(args, 128, "", "fatal: Not a valid commit name")
+        return original(cwd, *args)
+
+    monkeypatch.setattr(gitops, "git", broken)
+    before = _refs(ws)
+    result = _invoke("review", "bind", str(ws))
+    print(f"SUBJECT broken={broken_member} rc={result.exit_code} stdout={result.stdout!r}")
+    if broken_member is None:
+        gr_id = _assert_only_bind_stdout(result)
+        rows = json.loads(_invoke("review", "show", str(ws), gr_id, "--json").stdout)["members"]
+        assert sorted((r["key"], r["head"]) for r in rows) == [("alpha", a_head), ("beta", b_head)]
+        return
+    assert calls == ["beta"]
+    assert result.exit_code == 2, result.output
+    message = _flat(result.stderr)
+    assert "beta (ancestry could not be read" in message and "no review id was minted" in message
+    assert "gr2: pin alpha" not in result.stderr
+    assert result.stdout == "" and _refs(ws) == before
+
+
+def test_choice_refused_default_is_immutable() -> None:
+    """A NamedTuple default is one object shared by every instance, so `refused` defaults to an immutable tuple:
+    appending to one Choice's default must not be possible, let alone reach another Choice."""
+    from gr2.python_cli.review_members import Choice
+
+    first, second = Choice([], []), Choice([], [])
+    assert first.refused == () and second.refused == ()
+    with pytest.raises(AttributeError):
+        first.refused.append("x (leaked)")  # type: ignore[attr-defined]
+    assert second.refused == ()

@@ -32,6 +32,8 @@ from .platform import (
     MergeMethod,
     MergeReceipt,
     PlatformAdapter,
+    RemoteTarget,
+    adapter_api_version,
     require_adapter_capability,
 )
 
@@ -325,6 +327,39 @@ class SiblingLinkError(RuntimeError):
         )
 
 
+def member_routing(adapter: PlatformAdapter, repo: str, member: Mapping[str, object]) -> dict[str, RemoteTarget]:
+    """The keyword a v2 adapter's lifecycle call takes: the member's own RemoteTarget.
+
+    A v1 adapter gets nothing, so it is called exactly as before. A v2 adapter cannot route a member
+    from a repo string, so a stored member with neither a `target` nor a `remote` is refused by name,
+    before any adapter call. The stored target is the one resolved at creation; when the group also
+    keeps the raw `remote`, the adapter's reading of it now must still be that target.
+    """
+    if adapter_api_version(adapter) < 2:
+        return {}
+    stored = member.get("target")
+    remote = member.get("remote")
+    if stored is None and remote is None:
+        raise AdapterError(
+            f"group_lacks_routing_context: {repo} has no remote or target, so a v2 adapter cannot route "
+            "it. next: re-create the group with gr2 pr create, which records each member's remote"
+        )
+    if stored is not None:
+        target = RemoteTarget.from_dict(stored)
+        if isinstance(remote, str) and remote and adapter.resolve_target(remote) != target:  # type: ignore[attr-defined]
+            raise AdapterError(
+                f"routing_target_changed: {repo}'s remote now resolves to a different target than the one "
+                "this group was created with. next: re-create the group"
+            )
+        return {"target": target}
+    return {"target": adapter.resolve_target(str(remote))}  # type: ignore[attr-defined]
+
+
+def group_routing(adapter: PlatformAdapter, group: Mapping[str, object]) -> dict[str, dict[str, RemoteTarget]]:
+    """Every member's routing, decided for the whole group before the first adapter call."""
+    return {str(m["repo"]): member_routing(adapter, str(m["repo"]), m) for m in group["prs"]}  # type: ignore[index]
+
+
 def create_pr_group(
     workspace_root: Path,
     owner_unit: str,
@@ -352,6 +387,17 @@ def create_pr_group(
     pr_group_id = _generate_group_id()
     prs: list[dict] = []
 
+    v2 = adapter_api_version(adapter) >= 2
+    targets: dict[str, RemoteTarget] = {}
+    if v2:
+        for repo in repos:
+            remote = remotes.get(repo) if remotes is not None else None
+            if remote is None:
+                raise AdapterError(
+                    f"group_lacks_routing_context: {repo} has no remote, so a v2 adapter cannot route it"
+                )
+            targets[repo] = adapter.resolve_target(remote)  # type: ignore[attr-defined]
+
     for repo in repos:
         remote = remotes.get(repo) if remotes is not None else None
         request = CreatePRRequest(
@@ -362,11 +408,14 @@ def create_pr_group(
             base_branch=base_branch,
             draft=draft,
             remote=remote,
+            target=targets.get(repo),
         )
         ref = adapter.create_pr(request)
         member = {"repo": repo, "pr_number": ref.number, "url": ref.url}
         if remote is not None:
             member["remote"] = remote
+        if repo in targets:
+            member["target"] = targets[repo].as_dict()
         prs.append(member)
 
     # THE SIBLING BLOCK. A reviewer who lands on one PR of a set has no way to reach
@@ -389,7 +438,10 @@ def create_pr_group(
             try:
                 if number is None:
                     raise AdapterError(f"{repo_name} carries no PR number, so it cannot be linked")
-                adapter.edit_pr_body(repo_name, int(number), body + block)
+                adapter.edit_pr_body(
+                    repo_name, int(number), body + block,
+                    **({"target": targets[repo_name]} if repo_name in targets else {}),
+                )
             except Exception as exc:  # every failure must be reported, none swallowed
                 sibling_edits[repo_name] = f"FAILED: {exc}"
                 unlinked.append(f"{repo_name}#{number}")
@@ -573,13 +625,14 @@ def merge_pr_group(
     # per-call check refuses only the member the adapter has reached -- an
     # earlier member merges first, and half of a group that nobody read lands.
     require_adapter_capability(adapter, "merge_pr")
+    routing = group_routing(adapter, group)
     for pr_info in group["prs"]:
         repo = str(pr_info["repo"])
         expected = pins.get(repo)
         if expected is None:
             continue
         number = int(pr_info["pr_number"])
-        actual = adapter.pr_status(repo, number).head_oid
+        actual = adapter.pr_status(repo, number, **routing[repo]).head_oid
         if actual != expected:
             raise PRHeadPinError(
                 repo,
@@ -594,7 +647,7 @@ def merge_pr_group(
         number = int(pr_info["pr_number"])
         try:
             receipt = adapter.merge_pr(
-                repo, number, method=method, expected_head=pins.get(repo)
+                repo, number, method=method, expected_head=pins.get(repo), **routing[repo]
             )
         except MergeEvidenceError as exc:
             _record_merge_failure(
@@ -721,11 +774,12 @@ def check_pr_group_status(
     """Poll PR status/checks for all repos in a group. Emit change events."""
     group = _load_group(workspace_root, pr_group_id)
     cached_status = group.get("status", {})
+    routing = group_routing(adapter, group)
 
     for pr_info in group["prs"]:
         repo = pr_info["repo"]
         number = pr_info["pr_number"]
-        status = adapter.pr_status(repo, number)
+        status = adapter.pr_status(repo, number, **routing[str(repo)])
         old_state = cached_status.get(repo, "OPEN")
 
         if status.state != old_state:

@@ -25,6 +25,16 @@ flag  check run --head <str>                                          stable
 flag  check run --name <str>                                          stable
 flag  check run --remote <str>                                        stable
 verb  check run                                                       stable
+# check set
+arg   check set command <str>                                         stable
+arg   check set review_id <str>                                       stable
+arg   check set workspace_root <str>                                  stable
+flag  check set --at-remote-heads <str>                               stable
+flag  check set --name <str>                                          stable
+flag  check set --root-commit <str>                                   stable
+flag  check set --root/-C <str>                                       stable
+flag  check set --set <str>                                           stable
+verb  check set                                                       stable
 # check show
 arg   check show repo <str>                                           stable
 flag  check show --head <str>                                         stable
@@ -32,6 +42,7 @@ flag  check show --json                                               stable
 flag  check show --member <str>                                       stable
 flag  check show --remote <str>                                       stable
 flag  check show --require <str>                                      stable
+flag  check show --review <str>                                       stable
 json  check show .head                                                stable
 json  check show .member_key                                          stable
 json  check show .reason                                              stable
@@ -98,7 +109,7 @@ verb  exec status                                                     stable
 flag  grip check --json (hidden:grip)                                 stable
 json  grip check .members[].name                                      may-change
 json  grip check .members[].pin                                       may-change
-json  grip check .members[].state  enum(upstream)                     may-change
+json  grip check .members[].state  enum(upstream,layer)               may-change
 json  grip check .members[].upstream                                  may-change
 json  grip check .status  enum(checked)                               may-change
 verb  grip check (hidden:grip)                                        stable
@@ -112,8 +123,10 @@ json  grip checkout .root_commit                                      may-change
 json  grip checkout .status  enum(checked-out)                        may-change
 verb  grip checkout (hidden:grip)                                     stable
 # grip commit
+flag  grip commit --allow-rewind (hidden:grip)                        stable
 flag  grip commit --json (hidden:grip)                                stable
 flag  grip commit --message/-m <str> (hidden:grip)                    stable
+json  grip commit .layered[]                                          may-change
 json  grip commit .root_commit                                        may-change
 json  grip commit .status  enum(committed,unchanged)                  may-change
 verb  grip commit (hidden:grip)                                       stable
@@ -130,6 +143,7 @@ json  grip diff .ref_b                                                may-change
 verb  grip diff (hidden:grip)                                         stable
 # grip init
 arg   grip init workspace_root <str> (hidden:grip)                    stable
+flag  grip init --clone <str> (hidden:grip)                           stable
 flag  grip init --json (hidden:grip)                                  stable
 flag  grip init --member <str> (hidden:grip)                          stable
 json  grip init .path                                                 may-change
@@ -172,17 +186,21 @@ json  grip migrate-reviews .rows[].status  enum(created,present,refused) stable
 verb  grip migrate-reviews (hidden:grip)                              stable
 # grip push
 flag  grip push --json (hidden:grip)                                  stable
+flag  grip push --to <str> (hidden:grip)                              stable
 json  grip push .members[].name                                       may-change
 json  grip push .members[].pin                                        may-change
-json  grip push .members[].state  enum(upstream)                      may-change
+json  grip push .members[].state  enum(upstream,layer)                may-change
 json  grip push .members[].upstream                                   may-change
+json  grip push .origin_recorded  bool                                may-change
 json  grip push .root_branch                                          may-change
 json  grip push .root_commit                                          may-change
 json  grip push .status  enum(pushed)                                 may-change
 verb  grip push (hidden:grip)                                         stable
 # grip snapshot
+flag  grip snapshot --allow-rewind (hidden:grip)                      stable
 flag  grip snapshot --json (hidden:grip)                              stable
 flag  grip snapshot --message/-m <str> (hidden:grip)                  stable
+json  grip snapshot .layered[]                                        may-change
 json  grip snapshot .root_commit                                      may-change
 json  grip snapshot .status  enum(committed,unchanged)                may-change
 verb  grip snapshot (hidden:grip)                                     stable
@@ -192,7 +210,7 @@ json  grip status .members[].gitlink                                  may-change
 json  grip status .members[].head                                     may-change
 json  grip status .members[].name                                     may-change
 json  grip status .members[].pin                                      may-change
-json  grip status .members[].state  enum(upstream,stale,missing,unpinned,cannot-measure) may-change
+json  grip status .members[].state  enum(upstream,layer,stale,missing,unpinned,cannot-measure) may-change
 json  grip status .root.porcelain                                     may-change
 json  grip status .root.state  enum(clean,dirty)                      may-change
 json  grip status .status  enum(status)                               may-change
@@ -300,6 +318,29 @@ arg   lane lease show workspace_root <str>                            stable
 flag  lane lease show --json                                          stable
 flag  lane lease show --root/-C <str>                                 stable
 verb  lane lease show                                                 stable
+# lane list
+arg   lane list workspace_root <str>                                  stable
+flag  lane list --root/-C <str>                                       stable
+flag  lane list --unit <str>                                          stable
+verb  lane list                                                       stable
+# lane push
+arg   lane push lane_name <str>                                       stable
+arg   lane push owner_unit <str>                                      stable
+arg   lane push workspace_root <str>                                  stable
+flag  lane push --force-with-lease                                    stable
+flag  lane push --json                                                stable
+flag  lane push --remote <str>                                        stable
+flag  lane push --root/-C <str>                                       stable
+flag  lane push --set-upstream/-u                                     stable
+flag  lane push --unit <str>                                          stable
+verb  lane push                                                       stable
+# lane remove
+arg   lane remove lane_name <str>                                     stable
+arg   lane remove owner_unit <str>                                    stable
+arg   lane remove workspace_root <str>                                stable
+flag  lane remove --root/-C <str>                                     stable
+flag  lane remove --unit <str>                                        stable
+verb  lane remove                                                     stable
 # lane resolve
 arg   lane resolve operation_id <str>                                 stable
 arg   lane resolve owner_unit <str>                                   stable
@@ -486,6 +527,7 @@ flag  review merge --approvals <str>                                  stable
 flag  review merge --check <str>                                      stable
 flag  review merge --from <str>                                       stable
 flag  review merge --into <str>                                       stable
+flag  review merge --no-set                                           stable
 flag  review merge --root/-C <str>                                    stable
 verb  review merge                                                    stable
 # review open
@@ -628,7 +670,7 @@ exit  store 5 cannot-measure prefix:"cannot complete this store verb: " may-chan
 flag  store check --json                                              may-change
 json  store check .members[].name                                     may-change
 json  store check .members[].pin                                      may-change
-json  store check .members[].state  enum(upstream)                    may-change
+json  store check .members[].state  enum(upstream,layer)              may-change
 json  store check .members[].upstream                                 may-change
 json  store check .status  enum(checked)                              may-change
 verb  store check                                                     may-change
@@ -642,8 +684,10 @@ json  store checkout .root_commit                                     may-change
 json  store checkout .status  enum(checked-out)                       may-change
 verb  store checkout                                                  may-change
 # store commit
+flag  store commit --allow-rewind                                     may-change
 flag  store commit --json                                             may-change
 flag  store commit --message/-m <str>                                 may-change
+json  store commit .layered[]                                         may-change
 json  store commit .root_commit                                       may-change
 json  store commit .status  enum(committed,unchanged)                 may-change
 verb  store commit                                                    may-change
@@ -660,6 +704,7 @@ json  store diff .ref_b                                               may-change
 verb  store diff                                                      may-change
 # store init
 arg   store init workspace_root <str>                                 may-change
+flag  store init --clone <str>                                        stable
 flag  store init --json                                               may-change
 flag  store init --member <str>                                       may-change
 json  store init .path                                                may-change
@@ -702,17 +747,21 @@ json  store migrate-reviews .rows[].status  enum(created,present,refused) stable
 verb  store migrate-reviews                                           stable
 # store push
 flag  store push --json                                               may-change
+flag  store push --to <str>                                           may-change
 json  store push .members[].name                                      may-change
 json  store push .members[].pin                                       may-change
-json  store push .members[].state  enum(upstream)                     may-change
+json  store push .members[].state  enum(upstream,layer)               may-change
 json  store push .members[].upstream                                  may-change
+json  store push .origin_recorded  bool                               may-change
 json  store push .root_branch                                         may-change
 json  store push .root_commit                                         may-change
 json  store push .status  enum(pushed)                                may-change
 verb  store push                                                      may-change
 # store snapshot
+flag  store snapshot --allow-rewind (hidden)                          may-change
 flag  store snapshot --json (hidden)                                  may-change
 flag  store snapshot --message/-m <str> (hidden)                      may-change
+json  store snapshot .layered[]                                       may-change
 json  store snapshot .root_commit                                     may-change
 json  store snapshot .status  enum(committed,unchanged)               may-change
 verb  store snapshot (hidden)                                         may-change
@@ -722,7 +771,7 @@ json  store status .members[].gitlink                                 may-change
 json  store status .members[].head                                    may-change
 json  store status .members[].name                                    may-change
 json  store status .members[].pin                                     may-change
-json  store status .members[].state  enum(upstream,stale,missing,unpinned,cannot-measure) may-change
+json  store status .members[].state  enum(upstream,layer,stale,missing,unpinned,cannot-measure) may-change
 json  store status .root.porcelain                                    may-change
 json  store status .root.state  enum(clean,dirty)                     may-change
 json  store status .status  enum(status)                              may-change
@@ -798,6 +847,11 @@ arg   workspace migrate-lane-state workspace_root <str>               stable
 flag  workspace migrate-lane-state --json                             stable
 flag  workspace migrate-lane-state --receipt <str>                    stable
 verb  workspace migrate-lane-state                                    stable
+# workspace retire-gr1
+arg   workspace retire-gr1 workspace_root <str>                       stable
+flag  workspace retire-gr1 --break-gr1-spawn                          stable
+flag  workspace retire-gr1 --json                                     stable
+verb  workspace retire-gr1                                            stable
 # workspace status
 arg   workspace status workspace_root <str>                           stable
 flag  workspace status --json                                         stable

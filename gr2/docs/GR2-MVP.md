@@ -139,9 +139,11 @@ converges to the full declared state.
 
 ### Gap 4: Platform adapter (Tier 2)
 
-**Current state**: `platform.py` defines the `PlatformAdapter` protocol with
-`create_pr`, `merge_pr`, `pr_status`, `list_prs`, `pr_checks`. `GitHubAdapter`
-is a stub.
+**Current state** (when this plan was written): `platform.py` defined the
+`PlatformAdapter` protocol with `create_pr`, `merge_pr`, `pr_status`,
+`list_prs`, `pr_checks`, and `GitHubAdapter` was a stub. The protocol has since
+gained `pr_view` and `edit_pr_body`, and `GitHubAdapter` implements it through
+the `gh` CLI; `PR-LIFECYCLE.md` section 5.1 is the current list.
 
 **What is missing**:
 - `GitHubAdapter` implementation using `gh` CLI or GitHub API

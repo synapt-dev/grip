@@ -33,6 +33,7 @@ import getpass
 import hashlib
 import unicodedata
 import json
+import os
 import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,13 +52,21 @@ def hooks_sha(repo_root: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def plain_relative_key(member_key: str) -> str:
+    """A member key as a plain workspace-relative path: no leading "/", no empty, "." or ".." part, and
+    no backslash, NUL or newline. Anything else is refused, never normalized."""
+    rel = member_key.rstrip("/")
+    parts = rel.split("/")
+    if (not rel or any(p in ("", ".", "..") for p in parts)
+            or any(c in rel for c in "\\\0\n")):
+        raise ValueError(f"invalid member key: {member_key!r} (a member key is a plain workspace-relative path)")
+    return rel
+
+
 def consent_path(workspace_root: Path, member_key: str) -> Path:
     # The .json suffix is load-bearing: nested member paths would otherwise
     # collide with the parent's record.
-    rel = member_key.strip("/")
-    if not rel or rel in (".", ".."):
-        raise ValueError(f"invalid member key: {member_key!r}")
-    return grip_dir(workspace_root) / "consent" / (rel + ".json")
+    return grip_dir(workspace_root) / "consent" / (plain_relative_key(member_key) + ".json")
 
 
 def workspace_spec_path(workspace_root: Path) -> Path:
@@ -83,9 +92,23 @@ def member_key(workspace_root: Path, repo_root: Path, repo_name: str) -> str:
         return repo_name
 
 
+def _exact_name_exists(base: Path, path: Path) -> bool:
+    """Every component of path below base is listed under exactly that name, on any filesystem,
+    including one that matches names without regard to case or Unicode normalization."""
+    current = base
+    for part in path.relative_to(base).parts:
+        try:
+            if part not in os.listdir(current):
+                return False
+        except OSError:
+            return False
+        current = current / part
+    return True
+
+
 def load_consent(workspace_root: Path, member_key: str) -> dict | None:
     path = consent_path(workspace_root, member_key)
-    if not path.exists():
+    if not path.exists() or not _exact_name_exists(grip_dir(workspace_root) / "consent", path):
         return None
     return json.loads(path.read_text())
 
@@ -93,9 +116,13 @@ def load_consent(workspace_root: Path, member_key: str) -> dict | None:
 def consent_state(
     workspace_root: Path, member_key: str, repo_root: Path
 ) -> tuple[str, dict | None]:
-    """("unbound" | "changed" | "bound", record). "changed" means a record
-    exists whose hooks_sha no longer matches the member's hook text."""
-    record = load_consent(workspace_root, member_key)
+    """("unbound" | "changed" | "bound" | "invalid", record). "changed" means a record
+    exists whose hooks_sha no longer matches the member's hook text; "invalid" means the key is not a
+    plain workspace-relative path, so no record is read and the hooks do not run."""
+    try:
+        record = load_consent(workspace_root, member_key)
+    except ValueError:
+        return ("invalid", None)
     if record is None:
         return ("unbound", None)
     if record.get("hooks_sha") != hooks_sha(repo_root):
@@ -286,7 +313,7 @@ def describe_member(
     for stage in ("on_materialize", "on_enter", "on_exit"):
         for hook in getattr(hooks, stage):
             lines.append(f"lifecycle {stage} · {hook.name} [{hook.when}]: {hook.command}")
-    for item in [*hooks.file_links, *hooks.file_copies]:
+    for item in [*hooks.file_links, *hooks.file_copies, *getattr(hooks, "file_composes", [])]:
         rendered = item.dest
         link_target: str | None = None
         if item.kind == "link":
@@ -326,24 +353,31 @@ def describe_member(
         # raise: a resolved src outside the member's own tree is refused
         # when the hook block runs, so the screen flags it here — the
         # warning's count must cover what the runtime refuses.
-        if "{" in item.src and "}" in item.src:
-            try:
-                from .hooks import render_text as _rt
+        item_srcs = list(item.parts) if item.kind == "compose" else [item.src]
+        for one_src in item_srcs:
+            src_rendered: str | None
+            if "{" in one_src and "}" in one_src:
+                try:
+                    from .hooks import render_text as _rt
 
-                src_rendered = _rt(item.src, _trust_ctx(workspace_root, repo_root, hooks, key))
-            except ValueError:
-                src_rendered = None
+                    src_rendered = _rt(one_src, _trust_ctx(workspace_root, repo_root, hooks, key))
+                except ValueError:
+                    src_rendered = None
             else:
-                src_rendered = src_rendered  # noqa: F841 - name set for clarity
-        else:
-            src_rendered = item.src
-        if src_rendered is not None:
-            src_path = Path(src_rendered)
-            src_abs = str(src_path if src_path.is_absolute() else repo_root / src_path)
-            if not Path(src_abs).resolve().is_relative_to(repo_root.resolve()):
-                flags = [*flags, "the projection source resolves outside the member's own tree"]
+                src_rendered = one_src
+            if src_rendered is not None:
+                src_path = Path(src_rendered)
+                src_abs = str(src_path if src_path.is_absolute() else repo_root / src_path)
+                if not Path(src_abs).resolve().is_relative_to(repo_root.resolve()):
+                    flags = [*flags, "the projection source resolves outside the member's own tree"]
         marker = " ESCAPE: " + "; ".join(flags) if flags else ""
-        lines.append(f"projection {item.kind} dest {rendered}{marker}")
+        if item.kind == "compose":
+            lines.append(
+                f"projection compose dest {rendered} from {len(item.parts)} part(s) "
+                f"[{item.format}]: {', '.join(item.parts)}{marker}"
+            )
+        else:
+            lines.append(f"projection {item.kind} dest {rendered}{marker}")
         if flags:
             escaped_rows.append(item.kind)
     return lines, escaped_rows
@@ -373,10 +407,12 @@ def trust_refusal_rows(
 
     ctx = _trust_ctx_for_key(workspace_root, repo_root, str(hooks.repo_name or key))
     refusals: list[str] = []
-    for item in [*hooks.file_links, *hooks.file_copies]:
+    for item in [*hooks.file_links, *hooks.file_copies, *getattr(hooks, "file_composes", [])]:
         templates = [item.dest]
         if item.kind == "link":
             templates.append(item.src)
+        elif item.kind == "compose":
+            templates.extend(item.parts)
         for template in templates:
             reason = None
             if any(token in template for token in LANE_DEPENDENT_TOKENS):
@@ -422,10 +458,7 @@ PENDING_DIR = Path(GRIP_DIR) / "state" / "hooks_pending"
 
 
 def pending_marker_path(workspace_root: Path, member_key: str) -> Path:
-    rel = member_key.strip("/")
-    if not rel or rel in (".", ".."):
-        raise ValueError(f"invalid member key: {member_key!r}")
-    return workspace_root / PENDING_DIR / (rel + ".json")
+    return workspace_root / PENDING_DIR / (plain_relative_key(member_key) + ".json")
 
 
 def write_pending_marker(workspace_root: Path, member_key: str) -> bool:
@@ -447,7 +480,7 @@ def write_pending_marker(workspace_root: Path, member_key: str) -> bool:
 def take_pending_marker(workspace_root: Path, member_key: str) -> bool:
     """True when a pending marker existed (and is now consumed)."""
     path = pending_marker_path(workspace_root, member_key)
-    if not path.exists():
+    if not path.exists() or not _exact_name_exists(workspace_root / PENDING_DIR, path):
         return False
     path.unlink()
     return True

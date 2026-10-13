@@ -63,11 +63,14 @@ gr2 commit -m "my change" --workspace-root ~/ws --owner-unit default
 ```bash
 gr2 exec run ~/ws default --actor human:you -- pytest -q   # one command, every lane repo
 gr2 review create-project ~/ws default feat-x              # prints gr:<sha>: one object to review
+gr2 lane push ~/ws default feat-x                          # push every lane repo, each verified on its remote
 gr2 lane show ~/ws default                                 # where am I?
 gr2 lane exit ~/ws default --actor human:you
+gr2 lane list ~/ws                                         # each lane: removable, or keep and why
+gr2 lane remove ~/ws default feat-x                        # end it: its clones and record go
 ```
 
-`exec run` and `lane exit` require `--actor`. Every group and verb takes `--help`; `gr2 --help` lists them all.
+`lane remove` refuses while the lane is entered or leased, or was made by `lane bind`, while any of its repos holds uncommitted work, a stash, or a commit no remote has (on any branch or tag), or while its checkout holds anything that is not one of its repos; it names each one and removes nothing. `exec run` and `lane exit` require `--actor`. Every group and verb takes `--help`; `gr2 --help` lists them all.
 
 ## What works today, and what is not there yet
 
@@ -87,13 +90,13 @@ Not there yet:
 
 | Group | Verbs |
 |---|---|
-| `workspace` | init, init-from-topology, materialize, status, convert-clone, detect-gr1, migrate-gr1, migrate-lane-state, bootstrap-gr1, gitinclude |
+| `workspace` | init, init-from-topology, materialize, status, convert-clone, detect-gr1, migrate-gr1, retire-gr1, migrate-lane-state, bootstrap-gr1, gitinclude |
 | `spec` | show, validate |
-| `lane` | create, enter, exit, show, resolve, bind, lease |
+| `lane` | create, enter, exit, show, resolve, bind, lease, list, push, remove |
 | (top level) | branch, add, commit, push, prune, status, plan, apply |
 | `sync` | status, run |
 | `pr` | create, status, checks, merge, view |
-| `check` | run, show |
+| `check` | run, show, set |
 | `review` | open, close, checkout-pr, run, check, pin, publish, receive, verify, show, stamp, merge, repin, create-project, bind, approve, rebind |
 | `exec` | status, run |
 | `repo` | status, projection-run |
@@ -237,6 +240,12 @@ checks, use `--require test --require lint`.
 The read JSON contains `status`, `record_id` (the head's record-set blob id or
 null), `snapshot_oid`, `head`, `member_key`, `records`, and `reason`. Each
 observation retains its fields and adds a SHA-256 `observation_id`.
+
+A review over several members is checked as one set. `gr2 check set <workspace> <review> -- <command>`
+reconstructs every member at its pinned head side by side (`GR2_SET_ROOT`, `GR2_REVIEW_ID` and `GR2_SET_MEMBERS`
+name them), runs the command once, and publishes one `set` observation per member remote, carrying the review and the
+identity of the set. `gr2 review merge` requires that record on a multi-member review (`--no-set` says otherwise),
+and `check show --require set --review <id>` reads a `set` record for another review as stale.
 
 A failed command is recorded and `check run` exits 1. Publication or execution
 refusals exit 2. `check show` returns `pass`, `fail` or `absent` in its JSON;

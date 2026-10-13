@@ -428,11 +428,12 @@ def _run_pytest(
     store.mkdir(parents=True, exist_ok=True)
     venv_dir = store / VENV_DIRNAME
     interpreter = python or sys.executable
+    existed = venv_dir.exists()
     proc = subprocess.run(
         [interpreter, "-m", "venv", str(venv_dir)], text=True, capture_output=True
     )
     if proc.returncode != 0:
-        raise rr.ReviewRunRefused("venv_failed", f"venv create failed: {proc.stderr.strip()}")
+        raise rr.venv_failure(proc, venv_dir, existed=existed)
     venv_python = venv_dir / "bin" / "python"
 
     install_source = "flag" if install is not None else None

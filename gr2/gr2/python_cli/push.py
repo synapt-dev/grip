@@ -25,6 +25,8 @@ class PushReceipt:
     remote_sha: str
     set_upstream: bool
     force_with_lease: bool
+    # git sent nothing: the remote already had the head (porcelain flag '=' on every ref)
+    up_to_date: bool = False
 
 
 def _current_branch(repo: Path) -> str:
@@ -132,6 +134,12 @@ def _refuse_review_ephemeral_repo(repo: Path) -> None:
         )
 
 
+def _porcelain_up_to_date(stdout: str) -> bool:
+    """True when `git push --porcelain` reports every ref as already on the remote ('=' flag)."""
+    flags = [line.split("\t", 1)[0] for line in stdout.splitlines() if "\t" in line]
+    return bool(flags) and all(flag == "=" for flag in flags)
+
+
 def push_current_branch(
     repo: Path,
     *,
@@ -145,7 +153,9 @@ def push_current_branch(
     selected_remote = _select_remote(repo, branch, remote)
     local_sha = _head_sha(repo)
 
-    args = ["push"]
+    # --porcelain: the per-ref flag ('=' for a ref the remote already had) is fixed text, unlike
+    # the "Everything up-to-date" sentence, which git translates under a non-English locale.
+    args = ["push", "--porcelain"]
     if set_upstream:
         args.append("--set-upstream")
     if force_with_lease:
@@ -156,7 +166,9 @@ def push_current_branch(
     except OSError as exc:
         raise PushError(f"failed to launch git push in {repo}: {exc}") from exc
     if pushed.returncode != 0:
-        detail = (pushed.stderr or pushed.stdout).strip()
+        # --porcelain puts the per-ref reason ("[rejected] (fetch first)") on stdout and git's
+        # error and hints on stderr; the refusal carries both.
+        detail = "\n".join(part for part in (pushed.stdout.strip(), pushed.stderr.strip()) if part)
         raise PushError(detail or f"git push failed with exit {pushed.returncode}")
 
     remote_sha = _remote_branch_sha(repo, selected_remote, branch)
@@ -171,4 +183,103 @@ def push_current_branch(
         remote_sha=remote_sha,
         set_upstream=set_upstream,
         force_with_lease=force_with_lease,
+        up_to_date=_porcelain_up_to_date(pushed.stdout),
     )
+
+
+@dataclass(frozen=True)
+class LaneRepoPush:
+    """One repo's row in a lane push: `pushed`, `up_to_date` or `failed`. `uncovered` carries the
+    sentence when the push landed but the head is not on the lane's branch at its remote."""
+
+    repo: str
+    status: str
+    remote: str | None = None
+    branch: str | None = None
+    sha: str | None = None
+    error: str | None = None
+    uncovered: str | None = None
+
+
+def _lane_branch_uncovered(repo: Path, receipt: PushReceipt, lane_branch: str) -> str | None:
+    """Why the pushed head is not on the lane's branch at the remote it went to, or None when it is.
+
+    When the repo pushed the lane's branch itself, the push's own `ls-remote` already proved the
+    remote ref equals the head, so the answer costs nothing more. Only a repo on ANOTHER branch asks
+    the remote once about the lane's branch. When that tip is not in this clone (a teammate pushed
+    past the head and this clone has not fetched), the ancestry cannot be read locally, so exactly
+    that ref is fetched and the question asked again; a fetch that fails says it cannot tell, never
+    that the head must be pushed."""
+    if receipt.branch == lane_branch:
+        return None
+    where = f"{receipt.remote}/{lane_branch}"
+    not_on = f"head {receipt.local_sha} is not on {where}; push it first"
+    listed = git(repo, "ls-remote", "--heads", receipt.remote, f"refs/heads/{lane_branch}")
+    if listed.returncode != 0:
+        return f"cannot tell whether head {receipt.local_sha} is on {where}: ls-remote failed"
+    if not listed.stdout.strip():
+        return not_on
+    tip = listed.stdout.split()[0]
+    ancestry = git(repo, "merge-base", "--is-ancestor", receipt.local_sha, tip)
+    if ancestry.returncode not in (0, 1):
+        fetched = git(repo, "fetch", "--no-tags", "--no-write-fetch-head", receipt.remote, f"refs/heads/{lane_branch}")
+        if fetched.returncode != 0:
+            return f"cannot tell whether head {receipt.local_sha} is on {where}: its tip could not be fetched"
+        ancestry = git(repo, "merge-base", "--is-ancestor", receipt.local_sha, tip)
+        if ancestry.returncode not in (0, 1):
+            return f"cannot tell whether head {receipt.local_sha} is on {where}: ancestry could not be read"
+    return None if ancestry.returncode == 0 else not_on
+
+
+def push_lane(
+    workspace_root: Path,
+    owner_unit: str,
+    lane_name: str,
+    *,
+    remote: str | None = None,
+    set_upstream: bool = False,
+    force_with_lease: bool = False,
+) -> list[LaneRepoPush]:
+    """Push every repo of a lane through `push_current_branch`, one row per repo.
+
+    Pushes to N remotes cannot be atomic: a repo that fails is recorded and the repos already
+    pushed stay pushed; the rows say which landed. After each successful push, the coverage question
+    the store's root push will ask is asked here, so a lane push cannot report success that the
+    root push later refuses."""
+    from gr2.prototypes import lane_workspace_prototype as lane_proto
+
+    from .commit import _lane_repo_targets
+
+    doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
+    if doc.get("lane_kind") == "review-ephemeral":
+        raise PushError(
+            f"lane {owner_unit}/{lane_name} is a review-ephemeral lane (read-only, disposable): "
+            "it cannot be pushed. A review lane never becomes a work lane."
+        )
+    branch_map = doc.get("branch_map", {}) or {}
+    rows: list[LaneRepoPush] = []
+    for key, repo_root in _lane_repo_targets(workspace_root, owner_unit, lane_name, doc):
+        try:
+            receipt = push_current_branch(
+                repo_root,
+                remote=remote,
+                set_upstream=set_upstream,
+                force_with_lease=force_with_lease,
+            )
+        except PushError as exc:
+            rows.append(LaneRepoPush(key, "failed", error=str(exc)))
+            continue
+        lane_branch = branch_map.get(key) or receipt.branch
+        why = _lane_branch_uncovered(repo_root, receipt, lane_branch)
+        uncovered = f"{key} {why}" if why else None
+        rows.append(
+            LaneRepoPush(
+                key,
+                "up_to_date" if receipt.up_to_date else "pushed",
+                remote=receipt.remote,
+                branch=receipt.branch,
+                sha=receipt.local_sha,
+                uncovered=uncovered,
+            )
+        )
+    return rows

@@ -1,0 +1,202 @@
+"""A full-mode member's record as a field tree (package ``dev.synapt.grip.field.v1alpha1``).
+
+The record is a Git tree with one entry per protobuf field, named ``NNN.W_name`` exactly as the review records are
+(see ``review_field_tree``): the field number zero-padded to three digits, the wire type, the field name from the
+writer's schema. Scalars are stored as their raw protobuf payload bytes, and a field at its proto3 default is absent.
+
+A FIELD-COMMIT is a commit whose tree is that record. The grip tree's entry for the member is a gitlink to it, and the
+grip commit carries it as a parent, so every plain clone and pull holds the record while git materializes nothing at the
+member's path.
+
+Field numbers are the field schema's (package v1alpha1, named above). This module writes and reads the fields a pin
+needs: schema (1), kind (2), pin (3), url (4), ref (5), covered_by (6), layers (7), records (9), ref_defaulted (12) and
+covered_test (13). A LAYER is a git bundle, stored as one occurrence of the repeated ``layers`` entry (a tree of
+blobs named 0000001..n, so the order of the occurrences is the order to apply them in). It carries the commits a pin
+needs that no remote holds, so a pin that is on no remote can still be rebuilt from the record plus the member's url.
+A RECORD is a tree, stored as one occurrence of the repeated ``records`` entry: a review, an approval or a check about
+the member's pin, each in the shape its own reader takes. Hooks (8) and config (10) are not written yet; a reader that
+meets an entry it does not know ignores it, and refuses a tree whose schema entry names another package.
+"""
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+from . import review_field_tree as rft
+
+PACKAGE = "dev.synapt.grip.field.v1alpha1"
+
+KIND_REPO, KIND_GRIP = 1, 2
+COVER_REACHABLE, COVER_LANDED_BY_PATCH = 1, 2
+
+RECORDS_FIELD = 9   # the spec's 009.2r_records/; 8 is reserved for hooks, 10 for config, 11 is unassigned
+_REPEATED = {7, RECORDS_FIELD}   # field numbers stored as a tree of occurrences
+_TREE_OCCURRENCES = {RECORDS_FIELD}   # repeated fields whose occurrences are trees (a record), not blobs
+BUNDLE_HEADERS = (b"# v2 git bundle\n", b"# v3 git bundle\n")
+MAX_LAYER_BYTES = 64 * 1024 * 1024   # a layer is a handful of commits; a record is written by anyone with push access
+
+# number -> (name, wire type, record key). Wire type 2 is a string, 0 a varint.
+_FIELDS = {
+    1: ("schema", 2, "schema"),
+    2: ("kind", 0, "kind"),
+    3: ("pin", 2, "pin"),
+    4: ("url", 2, "url"),
+    5: ("ref", 2, "ref"),
+    6: ("covered_by", 2, "covered_by"),
+    7: ("layers", 2, "layers"),
+    RECORDS_FIELD: ("records", 2, "records"),
+    12: ("ref_defaulted", 0, "ref_defaulted"),
+    13: ("covered_test", 0, "covered_test"),
+}
+
+
+class FieldTreeError(ValueError):
+    """A member record that cannot be written or read as a field tree."""
+
+
+def write(repo: Path, record: dict) -> str:
+    """The tree id of ``record`` (keys: kind, pin, url, ref, covered_by, layers, records, ref_defaulted, covered_test;
+    the schema entry is always this package). A field at its default is not written; ``records`` holds tree ids."""
+    values = {**record, "schema": PACKAGE}
+    entries: list[rft.Entry] = []
+    for number, (name, wire, key) in sorted(_FIELDS.items()):
+        value = values.get(key)
+        if number in _REPEATED:
+            if not value:
+                continue
+            if number in _TREE_OCCURRENCES:
+                occurrences = [("040000", "tree", str(item), f"{i:07d}") for i, item in enumerate(value, 1)]
+            else:
+                occurrences = [("100644", "blob", rft._blob(repo, bytes(item)), f"{i:07d}")
+                               for i, item in enumerate(value, 1)]
+            field = rft.Field(number, name, "bytes", True)
+            entries.append(("040000", "tree", rft._mktree(repo, occurrences), rft.entry_name(field, number, wire, True)))
+            continue
+        if value in (None, "", 0, False):
+            continue
+        if wire == 2:
+            payload = str(value).encode("utf-8")
+        else:
+            payload = rft._varint(int(value))
+        field = rft.Field(number, name, "string" if wire == 2 else "uint64", False)
+        entries.append(("100644", "blob", rft._blob(repo, payload), rft.entry_name(field, number, wire, False)))
+    return rft._mktree(repo, entries)
+
+
+def read(repo: Path, tree: str) -> dict:
+    """The record in ``tree``, decoded by field NUMBER (the name is a hint). Refuses a tree for another package."""
+    out: dict = dict(schema="", kind=0, pin="", url="", ref="", covered_by="", layers=[], records=[],
+                     ref_defaulted=False, covered_test=0)
+    try:
+        entries = rft._ls(repo, tree)   # a tree object this clone does not hold is a git failure, not a record
+    except rft.ReviewRecordError as exc:
+        raise FieldTreeError(str(exc)) from exc
+    for mode, kind, oid, name in entries:
+        try:
+            number, wire, repeated = rft.parse_entry(name)
+        except rft.ReviewRecordError as exc:
+            raise FieldTreeError(str(exc)) from exc
+        spec = _FIELDS.get(number)
+        if spec is None:
+            continue
+        if number in _REPEATED:
+            if kind != "tree" or not repeated or wire != spec[1]:
+                raise FieldTreeError(f"entry {name!r} is not the {spec[0]} field this schema defines")
+            if number in _TREE_OCCURRENCES:
+                try:
+                    kids = rft._occurrences(repo, name, oid)
+                except rft.ReviewRecordError as exc:
+                    raise FieldTreeError(str(exc)) from exc
+                if any(kid[1] != "tree" for kid in kids):
+                    raise FieldTreeError(f"entry {name!r} holds an occurrence that is not a record tree")
+                out[spec[2]] = [kid[2] for kid in kids]
+                continue
+            try:
+                kids = rft._occurrences(repo, name, oid)
+                blobs = []
+                for index, kid in enumerate(kids, 1):
+                    # The size is asked for first, so a record cannot make this read load what it will then refuse.
+                    size = int(rft._git(repo, "cat-file", "-s", kid[2]))
+                    if size > MAX_LAYER_BYTES:
+                        raise FieldTreeError(f"layer {index} is {size} bytes, over the {MAX_LAYER_BYTES} a layer may carry")
+                    blobs.append(rft._git(repo, "cat-file", "blob", kid[2]))
+                out[spec[2]] = blobs
+            except rft.ReviewRecordError as exc:
+                raise FieldTreeError(str(exc)) from exc
+            continue
+        if kind != "blob" or repeated or wire != spec[1]:
+            raise FieldTreeError(f"entry {name!r} is not the {spec[0]} field this schema defines")
+        payload = rft._git(repo, "cat-file", "blob", oid)
+        if wire == 2:
+            out[spec[2]] = payload.decode("utf-8")
+        else:
+            value, end = rft._read_varint(payload, 0)
+            if end != len(payload):
+                raise FieldTreeError(f"entry {name!r} carries bytes after its varint")
+            out[spec[2]] = bool(value) if spec[2] == "ref_defaulted" else value
+    if out["schema"] != PACKAGE:
+        raise FieldTreeError(f"schema entry names {out['schema']!r}, not {PACKAGE!r}")
+    _validate(repo, out)
+    return out
+
+
+_HEX_PIN = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+
+
+def _validate(repo: Path, record: dict) -> None:
+    """Refuse a record whose strings git would act on as something other than data.
+
+    A record arrives in a commit anyone with push or PR access can write, and `materialize` hands its ref and url to
+    `git fetch` and `git clone`. A ref that starts with a dash is an option (`--upload-pack=...` runs a command), so
+    each field is checked here, at the read, and every reader gets the same answer."""
+    from . import grip as grip_mod
+
+    if record["pin"] and not _HEX_PIN.fullmatch(record["pin"]):
+        raise FieldTreeError(f"pin {record['pin'][:80]!r} is not a full hex commit id")
+    for key in ("covered_by", "ref", "url"):
+        value = record[key]
+        if value and (value.startswith("-") or any(ch.isspace() or ord(ch) < 32 for ch in value)):
+            raise FieldTreeError(f"{key} {value[:80]!r} is shaped like an option or carries whitespace or control bytes")
+    for index, layer in enumerate(record["layers"], 1):
+        if not layer.startswith(BUNDLE_HEADERS):
+            raise FieldTreeError(f"layer {index} is not a git bundle")
+    covered = record["covered_by"]
+    if covered:
+        try:
+            rft._git(repo, "check-ref-format", covered)
+            well_formed = True
+        except rft.ReviewRecordError:
+            well_formed = False
+        if not covered.startswith("refs/heads/") or not well_formed:
+            raise FieldTreeError(f"covered_by {covered[:80]!r} is not a refs/heads/ ref name")
+    url = record["url"]
+    transport = grip_mod.url_transport_refusal(url) if url else None
+    if transport is not None:
+        raise FieldTreeError(f"url uses the {transport[:40]!r} transport, which runs a program on the reader's machine; "
+                             f"use an https, http, ssh, git or file url")
+    if url and grip_mod.url_has_credentials(url):
+        raise FieldTreeError("url carries credentials; remove them and use a credential helper")
+
+
+def root_commit(repo: Path, message: str = "grip root") -> str:
+    """An empty commit with no parents. The first grip commit has no previous grip commit, and git makes a commit's
+    first parent whatever is listed first, so without this the first carried field-commit would be the first parent and
+    `git log --first-parent` would walk into a record. This commit holds that place, so the first-parent chain is grip
+    commits down to a real root."""
+    tree = rft._mktree(repo, [])
+    made = rft._git(repo, "-c", "user.name=gr2", "-c", "user.email=gr2@example.invalid", "commit-tree", tree, "-m", message)
+    return made.decode().strip()
+
+
+def commit(repo: Path, record: dict, message: str, previous: str | None = None) -> str:
+    """A field-commit for ``record``. When ``previous`` (the field-commit the grip tree already holds) has this very
+    tree, it is returned unchanged, so a member whose record did not move keeps the same field-commit id."""
+    tree = write(repo, record)
+    if previous:
+        try:
+            if rft._git(repo, "rev-parse", f"{previous}^{{tree}}").decode().strip() == tree:
+                return previous
+        except rft.ReviewRecordError:
+            pass
+    made = rft._git(repo, "-c", "user.name=gr2", "-c", "user.email=gr2@example.invalid", "commit-tree", tree, "-m", message)
+    return made.decode().strip()

@@ -79,7 +79,10 @@ MIN_ARGS = 95
 # --json payload already had no registered shape, so the new spelling is one extra residual,
 # the same way `review check` was. `pin` and `stamp` add none: their old names carried no --json.
 
-JSON_VERBS_PENDING = 54
+# 55 -> 56: `lane push --json` prints one row per repo and registers no shape: the shape table is the
+# store group's (its gate reads every json spelling as a store mount), so the lane verb joins the residual.
+
+JSON_VERBS_PENDING = 56
 
 # The kinds a stranger BUILDS ON INDEPENDENTLY: a verb, a flag, a positional
 # and an exit code are each actionable on their own -- a caller writes

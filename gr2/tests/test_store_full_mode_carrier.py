@@ -1,0 +1,364 @@
+"""Full mode: a member's record is a field-commit that the grip commit carries as a parent.
+
+THE SHAPE (the full-mode spec, sections 2 and 3): in a workspace whose grip.toml says `mode = "full"`, the grip tree
+holds a mode-160000 entry per member, but it points at a FIELD-COMMIT, whose tree is the member's record (the pin, the
+url, the tracked ref and the remote ref that covers the pin), and that field-commit is also a PARENT of the grip commit.
+A plain clone and a plain pull therefore carry every record while git materializes nothing under a member's path, and
+`git log --first-parent` is the workspace's own history.
+
+Smallest proof first: one covered pin per member. A pin that is on no remote is carried by a layer (see
+test_store_full_mode_layers).
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from gr2.python_cli import member_field_tree as mft
+from tests.test_store_git_native_smoke import configure_identity, git, gr2, make_member, run
+
+
+def _full_store(tmp_path: Path) -> Path:
+    """Two members cloned side by side, a store init, `mode = "full"` written by hand, and one recorded root commit."""
+    root = tmp_path / "workspace"
+    root.mkdir()
+    for name in ("alpha", "beta"):
+        remote, _ = make_member(tmp_path, name)
+        run(root, "git", "clone", str(remote), name)
+        configure_identity(root / name)
+    assert gr2(root, "init").returncode == 0
+    configure_identity(root)
+    text = (root / "grip.toml").read_text(encoding="utf-8")
+    (root / "grip.toml").write_text('mode = "full"\n' + text, encoding="utf-8")
+    first = gr2(root, "commit", "-m", "first")
+    assert first.returncode == 0, f"{first.stdout}\n{first.stderr}"
+    return root
+
+
+def _gitlink(root: Path, member: str, rev: str = "HEAD") -> str:
+    return git(root, "ls-tree", rev, "--", member).stdout.split()[2]
+
+
+def _member_head(root: Path, member: str) -> str:
+    return git(root / member, "rev-parse", "HEAD").stdout.strip()
+
+
+def _advance(root: Path, member: str, *, push: bool) -> str:
+    work = root / member
+    marker = work / f"{member}-{len(list(work.glob('*.txt')))}.txt"
+    marker.write_text("moved\n")
+    git(work, "add", marker.name)
+    git(work, "commit", "-m", f"{member} moved")
+    if push:
+        git(work, "push", "origin", "main")
+    return git(work, "rev-parse", "HEAD").stdout.strip()
+
+
+def test_the_members_gitlink_points_at_a_field_commit_whose_tree_is_the_record(tmp_path):
+    root = _full_store(tmp_path)
+
+    carrier = _gitlink(root, "alpha")
+
+    assert carrier != _member_head(root, "alpha"), "the entry must not be the member commit itself"
+    assert git(root, "cat-file", "-t", carrier).stdout.strip() == "commit"
+    names = git(root, "ls-tree", "--name-only", f"{carrier}^{{tree}}").stdout.split()
+    assert names == ["001.2_schema", "002.0_kind", "003.2_pin", "004.2_url", "005.2_ref", "006.2_covered_by", "013.0_covered_test"]
+    assert git(root, "ls-tree", "HEAD", "--", "alpha").stdout.split()[0] == "160000"
+
+
+def test_the_field_commit_is_a_parent_of_the_grip_commit(tmp_path):
+    root = _full_store(tmp_path)
+
+    parents = git(root, "rev-list", "--parents", "-n", "1", "HEAD").stdout.split()[1:]
+
+    assert _gitlink(root, "alpha") in parents and _gitlink(root, "beta") in parents, parents
+
+
+def test_first_parent_history_lists_grip_commits_only(tmp_path):
+    root = _full_store(tmp_path)
+    _advance(root, "beta", push=True)
+    assert gr2(root, "commit", "-m", "second").returncode == 0
+
+    chain = git(root, "log", "--first-parent", "--format=%H").stdout.split()
+    subjects = git(root, "log", "--first-parent", "--format=%s").stdout.splitlines()
+    carriers = {_gitlink(root, "alpha"), _gitlink(root, "beta"), _gitlink(root, "beta", "HEAD~1")}
+
+    assert subjects == ["second", "first", "grip root"], subjects
+    assert not carriers & set(chain), "a field-commit is on the first-parent chain"
+    # every grip commit holds grip.toml; the empty root holds the first-parent place and holds nothing
+    assert all(git(root, "cat-file", "-e", f"{c}:grip.toml", check=False).returncode == 0 for c in chain[:2]), chain
+
+
+def test_a_plain_clone_carries_the_field_commits_and_projects_nothing(tmp_path):
+    root = _full_store(tmp_path)
+    carrier = _gitlink(root, "alpha")
+
+    git(tmp_path, "clone", str(root), "plain")
+    plain = tmp_path / "plain"
+
+    assert git(plain, "cat-file", "-e", f"{carrier}^{{commit}}", check=False).returncode == 0
+    assert not (plain / ".gitmodules").exists(), "full mode never projects a .gitmodules"
+    assert (plain / "alpha").is_dir() and list((plain / "alpha").iterdir()) == []
+
+
+def test_the_record_reads_back_whole(tmp_path):
+    root = _full_store(tmp_path)
+
+    record = mft.read(root, f"{_gitlink(root, 'alpha')}^{{tree}}")
+
+    remote = git(root / "alpha", "remote", "get-url", "origin").stdout.strip()
+    assert record == dict(schema=mft.PACKAGE, kind=mft.KIND_REPO, pin=_member_head(root, "alpha"), url=remote,
+                          ref="main", covered_by="refs/heads/main", layers=[], records=[], ref_defaulted=False,
+                          covered_test=mft.COVER_REACHABLE)
+
+
+def test_an_unchanged_pin_keeps_the_same_field_commit(tmp_path):
+    root = _full_store(tmp_path)
+    before = _gitlink(root, "alpha")
+    _advance(root, "beta", push=True)
+    assert gr2(root, "commit", "-m", "only beta moved").returncode == 0
+
+    assert _gitlink(root, "alpha") == before
+
+
+def test_materialize_in_a_fresh_clone_checks_out_each_pin_from_its_url_and_covering_ref(tmp_path):
+    root = _full_store(tmp_path)
+    pins = {n: _member_head(root, n) for n in ("alpha", "beta")}
+    git(tmp_path, "clone", str(root), "fresh")
+    fresh = tmp_path / "fresh"
+    configure_identity(fresh)
+
+    done = gr2(fresh, "materialize")
+
+    assert done.returncode == 0, f"{done.stdout}\n{done.stderr}"
+    for name, pin in pins.items():
+        assert git(fresh / name, "rev-parse", "HEAD").stdout.strip() == pin
+
+
+def test_compat_mode_is_unchanged(tmp_path):
+    """No `mode` key: the entry is the member commit itself and a .gitmodules is written, as before."""
+    root = tmp_path / "workspace"
+    root.mkdir()
+    for name in ("alpha", "beta"):
+        remote, _ = make_member(tmp_path, name)
+        run(root, "git", "clone", str(remote), name)
+        configure_identity(root / name)
+    assert gr2(root, "init").returncode == 0
+    configure_identity(root)
+    assert gr2(root, "commit", "-m", "first").returncode == 0
+
+    assert _gitlink(root, "alpha") == _member_head(root, "alpha")
+    assert (root / ".gitmodules").exists()
+
+
+# ── readers that take a tree entry for a pin must read `mode` first ──────────────────────────────────────────────────
+
+
+def test_a_selected_workspace_commit_agrees_with_the_field_record_not_the_raw_entry(tmp_path):
+    """In full mode the entry is a field-commit; `_native_members` at a revision compares the pin the record holds."""
+    from gr2.python_cli import grip_cli
+
+    root = _full_store(tmp_path)
+
+    members = grip_cli._native_members(root, "HEAD")
+
+    assert sorted(m["name"] for m in members) == ["alpha", "beta"]
+    assert {m["name"]: m["pin"] for m in members} == {n: _member_head(root, n) for n in ("alpha", "beta")}
+
+
+def test_a_plain_git_commit_is_refused_by_the_hook_by_name_in_full_mode(tmp_path):
+    root = _full_store(tmp_path)
+
+    refused = git(root, "commit", "--allow-empty", "-m", "plain", check=False)
+
+    assert refused.returncode != 0
+    assert "full_mode_hook" in f"{refused.stdout}{refused.stderr}", (refused.stdout, refused.stderr)
+
+
+@pytest.mark.parametrize("reader", ["_scan_existing_repos", "_require_superproject", "_superproject_report"])
+def test_the_superproject_readers_refuse_a_full_mode_root_by_name(tmp_path, reader):
+    from gr2.python_cli import app
+
+    root = _full_store(tmp_path)
+
+    with pytest.raises(SystemExit) as stopped:
+        getattr(app, reader)(root)
+
+    assert "full_mode_unsupported" in str(stopped.value), stopped.value
+
+
+def test_a_compat_root_still_reads_its_gitlinks_as_pins(tmp_path):
+    from gr2.python_cli import app
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    for name in ("alpha", "beta"):
+        remote, _ = make_member(tmp_path, name)
+        run(root, "git", "clone", str(remote), name)
+        configure_identity(root / name)
+    assert gr2(root, "init").returncode == 0
+    configure_identity(root)
+    assert gr2(root, "commit", "-m", "first").returncode == 0
+
+    assert sorted(app._root_gitlink_pins(root)) == ["alpha", "beta"]
+
+
+def test_migrate_already_refuses_a_root_that_has_a_grip_toml(tmp_path):
+    """`store migrate` writes member pins as gitlinks, which would overwrite a field-commit; it never reaches that."""
+    root = _full_store(tmp_path)
+
+    refused = gr2(root, "migrate", check=False)
+
+    assert refused.returncode != 0
+
+
+def test_a_mode_that_is_neither_compat_nor_full_is_refused_by_name(tmp_path):
+    root = _full_store(tmp_path)
+    text = (root / "grip.toml").read_text(encoding="utf-8").replace('mode = "full"\n', 'mode = "fulll"\n', 1)
+    (root / "grip.toml").write_text(text, encoding="utf-8")
+
+    refused = gr2(root, "commit", "-m", "typo", check=False)
+
+    assert refused.returncode == 4
+    assert 'mode must be "compat" or "full"' in f"{refused.stdout}{refused.stderr}"
+
+
+def test_materialize_fetches_the_covering_ref_when_the_pin_is_on_no_default_branch(tmp_path):
+    """The pin is covered by `origin/side` only: a plain clone does not hold it, so materialize must fetch the ref the
+    record names (never ask for a bare sha) before it checks the pin out."""
+    root = _full_store(tmp_path)
+    text = (root / "grip.toml").read_text(encoding="utf-8")
+    assert text.count('upstream = "origin/main"') == 2
+    (root / "grip.toml").write_text(text.replace('upstream = "origin/main"', 'upstream = "origin/side"', 1), encoding="utf-8")
+    pin = _advance(root, "alpha", push=False)
+    git(root / "alpha", "push", "origin", "HEAD:refs/heads/side")
+    done = gr2(root, "commit", "-m", "alpha covered by side only")
+    assert done.returncode == 0, f"{done.stdout}\n{done.stderr}"
+    git(tmp_path, "clone", str(root), "fresh")
+    fresh = tmp_path / "fresh"
+    configure_identity(fresh)
+    # A plain clone fetches every branch, so `origin/side` would arrive without the fetch and this row could not fail.
+    # A single-branch checkout of main leaves the covering ref as the only way the pin can arrive.
+    url = git(root / "alpha", "remote", "get-url", "origin").stdout.strip()
+    git(fresh, "clone", "--no-local", "--single-branch", "--branch", "main", url, "alpha")
+    assert git(fresh / "alpha", "cat-file", "-t", pin, check=False).returncode != 0
+
+    made = gr2(fresh, "materialize")
+
+    assert made.returncode == 0, f"{made.stdout}\n{made.stderr}"
+    assert git(fresh / "alpha", "rev-parse", "HEAD").stdout.strip() == pin
+
+
+def test_a_shallow_clone_that_lacks_the_records_is_a_named_refusal_not_a_traceback(tmp_path):
+    """The field-commits are PARENTS of the grip commit, and a depth-1 clone does not fetch parents."""
+    root = _full_store(tmp_path)
+    git(tmp_path, "clone", "--depth", "1", f"file://{root}", "shallow")
+
+    made = gr2(tmp_path / "shallow", "materialize", check=False)
+
+    out = f"{made.stdout}\n{made.stderr}"
+    assert made.returncode == 4, out
+    assert "Traceback" not in out, out
+    assert "git fetch --unshallow" in out, out
+
+
+@pytest.mark.parametrize("verb", ["check", "status"])
+def test_check_and_status_read_the_record_pin_of_a_clean_full_mode_commit(tmp_path, verb):
+    root = _full_store(tmp_path)
+
+    done = gr2(root, verb)
+
+    out = f"{done.stdout}\n{done.stderr}"
+    assert "disagrees with pin" not in out, out
+    assert done.returncode == 0, out
+
+
+def test_diff_names_the_empty_root_commit_and_still_diffs_real_commits(tmp_path):
+    root = _full_store(tmp_path)
+    _advance(root, "alpha", push=True)
+    assert gr2(root, "commit", "-m", "alpha moved").returncode == 0
+
+    real = gr2(root, "diff", "HEAD~1", "HEAD")
+    empty = gr2(root, "diff", "HEAD~2", "HEAD", check=False)
+
+    assert real.returncode == 0, f"{real.stdout}\n{real.stderr}"
+    assert "alpha" in real.stdout
+    out = f"{empty.stdout}\n{empty.stderr}"
+    assert empty.returncode == 5, out
+    assert "empty root commit" in out and "fatal" not in out, out
+
+
+def test_a_compat_store_that_flips_to_full_drops_the_gitmodules_gr2_wrote(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    for name in ("alpha", "beta"):
+        remote, _ = make_member(tmp_path, name)
+        run(root, "git", "clone", str(remote), name)
+        configure_identity(root / name)
+    assert gr2(root, "init").returncode == 0
+    configure_identity(root)
+    assert gr2(root, "commit", "-m", "compat first").returncode == 0
+    assert git(root, "cat-file", "-e", "HEAD:.gitmodules", check=False).returncode == 0
+    text = (root / "grip.toml").read_text(encoding="utf-8")
+    (root / "grip.toml").write_text('mode = "full"\n' + text, encoding="utf-8")
+    _advance(root, "alpha", push=True)
+
+    flipped = gr2(root, "commit", "-m", "flip to full")
+
+    assert flipped.returncode == 0, f"{flipped.stdout}\n{flipped.stderr}"
+    assert git(root, "cat-file", "-e", "HEAD:.gitmodules", check=False).returncode != 0
+    assert not (root / ".gitmodules").exists()
+
+
+def _evil_root(tmp_path: Path, marker: Path, covered_by: str) -> Path:
+    """A full-mode root whose alpha record names `covered_by`, carried in a root commit as any pusher could."""
+    root = _full_store(tmp_path)
+    pin = _member_head(root, "alpha")
+    evil = mft.commit(root, dict(kind=mft.KIND_REPO, pin=pin, url=git(root / "alpha", "remote", "get-url", "origin").stdout.strip(),
+                                 ref="main", covered_by=covered_by, covered_test=mft.COVER_REACHABLE), "evil record")
+    git(root, "update-index", "--add", "--cacheinfo", f"160000,{evil},alpha")
+    tree = git(root, "write-tree").stdout.strip()
+    head = git(root, "rev-parse", "HEAD").stdout.strip()
+    made = git(root, "-c", "user.name=x", "-c", "user.email=x@example.invalid", "commit-tree", tree,
+               "-p", head, "-p", evil, "-m", "carry the evil record").stdout.strip()
+    git(root, "update-ref", "HEAD", made)
+    return root
+
+
+def test_a_record_whose_covering_ref_is_an_option_is_refused_and_runs_nothing(tmp_path):
+    """A record whose covered_by is an option (`--upload-pack=<command>`) is refused and nothing runs: it was handed to
+    `git fetch` and ran."""
+    marker = tmp_path / "PWNED"
+    root = _evil_root(tmp_path, marker, f"--upload-pack=touch {marker}; git-upload-pack")
+    git(tmp_path, "clone", str(root), "victim")
+
+    made = gr2(tmp_path / "victim", "materialize", check=False)
+
+    out = f"{made.stdout}\n{made.stderr}"
+    assert made.returncode != 0, out
+    assert not marker.exists(), "the record's covered_by ran as a command"
+    assert "covered_by" in out, out
+
+
+@pytest.mark.parametrize("field,value", [
+    ("covered_by", "refs/tags/v1"),
+    ("covered_by", "refs/heads/a..b"),
+    ("covered_by", "-x"),
+    ("pin", "not-hex"),
+    ("pin", "abc123"),
+    ("ref", "-x"),
+    ("url", "--upload-pack=x"),
+    ("url", "ext::sh -c id"),
+    ("url", "https://user:secret@example.invalid/r.git"),
+    ("url", "https://example.invalid/r.git extra"),
+])
+def test_a_record_field_that_git_would_act_on_as_an_option_is_refused_at_the_read(tmp_path, field, value):
+    git(tmp_path, "init", "-q", "-b", "main")
+    good = dict(kind=mft.KIND_REPO, pin="a" * 40, url="https://example.invalid/r.git", ref="main",
+                covered_by="refs/heads/main", covered_test=mft.COVER_REACHABLE)
+    assert mft.read(tmp_path, f"{mft.write(tmp_path, good)}")["pin"] == "a" * 40
+    tree = mft.write(tmp_path, {**good, field: value})
+
+    with pytest.raises(mft.FieldTreeError, match=field):
+        mft.read(tmp_path, tree)

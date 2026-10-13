@@ -11,14 +11,15 @@ import subprocess
 
 import pytest
 
-from gr2.python_cli import merge_gate
+from gr2.python_cli import gitops, merge_gate
 from tests.test_review_merge_gate import _git_identity, check, git, merge, mains, slice2, world  # noqa: F401  (fixtures)
 
 REAL_RUN = subprocess.run
 
 
 def _is_push(cmd) -> bool:
-    return isinstance(cmd, (list, tuple)) and len(cmd) > 3 and cmd[0] == "git" and "push" in cmd[:9]
+    # By subcommand, not by position: the shared `-c` flags gr2 puts before it grow over time.
+    return isinstance(cmd, (list, tuple)) and len(cmd) > 3 and cmd[0] == "git" and gitops.command_of(cmd) == "push"
 
 
 def lose_acknowledgement(monkeypatch, *, hide=None, only_first=False):
@@ -55,7 +56,7 @@ def test_a_lost_acknowledgement_reads_merged_never_nothing_moved(world, monkeypa
 
 def test_a_lost_acknowledgement_on_the_first_member_does_not_stop_the_set(slice2, monkeypatch):
     lose_acknowledgement(monkeypatch, only_first=True)
-    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
     assert [r["state"] for r in receipt["members"]] == ["merged", "merged"], receipt
     assert code == merge_gate.EXIT_MERGED, receipt
     for k, m in slice2["members"].items():
@@ -133,7 +134,7 @@ def test_no_further_member_is_pushed_after_an_unknown_one(slice2, monkeypatch):
     alpha, beta = slice2["members"]["alpha"], slice2["members"]["beta"]
     pushes = lose_acknowledgement(monkeypatch, hide=alpha["remote"])
     try:
-        code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+        code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
     finally:
         away = alpha["remote"].with_name(alpha["remote"].name + ".away")
         if away.exists():
@@ -188,7 +189,7 @@ def test_a_same_head_merge_by_another_writer_is_attributed_to_them(world, tmp_pa
     real_run = subprocess.run
     fired = {"n": 0}
     def run(cmd, *a, **kw):
-        if isinstance(cmd, (list, tuple)) and "push" in cmd[:9] and not fired["n"]:
+        if _is_push(cmd) and not fired["n"]:
             fired["n"] = 1
             other = tmp_path / "competitor"
             git(tmp_path, "clone", "--no-local", "--branch", "main", world["remote"], other)
@@ -241,7 +242,7 @@ def test_a_bind_whose_verification_returns_false_refuses_before_any_transfer(wor
     calls = []
     real_run = subprocess.run
     def run(cmd, *a, **kw):
-        if isinstance(cmd, (list, tuple)) and any(v in cmd[:9] for v in ("fetch", "push", "ls-remote")):
+        if isinstance(cmd, (list, tuple)) and list(cmd[:1]) == ["git"] and gitops.command_of(cmd) in ("fetch", "push", "ls-remote"):
             calls.append(cmd)
         return real_run(cmd, *a, **kw)
     monkeypatch.setattr(merge_gate.subprocess, "run", run)
@@ -286,7 +287,7 @@ def test_a_later_member_moving_after_an_earlier_push_is_partial_not_none(slice2,
     fired = {"n": 0}
     def run(cmd, *a, **kw):
         result = real_run(cmd, *a, **kw)
-        if isinstance(cmd, (list, tuple)) and "push" in cmd[:9] and not fired["n"]:
+        if _is_push(cmd) and not fired["n"]:
             fired["n"] = 1  # alpha has just been pushed; beta's feature moves before its re-read
             (beta["repo"] / "late.txt").write_text("late\n")
             git(beta["repo"], "add", "late.txt")
@@ -294,7 +295,7 @@ def test_a_later_member_moving_after_an_earlier_push_is_partial_not_none(slice2,
             git(beta["repo"], "push", beta["remote"], "feat")
         return result
     monkeypatch.setattr(merge_gate.subprocess, "run", run)
-    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
     rows = {r["key"]: r for r in receipt["members"]}
     assert rows["alpha"]["final"] == "merged", receipt
     assert rows["beta"]["refused"].startswith("feature_moved_before_push"), receipt

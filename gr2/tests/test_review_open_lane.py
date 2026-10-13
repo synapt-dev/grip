@@ -183,6 +183,65 @@ def test_pr_head_cli_open_close_owns_absent_and_declared_lane_coordinates(review
     assert definition.exists() == declared
 
 
+def _open_through_cli(world, monkeypatch, adapter):
+    """`review open` through the CLI, with the host seams stubbed and `adapter` as the platform adapter."""
+    from typer.testing import CliRunner
+    from gr2.python_cli import app as app_mod, review as review_mod
+
+    ws = world["workspace_root"]
+    (ws / ".grip").mkdir()
+    (ws / ".grip" / "workspace_spec.toml").write_text(
+        f'[[repos]]\nname = "grip"\npath = "{world["source"]}"\n'
+    )
+    monkeypatch.setattr(review_mod, "host_pr_head_oid", lambda *args: world["head_sha"])
+    monkeypatch.setattr(app_mod, "_prepare_review_branch", lambda *args: world["review_branch"])
+    monkeypatch.setattr(app_mod.platform_ops, "get_platform_adapter", lambda *args: adapter)
+    real_open = review_mod.open_review_lane
+    monkeypatch.setattr(review_mod, "open_review_lane",
+                        lambda **kwargs: real_open(**kwargs, allow_local=True))
+    return CliRunner().invoke(app_mod.app, ["review", "open", str(ws), "atlas", "grip", "7", "--json"])
+
+
+class _V2Open:
+    platform_adapter_api_version = 2
+
+    def __init__(self):
+        self.resolved: list[str] = []
+        self.status_calls: list[tuple] = []
+
+    def resolve_target(self, remote):
+        from gr2.python_cli.platform import RemoteTarget
+        self.resolved.append(remote)
+        return RemoteTarget(raw=remote, host="h", org="o", project="p", repo="grip")
+
+    def pr_status(self, repo, number, *, target=None):
+        from types import SimpleNamespace
+        self.status_calls.append((repo, number, target))
+        return SimpleNamespace(ref=SimpleNamespace(base_branch="main"))
+
+
+def test_review_open_reads_the_pr_through_the_origins_own_target_under_a_v2_adapter(review_world, monkeypatch):
+    # `review open` is in the adapter v2 change: the base branch is read through the adapter with the
+    # origin's resolved target, not through a repo string the adapter has to guess a target from.
+    origin = _run(review_world["source"], "remote", "get-url", "origin")
+    adapter = _V2Open()
+    opened = _open_through_cli(review_world, monkeypatch, adapter)
+    assert opened.exit_code == 0, (opened.output, opened.exception)
+    assert adapter.resolved == [origin]
+    assert len(adapter.status_calls) == 1
+    _, number, target = adapter.status_calls[0]
+    assert number == 7 and target is not None and target.raw == origin
+
+
+def test_review_open_under_a_v2_adapter_refuses_a_repository_with_no_origin_by_name(review_world, monkeypatch):
+    _run(review_world["source"], "remote", "remove", "origin")
+    adapter = _V2Open()
+    opened = _open_through_cli(review_world, monkeypatch, adapter)
+    assert opened.exit_code != 0, opened.output
+    assert "no origin url" in opened.output and "grip" in opened.output, opened.output
+    assert adapter.status_calls == [] and adapter.resolved == []
+
+
 @pytest.mark.parametrize("kind", ["bound", "materialized", "unknown"])
 def test_pr_head_cli_refuses_bound_conflicting_and_unknown_coordinates_before_delegates(tmp_path, monkeypatch, kind):
     from typer.testing import CliRunner

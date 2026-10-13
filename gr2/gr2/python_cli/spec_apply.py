@@ -96,9 +96,27 @@ def load_workspace_spec_doc(workspace_root: Path) -> dict[str, object]:
 
 
 def show_spec(workspace_root: Path, *, json_output: bool) -> str:
+    """The workspace spec when the root has one (unchanged, also when it carries both documents), else the native
+    `grip.toml`, else a named refusal that names both: a native root has no workspace spec, and reading one
+    unconditionally gave a traceback in text mode and `workspace init` advice, wrong for a native root, in --json."""
     spec_path = workspace_spec_path(workspace_root)
+    native_path = workspace_root / "grip.toml"
+    if not spec_path.exists():
+        if not native_path.is_file():
+            raise SystemExit(
+                f"workspace spec not found: {spec_path}\n"
+                f"and no {native_path.name} in {workspace_root}; run `gr2 workspace init <path>` for a workspace "
+                f"spec or `gr2 store init` for a native root"
+            )
+        try:
+            text = native_path.read_text(encoding="utf-8")
+            return json.dumps(tomllib.loads(text), indent=2, default=str) if json_output else text
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+            # A file that cannot be read, decoded or (for --json) parsed is a refusal that names the file; text mode
+            # shows a document that does not parse, since showing it is the way to find the mistake.
+            raise SystemExit(f"cannot show {native_path}: {exc}") from exc
     if json_output:
-        return json.dumps(load_workspace_spec_doc(workspace_root), indent=2)
+        return json.dumps(load_workspace_spec_doc(workspace_root), indent=2, default=str)
     return spec_path.read_text()
 
 

@@ -47,7 +47,12 @@ def _effective_remote_url(url: str) -> str:
 
 # Every git call gr2 makes goes through run(): no auto maintenance (a background `git maintenance run --auto`
 # writes outside anything a caller checks or waits for), and a bound on how long it may take.
-NO_AUTO = ("-c", "maintenance.auto=false", "-c", "gc.auto=0")
+# And a transport allow-list: git runs any installed `git-remote-<name>` for a `<name>::<address>` url, and a
+# member url in grip.toml or a record reaches `git clone`. Written as config, not GIT_ALLOW_PROTOCOL, because
+# that variable makes each listed protocol `always` and so loosens git's `file=user` default for submodules.
+TRANSPORTS = ("-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "protocol.http.allow=always",
+              "-c", "protocol.ssh.allow=always", "-c", "protocol.git.allow=always", "-c", "protocol.file.allow=user")
+NO_AUTO = ("-c", "maintenance.auto=false", "-c", "gc.auto=0", *TRANSPORTS)
 DEFAULT_TIMEOUT = 600.0
 
 
@@ -109,6 +114,19 @@ def run(
     argv = ["git", *NO_AUTO, *(() if via_cwd else ("-C", str(cwd))), *args]
     return _spawn(argv, cwd=cwd if via_cwd else None, input=input, binary=binary, env=env, timeout=timeout,
                   raise_timeout=raise_timeout)
+
+
+def start(cwd: Path, *args: str) -> subprocess.Popen:
+    """One long-lived git process with binary pipes on stdin and stdout, for a caller that streams many
+    requests through one command (``cat-file --batch``). The same flags as run(); no timeout, because the
+    caller owns its lifetime and must close it. stderr is discarded: batch commands answer on stdout."""
+    try:
+        return subprocess.Popen(["git", *NO_AUTO, "-C", str(cwd), *args],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except FileNotFoundError as exc:
+        if exc.filename == "git":
+            raise GitMissingError("git is not on PATH; install git, then run the verb again") from None
+        raise
 
 
 def run_argv(argv: list[str], *, cwd: Path | None = None, input: str | bytes | None = None, binary: bool = False,

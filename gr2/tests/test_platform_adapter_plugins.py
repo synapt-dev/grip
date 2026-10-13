@@ -152,6 +152,7 @@ def test_absent_lane_url_omits_creation_remote(plugin, url_line):
     "https://fixture-private-token@github.com/o/sample.git",
     "https://github.com/o/sample.git?access_token=fixture-private-token",
     "https://github.com/o/sample.git#fixture-private-token",
+    "https://[bad/o/sample.git",
 ])
 def test_credential_lane_url_refuses_before_adapter_or_state(plugin, remote):
     workspace, capture, env, _ = plugin
@@ -218,6 +219,7 @@ def test_external_entry_point_actual_cli_carries_policy_and_target(plugin, flags
         base_branch="integration",
         draft=draft,
         remote="https://example.invalid/sample.git",
+        target=None,  # additive field (adapter API v2): a v1 plugin is handed None, never a guess
     )
     assert json.loads(result.stdout)["platform"] == "fixture"
 

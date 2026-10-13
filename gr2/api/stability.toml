@@ -57,6 +57,7 @@ may-change = [
   "verb store commit",
   "flag store commit --json",
   "flag store commit --message/-m <str>",
+  "flag store commit --allow-rewind",
   "verb store diff",
   "flag store diff --json",
   "arg store diff ref_a <str>",
@@ -75,6 +76,7 @@ may-change = [
   "flag store migrate --json",
   "verb store push",
   "flag store push --json",
+  "flag store push --to <str>",
   # `store snapshot` is the hidden alias of `store commit` (section 5), removed
   # at beta, and it was the one store verb left off this list -- so it read
   # `stable` while the verb it aliases is `may-change`, and the json keys it
@@ -83,6 +85,7 @@ may-change = [
   "verb store snapshot",
   "flag store snapshot --json",
   "flag store snapshot --message/-m <str>",
+  "flag store snapshot --allow-rewind",
   "verb store status",
   "flag store status --json",
   # The group's exit table travels WITH its verbs rather than being promised on

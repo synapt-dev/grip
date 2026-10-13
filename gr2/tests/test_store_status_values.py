@@ -182,3 +182,52 @@ def test_status_cannot_measure_when_a_member_is_absent(ws: Path) -> None:
     assert rows["alpha"]["state"] == "cannot-measure", out
     assert rows["alpha"]["head"] is None, "an unmeasurable member has no HEAD to report"
     assert rows["beta"]["state"] == "upstream", f"the readable member must still be reported: {out}"
+
+
+def _drop_pin(root: Path, member: str) -> None:
+    """Remove one member's `pin` line from grip.toml by hand, as an operator might."""
+    blocks = (root / "grip.toml").read_text().split("[[members]]")
+    edited = [
+        "\n".join(line for line in block.splitlines() if not line.strip().startswith("pin"))
+        + ("\n" if block.endswith("\n") else "")
+        if f'name = "{member}"' in block else block
+        for block in blocks
+    ]
+    (root / "grip.toml").write_text("[[members]]".join(edited))
+
+
+def test_a_member_with_no_pin_is_a_named_row_and_exit_4_not_a_traceback(ws: Path) -> None:
+    """`store status` died with KeyError 'pin' when a member's pin line was gone.
+    The member is now its own row, `no-pin`, the command names it and exits 4 like any other
+    document/snapshot disagreement, and the OTHER member still reads its real state (control)."""
+    _drop_pin(ws, "alpha")
+    text = (ws / "grip.toml").read_text()
+    assert text.count("pin =") == 1, text  # the mutation applied to alpha only
+
+    rc, out = _cli("store", "status", "--json")
+    assert rc == 4, out
+    assert "Traceback" not in out and "KeyError" not in out, out
+    rows = {row["name"]: row for row in json.loads(out.splitlines()[0])["members"]}
+    assert rows["alpha"]["state"] == "no-pin" and rows["alpha"]["pin"] is None, rows
+    assert rows["beta"]["state"] == "upstream", rows
+
+    rc, out = _cli("store", "status")
+    assert rc == 4, out
+    assert "alpha: grip.toml has no pin; run gr2 store commit to record one" in out, out
+
+
+def test_a_member_with_no_pin_and_no_gitlink_still_exits_4(ws: Path) -> None:
+    """No pin AND no gitlink must not read as agreement: None == None is not a recorded pin."""
+    _drop_pin(ws, "alpha")
+    _git(ws, "rm", "-q", "--cached", "alpha")
+    _git(ws, "commit", "-qm", "drop alpha's gitlink")
+    assert _git(ws, "ls-tree", "HEAD", "--", "alpha").stdout == "", "the gitlink must be gone for this row to mean anything"
+
+    rc, out = _cli("store", "status", "--json")
+    assert rc == 4, out
+    rows = {row["name"]: row for row in json.loads(out.splitlines()[0])["members"]}
+    assert rows["alpha"]["state"] == "no-pin" and rows["alpha"]["pin"] is None and rows["alpha"]["gitlink"] is None, rows
+
+    rc, out = _cli("store", "status")
+    assert rc == 4, out
+    assert "alpha: grip.toml has no pin; run gr2 store commit to record one" in out, out

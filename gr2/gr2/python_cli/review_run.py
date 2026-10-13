@@ -20,6 +20,7 @@ cannot be parsed, is a REFUSAL, not a green.
 from __future__ import annotations
 
 import json
+import keyword
 import os
 import re
 import shlex
@@ -310,6 +311,18 @@ def assert_no_untracked_drift(
 _INSTALL_OUTPUT_TOPS = ("build/",)
 
 
+def install_outputs(repo_dir: Path, baseline: set[str], lane_dir: Path) -> list[str]:
+    """The untracked paths this run created under `_INSTALL_OUTPUT_TOPS` in `repo_dir`, lane-relative and sorted: what
+    the receipt records so `review close` can admit exactly these and nothing a person put there before or after
+    the run (a tracked `build/` included, whose files are source)."""
+    prefix = repo_dir.resolve().relative_to(lane_dir.resolve())
+    return sorted(
+        str(prefix / rel) if str(prefix) != "." else rel
+        for rel in list_untracked(repo_dir) - baseline
+        if any(rel.startswith(top) for top in _INSTALL_OUTPUT_TOPS)
+    )
+
+
 def list_untracked(repo_dir: Path) -> set[str]:
     """The untracked paths git reports in `repo_dir`, host ignore rules neutralized (see
     `assert_no_untracked_drift` for why). Every file is listed on its own: without
@@ -403,6 +416,12 @@ def resolve_import_file(venv_python: Path, package: str, env: dict) -> str:
     what `assert_import_under_lane` then verifies. `-I` isolates the CHECK only; the
     RUN is isolated by `scrubbed_python_env` (a `PYTHONPATH` shadow is neutralized for
     pytest there, not here)."""
+    if not all(part.isidentifier() and not keyword.iskeyword(part) for part in package.split(".")):
+        raise ReviewRunRefused(
+            "import_failed",
+            f"package {package!r} is not an import name: `package` names the module the install provides (a dotted "
+            "Python name such as demo_pkg), not a path or a directory",
+        )
     proc = subprocess.run(
         [str(venv_python), "-I", "-c", f"import {package} as _m; print(_m.__file__ or '')"],
         text=True,
@@ -650,7 +669,13 @@ def resolve_run_lane(lane_dir: Path | None, *, cwd: Path | None = None) -> Path:
     if lane_dir is not None:
         candidates = [Path(lane_dir).resolve()]
     else:
-        here = (cwd or Path.cwd()).resolve()
+        try:
+            here = (cwd or Path.cwd()).resolve()
+        except OSError:  # Path.cwd() raises FileNotFoundError when the working directory was deleted
+            raise ReviewRunRefused(
+                "no_review_context",
+                "the working directory no longer exists; cd into a lane opened by `review open` or pass LANE_DIR",
+            ) from None
         candidates = [p for p in (here, *here.parents) if find_marker(p) is not None]
         if not candidates:
             raise ReviewRunRefused(
@@ -672,6 +697,13 @@ def resolve_run_lane(lane_dir: Path | None, *, cwd: Path | None = None) -> Path:
 _NOT_A_LANE_CODES = frozenset({"no_marker", "not_open_gr"})
 
 
+def _marker_gr_commit(lane_dir: Path) -> str:
+    try:
+        return str(_read_marker(lane_dir).get("gr_commit") or "")
+    except (ReviewRunRefused, OSError, ValueError):
+        return ""
+
+
 def _write_refusal_receipt(lane_dir: Path, exc: "ReviewRunRefused") -> None:
     """Persist WHY a run refused so the refusal is not invisible on disk (review-run
     door 2): close-gr carries the receipt out of the lane, and `review run --json` has
@@ -683,6 +715,8 @@ def _write_refusal_receipt(lane_dir: Path, exc: "ReviewRunRefused") -> None:
         "result": "refused",
         "refusal_code": exc.code,
         "refusal_detail": exc.detail,
+        # The lane's marker knows the commit, so the receipt `close` keeps is named by it, not `unknown-<time>`.
+        "gr_commit": _marker_gr_commit(lane_dir),
         # A refusal after pytest ran (unparseable_summary, zero_collected) has already
         # written the log; name it when present so close-gr carries it out too.
         "output_log": _OUTPUT_LOG_NAME if (lane_dir / _OUTPUT_LOG_NAME).exists() else None,
@@ -828,6 +862,7 @@ def _run_review_lane(
         "bound_head_tree": bound_tree,
         **body,
         "downstream": _single_repo_downstream(downstream),
+        "install_outputs": install_outputs(repo_dir, baseline, lane_dir),
     }
     (lane_dir / _RECEIPT_NAME).write_text(json.dumps(receipt, indent=2) + "\n")
     return receipt
@@ -843,10 +878,27 @@ def _create_lane_venv(
     if system_site_packages:
         venv_cmd.append("--system-site-packages")
     venv_cmd.append(str(venv_dir))
+    existed = venv_dir.exists()
     proc = subprocess.run(venv_cmd, text=True, capture_output=True)
     if proc.returncode != 0:
-        raise ReviewRunRefused("venv_failed", f"venv create failed: {proc.stderr.strip()}")
+        raise venv_failure(proc, venv_dir, existed=existed)
     return venv_dir, venv_dir / "bin" / "python"
+
+
+def venv_failure(proc: "subprocess.CompletedProcess[str]", venv_dir: Path, *, existed: bool) -> "ReviewRunRefused":
+    """The refusal for a failed `python -m venv`. Its reason can be on stdout (ensurepip's failure is), so both streams are
+    read, and with neither the exit status is named. A directory the failed create half-built is removed so the next run
+    builds a venv instead of reusing one with no pip; a venv that existed before this call is not this call's to remove."""
+    from .clone_exec import IncompleteRemoval, rmtree_or_refuse
+
+    leftover = ""
+    if not existed:
+        try:
+            rmtree_or_refuse(venv_dir)
+        except IncompleteRemoval as exc:
+            leftover = f"\n{exc}; remove it before running again"
+    reason = "\n".join(part for part in (proc.stderr.strip(), proc.stdout.strip()) if part) or f"exit status {proc.returncode}, no output"
+    return ReviewRunRefused("venv_failed", f"venv create failed: {reason}{leftover}")
 
 
 def _run_member_steps(
@@ -1448,6 +1500,8 @@ def _run_multi_member_lane(
         "members": members,
         "not_run": [],
         "downstream": selection,
+        "install_outputs": [p for member in ran_order
+                            for p in install_outputs(_member_dir(lane_dir, member), baselines[member], lane_dir)],
         "selected": sum(m["selected"] for m in members),
         "passed": sum(m["passed"] for m in members),
         "failed": sum(m["failed"] for m in members),

@@ -114,7 +114,7 @@ def close(repo: Path, stook: str, rheon: str, members: list[str], *, org: str, r
     tag = arbon(repo, stook, rheon, message=message)
     try:
         pushed = leased_push.push(repo, [stook, shadow_ref, ref] + member_refs, org=org, remote=remote,
-                                  atomic=True, allow_rewind=allow_rewind)
+                                  atomic=True, allow_rewind=False)    # allow_rewind is the members' flag, cut's alone (A9)
     except Exception:
         gitops.run(repo, "update-ref", "-d", ref, tag)     # nothing reached the remote; the close can be retried
         raise

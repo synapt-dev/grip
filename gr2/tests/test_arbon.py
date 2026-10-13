@@ -9,6 +9,7 @@ A5 a fresh clone of the arbon alone reads every member it pins;
 A6 a rheon that is not one lowercase ref component is refused before anything is written;
 A7 recurse=on-demand refuses a member this clone holds no value for, by name;
 A8 a remote without atomic push support refuses the close (never degrades to per-ref) and moves nothing.
+A9 allow_rewind reaches the members alone: a locally rewritten SHADOW is refused under it and origin is unchanged.
 """
 from __future__ import annotations
 
@@ -185,3 +186,22 @@ def test_a8_a_remote_without_atomic_push_refuses_the_close_and_moves_nothing(ab,
     git(origin, "config", "--unset", "receive.advertiseAtomic")
     c = ab.close(me, TEAM, "9", [stook("a"), stook("b")], org=ORG)     # the same close lands once atomic is back
     assert on(origin, arbon) == c.arbon
+
+
+def test_a9_allow_rewind_never_lets_a_rewritten_shadow_through(ab, world):
+    """A9: allow_rewind is the members' flag, given to the cut only. The close's own STOOK,
+    SHADOW and arbon are always pushed without it, so a SHADOW rewritten locally is refused and origin is unchanged."""
+    origin, _, me, _ = world
+    c = ab.close(me, TEAM, "9", [stook("a"), stook("b")], org=ORG)
+    forged = git(me, "commit-tree", git(me, "rev-parse", f"{c.shadow}^{{tree}}"), "-m", "amended",
+                 "-p", git(me, "rev-parse", TEAM))           # its first parent is not origin's SHADOW tip
+    git(me, "update-ref", SHADOW, forged)
+    before = git(origin, "for-each-ref")
+    lp = importlib.import_module("gr2.python_cli.leased_push")
+    arbon = f"refs/{ORG}/__teams__/t/__arbons__/10"
+    with pytest.raises(lp.PushRefused) as e:
+        ab.close(me, TEAM, "10", [stook("a"), stook("b")], org=ORG, allow_rewind=True)
+    assert e.value.ref == SHADOW and "does not descend" in e.value.why
+    assert git(origin, "for-each-ref") == before
+    assert on(origin, SHADOW) == c.shadow and on(origin, arbon) is None
+    assert git(me, "for-each-ref", "--format=%(refname)", arbon) == ""

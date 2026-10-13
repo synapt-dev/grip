@@ -26,9 +26,8 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 - **`gr2`: after `store commit` or `store materialize`, plain `git submodule update --remote <member>` needs no
   hand-run `git submodule init`.** Each member is registered in the root's own config from the `.gitmodules` gr2
   writes. Unregistered, git printed "not initialized", left the member where it was and exited 0. Nothing is
-  registered in a full-mode store or from an adopted superproject's own `.gitmodules`, nor in a root cloned with
-  `--no-checkout`, whose empty index no plain `git submodule` verb can act on. A member git refuses to register is
-  named on stderr with the hand step; the verb still succeeds.
+  registered in a full-mode store or from an adopted superproject's own `.gitmodules`. A member git refuses to
+  register is named on stderr with the hand step; the verb still succeeds.
 - **`gr2`: `store status` answers, per member, what operators otherwise ask with plain git.** Each row now
   carries `branch` (null when detached), `ahead` / `behind` its recorded upstream (counted after the fetch status
   already makes; null when the upstream could not be measured) and `dirty` (the member's own uncommitted entries).
@@ -210,6 +209,15 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **`gr2`: `store commit` keeps what the record declares; `store materialize` gives a `--no-checkout` root its own
+  files.** `store commit` rebuilt `grip.toml` from the members alone. It renamed the workspace to the checkout's
+  directory and dropped every key and table it did not know, `[approvals]` among them, so after the first commit
+  the review gate read `required = 0` and `review merge` merged on no approvals with exit 0. It now carries
+  `workspace_name` and every key and table it does not derive, and still writes only the members. And materialize
+  never wrote the root's own files after a `--no-checkout` clone, so the next commit started from no `grip.toml` and
+  staged `.gitinclude` as deleted. When the root has no index file, which is the `--no-checkout` case, it now
+  restores the committed index and writes only the files absent from disk, before it registers the members; an index
+  the operator emptied is their staged work and is left as it is, and a file already on disk is never replaced.
 - **`gr2`: `review pin` refuses the set when a changed member's ancestry cannot be read.** Such a member was
   skipped with `not pinned: ... (ancestry could not be read)` while the other members were pinned and an id printed,
   so a later merge could land part of a change set with exit 0. The pin now exits 2, names the member with its pin,

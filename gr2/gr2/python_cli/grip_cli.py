@@ -1726,11 +1726,15 @@ def _commit_with_carried(root: Path, message: str, carried: list[str]) -> None:
 def _committed_pin(root: Path, member: dict) -> str | None:
     """The member's pin as the root commit records it (HEAD:grip.toml). grip.toml in the work tree is editable, so a pin
     line set back to an older sha is not the record; the working pin is used only when HEAD records none (a first
-    commit, or the empty root commit of a full-mode workspace)."""
+    commit, or the empty root commit of a full-mode workspace). The record is found by the member's PATH, not its name:
+    a name is a label the working file can change, while the path is where the member's commits live."""
+    want = str(member["path"]).strip("/")
     try:
-        committed = _native_members_at(root, "HEAD").get(str(member["name"]))
-    except (NativeStoreRefusal, RuntimeError, tomllib.TOMLDecodeError):
-        committed = None
+        members = tomllib.loads(_store_git(root, "show", "HEAD:grip.toml").stdout).get("members", [])
+    except (RuntimeError, tomllib.TOMLDecodeError):
+        members = []
+    committed = next((str(m["pin"]) for m in members if isinstance(m, dict) and m.get("pin")
+                      and str(m.get("path", "")).strip("/") == want), None)
     return committed or member.get("pin")
 
 

@@ -480,7 +480,7 @@ def write_pending_marker(workspace_root: Path, member_key: str) -> bool:
 def take_pending_marker(workspace_root: Path, member_key: str) -> bool:
     """True when a pending marker existed (and is now consumed)."""
     path = pending_marker_path(workspace_root, member_key)
-    if not path.exists():
+    if not path.exists() or not _exact_name_exists(workspace_root / PENDING_DIR, path):
         return False
     path.unlink()
     return True

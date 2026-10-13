@@ -2918,6 +2918,14 @@ def grip_materialize_cmd(
         # fire).
         typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
+    # A plain `git clone` copies no hooks, so a root cloned and materialized ran plain git with none of the store's
+    # checks (an unpushed pin committed with exit 0). The same installer `store init` uses: it never writes over
+    # another owner's hook or into a core.hooksPath, and reports both. The members are already in place here, so a
+    # hook that cannot be written is reported, never a failed verb.
+    try:
+        hook_lines = store_hooks.hook_problems(Path.cwd(), store_hooks.install_store_hooks(Path.cwd()))
+    except OSError as exc:
+        hook_lines = [f"hooks: could not be installed ({exc}); run gr2 store materialize again to install them"]
     if json_output:
         typer.echo(json.dumps({"status": "materialized", "members": members}))
     else:
@@ -2929,6 +2937,9 @@ def grip_materialize_cmd(
                     f"to work on a branch: git -C {member['path']} switch -c <branch>",
                     err=True,
                 )
+    # stderr in both modes, so neither stdout contract moves
+    for line in hook_lines:
+        typer.echo(line, err=True)
 
 
 @grip_app.command("migrate")

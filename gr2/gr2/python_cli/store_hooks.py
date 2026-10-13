@@ -5,7 +5,7 @@ root records the member's gitlink, but nothing refuses a pin that is not on the 
 (`store commit` does), and nothing keeps the `pin` in `grip.toml` level with the gitlink, so the commit
 leaves two records of one fact disagreeing. `store init` installed no hooks.
 
-THE SHAPE: two hooks, written by `store init`, that call the SAME engine the verbs call
+THE SHAPE: two hooks, written by `store init` and by `store materialize`, that call the SAME engine the verbs call
 (`_member_coverage`, `_claimed_member_paths`), so a hook and a verb cannot answer one question
 differently. There is no new verb and no second implementation.
 
@@ -20,7 +20,11 @@ differently. There is no new verb and no second implementation.
 
 THE LIMITS, stated here because a hook that overclaims is worse than none:
   * a hook only runs where Git runs it. `core.hooksPath` hides the installed hooks, and a plain `git
-    clone` does not copy hooks at all; `store status` reports both rather than looking healthy.
+    clone` does not copy hooks at all, so `store materialize` installs them in the clone; until it runs,
+    `store status` reports both rather than looking healthy. A client hook is cooperative: git skips it
+    under `--no-verify`, or when `core.hooksPath` is given for one command (`git -c` or the GIT_CONFIG_*
+    environment), which no configured-hooksPath report can see; the store's own verbs are where the rule
+    is enforced.
   * a PARTIAL commit (`git commit <paths>`) runs the hook against a temporary `next-index-<pid>.lock`
     index (measured on this host's git), so a fold there leaves the real index disagreeing with HEAD.
     The hook checks coverage in that case and REFUSES a fold, naming the remedy.
@@ -88,7 +92,7 @@ def hook_script(name: str) -> str:
     package_root = Path(__file__).resolve().parents[2]
     return (
         "#!/bin/sh\n"
-        f"{MARKER} ({name}): written by `gr2 store init`; delete it and rerun init to restore.\n"
+        f"{MARKER} ({name}): written by `gr2 store init` or `gr2 store materialize`; delete it and rerun either to restore.\n"
         f"PY={shlex.quote(sys.executable)}\n"
         f"PKG={shlex.quote(str(package_root))}\n"
         'if [ ! -x "$PY" ]; then\n'
@@ -196,14 +200,14 @@ def hook_problems(root: Path, states: dict[str, str]) -> list[str]:
                 f"run on it; call `{entry} {name}` from that hook to enable them"
             )
         elif state == "absent":
-            lines.append(f"hooks: {name} is not installed; run gr2 store init to install it")
+            lines.append(f"hooks: {name} is not installed; run gr2 store materialize to install it")
         elif state == "installed":
             interpreter = _recorded_interpreter(_hooks_dir(root) / name)
             if interpreter and not os.access(interpreter, os.X_OK):
                 verb = "commit" if name == "pre-commit" else "push"
                 lines.append(
                     f"hooks: {name} records interpreter {interpreter}, which is missing, so it refuses every git "
-                    f"{verb} until `gr2 store init` rewrites it"
+                    f"{verb} until `gr2 store materialize` (or `gr2 store init`) rewrites it"
                 )
     return lines
 

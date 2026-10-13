@@ -122,7 +122,8 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   paths. A hook someone else already owns is left byte for byte and named, and when `core.hooksPath` hides the
   installed hooks, `store status` and `store init` say so on stderr. The hooks run the interpreter that wrote them,
   not whichever `gr2` is first on `PATH`, and fail closed with a named remedy if it is gone. Hooks are cooperative
-  (`--no-verify` skips them) and a plain `git clone` does not copy them; `store init` is what installs them.
+  (`--no-verify` skips them) and a plain `git clone` does not copy them; `store init` and `store materialize`
+  install them.
   `store commit` is unchanged apart from skipping the hook for its own commit, having run the same checks.
 - **`gr2`: a symlink in a hook slot is another owner's, and `store status` names a hook whose interpreter is gone.**
   `store init` checked a hook slot with `exists()`, which follows a link and calls a dangling one free, so it wrote
@@ -209,6 +210,13 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **`gr2`: `store materialize` installs the store's git hooks, so a root cloned with plain git gets the store's
+  checks.** A plain `git clone` copies no hooks, and only `store init` installed them, so in a cloned and
+  materialized root a plain `git commit` recorded a pin not on its member's remote with exit 0. materialize now runs
+  the same installer: it never writes over another owner's hook or into a `core.hooksPath`, and names either on
+  stderr. `store status` now names `store materialize` as the way to install them. A client hook is cooperative:
+  git skips it under `--no-verify`, or when `core.hooksPath` is given for one command (`git -c` or the
+  `GIT_CONFIG_*` environment); the store's own verbs are where the rule is enforced.
 - **`gr2`: `store commit` keeps what the record declares; `store materialize` gives a `--no-checkout` root its own
   files.** `store commit` rebuilt `grip.toml` from the members alone. It renamed the workspace to the checkout's
   directory and dropped every key and table it did not know, `[approvals]` among them, so after the first commit

@@ -34,38 +34,12 @@ clock-free key. It never picks a side.
 """
 from __future__ import annotations
 
-import re
-
 from pathlib import Path
 from typing import NamedTuple
 
 from . import gitops
 from . import review_field_tree as fd
-
-_COMPONENT = re.compile(r"[a-z0-9][a-z0-9._-]*")
-
-
-def _leaf(name: str, what: str) -> str:
-    """A caller's name only ever sits as ONE conservative ref component: lowercase letters,
-    digits, ".", "_" and "-", starting with a letter or digit, never containing "..", never
-    ending in "." and never ending in ".lock". A name with "/" would nest below another agent's
-    ref (two records aliasing to one ref) or below the fold's ``*`` (which does not cross "/", so
-    its writes would be on disk and silently left out of every fold). Lowercase only because a
-    case-insensitive filesystem (macOS by default) folds "Alice" and "alice" into ONE loose ref
-    under the files backend: the second agent's write would take the first one's tip as its
-    parent, and the fold would read a fork as a write that saw the other. Every rule of ``git check-ref-format`` that a single
-    component can break is refused here, before any object is written: the character class
-    excludes control characters, space, "~", "^", ":", "?", "*", "[", "\\" and "@" (so "@{" and
-    the single "@"), and a leading "."; "..", a trailing "." and a ".lock" suffix are checked
-    after it. The one uppercase name is the default ref ``STOOK``; its lowercase twin
-    ``stook`` is refused, since the two are one file on such a filesystem."""
-    if what == "ref" and name == "STOOK":
-        return name
-    if (not isinstance(name, str) or not _COMPONENT.fullmatch(name) or ".." in name
-            or name.endswith(".") or name.endswith(".lock") or (what == "ref" and name == "stook")):
-        raise ValueError(f"{what} must be one lowercase ref component ([a-z0-9][a-z0-9._-]*, "
-                         f"no '..', no trailing '.', no '.lock' suffix): {name!r}")
-    return name
+from .names import strict as _leaf
 
 
 def prefix(org: str) -> str:

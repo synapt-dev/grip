@@ -23,17 +23,14 @@ RUNNER = make_cli_runner()
 SPEC = ('schema_version = 1\nworkspace_name = "m"\n\n[[repos]]\nname = "repo-a"\npath = "repos/repo-a"\nurl = "{url}"\n\n'
         '[[units]]\nname = "atlas"\npath = "agents/atlas"\nrepos = ["repo-a"]\n')
 
-ALL = {label for label, _ in HOSTILE_NAMES}
-UNSAFE_MEMBER = {"inner-space", "at", "reflog-at", "lock", "double-dot", "tilde", "colon", "line-separator"}
+# store init --clone, lane create (the lane and --branch), branch and target set check each name with the shared
+# GIT-REF profile (gr2/python_cli/names.py) before their first write, so none of them carries a finding now.
 FINDINGS = {
-    "store-init-clone": UNSAFE_MEMBER | {"lead-space", "trail-space"},
-    "lane-create-lane": UNSAFE_MEMBER,
-    # every bad branch name is refused only after the lane-creation lock and the cache are written, or not at all
-    "lane-create-branch": ALL - {"nested"},
-    # git itself allows both, so only a gr2 validator refuses them
-    "branch": {"at", "line-separator"},
-    # stored with a warning that the ref is absent, so prune later defaults to it
-    "target-set": ALL - {"empty", "dash"},
+    "store-init-clone": set(),
+    "lane-create-lane": set(),
+    "lane-create-branch": set(),
+    "branch": set(),
+    "target-set": set(),
     "lane-enter": set(),
     "lane-create-unit": set(),
     "hooks-trust": set(),
@@ -43,7 +40,8 @@ FINDINGS = {
     "lane-lease-actor": {"empty"},
 }
 # a nested branch name is a legal branch, so the verb is right to take it
-EXPECTED = {("lane-create-branch", "nested"): "accepted", ("branch", "nested"): "accepted"}
+EXPECTED = {("lane-create-branch", "nested"): "accepted", ("branch", "nested"): "accepted",
+            ("target-set", "nested"): "accepted"}
 EXPECTED.update({("check-run-name", label): "accepted" for label, _ in HOSTILE_NAMES if label != "empty"})
 EXPECTED.update({("lane-lease-actor", label): "accepted" for label, _ in HOSTILE_NAMES})
 # the finding is that an empty actor is taken; the validator should refuse it
@@ -193,6 +191,20 @@ def test_hostile_name_is_refused_before_any_write(tmp_path, verb, label, name):
     expected = EXPECTED.get((verb, label), "refused-clean")
     assert outcome.verdict == expected, (outcome.rc, outcome.changed[:8], outcome.output[-400:])
 
+
+
+# the mapping form strips each item's surrounding space as layout, so the space labels are not hostile there
+MAPPING_LABELS = ["at", "reflog-at", "lock", "double-dot", "tilde", "colon", "line-separator", "dotdot", "dash"]
+
+
+@pytest.mark.parametrize("label", MAPPING_LABELS)
+def test_lane_create_refuses_a_hostile_branch_given_as_a_repo_mapping(tmp_path, label):
+    """`--branch repo=branch` is checked branch by branch, before the lane lock and the cache clone."""
+    name = dict(HOSTILE_NAMES)[label]
+    ws = _lane_workspace(tmp_path)
+    outcome = classify(ws, lambda: _invoke("lane", "create", str(ws), "atlas", "ok", "--repos", "repo-a",
+                                           "--branch", f"repo-a={name}"))
+    assert outcome.verdict == "refused-clean", (outcome.rc, outcome.changed[:8], outcome.output[-300:])
 
 
 @pytest.mark.xfail(strict=True, reason="finding: case twins are cloned until they collide")

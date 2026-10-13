@@ -2220,8 +2220,9 @@ def _native_store_commit(
 
 
 @_refuses_moved_workspace
-def _native_store_check(root: Path) -> list[dict[str, str]]:
-    """Verify the committed root pins against each live member upstream."""
+def _native_store_check(root: Path, coverage: bool = True) -> list[dict[str, str]]:
+    """Verify the committed root pins against each live member upstream. `coverage=False` (push --recurse=none) still
+    compares every gitlink with its pin, and names each member whose coverage it did not ask as `unchecked`."""
     _refuse_beta(root)
     issues = validate_grip_toml(root)
     if issues:
@@ -2248,6 +2249,9 @@ def _native_store_check(root: Path) -> list[dict[str, str]]:
         # §5a's input is the RECORDED PIN, not the member's current HEAD: this verb asks
         # whether the pin the root publishes is still covered, and a member whose HEAD has
         # moved is `unpinned` (a status observation) whose recorded pin may be fine.
+        if not coverage:
+            checked.append({"name": member["name"], "pin": member["pin"], "upstream": member["upstream"], "state": "unchecked"})
+            continue
         record = _field_record(root, member) if full else None
         if record and record["layers"]:
             # A layered pin is on no remote by design; it is covered when the record's layers carry it.
@@ -2342,7 +2346,7 @@ def _root_origin_for_push(root: Path, to: str | None) -> str | None:
     return to
 
 
-def _atomic_push(root: Path, refspecs: list[tuple[str, str]]) -> bool:
+def _atomic_push(root: Path, refspecs: list[tuple[str, str]], verify: bool = True) -> bool:
     """ONE `git push --atomic` of every (commit, ref), so the remote moves all of them or none. A refusal names
     each rejected ref with git's reason, plus the remote's own lines (a pre-receive hook declines every ref in the
     push, so only its message says which one it refused).
@@ -2350,8 +2354,10 @@ def _atomic_push(root: Path, refspecs: list[tuple[str, str]]) -> bool:
     Returns False when this push moved the refs, True when it was refused but origin already holds EVERY ref at its
     target: another push of the same refs landed first (two `store push` from one workspace at once; the loser's
     receive-pack fails its lock on the shadow). One ref anywhere else is a real loss and refuses as before."""
-    proc = _store_git(root, "push", "--porcelain", "--atomic", "origin", *[f"{sha}:{ref}" for sha, ref in refspecs],
-                      check=False)
+    # `verify=False` is push --recurse=none: the pre-push hook asks coverage, which that mode skips by name; the
+    # verb has run the fence and the gitlink comparison itself.
+    proc = _store_git(root, "push", "--porcelain", "--atomic", *([] if verify else ["--no-verify"]), "origin",
+                      *[f"{sha}:{ref}" for sha, ref in refspecs], check=False)
     if proc.returncode == 0:
         return False
     listed = _store_git(root, "ls-remote", "origin", *[ref for _, ref in refspecs], check=False)
@@ -2410,12 +2416,68 @@ def _same_repo_member_refs(root: Path, branch: str) -> list[tuple[str, str, str]
     return found
 
 
-def _native_store_push(root: Path, to: str | None = None, atomic: bool = False) -> dict[str, object]:
-    """Push only the checked root record. Member publication is a prior verb.
+RECURSE_MODES = ("check", "on-demand", "none")
+
+
+def _push_uncovered_members(root: Path, same_repo_origin: str) -> list[dict[str, str]]:
+    """push --recurse=on-demand: each member whose recorded pin its upstream does not cover is pushed from its own
+    clone to its upstream branch, BEFORE the root, so a failed member push stops the root. A member in the root's own
+    repository is left to the root's atomic push. Returns one entry per member: pushed, covered or same-repo."""
+    members = _native_members(root, "HEAD")
+    done: list[dict[str, str]] = []
+    for member in members:
+        if member["remote"] == same_repo_origin:
+            done.append({"name": member["name"], "pin": member["pin"], "action": "same-repo"})
+            continue
+        claimed = _claimed_member_paths(root, members, exclude=member)
+        try:
+            path = _native_member_working_root(root, member, claimed)
+            top = _store_git(path, "rev-parse", "--show-toplevel", check=False)
+            here = not top.returncode and Path(top.stdout.strip()).resolve() == path.resolve()
+        except NativeStoreRefusal:
+            here = False
+        if not here or _store_git(path, "cat-file", "-e", f"{member['pin']}^{{commit}}", check=False).returncode:
+            raise NativeStoreRefusal(
+                f"{member['name']} has no clone in this workspace that holds its pin {member['pin']}, so "
+                f"--recurse=on-demand cannot push it; materialize it, or push it where it lives", 3)
+        try:
+            _member_coverage(root, member, member["pin"], claimed)
+            done.append({"name": member["name"], "pin": member["pin"], "action": "covered"})
+            continue
+        except NativeStoreRefusal as exc:
+            if exc.code != 3:
+                raise
+        remote, _, branch = member["upstream"].partition("/")
+        pushed = _store_git(path, "push", "--porcelain", remote, f"{member['pin']}:refs/heads/{branch}", check=False)
+        if pushed.returncode:
+            detail = " | ".join(line.strip() for line in pushed.stderr.splitlines() if line.strip())[:300]
+            raise NativeStoreRefusal(
+                f"{member['name']} push to {member['upstream']} was refused, so the root was not pushed: {detail}", 5)
+        done.append({"name": member["name"], "pin": member["pin"], "action": "pushed"})
+    return done
+
+
+def _native_store_push(root: Path, to: str | None = None, atomic: bool = False, recurse: str = "check",
+                       snapshot: bool = False, allow_rewind: list[str] | None = None) -> dict[str, object]:
+    """Push only the checked root record. Member publication is a prior verb, or `recurse="on-demand"`.
+
+    `recurse` names what the push does with a member pin its upstream does not cover: `check` refuses (exit 3),
+    `none` skips coverage (the fence and the gitlink comparison still run) and names each member `unchecked`,
+    `on-demand` pushes each such member from its clone first. `snapshot` makes the store commit first.
+    `allow_rewind` names members whose pin may move backwards; each must be a member, and nothing else reads it yet.
 
     The branch and its shadow ref (section 9, S1) go in ONE `git push --atomic`, always, both naming the branch tip,
     so origin never holds a branch the shadow does not name. `atomic` adds the same-repo members' refs (members whose
     origin is the root's) to that same push, so the root record and the member refs it pins move together or not."""
+    if recurse not in RECURSE_MODES:
+        raise NativeStoreRefusal(f"--recurse must be one of {', '.join(RECURSE_MODES)}, not {recurse!r}", 2)
+    if allow_rewind:
+        known = {member["name"] for member in _native_members(root)}
+        unknown = [name for name in allow_rewind if name not in known]
+        if unknown:
+            raise NativeStoreRefusal(f"--allow-rewind names {', '.join(unknown)}, which is not a member of this "
+                                     f"workspace (members: {', '.join(sorted(known))})", 2)
+    made = _native_store_commit(root, "store push --snapshot") if snapshot else False
     shadow = _shadow_value(root)
     if shadow and shadow != _store_git(root, "rev-parse", "HEAD").stdout.strip():
         # THE FENCE first, so a hand-edited pin gets its own name and not a later reader's: a hand commit whose
@@ -2424,14 +2486,21 @@ def _native_store_push(root: Path, to: str | None = None, atomic: bool = False) 
         pins = _native_members_at(root, "HEAD")
         mode = _workspace_mode(tomllib.loads(_store_git(root, "show", "HEAD:grip.toml").stdout))
         _refuse_unrecorded_pins(root, pins, shadow, mode, _gitlinks_at(root, "HEAD", pins))
-    members = _native_store_check(root)
+    recursed: list[dict[str, str]] = []
+    if recurse == "on-demand":
+        _require_root_commit(root)
+        origin = _store_git(root, "remote", "get-url", "origin", check=False).stdout.strip()
+        recursed = _push_uncovered_members(root, origin or to or "")
+    members = _native_store_check(root, coverage=recurse != "none")
     branch = _store_git(root, "symbolic-ref", "--short", "HEAD").stdout.strip()
     recorded = _root_origin_for_push(root, to)
     tip = _store_git(root, "rev-parse", "HEAD").stdout.strip()
     try:
-        same_repo = _same_repo_member_refs(root, branch) if atomic else []
+        # A same-repo member under on-demand rides the root's ONE atomic push, as --atomic's members do.
+        same_repo = _same_repo_member_refs(root, branch) if atomic or recurse == "on-demand" else []
         landed_by_another = _atomic_push(root, [(tip, f"refs/heads/{branch}"), (tip, _shadow_ref(root)),
-                                                *[(pin, ref) for _, pin, ref in same_repo]])
+                                                *[(pin, ref) for _, pin, ref in same_repo]],
+                                         verify=recurse != "none")
         if shadow != tip:
             # Compare-and-swap from the shadow this push read; a concurrent push of the same tip may have moved it
             # first, which is the same outcome, so only a shadow left anywhere but `tip` is a failure.
@@ -2454,6 +2523,11 @@ def _native_store_push(root: Path, to: str | None = None, atomic: bool = False) 
         "origin_recorded": recorded is not None,
         "landed_by_another": landed_by_another,
         "members": members,
+        "recurse": recurse,
+        "recursed": recursed,
+        "unchecked": [member["name"] for member in members if member["state"] == "unchecked"],
+        "snapshot": tip if made else None,
+        "allow_rewind": list(allow_rewind or []),
     }
 
 
@@ -3326,11 +3400,17 @@ def grip_push_cmd(
     atomic: bool = typer.Option(
         False, "--atomic", help="Also push the same-repo members' refs (members whose origin is the root's) in the same atomic push "
              "as the branch and its shadow: all move, or none"),
+    recurse: str = typer.Option(
+        "check", "--recurse", help="A member pin its upstream does not cover: check (refuse, exit 3), on-demand (push "
+                                   "the member from its clone first) or none (skip coverage; the fence still runs)"),
+    snapshot: bool = typer.Option(False, "--snapshot", help="Make the store commit first, then push it"),
+    allow_rewind: list[str] = typer.Option(
+        [], "--allow-rewind", help="A member whose pin may move backwards (repeatable); must name a member"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Check, then push the root branch and its shadow in one atomic push; --atomic adds same-repo member refs."""
     try:
-        payload = _native_store_push(Path.cwd(), to, atomic)
+        payload = _native_store_push(Path.cwd(), to, atomic, recurse, snapshot, allow_rewind)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
@@ -3345,7 +3425,14 @@ def grip_push_cmd(
     if json_output:
         typer.echo(json.dumps(payload))
     else:
+        if payload["snapshot"]:
+            typer.echo(f"Committed {payload['snapshot']} (--snapshot)")
+        for entry in payload["recursed"]:
+            if entry["action"] == "pushed":
+                typer.echo(f"Pushed member {entry['name']} at {entry['pin']}")
         typer.echo(f"Pushed root {payload['root_branch']} at {payload['root_commit']}")
+        if payload["unchecked"]:
+            typer.echo(f"Coverage not checked (--recurse=none): {', '.join(payload['unchecked'])}")
         if payload["landed_by_another"]:
             typer.echo("Another push landed the same refs first; origin holds every ref at its target")
 

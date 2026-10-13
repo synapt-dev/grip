@@ -306,6 +306,11 @@ class NativeStoreRefusal(RuntimeError):
         self.code = code
 
 
+class PinRewindRefusal(NativeStoreRefusal):
+    """A pin that would move backwards (exit 3). Its own type because full mode reads a coverage exit 3 as "carry a
+    layer": a rewind is never a layer, so callers that catch coverage refusals must let this one through."""
+
+
 #: A moved workspace tracks `MOVED_MARKER` at its root, or holds its state under this ref: either
 #: one means a newer gr2 owns this workspace and this one must not touch it.
 MOVED_STATE_REF = "refs/dev.synapt.grip/__state__/v1"
@@ -1494,6 +1499,62 @@ def _coverage_of(path: Path, pin: str, upstream: str) -> str:
     return COVERAGE_LANDED if net_landed(combined[0], reverse[0]) else COVERAGE_UNCOVERED
 
 
+def _remote_branches_holding(path: Path, sha: str) -> list[str]:
+    """The remote-tracking branches of a member clone that contain ``sha``, as `origin/feat/x`."""
+    held = _store_git(path, "for-each-ref", "--contains", sha, "--format=%(refname:short)", "refs/remotes", check=False)
+    return [name for name in held.stdout.split() if held.returncode == 0 and not name.endswith("/HEAD")]
+
+
+def _not_on_upstream(name: str, path: Path, sha: str, upstream: str) -> str:
+    """The refusal for a pin its upstream does not reach. "push it first" is the advice only for a pin no remote
+    branch holds; a pushed pin is named where it is, since pushing again would change nothing."""
+    elsewhere = _remote_branches_holding(path, sha)
+    if not elsewhere:
+        return f"{name} pin {sha} is not on {upstream}; push it first"
+    return (f"{name} pin {sha} is on {', '.join(elsewhere)} but not on {upstream}; check out that branch in the "
+            f"member so its upstream covers the pin, then commit again")
+
+
+def _resolve_member_pin(
+    root: Path, member: dict[str, str], path: Path, sha: str, claimed: set[Path], allow: str | None = None
+) -> dict[str, str]:
+    """The member to record with pin ``sha``: the one rule `store commit` and the store's pre-commit hook share.
+
+    THE BRANCH THE MEMBER MOVED TO, read before coverage. The record kept the branch from init, so a member moved from
+    feat/greet to merged main was checked against origin/feat/greet. Same reader as init, and ONLY when the branch
+    CHANGED: a member still on its recorded ref keeps its recorded upstream, which the owner may have declared by hand
+    (break 08). A DETACHED member (what materialize leaves) keeps its record too. The moved branch is adopted ONLY
+    when its upstream covers the pin: a member that ran `git checkout -b wip` with no new commit is still covered by
+    its recorded upstream, and adopting origin/wip (which does not exist) would refuse a pin the record already covers.
+    When ``allow`` is given (how the caller records an older pin anyway), the rewind check runs on the member as it
+    will be recorded, against the pin the root commit records: HEAD behind it, lacking it, or on an adopted branch
+    that does not contain it is refused (3). None skips it (`--allow-rewind`).
+    Raises the coverage refusal (exit 3 when no upstream covers the pin)."""
+    on = _store_git(path, "branch", "--show-current", check=False).stdout.strip()
+    moved = None
+    chosen = member
+    if on and on != member.get("ref"):
+        ref, upstream = _infer_member_branch(path)
+        moved = {**member, "ref": ref, "upstream": upstream}
+        if _member_covers(root, moved, sha, claimed):
+            chosen = moved
+    if allow is not None:
+        _refuse_pin_rewind({**chosen, "pin": _committed_pin(root, member)}, path, sha, member.get("ref"), allow=allow)
+    if chosen is moved:
+        return moved
+    try:
+        _member_coverage(root, member, sha, claimed)
+    except NativeStoreRefusal as exc:
+        if moved is not None and exc.code == 3:
+            elsewhere = _remote_branches_holding(path, sha)
+            where = f"the pin is on {', '.join(elsewhere)}" if elsewhere else "push it first"
+            raise NativeStoreRefusal(
+                f"{member['name']} pin {sha} is not on {moved['upstream']} (it is on {on}) or on its recorded "
+                f"upstream {member['upstream']}; {where}", 3) from None
+        raise
+    return member
+
+
 def _member_covers(root: Path, member: dict[str, str], sha: str, claimed: set[Path]) -> bool:
     """`_member_coverage` as a question: True when the member's upstream covers ``sha``, False on
     its exit-3 answers (not on the upstream, or landed under other commits). Every other refusal (an
@@ -1549,9 +1610,7 @@ def _member_coverage(
             f"{member['name']} pin {sha} landed on {upstream} under a different commit (squash or rebase); "
             f"re-pin to the tip of {upstream}, do not push it", 3)
     if answer != COVERAGE_REACHABLE:
-        raise NativeStoreRefusal(
-            f"{member['name']} pin {sha} is not on {upstream}; push it first", 3
-        )
+        raise NativeStoreRefusal(_not_on_upstream(member["name"], path, sha, upstream), 3)
 
 
 def _layer_for(root: Path, member: dict[str, str], path: Path, head: str) -> list[bytes]:
@@ -1765,20 +1824,20 @@ def _refuse_pin_rewind(
         if shallow:
             # A shallow checkout can descend from a pin older than its depth and still lack it, so a missing pin
             # says nothing about direction there; materialize would be the wrong advice for a checkout ahead.
-            raise NativeStoreRefusal(
+            raise PinRewindRefusal(
                 f"{name}: cannot tell whether HEAD {head[:12]} is behind the recorded pin {recorded[:12]}: this "
                 f"checkout is shallow and does not reach it; run `git fetch --unshallow` in {member['path']} and "
                 f"commit again, or {allow} to record HEAD anyway",
                 3,
             )
-        raise NativeStoreRefusal(
+        raise PinRewindRefusal(
             f"{name}: the recorded pin {recorded[:12]} is not in this checkout (HEAD {head[:12]}), so recording "
             f"HEAD could undo it; {hint}",
             3,
         )
     behind = _store_git(path, "merge-base", "--is-ancestor", head, recorded, check=False)
     if behind.returncode == 0:
-        raise NativeStoreRefusal(
+        raise PinRewindRefusal(
             f"{name}: HEAD {head[:12]} is behind the recorded pin {recorded[:12]}; recording it would undo "
             f"commits already in the store; {hint}",
             3,
@@ -1790,7 +1849,7 @@ def _refuse_pin_rewind(
         # then forgets the old pin: if HEAD does not contain it, its commits leave the record with exit 0.
         contains = _store_git(path, "merge-base", "--is-ancestor", recorded, head, check=False)
         if contains.returncode == 1:
-            raise NativeStoreRefusal(
+            raise PinRewindRefusal(
                 f"{name}: HEAD {head[:12]} on {member.get('ref')} does not contain the recorded pin {recorded[:12]} "
                 f"(on {recorded_ref}); recording the switch would drop that pin's commits from the store; merge or "
                 f"rebase onto the pin first, or {allow} to record the switch anyway",
@@ -1841,36 +1900,12 @@ def _native_store_commit(
                 f"{member['name']} is dirty; commit or stash changes first", 3
             )
         head = _store_git(path, "rev-parse", "HEAD").stdout.strip()
-        # THE BRANCH THE MEMBER MOVED TO, read before coverage. The record kept the
-        # branch from init, so a member moved from feat/greet to merged main was checked against
-        # origin/feat/greet: compat mode refused a pushed merge commit ("not on origin/feat/greet;
-        # push it first"), full mode carried it as a layer it did not need, and grip.toml's ref
-        # disagreed with its pin. Same reader as init, and ONLY when the branch CHANGED: a member
-        # still on its recorded ref keeps its recorded upstream, which the owner may have declared
-        # by hand (break 08). A DETACHED member (what materialize leaves) keeps its record too:
-        # that reader's detached default is main/origin/main.
-        # The moved branch is adopted ONLY when its upstream covers the pin: a member that ran
-        # `git checkout -b wip` with no new commit is still covered by its recorded upstream, and
-        # adopting origin/wip (which does not exist) would refuse a pin the record already covers.
-        on = _store_git(path, "branch", "--show-current", check=False).stdout.strip()
-        recorded_ref = member.get("ref")
-        moved = None
-        if on and on != member.get("ref"):
-            ref, upstream = _infer_member_branch(path)
-            moved = {**member, "ref": ref, "upstream": upstream}
-            if _member_covers(root, moved, head, claimed):
-                member, moved = moved, None
-        if not allow_rewind:
-            _refuse_pin_rewind({**member, "pin": _committed_pin(root, member)}, path, head, recorded_ref)
+        # The one rule the store's pre-commit hook shares: adopt a moved branch whose upstream covers the pin, and
+        # refuse a pin that would move backwards (unless --allow-rewind).
         try:
-            _member_coverage(root, member, head, claimed)
+            member = _resolve_member_pin(root, member, path, head, claimed, allow=None if allow_rewind else "pass --allow-rewind")
         except NativeStoreRefusal as exc:
-            if moved is not None and exc.code == 3:
-                # neither upstream covers the pin: name the branch the member is on as well
-                exc = NativeStoreRefusal(
-                    f"{member['name']} pin {head} is not on {moved['upstream']} (it is on {on}) "
-                    f"or on its recorded upstream {member['upstream']}; push it first", 3)
-            if not full or exc.code != 3:
+            if not full or exc.code != 3 or isinstance(exc, PinRewindRefusal):
                 raise exc from None
             # Full mode holds a pin no remote has in a LAYER: a bundle of the commits the member's upstream lacks,
             # stored in the record, so the pin can be rebuilt from the record plus the member's url.
@@ -1898,7 +1933,9 @@ def _native_store_commit(
     _write_native_members(root, changed)
     _store_git(root, "add", "grip.toml")
     if not full and not has_foreign_gitmodules(root):   # full mode never projects a .gitmodules
-        (root / ".gitmodules").write_text(render_gitmodules(members), encoding="utf-8")
+        # from the members AS RECORDED: a member whose moved branch was adopted declares that branch, as its
+        # grip.toml entry does, or the record would say feat/x in one file and dev in the other
+        (root / ".gitmodules").write_text(render_gitmodules(changed), encoding="utf-8")
         _store_git(root, "add", "-f", ".gitmodules")   # -f: the generated .gitignore ignores everything not declared
     elif full and not has_foreign_gitmodules(root):
         # A compat store that flips to full carries the .gitmodules gr2 wrote; a recursive clone would try to init

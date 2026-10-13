@@ -316,3 +316,59 @@ def test_a_renamed_member_with_its_pin_set_back_is_refused_by_the_hook(ws: Path)
     assert done.returncode != 0, done.stdout + done.stderr
     assert "behind the recorded pin" in done.stderr, done.stderr
     assert _git_out(ws, "rev-parse", "HEAD") == root_before
+
+
+def test_a_switch_that_drops_the_pin_is_refused_through_the_hook_as_through_the_verb(ws: Path) -> None:
+    """The hook and the verb share one resolver, so the switch clause holds for a plain `git commit` too. On dev the
+    hook never adopted a moved branch and refused this state with "push it first", advice that does nothing for a
+    pushed branch. Once the hook adopts (this change), the clause is what refuses it: a pushed side branch that
+    diverged before the recorded pin is not BEHIND it, so without the recorded branch the hook would adopt the switch
+    and the pin's commits would leave the record with exit 0."""
+    alpha = ws / "alpha"
+    recorded = _pin(ws, "alpha")
+    _git(alpha, "checkout", "-q", "-b", "side", "HEAD~1")
+    side = _commit_on(alpha, "side.txt")
+    _git(alpha, "push", "-q", "-u", "origin", "side")
+    root_before = _git_out(ws, "rev-parse", "HEAD")
+    _git(ws, "add", "alpha")
+
+    done = _git(ws, "commit", "-q", "-m", "alpha switched", check=False)
+
+    assert done.returncode != 0, done.stdout + done.stderr
+    assert "does not contain the recorded pin" in done.stderr and side[:12] in done.stderr, done.stderr
+    assert "gr2 store commit --allow-rewind" in done.stderr, done.stderr
+    assert _git_out(ws, "rev-parse", "HEAD") == root_before
+    assert _git_out(ws, "show", "HEAD:grip.toml").count(recorded) == 1
+
+
+def test_control_a_switch_that_contains_the_pin_commits_through_the_hook(ws: Path) -> None:
+    alpha = ws / "alpha"
+    _git(alpha, "checkout", "-q", "-b", "next")
+    head = _commit_on(alpha, "next.txt")
+    _git(alpha, "push", "-q", "-u", "origin", "next")
+    _git(ws, "add", "alpha")
+
+    done = _git(ws, "commit", "-q", "-m", "alpha on next", check=False)
+
+    assert done.returncode == 0, done.stdout + done.stderr
+    toml = _git_out(ws, "show", "HEAD:grip.toml")
+    assert head in toml and 'ref = "next"' in toml, toml
+
+
+def test_full_mode_refuses_a_checkout_behind_its_pin_and_never_carries_it_as_a_layer(tmp_path: Path) -> None:
+    """Full mode reads a coverage refusal (exit 3) as "carry a layer". The rewind check runs inside the same resolver,
+    so its exit 3 must not be read that way: an older pin is refused, never recorded as a layer."""
+    from tests.test_store_full_mode_carrier import _advance, _full_store
+    from tests.test_store_git_native_smoke import gr2
+
+    root = _full_store(tmp_path)
+    recorded = _advance(root, "alpha", push=True)
+    assert gr2(root, "commit", "-m", "alpha moved").returncode == 0
+    _git(root / "alpha", "reset", "-q", "--hard", "HEAD~1")
+    root_before = _git_out(root, "rev-parse", "HEAD")
+
+    done = gr2(root, "commit", "-m", "alpha behind", check=False)
+
+    assert done.returncode == 3, done.stdout + done.stderr
+    assert "behind the recorded pin" in done.stderr and recorded[:12] in done.stderr, done.stderr
+    assert _git_out(root, "rev-parse", "HEAD") == root_before

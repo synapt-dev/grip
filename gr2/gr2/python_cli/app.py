@@ -440,6 +440,25 @@ def _prepare_review_branch(workspace_root: Path, repo: str, pr_number: int, bran
     return target_branch
 
 
+def _pr_base_sha(source_repo_root: Path, repo: str, pr_number: int, head_sha: str, platform: str) -> str:
+    """The base pin of a PR-head review: merge-base(head, base-branch tip). The base branch comes from the
+    PR itself, so the pin is what the PR is actually measured against. One rule for `review open` and
+    `review checkout-pr`."""
+    repo_slug = _repo_slug_from_url(remote_origin_url(source_repo_root) or "", repo)
+    head_adapter = platform_ops.get_platform_adapter(platform)
+    head_route: dict[str, object] = {}
+    if platform_ops.adapter_api_version(head_adapter) >= 2:
+        origin = remote_origin_url(source_repo_root) or ""
+        if not origin:
+            _refuse(f"{repo}: no origin url, so a v2 platform adapter cannot route its PR")
+        head_route = {"target": head_adapter.resolve_target(origin)}  # type: ignore[attr-defined]
+    base_branch = head_adapter.pr_status(repo_slug, pr_number, **head_route).ref.base_branch or "main"
+    git(source_repo_root, "fetch", "--quiet", "origin", base_branch)
+    base_tip = git(source_repo_root, "rev-parse", "FETCH_HEAD").stdout.strip()
+    merged = git(source_repo_root, "merge-base", head_sha, base_tip)
+    return merged.stdout.strip() if merged.returncode == 0 else base_tip
+
+
 def _create_review_lane_metadata(
     workspace_root: Path,
     owner_unit: str,
@@ -3581,11 +3600,27 @@ def review_checkout_pr(
     actor: Optional[str] = typer.Option(None, "--actor", help="Actor label to use when entering the lane"),
     manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual during materialization/enter"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    platform: str = typer.Option("github", "--platform", help="Platform adapter name"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Create and materialize a review lane for a PR."""
     workspace_root = workspace_root.resolve()
     resolved_branch = _prepare_review_branch(workspace_root, repo, pr_number, branch)
+    # The record `review close` needs, worked out before any lane state is written, so a refusal leaves
+    # nothing behind: the head is the PR head this checkout fetched, the base comes from the rule
+    # `review open` uses.
+    from . import review as review_mod
+
+    source_repo_root = (workspace_root / str(_workspace_repo_spec(workspace_root, repo)["path"])).resolve()
+    try:
+        head_sha = review_mod.fetched_review_head(source_repo_root, resolved_branch)
+        record = review_mod.pr_lane_record(
+            source_repo_root=source_repo_root,
+            head_sha=head_sha,
+            base_sha=_pr_base_sha(source_repo_root, repo, pr_number, head_sha, platform),
+        )
+    except review_mod.ReviewError as exc:
+        _refuse(str(exc))
     resolved_lane = _create_review_lane_metadata(
         workspace_root,
         owner_unit,
@@ -3595,6 +3630,18 @@ def review_checkout_pr(
         branch=resolved_branch,
     )
     _materialize_lane_repos(workspace_root, owner_unit, resolved_lane, manual_hooks=manual_hooks)
+    try:
+        review_mod.record_checked_out_pr_lane(
+            record,
+            lane_repo_root=_lane_repo_root(workspace_root, owner_unit, resolved_lane, repo),
+            workspace_root=workspace_root,
+            owner_unit=owner_unit,
+            lane_name=resolved_lane,
+            member=repo,
+            pr_number=pr_number,
+        )
+    except review_mod.ReviewError as exc:
+        _refuse(str(exc))
 
     entered = False
     if enter:
@@ -3749,21 +3796,7 @@ def review_open(
     # ref against expected_head and refuses a wrong/tampered fetch before the seam.
     review_branch = _prepare_review_branch(workspace_root, repo, pr_number, None)
 
-    # Base pin = merge-base(head, base-branch tip). The base branch comes from the
-    # PR itself, so the pin is what the PR is actually measured against.
-    repo_slug = _repo_slug_from_url(remote_origin_url(source_repo_root) or "", repo)
-    head_adapter = platform_ops.get_platform_adapter(platform)
-    head_route: dict[str, object] = {}
-    if platform_ops.adapter_api_version(head_adapter) >= 2:
-        origin = remote_origin_url(source_repo_root) or ""
-        if not origin:
-            _refuse(f"{repo}: no origin url, so a v2 platform adapter cannot route its PR")
-        head_route = {"target": head_adapter.resolve_target(origin)}  # type: ignore[attr-defined]
-    base_branch = head_adapter.pr_status(repo_slug, pr_number, **head_route).ref.base_branch or "main"
-    git(source_repo_root, "fetch", "--quiet", "origin", base_branch)
-    base_tip = git(source_repo_root, "rev-parse", "FETCH_HEAD").stdout.strip()
-    merged = git(source_repo_root, "merge-base", expected_head, base_tip)
-    base_sha = merged.stdout.strip() if merged.returncode == 0 else base_tip
+    base_sha = _pr_base_sha(source_repo_root, repo, pr_number, expected_head, platform)
 
     record = review_mod.open_review_lane(
         source_repo_root=source_repo_root,

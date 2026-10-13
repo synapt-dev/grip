@@ -371,6 +371,61 @@ def open_review_lane(
     return record
 
 
+def fetched_review_head(source_repo_root: Path, review_branch: str) -> str:
+    """The commit `review_branch` names in the source: the PR head a checkout fetched."""
+    actual = gitops.git(Path(source_repo_root), "rev-parse", "--verify", f"{review_branch}^{{commit}}")
+    if actual.returncode != 0:
+        raise ReviewError(
+            f"review branch {review_branch!r} does not resolve in {source_repo_root}: "
+            f"{actual.stderr.strip() or actual.stdout.strip()}"
+        )
+    return actual.stdout.strip()
+
+
+def pr_lane_record(*, source_repo_root: Path, head_sha: str, base_sha: str, allow_local: bool = False) -> ReviewRecord:
+    """The ``(repo, base, head, lane_kind)`` receipt for a PR lane `review checkout-pr` is about to make,
+    worked out BEFORE the lane exists, so a refusal here leaves nothing on disk. ``head_sha`` is the PR head
+    the checkout fetched."""
+    _require_sha("fetched head", head_sha)
+    _require_sha("base pin", base_sha)
+    repo_identity = canonical_source_identity(
+        gitops.remote_origin_url(Path(source_repo_root)) or "", allow_local=allow_local
+    )
+    return ReviewRecord(repo=repo_identity, base=base_sha, head=head_sha, lane_kind="materialized")
+
+
+def record_checked_out_pr_lane(
+    record: ReviewRecord,
+    *,
+    lane_repo_root: Path,
+    workspace_root: Path,
+    owner_unit: str,
+    lane_name: str,
+    member: str,
+    pr_number: int,
+) -> None:
+    """Write ``record`` for a lane `review checkout-pr` materialized, the same receipt `open_review_lane`
+    writes, so `close_review_lane` can drop it. A lane whose HEAD is not the record's head (the PR head the
+    checkout fetched) is refused and nothing is recorded; the refusal prints the one `review close` command,
+    its lane named, that drops this lane as printed."""
+    lane_repo_root = Path(lane_repo_root)
+    try:
+        record_paths = review_record_paths(workspace_root, owner_unit, lane_name, member, lane_repo_root)
+    except ReviewRecordLocationError as exc:
+        raise ReviewError(str(exc)) from exc
+    lane_head = gitops.git(lane_repo_root, "rev-parse", "HEAD")
+    if lane_head.returncode != 0 or lane_head.stdout.strip() != record.head:
+        import shlex
+        close = shlex.join(["gr2", "review", "close", str(workspace_root), owner_unit, member, str(pr_number),
+                            "--lane", lane_name])
+        raise ReviewError(
+            f"review lane {lane_repo_root} is at {lane_head.stdout.strip()!r}, not the fetched PR head "
+            f"{record.head}; refusing to record it as that review. If the PR moved since this lane was made, "
+            f"run `{close}` and check it out again"
+        )
+    write_review_record(record_paths, record.to_dict())
+
+
 def run_in_review_lane(
     lane_repo_root: Path,
     command: Sequence[str],

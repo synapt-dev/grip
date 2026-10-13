@@ -145,9 +145,11 @@ def _refuse_local_work(target: Path, allocation: dict) -> None:
         receipt = {}
     runner = receipt.get("runner")
     created = RUNNER_CREATED_PATHS.get(runner if isinstance(runner, str) else "", {})
-    # What `review run` admits as an install's own output (setuptools' top-level `build/`), from its one
-    # list, and only once a run has written its receipt: before any run, a `build/` is not the review's.
-    install_tops = _INSTALL_OUTPUT_TOPS if receipt.get("kind") == "review-run" else ()
+    # What the run's install itself created (setuptools' top-level `build/`), as the run's receipt names it, file by
+    # file and lane-relative, and only under `_INSTALL_OUTPUT_TOPS`. Anything else under `build/` -- written before
+    # the run, after it, or in a `build/` the member tracks -- stays work and refuses.
+    recorded = receipt.get("install_outputs") if receipt.get("kind") == "review-run" else None
+    install_outputs = {p for p in recorded if isinstance(p, str)} if isinstance(recorded, list) else set()
     found: list[str] = []
     members = [target / item["path"] for item in allocation["members"]]
     if not (target / ".git").exists():
@@ -176,8 +178,10 @@ def _refuse_local_work(target: Path, allocation: dict) -> None:
         for line in ask(path, "status", "--porcelain", "--untracked-files=all").splitlines():
             if line.startswith("?? ") and _is_allowlisted_untracked(
                     line[3:], extra_names=created.get("names", frozenset()),
-                    extra_tops=(*created.get("tops", ()), *install_tops),
-                    extra_segments=created.get("segments", frozenset())):
+                    extra_tops=created.get("tops", ()), extra_segments=created.get("segments", frozenset())):
+                continue
+            if line.startswith("?? ") and any(line[3:].startswith(top) for top in _INSTALL_OUTPUT_TOPS) \
+                    and _lane_relative(target, path, line[3:]) in install_outputs:
                 continue
             found.append(f"uncommitted work in {path}: {line}")
         stashes = ask(path, "stash", "list", "--format=%H").split()
@@ -193,6 +197,12 @@ def _refuse_local_work(target: Path, allocation: dict) -> None:
         raise OpenGrReviewError(
             f"lane {target} holds work that exists nowhere else; commit and push it, or move it out, "
             "then close again:\n  " + "\n  ".join(found))
+
+
+def _lane_relative(target: Path, repo: Path, rel: str) -> str:
+    """`rel`, a path git reported inside `repo`, as the lane-relative path a run receipt records."""
+    prefix = str(repo.relative_to(target))
+    return rel if prefix == "." else f"{prefix}/{rel}"
 
 
 def _run_placed_members(target: Path, receipt: dict, member_names: set[str]) -> list[str]:
@@ -212,7 +222,9 @@ def _run_placed_members(target: Path, receipt: dict, member_names: set[str]) -> 
                 or "\\" in key or not isinstance(pins.get(key), str):
             continue
         path = target / key
-        if path.is_symlink() or not path.is_dir() or not (path / ".git").exists():
+        # A real clone: its own `.git` directory. A `.git` FILE points at another repository's git dir (a linked
+        # worktree), which the run never makes, and whose work would be judged against someone else's refs.
+        if path.is_symlink() or not path.is_dir() or (path / ".git").is_symlink() or not (path / ".git").is_dir():
             continue
         head = git(path, "rev-parse", "--verify", "-q", "HEAD")
         if head.returncode == 0 and head.stdout.strip() == pins[key]:

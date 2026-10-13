@@ -311,6 +311,18 @@ def assert_no_untracked_drift(
 _INSTALL_OUTPUT_TOPS = ("build/",)
 
 
+def install_outputs(repo_dir: Path, baseline: set[str], lane_dir: Path) -> list[str]:
+    """The untracked paths this run created under `_INSTALL_OUTPUT_TOPS` in `repo_dir`, lane-relative and sorted: what
+    the receipt records so `review close` can admit exactly these and nothing a person put there before or after
+    the run (a tracked `build/` included, whose files are source)."""
+    prefix = repo_dir.resolve().relative_to(lane_dir.resolve())
+    return sorted(
+        str(prefix / rel) if str(prefix) != "." else rel
+        for rel in list_untracked(repo_dir) - baseline
+        if any(rel.startswith(top) for top in _INSTALL_OUTPUT_TOPS)
+    )
+
+
 def list_untracked(repo_dir: Path) -> set[str]:
     """The untracked paths git reports in `repo_dir`, host ignore rules neutralized (see
     `assert_no_untracked_drift` for why). Every file is listed on its own: without
@@ -850,6 +862,7 @@ def _run_review_lane(
         "bound_head_tree": bound_tree,
         **body,
         "downstream": _single_repo_downstream(downstream),
+        "install_outputs": install_outputs(repo_dir, baseline, lane_dir),
     }
     (lane_dir / _RECEIPT_NAME).write_text(json.dumps(receipt, indent=2) + "\n")
     return receipt
@@ -1487,6 +1500,8 @@ def _run_multi_member_lane(
         "members": members,
         "not_run": [],
         "downstream": selection,
+        "install_outputs": [p for member in ran_order
+                            for p in install_outputs(_member_dir(lane_dir, member), baselines[member], lane_dir)],
         "selected": sum(m["selected"] for m in members),
         "passed": sum(m["passed"] for m in members),
         "failed": sum(m["failed"] for m in members),

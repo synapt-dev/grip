@@ -5,7 +5,7 @@ P1 an atomic push of two records moves both on the remote, and the tracking tree
 P2 a lease turns the push away when the remote moved after the check, and with atomic no ref moves;
 P3 stale tracking is refused before anything is sent, naming the ref; no ref moves, the fresh one included;
 P4 a record new to the remote is pushed on an empty lease, and its tracking ref is made;
-P5 a rewind is refused by name unless allow_rewind, which takes it;
+P5 a rewind is refused by name unless allow_rewind, which takes it; P5b an amended (diverged) record is a rewrite;
 P6 a ref with no local value is refused, and a ref outside the namespace has no lease.
 """
 from __future__ import annotations
@@ -139,9 +139,21 @@ def test_p5_a_rewind_is_refused_unless_allowed(lp, world):
     git(me, "update-ref", stook("a"), a1)                 # back to the parent: a rewind of what the remote has
     with pytest.raises(lp.PushRefused) as e:
         lp.push(me, [stook("a")], org=ORG)
-    assert "rewind" in e.value.why and remote(origin, stook("a")) == a2
+    assert e.value.why.startswith("rewind:") and remote(origin, stook("a")) == a2
     lp.push(me, [stook("a")], org=ORG, allow_rewind=True)
     assert remote(origin, stook("a")) == a1
+
+
+def test_p5b_an_amended_record_is_refused_as_a_rewrite(lp, world):
+    origin, me, _ = world
+    a1 = remote(origin, stook("a"))
+    a2 = append(me, "a", "2")
+    lp.push(me, [stook("a")], org=ORG)
+    git(me, "update-ref", stook("a"), a1)
+    append(me, "a", "amended")                            # a sibling of a2: neither descends from the other
+    with pytest.raises(lp.PushRefused) as e:
+        lp.push(me, [stook("a")], org=ORG)
+    assert e.value.why.startswith("rewrite:") and remote(origin, stook("a")) == a2
 
 
 def test_p6_no_local_value_and_outside_the_namespace_are_refused(lp, world):

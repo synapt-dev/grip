@@ -1723,19 +1723,22 @@ def _commit_with_carried(root: Path, message: str, carried: list[str]) -> None:
     _store_git(root, "update-ref", "-m", f"commit: {message}", "HEAD", made)
 
 
-def _refuse_pin_rewind(member: dict, path: Path, head: str, recorded_ref: str | None = None) -> None:
+def _refuse_pin_rewind(
+    member: dict, path: Path, head: str, recorded_ref: str | None = None, allow: str = "pass --allow-rewind"
+) -> None:
     """Refuse (3) a pin that would move BACKWARDS: HEAD is behind the recorded pin, or lacks it entirely.
 
     Found in review: a stale checkout's HEAD was recorded over a newer pin, rc 0, and the push undid another
     workspace's recorded merge. A checkout ahead of its pin, or on the pin, is not this; one that diverged
     from it is left to the coverage check. A missing pin in a full clone means HEAD cannot descend from it; in a
     shallow clone it may, so there the refusal says it cannot tell and names `git fetch --unshallow`.
+    `allow` is how the caller records the older pin anyway: the flag for the verb, the verb for a hook.
     """
     recorded = member.get("pin")
     if not recorded or recorded == head:
         return
     name = member["name"]
-    hint = "run `gr2 store materialize` to bring the checkout to the pin, or pass --allow-rewind to record it anyway"
+    hint = f"run `gr2 store materialize` to bring the checkout to the pin, or {allow} to record it anyway"
     if _store_git(path, "cat-file", "-e", f"{recorded}^{{commit}}", check=False).returncode:
         shallow = _store_git(path, "rev-parse", "--is-shallow-repository", check=False).stdout.strip() == "true"
         if shallow:
@@ -1744,7 +1747,7 @@ def _refuse_pin_rewind(member: dict, path: Path, head: str, recorded_ref: str | 
             raise NativeStoreRefusal(
                 f"{name}: cannot tell whether HEAD {head[:12]} is behind the recorded pin {recorded[:12]}: this "
                 f"checkout is shallow and does not reach it; run `git fetch --unshallow` in {member['path']} and "
-                f"commit again, or pass --allow-rewind to record HEAD anyway",
+                f"commit again, or {allow} to record HEAD anyway",
                 3,
             )
         raise NativeStoreRefusal(
@@ -1769,7 +1772,7 @@ def _refuse_pin_rewind(member: dict, path: Path, head: str, recorded_ref: str | 
             raise NativeStoreRefusal(
                 f"{name}: HEAD {head[:12]} on {member.get('ref')} does not contain the recorded pin {recorded[:12]} "
                 f"(on {recorded_ref}); recording the switch would drop that pin's commits from the store; merge or "
-                f"rebase onto the pin first, or pass --allow-rewind to record the switch anyway",
+                f"rebase onto the pin first, or {allow} to record the switch anyway",
                 3,
             )
         if contains.returncode != 0:

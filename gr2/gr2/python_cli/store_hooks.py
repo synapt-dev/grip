@@ -10,7 +10,8 @@ THE SHAPE: two hooks, written by `store init` and by `store materialize`, that c
 differently. There is no new verb and no second implementation.
 
   pre-commit   every NEW gitlink in the index must be on its member's upstream (refused with the
-               verb's own message, "... push it first"); and the `pin` lines of grip.toml are folded to the
+               verb's own message, "... push it first") and must not move its pin backwards (the verb's
+               rewind refusal, naming `gr2 store commit --allow-rewind`); and the `pin` lines of grip.toml are folded to the
                staged gitlinks and staged, so one commit can never carry two disagreeing records. The commit
                is judged by the grip.toml it will CARRY (the staged blob), only the pin lines are rewritten,
                and a fold is refused when grip.toml has unstaged edits (it never rewrites what the user has
@@ -383,6 +384,10 @@ def run_pre_commit(root: Path) -> int:
             if sha is None:
                 continue
             if committed.get(member["path"]) != sha:
+                # The verb's own rewind check, so a plain `git commit` cannot record a pin the verb refuses.
+                gc._refuse_pin_rewind(
+                    member, root / member["path"], sha, allow="commit through `gr2 store commit --allow-rewind`"
+                )
                 claimed = gc._claimed_member_paths(root, members, exclude=member)
                 gc._member_coverage(root, member, sha, claimed)
             if sha != member["pin"]:

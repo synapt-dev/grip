@@ -211,3 +211,29 @@ def _commit_on(repo: Path, name: str) -> str:
     _git(repo, "add", name)
     _git(repo, "commit", "-q", "-m", f"add {name}")
     return _git_out(repo, "rev-parse", "HEAD")
+
+
+def test_a_plain_git_commit_through_the_hook_refuses_the_same_rewind(ws: Path) -> None:
+    """The pre-commit hook runs the verb's rewind check, so `git commit` and `store commit` agree."""
+    alpha = ws / "alpha"
+    recorded = _pin(ws, "alpha")
+    _git(alpha, "reset", "-q", "--hard", "HEAD~1")
+    root_before = _git_out(ws, "rev-parse", "HEAD")
+    _git(ws, "add", "alpha")
+
+    done = _git(ws, "commit", "-q", "-m", "feature 2 merged", check=False)
+
+    assert done.returncode != 0, done.stdout + done.stderr
+    assert "behind the recorded pin" in done.stderr and "gr2 store commit --allow-rewind" in done.stderr, done.stderr
+    assert _git_out(ws, "rev-parse", "HEAD") == root_before
+    assert _pin(ws, "alpha") == recorded
+
+
+def test_control_a_plain_git_commit_of_a_checkout_ahead_folds_the_pin(ws: Path) -> None:
+    ahead = _commit_and_push(ws / "alpha", "next.txt")
+    _git(ws, "add", "alpha")
+
+    done = _git(ws, "commit", "-q", "-m", "alpha moves on", check=False)
+
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert _pin(ws, "alpha") == ahead

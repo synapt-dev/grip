@@ -3198,6 +3198,73 @@ def _lane_removal_refusals(workspace_root: Path, owner_unit: str, lane_name: str
     return refusals
 
 
+@lane_app.command("push", cls=ContextCommand)
+def lane_push(
+    workspace_root: Path,
+    owner_unit: str,
+    lane_name: str,
+    remote: Optional[str] = typer.Option(
+        None,
+        "--remote",
+        help="Remote to push each repo to (defaults to each branch's configured remote)",
+    ),
+    set_upstream: bool = typer.Option(
+        False, "--set-upstream", "-u", help="Record each pushed branch's upstream"
+    ),
+    force_with_lease: bool = typer.Option(
+        False,
+        "--force-with-lease",
+        help="Rewrite each repo's remote branch only if it still matches that repo's "
+        "last-fetched remote head",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    root: Optional[Path] = ROOT_OPTION,
+    unit: Optional[str] = typer.Option(None, "--unit", help="The unit. Same as the UNIT argument; give one or the other."),
+    ctx: typer.Context = None,  # type: ignore[assignment]
+) -> None:
+    """Push every repo of a lane, each verified on its remote.
+
+    Each repo goes through the same path as `gr2 push` (its remote, a refusal of a detached HEAD,
+    and an `ls-remote` check that the remote ref equals the head), one line per repo: pushed, up to
+    date, or FAILED. Exit 1 when any push failed; the repos that landed are not rolled back. Exit 3
+    when every push landed but a head is not on the lane's branch at its remote (the store's root
+    push would refuse that pin), or that could not be read."""
+    _announce_context(ctx)
+    workspace_root = workspace_root.resolve()
+    try:
+        rows = push_ops.push_lane(
+            workspace_root,
+            owner_unit,
+            lane_name,
+            remote=remote,
+            set_upstream=set_upstream,
+            force_with_lease=force_with_lease,
+        )
+    except push_ops.PushError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    if json_output:
+        repos = [dict(vars(row)) for row in rows]
+        typer.echo(json.dumps({"lane": f"{owner_unit}/{lane_name}", "repos": repos}, indent=2))
+    else:
+        for row in rows:
+            if row.status == "failed":
+                typer.echo(f"{row.repo}: FAILED, {row.error}")
+            elif row.status == "up_to_date":
+                typer.echo(f"{row.repo}: up to date at {row.sha}")
+            else:
+                typer.echo(
+                    f"{row.repo}: pushed {row.branch} to {row.remote} at {row.sha} "
+                    "(remote ref verified)"
+                )
+            if row.uncovered:
+                typer.echo(row.uncovered)
+    if any(row.status == "failed" for row in rows):
+        raise typer.Exit(code=1)
+    if any(row.uncovered for row in rows):
+        raise typer.Exit(code=3)
+
+
 @lane_app.command("list", cls=RootOptionalCommand)
 def lane_list(
     workspace_root: Path,

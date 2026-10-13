@@ -149,3 +149,25 @@ def test_fence_e_compat_hand_gitlink_bump_past_the_hook_with_a_stale_pin_is_refu
 def test_fence_f_the_mode_split_is_one_predicate_with_two_answers():
     assert gc._gitlink_may_be_pin("compat") is True, "compat: the gitlink IS the pin"
     assert gc._gitlink_may_be_pin("full") is False, "full: the gitlink is the field commit; only the verb records"
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_hand_commit_that_drops_a_member_is_refused_at_the_hook_and_the_push(tmp_path, mode):
+    """A hand commit that DROPS a recorded member from grip.toml: the hook refuses it naming the member, and the
+    same commit made past the hook is refused by the push, nothing moving on origin or in the local shadow. The
+    fence used to loop over the pins the commit records only, so a removed name was never compared."""
+    root, origin = _store(tmp_path, mode)
+    gr2(root, "push")
+    shadow, remote = _refs(root)[SHADOW], _refs(origin)
+    toml = root / "grip.toml"
+    head, _, rest = toml.read_text(encoding="utf-8").partition('[[members]]\nname = "beta"')
+    tail = rest.split("[[members]]", 1)
+    toml.write_text(head + ("[[members]]" + tail[1] if len(tail) > 1 else ""), encoding="utf-8")
+    assert 'name = "beta"' not in toml.read_text(encoding="utf-8")
+    git(root, "add", "grip.toml")
+    hooked = git(root, "commit", "-m", "drop beta by hand", check=False)
+    assert hooked.returncode != 0 and "member dropped by hand" in hooked.stderr and "beta" in hooked.stderr
+    git(root, "commit", "--no-verify", "-m", "drop beta past the hook")
+    pushed = gr2(root, "push", check=False)
+    assert pushed.returncode == 4 and "member dropped by hand" in pushed.stderr and "beta" in pushed.stderr
+    assert _refs(origin) == remote and _refs(root)[SHADOW] == shadow

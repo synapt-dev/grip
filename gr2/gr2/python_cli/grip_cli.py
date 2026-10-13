@@ -2059,6 +2059,13 @@ def _refuse_unrecorded_pins(root: Path, pins: dict[str, str], base: str, mode: s
     equal to the commit's own gitlink is RECORDED (the hook's fold), and a pin that differs from it is refused naming
     both (a hand bump past the hook, a stale fold). Otherwise the gitlink is never compared: in full mode it is the
     member's field commit, not its pin (#1233 v3 failed 47 full-mode rows on that)."""
+    shown = _store_git(root, "show", f"{base}:grip.toml", check=False)
+    recorded = _recorded_pins(shown.stdout) if not shown.returncode else {}
+    dropped = sorted(name for name in recorded if name not in pins)
+    if dropped:
+        raise NativeStoreRefusal(
+            f"member dropped by hand, not recorded by the verb: {', '.join(dropped)}; record pins through "
+            f"`gr2 store commit`", 4)
     if gitlinks is not None and _gitlink_may_be_pin(mode):
         stale = [f"{name} (gitlink {gitlinks.get(name, '')[:12] or 'none'}, pin {pin[:12]})"
                  for name, pin in sorted(pins.items()) if gitlinks.get(name) != pin]
@@ -2326,14 +2333,22 @@ def _root_origin_for_push(root: Path, to: str | None) -> str | None:
     return to
 
 
-def _atomic_push(root: Path, refspecs: list[tuple[str, str]]) -> None:
+def _atomic_push(root: Path, refspecs: list[tuple[str, str]]) -> bool:
     """ONE `git push --atomic` of every (commit, ref), so the remote moves all of them or none. A refusal names
     each rejected ref with git's reason, plus the remote's own lines (a pre-receive hook declines every ref in the
-    push, so only its message says which one it refused)."""
+    push, so only its message says which one it refused).
+
+    Returns False when this push moved the refs, True when it was refused but origin already holds EVERY ref at its
+    target: another push of the same refs landed first (two `store push` from one workspace at once; the loser's
+    receive-pack fails its lock on the shadow). One ref anywhere else is a real loss and refuses as before."""
     proc = _store_git(root, "push", "--porcelain", "--atomic", "origin", *[f"{sha}:{ref}" for sha, ref in refspecs],
                       check=False)
     if proc.returncode == 0:
-        return
+        return False
+    listed = _store_git(root, "ls-remote", "origin", *[ref for _, ref in refspecs], check=False)
+    held = {parts[1]: parts[0] for parts in (line.split("\t") for line in listed.stdout.splitlines()) if len(parts) == 2}
+    if listed.returncode == 0 and all(held.get(ref) == sha for sha, ref in refspecs):
+        return True
     rejected = [line.split("\t") for line in proc.stdout.splitlines() if line.startswith("!")]
     named = "; ".join(f"{parts[1].split(':', 1)[1]} {parts[2]}" for parts in rejected if len(parts) >= 3)
     remote = " | ".join(line.strip() for line in proc.stderr.splitlines() if line.startswith("remote:"))
@@ -2383,10 +2398,15 @@ def _native_store_push(root: Path, to: str | None = None, atomic: bool = False) 
     tip = _store_git(root, "rev-parse", "HEAD").stdout.strip()
     try:
         same_repo = _same_repo_member_refs(root, branch) if atomic else []
-        _atomic_push(root, [(tip, f"refs/heads/{branch}"), (tip, _shadow_ref(root)),
-                            *[(pin, ref) for _, pin, ref in same_repo]])
+        landed_by_another = _atomic_push(root, [(tip, f"refs/heads/{branch}"), (tip, _shadow_ref(root)),
+                                                *[(pin, ref) for _, pin, ref in same_repo]])
         if shadow != tip:
-            _store_git(root, "update-ref", "-m", "store push: shadow", _shadow_ref(root), tip, shadow or "0" * len(tip))
+            # Compare-and-swap from the shadow this push read; a concurrent push of the same tip may have moved it
+            # first, which is the same outcome, so only a shadow left anywhere but `tip` is a failure.
+            moved = _store_git(root, "update-ref", "-m", "store push: shadow", _shadow_ref(root), tip,
+                               shadow or "0" * len(tip), check=False)
+            if moved.returncode and _shadow_value(root) != tip:
+                raise RuntimeError(moved.stderr.strip() or "update-ref of the local shadow failed")
     except Exception:
         # The origin this push recorded is taken back when the push fails (a typo in --to), so the corrected
         # `--to` is a first record, not a repoint, and no raw `git remote` step is needed to recover.
@@ -2400,6 +2420,7 @@ def _native_store_push(root: Path, to: str | None = None, atomic: bool = False) 
         "shadow": _shadow_ref(root),
         "member_refs": [{"name": name, "pin": pin, "ref": ref} for name, pin, ref in same_repo],
         "origin_recorded": recorded is not None,
+        "landed_by_another": landed_by_another,
         "members": members,
     }
 
@@ -3081,6 +3102,7 @@ _STORE_JSON_SHAPES: dict[str, tuple[str, ...]] = {
         ".root_branch",
         ".root_commit",
         ".origin_recorded  bool",
+        ".landed_by_another  bool",
         ".members[].name",
         ".members[].pin",
         ".members[].upstream",
@@ -3294,6 +3316,8 @@ def grip_push_cmd(
         typer.echo(json.dumps(payload))
     else:
         typer.echo(f"Pushed root {payload['root_branch']} at {payload['root_commit']}")
+        if payload["landed_by_another"]:
+            typer.echo("Another push landed the same refs first; origin holds every ref at its target")
 
 
 def _store_status_line(member: dict) -> str:

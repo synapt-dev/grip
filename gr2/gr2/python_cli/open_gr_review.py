@@ -133,19 +133,33 @@ def _refuse_local_work(target: Path, allocation: dict) -> None:
                                     f"{(proc.stderr or proc.stdout).strip()}; close refused")
         return proc.stdout
 
+    from .review_run import _INSTALL_OUTPUT_TOPS
     from .review_runners import RUNNER_CREATED_PATHS
     # A runner's own outputs (cargo's target/ and Cargo.lock, ...) are the review's, exactly as
     # `review run` treats them; the receipt names the runner that wrote them.
     try:
-        runner = json.loads((target / _RUN_RECEIPT_NAME).read_text()).get("runner")
-    except (OSError, ValueError, AttributeError):
-        runner = None
-    created = RUNNER_CREATED_PATHS.get(runner or "", {})
+        receipt = json.loads((target / _RUN_RECEIPT_NAME).read_text())
+    except (OSError, ValueError):
+        receipt = None
+    if not isinstance(receipt, dict):
+        receipt = {}
+    runner = receipt.get("runner")
+    created = RUNNER_CREATED_PATHS.get(runner if isinstance(runner, str) else "", {})
+    # What the run's install itself created (setuptools' top-level `build/`), as the run's receipt names it, file by
+    # file and lane-relative, and only under `_INSTALL_OUTPUT_TOPS`. Anything else under `build/` -- written before
+    # the run, after it, or in a `build/` the member tracks -- stays work and refuses.
+    recorded = receipt.get("install_outputs") if receipt.get("kind") == "review-run" else None
+    install_outputs = {p for p in recorded if isinstance(p, str)} if isinstance(recorded, list) else set()
     found: list[str] = []
     members = [target / item["path"] for item in allocation["members"]]
     if not (target / ".git").exists():
         from .review_run import _LEGACY_MARKERS
         member_names = {m.relative_to(target).parts[0] for m in members if m != target}
+        # The upstream and downstream members `review run` cloned into the lane root are the review's
+        # too, and are examined below exactly like a member, so work inside one still refuses.
+        placed = _run_placed_members(target, receipt, member_names)
+        member_names |= set(placed)
+        members += [target / key for key in placed]
         # The exact names the review writes at the root, as regular files: its marker, receipt and
         # run logs (one per member, in either spelling). The shared environment is the `.venv`
         # directory, checked separately. Nothing else is the review's.
@@ -166,6 +180,9 @@ def _refuse_local_work(target: Path, allocation: dict) -> None:
                     line[3:], extra_names=created.get("names", frozenset()),
                     extra_tops=created.get("tops", ()), extra_segments=created.get("segments", frozenset())):
                 continue
+            if line.startswith("?? ") and any(line[3:].startswith(top) for top in _INSTALL_OUTPUT_TOPS) \
+                    and _lane_relative(target, path, line[3:]) in install_outputs:
+                continue
             found.append(f"uncommitted work in {path}: {line}")
         stashes = ask(path, "stash", "list", "--format=%H").split()
         if stashes:
@@ -180,6 +197,39 @@ def _refuse_local_work(target: Path, allocation: dict) -> None:
         raise OpenGrReviewError(
             f"lane {target} holds work that exists nowhere else; commit and push it, or move it out, "
             "then close again:\n  " + "\n  ".join(found))
+
+
+def _lane_relative(target: Path, repo: Path, rel: str) -> str:
+    """`rel`, a path git reported inside `repo`, as the lane-relative path a run receipt records."""
+    prefix = str(repo.relative_to(target))
+    return rel if prefix == "." else f"{prefix}/{rel}"
+
+
+def _run_placed_members(target: Path, receipt: dict, member_names: set[str]) -> list[str]:
+    """The upstream and downstream members `review run` cloned into the lane root, as its receipt records
+    them: a key named in the run's selection, whose directory at the lane root is a real git clone (not a
+    symlink) with HEAD at the pin the run recorded for it. Anything else at the root, a clone the receipt
+    does not name included, stays unknown, and close refuses it."""
+    selection = receipt.get("downstream") if receipt.get("kind") == "review-run" else None
+    if not isinstance(selection, dict) or not isinstance(selection.get("pins"), dict):
+        return []
+    pins = selection["pins"]
+    keys = [k for role in ("upstream", "downstream") if isinstance(selection.get(role), list)
+            for k in selection[role]]
+    placed = []
+    for key in dict.fromkeys(keys):
+        if not isinstance(key, str) or key in member_names or key in ("", ".", "..") or "/" in key \
+                or "\\" in key or not isinstance(pins.get(key), str):
+            continue
+        path = target / key
+        # A real clone: its own `.git` directory. A `.git` FILE points at another repository's git dir (a linked
+        # worktree), which the run never makes, and whose work would be judged against someone else's refs.
+        if path.is_symlink() or not path.is_dir() or (path / ".git").is_symlink() or not (path / ".git").is_dir():
+            continue
+        head = git(path, "rev-parse", "--verify", "-q", "HEAD")
+        if head.returncode == 0 and head.stdout.strip() == pins[key]:
+            placed.append(key)
+    return placed
 
 
 def _preserve_allocated_runs(workspace: Path, target: Path, allocation: dict) -> list[dict]:

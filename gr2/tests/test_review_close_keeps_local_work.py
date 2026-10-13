@@ -175,9 +175,11 @@ def test_reconstruction_close_refuses_a_local_only_tag(reconstruction, verb):
     assert lane.is_dir() and allocation.exists()
 
 
-def _multi_member_lane(tmp_path: Path) -> Path:
+def _multi_member_lane(tmp_path: Path, before_allocation=None) -> Path:
     from tests.test_review_run_multi_repo import _lane
     lane = _lane(tmp_path)
+    if before_allocation is not None:
+        before_allocation(lane)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     review_allocation.record_created_allocation(
@@ -290,3 +292,221 @@ def test_a_file_named_venv_at_the_root_is_work(tmp_path: Path):
     result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
     assert result.exit_code != 0 and ".venv" in _text(result), _text(result)
     assert (lane / ".venv").read_text() == "user notes\n"
+
+
+# ---- what `review run` leaves in a lane is the review's: the install's build/ and the clones it placed
+
+
+def _run_receipt(lane: Path, downstream: dict | None = None, install_outputs: list[str] | None = None) -> None:
+    receipt = {"kind": "review-run", "created": "2026-10-13T00:00:00+00:00", "result": "green",
+               "install_outputs": list(install_outputs or [])}
+    if downstream is not None:
+        receipt["downstream"] = downstream
+    (lane / review_run._RECEIPT_NAME).write_text(json.dumps(receipt) + "\n")
+
+
+def _build_output(member: Path, rel: str = "build/lib/demo_core/__init__.py") -> Path:
+    path = member / rel
+    path.parent.mkdir(parents=True)
+    path.write_text("# what setuptools copies on a non-editable pip install\n")
+    return path
+
+
+def test_the_build_dir_a_run_left_in_a_member_does_not_block_close(tmp_path: Path):
+    """A non-editable `pip install <member>` writes `build/` into the member; `review run` admits it as
+    install output, so close must too. Before, the tutorial's `review close` exited 2 after a green run."""
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    _build_output(lane / "demo-core")
+    _build_output(lane / "demo-web", "build/lib/demo_web/app.py")
+    _run_receipt(lane, install_outputs=["demo-core/build/lib/demo_core/__init__.py",
+                                        "demo-web/build/lib/demo_web/app.py"])
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code == 0, _text(result)
+    assert not lane.exists()
+
+
+def test_a_build_dir_in_a_lane_no_run_has_touched_is_still_work(tmp_path: Path):
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    kept = _build_output(lane / "demo-core")
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code != 0 and "build/" in _text(result), _text(result)
+    assert kept.is_file()
+
+
+def test_a_build_dir_below_the_member_top_is_still_work(tmp_path: Path):
+    """Only the member's top-level `build/` is install output; a `conftest.py` deeper down is not."""
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    kept = _build_output(lane / "demo-core", "src/build/conftest.py")
+    # Even recorded: the receipt admits a path only under the install's own top-level `build/`.
+    _run_receipt(lane, install_outputs=["demo-core/src/build/conftest.py"])
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code != 0 and "src/build/" in _text(result), _text(result)
+    assert kept.is_file()
+
+
+def _placed_clone(tmp_path: Path, lane: Path, key: str) -> str:
+    """A member `review run` cloned into the lane root at its pin, as it does for a downstream member."""
+    source = tmp_path / f"{key}-source"
+    source.mkdir()
+    _git(source, "init", "-q", "-b", "main")
+    (source / "README.md").write_text(f"{key}\n")
+    _git(source, "add", "README.md")
+    _git(source, "-c", "user.name=F", "-c", "user.email=f@x.invalid", "commit", "-qm", "pin")
+    _git(lane, "clone", "-q", str(source), key)
+    return _git(lane / key, "rev-parse", "HEAD")
+
+
+def _selection(downstream: dict[str, str]) -> dict:
+    return {"status": "ran", "changed": ["demo-core", "demo-web"], "upstream": [],
+            "downstream": list(downstream), "pins": dict(downstream)}
+
+
+def test_the_downstream_clones_a_run_recorded_do_not_block_close(tmp_path: Path):
+    """At five members the tutorial's run clones demo-api and demo-worker into the lane root and logs
+    each; close named all four as work at the lane root and exited 2 after a green run."""
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    pins = {key: _placed_clone(tmp_path, lane, key) for key in ("demo-api", "demo-worker")}
+    for key in pins:
+        (lane / f"{review_run._OUTPUT_LOG_NAME}.{key}").write_text("log\n")
+    _build_output(lane / "demo-api", "build/lib/demo_api/__init__.py")
+    _run_receipt(lane, _selection(pins), install_outputs=["demo-api/build/lib/demo_api/__init__.py"])
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code == 0, _text(result)
+    assert not lane.exists()
+
+
+@pytest.mark.parametrize("case", ["unrecorded", "moved_off_its_pin", "work_inside", "no_run_receipt"])
+def test_a_clone_at_the_lane_root_the_run_did_not_place_is_still_work(tmp_path: Path, case: str):
+    """Only a clone the run's receipt names, at the pin it recorded, is the review's; a clone examined
+    as a member still refuses when it holds work."""
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    pin = _placed_clone(tmp_path, lane, "demo-api")
+    recorded = {"demo-api": pin}
+    if case == "unrecorded":
+        recorded = {"demo-worker": pin}
+    elif case == "moved_off_its_pin":
+        recorded = {"demo-api": "f" * 40}
+    elif case == "work_inside":
+        (lane / "demo-api" / "notes.txt").write_text("user notes\n")
+    if case != "no_run_receipt":
+        _run_receipt(lane, _selection(recorded))
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code != 0, _text(result)
+    expected = "notes.txt" if case == "work_inside" else "work at the lane root"
+    assert expected in _text(result) and "demo-api" in _text(result), _text(result)
+    assert (lane / "demo-api" / ".git").is_dir()
+
+
+def _track_in_reviewed_head(member: Path, rel: str) -> None:
+    """`rel` becomes part of the member's reviewed tree (HEAD), as if the reviewed commit tracked it."""
+    _git(member, "add", rel)
+    _git(member, "-c", "user.name=F", "-c", "user.email=f@x.invalid", "commit", "-qm", "track it")
+
+
+@pytest.mark.parametrize("case", ["tracked_build_dir", "written_after_the_run", "written_before_the_run"])
+def test_a_build_file_the_run_did_not_record_is_work(tmp_path: Path, case: str):
+    """Close admits the exact files the run's install wrote, never `build/` as a whole: a member that tracks a
+    `build/` and a file a person adds before or after the run all stay work."""
+    runner = make_cli_runner()
+
+    def tracked_build(lane: Path) -> None:
+        _build_output(lane / "demo-core", "build/tool.sh")
+        _track_in_reviewed_head(lane / "demo-core", "build/tool.sh")
+
+    lane = _multi_member_lane(tmp_path, tracked_build if case == "tracked_build_dir" else None)
+    member = lane / "demo-core"
+    if case == "tracked_build_dir":
+        assert _git(member, "ls-files", "build") == "build/tool.sh"
+    if case == "written_before_the_run":
+        kept = _build_output(member, "build/notes.txt")
+        kept.write_text("user notes\n")
+    _build_output(member)
+    _run_receipt(lane, install_outputs=["demo-core/build/lib/demo_core/__init__.py"])
+    if case != "written_before_the_run":
+        kept = member / "build" / "notes.txt"
+        kept.write_text("user notes\n")
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code != 0 and "build/notes.txt" in _text(result), _text(result)
+    assert "build/lib/demo_core/__init__.py" not in _text(result), _text(result)
+    assert kept.read_text() == "user notes\n"
+
+
+def test_a_lane_root_entry_whose_git_is_a_file_is_not_a_placed_clone(tmp_path: Path):
+    """A directory whose `.git` is a file (a linked worktree's pointer) is not a clone the run made, even at a
+    recorded key and pin."""
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    pin = _placed_clone(tmp_path, lane, "demo-api")
+    gitdir = tmp_path / "moved-gitdir"
+    (lane / "demo-api" / ".git").rename(gitdir)
+    (lane / "demo-api" / ".git").write_text(f"gitdir: {gitdir}\n")
+    assert _git(lane / "demo-api", "rev-parse", "HEAD") == pin
+    _run_receipt(lane, _selection({"demo-api": pin}))
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code != 0 and "work at the lane root" in _text(result), _text(result)
+    assert (lane / "demo-api" / ".git").is_file()
+
+
+def _lane_whose_install_writes_build(tmp_path: Path, monkeypatch) -> Path:
+    """The multi-member lane, with an install that also writes `build/lib/...` into the member the way a
+    non-editable `pip install <member>` does."""
+    from tests import test_review_run_multi_repo as multi
+    writes_build = ("import pathlib,sys;b=pathlib.Path(sys.argv[2]).parent/'build'/'lib'/'demo_core';"
+                    "b.mkdir(parents=True,exist_ok=True);(b/'__init__.py').write_text('copied\\n');")
+    monkeypatch.setattr(multi, "PTH_SCRIPT", writes_build + multi.PTH_SCRIPT)
+    return _multi_member_lane(tmp_path)
+
+
+@pytest.mark.parametrize("after_the_run", [None, "demo-core/build/notes.txt"])
+def test_a_run_records_its_install_outputs_and_close_admits_exactly_those(tmp_path: Path, monkeypatch,
+                                                                         after_the_run):
+    runner = make_cli_runner()
+    lane = _lane_whose_install_writes_build(tmp_path, monkeypatch)
+    receipt = review_run.run_review_lane(lane, pytest_args=["-q"])
+    assert receipt["result"] == "green", receipt
+    written = ["demo-core/build/lib/demo_core/__init__.py", "demo-web/build/lib/demo_core/__init__.py"]
+    assert all((lane / rel).is_file() for rel in written)
+    assert json.loads((lane / review_run._RECEIPT_NAME).read_text())["install_outputs"] == written
+    if after_the_run:
+        (lane / after_the_run).write_text("user notes\n")
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    if after_the_run is None:
+        assert result.exit_code == 0, _text(result)
+        assert not lane.exists()
+    else:
+        assert result.exit_code != 0 and "build/notes.txt" in _text(result), _text(result)
+        assert (lane / after_the_run).read_text() == "user notes\n"
+
+
+def test_install_outputs_names_only_new_paths_under_build_lane_relative(tmp_path: Path):
+    lane = tmp_path / "lane"
+    member = lane / "demo-core"
+    member.mkdir(parents=True)
+    _git(member, "init", "-q", "-b", "main")
+    (member / "build").mkdir()
+    (member / "build" / "before.txt").write_text("x\n")
+    baseline = review_run.list_untracked(member)
+    for rel in ("build/lib/a.py", "notes.txt", "src/build/b.py"):
+        (member / rel).parent.mkdir(parents=True, exist_ok=True)
+        (member / rel).write_text("x\n")
+    assert review_run.install_outputs(member, baseline, lane) == ["demo-core/build/lib/a.py"]
+    assert review_run.install_outputs(lane / "demo-core", baseline, member) == ["build/lib/a.py"]
+
+
+def test_a_symlinked_key_at_the_lane_root_is_not_a_placed_clone(tmp_path: Path):
+    """A recorded key whose lane-root entry is a symlink to a real clone at the recorded pin is not the run's."""
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    pin = _placed_clone(tmp_path, outside, "demo-api")
+    (lane / "demo-api").symlink_to(outside / "demo-api")
+    _run_receipt(lane, _selection({"demo-api": pin}))
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code != 0 and "work at the lane root" in _text(result), _text(result)
+    assert (outside / "demo-api" / ".git").is_dir()

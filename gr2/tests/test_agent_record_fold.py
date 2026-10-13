@@ -26,7 +26,8 @@ r000..r099, even rounds SAW, odd rounds FORK. B's clock is skewed by 1..3600 s (
 earlier, then later for R3. The skew is applied to the event's ts AND the commit dates. R4 is new
 (git spawns per fold counted). Mutants come with the build turn: swap (R1), ts (resolve a
 conflict by ts: R2 and R3), logorder (sides in rev-list order: R3), swap (keep the ancestor: R1),
-pertip (a BatchReader per ref: R4), perpair (an ancestry walk per pair of writes: R5);
+pertip (a BatchReader per ref: R4), perpair (an ancestry walk per pair of writes: R5),
+pergroup (an ancestry walk per (key, field) group over the shared history: R7);
 each reds exactly its own rows.
 """
 from __future__ import annotations
@@ -192,39 +193,117 @@ def test_r4_one_reused_batch_reader_spawns_do_not_grow_with_writes(agent_record,
     assert spawns[10] == spawns[ROUNDS], spawns
 
 
+class _Counted(dict):
+    """The fold's commit graph, every parent lookup counted and stopped at a bound."""
+    def __init__(self, data, visits, bound, what):
+        super().__init__(data)
+        self.visits, self.bound, self.what = visits, bound, what
+
+    def get(self, k, default=None):
+        self.visits[0] += 1
+        assert self.visits[0] <= self.bound, f"{self.what}: passed {self.bound} parent lookups"
+        return super().get(k, default)
+
+    def __getitem__(self, k):
+        return self.get(k)
+
+
+def _count_graph(agent_record, monkeypatch, bound, what):
+    """Wrap the graph where the fold reads it, so every parent lookup by any reader of it is counted."""
+    visits, real = [0], agent_record._graph
+    monkeypatch.setattr(agent_record, "_graph", lambda *a: _Counted(real(*a), visits, bound, what))
+    return visits
+
+
 def test_r5_ancestry_walk_visits_are_linear_in_writes(agent_record, monkeypatch, tmp_path):
     """R5, COST WITHOUT A CLOCK: FORK on ONE (key, field), N=800 writes, A and B alternating on their own STOOKs,
-    no saw. Every parent lookup the kept-set walk makes is counted; it stays under 4N (one walk makes 2N-2:
-    one per write, one per strict ancestor). A walk per pair of writes makes ~N^3 lookups (32 M at N=800);
-    the row stops it at the bound."""
+    no saw. Every parent lookup the fold makes is counted; it stays under 4N (the clock visits each commit once).
+    A walk per pair of writes makes ~N^3 lookups (32 M at N=800); the row stops it at the bound."""
     n, bound = 800, 4 * 800
     repo = make_repo(tmp_path, "fork")
     for i in range(n):
         agent, by = ("a", "A") if i % 2 == 0 else ("b", "B")
         write(agent_record, monkeypatch, repo, agent, by, "k", f"v{i}", BASE_TS + i)
 
-    visits, calls = [0], [0]
+    calls, real = [0], agent_record._kept
 
-    class Counted(dict):
-        def get(self, k, default=None):
-            visits[0] += 1
-            assert visits[0] <= bound, f"ancestry walk passed {bound} parent lookups for {n} writes"
-            return super().get(k, default)
-
-        def __getitem__(self, k):
-            return self.get(k)
-
-    real = agent_record._kept
-
-    def counted_kept(parents, writes):
+    def counted_kept(*a):
         calls[0] += 1
-        return real(Counted(parents), writes)
+        return real(*a)
     monkeypatch.setattr(agent_record, "_kept", counted_kept)
+    visits = _count_graph(agent_record, monkeypatch, bound, f"ancestry walk for {n} writes")
 
     got = agent_record.fold(repo, org=ORG, message="BoardEvent", schema=BOARD)
     print(f"R5 ancestry walk: N={n} parent lookups={visits[0]} bound={bound} kept calls={calls[0]}")
     assert list(got) == [("k", "Status")], got  # what the line says is R2's and R3's claim, not this row's
     assert calls[0] == 1 and 0 < visits[0] <= bound, (calls[0], visits[0])
+
+
+def reference_fold(agent_record, monkeypatch, repo, ref="STOOK"):
+    """The fold with its kept writes found the old way, a walk per (key, field) group over the group's
+    ancestors: slow and plainly right, the reference the clock's lines must equal."""
+    with monkeypatch.context() as m:
+        graph, real_graph = {}, agent_record._graph
+
+        def keep_graph(*a):
+            graph.update(real_graph(*a))
+            return graph
+
+        def walk_kept(writes, clock, at):
+            seen, todo = set(), [p for w in writes for p in graph.get(w, ())]
+            while todo:
+                c = todo.pop()
+                if c not in seen:
+                    seen.add(c)
+                    todo.extend(graph.get(c, ()))
+            return [w for w in writes if w not in seen]
+        m.setattr(agent_record, "_graph", keep_graph)
+        m.setattr(agent_record, "_kept", walk_kept)
+        return agent_record.fold(repo, ref, org=ORG, message="BoardEvent", schema=BOARD)
+
+
+def test_r7_parent_lookups_stay_linear_across_many_key_field_groups(agent_record, monkeypatch, tmp_path):
+    """R7, COST ACROSS GROUPS, which R5 bounds within one group and cannot see: N=400 writes over 100 keys
+    (4 writes each: A, B, A, B; the first B always SAW the A before it, the last B SAW it in every other key,
+    so half the keys resolve and half end in a conflict). Every group's writes sit in one shared history,
+    so a walk per group makes about groups x history lookups (~40 k here, N^2 / 4); one clock per fold makes
+    about 2N. Bounded at 4N, and the lines must equal those of the per-group walk (the reference) on the same
+    writes, conflicts and SAW resolutions both present."""
+    n, keys, bound = 400, 100, 4 * 400
+    repo = make_repo(tmp_path, "groups")
+    last_a = None
+    for i in range(n):
+        key = f"k{(i // 4) % keys:03d}"
+        if i % 2 == 0:
+            last_a = write(agent_record, monkeypatch, repo, "a", "A", key, f"v{i}", BASE_TS + i)
+        else:
+            saw = (last_a.commit,) if i % 4 == 1 or (i % 4 == 3 and (i // 4) % 2 == 0) else ()
+            write(agent_record, monkeypatch, repo, "b", "B", key, f"v{i}", BASE_TS + i, saw=saw)
+    want = reference_fold(agent_record, monkeypatch, repo)
+
+    visits = _count_graph(agent_record, monkeypatch, bound, f"fold over {keys} groups and {n} writes")
+    got = agent_record.fold(repo, org=ORG, message="BoardEvent", schema=BOARD)
+    print(f"R7 groups: N={n} groups={keys} parent lookups={visits[0]} bound={bound}")
+    assert got == want and len(got) == keys
+    assert any("CONFLICT" in line for line in got.values()) and any("CONFLICT" not in line for line in got.values())
+    assert 0 < visits[0] <= bound, visits[0]
+
+
+def test_r8_a_saw_of_a_commit_no_folded_ref_holds_folds_like_the_reference(agent_record, monkeypatch, tmp_path):
+    """R8: B's STOOK write SAW a commit on A's `other` ref, which the STOOK fold does not read. That commit is in the
+    graph (B's write has it as its second parent; B's first is B's own earlier write) but on no folded chain. The fold neither fails nor invents a reach: its
+    lines equal the reference's, and B's later write and A's STOOK write stay a conflict."""
+    repo = make_repo(tmp_path, "other-ref")
+    write(agent_record, monkeypatch, repo, "b", "B", "j", "first", BASE_TS - 1)  # so the SAW is B's SECOND parent
+    write(agent_record, monkeypatch, repo, "a", "A", "k", "stook-a", BASE_TS)
+    other = agent_record.append(repo, "a", {"key": "k", "field": "Status", "value": "other", "by": "A",
+                                            "ts": str(BASE_TS + 1)}, "other", org=ORG, message="BoardEvent",
+                                schema=BOARD)
+    write(agent_record, monkeypatch, repo, "b", "B", "k", "stook-b", BASE_TS + 2, saw=(other.commit,))
+    got = agent_record.fold(repo, org=ORG, message="BoardEvent", schema=BOARD)
+    assert got == reference_fold(agent_record, monkeypatch, repo)
+    assert sides(got[("k", "Status")]) == {"A=stook-a", "B=stook-b"}, got
+    assert got[("j", "Status")] == "j Status = first (by B)", got
 
 
 def case_folds(tmp_path: Path) -> bool:

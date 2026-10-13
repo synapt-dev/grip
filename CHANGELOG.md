@@ -237,6 +237,16 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   reviewed head from the member remote the review names (the remote it already reads the approval chain from, not the
   clone's own `origin`), and refuses with `head_not_fetched` only when that remote cannot serve it; its next step now
   says the author must push the head there first, since a hand fetch would fail the same way.
+- **`gr2`: `store materialize` fetches a pin an existing member clone does not hold yet.** After another workspace
+  merged and recorded the merge with `store commit` and `store push`, a second workspace's `store materialize`
+  refused with `<member> pin <sha> cannot be served by origin` at exit 3 while origin held that commit: an existing
+  clone was checked out at the pin without being fetched first, so it relied on git having fetched the member during
+  the root pull, which a first pull from a root with no `.gitmodules` and `fetch.recurseSubmodules=false` both skip.
+  materialize now fetches a missing pin with every branch of origin named explicitly, so a member clone with a
+  narrowed refspec (a `--single-branch` clone) gets it too; never by sha, so a commit origin still holds but no
+  branch reaches (an upstream force-pushed over the pin) is still refused. When origin cannot be reached, the refusal
+  says origin could not be asked and gives git's reason, instead of "cannot be served by origin". A clone that
+  already holds its pin fetches nothing.
 
 - **`gr2`: a failed venv create in `review run` names its reason and leaves no half-built venv, and a refused run's receipt
   is named by the lane's commit.** `venv_failed` printed an empty reason when the cause was on stdout (ensurepip's

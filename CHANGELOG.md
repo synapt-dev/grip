@@ -54,6 +54,13 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Added
 
+- **Platform adapter API version 2: each member's `RemoteTarget` reaches PR creation and the PR lifecycle.**
+  A version 2 adapter implements `resolve_target(remote)`, the one place a hosting URL is parsed, and gr2
+  passes the member's target on `CreatePRRequest.target` and as `target=` to every lifecycle call. A version
+  1 adapter, or one that declares nothing, is called exactly as before. The full protocol change is in the
+  package's `PLATFORM_ADAPTER_CHANGELOG.md`. Not in 2.0.0a9: the vote, blocking-check and later-completion
+  types, which join version 2 in a later alpha.
+
 - **A plain `git submodule update --remote <member>` leaves the member on its branch.** The generated
   `.gitmodules` gives each member that declares a branch `update = merge`, so the branch fast-forwards to the remote
   tip when nothing is local, and gains a merge that keeps a local-only commit when something is; a local commit that

@@ -193,6 +193,20 @@ def test_hostile_name_is_refused_before_any_write(tmp_path, verb, label, name):
 
 
 
+# the mapping form strips each item's surrounding space as layout, so the space labels are not hostile there
+MAPPING_LABELS = ["at", "reflog-at", "lock", "double-dot", "tilde", "colon", "line-separator", "dotdot", "dash"]
+
+
+@pytest.mark.parametrize("label", MAPPING_LABELS)
+def test_lane_create_refuses_a_hostile_branch_given_as_a_repo_mapping(tmp_path, label):
+    """`--branch repo=branch` is checked branch by branch, before the lane lock and the cache clone."""
+    name = dict(HOSTILE_NAMES)[label]
+    ws = _lane_workspace(tmp_path)
+    outcome = classify(ws, lambda: _invoke("lane", "create", str(ws), "atlas", "ok", "--repos", "repo-a",
+                                           "--branch", f"repo-a={name}"))
+    assert outcome.verdict == "refused-clean", (outcome.rc, outcome.changed[:8], outcome.output[-300:])
+
+
 @pytest.mark.xfail(strict=True, reason="finding: case twins are cloned until they collide")
 def test_store_init_refuses_member_names_that_differ_only_by_case(tmp_path):
     # one checkout path on a case-insensitive filesystem, two on a case-sensitive one; either way, refuse first

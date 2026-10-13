@@ -11,6 +11,18 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Added
 
+- **`gr2`: a plain `git submodule update --remote <member>` leaves the member on its branch.** The generated
+  `.gitmodules` gives each member that declares a branch `update = merge`, so the branch fast-forwards to the remote
+  tip when nothing is local, and gains a merge that keeps a local-only commit when something is; a local commit that
+  conflicts with the tip stops the update with git's merge conflict in the member, to finish or abort there. It used
+  to leave the member detached at the tip, where a local-only commit was no longer in the checkout. A plain
+  `git submodule update` (no `--remote`) now merges the recorded commit into the member's current branch too, rather
+  than detaching it, so a member on a feature branch gains a merge commit.
+- **`gr2`: `store commit` and `store materialize` name on stderr each member they newly register.** Git cannot tell
+  a member never registered from one a user removed with `git submodule deinit`, so the next commit registers it
+  again; the line names the member and says a deinit lasts until the next store commit. A first registration (a new
+  workspace's first commit, a fresh clone's materialize) prints the same line for each member. It is read from the
+  root's config, so it appears whatever language git speaks; a member registered all along says nothing.
 - **`gr2`: after `store commit` or `store materialize`, plain `git submodule update --remote <member>` needs no
   hand-run `git submodule init`.** Each member is registered in the root's own config from the `.gitmodules` gr2
   writes. Unregistered, git printed "not initialized", left the member where it was and exited 0. Nothing is

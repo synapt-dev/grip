@@ -684,9 +684,11 @@ def test_log_reports_pin_changes_per_root_commit(ws: Path) -> None:
 
 def test_snapshot_is_a_hidden_alias_of_commit(ws: Path) -> None:
     assert _cli("store", "init", str(ws))[0] == 0
-    rc, out = _cli("store", "snapshot", "-m", "first", "--json")
-    assert rc == 0, out
-    assert json.loads(out)["status"] == "committed", out
+    result = make_cli_runner().invoke(app, ["store", "snapshot", "-m", "first", "--json"])
+    out = (result.stdout or "") + (result.stderr or "")
+    assert result.exit_code == 0, out
+    # stdout alone: a first commit names each member it registers on stderr, beside the JSON
+    assert json.loads(result.stdout)["status"] == "committed", out
     assert _git_out(ws, "ls-tree", "HEAD", "alpha").split()[2] == _git_out(
         ws / "alpha", "rev-parse", "HEAD"
     )

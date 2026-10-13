@@ -499,6 +499,12 @@ def render_gitmodules(members: list[dict[str, str]]) -> str:
     `submodule.<name>.branch` names a branch on the member's remote. A member with no `<remote>/<branch>` upstream
     gets no branch line.
 
+    A member with a branch line also gets `update = merge`, so that same plain `update --remote` advances the branch the
+    member is on instead of leaving it detached at the tip: a fast-forward when nothing is local, a merge that keeps a
+    local-only commit when something is. A local commit that conflicts with the tip stops the update with git's merge
+    conflict inside the member, to finish or abort there. With no branch line there is no branch to stay on, so no
+    update line.
+
     Never hand-kept: the first line says so, which is also how a file gr2 did not write is told apart."""
     chunks = [_GITMODULES_HEADER]
     for member in members:
@@ -509,7 +515,7 @@ def render_gitmodules(members: list[dict[str, str]]) -> str:
         if _url_has_credentials(member["remote"]):
             raise _credential_refusal(member["name"])
         _, separator, tracked = member.get("upstream", "").partition("/")
-        branch = f"\tbranch = {_config_quote(tracked)}\n" if separator and tracked else ""
+        branch = f"\tbranch = {_config_quote(tracked)}\n\tupdate = merge\n" if separator and tracked else ""
         chunks.append(
             f"[submodule {_config_quote(member['name'])}]\n"
             f"\tpath = {_config_quote(member['path'])}\n"
@@ -536,6 +542,12 @@ def has_foreign_gitmodules(root: Path) -> bool:
     return staged.returncode == 0 and not staged.stdout.startswith(_GITMODULES_HEADER)
 
 
+def _registered_submodule_urls(root: Path) -> set[str]:
+    """The `submodule.<name>.url` keys in the root's own config: what `git submodule init` writes and `deinit` removes."""
+    found = _store_git(root, "config", "--local", "--name-only", "--get-regexp", r"^submodule\..*\.url$", check=False)
+    return set(found.stdout.splitlines())
+
+
 def _register_submodules(root: Path, paths: list[str]) -> None:
     """`git submodule init -- <paths>`: register each member from the `.gitmodules` gr2 owns, so plain
     `git submodule update --remote <member>` works with no hand-run init. Unregistered, git 2.50 prints "not
@@ -543,12 +555,24 @@ def _register_submodules(root: Path, paths: list[str]) -> None:
     own `submodule.<name>.*` config and reaches no network. Callers skip a full-mode root and a foreign `.gitmodules`.
 
     A convenience, never a gate: each member is registered on its own, and one git refuses (a name git calls
-    suspicious, such as one carrying `..`) is named on stderr with the hand step, while the verb goes on."""
+    suspicious, such as one carrying `..`) is named on stderr with the hand step, while the verb goes on.
+
+    A NEW registration is said on stderr too. Git cannot tell a member never registered from one a user removed with
+    `git submodule deinit` (both leave no config), so registering again is the rule, and saying so is what keeps it from
+    silently undoing that choice. A new registration is read from the root's config (a `submodule.<name>.url` that
+    was not there before the init), never from git's message, which a translated git words differently."""
+    registered = _registered_submodule_urls(root)
     for path in paths:
         done = _store_git(root, "submodule", "init", "--", path, check=False)
         if done.returncode:
             typer.echo(f"{path}: not registered as a submodule ({_git_detail(done)}); plain `git submodule` verbs "
                        f"need `git submodule init {path}` first", err=True)
+            continue
+        now = _registered_submodule_urls(root)
+        new, registered = now - registered, now
+        if new:
+            typer.echo(f"{path}: registered as a submodule, so plain `git submodule` verbs act on it "
+                       f"(`git submodule deinit {path}` lasts until the next store commit)", err=True)
 
 
 def _existing_sets(root: Path) -> list[dict]:

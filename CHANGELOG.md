@@ -210,6 +210,11 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **`gr2`: a pending consent marker is consumed only under its member's exact key.** On a filesystem that matches
+  names regardless of case or Unicode normalization, a member key spelled differently from another member's could
+  consume that member's pending marker. Taking a marker now requires each component of its path to be listed under
+  exactly that name, as reading a consent record already did. Writing a marker is unchanged: it never replaces one
+  that exists.
 - **`gr2`: `store materialize` installs the store's git hooks, so a root cloned with plain git gets the store's
   checks.** A plain `git clone` copies no hooks, and only `store init` installed them, so in a cloned and
   materialized root a plain `git commit` recorded a pin not on its member's remote with exit 0. materialize now runs

@@ -1723,7 +1723,7 @@ def _commit_with_carried(root: Path, message: str, carried: list[str]) -> None:
     _store_git(root, "update-ref", "-m", f"commit: {message}", "HEAD", made)
 
 
-def _refuse_pin_rewind(member: dict, path: Path, head: str) -> None:
+def _refuse_pin_rewind(member: dict, path: Path, head: str, recorded_ref: str | None = None) -> None:
     """Refuse (3) a pin that would move BACKWARDS: HEAD is behind the recorded pin, or lacks it entirely.
 
     Found in review: a stale checkout's HEAD was recorded over a newer pin, rc 0, and the push undid another
@@ -1761,6 +1761,19 @@ def _refuse_pin_rewind(member: dict, path: Path, head: str) -> None:
         )
     if behind.returncode != 1:
         raise RuntimeError(f"cannot compare {name}'s HEAD with its recorded pin: {_git_detail(behind)}")
+    if recorded_ref and member.get("ref") != recorded_ref:
+        # A member switched to another branch is adopted when that branch's upstream covers HEAD, but the record
+        # then forgets the old pin: if HEAD does not contain it, its commits leave the record with exit 0.
+        contains = _store_git(path, "merge-base", "--is-ancestor", recorded, head, check=False)
+        if contains.returncode == 1:
+            raise NativeStoreRefusal(
+                f"{name}: HEAD {head[:12]} on {member.get('ref')} does not contain the recorded pin {recorded[:12]} "
+                f"(on {recorded_ref}); recording the switch would drop that pin's commits from the store; merge or "
+                f"rebase onto the pin first, or pass --allow-rewind to record the switch anyway",
+                3,
+            )
+        if contains.returncode != 0:
+            raise RuntimeError(f"cannot compare {name}'s HEAD with its recorded pin: {_git_detail(contains)}")
 
 
 @_refuses_moved_workspace
@@ -1816,6 +1829,7 @@ def _native_store_commit(
         # `git checkout -b wip` with no new commit is still covered by its recorded upstream, and
         # adopting origin/wip (which does not exist) would refuse a pin the record already covers.
         on = _store_git(path, "branch", "--show-current", check=False).stdout.strip()
+        recorded_ref = member.get("ref")
         moved = None
         if on and on != member.get("ref"):
             ref, upstream = _infer_member_branch(path)
@@ -1823,7 +1837,7 @@ def _native_store_commit(
             if _member_covers(root, moved, head, claimed):
                 member, moved = moved, None
         if not allow_rewind:
-            _refuse_pin_rewind(member, path, head)
+            _refuse_pin_rewind(member, path, head, recorded_ref)
         try:
             _member_coverage(root, member, head, claimed)
         except NativeStoreRefusal as exc:

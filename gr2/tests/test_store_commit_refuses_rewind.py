@@ -172,3 +172,42 @@ def test_a_shallow_checkout_that_does_not_reach_its_pin_says_it_cannot_tell(ws: 
     assert "cannot tell" in out and "git fetch --unshallow" in out and recorded[:12] in out, out
     assert "gr2 store materialize" not in out, out
     assert _pin(ws, "alpha") == recorded and _git_out(ws, "rev-parse", "HEAD") == root_before
+
+
+def test_a_switch_to_a_branch_that_drops_the_pin_is_refused(ws: Path) -> None:
+    """The member is switched to another pushed branch that diverged before the recorded pin. That branch's upstream
+    covers HEAD, so the switch would be adopted, and the old pin's commits would leave the record with exit 0."""
+    alpha = ws / "alpha"
+    recorded = _pin(ws, "alpha")
+    _git(alpha, "checkout", "-q", "-b", "side", "HEAD~1")
+    side = _commit_on(alpha, "side.txt")
+    _git(alpha, "push", "-q", "-u", "origin", "side")
+    root_before = _git_out(ws, "rev-parse", "HEAD")
+
+    rc, out = _cli("store", "commit", "-m", "alpha switched")
+
+    assert rc == 3, out
+    assert "does not contain the recorded pin" in out and recorded[:12] in out and side[:12] in out, out
+    assert "--allow-rewind" in out, out
+    assert _pin(ws, "alpha") == recorded and _git_out(ws, "rev-parse", "HEAD") == root_before
+
+
+def test_control_a_switch_to_a_branch_that_contains_the_pin_commits(ws: Path) -> None:
+    alpha = ws / "alpha"
+    recorded = _pin(ws, "alpha")
+    _git(alpha, "checkout", "-q", "-b", "next")
+    head = _commit_on(alpha, "next.txt")
+    _git(alpha, "push", "-q", "-u", "origin", "next")
+    assert _git(alpha, "merge-base", "--is-ancestor", recorded, head, check=False).returncode == 0
+
+    rc, out = _cli("store", "commit", "-m", "alpha on next")
+
+    assert rc == 0, out
+    assert _pin(ws, "alpha") == head
+
+
+def _commit_on(repo: Path, name: str) -> str:
+    (repo / name).write_text(f"{name}\n")
+    _git(repo, "add", name)
+    _git(repo, "commit", "-q", "-m", f"add {name}")
+    return _git_out(repo, "rev-parse", "HEAD")

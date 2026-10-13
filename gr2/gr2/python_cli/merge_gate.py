@@ -77,6 +77,21 @@ def _state(repo: Path, remote: str, into: str, head: str) -> tuple[str, str | No
     return ("merged", merged) if merged else ("unmerged", None)
 
 
+def _refresh_tracking(repo: Path, remote: str, into: str) -> str | None:
+    """Bring the clone's own remote-tracking ref for `into` up to the remote after a merge; None, or the command that
+    failed. The merge was pushed by URL, so the clone's tracking ref did not move, and a `gr2 branch <into> --base
+    <name>/<into>` followed by `store commit` recorded the PRE-merge pin with exit 0. Fetched by name with an explicit
+    refspec (a narrowed clone has no refspec for it), never by sha. A clone with no remote at this URL has no tracking
+    ref to leave behind, so there is nothing to do."""
+    names = _git(repo, "remote", check=False).split()
+    name = next((n for n in names if _git(repo, "remote", "get-url", n, check=False) == remote), None)
+    if name is None:
+        return None
+    spec = f"+refs/heads/{into}:refs/remotes/{name}/{into}"
+    proc = gitops.run(repo, "fetch", "--no-tags", "-q", name, spec, timeout=120)
+    return None if proc.returncode == 0 else f"git -C {repo} fetch --no-tags {name} {spec}"
+
+
 _REVIEW_REF_PREFIX = "refs/dev.synapt.grip/__reviews__/"
 _REVIEW_SCAN_CAP = 200  # reviews read per member remote; over it is a named refusal, never a silent partial read
 
@@ -381,6 +396,19 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         if merged:
             r["merged"] = merged
         final.append(state)
+    # The remote holds each merged member's merge; the clone must know it too, or the next `store commit` records the
+    # pre-merge pin. A fetch that fails here never changes the exit (the merge stands), and is never silent.
+    tracking_stale = []
+    for r, m in zip(rows, view["members"]):
+        if r.get("final") != "merged":
+            continue
+        repo = (workspace / m["path"]).resolve()
+        try:
+            failed = _refresh_tracking(repo, m["remote"], into)
+        except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
+            failed = f"git -C {repo} fetch --no-tags <remote> +refs/heads/{into}:refs/remotes/<remote>/{into} ({exc})"
+        if failed:
+            tracking_stale.append({"member": m["key"], "command": failed})
     if all(s == "merged" for s in final):
         code = EXIT_MERGED
     elif all(s == "unmerged" for s in final):
@@ -395,7 +423,7 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         r["refusal"] = None if not r["refused"] else {
             "code": r["refused"].split(":", 1)[0], "member": r["key"], "expected": expected, "observed": observed}
     receipt = {"id": view["id"], "into": into, "feature": feature, "exit": code, "members": rows,
-               "approvals": approval_receipt}
+               "approvals": approval_receipt, "tracking_stale": tracking_stale}
     try:
         # Kept for `review show`, so the receipt outlives this run's stdout; a failed write never changes the exit.
         merge_receipts.record(root, view["id"], receipt)

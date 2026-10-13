@@ -192,7 +192,6 @@ def test_check_json_names_every_member_and_its_exit_is_zero(ws: Path) -> None:
         assert member["upstream"] == "origin/main", member
 
 
-@pytest.mark.xfail(strict=True, reason="section 9 rename turn: the plain push now runs the fence, which refuses this compat hand-pinned commit first; the compat turn (pin == own gitlink is recorded, a differing one is refused naming both) turns it green")
 def test_push_publishes_the_root_ref_and_refuses_on_coverage(ws: Path, tmp_path: Path) -> None:
     """The push half, with the remote ref as the fruit and a control on the same instrument.
 

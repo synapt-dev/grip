@@ -7,7 +7,10 @@ pre-commit hook and by `store push`, so the two cannot disagree.
 - (b) a hand-edited pin in grip.toml is refused at commit AND at push, naming the member; neither ref moves.
 - (c) full mode: the root gitlink is the member's field commit and differs from its recorded pin, and the fence still
   passes a hand commit.
-Every row runs in both store modes except (c), which only full mode can set up.
+- compat: the gitlink IS the pin, so (d) a hand gitlink bump the hook folded is
+  recorded and a plain push takes it; (e) the same bump past the hook with grip.toml stale is refused naming the
+  member; (f) the mode split is one predicate, `_gitlink_may_be_pin`, and its two answers are pinned.
+Every row runs in both store modes except (c), which only full mode can set up, and (d)-(f), which are compat's.
 """
 from __future__ import annotations
 
@@ -15,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from gr2.python_cli import grip_cli as gc
 from tests.test_store_git_native_smoke import git, gr2
 from tests.test_store_shadow_s1 import MODES, SHADOW, _advance, _refs, _store
 
@@ -30,9 +34,9 @@ def _hand_note(root: Path, text: str = "a hand note\n") -> str:
 
 
 def _hand_pin(root: Path, member: str, mode: str) -> str:
-    """Advance `member`, then write its new head into grip.toml BY HAND. In compat the gitlink is the pin, so it is
-    staged too (nothing but the fence stands between the commit and the push); in full mode the gitlink is the field
-    commit and is left alone. Returns the new head."""
+    """Advance `member`, then write its new head into grip.toml BY HAND, leaving the gitlink where it was (in full mode
+    the gitlink is the field commit; in compat a gitlink staged to match would make the edit a fold, row d). Returns
+    the new head."""
     _advance(root, member)
     new = git(root / member, "rev-parse", "HEAD").stdout.strip()
     toml = root / "grip.toml"
@@ -43,7 +47,7 @@ def _hand_pin(root: Path, member: str, mode: str) -> str:
     was = block.split('pin = "', 1)[1].split('"', 1)[0]
     assert was in old
     toml.write_text(text.replace(f'pin = "{was}"', f'pin = "{new}"', 1), encoding="utf-8")
-    git(root, "add", "grip.toml", *([member] if mode == "compat" else []))
+    git(root, "add", "grip.toml")
     return new
 
 
@@ -86,8 +90,9 @@ def test_fence_b_hand_edited_pin_is_refused_at_push_naming_the_member(tmp_path, 
 
     result = gr2(root, "push", check=False)
 
-    assert result.returncode != 0
-    assert "pin edited by hand" in result.stderr and "alpha" in result.stderr, result.stderr
+    assert result.returncode == 4, (result.returncode, result.stderr)
+    words = "pin edited by hand" if mode == "full" else "gitlink is not the pin grip.toml records"
+    assert words in result.stderr and "alpha" in result.stderr, result.stderr
     assert _refs(origin) == remote, "a fenced push moves neither ref on origin"
     assert _refs(root)[SHADOW] == shadow, "nor the local shadow"
 
@@ -107,9 +112,6 @@ def test_fence_c_reads_recorded_pins_not_the_gitlink_in_full_mode(tmp_path):
     assert _refs(origin).get(SHADOW) == hand
 
 
-@pytest.mark.xfail(strict=True, reason="compat fold at the push (a compat pin the hook "
-                   "folded counts as recorded when grip.toml's pin equals the commit's own gitlink) lands in the compat "
-                   "turn; until then the plain push's fence refuses the fold")
 def test_fence_d_compat_hand_gitlink_bump_folded_by_the_hook_pushes(tmp_path):
     root, origin = _store(tmp_path, "compat")
     gr2(root, "push")
@@ -125,3 +127,25 @@ def test_fence_d_compat_hand_gitlink_bump_folded_by_the_hook_pushes(tmp_path):
     assert result.returncode == 0, result.stderr
     remote = _refs(origin)
     assert remote.get("refs/heads/main") == head and remote.get(SHADOW) == head, remote
+    assert _refs(root)[SHADOW] == head
+
+
+def test_fence_e_compat_hand_gitlink_bump_past_the_hook_with_a_stale_pin_is_refused(tmp_path):
+    root, origin = _store(tmp_path, "compat")
+    gr2(root, "push")
+    shadow, remote = _refs(root)[SHADOW], _refs(origin)
+    _advance(root, "alpha")
+    git(root, "add", "alpha")
+    git(root, "commit", "--no-verify", "-m", "hand bump past the hook")  # no fold: grip.toml still pins the old head
+    assert git(root, "rev-parse", "HEAD:alpha").stdout.strip() not in git(root, "show", "HEAD:grip.toml").stdout
+
+    result = gr2(root, "push", check=False)
+
+    assert result.returncode == 4, (result.returncode, result.stderr)
+    assert "gitlink is not the pin grip.toml records" in result.stderr and "alpha" in result.stderr, result.stderr
+    assert _refs(origin) == remote and _refs(root)[SHADOW] == shadow, "nothing moves"
+
+
+def test_fence_f_the_mode_split_is_one_predicate_with_two_answers():
+    assert gc._gitlink_may_be_pin("compat") is True, "compat: the gitlink IS the pin"
+    assert gc._gitlink_may_be_pin("full") is False, "full: the gitlink is the field commit; only the verb records"

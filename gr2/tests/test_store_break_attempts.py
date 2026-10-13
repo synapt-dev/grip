@@ -453,6 +453,9 @@ def test_break_03_push_root_with_unpushed_member(two_member_ws: Path, tmp_path: 
     text = (root / "grip.toml").read_text()
     assert covered_pin in text, "the fixture must start from the pin store commit wrote"
     (root / "grip.toml").write_text(text.replace(covered_pin, uncovered))
+    # Section 9 (2026-10-13): STAGED, so the commit records the pin it says it does. Unstaged, HEAD kept the covered
+    # pin beside the uncovered gitlink, and the push's fence now refuses that (a stale pin, exit 4) before coverage.
+    _git(root, "add", "grip.toml")
     _git(root, "update-index", "--add", "--cacheinfo", f"160000,{uncovered},alpha")
     # v5, same class as the witnesses file: the root repo carries no identity by design, so
     # the production -c identity is supplied explicitly rather than borrowed from the desk.
@@ -606,7 +609,6 @@ def test_break_05_shallow_clone_of_the_root(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="section 9 rename turn: the plain push now runs the fence, which refuses this compat hand-pinned commit first; the compat turn (pin == own gitlink is recorded, a differing one is refused naming both) turns it green")
 def test_break_07_gitlink_and_pin_disagree(two_member_ws: Path) -> None:
     """Every verb that reads the pin exits 4 and names BOTH values.
 

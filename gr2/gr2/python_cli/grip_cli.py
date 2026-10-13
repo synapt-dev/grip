@@ -2028,12 +2028,45 @@ def _recorded_pins(text: str) -> dict[str, str]:
     return {str(member["name"]): str(member["pin"]) for member in tomllib.loads(text).get("members", [])}
 
 
-def _refuse_unrecorded_pins(root: Path, pins: dict[str, str], base: str) -> None:
+def _gitlink_may_be_pin(mode: str) -> bool:
+    """THE MODE SPLIT, in one place: may a commit's own gitlink count as the pin it
+    records? Compat: yes, the gitlink IS the pin, so a pin the hook folded to it is recorded. Full: no, the gitlink is
+    the member's field commit and only the verb records a pin. If full mode's gitlink becomes the member's real commit
+    (Apollo's 6.4, Layne's call), this returns True for both and the split is gone."""
+    return mode != "full"
+
+
+def _gitlinks_at(root: Path, revision: str, pins: dict[str, str]) -> dict[str, str]:
+    """{name: the gitlink `revision`'s tree holds at the member's path} for the members its grip.toml records."""
+    text = _store_git(root, "show", f"{revision}:grip.toml").stdout
+    links: dict[str, str] = {}
+    for member in tomllib.loads(text).get("members", []):
+        if str(member["name"]) in pins:
+            entry = _store_git(root, "ls-tree", revision, "--", str(member["path"])).stdout.split()
+            links[str(member["name"])] = entry[2] if len(entry) >= 3 and entry[0] == "160000" else ""
+    return links
+
+
+def _refuse_unrecorded_pins(root: Path, pins: dict[str, str], base: str, mode: str,
+                            gitlinks: dict[str, str] | None) -> None:
     """THE FENCE (section 9), the one check the pre-commit hook and `store push` both call. `pins` are the
     pins a commit RECORDS (its grip.toml); a pin that differs from the one `base` records (the shadow at the push,
-    HEAD at the hook) was edited by hand, so it is refused by the member's name. Never compare a root gitlink: in full mode the gitlink at a member path is
-    the member's field commit, not its pin (#1233 v3 failed 47 full-mode rows on that). A commit whose pins equal the
-    base's carries nothing unresolved (a hand README commit), and passes."""
+    HEAD at the hook) was edited by hand, so it is refused by the member's name. A commit whose pins equal the base's
+    carries nothing unresolved (a hand README commit), and passes.
+
+    `gitlinks` are the commit's OWN gitlinks (the push passes HEAD's; the hook passes None, because a commit's
+    gitlinks are not settled until the compat fold has run). Where `_gitlink_may_be_pin(mode)` (compat), a moved pin
+    equal to the commit's own gitlink is RECORDED (the hook's fold), and a pin that differs from it is refused naming
+    both (a hand bump past the hook, a stale fold). Otherwise the gitlink is never compared: in full mode it is the
+    member's field commit, not its pin (#1233 v3 failed 47 full-mode rows on that)."""
+    if gitlinks is not None and _gitlink_may_be_pin(mode):
+        stale = [f"{name} (gitlink {gitlinks.get(name, '')[:12] or 'none'}, pin {pin[:12]})"
+                 for name, pin in sorted(pins.items()) if gitlinks.get(name) != pin]
+        if stale:
+            raise NativeStoreRefusal(
+                f"gitlink is not the pin grip.toml records: {', '.join(stale)}; commit with the hook on so it folds "
+                f"the pin, or record pins through `gr2 store commit`", 4)
+        return
     shown = _store_git(root, "show", f"{base}:grip.toml", check=False)
     if shown.returncode:
         return  # the base records no grip.toml: there is nothing to compare against
@@ -2341,7 +2374,9 @@ def _native_store_push(root: Path, to: str | None = None, atomic: bool = False) 
         # THE FENCE first, so a hand-edited pin gets its own name and not a later reader's: a hand commit whose
         # recorded pins equal the shadow's pushes, and the shadow advances to it in the same atomic push (the implicit
         # --snapshot); one that edits a pin is refused before anything moves.
-        _refuse_unrecorded_pins(root, _native_members_at(root, "HEAD"), shadow)
+        pins = _native_members_at(root, "HEAD")
+        mode = _workspace_mode(tomllib.loads(_store_git(root, "show", "HEAD:grip.toml").stdout))
+        _refuse_unrecorded_pins(root, pins, shadow, mode, _gitlinks_at(root, "HEAD", pins))
     members = _native_store_check(root)
     branch = _store_git(root, "symbolic-ref", "--short", "HEAD").stdout.strip()
     recorded = _root_origin_for_push(root, to)

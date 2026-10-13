@@ -437,7 +437,7 @@ def run_pre_commit(root: Path) -> int:
         # the compat fold, so a hand-edited pin line is refused by name; compat's gitlink-bump fold is left as it was.
         shadow = gc._shadow_value(root)
         if shadow:
-            gc._refuse_unrecorded_pins(root, gc._recorded_pins(staged_text), "HEAD")
+            gc._refuse_unrecorded_pins(root, gc._recorded_pins(staged_text), "HEAD", _staged_mode(staged_text), None)
         if _staged_mode(staged_text) == "full":
             # full_mode_hook, NARROWED: a hand commit that leaves every recorded pin unchanged (a root README) passes
             # the fence above and is let through. Never read a staged gitlink here: in full mode it is the member's

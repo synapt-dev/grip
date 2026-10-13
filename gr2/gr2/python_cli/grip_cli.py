@@ -22,6 +22,7 @@ from . import config as config_mod
 from .check_records import JSON_SHAPES as CHECK_JSON_SHAPES
 from . import gitops
 from . import grip as grip_mod
+from . import names as name_rules
 from . import store_hooks
 from . import workspace_mode
 from .gitops import git, repo_dirty
@@ -1217,13 +1218,18 @@ def _parse_clone_values(values: list[str]) -> list[tuple[str, str]]:
     problems: list[str] = []
     seen: set[str] = set()
     for value in values:
-        name, sep, url = value.partition("=")
-        name, url = name.strip(), url.strip()
+        raw_name, sep, url = value.partition("=")
+        name, url = raw_name.strip(), url.strip()
         if not sep or not name or not url:
             problems.append(f"{value!r} is not NAME=URL")
             continue
         if "/" in name or "\\" in name or name.startswith((".", "-")):
             problems.append(f"member name {name!r} must be one path segment, not starting with '.' or '-'")
+            continue
+        try:
+            name_rules.git_ref(raw_name, "member name")
+        except ValueError as exc:
+            problems.append(str(exc))
             continue
         if name in seen:
             problems.append(f"member name {name!r} is given twice")

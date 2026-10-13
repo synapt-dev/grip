@@ -210,6 +210,14 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **`gr2`: a name git cannot hold as a ref is refused before anything is written.** `store init --clone NAME=URL`,
+  `lane create` (the lane name and each `--branch` value), `branch` and `target set` now check the name first: it
+  must be what `git check-ref-format --allow-onelevel` accepts, printable, and not start with `-`. Names such as
+  `@`, `a b`, `x.lock`, `a..b`, `~x`, `x:y` or one holding U+2028 used to be cloned, written as a branch, stored as
+  a target, or refused only after `lane create` had taken its lock and cloned its cache. A lane `--branch` given as
+  an empty value is refused rather than read as omitted. `store init --clone` checks the name as typed, so a
+  leading or trailing space is refused rather than trimmed. A nested name such as `feat/x` is still a legal branch
+  and target.
 - **`gr2`: a pending consent marker is consumed only under its member's exact key.** On a filesystem that matches
   names regardless of case or Unicode normalization, a member key spelled differently from another member's could
   consume that member's pending marker. Taking a marker now requires each component of its path to be listed under

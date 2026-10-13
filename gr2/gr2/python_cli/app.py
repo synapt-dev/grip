@@ -32,6 +32,7 @@ from . import gitops
 from . import check_records, set_check
 from . import defaults
 from . import merge_gate, merge_receipts
+from . import names as name_rules
 from . import pr as pr_ops
 from .platform import AdapterError
 from . import prune as prune_ops
@@ -1745,6 +1746,11 @@ def branch_cmd(
     """Create or switch to a branch, natively -- no gr1 dependency."""
     target = (repo_path or Path.cwd()).resolve()
     try:
+        name_rules.git_ref(name, "branch name")
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    try:
         gitops.require_git_repo(target, "branch")
         branch_ops.create_branch(target, name, base=base)
     except (branch_ops.BranchError, gitops.OutsideRepoError, gitops.GitMissingError) as exc:
@@ -2068,6 +2074,11 @@ def target_set(
     <remote>/<branch> is absent in the checked clone -- prune tolerates the same
     stale case by skipping the stored step -- so a typo is visible at write time.
     """
+    try:
+        name_rules.git_ref(branch, "target branch")
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     start, workspace_root = _target_workspace_root(repo_path)
     try:
         target_ops.set_target(workspace_root, branch)
@@ -2750,6 +2761,23 @@ def _lane_create_defaults(workspace_root: Path, lane_name: str, repos: Optional[
     return repos, branch or ""
 
 
+def _refuse_unusable_lane_names(lane_name: str, branch: Optional[str]) -> None:
+    """Refuse a lane name or --branch value git cannot hold as a ref, before the lane lock, the spec or a clone is
+    written. --branch is one name for every repo, or repo=branch pairs separated by commas; each branch is checked
+    as the mapping parser will read it (an item's surrounding space is layout, not part of the name)."""
+    try:
+        name_rules.git_ref(lane_name, "lane name")
+        if branch is not None:   # a typed empty --branch is refused, not read as "omitted"
+            if "=" in branch:
+                for item in branch.split(","):
+                    if "=" in item:   # an item without one is the mapping parser's own refusal
+                        name_rules.git_ref(item.split("=", 1)[1].strip(), "branch name")
+            else:
+                name_rules.git_ref(branch, "branch name")
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
 @lane_app.command("create", cls=ContextCommand)
 def lane_create(
     workspace_root: Path,
@@ -2777,6 +2805,7 @@ def lane_create(
     """
     items, _ = _announce_context(ctx)
     workspace_root = workspace_root.resolve()
+    _refuse_unusable_lane_names(lane_name, branch if bind is None else None)
     from .spec_apply import workspace_spec_path
     from . import grip_cli
 

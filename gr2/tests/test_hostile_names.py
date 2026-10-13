@@ -23,17 +23,14 @@ RUNNER = make_cli_runner()
 SPEC = ('schema_version = 1\nworkspace_name = "m"\n\n[[repos]]\nname = "repo-a"\npath = "repos/repo-a"\nurl = "{url}"\n\n'
         '[[units]]\nname = "atlas"\npath = "agents/atlas"\nrepos = ["repo-a"]\n')
 
-ALL = {label for label, _ in HOSTILE_NAMES}
-UNSAFE_MEMBER = {"inner-space", "at", "reflog-at", "lock", "double-dot", "tilde", "colon", "line-separator"}
+# store init --clone, lane create (the lane and --branch), branch and target set check each name with the shared
+# GIT-REF profile (gr2/python_cli/names.py) before their first write, so none of them carries a finding now.
 FINDINGS = {
-    "store-init-clone": UNSAFE_MEMBER | {"lead-space", "trail-space"},
-    "lane-create-lane": UNSAFE_MEMBER,
-    # every bad branch name is refused only after the lane-creation lock and the cache are written, or not at all
-    "lane-create-branch": ALL - {"nested"},
-    # git itself allows both, so only a gr2 validator refuses them
-    "branch": {"at", "line-separator"},
-    # stored with a warning that the ref is absent, so prune later defaults to it
-    "target-set": ALL - {"empty", "dash"},
+    "store-init-clone": set(),
+    "lane-create-lane": set(),
+    "lane-create-branch": set(),
+    "branch": set(),
+    "target-set": set(),
     "lane-enter": set(),
     "lane-create-unit": set(),
     "hooks-trust": set(),
@@ -43,7 +40,8 @@ FINDINGS = {
     "lane-lease-actor": {"empty"},
 }
 # a nested branch name is a legal branch, so the verb is right to take it
-EXPECTED = {("lane-create-branch", "nested"): "accepted", ("branch", "nested"): "accepted"}
+EXPECTED = {("lane-create-branch", "nested"): "accepted", ("branch", "nested"): "accepted",
+            ("target-set", "nested"): "accepted"}
 EXPECTED.update({("check-run-name", label): "accepted" for label, _ in HOSTILE_NAMES if label != "empty"})
 EXPECTED.update({("lane-lease-actor", label): "accepted" for label, _ in HOSTILE_NAMES})
 # the finding is that an empty actor is taken; the validator should refuse it

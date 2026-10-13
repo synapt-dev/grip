@@ -14,13 +14,13 @@ Each entry names the release that first carried it. The full release notes for e
 project's `CHANGELOG.md` and its GitHub releases.
 
 `PLATFORM_ADAPTER_API_VERSION` is the protocol's version number. It changes only for a change an existing
-adapter cannot absorb. The released version is `1`; version `2` is in this file's Unreleased section and no
-release carries it yet.
+adapter cannot absorb. Version `2` is first carried by 2.0.0a9, and later 2.0.0a releases may add to it;
+an adapter that declares version `1`, or nothing, is still accepted and called as before.
 
-## Unreleased (adapter API version 2)
+## 2.0.0a9 (adapter API version 2)
 
-Nothing here is in a gr2 release. An adapter that declares no `platform_adapter_api_version` is a version 1
-adapter and is called exactly as before.
+An adapter that declares no `platform_adapter_api_version` is a version 1 adapter and is called exactly as
+before.
 
 - **`PLATFORM_ADAPTER_API_VERSION = 2`.** gr2 accepts a declared `1` or `2` and refuses any other value.
   `adapter_api_version(adapter)` returns the declaration, and `1` when there is none.

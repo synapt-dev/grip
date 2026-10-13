@@ -334,8 +334,10 @@ class PlatformAdapter(Protocol):
     def edit_pr_body(self, repo: str, number: int, body: str) -> None: ...
 ```
 
-`PLATFORM_ADAPTER_API_VERSION = 1` names this contract. Plugins can declare
-`platform_adapter_api_version = 1`. An omitted declaration retains compatibility
+`PLATFORM_ADAPTER_API_VERSION` names this contract; it is `2` from 2.0.0a9, and the version 2 additions
+(`resolve_target`, `RemoteTarget`, the `target` keyword) are in the package's `PLATFORM_ADAPTER_CHANGELOG.md`.
+Plugins can declare `platform_adapter_api_version = 1` or `2`; a version 1 adapter is called as above. An
+omitted declaration retains compatibility
 through operation-specific capability checks. An unsupported declared version
 refuses. A declaration is a contract, not certification of provider behavior.
 

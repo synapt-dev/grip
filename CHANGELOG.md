@@ -45,6 +45,12 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **`gr2`: a root without a workspace spec refuses in one line, naming the step that suits it.** `review checkout-pr`
+  and `review open` printed a `FileNotFoundError` traceback on a native root (one with `grip.toml`) and on a gr1
+  desk not yet adopted. They now exit 1 with one line that names the root: a native root is told the verb reads a
+  workspace spec and does not support a native root yet, a gr1 desk is told to run `gr2 workspace migrate-gr1
+  <root>`, and a root with neither is told to run `gr2 workspace init <root>`.
+
 - **`gr pr create` opens PRs for the branch you are on, not for every branch
   some repo happens to sit on.** It used to open one PR per branch group under
   the single `-t` title, so a repo (the manifest included) parked on an old

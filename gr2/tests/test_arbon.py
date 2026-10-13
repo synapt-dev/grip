@@ -7,7 +7,8 @@ A3 a close whose push is turned away moves nothing on the remote and removes its
 A4 recurse=check refuses a member that moved backwards on the remote, by name and both shas, pushing nothing;
 A5 a fresh clone of the arbon alone reads every member it pins;
 A6 a rheon that is not one lowercase ref component is refused before anything is written;
-A7 recurse=on-demand refuses a member this clone holds no value for, by name.
+A7 recurse=on-demand refuses a member this clone holds no value for, by name;
+A8 a remote without atomic push support refuses the close (never degrades to per-ref) and moves nothing.
 """
 from __future__ import annotations
 
@@ -168,3 +169,19 @@ def test_a7_on_demand_refuses_a_member_this_clone_holds_no_value_for(ab, world):
         ab.close(me, TEAM, "9", [stook("a")], org=ORG, recurse="on-demand")
     assert e.value.ref == stook("a") and "on-demand" in e.value.why
     assert git(origin, "for-each-ref") == before
+
+
+def test_a8_a_remote_without_atomic_push_refuses_the_close_and_moves_nothing(ab, world):
+    """A8 (a section 4 probe): a remote that does not advertise atomic push (receive.advertiseAtomic
+    false) must REFUSE the close, never degrade to a per-ref push that could land the STOOK without its arbon."""
+    origin, _, me, _ = world
+    git(origin, "config", "receive.advertiseAtomic", "false")
+    lp = importlib.import_module("gr2.python_cli.leased_push")
+    arbon = f"refs/{ORG}/__teams__/t/__arbons__/9"
+    with pytest.raises(lp.PushRejected, match="atomic"):
+        ab.close(me, TEAM, "9", [stook("a"), stook("b")], org=ORG)
+    assert (on(origin, TEAM), on(origin, SHADOW), on(origin, arbon)) == (None, None, None)
+    assert git(me, "for-each-ref", "--format=%(refname)", arbon) == ""
+    git(origin, "config", "--unset", "receive.advertiseAtomic")
+    c = ab.close(me, TEAM, "9", [stook("a"), stook("b")], org=ORG)     # the same close lands once atomic is back
+    assert on(origin, arbon) == c.arbon

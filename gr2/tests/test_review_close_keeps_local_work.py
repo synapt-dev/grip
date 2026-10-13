@@ -292,7 +292,7 @@ def test_a_file_named_venv_at_the_root_is_work(tmp_path: Path):
     assert (lane / ".venv").read_text() == "user notes\n"
 
 
-# ---- what `review run` leaves in a lane is the review's: the install's build/
+# ---- what `review run` leaves in a lane is the review's: the install's build/ and the clones it placed
 
 
 def _run_receipt(lane: Path, downstream: dict | None = None) -> None:
@@ -340,3 +340,58 @@ def test_a_build_dir_below_the_member_top_is_still_work(tmp_path: Path):
     result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
     assert result.exit_code != 0 and "src/build/" in _text(result), _text(result)
     assert kept.is_file()
+
+
+def _placed_clone(tmp_path: Path, lane: Path, key: str) -> str:
+    """A member `review run` cloned into the lane root at its pin, as it does for a downstream member."""
+    source = tmp_path / f"{key}-source"
+    source.mkdir()
+    _git(source, "init", "-q", "-b", "main")
+    (source / "README.md").write_text(f"{key}\n")
+    _git(source, "add", "README.md")
+    _git(source, "-c", "user.name=F", "-c", "user.email=f@x.invalid", "commit", "-qm", "pin")
+    _git(lane, "clone", "-q", str(source), key)
+    return _git(lane / key, "rev-parse", "HEAD")
+
+
+def _selection(downstream: dict[str, str]) -> dict:
+    return {"status": "ran", "changed": ["demo-core", "demo-web"], "upstream": [],
+            "downstream": list(downstream), "pins": dict(downstream)}
+
+
+def test_the_downstream_clones_a_run_recorded_do_not_block_close(tmp_path: Path):
+    """At five members the tutorial's run clones demo-api and demo-worker into the lane root and logs
+    each; close named all four as work at the lane root and exited 2 after a green run."""
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    pins = {key: _placed_clone(tmp_path, lane, key) for key in ("demo-api", "demo-worker")}
+    _run_receipt(lane, _selection(pins))
+    for key in pins:
+        (lane / f"{review_run._OUTPUT_LOG_NAME}.{key}").write_text("log\n")
+    _build_output(lane / "demo-api", "build/lib/demo_api/__init__.py")
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code == 0, _text(result)
+    assert not lane.exists()
+
+
+@pytest.mark.parametrize("case", ["unrecorded", "moved_off_its_pin", "work_inside", "no_run_receipt"])
+def test_a_clone_at_the_lane_root_the_run_did_not_place_is_still_work(tmp_path: Path, case: str):
+    """Only a clone the run's receipt names, at the pin it recorded, is the review's; a clone examined
+    as a member still refuses when it holds work."""
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    pin = _placed_clone(tmp_path, lane, "demo-api")
+    recorded = {"demo-api": pin}
+    if case == "unrecorded":
+        recorded = {"demo-worker": pin}
+    elif case == "moved_off_its_pin":
+        recorded = {"demo-api": "f" * 40}
+    elif case == "work_inside":
+        (lane / "demo-api" / "notes.txt").write_text("user notes\n")
+    if case != "no_run_receipt":
+        _run_receipt(lane, _selection(recorded))
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code != 0, _text(result)
+    expected = "notes.txt" if case == "work_inside" else "work at the lane root"
+    assert expected in _text(result) and "demo-api" in _text(result), _text(result)
+    assert (lane / "demo-api" / ".git").is_dir()

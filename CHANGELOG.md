@@ -220,6 +220,12 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   `build/` as install output; close did not, so it called that `build/` uncommitted work and exited 2 after a green
   run (the tutorial's gr2 walk ended there on 2.0.0a8). Close now admits it from the same list, and only once a run
   has written its receipt; a `build/` in a lane no run has touched, or one below a member's top level, still refuses.
+- **`gr2`: `review close` no longer refuses the upstream and downstream members a `review run` cloned into the lane.**
+  On a root with more members than a review changes, `review run` clones each upstream or downstream member into the
+  lane root at its pin and records it in its receipt; close knew only the lane's own members, so it named those
+  clones and their run logs as work at the lane root and exited 2 after a green run. Close now takes a clone as the
+  review's only when the receipt names it and its HEAD is at the pin the run recorded, and examines it like a member,
+  so work inside one still refuses; any other directory or clone at the lane root still refuses.
 - **`gr2`: the store's pre-commit hook and `store commit` record a member pin by one rule.** A pin pushed to a
   feature branch but not to the declared upstream was recorded by `store commit` (which adopts the branch whose
   upstream covers it) and refused by a plain `git commit` with "push it first". Both now adopt the branch, the hook

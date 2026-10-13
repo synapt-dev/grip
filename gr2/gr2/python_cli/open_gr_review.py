@@ -153,6 +153,11 @@ def _refuse_local_work(target: Path, allocation: dict) -> None:
     if not (target / ".git").exists():
         from .review_run import _LEGACY_MARKERS
         member_names = {m.relative_to(target).parts[0] for m in members if m != target}
+        # The upstream and downstream members `review run` cloned into the lane root are the review's
+        # too, and are examined below exactly like a member, so work inside one still refuses.
+        placed = _run_placed_members(target, receipt, member_names)
+        member_names |= set(placed)
+        members += [target / key for key in placed]
         # The exact names the review writes at the root, as regular files: its marker, receipt and
         # run logs (one per member, in either spelling). The shared environment is the `.venv`
         # directory, checked separately. Nothing else is the review's.
@@ -188,6 +193,31 @@ def _refuse_local_work(target: Path, allocation: dict) -> None:
         raise OpenGrReviewError(
             f"lane {target} holds work that exists nowhere else; commit and push it, or move it out, "
             "then close again:\n  " + "\n  ".join(found))
+
+
+def _run_placed_members(target: Path, receipt: dict, member_names: set[str]) -> list[str]:
+    """The upstream and downstream members `review run` cloned into the lane root, as its receipt records
+    them: a key named in the run's selection, whose directory at the lane root is a real git clone (not a
+    symlink) with HEAD at the pin the run recorded for it. Anything else at the root, a clone the receipt
+    does not name included, stays unknown, and close refuses it."""
+    selection = receipt.get("downstream") if receipt.get("kind") == "review-run" else None
+    if not isinstance(selection, dict) or not isinstance(selection.get("pins"), dict):
+        return []
+    pins = selection["pins"]
+    keys = [k for role in ("upstream", "downstream") if isinstance(selection.get(role), list)
+            for k in selection[role]]
+    placed = []
+    for key in dict.fromkeys(keys):
+        if not isinstance(key, str) or key in member_names or key in ("", ".", "..") or "/" in key \
+                or "\\" in key or not isinstance(pins.get(key), str):
+            continue
+        path = target / key
+        if path.is_symlink() or not path.is_dir() or not (path / ".git").exists():
+            continue
+        head = git(path, "rev-parse", "--verify", "-q", "HEAD")
+        if head.returncode == 0 and head.stdout.strip() == pins[key]:
+            placed.append(key)
+    return placed
 
 
 def _preserve_allocated_runs(workspace: Path, target: Path, allocation: dict) -> list[dict]:

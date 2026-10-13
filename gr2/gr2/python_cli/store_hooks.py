@@ -43,7 +43,6 @@ entitlement semantics.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import re
 import shlex
@@ -305,32 +304,53 @@ def _fold_pins(text: str, moves: dict[str, tuple[str, str]]) -> str:
 
     chunks = re.split(r"(?m)^(?=\[\[members\]\])", text)
     for name, (old, new) in moves.items():
-        name_line = re.compile(r"(?m)^name\s*=\s*" + re.escape(json.dumps(name)) + r"\s*$")
-        pin_line = re.compile(r"(?m)^(pin\s*=\s*)" + re.escape(json.dumps(old)) + r"(\s*)$")
+        name_line = re.compile(r"(?m)^name\s*=\s*" + re.escape(gc._toml_str(name)) + r"\s*$")
+        pin_line = re.compile(r"(?m)^(pin\s*=\s*)" + re.escape(gc._toml_str(old)) + r"(\s*)$")
         owners = [i for i, chunk in enumerate(chunks) if name_line.search(chunk) and len(pin_line.findall(chunk)) == 1]
         if len(owners) != 1:
             raise gc.NativeStoreRefusal(
                 f"cannot fold the pin of {name} into grip.toml by line; run `gr2 store commit` for this change", 4
             )
-        chunks[owners[0]] = pin_line.sub(lambda m: m.group(1) + json.dumps(new) + m.group(2), chunks[owners[0]], count=1)
+        chunks[owners[0]] = pin_line.sub(lambda m: m.group(1) + gc._toml_str(new) + m.group(2), chunks[owners[0]], count=1)
     return "".join(chunks)
 
 
 def _fold_field(text: str, name: str, key: str, old: str | None, new: str) -> str:
     """Rewrite ONLY the `<key> = "..."` line of one member, the way `_fold_pins` rewrites its pin; refuses when the
-    line cannot be found exactly once."""
+    line cannot be found exactly once. Values are spelled as the engine's writer spells them (`_toml_str`): JSON would
+    write a character outside the BMP as a surrogate pair, which TOML refuses."""
     from . import grip_cli as gc
 
     chunks = re.split(r"(?m)^(?=\[\[members\]\])", text)
-    name_line = re.compile(r"(?m)^name\s*=\s*" + re.escape(json.dumps(name)) + r"\s*$")
-    key_line = re.compile(r"(?m)^(" + re.escape(key) + r"\s*=\s*)" + re.escape(json.dumps(old)) + r"(\s*)$")
+    name_line = re.compile(r"(?m)^name\s*=\s*" + re.escape(gc._toml_str(name)) + r"\s*$")
+    key_line = re.compile(r"(?m)^(" + re.escape(key) + r"\s*=\s*)" + re.escape(gc._toml_str(old or "")) + r"(\s*)$")
     owners = [i for i, chunk in enumerate(chunks) if name_line.search(chunk) and len(key_line.findall(chunk)) == 1]
     if old is None or len(owners) != 1:
         raise gc.NativeStoreRefusal(
             f"cannot fold the {key} of {name} into grip.toml by line; run `gr2 store commit` for this change", 4
         )
-    chunks[owners[0]] = key_line.sub(lambda m: m.group(1) + json.dumps(new) + m.group(2), chunks[owners[0]], count=1)
+    chunks[owners[0]] = key_line.sub(lambda m: m.group(1) + gc._toml_str(new) + m.group(2), chunks[owners[0]], count=1)
     return "".join(chunks)
+
+
+def _refuse_unreadable_fold(
+    folded: str, stale: list[dict[str, str]], staged: dict[str, str], adopted: dict[str, dict[str, str]]
+) -> None:
+    """Refuse (4) a folded grip.toml that does not read back as what was folded: it must parse, and each folded member
+    must carry its staged pin and, when its branch was adopted, that branch's ref and upstream. Called before the hook
+    writes or stages anything, so a refusal leaves the working and staged grip.toml as they were."""
+    from . import grip_cli as gc
+
+    try:
+        members = {str(m.get("name")): m for m in _members_from(folded)}
+    except ValueError as exc:   # tomllib.TOMLDecodeError is a ValueError
+        raise gc.NativeStoreRefusal(f"the folded grip.toml does not parse ({exc}); run `gr2 store commit` for this change", 4) from None
+    for m in stale:
+        want = {"pin": staged[m["path"]], **{k: adopted[m["name"]][k] for k in ("ref", "upstream") if m["name"] in adopted}}
+        got = members.get(m["name"], {})
+        if any(got.get(k) != v for k, v in want.items()):
+            raise gc.NativeStoreRefusal(
+                f"the folded grip.toml does not record {m['name']} as staged; run `gr2 store commit` for this change", 4)
 
 
 def _sync_gitmodules(root: Path, members: list[dict[str, str]], index: str | None, *, env_partial: bool) -> None:
@@ -439,6 +459,7 @@ def run_pre_commit(root: Path) -> int:
                 for key in ("ref", "upstream"):
                     if m["name"] in adopted and adopted[m["name"]].get(key) != m.get(key):
                         folded = _fold_field(folded, m["name"], key, m.get(key), adopted[m["name"]][key])
+            _refuse_unreadable_fold(folded, stale, staged, adopted)   # BEFORE any write: a refusal leaves the root as it was
             working.write_bytes(folded.encode("utf-8"))
             added = _git(root, "add", "grip.toml", env=env)
             if added.returncode:

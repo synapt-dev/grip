@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from tests.test_store_git_native_smoke import configure_identity, git, gr2, run
 from tests.test_store_materialize_installs_hooks import _cloned
 
@@ -145,3 +147,44 @@ def test_the_verb_declares_an_adopted_branch_in_gitmodules_as_in_grip_toml(tmp_p
     toml = git(root, "show", "HEAD:grip.toml").stdout
     assert 'ref = "feat/x"' in toml, toml
     assert declared == "feat/x", declared
+
+
+def test_a_branch_name_outside_the_bmp_commits_through_the_hook_as_through_the_verb(tmp_path: Path) -> None:
+    """`feat/🚀` is a legal ref. The hook folds it in the engine writer's spelling (`\\U0001f680`); JSON's surrogate pair
+    left a working and staged grip.toml TOML cannot read, and `store status` crashed on it."""
+    by_verb = _cloned(tmp_path)
+    gr2(by_verb, "materialize")
+    head = _feature_commit(by_verb / "beta", "feat/\U0001f680", push=True)
+    by_hook = _second_clone(tmp_path)
+    _follow(by_hook / "beta", "feat/\U0001f680")
+
+    verb = gr2(by_verb, "commit", "-m", "pin rocket", check=False)
+    git(by_hook, "add", "beta")
+    hook = run(by_hook, "git", "commit", "-q", "-m", "pin rocket", check=False)
+
+    assert verb.returncode == 0, verb.stderr
+    assert hook.returncode == 0, hook.stderr
+    assert _record(by_hook)[0] == head
+    assert _record(by_hook) == _record(by_verb)
+    assert gr2(by_hook, "status", check=False).returncode == 0
+
+
+def test_a_fold_that_does_not_read_back_is_refused_before_anything_is_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hook checks the folded text BEFORE it writes or stages grip.toml, so a fold it cannot read back refuses with
+    the working and staged grip.toml as they were."""
+    from gr2.python_cli import store_hooks
+
+    root = _cloned(tmp_path)
+    gr2(root, "materialize")
+    _feature_commit(root / "beta", "feat/x", push=True)
+    git(root, "add", "beta")
+    working = (root / "grip.toml").read_bytes()
+    staged = git(root, "show", ":grip.toml").stdout
+    monkeypatch.setattr(store_hooks, "_fold_field", lambda text, *a, **k: text + "\nref = \"unterminated\n")
+    monkeypatch.chdir(root)
+
+    assert store_hooks.run_pre_commit(root) == 1
+    assert (root / "grip.toml").read_bytes() == working
+    assert git(root, "show", ":grip.toml").stdout == staged

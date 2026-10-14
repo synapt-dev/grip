@@ -58,6 +58,12 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **`gr2`: `store commit` and `store migrate` record a member whose only changes are untracked files.** Both
+  refused such a member at exit 3 with "commit or stash changes first", and a plain `git stash` leaves untracked
+  files in place, so a desk with scratch files in a member could not record at all. Both record the member's HEAD,
+  which an untracked file cannot be part of, so they now count tracked changes only. `store checkout` still refuses
+  an untracked file, since one at a path the target pin tracks would fail the checkout after the root had moved;
+  its message now names `git stash -u`, which clears it.
 - **`gr2`: a root without a workspace spec refuses in one line, naming the step that suits it.** `review checkout-pr`
   and `review open` printed a `FileNotFoundError` traceback on a native root (one with `grip.toml`) and on a gr1
   desk not yet adopted. They now exit 1 with one line that names the root: a native root is told the verb reads a

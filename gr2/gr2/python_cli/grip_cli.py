@@ -2007,7 +2007,10 @@ def _native_store_commit(
         # Section 5's commit row refuses a dirty member at exit 3, and it is checked BEFORE
         # coverage so the refusal names the thing the author has to fix first. Before this,
         # no verb in the group refused a dirty member, though the row names it.
-        if _store_git(path, "status", "--porcelain").stdout.strip():
+        # Untracked files do not count: the record is the member's HEAD, and an untracked file
+        # cannot be in it either way. Counting them refused a desk whose only changes were
+        # scratch files, with advice (stash) that does not stash them.
+        if _store_git(path, "status", "--porcelain", "--untracked-files=no").stdout.strip():
             raise NativeStoreRefusal(
                 f"{member['name']} is dirty; commit or stash changes first", 3
             )
@@ -2354,8 +2357,14 @@ def _native_store_checkout(root: Path, revision: str) -> tuple[str, list[dict[st
             top = _store_git(path, "rev-parse", "--show-toplevel", check=False)
             if top.returncode or Path(top.stdout.strip()).resolve() != path.resolve():
                 raise NativeStoreRefusal(f"{member['name']} selected path {path} is not its own checkout", 5)
+            # Untracked files DO count here, unlike commit: an untracked file at a path the pin
+            # tracks makes git's own checkout fail inside the member loop, after the root moved,
+            # which is the part-applied state this planning pass exists to prevent. A plain
+            # `git stash` leaves untracked files in place, so the advice names `stash -u`.
             if _store_git(path, "status", "--porcelain").stdout.strip():
-                raise NativeStoreRefusal(f"{member['name']} is dirty; commit or stash changes first", 3)
+                raise NativeStoreRefusal(
+                    f"{member['name']} is dirty; commit, `git stash -u`, or remove untracked files first", 3
+                )
         elif path.exists() and any(path.iterdir()):
             raise NativeStoreRefusal(f"{member['name']} path {path} is not an empty checkout placeholder", 3)
         planned.append((member, path, exists))
@@ -2775,7 +2784,9 @@ def _native_store_migrate(root: Path, *, dry_run: bool = False) -> dict[str, obj
         path = root / name
         if not isinstance(pin, str) or len(pin) != 40:
             raise NativeStoreRefusal(f"{name} alpha snapshot has no valid pin", 4)
-        if repo_dirty(path):
+        # Tracked changes only, as at store commit: migration records each member's HEAD, and
+        # an untracked file cannot be in a pin.
+        if _store_git(path, "status", "--porcelain", "--untracked-files=no").stdout.strip():
             raise NativeStoreRefusal(f"{name} is dirty; commit or stash changes first", 3)
         remote = _store_git(path, "remote", "get-url", "origin", check=False)
         if remote.returncode:

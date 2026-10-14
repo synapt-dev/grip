@@ -142,8 +142,13 @@ def test_commit_succeeds_when_the_root_carries_untracked_workspace_files(
     rc, out = _commit(plain, "dirty-root")
     assert rc == 0, f"the members are clean; the root's own state is not theirs: {out}"
 
+    # The dirt is a TRACKED modification: an untracked file is not part of a pin, so store
+    # commit records past it (tests/test_store_untracked_member.py pins that side).
     member = plain / sorted(heads)[0]
-    (member / "scratch.txt").write_text("uncommitted\n")
+    tracked = subprocess.run(
+        ["git", "-C", str(member), "ls-files"], capture_output=True, text=True, check=True
+    ).stdout.split()[0]
+    (member / tracked).write_text("uncommitted\n")
     rc, out = _cli("store", "commit", "-m", "dirty member")
     assert rc == 3, f"a dirty MEMBER must still refuse at 3, got {rc}: {out}"
     assert sorted(heads)[0] in out, out

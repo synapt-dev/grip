@@ -273,7 +273,10 @@ def platform_for_remote(remote: str):  # noqa: ANN201
             target = adapter.resolve_target(remote)
         except Exception as exc:  # noqa: BLE001  (a URL the adapter does not read is a plain-Git member, unless on GitHub)
             if on_github:
-                raise PlatformUnavailable(f"the GitHub adapter on this machine cannot read {remote!r} ({exc})") from exc
+                # Named by repository, never by the remote as spelled: it may carry a token, and so may the
+                # adapter's own error text, so only the error's type is printed.
+                raise PlatformUnavailable(f"the GitHub adapter on this machine cannot read the remote of {on_github} "
+                                          f"({type(exc).__name__})") from exc
             return None
         return (adapter, f"{target.org}/{target.repo}") if target.org and target.repo else None
     return (adapter, on_github) if on_github else None  # a version 1 adapter: GitHub URLs, read by gr2's own reader

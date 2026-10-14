@@ -13,7 +13,6 @@ an unresolved member is `unknown`; no further member is pushed after one.
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import uuid
 from pathlib import Path
@@ -231,8 +230,18 @@ class RequirementRefused(ValueError):
     """The merge asked to lower what the review's own bind requires; refused before any remote is read."""
 
 
-_GITHUB_REMOTE = re.compile(r"^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([^/]+/[^/]+?)(?:\.git)?/?$")
 _PLATFORM_CAPABILITIES = ("pr_for_head", "pr_for_branch", "pr_head", "merge_pr_async")
+
+
+def _github_repo(remote: str) -> str | None:
+    """'<owner>/<repo>' for every remote gr2 reads as GitHub (review.canonical_source_identity: https, http, with a
+    user or a token, scp-style and ssh), else None. One reader for the whole of gr2, so a spelling the review record
+    calls GitHub is never a plain-Git member here."""
+    from .review import ReviewError, canonical_source_identity
+    try:
+        return canonical_source_identity(remote or "").removeprefix("https://github.com/")
+    except ReviewError:
+        return None
 
 
 class PlatformUnavailable(RuntimeError):
@@ -247,7 +256,7 @@ def platform_for_remote(remote: str):  # noqa: ANN201
     pinned head; that is asked in the preflight, not here. A GitHub URL with no usable adapter raises
     PlatformUnavailable: whether a member's PRs are honoured must not depend on what is installed on this machine."""
     from . import platform as platform_ops
-    on_github = _GITHUB_REMOTE.match(remote or "")
+    on_github = _github_repo(remote)
     try:
         adapter = platform_ops.get_platform_adapter("github")
     except Exception as exc:  # noqa: BLE001  (no adapter: a plain-Git member, unless the remote is on GitHub)
@@ -262,11 +271,12 @@ def platform_for_remote(remote: str):  # noqa: ANN201
         # A version 2 adapter is the only reader of its URLs.
         try:
             target = adapter.resolve_target(remote)
-        except Exception:  # noqa: BLE001  (a URL the adapter does not read is a plain-Git member)
+        except Exception as exc:  # noqa: BLE001  (a URL the adapter does not read is a plain-Git member, unless on GitHub)
+            if on_github:
+                raise PlatformUnavailable(f"the GitHub adapter on this machine cannot read {remote!r} ({exc})") from exc
             return None
         return (adapter, f"{target.org}/{target.repo}") if target.org and target.repo else None
-    found = _GITHUB_REMOTE.match(remote or "")  # a version 1 adapter: read as the v1 path reads a GitHub URL
-    return (adapter, found.group(1)) if found else None
+    return (adapter, on_github) if on_github else None  # a version 1 adapter: GitHub URLs, read by gr2's own reader
 
 
 def _platform_preflight(adapter, repo: str, head: str, into: str) -> tuple[dict | None, str | None]:  # noqa: ANN001
@@ -511,13 +521,21 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                     # After the platform says merged, the PR's head must still be the pinned head: a commit pushed while
                     # the land ran is left out of the merge under a PR that reads merged (measured on GitHub stacks).
                     try:
-                        now = adapter.pr_head(plan["repo"], plan["pr"]).get("head")
-                    except Exception:  # noqa: BLE001
-                        now = None
+                        now, read_error = adapter.pr_head(plan["repo"], plan["pr"]).get("head"), None
+                    except Exception as exc:  # noqa: BLE001
+                        now, read_error = None, f"{type(exc).__name__}: {exc}"
                     if state != "merged":
-                        moved = f"; PR #{plan['pr']} head is now {now}" if now != m["head"] else ""
+                        moved = f"; PR #{plan['pr']} head is now {now}" if now and now != m["head"] else ""
                         r["refused"] = f"platform_merge_not_confirmed: {result.get('status')}: {result.get('message')}{moved}"
                         break
+                    if not now:
+                        # The merge holds the pinned head, but whether a commit was pushed during the land is unknown:
+                        # never reported as stranding a commit that was not measured, and never as a clean merge.
+                        r["refused"] = (f"platform_head_unmeasured_after_merge: PR #{plan['pr']} merged at the pinned head "
+                                        f"{m['head']}, but its head could not be read after the merge "
+                                        f"({read_error or 'no head returned'}); whether a later commit was left out is unknown")
+                        r["_unmeasured"] = True
+                        break  # land no further member after one whose outcome is not known
                     if now != m["head"]:
                         r["refused"] = (f"platform_head_moved_after_merge: PR #{plan['pr']} head is {now}; the merge holds "
                                         f"the pinned head {m['head']}, so {now} was pushed during the land and is not in it")
@@ -575,8 +593,8 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                       "reason": f"the clone could not be read: {exc}"}
         if failed:
             tracking_stale.append({"member": m["key"], **failed})
-    if any(r.get("stranded") for r in rows):
-        code = EXIT_PARTIAL  # the PR reads merged, and a commit on it is not in the target
+    if any(r.get("stranded") or r.get("_unmeasured") for r in rows):
+        code = EXIT_PARTIAL  # the PR reads merged, and a commit on it is not in the target, or that is not known
     elif all(s == "merged" for s in final):
         code = EXIT_MERGED
     elif all(s == "unmerged" for s in final):
@@ -587,6 +605,7 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
     # is a moved ref (expected is what was reviewed, observed is what the remote holds now).
     for r in rows:
         expected, observed = r.pop("_heads", (None, None))
+        r.pop("_unmeasured", None)
         r.setdefault("records", None)
         r["refusal"] = None if not r["refused"] else {
             "code": r["refused"].split(":", 1)[0], "member": r["key"], "expected": expected, "observed": observed}

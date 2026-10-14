@@ -252,3 +252,63 @@ def test_control_gh_absent_on_plain_git_members_still_merges_by_push(slice2, mon
     code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
     assert code == merge_gate.EXIT_MERGED, receipt
     assert all(m["merged_by"] != "platform" for m in receipt["members"]), receipt
+
+
+# GitHub URL spellings that gr2's own reader (review.canonical_source_identity) calls GitHub, beyond the plain three.
+_GITHUB_SPELLINGS = ["https://x-access-token:TOK@github.com/o/alpha.git", "https://user@github.com/o/alpha",
+                     "http://github.com/o/alpha.git"]
+
+
+@pytest.mark.parametrize("url", _GITHUB_SPELLINGS)
+def test_gh_absent_on_a_github_member_with_credentials_a_user_or_http_refuses_and_merges_nothing(slice2, monkeypatch, url):  # noqa: F811
+    _gh_absent(monkeypatch)
+    real = merge_gate.platform_for_remote
+    alpha = str(slice2["members"]["alpha"]["remote"])
+    monkeypatch.setattr(merge_gate, "platform_for_remote", lambda remote: real(url if remote == alpha else remote))
+    before = mains(slice2)
+    record_set(slice2)
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    assert code == merge_gate.EXIT_REFUSED, receipt
+    assert mains(slice2) == before
+    row = next(r for r in receipt["members"] if r["key"] == "alpha")
+    assert row["refusal"]["code"] == "platform_unmeasurable", row
+
+
+@pytest.mark.parametrize("url", _GITHUB_SPELLINGS)
+def test_gh_present_a_github_member_with_credentials_a_user_or_http_lands_through_its_pr(slice2, monkeypatch, url):  # noqa: F811
+    """With a working adapter, every GitHub spelling lands through the PR at its head; none is pushed past it."""
+    from gr2.python_cli import platform as platform_ops
+    alpha = str(slice2["members"]["alpha"]["remote"])
+    fake = FakePlatform(slice2["members"])
+    fake.prs["o/alpha"], fake.remotes["o/alpha"] = fake.prs[alpha], fake.remotes[alpha]  # the PR, keyed as GitHub names it
+    monkeypatch.setattr(platform_ops, "get_platform_adapter", lambda name: fake)
+    real = merge_gate.platform_for_remote
+    monkeypatch.setattr(merge_gate, "platform_for_remote", lambda remote: real(url if remote == alpha else remote))
+    record_set(slice2)
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    assert code == merge_gate.EXIT_MERGED, receipt
+    assert fake.merges == ["o/alpha"], fake.merges
+    by = {m["key"]: m["merged_by"] for m in receipt["members"]}
+    assert by["alpha"] == "platform" and by["beta"] != "platform", by
+
+
+def test_a_pr_head_read_that_fails_after_the_last_merge_is_partial_and_strands_nothing(slice2, platform):  # noqa: F811
+    """The merge holds the pinned head, but whether a commit was pushed during the land is unknown: exit 4, its own
+    code, and no commit named as stranded."""
+    beta = str(slice2["members"]["beta"]["remote"])
+    read = platform.pr_head
+
+    def flaky(repo, number):
+        if repo == beta and platform.prs[repo]["state"] == "merged":
+            raise RuntimeError("gh: HTTP 502")
+        return read(repo, number)
+
+    platform.pr_head = flaky
+    record_set(slice2)
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    assert len(platform.merges) == 2, platform.merges
+    assert code == merge_gate.EXIT_PARTIAL, receipt
+    row = next(r for r in receipt["members"] if r["key"] == "beta")
+    assert row["refusal"]["code"] == "platform_head_unmeasured_after_merge", row
+    assert not row.get("stranded"), row
+    assert "next" in row and "review merge" in row["next"], row

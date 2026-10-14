@@ -326,6 +326,10 @@ next: receive the published review into this workspace, then stamp it: gr2 revie
 
 next: this member landed at the pinned head, and the later commit <sha> is on the PR's branch only: review it as a new change (pin it on top of the merged target), or remove it from the branch; members after this one were not landed, so run gr2 review merge '<workspace>' '<review>' again once it is resolved
 
+### platform_head_unmeasured_after_merge
+
+next: this member landed at the pinned head; read the PR's commits on the platform to see whether one was pushed during the land (review any such commit as a new change); members after this one were not landed, so run gr2 review merge '<workspace>' '<review>' again once that is known
+
 ### platform_pr_ambiguous
 
 next: close the extra PRs so one open PR has this head, then run the merge again; nothing was merged

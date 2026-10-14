@@ -105,6 +105,10 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
                 "is on the PR's branch only: review it as a new change (pin it on top of the merged target), or "
                 f"remove it from the branch; members after this one were not landed, so run gr2 review merge "
                 f"{_shown(workspace)} {_shown(review)} again once it is resolved")
+    if refused.startswith("platform_head_unmeasured_after_merge"):
+        return ("next: this member landed at the pinned head; read the PR's commits on the platform to see whether one "
+                "was pushed during the land (review any such commit as a new change); members after this one were not "
+                f"landed, so run gr2 review merge {_shown(workspace)} {_shown(review)} again once that is known")
     if refused.startswith("platform_pr_not_ready"):
         return "next: mark the PR ready (or reopen it) on the platform, then run the merge again; nothing was merged"
     if refused.startswith("platform_unmeasurable"):

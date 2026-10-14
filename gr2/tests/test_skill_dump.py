@@ -65,7 +65,7 @@ EXPECTED_CODES = {
     "approvals_insufficient", "base_moved", "check_absent", "check_fail", "check_set*",
     "check_set_fail",
     "feature_moved", "head_already_on_remote", "head_not_fetched", "not_received",
-    "platform_head_moved_after_merge", "platform_pr_ambiguous", "platform_pr_not_ready", "platform_unmeasurable",
+    "platform_head_moved_after_merge", "platform_head_unmeasured_after_merge", "platform_pr_ambiguous", "platform_pr_not_ready", "platform_unmeasurable",
     "review_not_on_member_remote", "self_approval",
 }
 

@@ -109,7 +109,47 @@ def required_approvals(workspace: Path, given: int | None = None) -> int:
     return max(required, given or 0)
 
 
-def _context(workspace: Path, review_id: str) -> tuple[dict, set[str]]:
+def review_open_lane(lane: Path) -> tuple[Path, str, dict[str, Path]] | None:
+    """A lane `review open` made: (the store workspace it was opened from, the review id, each member's checkout).
+
+    A reviewer in another gripspace has no member clone in their own workspace; the lane is the only checkout of
+    the reviewed repos, so stamp reads the members there and the store from the workspace the marker names.
+    A member directory of a multi-member lane (`<lane>/<key>`) resolves to its lane. None when neither holds a
+    review-open marker."""
+    from . import review_run
+    lane = Path(lane).resolve()
+    path = review_run.find_marker(lane)
+    if path is None:
+        parent = review_run.find_marker(lane.parent)
+        if parent is None:
+            return None
+        found = review_open_lane(lane.parent)
+        return found if found is not None and found[2].get(lane.name) == lane else None
+    try:
+        marker = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise ApprovalRefused(f"approval_review_record_unreadable: {path}") from exc
+    rows = marker.get("repos") if isinstance(marker, dict) else None
+    if (not review_run.marker_kind_ok(marker) or not isinstance(marker.get("gr_commit"), str)
+            or not isinstance(rows, list) or not rows
+            or not all(isinstance(r, dict) and isinstance(r.get("key"), str) for r in rows)):
+        raise ApprovalRefused(f"approval_review_record_unreadable: {path}")
+    if not isinstance(marker.get("workspace_root"), str):
+        raise ApprovalRefused(f"approval_lane_names_no_workspace: {lane} was opened by an older gr2 and does not name "
+                              "the workspace it was opened from",
+                              next_step=f"next: open the review again, then stamp the new lane: "
+                                        f"gr2 review open <your-workspace> gr:{marker['gr_commit']} --lane-dir <new-lane>, "
+                                        "then gr2 review stamp <new-lane>")
+    try:
+        members = ({rows[0]["key"]: lane} if len(rows) == 1
+                   else {r["key"]: review_run._member_dir(lane, r["key"]) for r in rows})
+    except review_run.ReviewRunRefused as exc:
+        raise ApprovalRefused(f"approval_review_record_unreadable: {exc.detail}") from exc
+    return Path(marker["workspace_root"]).resolve(), marker["gr_commit"], members
+
+
+def _context(workspace: Path, review_id: str, member_dirs: dict[str, Path] | None = None) -> tuple[dict, set[str]]:
+    """`member_dirs` (key -> checkout) reads the members from a review lane instead of the workspace's own clones."""
     from . import merge_gate
     workspace = workspace.resolve()
     if merge_gate._toplevel(workspace) != workspace or not merge_gate._store_inside(workspace, workspace):
@@ -126,9 +166,22 @@ def _context(workspace: Path, review_id: str) -> tuple[dict, set[str]]:
     members = []
     root = workspace.resolve()
     for m in view["members"]:
-        repo = (root / m["path"]).resolve()
-        if not repo.is_relative_to(root) or merge_gate._toplevel(repo) != repo or not merge_gate._store_inside(repo, root):
-            raise ApprovalRefused(f"approval_member_repo_mismatch: {m['key']}")
+        if member_dirs is not None:
+            repo = member_dirs.get(m["key"])
+            if repo is None:
+                keys = [r["key"] for r in view["members"]]
+                raise ApprovalRefused(
+                    f"approval_lane_partial: this lane holds {', '.join(sorted(member_dirs))}; the review has "
+                    f"{', '.join(keys)}",
+                    next_step=f"next: open the whole review and stamp that lane: gr2 review open {workspace} "
+                              f"gr:{rid} --lane-dir <new-lane>, then gr2 review stamp <new-lane>")
+            if merge_gate._toplevel(repo) != repo.resolve():
+                raise ApprovalRefused(f"approval_member_repo_mismatch: {m['key']}")
+            repo = repo.resolve()
+        else:
+            repo = (root / m["path"]).resolve()
+            if not repo.is_relative_to(root) or merge_gate._toplevel(repo) != repo or not merge_gate._store_inside(repo, root):
+                raise ApprovalRefused(f"approval_member_repo_mismatch: {m['key']}")
         # A reviewer's clone made before the head was pushed does not hold it, so the exact reviewed head is
         # fetched from the member remote the review names (the remote the approval chain is read from below).
         # Only when that remote cannot serve it: a named refusal with the next step, not a raw `unknown revision`.
@@ -276,8 +329,8 @@ def _reconcile(workspace: Path, root: dict, authors: set[str], tips: dict[str, s
     return tip
 
 
-def count_approvals(workspace: Path, review_id: str) -> dict:
-    root, authors = _context(workspace, review_id)
+def count_approvals(workspace: Path, review_id: str, member_dirs: dict[str, Path] | None = None) -> dict:
+    root, authors = _context(workspace, review_id, member_dirs)
     tips = _remote_tips(workspace, root)
     if len(set(tips.values())) != 1:
         raise ApprovalRefused("approval_chain_divergent: " + canonical(tips))
@@ -291,10 +344,10 @@ def count_approvals(workspace: Path, review_id: str) -> dict:
     return {"review_id": root["review_id"], "tip": tip, "count": len(distinct), "links": list(distinct.values()), "signed": False}
 
 
-def approve(workspace: Path, review_id: str | None = None) -> dict:
+def approve(workspace: Path, review_id: str | None = None, member_dirs: dict[str, Path] | None = None) -> dict:
     workspace = workspace.resolve()
     rid = review_id.removeprefix("gr:") if review_id else current_review(workspace)
-    root, authors = _context(workspace, rid)
+    root, authors = _context(workspace, rid, member_dirs)
     name = _git(workspace, "config", "user.name")
     if not name.strip():
         raise ApprovalRefused("approval_identity_missing")
@@ -316,7 +369,7 @@ def approve(workspace: Path, review_id: str | None = None) -> dict:
         old = tip
         _git(workspace, "push", f"--force-with-lease={ref}:{old or ''}", "--", remote, f"{commit}:{ref}")
     _git(workspace, "update-ref", ref, commit)
-    return count_approvals(workspace, rid)
+    return count_approvals(workspace, rid, member_dirs)
 
 
 # ---- a PR-head review: the lane `review checkout-pr` (or `review open`) made, stamped by its (repo, head) record

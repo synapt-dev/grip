@@ -124,6 +124,18 @@ gr2 review stamp
 gr2 review merge
 ```
 
+A reviewer whose own workspace does not hold the reviewed repos (another team's
+gripspace) receives the review, opens a lane, and stamps from the lane (or from one
+repo directory in it). The stamp uses the store of the workspace the lane was opened
+from and the repos checked out in the lane, and records the git `user.name` of that
+workspace, not of the lane:
+
+```bash
+gr2 review receive <their-workspace> gr:<id> --remote <member-remote>
+gr2 review open <their-workspace> gr:<id> --lane-dir <lane>
+gr2 review stamp <lane>
+```
+
 The author recorded by the pin, and anyone who authored a commit in its range,
 cannot stamp it. A stamp records an approval; approver names are self-declared and receipts say `signed: false`.
 Repeated stamps by the same name count once. A moved head needs a new pin

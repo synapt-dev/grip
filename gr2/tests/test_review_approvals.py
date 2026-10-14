@@ -848,3 +848,85 @@ def test_a_bind_approval_push_carries_no_pr_lane_approval(world):
     on_remote = git(remote, "for-each-ref", "--format=%(refname)", approvals.PREFIX).splitlines()
     assert approvals.PREFIX + rid in on_remote, on_remote  # control: the bind approval was pushed
     assert not [r for r in on_remote if r.startswith(approvals.PR_PREFIX)], on_remote
+
+
+def _reviewer_in_another_gripspace(world, tmp_path, monkeypatch, *open_args):
+    """A reviewer whose own workspace does not hold the reviewed repo at all (another team's gripspace): it receives
+    the review and opens a lane, which is the only place the member is checked out."""
+    reviewer = tmp_path / "other-gripspace"
+    reviewer.mkdir()
+    # their own repo, with a remote of its own: nothing in this workspace is the reviewed member
+    theirs = tmp_path / "theirs.git"
+    git(tmp_path, "init", "--bare", "-b", "main", theirs)
+    git(reviewer, "clone", theirs, "their-own-repo")
+    git(reviewer / "their-own-repo", "commit", "--allow-empty", "-m", "theirs")
+    git(reviewer / "their-own-repo", "push", "origin", "main")
+    initialised = runner.invoke(app, ["store", "init", str(reviewer)])
+    assert initialised.exit_code == 0, initialised.output
+    monkeypatch.chdir(reviewer)
+    git(reviewer, "config", "user.name", "Reviewer R")
+    git(reviewer, "config", "user.email", "r@example.invalid")
+    rid = "gr:" + world["rid"]
+    got = runner.invoke(app, ["review", "receive", str(reviewer), rid, "--remote", str(world["remote"])])
+    assert got.exit_code == 0, got.output
+    lane = tmp_path / "review-lane"
+    opened = runner.invoke(app, ["review", "open", str(reviewer), rid, "--lane-dir", str(lane), *open_args])
+    assert opened.exit_code == 0, opened.output
+    return reviewer, rid, lane
+
+
+def test_a_reviewer_in_another_gripspace_stamps_from_the_review_lane(world, tmp_path, monkeypatch):
+    reviewer, rid, lane = _reviewer_in_another_gripspace(world, tmp_path, monkeypatch)
+    git(lane, "config", "user.name", "Lane Name")  # the approver is the store workspace's name, not the lane's
+    stamped = runner.invoke(app, ["review", "stamp", str(lane)])
+    assert stamped.exit_code == 0, stamped.output
+    receipt = json.loads(stamped.stdout)
+    assert receipt["review_id"] == rid and receipt["count"] == 1, receipt
+    assert [link["approver"] for link in receipt["links"]] == ["Reviewer R"], receipt
+    # the author's own workspace reads the same approval from the member remote
+    monkeypatch.chdir(world["workspace"])
+    seen = approvals.count_approvals(world["workspace"], world["rid"])
+    assert seen["count"] == 1 and [link["approver"] for link in seen["links"]] == ["Reviewer R"], seen
+
+
+def test_a_reviewer_in_another_gripspace_stamps_a_two_member_review_from_its_lane(multi, tmp_path, monkeypatch):
+    """Two members: the lane holds each at <lane>/<key>, and the stamp reaches both member remotes."""
+    reviewer, rid, lane = _reviewer_in_another_gripspace(multi, tmp_path, monkeypatch)
+    assert sorted(p.name for p in lane.iterdir() if (p / ".git").exists()) == ["beta", "member"]
+    stamped = runner.invoke(app, ["review", "stamp", str(lane)])
+    assert stamped.exit_code == 0, stamped.output
+    receipt = json.loads(stamped.stdout)
+    assert receipt["review_id"] == rid and receipt["count"] == 1, receipt
+    ref = approvals.PREFIX + multi["rid"]
+    tips = {key: git(m["remote"], "rev-parse", ref) for key, m in multi["members"].items()}
+    assert len(set(tips.values())) == 1 and receipt["tip"] in tips.values(), tips
+
+
+def test_a_member_directory_of_a_two_member_lane_stamps_its_lane(multi, tmp_path, monkeypatch):
+    reviewer, rid, lane = _reviewer_in_another_gripspace(multi, tmp_path, monkeypatch)
+    stamped = runner.invoke(app, ["review", "stamp", str(lane / "beta")])
+    assert stamped.exit_code == 0, stamped.output
+    assert json.loads(stamped.stdout)["count"] == 1, stamped.output
+
+
+def test_a_lane_holding_part_of_the_review_refuses_by_name_with_the_next_step(multi, tmp_path, monkeypatch):
+    reviewer, rid, lane = _reviewer_in_another_gripspace(multi, tmp_path, monkeypatch, "--repo", "beta")
+    refused = runner.invoke(app, ["review", "stamp", str(lane)])
+    assert refused.exit_code == 2, refused.output
+    assert "approval_lane_partial: this lane holds beta; the review has" in refused.output, refused.output
+    assert any(x.startswith("next: ") and "gr2 review open" in x for x in refused.output.splitlines()), refused.output
+    ref = approvals.PREFIX + multi["rid"]
+    assert all(subprocess.run(["git", "-C", str(m["remote"]), "rev-parse", "--verify", "-q", ref],
+                              capture_output=True).returncode != 0 for m in multi["members"].values())
+
+
+def test_a_lane_whose_marker_names_no_workspace_refuses_as_an_older_lane(world, tmp_path, monkeypatch):
+    reviewer, rid, lane = _reviewer_in_another_gripspace(world, tmp_path, monkeypatch)
+    marker = lane / ".grip-review-open.json"
+    record = json.loads(marker.read_text())
+    record.pop("workspace_root")
+    marker.write_text(json.dumps(record))
+    refused = runner.invoke(app, ["review", "stamp", str(lane)])
+    assert refused.exit_code == 2 and "approval_lane_names_no_workspace" in refused.output, refused.output
+    assert "unreadable" not in refused.output, refused.output
+

@@ -4918,11 +4918,20 @@ def review_approve(
     review_id: Optional[str] = typer.Argument(None, help="Review id; default is the pinned review at the current member heads"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
-    """Stamp the review: append an unsigned exact-head approval as git user.name, on every member remote."""
+    """Stamp the review: append an unsigned exact-head approval as git user.name, on every member remote.
+
+    WORKSPACE_ROOT may be a lane `review open` made, or one member directory in it: the stamp then uses the store
+    of the workspace the lane was opened from and the members checked out in the lane, so a reviewer in another
+    gripspace stamps from the lane. The approver is the git user.name of the workspace the lane was opened from."""
     from . import approvals
     try:
         # A review lane (`review checkout-pr` or `review open`) carries its (repo, head) record; stamp binds to it.
-        if review_id is None and approvals.pr_lane_record(workspace_root.resolve()) is not None:
+        opened = approvals.review_open_lane(workspace_root.resolve()) if review_id is None else None
+        if opened is not None:
+            # A `review open` lane: the store is the workspace it was opened from, the members are read here.
+            store, rid, members = opened
+            result = approvals.approve(store, rid, members)
+        elif review_id is None and approvals.pr_lane_record(workspace_root.resolve()) is not None:
             result = approvals.approve_pr_lane(workspace_root.resolve())
         else:
             result = approvals.approve(workspace_root.resolve(), review_id)

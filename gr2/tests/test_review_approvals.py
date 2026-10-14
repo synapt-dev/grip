@@ -10,7 +10,7 @@ import pytest
 
 from typer.testing import CliRunner
 
-from gr2.python_cli import approvals, check_records, merge_gate
+from gr2.python_cli import approvals, check_records, merge_gate, set_check
 from gr2.python_cli.app import app
 
 runner = CliRunner()
@@ -288,7 +288,10 @@ def test_divergent_remote_tips_refuse_and_approve_repairs_a_linear_partial(multi
     beta = multi["members"]["beta"]["remote"]
     git(beta, "update-ref", "-d", ref)
     before = {str(m["remote"]): git(m["remote"], "rev-parse", "main") for m in multi["members"].values()}
-    merged = runner.invoke(app, ["review", "merge", "--no-set"])
+    # a review over several members merges only on a passing set; recorded so the approval chain is what refuses
+    rec = set_check.run_set_check(multi["workspace"], multi["rid"], "set", [sys.executable, "-c", "pass"])
+    assert rec.get("result") == "pass", rec
+    merged = runner.invoke(app, ["review", "merge"])
     assert merged.exit_code == 3, merged.output
     receipt = json.loads(merged.stdout)
     assert all(row["refused"].startswith("approval_chain_divergent") for row in receipt["members"])

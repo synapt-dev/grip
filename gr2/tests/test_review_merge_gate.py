@@ -11,7 +11,7 @@ import sys
 import pytest
 from typer.testing import CliRunner
 
-from gr2.python_cli import check_records, merge_gate
+from gr2.python_cli import check_records, merge_gate, set_check
 from gr2.python_cli.app import app
 from tests.review_ref_helper import REVIEW_REF_PREFIX
 
@@ -169,6 +169,12 @@ def slice2(tmp_path, monkeypatch):
     return out
 
 
+def record_set(s):
+    """A passing `set` record at the pinned heads: what a review over several members merges on."""
+    rec = set_check.run_set_check(s["author"], s["review"], "set", [sys.executable, "-c", "pass"])
+    assert rec.get("result") == "pass", rec
+
+
 def move(m, tmp_path_name="moved.txt"):
     (m["repo"] / tmp_path_name).write_text("after review\n")
     git(m["repo"], "add", tmp_path_name)
@@ -181,7 +187,8 @@ def mains(s):
 
 
 def test_a_two_member_slice_merges_as_a_set(slice2):
-    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
+    record_set(slice2)  # a review over several members merges only on a passing set
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
     assert code == merge_gate.EXIT_MERGED, receipt
     for k, m in slice2["members"].items():
         parents = git(m["remote"], "rev-list", "--parents", "-n", "1", "main").split()[1:]
@@ -189,20 +196,22 @@ def test_a_two_member_slice_merges_as_a_set(slice2):
 
 
 def test_moving_the_last_member_refuses_the_whole_set(slice2):
+    record_set(slice2)  # a review over several members merges only on a passing set
     move(slice2["members"]["beta"])
-    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
     assert code == merge_gate.EXIT_REFUSED, receipt
     assert mains(slice2) == {k: m["base"] for k, m in slice2["members"].items()}, "no member may merge"
 
 
 def test_a_rerun_after_an_earlier_partial_reports_partial_not_refused(slice2):
+    record_set(slice2)  # a review over several members merges only on a passing set
     # alpha merged by an earlier run; then beta moves; the rerun refuses beta but the STATE is partial.
-    code, _ = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
+    code, _ = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
     assert code == merge_gate.EXIT_MERGED
     beta = slice2["members"]["beta"]
     git(beta["remote"], "update-ref", "refs/heads/main", beta["base"])  # undo beta's merge on the remote
     move(beta)
-    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
     assert code == merge_gate.EXIT_PARTIAL, receipt
 
 

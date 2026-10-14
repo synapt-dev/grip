@@ -223,14 +223,34 @@ def _unmeasured(review_id: str, into: str, feature: str, reason: str) -> tuple[i
                           "refused": reason, "members": []}
 
 
+MEMBER_CHECK_NAME = "test"  # the per-member check a review over several members may require beside `set`
+
+
+class RequirementRefused(ValueError):
+    """The merge asked to lower what the review's own bind requires; refused before any remote is read."""
+
+
 def required_check_names(required: Sequence[str] | None, members: int, no_set: bool) -> tuple[str, ...]:
-    """What each member must hold. A review over several members requires `test` (each member's own recorded check)
-    AND `set` (one command over all of them) when nothing is named, so a member whose recorded test is red, or that has
-    no recorded test, is refused; it still requires `set` beside whatever is named unless `no_set` says otherwise. A
-    single-member review requires `test` by default and `set` only when asked. Naming `--check set` alone is the
-    explicit way to merge on the set's record without per-member tests."""
-    names = tuple(required) if required is not None else (("test", "set") if members > 1 and not no_set else ("test",))
-    if members > 1 and not no_set and set_check.SET_CHECK_NAME not in names:
+    """What each member must hold. The requirement comes from the BIND, not from the person merging: a review over
+    several members always requires `set` (one command over all of them, at the pinned heads), and requires `test`
+    (each member's own recorded check) unless only `set` is named. `no_set`, or a check name other than `test` or
+    `set`, is refused there (RequirementRefused), because either would let the merging author choose the gate. A
+    single-member review requires `test` by default and `set` only when asked, and `no_set` changes nothing for it."""
+    if members <= 1:
+        return tuple(required) if required is not None else (MEMBER_CHECK_NAME,)
+    if no_set:
+        raise RequirementRefused(
+            f"set_required: this review pins {members} members, so it merges only on a passing `set` record (every "
+            "member tested together at the pinned heads); --no-set is refused. Record it with "
+            "`gr2 check set <workspace> <review> -- <command>`")
+    names = tuple(required) if required is not None else (MEMBER_CHECK_NAME, set_check.SET_CHECK_NAME)
+    foreign = [n for n in names if n not in (MEMBER_CHECK_NAME, set_check.SET_CHECK_NAME)]
+    if foreign:
+        raise RequirementRefused(
+            f"check_not_configured: {', '.join(foreign)}: a review over {members} members takes only "
+            f"`{MEMBER_CHECK_NAME}` and `{set_check.SET_CHECK_NAME}`, so a check recorded under a new name cannot stand "
+            "in for them (a failed record stays recorded; fix the change and record the configured check again)")
+    if set_check.SET_CHECK_NAME not in names:
         names += (set_check.SET_CHECK_NAME,)
     return names
 
@@ -256,7 +276,11 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         declaration = declared_sets.read(root)  # the committed grip.toml: a set is declared once, for every workspace
     except declared_sets.DeclaredSetError as exc:
         return _unmeasured(review_id, into, feature, f"declared_sets_invalid: {exc}")
-    required_checks = required_check_names(required_checks, len(view["members"]), no_set)
+    try:
+        required_checks = required_check_names(required_checks, len(view["members"]), no_set)
+    except RequirementRefused as exc:  # nothing read from a remote, nothing transferred
+        return EXIT_REFUSED, {"id": f"gr:{review_id}", "into": into, "feature": feature, "exit": EXIT_REFUSED,
+                              "refused": str(exc), "members": []}
     want_set = set_check.SET_CHECK_NAME in required_checks
     plain_checks = tuple(n for n in required_checks if n != set_check.SET_CHECK_NAME)
     expected_set_id = set_check.set_id(view["members"])

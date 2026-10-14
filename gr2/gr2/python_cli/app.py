@@ -5542,7 +5542,7 @@ def check_set(
     workspace_root: Path,
     review_id: str = typer.Argument(..., help="The pinned review, gr:<sha>"),
     command: List[str] = typer.Argument(None, help="The command to run, after --"),
-    name: str = typer.Option(set_check.SET_CHECK_NAME, "--name"),
+    name: str = typer.Option(set_check.SET_CHECK_NAME, "--name", help="Name the set record is stored under"),
     root_commit: Optional[str] = typer.Option(
         None, "--root-commit",
         help="Check a DECLARED set (a [[sets]] table in grip.toml) at this root commit instead of a review"),

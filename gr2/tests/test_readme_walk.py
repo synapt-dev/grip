@@ -19,6 +19,10 @@ from gr2.python_cli.app import app
 README = Path(__file__).resolve().parents[1] / "README.md"
 runner = CliRunner()
 
+# A walk line that refuses today, by a defect the README names under "Not there yet": verb -> the refusal it prints.
+# When the defect is fixed this row goes red, and the README's note and this entry go together.
+KNOWN_REFUSALS = {"lane remove": "lane_has_unlisted_content"}
+
 
 def _section() -> str:
     text = README.read_text(encoding="utf-8")
@@ -54,15 +58,18 @@ def ws(tmp_path: Path, monkeypatch) -> Path:
         _git(clone, "config", "user.name", "You")
         _git(clone, "checkout", "-q", "-B", "main")
         (clone / "README").write_text(f"{name}\n")
-        _git(clone, "add", "README")
+        (clone / "test_ok.py").write_text("def test_ok():\n    pass\n")  # the walk's `exec run -- pytest -q`
+        (clone / ".gitignore").write_text("__pycache__/\n")  # what the README asks of a repo the walk runs pytest in
+        _git(clone, "add", "README", "test_ok.py", ".gitignore")
         _git(clone, "commit", "-qm", "init")
         _git(clone, "push", "-q", "origin", "main")
     return root
 
 
-def _run_block(block: str, root: Path, monkeypatch) -> dict[str, str]:
-    """Each `gr2 ...` line of a README bash block, with ~/ws as the fixture root; returns stdout per verb."""
-    out = {}
+def _run_block(block: str, root: Path, monkeypatch, out: dict[str, str]) -> int:
+    """Each `gr2 ...` line of a README bash block, with ~/ws as the fixture root; stdout per verb goes into ``out``.
+    Returns how many gr2 lines ran."""
+    ran = 0
     for line in block.splitlines():
         line = line.split("  #", 1)[0].strip()
         if not line:
@@ -74,9 +81,17 @@ def _run_block(block: str, root: Path, monkeypatch) -> dict[str, str]:
         argv = shlex.split(line)
         assert argv[0] == "gr2", f"README walk line is not a gr2 command: {line!r}"
         result = runner.invoke(app, argv[1:], catch_exceptions=False)
-        assert result.exit_code == 0, f"README line {line!r} exited {result.exit_code}:\n{result.output}"
+        known = KNOWN_REFUSALS.get(" ".join(argv[1:3]))
+        if known:
+            assert result.exit_code != 0 and known in result.output, (
+                f"README line {line!r} no longer refuses with {known}: drop the README's note and KNOWN_REFUSALS\n"
+                f"{result.output}"
+            )
+        else:
+            assert result.exit_code == 0, f"README line {line!r} exited {result.exit_code}:\n{result.output}"
         out[" ".join(argv[1:3])] = result.stdout
-    return out
+        ran += 1
+    return ran
 
 
 def test_the_readme_walk_runs_in_order_and_prints_what_it_shows(ws: Path, monkeypatch) -> None:
@@ -85,8 +100,19 @@ def test_the_readme_walk_runs_in_order_and_prints_what_it_shows(ws: Path, monkey
     printed = [body for lang, body in blocks if lang == ""]
     assert len(bash) >= 2 and printed, "fixture check: the section's setup, lane and output blocks were found"
 
-    _run_block(bash[0], ws, monkeypatch)
-    lane = _run_block(bash[1], ws, monkeypatch)
+    lane: dict[str, str] = {}
+    ran = 0
+    for index, body in enumerate(bash):
+        if index == 2:
+            # The README's "Edit there" step, between the lane block and the commit block: a commit that commits
+            # nothing anywhere refuses, so the walk needs a change in a lane repo to stage.
+            lane_repo = Path(lane["lane create"].splitlines()[1].split(": ", 1)[1])
+            (lane_repo / "CHANGE").write_text("my change\n")
+        ran += _run_block(body, ws, monkeypatch, lane)
+
+    # Every gr2 line in the section ran, whatever its fence says: a block re-fenced as ```sh would otherwise drop out.
+    gr2_lines = sum(1 for _, body in blocks for line in body.splitlines() if line.strip().startswith("gr2 "))
+    assert ran == gr2_lines, f"ran {ran} of the section's {gr2_lines} gr2 lines"
 
     shown = [line.replace("~/ws", str(ws)) for line in printed[0].strip().splitlines()]
     assert lane["lane create"].strip().splitlines() == shown, (

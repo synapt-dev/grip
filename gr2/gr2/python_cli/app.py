@@ -4387,6 +4387,17 @@ def review_bind(
             except OSError as exc:
                 raise typer.BadParameter(f"--from-range {from_range}: {exc.strerror or exc}")
         rows = [row]
+    if len(rows) > 1:
+        # A review over several members merges only on a `set` record, and `check set` needs every member's objects;
+        # a row with neither a source nor a range would mint an id that can never be set-checked or merged.
+        bare = [str(r.get("key")) for r in rows if not r.get("source") and not r.get("range_patch")]
+        if bare:
+            raise typer.BadParameter(
+                f"cannot pin {len(rows)} members without each one's source: {', '.join(bare)} carries neither a "
+                "\"source\" (the author clone that holds its head) nor a \"range\". `check set` needs every member's "
+                "objects to test them together at the pinned heads, and a review over several members merges only on "
+                "that record. No review id was minted; add the source or range to each row and pin again"
+            )
     bind_root = _resolve_workspace_root(workspace_root)
     commit = _review_call(grip.create_review_bind_commit, bind_root, rows, ratified=ratified)
     emit_after_outcome(
@@ -4971,8 +4982,8 @@ def review_merge(
     review_id: Optional[str] = typer.Argument(None, help="Pinned review id, gr:<sha>; default: the pinned review at the members' current heads"),
     into: Optional[str] = typer.Option(None, "--into", help="Target branch; default: the remote's default branch when it is the one branch at the reviewed base"),
     feature: Optional[str] = typer.Option(None, "--from", help="Feature branch; default: the members' current branch"),
-    check: Optional[List[str]] = typer.Option(None, "--check", help="Required exact-head check name (repeatable); default `test`, and `test` plus `set` for a review over several members"),
-    no_set: bool = typer.Option(False, "--no-set", help="Do not add the `set` requirement to a review over several members"),
+    check: Optional[List[str]] = typer.Option(None, "--check", help="Required exact-head check name (repeatable); default `test`, and `test` plus `set` for a review over several members, where only `test` and `set` are accepted and `set` is always required"),
+    no_set: bool = typer.Option(False, "--no-set", help="Single-member reviews only: a review over several members always requires `set` and refuses this flag"),
     approval_count: Optional[int] = typer.Option(None, "--approvals", help="Required distinct approvers; may raise the workspace approvals.required floor, default 0"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:

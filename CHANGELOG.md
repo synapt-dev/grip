@@ -45,6 +45,12 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Changed
 
+- **`gr2`: a multi-member review merges only on a passing `set` record, and the person merging cannot lower that.**
+  `gr2 review merge` on a review over several members now refuses `--no-set` (`set_required`) and any `--check` name
+  other than `test` and `set` (`check_not_configured`), before anything is read from a remote, so a check recorded
+  under a new name cannot stand in for a red `test` record or a missing `set`. `gr2 review pin` refuses a multi-member
+  review whose rows do not each carry a `source` or a `range`, and mints no id, instead of minting one that `check set`
+  later refuses with `row_carries_no_objects`. A single-member review is unchanged.
 - **With only gr1 installed, `gr` runs gr1.** Outside any workspace with gr2 not installed, the `gr` in the
   gr1 binary runs gr1 and prints one line naming the gr2 install; a gr2 workspace with gr2 missing still
   refuses with exit 69. `gr --which` reports what a plain run would run.

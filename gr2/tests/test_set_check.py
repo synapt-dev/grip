@@ -81,9 +81,13 @@ def test_D6_an_explicit_check_test_still_requires_the_set(slice2):
     assert receipt["members"][0]["refused"].startswith("check_set_absent"), receipt
 
 
-def test_D6_no_set_is_the_stated_way_out(slice2):
+def test_D6_no_set_is_refused_on_a_review_over_several_members(slice2):
+    # It was the stated way out; the requirement now comes from the bind, never from the person merging.
+    before = mains(slice2)
     code, receipt = merge(slice2, required_checks=("test",), no_set=True)
-    assert code == merge_gate.EXIT_MERGED, receipt
+    assert code == merge_gate.EXIT_REFUSED, receipt
+    assert receipt["refused"].startswith("set_required"), receipt
+    assert mains(slice2) == before
 
 
 def test_D6_a_single_member_review_does_not_need_a_set(slice2):
@@ -91,7 +95,11 @@ def test_D6_a_single_member_review_does_not_need_a_set(slice2):
     assert merge_gate.required_check_names(None, 1, False) == ("test",)
     assert merge_gate.required_check_names(None, 2, False) == ("test", "set")
     assert merge_gate.required_check_names(("test",), 2, False) == ("test", "set")
-    assert merge_gate.required_check_names(("test",), 2, True) == ("test",)
+    assert merge_gate.required_check_names(("test",), 1, True) == ("test",)
+    with pytest.raises(merge_gate.RequirementRefused, match="set_required"):
+        merge_gate.required_check_names(("test",), 2, True)
+    with pytest.raises(merge_gate.RequirementRefused, match="check_not_configured"):
+        merge_gate.required_check_names(("unit",), 2, False)
 
 
 @pytest.fixture

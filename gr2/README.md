@@ -276,8 +276,11 @@ reconstructs every member at its pinned head side by side (`GR2_SET_ROOT`, `GR2_
 name them), runs the command once, and publishes one `set` observation per member remote, carrying the review and the
 identity of the set. With no `--check`, `gr2 review merge` on a multi-member review requires that record AND a
 passing `test` record from `gr2 check run` at each member's head, so a member whose recorded test is red, or that has
-none, is refused and nothing lands. `--check set` merges on the set's record alone; `--no-set` drops the set
-requirement. `check show --require set --review <id>` reads a `set` record for another review as stale.
+none, is refused and nothing lands. `--check set` merges on the set's record alone. The requirement comes from the
+review, not from the person merging: on a multi-member review `--no-set` is refused, and so is any `--check` name other
+than `test` and `set`. `review pin` refuses a multi-member review whose rows do not each carry a `source` or a `range`,
+because `check set` could never run on it. `check show --require set --review <id>` reads a `set` record for another
+review as stale.
 
 A failed command is recorded and `check run` exits 1. Publication or execution
 refusals exit 2. `check show` returns `pass`, `fail` or `absent` in its JSON;

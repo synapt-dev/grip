@@ -36,6 +36,7 @@ from .spec_apply import (
     _run_materialize_hooks,
     _find_repo,
     _record_apply_state,
+    derived_spec_doc,
     load_workspace_spec_doc,
     repo_cache_path,
     validate_spec,
@@ -257,7 +258,8 @@ def build_sync_plan(
     workspace_root = workspace_root.resolve()
     dirty_mode = _normalize_dirty_mode(dirty_mode)
     spec_path = workspace_spec_path(workspace_root)
-    if not spec_path.exists():
+    # A native root with no spec file is answered by the spec derived from grip.toml (spec_apply.derived_spec_doc).
+    if not spec_path.exists() and derived_spec_doc(workspace_root) is None:
         next_step = missing_gr2_workspace_guidance(
             workspace_root,
             "run `gr2 workspace init <path>` first or create .grip/workspace_spec.toml explicitly",

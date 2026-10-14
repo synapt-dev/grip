@@ -315,15 +315,16 @@ def _store_init_only_root(two_member_ws: Path, *, commit: bool = True) -> Path:
 
 def test_bare_lane_create_on_a_store_init_root_builds_the_lane_from_the_grip_toml_members(two_member_ws: Path) -> None:
     """The smallest working proof of the first-release must: a root made by `store init` holds grip.toml and no
-    workspace spec, and a bare `lane create` makes the lane over its members, says it wrote the spec, and the lane
-    holds one clone per member on the lane's branch. Goes red if the spec is not written from the members."""
+    workspace spec, and a bare `lane create` makes the lane over its members from the spec derived from grip.toml,
+    writes no spec file (grip.toml stays the one record), and the lane holds one clone per member on the lane's
+    branch. Goes red if the lane is not built over the members, or if a spec file is written."""
     root = _store_init_only_root(two_member_ws)
     res = runner.invoke(gr2_app.app, ["lane", "create", str(root), "default", "demo"])
     assert res.exit_code == 0, res.output
     text = _flat(res)
-    assert "workspace spec written from the grip.toml members: alpha, beta" in text
+    assert "workspace spec written" not in text
     assert "gr2: repos=alpha,beta" in text and "gr2: branch=demo" in text
-    assert (root / ".grip" / "workspace_spec.toml").is_file()
+    assert not (root / ".grip" / "workspace_spec.toml").exists()
     for repo in ("alpha", "beta"):
         clone = root / "agents" / "default" / "lanes" / "demo" / repo
         assert clone.is_dir(), sorted(str(p.relative_to(root)) for p in root.rglob("repos/*"))

@@ -555,14 +555,12 @@ class WorkspaceSpecMissing(SystemExit):
 
 
 def load_workspace_spec(workspace_root: Path) -> dict:
-    try:
-        fh = (workspace_root / ".grip" / "workspace_spec.toml").open("rb")
-    except FileNotFoundError:
-        from gr2.python_cli.workspace_guidance import missing_workspace_spec_message
+    """The one spec loader (`spec_apply.load_workspace_spec_doc`): a spec file when the root has one, else the spec
+    derived from a native root's grip.toml, else the named WorkspaceSpecMissing refusal. Delegated, not copied, so the
+    two seams cannot disagree about a root."""
+    from gr2.python_cli.spec_apply import load_workspace_spec_doc
 
-        raise WorkspaceSpecMissing(missing_workspace_spec_message(workspace_root)) from None
-    with fh:
-        return tomllib.load(fh)
+    return load_workspace_spec_doc(workspace_root)
 
 
 def find_unit_spec(workspace_root: Path, owner_unit: str) -> dict:
@@ -570,6 +568,12 @@ def find_unit_spec(workspace_root: Path, owner_unit: str) -> dict:
     for unit in spec.get("units", []):
         if unit.get("name") == owner_unit:
             return unit
+    from gr2.python_cli.spec_apply import workspace_spec_path
+
+    if not workspace_spec_path(workspace_root).exists():
+        # A derived spec (no spec FILE: grip.toml is the record) declares no units, so every unit works over every
+        # member, as the unit a spec file was once written for would have.
+        return {"name": owner_unit, "path": f"agents/{owner_unit}/home", "repos": [r["name"] for r in spec.get("repos", [])]}
     raise SystemExit(f"unit not found in workspace spec: {owner_unit}")
 
 

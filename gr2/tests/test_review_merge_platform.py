@@ -22,13 +22,16 @@ class FakePlatform:
         self.remotes = {str(m["remote"]): m for m in members.values()}
         self.merges: list[str] = []
         self.after_merge = None  # test hook: what happens on the platform right after a merge
+        self.also_at_head: dict[str, list[dict]] = {}  # test hook: more open PRs whose head is the same commit
+        self.below: dict[tuple[str, str], list[dict]] = {}  # test hook: (repo, branch) -> open PRs with that head branch
 
     def pr_for_head(self, repo, sha):
         pr = self.prs[repo]
-        return [dict(pr)] if pr["head"] == sha and pr["state"] == "open" else []
+        mine = [dict(pr)] if pr["head"] == sha and pr["state"] == "open" else []
+        return mine + [dict(p) for p in self.also_at_head.get(repo, [])]
 
     def pr_for_branch(self, repo, branch):
-        return []  # one-PR stacks: the top PR's base is the target
+        return [dict(p) for p in self.below.get((repo, branch), [])]  # default: one-PR stacks
 
     def pr_head(self, repo, number):
         return dict(self.prs[repo])
@@ -131,3 +134,58 @@ def test_a_refused_platform_merge_with_a_moved_head_is_not_called_stranded(slice
     assert not row.get("stranded") and "holds the pinned head" not in row["refused"], row
     assert "f" * 40 in row["refused"], "the moved head is still named"
     assert code == merge_gate.EXIT_REFUSED, receipt
+
+
+def test_two_open_prs_at_the_pinned_head_refuse_as_ambiguous_before_any_merge(slice2, platform):  # noqa: F811
+    beta = str(slice2["members"]["beta"]["remote"])
+    platform.also_at_head[beta] = [{"number": 7, "state": "open", "draft": False, "head": platform.prs[beta]["head"],
+                                    "base": "main"}]
+    before = mains(slice2)
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
+    assert code == merge_gate.EXIT_REFUSED, receipt
+    assert platform.merges == [] and mains(slice2) == before
+    row = next(r for r in receipt["members"] if r["key"] == "beta")
+    assert row["refusal"]["code"] == "platform_pr_ambiguous", row
+    assert "#2" in row["refused"] and "#7" in row["refused"], row
+
+
+def test_a_draft_lower_in_the_stack_refuses_before_any_merge(slice2, platform):  # noqa: F811
+    # beta's PR #2 targets feat-base, whose own PR #3 targets main and is a draft: the stack is followed down to main.
+    beta = str(slice2["members"]["beta"]["remote"])
+    platform.prs[beta]["base"] = "feat-base"
+    platform.below[(beta, "feat-base")] = [{"number": 3, "state": "open", "draft": True, "head": "e" * 40, "base": "main"}]
+    before = mains(slice2)
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
+    assert code == merge_gate.EXIT_REFUSED, receipt
+    assert platform.merges == [] and mains(slice2) == before
+    row = next(r for r in receipt["members"] if r["key"] == "beta")
+    assert row["refusal"]["code"] == "platform_pr_not_ready" and "#3" in row["refused"], row
+
+
+def test_a_stack_that_does_not_reach_the_target_refuses_before_any_merge(slice2, platform):  # noqa: F811
+    beta = str(slice2["members"]["beta"]["remote"])
+    platform.prs[beta]["base"] = "feat-base"  # and no open PR has feat-base as its head
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
+    assert code == merge_gate.EXIT_REFUSED, receipt
+    assert platform.merges == []
+    row = next(r for r in receipt["members"] if r["key"] == "beta")
+    assert row["refusal"]["code"] == "platform_stack_unresolved" and "feat-base" in row["refused"], row
+
+
+def test_a_stranded_commit_on_the_last_member_is_partial_although_every_member_reads_merged(slice2, platform):  # noqa: F811
+    beta = slice2["members"]["beta"]
+
+    def push_late(repo):
+        if repo == str(beta["remote"]):
+            (beta["repo"] / "late.txt").write_text("pushed during the land\n")
+            git(beta["repo"], "add", "late.txt")
+            git(beta["repo"], "commit", "-m", "late")
+            git(beta["repo"], "push", beta["remote"], "feat")
+            platform.prs[repo]["head"] = git(beta["repo"], "rev-parse", "HEAD")
+
+    platform.after_merge = push_late
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
+    assert len(platform.merges) == 2, "both members landed; the late commit came after beta's merge"
+    row = next(r for r in receipt["members"] if r["key"] == "beta")
+    assert row["refusal"]["code"] == "platform_head_moved_after_merge", row
+    assert code == merge_gate.EXIT_PARTIAL, receipt

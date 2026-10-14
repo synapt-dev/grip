@@ -267,7 +267,7 @@ Read fresh remote observations for this exact commit.
 
 ### gr2 review merge
 
-Merge a pinned review into plain Git remotes: preflight every member, push nothing if any member fails it.
+Merge a pinned review into its members' remotes: preflight every member, merge nothing if any member fails it.
 
 - `<workspace_root>` (optional)
 - `<review_id>` (optional)
@@ -321,6 +321,18 @@ next: the member remote '<remote>' does not serve the reviewed head '<head>'; on
 ### not_received
 
 next: receive the published review into this workspace, then stamp it: gr2 review receive '<workspace>' '<review>' --remote <member-remote>, then gr2 review stamp '<workspace>' '<review>'
+
+### platform_head_moved_after_merge
+
+next: this member landed at the pinned head, and the later commit <sha> is on the PR's branch only: review it as a new change (pin it on top of the merged target), or remove it from the branch; members after this one were not landed, so run gr2 review merge '<workspace>' '<review>' again once it is resolved
+
+### platform_pr_ambiguous
+
+next: close the extra PRs so one open PR has this head, then run the merge again; nothing was merged
+
+### platform_pr_not_ready
+
+next: mark the PR ready (or reopen it) on the platform, then run the merge again; nothing was merged
 
 ### review_not_on_member_remote
 

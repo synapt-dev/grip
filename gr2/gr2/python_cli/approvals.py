@@ -355,7 +355,8 @@ def pr_lane_store(lane: Path) -> Path:
     the lane's repo directory. Refused, naming the lane, when there is none."""
     from ..prototypes import lane_workspace_prototype as lane_proto
     lane = Path(lane).resolve()
-    ws = next((p for p in lane.parents if (p / ".grip" / "workspace_spec.toml").is_file()), None)
+    from .layout import grip_dir
+    ws = next((p for p in lane.parents if (grip_dir(p) / "workspace_spec.toml").is_file()), None)
     if ws is None:
         raise ApprovalRefused(f"approval_no_workspace: no .grip/workspace_spec.toml encloses {lane}")
     for repo in lane_proto.load_workspace_spec(ws).get("repos", []):

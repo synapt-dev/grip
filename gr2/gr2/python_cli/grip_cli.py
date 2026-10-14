@@ -2605,9 +2605,8 @@ def _native_store_push(root: Path, to: str | None = None, atomic: bool = False, 
     recursed: list[dict[str, str]] = []
     if recurse == "on-demand":
         _require_root_commit(root)
-        origin = _store_git(root, "remote", "get-url", "origin", check=False).stdout.strip()
-        recursed = _push_uncovered_members(root, origin or to or "")
-    members = _native_store_check(root, coverage=recurse != "none")
+    else:
+        members = _native_store_check(root, coverage=recurse != "none")
     branch = _store_git(root, "symbolic-ref", "--short", "HEAD").stdout.strip()
     recorded = _root_origin_for_push(root, to)
     tip = _store_git(root, "rev-parse", "HEAD").stdout.strip()
@@ -2615,9 +2614,16 @@ def _native_store_push(root: Path, to: str | None = None, atomic: bool = False, 
         # A same-repo member under on-demand rides the root's ONE atomic push, as --atomic's members do.
         same_repo = _same_repo_member_refs(root, branch) if atomic or recurse == "on-demand" else []
         _ensure_shadow_fetch_line(root)
+        # Leases 3, 1 and 2 run BEFORE on-demand publishes any member: a lease refusal says nothing was pushed, so
+        # nothing may have been (a member's remote moved, then lease 2 refused the root). The walk reads only the
+        # member clones, which hold both pins.
         leases = _leases(root, tip, [f"refs/heads/{branch}", _shadow_ref(root)])
         rewound = _member_rewinds(root, tip, leases[_shadow_ref(root)], list(allow_rewind or []))
         rewound_ref = _rewound_record(root, tip, rewound)
+        if recurse == "on-demand":
+            origin = _store_git(root, "remote", "get-url", "origin", check=False).stdout.strip()
+            recursed = _push_uncovered_members(root, origin or to or "")
+            members = _native_store_check(root, coverage=True)
         landed_by_another = _atomic_push(root, [(tip, f"refs/heads/{branch}"), (tip, _shadow_ref(root)),
                                                 *[(pin, ref) for _, pin, ref in same_repo],
                                                 *([rewound_ref] if rewound_ref else [])],

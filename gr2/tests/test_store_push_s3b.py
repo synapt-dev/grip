@@ -177,3 +177,39 @@ def test_b8_the_record_rides_the_one_atomic_push(tmp_path, mode):
     result = gr2(root, "push", "--allow-rewind", "alpha", check=False)
     assert result.returncode != 0
     assert _refs(origin) == before
+
+
+def _remote_main(member: Path) -> str:
+    url = git(member, "remote", "get-url", "origin").stdout.strip()
+    return git(member, "ls-remote", url, "refs/heads/main").stdout.split()[0]
+
+
+def _beta_ahead_alpha_back(tmp_path: Path) -> tuple[Path, Path, str]:
+    # Full mode only: compat's store commit refuses a pin its upstream does not cover, so the state is unreachable.
+    root, origin, p0, _ = _two_pushes(tmp_path, "full")
+    beta = root / "beta"
+    before = _remote_main(beta)
+    (beta / "local.txt").write_text("not on beta's remote yet\n")
+    git(beta, "add", "local.txt")
+    git(beta, "commit", "-q", "-m", "beta local")
+    git(root / "alpha", "reset", "-q", "--hard", p0)
+    gr2(root, "commit", "-m", "alpha back, beta ahead")
+    return root, origin, before
+
+
+def test_b9_on_demand_publishes_no_member_when_lease_2_refuses(tmp_path):
+    # Regression: on-demand pushed beta, THEN lease 2 refused alpha saying nothing was pushed.
+    root, origin, beta_before = _beta_ahead_alpha_back(tmp_path)
+    refs_before = _refs(origin)
+    result = gr2(root, "push", "--recurse=on-demand", check=False)
+    assert result.returncode == 3, (result.returncode, result.stdout, result.stderr)
+    assert "alpha" in result.stderr and "nothing was pushed" in result.stderr
+    assert _refs(origin) == refs_before
+    assert _remote_main(root / "beta") == beta_before, "beta's remote moved before lease 2 refused alpha"
+
+
+def test_b9_control_on_demand_still_publishes_once_the_walk_passes(tmp_path):
+    root, origin, beta_before = _beta_ahead_alpha_back(tmp_path)
+    result = gr2(root, "push", "--recurse=on-demand", "--allow-rewind", "alpha", check=False)
+    assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+    assert _remote_main(root / "beta") == _head(root / "beta") != beta_before

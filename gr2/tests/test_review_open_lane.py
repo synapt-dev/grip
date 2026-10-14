@@ -1029,4 +1029,22 @@ def test_stamp_on_a_checkout_pr_lane_whose_head_moved_refuses(review_world, monk
     stamped = CliRunner().invoke(app_mod.app, ["review", "stamp", str(lane)])
     assert stamped.exit_code == 2, (stamped.output, stamped.exception)
     assert "approval_head_moved" in stamped.output and world["head_sha"] in stamped.output, stamped.output
-    assert not approvals._pr_lane_approvals_path(lane).exists()
+    assert approvals.pr_head_approvals(world["source"], "any", world["head_sha"])["tip"] is None
+
+
+def test_a_pr_lane_approval_outlives_review_close_and_reads_back_by_repo_and_head(review_world, monkeypatch):
+    """The approval lives in the workspace's clone of the repo, not the lane, so closing the lane keeps it."""
+    from typer.testing import CliRunner
+    from gr2.python_cli import approvals
+
+    world = review_world
+    ws, app_mod, lane = _checked_out_lane(world, monkeypatch)
+    repo = approvals.pr_lane_record(lane)["repo"]
+    stamped = CliRunner().invoke(app_mod.app, ["review", "stamp", str(lane)])
+    assert stamped.exit_code == 0, (stamped.output, stamped.exception)
+    closed = CliRunner().invoke(app_mod.app, ["review", "close", str(ws), "atlas", "grip", "7"])
+    assert closed.exit_code == 0, (closed.output, closed.exception)
+    assert not lane.exists()
+    back = approvals.pr_head_approvals(world["source"], repo, world["head_sha"])
+    assert back["count"] == 1 and [link["approver"]["name"] for link in back["links"]] == ["Reviewer"], back
+    assert approvals.pr_head_approvals(world["source"], repo, world["base_sha"])["count"] == 0

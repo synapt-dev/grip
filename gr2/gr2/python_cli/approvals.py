@@ -320,8 +320,14 @@ def approve(workspace: Path, review_id: str | None = None) -> dict:
 
 
 # ---- a PR-head review: the lane `review checkout-pr` (or `review open`) made, stamped by its (repo, head) record
+#
+# The approval is a commit chain under PREFIX + "pr/<head>" in the WORKSPACE'S OWN CLONE of the reviewed repo (the
+# member checkout the PR was fetched into): local, never pushed, and it outlives the lane, which `review close`
+# drops. A workspace a checkout-pr lane lives in need not have a root store, so the member clone is the store.
+# As for bind approvals, the approver is the self-declared Git user.name; who wrote the PR is not checked here.
 
 PR_LANE_SCHEMA = "gr2.pr-lane-approval.v1"
+PR_PREFIX = PREFIX + "pr/"
 
 
 def pr_lane_record(lane: Path) -> dict | None:
@@ -344,25 +350,49 @@ def pr_lane_record(lane: Path) -> dict | None:
     return record
 
 
-def _pr_lane_approvals_path(lane: Path) -> Path:
-    from .review_records import worktree_git_path
-    return worktree_git_path(lane, "grip-approvals.json")
+def pr_lane_store(lane: Path) -> Path:
+    """The workspace member clone a review lane was made from: the nearest enclosing workspace's repo named as
+    the lane's repo directory. Refused, naming the lane, when there is none."""
+    from ..prototypes import lane_workspace_prototype as lane_proto
+    lane = Path(lane).resolve()
+    ws = next((p for p in lane.parents if (p / ".grip" / "workspace_spec.toml").is_file()), None)
+    if ws is None:
+        raise ApprovalRefused(f"approval_no_workspace: no .grip/workspace_spec.toml encloses {lane}")
+    for repo in lane_proto.load_workspace_spec(ws).get("repos", []):
+        if repo.get("name") == lane.name:
+            source = Path(str(repo.get("path", "")))
+            source = (source if source.is_absolute() else ws / source).resolve()
+            if source == lane or not (source / ".git").exists():
+                break
+            return source
+    raise ApprovalRefused(f"approval_no_member_clone: the workspace {ws} has no clone of repo {lane.name!r} to hold the approval")
+
+
+def pr_head_approvals(store: Path, repo: str, head: str) -> dict:
+    """The approvals of (repo, head) held in `store`, the workspace member clone. Readable after the lane is gone."""
+    ref = PR_PREFIX + head
+    tip = gitops.git(Path(store), "rev-parse", "--verify", "-q", ref + "^{commit}").stdout.strip()
+    links = []
+    if tip:
+        for commit in _git(store, "rev-list", tip).splitlines():
+            try:
+                link = json.loads(_git(store, "show", f"{commit}:approval.json"))
+            except ValueError as exc:
+                raise ApprovalRefused(f"approval_record_unreadable: {ref} at {commit}") from exc
+            if link.get("repo") == repo and link.get("head") == head:
+                links.append(link)
+    links.reverse()
+    return {"repo": repo, "head": head, "tip": tip or None,
+            "count": len({link["approver"]["name"] for link in links}), "links": links, "signed": False}
 
 
 def pr_lane_approvals(lane: Path) -> dict:
-    """The approvals bound to the lane's review record (repo, head); an approval of any other head is not counted."""
+    """The approvals bound to the lane's review record (repo, head)."""
     lane = Path(lane).resolve()
     record = pr_lane_record(lane)
     if record is None:
         raise ApprovalRefused(f"approval_not_a_review_lane: {lane} holds no review record")
-    path = _pr_lane_approvals_path(lane)
-    try:
-        stored = json.loads(path.read_text()) if path.is_file() else []
-    except (OSError, ValueError) as exc:
-        raise ApprovalRefused(f"approval_record_unreadable: {path}") from exc
-    links = [a for a in stored if a.get("repo") == record["repo"] and a.get("head") == record["head"]]
-    return {"repo": record["repo"], "base": record["base"], "head": record["head"],
-            "count": len({a["approver"]["name"] for a in links}), "links": links, "signed": False}
+    return {**pr_head_approvals(pr_lane_store(lane), record["repo"], record["head"]), "base": record["base"]}
 
 
 def approve_pr_lane(lane: Path) -> dict:
@@ -382,17 +412,17 @@ def approve_pr_lane(lane: Path) -> dict:
     name = gitops.git(lane, "config", "user.name").stdout.strip()
     if not name:
         raise ApprovalRefused("approval_identity_missing")
-    path = _pr_lane_approvals_path(lane)
-    try:
-        stored = json.loads(path.read_text()) if path.is_file() else []
-    except (OSError, ValueError) as exc:
-        raise ApprovalRefused(f"approval_record_unreadable: {path}") from exc
-    if not any(a.get("repo") == record["repo"] and a.get("head") == record["head"]
-               and a.get("approver", {}).get("name") == name for a in stored):
-        stored.append({"schema": PR_LANE_SCHEMA, "repo": record["repo"], "base": record["base"],
-                       "head": record["head"], "approver": {"name": name, "key_id": ""}, "verdict": "approve",
-                       "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")})
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(stored, indent=2, sort_keys=True) + "\n")
-        tmp.replace(path)
+    store = pr_lane_store(lane)
+    current = pr_head_approvals(store, record["repo"], record["head"])
+    if name not in {link["approver"]["name"] for link in current["links"]}:
+        link = {"schema": PR_LANE_SCHEMA, "repo": record["repo"], "base": record["base"], "head": record["head"],
+                "approver": {"name": name, "key_id": ""}, "verdict": "approve",
+                "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
+        blob = _git(store, "hash-object", "-w", "--stdin", data=canonical(link))
+        tree = _git(store, "mktree", data=f"100644 blob {blob}\tapproval.json\n")
+        parent = ["-p", current["tip"]] if current["tip"] else []
+        commit = _git(store, "-c", f"user.name={name}", "-c", "user.email=gr2@localhost",
+                      "commit-tree", tree, *parent, "-m", f"Approve {record['repo']} {record['head']}")
+        # compare-and-swap on the tip read above, so two stamps at once cannot drop one
+        _git(store, "update-ref", PR_PREFIX + record["head"], commit, current["tip"] or "0" * 40)
     return pr_lane_approvals(lane)

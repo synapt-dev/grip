@@ -2523,6 +2523,40 @@ def _leases(root: Path, tip: str, refs: list[str]) -> dict[str, str]:
     return leases
 
 
+def _member_rewinds(root: Path, tip: str, recorded: str, allow_rewind: list[str]) -> list[dict[str, str]]:
+    """Lease 2 (plan section 5): each member's pin at `tip` must fast-forward from the pin
+    origin's shadow `recorded` records. The walk is LOCAL, in the member's own clone, by the org cut's walker
+    (shadow._walk): a commit not held is fetched from the member's remote once, and still missing is refused as
+    unverifiable (exit 5), offline included. A rewind or a rewrite is refused by member and both shas (exit 3) unless
+    `allow_rewind` names the member; each one taken is returned. A member new since `recorded`, or unchanged, is
+    never walked. No `recorded` (origin holds no shadow yet) walks nothing."""
+    if not recorded:
+        return []
+    from . import shadow as shadow_mod
+    was = _native_members_at(root, recorded)
+    members = {member["name"]: member for member in _native_members(root, tip)}
+    claimed: set[Path] = set()
+    taken: list[dict[str, str]] = []
+    for name, pin in _native_members_at(root, tip).items():
+        old = was.get(name)
+        if not old or old == pin:
+            continue
+        member = members[name]
+        path = _native_member_working_root(root, member, claimed)
+        remote = member.get("upstream", "origin/main").partition("/")[0] or "origin"
+        try:
+            kind = shadow_mod._walk(path, name, old, pin, remote)
+        except shadow_mod.CannotVerify as exc:
+            raise NativeStoreRefusal(f"{exc}; nothing was pushed", 5) from exc
+        if kind in ("rewind", "rewrite"):
+            if name not in allow_rewind:
+                raise NativeStoreRefusal(
+                    f"{name}: {kind}: its pin {pin} does not descend from the pin origin's shadow records, {old}; "
+                    f"nothing was pushed (--allow-rewind {name} takes it)", 3)
+            taken.append({"name": name, "kind": kind, "old": old, "new": pin})
+    return taken
+
+
 def _native_store_push(root: Path, to: str | None = None, atomic: bool = False, recurse: str = "check",
                        snapshot: bool = False, allow_rewind: list[str] | None = None) -> dict[str, object]:
     """Push only the checked root record. Member publication is a prior verb, or `recurse="on-demand"`.
@@ -2530,7 +2564,8 @@ def _native_store_push(root: Path, to: str | None = None, atomic: bool = False, 
     `recurse` names what the push does with a member pin its upstream does not cover: `check` refuses (exit 3),
     `none` skips coverage (the fence and the gitlink comparison still run) and names each member `unchecked`,
     `on-demand` pushes each such member from its clone first. `snapshot` makes the store commit first.
-    `allow_rewind` names members whose pin may move backwards; each must be a member, and nothing else reads it yet.
+    `allow_rewind` names members whose pin may move backwards against origin's recorded pin (lease 2); each must be
+    a member, and each one taken is named in the result's `rewound`.
 
     The branch and its shadow ref (section 9, S1) go in ONE `git push --atomic`, always, both naming the branch tip,
     so origin never holds a branch the shadow does not name. `atomic` adds the same-repo members' refs (members whose
@@ -2566,6 +2601,7 @@ def _native_store_push(root: Path, to: str | None = None, atomic: bool = False, 
         same_repo = _same_repo_member_refs(root, branch) if atomic or recurse == "on-demand" else []
         _ensure_shadow_fetch_line(root)
         leases = _leases(root, tip, [f"refs/heads/{branch}", _shadow_ref(root)])
+        rewound = _member_rewinds(root, tip, leases[_shadow_ref(root)], list(allow_rewind or []))
         landed_by_another = _atomic_push(root, [(tip, f"refs/heads/{branch}"), (tip, _shadow_ref(root)),
                                                 *[(pin, ref) for _, pin, ref in same_repo]],
                                          verify=recurse != "none", leases=leases)
@@ -2598,6 +2634,7 @@ def _native_store_push(root: Path, to: str | None = None, atomic: bool = False, 
         "unchecked": [member["name"] for member in members if member["state"] == "unchecked"],
         "snapshot": tip if made else None,
         "allow_rewind": list(allow_rewind or []),
+        "rewound": rewound,
     }
 
 

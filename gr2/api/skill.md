@@ -126,7 +126,7 @@ Merge a pinned review into plain Git remotes: preflight every member, push nothi
 - `<review_id>` (optional)
 - `--into`: Target branch; default: the remote's default branch when it is the one branch at the reviewed base
 - `--from`: Feature branch; default: the members' current branch
-- `--check`: Required exact-head check name (repeatable); default `test`, or `set` for a review over several members
+- `--check`: Required exact-head check name (repeatable); default `test`, and `test` plus `set` for a review over several members
 - `--no-set`: Do not add the `set` requirement to a review over several members
 - `--approvals`: Required distinct approvers; may raise the workspace approvals.required floor, default 0
 - `--root/-C`: The workspace root. Same as the leading WORKSPACE_ROOT argument; give one or the other.

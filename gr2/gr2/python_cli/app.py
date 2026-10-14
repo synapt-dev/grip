@@ -4968,7 +4968,7 @@ def review_merge(
     review_id: Optional[str] = typer.Argument(None, help="Pinned review id, gr:<sha>; default: the pinned review at the members' current heads"),
     into: Optional[str] = typer.Option(None, "--into", help="Target branch; default: the remote's default branch when it is the one branch at the reviewed base"),
     feature: Optional[str] = typer.Option(None, "--from", help="Feature branch; default: the members' current branch"),
-    check: Optional[List[str]] = typer.Option(None, "--check", help="Required exact-head check name (repeatable); default `test`, or `set` for a review over several members"),
+    check: Optional[List[str]] = typer.Option(None, "--check", help="Required exact-head check name (repeatable); default `test`, and `test` plus `set` for a review over several members"),
     no_set: bool = typer.Option(False, "--no-set", help="Do not add the `set` requirement to a review over several members"),
     approval_count: Optional[int] = typer.Option(None, "--approvals", help="Required distinct approvers; may raise the workspace approvals.required floor, default 0"),
     root: Optional[Path] = ROOT_OPTION,

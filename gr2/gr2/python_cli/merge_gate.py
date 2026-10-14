@@ -224,10 +224,12 @@ def _unmeasured(review_id: str, into: str, feature: str, reason: str) -> tuple[i
 
 
 def required_check_names(required: Sequence[str] | None, members: int, no_set: bool) -> tuple[str, ...]:
-    """What each member must hold. A review over several members requires `set` (one command over all of them)
-    instead of `test` (one command per member) when nothing is named, and still requires `set` beside whatever is named
-    unless `no_set` says otherwise; a single-member review requires `test` by default and `set` only when asked."""
-    names = tuple(required) if required is not None else (("set",) if members > 1 and not no_set else ("test",))
+    """What each member must hold. A review over several members requires `test` (each member's own recorded check)
+    AND `set` (one command over all of them) when nothing is named, so a member whose recorded test is red, or that has
+    no recorded test, is refused; it still requires `set` beside whatever is named unless `no_set` says otherwise. A
+    single-member review requires `test` by default and `set` only when asked. Naming `--check set` alone is the
+    explicit way to merge on the set's record without per-member tests."""
+    names = tuple(required) if required is not None else (("test", "set") if members > 1 and not no_set else ("test",))
     if members > 1 and not no_set and set_check.SET_CHECK_NAME not in names:
         names += (set_check.SET_CHECK_NAME,)
     return names

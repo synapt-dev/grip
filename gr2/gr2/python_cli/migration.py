@@ -1337,7 +1337,9 @@ def workspace_status(workspace_root: Path) -> dict[str, object]:
         # declared state only.
         # One line per DECLARED repo: derive_targets also lists each unit's clone
         # of the repo after it, so a materialized workspace printed every repo
-        # once per clone. The shared clone comes first and answers for the repo.
+        # once per clone. The shared clone comes first and answers for the repo, so a
+        # unit clone that has moved off the pin is not reported here: this is the
+        # declaration's report, and `repo status` reads every clone.
         declared = []
         reported: set[str] = set()
         for target in targets:

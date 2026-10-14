@@ -109,3 +109,26 @@ def test_workspace_status_names_each_declared_repo_once_after_materialize(ws: Pa
     assert status.exit_code == 0, status.output
     declared = [line for line in status.stdout.splitlines() if line.startswith("declared = ")]
     assert [line.split()[2] for line in declared] == ["repo-a", "repo-b"], declared
+
+
+def test_the_readme_review_install_block_parses_to_an_install_that_brings_pytest(tmp_path: Path) -> None:
+    """The ".review-install" block in "Run a review's tests", read by the real hint parser and filled in by the real
+    placeholder substitution, installs the lane AND pytest with the lane venv's Python. Without pytest the run
+    refuses pytest_not_installed, which is what a stranger met following the one-line block."""
+    from gr2.python_cli import review_run as rr
+
+    text = README.read_text(encoding="utf-8")
+    start = text.index("## Run a review's tests")
+    section = text[start:text.index("\n## ", start + 1)]
+    hint_blocks = [body for lang, body in _blocks(section) if lang == "" and ".review-install" in body]
+    assert len(hint_blocks) == 1, "fixture check: exactly one .review-install block in the section"
+    lane = tmp_path / "lane with space"
+    lane.mkdir()
+    (lane / ".review-install").write_text(hint_blocks[0])
+
+    hint = rr.read_install_hint(lane)
+
+    assert hint is not None and hint.get("package"), hint
+    venv_python = tmp_path / "venv" / "bin" / "python"
+    tokens = rr._apply_install_placeholders(shlex.split(hint["install"]), venv_python, lane)
+    assert tokens == [str(venv_python), "-m", "pip", "install", "-e", str(lane), "pytest"], tokens

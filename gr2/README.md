@@ -168,14 +168,15 @@ remain readable without an author field, and reading them does not invent one.
 
 ## Run a review's tests
 
-`gr2 review run` runs the reviewed tree's tests inside the review's lane, and only after it proves the lane equals the pinned tree. What to install and what to test comes from the reviewed repo itself: a tracked `.review-install` file at the repo root, read whenever the flags are left out. For a Python repo it needs one line, the package the run must import from inside the lane:
+`gr2 review run` runs the reviewed tree's tests inside the review's lane, and only after it proves the lane equals the pinned tree. What to install and what to test comes from the reviewed repo itself: a tracked `.review-install` file at the repo root, read whenever the flags are left out. For a Python repo tested with pytest it needs two lines: the package the run must import from inside the lane, and an install that brings pytest:
 
 ```
 # .review-install
 package = mypkg
+install = {venv} -m pip install -e {lane} pytest
 ```
 
-The default install is `<lane venv python> -m pip install -e <lane>`, so the repo must be pip-installable (a `pyproject.toml` or `setup.py` declaring that package). Override it with `install = …`, where `{venv}` and `{lane}` are filled in per token. For another language, declare the runner and its command instead, for example `runner = cargo` and `test = cargo test`. The recognised keys are `install`, `package`, `runner`, `test` and `reports`; any other key is refused (`bad_hint`). A repo with no `.review-install` must pass `--package` and/or `--install`, and with neither the run refuses (`no_package`). `gr2 review run --help` has the full list.
+`{venv}` is the lane venv's Python executable, not its directory, and `{lane}` is the lane's checkout of the repo; both are filled in per token. Without an `install` line the run uses `<lane venv python> -m pip install -e <lane>`, which installs your package and no test runner, so a pytest repo without the line refuses (`pytest_not_installed`). Either way the repo must be pip-installable (a `pyproject.toml` or `setup.py` declaring that package). For another language, declare the runner and its command instead, for example `runner = cargo` and `test = cargo test`. The recognised keys are `install`, `package`, `runner`, `test` and `reports`; any other key is refused (`bad_hint`). A repo with no `.review-install` must pass `--package` and/or `--install`, and with neither the run refuses (`no_package`). `gr2 review run --help` has the full list.
 
 
 ## Transfer a native review

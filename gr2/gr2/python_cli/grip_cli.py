@@ -2474,15 +2474,16 @@ def _tracking_ref(ref: str) -> str:
     return f"refs/remotes/origin/{ref[len('refs/'):]}"
 
 
-def _ensure_shadow_fetch_line(root: Path) -> None:
+def _ensure_shadow_fetch_line(root: Path) -> str | None:
     """Add the fetch line that tracks origin's shadows, once: only when origin carries no exact copy of it, and never
-    rewriting an existing refspec. The line added is said on stderr."""
+    rewriting an existing refspec. Returns the line added, or None; the caller says it (stderr in text mode, the
+    payload's `notes` under --json, so a JSON reader of stdout and stderr together still reads one document)."""
     line = _shadow_fetch_line()
     have = _store_git(root, "config", "--get-all", "remote.origin.fetch", check=False).stdout.splitlines()
     if line in have:
-        return
+        return None
     _store_git(root, "config", "--add", "remote.origin.fetch", line)
-    typer.echo(f"gr2: added to remote.origin.fetch: {line}", err=True)
+    return line
 
 
 def _leases(root: Path, tip: str, refs: list[str]) -> dict[str, str]:
@@ -2573,18 +2574,21 @@ def _rewound_record(root: Path, tip: str, rewound: list[dict[str, str]]) -> tupl
 
 
 def _native_store_push(root: Path, to: str | None = None, atomic: bool = False, recurse: str = "check",
-                       snapshot: bool = False, allow_rewind: list[str] | None = None) -> dict[str, object]:
+                       snapshot: bool = False, allow_rewind: list[str] | None = None,
+                       notes: list[str] | None = None) -> dict[str, object]:
     """Push only the checked root record. Member publication is a prior verb, or `recurse="on-demand"`.
 
     `recurse` names what the push does with a member pin its upstream does not cover: `check` refuses (exit 3),
     `none` skips coverage (the fence and the gitlink comparison still run) and names each member `unchecked`,
     `on-demand` pushes each such member from its clone first. `snapshot` makes the store commit first.
     `allow_rewind` names members whose pin may move backwards against origin's recorded pin (lease 2); each must be
-    a member, and each one taken is named in the result's `rewound`.
+    a member, and each one taken is named in the result's `rewound`. `notes` (the caller's list, so a refusal keeps
+    what was already said) collects side effects worth a line, such as a fetch line added; the result carries them.
 
     The branch and its shadow ref (section 9, S1) go in ONE `git push --atomic`, always, both naming the branch tip,
     so origin never holds a branch the shadow does not name. `atomic` adds the same-repo members' refs (members whose
     origin is the root's) to that same push, so the root record and the member refs it pins move together or not."""
+    notes = [] if notes is None else notes
     if recurse not in RECURSE_MODES:
         raise NativeStoreRefusal(f"--recurse must be one of {', '.join(RECURSE_MODES)}, not {recurse!r}", 2)
     if allow_rewind:
@@ -2613,7 +2617,9 @@ def _native_store_push(root: Path, to: str | None = None, atomic: bool = False, 
     try:
         # A same-repo member under on-demand rides the root's ONE atomic push, as --atomic's members do.
         same_repo = _same_repo_member_refs(root, branch) if atomic or recurse == "on-demand" else []
-        _ensure_shadow_fetch_line(root)
+        added = _ensure_shadow_fetch_line(root)
+        if added:
+            notes.append(f"added to remote.origin.fetch: {added}")
         # Leases 3, 1 and 2 run BEFORE on-demand publishes any member: a lease refusal says nothing was pushed, so
         # nothing may have been (a member's remote moved, then lease 2 refused the root). The walk reads only the
         # member clones, which hold both pins.
@@ -2659,6 +2665,7 @@ def _native_store_push(root: Path, to: str | None = None, atomic: bool = False, 
         "allow_rewind": list(allow_rewind or []),
         "rewound": rewound,
         "rewound_record": rewound_ref[1] if rewound_ref else None,
+        "notes": list(notes),
     }
 
 
@@ -3540,9 +3547,18 @@ def grip_push_cmd(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Check, then push the root branch and its shadow in one atomic push; --atomic adds same-repo member refs."""
+    notes: list[str] = []
+
+    def say_notes() -> None:
+        # Text mode only: under --json a note on stderr breaks a reader that takes stdout and stderr together.
+        if not json_output:
+            for note in notes:
+                typer.echo(f"gr2: {note}", err=True)
+
     try:
-        payload = _native_store_push(Path.cwd(), to, atomic, recurse, snapshot, allow_rewind)
+        payload = _native_store_push(Path.cwd(), to, atomic, recurse, snapshot, allow_rewind, notes)
     except NativeStoreRefusal as exc:
+        say_notes()
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
     except RuntimeError as exc:
@@ -3551,8 +3567,10 @@ def grip_push_cmd(
         # could not COMPLETE, which is the 5 row, and it is prefixed so a raw git message
         # cannot read as a contract refusal (an unaudited backstop is the one that will
         # fire).
+        say_notes()
         typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
+    say_notes()
     if json_output:
         typer.echo(json.dumps(payload))
     else:

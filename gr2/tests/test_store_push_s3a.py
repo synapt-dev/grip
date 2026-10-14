@@ -6,6 +6,7 @@ stderr); another writer is played by moving origin's refs directly, so no second
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 from pathlib import Path
@@ -167,6 +168,19 @@ def test_fetch_line_is_added_once_and_said(tmp_path, mode):
     again = gr2(root, "push")
     assert "added to remote.origin.fetch" not in again.stderr, again.stderr
     assert _fetch_lines(root) == ["+refs/heads/*:refs/remotes/origin/*", LINE]
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_fetch_line_under_json_rides_the_payload_not_stderr(tmp_path, mode):
+    # Regression: the stderr note broke --json for a reader of stdout and stderr together.
+    root, origin = _store(tmp_path, mode)
+    result = gr2(root, "push", "--json")
+    assert "added to remote.origin.fetch" not in result.stderr, result.stderr
+    payload = json.loads(result.stdout + result.stderr)
+    assert payload["notes"] == [f"added to remote.origin.fetch: {LINE}"], payload
+    _advance(root, "alpha")
+    gr2(root, "commit", "-m", "alpha moved")
+    assert json.loads(gr2(root, "push", "--json").stdout)["notes"] == []
 
 
 @pytest.mark.parametrize("mode", MODES)

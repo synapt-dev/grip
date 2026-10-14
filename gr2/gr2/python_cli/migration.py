@@ -1335,10 +1335,17 @@ def workspace_status(workspace_root: Path) -> dict[str, object]:
         # repo actually is. It belongs in the status, where it is dated and
         # visibly a remark about a moment, and never in the spec, which holds
         # declared state only.
+        # One line per DECLARED repo: derive_targets also lists each unit's clone
+        # of the repo after it, so a materialized workspace printed every repo
+        # once per clone. The shared clone comes first and answers for the repo, so a
+        # unit clone that has moved off the pin is not reported here: this is the
+        # declaration's report, and `repo status` reads every clone.
         declared = []
+        reported: set[str] = set()
         for target in targets:
-            if not target.pin:
+            if not target.pin or target.repo_name in reported:
                 continue
+            reported.add(target.repo_name)
             # Only a repo that IS its own toplevel can be at a commit. Inside an
             # unmaterialized member -- an empty directory in a plain clone --
             # git answers HEAD from the ENCLOSING root, so the comparison

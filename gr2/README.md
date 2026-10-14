@@ -35,7 +35,10 @@ gr2 workspace init ~/ws                 # scans the folder; writes .grip/workspa
 gr2 workspace materialize ~/ws --yes    # builds the .grip layout and a default unit
 gr2 workspace status ~/ws               # what kind of workspace this is
 gr2 store init ~/ws                     # the workspace snapshot store (needed before review)
+gr2 store commit -m "first snapshot"    # record the workspace once; lanes start from a recorded snapshot
 ```
+
+`store commit` reads the workspace from the current directory, which is why the walk starts with `cd ~/ws`. It prints nothing on success; each repo it records for the first time gets one note on stderr.
 
 A **unit** is one worker — you, or one agent — and `default` is created for you. A **lane** is one piece of work spanning repos, with its own clones, so two lanes never step on each other:
 
@@ -44,24 +47,25 @@ gr2 lane create ~/ws default feat-x --repos repo-a,repo-b --branch feat/x
 gr2 lane enter  ~/ws default feat-x --actor human:you
 ```
 
-Both commands print, per repo, the absolute directory you work in:
+`lane create` prints the lane's record, then, per repo, the absolute directory you work in (`lane enter` prints the same directories as `repo_paths`):
 
 ```
-repo-a: ~/ws/.grip/state/lanes/default/feat-x/repos/repo-a
-repo-b: ~/ws/.grip/state/lanes/default/feat-x/repos/repo-b
+~/ws/.grip/state/lanes/default/feat-x/lane.toml
+repo-a: ~/ws/agents/default/lanes/feat-x/repo-a
+repo-b: ~/ws/agents/default/lanes/feat-x/repo-b
 ```
 
 Edit there — not in your original clones. Stage and commit across the lane's repos:
 
 ```bash
-gr2 add . --repo-path ~/ws/.grip/state/lanes/default/feat-x/repos/repo-a
+gr2 add . --repo-path ~/ws/agents/default/lanes/feat-x/repo-a
 gr2 commit -m "my change" --workspace-root ~/ws --owner-unit default
 ```
 
 `commit` with the lane flags commits every lane repo that has staged changes and names the repos it skipped. If every repo was skipped it exits non-zero with one sentence naming where it looked — and, when it can see them, where your staged changes actually are. Run one command across every lane repo, then turn the lane into one reviewable object:
 
 ```bash
-gr2 exec run ~/ws default --actor human:you -- pytest -q   # one command, every lane repo
+gr2 exec run ~/ws default --actor human:you -- git status --short   # one command, every lane repo
 gr2 review create-project ~/ws default feat-x              # prints gr:<sha>: one object to review
 gr2 lane push ~/ws default feat-x                          # push every lane repo, each verified on its remote
 gr2 lane show ~/ws default                                 # where am I?
@@ -70,7 +74,7 @@ gr2 lane list ~/ws                                         # each lane: removabl
 gr2 lane remove ~/ws default feat-x                        # end it: its clones and record go
 ```
 
-`lane remove` refuses while the lane is entered or leased, or was made by `lane bind`, while any of its repos holds uncommitted work, a stash, or a commit no remote has (on any branch or tag), or while its checkout holds anything that is not one of its repos; it names each one and removes nothing. `exec run` and `lane exit` require `--actor`. Every group and verb takes `--help`; `gr2 --help` lists them all.
+`lane remove` refuses while the lane is entered or leased, or was made by `lane bind`, while any of its repos holds uncommitted work, a stash, or a commit no remote has (on any branch or tag), or while its checkout holds anything that is not one of its repos; it names each one and removes nothing. `exec run` runs whatever follows `--` in each lane repo, with your own `PATH`: a test runner works there only if it is installed where your shell finds it. `review create-project` refuses a lane repo holding any uncommitted or untracked file, so whatever a command leaves behind (`__pycache__/` after a pytest run, say) has to be in the repo's `.gitignore`. `exec run` and `lane exit` require `--actor`. Every group and verb takes `--help`; `gr2 --help` lists them all.
 
 ## What works today, and what is not there yet
 
@@ -84,6 +88,7 @@ Not there yet:
 
 - The full walk with **remote** PRs (`gr2 push`, `gr2 pr create`) is documented in `--help` but was not exercised in a clean environment for this README; treat those two as alpha.
 - `gr2 --help` and some verb output still say "prototype" in places; the wording is being cleaned up as verbs land.
+- `lane remove` refuses a lane made on a workspace with a snapshot store (the `store init` above): it names the lane's own store files (`.git`, `.gitignore`, `.gitinclude`, `.gitmodules`, `.grip`, `grip.toml`) as unlisted content and removes nothing. Until that is fixed the walk's last line refuses, and the lane stays.
 - The Rust `gr` (gr1) still owns `spawn`, `fleet`, and `manifest` until their gr2 ports land. Everything else — workspace sync, lanes, the multi-repo slice, its review — is gr2's job; if a verb is missing or wrong there, that is a bug worth reporting, not a reason to reach for gr1.
 
 ## Commands
@@ -161,6 +166,18 @@ New pinned reviews record the author's Git `user.name` from the workspace root.
 Set it with `git config user.name 'Your Name'` there if Git has no configured name.
 `review show --json` and `review verify --json` include this author; older pinned reviews
 remain readable without an author field, and reading them does not invent one.
+
+## Run a review's tests
+
+`gr2 review run` runs the reviewed tree's tests inside the review's lane, and only after it proves the lane equals the pinned tree. What to install and what to test comes from the reviewed repo itself: a tracked `.review-install` file at the repo root, read whenever the flags are left out. For a Python repo tested with pytest it needs two lines: the package the run must import from inside the lane, and an install that brings pytest:
+
+```
+# .review-install
+package = mypkg
+install = {venv} -m pip install -e {lane} pytest
+```
+
+`{venv}` is the lane venv's Python executable, not its directory, and `{lane}` is the lane's checkout of the repo; both are filled in per token. Without an `install` line the run uses `<lane venv python> -m pip install -e <lane>`, which installs your package and no test runner, so a pytest repo without the line refuses (`pytest_not_installed`). Either way the repo must be pip-installable (a `pyproject.toml` or `setup.py` declaring that package). For another language, declare the runner and its command instead, for example `runner = cargo` and `test = cargo test`. The recognised keys are `install`, `package`, `runner`, `test` and `reports`; any other key is refused (`bad_hint`). A repo with no `.review-install` must pass `--package` and/or `--install`, and with neither the run refuses (`no_package`). `gr2 review run --help` has the full list.
 
 
 ## Transfer a native review

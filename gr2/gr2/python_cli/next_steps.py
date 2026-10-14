@@ -107,6 +107,9 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
                 f"{_shown(workspace)} {_shown(review)} again once it is resolved")
     if refused.startswith("platform_pr_not_ready"):
         return "next: mark the PR ready (or reopen it) on the platform, then run the merge again; nothing was merged"
+    if refused.startswith("platform_unmeasurable"):
+        return ("next: install the GitHub CLI (gh) and authenticate it (gh auth login), then run the merge again; "
+                "nothing was merged")
     if refused.startswith("platform_pr_ambiguous"):
         return "next: close the extra PRs so one open PR has this head, then run the merge again; nothing was merged"
     return None

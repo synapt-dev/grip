@@ -235,17 +235,28 @@ _GITHUB_REMOTE = re.compile(r"^(?:https://github\.com/|git@github\.com:|ssh://gi
 _PLATFORM_CAPABILITIES = ("pr_for_head", "pr_for_branch", "pr_head", "merge_pr_async")
 
 
+class PlatformUnavailable(RuntimeError):
+    """A member's remote is a GitHub URL, but no adapter here can read its PRs (gh absent, or an adapter that cannot
+    land a stack). Merging it by push could pass an open PR stack, so the member refuses instead."""
+
+
 def platform_for_remote(remote: str):  # noqa: ANN201
     """(adapter, repo) when the member's remote is on a hosting platform whose adapter can land a PR stack, else None.
 
     A member is a platform member only if, in addition, the platform reports exactly one open PR whose head is the
-    pinned head; that is asked in the preflight, not here."""
+    pinned head; that is asked in the preflight, not here. A GitHub URL with no usable adapter raises
+    PlatformUnavailable: whether a member's PRs are honoured must not depend on what is installed on this machine."""
     from . import platform as platform_ops
+    on_github = _GITHUB_REMOTE.match(remote or "")
     try:
         adapter = platform_ops.get_platform_adapter("github")
-    except Exception:  # noqa: BLE001  (no adapter means a plain-Git member, as before)
+    except Exception as exc:  # noqa: BLE001  (no adapter: a plain-Git member, unless the remote is on GitHub)
+        if on_github:
+            raise PlatformUnavailable(f"no GitHub adapter on this machine ({exc})") from exc
         return None
     if not all(callable(getattr(adapter, name, None)) for name in _PLATFORM_CAPABILITIES):
+        if on_github:
+            raise PlatformUnavailable("the GitHub adapter on this machine cannot land a PR stack")
         return None
     if platform_ops.adapter_api_version(adapter) >= 2:
         # A version 2 adapter is the only reader of its URLs.
@@ -420,7 +431,11 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
     for r, m in zip(rows, view["members"]):
         if r["state"] != "ready":
             continue
-        found = platform_for_remote(m["remote"])
+        try:
+            found = platform_for_remote(m["remote"])
+        except PlatformUnavailable as exc:
+            r["refused"], r["state"] = f"platform_unmeasurable: {exc}", None
+            continue
         if found is None:
             continue
         adapter, repo_name = found

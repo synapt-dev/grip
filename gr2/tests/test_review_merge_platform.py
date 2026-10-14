@@ -197,3 +197,58 @@ def test_a_stranded_commit_on_the_last_member_is_partial_although_every_member_r
     row = next(r for r in receipt["members"] if r["key"] == "beta")
     assert row["refusal"]["code"] == "platform_head_moved_after_merge", row
     assert code == merge_gate.EXIT_PARTIAL, receipt
+
+
+def test_a_platform_read_that_raises_refuses_unmeasurable_and_merges_nothing(slice2, platform):  # noqa: F811
+    """A failed platform read must refuse, never fall through to a push past an open PR."""
+    def boom(repo, sha):
+        raise RuntimeError("gh: not authenticated")
+    platform.pr_for_head = boom
+    before = mains(slice2)
+    record_set(slice2)
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    assert code == merge_gate.EXIT_REFUSED, receipt
+    assert platform.merges == []
+    assert mains(slice2) == before
+    codes = {r["key"]: (r.get("refusal") or {}).get("code") for r in receipt["members"]}
+    assert set(codes.values()) == {"platform_unmeasurable"}, codes
+
+
+def _gh_absent(monkeypatch):
+    """No `gh` on this machine: the real GitHubAdapter() raises, exactly as it does when gh is not installed."""
+    from gr2.python_cli import platform as platform_ops
+    real_which = platform_ops.shutil.which
+    monkeypatch.setattr(platform_ops.shutil, "which", lambda name, *a, **k: None if name == "gh" else real_which(name, *a, **k))
+
+
+@pytest.mark.parametrize("url", ["https://github.com/o/r.git", "git@github.com:o/r.git", "ssh://git@github.com/o/r"])
+def test_a_github_url_with_gh_absent_is_unavailable_not_a_plain_git_member(monkeypatch, url):
+    _gh_absent(monkeypatch)
+    with pytest.raises(merge_gate.PlatformUnavailable, match="no GitHub adapter"):
+        merge_gate.platform_for_remote(url)
+    assert merge_gate.platform_for_remote("/srv/git/r.git") is None  # control: a plain-Git remote stays plain Git
+
+
+def test_gh_absent_on_a_github_member_refuses_unmeasurable_names_gh_and_merges_nothing(slice2, monkeypatch):  # noqa: F811
+    """With gh absent, a member on GitHub must not be merged by push past its PR stack; whether its PRs are honoured must not depend on what is installed."""
+    _gh_absent(monkeypatch)
+    real = merge_gate.platform_for_remote
+    alpha = str(slice2["members"]["alpha"]["remote"])
+    monkeypatch.setattr(merge_gate, "platform_for_remote",
+                        lambda remote: real("https://github.com/o/alpha.git" if remote == alpha else remote))
+    before = mains(slice2)
+    record_set(slice2)
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    assert code == merge_gate.EXIT_REFUSED, receipt
+    assert mains(slice2) == before
+    row = next(r for r in receipt["members"] if r["key"] == "alpha")
+    assert row["refusal"]["code"] == "platform_unmeasurable", row
+    assert "gh" in row["next"] and "auth" in row["next"], row
+
+
+def test_control_gh_absent_on_plain_git_members_still_merges_by_push(slice2, monkeypatch):  # noqa: F811
+    _gh_absent(monkeypatch)
+    record_set(slice2)
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    assert code == merge_gate.EXIT_MERGED, receipt
+    assert all(m["merged_by"] != "platform" for m in receipt["members"]), receipt

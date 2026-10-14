@@ -334,6 +334,10 @@ next: close the extra PRs so one open PR has this head, then run the merge again
 
 next: mark the PR ready (or reopen it) on the platform, then run the merge again; nothing was merged
 
+### platform_unmeasurable
+
+next: install the GitHub CLI (gh) and authenticate it (gh auth login), then run the merge again; nothing was merged
+
 ### review_not_on_member_remote
 
 next: gr2 review publish '<workspace>' '<review>' --remote '<remote>'

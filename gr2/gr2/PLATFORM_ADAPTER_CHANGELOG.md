@@ -29,6 +29,9 @@ Optional, and `PLATFORM_ADAPTER_API_VERSION` is unchanged: an adapter without th
   branch is `branch`. `merge_pr_async` merges with the head pinned to `sha` and returns `status` (`merged`,
   `enqueued`, `failed` or `unknown`) and, when merged, the merge commit as `sha`. A version 2 adapter's
   `resolve_target` decides which remotes it serves; for a version 1 adapter only GitHub URLs are considered.
+- **A GitHub member with no usable adapter refuses.** When the adapter cannot be built (for example, `gh` is not
+  installed) or lacks any of the four, a member whose remote is a GitHub URL is refused as `platform_unmeasurable`
+  instead of merging by push. Members on other remotes are called exactly as before.
 
 ## 2.0.0a9 (adapter API version 2)
 

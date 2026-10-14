@@ -2346,7 +2346,8 @@ def _root_origin_for_push(root: Path, to: str | None) -> str | None:
     return to
 
 
-def _atomic_push(root: Path, refspecs: list[tuple[str, str]], verify: bool = True) -> bool:
+def _atomic_push(root: Path, refspecs: list[tuple[str, str]], verify: bool = True,
+                 leases: dict[str, str] | None = None) -> bool:
     """ONE `git push --atomic` of every (commit, ref), so the remote moves all of them or none. A refusal names
     each rejected ref with git's reason, plus the remote's own lines (a pre-receive hook declines every ref in the
     push, so only its message says which one it refused).
@@ -2356,7 +2357,11 @@ def _atomic_push(root: Path, refspecs: list[tuple[str, str]], verify: bool = Tru
     receive-pack fails its lock on the shadow). One ref anywhere else is a real loss and refuses as before."""
     # `verify=False` is push --recurse=none: the pre-push hook asks coverage, which that mode skips by name; the
     # verb has run the fence and the gitlink comparison itself.
-    proc = _store_git(root, "push", "--porcelain", "--atomic", *([] if verify else ["--no-verify"]), "origin",
+    # `leases` maps a ref to the value this push last recorded for it on origin (empty: absent); git refuses the
+    # whole atomic push when origin's advertised value differs, so a writer landing after the freshness check is
+    # turned away and nothing moves.
+    leased = [f"--force-with-lease={ref}:{value}" for ref, value in (leases or {}).items()]
+    proc = _store_git(root, "push", "--porcelain", "--atomic", *leased, *([] if verify else ["--no-verify"]), "origin",
                       *[f"{sha}:{ref}" for sha, ref in refspecs], check=False)
     if proc.returncode == 0:
         return False
@@ -2457,6 +2462,67 @@ def _push_uncovered_members(root: Path, same_repo_origin: str) -> list[dict[str,
     return done
 
 
+def _shadow_fetch_line() -> str:
+    return f"+{SHADOW_REF_ROOT}*:refs/remotes/origin/{SHADOW_REF_ROOT[len('refs/'):]}*"
+
+
+def _tracking_ref(ref: str) -> str:
+    """Where this clone records origin's value of `ref`: refs/heads/<b> -> refs/remotes/origin/<b>, a shadow under
+    refs/remotes/origin/ by the fetch line `_ensure_shadow_fetch_line` writes."""
+    if ref.startswith("refs/heads/"):
+        return f"refs/remotes/origin/{ref[len('refs/heads/'):]}"
+    return f"refs/remotes/origin/{ref[len('refs/'):]}"
+
+
+def _ensure_shadow_fetch_line(root: Path) -> None:
+    """Add the fetch line that tracks origin's shadows, once: only when origin carries no exact copy of it, and never
+    rewriting an existing refspec. The line added is said on stderr."""
+    line = _shadow_fetch_line()
+    have = _store_git(root, "config", "--get-all", "remote.origin.fetch", check=False).stdout.splitlines()
+    if line in have:
+        return
+    _store_git(root, "config", "--add", "remote.origin.fetch", line)
+    typer.echo(f"gr2: added to remote.origin.fetch: {line}", err=True)
+
+
+def _leases(root: Path, tip: str, refs: list[str]) -> dict[str, str]:
+    """Leases 3 and 1 (plan section 5) on the branch and its shadow, before anything is sent.
+
+    Lease 3, freshness: origin's value of each ref must equal this clone's tracking ref for it; a clone that has
+    never recorded a ref origin holds must fetch first. Lease 1: origin's value must sit on tip's FIRST-PARENT line,
+    so a behind tip, a rewrite and a merge that took origin's commit as a side parent are each refused by name (git's
+    own non-fast-forward check accepts the last). Returns the leases for the push: ref -> tracked value."""
+    listed = _store_git(root, "ls-remote", "origin", *refs, check=False)
+    if listed.returncode:
+        detail = " | ".join(line.strip() for line in listed.stderr.splitlines() if line.strip())[:300]
+        raise NativeStoreRefusal(f"cannot verify origin's shadow, so nothing was pushed: {detail}", 5)
+    held = {parts[1]: parts[0] for parts in (line.split("\t") for line in listed.stdout.splitlines()) if len(parts) == 2}
+    leases: dict[str, str] = {}
+    for ref in refs:
+        now = held.get(ref, "")
+        tracked = _store_git(root, "rev-parse", "--verify", "-q", _tracking_ref(ref), check=False).stdout.strip()
+        if now and not tracked:
+            raise NativeStoreRefusal(
+                f"fetch first: origin holds {ref} at {now} and this clone has no record of it; "
+                f"run `git -C {root} fetch origin`, then push again", 3)
+        if now != tracked:
+            raise NativeStoreRefusal(
+                f"stale tracking: origin's {ref} is {now or 'absent'}, this clone last recorded {tracked or 'absent'}; "
+                f"run `git -C {root} fetch origin`, re-snapshot (store commit) and push again", 3)
+        if now and now != tip:
+            line = _store_git(root, "rev-list", "--first-parent", tip).stdout.split()
+            if now not in line:
+                if _store_git(root, "merge-base", "--is-ancestor", tip, now, check=False).returncode == 0:
+                    why = "behind: this push's tip is an ancestor of it"
+                elif _store_git(root, "merge-base", "--is-ancestor", now, tip, check=False).returncode:
+                    why = "rewrite: it is not an ancestor of this push's tip"
+                else:
+                    why = "not on the first-parent line of this push's tip (a merge took it as a side parent)"
+                raise NativeStoreRefusal(f"origin's {ref} is {now}, this push's tip is {tip}; {why}", 3)
+        leases[ref] = tracked
+    return leases
+
+
 def _native_store_push(root: Path, to: str | None = None, atomic: bool = False, recurse: str = "check",
                        snapshot: bool = False, allow_rewind: list[str] | None = None) -> dict[str, object]:
     """Push only the checked root record. Member publication is a prior verb, or `recurse="on-demand"`.
@@ -2498,9 +2564,13 @@ def _native_store_push(root: Path, to: str | None = None, atomic: bool = False, 
     try:
         # A same-repo member under on-demand rides the root's ONE atomic push, as --atomic's members do.
         same_repo = _same_repo_member_refs(root, branch) if atomic or recurse == "on-demand" else []
+        _ensure_shadow_fetch_line(root)
+        leases = _leases(root, tip, [f"refs/heads/{branch}", _shadow_ref(root)])
         landed_by_another = _atomic_push(root, [(tip, f"refs/heads/{branch}"), (tip, _shadow_ref(root)),
                                                 *[(pin, ref) for _, pin, ref in same_repo]],
-                                         verify=recurse != "none")
+                                         verify=recurse != "none", leases=leases)
+        for ref in leases:
+            _store_git(root, "update-ref", "-m", "store push: tracking", _tracking_ref(ref), tip)
         if shadow != tip:
             # Compare-and-swap from the shadow this push read; a concurrent push of the same tip may have moved it
             # first, which is the same outcome, so only a shadow left anywhere but `tip` is a failure.

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import NamedTuple
@@ -38,7 +39,11 @@ def pin_of(repo_spec: dict) -> str | None:
 
 
 class PinConflict(Exception):
-    """The workspace spec and grip.toml record different pins for one member. Neither wins silently."""
+    """The workspace spec and grip.toml record different pins for one member.
+
+    No longer raised by ``load_members``: on a root with grip.toml the store's record is the pin (``record_pin``), because
+    on a native root grip.toml and the root's gitlinks own the pins. Kept so the callers that name it in an
+    ``except`` still import."""
 
     def __init__(self, member: str, spec_pin: str, root_pin: str) -> None:
         super().__init__(
@@ -65,6 +70,46 @@ def _read_toml(path: Path) -> dict:
         raise MembersUnreadable(path, f"{type(exc).__name__}: {exc}") from exc
 
 
+_NOTICED: set[tuple[str, str, str, str]] = set()
+
+
+def record_pin(workspace_root: Path, name: str, path: object, spec_pin: object) -> str | None:
+    """The pin a verb that reads the workspace spec should use for one member.
+
+    On a native root (one whose working or committed grip.toml lists the member) the store's record wins: the pin the
+    root commit records (HEAD:grip.toml by the member's path, or the committed gitlink when that is not a commit; the
+    working grip.toml only before the first commit). The spec's copy goes stale at the first advance (sync run, then
+    store commit), and reading it put a member back at an older commit with exit 0. When the spec holds a different
+    commit, one line on stderr says which was used. A member neither grip.toml lists keeps the spec's pin, and so does
+    a listed member with no record anywhere (a store not committed yet), with the same line."""
+    from .grip_cli import recorded_member_pin
+
+    spec_value = str(spec_pin) if isinstance(spec_pin, str) and spec_pin else None
+    listed, recorded, source = recorded_member_pin(Path(workspace_root), str(name), str(path) if path else None)
+    if not listed:
+        return spec_value
+    usable_spec = pin_of({"pin": spec_value}) if spec_value else None
+    if recorded is None:
+        if usable_spec:
+            _notice(workspace_root, name, usable_spec, "",
+                    f"gr2: member {name!r}: no pin in grip.toml or the root's gitlinks; using "
+                    f".grip/workspace_spec.toml's {usable_spec[:12]}")
+        return spec_value
+    if usable_spec and usable_spec != recorded:
+        _notice(workspace_root, name, usable_spec, recorded,
+                f"gr2: member {name!r}: .grip/workspace_spec.toml pins {usable_spec[:12]}, the store records "
+                f"{recorded[:12]} ({source}); using the store's record")
+    return recorded
+
+
+def _notice(workspace_root: Path, name: object, spec_pin: str, recorded: str, line: str) -> None:
+    key = (str(workspace_root), str(name), spec_pin, recorded)
+    if key in _NOTICED:
+        return
+    _NOTICED.add(key)
+    print(line, file=sys.stderr)
+
+
 def load_members(workspace_root: Path) -> list[dict] | None:
     """Every member the workspace declares, as plain ``{name, url, pin, path, ref}`` dicts, or None when the root carries
     neither source. Two sources exist: the workspace spec's ``[[repos]]`` (name, url, pin) and the root's
@@ -72,9 +117,11 @@ def load_members(workspace_root: Path) -> list[dict] | None:
     ``store init`` alone has only the second. Both are read into the SAME shape and every pin is judged by
     ``pin_of``, so no source can make a non-commit count as a pin.
 
-    Both present: members are matched by name. Two usable pins that differ refuse (``PinConflict``); a usable pin
-    in one file and none in the other is used; a member only in grip.toml is added. Path, ref and url use the
-    spec value when present, otherwise the root value. Defaults are left to the caller. Nothing here guesses."""
+    Both present: members are matched by name, and a member grip.toml lists takes the store's record
+    (``record_pin``: grip.toml's pin, else the root's committed gitlink), so a spec pin left behind by an advance is
+    not read and no longer refuses as ``PinConflict``; one stderr line names the difference. A member only in the
+    spec keeps its pin; a member only in grip.toml is added. Path, ref and url use the spec value when present,
+    otherwise the root value. Defaults are left to the caller. Nothing here guesses."""
     from .spec_apply import workspace_spec_path
 
     spec_path = workspace_spec_path(workspace_root)
@@ -108,10 +155,8 @@ def load_members(workspace_root: Path) -> list[dict] | None:
     for m in spec_members:
         other = by_name.pop(m["name"], None)
         if other is not None:
-            mine, theirs = pin_of(m), pin_of(other)
-            if mine and theirs and mine != theirs:
-                raise PinConflict(str(m["name"]), mine, theirs)
-            m = {**m, "pin": mine or theirs, "url": m.get("url") or other.get("url"),
+            pin = record_pin(workspace_root, m["name"], m.get("path") or other.get("path"), m.get("pin"))
+            m = {**m, "pin": pin_of({"pin": pin}), "url": m.get("url") or other.get("url"),
                  "path": m.get("path") or other.get("path"), "ref": m.get("ref") or other.get("ref")}
         merged.append(m)
     return merged + list(by_name.values())

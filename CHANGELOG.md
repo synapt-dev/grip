@@ -51,6 +51,25 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   workspace spec and does not support a native root yet, a gr1 desk is told to run `gr2 workspace migrate-gr1
   <root>`, and a root with neither is told to run `gr2 workspace init <root>`.
 
+- **`gr2`: on a native store, the verbs that read the workspace spec use the store's record of each pin.**
+  `.grip/workspace_spec.toml` keeps its own copy of every member's pin, and that copy goes stale at the first ordinary
+  advance (`gr2 sync run`, then `gr2 store commit`), because only `grip.toml` and the root's gitlinks move. `gr2 apply`,
+  `gr2 workspace materialize` and `gr2 sync run` then recloned a missing member at the spec's OLD commit with exit 0,
+  while `gr2 store materialize` on the same root used the new one, and `gr2 review pin` with no rows refused with "they
+  must agree, so fix one of them". Now, on a root with `grip.toml`, `apply`, `workspace materialize`, `sync run`, a
+  unit's member convergence, `review pin`, `review run` and `pr create` take the pin the root commit records: the
+  committed `grip.toml`'s pin for the member's path, or the root's committed gitlink (read through the field record in
+  full mode) when that is not a commit. The working `grip.toml` is used only before the root's first commit, so a pin
+  edited back to an older commit there is not taken. One line on stderr names both commits when the spec named a
+  different one. A deleted working `grip.toml` does not make a root non-native: the root commit's record still answers,
+  whether the member is found there by path or by name and whether its committed pin is a commit or a branch name. The
+  store mode that says how to read a committed gitlink is the committed one, so an uncommitted edit to `mode` does not
+  change the pin. A
+  root that has never committed a `grip.toml`, and a member that neither the working `grip.toml` nor the root commit
+  lists, keep the spec's pin as before.
+  Behaviour change: the two-files-disagree refusal (`downstream_pin_conflict` in a review lane) no longer happens on
+  such a root; the lane runs at the store's record.
+
 - **`gr pr create` opens PRs for the branch you are on, not for every branch
   some repo happens to sit on.** It used to open one PR per branch group under
   the single `-t` title, so a repo (the manifest included) parked on an old

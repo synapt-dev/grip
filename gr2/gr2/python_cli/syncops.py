@@ -647,11 +647,13 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
         cache_path = repo_cache_path(workspace_root, str(repo_spec["name"]))
         # A root member deleted from the workspace is re-cloned HERE, and cloning
         # straight onto the default tip left it on a commit the root never
-        # declared while sync exited 0.
+        # declared while sync exited 0. On a native root the pin is the store's record, not the spec's copy, which
+        # goes stale at the first advance.
+        from .lane_downstream import record_pin
         first_materialize = clone_and_pin(
             str(repo_spec["url"]),
             repo_root,
-            pin=str(repo_spec.get("pin") or ""),
+            pin=str(record_pin(workspace_root, repo_spec["name"], repo_spec.get("path"), repo_spec.get("pin")) or ""),
             member=str(repo_spec["name"]),
             reference_repo_root=cache_path,
         )

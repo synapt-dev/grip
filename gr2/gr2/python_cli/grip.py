@@ -531,6 +531,23 @@ def _source_capture(source: str, *args: str) -> str:
     return proc.stdout
 
 
+def _flattened_range(source: str, base: str, head: str, merge_count: int) -> str:
+    """A range holding a merge, carried as ONE patch: the diff from base to head.
+
+    format-patch linearizes a merge away: it emits the merged branch's commits, written against an older base, and
+    drops the merge's resolution, so ``am`` onto the bound base fails. The diff base..head is exactly what the head
+    adds to the base, so applying it rebuilds the head's TREE (the contract a bind without committers already has).
+    The header names the head, so the range's terminal head is still the bound head; author and date are the head's.
+    The real per-commit history still travels in ``metadata``."""
+    who = _source_capture(source, "log", "-1", "--format=%an <%ae>%n%aD", head).splitlines()
+    total = _source_capture(source, "rev-list", "--count", f"{base}..{head}").strip()
+    diff = _source_capture(source, "diff", "--binary", "--full-index", base, head)
+    subject = f"[PATCH] {head[:12]}: {total} commit(s) with {merge_count} merge(s), carried as one tree diff from {base[:12]}"
+    return (f"From {head} Mon Sep 17 00:00:00 2001\nFrom: {who[0]}\nDate: {who[1]}\nSubject: {subject}\n\n"
+            f"Carried flattened: a range that contains a merge has no patch form; see metadata for its commits.\n"
+            f"---\n{diff}")
+
+
 def _carry_objects(workspace: Path, source: str, base: str, head: str) -> dict[str, str]:
     """From the author's source repo, capture the range (format-patch base..head),
     the fuller metadata (author+committer per commit), and the head tree. These
@@ -541,7 +558,11 @@ def _carry_objects(workspace: Path, source: str, base: str, head: str) -> dict[s
         raise GripReviewRefused("source_missing_head", head, source)
     if _source_capture(source, "rev-parse", "--verify", f"{base}^{{commit}}").strip() != base:
         raise GripReviewRefused("source_missing_base", base, source)
-    range_patch = _source_capture(source, "format-patch", f"{base}..{head}", "--stdout")
+    merges = _source_capture(source, "rev-list", "--merges", f"{base}..{head}").split()
+    if merges:
+        range_patch = _flattened_range(source, base, head, len(merges))
+    else:
+        range_patch = _source_capture(source, "format-patch", f"{base}..{head}", "--stdout")
     if not range_patch.strip():
         raise GripReviewRefused("empty_range", f"{base}..{head}", source)
     metadata = _source_capture(source, "log", "--format=fuller", f"{base}..{head}")

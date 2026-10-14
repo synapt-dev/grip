@@ -560,6 +560,17 @@ def _carry_objects(workspace: Path, source: str, base: str, head: str) -> dict[s
         raise GripReviewRefused("source_missing_base", base, source)
     merges = _source_capture(source, "rev-list", "--merges", f"{base}..{head}").split()
     if merges:
+        # A flattened range rebuilds the head's tree, so it must contain the base: otherwise the rebuild lacks what the
+        # base gained since the author's last merge, and a passing set check would attest a combination never tested.
+        if gitops.run(Path(source), "merge-base", "--is-ancestor", base, head).returncode != 0:
+            exc = GripReviewRefused("base_not_ancestor_of_head", base, head)
+            exc.add_note("next: merge the target again (git merge origin/<branch>), resolve, and bind the new head")
+            raise exc
+        if _source_capture(source, "rev-parse", f"{head}^{{tree}}").strip() == _source_capture(
+                source, "rev-parse", f"{base}^{{tree}}").strip():
+            exc = GripReviewRefused("range_adds_nothing", base, head)
+            exc.add_note("next: the head's tree equals the base's, so this member changes nothing; drop it from the review")
+            raise exc
         range_patch = _flattened_range(source, base, head, len(merges))
     else:
         range_patch = _source_capture(source, "format-patch", f"{base}..{head}", "--stdout")

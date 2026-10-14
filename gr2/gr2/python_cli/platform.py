@@ -590,6 +590,57 @@ class GitHubAdapter:
     def pr_checks(self, repo: str, number: int) -> list[PRCheck]:
         return self.pr_status(repo, number).checks
 
+    # ---- landing a PR stack (optional capabilities; `review merge` uses them when all four are present) ----
+
+    @staticmethod
+    def _stack_pr(item: dict) -> dict:
+        state = "merged" if item.get("merged_at") else str(item.get("state") or "")
+        return {"number": item.get("number"), "state": state, "draft": bool(item.get("draft")),
+                "head": (item.get("head") or {}).get("sha"), "head_branch": (item.get("head") or {}).get("ref"),
+                "base": (item.get("base") or {}).get("ref")}
+
+    def pr_for_head(self, repo: str, sha: str) -> list[dict]:
+        """Open PRs whose head commit is exactly ``sha``."""
+        payload = _run_json([self.gh_binary, "api", f"repos/{repo}/commits/{sha}/pulls"])
+        assert isinstance(payload, list)
+        prs = [self._stack_pr(p) for p in payload if isinstance(p, dict)]
+        return [p for p in prs if p["state"] == "open" and p["head"] == sha]
+
+    def pr_for_branch(self, repo: str, branch: str) -> list[dict]:
+        """Open PRs whose head branch is ``branch`` in this repository (the PR one level down a stack)."""
+        owner = repo.split("/", 1)[0]
+        payload = _run_json([self.gh_binary, "api", f"repos/{repo}/pulls?state=open&head={owner}:{branch}"])
+        assert isinstance(payload, list)
+        return [self._stack_pr(p) for p in payload if isinstance(p, dict)]
+
+    def pr_head(self, repo: str, number: int) -> dict:
+        """The PR as the platform reports it now: state, draft, head commit and base branch."""
+        payload = _run_json([self.gh_binary, "api", f"repos/{repo}/pulls/{number}"])
+        assert isinstance(payload, dict)
+        return self._stack_pr(payload)
+
+    def merge_pr_async(self, repo: str, number: int, sha: str, method: str = "merge", *,
+                       timeout: float = 180.0, interval: float = 2.0) -> dict:
+        """Merge through GitHub's asynchronous merge (the route GitHub requires for stacks), with the head pinned to
+        ``sha``, and wait for a final state: ``merged`` (with the merge commit ``sha``), ``enqueued``, ``failed``,
+        or ``unknown`` when it is still pending at ``timeout``."""
+        import time
+        started = _run_json([self.gh_binary, "api", "-X", "PUT", f"repos/{repo}/pulls/{number}/merge-async",
+                             "-f", f"sha={sha}", "-f", f"merge_method={method}"])
+        assert isinstance(started, dict)
+        details = started.get("details") or {}
+        uuid = details.get("uuid") or started.get("uuid")
+        status = started.get("status")
+        deadline = time.monotonic() + timeout
+        while status == "pending" and uuid and time.monotonic() < deadline:
+            time.sleep(interval)
+            polled = _run_json([self.gh_binary, "api", f"repos/{repo}/pulls/{number}/merge-async/{uuid}"])
+            assert isinstance(polled, dict)
+            status, details = polled.get("status"), polled.get("details") or {}
+        if status == "pending":
+            status = "unknown"
+        return {"status": status, "sha": details.get("sha"), "message": details.get("message"), "uuid": uuid}
+
     @staticmethod
     def _parse_checks(rows: list[object]) -> list[PRCheck]:
         checks: list[PRCheck] = []

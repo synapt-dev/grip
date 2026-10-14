@@ -99,4 +99,21 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
                 "--ratified <receipt id> naming the ratify that covers it")
     if refused.startswith("base_moved"):
         return "next: the target moved after the pin; pin again on the new base with gr2 review pin"
+    if refused.startswith("platform_head_moved_after_merge"):
+        late = re.search(r"head is (\S+);", refused)
+        return (f"next: this member landed at the pinned head, and the later commit {late.group(1) if late else '<sha>'} "
+                "is on the PR's branch only: review it as a new change (pin it on top of the merged target), or "
+                f"remove it from the branch; members after this one were not landed, so run gr2 review merge "
+                f"{_shown(workspace)} {_shown(review)} again once it is resolved")
+    if refused.startswith("platform_head_unmeasured_after_merge"):
+        return ("next: this member landed at the pinned head; read the PR's commits on the platform to see whether one "
+                "was pushed during the land (review any such commit as a new change); members after this one were not "
+                f"landed, so run gr2 review merge {_shown(workspace)} {_shown(review)} again once that is known")
+    if refused.startswith("platform_pr_not_ready"):
+        return "next: mark the PR ready (or reopen it) on the platform, then run the merge again; nothing was merged"
+    if refused.startswith("platform_unmeasurable"):
+        return ("next: install the GitHub CLI (gh) and authenticate it (gh auth login), then run the merge again; "
+                "nothing was merged")
+    if refused.startswith("platform_pr_ambiguous"):
+        return "next: close the extra PRs so one open PR has this head, then run the merge again; nothing was merged"
     return None

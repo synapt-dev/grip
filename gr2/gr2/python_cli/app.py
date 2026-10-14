@@ -4987,11 +4987,15 @@ def review_merge(
     approval_count: Optional[int] = typer.Option(None, "--approvals", help="Required distinct approvers; may raise the workspace approvals.required floor, default 0"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
-    """Merge a pinned review into plain Git remotes: preflight every member, push nothing if any member fails it.
+    """Merge a pinned review into its members' remotes: preflight every member, merge nothing if any member fails it.
 
     Requires, per member: the remote feature branch at the reviewed head, the target at the reviewed base,
-    and a passing exact-head check. Merges are separate pushes, not atomic across repos. Exit 0 all merged,
-    3 none merged (refused), 4 partial or unknown; computed from the remote state after the run.
+    and a passing exact-head check. A member whose hosting platform has exactly one open PR at the reviewed head
+    lands through that PR (its stack down to the target must be open and not a draft), and its PR head must still
+    be the reviewed head after the merge. A member on a GitHub URL whose platform cannot be read (gh absent or not
+    authenticated) refuses as platform_unmeasurable; every other member is merged by push. Merges are separate, not atomic
+    across repos. Exit 0 all merged, 3 none merged (refused), 4 partial or unknown; computed from the remote state
+    after the run.
     """
     ws = workspace_root.resolve()
     try:

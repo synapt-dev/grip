@@ -17,6 +17,26 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   every read (one repo per member, its `origin` remote as url, its ref and pin, one default unit). Nothing is written,
   so `grip.toml` stays the one record of each member and an edit there is what the next `sync` reads. A spec file
   that exists is still the spec, unchanged.
+- **`gr2`: `gr2 review merge` lands a member through its hosting platform when it has an open PR at the reviewed
+  head.** The mode is chosen per member, with no flag: a member whose platform reports exactly one open PR whose
+  head is the reviewed head lands through that PR, and every other member is merged by push as before. The PR's
+  stack is followed down through each PR's base branch to the target; every PR in it must be open and not a draft,
+  checked for every member before anything merges (`platform_pr_not_ready`; more than one PR at the head is
+  `platform_pr_ambiguous`, a stack that does not reach the target is `platform_stack_unresolved`). The top PR is
+  merged with its head pinned, through GitHub's asynchronous merge, so a stack lands as one merge commit. After
+  the platform reports merged, the target must contain the reviewed head and the PR's head must still be the
+  reviewed head: a commit pushed to the PR while the land ran is left out of the merge under a PR that reads
+  merged, so that member is refused as `platform_head_moved_after_merge`, the commit is named, the run exits 4,
+  and no later member lands. If the PR's head cannot be read after a confirmed merge, that member is refused as
+  `platform_head_unmeasured_after_merge` (the merge holds the pinned head; whether a commit was left out is unknown),
+  the run exits 4, nothing is called stranded, and no later member lands. A merge the platform does not confirm is `platform_merge_not_confirmed`, naming the
+  PR's head when it moved, and nothing is called stranded. The GitHub adapter gains `pr_for_head`, `pr_for_branch`, `pr_head` and
+  `merge_pr_async`. A member counts as on GitHub for every spelling gr2's review records read as GitHub (https or
+  http, with a user or a token, scp-style or ssh); an ssh URL with a port, or an ssh-config host alias, is not resolved and
+  reads as plain Git.
+  A member whose remote is a GitHub URL refuses as `platform_unmeasurable` when the platform
+  cannot be read (`gh` absent or not authenticated, or an adapter without all four), with a next line to install
+  and authenticate `gh`, so it is never pushed past its PRs; a member on a plain-Git remote is merged by push as before.
 - **`gr2`: `gr2 review stamp <lane>` stamps a PR-head review.** Given a lane `review checkout-pr` or `review open`
   made, it records an unsigned approval as git `user.name`, bound to the lane's recorded repo and PR head, and
   prints the approvals of that (repo, head). The approval is a ref under

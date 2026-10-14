@@ -35,7 +35,10 @@ gr2 workspace init ~/ws                 # scans the folder; writes .grip/workspa
 gr2 workspace materialize ~/ws --yes    # builds the .grip layout and a default unit
 gr2 workspace status ~/ws               # what kind of workspace this is
 gr2 store init ~/ws                     # the workspace snapshot store (needed before review)
+gr2 store commit -m "first snapshot"    # record the workspace once; lanes start from a recorded snapshot
 ```
+
+`store commit` reads the workspace from the current directory, which is why the walk starts with `cd ~/ws`. It prints nothing on success; each repo it records for the first time gets one note on stderr.
 
 A **unit** is one worker — you, or one agent — and `default` is created for you. A **lane** is one piece of work spanning repos, with its own clones, so two lanes never step on each other:
 
@@ -44,17 +47,18 @@ gr2 lane create ~/ws default feat-x --repos repo-a,repo-b --branch feat/x
 gr2 lane enter  ~/ws default feat-x --actor human:you
 ```
 
-Both commands print, per repo, the absolute directory you work in:
+`lane create` prints the lane's record, then, per repo, the absolute directory you work in (`lane enter` prints the same directories as `repo_paths`):
 
 ```
-repo-a: ~/ws/.grip/state/lanes/default/feat-x/repos/repo-a
-repo-b: ~/ws/.grip/state/lanes/default/feat-x/repos/repo-b
+~/ws/.grip/state/lanes/default/feat-x/lane.toml
+repo-a: ~/ws/agents/default/lanes/feat-x/repo-a
+repo-b: ~/ws/agents/default/lanes/feat-x/repo-b
 ```
 
 Edit there — not in your original clones. Stage and commit across the lane's repos:
 
 ```bash
-gr2 add . --repo-path ~/ws/.grip/state/lanes/default/feat-x/repos/repo-a
+gr2 add . --repo-path ~/ws/agents/default/lanes/feat-x/repo-a
 gr2 commit -m "my change" --workspace-root ~/ws --owner-unit default
 ```
 
@@ -161,6 +165,17 @@ New pinned reviews record the author's Git `user.name` from the workspace root.
 Set it with `git config user.name 'Your Name'` there if Git has no configured name.
 `review show --json` and `review verify --json` include this author; older pinned reviews
 remain readable without an author field, and reading them does not invent one.
+
+## Run a review's tests
+
+`gr2 review run` runs the reviewed tree's tests inside the review's lane, and only after it proves the lane equals the pinned tree. What to install and what to test comes from the reviewed repo itself: a tracked `.review-install` file at the repo root, read whenever the flags are left out. For a Python repo it needs one line, the package the run must import from inside the lane:
+
+```
+# .review-install
+package = mypkg
+```
+
+The default install is `<lane venv python> -m pip install -e <lane>`, so the repo must be pip-installable (a `pyproject.toml` or `setup.py` declaring that package). Override it with `install = …`, where `{venv}` and `{lane}` are filled in per token. For another language, declare the runner and its command instead, for example `runner = cargo` and `test = cargo test`. The recognised keys are `install`, `package`, `runner`, `test` and `reports`; any other key is refused (`bad_hint`). A repo with no `.review-install` must pass `--package` and/or `--install`, and with neither the run refuses (`no_package`). `gr2 review run --help` has the full list.
 
 
 ## Transfer a native review

@@ -274,8 +274,10 @@ observation retains its fields and adds a SHA-256 `observation_id`.
 A review over several members is checked as one set. `gr2 check set <workspace> <review> -- <command>`
 reconstructs every member at its pinned head side by side (`GR2_SET_ROOT`, `GR2_REVIEW_ID` and `GR2_SET_MEMBERS`
 name them), runs the command once, and publishes one `set` observation per member remote, carrying the review and the
-identity of the set. `gr2 review merge` requires that record on a multi-member review (`--no-set` says otherwise),
-and `check show --require set --review <id>` reads a `set` record for another review as stale.
+identity of the set. With no `--check`, `gr2 review merge` on a multi-member review requires that record AND a
+passing `test` record from `gr2 check run` at each member's head, so a member whose recorded test is red, or that has
+none, is refused and nothing lands. `--check set` merges on the set's record alone; `--no-set` drops the set
+requirement. `check show --require set --review <id>` reads a `set` record for another review as stale.
 
 A failed command is recorded and `check run` exits 1. Publication or execution
 refusals exit 2. `check show` returns `pass`, `fail` or `absent` in its JSON;

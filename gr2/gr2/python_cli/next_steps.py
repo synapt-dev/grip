@@ -27,9 +27,10 @@ A review goes through six steps, in this order:
   3. gr2 review publish  put the pinned review on each member remote
   4. gr2 review stamp    an approver other than the author stamps it; in their
                          own workspace, after gr2 review receive
-  5. gr2 check run       record the check at the exact head on the remote; a
-                         review over several members is checked together with
-                         gr2 check set, one command over every member
+  5. gr2 check run       record the check at the exact head on the remote, for
+                         every member; a review over several members is also
+                         checked together with gr2 check set, one command over
+                         every member
   6. gr2 review merge    merges only if heads still match the pin and check
 Each refusal along the way names the next command."""
 

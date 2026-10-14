@@ -89,9 +89,60 @@ def test_D6_no_set_is_the_stated_way_out(slice2):
 def test_D6_a_single_member_review_does_not_need_a_set(slice2):
     # the default for ONE member is the old default; required_check_names is the whole rule
     assert merge_gate.required_check_names(None, 1, False) == ("test",)
-    assert merge_gate.required_check_names(None, 2, False) == ("set",)
+    assert merge_gate.required_check_names(None, 2, False) == ("test", "set")
     assert merge_gate.required_check_names(("test",), 2, False) == ("test", "set")
     assert merge_gate.required_check_names(("test",), 2, True) == ("test",)
+
+
+@pytest.fixture
+def slice2_no_test(request, monkeypatch):
+    """slice2 built with check_records.run_check stubbed out, so no member holds a `test` record yet."""
+    real = check_records.run_check
+    monkeypatch.setattr(check_records, "run_check", lambda *a, **k: None)
+    s = request.getfixturevalue("slice2")
+    monkeypatch.setattr(check_records, "run_check", real)
+    for m in s["members"].values():
+        assert not [r for r in check_records.read_remote_check(
+            str(m["remote"]), {"path": m["repo"], "key": "x", "remote": str(m["remote"])}, m["head"], ("test",)
+        )["records"] if r.get("name") == "test"], "fixture check: no test record"
+    return s
+
+
+def _record_test(m, argv):
+    check_records.run_check(m["repo"], str(m["remote"]), m["head"], "test", argv)
+
+
+def test_D8_with_no_check_a_member_whose_recorded_test_is_red_refuses_and_nothing_lands(slice2_no_test):
+    """The regression row: with no --check, a green set used to merge a review over a member's red test."""
+    s = slice2_no_test
+    _record_test(s["members"]["alpha"], PASS)
+    _record_test(s["members"]["beta"], FAIL)
+    assert run_set(s)["result"] == "pass"
+    code, receipt = merge(s)
+    assert code == merge_gate.EXIT_REFUSED, receipt
+    rows = {m["key"]: m for m in receipt["members"]}
+    assert rows["beta"]["refused"].startswith("check_fail"), receipt
+    assert untouched(s)
+
+
+def test_D8_with_no_check_a_member_with_no_recorded_test_refuses(slice2_no_test):
+    """No recorded test is not a pass by absence."""
+    s = slice2_no_test
+    _record_test(s["members"]["alpha"], PASS)
+    assert run_set(s)["result"] == "pass"
+    code, receipt = merge(s)
+    assert code == merge_gate.EXIT_REFUSED, receipt
+    rows = {m["key"]: m for m in receipt["members"]}
+    assert rows["beta"]["refused"].startswith("check_absent"), receipt
+    assert untouched(s)
+
+
+def test_D8_an_explicit_check_set_still_merges_on_the_set_record_alone(slice2_no_test):
+    """--check stays the explicit form with its current behaviour: naming `set` alone merges on the set's record."""
+    s = slice2_no_test
+    assert run_set(s)["result"] == "pass"
+    code, receipt = merge(s, required_checks=("set",))
+    assert code == merge_gate.EXIT_MERGED, receipt
 
 
 def test_R6_a_forged_record_named_set_does_not_satisfy_the_gate(slice2):

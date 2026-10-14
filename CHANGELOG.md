@@ -27,7 +27,8 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   the platform reports merged, the target must contain the reviewed head and the PR's head must still be the
   reviewed head: a commit pushed to the PR while the land ran is left out of the merge under a PR that reads
   merged, so that member is refused as `platform_head_moved_after_merge`, the commit is named, the run exits 4,
-  and no later member lands. The GitHub adapter gains `pr_for_head`, `pr_for_branch`, `pr_head` and
+  and no later member lands. A merge the platform does not confirm is `platform_merge_not_confirmed`, naming the
+  PR's head when it moved, and nothing is called stranded. The GitHub adapter gains `pr_for_head`, `pr_for_branch`, `pr_head` and
   `merge_pr_async`; an adapter without all four keeps every member on the push path.
 - **`gr2`: `gr2 review stamp <lane>` stamps a PR-head review.** Given a lane `review checkout-pr` or `review open`
   made, it records an unsigned approval as git `user.name`, bound to the lane's recorded repo and PR head, and

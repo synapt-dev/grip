@@ -499,14 +499,15 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                         now = adapter.pr_head(plan["repo"], plan["pr"]).get("head")
                     except Exception:  # noqa: BLE001
                         now = None
+                    if state != "merged":
+                        moved = f"; PR #{plan['pr']} head is now {now}" if now != m["head"] else ""
+                        r["refused"] = f"platform_merge_not_confirmed: {result.get('status')}: {result.get('message')}{moved}"
+                        break
                     if now != m["head"]:
                         r["refused"] = (f"platform_head_moved_after_merge: PR #{plan['pr']} head is {now}; the merge holds "
                                         f"the pinned head {m['head']}, so {now} was pushed during the land and is not in it")
                         r["_heads"], r["stranded"] = (m["head"], now), now
                         break  # land no further member after a stranded one
-                    if state != "merged":
-                        r["refused"] = f"platform_merge_not_confirmed: {result.get('status')}: {result.get('message')}"
-                        break
                     continue
                 try:
                     # An expiry is rc 124 here, so it lands in push_error and the state below is re-measured.

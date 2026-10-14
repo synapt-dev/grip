@@ -112,3 +112,22 @@ def test_a_version_2_adapter_reads_its_own_urls_when_selecting_a_platform_member
     monkeypatch.setattr(platform_ops, "get_platform_adapter", lambda name: adapter)
     assert merge_gate.platform_for_remote("https://git.example/acme/api.git") == (adapter, "acme/api")
     assert adapter.read == ["https://git.example/acme/api.git"], "the adapter, not gr2, read the URL"
+
+
+def test_a_refused_platform_merge_with_a_moved_head_is_not_called_stranded(slice2, platform):  # noqa: F811
+    # GitHub may refuse a merge whose head moved; then nothing landed and nothing was stranded by a merge.
+    alpha = str(slice2["members"]["alpha"]["remote"])
+    before = mains(slice2)
+
+    def refuse(repo, number, sha, method="merge"):
+        platform.prs[repo]["head"] = "f" * 40
+        return {"status": "failed", "sha": None, "message": "Head branch was modified"}
+
+    platform.merge_pr_async = refuse
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
+    assert mains(slice2) == before
+    row = next(r for r in receipt["members"] if r["key"] == "alpha")
+    assert row["refusal"]["code"] == "platform_merge_not_confirmed", row
+    assert not row.get("stranded") and "holds the pinned head" not in row["refused"], row
+    assert "f" * 40 in row["refused"], "the moved head is still named"
+    assert code == merge_gate.EXIT_REFUSED, receipt

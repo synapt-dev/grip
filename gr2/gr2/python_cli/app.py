@@ -4920,8 +4920,9 @@ def review_approve(
 ) -> None:
     """Stamp the review: append an unsigned exact-head approval as git user.name, on every member remote.
 
-    WORKSPACE_ROOT may be a lane `review open` made: the stamp then uses the store of the workspace the lane was
-    opened from and the members checked out in the lane, so a reviewer in another gripspace stamps from the lane."""
+    WORKSPACE_ROOT may be a lane `review open` made, or one member directory in it: the stamp then uses the store
+    of the workspace the lane was opened from and the members checked out in the lane, so a reviewer in another
+    gripspace stamps from the lane. The approver is the git user.name of the workspace the lane was opened from."""
     from . import approvals
     try:
         # A review lane (`review checkout-pr` or `review open`) carries its (repo, head) record; stamp binds to it.

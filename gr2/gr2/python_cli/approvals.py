@@ -114,21 +114,32 @@ def review_open_lane(lane: Path) -> tuple[Path, str, dict[str, Path]] | None:
 
     A reviewer in another gripspace has no member clone in their own workspace; the lane is the only checkout of
     the reviewed repos, so stamp reads the members there and the store from the workspace the marker names.
-    None when `lane` holds no review-open marker."""
+    A member directory of a multi-member lane (`<lane>/<key>`) resolves to its lane. None when neither holds a
+    review-open marker."""
     from . import review_run
     lane = Path(lane).resolve()
     path = review_run.find_marker(lane)
     if path is None:
-        return None
+        parent = review_run.find_marker(lane.parent)
+        if parent is None:
+            return None
+        found = review_open_lane(lane.parent)
+        return found if found is not None and found[2].get(lane.name) == lane else None
     try:
         marker = json.loads(path.read_text())
     except (OSError, ValueError) as exc:
         raise ApprovalRefused(f"approval_review_record_unreadable: {path}") from exc
     rows = marker.get("repos") if isinstance(marker, dict) else None
     if (not review_run.marker_kind_ok(marker) or not isinstance(marker.get("gr_commit"), str)
-            or not isinstance(marker.get("workspace_root"), str) or not isinstance(rows, list) or not rows
+            or not isinstance(rows, list) or not rows
             or not all(isinstance(r, dict) and isinstance(r.get("key"), str) for r in rows)):
         raise ApprovalRefused(f"approval_review_record_unreadable: {path}")
+    if not isinstance(marker.get("workspace_root"), str):
+        raise ApprovalRefused(f"approval_lane_names_no_workspace: {lane} was opened by an older gr2 and does not name "
+                              "the workspace it was opened from",
+                              next_step=f"next: open the review again, then stamp the new lane: "
+                                        f"gr2 review open <your-workspace> gr:{marker['gr_commit']} --lane-dir <new-lane>, "
+                                        "then gr2 review stamp <new-lane>")
     try:
         members = ({rows[0]["key"]: lane} if len(rows) == 1
                    else {r["key"]: review_run._member_dir(lane, r["key"]) for r in rows})
@@ -157,7 +168,14 @@ def _context(workspace: Path, review_id: str, member_dirs: dict[str, Path] | Non
     for m in view["members"]:
         if member_dirs is not None:
             repo = member_dirs.get(m["key"])
-            if repo is None or merge_gate._toplevel(repo) != repo.resolve():
+            if repo is None:
+                keys = [r["key"] for r in view["members"]]
+                raise ApprovalRefused(
+                    f"approval_lane_partial: this lane holds {', '.join(sorted(member_dirs))}; the review has "
+                    f"{', '.join(keys)}",
+                    next_step=f"next: open the whole review and stamp that lane: gr2 review open {workspace} "
+                              f"gr:{rid} --lane-dir <new-lane>, then gr2 review stamp <new-lane>")
+            if merge_gate._toplevel(repo) != repo.resolve():
                 raise ApprovalRefused(f"approval_member_repo_mismatch: {m['key']}")
             repo = repo.resolve()
         else:

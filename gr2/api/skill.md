@@ -53,12 +53,16 @@ for m in $MEMBERS; do echo "$m $(git -C "$WS/$m" rev-parse HEAD)"; done
 
 The record carries every member at its current commit, including commits no member remote has; nothing is pushed to any member remote. Run it from the workspace root after Recipe 1.
 
+It needs a FULL-mode workspace: `mode = "full"` as a top-level key of the root's `grip.toml`, above its first `[table]`. A plain `gr2 store init` writes no top-level mode, which means compat, and in compat `store commit` refuses a member commit that is on no remote ("push it first"). For a new workspace, add that line before the first `store commit`; the script stops and says so when it is missing.
+
 ```bash
 #!/bin/bash
 set -euo pipefail
 WS=/path/to/workspace                              # EDIT
 ROOT=/path/to/root.git                             # EDIT: the one address (an empty bare repository)
 cd "$WS"
+awk '/^\[/{exit} {print}' grip.toml | grep -q '^mode *= *"full"' \
+  || { echo 'grip.toml has no top-level mode = "full"; add it as the first line (see above), then run again' >&2; exit 1; }
 gr2 store commit -m "workspace at its current commits"
 gr2 store check                                    # every member's pin is carried by the record
 gr2 store push --to "$ROOT"                        # pushes the record, and nothing to any member remote

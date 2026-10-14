@@ -109,7 +109,7 @@ gr2 check set "$WS" "$REVIEW" -- "$T/set-test.sh"  # exit 0 pass, 1 fail (it pri
 
 ### Recipe 5: approve a teammate's review
 
-Run it in YOUR workspace: the approval is made as that workspace's `git user.name`, and the author cannot approve their own review. It runs the set test itself (as in Recipe 4) and stops before stamping when that test fails.
+Run it in YOUR workspace: the approval is made as that workspace's `git user.name`, and the author cannot approve their own review. Run it once to see the ranges and read the change; run it again with `APPROVE=1` to test and stamp. It runs the set test itself (as in Recipe 4) and stops before stamping when that test fails.
 
 ```bash
 #!/bin/bash
@@ -121,7 +121,7 @@ MEMBERS="alpha beta"                               # EDIT: the member directorie
 for r in $REMOTES; do gr2 review receive "$WS" "$REVIEW" --remote "$r"; done
 for m in $MEMBERS; do git -C "$WS/$m" fetch -q origin; done   # receive does not fetch the heads; the set test needs them
 gr2 review show "$WS" "$REVIEW"                    # each member's commit range and the files it changes
-# READ the change before going on: in each member, `git diff <range start>..<range end>` for the range shown above
+[ "${APPROVE:-}" = 1 ] || { echo "Read each member's range above (git diff <start>..<end> in that member), then run this again with APPROVE=1 to test and stamp."; exit 0; }
 T=$(mktemp -d)
 cat > "$T/set-test.sh" <<'EOF'
 #!/bin/bash

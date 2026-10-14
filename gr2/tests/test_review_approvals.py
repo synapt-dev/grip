@@ -835,3 +835,16 @@ def test_a_head_the_member_remote_no_longer_has_still_refuses_head_not_fetched(w
     assert early.exit_code == 2 and "head_not_fetched: member" in early.output, early.output
     assert "unknown revision" not in early.output, early.output
     assert any(x.startswith("next: ") for x in early.output.splitlines()), early.output
+
+
+def test_a_bind_approval_push_carries_no_pr_lane_approval(world):
+    """PR-lane approvals (PREFIX + "pr/<head>") are local. The bind writer pushes only its own tip:ref, so a ref
+    under pr/ in the repo it pushes from stays home while the bind approval reaches the remote."""
+    workspace, remote, rid = world["workspace"], world["remote"], world["rid"]
+    pr_ref = approvals.PR_PREFIX + world["head"]
+    git(workspace, "update-ref", pr_ref, rid)  # any object the store holds; the review commit is one
+    stamped = approve_as(world, "Reviewer B")
+    assert stamped.exit_code == 0, stamped.output
+    on_remote = git(remote, "for-each-ref", "--format=%(refname)", approvals.PREFIX).splitlines()
+    assert approvals.PREFIX + rid in on_remote, on_remote  # control: the bind approval was pushed
+    assert not [r for r in on_remote if r.startswith(approvals.PR_PREFIX)], on_remote

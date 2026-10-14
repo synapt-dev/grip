@@ -11,6 +11,13 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Added
 
+- **`gr2`: `gr2 review stamp <lane>` stamps a PR-head review.** Given a lane `review checkout-pr` or `review open`
+  made, it records an unsigned approval as git `user.name`, bound to the lane's recorded repo and PR head, and
+  prints the approvals of that (repo, head). The approval is a ref under
+  `refs/dev.synapt.grip/__approvals__/v1/pr/<head>` in the workspace's own clone of that repo: it is local, is
+  never pushed, and is still there after `review close` drops the lane. A lane whose HEAD is not the recorded head
+  is refused (`approval_head_moved`), and nothing is stamped. Stamping twice under one name counts once. As with
+  bind approvals, the name is self-declared; whether the approver wrote the PR is not checked.
 - **`gr2`: `gr2 proto json` prints a protobuf record as JSON, and `git diff` can show it.** It reads a file of
   protobuf bytes, a blob, or a field tree. Without a schema, keys are field numbers and a length-delimited value
   prints as text or `{"bytes_b64": ...}`, never guessed as nested; `--message` names fields from the bundled

@@ -848,3 +848,42 @@ def test_a_bind_approval_push_carries_no_pr_lane_approval(world):
     on_remote = git(remote, "for-each-ref", "--format=%(refname)", approvals.PREFIX).splitlines()
     assert approvals.PREFIX + rid in on_remote, on_remote  # control: the bind approval was pushed
     assert not [r for r in on_remote if r.startswith(approvals.PR_PREFIX)], on_remote
+
+
+def _reviewer_in_another_gripspace(world, tmp_path, monkeypatch):
+    """A reviewer whose own workspace does not hold the reviewed repo at all (another team's gripspace): it receives
+    the review and opens a lane, which is the only place the member is checked out."""
+    reviewer = tmp_path / "other-gripspace"
+    reviewer.mkdir()
+    # their own repo, with a remote of its own: nothing in this workspace is the reviewed member
+    theirs = tmp_path / "theirs.git"
+    git(tmp_path, "init", "--bare", "-b", "main", theirs)
+    git(reviewer, "clone", theirs, "their-own-repo")
+    git(reviewer / "their-own-repo", "commit", "--allow-empty", "-m", "theirs")
+    git(reviewer / "their-own-repo", "push", "origin", "main")
+    initialised = runner.invoke(app, ["store", "init", str(reviewer)])
+    assert initialised.exit_code == 0, initialised.output
+    monkeypatch.chdir(reviewer)
+    git(reviewer, "config", "user.name", "Reviewer R")
+    git(reviewer, "config", "user.email", "r@example.invalid")
+    rid = "gr:" + world["rid"]
+    got = runner.invoke(app, ["review", "receive", str(reviewer), rid, "--remote", str(world["remote"])])
+    assert got.exit_code == 0, got.output
+    lane = tmp_path / "review-lane"
+    opened = runner.invoke(app, ["review", "open", str(reviewer), rid, "--lane-dir", str(lane)])
+    assert opened.exit_code == 0, opened.output
+    git(lane, "config", "user.name", "Reviewer R")  # one member: the lane is its checkout
+    return reviewer, rid, lane
+
+
+def test_a_reviewer_in_another_gripspace_stamps_from_the_review_lane(world, tmp_path, monkeypatch):
+    reviewer, rid, lane = _reviewer_in_another_gripspace(world, tmp_path, monkeypatch)
+    stamped = runner.invoke(app, ["review", "stamp", str(lane)])
+    assert stamped.exit_code == 0, stamped.output
+    receipt = json.loads(stamped.stdout)
+    assert receipt["review_id"] == rid and receipt["count"] == 1, receipt
+    assert [link["approver"] for link in receipt["links"]] == ["Reviewer R"], receipt
+    # the author's own workspace reads the same approval from the member remote
+    monkeypatch.chdir(world["workspace"])
+    seen = approvals.count_approvals(world["workspace"], world["rid"])
+    assert seen["count"] == 1 and [link["approver"] for link in seen["links"]] == ["Reviewer R"], seen

@@ -4922,7 +4922,12 @@ def review_approve(
     from . import approvals
     try:
         # A review lane (`review checkout-pr` or `review open`) carries its (repo, head) record; stamp binds to it.
-        if review_id is None and approvals.pr_lane_record(workspace_root.resolve()) is not None:
+        opened = approvals.review_open_lane(workspace_root.resolve()) if review_id is None else None
+        if opened is not None:
+            # A `review open` lane: the store is the workspace it was opened from, the members are read here.
+            store, rid, members = opened
+            result = approvals.approve(store, rid, members)
+        elif review_id is None and approvals.pr_lane_record(workspace_root.resolve()) is not None:
             result = approvals.approve_pr_lane(workspace_root.resolve())
         else:
             result = approvals.approve(workspace_root.resolve(), review_id)

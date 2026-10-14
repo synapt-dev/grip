@@ -566,6 +566,8 @@ def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -
     # importing it inside the first arm left `converge_unit_repos` reading an
     # unbound name, and the failure surfaced as an exit 1 with empty stdout.
     from .clone_exec import clone_and_pin
+    # On a native root the store's record is the pin, not the spec's copy, which goes stale at the first advance.
+    from .lane_downstream import record_pin
 
     applied: list[str] = []
     materialized_repos: list[dict[str, object]] = []
@@ -577,7 +579,7 @@ def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -
             first_materialize = clone_and_pin(
                 str(repo_spec["url"]),
                 repo_root,
-                pin=str(repo_spec.get("pin") or ""),
+                pin=str(record_pin(workspace_root, repo_spec["name"], repo_spec.get("path"), repo_spec.get("pin")) or ""),
                 member=str(repo_spec["name"]),
                 reference_repo_root=cache_path,
             )
@@ -629,7 +631,7 @@ def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -
                 # beside it.
                 clone_dest = unit_member_path(workspace_root, spec, unit_spec, repo_name)
                 cache_path = repo_cache_path(workspace_root, str(repo_spec["name"]))
-                pin = str(repo_spec.get("pin") or "")
+                pin = str(record_pin(workspace_root, repo_name, repo_spec.get("path"), repo_spec.get("pin")) or "")
                 # A clone lands on the remote's default tip; the root declares a
                 # commit. The helper stages, pins, then renames, so a refusal
                 # cannot leave a clone behind at the tip for the next run to

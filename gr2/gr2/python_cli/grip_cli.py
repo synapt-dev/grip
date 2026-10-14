@@ -1793,14 +1793,126 @@ def _committed_pin(root: Path, member: dict) -> str | None:
     line set back to an older sha is not the record; the working pin is used only when HEAD records none (a first
     commit, or the empty root commit of a full-mode workspace). The record is found by the member's PATH, not its name:
     a name is a label the working file can change, while the path is where the member's commits live."""
-    want = str(PurePosixPath(str(member["path"])))
+    return _head_member_pin(root, str(member["path"])) or member.get("pin")
+
+
+def _head_grip_toml(root: Path) -> dict:
+    """HEAD:grip.toml parsed, or {} when HEAD holds none (no commit yet, or no grip.toml in it)."""
     try:
-        members = tomllib.loads(_store_git(root, "show", "HEAD:grip.toml").stdout).get("members", [])
+        return tomllib.loads(_store_git(root, "show", "HEAD:grip.toml").stdout)
     except (RuntimeError, tomllib.TOMLDecodeError):
-        members = []
-    committed = next((str(m["pin"]) for m in members if isinstance(m, dict) and m.get("pin")
-                      and str(PurePosixPath(str(m.get("path", "")))) == want), None)
-    return committed or member.get("pin")
+        return {}
+
+
+def _head_member_entry(document: dict, path: str, name: str | None = None) -> dict | None:
+    """The committed entry (from HEAD:grip.toml, parsed) with a pin for the member at ``path``, matched by PATH because a
+    name is a label the working file can change. With ``name``, a member no committed entry holds at ``path`` is then
+    matched by its committed name, which no working edit can change."""
+    members = document.get("members", [])
+    entries = [m for m in members if isinstance(m, dict) and m.get("pin")] if isinstance(members, list) else []
+    want = str(PurePosixPath(str(path)))
+    found = next((m for m in entries if str(PurePosixPath(str(m.get("path", "")))) == want), None)
+    if found is None and name:
+        found = next((m for m in entries if m.get("name") == name), None)
+    return found
+
+
+def _head_member_pin(root: Path, path: str, name: str | None = None) -> str | None:
+    """The pin HEAD:grip.toml records for the member at ``path`` (then by ``name``), or None when HEAD records none.
+    `_committed_pin` and `recorded_member_pin` both read the committed entry through `_head_member_entry`."""
+    entry = _head_member_entry(_head_grip_toml(root), path, name)
+    return str(entry["pin"]) if entry else None
+
+
+def _member_record(root: Path, path: str, committed: str | None, full: bool) -> tuple[str | None, str]:
+    """The one reader of a member's record in the root commit, for the member whose committed entry is at ``path``:
+    ``committed`` (HEAD:grip.toml's pin there) when it is a full lowercase commit; otherwise the root's committed
+    gitlink at ``path``, read through the field record when ``full`` (the gitlink is then a field-commit, not the
+    member's commit). Returns ``(pin, source)``, or ``(None, "")`` when the commit gives no pin."""
+    if committed is not None and _FULL_SHA.match(committed):
+        return committed, "committed grip.toml"
+    link = _store_git(root, "ls-tree", "HEAD", "--", path, check=False).stdout.split()
+    entry = link[2] if len(link) >= 3 and link[0] == "160000" else None
+    if entry is not None and full:
+        from . import member_field_tree as mft
+        try:
+            entry = mft.read(root, f"{entry}^{{tree}}")["pin"]
+        except (mft.FieldTreeError, RuntimeError, subprocess.SubprocessError, OSError, KeyError):
+            entry = None
+    if isinstance(entry, str) and _FULL_SHA.match(entry):
+        return entry, "gitlink"
+    return None, ""
+
+
+_FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+def recorded_member_pin(root: Path, name: str, path: str | None = None) -> tuple[bool, str | None, str]:
+    """The store's own record of one member's pin on a native root, for the verbs that read the workspace spec.
+
+    Returns ``(listed, pin, source)``. ``listed`` is False when neither the working grip.toml (matched by path, then by
+    name) nor the root commit's grip.toml (by path, then by name) lists the member, which includes a root that has never
+    committed a grip.toml, and the caller keeps its own value. A deleted working grip.toml does not make a root
+    non-native: the root commit's record still answers. A listed member's pin is the one the root COMMIT records,
+    read by `_member_record` whichever file listed it: HEAD:grip.toml's pin for the member's path when it is a full
+    lowercase commit; otherwise the root's committed gitlink at that path, read through the field record in a
+    full-mode store, where the entry is a field-commit and not the member's commit. The working grip.toml's pin is
+    used only when HEAD records none (a store not committed yet): the working file is editable, so a pin set back to
+    an older commit there is not the record. ``pin`` is None when nothing gives one. The spec is never consulted
+    here: its copy goes stale at the first advance.
+
+    What still comes from the WORKING grip.toml, and nothing else does: (1) which entry lists the member (by path,
+    then by name), and so the path at which the committed record is read; (2) the member's pin, only when HEAD records
+    none (before the first store commit); (3) the store mode, only when HEAD holds no grip.toml. The committed pin,
+    the gitlink and, whenever HEAD has a grip.toml, the store mode that says how to read that gitlink are HEAD's."""
+    grip_toml = root / "grip.toml"
+    if not grip_toml.is_file():
+        # The working file is gone, but a root whose commit holds grip.toml is still native by its record.
+        return _committed_record(root, str(path or name), name)
+    try:
+        document = tomllib.loads(grip_toml.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return False, None, ""
+    members = [m for m in document.get("members", []) if isinstance(m, dict)] if isinstance(
+        document.get("members"), list) else []
+    member = None
+    if path:
+        want = str(PurePosixPath(str(path)))
+        member = next((m for m in members if str(PurePosixPath(str(m.get("path", "")))) == want), None)
+    if member is None:
+        member = next((m for m in members if m.get("name") == name), None)
+    if member is None:
+        # Dropped from the working file but still in the root commit: the working file is editable, so the commit's
+        # pin is still the record.
+        return _committed_record(root, str(path or name), name)
+    member_path = str(PurePosixPath(str(member.get("path") or path or name)))
+    head = _head_grip_toml(root)
+    entry = _head_member_entry(head, member_path)
+    committed = str(entry["pin"]) if entry else None
+    # The gitlink read below is HEAD's, so the mode that says what it is (member commit or field-commit) is HEAD's
+    # too; the working file's mode is used only when HEAD holds no grip.toml (no store commit yet).
+    recorded, source = _member_record(root, member_path, committed, _workspace_mode(head or document) == "full")
+    if recorded is not None:
+        return True, recorded, source
+    pin = member.get("pin")
+    if committed is None and isinstance(pin, str) and _FULL_SHA.match(pin):
+        return True, pin, "grip.toml, not committed yet"
+    return True, None, ""
+
+
+def _committed_record(root: Path, path: str, name: str) -> tuple[bool, str | None, str]:
+    """``recorded_member_pin``'s answer from the root commit alone, for a member the working grip.toml does not list
+    (or when that file is gone). The committed entry is found by ``path``, then by ``name``; its record is read by
+    `_member_record` at the ENTRY's path (a name match can sit at another path than the caller's) and in the committed
+    store mode, since the working file that would name the mode is gone or no longer speaks for this member. No
+    committed entry: not listed."""
+    document = _head_grip_toml(root)
+    entry = _head_member_entry(document, path, name)
+    if entry is None:
+        return False, None, ""
+    entry_path = str(PurePosixPath(str(entry.get("path") or path)))
+    recorded, source = _member_record(root, entry_path, str(entry["pin"]), _workspace_mode(document) == "full")
+    return True, recorded, source
 
 
 def _refuse_pin_rewind(

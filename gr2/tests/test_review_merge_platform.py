@@ -93,3 +93,22 @@ def test_a_commit_pushed_to_the_pr_during_the_land_is_named_as_stranded_and_stop
     assert row["refusal"]["code"] == "platform_head_moved_after_merge", row
     assert row["stranded"] == late["sha"] and late["sha"] in row["refused"], row
     assert row.get("next"), "a stranded commit names the next step"
+
+
+def test_a_version_2_adapter_reads_its_own_urls_when_selecting_a_platform_member(monkeypatch):
+    from gr2.python_cli import platform as platform_ops
+
+    class V2(FakePlatform):
+        platform_adapter_api_version = 2
+
+        def __init__(self):
+            self.read = []
+
+        def resolve_target(self, remote):
+            self.read.append(remote)
+            return platform_ops.RemoteTarget(raw=remote, host="git.example", org="acme", project=None, repo="api")
+
+    adapter = V2()
+    monkeypatch.setattr(platform_ops, "get_platform_adapter", lambda name: adapter)
+    assert merge_gate.platform_for_remote("https://git.example/acme/api.git") == (adapter, "acme/api")
+    assert adapter.read == ["https://git.example/acme/api.git"], "the adapter, not gr2, read the URL"

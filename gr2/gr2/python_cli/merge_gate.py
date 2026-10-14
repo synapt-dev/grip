@@ -240,9 +240,6 @@ def platform_for_remote(remote: str):  # noqa: ANN201
 
     A member is a platform member only if, in addition, the platform reports exactly one open PR whose head is the
     pinned head; that is asked in the preflight, not here."""
-    found = _GITHUB_REMOTE.match(remote or "")
-    if not found:
-        return None
     from . import platform as platform_ops
     try:
         adapter = platform_ops.get_platform_adapter("github")
@@ -250,7 +247,15 @@ def platform_for_remote(remote: str):  # noqa: ANN201
         return None
     if not all(callable(getattr(adapter, name, None)) for name in _PLATFORM_CAPABILITIES):
         return None
-    return adapter, found.group(1)
+    if platform_ops.adapter_api_version(adapter) >= 2:
+        # A version 2 adapter is the only reader of its URLs.
+        try:
+            target = adapter.resolve_target(remote)
+        except Exception:  # noqa: BLE001  (a URL the adapter does not read is a plain-Git member)
+            return None
+        return (adapter, f"{target.org}/{target.repo}") if target.org and target.repo else None
+    found = _GITHUB_REMOTE.match(remote or "")  # a version 1 adapter: read as the v1 path reads a GitHub URL
+    return (adapter, found.group(1)) if found else None
 
 
 def _platform_preflight(adapter, repo: str, head: str, into: str) -> tuple[dict | None, str | None]:  # noqa: ANN001

@@ -15,6 +15,9 @@ MUTANTS = [
      'got = gitops.run(repo, "rev-parse", "HEAD")', "b6"),
     ("unverifiable-passes", CLI, "        except shadow_mod.CannotVerify as exc:\n            raise NativeStoreRefusal(f\"{exc}; nothing was pushed\", 5) from exc",
      "        except shadow_mod.CannotVerify:\n            continue", "b7"),
+    ("record-not-pushed", CLI, "*([rewound_ref] if rewound_ref else [])],", "],", "b8"),
+    ("record-parent-not-tip", CLI, 'record = _store_git(root, "commit-tree", tree, "-p", tip, "-m", message)',
+     'record = _store_git(root, "commit-tree", tree, "-m", message)', "b8"),
 ]
 killed = 0
 RUN = [m for m in MUTANTS if not ONLY or m[0] in ONLY]

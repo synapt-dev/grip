@@ -2557,6 +2557,21 @@ def _member_rewinds(root: Path, tip: str, recorded: str, allow_rewind: list[str]
     return taken
 
 
+def _rewound_record(root: Path, tip: str, rewound: list[dict[str, str]]) -> tuple[str, str] | None:
+    """A rewind taken under --allow-rewind is WRITTEN DOWN on origin, not only in the result (the main post: "a rewind
+    needs --allow-rewind, and is written down"). The record is one commit at refs/dev.synapt.grip/rewound/<tip>: its
+    parent is the tip and its tree the tip's, so it carries no object the tip does not, and its message names each
+    member, the kind and both pins. It rides the root's ONE atomic push, so it lands with the tip or not at all; one
+    ref per tip needs no lease (a second push of the same tip rewinds nothing). None when nothing was taken."""
+    if not rewound:
+        return None
+    lines = [f"{r['name']}: {r['kind']}: {r['old']} -> {r['new']}" for r in rewound]
+    message = f"store push: rewound under --allow-rewind at {tip}\n\n" + "\n".join(lines) + "\n"
+    tree = _store_git(root, "rev-parse", f"{tip}^{{tree}}").stdout.strip()
+    record = _store_git(root, "commit-tree", tree, "-p", tip, "-m", message).stdout.strip()
+    return record, f"refs/dev.synapt.grip/rewound/{tip}"
+
+
 def _native_store_push(root: Path, to: str | None = None, atomic: bool = False, recurse: str = "check",
                        snapshot: bool = False, allow_rewind: list[str] | None = None) -> dict[str, object]:
     """Push only the checked root record. Member publication is a prior verb, or `recurse="on-demand"`.
@@ -2602,8 +2617,10 @@ def _native_store_push(root: Path, to: str | None = None, atomic: bool = False, 
         _ensure_shadow_fetch_line(root)
         leases = _leases(root, tip, [f"refs/heads/{branch}", _shadow_ref(root)])
         rewound = _member_rewinds(root, tip, leases[_shadow_ref(root)], list(allow_rewind or []))
+        rewound_ref = _rewound_record(root, tip, rewound)
         landed_by_another = _atomic_push(root, [(tip, f"refs/heads/{branch}"), (tip, _shadow_ref(root)),
-                                                *[(pin, ref) for _, pin, ref in same_repo]],
+                                                *[(pin, ref) for _, pin, ref in same_repo],
+                                                *([rewound_ref] if rewound_ref else [])],
                                          verify=recurse != "none", leases=leases)
         for ref in leases:
             _store_git(root, "update-ref", "-m", "store push: tracking", _tracking_ref(ref), tip)
@@ -2635,6 +2652,7 @@ def _native_store_push(root: Path, to: str | None = None, atomic: bool = False, 
         "snapshot": tip if made else None,
         "allow_rewind": list(allow_rewind or []),
         "rewound": rewound,
+        "rewound_record": rewound_ref[1] if rewound_ref else None,
     }
 
 

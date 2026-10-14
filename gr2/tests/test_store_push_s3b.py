@@ -12,9 +12,10 @@ from pathlib import Path
 import pytest
 
 from tests.test_store_git_native_smoke import git, gr2
-from tests.test_store_shadow_s1 import MODES, SHADOW, _advance, _refs, _store
+from tests.test_store_shadow_s1 import MODES, SHADOW, _advance, _refs, _refuse_shadow, _store
 
 MAIN = "refs/heads/main"
+REWOUND = "refs/dev.synapt.grip/rewound"
 
 
 def _head(repo: Path) -> str:
@@ -93,8 +94,13 @@ def test_b4_allow_rewind_takes_it_and_the_result_names_it(tmp_path, mode):
     git(root / "alpha", "reset", "-q", "--hard", p0)
     gr2(root, "commit", "-m", "alpha back")
     result = gr2(root, "push", "--allow-rewind", "alpha", "--json")
-    assert json.loads(result.stdout)["rewound"] == [{"name": "alpha", "kind": "rewind", "old": p1, "new": p0}]
-    assert _refs(origin) == {MAIN: _head(root), SHADOW: _head(root)}
+    payload = json.loads(result.stdout)
+    assert payload["rewound"] == [{"name": "alpha", "kind": "rewind", "old": p1, "new": p0}]
+    tip = _head(root)
+    record = f"{REWOUND}/{tip}"
+    assert payload["rewound_record"] == record
+    assert set(_refs(origin)) == {MAIN, SHADOW, record}
+    assert (_refs(origin)[MAIN], _refs(origin)[SHADOW]) == (tip, tip)
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -141,4 +147,33 @@ def test_b7_a_recorded_pin_gone_everywhere_cannot_be_verified(tmp_path, mode):
     assert result.returncode == 5, (result.returncode, result.stderr)
     assert f"cannot verify alpha: {p1} not held" in result.stderr
     assert "nothing was pushed" in result.stderr
+    assert _refs(origin) == before
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_b8_a_rewind_taken_is_written_down_on_origin_with_the_tip(tmp_path, mode):
+    # The main post: "a rewind needs --allow-rewind, and is written down". The record is a commit on origin whose
+    # parent is the tip and whose tree is the tip's (no object the tip does not carry), naming member, kind, both pins.
+    root, origin, p0, p1 = _two_pushes(tmp_path, mode)
+    git(root / "alpha", "reset", "-q", "--hard", p0)
+    gr2(root, "commit", "-m", "alpha back")
+    gr2(root, "push", "--allow-rewind", "alpha")
+    tip = _head(root)
+    record = f"{REWOUND}/{tip}"
+    assert git(origin, "rev-parse", f"{record}^").stdout.strip() == tip
+    assert git(origin, "rev-parse", f"{record}^{{tree}}").stdout.strip() == git(origin, "rev-parse", f"{tip}^{{tree}}").stdout.strip()
+    assert git(origin, "rev-list", "--count", record).stdout.strip() == str(int(git(origin, "rev-list", "--count", tip).stdout.strip()) + 1)
+    assert f"alpha: rewind: {p1} -> {p0}" in git(origin, "log", "-1", "--format=%B", record).stdout
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_b8_the_record_rides_the_one_atomic_push(tmp_path, mode):
+    # Origin refuses the shadow: nothing moves, the record included (it lands with the tip or not at all).
+    root, origin, p0, p1 = _two_pushes(tmp_path, mode)
+    before = _refs(origin)
+    git(root / "alpha", "reset", "-q", "--hard", p0)
+    gr2(root, "commit", "-m", "alpha back")
+    _refuse_shadow(origin)
+    result = gr2(root, "push", "--allow-rewind", "alpha", check=False)
+    assert result.returncode != 0
     assert _refs(origin) == before

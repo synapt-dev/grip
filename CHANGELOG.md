@@ -11,6 +11,12 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Added
 
+- **`gr2`: a root made by `gr2 store init` works with `gr2 sync` at once, with no second init.** Before, `sync status`
+  on a fresh store refused ("run `gr2 workspace init <path>` first") until a spec file was written. Now, on a root
+  that has `grip.toml` and no `.grip/workspace_spec.toml`, the workspace spec is built from `grip.toml` in memory on
+  every read (one repo per member, its `origin` remote as url, its ref and pin, one default unit). Nothing is written,
+  so `grip.toml` stays the one record of each member and an edit there is what the next `sync` reads. A spec file
+  that exists is still the spec, unchanged.
 - **`gr2`: `gr2 review stamp <lane>` stamps a PR-head review.** Given a lane `review checkout-pr` or `review open`
   made, it records an unsigned approval as git `user.name`, bound to the lane's recorded repo and PR head, and
   prints the approvals of that (repo, head). The approval is a ref under

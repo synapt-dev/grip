@@ -2708,13 +2708,16 @@ def _announce_context(ctx: typer.Context, *, actor: Optional[str] = None, with_a
 
 def _spec_for_lane_create(workspace_root: Path, default_unit: str) -> bool:
     """Lanes are made from the workspace spec. A root made by `store init` holds only grip.toml, whose [[members]]
-    already say which repos the workspace is, so the spec is written from them (one announced stderr line) and the
-    lane is built as usual. With neither a spec nor members there is nothing to build from: refused first, before a
+    already say which repos the workspace is: when the spec derives from them (`spec_apply.derived_spec_doc`) nothing
+    is written, so grip.toml stays the one record. Members the derive refuses (one with no origin remote) are still
+    written as the spec (one announced stderr line) and the lane is built as usual. With neither a spec nor members there is nothing to build from: refused first, before a
     default is chosen, a remote is asked or a byte is written, in one sentence with the way out."""
     from . import lane_defaults, lane_downstream
-    from .spec_apply import workspace_spec_path
+    from .spec_apply import derived_spec_doc, workspace_spec_path
 
     if workspace_spec_path(workspace_root).is_file():
+        return False
+    if derived_spec_doc(workspace_root) is not None:
         return False
     members: list[dict[str, object]] = []
     grip_toml = workspace_root / "grip.toml"

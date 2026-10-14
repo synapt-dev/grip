@@ -113,7 +113,7 @@ EXPECTED = {
     "gr2/prototypes/concurrent_lease_stress.py": 2,
     "gr2/prototypes/concurrent_workspace_cap_stress.py": 3,
     "gr2/prototypes/cross_mode_lane_stress.py": 4,
-    "gr2/prototypes/lane_workspace_prototype.py": 10,
+    "gr2/prototypes/lane_workspace_prototype.py": 9,
     "gr2/prototypes/layout_model_probe.py": 1,
     "gr2/prototypes/python_exec_playground.py": 1,
     "gr2/prototypes/python_hook_runtime_playground.py": 2,

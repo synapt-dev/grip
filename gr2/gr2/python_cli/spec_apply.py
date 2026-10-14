@@ -84,8 +84,50 @@ def repo_cache_path(workspace_root: Path, repo_name: str) -> Path:
     return workspace_cache_root(workspace_root) / f"{repo_name}.git"
 
 
+def derived_spec_doc(workspace_root: Path) -> dict[str, object] | None:
+    """The workspace spec of a native root with no spec FILE, built from `grip.toml` in memory on every read: one repo
+    per member (name, path, the `origin` remote as url, ref, pin) and one default unit over them. Nothing is written,
+    so `grip.toml` stays the one record of each member and a later edit there (a remote, a pin) is what the next read
+    sees. None when the root has no `grip.toml`, an unreadable one, no members, or a member with no `origin` remote: a
+    spec repo needs a url, and inventing an empty one would declare a repo nothing can clone. Callers ask for it only when the
+    root has no spec FILE: an existing spec file wins (see `load_workspace_spec_doc`)."""
+    grip_toml = workspace_root / "grip.toml"
+    try:
+        members = tomllib.loads(grip_toml.read_text(encoding="utf-8")).get("members", [])
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None
+    repos: list[dict[str, object]] = []
+    for m in members if isinstance(members, list) else []:
+        if not (isinstance(m, dict) and isinstance(m.get("name"), str) and m["name"]):
+            continue
+        remotes = m.get("remotes") if isinstance(m.get("remotes"), dict) else {}
+        url = remotes.get("origin")
+        if not (isinstance(url, str) and url):
+            return None
+        repo: dict[str, object] = {
+            "name": m["name"],
+            "path": m["path"] if isinstance(m.get("path"), str) and m["path"] else m["name"],
+            "url": url,
+        }
+        for key in ("ref", "pin"):
+            if isinstance(m.get(key), str) and m[key]:
+                repo[key] = m[key]
+        repos.append(repo)
+    if not repos:
+        return None
+    return {
+        "workspace_name": workspace_root.name,
+        "repos": repos,
+        "units": [{"name": "default", "path": "agents/default/home", "repos": [r["name"] for r in repos]}],
+    }
+
+
 def load_workspace_spec_doc(workspace_root: Path) -> dict[str, object]:
     spec_path = workspace_spec_path(workspace_root)
+    # An existing spec file wins; only a root without one is answered from grip.toml.
+    derived = None if spec_path.exists() else derived_spec_doc(workspace_root)
+    if derived is not None:
+        return derived
     if not spec_path.exists():
         from gr2.prototypes.lane_workspace_prototype import WorkspaceSpecMissing
         from .workspace_guidance import missing_workspace_spec_message

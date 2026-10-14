@@ -872,7 +872,6 @@ def _reviewer_in_another_gripspace(world, tmp_path, monkeypatch):
     lane = tmp_path / "review-lane"
     opened = runner.invoke(app, ["review", "open", str(reviewer), rid, "--lane-dir", str(lane)])
     assert opened.exit_code == 0, opened.output
-    git(lane, "config", "user.name", "Reviewer R")  # one member: the lane is its checkout
     return reviewer, rid, lane
 
 
@@ -887,3 +886,17 @@ def test_a_reviewer_in_another_gripspace_stamps_from_the_review_lane(world, tmp_
     monkeypatch.chdir(world["workspace"])
     seen = approvals.count_approvals(world["workspace"], world["rid"])
     assert seen["count"] == 1 and [link["approver"] for link in seen["links"]] == ["Reviewer R"], seen
+
+
+def test_a_reviewer_in_another_gripspace_stamps_a_two_member_review_from_its_lane(multi, tmp_path, monkeypatch):
+    """Two members: the lane holds each at <lane>/<key>, and the stamp reaches both member remotes."""
+    reviewer, rid, lane = _reviewer_in_another_gripspace(multi, tmp_path, monkeypatch)
+    assert sorted(p.name for p in lane.iterdir() if (p / ".git").exists()) == ["beta", "member"]
+    stamped = runner.invoke(app, ["review", "stamp", str(lane)])
+    assert stamped.exit_code == 0, stamped.output
+    receipt = json.loads(stamped.stdout)
+    assert receipt["review_id"] == rid and receipt["count"] == 1, receipt
+    ref = approvals.PREFIX + multi["rid"]
+    tips = {key: git(m["remote"], "rev-parse", ref) for key, m in multi["members"].items()}
+    assert len(set(tips.values())) == 1 and receipt["tip"] in tips.values(), tips
+

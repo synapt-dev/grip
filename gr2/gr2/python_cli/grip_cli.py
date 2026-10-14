@@ -3015,7 +3015,7 @@ def grip_init_cmd(
 
 @grip_app.command("commit")
 def grip_commit_cmd(
-    message: str = typer.Option(..., "--message", "-m"),
+    message: str = typer.Option(..., "--message", "-m", help="Message for the root commit that records the member pins"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     allow_rewind: bool = typer.Option(
         False, "--allow-rewind", help="Record a member pin that is behind the one already recorded"

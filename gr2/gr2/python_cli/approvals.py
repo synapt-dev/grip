@@ -317,3 +317,82 @@ def approve(workspace: Path, review_id: str | None = None) -> dict:
         _git(workspace, "push", f"--force-with-lease={ref}:{old or ''}", "--", remote, f"{commit}:{ref}")
     _git(workspace, "update-ref", ref, commit)
     return count_approvals(workspace, rid)
+
+
+# ---- a PR-head review: the lane `review checkout-pr` (or `review open`) made, stamped by its (repo, head) record
+
+PR_LANE_SCHEMA = "gr2.pr-lane-approval.v1"
+
+
+def pr_lane_record(lane: Path) -> dict | None:
+    """The (repo, base, head, lane_kind) record of the review lane at `lane`, or None when `lane` is not one."""
+    from .review_records import ReviewRecordLocationError, worktree_git_path
+    if not (Path(lane) / ".git").exists():
+        return None
+    try:
+        path = worktree_git_path(lane, "grip-review.json")
+    except ReviewRecordLocationError:
+        return None
+    if not path.is_file():
+        return None
+    try:
+        record = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise ApprovalRefused(f"approval_review_record_unreadable: {path}") from exc
+    if not isinstance(record, dict) or not all(isinstance(record.get(k), str) for k in ("repo", "base", "head")):
+        raise ApprovalRefused(f"approval_review_record_unreadable: {path}")
+    return record
+
+
+def _pr_lane_approvals_path(lane: Path) -> Path:
+    from .review_records import worktree_git_path
+    return worktree_git_path(lane, "grip-approvals.json")
+
+
+def pr_lane_approvals(lane: Path) -> dict:
+    """The approvals bound to the lane's review record (repo, head); an approval of any other head is not counted."""
+    lane = Path(lane).resolve()
+    record = pr_lane_record(lane)
+    if record is None:
+        raise ApprovalRefused(f"approval_not_a_review_lane: {lane} holds no review record")
+    path = _pr_lane_approvals_path(lane)
+    try:
+        stored = json.loads(path.read_text()) if path.is_file() else []
+    except (OSError, ValueError) as exc:
+        raise ApprovalRefused(f"approval_record_unreadable: {path}") from exc
+    links = [a for a in stored if a.get("repo") == record["repo"] and a.get("head") == record["head"]]
+    return {"repo": record["repo"], "base": record["base"], "head": record["head"],
+            "count": len({a["approver"]["name"] for a in links}), "links": links, "signed": False}
+
+
+def approve_pr_lane(lane: Path) -> dict:
+    """Stamp a PR-head review: an unsigned approval as git user.name, bound to the lane record's (repo, head).
+    A lane whose HEAD is not the recorded head is refused, so an approval never lands on bytes nobody read."""
+    lane = Path(lane).resolve()
+    record = pr_lane_record(lane)
+    if record is None:
+        raise ApprovalRefused(f"approval_not_a_review_lane: {lane} holds no review record")
+    head = gitops.git(lane, "rev-parse", "HEAD")
+    actual = head.stdout.strip() if head.returncode == 0 else ""
+    if actual != record["head"]:
+        raise ApprovalRefused(
+            f"approval_head_moved: lane {lane} is at {actual or '(unreadable)'!s}, the review record's head is "
+            f"{record['head']}; nothing was stamped",
+            next_step="close this lane with `gr2 review close` and check the PR out again, then stamp the new head")
+    name = gitops.git(lane, "config", "user.name").stdout.strip()
+    if not name:
+        raise ApprovalRefused("approval_identity_missing")
+    path = _pr_lane_approvals_path(lane)
+    try:
+        stored = json.loads(path.read_text()) if path.is_file() else []
+    except (OSError, ValueError) as exc:
+        raise ApprovalRefused(f"approval_record_unreadable: {path}") from exc
+    if not any(a.get("repo") == record["repo"] and a.get("head") == record["head"]
+               and a.get("approver", {}).get("name") == name for a in stored):
+        stored.append({"schema": PR_LANE_SCHEMA, "repo": record["repo"], "base": record["base"],
+                       "head": record["head"], "approver": {"name": name, "key_id": ""}, "verdict": "approve",
+                       "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")})
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(stored, indent=2, sort_keys=True) + "\n")
+        tmp.replace(path)
+    return pr_lane_approvals(lane)

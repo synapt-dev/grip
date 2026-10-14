@@ -4921,7 +4921,11 @@ def review_approve(
     """Stamp the review: append an unsigned exact-head approval as git user.name, on every member remote."""
     from . import approvals
     try:
-        result = approvals.approve(workspace_root.resolve(), review_id)
+        # A review lane (`review checkout-pr` or `review open`) carries its (repo, head) record; stamp binds to it.
+        if review_id is None and approvals.pr_lane_record(workspace_root.resolve()) is not None:
+            result = approvals.approve_pr_lane(workspace_root.resolve())
+        else:
+            result = approvals.approve(workspace_root.resolve(), review_id)
     except grip.ReviewStoreAbsent as exc:
         # The review was never received here (a reviewer's own workspace): a named refusal and the order that
         # works, never a traceback.

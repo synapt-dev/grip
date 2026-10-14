@@ -982,3 +982,51 @@ def test_the_close_command_a_moved_pr_refusal_prints_drops_that_lane_as_printed(
     remade = runner.invoke(app_mod.app, args)
     assert remade.exit_code == 0, (remade.output, remade.exception)
     assert _run(lane, "rev-parse", "HEAD") == new_head
+
+
+# ---- `review stamp <lane>` on a checkout-pr lane binds its approval to the lane record's (repo, head)
+
+def _checked_out_lane(world, monkeypatch):
+    from typer.testing import CliRunner
+
+    ws, app_mod = _checkout_pr_world(world, monkeypatch)
+    made = CliRunner().invoke(app_mod.app, ["review", "checkout-pr", str(ws), "atlas", "grip", "7", "--json"])
+    assert made.exit_code == 0, (made.output, made.exception)
+    lane = Path(json.loads(made.output[made.output.index("{\n"):])["lane_repo_root"])
+    _run(lane, "config", "user.name", "Reviewer")
+    _run(lane, "config", "user.email", "r@example.invalid")
+    return ws, app_mod, lane
+
+
+def test_stamp_on_a_checkout_pr_lane_binds_the_approval_to_repo_and_head(review_world, monkeypatch):
+    from typer.testing import CliRunner
+    from gr2.python_cli import approvals
+
+    world = review_world
+    ws, app_mod, lane = _checked_out_lane(world, monkeypatch)
+    record = read_review_record(review_record_paths(ws, "atlas", "review-7", "grip", lane), notice=lambda _l: None)
+    stamped = CliRunner().invoke(app_mod.app, ["review", "stamp", str(lane)])
+    assert stamped.exit_code == 0, (stamped.output, stamped.exception)
+    result = json.loads(stamped.output)
+    assert (result["repo"], result["head"], result["count"]) == (record["repo"], world["head_sha"], 1)
+    back = approvals.pr_lane_approvals(lane)
+    assert back["count"] == 1 and back["head"] == world["head_sha"] and back["repo"] == record["repo"]
+    assert [(link["approver"]["name"], link["head"]) for link in back["links"]] == [("Reviewer", world["head_sha"])]
+    again = CliRunner().invoke(app_mod.app, ["review", "stamp", str(lane)])
+    assert again.exit_code == 0 and json.loads(again.output)["count"] == 1, again.output
+
+
+def test_stamp_on_a_checkout_pr_lane_whose_head_moved_refuses(review_world, monkeypatch):
+    from typer.testing import CliRunner
+    from gr2.python_cli import approvals
+
+    world = review_world
+    ws, app_mod, lane = _checked_out_lane(world, monkeypatch)
+    (lane / "notes.md").write_text("review notes\n")
+    _run(lane, "add", "notes.md")
+    _run(lane, "commit", "-q", "-m", "notes")
+    assert _run(lane, "rev-parse", "HEAD") != world["head_sha"]
+    stamped = CliRunner().invoke(app_mod.app, ["review", "stamp", str(lane)])
+    assert stamped.exit_code == 2, (stamped.output, stamped.exception)
+    assert "approval_head_moved" in stamped.output and world["head_sha"] in stamped.output, stamped.output
+    assert not approvals._pr_lane_approvals_path(lane).exists()

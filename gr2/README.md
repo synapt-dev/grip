@@ -65,7 +65,7 @@ gr2 commit -m "my change" --workspace-root ~/ws --owner-unit default
 `commit` with the lane flags commits every lane repo that has staged changes and names the repos it skipped. If every repo was skipped it exits non-zero with one sentence naming where it looked — and, when it can see them, where your staged changes actually are. Run one command across every lane repo, then turn the lane into one reviewable object:
 
 ```bash
-gr2 exec run ~/ws default --actor human:you -- pytest -q   # one command, every lane repo
+gr2 exec run ~/ws default --actor human:you -- git status --short   # one command, every lane repo
 gr2 review create-project ~/ws default feat-x              # prints gr:<sha>: one object to review
 gr2 lane push ~/ws default feat-x                          # push every lane repo, each verified on its remote
 gr2 lane show ~/ws default                                 # where am I?
@@ -74,7 +74,7 @@ gr2 lane list ~/ws                                         # each lane: removabl
 gr2 lane remove ~/ws default feat-x                        # end it: its clones and record go
 ```
 
-`lane remove` refuses while the lane is entered or leased, or was made by `lane bind`, while any of its repos holds uncommitted work, a stash, or a commit no remote has (on any branch or tag), or while its checkout holds anything that is not one of its repos; it names each one and removes nothing. `review create-project` refuses a lane repo holding any uncommitted or untracked file, so whatever `exec run` leaves behind has to be ignored by the repo: for the `pytest -q` above that means `__pycache__/` in each repo's `.gitignore` (pytest ignores its own `.pytest_cache/`). `exec run` and `lane exit` require `--actor`. Every group and verb takes `--help`; `gr2 --help` lists them all.
+`lane remove` refuses while the lane is entered or leased, or was made by `lane bind`, while any of its repos holds uncommitted work, a stash, or a commit no remote has (on any branch or tag), or while its checkout holds anything that is not one of its repos; it names each one and removes nothing. `exec run` runs whatever follows `--` in each lane repo, with your own `PATH`: a test runner works there only if it is installed where your shell finds it. `review create-project` refuses a lane repo holding any uncommitted or untracked file, so whatever a command leaves behind (`__pycache__/` after a pytest run, say) has to be in the repo's `.gitignore`. `exec run` and `lane exit` require `--actor`. Every group and verb takes `--help`; `gr2 --help` lists them all.
 
 ## What works today, and what is not there yet
 
@@ -88,7 +88,7 @@ Not there yet:
 
 - The full walk with **remote** PRs (`gr2 push`, `gr2 pr create`) is documented in `--help` but was not exercised in a clean environment for this README; treat those two as alpha.
 - `gr2 --help` and some verb output still say "prototype" in places; the wording is being cleaned up as verbs land.
-- `lane remove` refuses a lane made on a workspace with a snapshot store (the `store init` above): it names the lane's own store files (`.git`, `.grip`, `grip.toml`, `.gitmodules`) as unlisted content and removes nothing. Until that is fixed the walk's last line refuses, and the lane stays.
+- `lane remove` refuses a lane made on a workspace with a snapshot store (the `store init` above): it names the lane's own store files (`.git`, `.gitignore`, `.gitinclude`, `.gitmodules`, `.grip`, `grip.toml`) as unlisted content and removes nothing. Until that is fixed the walk's last line refuses, and the lane stays.
 - The Rust `gr` (gr1) still owns `spawn`, `fleet`, and `manifest` until their gr2 ports land. Everything else — workspace sync, lanes, the multi-repo slice, its review — is gr2's job; if a verb is missing or wrong there, that is a bug worth reporting, not a reason to reach for gr1.
 
 ## Commands

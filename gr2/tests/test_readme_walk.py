@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import shlex
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -58,9 +59,7 @@ def ws(tmp_path: Path, monkeypatch) -> Path:
         _git(clone, "config", "user.name", "You")
         _git(clone, "checkout", "-q", "-B", "main")
         (clone / "README").write_text(f"{name}\n")
-        (clone / "test_ok.py").write_text("def test_ok():\n    pass\n")  # the walk's `exec run -- pytest -q`
-        (clone / ".gitignore").write_text("__pycache__/\n")  # what the README asks of a repo the walk runs pytest in
-        _git(clone, "add", "README", "test_ok.py", ".gitignore")
+        _git(clone, "add", "README")
         _git(clone, "commit", "-qm", "init")
         _git(clone, "push", "-q", "origin", "main")
     return root
@@ -94,7 +93,13 @@ def _run_block(block: str, root: Path, monkeypatch, out: dict[str, str]) -> int:
     return ran
 
 
-def test_the_readme_walk_runs_in_order_and_prints_what_it_shows(ws: Path, monkeypatch) -> None:
+def test_the_readme_walk_runs_in_order_and_prints_what_it_shows(ws: Path, tmp_path: Path, monkeypatch) -> None:
+    # A stranger's clean install has git on PATH and not this suite's venv (no pytest, no tools it brought), so the
+    # walk runs with PATH reduced to git alone: a command the README shows that needs anything else goes red here.
+    git_bin = tmp_path / "path-git-only"
+    git_bin.mkdir()
+    (git_bin / "git").symlink_to(shutil.which("git"))
+    monkeypatch.setenv("PATH", str(git_bin))
     blocks = _blocks(_section())
     bash = [body for lang, body in blocks if lang == "bash"]
     printed = [body for lang, body in blocks if lang == ""]

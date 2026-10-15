@@ -148,7 +148,7 @@ The order matters, because each step refuses until the one before it is done:
 4. `gr2 review publish` the review to each member remote.
 5. Each reviewer runs `gr2 review receive` in their own workspace, then `gr2 review stamp`. The author cannot approve their own review.
 6. `gr2 check run` at the exact reviewed head (and `gr2 check set` when the review covers several members), then `gr2 check show` to read what is recorded.
-7. `gr2 review merge`: every member passes its preflight or nothing is pushed.
+7. `gr2 review merge --approvals N`: every member passes its preflight or nothing is pushed. Say how many approvals the merge needs: `--approvals N`, or `[approvals] required = N` in the root's `grip.toml`. With neither it refuses `approvals_unset`; `0` merges without approvals and prints that it skipped them.
 
 To inspect members, run `gr2 store status` (`--json` for a program), not plain git in each one: it answers, per member and in one line, the branch, head, pin, commits ahead of and behind its upstream, and the number of uncommitted entries.
 
@@ -328,7 +328,7 @@ Merge a pinned review into its members' remotes: preflight every member, merge n
 - `--from`: Feature branch; default: the members' current branch
 - `--check`: Required exact-head check name (repeatable); default `test`, and `test` plus `set` for a review over several members, where only `test` and `set` are accepted and `set` is always required
 - `--no-set`: Single-member reviews only: a review over several members always requires `set` and refuses this flag
-- `--approvals`: Required distinct approvers; may raise the workspace approvals.required floor, default 0
+- `--approvals`: Required distinct approvers; may raise the grip.toml [approvals] required floor. With neither set the merge refuses approvals_unset; 0 merges without approvals and says so
 - `--root/-C`: The workspace root. Same as the leading WORKSPACE_ROOT argument; give one or the other.
 
 ## When gr2 prints `refused: <code>`
@@ -338,6 +338,10 @@ gr2 names the next step beside the refusal; the same text is here, keyed by the 
 ### approvals_insufficient
 
 next: more approvers are required; each one stamps from their own checkout: gr2 review stamp '<workspace>' '<review>'
+
+### approvals_unset
+
+next: say how many approvals this merge needs: rerun with --approvals N (--approvals 0 merges without approvals), or set [approvals] required = N in '<workspace>'/grip.toml
 
 ### base_moved
 

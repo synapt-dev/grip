@@ -27,7 +27,7 @@ def run_set(s, argv=PASS, name="set"):
 
 
 def merge(s, **kw):
-    return merge_gate.review_merge(s["author"], s["review"], feature="feat", **kw)
+    return merge_gate.review_merge(s["author"], s["review"], feature="feat", **kw, required_approvals=0)
 
 
 def untouched(s):

@@ -31,14 +31,14 @@ def test_the_pilot_merge_no_set_with_a_check_of_the_authors_naming_refuses_and_n
     for m in slice2["members"].values():
         check_records.run_check(m["repo"], str(m["remote"]), m["head"], "unit", PASS)
     code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat",
-                                            required_checks=("unit",), no_set=True)
+                                            required_checks=("unit",), no_set=True, required_approvals=0)
     assert code == merge_gate.EXIT_REFUSED, receipt
     assert mains(slice2) == bases(slice2), "no member may merge"
     assert receipt["refused"].startswith("set_required"), receipt
 
 
 def test_no_set_alone_refuses_on_a_multi_member_review(slice2):  # noqa: F811
-    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True, required_approvals=0)
     assert code == merge_gate.EXIT_REFUSED, receipt
     assert mains(slice2) == bases(slice2)
     assert receipt["refused"].startswith("set_required"), receipt
@@ -49,7 +49,7 @@ def test_a_check_name_the_workspace_did_not_configure_refuses_even_beside_a_pass
     for m in slice2["members"].values():
         check_records.run_check(m["repo"], str(m["remote"]), m["head"], "unit", PASS)
     code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat",
-                                            required_checks=("unit", "set"))
+                                            required_checks=("unit", "set"), required_approvals=0)
     assert code == merge_gate.EXIT_REFUSED, receipt
     assert mains(slice2) == bases(slice2)
     assert receipt["refused"].startswith("check_not_configured") and "unit" in receipt["refused"], receipt
@@ -57,13 +57,13 @@ def test_a_check_name_the_workspace_did_not_configure_refuses_even_beside_a_pass
 
 def test_control_a_passing_set_merges_with_the_default_requirement(slice2):  # noqa: F811
     record_set(slice2)
-    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", required_approvals=0)
     assert code == merge_gate.EXIT_MERGED, receipt
 
 
 def test_control_a_single_member_review_still_takes_no_set(world):  # noqa: F811
     check_records.run_check(world["member"], str(world["remote"]), world["head"], "test", PASS)
-    code, receipt = merge_gate.review_merge(world["author"], world["review"], into="main", feature="feat", no_set=True)
+    code, receipt = merge_gate.review_merge(world["author"], world["review"], into="main", feature="feat", no_set=True, required_approvals=0)
     assert code == merge_gate.EXIT_MERGED, receipt
 
 

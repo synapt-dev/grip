@@ -84,6 +84,9 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
         return "\n".join(f"next: gr2 check run {_shown(path)} --remote {_shown(remote)} --head {_shown(head)}"
                          f"{'' if n == 'test' else f' --name {_shown(n)}'} -- <your {_shown(n)} command>" for n in checks
                          if n != "set")  # `set` is never recorded by `check run`; its refusals are check_set_*
+    if refused.startswith("approvals_unset"):
+        return (f"next: say how many approvals this merge needs: rerun with --approvals N (--approvals 0 merges "
+                f"without approvals), or set [approvals] required = N in {_shown(workspace)}/grip.toml")
     if refused.startswith("approvals_insufficient"):
         return (f"next: more approvers are required; each one stamps from their own checkout: "
                 f"gr2 review stamp {_shown(workspace)} {_shown(review)}")

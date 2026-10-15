@@ -323,7 +323,7 @@ def _one_member_merge(monkeypatch, tmp_path, merge_tree):
         assert "merge-tree" in argv
         return merge_tree(argv)
     monkeypatch.setattr(gitops.subprocess, "run", spawn)
-    code, receipt = merge_gate.review_merge(tmp_path, rid, into="main", feature="feat")
+    code, receipt = merge_gate.review_merge(tmp_path, rid, into="main", feature="feat", required_approvals=0)
     return code, receipt["members"][0]["refused"], calls
 
 

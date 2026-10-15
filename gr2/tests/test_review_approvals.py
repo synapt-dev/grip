@@ -239,15 +239,23 @@ def test_invalid_or_signed_policy_refuses(tmp_path, setting):
         approvals.required_approvals(tmp_path)
 
 
-def test_policy_default_zero_and_explicit_override(tmp_path):
+def test_policy_unset_refuses_and_zero_is_explicit(tmp_path):
     p = tmp_path / "grip.toml"
     p.write_text("[workspace]\nname='test'\n")
-    assert approvals.required_approvals(tmp_path) == 0
+    with pytest.raises(approvals.ApprovalRefused, match="approvals_unset"):
+        approvals.required_approvals(tmp_path)
+    (tmp_path / "grip.toml").unlink()
+    with pytest.raises(approvals.ApprovalRefused, match="approvals_unset"):
+        approvals.required_approvals(tmp_path)
+    assert approvals.approval_policy(tmp_path, 0) == {"required": 0, "source": "--approvals"}
+    p.write_text("[approvals]\nrequired=0\n")
+    assert approvals.approval_policy(tmp_path) == {"required": 0, "source": "grip.toml"}
     p.write_text("[approvals]\nrequired=2\n")
     assert approvals.required_approvals(tmp_path) == 2
     assert approvals.required_approvals(tmp_path, 3) == 3
     assert approvals.required_approvals(tmp_path, 0) == 2
     assert approvals.required_approvals(tmp_path, 1) == 2
+    assert approvals.approval_policy(tmp_path, 3)["source"] == "grip.toml and --approvals"
 
 
 @pytest.fixture
@@ -651,7 +659,8 @@ def test_zero_required_skips_an_unmeasurable_approval_chain(world, monkeypatch):
     result = runner.invoke(app, ["review", "merge"])
     assert result.exit_code == 0, result.output
     assert calls == []
-    assert json.loads(result.stdout)["approvals"] == {"required": 0, "skipped": True}
+    assert json.loads(result.stdout)["approvals"] == {"required": 0, "skipped": True, "source": "grip.toml"}
+    assert "approvals: skipped, 0 required by grip.toml" in result.stderr, "a skip is said where a person reads it"
     assert git(world["remote"], "rev-list", "--parents", "-n", "1", "main").split()[1:] == [world["base"], world["head"]]
 
 
@@ -666,19 +675,31 @@ def test_positive_required_read_failure_is_not_skipped(world, monkeypatch):
     assert result.exit_code == 3, result.output
     receipt = json.loads(result.stdout)
     assert len(calls) == 1
-    assert receipt["approvals"] == {"required": 2}
+    assert receipt["approvals"] == {"required": 2, "source": "grip.toml"}
     assert receipt["members"][0]["refused"].startswith("approval_unmeasurable")
     assert git(world["remote"], "rev-parse", "main") == world["base"]
 
 
-def test_missing_policy_file_defaults_zero_and_merges(world, tmp_path):
-    # A missing file defaults the policy; a workspace without an approvals table
-    # still keeps its member-discovery configuration for the real merge.
-    assert approvals.required_approvals(tmp_path) == 0
+def test_unset_policy_refuses_and_an_explicit_zero_merges(world, tmp_path):
+    # Neither a grip.toml count nor --approvals: zero is never assumed. A missing file is the same as no table.
+    with pytest.raises(approvals.ApprovalRefused, match="approvals_unset"):
+        approvals.required_approvals(tmp_path)
     check_records.run_check(world["member"], str(world["remote"]), world["head"], "test", [sys.executable, "-c", "pass"])
     code, receipt = merge_gate.review_merge(world["workspace"], world["rid"], into="main", feature="feature")
-    assert code == 0, receipt
-    assert receipt["approvals"] == {"required": 0, "skipped": True}
+    assert code == merge_gate.EXIT_REFUSED, receipt
+    row = receipt["members"][0]
+    assert row["refused"].startswith("approvals_unset"), row
+    assert "--approvals N" in row["next"] and "[approvals] required = N" in row["next"], row
+    assert git(world["remote"], "rev-parse", "main") == world["base"], "nothing merges on an unset count"
+    # A count above what is recorded refuses as insufficient, not unset.
+    result = runner.invoke(app, ["review", "merge", "--approvals", "2"])
+    assert result.exit_code == 3, result.output
+    assert json.loads(result.stdout)["members"][0]["refused"] == "approvals_insufficient: 0 of 2"
+    # Saying zero is the way to merge without approvals, and the skip is said on both surfaces.
+    result = runner.invoke(app, ["review", "merge", "--approvals", "0"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["approvals"] == {"required": 0, "skipped": True, "source": "--approvals"}
+    assert "approvals: skipped, 0 required by --approvals" in result.stderr
 
 
 def test_approve_uses_workspace_identity_from_a_member_cwd(world, monkeypatch):

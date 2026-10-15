@@ -56,9 +56,9 @@ def test_review_merge_prints_the_hint_and_the_receipt_and_exit_are_unchanged(tmp
     assert first.exit_code == 0, first.output
     with monkeypatch.context() as quiet:  # the same merge with the hint switched off is the control
         quiet.setattr(set_hints, "out_of_set_hints", lambda *a, **k: [])
-        control = runner.invoke(app, ["review", "merge", w["members"]["consumer"]["review"], "--from", "feat",
+        control = runner.invoke(app, ["review", "merge", "--approvals", "0", w["members"]["consumer"]["review"], "--from", "feat",
                                       "--into", "main"], catch_exceptions=False)
-    out = runner.invoke(app, ["review", "merge", w["members"]["producer"]["review"], "--from", "feat",
+    out = runner.invoke(app, ["review", "merge", "--approvals", "0", w["members"]["producer"]["review"], "--from", "feat",
                               "--into", "main"], catch_exceptions=False)
     assert control.exit_code == out.exit_code == 0, (control.output, out.output)
     assert hint_lines(control) == []
@@ -74,7 +74,7 @@ def test_a_hint_that_cannot_be_read_is_named_on_stderr_and_the_merge_is_unchange
     def broken(*_a, **_k):
         raise RuntimeError("hint source unreadable")
     monkeypatch.setattr(set_hints, "out_of_set_hints", broken)
-    out = runner.invoke(app, ["review", "merge", w["members"]["producer"]["review"], "--from", "feat",
+    out = runner.invoke(app, ["review", "merge", "--approvals", "0", w["members"]["producer"]["review"], "--from", "feat",
                               "--into", "main"], catch_exceptions=False)
 
     assert out.exit_code == 0, out.output

@@ -87,8 +87,12 @@ def current_review(workspace: Path) -> str:
         raise ApprovalRefused(f"approval_bind_not_unique: {exc}") from exc
 
 
-def required_approvals(workspace: Path, given: int | None = None) -> int:
-    """Workspace policy is a floor, default zero; a CLI count can raise it."""
+def approval_policy(workspace: Path, given: int | None = None) -> dict:
+    """The approval count a merge requires, and where it came from.
+
+    grip.toml `[approvals] required` is a floor; `--approvals N` can raise it. When NEITHER is given the merge
+    refuses with `approvals_unset` rather than merging on zero approvals: zero is a choice someone makes
+    (`required = 0`, or `--approvals 0`), never a default nobody saw."""
     try:
         policy = tomllib.loads((workspace / "grip.toml").read_text()).get("approvals", {})
     except FileNotFoundError:
@@ -101,12 +105,21 @@ def required_approvals(workspace: Path, given: int | None = None) -> int:
         raise ApprovalRefused("approval_policy_invalid: require_signed must be a boolean")
     if policy.get("require_signed"):
         raise ApprovalRefused("approval_signed_unsupported")
+    configured = "required" in policy
     required = policy.get("required", 0)
     if type(required) is not int or required < 0:
         raise ApprovalRefused("approval_policy_invalid: required must be a nonnegative integer")
     if given is not None and (type(given) is not int or given < 0):
         raise ApprovalRefused("approval_policy_invalid: requested count must be a nonnegative integer")
-    return max(required, given or 0)
+    if not configured and given is None:
+        raise ApprovalRefused("approvals_unset: grip.toml has no [approvals] required and no --approvals was given")
+    source = [name for name, present in (("grip.toml", configured), ("--approvals", given is not None)) if present]
+    return {"required": max(required, given or 0), "source": " and ".join(source)}
+
+
+def required_approvals(workspace: Path, given: int | None = None) -> int:
+    """The required count alone; refuses `approvals_unset` as `approval_policy` does."""
+    return approval_policy(workspace, given)["required"]
 
 
 def review_open_lane(lane: Path) -> tuple[Path, str, dict[str, Path]] | None:

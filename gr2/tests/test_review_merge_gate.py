@@ -77,7 +77,7 @@ def check(w):
 
 
 def merge(w):
-    return merge_gate.review_merge(w["author"], w["review"], into="main", feature="feat")
+    return merge_gate.review_merge(w["author"], w["review"], into="main", feature="feat", required_approvals=0)
 
 
 def test_merges_the_reviewed_head_and_a_rerun_is_idempotent(world):
@@ -188,7 +188,7 @@ def mains(s):
 
 def test_a_two_member_slice_merges_as_a_set(slice2):
     record_set(slice2)  # a review over several members merges only on a passing set
-    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", required_approvals=0)
     assert code == merge_gate.EXIT_MERGED, receipt
     for k, m in slice2["members"].items():
         parents = git(m["remote"], "rev-list", "--parents", "-n", "1", "main").split()[1:]
@@ -198,7 +198,7 @@ def test_a_two_member_slice_merges_as_a_set(slice2):
 def test_moving_the_last_member_refuses_the_whole_set(slice2):
     record_set(slice2)  # a review over several members merges only on a passing set
     move(slice2["members"]["beta"])
-    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", required_approvals=0)
     assert code == merge_gate.EXIT_REFUSED, receipt
     assert mains(slice2) == {k: m["base"] for k, m in slice2["members"].items()}, "no member may merge"
 
@@ -206,12 +206,12 @@ def test_moving_the_last_member_refuses_the_whole_set(slice2):
 def test_a_rerun_after_an_earlier_partial_reports_partial_not_refused(slice2):
     record_set(slice2)  # a review over several members merges only on a passing set
     # alpha merged by an earlier run; then beta moves; the rerun refuses beta but the STATE is partial.
-    code, _ = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    code, _ = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", required_approvals=0)
     assert code == merge_gate.EXIT_MERGED
     beta = slice2["members"]["beta"]
     git(beta["remote"], "update-ref", "refs/heads/main", beta["base"])  # undo beta's merge on the remote
     move(beta)
-    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", required_approvals=0)
     assert code == merge_gate.EXIT_PARTIAL, receipt
 
 
@@ -307,7 +307,7 @@ def test_review_help_gives_the_order_of_the_steps():
 
 def test_two_required_checks_get_one_check_run_line_each_and_both_lines_get_past_the_refusal(world):
     code, receipt = merge_gate.review_merge(world["author"], world["review"], into="main", feature="feat",
-                                            required_checks=("lint", "test"))
+                                            required_checks=("lint", "test"), required_approvals=0)
     row = receipt["members"][0]
     assert code == merge_gate.EXIT_REFUSED and row["refused"].startswith("check_absent"), receipt
     lines = row["next"].splitlines()
@@ -317,7 +317,7 @@ def test_two_required_checks_get_one_check_run_line_each_and_both_lines_get_past
         ran = runner.invoke(app, next_argv(line, [sys.executable, "-c", "pass"]))
         assert ran.exit_code == 0, ran.output
     code, receipt = merge_gate.review_merge(world["author"], world["review"], into="main", feature="feat",
-                                            required_checks=("lint", "test"))
+                                            required_checks=("lint", "test"), required_approvals=0)
     assert code == merge_gate.EXIT_MERGED, receipt
 
 

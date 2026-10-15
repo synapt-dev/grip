@@ -46,7 +46,7 @@ def test_no_upstream_and_no_origin_refuses_and_names_the_flag(world):
 
 def test_review_merge_with_no_arguments_merges_the_bind_at_the_current_heads(world):
     assert runner.invoke(app, ["check", "run", str(world["member"]), "--", sys.executable, "-c", "pass"]).exit_code == 0
-    merged = runner.invoke(app, ["review", "merge"])
+    merged = runner.invoke(app, ["review", "merge", "--approvals", "0"])
     assert merged.exit_code == 0, merged.output
     assert f"review={world['review']} (pinned review at the current heads)" in merged.stderr
     assert "from=feat (current branch)" in merged.stderr and "into=main (default branch at the reviewed base)" in merged.stderr
@@ -56,7 +56,7 @@ def test_review_merge_with_no_arguments_merges_the_bind_at_the_current_heads(wor
 
 def test_review_merge_overrides_still_win(world):
     assert runner.invoke(app, ["check", "run", str(world["member"]), "--", sys.executable, "-c", "pass"]).exit_code == 0
-    merged = runner.invoke(app, ["review", "merge", world["review"], "--from", "feat", "--into", "main"])
+    merged = runner.invoke(app, ["review", "merge", "--approvals", "0", world["review"], "--from", "feat", "--into", "main"])
     assert merged.exit_code == 0, merged.output
     assert "(given)" in merged.stderr
 
@@ -65,7 +65,7 @@ def test_a_member_moved_locally_matches_no_bind_and_refuses(world):
     (world["member"] / "later.txt").write_text("later\n")
     git(world["member"], "add", "later.txt")
     git(world["member"], "commit", "-m", "later")
-    merged = runner.invoke(app, ["review", "merge"])
+    merged = runner.invoke(app, ["review", "merge", "--approvals", "0"])
     assert merged.exit_code == 3, merged.output
     receipt = out(merged)
     assert receipt["refused"].startswith("review_ambiguous: no pinned review")
@@ -75,7 +75,7 @@ def test_a_member_moved_locally_matches_no_bind_and_refuses(world):
 
 def test_members_on_different_branches_refuse_the_feature_default(slice2):
     git(slice2["members"]["beta"]["repo"], "checkout", "-q", "-b", "other")
-    merged = runner.invoke(app, ["review", "merge", slice2["review"]])
+    merged = runner.invoke(app, ["review", "merge", "--approvals", "0", slice2["review"]])
     assert merged.exit_code == 3, merged.output
     assert out(merged)["refused"].startswith("feature_unresolved") and "--from" in out(merged)["refused"]
 
@@ -88,7 +88,7 @@ def test_two_binds_at_the_current_heads_refuse_and_list_both(world, monkeypatch)
                                 "--base", world["base"], "--head", world["head"], "--ref", "refs/heads/main",
                                 "--source", str(world["member"]), "--ratified", "second-look"])
     assert again.exit_code == 0, again.output
-    merged = runner.invoke(app, ["review", "merge"])
+    merged = runner.invoke(app, ["review", "merge", "--approvals", "0"])
     assert merged.exit_code == 3, merged.output
     reason = out(merged)["refused"]
     assert reason.startswith("review_ambiguous: several pinned reviews") and reason.count("gr:") == 2, reason
@@ -100,11 +100,11 @@ def test_two_branches_at_the_reviewed_base_refuse_even_when_the_remote_head_name
     git(world["remote"], "branch", "dev", world["base"])
     git(world["remote"], "symbolic-ref", "HEAD", "refs/heads/dev")
     assert runner.invoke(app, ["check", "run", str(world["member"]), "--", sys.executable, "-c", "pass"]).exit_code == 0
-    merged = runner.invoke(app, ["review", "merge"])
+    merged = runner.invoke(app, ["review", "merge", "--approvals", "0"])
     assert merged.exit_code == 3, merged.output
     assert out(merged)["refused"].startswith("into_unresolved: no remote's default branch") and "--into" in out(merged)["refused"]
     assert git(world["remote"], "rev-parse", "dev") == world["base"] == git(world["remote"], "rev-parse", "main")
-    named = runner.invoke(app, ["review", "merge", "--into", "main"])
+    named = runner.invoke(app, ["review", "merge", "--approvals", "0", "--into", "main"])
     assert named.exit_code == 0, named.output
     assert git(world["remote"], "rev-parse", "dev") == world["base"]
 
@@ -152,12 +152,12 @@ def test_a_stale_branch_left_at_the_base_is_never_the_default_target(world):
     git(member, "checkout", "-q", "feat")
     assert runner.invoke(app, ["check", "run", str(member), "--", sys.executable, "-c", "pass"]).exit_code == 0
     before = git(world["remote"], "for-each-ref", "--format=%(refname) %(objectname)")
-    merged = runner.invoke(app, ["review", "merge"])
+    merged = runner.invoke(app, ["review", "merge", "--approvals", "0"])
     assert merged.exit_code == 3, merged.output
     assert out(merged)["refused"].startswith("into_unresolved") and "--into" in out(merged)["refused"]
     after = git(world["remote"], "for-each-ref", "--format=%(refname) %(objectname)")
     assert after == before, "a refused default must push nothing"
-    named = runner.invoke(app, ["review", "merge", "--into", "hold/stale"])
+    named = runner.invoke(app, ["review", "merge", "--approvals", "0", "--into", "hold/stale"])
     assert named.exit_code == 0, named.output
 
 
@@ -193,7 +193,7 @@ def _moved_local_head_inside_an_opened_review(world, tmp_path, monkeypatch):
 def test_an_opened_review_marker_supplies_the_workspace_never_the_review(world, tmp_path, monkeypatch):
     """Inside an opened review, a bare merge still selects by the members' current heads, not the marker's bind."""
     _moved_local_head_inside_an_opened_review(world, tmp_path, monkeypatch)
-    merged = runner.invoke(app, ["review", "merge"])
+    merged = runner.invoke(app, ["review", "merge", "--approvals", "0"])
     assert merged.exit_code == 3, merged.output
     assert out(merged)["refused"].startswith("review_ambiguous: no pinned review")
     assert git(world["remote"], "rev-parse", "main") == world["base"]
@@ -201,7 +201,7 @@ def test_an_opened_review_marker_supplies_the_workspace_never_the_review(world, 
 
 def test_an_explicit_old_review_still_merges_from_inside_a_marker(world, tmp_path, monkeypatch):
     _moved_local_head_inside_an_opened_review(world, tmp_path, monkeypatch)
-    merged = runner.invoke(app, ["review", "merge", world["review"], "--from", "feat", "--into", "main"])
+    merged = runner.invoke(app, ["review", "merge", "--approvals", "0", world["review"], "--from", "feat", "--into", "main"])
     assert merged.exit_code == 0, merged.output
     assert git(world["remote"], "rev-list", "--parents", "-n", "1", "main").split()[1:] == [world["base"], world["head"]]
 

@@ -64,9 +64,9 @@ def test_options_without_help_do_not_grow():
 EXPECTED_CODES = {
     "approvals_insufficient", "approvals_unset", "base_moved", "check_absent", "check_fail", "check_set*",
     "check_set_fail",
-    "feature_moved", "head_already_on_remote", "head_not_fetched", "not_received",
+    "feature_moved", "head_already_on_remote", "head_behind_remote_branch", "head_not_fetched", "not_received",
     "platform_head_moved_after_merge", "platform_head_unmeasured_after_merge", "platform_pr_ambiguous", "platform_pr_not_ready", "platform_unmeasurable",
-    "review_not_on_member_remote", "self_approval",
+    "remote_branch_diverged", "review_not_on_member_remote", "self_approval",
 }
 
 

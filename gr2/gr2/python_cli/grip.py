@@ -498,11 +498,36 @@ def _norm_text(value: str) -> str:
 def _remote_head(workspace: Path, remote: str, ref: str) -> str:
     """The live head of one ref on a remote, or '' if absent. A ref name like
     refs/heads/<branch>; ls-remote is read-only and needs no local ref."""
+    matches = _remote_ref_matches(workspace, remote, ref)
+    return matches[0][0] if matches else ""
+
+
+def _remote_ref_matches(workspace: Path, remote: str, ref: str) -> list[tuple[str, str]]:
+    """(tip, full name) of every ref ls-remote matches for ``ref``, in its order. ls-remote matches
+    whole path components from the end, so `trunk` names refs/heads/trunk, refs/heads/a/trunk and
+    refs/tags/trunk alike."""
     proc = _bind_git(workspace, "ls-remote", "--", remote, ref)
     if proc.returncode != 0:
         raise GripReviewRefused("remote_unreadable", ref, proc.stderr.strip()[:120])
-    line = proc.stdout.strip().splitlines()
-    return line[0].split("\t", 1)[0] if line else ""
+    out = []
+    for row in proc.stdout.strip().splitlines():
+        sha, _, name = row.partition("\t")
+        out.append((sha, name))
+    return out
+
+
+def _pin_target(workspace: Path, remote: str, ref: str, field: str) -> tuple[str, str]:
+    """(tip, full name) of the one ref --ref names on the remote, or ('', '') if none. The name that
+    equals --ref wins; otherwise a --ref matching more than one ref refuses, naming them, because the
+    first line ls-remote prints is an order, not a choice (refs/heads/a/trunk sorts before trunk)."""
+    matches = _remote_ref_matches(workspace, remote, ref)
+    exact = [m for m in matches if m[1] == ref]
+    if exact:
+        return exact[0]
+    if len(matches) > 1:
+        raise GripReviewRefused("invalid_field", field,
+                                f"{ref} matches {' '.join(name for _, name in matches)}; give --ref in full")
+    return matches[0] if matches else ("", "")
 
 
 def _head_present_on_remote(workspace: Path, remote: str, head: str) -> bool:
@@ -513,6 +538,54 @@ def _head_present_on_remote(workspace: Path, remote: str, head: str) -> bool:
     if proc.returncode != 0:
         raise GripReviewRefused("remote_unreadable", remote, proc.stderr.strip()[:120])
     return any(row.split("\t", 1)[0] == head for row in proc.stdout.splitlines())
+
+
+def _remote_ref_tips(workspace: Path, remote: str) -> dict[str, str]:
+    """Every ref on the remote and its tip, read by ls-remote at the moment of the call. Pin judges
+    a pushed head by these, never by a refs/remotes tracking copy in some clone, which may be stale."""
+    proc = _bind_git(workspace, "ls-remote", "--", remote)
+    if proc.returncode != 0:
+        raise GripReviewRefused("remote_unreadable", remote, proc.stderr.strip()[:120])
+    tips: dict[str, str] = {}
+    for row in proc.stdout.splitlines():
+        sha, _, name = row.partition("\t")
+        if name:
+            tips[name] = sha
+    return tips
+
+
+def _source_upstream(source: str) -> str | None:
+    """The remote branch the source clone's current branch pushes to (its configured merge ref, else
+    refs/heads/<branch>), or None for a detached HEAD. Config only; no tracking ref is read."""
+    proc = gitops.run(Path(source), "symbolic-ref", "-q", "--short", "HEAD")
+    branch = proc.stdout.strip()
+    if proc.returncode != 0 or not branch:
+        return None
+    merge = gitops.run(Path(source), "config", "--get", f"branch.{branch}.merge").stdout.strip()
+    return merge or f"refs/heads/{branch}"
+
+
+def _judge_remote_branch(workspace: Path, remote: str, source: str, head: str, ref: str,
+                         tips: dict[str, str]) -> None:
+    """With a source clone, the remote branch the head belongs to must be the head, behind it, or
+    absent. A remote tip past the head (ahead) or beside it (diverged) refuses before any write,
+    with a non-destructive next step; the tip is the live one from ``tips`` (ls-remote at pin time)."""
+    upstream = _source_upstream(source)
+    if upstream is None or upstream == ref or upstream not in tips:
+        return
+    tip = tips[upstream]
+    if tip == head:
+        return
+    if gitops.run(Path(source), "cat-file", "-e", f"{tip}^{{commit}}").returncode != 0:
+        # Objects only: no ref and no FETCH_HEAD is written in the author's clone.
+        _source_capture(source, "fetch", "-q", "--no-write-fetch-head", "--", remote, upstream)
+        if gitops.run(Path(source), "cat-file", "-e", f"{tip}^{{commit}}").returncode != 0:
+            raise GripReviewRefused("remote_unreadable", f"{upstream} {tip}", "the remote branch moved during the pin")
+    if gitops.run(Path(source), "merge-base", "--is-ancestor", tip, head).returncode == 0:
+        return
+    if gitops.run(Path(source), "merge-base", "--is-ancestor", head, tip).returncode == 0:
+        raise GripReviewRefused("head_behind_remote_branch", head, f"{upstream} {tip}")
+    raise GripReviewRefused("remote_branch_diverged", head, f"{upstream} {tip}")
 
 
 def _source_capture(source: str, *args: str) -> str:
@@ -667,6 +740,7 @@ def _bind_review_rows_body(
     members: list[dict[str, object]] = []
     scan_items: list[tuple[str, str]] = [("author", author)]
     seen: set[str] = set()
+    pushed_before: dict[str, str] = {}
     for row in sorted(rows, key=lambda item: item.get("key", "")):
         key = row.get("key", "")
         # The same rule the readers apply, so the writer never makes a record its readers refuse.
@@ -687,12 +761,25 @@ def _bind_review_rows_body(
         _refuse_remote_credentials(key, remote)
         _refuse_option_shaped_remote(key, remote)
         # Refusal 1: base must be the live remote head of the target ref.
-        observed = _remote_head(workspace, remote, ref)
+        observed, target = _pin_target(workspace, remote, ref, f"{key}/ref")
         if base != observed:
             raise GripReviewRefused("base_not_live_head", base, observed)
-        # Refusal 2: head must not already be on the remote (unless ratified).
-        if _head_present_on_remote(workspace, remote, head) and not ratified:
-            raise GripReviewRefused("head_already_on_remote", head, "present")
+        # Refusal 2: head must not already be on the remote (unless ratified), except as the tip of a
+        # branch other than --ref: then the bytes on the remote ARE the head, and the bind records
+        # that the push came first (pushed_before_pin) instead of hiding the order.
+        tips = _remote_ref_tips(workspace, remote)
+        # --ref is compared as the full name the base check matched (`target`), never as typed: a
+        # `trunk` or `heads/trunk` --ref would otherwise read its own branch as "another" branch.
+        pushed_at = sorted(name for name, sha in tips.items()
+                           if sha == head and name.startswith("refs/heads/") and name != target)
+        if not ratified:
+            if any(sha == head for sha in tips.values()) and (not pushed_at or tips.get(target) == head):
+                raise GripReviewRefused("head_already_on_remote", head, "present")
+            if row.get("source"):
+                _judge_remote_branch(workspace, remote, row["source"], head, target, tips)
+        if pushed_at:  # a fact about the order, recorded under --ratified too
+            upstream = _source_upstream(row["source"]) if row.get("source") else None
+            pushed_before[key] = upstream if upstream in pushed_at else pushed_at[0]
 
         title = _norm_text(row.get("title", ""))
         body = _norm_text(row.get("body", ""))
@@ -747,8 +834,26 @@ def _bind_review_rows_body(
     root_tree = fd.write_tree(repo, fd.encode(record))
     # Verify the tree as written before it is committed: invalid bytes never reach a commit or a ref.
     fd.verify_tree(repo, root_tree)
-    commit = _bind_commit_tree(workspace, root_tree, message="grip review bind")
+    # The order is recorded in the bind's own message, so it is part of the gr id; the review
+    # schema (a pinned copy) is unchanged. One trailer per member pinned after its push.
+    message = "grip review bind" + "".join(
+        f"\n\n{_PUSHED_BEFORE_PIN} {key} {branch}" if i == 0 else f"\n{_PUSHED_BEFORE_PIN} {key} {branch}"
+        for i, (key, branch) in enumerate(sorted(pushed_before.items())))
+    commit = _bind_commit_tree(workspace, root_tree, message=message)
     return _publish_bind(workspace, commit, "grip review bind", ref=_review_ref_v1(commit))
+
+
+_PUSHED_BEFORE_PIN = "Pushed-before-pin:"
+
+
+def _pushed_before_pin(workspace: Path, commit: str) -> dict[str, str]:
+    """member key -> the remote branch whose tip already was the head when the review was pinned."""
+    out: dict[str, str] = {}
+    for line in _bind_git(workspace, "log", "-1", "--format=%B", commit).stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[0] == _PUSHED_BEFORE_PIN:
+            out[parts[1]] = parts[2]
+    return out
 
 
 def _review_bind_author(workspace: Path) -> str:
@@ -800,10 +905,12 @@ def show_review_commit(workspace: Path, commit: str) -> dict[str, object]:
     commit = _resolve_bound(workspace, commit)
     if _is_field_tree_bind(workspace, commit):
         view = _field_tree_view(workspace, commit)
+        pushed = _pushed_before_pin(workspace, commit)
         return {"id": f"gr:{commit}", **({"author": view["author"]} if "author" in view else {}), "members": [{
             "key": key, "remote": m["repo"]["remote"], "path": m["repo"]["path"],
             "base": m["repo"]["base"], "head": m["repo"]["commit"], "title": m["title"], "body": m["body"],
             "files": _range_files(None if m["objects"] is None else m["objects"]["range.patch"]),
+            **({"pushed_before_pin": pushed[key]} if key in pushed else {}),
         } for key, m in sorted(view["members"].items())]}
     if _bind_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip() != _REVIEW_BIND_SCHEMA:
         raise GripCorruptError("not a gr2 pinned review commit")

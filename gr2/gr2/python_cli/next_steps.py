@@ -126,6 +126,16 @@ def head_already_on_remote() -> str:
             "pushing, or pin this one with --ratified <receipt id> naming the ratify that already covers it")
 
 
+def head_behind_remote_branch(remote_tip: str) -> str:
+    return (f"next: the remote branch already holds commits past this head; pin what it holds: "
+            f"gr2 review pin <workspace> --head {_shown(remote_tip)} with your other flags unchanged")
+
+
+def remote_branch_diverged() -> str:
+    return ("next: fetch the remote branch, integrate it into your branch locally (merge or rebase) as a new "
+            "head, then pin that head before you push it")
+
+
 def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: str, head: str,
               checks: tuple[str, ...]) -> str | None:
     """The next command for one member's merge refusal, or None when no single command answers it."""

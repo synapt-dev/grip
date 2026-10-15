@@ -4308,7 +4308,13 @@ _REVIEW_REFUSALS = (grip.GripReviewRefused, grip.GripCorruptError, grip.StoreSet
 def _review_refusal(exc: BaseException) -> tuple[str, str, list[str]]:
     """Name an engine refusal: its code, the sentence after the code, and any remedy lines."""
     if isinstance(exc, grip.GripReviewRefused):
-        extra = [next_steps.head_already_on_remote()] if exc.refusal == "head_already_on_remote" else []
+        extra = []
+        if exc.refusal == "head_already_on_remote":
+            extra = [next_steps.head_already_on_remote()]
+        elif exc.refusal == "head_behind_remote_branch":  # observed is "<branch> <remote tip>"
+            extra = [next_steps.head_behind_remote_branch(str(exc.observed).split()[-1])]
+        elif exc.refusal == "remote_branch_diverged":
+            extra = [next_steps.remote_branch_diverged()]
         if exc.refusal == "unresolved_merge":  # a member and its unmerged paths, not two values that disagreed
             return exc.refusal, f"{exc.expected}: {exc.observed}", extra
         return exc.refusal, f"expected {exc.expected!r}, observed {exc.observed!r}", extra

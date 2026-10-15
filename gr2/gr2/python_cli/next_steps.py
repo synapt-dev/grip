@@ -62,6 +62,23 @@ def _head_fetch(repo: str, remote: str, head: str) -> str:
     return f"git -C {_shown(repo)} fetch -- {_shown(remote)} {_shown(head)}"
 
 
+def _unpushed_pin(path: str, sha: str, remote: str, branch: str | None, grip_toml: str, compat: bool) -> str:
+    """Private, so the skill's refusal table keeps one row per printed code: this is `store commit`'s and
+    `store check`'s coverage refusal, which prints no `refused: <code>`.
+
+    The next steps for a pin no remote branch holds. ``branch`` is the member's branch when it contains the pin,
+    else None (detached, or a branch that does not hold it). The full-mode line is compat-only: a full-mode store
+    carries such a pin as a layer and never prints this."""
+    if branch:
+        steps = [f"push it: git -C {_shown(path)} push -u {_shown(remote)} {_shown(branch)}"]
+    else:
+        steps = [f"push it: push a branch holding {sha} to {_shown(remote)}, then commit again"]
+    if compat:
+        steps.append(f'or keep it unpushed: add mode = "full" as the first line of {_shown(grip_toml)} '
+                     "(a full-mode record carries it as a layer), then commit again")
+    return "\n".join(steps)
+
+
 def not_received(workspace: str, review: str) -> str:
     return (f"next: receive the published review into this workspace, then stamp it: "
             f"gr2 review receive {_shown(workspace)} {_shown(review)} --remote <member-remote>, then "

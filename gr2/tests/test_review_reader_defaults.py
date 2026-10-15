@@ -56,8 +56,7 @@ def test_review_reader_selects_only_one_bind(two_member_ws, monkeypatch, tmp_pat
     if os.name != "nt":
         (nested / "gr:not-a-bind").mkdir()
     result = make_cli_runner().invoke(app, ["review", verb, "gr:not-a-bind", "--json"])
-    said = result.stderr if verb == "show" else json.loads(result.stdout)["message"]
-    assert result.exit_code != 0 and "is pinned in" in said
+    assert result.exit_code != 0 and "is pinned in" in json.loads(result.stdout)["message"]
     assert "the only pinned review" not in result.stderr
     if verb == "show":
         actual = json.loads(explicit)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
+import functools
 import importlib.metadata
 import io
 import json
@@ -598,8 +600,65 @@ def _group_state_from_statuses(statuses: list[dict[str, object]]) -> str:
 
 
 def _refuse(message: str) -> NoReturn:
+    if _JSON_REFUSALS.get():
+        _refuse_json(*_refusal_from_message(message), 2)
     typer.echo(f"refused: {message}", err=True)
     raise typer.Exit(code=2)
+
+
+# Set while a json_refusing command runs with --json: _refuse and _review_call then leave the printing to it.
+_JSON_REFUSALS: contextvars.ContextVar[bool] = contextvars.ContextVar("_JSON_REFUSALS", default=False)
+
+
+def _refusal_from_message(message: str) -> tuple[str, str]:
+    """`code: sentence` names its code; any other message is a plain `refused`."""
+    head, sep, rest = message.partition(": ")
+    if sep and re.fullmatch(r"[a-z][a-z0-9_]*", head):
+        return head, rest
+    return "refused", message
+
+
+@functools.cache
+def json_refusing(base: type) -> type:
+    """A command class whose every refusal under --json is one `_refuse_json` object on stdout, with the
+    exit code the text form gives: usage errors while reading the arguments, BadParameter and the
+    sole-pinned-review selection, engine refusals, `_refuse`, and `SystemExit("message")`. The text form
+    is untouched. Every review verb with --json uses it, so a new refusal path cannot print text there."""
+
+    class JsonRefusing(base):
+        def parse_args(self, ctx, args):
+            # Read before parsing: click's parser consumes `args` in place.
+            wants_json = "--json" in (args[:args.index("--")] if "--" in args else args)
+            try:
+                return super().parse_args(ctx, args)
+            except UsageError as exc:
+                if not wants_json:
+                    raise
+                _refuse_json("usage", exc.format_message(), exc.exit_code)
+
+        def invoke(self, ctx):
+            if not ctx.params.get("json_output"):
+                return super().invoke(ctx)
+            token = _JSON_REFUSALS.set(True)
+            try:
+                return super().invoke(ctx)
+            except _ReviewSelectRefused as exc:
+                _refuse_json(exc.refusal, exc.message, exc.exit_code)
+            except UsageError as exc:
+                _refuse_json("usage", exc.format_message(), exc.exit_code)
+            except _REVIEW_REFUSALS as exc:
+                refusal, message, extra = _review_refusal(exc)
+                _refuse_json(refusal, message, 2, extra + list(getattr(exc, "__notes__", [])))
+            except SystemExit as exc:
+                if not isinstance(exc.code, str):
+                    raise
+                _refuse_json(*_refusal_from_message(exc.code), 1)
+            finally:
+                _JSON_REFUSALS.reset(token)
+
+    # Keep the base's name: the root-option partition places a command by its class name.
+    JsonRefusing.__name__, JsonRefusing.__qualname__ = base.__name__, base.__qualname__
+    return JsonRefusing
 
 
 def _refuse_review_beside_unit(owner_unit: Optional[str], review: Optional[str]) -> None:
@@ -3598,8 +3657,8 @@ def lane_lease_show(
     _exit(lane_proto.show_lane_leases(ns))
 
 
-@review_app.command("check", cls=RootOptionalCommand)
-@review_app.command("requirements", hidden=True, cls=RootOptionalCommand)
+@review_app.command("check", cls=json_refusing(RootOptionalCommand))
+@review_app.command("requirements", hidden=True, cls=json_refusing(RootOptionalCommand))
 def review_check(
     ctx: typer.Context,
     workspace_root: Path,
@@ -3624,7 +3683,7 @@ def review_check(
     _exit(lane_proto.check_review_requirements(ns))
 
 
-@review_app.command("checkout-pr", cls=RootOptionalCommand)
+@review_app.command("checkout-pr", cls=json_refusing(RootOptionalCommand))
 def review_checkout_pr(
     workspace_root: Path,
     owner_unit: str,
@@ -3720,10 +3779,10 @@ class _ReviewSelectRefused(typer.BadParameter):
         self.refusal = refusal
 
 
-def _the_one_review_bind(workspace_root: Path, verb: str = "open", call=None) -> str:
+def _the_one_review_bind(workspace_root: Path, verb: str = "open") -> str:
     """Select the workspace's sole pinned review, announced on stderr. Refuse zero or
     several binds and name the invoking reader in the remedy."""
-    binds = (call or _review_call)(grip.list_review_binds, workspace_root)
+    binds = _review_call(grip.list_review_binds, workspace_root)
     if not binds:
         raise _ReviewSelectRefused(
             f"this workspace has no pinned review to {verb}; make one with `review pin` first, or name the target",
@@ -3755,7 +3814,7 @@ def _default_review_lane_dir(workspace_root: Path, target: str) -> Path:
     return path
 
 
-@review_app.command("open", cls=ReviewOpenCommand)
+@review_app.command("open", cls=json_refusing(ReviewOpenCommand))
 def review_open(
     workspace_root: Path,
     target: Optional[str] = typer.Argument(None, help="What to open: a PR number (PR-head lane), a gr:<sha> pinned review id (reconstruction), or a project-review id. Omitted: the workspace's one pinned review"),
@@ -3877,7 +3936,7 @@ def review_open(
         typer.echo(json.dumps(payload, indent=2))
 
 
-@review_app.command("close")
+@review_app.command("close", cls=json_refusing(typer.core.TyperCommand))
 def review_close(
     target: Annotated[Optional[Path], typer.Argument(help="Reconstruction lane directory; omitted inside its marked lane. PR-head form: WORKSPACE_ROOT")] = None,
     owner_unit: Optional[str] = typer.Argument(None, help="PR-head only: owner unit"),
@@ -4275,6 +4334,8 @@ def _review_call(fn, *args, **kwargs):
     try:
         return fn(*args, **kwargs)
     except _REVIEW_REFUSALS as exc:
+        if _JSON_REFUSALS.get():
+            raise  # the --json command class prints it as one object
         _refuse_text(exc)
 
 
@@ -4926,7 +4987,7 @@ def review_receive(
     typer.echo(json.dumps(result))
 
 
-@review_app.command("show", cls=ReviewTargetCommand)
+@review_app.command("show", cls=json_refusing(ReviewTargetCommand))
 def review_show(
     workspace_root: Path,
     commit: Optional[str] = typer.Argument(None, help="The pinned review, as gr:<sha> or a bare sha; omitted only when the workspace has exactly one pinned review"),
@@ -4962,23 +5023,7 @@ def review_show(
                        else f"  merge: {row.get('final')} {str(row.get('merged') or '')[:12]}".rstrip())
 
 
-class ReviewVerifyCommand(ReviewTargetCommand):
-    """`review verify`: under --json, a refusal while reading the arguments is a JSON object too."""
-
-    def parse_args(self, ctx, args):
-        try:
-            return super().parse_args(ctx, args)
-        except UsageError as exc:
-            if "--json" not in (args[:args.index("--")] if "--" in args else args):
-                raise
-            _refuse_json("usage", exc.format_message(), exc.exit_code)
-
-
-# Keep the base's name: the root-option partition places a command by its class name.
-ReviewVerifyCommand.__name__ = ReviewVerifyCommand.__qualname__ = ReviewTargetCommand.__name__
-
-
-@review_app.command("verify", cls=ReviewVerifyCommand)
+@review_app.command("verify", cls=json_refusing(ReviewTargetCommand))
 def review_verify(
     workspace_root: Path,
     commit: Optional[str] = typer.Argument(None, help="The pinned review commit, as gr:<sha> or a bare sha; omitted only when the workspace has exactly one pinned review"),
@@ -4987,20 +5032,9 @@ def review_verify(
 ) -> None:
     """Recompute the review gr commit tree from its own objects; a mismatch is
     corruption, not drift. With no id, selects the workspace's sole pinned review."""
-    try:
-        if commit is None:
-            # The engine is called bare here, so its refusal reaches the --json branch below unprinted.
-            commit = _the_one_review_bind(workspace_root.resolve(), "verify", call=lambda fn, *a: fn(*a))
-        result = grip.verify_review_commit(workspace_root.resolve(), _strip_gr_prefix(commit))
-    except _ReviewSelectRefused as exc:
-        if json_output:
-            _refuse_json(exc.refusal, exc.message, exc.exit_code)
-        raise
-    except _REVIEW_REFUSALS as exc:
-        if not json_output:
-            _refuse_text(exc)
-        refusal, message, extra = _review_refusal(exc)
-        _refuse_json(refusal, message, 2, extra + list(getattr(exc, "__notes__", [])))
+    if commit is None:
+        commit = _the_one_review_bind(workspace_root.resolve(), "verify")
+    result = _review_call(grip.verify_review_commit, workspace_root.resolve(), _strip_gr_prefix(commit))
     if json_output:
         typer.echo(json.dumps(result, indent=2, default=str))
     else:
@@ -5183,7 +5217,7 @@ def review_update(
         raise typer.Exit(code)
 
 
-@review_app.command("repin")
+@review_app.command("repin", cls=json_refusing(typer.core.TyperCommand))
 def review_rebind_cmd(
     frozen_dir: Path = typer.Argument(..., help="A frozen gate directory (freeze-public-range.sh output) to rebase onto the moved base"),
     repo: Path = typer.Option(..., "--repo", help="A clone whose origin remote hosts the target branch (used to read the live base head)"),
@@ -5227,7 +5261,7 @@ def review_rebind_cmd(
 
 
 # `rebind` is the earlier name of `review repin`; it stays as an alias with the same options and output.
-review_app.command("rebind", help="Alias of `review repin`.")(review_rebind_cmd)
+review_app.command("rebind", help="Alias of `review repin`.", cls=json_refusing(typer.core.TyperCommand))(review_rebind_cmd)
 
 
 @pr_app.command("status", cls=ReviewSubjectCommand)

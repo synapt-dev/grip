@@ -455,6 +455,9 @@ def run_pre_commit(root: Path) -> int:
         committed = _head_gitlinks(root)
         partial = bool(index) and Path(index).name.startswith("next-index-")
         _refuse_unclaimed_gitlinks(members, staged, committed)   # BEFORE any write
+        if shadow and any(not member.get("pin") for member in members):
+            # A pin line removed by hand: the checks below read every member's pin, so the fence names it first.
+            gc._refuse_unrecorded_pins(root, gc._recorded_pins(staged_text), "HEAD", _staged_mode(staged_text), None)
         _sync_gitmodules(root, members, index, env_partial=partial)
         stale: list[dict[str, str]] = []
         adopted: dict[str, dict[str, str]] = {}

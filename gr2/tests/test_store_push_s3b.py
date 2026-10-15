@@ -3,6 +3,9 @@
 The walk is local, in the member's own clone, by the org cut's walker. A commit the clone does not hold is fetched
 from the member's remote once; still missing is refused as unverifiable. `--allow-rewind <member>` takes a rewind or
 a rewrite for that member only, and the result names it.
+
+A fixture that records a rewound or rewritten pin locally passes `store commit --allow-rewind`: store commit refuses a
+pin that moves backwards on its own, so lease 2 is what these rows put under test, not the commit-time check.
 """
 from __future__ import annotations
 
@@ -68,7 +71,7 @@ def test_b2_rewind_is_refused_by_member_and_both_shas(tmp_path, mode):
     root, origin, p0, p1 = _two_pushes(tmp_path, mode)
     before = _refs(origin)
     git(root / "alpha", "reset", "-q", "--hard", p0)
-    gr2(root, "commit", "-m", "alpha back")
+    gr2(root, "commit", "--allow-rewind", "-m", "alpha back")
     result = gr2(root, "push", check=False)
     assert result.returncode == 3, (result.returncode, result.stderr)
     assert f"alpha: rewind: its pin {p0} does not descend from the pin origin's shadow records, {p1}" in result.stderr
@@ -81,7 +84,7 @@ def test_b3_rewrite_is_refused_by_name(tmp_path, mode):
     root, origin, p0, p1 = _two_pushes(tmp_path, mode)
     before = _refs(origin)
     q = _rewrite(root, tmp_path, p0)
-    gr2(root, "commit", "-m", "alpha rewritten")
+    gr2(root, "commit", "--allow-rewind", "-m", "alpha rewritten")
     result = gr2(root, "push", check=False)
     assert result.returncode == 3, (result.returncode, result.stderr)
     assert f"alpha: rewrite: its pin {q} does not descend from the pin origin's shadow records, {p1}" in result.stderr
@@ -92,7 +95,7 @@ def test_b3_rewrite_is_refused_by_name(tmp_path, mode):
 def test_b4_allow_rewind_takes_it_and_the_result_names_it(tmp_path, mode):
     root, origin, p0, p1 = _two_pushes(tmp_path, mode)
     git(root / "alpha", "reset", "-q", "--hard", p0)
-    gr2(root, "commit", "-m", "alpha back")
+    gr2(root, "commit", "--allow-rewind", "-m", "alpha back")
     result = gr2(root, "push", "--allow-rewind", "alpha", "--json")
     payload = json.loads(result.stdout)
     assert payload["rewound"] == [{"name": "alpha", "kind": "rewind", "old": p1, "new": p0}]
@@ -108,7 +111,7 @@ def test_b5_allow_rewind_takes_only_the_member_it_names(tmp_path, mode):
     root, origin, p0, p1 = _two_pushes(tmp_path, mode)
     before = _refs(origin)
     git(root / "alpha", "reset", "-q", "--hard", p0)
-    gr2(root, "commit", "-m", "alpha back")
+    gr2(root, "commit", "--allow-rewind", "-m", "alpha back")
     result = gr2(root, "push", "--allow-rewind", "beta", check=False)
     assert result.returncode == 3, (result.returncode, result.stderr)
     assert "alpha: rewind:" in result.stderr
@@ -121,7 +124,7 @@ def test_b6_a_recorded_pin_not_held_is_fetched_then_walked(tmp_path, mode):
     before = _refs(origin)
     work = root / "alpha"
     git(work, "reset", "-q", "--hard", p0)
-    gr2(root, "commit", "-m", "alpha back")   # store commit's own coverage fetch runs here, so forget p1 after it
+    gr2(root, "commit", "--allow-rewind", "-m", "alpha back")   # store commit's own coverage fetch runs here, so forget p1 after it
     git(work, "update-ref", "-d", "refs/remotes/origin/main")
     _forget(work, p1)
     # --recurse=none: no coverage fetch runs first, so only the walk's own fetch can bring p1 back (under the default
@@ -142,7 +145,7 @@ def test_b7_a_recorded_pin_gone_everywhere_cannot_be_verified(tmp_path, mode):
     work = root / "alpha"
     _forget(work, p1)
     _forget(tmp_path / "alpha.git", p1)
-    gr2(root, "commit", "-m", "alpha rewritten, p1 gone")
+    gr2(root, "commit", "--allow-rewind", "-m", "alpha rewritten, p1 gone")
     result = gr2(root, "push", check=False)
     assert result.returncode == 5, (result.returncode, result.stderr)
     assert f"cannot verify alpha: {p1} not held" in result.stderr
@@ -156,7 +159,7 @@ def test_b8_a_rewind_taken_is_written_down_on_origin_with_the_tip(tmp_path, mode
     # parent is the tip and whose tree is the tip's (no object the tip does not carry), naming member, kind, both pins.
     root, origin, p0, p1 = _two_pushes(tmp_path, mode)
     git(root / "alpha", "reset", "-q", "--hard", p0)
-    gr2(root, "commit", "-m", "alpha back")
+    gr2(root, "commit", "--allow-rewind", "-m", "alpha back")
     gr2(root, "push", "--allow-rewind", "alpha")
     tip = _head(root)
     record = f"{REWOUND}/{tip}"
@@ -172,7 +175,7 @@ def test_b8_the_record_rides_the_one_atomic_push(tmp_path, mode):
     root, origin, p0, p1 = _two_pushes(tmp_path, mode)
     before = _refs(origin)
     git(root / "alpha", "reset", "-q", "--hard", p0)
-    gr2(root, "commit", "-m", "alpha back")
+    gr2(root, "commit", "--allow-rewind", "-m", "alpha back")
     _refuse_shadow(origin)
     result = gr2(root, "push", "--allow-rewind", "alpha", check=False)
     assert result.returncode != 0
@@ -193,7 +196,7 @@ def _beta_ahead_alpha_back(tmp_path: Path) -> tuple[Path, Path, str]:
     git(beta, "add", "local.txt")
     git(beta, "commit", "-q", "-m", "beta local")
     git(root / "alpha", "reset", "-q", "--hard", p0)
-    gr2(root, "commit", "-m", "alpha back, beta ahead")
+    gr2(root, "commit", "--allow-rewind", "-m", "alpha back, beta ahead")
     return root, origin, before
 
 

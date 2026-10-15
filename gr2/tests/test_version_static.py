@@ -90,9 +90,13 @@ def test_gr2_version_option_names_the_code_that_runs() -> None:
     line = result.stdout.strip()
     installed = importlib.metadata.version("gitgrip")
 
-    # one of the four declared forms, carrying the installed version when there is one
+    # one of the six declared forms, carrying the installed version when there is one; a
+    # non-editable install names its build (a dev commit, or an unknown build) unless the
+    # build stamp says it was made at the release tag
     assert re.fullmatch(
-        rf"(?:{re.escape(installed)}(?:\+g[0-9a-f]+|\+unknown| released)|unknown)", line
+        rf"(?:{re.escape(installed)}(?:\+g[0-9a-f]+|\+unknown| released"
+        rf"|\+g[0-9a-f]+(\.dirty)? dev build, not a release| unknown build, not a release)|unknown)",
+        line,
     ), (line, installed)
 
     # and NOT the bare metadata read, which is the whole point of the change

@@ -40,6 +40,9 @@ dev = [
     # which pytest happens to pull in transitively. An import that arrives by
     # accident is one a future pytest could take away.
     "packaging>=22",
+    # `tests/test_version_build_stamp.py` builds real wheels through the stock backend to
+    # witness what an installed (non-editable) build says it is.
+    "setuptools>=68.0",
 ]
 
 [tool.setuptools]

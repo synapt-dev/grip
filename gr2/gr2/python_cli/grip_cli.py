@@ -3566,16 +3566,18 @@ def grip_push_cmd(
     """Check, then push the root branch and its shadow in one atomic push; --atomic adds same-repo member refs."""
     notes: list[str] = []
 
-    def say_notes() -> None:
-        # Text mode only: under --json a note on stderr breaks a reader that takes stdout and stderr together.
-        if not json_output:
+    def say_notes(refused: bool = False) -> None:
+        # Under --json a success carries its notes in the payload, so stderr stays empty for a reader that takes stdout
+        # and stderr together. A refusal prints no payload, and its own text is already on stderr, so its notes go
+        # there too: what the push changed before it was refused (a fetch line added) is never silent.
+        if not json_output or refused:
             for note in notes:
                 typer.echo(f"gr2: {note}", err=True)
 
     try:
         payload = _native_store_push(Path.cwd(), to, atomic, recurse, snapshot, allow_rewind, notes)
     except NativeStoreRefusal as exc:
-        say_notes()
+        say_notes(refused=True)
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
     except RuntimeError as exc:
@@ -3584,7 +3586,7 @@ def grip_push_cmd(
         # could not COMPLETE, which is the 5 row, and it is prefixed so a raw git message
         # cannot read as a contract refusal (an unaudited backstop is the one that will
         # fire).
-        say_notes()
+        say_notes(refused=True)
         typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
     say_notes()

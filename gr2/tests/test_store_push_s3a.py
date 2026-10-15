@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from tests.test_store_git_native_smoke import git, gr2
-from tests.test_store_shadow_s1 import MODES, SHADOW, _advance, _refs, _store
+from tests.test_store_shadow_s1 import MODES, SHADOW, _advance, _refs, _refuse_shadow, _store
 
 MAIN = "refs/heads/main"
 LINE = "+refs/dev.synapt.grip/__branches__/*:refs/remotes/origin/dev.synapt.grip/__branches__/*"
@@ -181,6 +181,17 @@ def test_fetch_line_under_json_rides_the_payload_not_stderr(tmp_path, mode):
     _advance(root, "alpha")
     gr2(root, "commit", "-m", "alpha moved")
     assert json.loads(gr2(root, "push", "--json").stdout)["notes"] == []
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_fetch_line_note_reaches_stderr_when_a_json_push_is_refused(tmp_path, mode):
+    # A refused push prints no payload, so the line it added before the refusal is named on stderr beside the refusal.
+    root, origin = _store(tmp_path, mode)
+    _refuse_shadow(origin)
+    result = gr2(root, "push", "--json", check=False)
+    assert result.returncode != 0 and result.stdout == "", (result.returncode, result.stdout)
+    assert LINE in _fetch_lines(root), _fetch_lines(root)
+    assert f"gr2: added to remote.origin.fetch: {LINE}" in result.stderr, result.stderr
 
 
 @pytest.mark.parametrize("mode", MODES)

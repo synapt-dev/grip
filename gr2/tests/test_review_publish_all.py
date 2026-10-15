@@ -1,0 +1,292 @@
+"""A bare `gr2 review publish <rid>` publishes every member: each pinned head to its own recorded remote, then the
+review ref there, or refuses before anything leaves the host.
+
+Rows P0/A1..A9, J (stdout is the JSON receipt with no flag) and S (cwd is a subdirectory of the workspace). Real git,
+bare local remotes under tmp_path, no network. Exit codes match `review merge`: 0 all published, 2 refused in
+preflight, 3 a later failure that landed nothing, 4 partial.
+"""
+from __future__ import annotations
+
+import json
+import shlex
+from pathlib import Path
+import subprocess
+
+import pytest
+from typer.testing import CliRunner
+
+from gr2.python_cli.app import app
+from tests.review_ref_helper import REVIEW_REF_PREFIX
+
+runner = CliRunner()
+
+
+def git(root, *args, check=True):
+    p = subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", *map(str, args)],
+                       cwd=root, capture_output=True, text=True)
+    if check:
+        assert p.returncode == 0, p.stderr
+    return p.stdout.strip()
+
+
+def tip(remote, ref):
+    """What the remote serves at `ref`, or None."""
+    out = git(remote, "ls-remote", str(remote), ref)
+    return out.split()[0] if out else None
+
+
+@pytest.fixture(autouse=True)
+def _git_identity(monkeypatch):
+    for k, v in (("GIT_AUTHOR_NAME", "Fixture"), ("GIT_AUTHOR_EMAIL", "fixture@example.invalid"),
+                 ("GIT_COMMITTER_NAME", "Fixture"), ("GIT_COMMITTER_EMAIL", "fixture@example.invalid")):
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+
+
+def build(tmp_path, monkeypatch, *, shared=False):
+    """Two members, alpha and beta, pinned into ONE review; nothing pushed, nothing published.
+    shared=True puts both on one bare remote (alpha's), on branches feat-alpha and feat-beta."""
+    author = tmp_path / "author"
+    author.mkdir()
+    w = {"author": author, "members": {}}
+    for name in ("alpha", "beta"):
+        remote = tmp_path / ("alpha.git" if shared else f"{name}.git")
+        if not remote.exists():
+            git(tmp_path, "init", "--bare", "-b", "main", remote)
+            seed = tmp_path / f"seed-{name}"
+            seed.mkdir()
+            git(seed, "init", "-b", "main")
+            (seed / "payload.txt").write_text(f"{name} base\n")
+            git(seed, "add", "payload.txt")
+            git(seed, "commit", "-m", "base")
+            git(seed, "push", remote, "main")
+        git(author, "clone", "--no-local", "--branch", "main", remote, name)
+        w["members"][name] = {"remote": remote, "base": git(author / name, "rev-parse", "HEAD"), "repo": author / name,
+                              "branch": f"feat-{name}" if shared else "feat"}
+    assert runner.invoke(app, ["store", "init", str(author)]).exit_code == 0
+    rows = []
+    for name, m in w["members"].items():
+        git(m["repo"], "checkout", "-b", m["branch"])
+        (m["repo"] / "payload.txt").write_text(f"{name} reviewed\n")
+        git(m["repo"], "add", "payload.txt")
+        git(m["repo"], "commit", "-m", "reviewed")
+        m["head"] = git(m["repo"], "rev-parse", "HEAD")
+        rows.append({"key": name, "path": name, "remote": str(m["remote"]), "base": m["base"], "head": m["head"],
+                     "ref": "refs/heads/main", "source": str(m["repo"])})
+    (tmp_path / "rows.json").write_text(json.dumps(rows))
+    monkeypatch.chdir(author)
+    made = runner.invoke(app, ["review", "bind", "--rows-json", str(tmp_path / "rows.json")])
+    assert made.exit_code == 0, made.output
+    w["review"] = "gr:" + git(author, "for-each-ref", "--format=%(refname)", REVIEW_REF_PREFIX).rsplit("/", 1)[1]
+    w["full"] = w["review"][3:]
+    return w
+
+
+@pytest.fixture
+def w(tmp_path, monkeypatch):
+    return build(tmp_path, monkeypatch)
+
+
+def publish(*extra):
+    return runner.invoke(app, ["review", "publish", *extra])
+
+
+def receipt(out):
+    return json.loads(out.stdout)
+
+
+def review_on(remote, full):
+    out = git(remote, "for-each-ref", "--format=%(objectname)", REVIEW_REF_PREFIX + full)
+    return out or None
+
+
+def untouched(m):
+    """The member's remote carries neither the feature head nor any review ref."""
+    return tip(m["remote"], f"refs/heads/{m['branch']}") is None and not git(m["remote"], "for-each-ref", REVIEW_REF_PREFIX)
+
+
+def test_p0_a1_one_bare_call_publishes_every_member_and_a_second_workspace_receives_both(w, tmp_path):
+    out = publish(w["review"])
+    assert out.exit_code == 0, out.output
+    for m in w["members"].values():
+        assert tip(m["remote"], "refs/heads/feat") == m["head"]
+        assert review_on(m["remote"], w["full"]) == w["full"]
+    other = tmp_path / "reviewer"
+    other.mkdir()
+    for name, m in w["members"].items():
+        git(other, "clone", "--no-local", "--single-branch", "--branch", "main", m["remote"], name)
+    assert runner.invoke(app, ["store", "init", str(other)]).exit_code == 0
+    for name, m in w["members"].items():
+        got = runner.invoke(app, ["review", "receive", str(other), w["review"], "--remote", str(m["remote"])])
+        assert got.exit_code == 0, got.output
+        heads = {h["key"]: h["status"] for h in json.loads(got.stdout)["heads"]}
+        assert heads[name] == "fetched", heads
+
+
+def test_a2_remote_form_is_unchanged_and_touches_only_that_remote(w):
+    alpha, beta = w["members"]["alpha"], w["members"]["beta"]
+    out = publish(w["review"], "--remote", str(alpha["remote"]))
+    assert out.exit_code == 0, out.output
+    assert set(receipt(out)) == {"id", "ref", "remote"}
+    assert tip(alpha["remote"], "refs/heads/feat") is None, "--remote publishes the review only, never a head"
+    assert review_on(alpha["remote"], w["full"]) == w["full"]
+    assert untouched(beta)
+
+
+def test_a3_a_commit_after_the_pin_refuses_and_nothing_leaves(w):
+    beta = w["members"]["beta"]
+    (beta["repo"] / "later.txt").write_text("after the pin\n")
+    git(beta["repo"], "add", "later.txt")
+    git(beta["repo"], "commit", "-m", "after the pin")
+    out = publish(w["review"])
+    assert out.exit_code == 2, out.output
+    assert receipt(out)["refused"].startswith("head_moved_since_pin: beta"), out.stdout
+    assert all(untouched(m) for m in w["members"].values())
+
+
+def _mid_merge(m):
+    git(m["repo"], "branch", "other", m["base"])
+    git(m["repo"], "checkout", "-q", "other")
+    (m["repo"] / "payload.txt").write_text("conflicting\n")
+    git(m["repo"], "commit", "-qam", "conflicting")
+    git(m["repo"], "checkout", "-q", m["branch"])
+    git(m["repo"], "merge", "other", check=False)
+    assert git(m["repo"], "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False)
+    assert git(m["repo"], "rev-parse", "HEAD") == m["head"]
+
+
+@pytest.mark.parametrize("form", ["bare", "remote"])
+def test_a4_a_member_mid_merge_refuses_in_both_forms(w, form):
+    alpha, beta = w["members"]["alpha"], w["members"]["beta"]
+    _mid_merge(beta)
+    out = publish(w["review"]) if form == "bare" else publish(w["review"], "--remote", str(alpha["remote"]))
+    assert out.exit_code == 2, out.output
+    assert "unresolved_merge" in out.output and "beta" in out.output, out.output
+    assert all(untouched(m) for m in w["members"].values())
+
+
+@pytest.mark.parametrize("form", ["bare", "remote"])
+def test_a4b_the_mid_merge_refusal_names_the_paths_and_says_what_to_do(w, form):
+    _mid_merge(w["members"]["beta"])
+    out = publish(w["review"]) if form == "bare" else publish(w["review"], "--remote", str(w["members"]["alpha"]["remote"]))
+    assert "refused: unresolved_merge: beta: payload.txt; resolve or abort the merge in this clone" in out.stderr, out.stderr
+    assert "expected" not in out.stderr, out.stderr
+
+
+def _reject_pushes(m):
+    hook = m["remote"] / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\necho 'fixture: rejected' >&2\nexit 1\n")
+    hook.chmod(0o755)
+    return hook
+
+
+def test_a5_a_later_member_failing_is_partial_exit_4_with_a_row_per_member(w):
+    alpha, beta = w["members"]["alpha"], w["members"]["beta"]
+    _reject_pushes(beta)
+    out = publish(w["review"])
+    assert out.exit_code == 4, out.output
+    r = receipt(out)
+    assert r["complete"] is False
+    rows = {m["key"]: m for m in r["members"]}
+    assert rows["alpha"]["state"] == "published" and rows["beta"]["state"] == "failed", r
+    assert rows["beta"]["error"], r
+    assert tip(alpha["remote"], "refs/heads/feat") == alpha["head"]
+    assert review_on(alpha["remote"], w["full"]) == w["full"]
+    assert untouched(beta)
+    assert r["next"] and "gr2 review publish" in r["next"]
+
+
+def test_a5c_the_partial_next_line_runs_as_printed_from_a_path_with_a_space(tmp_path, monkeypatch):
+    """The receipt's `next` is a command a person pastes: a workspace path holding a space must come back as ONE word."""
+    base = tmp_path / "work space"
+    base.mkdir()
+    w = build(base, monkeypatch)
+    _reject_pushes(w["members"]["beta"])
+    out = publish(w["review"])
+    assert out.exit_code == 4, out.output
+    line = receipt(out)["next"].split("   #", 1)[0]
+    argv = shlex.split(line)
+    assert argv[:3] == ["gr2", "review", "publish"] and argv[4] == w["review"], argv
+    assert Path(argv[3]).resolve() == w["author"].resolve(), argv
+
+def test_a5b_the_first_member_failing_landed_nothing_exit_3(w):
+    alpha, beta = w["members"]["alpha"], w["members"]["beta"]
+    _reject_pushes(alpha)
+    out = publish(w["review"])
+    assert out.exit_code == 3, out.output
+    rows = {m["key"]: m["state"] for m in receipt(out)["members"]}
+    assert rows == {"alpha": "failed", "beta": "not_attempted"}, rows
+    assert all(untouched(m) for m in w["members"].values())
+
+
+def test_a6_a_rerun_after_partial_resumes_and_is_idempotent(w):
+    alpha, beta = w["members"]["alpha"], w["members"]["beta"]
+    hook = _reject_pushes(beta)
+    assert publish(w["review"]).exit_code == 4
+    alpha_tip = tip(alpha["remote"], "refs/heads/feat")
+    hook.unlink()
+    out = publish(w["review"])
+    assert out.exit_code == 0, out.output
+    rows = {m["key"]: m["state"] for m in receipt(out)["members"]}
+    assert rows == {"alpha": "already_published", "beta": "published"}, rows
+    assert tip(alpha["remote"], "refs/heads/feat") == alpha_tip
+    assert tip(beta["remote"], "refs/heads/feat") == beta["head"]
+
+
+def test_a7_a_remote_feature_ahead_of_the_pin_refuses_before_any_push(w, tmp_path):
+    alpha, beta = w["members"]["alpha"], w["members"]["beta"]
+    other = tmp_path / "someone"
+    git(tmp_path, "clone", "--no-local", beta["repo"], other)
+    git(other, "checkout", "-q", "feat")
+    (other / "theirs.txt").write_text("someone else\n")
+    git(other, "add", "theirs.txt")
+    git(other, "commit", "-m", "theirs")
+    git(other, "push", beta["remote"], "feat")
+    ahead = tip(beta["remote"], "refs/heads/feat")
+    out = publish(w["review"])
+    assert out.exit_code == 2, out.output
+    assert receipt(out)["refused"].startswith("feature_moved: beta"), out.stdout
+    assert tip(beta["remote"], "refs/heads/feat") == ahead
+    assert untouched(alpha)
+
+
+def test_a8_two_members_on_one_remote_publish_the_review_once(tmp_path, monkeypatch):
+    w = build(tmp_path, monkeypatch, shared=True)
+    out = publish(w["review"])
+    assert out.exit_code == 0, out.output
+    r = receipt(out)
+    assert len(r["remotes"]) == 1, r["remotes"]
+    remote = w["members"]["alpha"]["remote"]
+    for m in w["members"].values():
+        assert tip(remote, f"refs/heads/{m['branch']}") == m["head"]
+    assert review_on(remote, w["full"]) == w["full"]
+
+
+def test_a9_a_detached_member_refuses_no_branch_and_nothing_leaves(w):
+    beta = w["members"]["beta"]
+    git(beta["repo"], "checkout", "-q", "--detach", beta["head"])
+    out = publish(w["review"])
+    assert out.exit_code == 2, out.output
+    assert receipt(out)["refused"].startswith("no_branch: beta"), out.stdout
+    assert all(tip(m["remote"], "refs/heads/main") == m["base"] and untouched(m) for m in w["members"].values())
+
+
+def test_j_the_bare_form_prints_its_json_receipt_on_stdout_with_no_flag(w):
+    out = publish(w["review"])
+    assert out.exit_code == 0, out.output
+    r = json.loads(out.stdout)
+    assert r["id"] == w["review"] and r["complete"] is True and r["exit"] == 0
+    assert [m["key"] for m in r["members"]] == ["alpha", "beta"]
+    assert "published: alpha" in out.stderr
+
+
+def test_s_from_a_subdirectory_of_the_workspace(w, monkeypatch):
+    sub = w["author"] / "alpha" / "docs"
+    sub.mkdir()
+    monkeypatch.chdir(sub)
+    out = publish(w["review"])
+    assert out.exit_code == 0, out.output
+    for m in w["members"].values():
+        assert tip(m["remote"], "refs/heads/feat") == m["head"]
+        assert review_on(m["remote"], w["full"]) == w["full"]

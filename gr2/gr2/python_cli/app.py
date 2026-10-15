@@ -4220,10 +4220,13 @@ def _review_call(fn, *args, **kwargs):
     try:
         return fn(*args, **kwargs)
     except grip.GripReviewRefused as exc:
-        typer.echo(
-            f"refused: {exc.refusal}: expected {exc.expected!r}, observed {exc.observed!r}",
-            err=True,
-        )
+        if exc.refusal == "unresolved_merge":  # a member and its unmerged paths, not two values that disagreed
+            typer.echo(f"refused: unresolved_merge: {exc.expected}: {exc.observed}", err=True)
+        else:
+            typer.echo(
+                f"refused: {exc.refusal}: expected {exc.expected!r}, observed {exc.observed!r}",
+                err=True,
+            )
         if exc.refusal == "head_already_on_remote":
             typer.echo(next_steps.head_already_on_remote(), err=True)
         _echo_notes(exc)
@@ -4828,13 +4831,51 @@ def review_run(
 def review_publish(
     workspace_root: Path,
     commit: str = typer.Argument(..., help="Full gr:<sha> review ID"),
-    remote: str = typer.Option(..., "--remote", help="HTTPS URL or absolute local remote path"),
+    remote: Optional[str] = typer.Option(None, "--remote", help="HTTPS URL or absolute local remote path: publish the review ref there only; without it, every member's pinned head and the review go to that member's own recorded remote"),
     ref: Optional[str] = typer.Option(None, "--ref", help="Exact native review ref, otherwise derived from ID"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
-    """Publish the existing native review ref and verify its remote ID."""
-    result = _review_call(grip.publish_review_commit, workspace_root.resolve(), commit, remote, ref)
-    typer.echo(json.dumps(result))
+    """Publish the existing native review ref and verify its remote ID.
+
+    With --remote, the review ref goes to that one remote and nothing else. Without it, every member's pinned head
+    goes to its own recorded remote (on the clone's current branch, never forced), then the review ref, each verified.
+    Every member is checked before anything leaves the host. Prints one JSON receipt on stdout either way; the
+    bare form's per-member lines go to stderr. Exit (bare form) 0 all published, 2 refused before anything left,
+    3 a failure that landed nothing, 4 partial: rerun the same command to resume."""
+    ws = workspace_root.resolve()
+    if remote is not None:
+        result = _review_call(grip.publish_review_commit, ws, commit, remote, ref)
+        typer.echo(json.dumps(result))
+        return
+    try:
+        code, receipt = grip.publish_review_all(ws, commit, ref)
+    except (grip.GripReviewRefused, grip.GripCorruptError, grip.ReviewStoreAbsent, grip.GripInitError) as exc:
+        refused = (f"{exc.refusal}: {exc.expected}: {exc.observed}" if isinstance(exc, grip.GripReviewRefused)
+                   else str(exc))
+        typer.echo(json.dumps({"id": commit if commit.startswith("gr:") else f"gr:{commit}", "ref": ref,
+                               "complete": False, "exit": grip.PUBLISH_EXIT_REFUSED, "members": [], "remotes": [],
+                               "refused": refused, "next": None}))
+        typer.echo(f"refused: {refused} (nothing left this host)", err=True)
+        _echo_notes(exc)
+        raise typer.Exit(grip.PUBLISH_EXIT_REFUSED)
+    typer.echo(json.dumps(receipt))
+    _publish_lines(receipt)
+    if code:
+        raise typer.Exit(code)
+
+
+def _publish_lines(receipt: dict) -> None:
+    """The bare publish form's human lines, on stderr: one per member, then the summary and the next command."""
+    for m in receipt["members"]:
+        head = f"{m['branch']}@{str(m['head'])[:7]} ({m['head_state']})" if m["head_state"] else "-"
+        tail = f"  error: {m['error']}" if m["error"] else ""
+        typer.echo(f"{m['state']}: {m['key']}  {m['remote']}  head={head}{tail}", err=True)
+    done = sum(m["state"] in ("published", "already_published") for m in receipt["members"])
+    if receipt["complete"]:
+        typer.echo(f"published: {done} of {len(receipt['members'])} members, review {receipt['ref']}", err=True)
+    else:
+        typer.echo(f"{'partial' if done else 'failed'}: {done} of {len(receipt['members'])} published", err=True)
+        typer.echo(f"next: {receipt['next']}", err=True)
 
 
 @review_app.command("receive", cls=ReviewTargetCommand)

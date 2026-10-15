@@ -10,7 +10,7 @@ A merge, not a rebase: the reviewed head stays an ancestor of the new head, so t
 land (a two-parent merge of base and head) takes the shape it already expects.
 
 Exit codes match `review merge` where they overlap: 0 done (pinned again, or every member already up to date and
-the pin current), 2 refused before anything moved (member_dirty, member_untracked_in_the_way, fetch_failed, an
+the pin current), 2 refused before anything moved (unresolved_merge, member_dirty, member_untracked_in_the_way, fetch_failed, an
 unreadable or unresolved review, an unresolved target), 3 a conflict in at least one member (nothing pinned), 4 partial (a member
 was merged before a later step failed in a way other than a conflict; the receipt names what moved).
 """
@@ -54,15 +54,6 @@ def merge_in_progress(repo: Path) -> bool:
     return gitops.run(repo, "rev-parse", "-q", "--verify", "MERGE_HEAD").returncode == 0
 
 
-def unresolved(repo: Path) -> list[str] | None:
-    """The unresolved paths of a merge in progress in `repo` (possibly empty), or None when no merge is in progress.
-    Read from git each time; there is no marker file to go stale."""
-    if not (repo / ".git").exists():  # only the member's own clone; never a parent repository's merge
-        return None
-    paths = _conflicts(repo)
-    return paths if (paths or merge_in_progress(repo)) else None
-
-
 def _default_branch(repo: Path, remote: str) -> str | None:
     for line in gitops.run(repo, "ls-remote", "--symref", "--", remote, "HEAD").stdout.splitlines():
         left, _, ref = line.partition("\t")
@@ -94,6 +85,16 @@ def update(workspace: Path, review_id: str | None = None, into: str | None = Non
             subprocess.SubprocessError) as exc:
         return done(EXIT_REFUSED, f"review_unreadable: {exc}")
     receipt["review"] = view["id"]
+    # The checks `review publish` makes too (grip._member_preflight, one copy): a credential in a recorded remote, or
+    # a member clone already mid-merge (`unresolved_merge`; resolve and commit, or abort, then run update again).
+    try:
+        grip._member_preflight(ws, view["id"].removeprefix("gr:"), for_push=False)
+    except grip.GripReviewRefused as exc:
+        if exc.refusal == "unresolved_merge":
+            # The member that blocked, so the next line can name its clone (the receipt is all next_steps reads).
+            receipt["members"] = [{"key": m["key"], "path": m["path"], "state": "unresolved_merge"}
+                                  for m in view["members"] if m["key"] == exc.expected]
+        return done(EXIT_REFUSED, f"{exc.refusal}: {exc.expected}: {exc.observed}")
     members = [dict(m, repo=(ws / m["path"]).resolve()) for m in view["members"]]
 
     # Every refusal that moves nothing comes before the first merge, across ALL members.
@@ -106,8 +107,6 @@ def update(workspace: Path, review_id: str | None = None, into: str | None = Non
         if not branch:
             return done(EXIT_REFUSED, f"detached_head: {m['key']}: check out the feature branch first")
         branches[m["key"]] = branch
-        if merge_in_progress(repo):
-            continue  # reported below as a conflict, from git
         # Untracked files are not dirty; the ones a merge would overwrite are refused below, once the tip is fetched.
         status = gitops.run(repo, "status", "--porcelain", "--untracked-files=no").stdout
         changed = [line[3:] for line in status.splitlines()]
@@ -128,8 +127,6 @@ def update(workspace: Path, review_id: str | None = None, into: str | None = Non
     tips, in_the_way = {}, []
     for m in members:
         repo, key = m["repo"], m["key"]
-        if merge_in_progress(repo):
-            continue
         # The ROW's remote: the pin checks the base against that remote's live head, whatever the clone's origin is.
         fetched = gitops.run(repo, "fetch", "-q", "--", m["remote"], f"refs/heads/{targets[key]}")
         tip = gitops.run(repo, "rev-parse", "-q", "--verify", "FETCH_HEAD^{commit}").stdout.strip() \
@@ -151,10 +148,6 @@ def update(workspace: Path, review_id: str | None = None, into: str | None = Non
         repo, key = m["repo"], m["key"]
         row = {"key": key, "path": m["path"], "remote": m["remote"], "into": targets[key], "conflicts": []}
         receipt["members"].append(row)
-        if merge_in_progress(repo):
-            row.update(state="conflict", conflicts=_conflicts(repo), head=_head(repo))
-            conflicted = True
-            continue
         tip = row["base"] = tips[key]
         if gitops.run(repo, "merge-base", "--is-ancestor", tip, "HEAD").returncode == 0:
             row.update(state="up_to_date", head=_head(repo))

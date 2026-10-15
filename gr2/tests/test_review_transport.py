@@ -151,6 +151,8 @@ def test_required_expectation_and_remote_are_not_inferred(handoff, monkeypatch, 
     display = required_input_display(missing_id, styled, "missing argument", "commit")
     (tmp_path / "missing-id.display.txt").write_text(display)
     assert calls == []
+    if verb == "publish":
+        return  # a bare publish is every member's own remote (tests/test_review_publish_all.py)
     missing_remote = runner.invoke(app, ["review", verb, "gr:" + commit], color=True)
     (tmp_path / "missing-remote.raw.txt").write_text(missing_remote.output)
     display = required_input_display(missing_remote, styled, "missing option", "--remote")

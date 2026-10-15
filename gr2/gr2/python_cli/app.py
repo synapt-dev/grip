@@ -5564,6 +5564,16 @@ def _resolve_remote_head(repo: Path, remote: Optional[str], head: Optional[str])
     return url, sha
 
 
+def _require_repo(repo: Path) -> None:
+    """Refuse a path that is not there or not a repository by naming the path, before any remote is looked for:
+    otherwise the missing remote of a repo that does not exist is reported as the cause."""
+    path = repo.resolve()
+    if not path.exists():
+        raise check_records.CheckRefused(f"repo_not_found: {path} does not exist")
+    if not path.is_dir() or not defaults.own_repo(path):
+        raise check_records.CheckRefused(f"not_a_repository: {path} is not the top of a git repository")
+
+
 @check_app.command("run")
 def check_run(
     repo: Path,
@@ -5574,6 +5584,7 @@ def check_run(
 ) -> None:
     """Execute at the exact commit and publish its observation."""
     try:
+        _require_repo(repo)
         remote, head = _resolve_remote_head(repo, remote, head)
         result = check_records.run_check(repo, remote, head, name, command)
     except (check_records.CheckRefused, defaults.Unresolved, subprocess.SubprocessError, OSError) as exc:

@@ -24,6 +24,16 @@ def missing_gr2_workspace_guidance(workspace_root: Path, fallback: str) -> str:
     return fallback
 
 
+def enclosing_workspace_root(path: Path) -> Path | None:
+    """The nearest strict ancestor of `path` that is a workspace (a spec, or a native grip.toml root), else None.
+    A verb pointed at a member or any directory inside a workspace is sent to that root, never told to init a
+    second workspace nested inside the first."""
+    for parent in path.resolve().parents:
+        if (grip_dir(parent) / "workspace_spec.toml").is_file() or (parent / "grip.toml").is_file():
+            return parent
+    return None
+
+
 def missing_workspace_spec_message(workspace_root: Path) -> str:
     """One line for a verb that reads `.grip/workspace_spec.toml` on a root that has none: which kind of root it is,
     and the step that suits it. A native root is not told to migrate, and a gr1 desk is not told to init."""
@@ -34,5 +44,9 @@ def missing_workspace_spec_message(workspace_root: Path) -> str:
     if is_gr1_only_workspace(workspace_root):
         return (f"workspace spec not found: {spec_path}; {workspace_root} is still in gr1 format: run "
                 f"`gr2 workspace migrate-gr1 {workspace_root}` to add gr2 alongside it; your gr1 setup keeps working")
+    enclosing = enclosing_workspace_root(workspace_root)
+    if enclosing is not None:
+        return (f"workspace spec not found: {spec_path}; {workspace_root} is inside the workspace at {enclosing}: "
+                f"pass the workspace root {enclosing} (or run from there), not a directory inside it")
     return (f"workspace spec not found: {spec_path}; run `gr2 workspace init {workspace_root}` first "
             "or create .grip/workspace_spec.toml explicitly")

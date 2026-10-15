@@ -200,3 +200,145 @@ def test_list_from_a_subdirectory_reads_the_workspace_above(world, monkeypatch):
     listed = runner.invoke(app, ["review", "list", "--json"])
     assert listed.exit_code == 0, listed.output
     assert [r["id"] for r in json.loads(listed.stdout)] == ["gr:" + world["rid"]]
+
+
+# 0003: `review stamps --since-my-stamp`: what moved since this reviewer's own newest stamp, on any pin of these members.
+def repin(world, text):
+    """Commit on the feature, pin the new head, then push (push-before-pin refuses head_already_on_remote)."""
+    member, remote = world["member"], world["remote"]
+    (member / "payload").write_text(text)
+    git(member, "commit", "-am", text.strip())
+    head = git(member, "rev-parse", "HEAD")
+    git(world["workspace"], "config", "user.name", "Author A")  # the pin's author; a reviewer may not pin what they stamp
+    bound = runner.invoke(app, ["review", "bind", "--repo", "member", "--remote", str(remote), "--base", world["base"],
+                               "--head", head, "--ref", "refs/heads/main", "--source", str(member)])
+    assert bound.exit_code == 0, bound.output
+    git(member, "push", remote, "feature")
+    return approvals.current_review(world["workspace"]), head
+
+
+def since(world):
+    git(world["workspace"], "config", "user.name", "Approver B")
+    return runner.invoke(app, ["review", "stamps", "--since-my-stamp"])
+
+
+def test_since_my_stamp_names_what_moved_after_the_stamp(world):
+    assert approve_as(world, "Approver B").exit_code == 0
+    old, old_head = world["rid"], world["head"]
+    new, new_head = repin(world, "moved\n")
+    result = since(world)
+    assert result.exit_code == 0, result.output
+    out = json.loads(result.stdout)
+    assert out["review_id"] == "gr:" + new and out["stamped_review"] == "gr:" + old and out["approver"] == "Approver B"
+    assert out["changed"] is True and out["stamped_at"].endswith("Z")
+    [m] = out["members"]
+    assert m["key"] == "member" and m["stamped_head"] == old_head and m["current_head"] == new_head
+    assert m["changed"] is True and m["range"] == f"{old_head}..{new_head}"
+    assert m["commits"] == [new_head] and m["paths"] == ["payload"]
+
+
+def test_since_my_stamp_on_the_current_pin_is_unchanged(world):
+    assert approve_as(world, "Approver B").exit_code == 0
+    result = since(world)
+    assert result.exit_code == 0, result.output
+    out = json.loads(result.stdout)
+    assert out["changed"] is False and out["stamped_review"] == out["review_id"] == "gr:" + world["rid"]
+    assert out["members"] == [{"key": "member", "stamped_head": world["head"], "current_head": world["head"],
+                               "changed": False, "range": None, "commits": [], "paths": []}]
+
+
+def test_since_my_stamp_without_my_stamp_refuses_no_stamp(world):
+    assert approve_as(world, "Approver C").exit_code == 0  # another reviewer's stamp is not mine
+    repin(world, "moved\n")
+    result = since(world)
+    assert result.exit_code == 3, result.output  # 3 as `blockers` "not ready": a measured no, not a fault
+    out = json.loads(result.stdout)
+    assert out["refused"].startswith("no_stamp: Approver B") and out["approver"] == "Approver B"
+
+
+def test_since_my_stamp_uses_my_newest_stamp(world):
+    assert approve_as(world, "Approver B").exit_code == 0
+    middle, middle_head = repin(world, "second\n")
+    assert approve_as(world, "Approver B").exit_code == 0
+    new, new_head = repin(world, "third\n")
+    out = json.loads(since(world).stdout)
+    assert out["stamped_review"] == "gr:" + middle and out["review_id"] == "gr:" + new
+    assert out["members"][0]["range"] == f"{middle_head}..{new_head}" and out["members"][0]["commits"] == [new_head]
+
+
+def test_since_my_stamp_from_a_subdirectory_reads_the_workspace_above(world, monkeypatch):
+    assert approve_as(world, "Approver B").exit_code == 0
+    repin(world, "moved\n")
+    at_root = since(world)
+    monkeypatch.chdir(world["member"])
+    below = runner.invoke(app, ["review", "stamps", "--since-my-stamp"])
+    assert below.exit_code == 0, below.output
+    assert json.loads(below.stdout) == json.loads(at_root.stdout)
+
+
+def test_since_my_stamp_writes_nothing(world):
+    assert approve_as(world, "Approver B").exit_code == 0
+    repin(world, "moved\n")
+    places = (world["remote"], world["workspace"], world["member"])
+    before = [refs(p) for p in places]
+    assert since(world).exit_code == 0
+    assert [refs(p) for p in places] == before  # byte-equal on the remote and in both clones
+
+
+def test_since_my_stamp_names_a_member_added_after_the_stamp_as_new(world):
+    """A member not in the stamped pin is all new to the reviewer: changed, no stamped head, no range, its pin's files."""
+    assert approve_as(world, "Approver B").exit_code == 0
+    remote, seed = world["remote"].parent / "other.git", world["remote"].parent / "other-seed"
+    git(remote.parent, "init", "--bare", "-b", "main", remote)
+    git(remote.parent, "clone", "-q", "-b", "main", world["remote"], seed)
+    git(seed, "push", remote, "main")
+    other = world["workspace"] / "other"
+    git(world["workspace"], "clone", remote, other)
+    git(other, "checkout", "-b", "feature")
+    (other / "added").write_text("added\n")
+    git(other, "add", "added")
+    git(other, "commit", "-m", "added")
+    head = git(other, "rev-parse", "HEAD")
+    member = world["member"]
+    (member / "payload").write_text("moved\n")
+    git(member, "commit", "-am", "moved")
+    moved = git(member, "rev-parse", "HEAD")
+    rows = world["workspace"].parent / "rows.json"  # one pin holding both rows: the stamped member moved, other added
+    rows.write_text(json.dumps([{"key": k, "remote": str(r), "base": world["base"], "head": h, "ref": "refs/heads/main",
+                                 "source": str(c)} for k, r, h, c in (("member", world["remote"], moved, member),
+                                                                       ("other", remote, head, other))]))
+    git(world["workspace"], "config", "user.name", "Author A")
+    bound = runner.invoke(app, ["review", "bind", "--rows-json", str(rows)])
+    assert bound.exit_code == 0, bound.output
+    git(member, "push", world["remote"], "feature")
+    git(other, "push", remote, "feature")
+    result = since(world)
+    assert result.exit_code == 0, result.output
+    out = json.loads(result.stdout)
+    assert out["stamped_review"] == "gr:" + world["rid"] and out["changed"] is True
+    rows = {m["key"]: m for m in out["members"]}
+    assert rows["other"] == {"key": "other", "stamped_head": None, "current_head": head, "changed": True,
+                             "range": None, "commits": [], "paths": ["added"]}
+    assert rows["member"]["changed"] is True and rows["member"]["range"] == f"{world['head']}..{moved}"
+
+
+def test_since_my_stamp_on_a_rebased_head_has_no_range_and_the_tree_diff(world):
+    """The stamped head is not an ancestor of the current one: no range and no commits; paths are the tree diff."""
+    assert approve_as(world, "Approver B").exit_code == 0
+    member = world["member"]
+    git(member, "reset", "-q", "--hard", world["base"])
+    (member / "rebased").write_text("rebased\n")
+    git(member, "add", "rebased")
+    git(member, "commit", "-m", "rebased")
+    head = git(member, "rev-parse", "HEAD")
+    git(member, "push", "-f", world["remote"], "feature")
+    git(world["workspace"], "config", "user.name", "Author A")
+    bound = runner.invoke(app, ["review", "bind", "--repo", "member", "--remote", str(world["remote"]),
+                               "--base", world["base"], "--head", head, "--ref", "refs/heads/main",
+                               "--source", str(member)])
+    assert bound.exit_code == 0, bound.output
+    result = since(world)
+    assert result.exit_code == 0, result.output
+    [m] = json.loads(result.stdout)["members"]
+    assert m == {"key": "member", "stamped_head": world["head"], "current_head": head, "changed": True,
+                 "range": None, "commits": [], "paths": ["payload", "rebased"]}

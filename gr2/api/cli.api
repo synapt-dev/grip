@@ -723,6 +723,7 @@ arg   review stamps review_id <str>                                   stable
 arg   review stamps workspace_root <str>                              stable
 flag  review stamps --approvals <str>                                 stable
 flag  review stamps --root/-C <str>                                   stable
+flag  review stamps --since-my-stamp                                  stable
 verb  review stamps                                                   stable
 # review update
 arg   review update review_id <str>                                   stable

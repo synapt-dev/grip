@@ -5715,14 +5715,22 @@ def review_stamps(
     workspace_root: Path,
     review_id: Optional[str] = typer.Argument(None, help="Review id; default is the pinned review at the current member heads"),
     approval_count: Optional[int] = typer.Option(None, "--approvals", help="As `review merge --approvals`"),
+    since_my_stamp: bool = typer.Option(False, "--since-my-stamp", help="Instead: what moved since your own newest stamp (as git user.name) on any pin of these members: per member the stamped and current heads, the range, its commits and changed paths"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Read-only: who stamped this review, when, and at which link commit; the count against the required number,
-    and each member's pinned head. Writes nothing. Exit 0 measured, 5 not measurable."""
+    and each member's pinned head. Writes nothing. Exit 0 measured, 5 not measurable; with --since-my-stamp,
+    3 when you have no stamp on any pin of these members."""
     from . import approvals
     ws = workspace_root.resolve()
     try:
         rid = (review_id or approvals.current_review(ws)).removeprefix("gr:")
+        if since_my_stamp:
+            result = approvals.since_my_stamp(ws, rid)
+            typer.echo(json.dumps(result))
+            if "refused" in result:
+                raise typer.Exit(3)  # a measured no, as `blockers` "not ready"; 5 stays for what cannot be read
+            return
         result = approvals.count_approvals(ws, rid)
         # Who stamped is a fact about the chain; a missing merge policy must not hide it. The merge still refuses on
         # approvals_unset; this read reports the policy as unset. Every other policy refusal still refuses here.

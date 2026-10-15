@@ -168,3 +168,24 @@ def test_the_structural_scan_sees_an_init_text(tmp_path):
     scratch = tmp_path / "scratch.py"
     scratch.write_text('def f(root):\n    """Mentions workspace init."""\n    return f"run `gr2 workspace init {root}` first"\n')
     assert [(f, line) for f, line, _ in _init_texts(scratch)] == [("f", 3)]
+
+
+def test_alpha_store_refusal_on_a_member_points_at_the_workspace_root(tmp_path):
+    """grip._validate_grip_repo: its `gr2 store init .` advice goes through the same helper."""
+    from gr2.python_cli import grip as grip_mod
+
+    ws, member = _member_of_spec_workspace(tmp_path)
+    with pytest.raises(grip_mod.GripInitError) as refused:
+        grip_mod.grip_log(member)
+    assert "store init" not in str(refused.value), refused.value
+    _sends_to_root(str(refused.value), member, ws)
+
+
+def test_control_alpha_store_refusal_outside_any_workspace_keeps_store_init(tmp_path):
+    from gr2.python_cli import grip as grip_mod
+
+    lone = tmp_path / "lone"
+    lone.mkdir()
+    with pytest.raises(grip_mod.GripInitError) as refused:
+        grip_mod.grip_log(lone)
+    assert "Run `gr2 store init .` first." in str(refused.value), refused.value

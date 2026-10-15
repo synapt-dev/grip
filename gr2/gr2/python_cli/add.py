@@ -27,9 +27,12 @@ def is_bytecode(path: str) -> bool:
 
 
 def _untracked_bytecode(repo: Path, requested: tuple[str, ...]) -> tuple[str, ...]:
-    """The untracked, not-ignored bytecode under the requested pathspecs: what ``add --all`` would newly stage."""
+    """The untracked, not-ignored bytecode under the requested pathspecs: what ``add --all`` would newly stage.
+
+    Names are relative to the top level (``--full-name``), whatever directory ``repo`` is, so the unstage below can
+    run from the top level, where they resolve."""
     try:
-        listed = git(repo, "ls-files", "--others", "--exclude-standard", "-z", "--", *requested)
+        listed = git(repo, "ls-files", "--others", "--exclude-standard", "--full-name", "-z", "--", *requested)
     except OSError as exc:
         raise AddError(f"failed to list untracked files in {repo}: {exc}") from exc
     if listed.returncode != 0:
@@ -65,10 +68,16 @@ def stage_files(repo: Path, paths: list[str], *, include_bytecode: bool = False)
 
     if skipped:
         # Literal pathspecs on stdin: a name with a glob character is that file, and a long list never meets argv.
+        # From the TOP LEVEL: in a subdirectory git rm adds the cwd as a pathspec of its own and then refuses
+        # --pathspec-from-file beside it, which would leave the bytecode staged.
         spec = "".join(f":(literal){name}\0" for name in skipped)
         try:
-            unstaged = run(repo, "rm", "--cached", "--quiet", "--ignore-unmatch", "--pathspec-from-file=-",
-                           "--pathspec-file-nul", input=spec, via_cwd=True)
+            top = git(repo, "rev-parse", "--show-toplevel")
+            if top.returncode != 0 or not top.stdout.strip():
+                raise AddError("git add staged untracked bytecode and the repository top level could not be read: "
+                               + ((top.stderr or top.stdout).strip() or f"exit {top.returncode}"))
+            unstaged = run(Path(top.stdout.strip()), "rm", "--cached", "--quiet", "--ignore-unmatch",
+                           "--pathspec-from-file=-", "--pathspec-file-nul", input=spec, via_cwd=True)
         except OSError as exc:
             raise AddError(f"git add staged untracked bytecode and it could not be unstaged: {exc}") from exc
         if unstaged.returncode != 0:

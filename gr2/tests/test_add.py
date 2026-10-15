@@ -156,6 +156,35 @@ def test_add_dot_skips_untracked_bytecode_and_names_it_once(tmp_path: Path, monk
                      "pass --include-bytecode to stage them"], result.output
 
 
+def test_add_dot_from_a_subdirectory_skips_its_bytecode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`cd src && gr2 add .`: git refuses `rm --pathspec-from-file` from a subdirectory (it adds the cwd as a pathspec
+    of its own), so the unstage runs from the top level, on top-level names, and the bytecode is never left staged."""
+    from gr2.python_cli.app import app
+
+    repo = _bytecode_repo(tmp_path / "repo")
+    (repo / "src" / "new.pyc").write_bytes(b"\x00loose in a subdirectory")
+    monkeypatch.chdir(repo / "src")
+    result = CliRunner().invoke(app, ["add", "."])
+    assert result.exit_code == 0, result.output
+    assert _cached_names(repo) == ["src/m.py"]
+    skips = [line for line in result.output.splitlines() if line.startswith("Skipped ")]
+    assert skips == ["Skipped 2 untracked bytecode path(s) (__pycache__/, *.pyc, *.pyo), e.g. src/__pycache__/m.cpython-313.pyc; "
+                     "pass --include-bytecode to stage them"], result.output
+
+
+def test_pathspecs_that_leave_the_subdirectory_skip_bytecode_too(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from gr2.python_cli.app import app
+
+    repo = _bytecode_repo(tmp_path / "repo")
+    monkeypatch.chdir(repo / "src")
+    result = CliRunner().invoke(app, ["add", "../x.pyc", "../y.pyo", "m.py"])
+    assert result.exit_code == 0, result.output
+    assert _cached_names(repo) == ["src/m.py"]
+    skips = [line for line in result.output.splitlines() if line.startswith("Skipped ")]
+    assert skips == ["Skipped 2 untracked bytecode path(s) (__pycache__/, *.pyc, *.pyo), e.g. x.pyc; "
+                     "pass --include-bytecode to stage them"], result.output
+
+
 def test_include_bytecode_stages_it_as_before(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from gr2.python_cli.app import app
 

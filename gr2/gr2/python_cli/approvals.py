@@ -223,11 +223,11 @@ def _context(workspace: Path, review_id: str, member_dirs: dict[str, Path] | Non
         members.append({"key": m["key"], "remote": m["remote"], "head_commit": m["head"], "head_tree": tree})
     # Every local refusal comes first; then one remote read per member, before any approval is pushed.
     for m in view["members"]:
-        _refuse_moved_base(workspace, m["key"], m["remote"], m["base"])
+        _refuse_moved_base(workspace, m["key"], m["remote"], m["base"], "gr:" + rid)
     return {"review_id": "gr:" + rid, "author": author, "members": members}, authors
 
 
-def _refuse_moved_base(workspace: Path, key: str, remote: str, base: str) -> None:
+def _refuse_moved_base(workspace: Path, key: str, remote: str, base: str, review: str) -> None:
     """Refuse a stamp the merge could never count: a merge needs its target at the reviewed base, so when no branch
     on the member's remote still sits at that base, the target has moved and the review needs a new pin. Read
     before any approval is pushed. Any branch at the base passes (a review may target a branch other than the
@@ -248,7 +248,7 @@ def _refuse_moved_base(workspace: Path, key: str, remote: str, base: str) -> Non
     branch = default or "<target branch>"
     now = f" ({branch} is now {tips[branch][:12]})" if branch in tips else ""
     raise ApprovalRefused(f"base_moved: {key}: no branch on its remote is at the reviewed base {base[:12]}{now}",
-                          next_steps._stamp_base_moved(branch))
+                          next_steps._stamp_base_moved(branch, review))
 
 
 def _remote_tips(workspace: Path, root: dict) -> dict[str, str | None]:

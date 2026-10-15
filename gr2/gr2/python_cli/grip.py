@@ -1597,6 +1597,13 @@ def publish_review_commit(workspace: Path, commit: str, remote: str,
     elif _bind_git(workspace, "rev-parse", "--verify", "--quiet", canonical).returncode != 0:
         raise GripCorruptError(f"review_ref_not_local: {canonical}")
     _require_review_content(workspace, full, canonical)
+    # A member clone halfway through `review update` (a merge in progress) is read from git, never from a marker:
+    # publishing then would put a review out while its author is still resolving the head that replaces it.
+    from .review_update import unresolved
+    for key, fields in sorted(_read_repo_state(workspace, full, bind=True).items()):
+        paths = unresolved((workspace / fields["path"]).resolve())
+        if paths is not None:
+            raise GripReviewRefused("unresolved_merge", key, ", ".join(paths) or "MERGE_HEAD present")
     # A record made before the writer guard, or received from elsewhere, is checked again here:
     # nothing leaves with a credential, and an author-local path never leaves this host.
     off_host = destination.startswith("https://")

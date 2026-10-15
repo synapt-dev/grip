@@ -1840,7 +1840,7 @@ def _refuse_add_at_a_workspace_root_with_a_lane() -> None:
     raise typer.Exit(code=2)
 
 
-def _add_in_lane(paths: list[str]) -> None:
+def _add_in_lane(paths: list[str], include_bytecode: bool = False) -> None:
     """`add --lane`: stage the paths in EVERY repo of the entered lane. The root, the unit and the lane come from
     the resolver (the workspace above the current directory, the only unit with an entered lane, that unit's
     current lane), each announced on stderr; none of them can be guessed between two candidates."""
@@ -1859,7 +1859,7 @@ def _add_in_lane(paths: list[str]) -> None:
     failed = False
     for key, repo_root in commit_ops._lane_repo_targets(workspace_root, unit.value, lane_item.value, doc):
         try:
-            result = add_ops.stage_files(repo_root, paths)
+            result = add_ops.stage_files(repo_root, paths, include_bytecode=include_bytecode)
         except (add_ops.AddError, gitops.OutsideRepoError, gitops.GitMissingError) as exc:
             typer.echo(f"{key}: FAILED: {exc}", err=True)
             failed = True
@@ -1869,6 +1869,8 @@ def _add_in_lane(paths: list[str]) -> None:
             if result.staged_files
             else f"{key}: no changes staged for the requested paths"
         )
+        if result.skipped_bytecode:
+            typer.echo(f"{key}: {add_ops.skip_line(result.skipped_bytecode)}")
     if failed:
         raise typer.Exit(code=1)
 
@@ -1886,24 +1888,30 @@ def add_cmd(
         "--lane",
         help="Stage in EVERY repo of the entered lane (the workspace, unit and lane are read from where you are)",
     ),
+    include_bytecode: bool = typer.Option(
+        False,
+        "--include-bytecode",
+        help="Also stage untracked Python bytecode (__pycache__/, *.pyc, *.pyo), which add skips by default",
+    ),
 ) -> None:
     """Stage paths in one repository, including tracked deletions.
 
     Standing inside a lane's repo, `add .` stages that repo. Standing at the workspace root with a lane entered,
     it refuses rather than stage the root's own repository by accident: pass --lane for every repo of the lane,
-    or --repo-path for one."""
+    or --repo-path for one. Untracked Python bytecode (__pycache__/, *.pyc, *.pyo) is skipped and named in one
+    line, on top of git's own ignore rules; tracked bytecode stages as git stages it."""
     if lane and repo_path is not None:
         typer.echo("Error: --lane stages every repo of the lane; do not combine it with --repo-path", err=True)
         raise typer.Exit(code=2)
     if lane:
-        _add_in_lane(paths)
+        _add_in_lane(paths, include_bytecode)
         return
     if repo_path is None:
         _refuse_add_at_a_workspace_root_with_a_lane()
     target = (repo_path or Path.cwd()).resolve()
     try:
         gitops.require_git_repo(target, "add")
-        result = add_ops.stage_files(target, paths)
+        result = add_ops.stage_files(target, paths, include_bytecode=include_bytecode)
     except (add_ops.AddError, gitops.OutsideRepoError, gitops.GitMissingError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -1911,6 +1919,8 @@ def add_cmd(
         typer.echo(f"Staged {len(result.staged_files)} path(s): {', '.join(result.staged_files)}")
     else:
         typer.echo("No changes staged for the requested paths")
+    if result.skipped_bytecode:
+        typer.echo(add_ops.skip_line(result.skipped_bytecode))
 
 
 @app.command("commit")

@@ -127,3 +127,121 @@ def test_add_cli_honors_explicit_repo_path_over_cwd(
     assert result.exit_code == 0, result.output
     assert _cached_names(cwd_repo) == []
     assert _cached_names(requested_repo) == ["new.txt"]
+
+
+# --- untracked Python bytecode is skipped by default -------------------------------------------------------------------
+# Each repo here ignores NOTHING (no .gitignore), which is what a test fixture and a first-time user's repo look like.
+
+
+def _bytecode_repo(path: Path) -> Path:
+    repo = _init_repo(path)
+    (repo / "src" / "__pycache__").mkdir(parents=True)
+    (repo / "src" / "m.py").write_text("VALUE = 1\n")
+    (repo / "src" / "__pycache__" / "m.cpython-313.pyc").write_bytes(b"\x00bytecode")
+    (repo / "x.pyc").write_bytes(b"\x00loose")  # outside any __pycache__ directory (Apollo's ask 3)
+    (repo / "y.pyo").write_bytes(b"\x00optimized")
+    return repo
+
+
+def test_add_dot_skips_untracked_bytecode_and_names_it_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from gr2.python_cli.app import app
+
+    repo = _bytecode_repo(tmp_path / "repo")
+    monkeypatch.chdir(repo)
+    result = CliRunner().invoke(app, ["add", "."])
+    assert result.exit_code == 0, result.output
+    assert _cached_names(repo) == ["src/m.py"]
+    skips = [line for line in result.output.splitlines() if line.startswith("Skipped ")]
+    assert skips == ["Skipped 3 untracked bytecode path(s) (__pycache__/, *.pyc, *.pyo), e.g. src/__pycache__/m.cpython-313.pyc; "
+                     "pass --include-bytecode to stage them"], result.output
+
+
+def test_include_bytecode_stages_it_as_before(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from gr2.python_cli.app import app
+
+    repo = _bytecode_repo(tmp_path / "repo")
+    monkeypatch.chdir(repo)
+    result = CliRunner().invoke(app, ["add", "--include-bytecode", "."])
+    assert result.exit_code == 0, result.output
+    assert _cached_names(repo) == ["src/__pycache__/m.cpython-313.pyc", "src/m.py", "x.pyc", "y.pyo"]
+    assert "Skipped" not in result.output
+
+
+def test_tracked_bytecode_stages_a_change_and_a_delete_as_git_does(tmp_path: Path) -> None:
+    from gr2.python_cli.add import stage_files
+
+    repo = _init_repo(tmp_path / "repo")
+    (repo / "pkg" / "__pycache__").mkdir(parents=True)
+    (repo / "pkg" / "__pycache__" / "a.pyc").write_bytes(b"\x00one")
+    (repo / "old.pyc").write_bytes(b"\x00two")
+    _git(repo, "add", "-f", ".")
+    _git(repo, "commit", "-m", "bytecode committed by mistake")
+    (repo / "pkg" / "__pycache__" / "a.pyc").write_bytes(b"\x00changed")  # Apollo's ask 2: a change
+    (repo / "old.pyc").unlink()  # the cleanup case: a delete
+
+    result = stage_files(repo, ["."])
+
+    assert result.skipped_bytecode == ()
+    assert _cached_names(repo) == ["old.pyc", "pkg/__pycache__/a.pyc"]
+    assert _git(repo, "diff", "--cached", "--diff-filter=D", "--name-only").stdout.split() == ["old.pyc"]
+
+
+def test_a_repo_with_no_bytecode_stages_as_before_and_prints_no_skip_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from gr2.python_cli.app import app
+
+    repo = _init_repo(tmp_path / "repo")
+    (repo / "keep.txt").write_text("after\n")
+    (repo / "new.txt").write_text("new\n")
+    monkeypatch.chdir(repo)
+    result = CliRunner().invoke(app, ["add", "."])
+    assert result.exit_code == 0, result.output
+    assert _cached_names(repo) == ["keep.txt", "new.txt"]
+    assert "Skipped" not in result.output
+
+
+def test_a_gitignore_that_already_covers_bytecode_leaves_nothing_to_skip(tmp_path: Path) -> None:
+    from gr2.python_cli.add import stage_files
+
+    repo = _bytecode_repo(tmp_path / "repo")
+    (repo / ".gitignore").write_text("__pycache__/\n*.py[co]\n")
+
+    result = stage_files(repo, ["."])
+
+    assert result.skipped_bytecode == ()
+    assert _cached_names(repo) == [".gitignore", "src/m.py"]
+
+
+def test_names_that_only_look_like_bytecode_still_stage(tmp_path: Path) -> None:
+    from gr2.python_cli.add import stage_files
+
+    repo = _init_repo(tmp_path / "repo")
+    (repo / "pycache_notes.txt").write_text("notes\n")
+    (repo / "my__pycache__.md").write_text("doc\n")
+    (repo / "x.pyc.txt").write_text("not bytecode\n")
+    (repo / "glob[1].pyc").write_bytes(b"\x00bracket name")  # a glob character in a skipped name stays literal
+
+    result = stage_files(repo, ["."])
+
+    assert result.skipped_bytecode == ("glob[1].pyc",)
+    assert _cached_names(repo) == ["my__pycache__.md", "pycache_notes.txt", "x.pyc.txt"]
+
+
+def test_a_skipped_name_with_glob_characters_never_unstages_a_tracked_file_it_would_match(tmp_path: Path) -> None:
+    """The unstage takes each skipped name LITERALLY: as a glob, `[ab].pyc` would also match the tracked `a.pyc` and take
+    a committed file out of the index."""
+    from gr2.python_cli.add import stage_files
+
+    repo = _init_repo(tmp_path / "repo")
+    (repo / "a.pyc").write_bytes(b"\x00tracked")
+    _git(repo, "add", "-f", "a.pyc")
+    _git(repo, "commit", "-m", "tracked bytecode")
+    (repo / "a.pyc").write_bytes(b"\x00tracked, changed")
+    (repo / "[ab].pyc").write_bytes(b"\x00untracked")
+
+    result = stage_files(repo, ["."])
+
+    assert result.skipped_bytecode == ("[ab].pyc",)
+    assert _cached_names(repo) == ["a.pyc"]
+    assert _git(repo, "diff", "--cached", "--diff-filter=M", "--name-only").stdout.split() == ["a.pyc"]

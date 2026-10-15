@@ -1663,7 +1663,8 @@ def receive_review_commit(workspace: Path, commit: str, remote: str,
             _publish_bind(workspace, actual, "received review", ref=canonical)
         except RuntimeError as exc:
             raise GripCorruptError(f"review_bind_publication_failed: {exc}") from exc
-        return {"id": f"gr:{actual}", "ref": canonical, "remote": source}
+        return {"id": f"gr:{actual}", "ref": canonical, "remote": source,
+                "heads": _fetch_received_heads(workspace, actual, source)}
     except BaseException as exc:
         primary = exc
         raise
@@ -1681,6 +1682,49 @@ def receive_review_commit(workspace: Path, commit: str, remote: str,
                 primary.add_note(f"review_staging_cleanup_failed: {cleanup}")
             else:
                 raise GripCorruptError(f"review_staging_cleanup_failed: {cleanup}") from cleanup
+
+
+def _fetch_received_heads(workspace: Path, commit: str, source: str) -> list[dict[str, str]]:
+    """Bring each pinned head into its member's clone, from the remote this receive read the review from.
+
+    A received review binds the record only; the set check reads every member's head from the member's own clone,
+    so without this a reviewer's clone lacks the commits until a hand fetch. Only members whose recorded remote is
+    `source` are fetched (another member's head is not this remote's to serve). One row per member: fetched,
+    already_present, not_this_remote, or not_fetched with its reason and the exact command that fetches it."""
+    from .review import ReviewError, canonical_source_identity
+
+    def same(remote: str) -> str | None:
+        try:
+            return canonical_source_identity(remote, allow_local=True)
+        except ReviewError:
+            return None
+
+    root = Path(workspace).resolve()
+    want = same(source)
+    rows: list[dict[str, str]] = []
+    for m in show_review_commit(workspace, commit)["members"]:
+        key, head = str(m["key"]), str(m["head"])
+        repo = (root / str(m["path"])).resolve()
+        row = {"key": key, "head": head}
+        if want is None or same(str(m["remote"])) != want:
+            rows.append({**row, "status": "not_this_remote"})
+            continue
+        if not repo.is_relative_to(root) or not (repo / ".git").exists():
+            rows.append({**row, "status": "not_fetched", "reason": "member_clone_missing",
+                         "next": f"clone {source} at {repo}, then receive again"})
+            continue
+        if git(repo, "cat-file", "-e", f"{head}^{{commit}}").returncode == 0:
+            rows.append({**row, "status": "already_present"})
+            continue
+        proc = git(repo, "fetch", "--no-tags", "--no-write-fetch-head", source, head, timeout=60)
+        if proc.returncode == 0 and git(repo, "cat-file", "-e", f"{head}^{{commit}}").returncode == 0:
+            rows.append({**row, "status": "fetched"})
+        else:
+            said = (proc.stderr or "").strip().splitlines()
+            rows.append({**row, "status": "not_fetched",
+                         "reason": f"head_fetch_refused: {said[-1] if said else 'the remote did not serve the head'}",
+                         "next": f"git -C {repo} fetch {source} {head}"})
+    return rows
 
 
 def migrate_review_binds(workspace: Path) -> tuple[Path, list[dict[str, str]]]:

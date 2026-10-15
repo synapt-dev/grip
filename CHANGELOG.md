@@ -84,6 +84,13 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **`gr2`: `gr2 review stamp` refuses a review whose target has moved past its base.** A merge needs each
+  member's target at the reviewed base, and a pinned review cannot move to a new base, so a stamp written after
+  a teammate's merge could never count, and nothing said so until the merge refused as `base_moved`. Stamp now
+  reads each member's remote before pushing anything and refuses as `base_moved` when no branch there sits at the
+  reviewed base, naming the member and asking for a new pin. Any branch at the base passes, so a review on a
+  non-default target needs no flag; an unrelated branch left at the base lets a stale stamp through, and the
+  merge still refuses it.
 - **`gr2`: `gr2 review merge` no longer prints a GitHub remote's token when a platform adapter cannot read it.**
   When a version 2 platform adapter could not read a member's GitHub remote, the `platform_unmeasurable` refusal
   printed the remote as spelled and the adapter's own error text, so a remote such as

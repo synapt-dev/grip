@@ -48,6 +48,14 @@ def head_not_fetched(repo: str, remote: str, head: str, workspace: str, review: 
             f"author has pushed it there, stamp again: gr2 review stamp {_shown(workspace)} {_shown(review)}")
 
 
+def _stamp_base_moved(branch: str) -> str:
+    # Private, so the skill's refusal table keeps one row per printed code (base_moved is merge_row's).
+    # A merge needs the target at the reviewed base, and a pinned review cannot move to a new base, so a stamp here
+    # could never count; the author has to update and pin again.
+    return (f"next: no stamp was written; ask the author to update the feature onto {_shown(branch)}, pin it "
+            "again with gr2 review pin, and ask for a stamp on the new review")
+
+
 def not_received(workspace: str, review: str) -> str:
     return (f"next: receive the published review into this workspace, then stamp it: "
             f"gr2 review receive {_shown(workspace)} {_shown(review)} --remote <member-remote>, then "

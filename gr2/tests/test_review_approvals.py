@@ -977,12 +977,14 @@ def test_stamp_succeeds_while_another_branch_still_sits_at_the_base(world):
     assert result.exit_code == 0, result.output
 
 
-def test_stamp_names_only_the_member_whose_target_moved(multi):
-    beta = multi["members"]["beta"]
-    _advance(beta["repo"], beta["remote"], beta["base"])
+@pytest.mark.parametrize("moved, still", [("beta", "member"), ("member", "beta")])
+def test_stamp_names_only_the_member_whose_target_moved(multi, moved, still):
+    """Both orders: beta sorts first and member last, so a check of the first member alone fails one of them."""
+    m = multi["members"][moved]
+    _advance(m["repo"], m["remote"], m["base"])
     result = approve_as(multi, "Approver B")
     assert result.exit_code == 2, result.output
     refusal = next(x for x in result.output.splitlines() if "base_moved" in x)
-    assert "beta" in refusal and "member" not in refusal.replace("beta", ""), refusal
+    assert f"base_moved: {moved}:" in refusal and f"{still}:" not in refusal, refusal
     for m in multi["members"].values():
         assert _approval_refs(m["remote"]) == "", m["remote"]

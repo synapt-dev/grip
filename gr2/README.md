@@ -102,7 +102,7 @@ Not there yet:
 | `pr` | create, status, checks, merge, view |
 | `check` | run, show, set |
 | `proto` | json |
-| `review` | open, close, checkout-pr, read-pr, run, check, pin, publish, receive, verify, show, stamp, merge, update, repin, create-project, bind, approve, rebind, stamps, merged, blockers |
+| `review` | open, close, checkout-pr, read-pr, run, check, pin, publish, receive, verify, show, stamp, merge, update, repin, create-project, bind, approve, rebind, stamps, merged, blockers, list |
 | `exec` | status, run |
 | `repo` | status, projection-run |
 | `hooks` | trust, revoke, status, show, run |

@@ -137,3 +137,66 @@ def test_merged_bare_after_main_moves_reads_none_merged(world):
     out = json.loads(read.stdout)
     assert out["into"] == "main" and out["members"][0]["merged"] is None
     assert "(remote default)" in read.stderr
+
+
+def pin_second(world):
+    """A second pin in the same workspace: the member moves one commit and is pinned again."""
+    member = world["member"]
+    (member / "payload").write_text("second\n")
+    git(member, "commit", "-am", "second")
+    head = git(member, "rev-parse", "HEAD")
+    bound = runner.invoke(app, ["review", "bind", "--repo", "member", "--remote", str(world["remote"]),
+                               "--base", world["base"], "--head", head, "--ref", "refs/heads/main", "--source", str(member)])
+    assert bound.exit_code == 0, bound.output
+    return approvals.current_review(world["workspace"])
+
+
+def test_list_names_every_pin_with_its_time_where_bare_show_refuses(world):
+    second = pin_second(world)
+    assert runner.invoke(app, ["review", "show"]).exit_code != 0  # two pins: a bare read still refuses
+    listed = runner.invoke(app, ["review", "list", "--json"])
+    assert listed.exit_code == 0, listed.output
+    rows = json.loads(listed.stdout)
+    assert sorted(r["id"] for r in rows) == sorted(["gr:" + world["rid"], "gr:" + second])
+    assert [r["pinned_at"] for r in rows] == sorted(r["pinned_at"] for r in rows)  # oldest first (1 s; ties by sha)
+    for row in rows:
+        assert row["pinned_at"] == git(world["workspace"], "log", "-1", "--format=%cI", row["id"].removeprefix("gr:"))
+        assert runner.invoke(app, ["review", "show", row["id"]]).exit_code == 0  # each listed id is one a reader takes
+
+
+def test_list_with_no_pins_is_an_empty_list_and_show_refuses_unchanged(tmp_path, monkeypatch):
+    workspace = tmp_path / "empty"
+    for key in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"):
+        monkeypatch.setenv(key, "Author A")
+    for key in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.setenv(key, "a@example.invalid")
+    remote = tmp_path / "remote.git"
+    git(tmp_path, "init", "--bare", "-b", "main", remote)
+    workspace.mkdir()
+    git(workspace, "clone", remote, workspace / "member")
+    git(workspace / "member", "commit", "--allow-empty", "-m", "base")
+    git(workspace / "member", "push", remote, "HEAD:main")
+    assert runner.invoke(app, ["store", "init", str(workspace)]).exit_code == 0
+    monkeypatch.chdir(workspace)
+    listed = runner.invoke(app, ["review", "list", "--json"])
+    assert listed.exit_code == 0, listed.output
+    assert json.loads(listed.stdout) == []
+    shown = runner.invoke(app, ["review", "show"])
+    assert shown.exit_code != 0 and "no pinned review to show" in shown.output
+
+
+def test_list_prints_the_one_json_shape_with_or_without_the_flag(world):
+    pin_second(world)
+    bare, flagged = runner.invoke(app, ["review", "list"]), runner.invoke(app, ["review", "list", "--json"])
+    assert bare.exit_code == flagged.exit_code == 0, bare.output
+    assert bare.stdout == flagged.stdout
+    assert [sorted(r) for r in json.loads(bare.stdout)] == [["id", "pinned_at"]] * 2
+
+
+def test_list_from_a_subdirectory_reads_the_workspace_above(world, monkeypatch):
+    deeper = world["member"] / "sub"
+    deeper.mkdir()
+    monkeypatch.chdir(deeper)
+    listed = runner.invoke(app, ["review", "list", "--json"])
+    assert listed.exit_code == 0, listed.output
+    assert [r["id"] for r in json.loads(listed.stdout)] == ["gr:" + world["rid"]]

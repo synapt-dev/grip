@@ -574,6 +574,11 @@ flag  review exit-gr --adopt-legacy (hidden)                          stable
 flag  review exit-gr --json (hidden)                                  stable
 flag  review exit-gr --root/-C <str> (hidden)                         stable
 verb  review exit-gr (hidden)                                         stable
+# review list
+arg   review list workspace_root <str>                                stable
+flag  review list --json                                              stable
+flag  review list --root/-C <str>                                     stable
+verb  review list                                                     stable
 # review merge
 arg   review merge review_id <str>                                    stable
 arg   review merge workspace_root <str>                               stable

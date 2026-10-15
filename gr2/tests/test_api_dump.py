@@ -82,7 +82,10 @@ MIN_ARGS = 95
 # 55 -> 56: `lane push --json` prints one row per repo and registers no shape: the shape table is the
 # store group's (its gate reads every json spelling as a store mount), so the lane verb joins the residual.
 
-JSON_VERBS_PENDING = 56
+# 56 -> 57: `review list` prints one row per pinned review, `[{id, pinned_at}]`, the same JSON with or without
+# --json. The shape table is the store group's, so this review verb joins the residual as `lane push` did.
+
+JSON_VERBS_PENDING = 57
 
 # The kinds a stranger BUILDS ON INDEPENDENTLY: a verb, a flag, a positional
 # and an exit code are each actionable on their own -- a caller writes

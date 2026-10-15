@@ -5414,6 +5414,18 @@ def review_show(
             typer.echo(review_diff.printable(line))
 
 
+@review_app.command("list", cls=RootOptionalCommand)
+def review_list(
+    workspace_root: Path,
+    json_output: bool = typer.Option(False, "--json", help="Accepted for symmetry; the output is JSON either way"),
+    root: Optional[Path] = ROOT_OPTION,
+) -> None:
+    """Read-only: every pinned review in this workspace as a JSON list of {id, pinned_at}, oldest first; `[]` when
+    there are none. The ids are the ones `review show`, `stamps`, `merged` and `blockers` take."""
+    binds = _review_call(grip.list_review_binds, workspace_root.resolve())
+    typer.echo(json.dumps([{"id": f"gr:{commit}", "pinned_at": when} for commit, when in binds], indent=2))
+
+
 @review_app.command("verify", cls=json_refusing(ReviewTargetCommand))
 def review_verify(
     workspace_root: Path,

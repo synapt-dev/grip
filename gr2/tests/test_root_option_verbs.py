@@ -41,7 +41,7 @@ FIXED_ARITY = [  # RootOptionalCommand: the 18, and ContextCommand: the 7 above
     "lane/list", "lane/remove", "lane/push",
     "lane/lease/acquire", "lane/lease/release", "lane/lease/show",
     "review/check", "review/requirements", "review/checkout-pr", "review/create-project", "review/open-project",
-    "review/exit-gr", "review/open-gr",
+    "review/exit-gr", "review/open-gr", "review/list",
     "hooks/run", "config/restore",
 ]
 OPTIONAL_TRAILING = [  # RootOptionCommand: the two execution verbs

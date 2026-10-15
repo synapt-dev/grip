@@ -433,12 +433,14 @@ def run_pre_commit(root: Path) -> int:
         staged_text = staged_bytes.decode("utf-8")
         # THE FENCE (section 9), the same function and the same reader `store push` uses: the pins the commit
         # will RECORD (the staged grip.toml). The hook sees one commit, so it judges that commit's own edit (against
-        # HEAD); the push judges the whole range since the shadow, and backstops a commit made past the hook. Before
-        # the compat fold, so a hand-edited pin line is refused by name; compat's gitlink-bump fold is left as it was.
+        # HEAD); the push judges the whole range since the shadow, and backstops a commit made past the hook. In full
+        # mode it runs first. In compat it runs after the membership and rewind checks below and before the fold, so
+        # a rewind or an unclaimed gitlink is refused in its own words and a hand-edited pin line is still refused by
+        # name; compat's gitlink-bump fold is left as it was.
         shadow = gc._shadow_value(root)
-        if shadow:
-            gc._refuse_unrecorded_pins(root, gc._recorded_pins(staged_text), "HEAD", _staged_mode(staged_text), None)
         if _staged_mode(staged_text) == "full":
+            if shadow:
+                gc._refuse_unrecorded_pins(root, gc._recorded_pins(staged_text), "HEAD", "full", None)
             # full_mode_hook, NARROWED: a hand commit that leaves every recorded pin unchanged (a root README) passes
             # the fence above and is let through. Never read a staged gitlink here: in full mode it is the member's
             # field commit, not its pin. With no shadow there is nothing to fence against, so it still refuses.
@@ -473,6 +475,8 @@ def run_pre_commit(root: Path) -> int:
                     adopted[member["name"]] = resolved
             if sha != member["pin"] or member["name"] in adopted:
                 stale.append(member)
+        if shadow:
+            gc._refuse_unrecorded_pins(root, gc._recorded_pins(staged_text), "HEAD", _staged_mode(staged_text), None)
         if stale:
             names = ", ".join(member["name"] for member in stale)
             if partial:

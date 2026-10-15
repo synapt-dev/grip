@@ -1,7 +1,8 @@
 """A refusal names the real cause and points at the workspace root.
 
-`gr2 check run <path>` on a path that does not exist (or is not a repository) used to say the branch has no
-upstream and no 'origin', which sends the user to configure a remote on a repo that is not there. And a
+`gr2 check run <path>` on a path that does not exist (or is not inside a repository) used to say the branch has no
+upstream and no 'origin', which sends the user to configure a remote on a repo that is not there; a directory
+inside a repository runs against the repository's top, the way git resolves it. And a
 workspace verb run from inside a member (`gr2 review check .` with the cwd in a member clone) used to suggest
 `gr2 workspace init <member>`, which would create a workspace nested inside a member of the real one. The rows
 run the real CLI in a subprocess so stdout, stderr and the exit code are the ones a user sees.
@@ -48,7 +49,36 @@ def test_check_run_on_a_directory_that_is_not_a_repository_says_so(tmp_path):
     (tmp_path / "plain").mkdir()
     reason = _check_run_reason(tmp_path, "plain")
     assert reason.startswith("not_a_repository:"), reason
-    assert "plain" in reason and "origin" not in reason
+    assert "plain" in reason and "is not inside a git repository" in reason and "origin" not in reason
+
+
+def _repo_with_subdir(tmp_path: Path, origin: bool) -> Path:
+    repo = tmp_path / "r"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / "sub").mkdir()
+    (repo / "sub" / "f").write_text("x\n", encoding="utf-8")
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "add", "."], check=True)
+    subprocess.run([*git, "commit", "-qm", "init"], check=True)
+    if origin:
+        subprocess.run(["git", "init", "-q", "--bare", str(tmp_path / "o.git")], check=True)
+        subprocess.run([*git, "remote", "add", "origin", str(tmp_path / "o.git")], check=True)
+    return repo
+
+
+def test_check_run_from_a_directory_inside_a_repo_runs_at_the_top(tmp_path):
+    repo = _repo_with_subdir(tmp_path, origin=True)
+    result = _gr2(repo / "sub", "check", "run", ".", "--", "sh", "-c", "test -f sub/f")
+    assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+    head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True, capture_output=True, check=True)
+    observation = json.loads(result.stdout)["observation"]
+    assert observation["result"] == "pass" and observation["head"] == head.stdout.strip(), observation
+
+
+def test_check_run_from_a_directory_inside_a_repo_without_origin_still_names_the_remote(tmp_path):
+    repo = _repo_with_subdir(tmp_path, origin=False)
+    reason = _check_run_reason(repo, "sub")
+    assert reason.startswith("remote_unresolved:") and "no 'origin'" in reason, reason
 
 
 def test_control_check_run_on_a_repo_without_origin_still_names_the_remote(tmp_path):

@@ -26,6 +26,8 @@ import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 
+from gr2.python_cli import gitops
+
 
 @dataclasses.dataclass(frozen=True)
 class RepoSpec:
@@ -237,13 +239,7 @@ def policy_for(target: RepoTarget, policy_doc: dict[str, object]) -> RepoPolicy:
 
 
 def run_git(repo_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", *args],
-        cwd=repo_path,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    return gitops.git(repo_path, *args)
 
 
 ASIDE_KEEP = "KEEP"
@@ -282,14 +278,7 @@ def _git_scrubbed(repo_path: Path, *args: str) -> subprocess.CompletedProcess[st
     """
     env = {k: v for k, v in os.environ.items() if k not in _REPO_IDENTITY_ENV}
     try:
-        return subprocess.run(
-            ["git", *args],
-            cwd=repo_path,
-            check=False,
-            capture_output=True,
-            text=True,
-            env=env,
-        )
+        return gitops.run(repo_path, *args, env=env, via_cwd=True)
     except OSError as exc:
         return subprocess.CompletedProcess(
             ["git", *args], returncode=1, stdout="", stderr=f"{type(exc).__name__}: {exc}"
@@ -950,12 +939,7 @@ def convert_worktree_to_clone(path: Path) -> dict[str, object]:
     if staging_path.exists():
         raise ConvertCloneError(f"{staging_path}: staging path already exists")
 
-    clone_proc = subprocess.run(
-        ["git", "clone", "-q", f"file://{canonical_repo_root}", str(staging_path)],
-        cwd=path.parent,
-        capture_output=True,
-        text=True,
-    )
+    clone_proc = gitops.clone("-q", f"file://{canonical_repo_root}", str(staging_path), cwd=path.parent)
     if clone_proc.returncode != 0:
         raise ConvertCloneError(
             f"clone from {canonical_repo_root} failed: {clone_proc.stderr.strip()}"

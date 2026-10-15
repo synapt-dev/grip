@@ -292,6 +292,36 @@ def test_gh_present_a_github_member_with_credentials_a_user_or_http_lands_throug
     assert by["alpha"] == "platform" and by["beta"] != "platform", by
 
 
+def test_a_version_2_adapter_that_cannot_read_a_token_url_refuses_without_printing_the_token(slice2, monkeypatch):  # noqa: F811
+    """The refusal names the repository, never the remote as spelled: a token-bearing URL is a GitHub member, and a
+    version 2 adapter's own error text may echo the URL back."""
+    import json
+
+    from gr2.python_cli import platform as platform_ops
+
+    class V2(FakePlatform):
+        platform_adapter_api_version = 2
+
+        def resolve_target(self, remote):
+            raise ValueError(f"unsupported remote {remote}")
+
+    url = "https://x-access-token:TOK123secret@github.com/o/alpha.git"
+    monkeypatch.setattr(platform_ops, "get_platform_adapter", lambda name: V2(slice2["members"]))
+    real = merge_gate.platform_for_remote
+    alpha = str(slice2["members"]["alpha"]["remote"])
+    monkeypatch.setattr(merge_gate, "platform_for_remote", lambda remote: real(url if remote == alpha else remote))
+    before = mains(slice2)
+    record_set(slice2)
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    assert code == merge_gate.EXIT_REFUSED, receipt
+    assert mains(slice2) == before
+    row = next(r for r in receipt["members"] if r["key"] == "alpha")
+    assert row["refusal"]["code"] == "platform_unmeasurable", row
+    printed = json.dumps(receipt)
+    assert "TOK123secret" not in printed and "x-access-token" not in printed, printed
+    assert "o/alpha" in row["refused"], row  # control: the refusal still names the repository
+
+
 def test_a_pr_head_read_that_fails_after_the_last_merge_is_partial_and_strands_nothing(slice2, platform):  # noqa: F811
     """The merge holds the pinned head, but whether a commit was pushed during the land is unknown: exit 4, its own
     code, and no commit named as stranded."""

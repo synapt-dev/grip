@@ -84,6 +84,12 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **`gr2`: `gr2 review merge` no longer prints a GitHub remote's token when a platform adapter cannot read it.**
+  When a version 2 platform adapter could not read a member's GitHub remote, the `platform_unmeasurable` refusal
+  printed the remote as spelled and the adapter's own error text, so a remote such as
+  `https://x-access-token:<token>@github.com/o/r.git` put its token into the refusal and the receipt. The refusal now
+  names the repository (`o/r`) and the type of the adapter's error, never the URL or the error text. The GitHub adapter
+  gr2 ships is version 1 and never took this path.
 - **`gr2`: `store commit` and `store migrate` record a member whose only changes are untracked files.** Both
   refused such a member at exit 3 with "commit or stash changes first", and a plain `git stash` leaves untracked
   files in place, so a desk with scratch files in a member could not record at all. Both record the member's HEAD,

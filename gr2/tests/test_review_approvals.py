@@ -966,6 +966,21 @@ def test_a_lane_whose_marker_names_no_workspace_refuses_as_an_older_lane(world, 
     assert "unreadable" not in refused.output, refused.output
 
 
+def test_a_lane_whose_marker_names_a_relative_workspace_refuses_by_name(world, tmp_path, monkeypatch):
+    # review open writes workspace_root absolute; a hand-edited or foreign marker may not, and a relative root would
+    # resolve against the caller's cwd: here cwd makes "other-gripspace" the reviewer's real workspace, so it would stamp
+    reviewer, rid, lane = _reviewer_in_another_gripspace(world, tmp_path, monkeypatch)
+    marker = lane / ".grip-review-open.json"
+    record = json.loads(marker.read_text())
+    assert Path(record["workspace_root"]) == reviewer.resolve(), record
+    record["workspace_root"] = reviewer.name
+    marker.write_text(json.dumps(record))
+    monkeypatch.chdir(tmp_path)
+    refused = runner.invoke(app, ["review", "stamp", str(lane)])
+    assert refused.exit_code == 2 and "approval_lane_workspace_not_absolute" in refused.output, refused.output
+    assert subprocess.run(["git", "-C", str(world["remote"]), "rev-parse", "--verify", "-q",
+                           approvals.PREFIX + world["rid"]], capture_output=True).returncode != 0
+
 
 # A stamp on a review whose target has moved past the reviewed base can never be merged (merge refuses base_moved,
 # and the review cannot move: a new base is a new pin), so the stamp refuses before anything is pushed.

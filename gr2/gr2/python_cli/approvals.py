@@ -153,6 +153,13 @@ def review_open_lane(lane: Path) -> tuple[Path, str, dict[str, Path]] | None:
                               next_step=f"next: open the review again, then stamp the new lane: "
                                         f"gr2 review open <your-workspace> gr:{marker['gr_commit']} --lane-dir <new-lane>, "
                                         "then gr2 review stamp <new-lane>")
+    if not Path(marker["workspace_root"]).is_absolute():
+        raise ApprovalRefused(f"approval_lane_workspace_not_absolute: {lane} names the workspace "
+                              f"{marker['workspace_root']!r}, which is not absolute and would resolve against the "
+                              "current directory; review open writes it absolute, so this marker was edited by hand or written elsewhere",
+                              next_step=f"next: open the review again, then stamp the new lane: "
+                                        f"gr2 review open <your-workspace> gr:{marker['gr_commit']} --lane-dir <new-lane>, "
+                                        "then gr2 review stamp <new-lane>")
     try:
         members = ({rows[0]["key"]: lane} if len(rows) == 1
                    else {r["key"]: review_run._member_dir(lane, r["key"]) for r in rows})

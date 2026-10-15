@@ -933,3 +933,56 @@ def test_a_lane_whose_marker_names_no_workspace_refuses_as_an_older_lane(world, 
     assert refused.exit_code == 2 and "approval_lane_names_no_workspace" in refused.output, refused.output
     assert "unreadable" not in refused.output, refused.output
 
+
+
+# A stamp on a review whose target has moved past the reviewed base can never be merged (merge refuses base_moved,
+# and the review cannot move: a new base is a new pin), so the stamp refuses before anything is pushed.
+
+def _advance(repo, remote, base, branch="main"):
+    """Move `branch` on `remote` one commit past `base`, as a teammate's merge does."""
+    tree = git(repo, "rev-parse", base + "^{tree}")
+    moved = git(repo, "commit-tree", tree, "-p", base, "-m", "main moved")
+    git(repo, "push", remote, f"{moved}:refs/heads/{branch}")
+    return moved
+
+
+def _approval_refs(remote):
+    return git(remote, "for-each-ref", "--format=%(refname)", approvals.PREFIX)
+
+
+def test_stamp_after_the_target_moved_refuses_base_moved_and_writes_nothing(world):
+    moved = _advance(world["member"], world["remote"], world["base"])
+    result = approve_as(world, "Approver B")
+    assert result.exit_code == 2, result.output
+    assert "base_moved" in result.output and "member" in result.output, result.output
+    assert world["base"][:12] in result.output and moved[:12] in result.output, result.output
+    advice = next(x for x in result.output.splitlines() if x.startswith("next: "))
+    assert "pin" in advice and "main" in advice, advice
+    assert _approval_refs(world["remote"]) == "", "no approval may be pushed for a review that cannot merge"
+
+
+def test_control_stamp_with_the_target_at_the_base_succeeds(world):
+    result = approve_as(world, "Approver B")
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["count"] == 1
+    assert _approval_refs(world["remote"]) != ""
+
+
+def test_stamp_succeeds_while_another_branch_still_sits_at_the_base(world):
+    """A review targeting a non-default branch (dev) stamps while that branch is at the base, even after main
+    moved. Known limit: an unrelated branch left at the base passes the same way; merge still refuses it."""
+    git(world["member"], "push", world["remote"], world["base"] + ":refs/heads/dev")
+    _advance(world["member"], world["remote"], world["base"])
+    result = approve_as(world, "Approver B")
+    assert result.exit_code == 0, result.output
+
+
+def test_stamp_names_only_the_member_whose_target_moved(multi):
+    beta = multi["members"]["beta"]
+    _advance(beta["repo"], beta["remote"], beta["base"])
+    result = approve_as(multi, "Approver B")
+    assert result.exit_code == 2, result.output
+    refusal = next(x for x in result.output.splitlines() if "base_moved" in x)
+    assert "beta" in refusal and "member" not in refusal.replace("beta", ""), refusal
+    for m in multi["members"].values():
+        assert _approval_refs(m["remote"]) == "", m["remote"]

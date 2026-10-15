@@ -195,6 +195,7 @@ def _context(workspace: Path, review_id: str, member_dirs: dict[str, Path] | Non
             raise ApprovalRefused(f"head_not_fetched: {m['key']}",
                                   next_steps.head_not_fetched(str(repo), m["remote"], m["head"], str(workspace),
                                                               "gr:" + rid)) from None
+        _refuse_moved_base(workspace, m["key"], m["remote"], m["base"])
         actual_tree = _git(repo, "rev-parse", f"{m['head']}^{{tree}}")
         tree = measured[m["key"]].get("head_tree", actual_tree)
         if actual_tree != tree:
@@ -202,6 +203,30 @@ def _context(workspace: Path, review_id: str, member_dirs: dict[str, Path] | Non
         authors.update(_git(repo, "log", "--format=%an", f"{m['base']}..{m['head']}").splitlines())
         members.append({"key": m["key"], "remote": m["remote"], "head_commit": m["head"], "head_tree": tree})
     return {"review_id": "gr:" + rid, "author": author, "members": members}, authors
+
+
+def _refuse_moved_base(workspace: Path, key: str, remote: str, base: str) -> None:
+    """Refuse a stamp the merge could never count: a merge needs its target at the reviewed base, so when no branch
+    on the member's remote still sits at that base, the target has moved and the review needs a new pin. Read
+    before any approval is pushed. Any branch at the base passes (a review may target a branch other than the
+    default), so a stale branch left at the base lets the stamp through; the merge still refuses that case."""
+    if remote.startswith("-") or any(ord(c) < 32 or ord(c) == 127 for c in remote):
+        raise ApprovalRefused("approval_remote_invalid")
+    default, at_base, tips = None, False, {}
+    for line in _git(workspace, "ls-remote", "--symref", "--", remote, "HEAD", "refs/heads/*").splitlines():
+        left, _, ref = line.partition("\t")
+        if left.startswith("ref: refs/heads/") and ref == "HEAD":
+            default = left.removeprefix("ref: refs/heads/")
+        elif ref.startswith("refs/heads/"):
+            tips[ref.removeprefix("refs/heads/")] = left
+            at_base = at_base or left == base
+    if at_base:
+        return
+    from . import next_steps
+    branch = default or "<target branch>"
+    now = f" ({branch} is now {tips[branch][:12]})" if branch in tips else ""
+    raise ApprovalRefused(f"base_moved: {key}: no branch on its remote is at the reviewed base {base[:12]}{now}",
+                          next_steps.stamp_base_moved(branch))
 
 
 def _remote_tips(workspace: Path, root: dict) -> dict[str, str | None]:

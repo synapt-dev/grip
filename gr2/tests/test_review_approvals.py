@@ -810,7 +810,11 @@ def test_a_reviewer_who_stamps_before_receiving_gets_a_named_refusal_and_the_ord
 
 
 def _reviewer_without_the_head(world, tmp_path, monkeypatch):
-    """A reviewer's own workspace whose member clone was made before the head was pushed, then the review received."""
+    """A reviewer's own workspace whose member clone was made before the head was pushed, then the review received.
+
+    receive now fetches a head the receiving remote serves; a member whose head lives on another remote is not
+    fetched, and stamp fetches it. That is the path these rows keep: the head receive fetched is pruned again, so
+    the clone lacks it the way such a member's clone does."""
     reviewer = tmp_path / "reviewer-ws"
     reviewer.mkdir()
     # --no-local: a local clone copies every object, which would hide the case a real early clone meets
@@ -821,6 +825,9 @@ def _reviewer_without_the_head(world, tmp_path, monkeypatch):
     git(reviewer, "config", "user.email", "r@example.invalid")
     rid = "gr:" + world["rid"]
     assert runner.invoke(app, ["review", "receive", str(reviewer), rid, "--remote", str(world["remote"])]).exit_code == 0
+    # receive fetched the head by id onto no ref; drop it so stamp meets a clone without it
+    git(reviewer / "member", "reflog", "expire", "--expire=now", "--all")
+    git(reviewer / "member", "gc", "-q", "--prune=now")
     assert subprocess.run(["git", "-C", str(reviewer / "member"), "cat-file", "-e", world["head"] + "^{commit}"],
                           capture_output=True).returncode != 0, "precondition: the reviewer's clone lacks the head"
     return reviewer, rid

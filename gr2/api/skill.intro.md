@@ -85,15 +85,13 @@ for m in $(ls -d */ | tr -d /); do [ -d "$m/.git" ] && echo "$m $(git -C "$m" re
 
 ### Recipe 4: run the test that counts over a whole review, at its pinned heads
 
-`gr2 check set` checks out every member of the review side by side at its pinned head, runs ONE command once at that lane's root, and records the result on every member's remote as the check named `set`. Every member's clone must already hold its pinned head, so the recipe fetches first; without that, `check set` stops with `could not get object info` (exit 2). Write the command as a small script; it runs with `GR2_SET_ROOT` (the lane root, holding one directory per member) and `GR2_SET_MEMBERS` (JSON, member key to path) set.
+`gr2 check set` checks out every member of the review side by side at its pinned head, runs ONE command once at that lane's root, and records the result on every member's remote as the check named `set`. Every member's clone must hold its pinned head: an author's clones do, and `gr2 review receive` fetches them into a reviewer's. When one is missing, `check set` refuses with `head_not_in_member_clone` and prints the `git fetch` that brings it. Write the command as a small script; it runs with `GR2_SET_ROOT` (the lane root, holding one directory per member) and `GR2_SET_MEMBERS` (JSON, member key to path) set.
 
 ```bash
 #!/bin/bash
 set -euo pipefail
 WS=/path/to/workspace                              # EDIT: your workspace root
 REVIEW=gr:0000000000000000000000000000000000000000 # EDIT: the full review ID that `gr2 review pin` printed
-MEMBERS="alpha beta"                               # EDIT: the member directories
-for m in $MEMBERS; do git -C "$WS/$m" fetch -q origin; done   # the pinned heads must be in your clones
 T=$(mktemp -d)                                     # outside the workspace, so the record stays clean
 cat > "$T/set-test.sh" <<'EOF'
 #!/bin/bash
@@ -117,9 +115,7 @@ set -euo pipefail
 WS=/path/to/your/workspace                         # EDIT: your workspace root
 REVIEW=gr:0000000000000000000000000000000000000000 # EDIT: the full review ID the author sent you
 REMOTES="/path/to/alpha.git /path/to/beta.git"     # EDIT: every member's remote
-MEMBERS="alpha beta"                               # EDIT: the member directories, in the same order
-for r in $REMOTES; do gr2 review receive "$WS" "$REVIEW" --remote "$r"; done
-for m in $MEMBERS; do git -C "$WS/$m" fetch -q origin; done   # receive does not fetch the heads; the set test needs them
+for r in $REMOTES; do gr2 review receive "$WS" "$REVIEW" --remote "$r"; done   # also fetches each pinned head into its member clone
 gr2 review show "$WS" "$REVIEW"                    # each member's commit range and the files it changes
 [ "${APPROVE:-}" = 1 ] || { echo "Read each member's range above (git diff <start>..<end> in that member), then run this again with APPROVE=1 to test and stamp."; exit 0; }
 T=$(mktemp -d)

@@ -13,7 +13,7 @@ import ipaddress
 import socket
 from urllib.parse import parse_qsl, urlsplit
 
-from . import gitops
+from . import gitops, next_steps
 from .gitops import git
 from .layout import GRIP_DIR, LANE_CONTROL_PREFIX, LANE_VENV, grip_dir as _layout_grip_dir
 from .workspace_guidance import missing_gr2_workspace_guidance
@@ -1723,7 +1723,7 @@ def _fetch_received_heads(workspace: Path, commit: str, source: str) -> list[dic
             said = (proc.stderr or "").strip().splitlines()
             rows.append({**row, "status": "not_fetched",
                          "reason": f"head_fetch_refused: {said[-1] if said else 'the remote did not serve the head'}",
-                         "next": f"git -C {repo} fetch {source} {head}"})
+                         "next": next_steps._head_fetch(str(repo), source, head)})
     return rows
 
 

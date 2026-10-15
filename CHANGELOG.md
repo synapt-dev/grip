@@ -102,7 +102,9 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   clone, so a reviewer's set check stopped at exit 2 with `could not get object info`. Receive now fetches the head into each
   member clone whose recorded remote is the one it received from, and its output gains a `heads` row per member
   (`fetched`, `already_present`, `not_this_remote`, or `not_fetched` with the reason and the exact command). `check set`
-  names a missing head as `head_not_in_member_clone` with the fetch that brings it.
+  names a missing head as `head_not_in_member_clone` with the fetch that brings it. Both printed commands are
+  shell-quoted, so a workspace path with a space runs as printed, and `check set` refuses a record whose remote carries
+  URL credentials as `remote_credentials` by member key, before any message could print the remote.
 - **`gr2`: `gr2 review merge` no longer prints a GitHub remote's token when a platform adapter cannot read it.**
   When a version 2 platform adapter could not read a member's GitHub remote, the `platform_unmeasurable` refusal
   printed the remote as spelled and the adapter's own error text, so a remote such as

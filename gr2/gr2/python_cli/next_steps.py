@@ -56,6 +56,12 @@ def _stamp_base_moved(branch: str) -> str:
             "again with gr2 review pin, and ask for a stamp on the new review")
 
 
+def _head_fetch(repo: str, remote: str, head: str) -> str:
+    # Private, so the skill's refusal table keeps one row per printed code. The command a refusal prints for a clone
+    # that lacks the pinned head; shell-quoted, so a path with a space runs as printed.
+    return f"git -C {_shown(repo)} fetch -- {_shown(remote)} {_shown(head)}"
+
+
 def not_received(workspace: str, review: str) -> str:
     return (f"next: receive the published review into this workspace, then stamp it: "
             f"gr2 review receive {_shown(workspace)} {_shown(review)} --remote <member-remote>, then "

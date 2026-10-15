@@ -19,7 +19,7 @@ import uuid
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from . import check_records, gitops, grip
+from . import check_records, gitops, grip, next_steps
 
 SET_CHECK_NAME = "set"
 _KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
@@ -106,6 +106,10 @@ def run_set_check(workspace: Path, review_id: str, name: str, argv: Sequence[str
             raise check_records.CheckRefused(f"member_key_unsafe: {key!r} cannot name a directory in the lane")
     repos: dict[str, Path] = {}
     for m in members:
+        if grip.url_has_credentials(m["remote"]):  # every message below may name the remote, so refuse by key first
+            raise check_records.CheckRefused(
+                f"remote_credentials: {m['key']}: the recorded remote cannot be parsed or carries URL userinfo; "
+                "pin again from a remote without it and use a credential helper")
         repo = (workspace / m["path"]).resolve()
         if not repo.is_relative_to(root):
             raise check_records.CheckRefused(f"member_path_outside_workspace: {m['path']}")
@@ -114,7 +118,7 @@ def run_set_check(workspace: Path, review_id: str, name: str, argv: Sequence[str
             # fetches it from the member's own remote).
             raise check_records.CheckRefused(
                 f"head_not_in_member_clone: {m['key']} {m['head']}; fetch it with "
-                f"`git -C {repo} fetch {m['remote']} {m['head']}`")
+                f"`{next_steps._head_fetch(str(repo), m['remote'], m['head'])}`")
         check_records._oid(repo, m["head"])  # a full commit id that this member's repo holds
         check_records._remote(m["remote"])
         repos[m["key"]] = repo

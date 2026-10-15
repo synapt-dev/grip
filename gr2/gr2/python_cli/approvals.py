@@ -228,7 +228,7 @@ def _refuse_moved_base(workspace: Path, key: str, remote: str, base: str) -> Non
     branch = default or "<target branch>"
     now = f" ({branch} is now {tips[branch][:12]})" if branch in tips else ""
     raise ApprovalRefused(f"base_moved: {key}: no branch on its remote is at the reviewed base {base[:12]}{now}",
-                          next_steps.stamp_base_moved(branch))
+                          next_steps._stamp_base_moved(branch))
 
 
 def _remote_tips(workspace: Path, root: dict) -> dict[str, str | None]:

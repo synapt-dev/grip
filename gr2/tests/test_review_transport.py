@@ -405,3 +405,24 @@ def test_a_set_check_on_a_clone_without_the_head_names_the_fetch(handoff, monkey
     assert checked.exit_code != 0, checked.output
     assert "head_not_in_member_clone: member " + head in checked.output, checked.output
     assert f"git -C {receiver / 'member'} fetch {remote} {head}" in checked.output, checked.output
+
+
+def test_a_head_a_force_push_left_unadvertised_is_named_with_the_command_to_run(handoff, monkeypatch):
+    """The head was pushed, then the branch was force-pushed back, so no ref on the remote points at it any more.
+    Whether a server serves a want for such a sha depends on the server (a local bare remote with this git does;
+    a server with uploadpack.allowAnySHA1InWant off may not), so the receipt must agree with the clone either way:
+    fetched means the head is there, not_fetched means it is not and names the command that fetches it."""
+    author, receiver, remote, commit, base, head = handoff
+    git(author / "member", "push", remote, "HEAD:refs/heads/feat")
+    git(author / "member", "push", "--force", remote, f"{base}:refs/heads/feat")
+    assert head not in git(receiver, "ls-remote", remote)  # control: no ref advertises the head
+    publish(handoff, monkeypatch)
+    got = cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", remote)
+    assert got.exit_code == 0, got.output
+    row = _rows(got)["member"]
+    present = subprocess.run(["git", "cat-file", "-e", head + "^{commit}"], cwd=receiver / "member").returncode == 0
+    if row["status"] == "fetched":
+        assert present, row
+    else:
+        assert row["status"] == "not_fetched" and row["reason"].startswith("head_fetch_refused"), row
+        assert not present and row["next"] == f"git -C {receiver / 'member'} fetch {remote} {head}", row

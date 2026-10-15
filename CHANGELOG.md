@@ -97,6 +97,12 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   reviewed base, naming the member and asking for a new pin. Any branch at the base passes, so a review on a
   non-default target needs no flag; an unrelated branch left at the base lets a stale stamp through, and the
   merge still refuses it.
+- **`gr2`: `gr2 review receive` fetches each pinned head into its member clone, so a reviewer's `check set` runs with no
+  hand `git fetch`.** Receive bound only the review record, and `check set` reads every member's head from the member's own
+  clone, so a reviewer's set check stopped at exit 2 with `could not get object info`. Receive now fetches the head into each
+  member clone whose recorded remote is the one it received from, and its output gains a `heads` row per member
+  (`fetched`, `already_present`, `not_this_remote`, or `not_fetched` with the reason and the exact command). `check set`
+  names a missing head as `head_not_in_member_clone` with the fetch that brings it.
 - **`gr2`: `gr2 review merge` no longer prints a GitHub remote's token when a platform adapter cannot read it.**
   When a version 2 platform adapter could not read a member's GitHub remote, the `platform_unmeasurable` refusal
   printed the remote as spelled and the adapter's own error text, so a remote such as

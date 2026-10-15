@@ -1515,13 +1515,19 @@ def _unpushed_steps(root: Path, path: Path, sha: str, upstream: str) -> str:
     return next_steps._unpushed_pin(str(path), sha, upstream.partition("/")[0], on, str(root / "grip.toml"), compat)
 
 
+def _push_or_switch(name: str, again: str) -> str:
+    """The two ways out of a pin no remote branch holds: push it, or the member is on the wrong branch."""
+    return f"push it first, or switch {name} to the branch it should be recorded on, then {again}"
+
+
 def _not_on_upstream(root: Path, name: str, path: Path, sha: str, upstream: str) -> str:
     """The refusal for a pin its upstream does not reach. "push it first" is the advice only for a pin no remote
     branch holds, and it names the steps; a pushed pin is named where it is, since pushing again would change
     nothing."""
     elsewhere = _remote_branches_holding(path, sha)
     if not elsewhere:
-        return f"{name} pin {sha} is not on {upstream}; push it first\n{_unpushed_steps(root, path, sha, upstream)}"
+        return (f"{name} pin {sha} is not on {upstream}; {_push_or_switch(name, 'commit again')}\n"
+                f"{_unpushed_steps(root, path, sha, upstream)}")
     return (f"{name} pin {sha} is on {', '.join(elsewhere)} but not on {upstream}; check out that branch in the "
             f"member so its upstream covers the pin, then commit again")
 
@@ -1559,7 +1565,8 @@ def _resolve_member_pin(
         if moved is not None and exc.code == 3:
             elsewhere = _remote_branches_holding(path, sha)
             where = (f"the pin is on {', '.join(elsewhere)}" if elsewhere else
-                     f"push it first\n{_unpushed_steps(root, path, sha, moved['upstream'])}")
+                     f"{_push_or_switch(member['name'], 'commit again')}\n"
+                     f"{_unpushed_steps(root, path, sha, moved['upstream'])}")
             raise NativeStoreRefusal(
                 f"{member['name']} pin {sha} is not on {moved['upstream']} (it is on {on}) or on its recorded "
                 f"upstream {member['upstream']}; {where}", 3) from None
@@ -2812,7 +2819,8 @@ def _native_store_migrate(root: Path, *, dry_run: bool = False) -> dict[str, obj
         # is checked against the upstream init would write (`origin/core/main`, not a literal).
         _ref, upstream = _infer_member_branch(path)
         if _store_git(path, "merge-base", "--is-ancestor", pin, upstream, check=False).returncode:
-            raise NativeStoreRefusal(f"{name} pin {pin} is not on {upstream}; push it first", 3)
+            raise NativeStoreRefusal(
+                f"{name} pin {pin} is not on {upstream}; {_push_or_switch(name, 'migrate')}", 3)
         planned[name] = pin
 
     if dry_run:

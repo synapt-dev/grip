@@ -192,15 +192,32 @@ flag  grip push --json (hidden:grip)                                  stable
 flag  grip push --recurse <str> (hidden:grip)                         stable
 flag  grip push --snapshot (hidden:grip)                              stable
 flag  grip push --to <str> (hidden:grip)                              stable
+json  grip push .allow_rewind[]                                       may-change
 json  grip push .landed_by_another  bool                              may-change
+json  grip push .member_refs[].name                                   may-change
+json  grip push .member_refs[].pin                                    may-change
+json  grip push .member_refs[].ref                                    may-change
 json  grip push .members[].name                                       may-change
 json  grip push .members[].pin                                        may-change
-json  grip push .members[].state  enum(upstream,layer)                may-change
+json  grip push .members[].state  enum(upstream,layer,unchecked)      may-change
 json  grip push .members[].upstream                                   may-change
+json  grip push .notes[]                                              may-change
 json  grip push .origin_recorded  bool                                may-change
+json  grip push .recurse  enum(check,on-demand,none)                  may-change
+json  grip push .recursed[].action  enum(same-repo,covered,pushed)    may-change
+json  grip push .recursed[].name                                      may-change
+json  grip push .recursed[].pin                                       may-change
+json  grip push .rewound[].kind  enum(rewind,rewrite)                 may-change
+json  grip push .rewound[].name                                       may-change
+json  grip push .rewound[].new                                        may-change
+json  grip push .rewound[].old                                        may-change
+json  grip push .rewound_record                                       may-change
 json  grip push .root_branch                                          may-change
 json  grip push .root_commit                                          may-change
+json  grip push .shadow                                               may-change
+json  grip push .snapshot                                             may-change
 json  grip push .status  enum(pushed)                                 may-change
+json  grip push .unchecked[]                                          may-change
 verb  grip push (hidden:grip)                                         stable
 # grip snapshot
 flag  grip snapshot --allow-rewind (hidden:grip)                      stable
@@ -771,15 +788,32 @@ flag  store push --json                                               may-change
 flag  store push --recurse <str>                                      stable
 flag  store push --snapshot                                           stable
 flag  store push --to <str>                                           may-change
+json  store push .allow_rewind[]                                      may-change
 json  store push .landed_by_another  bool                             may-change
+json  store push .member_refs[].name                                  may-change
+json  store push .member_refs[].pin                                   may-change
+json  store push .member_refs[].ref                                   may-change
 json  store push .members[].name                                      may-change
 json  store push .members[].pin                                       may-change
-json  store push .members[].state  enum(upstream,layer)               may-change
+json  store push .members[].state  enum(upstream,layer,unchecked)     may-change
 json  store push .members[].upstream                                  may-change
+json  store push .notes[]                                             may-change
 json  store push .origin_recorded  bool                               may-change
+json  store push .recurse  enum(check,on-demand,none)                 may-change
+json  store push .recursed[].action  enum(same-repo,covered,pushed)   may-change
+json  store push .recursed[].name                                     may-change
+json  store push .recursed[].pin                                      may-change
+json  store push .rewound[].kind  enum(rewind,rewrite)                may-change
+json  store push .rewound[].name                                      may-change
+json  store push .rewound[].new                                       may-change
+json  store push .rewound[].old                                       may-change
+json  store push .rewound_record                                      may-change
 json  store push .root_branch                                         may-change
 json  store push .root_commit                                         may-change
+json  store push .shadow                                              may-change
+json  store push .snapshot                                            may-change
 json  store push .status  enum(pushed)                                may-change
+json  store push .unchecked[]                                         may-change
 verb  store push                                                      may-change
 # store snapshot
 flag  store snapshot --allow-rewind (hidden)                          may-change

@@ -216,3 +216,57 @@ def test_b9_control_on_demand_still_publishes_once_the_walk_passes(tmp_path):
     result = gr2(root, "push", "--recurse=on-demand", "--allow-rewind", "alpha", check=False)
     assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
     assert _remote_main(root / "beta") == _head(root / "beta") != beta_before
+
+
+def _declared(verb: str) -> tuple[set[str], dict[str, set[str]], dict[str, set[str]]]:
+    """The push shape as api/cli.api publishes it: the top-level keys, each array's element keys, and each enum."""
+    from gr2.python_cli import grip_cli
+
+    top: set[str] = set()
+    elements: dict[str, set[str]] = {}
+    enums: dict[str, set[str]] = {}
+    for line in grip_cli._STORE_JSON_SHAPES[verb]:
+        path, _, note = line.partition("  ")
+        head, _, tail = path.lstrip(".").partition("[].")
+        top.add(head.removesuffix("[]"))
+        if tail:
+            elements.setdefault(head, set()).add(tail)
+        if note.startswith("enum("):
+            enums[path] = set(note[len("enum("):-1].split(","))
+    return top, elements, enums
+
+
+def _holds_to_the_declared_shape(payload: dict) -> None:
+    top, elements, enums = _declared("push")
+    assert set(payload) == top
+    for key, wanted in elements.items():
+        for entry in payload[key]:
+            assert set(entry) == wanted, key
+    for path, values in enums.items():
+        head, _, tail = path.lstrip(".").partition("[].")
+        seen = [entry[tail] for entry in payload[head]] if tail else [payload[head]]
+        assert set(seen) <= values, (path, seen)
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_push_json_carries_exactly_the_declared_keys_and_enums(tmp_path, mode):
+    """Every key `store push --json` emits is declared (api/cli.api is built from the declaration), every array element
+    carries the declared keys, and every enum value is in its declared set: a plain push, a `--recurse=none` push (its
+    members are `unchecked`), and an `--allow-rewind` push (its `rewound` list is filled)."""
+    root, origin, p0, p1 = _two_pushes(tmp_path, mode)
+    _advance(root, "alpha")
+    gr2(root, "commit", "-m", "alpha ahead")
+    _holds_to_the_declared_shape(json.loads(gr2(root, "push", "--json").stdout))
+    (root / "alpha" / "again.txt").write_text("again\n")   # `_advance` writes the same bytes twice
+    git(root / "alpha", "add", "again.txt")
+    git(root / "alpha", "commit", "-q", "-m", "again")
+    git(root / "alpha", "push", "-q", "origin", "main")
+    gr2(root, "commit", "-m", "alpha ahead again")
+    unchecked = json.loads(gr2(root, "push", "--recurse=none", "--json").stdout)
+    _holds_to_the_declared_shape(unchecked)
+    assert {member["state"] for member in unchecked["members"]} == {"unchecked"}
+    git(root / "alpha", "reset", "-q", "--hard", p0)
+    gr2(root, "commit", "--allow-rewind", "-m", "alpha back")
+    rewound = json.loads(gr2(root, "push", "--allow-rewind", "alpha", "--json").stdout)
+    _holds_to_the_declared_shape(rewound)
+    assert rewound["rewound"]

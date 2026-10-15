@@ -65,6 +65,11 @@ def _update_lines(workspace: str, receipt: dict) -> list[str]:
         moved = receipt.get("merged") or []
         if moved:
             lines.append(f"partial: merged in the member clones (not pushed, not pinned): {', '.join(moved)}")
+        if receipt["refused"].startswith("unresolved_merge"):
+            for m in receipt.get("members", []):
+                clone = f"{workspace.rstrip('/')}/{m['path']}"
+                lines.append(f"next: resolve in {_shown(clone)}, git add, git commit (or git merge --abort), then run "
+                             f"gr2 review update {_shown(workspace)} {_shown(rid)}")
         return lines
     for m in receipt.get("members", []):
         lines.append(f"{m['key']}: {m['state']}")

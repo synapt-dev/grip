@@ -258,7 +258,7 @@ Publish the existing native review ref and verify its remote ID.
 
 - `<workspace_root>` (optional)
 - `<commit>`
-- `--remote`: HTTPS URL or absolute local remote path
+- `--remote`: HTTPS URL or absolute local remote path: publish the review ref there only; without it, every member's pinned head and the review go to that member's own recorded remote
 - `--ref`: Exact native review ref, otherwise derived from ID
 - `--root/-C`: The workspace root. Same as the leading WORKSPACE_ROOT argument; give one or the other.
 

@@ -1583,6 +1583,45 @@ def _require_review_content(workspace: Path, full: str, ref: str | None = None) 
         raise GripCorruptError(f"review_ref_format_mismatch: {ref} holds a record that is not a field tree")
 
 
+def _member_preflight(workspace: Path, full: str, *, for_push: bool) -> list[dict[str, object]]:
+    """Every local check on a pinned review's member clones, before anything leaves the host. One row per member
+    in key order: key, path, remote, head, clone (absolute) and, with `for_push`, branch.
+
+    Shared by `review publish` and `review update`: both call this, never a copy. Refuses (GripReviewRefused) on a credential in a recorded remote, or a clone mid-merge
+    (`unresolved_merge`, read from git: MERGE_HEAD or an unmerged path). With `for_push` it also refuses
+    `member_clone_missing`, `no_branch` (detached HEAD) and `head_moved_since_pin` (the clone's HEAD is not the pin);
+    without it an absent clone is skipped, as publishing the review ref alone does not need it. Paths resolve from the
+    workspace root, never from cwd."""
+    root = Path(workspace).resolve()
+    rows: list[dict[str, object]] = []
+    for key, fields in sorted(_read_repo_state(workspace, full, bind=True).items()):
+        _refuse_remote_credentials(key, fields["remote"])
+        clone = (root / fields["path"]).resolve()
+        row: dict[str, object] = {"key": key, "path": fields["path"], "remote": fields["remote"],
+                                  "head": fields["commit"], "clone": clone}
+        present = clone.is_relative_to(root) and (clone / ".git").exists()
+        if not present:
+            if for_push:
+                raise GripReviewRefused("member_clone_missing", key, str(clone))
+            rows.append(row)
+            continue
+        # Read from git each time (MERGE_HEAD or an unmerged path); there is no marker file to go stale.
+        unmerged = [p for p in git(clone, "diff", "--name-only", "--diff-filter=U", "-z").stdout.split("\0") if p]
+        if unmerged or git(clone, "rev-parse", "-q", "--verify", "MERGE_HEAD").returncode == 0:
+            raise GripReviewRefused("unresolved_merge", key, f"{', '.join(unmerged) or 'MERGE_HEAD present'}; "
+                                    "resolve or abort the merge in this clone")
+        if for_push:
+            branch = git(clone, "symbolic-ref", "-q", "--short", "HEAD")
+            if branch.returncode or not branch.stdout.strip():
+                raise GripReviewRefused("no_branch", key, "the clone is on a detached HEAD")
+            row["branch"] = branch.stdout.strip()
+            at = git(clone, "rev-parse", "HEAD").stdout.strip()
+            if at != fields["commit"]:
+                raise GripReviewRefused("head_moved_since_pin", key, f"pinned {fields['commit']}, clone {at}")
+        rows.append(row)
+    return rows
+
+
 def publish_review_commit(workspace: Path, commit: str, remote: str,
                           ref: str | None = None) -> dict[str, str]:
     """Publish one existing native review ref, without approval or branch publication."""
@@ -1597,16 +1636,10 @@ def publish_review_commit(workspace: Path, commit: str, remote: str,
     elif _bind_git(workspace, "rev-parse", "--verify", "--quiet", canonical).returncode != 0:
         raise GripCorruptError(f"review_ref_not_local: {canonical}")
     _require_review_content(workspace, full, canonical)
-    # A member clone halfway through `review update` (a merge in progress) is read from git, never from a marker:
-    # publishing then would put a review out while its author is still resolving the head that replaces it.
-    from .review_update import unresolved
-    for key, fields in sorted(_read_repo_state(workspace, full, bind=True).items()):
-        paths = unresolved((workspace / fields["path"]).resolve())
-        if paths is not None:
-            raise GripReviewRefused("unresolved_merge", key, ", ".join(paths) or "MERGE_HEAD present")
     # A record made before the writer guard, or received from elsewhere, is checked again here:
     # nothing leaves with a credential, and an author-local path never leaves this host.
     off_host = destination.startswith("https://")
+    _member_preflight(workspace, full, for_push=False)
     for key, fields in sorted(_read_repo_state(workspace, full, bind=True).items()):
         _refuse_remote_credentials(key, fields["remote"])
         if off_host and not _is_portable_remote(fields["remote"]):
@@ -1619,6 +1652,112 @@ def publish_review_commit(workspace: Path, commit: str, remote: str,
     if observed != full:
         raise GripCorruptError(f"remote_review_id_mismatch: expected {full}, observed {observed}")
     return {"id": f"gr:{full}", "ref": canonical, "remote": destination}
+
+
+PUBLISH_EXIT_OK, PUBLISH_EXIT_REFUSED, PUBLISH_EXIT_FAILED, PUBLISH_EXIT_PARTIAL = 0, 2, 3, 4
+
+
+def publish_review_all(workspace: Path, commit: str, ref: str | None = None) -> tuple[int, dict[str, object]]:
+    """Publish a pinned review to every member's own recorded remote: the PINNED head to the clone's current branch
+    (never forced), then the review ref once per distinct remote, each verified by ls-remote.
+
+    Preflight first, with no writes: the shared member checks, then each remote branch read; a branch ahead of or
+    beside the pin refuses `feature_moved`. A refusal raises before anything leaves the host. After it, remotes go in
+    order and the run stops at the first failure; the receipt names what landed. Returns (exit, receipt): 0 all
+    published, 3 a failure that landed nothing, 4 partial. A rerun resumes: what is already there is not pushed again."""
+    from .review import ReviewError, canonical_source_identity
+    full, canonical = _review_transport_identity(commit, ref)
+    _validate_bind_store(workspace)
+    _resolve_bound(workspace, full)
+    if ref is None:
+        canonical = next(r for r in _review_refs_for(full)
+                         if _bind_git(workspace, "rev-parse", "--verify", "--quiet", r).returncode == 0)
+    elif _bind_git(workspace, "rev-parse", "--verify", "--quiet", canonical).returncode != 0:
+        raise GripCorruptError(f"review_ref_not_local: {canonical}")
+    _require_review_content(workspace, full, canonical)
+    rows = _member_preflight(workspace, full, for_push=True)
+    groups: dict[str, dict[str, object]] = {}
+    for row in rows:
+        try:
+            destination = _review_transport_remote(str(row["remote"]))
+        except GripCorruptError as exc:
+            raise GripReviewRefused("review_remote_required", str(row["key"]), str(exc)) from exc
+        branch_ref = f"refs/heads/{row['branch']}"
+        on_remote = git(Path(workspace), "ls-remote", "--refs", destination, branch_ref, timeout=30)
+        if on_remote.returncode:
+            raise GripReviewRefused("remote_unreadable", str(row["key"]), on_remote.stderr.strip())
+        theirs = on_remote.stdout.split()[0] if on_remote.stdout.strip() else None
+        if theirs is not None and theirs != row["head"] and \
+                git(Path(row["clone"]), "merge-base", "--is-ancestor", theirs, str(row["head"])).returncode != 0:
+            raise GripReviewRefused("feature_moved", str(row["key"]), f"remote {row['branch']} at {theirs}")
+        row.update(destination=destination, branch_ref=branch_ref, theirs=theirs)
+        try:
+            identity = canonical_source_identity(destination, allow_local=True)
+        except ReviewError:
+            identity = destination
+        groups.setdefault(identity, {"remote": destination, "members": []})["members"].append(row)
+
+    members = {str(r["key"]): {"key": r["key"], "remote": r["destination"], "branch": r["branch"], "head": r["head"],
+                               "head_state": None, "state": "not_attempted", "error": None} for r in rows}
+    remotes: list[dict[str, object]] = []
+    failed = False
+    for group in groups.values():
+        out = {"remote": group["remote"], "review": "not_attempted"}
+        remotes.append(out)
+        if failed:
+            continue
+        for row in group["members"]:
+            m = members[str(row["key"])]
+            if row["theirs"] == row["head"]:
+                m["head_state"] = "already_on_remote"
+                continue
+            proc = git(Path(row["clone"]), "push", str(row["destination"]),
+                       f"{row['head']}:{row['branch_ref']}", timeout=60)
+            seen = git(Path(workspace), "ls-remote", "--refs", str(row["destination"]), str(row["branch_ref"]),
+                       timeout=30).stdout.split()
+            if proc.returncode or not seen or seen[0] != row["head"]:
+                lines = proc.stderr.strip().splitlines()
+                m.update(head_state="failed", state="failed",
+                         error=lines[-1] if lines else f"head not at the pin on the remote after the push")
+                failed = True
+                break
+            m["head_state"] = "pushed"
+        if failed:
+            continue
+        try:
+            already = _review_remote_target(workspace, str(group["remote"]), canonical) == full
+        except (ReviewStoreAbsent, GripCorruptError):
+            already = False
+        if already:
+            out["review"] = "already_on_remote"
+        else:
+            proc = git(workspace, "push", str(group["remote"]), f"{full}:{canonical}", timeout=30)
+            try:
+                landed = not proc.returncode and _review_remote_target(workspace, str(group["remote"]), canonical) == full
+            except (ReviewStoreAbsent, GripCorruptError):
+                landed = False
+            if not landed:
+                lines = proc.stderr.strip().splitlines()
+                out["review"] = "failed"
+                for row in group["members"]:
+                    members[str(row["key"])].update(state="failed", error=lines[-1] if lines else "review ref not confirmed")
+                failed = True
+                continue
+            out["review"] = "pushed"
+        for row in group["members"]:
+            m = members[str(row["key"])]
+            m["state"] = "already_published" if out["review"] == "already_on_remote" and \
+                m["head_state"] == "already_on_remote" else "published"
+    listed = [members[k] for k in sorted(members)]
+    complete = all(m["state"] in ("published", "already_published") for m in listed)
+    landed_any = any(m["state"] in ("published", "already_published") or m["head_state"] == "pushed" for m in listed)
+    code = PUBLISH_EXIT_OK if complete else (PUBLISH_EXIT_PARTIAL if landed_any else PUBLISH_EXIT_FAILED)
+    done = [m["key"] for m in listed if m["state"] in ("published", "already_published")]
+    receipt = {"id": f"gr:{full}", "ref": canonical, "complete": complete, "exit": code, "members": listed,
+               "remotes": remotes, "refused": None,
+               "next": None if complete else f"gr2 review publish {next_steps._shown(str(workspace))} gr:{full}" + (
+                   f"   # resumes; {', '.join(map(str, done))} already published" if done else "   # reruns")}
+    return code, receipt
 
 
 def receive_review_commit(workspace: Path, commit: str, remote: str,

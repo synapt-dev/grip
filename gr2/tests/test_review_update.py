@@ -297,6 +297,24 @@ def test_u16_a_fetch_failure_on_a_later_member_refuses_before_any_member_is_merg
     assert receipt(out)["refused"].startswith("fetch_failed: beta:"), receipt(out)
     assert git(alpha["repo"], "rev-parse", "HEAD") == head, "nothing may be merged anywhere"
 
+def test_u18_a_member_already_mid_merge_refuses_unresolved_merge_before_any_member_is_merged(two):
+    # The read is publish's own preflight (grip._member_preflight), shared, not a second copy in update.
+    move_main(two, "alpha")
+    beta = conflict(two, "beta")
+    git(beta, "fetch", "-q", str(two["members"]["beta"]["remote"]), "main")
+    git(beta, "merge", "--no-edit", "FETCH_HEAD", check=False)
+    alpha = two["members"]["alpha"]["repo"]
+    head, before = git(alpha, "rev-parse", "HEAD"), binds(two)
+    out = update(two)
+    assert out.exit_code == 2, out.output
+    assert receipt(out)["refused"] == "unresolved_merge: beta: shared.txt; resolve or abort the merge in this clone"
+    ws = two["author"].resolve()  # the fixture path holds a space, so the line must be shell-quoted to run as printed
+    assert (f"next: resolve in {shlex.quote(str(beta.resolve()))}, git add, git commit (or git merge --abort), then run "
+            f"gr2 review update {shlex.quote(str(ws))} {receipt(out)['review']}") in out.stderr, out.stderr
+    assert git(alpha, "rev-parse", "HEAD") == head, "nothing may be merged anywhere"
+    assert binds(two) == before and receipt(out)["new_review"] is None
+
+
 def test_u13_stdout_is_one_json_receipt_with_no_flag_and_the_human_lines_go_to_stderr(one):
     move_main(one, "alpha")
     out = update(one)

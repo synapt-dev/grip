@@ -2157,13 +2157,18 @@ def _refuse_undeclared_gitlinks(root: Path, members: list[dict[str, str]]) -> No
     asked, so it answers offline too. The advice carries -f because plain `git rm --cached` refuses a
     freshly staged gitlink ("staged content different from both the file and the HEAD"); with
     --cached it touches only the index, and the nested repository stays on disk."""
+    lines = _undeclared_gitlink_lines(root, members)
+    if lines:
+        raise NativeStoreRefusal("\n".join(lines), 3)
+
+
+def _undeclared_gitlink_lines(root: Path, members: list[dict[str, str]]) -> list[str]:
+    """One refusal line per root-index gitlink that no member declares; `check` raises them, `status` prints them."""
     declared = {str(PurePosixPath(member["path"])) for member in members}   # the index spells `./a` and `a/` as `a`
     stray = sorted(path for path in store_hooks._index_gitlinks(root, None) if path not in declared)
-    if stray:
-        lines = [f"undeclared gitlink {path!r} in the root index: grip.toml has no member at that path; "
-                 f"declare it as a member, or remove it from the index with `git rm --cached -f -- {shlex.quote(path)}`"
-                 for path in stray]
-        raise NativeStoreRefusal("\n".join(lines), 3)
+    return [f"undeclared gitlink {path!r} in the root index: grip.toml has no member at that path; "
+            f"declare it as a member, or remove it from the index with `git rm --cached -f -- {shlex.quote(path)}`"
+            for path in stray]
 
 
 def _layers_carry_pin(root: Path, member: dict[str, str]) -> bool:
@@ -2584,7 +2589,8 @@ def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[
     if root_read.returncode:
         raise RuntimeError(root_read.stderr.strip() or "git command failed")
     porcelain = root_read.stdout.splitlines()
-    return rows, {"state": "dirty" if porcelain else "clean", "porcelain": porcelain}
+    return rows, {"state": "dirty" if porcelain else "clean", "porcelain": porcelain,
+                  "undeclared": _undeclared_gitlink_lines(root, members)}
 
 
 def _apply_layer(path: Path, member: dict[str, str], number: int, layer: bytes, done: list[dict[str, str]]) -> None:
@@ -3192,6 +3198,12 @@ def grip_status_cmd(
                 err=True,
             )
         raise typer.Exit(code=4)
+    # An undeclared gitlink in the root index is the refusal `check` gives (exit 3), said after the
+    # table. It is a measured local fact, so it outranks 5 (a member that could not be measured).
+    if root_status["undeclared"]:
+        for line in root_status["undeclared"]:
+            typer.echo(line, err=True)
+        raise typer.Exit(code=3)
     if any(member["state"] == "cannot-measure" for member in members):
         raise typer.Exit(code=5)
 

@@ -195,13 +195,15 @@ def _context(workspace: Path, review_id: str, member_dirs: dict[str, Path] | Non
             raise ApprovalRefused(f"head_not_fetched: {m['key']}",
                                   next_steps.head_not_fetched(str(repo), m["remote"], m["head"], str(workspace),
                                                               "gr:" + rid)) from None
-        _refuse_moved_base(workspace, m["key"], m["remote"], m["base"])
         actual_tree = _git(repo, "rev-parse", f"{m['head']}^{{tree}}")
         tree = measured[m["key"]].get("head_tree", actual_tree)
         if actual_tree != tree:
             raise ApprovalRefused(f"approval_head_tree_unmeasurable: {m['key']}")
         authors.update(_git(repo, "log", "--format=%an", f"{m['base']}..{m['head']}").splitlines())
         members.append({"key": m["key"], "remote": m["remote"], "head_commit": m["head"], "head_tree": tree})
+    # Every local refusal comes first; then one remote read per member, before any approval is pushed.
+    for m in view["members"]:
+        _refuse_moved_base(workspace, m["key"], m["remote"], m["base"])
     return {"review_id": "gr:" + rid, "author": author, "members": members}, authors
 
 

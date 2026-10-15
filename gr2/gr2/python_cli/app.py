@@ -17,8 +17,10 @@ from typing import Annotated, List, Mapping, NoReturn, Optional
 import typer
 try:
     from typer._click.core import ParameterSource
+    from typer._click.exceptions import UsageError
 except ImportError:  # Older Typer uses the separately installed Click.
     from click.core import ParameterSource
+    from click.exceptions import UsageError
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 from gr2.prototypes import repo_maintenance_prototype as repo_proto
 
@@ -3710,17 +3712,29 @@ def review_checkout_pr(
         typer.echo(json.dumps(payload, indent=2))
 
 
-def _the_one_review_bind(workspace_root: Path, verb: str = "open") -> str:
+class _ReviewSelectRefused(typer.BadParameter):
+    """The sole-pinned-review selection refused; `refusal` names which way, for a --json reader."""
+
+    def __init__(self, message: str, refusal: str) -> None:
+        super().__init__(message)
+        self.refusal = refusal
+
+
+def _the_one_review_bind(workspace_root: Path, verb: str = "open", call=None) -> str:
     """Select the workspace's sole pinned review, announced on stderr. Refuse zero or
     several binds and name the invoking reader in the remedy."""
-    binds = _review_call(grip.list_review_binds, workspace_root)
+    binds = (call or _review_call)(grip.list_review_binds, workspace_root)
     if not binds:
-        raise typer.BadParameter(f"this workspace has no pinned review to {verb}; make one with `review pin` first, or name the target")
+        raise _ReviewSelectRefused(
+            f"this workspace has no pinned review to {verb}; make one with `review pin` first, or name the target",
+            "no_pinned_review",
+        )
     if len(binds) > 1:
         listing = "; ".join(f"gr:{c} ({when})" for c, when in binds)
-        raise typer.BadParameter(
+        raise _ReviewSelectRefused(
             f"{len(binds)} pinned reviews exist and `{verb}` will not choose between them: {listing}. Name one, "
-            f"for example `review {verb} <root> gr:<sha>`"
+            f"for example `review {verb} <root> gr:<sha>`",
+            "several_pinned_reviews",
         )
     commit = binds[0][0]
     typer.echo(f"gr2: target=gr:{commit} (the only pinned review in this workspace)", err=True)
@@ -4225,6 +4239,33 @@ def _echo_notes(exc: BaseException) -> None:
         typer.echo(note, err=True)
 
 
+_REVIEW_REFUSALS = (grip.GripReviewRefused, grip.GripCorruptError, grip.StoreSetupRefused,
+                    grip.AlphaRootRefused, grip.ReviewStoreAbsent, grip.GripInitError)
+
+
+def _review_refusal(exc: BaseException) -> tuple[str, str, list[str]]:
+    """Name an engine refusal: its code, the sentence after the code, and any remedy lines."""
+    if isinstance(exc, grip.GripReviewRefused):
+        extra = [next_steps.head_already_on_remote()] if exc.refusal == "head_already_on_remote" else []
+        if exc.refusal == "unresolved_merge":  # a member and its unmerged paths, not two values that disagreed
+            return exc.refusal, f"{exc.expected}: {exc.observed}", extra
+        return exc.refusal, f"expected {exc.expected!r}, observed {exc.observed!r}", extra
+    if isinstance(exc, grip.GripCorruptError):
+        return "corrupt", str(exc), []
+    if isinstance(exc, grip.StoreSetupRefused):
+        return "store_init_refused", str(exc), []
+    if isinstance(exc, grip.AlphaRootRefused):
+        return "alpha_root", str(exc), []
+    if isinstance(exc, grip.ReviewStoreAbsent):
+        # A native root where nothing has been bound. Not a setup error, so no remedy that
+        # sends the caller back to the verb they already ran.
+        return "not_bound", str(exc), []
+    # GripInitError: the engine's own message already names what's missing and where
+    # (workspace path included); add the remediation verb rather than re-deriving the
+    # diagnosis, since _validate_grip_repo already did the naming precisely.
+    return "not_initialized", f"{exc} Run `gr2 grip init` to create it.", []
+
+
 def _review_call(fn, *args, **kwargs):
     """Run an engine review function, converting a refusal or corruption into a
     clean nonzero exit (code 2) with real error text on stderr — never a
@@ -4233,44 +4274,24 @@ def _review_call(fn, *args, **kwargs):
     failure surface loudly, not swallowed and not as a Python stack trace."""
     try:
         return fn(*args, **kwargs)
-    except grip.GripReviewRefused as exc:
-        if exc.refusal == "unresolved_merge":  # a member and its unmerged paths, not two values that disagreed
-            typer.echo(f"refused: unresolved_merge: {exc.expected}: {exc.observed}", err=True)
-        else:
-            typer.echo(
-                f"refused: {exc.refusal}: expected {exc.expected!r}, observed {exc.observed!r}",
-                err=True,
-            )
-        if exc.refusal == "head_already_on_remote":
-            typer.echo(next_steps.head_already_on_remote(), err=True)
-        _echo_notes(exc)
-        raise typer.Exit(code=2)
-    except grip.GripCorruptError as exc:
-        typer.echo(f"corrupt: {exc}", err=True)
-        _echo_notes(exc)
-        raise typer.Exit(code=2)
-    except grip.StoreSetupRefused as exc:
-        typer.echo(f"store_init_refused: {exc}", err=True)
-        _echo_notes(exc)
-        raise typer.Exit(code=2)
-    except grip.AlphaRootRefused as exc:
-        typer.echo(f"alpha_root: {exc}", err=True)
-        _echo_notes(exc)
-        raise typer.Exit(code=2)
-    except grip.ReviewStoreAbsent as exc:
-        # A native root where nothing has been bound. Not a setup error, so no remedy that
-        # sends the caller back to the verb they already ran.
-        typer.echo(f"not_bound: {exc}", err=True)
-        _echo_notes(exc)
-        raise typer.Exit(code=2)
-    except grip.GripInitError as exc:
-        # The engine's own message already names what's missing and where
-        # (workspace path included); add the remediation verb rather than
-        # re-deriving the diagnosis, since _validate_grip_repo already did
-        # the naming precisely.
-        typer.echo(f"not_initialized: {exc} Run `gr2 grip init` to create it.", err=True)
-        _echo_notes(exc)
-        raise typer.Exit(code=2)
+    except _REVIEW_REFUSALS as exc:
+        _refuse_text(exc)
+
+
+def _refuse_text(exc: BaseException) -> NoReturn:
+    refusal, message, extra = _review_refusal(exc)
+    prefix = "refused: " if isinstance(exc, grip.GripReviewRefused) else ""
+    typer.echo(f"{prefix}{refusal}: {message}", err=True)
+    for line in extra:
+        typer.echo(line, err=True)
+    _echo_notes(exc)
+    raise typer.Exit(code=2)
+
+
+def _refuse_json(refusal: str, message: str, code: int, notes: list[str] = ()) -> NoReturn:
+    """A --json reader's refusal: one JSON object on stdout naming it, and the same exit code as the text form."""
+    typer.echo(json.dumps({"status": "refused", "refusal": refusal, "message": message, "notes": list(notes)}, indent=2))
+    raise typer.Exit(code=code)
 
 
 _ROW_REQUIRED = ("key", "remote", "base", "head")
@@ -4941,7 +4962,23 @@ def review_show(
                        else f"  merge: {row.get('final')} {str(row.get('merged') or '')[:12]}".rstrip())
 
 
-@review_app.command("verify", cls=ReviewTargetCommand)
+class ReviewVerifyCommand(ReviewTargetCommand):
+    """`review verify`: under --json, a refusal while reading the arguments is a JSON object too."""
+
+    def parse_args(self, ctx, args):
+        try:
+            return super().parse_args(ctx, args)
+        except UsageError as exc:
+            if "--json" not in (args[:args.index("--")] if "--" in args else args):
+                raise
+            _refuse_json("usage", exc.format_message(), exc.exit_code)
+
+
+# Keep the base's name: the root-option partition places a command by its class name.
+ReviewVerifyCommand.__name__ = ReviewVerifyCommand.__qualname__ = ReviewTargetCommand.__name__
+
+
+@review_app.command("verify", cls=ReviewVerifyCommand)
 def review_verify(
     workspace_root: Path,
     commit: Optional[str] = typer.Argument(None, help="The pinned review commit, as gr:<sha> or a bare sha; omitted only when the workspace has exactly one pinned review"),
@@ -4950,9 +4987,20 @@ def review_verify(
 ) -> None:
     """Recompute the review gr commit tree from its own objects; a mismatch is
     corruption, not drift. With no id, selects the workspace's sole pinned review."""
-    if commit is None:
-        commit = _the_one_review_bind(workspace_root.resolve(), "verify")
-    result = _review_call(grip.verify_review_commit, workspace_root.resolve(), _strip_gr_prefix(commit))
+    try:
+        if commit is None:
+            # The engine is called bare here, so its refusal reaches the --json branch below unprinted.
+            commit = _the_one_review_bind(workspace_root.resolve(), "verify", call=lambda fn, *a: fn(*a))
+        result = grip.verify_review_commit(workspace_root.resolve(), _strip_gr_prefix(commit))
+    except _ReviewSelectRefused as exc:
+        if json_output:
+            _refuse_json(exc.refusal, exc.message, exc.exit_code)
+        raise
+    except _REVIEW_REFUSALS as exc:
+        if not json_output:
+            _refuse_text(exc)
+        refusal, message, extra = _review_refusal(exc)
+        _refuse_json(refusal, message, 2, extra + list(getattr(exc, "__notes__", [])))
     if json_output:
         typer.echo(json.dumps(result, indent=2, default=str))
     else:

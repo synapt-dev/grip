@@ -145,10 +145,13 @@ def show_spec(workspace_root: Path, *, json_output: bool) -> str:
     native_path = workspace_root / "grip.toml"
     if not spec_path.exists():
         if not native_path.is_file():
+            from .workspace_guidance import init_unless_inside_workspace, workspace_init_command
+
             raise SystemExit(
                 f"workspace spec not found: {spec_path}\n"
-                f"and no {native_path.name} in {workspace_root}; run `gr2 workspace init <path>` for a workspace "
-                f"spec or `gr2 store init` for a native root"
+                f"and no {native_path.name} in {workspace_root}; " + init_unless_inside_workspace(
+                    workspace_root,
+                    f"run {workspace_init_command(workspace_root)} for a workspace spec or `gr2 store init` for a native root")
             )
         try:
             text = native_path.read_text(encoding="utf-8")

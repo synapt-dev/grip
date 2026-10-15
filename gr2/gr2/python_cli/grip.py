@@ -16,7 +16,7 @@ from urllib.parse import parse_qsl, urlsplit
 from . import gitops, next_steps
 from .gitops import git
 from .layout import GRIP_DIR, LANE_CONTROL_PREFIX, LANE_VENV, grip_dir as _layout_grip_dir
-from .workspace_guidance import missing_gr2_workspace_guidance
+from .workspace_guidance import init_unless_inside_workspace
 
 
 # ---------------------------------------------------------------------------
@@ -1984,7 +1984,7 @@ def _validate_grip_repo(workspace: Path) -> None:
     if not grip_dir.exists():
         raise GripInitError(
             f"No .grip/ directory at {workspace}. "
-            f"{missing_gr2_workspace_guidance(workspace, 'Run `gr2 store init .` first.')}"
+            f"{init_unless_inside_workspace(workspace, 'Run `gr2 store init .` first.')}"
         )
     git_dir = grip_dir / ".git"
     if not git_dir.exists():

@@ -71,6 +71,13 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   does not hold the pin is told to push a branch holding it), and, in compat mode only, the way to keep it
   unpushed: `mode = "full"` as the first line of the root's `grip.toml`, where the record carries it as a layer.
   A pin some remote branch already holds keeps its own message and gets no push line.
+
+- **`gr2`: `gr2 add` skips untracked Python bytecode by default.** In a repository that ignores nothing, `add .`
+  used to stage `__pycache__/` directories and `*.pyc` / `*.pyo` files alongside the source. It now leaves untracked
+  bytecode out, in the single-repo and `--lane` forms alike, and prints one line with the count and an example path.
+  `--include-bytecode` stages it as before. Git's own ignore rules still apply first, and bytecode that is already
+  tracked stages as git stages it, a change or a delete.
+
 - **`gr2`: `review merge` refuses `approvals_unset` when nobody said how many approvals it needs.**
   Before, with no `[approvals] required` in `grip.toml` and no `--approvals`, the merge required zero and
   merged on no approvals without saying so. Now it refuses, and the next step names both fixes: pass
@@ -78,6 +85,7 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   An explicit zero still merges, and the receipt's `approvals` carries `skipped: true` and the `source` of the
   count, and stderr prints `approvals: skipped, 0 required by <source>`. **Scripts that ran `review merge`
   without either setting must add one.**
+
 - **`gr2`: a multi-member review merges only on a passing `set` record, and the person merging cannot lower that.**
   `gr2 review merge` on a review over several members now refuses `--no-set` (`set_required`) and any `--check` name
   other than `test` and `set` (`check_not_configured`), before anything is read from a remote, so a check recorded

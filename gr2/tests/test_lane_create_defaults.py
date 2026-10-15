@@ -233,6 +233,20 @@ def test_add_lane_stages_every_repo_of_the_entered_lane_and_says_where_it_read_t
     assert "alpha: staged 1 path(s): edit.txt" in res.output and "beta: staged 1 path(s): edit.txt" in res.output
 
 
+def test_add_lane_skips_untracked_bytecode_in_every_repo(tmp_path: Path, monkeypatch) -> None:
+    """The lane path shares stage_files, and each repo names its own skip."""
+    ws, lane_root = _entered_lane(tmp_path)
+    for repo in ("alpha", "beta"):
+        (lane_root / "repos" / repo / "__pycache__").mkdir()
+        (lane_root / "repos" / repo / "__pycache__" / "edit.cpython-313.pyc").write_bytes(b"\x00bytecode")
+    monkeypatch.chdir(ws)
+    res = runner.invoke(gr2_app.app, ["add", "--lane", "."])
+    assert res.exit_code == 0, res.output
+    assert _staged(lane_root / "repos" / "alpha") == ["edit.txt"] and _staged(lane_root / "repos" / "beta") == ["edit.txt"]
+    for repo in ("alpha", "beta"):
+        assert f"{repo}: Skipped 1 untracked bytecode path(s)" in res.output, res.output
+
+
 def test_add_dot_at_the_workspace_root_with_a_lane_entered_refuses_and_stages_nothing(tmp_path: Path, monkeypatch) -> None:
     """Goes red if the refusal is dropped (the root's own repository would be staged) or if it names only one way out."""
     ws, lane_root = _entered_lane(tmp_path)

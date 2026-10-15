@@ -169,6 +169,7 @@ Stage paths in one repository, including tracked deletions.
 - `<paths>`
 - `--repo-path`: Repo to operate on (defaults to cwd; gr2 verbs are single-repo)
 - `--lane`: Stage in EVERY repo of the entered lane (the workspace, unit and lane are read from where you are)
+- `--include-bytecode`: Also stage untracked Python bytecode (__pycache__/, *.pyc, *.pyo), which add skips by default
 
 ### gr2 commit
 

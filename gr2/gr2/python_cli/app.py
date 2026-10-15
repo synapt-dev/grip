@@ -5726,6 +5726,7 @@ def check_show(
 
     A `set` record written by `check set` names the review it was run for. Without --review the answer is about the
     head alone; with it, a `set` record for another review reads as absent (reason required_check_stale)."""
+    repo = defaults.toplevel(repo)  # the same repo `check run` recorded, so a subdirectory reads the same snapshot
     try:
         remote, head = _resolve_remote_head(repo, remote, head)
     except defaults.Unresolved as exc:

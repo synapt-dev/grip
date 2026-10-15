@@ -29,6 +29,12 @@ def own_repo(path: Path) -> bool:
     return top is not None and Path(top).resolve() == path.resolve()
 
 
+def toplevel(path: Path) -> Path:
+    """The top level of the repository enclosing `path`, or `path` unchanged when it is not inside one."""
+    top = _git(path, "rev-parse", "--show-toplevel")
+    return Path(top) if top else path
+
+
 def current_head(path: Path) -> str | None:
     """The member clone's HEAD commit, or None when the path is not its own repository."""
     return _git(path, "rev-parse", "--verify", "HEAD^{commit}") if own_repo(path) else None

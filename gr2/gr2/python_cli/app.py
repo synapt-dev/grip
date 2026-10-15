@@ -1856,8 +1856,22 @@ def _add_in_lane(paths: list[str], include_bytecode: bool = False) -> None:
     ctx_mod.announce({"root": root, "unit": unit, "lane": lane_item}, root=root, quiet=ctx_mod.quiet_from_env())
     workspace_root = Path(root.value).resolve()
     doc = lane_proto.load_lane_doc(workspace_root, unit.value, lane_item.value)
+    targets = commit_ops._lane_repo_targets(workspace_root, unit.value, lane_item.value, doc)
+    here = Path.cwd().resolve()
+    for key, repo_root in targets:
+        top = repo_root.resolve()
+        if here != top and here.is_relative_to(top):
+            # The paths are read at the root of every lane repo; typed from below one, a relative path means a
+            # different file (or none) there. Refuse before staging anything rather than stage the wrong one.
+            typer.echo(
+                f"Error: {here} is a subdirectory of the lane repo {key} ({top}); --lane reads each path from the "
+                "root of every lane repo, not from here. Nothing was staged. To stage here, drop --lane (or pass "
+                f"--repo-path {top}); to stage in every lane repo, run from {top} with paths from that root.",
+                err=True,
+            )
+            raise typer.Exit(code=2)
     failed = False
-    for key, repo_root in commit_ops._lane_repo_targets(workspace_root, unit.value, lane_item.value, doc):
+    for key, repo_root in targets:
         try:
             result = add_ops.stage_files(repo_root, paths, include_bytecode=include_bytecode)
         except (add_ops.AddError, gitops.OutsideRepoError, gitops.GitMissingError) as exc:

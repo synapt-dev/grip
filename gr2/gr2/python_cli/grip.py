@@ -1716,7 +1716,7 @@ def _fetch_received_heads(workspace: Path, commit: str, source: str) -> list[dic
         if git(repo, "cat-file", "-e", f"{head}^{{commit}}").returncode == 0:
             rows.append({**row, "status": "already_present"})
             continue
-        proc = git(repo, "fetch", "--no-tags", "--no-write-fetch-head", source, head, timeout=60)
+        proc = git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--", source, head, timeout=60)
         if proc.returncode == 0 and git(repo, "cat-file", "-e", f"{head}^{{commit}}").returncode == 0:
             rows.append({**row, "status": "fetched"})
         else:

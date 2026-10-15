@@ -4263,7 +4263,10 @@ def review_exit_gr(
 
 
 def _strip_gr_prefix(commit: str) -> str:
-    """A review commit is addressed as ``gr:<sha>``; accept a bare sha too."""
+    """A review commit is addressed as ``gr:<sha>``; accept a bare sha too. A NUL byte is refused
+    here, before the id reaches git or the filesystem (where it would raise ValueError)."""
+    if "\x00" in commit:
+        _refuse(f"invalid_id: review id {commit!r} contains a NUL byte; give a gr:<sha> review id")
     return commit[3:] if commit.startswith("gr:") else commit
 
 
@@ -5242,8 +5245,7 @@ def review_rebind_cmd(
             out_dir.resolve(), allow_public_ref=allow_public_ref,
         )
     except review_rebind.RebindRefused as exc:
-        typer.echo(f"refused: {exc}", err=True)
-        raise typer.Exit(code=2)
+        _refuse(str(exc))
     if json_output:
         typer.echo(json.dumps({
             "outcome": result.outcome,

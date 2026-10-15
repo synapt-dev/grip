@@ -346,6 +346,12 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
     except (grip.GripInitError, grip.GripCorruptError, RuntimeError, OSError, ValueError, KeyError,
             subprocess.SubprocessError) as exc:
         return _unmeasured(review_id, into, feature, f"bind_unreadable: {type(exc).__name__}: {exc}")
+    credentialed = sorted(m["key"] for m in view["members"] if grip.url_has_credentials(m["remote"]))
+    if credentialed:  # every row, advice line and next step prints the remote, so refuse before any is built
+        return EXIT_REFUSED, {"id": f"gr:{review_id}", "into": into, "feature": feature, "exit": EXIT_REFUSED,
+                              "refused": f"remote_credentials: {', '.join(credentialed)}: the recorded remote cannot "
+                                         "be parsed or carries URL userinfo; pin again from a remote without it and "
+                                         "use a credential helper", "members": []}
     rows: list[dict] = []
     root = Path(workspace).resolve()
     try:

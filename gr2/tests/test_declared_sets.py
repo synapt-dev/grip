@@ -106,7 +106,7 @@ def world(tmp_path, monkeypatch):
 
 
 def merge(w, name):
-    return merge_gate.review_merge(w["author"], w["members"][name]["review"], into="main", feature="feat")
+    return merge_gate.review_merge(w["author"], w["members"][name]["review"], into="main", feature="feat", required_approvals=0)
 
 
 def untouched(w, names=SET):

@@ -107,7 +107,7 @@ def test_R1_a_merge_resolved_review_set_checks_and_merges(tmp_path, monkeypatch)
     assert all(_is_merge(m["repo"], m["head"]) for m in w["members"].values()), "fixture must give merge heads"
     record = set_check.run_set_check(w["author"], w["review"], "set", PASS)
     assert record["result"] == "pass", record
-    code, receipt = merge_gate.review_merge(w["author"], w["review"], feature="feat")
+    code, receipt = merge_gate.review_merge(w["author"], w["review"], feature="feat", required_approvals=0)
     assert code == merge_gate.EXIT_MERGED, receipt
     for m in w["members"].values():
         tip = git(m["remote"], "rev-parse", "main")

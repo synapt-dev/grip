@@ -28,7 +28,7 @@ def show(author, review):
 
 def test_a_merged_two_member_set_shows_commit_records_and_no_refusal(slice2):
     record_set(slice2)  # a review over several members merges only on a passing set
-    code, _ = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    code, _ = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", required_approvals=0)
     assert code == merge_gate.EXIT_MERGED
     view = show(slice2["author"], slice2["review"])
     assert view["merge_runs"] == 1
@@ -78,12 +78,12 @@ def test_a_review_never_merged_shows_merge_null(world):
 
 def test_a_partial_run_is_stored_with_exit_4(slice2):
     record_set(slice2)  # a review over several members merges only on a passing set
-    code, _ = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    code, _ = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", required_approvals=0)
     assert code == merge_gate.EXIT_MERGED
     beta = slice2["members"]["beta"]
     git(beta["remote"], "update-ref", "refs/heads/main", beta["base"])
     move(beta)
-    code, _ = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    code, _ = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", required_approvals=0)
     assert code == merge_gate.EXIT_PARTIAL
     view = show(slice2["author"], slice2["review"])
     assert view["merge_runs"] == 2

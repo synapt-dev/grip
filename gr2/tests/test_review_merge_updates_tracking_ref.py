@@ -59,7 +59,7 @@ def test_a_tracking_fetch_that_fails_after_the_push_is_named_in_the_receipt_and_
     lock.parent.mkdir(parents=True, exist_ok=True)
     lock.write_text("")
     try:
-        result = runner.invoke(app, ["review", "merge", str(world["author"]), world["review"],
+        result = runner.invoke(app, ["review", "merge", "--approvals", "0", str(world["author"]), world["review"],
                                      "--into", "main", "--from", "feat"])
     finally:
         lock.unlink()
@@ -123,7 +123,7 @@ def test_a_clone_whose_remotes_name_another_url_is_listed_never_passed_over(worl
     _respell_origin(world, str(other))
     check(world)
 
-    result = runner.invoke(app, ["review", "merge", str(world["author"]), world["review"],
+    result = runner.invoke(app, ["review", "merge", "--approvals", "0", str(world["author"]), world["review"],
                                  "--into", "main", "--from", "feat"])
 
     assert result.exit_code == 0, result.output

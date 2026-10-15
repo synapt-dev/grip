@@ -148,7 +148,7 @@ The order matters, because each step refuses until the one before it is done:
 4. `gr2 review publish` the review to each member remote.
 5. Each reviewer runs `gr2 review receive` in their own workspace, then `gr2 review stamp`. The author cannot approve their own review.
 6. `gr2 check run` at the exact reviewed head (and `gr2 check set` when the review covers several members), then `gr2 check show` to read what is recorded.
-7. `gr2 review merge`: every member passes its preflight or nothing is pushed.
+7. `gr2 review merge --approvals N`: every member passes its preflight or nothing is pushed. Say how many approvals the merge needs: `--approvals N`, or `[approvals] required = N` in the root's `grip.toml`. With neither it refuses `approvals_unset`; `0` merges without approvals and prints that it skipped them.
 
 To inspect members, run `gr2 store status` (`--json` for a program), not plain git in each one: it answers, per member and in one line, the branch, head, pin, commits ahead of and behind its upstream, and the number of uncommitted entries.
 

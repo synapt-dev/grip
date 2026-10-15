@@ -472,11 +472,12 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
     if not any(r["refused"] for r in rows):
         from . import approvals
         try:
-            required = approvals.required_approvals(root, required_approvals)
-            approval_receipt = {"required": required}
+            policy = approvals.approval_policy(root, required_approvals)
+            required = policy["required"]
+            approval_receipt = dict(policy)
             if required:
                 approval_receipt = approvals.count_approvals(root, view["id"])
-                approval_receipt["required"] = required
+                approval_receipt.update(policy)
                 if approval_receipt["count"] < required:
                     raise approvals.ApprovalRefused(f"approvals_insufficient: {approval_receipt['count']} of {required}")
             else:

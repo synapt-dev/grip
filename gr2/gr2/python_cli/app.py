@@ -4984,7 +4984,7 @@ def review_merge(
     feature: Optional[str] = typer.Option(None, "--from", help="Feature branch; default: the members' current branch"),
     check: Optional[List[str]] = typer.Option(None, "--check", help="Required exact-head check name (repeatable); default `test`, and `test` plus `set` for a review over several members, where only `test` and `set` are accepted and `set` is always required"),
     no_set: bool = typer.Option(False, "--no-set", help="Single-member reviews only: a review over several members always requires `set` and refuses this flag"),
-    approval_count: Optional[int] = typer.Option(None, "--approvals", help="Required distinct approvers; may raise the workspace approvals.required floor, default 0"),
+    approval_count: Optional[int] = typer.Option(None, "--approvals", help="Required distinct approvers; may raise the grip.toml [approvals] required floor. With neither set the merge refuses approvals_unset; 0 merges without approvals and says so"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Merge a pinned review into its members' remotes: preflight every member, merge nothing if any member fails it.
@@ -5021,6 +5021,9 @@ def review_merge(
                                             required_checks=tuple(check) if check else None,
                                             required_approvals=approval_count, no_set=no_set)
     typer.echo(json.dumps(receipt))
+    approval = receipt.get("approvals") or {}
+    if approval.get("skipped"):
+        typer.echo(f"approvals: skipped, 0 required by {approval.get('source')}", err=True)
     for stale in receipt.get("tracking_stale", []):
         typer.echo(f"{stale['member']}: merged on its remote, but this clone's tracking ref still names the old tip "
                    f"({stale.get('reason')}), so `store commit` would record the pre-merge pin; run: {stale['command']}",

@@ -65,6 +65,12 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Changed
 
+- **`gr2`: a compat `store commit` refused for an unpushed pin names the next step.** When no remote branch holds
+  a member's pin, the refusal ("... push it first", exit 3, unchanged) now ends with the push that covers it,
+  `push it: git -C <member> push -u <remote> <branch>`, shell-quoted so it runs as printed (a member whose branch
+  does not hold the pin is told to push a branch holding it), and, in compat mode only, the way to keep it
+  unpushed: `mode = "full"` as the first line of the root's `grip.toml`, where the record carries it as a layer.
+  A pin some remote branch already holds keeps its own message and gets no push line.
 - **`gr2`: `review merge` refuses `approvals_unset` when nobody said how many approvals it needs.**
   Before, with no `[approvals] required` in `grip.toml` and no `--approvals`, the merge required zero and
   merged on no approvals without saying so. Now it refuses, and the next step names both fixes: pass

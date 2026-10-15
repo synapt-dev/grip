@@ -23,6 +23,7 @@ from .check_records import JSON_SHAPES as CHECK_JSON_SHAPES
 from . import gitops
 from . import grip as grip_mod
 from . import names as name_rules
+from . import next_steps
 from . import store_hooks
 from . import workspace_mode
 from .gitops import git, repo_dirty
@@ -1505,12 +1506,24 @@ def _remote_branches_holding(path: Path, sha: str) -> list[str]:
     return [name for name in held.stdout.split() if held.returncode == 0 and not name.endswith("/HEAD")]
 
 
-def _not_on_upstream(name: str, path: Path, sha: str, upstream: str) -> str:
+def _unpushed_steps(root: Path, path: Path, sha: str, upstream: str) -> str:
+    """The next steps after "push it first", for a pin no remote branch holds (run 4: two operators met the bare
+    line and neither learned what to push or that full mode keeps it unpushed). The push names the member's branch
+    only when that branch contains the pin; `store check` asks about a recorded pin the HEAD may have left."""
+    on = _store_git(path, "branch", "--show-current", check=False).stdout.strip() or None
+    if on and _store_git(path, "merge-base", "--is-ancestor", sha, "HEAD", check=False).returncode:
+        on = None
+    compat = _workspace_mode(_grip_document(root)) != "full"
+    return next_steps._unpushed_pin(str(path), sha, upstream.partition("/")[0], on, str(root / "grip.toml"), compat)
+
+
+def _not_on_upstream(root: Path, name: str, path: Path, sha: str, upstream: str) -> str:
     """The refusal for a pin its upstream does not reach. "push it first" is the advice only for a pin no remote
-    branch holds; a pushed pin is named where it is, since pushing again would change nothing."""
+    branch holds, and it names the steps; a pushed pin is named where it is, since pushing again would change
+    nothing."""
     elsewhere = _remote_branches_holding(path, sha)
     if not elsewhere:
-        return f"{name} pin {sha} is not on {upstream}; push it first"
+        return f"{name} pin {sha} is not on {upstream}; push it first\n{_unpushed_steps(root, path, sha, upstream)}"
     return (f"{name} pin {sha} is on {', '.join(elsewhere)} but not on {upstream}; check out that branch in the "
             f"member so its upstream covers the pin, then commit again")
 
@@ -1547,7 +1560,8 @@ def _resolve_member_pin(
     except NativeStoreRefusal as exc:
         if moved is not None and exc.code == 3:
             elsewhere = _remote_branches_holding(path, sha)
-            where = f"the pin is on {', '.join(elsewhere)}" if elsewhere else "push it first"
+            where = (f"the pin is on {', '.join(elsewhere)}" if elsewhere else
+                     f"push it first\n{_unpushed_steps(root, path, sha, moved['upstream'])}")
             raise NativeStoreRefusal(
                 f"{member['name']} pin {sha} is not on {moved['upstream']} (it is on {on}) or on its recorded "
                 f"upstream {member['upstream']}; {where}", 3) from None
@@ -1610,7 +1624,7 @@ def _member_coverage(
             f"{member['name']} pin {sha} landed on {upstream} under a different commit (squash or rebase); "
             f"re-pin to the tip of {upstream}, do not push it", 3)
     if answer != COVERAGE_REACHABLE:
-        raise NativeStoreRefusal(_not_on_upstream(member["name"], path, sha, upstream), 3)
+        raise NativeStoreRefusal(_not_on_upstream(root, member["name"], path, sha, upstream), 3)
 
 
 def _layer_for(root: Path, member: dict[str, str], path: Path, head: str) -> list[bytes]:

@@ -4298,7 +4298,7 @@ def review_bind(
     from_range: Optional[Path] = typer.Option(None, "--from-range", help="A frozen range.patch (freeze-public-range.sh output). Carries the range so `review open` reconstructs, deriving the head-tree by applying it over --base in a throwaway clone — NO author clone that holds the head is needed. Exclusive with --source."),
     title: str = typer.Option("", "--title", help="Platform title text (NORM-hashed into the object)"),
     body: str = typer.Option("", "--body", help="Platform body text (NORM-hashed into the object)"),
-    rows_json: Optional[Path] = typer.Option(None, "--rows-json", help="A JSON file with a list of row objects (key/remote/base/head, optional path/ref/title/body/source); pins ALL rows into ONE gr commit. Exclusive with the single-row flags."),
+    rows_json: Optional[Path] = typer.Option(None, "--rows-json", help="A JSON file with a list of row objects (key/remote/base/head, optional path/ref/title/body; source or range is optional on a single row but required on every row when the file holds more than one); pins ALL rows into ONE gr commit. Exclusive with the single-row flags."),
     ratified: Optional[str] = typer.Option(None, "--ratified", help="Named ratify receipt id: the sanctioned fix-forward when a --head is already on the remote"),
     members: Optional[str] = typer.Option(None, "--members", help="With no rows given: pin only these members (comma-separated names)"),
 ) -> None:

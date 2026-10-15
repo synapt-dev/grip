@@ -238,7 +238,7 @@ Pin a review gr commit for one or more repository rows; print ``gr:<commit>``.
 - `--from-range`: A frozen range.patch (freeze-public-range.sh output). Carries the range so `review open` reconstructs, deriving the head-tree by applying it over --base in a throwaway clone — NO author clone that holds the head is needed. Exclusive with --source.
 - `--title`: Platform title text (NORM-hashed into the object)
 - `--body`: Platform body text (NORM-hashed into the object)
-- `--rows-json`: A JSON file with a list of row objects (key/remote/base/head, optional path/ref/title/body/source); pins ALL rows into ONE gr commit. Exclusive with the single-row flags.
+- `--rows-json`: A JSON file with a list of row objects (key/remote/base/head, optional path/ref/title/body; source or range is optional on a single row but required on every row when the file holds more than one); pins ALL rows into ONE gr commit. Exclusive with the single-row flags.
 - `--ratified`: Named ratify receipt id: the sanctioned fix-forward when a --head is already on the remote
 - `--members`: With no rows given: pin only these members (comma-separated names)
 

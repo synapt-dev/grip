@@ -3174,9 +3174,13 @@ def lane_exit(
         exit_results = _run_lane_stage(workspace_root, owner_unit, lane_name, "on_exit", manual_hooks=manual_hooks)
     except SystemExit as exc:
         # A stash or an on_exit hook refused after earlier work may already have been stashed:
-        # the lane stays entered and the receipt still names every stash this call made.
+        # the lane stays entered and the receipt still names every stash this call made, and every
+        # member that still holds uncommitted work.
         typer.echo(f"refused: {exc}; the lane {owner_unit}/{lane_name} is still entered", err=True)
-        _refuse_exit_json("exit_step_failed", owner_unit, lane_name, [], stashed)
+        still_dirty = [(name, path) for name, path in lane_repos if path.exists() and repo_dirty(path)]
+        for name, path in still_dirty:
+            typer.echo(f"still holds uncommitted work: {name} ({path})", err=True)
+        _refuse_exit_json("exit_step_failed", owner_unit, lane_name, still_dirty, stashed)
     # An on_exit hook runs in the lane and can leave work of its own; exit does not hide that either.
     hook_dirty = [(name, path) for name, path in lane_repos if path.exists() and repo_dirty(path)]
     if hook_dirty:

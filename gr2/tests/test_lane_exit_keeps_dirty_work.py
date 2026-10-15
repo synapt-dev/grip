@@ -16,6 +16,7 @@ import pytest
 
 from gr2.python_cli import app as gr2_app
 from tests.conftest import make_cli_runner
+from gr2.python_cli.consent import write_consent
 from tests.test_lane_enter_hook_warnings import _workspace_with_enter_hook
 
 runner = make_cli_runner()
@@ -215,3 +216,55 @@ def test_the_exit_event_carries_the_same_stash_rows_as_the_output(tmp_path: Path
     [event] = events
     assert event["payload"]["stashed"] == rows and rows[0]["stash"], event
     assert event["payload"]["stashed_repos"] == ["app"]
+
+
+def _two_member_lane_second_stash_refused(tmp_path: Path):
+    """Lane with members app and web, both dirty; web's git dir holds an index.lock, so its
+    `git stash` is a real git refusal after app's stash has already been made."""
+    ws, _, _ = _workspace_with_enter_hook(tmp_path, command="exit 0", stage_key="on_exit")
+    origin = tmp_path / "web.git"
+    _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    src = ws / "repos" / "web"
+    _git(tmp_path, "clone", "-q", str(origin), str(src))
+    _git(src, "config", "user.email", "t@e.invalid")
+    _git(src, "config", "user.name", "t")
+    (src / "w.txt").write_text("base\n")
+    _git(src, "add", ".")
+    _git(src, "commit", "-qm", "w")
+    _git(src, "push", "-q", "origin", "main")
+    write_consent(ws, "repos/web", src)
+    spec = ws / ".grip" / "workspace_spec.toml"
+    text = spec.read_text().replace(
+        "[[units]]", f'[[repos]]\nname = "web"\npath = "repos/web"\nurl = "{origin}"\n[[units]]', 1,
+    ).replace('repos = ["app"]', 'repos = ["app", "web"]')
+    spec.write_text(text)
+    for argv in (["lane", "create", str(ws), "atlas", "x", "--repos", "app,web", "--branch", "app=feat/x,web=feat/x"],
+                 ["lane", "enter", str(ws), "atlas", "x", "--actor", "agent:s"]):
+        result = runner.invoke(gr2_app.app, argv)
+        assert result.exit_code == 0, result.output
+    app_repo = gr2_app._lane_repo_root(ws, "atlas", "x", "app")
+    web_repo = gr2_app._lane_repo_root(ws, "atlas", "x", "web")
+    (app_repo / "f.txt").write_text("app edit\n")
+    (web_repo / "w.txt").write_text("web edit\n")
+    (Path(_git(web_repo, "rev-parse", "--absolute-git-dir")) / "index.lock").write_text("")
+    return ws, app_repo, web_repo, _exit(ws, "--dirty", "stash")
+
+
+def test_a_real_stash_refusal_on_the_second_member_names_the_first_members_stash(tmp_path: Path) -> None:
+    ws, app_repo, web_repo, result = _two_member_lane_second_stash_refused(tmp_path)
+    assert result.exit_code == 2, result.output
+    payload = json.loads(result.stdout)
+    assert payload["refusal"] == "exit_step_failed" and payload["current_lane"] == "x", payload
+    [row] = payload["stashed"]
+    assert row["repo"] == "app" and row["stash"] == _git(app_repo, "rev-parse", "stash@{0}"), payload
+    assert _git(app_repo, "status", "--porcelain") == ""
+    assert (web_repo / "w.txt").read_text() == "web edit\n" and _git(web_repo, "stash", "list") == ""
+    assert _current_lane(ws) == "x"
+
+
+def test_a_real_stash_refusal_names_every_member_still_holding_work(tmp_path: Path) -> None:
+    ws, app_repo, web_repo, result = _two_member_lane_second_stash_refused(tmp_path)
+    assert result.exit_code == 2, result.output
+    payload = json.loads(result.stdout)
+    assert payload["dirty"] == [{"repo": "web", "path": str(web_repo)}], payload
+    assert f"still holds uncommitted work: web ({web_repo})" in result.stderr, result.stderr

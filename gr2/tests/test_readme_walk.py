@@ -22,7 +22,7 @@ runner = CliRunner()
 
 # A walk line that refuses today, by a defect the README names under "Not there yet": verb -> the refusal it prints.
 # When the defect is fixed this row goes red, and the README's note and this entry go together.
-KNOWN_REFUSALS = {"lane remove": "lane_has_unlisted_content"}
+KNOWN_REFUSALS: dict[str, str] = {}
 
 
 def _section() -> str:
@@ -114,18 +114,22 @@ def test_the_readme_walk_runs_in_order_and_prints_what_it_shows(ws: Path, tmp_pa
             lane_repo = Path(lane["lane create"].splitlines()[1].split(": ", 1)[1])
             (lane_repo / "CHANGE").write_text("my change\n")
         ran += _run_block(body, ws, monkeypatch, lane)
+        if index == 1:
+            shown = [line.replace("~/ws", str(ws)) for line in printed[0].strip().splitlines()]
+            assert lane["lane create"].strip().splitlines() == shown, (
+                "the README's printed block must be what `lane create` prints"
+            )
+            for line in shown:
+                path = Path(line.split(": ", 1)[-1])
+                assert path.exists(), f"the README names a path that does not exist after `lane create`: {path}"
 
     # Every gr2 line in the section ran, whatever its fence says: a block re-fenced as ```sh would otherwise drop out.
     gr2_lines = sum(1 for _, body in blocks for line in body.splitlines() if line.strip().startswith("gr2 "))
     assert ran == gr2_lines, f"ran {ran} of the section's {gr2_lines} gr2 lines"
-
-    shown = [line.replace("~/ws", str(ws)) for line in printed[0].strip().splitlines()]
-    assert lane["lane create"].strip().splitlines() == shown, (
-        "the README's printed block must be what `lane create` prints"
-    )
+    # The walk's last line, `lane remove`, ends the lane: its record and its clones are gone.
     for line in shown:
         path = Path(line.split(": ", 1)[-1])
-        assert path.exists(), f"the README names a path that does not exist after the walk: {path}"
+        assert not path.exists(), f"`lane remove` left a path the README says it removes: {path}"
 
 
 def test_workspace_status_names_each_declared_repo_once_after_materialize(ws: Path, monkeypatch) -> None:

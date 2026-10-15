@@ -327,3 +327,86 @@ def test_a_lane_record_without_a_lane_name_is_named_and_kept(tmp_path: Path) -> 
 
 def test_an_empty_lane_record_is_named_and_neither_record_nor_clone_is_removed(tmp_path: Path) -> None:
     _broken_record_rows(*_two_lanes_with_a_broken_record(tmp_path, lambda _: ""))
+
+
+def _native_lane(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
+    """The README walk up to `lane create` on a workspace with a snapshot store: the lane root
+    agents/default/lanes/x is itself a store checkout. Returns (ws, lane root)."""
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home" / ".gitconfig").write_text("[user]\n\tname = t\n\temail = t@e.invalid\n")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    remote = tmp_path / "app.git"
+    _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(remote))
+    _git(tmp_path, "clone", "-q", str(remote), str(ws / "app"))
+    _git(ws / "app", "checkout", "-q", "-B", "main")
+    (ws / "app" / "README").write_text("app\n")
+    _git(ws / "app", "add", "README")
+    _git(ws / "app", "commit", "-qm", "init")
+    _git(ws / "app", "push", "-q", "origin", "main")
+    monkeypatch.chdir(ws)
+    for argv in (["workspace", "init", str(ws)], ["workspace", "materialize", str(ws), "--yes"],
+                 ["store", "init", str(ws)], ["store", "commit", "-m", "first snapshot"],
+                 ["lane", "create", str(ws), "default", "x", "--repos", "app", "--branch", "feat/x"]):
+        result = runner.invoke(gr2_app.app, argv)
+        assert result.exit_code == 0, f"{argv}: {result.output}"
+    root = ws / "agents" / "default" / "lanes" / "x"
+    assert (root / ".git").is_dir() and (root / "grip.toml").is_file(), "fixture check: the lane root is a store checkout"
+    return ws, root
+
+
+def _remove_native(ws: Path):
+    return runner.invoke(gr2_app.app, ["lane", "remove", str(ws), "default", "x"])
+
+
+def test_a_native_lane_whose_store_and_repos_are_all_pushed_is_removed(tmp_path: Path, monkeypatch) -> None:
+    ws, root = _native_lane(tmp_path, monkeypatch)
+    result = _remove_native(ws)
+    assert result.exit_code == 0, result.output
+    assert not root.exists()
+
+
+def test_a_native_lane_root_holding_an_unpushed_store_commit_is_not_removed(tmp_path: Path, monkeypatch) -> None:
+    ws, root = _native_lane(tmp_path, monkeypatch)
+    _git(root, "commit", "-q", "--allow-empty", "-m", "store work that exists only here")
+    commit = _git(root, "rev-parse", "HEAD")
+    result = _remove_native(ws)
+    assert result.exit_code != 0
+    assert f"lane_has_unpushed_commit: lane-root {commit}" in result.output, result.output
+    assert "lane_has_unlisted_content" not in result.output, result.output
+    assert _git(root, "rev-parse", "HEAD") == commit
+
+
+def test_a_native_lane_root_with_an_edited_store_file_is_not_removed(tmp_path: Path, monkeypatch) -> None:
+    ws, root = _native_lane(tmp_path, monkeypatch)
+    with (root / "grip.toml").open("a") as fh:
+        fh.write("# an edit that exists only here\n")
+    result = _remove_native(ws)
+    assert result.exit_code != 0
+    assert "lane_has_uncommitted_work: lane-root" in result.output, result.output
+    assert (root / "grip.toml").is_file()
+
+
+def test_a_native_lane_root_holding_a_store_stash_is_not_removed(tmp_path: Path, monkeypatch) -> None:
+    ws, root = _native_lane(tmp_path, monkeypatch)
+    with (root / "grip.toml").open("a") as fh:
+        fh.write("# stashed\n")
+    _git(root, "stash", "-q")
+    result = _remove_native(ws)
+    assert result.exit_code != 0
+    assert "lane_has_stash: lane-root" in result.output, result.output
+    assert root.exists()
+
+
+def test_a_stray_file_in_a_native_lane_root_is_still_named(tmp_path: Path, monkeypatch) -> None:
+    ws, root = _native_lane(tmp_path, monkeypatch)
+    (root / "notes.txt").write_text("ignored by the store, so only the unlisted check sees it\n")
+    (root / ".grip" / "mine").write_text("not the mirror cache\n")
+    result = _remove_native(ws)
+    assert result.exit_code != 0
+    assert f"lane_has_unlisted_content: {root / 'notes.txt'}" in result.output, result.output
+    assert f"lane_has_unlisted_content: {root / '.grip' / 'mine'}" in result.output, result.output
+    assert f"lane_has_unlisted_content: {root / '.git'}" not in result.output, result.output
+    assert (root / "notes.txt").is_file()

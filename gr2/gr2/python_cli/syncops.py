@@ -30,7 +30,7 @@ from .gitops import (
 )
 from .events import EventType, emit, emit_after_outcome
 from .hooks import load_repo_hooks
-from .workspace_guidance import missing_gr2_workspace_guidance
+from .workspace_guidance import init_unless_inside_workspace, workspace_init_command
 from .spec_apply import (
     ValidationIssue,
     _run_materialize_hooks,
@@ -260,9 +260,9 @@ def build_sync_plan(
     spec_path = workspace_spec_path(workspace_root)
     # A native root with no spec file is answered by the spec derived from grip.toml (spec_apply.derived_spec_doc).
     if not spec_path.exists() and derived_spec_doc(workspace_root) is None:
-        next_step = missing_gr2_workspace_guidance(
+        next_step = init_unless_inside_workspace(
             workspace_root,
-            "run `gr2 workspace init <path>` first or create .grip/workspace_spec.toml explicitly",
+            f"run {workspace_init_command(workspace_root)} first or create .grip/workspace_spec.toml explicitly",
         )
         raise SystemExit(
             f"workspace spec not found: {spec_path}\n"

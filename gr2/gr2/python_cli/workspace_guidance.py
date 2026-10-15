@@ -44,9 +44,31 @@ def missing_workspace_spec_message(workspace_root: Path) -> str:
     if is_gr1_only_workspace(workspace_root):
         return (f"workspace spec not found: {spec_path}; {workspace_root} is still in gr1 format: run "
                 f"`gr2 workspace migrate-gr1 {workspace_root}` to add gr2 alongside it; your gr1 setup keeps working")
+    return f"workspace spec not found: {spec_path}; " + init_unless_inside_workspace(
+        workspace_root, f"run {workspace_init_command(workspace_root)} first or create .grip/workspace_spec.toml explicitly")
+
+
+def workspace_init_command(target: object = "") -> str:
+    """The one place a verb's advice spells the init command (a structural test holds every other text to it), so
+    whether that advice suits the path is decided once, in `init_unless_inside_workspace`."""
+    return f"`gr2 workspace init {target}`" if str(target) else "`gr2 workspace init`"
+
+
+def inside_workspace_sentence(path: Path, enclosing: Path) -> str:
+    return (f"{path} is inside the workspace at {enclosing}: "
+            f"pass the workspace root {enclosing} (or run from there), not a directory inside it")
+
+
+def init_unless_inside_workspace(workspace_root: Path, init_advice: str) -> str:
+    """`init_advice` (a sentence naming `workspace_init_command`) for a root that may become a workspace; for a
+    directory inside one (a member clone, a subdirectory), the way to that workspace's root instead, since init there
+    would nest a second workspace inside the first. A root that is itself a workspace (a spec or a grip.toml) keeps
+    its own advice, and a gr1 desk is sent to migrate first."""
+    if (grip_dir(workspace_root) / "workspace_spec.toml").is_file() or (workspace_root / "grip.toml").is_file():
+        return init_advice
+    if is_gr1_only_workspace(workspace_root):
+        return GR1_ONLY_NEXT_STEP
     enclosing = enclosing_workspace_root(workspace_root)
     if enclosing is not None:
-        return (f"workspace spec not found: {spec_path}; {workspace_root} is inside the workspace at {enclosing}: "
-                f"pass the workspace root {enclosing} (or run from there), not a directory inside it")
-    return (f"workspace spec not found: {spec_path}; run `gr2 workspace init {workspace_root}` first "
-            "or create .grip/workspace_spec.toml explicitly")
+        return inside_workspace_sentence(workspace_root, enclosing)
+    return init_advice

@@ -30,7 +30,7 @@ from .gitops import git, repo_dirty
 from .layout import MOVED_MARKER, grip_dir
 from .root_option import ROOT_OPTION, RootOptionalCommand
 from .spec_apply import unit_member_path, validate_grip_toml
-from .workspace_guidance import missing_gr2_workspace_guidance
+from .workspace_guidance import init_unless_inside_workspace, workspace_init_command
 
 grip_app = typer.Typer(
     help="Grip object model: workspace snapshots and history. Exit codes: 0 ok, "
@@ -130,10 +130,8 @@ def _validate_grip_dir(workspace: Path) -> None:
     """Check .grip/ directory exists."""
     grip_dir = workspace / ".grip"
     if not grip_dir.exists():
-        typer.echo(
-            f"No .grip/ directory at {workspace}. "
-            f"{missing_gr2_workspace_guidance(workspace, 'Run `gr2 workspace init .` first.')}"
-        )
+        init_advice = f"Run {workspace_init_command('.')} first."
+        typer.echo(f"No .grip/ directory at {workspace}. {init_unless_inside_workspace(workspace, init_advice)}")
         raise typer.Exit(code=1)
 
 

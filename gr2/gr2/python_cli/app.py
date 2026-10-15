@@ -2724,6 +2724,7 @@ def _spec_for_lane_create(workspace_root: Path, default_unit: str) -> bool:
     default is chosen, a remote is asked or a byte is written, in one sentence with the way out."""
     from . import lane_defaults, lane_downstream
     from .spec_apply import derived_spec_doc, workspace_spec_path
+    from .workspace_guidance import init_unless_inside_workspace, workspace_init_command
 
     if workspace_spec_path(workspace_root).is_file():
         return False
@@ -2735,7 +2736,7 @@ def _spec_for_lane_create(workspace_root: Path, default_unit: str) -> bool:
         try:
             raw = lane_downstream._read_toml(grip_toml).get("members", [])
         except lane_downstream.MembersUnreadable as exc:
-            raise typer.BadParameter(f"{exc}; fix the file, or write the spec with `gr2 workspace init {workspace_root}`")
+            raise typer.BadParameter(f"{exc}; fix the file, or write the spec with {workspace_init_command(workspace_root)}")
         for m in raw:
             if isinstance(m, dict) and isinstance(m.get("name"), str) and m["name"]:
                 remotes = m.get("remotes") if isinstance(m.get("remotes"), dict) else {}
@@ -2751,8 +2752,10 @@ def _spec_for_lane_create(workspace_root: Path, default_unit: str) -> bool:
         typer.echo(
             f"Error: {workspace_root} has no workspace spec ({workspace_spec_path(workspace_root).relative_to(workspace_root)}) "
             "and no grip.toml members, and a lane is made from one of them. "
-            f"Run `gr2 workspace init {workspace_root}` to write the spec from the repos beside it, then create the lane again. "
-            "Nothing was created.",
+            + init_unless_inside_workspace(
+                workspace_root,
+                f"Run {workspace_init_command(workspace_root)} to write the spec from the repos beside it, then create the lane again.")
+            + " Nothing was created.",
             err=True,
         )
         raise typer.Exit(code=2)

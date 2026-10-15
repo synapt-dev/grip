@@ -16,7 +16,7 @@ import yaml
 
 from . import grip
 from .gitops import git, run as _run_git
-from .workspace_guidance import GR1_ONLY_NEXT_STEP
+from .workspace_guidance import GR1_ONLY_NEXT_STEP, init_unless_inside_workspace, workspace_init_command
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 from gr2.prototypes import repo_maintenance_prototype as repo_proto
 
@@ -1429,7 +1429,8 @@ def render_status(payload: dict[str, object]) -> str:
         if isinstance(entry, dict):
             lines.append("declared = " + _declared_line(entry))
     if not payload["gr1"] and not payload["gr2"]:
-        lines.append("No workspace detected. Run `gr2 workspace init` or `gr2 workspace migrate-gr1`.")
+        lines.append("No workspace detected. " + init_unless_inside_workspace(
+            Path(str(payload["workspace_root"])), f"Run {workspace_init_command()} or `gr2 workspace migrate-gr1`."))
     return "\n".join(lines)
 
 

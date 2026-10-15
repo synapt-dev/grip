@@ -1130,12 +1130,25 @@ def _refuse_init_disagreement(root: Path, members: list[dict[str, str]] | None =
 STORE_INCOMPLETE_PREFIX = "cannot complete this store verb: "
 STORE_COMMIT_UNCHANGED = "Nothing to record: every pin already matches the root's last commit."
 
+#: Every store verb names its root the same way: `--root/-C`, else the current directory (the shared spelling of
+#: root_option.ROOT_OPTION). A walk run from outside a workspace, or from inside another one, names the one it means.
+STORE_ROOT_OPTION = typer.Option(
+    None, "--root", "-C", help="The workspace root to act on (default: the current directory).")
 
-def _echo_layered(layered: list[str]) -> None:
+
+def _store_root(root: Path | None, positional: Path | None = None) -> Path:
+    """The root a store verb acts on: `--root/-C`, the verb's own root argument (init, migrate-reviews), or cwd."""
+    if root is not None and positional is not None:
+        typer.echo("the workspace root was given twice: as the first argument and with --root/-C", err=True)
+        raise typer.Exit(code=2)
+    chosen = root if root is not None else positional
+    return Path.cwd() if chosen is None else chosen.resolve()
+
+
+def _echo_layered(root: Path, layered: list[str]) -> None:
     """One line per member whose pin went into the record as a layer."""
     import typer
 
-    root = Path.cwd()
     pins = {m["name"]: m["pin"] for m in _native_members(root)}
     for name in layered:
         typer.echo(f"{name}: pin {pins[name][:12]} is on no remote; carried as a layer in the record")
@@ -3462,10 +3475,11 @@ def grip_init_cmd(
             "(repeatable). The root is created when it does not exist."
         ),
     ),
+    root: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Initialize a native store at cwd or the supplied root."""
-    root = Path.cwd() if workspace_root is None else workspace_root.resolve()
+    root = _store_root(root, workspace_root)
     try:
         clones = _parse_clone_values(clone_values) if clone_values else None
         hook_states = _native_store_init(root, member_paths=member_paths, clones=clones)
@@ -3495,6 +3509,7 @@ def grip_init_cmd(
 @grip_app.command("commit")
 def grip_commit_cmd(
     message: str = typer.Option(..., "--message", "-m", help="Message for the root commit that records the member pins"),
+    root: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     allow_rewind: bool = typer.Option(
         False, "--allow-rewind", help="Record a member pin that is behind the one already recorded"
@@ -3506,9 +3521,10 @@ def grip_commit_cmd(
     commits its upstream lacks are carried as a layer in the member's record, so `store push` and a clone
     plus `store materialize` rebuild it on another machine without pushing the member.
     """
+    root = _store_root(root)
     layered: list[str] = []
     try:
-        committed = _native_store_commit(Path.cwd(), message, layered, allow_rewind=allow_rewind)
+        committed = _native_store_commit(root, message, layered, allow_rewind=allow_rewind)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
@@ -3521,21 +3537,23 @@ def grip_commit_cmd(
         typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
     if json_output:
-        root_commit = _store_git(Path.cwd(), "rev-parse", "HEAD").stdout.strip()
+        root_commit = _store_git(root, "rev-parse", "HEAD").stdout.strip()
         typer.echo(json.dumps({"status": "committed" if committed else "unchanged", "root_commit": root_commit, "layered": layered}))
     elif not committed:
         typer.echo(STORE_COMMIT_UNCHANGED)
     else:
-        _echo_layered(layered)
+        _echo_layered(root, layered)
 
 
 @grip_app.command("check")
 def grip_check_cmd(
+    root: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Verify root gitlinks and member coverage against live upstreams."""
+    root = _store_root(root)
     try:
-        members = _native_store_check(Path.cwd())
+        members = _native_store_check(root)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
@@ -3566,9 +3584,11 @@ def grip_push_cmd(
     snapshot: bool = typer.Option(False, "--snapshot", help="Make the store commit first, then push it"),
     allow_rewind: list[str] = typer.Option(
         [], "--allow-rewind", help="A member whose pin may move backwards (repeatable); must name a member"),
+    root: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Check, then push the root branch and its shadow in one atomic push; --atomic adds same-repo member refs."""
+    root = _store_root(root)
     notes: list[str] = []
 
     def say_notes(refused: bool = False) -> None:
@@ -3580,7 +3600,7 @@ def grip_push_cmd(
                 typer.echo(f"gr2: {note}", err=True)
 
     try:
-        payload = _native_store_push(Path.cwd(), to, atomic, recurse, snapshot, allow_rewind, notes)
+        payload = _native_store_push(root, to, atomic, recurse, snapshot, allow_rewind, notes)
     except NativeStoreRefusal as exc:
         say_notes(refused=True)
         typer.echo(str(exc), err=True)
@@ -3626,11 +3646,13 @@ def _store_status_line(member: dict) -> str:
 
 @grip_app.command("status")
 def grip_status_cmd(
+    root: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Show each member's branch, head, pin, ahead/behind its upstream, and uncommitted entries."""
+    root = _store_root(root)
     try:
-        members, root_status = _native_store_status(Path.cwd())
+        members, root_status = _native_store_status(root)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
@@ -3649,9 +3671,9 @@ def grip_status_cmd(
             note = STORE_STATUS_NOTES.get(member["state"], "")
             typer.echo(_store_status_line(member) + note)
     # A hook that will not run is a finding, not a pass: said on stderr in both modes so stdout is unchanged.
-    for line in store_hooks.hook_problems(Path.cwd(), store_hooks.hook_states(Path.cwd())):
+    for line in store_hooks.hook_problems(root, store_hooks.hook_states(root)):
         typer.echo(line, err=True)
-    for line in store_hooks.gitmodules_problems(Path.cwd()):
+    for line in store_hooks.gitmodules_problems(root):
         typer.echo(line, err=True)
     # THE TABLE PRINTS IN EVERY CASE, and the code follows it. A diagnostic that exits 0 on
     # an inconsistency is the silent-success class: the root snapshot a clone would
@@ -3680,11 +3702,13 @@ def grip_status_cmd(
 
 @grip_app.command("materialize")
 def grip_materialize_cmd(
+    root: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Materialize each canonical pin from its declared origin."""
+    root = _store_root(root)
     try:
-        members = _native_store_materialize(Path.cwd())
+        members = _native_store_materialize(root)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
@@ -3701,7 +3725,7 @@ def grip_materialize_cmd(
     # another owner's hook or into a core.hooksPath, and reports both. The members are already in place here, so a
     # hook that cannot be written is reported, never a failed verb.
     try:
-        hook_lines = store_hooks.hook_problems(Path.cwd(), store_hooks.install_store_hooks(Path.cwd()))
+        hook_lines = store_hooks.hook_problems(root, store_hooks.install_store_hooks(root))
     except OSError as exc:
         hook_lines = [f"hooks: could not be installed ({exc}); run gr2 store materialize again to install them"]
     if json_output:
@@ -3723,11 +3747,13 @@ def grip_materialize_cmd(
 @grip_app.command("migrate")
 def grip_migrate_cmd(
     dry_run: bool = typer.Option(False, "--dry-run", help="Print the alpha-to-native plan without writing"),
+    root: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Convert alpha .grip/.git HEAD into one native root commit."""
+    root = _store_root(root)
     try:
-        payload = _native_store_migrate(Path.cwd(), dry_run=dry_run)
+        payload = _native_store_migrate(root, dry_run=dry_run)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
@@ -3749,12 +3775,17 @@ def grip_migrate_cmd(
 
 @grip_app.command("migrate-reviews")
 def grip_migrate_reviews_cmd(
-    root: Path = typer.Argument(..., help="The native store root whose pinned reviews to migrate"),
+    workspace_root: Optional[Path] = typer.Argument(None, help="The native store root whose pinned reviews to migrate"),
+    root: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Give every legacy pinned review a field tree twin at the v1 ref; legacy refs stay as they are."""
+    if root is None and workspace_root is None:
+        typer.echo("Missing argument 'WORKSPACE_ROOT': name the native store root, or -C <root>", err=True)
+        raise typer.Exit(code=2)
+    root = _store_root(root, workspace_root)
     try:
-        receipt, rows = grip_mod.migrate_review_binds(root.resolve())
+        receipt, rows = grip_mod.migrate_review_binds(root)
     except grip_mod.GripCorruptError as exc:
         typer.echo(f"refused: {exc}", err=True)
         raise typer.Exit(code=4)
@@ -3774,6 +3805,7 @@ def grip_migrate_reviews_cmd(
 @grip_app.command("snapshot", hidden=True)
 def grip_snapshot_cmd(
     message: str = typer.Option(..., "--message", "-m", help="Snapshot message"),
+    root: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     allow_rewind: bool = typer.Option(
         False, "--allow-rewind", help="Record a member pin that is behind the one already recorded"
@@ -3793,34 +3825,36 @@ def grip_snapshot_cmd(
     commit and carries only commit's flags. This UNWIRES the verb; it does not delete the
     alpha writer, because `store migrate` (section 6a) reads that store and is a later step.
     """
+    root = _store_root(root)
     layered: list[str] = []
     try:
-        committed = _native_store_commit(Path.cwd(), message, layered, allow_rewind=allow_rewind)
+        committed = _native_store_commit(root, message, layered, allow_rewind=allow_rewind)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
     except RuntimeError as exc:
         typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
-    root_commit = _store_git(Path.cwd(), "rev-parse", "HEAD").stdout.strip()
+    root_commit = _store_git(root, "rev-parse", "HEAD").stdout.strip()
     if json_output:
         typer.echo(json.dumps({"status": "committed" if committed else "unchanged", "root_commit": root_commit, "layered": layered}))
     elif not committed:
         typer.echo(STORE_COMMIT_UNCHANGED)
     else:
         typer.echo(f"grip snapshot {root_commit[:12]}")
-        _echo_layered(layered)
+        _echo_layered(root, layered)
 
 
 @grip_app.command("log")
 def grip_log_cmd(
     max_count: int = typer.Option(10, "--max-count", "-n", help="Max entries to show"),
+    root: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """The root's commit history, with the pins each commit recorded (design section 5).
 
     Section 5 line 99 puts `log` in the same row as diff and checkout -- "`log` is the root's
-    `git log` with pins per commit" -- so it acts on the cwd like every other verb in the
+    `git log` with pins per commit" -- so it acts on the root (-C, else the cwd) like every other verb in the
     group, and its entries are native: a root `commit`, its `message`, and the `pins` that
     changed.
 
@@ -3832,8 +3866,9 @@ def grip_log_cmd(
     verb with two branches that answer different questions presents as ported whenever a
     caller happens to use the branch that was ported.
     """
+    root = _store_root(root)
     try:
-        entries = _native_store_log(Path.cwd(), max_count)
+        entries = _native_store_log(root, max_count)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
@@ -3851,18 +3886,19 @@ def grip_log_cmd(
 def grip_diff_cmd(
     ref_a: str = typer.Argument(None, help="First root commit (default: HEAD~1)"),
     ref_b: str = typer.Argument(None, help="Second root commit (default: HEAD)"),
+    root: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Pin changes between two root commits (design section 5).
 
     Section 5 line 99: "`diff` is pin changes between two root commits", and the row's
-    stability is "as `materialize`". It acts on the cwd, like every other verb in the group:
+    stability is "as `materialize`". It acts on the root (-C, else the cwd), like every other verb in the group:
     the old signature took a positional `workspace_root` and read the alpha snapshot index,
     so calling it the way the row describes failed on a missing argument before reaching any
     of this (measured 2026-09-28: `store diff HEAD~1 HEAD --json` on the base exited 2 with
     "Missing argument 'ref_b'").
     """
-    root = Path.cwd()
+    root = _store_root(root)
     a = ref_a or "HEAD~1"
     b = ref_b or "HEAD"
     try:
@@ -3884,6 +3920,7 @@ def grip_diff_cmd(
 @grip_app.command("checkout")
 def grip_checkout_cmd(
     ref: str = typer.Argument(..., help="Root commit to materialize the members at"),
+    root: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Materialize the members at a root commit (design section 5).
@@ -3894,7 +3931,7 @@ def grip_checkout_cmd(
     rather than leaving a silent partial tree) and defines no second materialization path. It
     delegates to the same helper materialize uses for exactly that reason.
     """
-    root = Path.cwd()
+    root = _store_root(root)
     try:
         resolved, members = _native_store_checkout(root, ref)
     except NativeStoreRefusal as exc:

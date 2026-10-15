@@ -189,12 +189,14 @@ Initialize a native store at cwd or the supplied root.
 - `<workspace_root>` (optional)
 - `--member`: Declare a member checkout by its path relative to the root (repeatable). Named paths win over the root's own spec and over sibling discovery; a named path that is not a checkout refuses the verb.
 - `--clone`: Declare a member from a url: NAME=URL clones it at <root>/NAME and records it (repeatable). The root is created when it does not exist.
+- `--root/-C`: The workspace root to act on (default: the current directory).
 - `--json`: Emit machine-readable JSON
 
 ### gr2 store status
 
 Show each member's branch, head, pin, ahead/behind its upstream, and uncommitted entries.
 
+- `--root/-C`: The workspace root to act on (default: the current directory).
 - `--json`: Emit machine-readable JSON
 
 ### gr2 store commit
@@ -202,6 +204,7 @@ Show each member's branch, head, pin, ahead/behind its upstream, and uncommitted
 Record member pins in the root git tree.
 
 - `--message/-m`: Message for the root commit that records the member pins
+- `--root/-C`: The workspace root to act on (default: the current directory).
 - `--json`: Emit machine-readable JSON
 - `--allow-rewind`: Record a member pin that is behind the one already recorded
 
@@ -209,6 +212,7 @@ Record member pins in the root git tree.
 
 Verify root gitlinks and member coverage against live upstreams.
 
+- `--root/-C`: The workspace root to act on (default: the current directory).
 - `--json`: Emit machine-readable JSON
 
 ### gr2 store push
@@ -220,12 +224,14 @@ Check, then push the root branch and its shadow in one atomic push; --atomic add
 - `--recurse` [default: check]: A member pin its upstream does not cover: check (refuse, exit 3), on-demand (push the member from its clone first) or none (skip coverage; the fence still runs)
 - `--snapshot`: Make the store commit first, then push it
 - `--allow-rewind`: A member whose pin may move backwards (repeatable); must name a member
+- `--root/-C`: The workspace root to act on (default: the current directory).
 - `--json`: Emit machine-readable JSON
 
 ### gr2 store materialize
 
 Materialize each canonical pin from its declared origin.
 
+- `--root/-C`: The workspace root to act on (default: the current directory).
 - `--json`: Emit machine-readable JSON
 
 ### gr2 review pin

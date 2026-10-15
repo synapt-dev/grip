@@ -38,7 +38,7 @@ gr2 store init ~/ws                     # the workspace snapshot store (needed b
 gr2 store commit -m "first snapshot"    # record the workspace once; lanes start from a recorded snapshot
 ```
 
-`store commit` reads the workspace from the current directory, which is why the walk starts with `cd ~/ws`. It prints nothing on success; each repo it records for the first time gets one note on stderr.
+`store commit` reads the workspace from the current directory, which is why the walk starts with `cd ~/ws`; from anywhere else, name it: `gr2 store commit -C ~/ws -m "..."`. It prints nothing on success; each repo it records for the first time gets one note on stderr.
 
 A **unit** is one worker — you, or one agent — and `default` is created for you. A **lane** is one piece of work spanning repos, with its own clones, so two lanes never step on each other:
 
@@ -106,7 +106,7 @@ Not there yet:
 | `exec` | status, run |
 | `repo` | status, projection-run |
 | `hooks` | trust, revoke, status, show, run |
-| `store` | init, commit, check, push, status, log, diff, checkout, materialize, migrate, migrate-reviews |
+| `store` | init, commit, check, push, status, log, diff, checkout, materialize, migrate, migrate-reviews; each names its workspace with `-C/--root <root>`, else reads the current directory |
 | `target`, `config` | stored PR target; config overlays |
 
 `review bind`, `review approve` and `review rebind` remain as aliases of `pin`, `stamp` and `repin`.

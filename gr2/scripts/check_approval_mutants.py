@@ -22,6 +22,7 @@ GUARDS = [
     ("approvals_unset", "approval_policy", "if not configured and given is None:", "if False:", "test_unset_policy_refuses_and_an_explicit_zero_merges"),
     ("workspace_approver", "approve", 'name = _git(workspace, "config", "user.name")', 'name = _git(Path.cwd(), "config", "user.name")', "test_approve_uses_workspace_identity_from_a_member_cwd"),
     ("zero_policy_skips_count", "review_merge", "if required:", "if True:", "test_zero_required_skips_an_unmeasurable_approval_chain"),
+    ("counted_source", "review_merge", "approval_receipt.update(policy)", 'approval_receipt["required"] = required', "test_default_merge_reads_workspace_policy_and_counts_two_approvers"),
     ("merge_quorum", "review_merge", 'if approval_receipt["count"] < required:', "if False:", "test_default_merge_reads_workspace_policy_and_counts_two_approvers"),
     ("member_repo", "_context", "if not repo.is_relative_to(root) or merge_gate._toplevel(repo) != repo or not merge_gate._store_inside(repo, root):", "if False:", "test_context_refuses_member_that_is_not_its_own_repo"),
     ("head_tree", "_context", "if actual_tree != tree:", "if False:", "test_context_refuses_a_head_tree_mismatch"),

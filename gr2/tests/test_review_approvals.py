@@ -108,6 +108,7 @@ def test_default_merge_reads_workspace_policy_and_counts_two_approvers(world):
     receipt = json.loads(merged.stdout)
     assert merged.exit_code == 0, merged.output
     assert receipt["approvals"]["count"] == 2 and receipt["approvals"]["required"] == 2
+    assert receipt["approvals"]["source"] == "grip.toml", "a counted receipt still says where its count came from"
     assert {link["approver"] for link in receipt["approvals"]["links"]} == {"Approver B", "Approver C"}
     assert git(world["remote"], "rev-list", "--parents", "-n", "1", "main").split()[1:] == [world["base"], world["head"]]
 
@@ -694,7 +695,9 @@ def test_unset_policy_refuses_and_an_explicit_zero_merges(world, tmp_path):
     # A count above what is recorded refuses as insufficient, not unset.
     result = runner.invoke(app, ["review", "merge", "--approvals", "2"])
     assert result.exit_code == 3, result.output
-    assert json.loads(result.stdout)["members"][0]["refused"] == "approvals_insufficient: 0 of 2"
+    refused = json.loads(result.stdout)
+    assert refused["members"][0]["refused"] == "approvals_insufficient: 0 of 2"
+    assert refused["approvals"]["source"] == "--approvals", "a counted count given only by flag names the flag"
     # Saying zero is the way to merge without approvals, and the skip is said on both surfaces.
     result = runner.invoke(app, ["review", "merge", "--approvals", "0"])
     assert result.exit_code == 0, result.output
@@ -741,6 +744,7 @@ def test_merge_defaults_keep_explicit_flags_with_approval_floor(world):
     receipt = json.loads(result.stdout)
     assert receipt["feature"] == "feature" and receipt["into"] == "main"
     assert receipt["approvals"]["required"] == 1 and receipt["approvals"]["count"] == 1
+    assert receipt["approvals"]["source"] == "grip.toml and --approvals", "a flag that cannot lower the floor is still named"
     assert "(given)" in result.stderr
     assert git(world["remote"], "rev-parse", "main^2") == world["head"]
 

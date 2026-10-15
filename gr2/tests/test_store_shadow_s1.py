@@ -121,3 +121,22 @@ def test_s1_witness_without_atomic_support_moves_nothing(tmp_path, mode):
     assert result.returncode != 0
     assert "atomic" in result.stderr, result.stderr
     assert _refs(origin) == {}, "nothing moves on a remote that cannot take both refs at once"
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_s1_commit_on_a_root_detached_by_store_checkout_lands_and_names_no_shadow(tmp_path, mode):
+    """`store checkout <rev>` detaches the root; a `store commit` there is made (exit 0, HEAD moves) and, naming no
+    branch, reads and moves no shadow."""
+    root, _ = _store(tmp_path, mode)
+    first = git(root, "rev-parse", "HEAD").stdout.strip()
+    _advance(root, "alpha")
+    gr2(root, "commit", "-m", "second")
+    gr2(root, "checkout", first)
+    assert git(root, "symbolic-ref", "-q", "HEAD", check=False).returncode != 0, "store checkout left the root detached"
+    git(root / "alpha", "checkout", "-q", "main")   # alpha's own main, which origin holds: a pin change to record
+    shadows = {ref: sha for ref, sha in _refs(root).items() if ref.startswith("refs/dev.synapt.grip/__branches__/")}
+    result = gr2(root, "commit", "-m", "detached", check=False)
+    assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+    assert git(root, "rev-parse", "HEAD").stdout.strip() != first
+    assert {ref: sha for ref, sha in _refs(root).items()
+            if ref.startswith("refs/dev.synapt.grip/__branches__/")} == shadows

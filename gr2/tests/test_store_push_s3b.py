@@ -270,3 +270,26 @@ def test_push_json_carries_exactly_the_declared_keys_and_enums(tmp_path, mode):
     rewound = json.loads(gr2(root, "push", "--allow-rewind", "alpha", "--json").stdout)
     _holds_to_the_declared_shape(rewound)
     assert rewound["rewound"]
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_b10_lease_two_resolves_each_member_against_the_other_members_claims(tmp_path, mode, monkeypatch):
+    """Lease 2 finds a member's clone the way every other verb does: with every OTHER member's two coordinates
+    claimed, so a member's name fallback can never land in a neighbour's checkout."""
+    from gr2.python_cli import grip_cli
+
+    root, origin, p0, p1 = _two_pushes(tmp_path, mode)
+    recorded = _refs(origin)[SHADOW]
+    _advance(root, "alpha")
+    gr2(root, "commit", "-m", "alpha again")
+    seen: dict[str, set[Path]] = {}
+    real = grip_cli._native_member_working_root
+
+    def spy(root_arg, member, claimed):
+        seen[member["name"]] = set(claimed)
+        return real(root_arg, member, claimed)
+
+    monkeypatch.setattr(grip_cli, "_native_member_working_root", spy)
+    assert grip_cli._member_rewinds(root, _head(root), recorded, []) == []
+    assert set(seen) == {"alpha"}, seen
+    assert (root / "beta").resolve() in seen["alpha"], seen

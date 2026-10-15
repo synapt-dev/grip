@@ -2210,12 +2210,17 @@ def _native_store_commit(
         layered.extend(m["name"] for m in changed if m["name"] in layers_by_member)
     # `--no-verify`: this verb has just run the same checks the pre-commit hook runs (coverage and the
     # pin write above), so the hook would repeat a network fetch per member for no new answer.
-    shadow_was = _store_git(root, "rev-parse", "--verify", "-q", _shadow_ref(root), check=False).stdout.strip()
+    # A detached root (`store checkout <rev>` leaves one) names no branch, so it has no shadow to read or move: the
+    # commit is made and both shadow steps are skipped.
+    branch = _store_git(root, "symbolic-ref", "--short", "-q", "HEAD", check=False).stdout.strip()
+    shadow_was = (_store_git(root, "rev-parse", "--verify", "-q", _shadow_ref_for(branch), check=False).stdout.strip()
+                  if branch else "")
     if full:
         _commit_with_carried(root, message, carried)
     else:
         _store_git(root, *_commit_identity_args(root), "commit", "--no-verify", "-m", message)
-    _name_shadow(root, shadow_was)
+    if branch:
+        _name_shadow(root, shadow_was)
     return True
 
 
@@ -2536,13 +2541,13 @@ def _member_rewinds(root: Path, tip: str, recorded: str, allow_rewind: list[str]
     from . import shadow as shadow_mod
     was = _native_members_at(root, recorded)
     members = {member["name"]: member for member in _native_members(root, tip)}
-    claimed: set[Path] = set()
     taken: list[dict[str, str]] = []
     for name, pin in _native_members_at(root, tip).items():
         old = was.get(name)
         if not old or old == pin:
             continue
         member = members[name]
+        claimed = _claimed_member_paths(root, list(members.values()), exclude=member)
         path = _native_member_working_root(root, member, claimed)
         remote = member.get("upstream", "origin/main").partition("/")[0] or "origin"
         try:

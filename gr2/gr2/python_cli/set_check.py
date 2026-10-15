@@ -109,8 +109,7 @@ def run_set_check(workspace: Path, review_id: str, name: str, argv: Sequence[str
         repo = (workspace / m["path"]).resolve()
         if not repo.is_relative_to(root):
             raise check_records.CheckRefused(f"member_path_outside_workspace: {m['path']}")
-        if subprocess.run(["git", "-C", str(repo), "cat-file", "-e", f"{m['head']}^{{commit}}"],
-                          capture_output=True).returncode != 0:
+        if gitops.run(repo, "cat-file", "-e", f"{m['head']}^{{commit}}").returncode != 0:
             # Named with its next step: a reviewer's clone lacks the head until it is fetched (`review receive`
             # fetches it from the member's own remote).
             raise check_records.CheckRefused(

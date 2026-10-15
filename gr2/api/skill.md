@@ -341,7 +341,7 @@ next: say how many approvals this merge needs: rerun with --approvals N (--appro
 
 ### base_moved
 
-next: the target moved after the pin; pin again on the new base with gr2 review pin
+next: the target moved after the pin; bring every member up to it and pin again: gr2 review update '<workspace>' '<review>'
 
 ### check_absent
 

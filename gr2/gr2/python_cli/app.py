@@ -5037,6 +5037,32 @@ def review_merge(
         raise typer.Exit(code)
 
 
+@review_app.command("update", cls=ReviewHeadCommand)
+def review_update(
+    workspace_root: Path,
+    review_id: Optional[str] = typer.Argument(None, help="Pinned review id, gr:<sha>, whose target moved after the pin; default: the pinned review at the members' current heads"),
+    into: Optional[str] = typer.Option(None, "--into", help="Target branch; default: each member remote's default branch"),
+    root: Optional[Path] = ROOT_OPTION,
+) -> None:
+    """Bring every member of a pinned review up to its moved target and pin the result again.
+
+    Fetches the target from each member's recorded remote, merges it into the member's feature branch, and when
+    every member is clean pins the merged heads as a new review (printed as new_review). Pushes nothing and resolves
+    nothing; stamps on the old review do not carry. Refuses before merging anything when a member has uncommitted
+    changes. Prints its JSON receipt on stdout; the next steps go on stderr. Exit 0 done, 2 refused (nothing moved),
+    3 conflicts (nothing pinned), 4 partial (a member merged, then a later step failed).
+    """
+    from . import review_update as ru
+
+    ws = workspace_root.resolve()
+    code, receipt = ru.update(ws, review_id, into)
+    typer.echo(json.dumps(receipt))
+    for line in next_steps._update_lines(str(ws), receipt):
+        typer.echo(line, err=True)
+    if code:
+        raise typer.Exit(code)
+
+
 @review_app.command("repin")
 def review_rebind_cmd(
     frozen_dir: Path = typer.Argument(..., help="A frozen gate directory (freeze-public-range.sh output) to rebase onto the moved base"),

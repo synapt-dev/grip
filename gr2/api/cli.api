@@ -651,6 +651,12 @@ arg   review stamp review_id <str>                                    stable
 arg   review stamp workspace_root <str>                               stable
 flag  review stamp --root/-C <str>                                    stable
 verb  review stamp                                                    stable
+# review update
+arg   review update review_id <str>                                   stable
+arg   review update workspace_root <str>                              stable
+flag  review update --into <str>                                      stable
+flag  review update --root/-C <str>                                   stable
+verb  review update                                                   stable
 # review verify
 arg   review verify commit <str>                                      stable
 arg   review verify workspace_root <str>                              stable

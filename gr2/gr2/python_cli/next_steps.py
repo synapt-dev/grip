@@ -48,12 +48,43 @@ def head_not_fetched(repo: str, remote: str, head: str, workspace: str, review: 
             f"author has pushed it there, stamp again: gr2 review stamp {_shown(workspace)} {_shown(review)}")
 
 
-def _stamp_base_moved(branch: str) -> str:
+def _stamp_base_moved(branch: str, review: str) -> str:
     # Private, so the skill's refusal table keeps one row per printed code (base_moved is merge_row's).
     # A merge needs the target at the reviewed base, and a pinned review cannot move to a new base, so a stamp here
-    # could never count; the author has to update and pin again.
-    return (f"next: no stamp was written; ask the author to update the feature onto {_shown(branch)}, pin it "
-            "again with gr2 review pin, and ask for a stamp on the new review")
+    # could never count; the author has to update and pin again. The stamper is not the author, so the line names
+    # the author's verb and the review it applies to.
+    return (f"next: no stamp was written; {_shown(branch)} moved after the pin. Ask the author to run "
+            f"gr2 review update <their workspace> {_shown(review)} and ask for a stamp on the review it prints")
+
+
+def _update_lines(workspace: str, receipt: dict) -> list[str]:
+    # Private: `review update` prints its refusal inside its JSON receipt, not as a `refused: <code>` line.
+    lines, rid, new = [], receipt.get("review") or "<review>", receipt.get("new_review")
+    if receipt.get("refused"):
+        lines.append(f"refused: {receipt['refused']}")
+        moved = receipt.get("merged") or []
+        if moved:
+            lines.append(f"partial: merged in the member clones (not pushed, not pinned): {', '.join(moved)}")
+        return lines
+    for m in receipt.get("members", []):
+        lines.append(f"{m['key']}: {m['state']}")
+        for path in m.get("conflicts", []):
+            lines.append(f"  {_shown(path)}")
+    for m in receipt.get("members", []):
+        if m["state"] == "conflict":
+            clone = f"{workspace.rstrip('/')}/{m['path']}"
+            lines.append(f"next: resolve in {_shown(clone)}, git add, git commit, then run "
+                         f"gr2 review update {_shown(workspace)} {_shown(rid)}")
+    if new:
+        for m in receipt["members"]:
+            clone = f"{workspace.rstrip('/')}/{m['path']}"
+            lines.append(f"next: git -C {_shown(clone)} push -- {_shown(m['remote'])} HEAD")
+        for remote in dict.fromkeys(m["remote"] for m in receipt["members"]):
+            lines.append(f"next: gr2 review publish {_shown(workspace)} {_shown(new)} --remote {_shown(remote)}")
+        lines.append(f"stamps and checks on {rid} do not carry; ask for stamps and run checks on {new}")
+    elif not receipt.get("refused") and not any(m["state"] == "conflict" for m in receipt.get("members", [])):
+        lines.append(f"{rid} is current: every member is at its target's tip; nothing to pin")
+    return lines
 
 
 def _head_fetch(repo: str, remote: str, head: str) -> str:
@@ -132,7 +163,8 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
                 "To merge it, commit a new head and pin it before you push, or pin this head with "
                 "--ratified <receipt id> naming the ratify that covers it")
     if refused.startswith("base_moved"):
-        return "next: the target moved after the pin; pin again on the new base with gr2 review pin"
+        return (f"next: the target moved after the pin; bring every member up to it and pin again: "
+                f"gr2 review update {_shown(workspace)} {_shown(review)}")
     if refused.startswith("platform_head_moved_after_merge"):
         late = re.search(r"head is (\S+);", refused)
         return (f"next: this member landed at the pinned head, and the later commit {late.group(1) if late else '<sha>'} "

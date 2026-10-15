@@ -2382,6 +2382,7 @@ def _native_store_checkout(root: Path, revision: str) -> tuple[str, list[dict[st
     "fatal: invalid object name 'HEAD~1'". A name that means one thing and then another is
     the same class as a control that answers a different question than the one asked.
     """
+    _grip_document(root)  # a cwd that is not a store refuses before git resolves the ref in an enclosing repo
     target = _store_git(root, "rev-parse", "--verify", f"{revision}^{{commit}}", check=False)
     if target.returncode:
         raise NativeStoreRefusal(

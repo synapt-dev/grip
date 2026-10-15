@@ -151,6 +151,17 @@ def _ref_state(repo: Path, url: str, ref: str | None) -> str:
     return f"PRESENT at {ls[0][:12]}" if ls else "ABSENT on remote"
 
 
+def _require_frozen_dir(frozen_dir: Path) -> None:
+    """Refuse, by name, a frozen dir that is not there or lacks the files every rebind reads."""
+    if not frozen_dir.is_dir():
+        raise RebindRefused("frozen_dir_missing", f"no frozen gate directory at {frozen_dir}; "
+                            "freeze the range with freeze-public-range.sh, then name the directory it wrote")
+    missing = [n for n in ("REQUEST.md", "range.patch") if not (frozen_dir / n).is_file()]
+    if missing:
+        raise RebindRefused("frozen_dir_incomplete", f"{frozen_dir} lacks {', '.join(missing)}; "
+                            "re-freeze the range with freeze-public-range.sh into a new directory")
+
+
 def rebind(frozen_dir: Path, repo: Path, target_ref: str, out_dir: Path,
            *, allow_public_ref: bool = False) -> RebindResult:
     """Rebase the frozen range onto the live tip of ``target_ref`` and emit a new
@@ -167,6 +178,7 @@ def rebind(frozen_dir: Path, repo: Path, target_ref: str, out_dir: Path,
     out_dir = Path(out_dir)
     if out_dir.exists():
         raise RebindRefused("out_dir_exists", f"a new version is a new dir: {out_dir}")
+    _require_frozen_dir(frozen_dir)
     frozen_base = _frozen_base(frozen_dir)
     branch = _branch_of(target_ref)
     url = _git(repo, "remote", "get-url", "origin").stdout.strip()

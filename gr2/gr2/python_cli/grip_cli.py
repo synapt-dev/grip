@@ -2505,11 +2505,11 @@ def _leases(root: Path, tip: str, refs: list[str]) -> dict[str, str]:
         if now and not tracked:
             raise NativeStoreRefusal(
                 f"fetch first: origin holds {ref} at {now} and this clone has no record of it; "
-                f"run `git -C {root} fetch origin`, then push again", 3)
+                f"run `git -C {shlex.quote(str(root))} fetch origin`, then push again", 3)
         if now != tracked:
             raise NativeStoreRefusal(
                 f"stale tracking: origin's {ref} is {now or 'absent'}, this clone last recorded {tracked or 'absent'}; "
-                f"run `git -C {root} fetch origin`, re-snapshot (store commit) and push again", 3)
+                f"run `git -C {shlex.quote(str(root))} fetch origin`, re-snapshot (store commit) and push again", 3)
         if now and now != tip:
             line = _store_git(root, "rev-list", "--first-parent", tip).stdout.split()
             if now not in line:

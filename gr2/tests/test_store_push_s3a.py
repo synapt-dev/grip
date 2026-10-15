@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shlex
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -102,7 +105,7 @@ def test_l3a_stale_tracking_names_the_shadow(tmp_path, mode):
     result = gr2(root, "push", check=False)
     assert result.returncode == 3, (result.returncode, result.stderr)
     assert (f"stale tracking: origin's {SHADOW} is {other}, this clone last recorded {first}; "
-            f"run `git -C {root} fetch origin`") in result.stderr, result.stderr
+            f"run `git -C {shlex.quote(str(root))} fetch origin`") in result.stderr, result.stderr
     assert _refs(origin) == {MAIN: first, SHADOW: other}
 
 
@@ -151,7 +154,7 @@ def test_fetch_first_names_the_command_and_then_pushes(tmp_path, mode):
     result = gr2(root, "push", check=False)
     assert result.returncode == 3, (result.returncode, result.stderr)
     assert f"fetch first: origin holds {SHADOW} at {first}" in result.stderr, result.stderr
-    assert f"run `git -C {root} fetch origin`, then push again" in result.stderr, result.stderr
+    assert f"run `git -C {shlex.quote(str(root))} fetch origin`, then push again" in result.stderr, result.stderr
     git(root, "fetch", "origin")
     gr2(root, "push")
     head = git(root, "rev-parse", "HEAD").stdout.strip()
@@ -202,3 +205,42 @@ def test_origin_that_already_has_the_line_gets_no_second_copy(tmp_path, mode):
     assert "added to remote.origin.fetch" not in result.stderr, result.stderr
     assert _fetch_lines(root).count(LINE) == 1, _fetch_lines(root)
     assert _fetch_lines(root)[0] == "+refs/heads/*:refs/remotes/origin/*", "existing refspec untouched"
+
+
+def _printed_command(stderr: str) -> str:
+    commands = re.findall(r"run `([^`]+)`", stderr)
+    assert len(commands) == 1, stderr
+    return commands[0]
+
+
+def test_fetch_first_command_runs_as_printed_from_a_spaced_path(tmp_path):
+    """The command a fetch-first refusal prints runs through a shell as printed, from a workspace whose path has a
+    space, and the push after it lands."""
+    base = tmp_path / "with space"
+    base.mkdir()
+    root, origin, first = _pushed(base, "compat")   # full mode refuses a member url with whitespace by design
+    git(root, "update-ref", "-d", TRACKED)
+    _advance(root, "alpha")
+    gr2(root, "commit", "-m", "alpha moved")
+    result = gr2(root, "push", check=False)
+    assert result.returncode == 3, (result.returncode, result.stderr)
+    ran = subprocess.run(["sh", "-c", _printed_command(result.stderr)], capture_output=True, text=True)
+    assert ran.returncode == 0, ran.stderr
+    gr2(root, "push")
+    head = git(root, "rev-parse", "HEAD").stdout.strip()
+    assert _refs(origin) == {MAIN: head, SHADOW: head}
+
+
+def test_stale_tracking_command_runs_as_printed_from_a_spaced_path(tmp_path):
+    """The command a stale-tracking refusal prints runs through a shell as printed from a spaced path, and records
+    origin's shadow in this clone."""
+    base = tmp_path / "with space"
+    base.mkdir()
+    root, origin, first = _pushed(base, "compat")   # full mode refuses a member url with whitespace by design
+    other = _commit(root, first)
+    _land(root, origin, other, SHADOW)
+    result = gr2(root, "push", check=False)
+    assert result.returncode == 3, (result.returncode, result.stderr)
+    ran = subprocess.run(["sh", "-c", _printed_command(result.stderr)], capture_output=True, text=True)
+    assert ran.returncode == 0, ran.stderr
+    assert git(root, "rev-parse", TRACKED).stdout.strip() == other

@@ -5473,6 +5473,56 @@ def _resolve_merge_defaults(ws: Path, review_id: Optional[str], into: Optional[s
     return view["id"], into, feature
 
 
+def _resolve_merged_defaults(ws: Path, review_id: Optional[str], into: Optional[str]) -> tuple[str, str]:
+    """The review id and --into for `review merged`. Not `defaults.target_branch`: that is the merge's precondition
+    (the target still at the reviewed base), false by construction once the merge ran and false again once the
+    target moves. Without --into: (a) this clone's own merge receipt; else (b) the members' remote default branch
+    (HEAD), with no ancestor test: whether the head is merged there is the read's own answer; members that disagree,
+    or a default nobody can read, refuse. Say on stderr what was resolved and from where."""
+    def members(bind: str) -> list[tuple[Path, str]]:
+        return [((ws / m["path"]).resolve(), m["head"]) for m in grip.show_review_commit(ws, bind)["members"]]
+
+    rsrc = "given"
+    if not review_id:
+        review_id, rsrc = defaults.review([b for b, _ in grip.list_review_binds(ws)], members, defaults.current_head)
+    if into:
+        return review_id, into
+    try:
+        view = grip.show_review_commit(ws, review_id.removeprefix("gr:"))
+    except (grip.GripInitError, grip.GripCorruptError, RuntimeError, OSError, ValueError, KeyError,
+            subprocess.SubprocessError):
+        if rsrc != "given":
+            raise
+        return review_id, ""  # the read reports bind_unreadable
+    try:
+        receipts = [r for r in merge_receipts.runs(ws, view["id"]) if r.get("into")]
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError):
+        receipts = []
+    if receipts:
+        into, isrc = receipts[-1]["into"], "receipt"
+    else:
+        found: set[str] = set()
+        for m in view["members"]:
+            repo = (ws / m["path"]).resolve()
+            try:
+                out = merge_gate._git(repo, "ls-remote", "--symref", "--", m["remote"], "HEAD")
+            except (RuntimeError, subprocess.SubprocessError, OSError):
+                out = ""
+            default = next((left.removeprefix("ref: refs/heads/") for left, _, ref in
+                            (line.partition("\t") for line in out.splitlines())
+                            if left.startswith("ref: refs/heads/") and ref == "HEAD"), None)
+            if default is None:
+                raise defaults.Unresolved(f"into_unresolved: {m['path']}: no remote default branch readable; "
+                                          "pass --into <branch>")
+            found.add(default)
+        if len(found) > 1:
+            raise defaults.Unresolved(f"into_unresolved: members' default branches disagree ({', '.join(sorted(found))}); "
+                                      "pass --into <branch>")
+        into, isrc = found.pop(), "remote default"
+    typer.echo(f"resolved: review={view['id']} ({rsrc}), into={into} ({isrc})", err=True)
+    return view["id"], into
+
+
 @review_app.command("stamp", cls=ReviewHeadCommand)
 def review_approve(
     workspace_root: Path,
@@ -5613,6 +5663,92 @@ def review_update(
     typer.echo(json.dumps(receipt))
     for line in next_steps._update_lines(str(ws), receipt):
         typer.echo(line, err=True)
+    if code:
+        raise typer.Exit(code)
+
+
+@review_app.command("blockers", cls=ReviewHeadCommand)
+def review_blockers(
+    workspace_root: Path,
+    review_id: Optional[str] = typer.Argument(None, help="Pinned review id, gr:<sha>; default: the pinned review at the members' current heads"),
+    into: Optional[str] = typer.Option(None, "--into", help="Target branch; default as `review merge`"),
+    feature: Optional[str] = typer.Option(None, "--from", help="Feature branch; default as `review merge`"),
+    check: Optional[List[str]] = typer.Option(None, "--check", help="Required exact-head check name (repeatable); default as `review merge`"),
+    no_set: bool = typer.Option(False, "--no-set", help="As `review merge --no-set`"),
+    approval_count: Optional[int] = typer.Option(None, "--approvals", help="As `review merge --approvals`"),
+    root: Optional[Path] = ROOT_OPTION,
+) -> None:
+    """Read-only: what would stop `review merge` now. The merge gate's preflight and approval count, then stop:
+    no merge build, no push, no receipt. Exit 0 ready (blockers empty), 3 blocked, 5 not measurable."""
+    ws = workspace_root.resolve()
+    try:
+        review_id, into, feature = _resolve_merge_defaults(ws, review_id, into, feature)
+    except (defaults.Unresolved, grip.GripInitError, grip.GripCorruptError) as exc:
+        typer.echo(json.dumps({"id": review_id, "into": into, "feature": feature, "dry_run": True, "ready": None,
+                               "refused": str(exc)}))
+        raise typer.Exit(5)
+    code, receipt = merge_gate.review_merge(ws, review_id, into=into, feature=feature,
+                                            required_checks=tuple(check) if check else None,
+                                            required_approvals=approval_count, no_set=no_set, dry_run=True)
+    if not receipt.get("dry_run"):  # a bind fault: no member's remote was measured
+        receipt.update(dry_run=True, ready=None)
+        code = 5
+    typer.echo(json.dumps(receipt))
+    if code:
+        raise typer.Exit(code)
+
+
+@review_app.command("stamps", cls=ReviewHeadCommand)
+def review_stamps(
+    workspace_root: Path,
+    review_id: Optional[str] = typer.Argument(None, help="Review id; default is the pinned review at the current member heads"),
+    approval_count: Optional[int] = typer.Option(None, "--approvals", help="As `review merge --approvals`"),
+    root: Optional[Path] = ROOT_OPTION,
+) -> None:
+    """Read-only: who stamped this review, when, and at which link commit; the count against the required number,
+    and each member's pinned head. Writes nothing. Exit 0 measured, 5 not measurable."""
+    from . import approvals
+    ws = workspace_root.resolve()
+    try:
+        rid = (review_id or approvals.current_review(ws)).removeprefix("gr:")
+        result = approvals.count_approvals(ws, rid)
+        # Who stamped is a fact about the chain; a missing merge policy must not hide it. The merge still refuses on
+        # approvals_unset; this read reports the policy as unset. Every other policy refusal still refuses here.
+        try:
+            result["required"], result["required_state"] = approvals.required_approvals(ws, approval_count), "set"
+        except approvals.ApprovalRefused as exc:
+            if not str(exc).startswith("approvals_unset"):
+                raise
+            result["required"], result["required_state"] = None, "unset"
+        result["members"] = [{"key": m["key"], "head": m["head"]} for m in grip.show_review_commit(ws, rid)["members"]]
+        # The chain walk keeps the approver per link; the stamp's own record holds when it was made.
+        result["stamps"] = [{"approver": l["approver"], "link": l["commit"],
+                             "created_at": approvals._read_link(ws, l["commit"]).get("created_at")}
+                            for l in result.pop("links")]
+    except (grip.ReviewStoreAbsent, approvals.ApprovalRefused, grip.GripInitError, grip.GripCorruptError,
+            OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+        typer.echo(json.dumps({"review_id": review_id, "refused": f"{type(exc).__name__}: {exc}"}))
+        raise typer.Exit(5)
+    typer.echo(json.dumps(result))
+
+
+@review_app.command("merged", cls=ReviewHeadCommand)
+def review_merged(
+    workspace_root: Path,
+    review_id: Optional[str] = typer.Argument(None, help="Pinned review id, gr:<sha>; default: the pinned review at the members' current heads"),
+    into: Optional[str] = typer.Option(None, "--into", help="Target branch; default: this clone's merge receipt, else the members' remote default branch"),
+    root: Optional[Path] = ROOT_OPTION,
+) -> None:
+    """Read-only: was each member's reviewed head merged on its REMOTE target, by which commit, and when (the merge's
+    committer date). Works from a clone that never ran the merge. Exit 0 all merged, 3 none, 4 some or unmeasured."""
+    ws = workspace_root.resolve()
+    try:
+        review_id, into = _resolve_merged_defaults(ws, review_id, into)
+    except (defaults.Unresolved, grip.GripInitError, grip.GripCorruptError) as exc:
+        typer.echo(json.dumps({"id": review_id, "into": into, "members": [], "refused": str(exc)}))
+        raise typer.Exit(merge_gate.EXIT_PARTIAL)
+    code, receipt = merge_gate.review_merged(ws, review_id, into=into)
+    typer.echo(json.dumps(receipt))
     if code:
         raise typer.Exit(code)
 

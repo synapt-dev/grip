@@ -83,6 +83,59 @@ gr2 store status
 for m in $(ls -d */ | tr -d /); do [ -d "$m/.git" ] && echo "$m $(git -C "$m" rev-parse HEAD)"; done
 ```
 
+### Recipe 4: run the test that counts over a whole review, at its pinned heads
+
+`gr2 check set` checks out every member of the review side by side at its pinned head, runs ONE command once at that lane's root, and records the result on every member's remote as the check named `set`. Every member's clone must already hold its pinned head, so the recipe fetches first; without that, `check set` stops with `could not get object info` (exit 2). Write the command as a small script; it runs with `GR2_SET_ROOT` (the lane root, holding one directory per member) and `GR2_SET_MEMBERS` (JSON, member key to path) set.
+
+```bash
+#!/bin/bash
+set -euo pipefail
+WS=/path/to/workspace                              # EDIT: your workspace root
+REVIEW=gr:0000000000000000000000000000000000000000 # EDIT: the full review ID that `gr2 review pin` printed
+MEMBERS="alpha beta"                               # EDIT: the member directories
+for m in $MEMBERS; do git -C "$WS/$m" fetch -q origin; done   # the pinned heads must be in your clones
+T=$(mktemp -d)                                     # outside the workspace, so the record stays clean
+cat > "$T/set-test.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+cd "$GR2_SET_ROOT"
+for m in alpha beta; do                            # EDIT: the member directories
+  ( cd "$m" && python3 -m pytest -q -p no:cacheprovider )   # EDIT: each member's test command
+done
+EOF
+chmod +x "$T/set-test.sh"
+gr2 check set "$WS" "$REVIEW" -- "$T/set-test.sh"  # exit 0 pass, 1 fail (it prints the output tail), 2 could not run
+```
+
+### Recipe 5: approve a teammate's review
+
+Run it in YOUR workspace: the approval is made as that workspace's `git user.name`, and the author cannot approve their own review. Run it once to see the ranges and read the change; run it again with `APPROVE=1` to test and stamp. It runs the set test itself (as in Recipe 4) and stops before stamping when that test fails.
+
+```bash
+#!/bin/bash
+set -euo pipefail
+WS=/path/to/your/workspace                         # EDIT: your workspace root
+REVIEW=gr:0000000000000000000000000000000000000000 # EDIT: the full review ID the author sent you
+REMOTES="/path/to/alpha.git /path/to/beta.git"     # EDIT: every member's remote
+MEMBERS="alpha beta"                               # EDIT: the member directories, in the same order
+for r in $REMOTES; do gr2 review receive "$WS" "$REVIEW" --remote "$r"; done
+for m in $MEMBERS; do git -C "$WS/$m" fetch -q origin; done   # receive does not fetch the heads; the set test needs them
+gr2 review show "$WS" "$REVIEW"                    # each member's commit range and the files it changes
+[ "${APPROVE:-}" = 1 ] || { echo "Read each member's range above (git diff <start>..<end> in that member), then run this again with APPROVE=1 to test and stamp."; exit 0; }
+T=$(mktemp -d)
+cat > "$T/set-test.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+cd "$GR2_SET_ROOT"
+for m in alpha beta; do                            # EDIT: the member directories
+  ( cd "$m" && python3 -m pytest -q -p no:cacheprovider )   # EDIT: each member's test command
+done
+EOF
+chmod +x "$T/set-test.sh"
+gr2 check set "$WS" "$REVIEW" -- "$T/set-test.sh"  # a failing set test exits 1 here, so nothing below runs
+gr2 review stamp "$WS" "$REVIEW"                   # the approval, at exactly the pinned heads, on every member remote
+```
+
 What these recipes do not need: `--help` on any of the verbs above, `git log` or `git ls-remote` to check progress (`store status` and `store check` answer it), or editing anything inside a member's remote.
 
 ## The review flow

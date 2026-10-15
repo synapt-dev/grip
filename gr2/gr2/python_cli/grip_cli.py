@@ -2559,8 +2559,8 @@ def _member_rewinds(root: Path, tip: str, recorded: str, allow_rewind: list[str]
 
 
 def _rewound_record(root: Path, tip: str, rewound: list[dict[str, str]]) -> tuple[str, str] | None:
-    """A rewind taken under --allow-rewind is WRITTEN DOWN on origin, not only in the result (the main post: "a rewind
-    needs --allow-rewind, and is written down"). The record is one commit at refs/dev.synapt.grip/rewound/<tip>: its
+    """A rewind taken under --allow-rewind is WRITTEN DOWN on origin, not only in the result: a rewind needs
+    --allow-rewind, and is written down. The record is one commit at refs/dev.synapt.grip/rewound/<tip>: its
     parent is the tip and its tree the tip's, so it carries no object the tip does not, and its message names each
     member, the kind and both pins. It rides the root's ONE atomic push, so it lands with the tip or not at all; one
     ref per tip needs no lease (a second push of the same tip rewinds nothing). None when nothing was taken."""

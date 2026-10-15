@@ -155,7 +155,7 @@ def test_b7_a_recorded_pin_gone_everywhere_cannot_be_verified(tmp_path, mode):
 
 @pytest.mark.parametrize("mode", MODES)
 def test_b8_a_rewind_taken_is_written_down_on_origin_with_the_tip(tmp_path, mode):
-    # The main post: "a rewind needs --allow-rewind, and is written down". The record is a commit on origin whose
+    # A rewind needs --allow-rewind, and is written down. The record is a commit on origin whose
     # parent is the tip and whose tree is the tip's (no object the tip does not carry), naming member, kind, both pins.
     root, origin, p0, p1 = _two_pushes(tmp_path, mode)
     git(root / "alpha", "reset", "-q", "--hard", p0)

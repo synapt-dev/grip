@@ -416,7 +416,23 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
             row["check"] = {k: check.get(k) for k in ("status", "record_id", "reason")}
             # A `fail` whose reason is not a verdict on a record is a transport or format fault, never a content answer.
             fault = check["status"] == "fail" and check["reason"] != "required_check_failed"
-            if fault or (plain_checks and check["status"] != "pass"):
+            if not fault and plain_checks and len(view["members"]) >= 2:
+                # Set evidence for X decides X on a multi-member review; the receipt says which source decided it.
+                judged = {n: set_check.judge_plain_check(check["records"], n, view["id"], expected_set_id)
+                          for n in plain_checks}
+                row["check"]["source"] = {n: j[2] for n, j in judged.items()}
+                worst = next((j for want in ("fail", "stale", "absent") for j in judged.values() if j[0] == want), None)
+                if worst is not None:
+                    status, reason = worst[0], worst[1]
+                    stale = next((n for n, j in judged.items() if j is worst), None) if status == "stale" else None
+                    row["refused"] = f"check_{stale}_stale: {reason}" if stale else f"check_{status}: {reason}"
+                    row["check"].update(status=status, reason=reason)
+                else:
+                    row["check"].update(status="pass", reason="required_checks_pass")
+                check = dict(check, status=row["check"]["status"])
+            if row["refused"]:
+                pass
+            elif fault or (plain_checks and check["status"] != "pass"):
                 row["refused"] = f"check_{check['status']}: {check['reason']}"
             elif want_set:
                 verdict, why = set_check.judge_set_records(check["records"], view["id"], expected_set_id)

@@ -52,6 +52,30 @@ def judge_set_records(rows: Sequence[Mapping], review: str, expected_set_id: str
     return "pass", "the set check passed at these heads"
 
 
+def judge_plain_check(rows: Sequence[Mapping], name: str, review: str, expected_set_id: str) -> tuple[str, str, str]:
+    """(status, reason, source) for a plain required name X on a review of two or more members, at one member's head.
+
+    A record named X that carries THIS review and THIS set identity (written by `check set --name X`) is evidence that
+    the members passed X together, and when any exists it alone decides X: a member tested alone is not the set.
+    A record that carries a review or set identity but not this one is stale and never counted, in either direction.
+    Without set evidence, the member's own X records (no review field) decide X exactly as a single member's would."""
+    named = [r for r in rows if r.get("name") == name]
+    scoped = [r for r in named if "review" in r or "set_id" in r]
+    mine = [r for r in scoped if r.get("review") == review and r.get("set_id") == expected_set_id]
+    if mine:
+        if any(r.get("result") != "pass" for r in mine):
+            return "fail", f"the {name} check failed as a set at these heads", "set"
+        return "pass", "required_checks_pass", "set"
+    own = [r for r in named if r not in scoped]
+    if any(r.get("result") != "pass" for r in own):
+        return "fail", "required_check_failed", "member"
+    if own:
+        return "pass", "required_checks_pass", "member"
+    if scoped:
+        return "stale", f"a {name} record exists at this head but not for this review and set", "member"
+    return "absent", "required_check_absent", "member"
+
+
 def read_for_review(remote: str, member: Mapping, head: str, required: Sequence[str], review: str) -> dict:
     """`check show --require set --review`: the read the merge gate would make, with ONE judge for `set`.
 

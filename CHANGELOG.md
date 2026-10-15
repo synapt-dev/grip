@@ -84,6 +84,12 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **`gr2`: `gr2 review merge` no longer prints a recorded remote that carries credentials.** The record writers
+  refuse such a remote, but a record made before they did still reached `review merge`, which printed the remote
+  in each receipt row, in the tracking advice and in the next steps. The merge now refuses as
+  `remote_credentials` before any row is built or any remote is read, naming the member and never the URL, and
+  exits 3. An ssh login (`git@host:...`) and a plain path are not refused.
+
 - **`gr2`: `gr2 review stamp` refuses a review whose target has moved past its base.** A merge needs each
   member's target at the reviewed base, and a pinned review cannot move to a new base, so a stamp written after
   a teammate's merge could never count, and nothing said so until the merge refused as `base_moved`. Stamp now

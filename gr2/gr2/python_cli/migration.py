@@ -15,7 +15,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import yaml
 
 from . import grip
-from .gitops import git, run as _run_git
+from .gitops import git
 from .workspace_guidance import GR1_ONLY_NEXT_STEP, init_unless_inside_workspace, workspace_init_command
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 from gr2.prototypes import repo_maintenance_prototype as repo_proto

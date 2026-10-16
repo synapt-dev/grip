@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from gr2.python_cli import migration
+from gr2.python_cli import gitops
 from gr2.python_cli.app import app
 from gr2.python_cli.migration import migrate_gr1_workspace, render_migration
 from tests.conftest import make_cli_runner
@@ -125,21 +125,44 @@ def test_a_sibling_desk_is_never_read(tmp_path: Path, monkeypatch: pytest.Monkey
     checkout = desk / "alpha"
     checkout.mkdir(parents=True)
     _git(checkout, "init", "-q", "-b", "main", ".")
-    calls: list[str] = []
-    real = migration._run_git
+    # Every git command gr2 builds goes through gitops._spawn (looked up at call time), except the
+    # version report's clone read (version.py), which the migration never calls;
+    # gitops.start, the one long-lived process, is recorded beside it. The migration itself runs
+    # no git here, so the recorder is proven live afterwards by one git call of the test's own.
+    calls: list[tuple[list[str], str | None]] = []
+    real = gitops._spawn
 
-    def recording(path, *args, **kwargs):
-        calls.append(str(path))
-        return real(path, *args, **kwargs)
+    def recording(argv, *, cwd, **kwargs):
+        calls.append(([str(a) for a in argv], None if cwd is None else str(cwd)))
+        return real(argv, cwd=cwd, **kwargs)
 
-    monkeypatch.setattr(migration, "_run_git", recording)
+    real_start = gitops.start
+
+    def recording_start(cwd, *args):
+        calls.append((["git", "-C", str(cwd), *args], None))
+        return real_start(cwd, *args)
+
+    monkeypatch.setattr(gitops, "_spawn", recording)
+    monkeypatch.setattr(gitops, "start", recording_start)
     (checkout / ".git").chmod(0)
     try:
         payload = migrate_gr1_workspace(root)
     finally:
         (checkout / ".git").chmod(0o755)
     desk_real = str(desk.resolve())
-    assert [c for c in calls if str(Path(c).resolve()).startswith(desk_real)] == []
+
+    def under_desk(path: str) -> bool:
+        resolved = str(Path(path).resolve())
+        return resolved == desk_real or resolved.startswith(desk_real + os.sep)
+
+    seen = len(calls)
+    gitops.git(tmp_path, "--version")
+    assert len(calls) == seen + 1, "the recorder did not see git, so it cannot witness a read"
+    assert [c for c in calls if c[1] is not None and under_desk(c[1])] == []
+    assert [
+        argv for argv, _ in calls
+        if any(a == "-C" and i + 1 < len(argv) and under_desk(argv[i + 1]) for i, a in enumerate(argv))
+    ] == []
     assert payload["not_migrated"] == [
         {"unit": "atlas", "path": "../synapt-codex", "reason": "another root, not migrated here"}
     ]

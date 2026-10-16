@@ -896,6 +896,7 @@ flag  workspace bootstrap-gr1 --json                                  stable
 flag  workspace bootstrap-gr1 --receipt <str>                         stable
 flag  workspace bootstrap-gr1 --regenerate                            stable
 flag  workspace bootstrap-gr1 --rollback-receipt <str>                stable
+flag  workspace bootstrap-gr1 --unit <str>                            stable
 verb  workspace bootstrap-gr1                                         stable
 # workspace convert-clone
 arg   workspace convert-clone path <str>                              stable
@@ -932,6 +933,7 @@ arg   workspace migrate-gr1 workspace_root <str>                      stable
 flag  workspace migrate-gr1 --apply                                   stable
 flag  workspace migrate-gr1 --force                                   stable
 flag  workspace migrate-gr1 --json                                    stable
+flag  workspace migrate-gr1 --unit <str>                              stable
 verb  workspace migrate-gr1                                           stable
 # workspace migrate-lane-state
 arg   workspace migrate-lane-state workspace_root <str>               stable

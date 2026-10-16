@@ -119,6 +119,11 @@ Required rule:
 
 - `.gitgrip/` remains untouched during initial migration
 
+One root at a time: migrate-gr1 declares only this root's own unit (worktree `main`, or the
+worktree that names this directory) and units nested inside it. A desk beside the root is
+another root; it is named under NOT MIGRATED HERE and migrates from its own root. If the gr1
+agents manifest puts two units at this root, pass `--unit <name>` to keep one.
+
 ### Stage 2: Validate the Compiled Workspace
 
 Before materializing anything operationally:

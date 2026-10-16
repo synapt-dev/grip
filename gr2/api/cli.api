@@ -415,6 +415,7 @@ flag  pr create --body-file <str>                                     stable
 flag  pr create --draft/--no-draft                                    stable
 flag  pr create --json                                                stable
 flag  pr create --platform <str>                                      stable
+flag  pr create --repo-path <str>                                     stable
 flag  pr create --review <str>                                        stable
 flag  pr create --root/-C <str>                                       stable
 flag  pr create --title <str>                                         stable

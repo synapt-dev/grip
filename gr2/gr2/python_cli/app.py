@@ -870,6 +870,107 @@ def _pr_create_for_review(workspace_root, review, platform, base_branch, draft, 
     typer.echo(json.dumps(payload, indent=2))
 
 
+def _live_remote_tips(workspace_root: Path, remote: str, *refs: str) -> dict[str, str]:
+    """The tip of each named ref on `remote`, read by ls-remote from the workspace root at this moment, the way
+    `review pin` dials: {full ref name: sha}. A ref the remote does not hold is absent from the answer."""
+    seen = git(workspace_root, "ls-remote", "--", remote, *refs, timeout=_REMOTE_TIP_TIMEOUT)
+    if seen.returncode != 0:
+        _refuse(f"cannot read {' and '.join(refs)} on the remote: {seen.stderr.strip()}")
+    tips = {}
+    for line in seen.stdout.splitlines():
+        sha, _, name = line.partition("\t")
+        if name in refs:  # ls-remote matches a pattern by its tail, so refs/heads/x also lists a/refs/heads/x
+            tips[name] = sha
+    return tips
+
+
+def pin_single_member(workspace_root: Path, repo_path: Path, base_branch: str) -> str:
+    """Pin the one-branch review `pr create --repo-path` stands on, and return its id (gr:<sha>).
+
+    The member is the workspace member whose checkout is `repo_path`; its checkout's HEAD is the head and the LIVE
+    tip of refs/heads/<base_branch> on its remote is the base, so behind-must-be-0 holds by construction. The pin
+    is written by the writer `review pin` uses, which reads that tip again and refuses ``base_not_live_head`` if
+    the base moved in between. The head must already be the tip of the member's branch on the remote, because the PR
+    carries the remote branch; a head pushed as a branch other than the base needs no --ratified, which is only for
+    a head found at the base, a tag or a review ref (the pin records the order as Pushed-before-pin).
+
+    Other pinned reviews are never consulted to choose one: a pin that holds EXACTLY this row (one member, the same
+    key, path, remote, base, head and target, no title or body) is reused and no ref is made; otherwise a new pin is
+    made, whatever else the workspace has pinned. The id comes back explicitly, so the caller never asks which of
+    several pins is "the" review."""
+    from . import lane_downstream, review_members
+
+    checkout = repo_path.resolve()
+    try:
+        members = review_members.workspace_members(workspace_root)
+    except (lane_downstream.MembersUnreadable, lane_downstream.PinConflict) as exc:
+        _refuse(str(exc))
+    member = next((m for m in members if (workspace_root / m.path).resolve() == checkout), None)
+    if member is None:
+        _refuse(f"{checkout} is not a member checkout of the workspace {workspace_root} "
+                f"(members: {', '.join(m.name for m in members) or 'none'})")
+    key = member.name
+    remote = member.url
+    if not remote:
+        origin = git(checkout, "remote", "get-url", "origin")
+        remote = origin.stdout.strip() if origin.returncode == 0 else ""
+    if not remote:
+        _refuse(f"{key}: the workspace records no remote url for it and its checkout has no origin")
+    if grip.url_has_credentials(remote):
+        _refuse(f"{key}: its url carries credentials or cannot be parsed; use a url without them")
+    at = git(checkout, "rev-parse", "--verify", "HEAD")
+    if at.returncode != 0:
+        _refuse(f"{key}: cannot read HEAD in {checkout}: {at.stderr.strip()}")
+    head = at.stdout.strip()
+    branch = git(checkout, "branch", "--show-current").stdout.strip()
+    if not branch:
+        _refuse(f"{key} has a detached HEAD; check out the branch to open its PR from")
+    base = base_branch.removeprefix("refs/heads/")
+    if branch == base:
+        _refuse(f"{key} is on {base}, the base itself; a PR needs the work on a branch of its own, pushed")
+    tips = _live_remote_tips(workspace_root, remote, f"refs/heads/{branch}", f"refs/heads/{base}")
+    pushed = tips.get(f"refs/heads/{branch}")
+    if pushed != head:
+        _refuse(f"{key}: {branch} on the remote is {pushed[:12] if pushed else 'absent'}, not HEAD {head[:12]}; "
+                "push it first with `gr2 push`, since the PR carries the remote branch")
+    live_base = tips.get(f"refs/heads/{base}")
+    if live_base is None:
+        _refuse(f"{key}: {base} is not a branch on the remote, so there is no base to open the PR against")
+    if live_base == head:
+        _refuse(f"{key}: HEAD is already the tip of {base} on the remote; there is nothing to open a PR for")
+    row = {"key": key, "remote": remote, "path": member.path, "head": head, "base": live_base,
+           "ref": f"refs/heads/{base}", "title": "", "body": ""}
+    what = f"{key} {base}@{live_base[:12]}..{branch}@{head[:12]}"
+    reused = _pin_holding_exactly(workspace_root, row)
+    if reused is not None:
+        typer.echo(f"gr2: reusing {reused}: it pins exactly {what}", err=True)
+        return reused
+    review_id = f"gr:{_pin_rows(workspace_root, [row])}"
+    typer.echo(f"gr2: pinned {review_id}: {what} (its HEAD on the remote, over the live tip of the base)", err=True)
+    return review_id
+
+
+def _pin_holding_exactly(workspace_root: Path, row: dict) -> Optional[str]:
+    """The id of the newest pinned review that holds exactly `row` and nothing else, or None. Every bind in the
+    workspace is a candidate (the lister keeps closed ones too) and one that cannot be read is not a match."""
+    try:
+        binds = grip.list_review_binds(workspace_root)
+    except grip.ReviewStoreAbsent:  # nothing has been pinned here yet
+        return None
+    except _REVIEW_REFUSALS as exc:
+        _refuse_text(exc)
+    for commit, _when in reversed(binds):
+        try:
+            members = grip.show_review_commit(workspace_root, commit)["members"]
+        except (grip.GripCorruptError, grip.GripInitError, RuntimeError, OSError, ValueError, KeyError):
+            continue
+        if len(members) == 1 and all(members[0].get(f) == v for f, v in (
+                ("key", row["key"]), ("path", row["path"]), ("remote", row["remote"]), ("base", row["base"]),
+                ("head", row["head"]), ("target", row["ref"]), ("title", ""), ("body", ""))):
+            return f"gr:{commit}"
+    return None
+
+
 def _repo_slug_from_url(url: str, fallback_name: str) -> str:
     cleaned = url.strip()
     if cleaned.startswith("git@github.com:"):
@@ -4118,6 +4219,7 @@ def pr_create(
     platform: str = typer.Option("github", "--platform", help="Platform adapter name"),
     base_branch: Optional[str] = typer.Option(None, "--base", help="Base branch for created PRs. A lane defaults to main; a review uses each member's tracked branch."),
     review: Optional[str] = typer.Option(None, "--review", help="Review ID (gr:<sha>) to open PRs for; defaults to the workspace's only pinned review"),
+    repo_path: Optional[Path] = typer.Option(None, "--repo-path", help="A one-branch PR from this member checkout, whose HEAD must already be pushed. Pins it over the live tip of --base (required), reusing a pin that holds exactly that row, then opens the PR for that review. The workspace's other pinned reviews are not consulted."),
     draft: bool = typer.Option(True, "--draft/--no-draft", help="Create drafts by default. --no-draft explicitly publishes PRs."),
     title: Optional[str] = typer.Option(None, "--title", help="Title for every PR in the group. Defaults to the lane name, which makes every PR in a set read identically; pass one when a reviewer must be able to tell the PRs apart."),
     body: Optional[str] = typer.Option(None, "--body", help="Body for every PR in the group. Defaults to a line naming the group and listing its repos."),
@@ -4128,7 +4230,16 @@ def pr_create(
     """Create a grouped set of per-repo PRs for a lane, or for the current review."""
     workspace_root = workspace_root.resolve()
     _refuse_review_beside_unit(owner_unit, review)
+    if repo_path is not None:
+        if owner_unit is not None:
+            _refuse("--repo-path opens the PR of one branch for the review form; do not combine it with OWNER_UNIT")
+        if review is not None:
+            _refuse("--repo-path pins its own review and --review names one; give one or the other")
+        if base_branch is None:
+            _refuse("--repo-path needs --base <branch>: the branch the PR opens against")
     if owner_unit is None:
+        if repo_path is not None:
+            review = pin_single_member(workspace_root, repo_path, base_branch)
         _pr_create_for_review(workspace_root, review, platform, base_branch, draft, title, body, body_file)
         return
     base_branch = base_branch or "main"
@@ -4517,6 +4628,21 @@ def _normalize_review_row(raw: object) -> dict:
     return row
 
 
+def _pin_rows(workspace_root: Optional[Path], rows: list[dict], ratified: Optional[str] = None) -> str:
+    """Pin `rows` as one review gr commit and record `review.bound`; returns the commit. The one writer behind
+    `review pin` and `pr create --repo-path`, so both make the same pin from the same rows, under the same refusals."""
+    bind_root = _resolve_workspace_root(workspace_root)
+    commit = _review_call(grip.create_review_bind_commit, bind_root, rows, ratified=ratified)
+    emit_after_outcome(
+        event_type=EventType.REVIEW_BOUND,
+        workspace_root=Path(bind_root).resolve(),
+        actor="system",
+        owner_unit="workspace",
+        payload={"bind_commit": f"gr:{commit}", "repos": [str(r.get("key", "")) for r in rows]},
+    )
+    return commit
+
+
 @review_app.command("pin")
 def review_bind(
     ctx: typer.Context,
@@ -4631,15 +4757,7 @@ def review_bind(
                 "objects to test them together at the pinned heads, and a review over several members merges only on "
                 "that record. No review id was minted; add the source or range to each row and pin again"
             )
-    bind_root = _resolve_workspace_root(workspace_root)
-    commit = _review_call(grip.create_review_bind_commit, bind_root, rows, ratified=ratified)
-    emit_after_outcome(
-        event_type=EventType.REVIEW_BOUND,
-        workspace_root=Path(bind_root).resolve(),
-        actor="system",
-        owner_unit="workspace",
-        payload={"bind_commit": f"gr:{commit}", "repos": [str(r.get("key", "")) for r in rows]},
-    )
+    commit = _pin_rows(workspace_root, rows, ratified)
     typer.echo(f"gr:{commit}")
 
 

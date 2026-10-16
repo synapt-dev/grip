@@ -147,6 +147,22 @@ def test_ignored_module_at_the_tag_is_never_released(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize("flag", ["--skip-worktree", "--assume-unchanged"])
+def test_hidden_tracked_edit_at_the_tag_is_never_released(tmp_path: Path, flag: str) -> None:
+    """A tracked module git is told not to look at still ships its edit, so the tag says dirty."""
+    src = _source(tmp_path)
+    _git([*_IDENT, "tag", f"gr2/v{_VERSION}"], src)
+    sha = _git(["rev-parse", "--short", "HEAD"], src)
+    _git(["update-index", flag, "gr2/python_cli/version.py"], src)
+    module = src / "gr2" / "python_cli" / "version.py"
+    module.write_text(module.read_text(encoding="utf-8") + "HIDDEN = True\n", encoding="utf-8")
+    assert _git(["status", "--porcelain"], src) == ""
+
+    assert _installed_line(src, tmp_path) == (
+        f"{_VERSION}+g{sha}.dirty dev build, not a release"
+    )
+
+
 def test_pycache_alone_at_the_tag_is_still_released(tmp_path: Path) -> None:
     """Control: bytecode under `__pycache__/` is not a source change, so the tag still releases."""
     src = _source(tmp_path)

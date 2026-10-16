@@ -8,7 +8,9 @@ it knows into the package as `gr2/python_cli/_build.json`:
 * `release` -- true only when `HEAD` carries the tag `gr2/v<version>`, the tag the release
   workflow builds from, AND the tree is not `dirty`;
 * `dirty` -- true when a file under this directory differs from `HEAD`, tracked, untracked
-  or ignored (an untracked or `.gitignore`d module would ship in the wheel); only the
+  or ignored (an untracked or `.gitignore`d module would ship in the wheel), or when a
+  tracked file is marked skip-worktree or assume-unchanged (status cannot see its edits,
+  so any mark counts; a fresh checkout has none); only the
   build's own output (`build/`, `dist/`, `*.egg-info/`) and `__pycache__/` are excluded,
   by pathspec, so no ignore file decides it. The cost: a local checkout with ignored files
   under this directory (a `.venv/`, `.pytest_cache/`) stamps dirty, never released. A
@@ -65,7 +67,13 @@ def _stamp(version: str) -> dict:
             ":(exclude)build", ":(exclude)dist", ":(exclude,glob)**/*.egg-info/**",
             ":(exclude,glob)**/__pycache__/**",
         )
-        if status is None or status:
+        # skip-worktree (`S`, sparse checkout sets it) and assume-unchanged (lowercase) hide a
+        # tracked file's edits from status, and the edited file still ships.
+        flags = _git("ls-files", "-v", "--", ".")
+        hidden = flags is None or any(
+            line[:1] == "S" or line[:1].islower() for line in flags.splitlines()
+        )
+        if status is None or status or hidden:
             return {"commit": commit, "dirty": True, "release": False}
         return {"commit": commit, "release": f"gr2/v{version}" in tags}
     carried = os.path.join(_HERE, _STAMP)

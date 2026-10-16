@@ -39,6 +39,36 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return gitops.run(cwd, *args, via_cwd=True)
 
 
+def review_cache_root() -> Path:
+    """The persistent per-host review-mirror cache root, SHARED with
+    config/scripts/review-clone.sh so there is one bare mirror per repo on this
+    host, never a second keyed differently. Honors the same
+    ``SYNAPT_REVIEW_CACHE_ROOT`` override the script honors."""
+    return Path(os.environ.get("SYNAPT_REVIEW_CACHE_ROOT") or (Path.home() / ".synapt-review-cache"))
+
+
+def mirror_basename(transport_location: str) -> str:
+    """The repo name the shared cache keys a mirror under: the URL/path basename
+    minus a trailing ``.git`` (e.g. …/recall.git -> recall). This matches
+    review-clone.sh's ``<repo>.git`` for every repo whose review-clone name is its
+    URL basename (all the code repos); ``site`` is the one review-clone name that
+    is NOT its URL basename, and is out of scope for multi-repo code review."""
+    name = transport_location.rstrip("/").rsplit("/", 1)[-1]
+    return name[:-4] if name.endswith(".git") else name
+
+
+def reader_sparse_patterns(mirror: Path, ref: str, repo_name: str, touched: list[str]) -> tuple[list[str], str]:
+    """The sparse patterns a READ lane of ``ref`` checks out, and the profile they came from.
+
+    One rule for both review lane kinds: the profile (``resolve_sparse_profile``) first, then
+    every touched path as an explicit include. No profile means no patterns (the whole tree),
+    because a bare range-union would narrow to the changed files and hide their context."""
+    profile_content, profile_source = resolve_sparse_profile(mirror, ref, repo_name)
+    if not profile_content.strip():
+        return [], profile_source
+    return _pattern_lines(profile_content, touched), profile_source
+
+
 def review_profile_dir() -> Path | None:
     """The gripspace-level sparse-profile fallback dir, honoring the same
     ``SYNAPT_REVIEW_PROFILE_DIR`` override review-clone.sh honors. gr2 is
@@ -111,18 +141,16 @@ def materialize_review_ephemeral(
     if dest.exists():
         raise ReviewEphemeralError(f"review-ephemeral destination already exists: {dest}")
 
-    profile_content, profile_source = resolve_sparse_profile(mirror, head, repo_name)
-    patterns = _pattern_lines(profile_content, touched_paths(mirror, base, head))
+    patterns, profile_source = reader_sparse_patterns(mirror, head, repo_name, touched_paths(mirror, base, head))
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     cloned = gitops.clone("--quiet", "--no-checkout", "--filter=blob:none", f"file://{mirror}", str(dest))
     if cloned.returncode != 0:
         raise ReviewEphemeralError(f"blobless clone from {mirror} failed: {cloned.stderr.strip()}")
 
-    # Sparse only when there is a profile AND patterns; a bare range-union with no
-    # profile would narrow to just the changed files, hiding their context, so a
-    # profile-less repo stays whole-tree (blobless), matching review-clone.sh.
-    if profile_content.strip() and patterns:
+    # Sparse only when there is a profile (reader_sparse_patterns returns none without
+    # one): a profile-less repo stays whole-tree (blobless), matching review-clone.sh.
+    if patterns:
         applied = gitops.run(dest, "sparse-checkout", "set", "--no-cone", "--stdin",
                              input="\n".join(patterns) + "\n")
         if applied.returncode != 0:

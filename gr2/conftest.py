@@ -197,5 +197,9 @@ def _isolated_git_config(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(blank_global))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(blank_xdg))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    # `review open` reads its lane from the host's review mirror cache, so every test gets its
+    # own cache root: no test ever writes the host's ~/.synapt-review-cache, and no test reads
+    # a mirror another left behind. A test that sets its own root still overrides this one.
+    monkeypatch.setenv("SYNAPT_REVIEW_CACHE_ROOT", str(tmp_path_factory.mktemp("isolated-review-cache")))
     monkeypatch.delenv("GIT_CONFIG_COUNT", raising=False)
     monkeypatch.delenv("GIT_CONFIG_PARAMETERS", raising=False)

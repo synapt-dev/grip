@@ -3,6 +3,10 @@
 Never from the pinned range.patch text: format-patch text is ambiguous (an empty commit has no separator of its own,
 so a message carrying a whole stanza reads as diff, and `git am --empty=keep` creates that file too). A member clone
 that lacks the base or head refuses by name; there is no text fallback. A range with merges shows its net change.
+
+The change is read from the merge-base of the pinned base and the head (`git diff base...head`), as a PR page reads
+it: pin holds the base at the target's live tip, which may have moved past where the head branched, and a plain
+`base head` diff would show what the target gained since as the member undoing it.
 """
 from __future__ import annotations
 
@@ -23,7 +27,7 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def change(workspace: Path, member: dict[str, object], *, with_diff: bool) -> dict[str, object]:
-    """{"files", "diffstat", and with_diff "diff"} for one member, from `git diff base head` in its clone at
+    """{"files", "diffstat", and with_diff "diff"} for one member, from `git diff base...head` in its clone at
     <workspace>/<path>. Files come from `--numstat -z`, so a name git would quote stays one plain name."""
     repo, base, head = workspace / str(member["path"]), str(member["base"]), str(member["head"])
     for sha in (base, head):
@@ -31,7 +35,11 @@ def change(workspace: Path, member: dict[str, object], *, with_diff: bool) -> di
             exc = GripReviewRefused("member_objects_missing", f"{member['key']} {sha}", str(repo))
             exc.add_note("next: fetch the member's head into its clone (git fetch <remote> <head>), then show again")
             raise exc
-    fields = _git(repo, "diff", *_PLAIN, "--numstat", "-z", base, head).split("\0")
+    fork = gitops.run(repo, "merge-base", base, head)
+    if fork.returncode != 0:  # no common history: nothing the head adds to the target can be named
+        raise GripReviewRefused("member_no_merge_base", f"{member['key']} {base}", head)
+    fork_sha = fork.stdout.strip()
+    fields = _git(repo, "diff", *_PLAIN, "--numstat", "-z", fork_sha, head).split("\0")
     files: list[str] = []
     added = removed = 0
     i = 0
@@ -48,7 +56,7 @@ def change(workspace: Path, member: dict[str, object], *, with_diff: bool) -> di
     out: dict[str, object] = {"files": files, "diffstat": {"files": len(files), "commits": commits,
                                                            "added": added, "removed": removed}}
     if with_diff:
-        out["diff"] = _git(repo, "diff", *_PLAIN, base, head)
+        out["diff"] = _git(repo, "diff", *_PLAIN, fork_sha, head)
     return out
 
 

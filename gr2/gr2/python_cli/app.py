@@ -358,7 +358,9 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
                 elif state == "neither":
                     raise SystemExit(f"run gr2 workspace materialize first: {source_repo_root} is not a repository")
                 target_repo_root = _lane_repo_root(workspace_root, owner_unit, lane_name, repo_name)
-                cache_root = grip_dir(workspace_root) / "cache" / "repos" / f"{source_repo_root.name}.git"
+                # Keyed by the member's spec NAME, the key materialize and sync write; the directory
+                # basename differs for a renamed or nested member and collides for two `*/home` members.
+                cache_root = spec_apply.repo_cache_path(workspace_root, repo_name)
                 gitops.ensure_repo_cache(gitops.remote_origin_url(source_repo_root), cache_root, local_source=source_repo_root)
                 # The seed is the author's own work when the source already holds a branch of this name
                 # (clone_exec seeds from it); otherwise it is the source's HEAD.
@@ -369,6 +371,7 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
                     target_repo_root=target_repo_root,
                     branch=branch_map[repo_name],
                     workspace_root=workspace_root,
+                    cache_root=cache_root,
                 )
             # Record the fork base = the point the lane forked from its integration branch, so
             # `review create-project` can pin base..head. A fresh clone first continues a branch the

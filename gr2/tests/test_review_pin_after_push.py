@@ -235,3 +235,32 @@ def test_p9_stale_tracking_ref_is_not_the_judge(tmp_path):
     assert result.exit_code == 2, result.output
     assert "refused: head_behind_remote_branch" in result.output
     assert _review_refs(w["ws"]) == ""
+
+
+def _range_patch(tmp_path: Path, w: dict) -> Path:
+    patch = tmp_path / "range.patch"
+    patch.write_text(_git(w["src"], "format-patch", "--stdout", "--full-index", f"{w['base']}..{w['head']}") + "\n")
+    return patch
+
+
+def test_p10_a_hold_branch_pins_from_range_and_opens(tmp_path):
+    # A head held on a branch under refs/heads/hold/ before review: the reviewer pins it from the
+    # author's range (no --source), opens a lane on it, and the bind records where it was pushed.
+    w = _world(tmp_path, push_head=False)
+    _git(w["src"], "push", "-q", "origin", f"{w['head']}:refs/heads/hold/cfg")
+    rid = _gr_id(_pin(w, "--from-range", str(_range_patch(tmp_path, w)), source=False))
+    assert _show(w["ws"], rid)["members"][0]["pushed_before_pin"] == "refs/heads/hold/cfg"
+    opened = runner.invoke(app, ["review", "open", str(w["ws"]), rid.removeprefix("gr:"), "--repo", "src",
+                                 "--lane-dir", str(tmp_path / "lane"), "--enter", "--json"])
+    assert opened.exit_code == 0, opened.output
+
+
+def test_p10b_a_hold_ref_outside_refs_heads_still_refuses(tmp_path):
+    # refs/hold/<x> is not a branch: the head counts as already on the remote, and nothing is written.
+    w = _world(tmp_path, push_head=False)
+    _git(w["src"], "push", "-q", "origin", f"{w['head']}:refs/hold/cfg")
+    result = _pin(w, "--from-range", str(_range_patch(tmp_path, w)), source=False)
+    assert result.exit_code == 2, result.output
+    assert "refused: head_already_on_remote" in result.output
+    assert "pin a head before you push it" in result.output
+    assert _review_refs(w["ws"]) == ""

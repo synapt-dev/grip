@@ -132,6 +132,35 @@ def test_untracked_module_at_the_tag_is_never_released(tmp_path: Path) -> None:
     )
 
 
+def test_ignored_module_at_the_tag_is_never_released(tmp_path: Path) -> None:
+    """A `.gitignore`d module ships in the wheel too, so a build at the tag with one says dirty."""
+    src = _source(tmp_path)
+    (src / ".gitignore").write_text("*_local.py\n", encoding="utf-8")
+    _git([*_IDENT, "add", ".gitignore"], src)
+    _git([*_IDENT, "commit", "-q", "-m", "ignore local modules"], src)
+    _git([*_IDENT, "tag", f"gr2/v{_VERSION}"], src)
+    sha = _git(["rev-parse", "--short", "HEAD"], src)
+    (src / "gr2" / "python_cli" / "zz_local.py").write_text("SHIPPED = True\n", encoding="utf-8")
+
+    assert _installed_line(src, tmp_path) == (
+        f"{_VERSION}+g{sha}.dirty dev build, not a release"
+    )
+
+
+def test_pycache_alone_at_the_tag_is_still_released(tmp_path: Path) -> None:
+    """Control: bytecode under `__pycache__/` is not a source change, so the tag still releases."""
+    src = _source(tmp_path)
+    (src / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
+    _git([*_IDENT, "add", ".gitignore"], src)
+    _git([*_IDENT, "commit", "-q", "-m", "ignore bytecode"], src)
+    _git([*_IDENT, "tag", f"gr2/v{_VERSION}"], src)
+    cache = src / "gr2" / "python_cli" / "__pycache__"
+    cache.mkdir()
+    (cache / "version.cpython-314.pyc").write_bytes(b"\0")
+
+    assert _installed_line(src, tmp_path) == f"{_VERSION} released"
+
+
 def test_sdist_built_inside_another_checkout_keeps_its_carried_commit(tmp_path: Path) -> None:
     """An sdist unpacked inside some other repo names the source commit, never that repo's HEAD."""
     src = _source(tmp_path)

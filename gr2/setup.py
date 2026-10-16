@@ -6,10 +6,13 @@ it knows into the package as `gr2/python_cli/_build.json`:
 * `commit` -- the short sha of `HEAD`, or null when git is absent or this is not a checkout
   that tracks this `setup.py` (an sdist unpacked inside another repo uses its carried stamp);
 * `release` -- true only when `HEAD` carries the tag `gr2/v<version>`, the tag the release
-  workflow builds from, AND no tracked file under this directory differs from `HEAD`;
-* `dirty` -- true when a file under this directory differs from `HEAD`, tracked or not (an
-  untracked module would ship in the wheel); only the build's own output (`build/`,
-  `dist/`, `*.egg-info/`) is excluded, by pathspec, so no ignore file decides it.
+  workflow builds from, AND the tree is not `dirty`;
+* `dirty` -- true when a file under this directory differs from `HEAD`, tracked, untracked
+  or ignored (an untracked or `.gitignore`d module would ship in the wheel); only the
+  build's own output (`build/`, `dist/`, `*.egg-info/`) and `__pycache__/` are excluded,
+  by pathspec, so no ignore file decides it. The cost: a local checkout with ignored files
+  under this directory (a `.venv/`, `.pytest_cache/`) stamps dirty, never released. A
+  release is cut by CI from a fresh checkout, which has none.
 
 An sdist carries the stamp its own build wrote, so a wheel built FROM the sdist (what
 `python -m build` does, with no `.git` in the unpacked tree) keeps the source commit
@@ -55,9 +58,12 @@ def _stamp(version: str) -> dict:
     commit = _git("rev-parse", "--short", "HEAD") if tracked else None
     if commit:
         tags = (_git("tag", "--points-at", "HEAD") or "").split()
+        # traditional, not matching: matching folds an ignored directory into one entry that
+        # no exclude pathspec drops, so `__pycache__/` could never be excluded.
         status = _git(
-            "status", "--porcelain", "--untracked-files=all", "--", ".",
+            "status", "--porcelain", "--untracked-files=all", "--ignored=traditional", "--", ".",
             ":(exclude)build", ":(exclude)dist", ":(exclude,glob)**/*.egg-info/**",
+            ":(exclude,glob)**/__pycache__/**",
         )
         if status is None or status:
             return {"commit": commit, "dirty": True, "release": False}

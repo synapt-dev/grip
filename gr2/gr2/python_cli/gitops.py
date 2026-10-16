@@ -708,6 +708,7 @@ def ensure_lane_checkout(
     branch: str,
     workspace_root: Path | None = None,
     seed_commit: str | None = None,
+    cache_root: Path | None = None,
 ) -> bool:
     """Ensure a real, state-isolated lane checkout exists (grip#807).
 
@@ -730,6 +731,7 @@ def ensure_lane_checkout(
         branch=branch,
         seed_commit=seed_commit,
         workspace_root=workspace_root,
+        cache_root=cache_root,
     )
 
 

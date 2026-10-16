@@ -278,8 +278,9 @@ def multi(world, tmp_path):
                "beta": dict(repo=beta, remote=remote, head=head, base=world["base"])}
     rows = [{"key": key, "path": key, "remote": str(m["remote"]), "head": m["head"], "base": m["base"],
              "ref": "refs/heads/main", "source": str(m["repo"])} for key, m in members.items()]
-    # The original member was already pushed by world; this names that local-fixture permission.
-    rid = grip.create_review_bind_commit(workspace, rows, ratified="local fixture")
+    # The original member was already pushed by world as its feature branch tip, which pins and records
+    # pushed_before_pin (1.0521306); no receipt is needed.
+    rid = grip.create_review_bind_commit(workspace, rows)
     git(workspace, "update-ref", "-d", "refs/dev.synapt.grip/__reviews__/v1/" + world["rid"])
     for m in members.values():
         git(m["repo"], "push", m["remote"], "feature")

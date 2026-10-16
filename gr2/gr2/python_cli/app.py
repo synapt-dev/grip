@@ -4447,7 +4447,7 @@ def review_bind(
     title: str = typer.Option("", "--title", help="Platform title text (NORM-hashed into the object)"),
     body: str = typer.Option("", "--body", help="Platform body text (NORM-hashed into the object)"),
     rows_json: Optional[Path] = typer.Option(None, "--rows-json", help="A JSON file with a list of row objects (key/remote/base/head, optional path/ref/title/body; source or range is optional on a single row but required on every row when the file holds more than one); pins ALL rows into ONE gr commit. Exclusive with the single-row flags."),
-    ratified: Optional[str] = typer.Option(None, "--ratified", help="Named ratify receipt id: the sanctioned fix-forward when a --head is already on the remote"),
+    ratified: Optional[str] = typer.Option(None, "--ratified", help="gr:<id> of an earlier pin of this same head that was stamped: the one way to pin a --head already on the remote; recorded in the review"),
     members: Optional[str] = typer.Option(None, "--members", help="With no rows given: pin only these members (comma-separated names)"),
 ) -> None:
     """Pin a review gr commit for one or more repository rows; print ``gr:<commit>``.

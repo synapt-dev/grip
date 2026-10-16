@@ -123,7 +123,7 @@ def not_received(workspace: str, review: str) -> str:
 
 def head_already_on_remote() -> str:
     return ("next: pin a head before you push it. For this head, either commit a new head and pin it before "
-            "pushing, or pin this one with --ratified <receipt id> naming the ratify that already covers it")
+            "pushing, or pin this one with --ratified gr:<id>, naming an earlier pin of this same head that was stamped")
 
 
 def head_behind_remote_branch(remote_tip: str) -> str:
@@ -176,7 +176,7 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
         return (f"next: the feature branch moved after the pin; to check the set as it is now: gr2 check set "
                 f"{_shown(workspace)} {_shown(review)} --at-remote-heads {_shown(branch)} -- <your combined test command>. "
                 "To merge it, commit a new head and pin it before you push, or pin this head with "
-                "--ratified <receipt id> naming the ratify that covers it")
+                "--ratified gr:<id>, naming an earlier pin of this same head that was stamped")
     if refused.startswith("base_moved"):
         return (f"next: the target moved after the pin; bring every member up to it and pin again: "
                 f"gr2 review update {_shown(workspace)} {_shown(review)}")

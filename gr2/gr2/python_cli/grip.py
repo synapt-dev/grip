@@ -741,6 +741,9 @@ def _bind_review_rows_body(
     scan_items: list[tuple[str, str]] = [("author", author)]
     seen: set[str] = set()
     pushed_before: dict[str, str] = {}
+    ratified_by: dict[str, str] = {}
+    # A named receipt is resolved before any row is read, so an id that names nothing refuses on its own.
+    receipt = _ratified_receipt(workspace, ratified) if ratified else None
     for row in sorted(rows, key=lambda item: item.get("key", "")):
         key = row.get("key", "")
         # The same rule the readers apply, so the writer never makes a record its readers refuse.
@@ -772,11 +775,15 @@ def _bind_review_rows_body(
         # `trunk` or `heads/trunk` --ref would otherwise read its own branch as "another" branch.
         pushed_at = sorted(name for name, sha in tips.items()
                            if sha == head and name.startswith("refs/heads/") and name != target)
-        if not ratified:
-            if any(sha == head for sha in tips.values()) and (not pushed_at or tips.get(target) == head):
+        if any(sha == head for sha in tips.values()) and (not pushed_at or tips.get(target) == head):
+            if receipt is None:
                 raise GripReviewRefused("head_already_on_remote", head, "present")
-            if row.get("source"):
-                _judge_remote_branch(workspace, remote, row["source"], head, target, tips)
+            # The one bypass: an earlier stamped pin of these same bytes. Recorded, so it is part of the gr id.
+            _receipt_covers(workspace, receipt, key, head)
+            ratified_by[key] = "gr:" + receipt[0]
+        # A receipt covers the head it stamped, never commits a remote branch carries past it: always judged.
+        if row.get("source"):
+            _judge_remote_branch(workspace, remote, row["source"], head, target, tips)
         if pushed_at:  # a fact about the order, recorded under --ratified too
             upstream = _source_upstream(row["source"]) if row.get("source") else None
             pushed_before[key] = upstream if upstream in pushed_at else pushed_at[0]
@@ -836,24 +843,54 @@ def _bind_review_rows_body(
     fd.verify_tree(repo, root_tree)
     # The order is recorded in the bind's own message, so it is part of the gr id; the review
     # schema (a pinned copy) is unchanged. One trailer per member pinned after its push.
-    message = "grip review bind" + "".join(
-        f"\n\n{_PUSHED_BEFORE_PIN} {key} {branch}" if i == 0 else f"\n{_PUSHED_BEFORE_PIN} {key} {branch}"
-        for i, (key, branch) in enumerate(sorted(pushed_before.items())))
+    trailers = [f"{_PUSHED_BEFORE_PIN} {key} {branch}" for key, branch in sorted(pushed_before.items())]
+    trailers += [f"{_RATIFIED_BY} {key} {rid}" for key, rid in sorted(ratified_by.items())]
+    message = "grip review bind" + ("\n\n" + "\n".join(trailers) if trailers else "")
     commit = _bind_commit_tree(workspace, root_tree, message=message)
     return _publish_bind(workspace, commit, "grip review bind", ref=_review_ref_v1(commit))
 
 
 _PUSHED_BEFORE_PIN = "Pushed-before-pin:"
+_RATIFIED_BY = "Ratified-by:"
+
+
+def _bind_trailers(workspace: Path, commit: str, name: str) -> dict[str, str]:
+    """member key -> value, for each `<name> <key> <value>` line in the bind's own message."""
+    out: dict[str, str] = {}
+    for line in _bind_git(workspace, "log", "-1", "--format=%B", commit).stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[0] == name:
+            out[parts[1]] = parts[2]
+    return out
 
 
 def _pushed_before_pin(workspace: Path, commit: str) -> dict[str, str]:
     """member key -> the remote branch whose tip already was the head when the review was pinned."""
-    out: dict[str, str] = {}
-    for line in _bind_git(workspace, "log", "-1", "--format=%B", commit).stdout.splitlines():
-        parts = line.split()
-        if len(parts) == 3 and parts[0] == _PUSHED_BEFORE_PIN:
-            out[parts[1]] = parts[2]
-    return out
+    return _bind_trailers(workspace, commit, _PUSHED_BEFORE_PIN)
+
+
+def _ratified_receipt(workspace: Path, ratified: str) -> tuple[str, dict[str, object]]:
+    """The review a `--ratified gr:<id>` names: an earlier pin in this workspace, as (full id, view).
+    Anything else (a string that is not a bind here, or one that cannot be read) refuses before any write."""
+    try:
+        view = show_review_commit(workspace, ratified.removeprefix("gr:"))
+    except (GripCorruptError, GripInitError, RuntimeError, OSError, ValueError, KeyError) as exc:
+        raise GripReviewRefused("ratified_receipt_unknown", ratified, "not a pinned review in this workspace") from exc
+    return str(view["id"]).removeprefix("gr:"), view
+
+
+def _receipt_covers(workspace: Path, receipt: tuple[str, dict[str, object]], key: str, head: str) -> None:
+    """A receipt covers a row when it pinned this same key at this same head AND someone stamped it."""
+    full, view = receipt
+    if not any(m["key"] == key and m["head"] == head for m in view["members"]):  # type: ignore[index, union-attr]
+        raise GripReviewRefused("ratified_receipt_not_covering", f"gr:{full}", f"no member {key} at {head}")
+    from . import approvals
+    try:
+        stamps = approvals.count_approvals(workspace, full)["count"]
+    except approvals.ApprovalRefused as exc:
+        raise GripReviewRefused("ratified_receipt_not_covering", f"gr:{full}", f"stamps unmeasurable: {exc}") from exc
+    if stamps < 1:
+        raise GripReviewRefused("ratified_receipt_not_covering", f"gr:{full}", "no stamp on it")
 
 
 def _review_bind_author(workspace: Path) -> str:
@@ -906,11 +943,13 @@ def show_review_commit(workspace: Path, commit: str) -> dict[str, object]:
     if _is_field_tree_bind(workspace, commit):
         view = _field_tree_view(workspace, commit)
         pushed = _pushed_before_pin(workspace, commit)
+        ratified_by = _bind_trailers(workspace, commit, _RATIFIED_BY)
         return {"id": f"gr:{commit}", **({"author": view["author"]} if "author" in view else {}), "members": [{
             "key": key, "remote": m["repo"]["remote"], "path": m["repo"]["path"],
             "base": m["repo"]["base"], "head": m["repo"]["commit"], "title": m["title"], "body": m["body"],
             "files": _range_files(None if m["objects"] is None else m["objects"]["range.patch"]),
             **({"pushed_before_pin": pushed[key]} if key in pushed else {}),
+            **({"ratified_by": ratified_by[key]} if key in ratified_by else {}),
         } for key, m in sorted(view["members"].items())]}
     if _bind_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip() != _REVIEW_BIND_SCHEMA:
         raise GripCorruptError("not a gr2 pinned review commit")

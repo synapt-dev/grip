@@ -1432,8 +1432,41 @@ def review_row_keys(workspace: Path, commit: str) -> list[str]:
     return sorted(_read_repo_state(workspace, commit, bind=True).keys())
 
 
+def _reader_clone(remote: str, base: str, range_text: str, lane_dir: Path) -> dict[str, str] | None:
+    """Clone a READ lane blobless from the host's review mirror, sparse by the shared profile rule.
+
+    Returns ``{"source": "mirror", "profile": <where the profile came from>}``, or None when the
+    mirror cannot serve this remote (its refresh failed, or it lacks the base, e.g. a mirror of
+    another repo that shares the basename); the caller then clones the remote as before. Measured on a
+    one-file config review: a remote clone 2.2G; this, with config's profile, 75M (30M .git) in 3 s."""
+    from . import review_ephemeral
+    mirror = review_ephemeral.review_cache_root() / f"{review_ephemeral.mirror_basename(remote)}.git"
+    try:
+        gitops.ensure_repo_cache(remote, mirror)
+    except SystemExit:
+        return None
+    # Objects are named by their content, so a mirror that carries the base serves the right bytes
+    # whoever its origin is (a fork, another repo sharing the basename). One that lacks it cannot.
+    if git(mirror, "cat-file", "-e", f"{base}^{{commit}}").returncode != 0:
+        return None
+    git(mirror, "config", "uploadpack.allowFilter", "true")
+    cloned = gitops.clone("--quiet", "--no-checkout", "--filter=blob:none", f"file://{mirror}", str(lane_dir))
+    if cloned.returncode != 0:
+        raise GripReviewRefused("clone_failed", str(mirror), cloned.stderr.strip()[:160])
+    # The profile is read at the BASE (the head is rebuilt here, so the mirror may not carry it);
+    # every path the range touches is included after it, so the range always applies.
+    patterns, profile = review_ephemeral.reader_sparse_patterns(
+        mirror, base, review_ephemeral.mirror_basename(remote), _range_files(range_text) or [])
+    if patterns:
+        applied = gitops.run(lane_dir, "sparse-checkout", "set", "--no-cone", "--stdin",
+                             input="\n".join(patterns) + "\n")
+        if applied.returncode != 0:
+            raise GripReviewRefused("reconstruct_failed", "sparse-checkout set", applied.stderr.strip()[:160])
+    return {"source": "mirror", "profile": profile}
+
+
 def reconstruct_review_lane(
-    workspace: Path, commit: str, key: str, lane_dir: Path
+    workspace: Path, commit: str, key: str, lane_dir: Path, *, reader: bool = False
 ) -> dict[str, str]:
     """Materialize a bound row's head by reconstruction, decision (a).
 
@@ -1472,9 +1505,15 @@ def reconstruct_review_lane(
             raise GripReviewRefused("reconstruct_failed", " ".join(args), proc.stderr.strip()[:160])
         return proc
 
-    clone = gitops.clone("--quiet", remote, str(lane_dir))
-    if clone.returncode != 0:
-        raise GripReviewRefused("clone_failed", remote, clone.stderr.strip()[:160])
+    # A READ lane (`review open`) comes from the host's mirror, blobless and sparse; a lane a check
+    # runs in (`check set`, `review run`) stays a whole clone of the remote, so no check meets a
+    # sparse tree. A mirror that cannot serve this remote falls back to the remote, and says so.
+    how = _reader_clone(remote, base, range_text, lane_dir) if reader else None
+    if how is None:
+        clone = gitops.clone("--quiet", remote, str(lane_dir))
+        if clone.returncode != 0:
+            raise GripReviewRefused("clone_failed", remote, clone.stderr.strip()[:160])
+        how = {"source": "remote", "profile": "none"}
     if _lg("rev-parse", "--verify", f"{base}^{{commit}}", allow_fail=True).returncode != 0:
         raise GripReviewRefused("base_unreachable_on_remote", base, remote)
     _lg("checkout", "--detach", base)
@@ -1495,6 +1534,8 @@ def reconstruct_review_lane(
         "reconstructed_head": reconstructed_head,
         "bound_head_tree": head_tree_expected,
         "reconstructed_tree": reconstructed_tree,
+        "source": how["source"],
+        "profile": how["profile"],
     }
 
 

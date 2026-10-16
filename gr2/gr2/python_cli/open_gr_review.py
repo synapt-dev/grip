@@ -338,23 +338,9 @@ def _pin_transport_location(pin_repo: str) -> str:
     return pin_repo
 
 
-def review_cache_root() -> Path:
-    """The persistent per-host review-mirror cache root, SHARED with
-    config/scripts/review-clone.sh so there is one bare mirror per repo on this
-    host, never a second keyed differently. Honors the same
-    ``SYNAPT_REVIEW_CACHE_ROOT`` override the script honors."""
-    import os
-    return Path(os.environ.get("SYNAPT_REVIEW_CACHE_ROOT") or (Path.home() / ".synapt-review-cache"))
-
-
-def _mirror_basename(transport_location: str) -> str:
-    """The repo name the shared cache keys a mirror under: the URL/path basename
-    minus a trailing ``.git`` (e.g. …/recall.git -> recall). This matches
-    review-clone.sh's ``<repo>.git`` for every repo whose review-clone name is its
-    URL basename (all the code repos); ``site`` is the one review-clone name that
-    is NOT its URL basename, and is out of scope for multi-repo code review."""
-    name = transport_location.rstrip("/").rsplit("/", 1)[-1]
-    return name[:-4] if name.endswith(".git") else name
+# One definition each, in review_ephemeral, so the read lane that grip.reconstruct_review_lane makes
+# and the ephemeral lane made here key the same mirror under the same root.
+from .review_ephemeral import review_cache_root, mirror_basename as _mirror_basename  # noqa: E402
 
 
 def resolve_sources_from_pins(

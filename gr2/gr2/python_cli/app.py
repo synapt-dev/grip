@@ -4693,7 +4693,7 @@ def review_open_gr(
             _review_call(grip.require_reconstructable, workspace_root.resolve(), sha, keys)
             results = {
                 row_key: _review_call(
-                    grip.reconstruct_review_lane, workspace_root.resolve(), sha, row_key, root / row_key
+                    grip.reconstruct_review_lane, workspace_root.resolve(), sha, row_key, root / row_key, reader=True
                 )
                 for row_key in keys
             }
@@ -4708,10 +4708,11 @@ def review_open_gr(
             else:
                 for row_key, res in results.items():
                     match = res["bound_head_tree"] == res["reconstructed_tree"]
-                    typer.echo(f"{row_key}: lane={res['lane']} tree_match={match}")
+                    typer.echo(f"{row_key}: lane={res['lane']} tree_match={match} "
+                               f"source={res['source']} profile={res['profile']}")
             return
     result = _review_call(
-        grip.reconstruct_review_lane, workspace_root.resolve(), sha, key, root
+        grip.reconstruct_review_lane, workspace_root.resolve(), sha, key, root, reader=True
     )
     from . import open_gr_review
     from .review_allocation import record_created_allocation
@@ -4725,6 +4726,7 @@ def review_open_gr(
         typer.echo(f"bound_head: {result['bound_head']}")
         typer.echo(f"reconstructed_head: {result['reconstructed_head']}")
         typer.echo(f"tree_match: {result['bound_head_tree'] == result['reconstructed_tree']}")
+        typer.echo(f"source: {result['source']}  profile: {result['profile']}")
 
 
 @review_app.command("close-gr", hidden=True)  # hidden alias for one release, dropped at 2.0 GA

@@ -50,7 +50,7 @@ def _remote_tip(repo: Path, remote: str, branch: str) -> str | None:
         return None
     staging = f"refs/dev.synapt.grip/__merge_transfers__/{uuid.uuid4().hex}"
     try:
-        _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", remote, f"refs/heads/{branch}:{staging}")
+        _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, f"refs/heads/{branch}:{staging}")
         return _git(repo, "rev-parse", "--verify", f"{staging}^{{commit}}")
     finally:
         _git(repo, "update-ref", "-d", staging, check=False)
@@ -114,7 +114,7 @@ def _refresh_tracking(repo: Path, remote: str, into: str) -> dict | None:
         return {"command": f"git -C {repo} fetch --no-tags {remote} +refs/heads/{into}:refs/remotes/{target}/{into}",
                 "reason": f"no remote of this clone names {remote}"}
     spec = f"+refs/heads/{into}:refs/remotes/{name}/{into}"
-    proc = gitops.run(repo, "fetch", "--no-tags", "-q", name, spec, timeout=120)
+    proc = gitops.run(repo, "fetch", "--no-tags", "-q", "--refmap=", name, spec, timeout=120)
     return None if proc.returncode == 0 else {"command": f"git -C {repo} fetch --no-tags {name} {spec}",
                                               "reason": "the fetch failed"}
 
@@ -149,7 +149,7 @@ def _pin_tie(root: Path, declaration: declared_sets.Declaration, into: str):
             for ref in refs:
                 staging = f"refs/dev.synapt.grip/__merge_transfers__/{uuid.uuid4().hex}"
                 try:
-                    _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", remote, f"{ref}:{staging}")
+                    _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, f"{ref}:{staging}")
                     state = grip._read_repo_state(repo, staging, bind=True)
                 finally:
                     _git(repo, "update-ref", "-d", staging, check=False)

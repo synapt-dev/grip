@@ -94,6 +94,21 @@ def branch(repos: list[Path], given: str | None) -> tuple[str, str]:
     return found.pop(), "current branch"
 
 
+def pinned_target(members: list[dict]) -> tuple[str, str] | None:
+    """(target branch, source) from the target each member was pinned against, or None for a review pinned before
+    the target was recorded (the caller then reads the remote, as before). Members pinned against different
+    targets refuse: one merge names one --into."""
+    recorded = {m["key"]: m["target"] for m in members if m.get("target")}
+    if not recorded:
+        return None
+    names = set(recorded.values())
+    if len(recorded) != len(members) or len(names) != 1:
+        listed = ", ".join(f"{m['key']}={recorded.get(m['key'], 'not recorded')}" for m in members)
+        raise Unresolved(f"into_unresolved: the members were pinned against different targets ({listed}); "
+                         "pass --into <branch>")
+    return names.pop().removeprefix("refs/heads/"), "pinned target"
+
+
 def target_branch(members: list[tuple[Path, str, str]], given: str | None) -> tuple[str, str]:
     """(target branch, source): the one branch, on every member's remote, whose tip is still the reviewed base.
 

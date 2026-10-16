@@ -5135,7 +5135,9 @@ def _resolve_merge_defaults(ws: Path, review_id: Optional[str], into: Optional[s
         return review_id, into or "", feature or ""
     paths = [(ws / m["path"]).resolve() for m in view["members"]]
     feature, fsrc = defaults.branch(paths, feature)
-    into, isrc = defaults.target_branch([(p, m["remote"], m["base"]) for p, m in zip(paths, view["members"])], into)
+    pinned = None if into else defaults.pinned_target(view["members"])
+    into, isrc = pinned or defaults.target_branch(
+        [(p, m["remote"], m["base"]) for p, m in zip(paths, view["members"])], into)
     typer.echo(f"resolved: review={view['id']} ({rsrc}), from={feature} ({fsrc}), into={into} ({isrc})", err=True)
     return view["id"], into, feature
 
@@ -5194,7 +5196,7 @@ review_app.command("approve", help="Alias of `review stamp`.", cls=ReviewHeadCom
 def review_merge(
     workspace_root: Path,
     review_id: Optional[str] = typer.Argument(None, help="Pinned review id, gr:<sha>; default: the pinned review at the members' current heads"),
-    into: Optional[str] = typer.Option(None, "--into", help="Target branch; default: the remote's default branch when it is the one branch at the reviewed base"),
+    into: Optional[str] = typer.Option(None, "--into", help="Target branch; default: the target the review was pinned against, else (a review pinned before that was recorded) the remote's default branch when it is the one branch at the reviewed base"),
     feature: Optional[str] = typer.Option(None, "--from", help="Feature branch; default: the members' current branch"),
     check: Optional[List[str]] = typer.Option(None, "--check", help="Required exact-head check name (repeatable); default `test`, and `test` plus `set` for a review over several members, where only `test` and `set` are accepted and `set` is always required"),
     no_set: bool = typer.Option(False, "--no-set", help="Single-member reviews only: a review over several members always requires `set` and refuses this flag"),
@@ -5255,7 +5257,7 @@ def review_merge(
 def review_update(
     workspace_root: Path,
     review_id: Optional[str] = typer.Argument(None, help="Pinned review id, gr:<sha>, whose target moved after the pin; default: the pinned review at the members' current heads"),
-    into: Optional[str] = typer.Option(None, "--into", help="Target branch; default: each member remote's default branch"),
+    into: Optional[str] = typer.Option(None, "--into", help="Target branch; default: the target each member was pinned against (a review pinned before that was recorded needs --into)"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Bring every member of a pinned review up to its moved target and pin the result again.

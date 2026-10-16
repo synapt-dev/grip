@@ -71,6 +71,9 @@ class GripDiff:
 
 _PROJECT_REVIEW_SCHEMA = "gr2-project-review/v1"
 _SHA40 = re.compile(r"\A[0-9a-f]{40}\Z")
+# A pinned target as the bind records it: a full branch name, read back as an --into, so no option, space,
+# control character, `..`, or git ref metacharacter.
+_PINNED_TARGET = re.compile(r"refs/heads/(?![-/.])(?!.*\.\.)(?!.*//)(?!.*/\.)(?!.*\.lock(?:/|$))[A-Za-z0-9._/+-]+(?<![./])")
 
 
 class _RangeApplyError(Exception):
@@ -792,6 +795,11 @@ def _bind_review_rows_body(
         body = _norm_text(row.get("body", ""))
         member: dict[str, object] = {"key": key, "path": path, "remote": remote, "base": base,
                                      "commit": head, "remote_head": observed, "title": title, "body": body}
+        # The full name the base check matched, so merge and update name THIS branch after it moves instead of
+        # guessing from what sits at the base. Only a name the readers accept is written; any other target (a
+        # tag, an unusual branch name) is left out, and that review defaults the way an older one does.
+        if _PINNED_TARGET.fullmatch(target):
+            member["target"] = target
 
         # (a): carry the frozen set inside the object. A row with a source repo
         # carries range.patch + fuller metadata + head-tree so a pre-push head
@@ -950,6 +958,7 @@ def show_review_commit(workspace: Path, commit: str) -> dict[str, object]:
             "files": _range_files(None if m["objects"] is None else m["objects"]["range.patch"]),
             **({"pushed_before_pin": pushed[key]} if key in pushed else {}),
             **({"ratified_by": ratified_by[key]} if key in ratified_by else {}),
+            **({"target": m["target"]} if "target" in m else {}),
         } for key, m in sorted(view["members"].items())]}
     if _bind_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip() != _REVIEW_BIND_SCHEMA:
         raise GripCorruptError("not a gr2 pinned review commit")
@@ -1179,11 +1188,16 @@ def _decode_field_tree(repo: Path, tree: str) -> dict[str, object]:
         evidence = None
         if "evidence" in m:
             evidence = {k: _text(v) for k, v in m["evidence"].items()}
+        # The pinned target (absent in binds made before it was recorded) is read back into git commands, so a
+        # value that is not a plain full ref name is a corrupt record, never a refspec.
+        target = m.get("target", "")
+        if target and not _PINNED_TARGET.fullmatch(target):
+            raise GripCorruptError(f"invalid review repository tree: {key} target is not a ref name")
         members[key] = {
             "repo": {"remote": m.get("remote", ""), "path": m.get("path", ""),
                      "commit": m.get("commit", ""), "base": m.get("base", "")},
             "remote_head": m.get("remote_head", ""), "title": m.get("title", ""), "body": m.get("body", ""),
-            "objects": objects, "evidence": evidence,
+            "objects": objects, "evidence": evidence, **({"target": target} if target else {}),
         }
     if not members:
         raise GripCorruptError("invalid review repository tree: a pinned review names no member")

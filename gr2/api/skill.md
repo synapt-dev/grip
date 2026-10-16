@@ -331,7 +331,7 @@ Merge a pinned review into its members' remotes: preflight every member, merge n
 
 - `<workspace_root>` (optional)
 - `<review_id>` (optional)
-- `--into`: Target branch; default: the remote's default branch when it is the one branch at the reviewed base
+- `--into`: Target branch; default: the target the review was pinned against, else (a review pinned before that was recorded) the remote's default branch when it is the one branch at the reviewed base
 - `--from`: Feature branch; default: the members' current branch
 - `--check`: Required exact-head check name (repeatable); default `test`, and `test` plus `set` for a review over several members, where only `test` and `set` are accepted and `set` is always required
 - `--no-set`: Single-member reviews only: a review over several members always requires `set` and refuses this flag
@@ -352,7 +352,7 @@ next: say how many approvals this merge needs: rerun with --approvals N (--appro
 
 ### base_moved
 
-next: the target moved after the pin; bring every member up to it and pin again: gr2 review update '<workspace>' '<review>'
+next: the target moved after the pin; bring every member up to it and pin again: gr2 review update '<workspace>' '<review>' --into '<branch>'
 
 ### check_absent
 

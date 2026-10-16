@@ -178,8 +178,11 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
                 "To merge it, commit a new head and pin it before you push, or pin this head with "
                 "--ratified gr:<id>, naming an earlier pin of this same head that was stamped")
     if refused.startswith("base_moved"):
+        # Name the target the merge measured, so update merges THAT branch and not the remote's default.
+        moved = re.match(r"base_moved: remote (\S+) is ", refused)
+        into = moved.group(1).removeprefix("refs/heads/") if moved else "<branch>"
         return (f"next: the target moved after the pin; bring every member up to it and pin again: "
-                f"gr2 review update {_shown(workspace)} {_shown(review)}")
+                f"gr2 review update {_shown(workspace)} {_shown(review)} --into {_shown(into)}")
     if refused.startswith("platform_head_moved_after_merge"):
         late = re.search(r"head is (\S+);", refused)
         return (f"next: this member landed at the pinned head, and the later commit {late.group(1) if late else '<sha>'} "

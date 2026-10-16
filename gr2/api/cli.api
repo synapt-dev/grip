@@ -883,6 +883,11 @@ verb  target show                                                     stable
 # target unset
 flag  target unset --repo-path <str>                                  stable
 verb  target unset                                                    stable
+# update
+flag  update --into <str>                                             stable
+flag  update --remote <str>                                           stable
+flag  update --repo-path <str>                                        stable
+verb  update                                                          stable
 # workspace bootstrap-gr1
 arg   workspace bootstrap-gr1 workspace_root <str>                    stable
 flag  workspace bootstrap-gr1 --expected-current-spec-sha256 <str>    stable

@@ -2021,6 +2021,39 @@ def branch_cmd(
     typer.echo(f"Switched to branch '{name}'")
 
 
+@app.command("update")
+def update_cmd(
+    into: str = typer.Option(..., "--into", help="The integration branch to merge in, fetched live from --remote"),
+    remote: str = typer.Option("origin", "--remote", help="The remote holding both branches"),
+    repo_path: Path | None = typer.Option(
+        None,
+        "--repo-path",
+        help="Repo to operate on (defaults to cwd; gr2 verbs are single-repo, not gripspace-wide)",
+    ),
+) -> None:
+    """Bring the pushed branch you are on up to a moved integration branch, with a merge (no review pin needed).
+
+    Fetches --into from --remote and merges its tip into the current branch. Pushes nothing and pins nothing.
+    Refuses before anything moves on an --into that is not a plain branch name, such as one with a colon or a
+    leading '+' or '-' (bad_into), a --remote that is not a configured remote (bad_remote), a detached head (detached_head), standing on --into itself (same_branch), a
+    merge in progress (unresolved_merge), tracked changes (dirty), commits the branch of the same name on --remote
+    lacks (unpushed) or has that this one lacks (behind_remote), --into missing on --remote (fetch_failed), and
+    untracked files the merge would overwrite (untracked_in_the_way). The configured upstream is not consulted: a
+    renamed branch counts as unpushed. Always a merge commit, even under merge.ff=only. A conflict aborts the merge
+    and leaves the tree as it was; any other failed merge is aborted too (merge_failed). Prints its JSON receipt on
+    stdout.
+    Exit 0 done (merged, or already up to date), 2 refused, 3 conflict.
+    """
+    from . import branch_update
+
+    code, receipt = branch_update.update((repo_path or Path.cwd()), into, remote)
+    typer.echo(json.dumps(receipt))
+    if receipt["refused"]:
+        typer.echo(f"gr2 update: {receipt['refused']}", err=True)
+    if code:
+        raise typer.Exit(code)
+
+
 def _workspace_above_cwd():
     """(root Resolved, entered units) for the workspace the current directory is inside, or None when it is inside
     none (a plain repository: `add` behaves as it always did there)."""

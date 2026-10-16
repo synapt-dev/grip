@@ -36,12 +36,20 @@ within the four forms is why there is one rule for a declared-editable record ra
 branch per failure -- a branch per failure is also how a stat ended up re-raising errnos that
 `is_dir()` does not ignore.
 
-FOUR FORMS, and the fourth is declared here because it was not. It is a **bare `unknown`**,
+THE BARE FORM is declared here because it was not. It is a **bare `unknown`**,
 and it means NO SINGLE VERSION COULD BE DETERMINED, for either of two reasons: nothing is
 installed under that name for this interpreter, or two installs under that name disagree
 and neither is editable. It is not `<something> unknown` and no version is invented to keep
-the shape regular. All three other forms carry a version, so a reader who has read only
-those three has been told something false about what this can return.
+the shape regular. All the other forms carry a version, so a reader who has read only
+those has been told something false about what this can return.
+
+A NON-EDITABLE INSTALL SAYS WHICH BUILD IT IS. `released` used to mean only "no editable
+record", so a wheel built from any dev commit printed the release it followed. The build now
+writes a stamp (`setup.py`, `gr2/python_cli/_build.json`) and a non-editable install reads
+it: `released` only when the stamp says the build was at the `gr2/v<version>` tag,
+`<version>+g<sha> dev build, not a release` for any other commit (with `.dirty` after the
+sha when a tracked file differed from that commit at build time), and
+`<version> unknown build, not a release` when no stamp names a commit.
 """
 
 from __future__ import annotations
@@ -61,6 +69,10 @@ DISTRIBUTION = "gitgrip"
 # git absent, or the recorded path is not a repository. Saying so states what the call
 # established; a number alone would claim a currency it cannot verify.
 UNKNOWN_COMMIT = "unknown"
+DEV_BUILD = "dev build, not a release"
+UNKNOWN_BUILD = "unknown build, not a release"
+# Written by setup.py at build time; see its docstring for the two fields.
+BUILD_STAMP = "gr2/python_cli/_build.json"
 
 
 def _normalise(name: str) -> str:
@@ -319,6 +331,28 @@ def _distribution_facts(distribution: str) -> tuple[str | None, PurePath | None]
     return versions.pop(), None
 
 
+def _build_stamp(distribution: str) -> dict | None:
+    """The build stamp of the installed (non-editable) distribution, or None.
+
+    Read from the files the distribution's own RECORD lists, so the stamp comes from the
+    same resolution as the version. Installs that disagree about the stamp have no single
+    answer, and that is None too.
+    """
+    stamps = []
+    for dist in _matching_distributions(distribution):
+        try:
+            entry = next(
+                (f for f in (dist.files or ()) if f.as_posix().endswith(BUILD_STAMP)), None
+            )
+            stamp = json.loads(entry.read_text(encoding="utf-8")) if entry else None
+        except (OSError, ValueError, UnicodeDecodeError):
+            stamp = None
+        stamps.append(stamp if isinstance(stamp, dict) else None)
+    if not stamps or any(s != stamps[0] for s in stamps):
+        return None
+    return stamps[0]
+
+
 def _clone_short_sha(clone: PurePath) -> str | None:
     """The checkout's short HEAD sha, or None when it cannot be read.
 
@@ -350,11 +384,18 @@ def _clone_short_sha(clone: PurePath) -> str | None:
 def version_line(distribution: str = DISTRIBUTION) -> str:
     """The one line `gr2 --version` prints.
 
-    Four forms, in the order they are decided:
+    Six forms, in the order they are decided:
 
     * `<version>+g<sha>` -- an editable checkout, named by the commit at its HEAD;
-    * `<version> released` -- no editable record at all: a wheel, or a `direct_url.json` that
-      is absent, unreadable, malformed, or does not declare `dir_info.editable`;
+    * `<version> released` -- no editable record at all (a wheel, or a `direct_url.json` that
+      is absent, unreadable, malformed, or does not declare `dir_info.editable`) AND the
+      build stamp says it was built at the `gr2/v<version>` tag;
+    * `<version>+g<sha> dev build, not a release` -- no editable record, and the build stamp
+      names a commit that is not the release tag, or a tracked file differed from that commit
+      at build time (then the sha is followed by `.dirty`);
+    * `<version> unknown build, not a release` -- no editable record, and no stamp names a
+      commit: git was absent at build time, or the stamp is missing or unreadable. A build
+      that cannot say what it is never claims to be a release;
     * `<version>+unknown` -- an editable record exists but no commit could be read from the
       checkout it names: `git` absent, not a repository, gone, a file, a path this host
       cannot represent, or a path it cannot probe. The version is stated and the commit is
@@ -366,7 +407,13 @@ def version_line(distribution: str = DISTRIBUTION) -> str:
     if version is None:
         return "unknown"
     if clone is None:
-        return f"{version} released"
+        stamp = _build_stamp(distribution)
+        if stamp is None or not isinstance(stamp.get("commit"), str) or not stamp["commit"]:
+            return f"{version} {UNKNOWN_BUILD}"
+        if stamp.get("release") is True:
+            return f"{version} released"
+        dirty = ".dirty" if stamp.get("dirty") is True else ""
+        return f"{version}+g{stamp['commit']}{dirty} {DEV_BUILD}"
     sha = _clone_short_sha(clone)
     if sha is None:
         return f"{version}+{UNKNOWN_COMMIT}"

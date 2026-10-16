@@ -1,0 +1,123 @@
+"""Stamps each build with the commit it was built from; everything else is in pyproject.toml.
+
+`gr2 --version` on a non-editable install has no checkout to ask, so the build writes what
+it knows into the package as `gr2/python_cli/_build.json`:
+
+* `commit` -- the short sha of `HEAD`, or null when git is absent or this is not a checkout
+  that tracks this `setup.py` (an sdist unpacked inside another repo uses its carried stamp);
+* `release` -- true only when `HEAD` carries the tag `gr2/v<version>`, the tag the release
+  workflow builds from, AND the tree is not `dirty`;
+* `dirty` -- true when a file under this directory differs from `HEAD`, tracked, untracked
+  or ignored (an untracked or `.gitignore`d module would ship in the wheel), or when a
+  tracked file is marked skip-worktree or assume-unchanged (status cannot see its edits,
+  so any mark counts; a fresh checkout has none), whatever the repo's stat config (git
+  runs with checkStat, trustctime and fsmonitor pinned to their defaults); only the
+  build's own output (`build/`, `dist/`, `*.egg-info/`) and `__pycache__/` are excluded,
+  by pathspec, so no ignore file decides it. The cost: a local checkout with ignored files
+  under this directory (a `.venv/`, `.pytest_cache/`) stamps dirty, never released. A
+  release is cut by CI from a fresh checkout, which has none.
+
+An sdist carries the stamp its own build wrote, so a wheel built FROM the sdist (what
+`python -m build` does, with no `.git` in the unpacked tree) keeps the source commit
+instead of degrading to unknown. The version itself is never derived here: it stays the
+static literal in pyproject.toml.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+
+from setuptools import setup
+from setuptools.command.build_py import build_py
+from setuptools.command.sdist import sdist
+
+_STAMP = os.path.join("gr2", "python_cli", "_build.json")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+# status trusts stat data before content, and repo config can narrow what it compares: with
+# trustctime=false or checkStat=minimal a same-size edit with its mtime put back (cp -p,
+# rsync -t, a tar extract) is clean to status, and an fsmonitor hook can report nothing
+# changed. Pinned per call, so the builder's repo config never decides `dirty`.
+_PINS = ("-c", "core.checkStat=default", "-c", "core.trustctime=true", "-c", "core.fsmonitor=false")
+
+
+def _git(*args: str) -> str | None:
+    git = shutil.which("git")
+    if git is None:
+        return None
+    # No inherited GIT_* (git exports GIT_DIR to hooks): git finds the repo from _HERE alone.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    try:
+        proc = subprocess.run(
+            [git, *_PINS, *args], cwd=_HERE, env=env, capture_output=True, text=True, check=False
+        )
+    except OSError:
+        return None
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def _stamp(version: str) -> dict:
+    """What this build is. In a checkout of this tree, read git live; else an sdist's carried stamp."""
+    # git answers only when this tree's own setup.py is tracked: an sdist unpacked inside
+    # some other checkout would otherwise be stamped with THAT repo's HEAD.
+    tracked = _git("ls-files", "--error-unmatch", "setup.py") is not None
+    commit = _git("rev-parse", "--short", "HEAD") if tracked else None
+    if commit:
+        tags = (_git("tag", "--points-at", "HEAD") or "").split()
+        # traditional, not matching: matching folds an ignored directory into one entry that
+        # no exclude pathspec drops, so `__pycache__/` could never be excluded.
+        status = _git(
+            "status", "--porcelain", "--untracked-files=all", "--ignored=traditional", "--", ".",
+            ":(exclude)build", ":(exclude)dist", ":(exclude,glob)**/*.egg-info/**",
+            ":(exclude,glob)**/__pycache__/**",
+        )
+        # skip-worktree (`S`, sparse checkout sets it) and assume-unchanged (lowercase) hide a
+        # tracked file's edits from status, and the edited file still ships.
+        flags = _git("ls-files", "-v", "--", ".")
+        hidden = flags is None or any(
+            line[:1] == "S" or line[:1].islower() for line in flags.splitlines()
+        )
+        # A conversion git runs on the way in (any clean filter, LFS included; `ident`;
+        # working-tree-encoding) can map a same-size edit back to the committed blob, so status
+        # shows nothing and the edited file ships. Any such path at all means dirty.
+        converted = _git(
+            "ls-files", "--", ".", ":(exclude,attr:!filter !ident !working-tree-encoding)"
+        )
+        if status is None or status or hidden or converted is None or converted:
+            return {"commit": commit, "dirty": True, "release": False}
+        return {"commit": commit, "release": f"gr2/v{version}" in tags}
+    carried = os.path.join(_HERE, _STAMP)
+    if os.path.isfile(carried):
+        with open(carried, encoding="utf-8") as fh:
+            return json.load(fh)
+    return {"commit": None, "release": False}
+
+
+def _write(root: str, stamp: dict) -> None:
+    target = os.path.join(root, _STAMP)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "w", encoding="utf-8") as fh:
+        json.dump(stamp, fh)
+
+
+class BuildPy(build_py):
+    def run(self) -> None:
+        super().run()
+        # An editable install reads its checkout's HEAD live; a stamp there would go stale.
+        if not getattr(self, "editable_mode", False):
+            _write(self.build_lib, _stamp(self.distribution.get_version()))
+
+
+class Sdist(sdist):
+    def make_release_tree(self, base_dir, files) -> None:
+        # Stamp first: setuptools builds the release tree inside this directory, untracked.
+        stamp = _stamp(self.distribution.get_version())
+        super().make_release_tree(base_dir, files)
+        _write(base_dir, stamp)
+
+
+setup(cmdclass={"build_py": BuildPy, "sdist": Sdist})

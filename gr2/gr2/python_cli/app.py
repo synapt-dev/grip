@@ -237,6 +237,48 @@ def _pr_head_review_paths(
     )
 
 
+def _start_lane_branch(repo_name: str, repo: Path, branch: str, ref: str | None, *, seed_is_work: bool) -> str:
+    """Where a freshly materialized lane branch starts, and the fork base a review measures from.
+
+    The clone was just made from the member's remote, so ``refs/remotes/origin/*`` is the remote as of now. A branch
+    that already EXISTS there is continued: the lane branch moves to its remote tip and tracks it, the way
+    ``git switch <branch>`` would. Before this the branch was made at the workspace commit's pin under the same name,
+    with no upstream: a second, unrelated history that a push would collide with.
+    The one exception is a seed that is the author's own local branch of that name holding commits the remote
+    does not contain: that work is kept where it is and only tracks the remote, so nothing unpushed is dropped.
+
+    The fork base of a continued branch is its merge-base with the integration ref, so a review still covers the
+    work already pushed on it. A branch the remote does not have starts where it did; when that start is behind
+    the integration ref, one line says by how much, because a lane on a stale pin otherwise looks current."""
+    head = git(repo, "rev-parse", "HEAD").stdout.strip()
+    integration = f"refs/remotes/origin/{ref or 'HEAD'}"
+    remote = git(repo, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{branch}^{{commit}}")
+    if remote.returncode == 0:
+        tip = remote.stdout.strip()
+        if head != tip and seed_is_work and git(repo, "merge-base", "--is-ancestor", head, tip).returncode != 0:
+            print(f"gr2: {repo_name}: {branch} keeps the local work at {head[:12]}, which origin/{branch} "
+                  f"({tip[:12]}) does not contain; it tracks origin/{branch}", file=sys.stderr)
+        elif head != tip:
+            moved = git(repo, "checkout", "-q", "-B", branch, tip)
+            if moved.returncode:
+                raise SystemExit(f"cannot start {branch} at origin/{branch} in {repo_name}: {moved.stderr.strip()}")
+            head = tip
+        tracked = git(repo, "branch", f"--set-upstream-to=origin/{branch}", branch)
+        if tracked.returncode:
+            raise SystemExit(f"cannot set {branch} to track origin/{branch} in {repo_name}: {tracked.stderr.strip()}")
+        base = git(repo, "merge-base", head, integration)
+        fork = base.stdout.strip() if base.returncode == 0 and base.stdout.strip() else head
+        print(f"gr2: {repo_name}: continues origin/{branch} at {head[:12]}; fork base {fork[:12]}", file=sys.stderr)
+        return fork
+    behind = git(repo, "rev-list", "--count", f"{head}..{integration}")
+    if behind.returncode == 0 and behind.stdout.strip() not in ("", "0"):
+        date = git(repo, "show", "-s", "--format=%cs", head).stdout.strip()
+        count = behind.stdout.strip()
+        print(f"gr2: {repo_name}: {branch} starts at {head[:12]} ({date}), {count} commit{'' if count == '1' else 's'} "
+              f"behind origin/{ref or 'HEAD'}", file=sys.stderr)
+    return head
+
+
 def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: str, *, manual_hooks: bool = False, created_checkout_roots: list | None = None, created_lane_file: list | None = None, workspace_commit: str | None = None) -> None:
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
     branch_map = dict(lane_doc.get("branch_map", {}))
@@ -280,6 +322,7 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
                 if checkout.returncode:
                     raise SystemExit(f"cannot select lane branch: {checkout.stderr}")
                 first_materialize = True
+                integration_ref, seed_is_work = member.get("ref") or None, False
             else:
                 repo_spec = _workspace_repo_spec(workspace_root, repo_name)
                 source_repo_root = (workspace_root / str(repo_spec["path"])).resolve()
@@ -317,17 +360,25 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
                 target_repo_root = _lane_repo_root(workspace_root, owner_unit, lane_name, repo_name)
                 cache_root = grip_dir(workspace_root) / "cache" / "repos" / f"{source_repo_root.name}.git"
                 gitops.ensure_repo_cache(gitops.remote_origin_url(source_repo_root), cache_root, local_source=source_repo_root)
+                # The seed is the author's own work when the source already holds a branch of this name
+                # (clone_exec seeds from it); otherwise it is the source's HEAD.
+                seed_is_work = git(source_repo_root, "show-ref", "--verify", "-q", f"refs/heads/{branch_map[repo_name]}").returncode == 0
+                integration_ref = str(repo_spec["ref"]) if repo_spec.get("ref") else None
                 first_materialize = ensure_lane_checkout(
                     source_repo_root=source_repo_root,
                     target_repo_root=target_repo_root,
                     branch=branch_map[repo_name],
                     workspace_root=workspace_root,
                 )
-            # Record the fork base = the materialization point (the branch the lane forked
-            # from and the sha it started at), so `review create-project` can pin base..head
-            # Collected here, before this repo's hooks run below.
+            # Record the fork base = the point the lane forked from its integration branch, so
+            # `review create-project` can pin base..head. A fresh clone first continues a branch the
+            # remote already has (_start_lane_branch). Collected here, before this repo's hooks run below.
+            fork_sha = None
+            if first_materialize:
+                fork_sha = _start_lane_branch(repo_name, target_repo_root, branch_map[repo_name], integration_ref,
+                                              seed_is_work=seed_is_work)
             head = git(target_repo_root, "rev-parse", "HEAD")
-            head_sha = head.stdout.strip() if head.returncode == 0 else ""
+            head_sha = fork_sha or (head.stdout.strip() if head.returncode == 0 else "")
             if len(head_sha) == 40:
                 fork_base[repo_name] = {"branch": branch_map[repo_name], "sha": head_sha}
             hooks = load_repo_hooks(target_repo_root)
@@ -2888,8 +2939,9 @@ def _lane_create_defaults(workspace_root: Path, lane_name: str, repos: Optional[
             more = f" (and {len(result.collisions) - 1} more repo{'s' if len(result.collisions) > 2 else ''})" if len(result.collisions) > 1 else ""
             raise typer.BadParameter(
                 f"the branch {branch!r} already exists on {c.repo}'s remote at {c.remote_tip[:12]}{more}, which is not the tip of {c.base_ref} "
-                f"({c.base_tip[:12]}) the lane forks from, so it is work that is already pushed. Two readings: to continue that work, "
-                f"pass --branch {branch} to use the existing branch; to start something new, pick another lane name."
+                f"({c.base_tip[:12]}), so it is work that is already pushed. Two readings: to continue that work, "
+                f"pass --branch {branch} to use the existing branch (the lane starts at its remote tip and tracks it); "
+                f"to start something new, pick another lane name."
             )
         if result.not_checked:  # a skipped SAFETY check is not information to hush
             print(f"gr2: branch {branch!r} was not checked against the remote for: {'; '.join(result.not_checked)}", file=sys.stderr)

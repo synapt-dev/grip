@@ -597,7 +597,7 @@ def branch_exists(repo_root: Path, branch: str) -> bool:
 
 
 def fetch_ref(repo_root: Path, remote: str, source_ref: str, local_branch: str) -> None:
-    proc = git(repo_root, "fetch", remote, f"{source_ref}:refs/heads/{local_branch}")
+    proc = git(repo_root, "fetch", "--no-tags", "--refmap=", remote, f"{source_ref}:refs/heads/{local_branch}")
     if proc.returncode != 0:
         raise SystemExit(
             f"failed to fetch {source_ref} from {remote} into {local_branch} in {repo_root}:\n{proc.stderr or proc.stdout}"
@@ -605,7 +605,7 @@ def fetch_ref(repo_root: Path, remote: str, source_ref: str, local_branch: str) 
 
 
 def refresh_existing_branch(repo_root: Path, remote: str, source_ref: str, local_branch: str) -> None:
-    proc = git(repo_root, "fetch", remote, source_ref)
+    proc = git(repo_root, "fetch", "--no-tags", "--refmap=", remote, source_ref)
     if proc.returncode != 0:
         raise SystemExit(
             f"failed to fetch {source_ref} from {remote} in {repo_root}:\n{proc.stderr or proc.stdout}"

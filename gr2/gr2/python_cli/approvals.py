@@ -267,7 +267,7 @@ def _remote_tips(workspace: Path, root: dict) -> dict[str, str | None]:
         if tip:
             temporary = "refs/dev.synapt.grip/__approval_transfers__/" + uuid.uuid4().hex
             try:
-                _git(workspace, "fetch", "--no-tags", "--no-write-fetch-head", "--", remote, f"{ref}:{temporary}")
+                _git(workspace, "fetch", "--no-tags", "--refmap=", "--no-write-fetch-head", "--", remote, f"{ref}:{temporary}")
                 if _git(workspace, "rev-parse", temporary) != tip:
                     raise ApprovalRefused("approval_chain_moved")
             finally:

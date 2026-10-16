@@ -124,7 +124,7 @@ def update(workspace: Path, review_id: str | None = None, into: str | None = Non
     for m in members:
         repo, key = m["repo"], m["key"]
         # The ROW's remote: the pin checks the base against that remote's live head, whatever the clone's origin is.
-        fetched = gitops.run(repo, "fetch", "-q", "--", m["remote"], f"refs/heads/{targets[key]}")
+        fetched = gitops.run(repo, "fetch", "-q", "--no-tags", "--refmap=", "--", m["remote"], f"refs/heads/{targets[key]}")
         tip = gitops.run(repo, "rev-parse", "-q", "--verify", "FETCH_HEAD^{commit}").stdout.strip() \
             if not fetched.returncode else ""
         if not tip:

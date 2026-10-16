@@ -222,7 +222,7 @@ def _lane_branch_uncovered(repo: Path, receipt: PushReceipt, lane_branch: str) -
     tip = listed.stdout.split()[0]
     ancestry = git(repo, "merge-base", "--is-ancestor", receipt.local_sha, tip)
     if ancestry.returncode not in (0, 1):
-        fetched = git(repo, "fetch", "--no-tags", "--no-write-fetch-head", receipt.remote, f"refs/heads/{lane_branch}")
+        fetched = git(repo, "fetch", "--no-tags", "--refmap=", "--no-write-fetch-head", receipt.remote, f"refs/heads/{lane_branch}")
         if fetched.returncode != 0:
             return f"cannot tell whether head {receipt.local_sha} is on {where}: its tip could not be fetched"
         ancestry = git(repo, "merge-base", "--is-ancestor", receipt.local_sha, tip)

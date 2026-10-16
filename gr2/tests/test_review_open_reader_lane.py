@@ -24,12 +24,12 @@ def _git(cwd: Path, *a: str) -> str:
     return subprocess.run(["git", *a], cwd=cwd, text=True, capture_output=True, check=True).stdout.strip()
 
 
-def _remote_with_bulk(tmp_path: Path, *, profile: bool) -> tuple[str, str, str, str]:
+def _remote_with_bulk(tmp_path: Path, *, profile: bool, name: str = "alpha") -> tuple[str, str, str, str]:
     """A bare origin whose BASE carries a bulk dir (and, with profile, a .review-exclude that opts it
     out), plus a one-file range for a pre-push head. Returns (remote, base, head, range_patch)."""
-    origin = tmp_path / "alpha.git"
+    origin = tmp_path / f"{name}.git"
     _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
-    work = tmp_path / "work"
+    work = tmp_path / f"work-{name}"
     _git(tmp_path, "clone", "-q", str(origin), str(work))
     _git(work, "config", "user.email", "a@e.invalid")
     _git(work, "config", "user.name", "a")
@@ -129,3 +129,51 @@ def test_review_open_prints_where_the_lane_came_from(tmp_path: Path) -> None:
     assert "tree_match: True" in out.output
     assert "source: mirror  profile: in-repo .review-exclude" in out.output
     assert not (lane / "bulk").exists()
+
+
+def _unwritable_cache_root(tmp_path: Path, monkeypatch) -> None:
+    # A regular file where a directory must go: mkdir raises NotADirectoryError (an OSError) for every
+    # user, root included, where a 0500 directory would not stop root.
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x\n")
+    monkeypatch.setenv("SYNAPT_REVIEW_CACHE_ROOT", str(blocker / "cache"))
+
+
+def test_a_cache_root_that_cannot_be_written_falls_back_to_the_remote(tmp_path: Path, monkeypatch) -> None:
+    ws, commit, remote = _bound(tmp_path)
+    _unwritable_cache_root(tmp_path, monkeypatch)
+    lane = tmp_path / "lane"
+    res = grip.reconstruct_review_lane(ws, commit, "alpha", lane, reader=True)
+    assert res["bound_head_tree"] == res["reconstructed_tree"]
+    assert (res["source"], res["profile"]) == ("remote", "none")
+    assert _git(lane, "remote", "get-url", "origin") == remote
+
+
+def test_review_open_with_a_cache_root_that_cannot_be_written_exits_0(tmp_path: Path, monkeypatch) -> None:
+    ws, commit, _ = _bound(tmp_path)
+    _unwritable_cache_root(tmp_path, monkeypatch)
+    lane = tmp_path / "lane"
+    out = CliRunner().invoke(gr2_app.app, ["review", "open", str(ws), f"gr:{commit}", "--lane-dir", str(lane)])
+    assert out.exit_code == 0, out.output
+    assert "tree_match: True" in out.output
+    assert "source: remote  profile: none" in out.output
+
+
+def test_review_open_of_two_members_reads_each_from_the_mirror(tmp_path: Path) -> None:
+    # The multi-member site (the way a multi-repo review opens) passes reader=True too.
+    ws = tmp_path / "ws"
+    (ws / ".grip").mkdir(parents=True)
+    native_root(ws)
+    rows = []
+    for name in ("alpha", "beta"):
+        remote, base, head, patch = _remote_with_bulk(tmp_path, profile=True, name=name)
+        rows.append({"key": name, "remote": remote, "path": f"repos/{name}", "base": base, "head": head,
+                     "ref": "refs/heads/main", "range_patch": patch})
+    commit = grip.create_review_bind_commit(ws, rows)
+    lanes = tmp_path / "lanes"
+    out = CliRunner().invoke(gr2_app.app, ["review", "open", str(ws), f"gr:{commit}", "--lane-dir", str(lanes)])
+    assert out.exit_code == 0, out.output
+    for name in ("alpha", "beta"):
+        line = next((ln for ln in out.output.splitlines() if ln.startswith(f"{name}: ")), "")
+        assert "tree_match=True" in line and "source=mirror" in line, out.output
+        assert not (lanes / name / "bulk").exists(), out.output

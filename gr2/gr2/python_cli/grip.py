@@ -1436,14 +1436,15 @@ def _reader_clone(remote: str, base: str, range_text: str, lane_dir: Path) -> di
     """Clone a READ lane blobless from the host's review mirror, sparse by the shared profile rule.
 
     Returns ``{"source": "mirror", "profile": <where the profile came from>}``, or None when the
-    mirror cannot serve this remote (its refresh failed, or it lacks the base, e.g. a mirror of
-    another repo that shares the basename); the caller then clones the remote as before. Measured on a
+    mirror cannot serve this remote (its refresh failed, its cache root cannot be written, or it lacks
+    the base, e.g. a mirror of another repo that shares the basename); the caller then clones the
+    remote as before. Measured on a
     one-file config review: a remote clone 2.2G; this, with config's profile, 75M (30M .git) in 3 s."""
     from . import review_ephemeral
     mirror = review_ephemeral.review_cache_root() / f"{review_ephemeral.mirror_basename(remote)}.git"
     try:
         gitops.ensure_repo_cache(remote, mirror)
-    except SystemExit:
+    except (SystemExit, OSError):  # a refresh that failed, or a cache root that cannot be written (or a full disk)
         return None
     # Objects are named by their content, so a mirror that carries the base serves the right bytes
     # whoever its origin is (a fork, another repo sharing the basename). One that lacks it cannot.

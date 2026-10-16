@@ -446,6 +446,10 @@ def _refuse_symlinked_members(root: Path, members: list[dict[str, str]]) -> None
             )
 
 
+#: A remote name gr2 hands to git: no leading `-` or `.`, no `..`, nothing git or a shell reads specially.
+_PLAIN_REMOTE = re.compile(r"^(?!.*\.\.)[A-Za-z0-9_][A-Za-z0-9._-]*$")
+
+
 def _native_members(root: Path, revision: str | None = None) -> list[dict[str, str]]:
     # A selected workspace commit owns the whole document, not only its pins.
     data = (_grip_document(root) if revision is None else
@@ -461,6 +465,11 @@ def _native_members(root: Path, revision: str | None = None) -> list[dict[str, s
         if not isinstance(remotes, dict) or not isinstance(remotes.get("origin"), str):
             raise NativeStoreRefusal(f"{item.get('name', 'member')} has no origin remote", 4)
         item["remote"] = remotes["origin"]
+        # Refused at the read, so every verb that splits `upstream` gets it: its remote part reaches `git fetch` and
+        # `git push` as the remote name, where `--upload-pack=...` runs a program.
+        upstream = item.get("upstream")
+        if upstream is not None and (not isinstance(upstream, str) or not _PLAIN_REMOTE.match(upstream.partition("/")[0])):
+            raise NativeStoreRefusal(f"{item.get('name', 'member')} upstream {upstream!r} does not start with a plain remote name", 4)
         # Refused at the read, before any verb hands a url to git: a `<name>::` or unknown-scheme url runs a program
         # (owner: grip.url_transport_refusal; gitops.TRANSPORTS is the second layer).
         for remote_name, remote_url in remotes.items():
@@ -1657,7 +1666,7 @@ def _member_coverage(
     remote, separator, branch = upstream.partition("/")
     if not separator or not remote or not branch:
         raise NativeStoreRefusal(f"{member['name']} has invalid upstream {upstream!r}", 4)
-    if _store_git(path, "fetch", remote, check=False).returncode:
+    if _store_git(path, "fetch", "--", remote, check=False).returncode:
         raise NativeStoreRefusal(f"{member['name']} cannot fetch {remote}", 5)
     answer = _coverage_of(path, sha, upstream)
     if answer == COVERAGE_LANDED:
@@ -2491,7 +2500,7 @@ def _push_uncovered_members(root: Path, same_repo_origin: str) -> list[dict[str,
             if exc.code != 3:
                 raise
         remote, _, branch = member["upstream"].partition("/")
-        pushed = _store_git(path, "push", "--porcelain", remote, f"{member['pin']}:refs/heads/{branch}", check=False)
+        pushed = _store_git(path, "push", "--porcelain", "--", remote, f"{member['pin']}:refs/heads/{branch}", check=False)
         if pushed.returncode:
             detail = " | ".join(line.strip() for line in pushed.stderr.splitlines() if line.strip())[:300]
             raise NativeStoreRefusal(
@@ -3019,7 +3028,7 @@ def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[
                          **_member_inspection(path, None)})
             continue
         remote, separator, branch = member["upstream"].partition("/")
-        fetched = _store_git(path, "fetch", remote, check=False) if separator else None
+        fetched = _store_git(path, "fetch", "--", remote, check=False) if separator else None
         measured = bool(separator and remote and branch and fetched is not None and not fetched.returncode)
         if not measured:
             state = "cannot-measure"

@@ -127,14 +127,24 @@ def load_workspace_spec_doc(workspace_root: Path) -> dict[str, object]:
     # An existing spec file wins; only a root without one is answered from grip.toml.
     derived = None if spec_path.exists() else derived_spec_doc(workspace_root)
     if derived is not None:
-        return derived
+        return _refuse_option_urls(derived)
     if not spec_path.exists():
         from gr2.prototypes.lane_workspace_prototype import WorkspaceSpecMissing
         from .workspace_guidance import missing_workspace_spec_message
 
         raise WorkspaceSpecMissing(missing_workspace_spec_message(workspace_root))
     with spec_path.open("rb") as fh:
-        return tomllib.load(fh)
+        return _refuse_option_urls(tomllib.load(fh))
+
+
+def _refuse_option_urls(spec: dict[str, object]) -> dict[str, object]:
+    """Refused at the load, so every reader gets it: a repo url reaches `ls-remote` and `clone` as the repository,
+    and one starting with '-' is read there as an option (`--upload-pack=<command>` runs the command)."""
+    for row in spec.get("repos", []) if isinstance(spec.get("repos"), list) else []:
+        url = row.get("url") if isinstance(row, dict) else None
+        if isinstance(url, str) and url.lstrip().startswith("-"):
+            raise SystemExit(f"workspace spec repo {row.get('name')!r}: url {url!r} starts with '-', which git reads as an option")
+    return spec
 
 
 def show_spec(workspace_root: Path, *, json_output: bool) -> str:

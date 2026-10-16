@@ -587,6 +587,11 @@ def load_lane_doc(workspace_root: Path, owner_unit: str, lane_name: str) -> dict
         doc["repos"] = [m["name"] for m in members]
         old_map = doc.get("branch_map", {})
         doc["branch_map"] = {m["name"]: old_map.get(m["name"], lane_name) for m in members}
+    # Refused at the load, so every reader of branch_map gets it: a value reaches `git checkout` as the branch.
+    for repo, branch in dict(doc.get("branch_map", {})).items():
+        refusal = gitops.branch_name_refusal(branch)
+        if refusal is not None:
+            raise SystemExit(f"lane {owner_unit}/{lane_name} branch_map[{repo!r}]: {refusal}")
     return doc
 
 
@@ -1036,7 +1041,7 @@ def _origin_default_branch(repo_path: Path, url: str | None = None) -> str | Non
     if not url:
         return None
     remote = gitops.git(
-        repo_path, "ls-remote", "--symref", url, "HEAD", timeout=_LS_REMOTE_TIMEOUT_SECONDS
+        repo_path, "ls-remote", "--symref", "--", url, "HEAD", timeout=_LS_REMOTE_TIMEOUT_SECONDS
     )
     if remote.returncode != 0:
         # A git that never returned is the same answer as a git that refused:

@@ -7,8 +7,9 @@ it knows into the package as `gr2/python_cli/_build.json`:
   that tracks this `setup.py` (an sdist unpacked inside another repo uses its carried stamp);
 * `release` -- true only when `HEAD` carries the tag `gr2/v<version>`, the tag the release
   workflow builds from, AND no tracked file under this directory differs from `HEAD`;
-* `dirty` -- true when a tracked file differs from `HEAD`, so the build is not the commit
-  it names (untracked files, such as the build's own output, do not count).
+* `dirty` -- true when a file under this directory differs from `HEAD`, tracked or not (an
+  untracked module would ship in the wheel); only the build's own output (`build/`,
+  `dist/`, `*.egg-info/`) is excluded, by pathspec, so no ignore file decides it.
 
 An sdist carries the stamp its own build wrote, so a wheel built FROM the sdist (what
 `python -m build` does, with no `.git` in the unpacked tree) keeps the source commit
@@ -54,7 +55,10 @@ def _stamp(version: str) -> dict:
     commit = _git("rev-parse", "--short", "HEAD") if tracked else None
     if commit:
         tags = (_git("tag", "--points-at", "HEAD") or "").split()
-        status = _git("status", "--porcelain", "--untracked-files=no", "--", ".")
+        status = _git(
+            "status", "--porcelain", "--untracked-files=all", "--", ".",
+            ":(exclude)build", ":(exclude)dist", ":(exclude,glob)**/*.egg-info/**",
+        )
         if status is None or status:
             return {"commit": commit, "dirty": True, "release": False}
         return {"commit": commit, "release": f"gr2/v{version}" in tags}
@@ -82,8 +86,10 @@ class BuildPy(build_py):
 
 class Sdist(sdist):
     def make_release_tree(self, base_dir, files) -> None:
+        # Stamp first: setuptools builds the release tree inside this directory, untracked.
+        stamp = _stamp(self.distribution.get_version())
         super().make_release_tree(base_dir, files)
-        _write(base_dir, _stamp(self.distribution.get_version()))
+        _write(base_dir, stamp)
 
 
 setup(cmdclass={"build_py": BuildPy, "sdist": Sdist})

@@ -120,6 +120,18 @@ def test_tracked_edit_at_the_tag_is_never_released(tmp_path: Path) -> None:
     )
 
 
+def test_untracked_module_at_the_tag_is_never_released(tmp_path: Path) -> None:
+    """An untracked module ships in the wheel, so a build at the tag with one says dirty."""
+    src = _source(tmp_path)
+    _git([*_IDENT, "tag", f"gr2/v{_VERSION}"], src)
+    sha = _git(["rev-parse", "--short", "HEAD"], src)
+    (src / "gr2" / "python_cli" / "zz_untracked.py").write_text("SHIPPED = True\n", encoding="utf-8")
+
+    assert _installed_line(src, tmp_path) == (
+        f"{_VERSION}+g{sha}.dirty dev build, not a release"
+    )
+
+
 def test_sdist_built_inside_another_checkout_keeps_its_carried_commit(tmp_path: Path) -> None:
     """An sdist unpacked inside some other repo names the source commit, never that repo's HEAD."""
     src = _source(tmp_path)

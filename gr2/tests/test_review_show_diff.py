@@ -129,6 +129,7 @@ def test_space_and_control_chars_print_safely(tmp_path, monkeypatch):
 def _repin(w, tmp_path, name):
     m = w["members"][name]
     head = git(m["repo"], "rev-parse", "HEAD")
+    git(m["repo"], "checkout", "-q", "--detach")  # a local head, not the pushed feat (pin judges a source's branch)
     rows = [{"key": name, "path": name, "remote": str(m["remote"]), "base": m["base"], "head": head,
              "ref": "refs/heads/main", "source": str(m["repo"])}]
     (tmp_path / "rowsp.json").write_text(json.dumps(rows))
@@ -341,6 +342,7 @@ def test_plain_show_missing_member_objects_reads_no_files(tmp_path, monkeypatch)
 # live tip at pin) and the head: never a change the target made that the head lacks or merged in.
 def _pin_at(w, tmp_path, name, base, head):
     m = w["members"][name]
+    git(m["repo"], "checkout", "-q", "--detach")  # as _repin: the head is local, not the pushed feat
     rows = [{"key": name, "path": name, "remote": str(m["remote"]), "base": base, "head": head,
              "ref": "refs/heads/main", "source": str(m["repo"])}]
     (tmp_path / "rowsb.json").write_text(json.dumps(rows))

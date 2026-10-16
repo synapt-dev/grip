@@ -32,9 +32,14 @@ def installed(tmp_path_factory):
     return venv / "bin"
 
 
+def _env(bin_dir, cwd, extra_path=()):
+    """Only HOME and PATH, so the wheel imports its own gr2: an inherited PYTHONPATH (a review run pins it to the
+    checkout) would load the source tree instead, whose version carries no build stamp."""
+    return {"HOME": str(cwd), "PATH": os.pathsep.join([*map(str, extra_path), str(bin_dir), "/usr/bin", "/bin"])}
+
+
 def _run(bin_dir, cwd, *args, extra_path=()):
-    env = {"HOME": str(cwd), "PATH": os.pathsep.join([*map(str, extra_path), str(bin_dir), "/usr/bin", "/bin"])}
-    return subprocess.run(["gr", *args], cwd=cwd, env=env, capture_output=True, text=True)
+    return subprocess.run(["gr", *args], cwd=cwd, env=_env(bin_dir, cwd, extra_path), capture_output=True, text=True)
 
 
 def test_the_wheel_installs_gr_beside_gr2(installed):
@@ -46,7 +51,8 @@ def test_outside_any_workspace_gr_is_gr2(installed, tmp_path):
     assert which.returncode == 0 and which.stdout.split()[0] == "gr2", which
     assert os.path.realpath(which.stdout.split()[2]) == os.path.realpath(installed / "gr2")
     version = _run(installed, tmp_path, "--version")
-    own = subprocess.run([str(installed / "gr2"), "--version"], cwd=tmp_path, capture_output=True, text=True)
+    own = subprocess.run([str(installed / "gr2"), "--version"], cwd=tmp_path, env=_env(installed, tmp_path),
+                         capture_output=True, text=True)
     assert version.returncode == 0 and version.stdout == own.stdout, (version, own)
 
 

@@ -215,12 +215,14 @@ def test_p7_no_destructive_path_in_output_or_next_steps(tmp_path):
     assert not hits, hits
 
 
-def test_p8_ratified_still_pins_a_pushed_head(tmp_path):
+def test_p8_ratified_names_a_real_receipt_or_refuses(tmp_path):
+    # --ratified must name a stamped earlier pin of this head (test_review_pin_ratified.py
+    # r4 pins with one); a string that names no pin refuses before any write.
     w = _world(tmp_path, push_head=False)
     _git(w["src"], "push", "-q", "origin", f"{w['head']}:refs/tags/v1")
     assert _pin(w).exit_code == 2
     result = _pin(w, "--ratified", "rcpt-1")
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 2 and "ratified_receipt_unknown" in result.output, result.output
 
 
 def test_p9_stale_tracking_ref_is_not_the_judge(tmp_path):

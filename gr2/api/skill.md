@@ -244,7 +244,7 @@ Pin a review gr commit for one or more repository rows; print ``gr:<commit>``.
 - `--title`: Platform title text (NORM-hashed into the object)
 - `--body`: Platform body text (NORM-hashed into the object)
 - `--rows-json`: A JSON file with a list of row objects (key/remote/base/head, optional path/ref/title/body; source or range is optional on a single row but required on every row when the file holds more than one); pins ALL rows into ONE gr commit. Exclusive with the single-row flags.
-- `--ratified`: Named ratify receipt id: the sanctioned fix-forward when a --head is already on the remote
+- `--ratified`: gr:<id> of an earlier pin of this same head that was stamped: the one way to pin a --head already on the remote; recorded in the review
 - `--members`: With no rows given: pin only these members (comma-separated names)
 
 ### gr2 push
@@ -366,11 +366,11 @@ next: the set check failed at these heads and that failure is recorded; a rerun 
 
 ### feature_moved
 
-next: the feature branch moved after the pin; to check the set as it is now: gr2 check set '<workspace>' '<review>' --at-remote-heads '<branch>' -- <your combined test command>. To merge it, commit a new head and pin it before you push, or pin this head with --ratified <receipt id> naming the ratify that covers it
+next: the feature branch moved after the pin; to check the set as it is now: gr2 check set '<workspace>' '<review>' --at-remote-heads '<branch>' -- <your combined test command>. To merge it, commit a new head and pin it before you push, or pin this head with --ratified gr:<id>, naming an earlier pin of this same head that was stamped
 
 ### head_already_on_remote
 
-next: pin a head before you push it. For this head, either commit a new head and pin it before pushing, or pin this one with --ratified <receipt id> naming the ratify that already covers it
+next: pin a head before you push it. For this head, either commit a new head and pin it before pushing, or pin this one with --ratified gr:<id>, naming an earlier pin of this same head that was stamped
 
 ### head_behind_remote_branch
 

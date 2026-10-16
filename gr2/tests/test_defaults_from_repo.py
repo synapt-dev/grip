@@ -86,7 +86,7 @@ def test_two_binds_at_the_current_heads_refuse_and_list_both(world, monkeypatch)
     monkeypatch.setenv("GIT_AUTHOR_DATE", "2001-01-01T00:00:00Z")
     again = runner.invoke(app, ["review", "bind", "--repo", "member", "--remote", str(world["remote"]),
                                 "--base", world["base"], "--head", world["head"], "--ref", "refs/heads/main",
-                                "--source", str(world["member"]), "--ratified", "second-look"])
+                                "--source", str(world["member"])])  # pushed as the feature tip: pins without a receipt
     assert again.exit_code == 0, again.output
     merged = runner.invoke(app, ["review", "merge", "--approvals", "0"])
     assert merged.exit_code == 3, merged.output

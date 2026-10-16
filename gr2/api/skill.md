@@ -372,6 +372,10 @@ next: the feature branch moved after the pin; to check the set as it is now: gr2
 
 next: pin a head before you push it. For this head, either commit a new head and pin it before pushing, or pin this one with --ratified <receipt id> naming the ratify that already covers it
 
+### head_behind_remote_branch
+
+next: the remote branch already holds commits past this head; pin what it holds: gr2 review pin <workspace> --head '<remote_tip>' with your other flags unchanged
+
 ### head_not_fetched
 
 next: the member remote '<remote>' does not serve the reviewed head '<head>'; once the author has pushed it there, stamp again: gr2 review stamp '<workspace>' '<review>'
@@ -399,6 +403,10 @@ next: mark the PR ready (or reopen it) on the platform, then run the merge again
 ### platform_unmeasurable
 
 next: install the GitHub CLI (gh) and authenticate it (gh auth login), then run the merge again; nothing was merged
+
+### remote_branch_diverged
+
+next: fetch the remote branch, integrate it into your branch locally (merge or rebase) as a new head, then pin that head before you push it
 
 ### review_not_on_member_remote
 

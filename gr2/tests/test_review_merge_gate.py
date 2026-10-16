@@ -273,12 +273,19 @@ def test_a_missing_check_names_check_run_and_the_printed_command_gets_past_it(wo
 
 
 def test_pinning_a_head_already_pushed_names_the_non_destructive_path(world):
+    # Now a head that IS the pushed branch tip pins (test_review_pin_after_push); the
+    # refusal that remains is a branch that moved past the head after the push.
+    (world["member"] / "later.txt").write_text("later\n")
+    git(world["member"], "add", "later.txt")
+    git(world["member"], "commit", "-m", "later")
+    tip = git(world["member"], "rev-parse", "HEAD")
+    git(world["member"], "push", str(world["remote"]), "feat")
     again = runner.invoke(app, ["review", "pin", "--repo", "member", "--remote", str(world["remote"]),
                                 "--base", world["base"], "--head", world["head"], "--ref", "refs/heads/main",
                                 "--source", str(world["member"])])
-    assert again.exit_code == 2 and "head_already_on_remote" in again.output, again.output
+    assert again.exit_code == 2 and "head_behind_remote_branch" in again.output, again.output
     line = next(x for x in again.output.splitlines() if x.startswith("next: "))
-    assert "--ratified" in line and not any(f in line.lower() for f in FORBIDDEN_ADVICE), line
+    assert f"--head {tip}" in line and not any(f in line.lower() for f in FORBIDDEN_ADVICE), line
 
 
 def test_no_next_line_and_no_help_line_suggests_an_identity_or_delete_trick():

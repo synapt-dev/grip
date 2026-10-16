@@ -106,11 +106,12 @@ def test_bind_refuses_when_base_is_not_live_head(tmp_path):
 def test_bind_refuses_when_head_already_on_remote(tmp_path):
     remote, base, head = _fixture_remote(tmp_path)
     ws = _grip_ws(tmp_path)
-    # Publish the head under some ref so it is present on the remote.
+    # Publish the head under a ref that is not a branch, so it is present on the remote. (An
+    # equal BRANCH tip now pins and records pushed_before_pin; see test_review_pin_after_push.)
     work2 = tmp_path / "work2"
     _git(tmp_path, "clone", remote, str(work2))
     _git(work2, "fetch", str(tmp_path / "work"), f"{head}:refs/heads/pushed")
-    _git(work2, "push", "origin", f"{head}:refs/heads/pushed")
+    _git(work2, "push", "origin", f"{head}:refs/tags/pushed")
 
     with pytest.raises(GripReviewRefused) as exc:
         grip.create_review_bind_commit(ws, [_row(remote, base, head)])

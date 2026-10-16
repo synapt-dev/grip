@@ -73,7 +73,13 @@ def _stamp(version: str) -> dict:
         hidden = flags is None or any(
             line[:1] == "S" or line[:1].islower() for line in flags.splitlines()
         )
-        if status is None or status or hidden:
+        # A conversion git runs on the way in (any clean filter, LFS included; `ident`;
+        # working-tree-encoding) can map a same-size edit back to the committed blob, so status
+        # shows nothing and the edited file ships. Any such path at all means dirty.
+        converted = _git(
+            "ls-files", "--", ".", ":(exclude,attr:!filter !ident !working-tree-encoding)"
+        )
+        if status is None or status or hidden or converted is None or converted:
             return {"commit": commit, "dirty": True, "release": False}
         return {"commit": commit, "release": f"gr2/v{version}" in tags}
     carried = os.path.join(_HERE, _STAMP)

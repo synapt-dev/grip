@@ -163,6 +163,98 @@ def test_hidden_tracked_edit_at_the_tag_is_never_released(tmp_path: Path, flag: 
     )
 
 
+def _converted_source(tmp_path: Path, attributes: str) -> Path:
+    """A source whose `.gitattributes` is committed, then tagged at that commit."""
+    src = _source(tmp_path)
+    (src / ".gitattributes").write_text(attributes, encoding="utf-8")
+    _git([*_IDENT, "add", "--renormalize", "."], src)
+    _git([*_IDENT, "add", ".gitattributes"], src)
+    _git([*_IDENT, "commit", "-q", "-m", "attributes"], src)
+    _git([*_IDENT, "tag", f"gr2/v{_VERSION}"], src)
+    return src
+
+
+def _same_size_rewrite(path: Path, old: bytes, new: bytes) -> None:
+    """Swap `old` for `new` in place, keeping the size so git trusts nothing but content."""
+    assert len(old) == len(new)
+    data = path.read_bytes()
+    assert data.count(old) == 1
+    path.write_bytes(data.replace(old, new))
+    later = path.stat().st_mtime + 2
+    os.utime(path, (later, later))
+
+
+def test_clean_filter_edit_at_the_tag_is_never_released(tmp_path: Path) -> None:
+    """A clean filter maps a same-size edit back to the committed blob; the edit still ships."""
+    src = _converted_source(tmp_path, "*.py filter=tilde\n")
+    _git(["config", "filter.tilde.clean", "tr '~' ' '"], src)
+    _git(["config", "filter.tilde.smudge", "cat"], src)
+    sha = _git(["rev-parse", "--short", "HEAD"], src)
+    module = src / "gr2" / "python_cli" / "version.py"
+    _same_size_rewrite(module, b"The distinction is", b"The~distinction is")
+    assert _git(["status", "--porcelain"], src) == ""
+
+    assert _installed_line(src, tmp_path) == (
+        f"{_VERSION}+g{sha}.dirty dev build, not a release"
+    )
+
+
+def test_ident_edit_at_the_tag_is_never_released(tmp_path: Path) -> None:
+    """`ident` collapses anything between `$Id:` and `$` on the way in, so code there ships unseen."""
+    src = _source(tmp_path)
+    module = src / "gr2" / "python_cli" / "version.py"
+    module.write_text(module.read_text(encoding="utf-8") + 'ID = "$Id$"\n', encoding="utf-8")
+    _git([*_IDENT, "add", "-A"], src)
+    _git([*_IDENT, "commit", "-q", "-m", "ident line"], src)
+    (src / ".gitattributes").write_text("*.py ident\n", encoding="utf-8")
+    _git([*_IDENT, "add", ".gitattributes"], src)
+    _git([*_IDENT, "commit", "-q", "-m", "attributes"], src)
+    module.unlink()
+    _git(["checkout", "--", "gr2/python_cli/version.py"], src)
+    _git([*_IDENT, "tag", f"gr2/v{_VERSION}"], src)
+    sha = _git(["rev-parse", "--short", "HEAD"], src)
+    expanded = module.read_bytes().split(b'ID = "')[-1].split(b'"')[0]
+    code = b'$Id: "+__import__("os").name+" $'
+    pad = b" " * (len(expanded) - len(code))
+    _same_size_rewrite(module, expanded, code.replace(b"$Id: ", b"$Id: " + pad))
+    assert _git(["status", "--porcelain"], src) == ""
+
+    assert _installed_line(src, tmp_path) == (
+        f"{_VERSION}+g{sha}.dirty dev build, not a release"
+    )
+
+
+def test_working_tree_encoding_edit_at_the_tag_is_never_released(tmp_path: Path) -> None:
+    """working-tree-encoding decodes both byte orders to one blob, so a swapped file ships unseen."""
+    src = _source(tmp_path)
+    data = src / "gr2" / "python_cli" / "notes.txt"
+    data.write_bytes("release notes\n".encode("utf-16"))
+    (src / ".gitattributes").write_text("*.txt working-tree-encoding=UTF-16\n", encoding="utf-8")
+    _git([*_IDENT, "add", "-A"], src)
+    _git([*_IDENT, "commit", "-q", "-m", "notes"], src)
+    _git([*_IDENT, "tag", f"gr2/v{_VERSION}"], src)
+    sha = _git(["rev-parse", "--short", "HEAD"], src)
+    raw = data.read_bytes()
+    text = raw.decode("utf-16")
+    if raw[:2] == b"\xff\xfe":
+        swapped = b"\xfe\xff" + text.encode("utf-16-be")
+    else:
+        swapped = b"\xff\xfe" + text.encode("utf-16-le")
+    _same_size_rewrite(data, raw, swapped)
+    assert _git(["status", "--porcelain"], src) == ""
+
+    assert _installed_line(src, tmp_path) == (
+        f"{_VERSION}+g{sha}.dirty dev build, not a release"
+    )
+
+
+def test_attribute_that_converts_nothing_is_still_released(tmp_path: Path) -> None:
+    """Control: an attribute git never converts content with leaves the tag a release."""
+    src = _converted_source(tmp_path, "*.py diff=python\n")
+
+    assert _installed_line(src, tmp_path) == f"{_VERSION} released"
+
+
 def test_pycache_alone_at_the_tag_is_still_released(tmp_path: Path) -> None:
     """Control: bytecode under `__pycache__/` is not a source change, so the tag still releases."""
     src = _source(tmp_path)

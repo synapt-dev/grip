@@ -221,6 +221,13 @@ is refused. Object downloads may remain after refusal. The owned temporary ref
 is removed separately, and cleanup failure is reported without replacing a
 primary failure.
 
+Receive also fetches each member's pinned head from the remote it read the review
+from, one `heads` row per member. A member whose recorded remote is another one
+(a review published to a staging remote) is `not_this_remote`. `gr2 review open`
+builds the lane from the range the review carries, and the row's `next` names that
+command. `gr2 review show --diff` and `gr2 review stamp` still need the head: they
+refuse until the author pushes it to the member's own remote and it is fetched.
+
 The review commit carries its trees, blobs and range patches. It does not make
 its recorded base or original member head reachable as Git parents. Keep each
 member's base reachable at its recorded remote for reconstruction. `verify`

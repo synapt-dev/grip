@@ -14,11 +14,19 @@ from pathlib import Path
 
 from . import gitops
 from .grip import GripReviewRefused
+from .next_steps import _shown
 
 # A shallow clone cuts the shared history even when both commits are present; else the head was re-cut or replaced.
-NO_MERGE_BASE_NEXT = ("next: if the clone is shallow (git rev-parse --is-shallow-repository), deepen it "
-                      "(git fetch --unshallow) and show again; if not, the head shares no commit with the target "
-                      "(a re-cut or replaced member branch): rebase it onto the target and pin again")
+# Named per member: the clone path, because a refusal is read at the workspace root, which is not that clone; and the
+# head, because a bare `fetch --unshallow` deepens only origin, while a head fetched from another remote keeps its own
+# shallow boundary and the clone stays shallow.
+def no_merge_base_next(repo: Path, head: str) -> str:
+    clone = _shown(str(repo))
+    return (f"next: if the clone is shallow (git -C {clone} rev-parse --is-shallow-repository), deepen it from the "
+            f"remote that holds the head (git -C {clone} fetch --unshallow <remote> {_shown(head)}) and show again; "
+            "if not, the head shares no commit with the target (a re-cut or replaced member branch): rebase it onto "
+            "the target and pin again")
+
 
 # A reviewer's diff config must not swap in another program's output or recolour it.
 _PLAIN = ("--no-ext-diff", "--no-textconv", "--no-color")
@@ -43,7 +51,7 @@ def change(workspace: Path, member: dict[str, object], *, with_diff: bool) -> di
     fork = gitops.run(repo, "merge-base", base, head)
     if fork.returncode != 0:  # no common history: nothing the head adds to the target can be named
         exc = GripReviewRefused("member_no_merge_base", f"{member['key']} {base}", head)
-        exc.add_note(NO_MERGE_BASE_NEXT)
+        exc.add_note(no_merge_base_next(repo, head))
         raise exc
     fork_sha = fork.stdout.strip()
     fields = _git(repo, "diff", *_PLAIN, "--numstat", "-z", fork_sha, head).split("\0")

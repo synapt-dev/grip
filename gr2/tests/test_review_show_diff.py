@@ -7,6 +7,9 @@ compares against git run in the member clone that made the commits.
 from __future__ import annotations
 
 import json
+import re
+import shlex
+import subprocess
 
 from gr2.python_cli.app import app
 from tests.test_review_update import build, git, move_main, runner, _env  # noqa: F401
@@ -407,7 +410,9 @@ _NO_MERGE_BASE_NEXT = ("next: if the clone is shallow (git rev-parse --is-shallo
                        "replaced member branch): rebase it onto the target and pin again")
 
 
-def test_no_merge_base_names_the_next_step(tmp_path, monkeypatch):
+def _cut_clone(tmp_path, monkeypatch):
+    """A pinned member whose clone is then replaced by a depth-1 clone of the target plus a depth-1 fetch of the head
+    from a second source: both commits present, no shared commit, and the head's shallow boundary is not origin's."""
     import shutil
     w = build(tmp_path, monkeypatch, ["alpha"])
     m = w["members"]["alpha"]
@@ -418,9 +423,42 @@ def test_no_merge_base_names_the_next_step(tmp_path, monkeypatch):
     git(w["author"], "clone", "-q", "--depth", "1", "--branch", "main", f"file://{m['remote']}", "alpha")
     git(m["repo"], "fetch", "-q", "--depth", "1", f"file://{held}", "HEAD")
     assert git(m["repo"], "rev-parse", "FETCH_HEAD") == head and git(m["repo"], "rev-parse", "HEAD") == m["base"]
+    assert " " in str(m["repo"])  # the printed clone path must survive shell quoting
+    return w, m, rid, head, held
+
+
+def test_no_merge_base_names_the_next_step(tmp_path, monkeypatch):
+    w, m, rid, head, _ = _cut_clone(tmp_path, monkeypatch)
+    clone = shlex.quote(str(m["repo"]))
+    probe = f"(git -C {clone} rev-parse --is-shallow-repository)"
+    deepen = f"(git -C {clone} fetch --unshallow <remote> {head}) and show again"
     out = runner.invoke(app, ["review", "show", str(w["author"]), rid, "--diff"])
     assert out.exit_code == 2, out.output
-    assert "member_no_merge_base" in out.stderr and _NO_MERGE_BASE_NEXT in out.stderr, out.stderr
+    assert "member_no_merge_base" in out.stderr and probe in out.stderr and deepen in out.stderr, out.stderr
+    # a bare `git fetch --unshallow` deepens origin only, so it is not the advice
+    assert _NO_MERGE_BASE_NEXT not in out.stderr and "(git fetch --unshallow)" not in out.stderr, out.stderr
     assert "diff --git" not in out.stdout and "Traceback" not in out.stderr
     data = runner.invoke(app, ["review", "show", str(w["author"]), rid, "--json", "--stat"])
-    assert data.exit_code == 2 and _NO_MERGE_BASE_NEXT in data.stdout, data.output
+    assert data.exit_code == 2 and probe in data.stdout and deepen in data.stdout, data.output
+
+
+def test_no_merge_base_probe_runs_as_printed_from_the_workspace_root(tmp_path, monkeypatch):
+    w, m, rid, head, _ = _cut_clone(tmp_path, monkeypatch)
+    out = runner.invoke(app, ["review", "show", str(w["author"]), rid, "--stat"])
+    assert out.exit_code == 2, out.output
+    found = re.search(r"\((git -C .+? rev-parse --is-shallow-repository)\)", out.stderr)
+    assert found, out.stderr
+    ran = subprocess.run(shlex.split(found.group(1)), cwd=w["author"], capture_output=True, text=True)
+    assert ran.returncode == 0 and ran.stdout.strip() == "true", (found.group(1), ran.stderr)
+
+
+def test_no_merge_base_clears_after_deepening_from_the_heads_source(tmp_path, monkeypatch):
+    w, m, rid, head, held = _cut_clone(tmp_path, monkeypatch)
+    git(m["repo"], "fetch", "-q", "--unshallow")  # origin only: the head's boundary stays, the refusal stays
+    assert git(m["repo"], "rev-parse", "--is-shallow-repository") == "true"
+    assert runner.invoke(app, ["review", "show", str(w["author"]), rid, "--stat"]).exit_code == 2
+    git(m["repo"], "fetch", "-q", "--unshallow", f"file://{held}", head)  # the printed step, <remote> filled in
+    assert git(m["repo"], "rev-parse", "--is-shallow-repository") == "false"
+    out = runner.invoke(app, ["review", "show", str(w["author"]), rid, "--stat"])
+    assert out.exit_code == 0, out.output
+    assert "  diff: 2 files, 2 commits, +2 -1\n" in out.stdout, out.stdout

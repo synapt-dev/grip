@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 
 from gr2.python_cli.app import app
-from tests.test_review_update import build, git, runner, _env  # noqa: F401
+from tests.test_review_update import build, git, move_main, runner, _env  # noqa: F401
 
 
 def _show(w, *args):
@@ -335,3 +335,63 @@ def test_plain_show_missing_member_objects_reads_no_files(tmp_path, monkeypatch)
     assert head in out.stdout and "local.txt" not in out.stdout, out.stdout
     row = json.loads(runner.invoke(app, ["review", "show", str(w["author"]), rid, "--json"]).stdout)["members"][0]
     assert row["files"] is None and row["files_unread"] == f"member_objects_missing alpha {head}", row
+
+
+# A member's change is what the head adds to the target, read from the merge-base of the pinned base (the target's
+# live tip at pin) and the head: never a change the target made that the head lacks or merged in.
+def _pin_at(w, tmp_path, name, base, head):
+    m = w["members"][name]
+    rows = [{"key": name, "path": name, "remote": str(m["remote"]), "base": base, "head": head,
+             "ref": "refs/heads/main", "source": str(m["repo"])}]
+    (tmp_path / "rowsb.json").write_text(json.dumps(rows))
+    return runner.invoke(app, ["review", "pin", str(w["author"]), "--rows-json", str(tmp_path / "rowsb.json")])
+
+
+def _mine(m):
+    (m["repo"] / "mine.txt").write_text("mine\n")
+    git(m["repo"], "add", "mine.txt")
+    git(m["repo"], "commit", "-q", "-m", "mine")
+
+
+def _only_the_members_change(w, rid, m, base, head, absent):
+    names = git(m["repo"], "diff", "--name-only", f"{base}...{head}").splitlines()
+    assert "mine.txt" in names and absent not in names, names
+    diff = runner.invoke(app, ["review", "show", str(w["author"]), rid, "--diff", "--member", "alpha"])
+    assert diff.exit_code == 0, diff.output
+    assert git(m["repo"], "diff", f"{base}...{head}") + "\n" in diff.stdout, diff.stdout
+    assert absent not in diff.stdout, diff.stdout
+    stat = runner.invoke(app, ["review", "show", str(w["author"]), rid, "--stat"])
+    assert stat.exit_code == 0 and f"  diff: {len(names)} files" in stat.stdout, stat.output
+    data = json.loads(runner.invoke(app, ["review", "show", str(w["author"]), rid, "--json", "--stat"]).stdout)
+    assert data["members"][0]["files"] == names and data["members"][0]["diffstat"]["files"] == len(names), data
+    plain = json.loads(runner.invoke(app, ["review", "show", str(w["author"]), rid, "--json"]).stdout)
+    assert plain["members"][0]["files"] == names, plain
+
+
+def test_merged_in_target_is_not_the_members_change(tmp_path, monkeypatch):
+    w = build(tmp_path, monkeypatch, ["alpha"])
+    m = w["members"]["alpha"]
+    _mine(m)
+    move_main(w, "alpha", "main.txt", "main\n")
+    git(m["repo"], "fetch", "-q", "origin")
+    target = git(m["repo"], "rev-parse", "origin/main")
+    git(m["repo"], "merge", "-q", "--no-edit", "origin/main")
+    head = git(m["repo"], "rev-parse", "HEAD")
+    stale = _pin_at(w, tmp_path, "alpha", m["base"], head)  # the base before main moved: refused by name
+    assert stale.exit_code == 2 and "base_not_live_head" in stale.output, stale.output
+    made = _pin_at(w, tmp_path, "alpha", target, head)
+    assert made.exit_code == 0, made.output
+    _only_the_members_change(w, made.stdout.strip().splitlines()[-1], m, target, head, "main.txt")
+
+
+def test_target_moved_past_the_branch_point_is_not_the_members_change(tmp_path, monkeypatch):
+    w = build(tmp_path, monkeypatch, ["alpha"])
+    m = w["members"]["alpha"]
+    _mine(m)
+    head = git(m["repo"], "rev-parse", "HEAD")
+    move_main(w, "alpha", "later.txt", "later\n")
+    git(m["repo"], "fetch", "-q", "origin")
+    target = git(m["repo"], "rev-parse", "origin/main")
+    made = _pin_at(w, tmp_path, "alpha", target, head)
+    assert made.exit_code == 0, made.output
+    _only_the_members_change(w, made.stdout.strip().splitlines()[-1], m, target, head, "later.txt")

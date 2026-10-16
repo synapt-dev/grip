@@ -184,6 +184,8 @@ def install_store_hooks(root: Path) -> dict[str, str]:
 
 def hook_problems(root: Path, states: dict[str, str]) -> list[str]:
     """One line per hook that will NOT run the store's checks, for `store init` and `store status`."""
+    from . import grip_cli as gc
+
     lines: list[str] = []
     override = hooks_path_override(root)
     if override:
@@ -200,14 +202,14 @@ def hook_problems(root: Path, states: dict[str, str]) -> list[str]:
                 f"run on it; call `{entry} {name}` from that hook to enable them"
             )
         elif state == "absent":
-            lines.append(f"hooks: {name} is not installed; run gr2 store materialize to install it")
+            lines.append(f"hooks: {name} is not installed; run {gc._store_advice(root, 'materialize')} to install it")
         elif state == "installed":
             interpreter = _recorded_interpreter(_hooks_dir(root) / name)
             if interpreter and not os.access(interpreter, os.X_OK):
                 verb = "commit" if name == "pre-commit" else "push"
                 lines.append(
                     f"hooks: {name} records interpreter {interpreter}, which is missing, so it refuses every git "
-                    f"{verb} until `gr2 store materialize` (or `gr2 store init`) rewrites it"
+                    f"{verb} until `{gc._store_advice(root, 'materialize')}` (or `{gc._store_advice(root, 'init')}`) rewrites it"
                 )
     return lines
 

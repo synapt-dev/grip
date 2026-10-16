@@ -1145,6 +1145,25 @@ def _store_root(root: Path | None, positional: Path | None = None) -> Path:
     return Path.cwd() if chosen is None else chosen.resolve()
 
 
+def _store_advice(root: Path | None, verb: str) -> str:
+    """`gr2 store <verb>` as it must be typed from the current directory to act on `root`.
+
+    Advice a verb prints is run from where the verb was run. A root named with -C that the advice did not carry
+    acted on the current directory instead, with exit 0: the wrong workspace. So the root goes in as `-C <root>`,
+    quoted to paste, whenever it is not the current directory (a hook runs at the root, so its advice stays bare).
+    """
+    advice = f"gr2 store {verb}"
+    if root is None:
+        return advice
+    try:
+        here = Path.cwd().resolve()
+    except OSError:
+        here = None
+    if Path(root).resolve() != here:
+        advice += f" -C {shlex.quote(str(root))}"
+    return advice
+
+
 def _echo_layered(root: Path, layered: list[str]) -> None:
     """One line per member whose pin went into the record as a layer."""
     import typer
@@ -1573,7 +1592,7 @@ def _resolve_member_pin(
         if _member_covers(root, moved, sha, claimed):
             chosen = moved
     if allow is not None:
-        _refuse_pin_rewind({**chosen, "pin": _committed_pin(root, member)}, path, sha, member.get("ref"), allow=allow)
+        _refuse_pin_rewind({**chosen, "pin": _committed_pin(root, member)}, path, sha, member.get("ref"), allow=allow, root=root)
     if chosen is moved:
         return moved
     try:
@@ -1952,7 +1971,8 @@ def _committed_record(root: Path, path: str, name: str) -> tuple[bool, str | Non
 
 
 def _refuse_pin_rewind(
-    member: dict, path: Path, head: str, recorded_ref: str | None = None, allow: str = "pass --allow-rewind"
+    member: dict, path: Path, head: str, recorded_ref: str | None = None, allow: str = "pass --allow-rewind",
+    root: Path | None = None,
 ) -> None:
     """Refuse (3) a pin that would move BACKWARDS: HEAD is behind the recorded pin, or lacks it entirely.
 
@@ -1966,7 +1986,7 @@ def _refuse_pin_rewind(
     if not recorded or recorded == head:
         return
     name = member["name"]
-    hint = f"run `gr2 store materialize` to bring the checkout to the pin, or {allow} to record it anyway"
+    hint = f"run `{_store_advice(root, 'materialize')}` to bring the checkout to the pin, or {allow} to record it anyway"
     if _store_git(path, "cat-file", "-e", f"{recorded}^{{commit}}", check=False).returncode:
         shallow = _store_git(path, "rev-parse", "--is-shallow-repository", check=False).stdout.strip() == "true"
         if shallow:
@@ -2038,7 +2058,7 @@ def _shadow_value(root: Path) -> str:
     return _store_git(root, "rev-parse", "--verify", "-q", _shadow_ref_for(branch), check=False).stdout.strip()
 
 
-def _recorded_pins(text: str) -> dict[str, str]:
+def _recorded_pins(text: str, root: Path | None = None) -> dict[str, str]:
     """The pins a grip.toml TEXT records, {name: pin}. A member with no pin line was edited by hand (the verb always
     writes one): it is refused by name here, the one reader the hook and `store push` share, not raised as a KeyError."""
     members = tomllib.loads(text).get("members", [])
@@ -2046,7 +2066,7 @@ def _recorded_pins(text: str) -> dict[str, str]:
     if unpinned:
         raise NativeStoreRefusal(
             f"pin line removed by hand, not recorded by the verb: {', '.join(unpinned)}; record pins through "
-            f"`gr2 store commit`", 4)
+            f"`{_store_advice(root, 'commit')}`", 4)
     return {str(member["name"]): str(member["pin"]) for member in members}
 
 
@@ -2082,30 +2102,30 @@ def _refuse_unrecorded_pins(root: Path, pins: dict[str, str], base: str, mode: s
     both (a hand bump past the hook, a stale fold). Otherwise the gitlink is never compared: in full mode it is the
     member's field commit, not its pin (#1233 v3 failed 47 full-mode rows on that)."""
     shown = _store_git(root, "show", f"{base}:grip.toml", check=False)
-    recorded = _recorded_pins(shown.stdout) if not shown.returncode else {}
+    recorded = _recorded_pins(shown.stdout, root) if not shown.returncode else {}
     dropped = sorted(name for name in recorded if name not in pins)
     if dropped:
         raise NativeStoreRefusal(
             f"member dropped by hand, not recorded by the verb: {', '.join(dropped)}; record pins through "
-            f"`gr2 store commit`", 4)
+            f"`{_store_advice(root, 'commit')}`", 4)
     if gitlinks is not None and _gitlink_may_be_pin(mode):
         stale = [f"{name} (gitlink {gitlinks.get(name, '')[:12] or 'none'}, pin {pin[:12]})"
                  for name, pin in sorted(pins.items()) if gitlinks.get(name) != pin]
         if stale:
             raise NativeStoreRefusal(
                 f"gitlink is not the pin grip.toml records: {', '.join(stale)}; commit with the hook on so it folds "
-                f"the pin, or record pins through `gr2 store commit`", 4)
+                f"the pin, or record pins through `{_store_advice(root, 'commit')}`", 4)
         return
     shown = _store_git(root, "show", f"{base}:grip.toml", check=False)
     if shown.returncode:
         return  # the base records no grip.toml: there is nothing to compare against
-    recorded = _recorded_pins(shown.stdout)
+    recorded = _recorded_pins(shown.stdout, root)
     moved = [f"{name} ({recorded.get(name, 'none')[:12]} -> {pin[:12]})" for name, pin in sorted(pins.items())
              if recorded.get(name) != pin]
     if moved:
         raise NativeStoreRefusal(
-            f"pin edited by hand, not recorded by the verb: {', '.join(moved)}; record pins through `gr2 store commit`",
-            4)
+            f"pin edited by hand, not recorded by the verb: {', '.join(moved)}; record pins through "
+            f"`{_store_advice(root, 'commit')}`", 4)
 
 
 @_refuses_moved_workspace
@@ -2344,7 +2364,7 @@ def _root_origin_for_push(root: Path, to: str | None) -> str | None:
         if not have:
             raise NativeStoreRefusal(
                 "the root has no origin remote, so there is nowhere to push; record one and push with "
-                "`gr2 store push --to <url>`", 5)
+                f"`{_store_advice(root, 'push --to <url>')}`", 5)
         return None
     if to.startswith("-"):
         raise NativeStoreRefusal("--to must be a URL or path, not an option", 2)
@@ -2358,7 +2378,7 @@ def _root_origin_for_push(root: Path, to: str | None) -> str | None:
         if have != to:
             raise NativeStoreRefusal(
                 f"the root's origin is already {have}; --to names {to}. gr2 does not repoint origin. "
-                f"Run `gr2 store push` to push to the recorded origin", 4)
+                f"Run `{_store_advice(root, 'push')}` to push to the recorded origin", 4)
         return None
     _store_git(root, "remote", "add", "origin", to)
     return to
@@ -2692,7 +2712,7 @@ def _native_members_at(root: Path, revision: str) -> dict[str, str]:
         raise NativeStoreRefusal(
             f"{revision} is the empty root commit that holds the first-parent place in a full-mode workspace; "
             f"it records no members, so name a commit that carries grip.toml", 5)
-    return _recorded_pins(_store_git(root, "show", f"{revision}:grip.toml").stdout)
+    return _recorded_pins(_store_git(root, "show", f"{revision}:grip.toml").stdout, root)
 
 
 @_refuses_moved_workspace
@@ -2922,7 +2942,7 @@ def _native_store_checkout(root: Path, revision: str) -> tuple[str, list[dict[st
 STORE_STATUS_NOTES = {
     "layer": "  (the record's layers carry the pin; no remote has it, by design in full mode)",
     "missing": "  (the upstream branch does not contain the pin, and no layer carries it)",
-    "no-pin": "  (grip.toml records no pin for this member; gr2 store commit records one)",
+    "no-pin": "  (grip.toml records no pin for this member; {commit} records one)",
     "stale": "  (the upstream has moved past the pin)",
     "unpinned": "  (the checkout has moved off the pin)",
 }
@@ -3668,7 +3688,7 @@ def grip_status_cmd(
         typer.echo(json.dumps({"status": "status", "members": members, "root": root_status}))
     else:
         for member in members:
-            note = STORE_STATUS_NOTES.get(member["state"], "")
+            note = STORE_STATUS_NOTES.get(member["state"], "").format(commit=_store_advice(root, "commit"))
             typer.echo(_store_status_line(member) + note)
     # A hook that will not run is a finding, not a pass: said on stderr in both modes so stdout is unchanged.
     for line in store_hooks.hook_problems(root, store_hooks.hook_states(root)):
@@ -3683,7 +3703,7 @@ def grip_status_cmd(
     if disagreed:
         for member in disagreed:
             if member["pin"] is None:
-                typer.echo(f"{member['name']}: grip.toml has no pin; run gr2 store commit to record one", err=True)
+                typer.echo(f"{member['name']}: grip.toml has no pin; run {_store_advice(root, 'commit')} to record one", err=True)
                 continue
             typer.echo(
                 f"{member['name']} gitlink {member['gitlink'] or '<missing>'} disagrees with pin {member['pin']}",
@@ -3727,7 +3747,7 @@ def grip_materialize_cmd(
     try:
         hook_lines = store_hooks.hook_problems(root, store_hooks.install_store_hooks(root))
     except OSError as exc:
-        hook_lines = [f"hooks: could not be installed ({exc}); run gr2 store materialize again to install them"]
+        hook_lines = [f"hooks: could not be installed ({exc}); run {_store_advice(root, 'materialize')} again to install them"]
     if json_output:
         typer.echo(json.dumps({"status": "materialized", "members": members}))
     else:

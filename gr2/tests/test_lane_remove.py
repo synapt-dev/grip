@@ -244,6 +244,54 @@ def test_a_commit_reachable_only_from_a_local_tag_is_not_removed(tmp_path: Path)
     _refused_untouched(ws, repo, _remove(ws), "lane_has_unpushed_commit", tagged[:12])
 
 
+def _lane_with_a_commit_only_a_pushed_tag_holds(tmp_path: Path) -> tuple[Path, Path, str]:
+    """A release tag off every branch, pushed (an annotated tag is this shape), and it kept every lane: refs/remotes/*
+    holds no tags, so `--tags --not --remotes` read the commit as unpushed."""
+    ws, repo = _pushed_exited_lane(tmp_path)
+    _git(repo, "checkout", "-q", "--detach")
+    (repo / "r.txt").write_text("a release, off every branch\n")
+    _git(repo, "add", "r.txt")
+    _git(repo, "commit", "-q", "-m", "release")
+    tagged = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "tag", "-a", "-m", "release", "v9.9.9")
+    _git(repo, "push", "-q", "origin", "refs/tags/v9.9.9")
+    _git(repo, "checkout", "-q", "feat/x")
+    assert _git(repo, "log", "HEAD", "--branches", "--tags", "--not", "--remotes", "--format=%H") == tagged, \
+        "the old query reads the pushed tag's commit as unpushed"
+    return ws, repo, tagged
+
+
+def test_a_commit_reachable_only_from_a_tag_the_remote_holds_is_removed(tmp_path: Path) -> None:
+    ws, repo, _ = _lane_with_a_commit_only_a_pushed_tag_holds(tmp_path)
+
+    result = _remove(ws)
+
+    assert result.exit_code == 0, result.output
+    assert not repo.exists(), "the lane's clone is gone"
+    assert not lane_proto.lane_file(ws, "atlas", "x").exists(), "the lane record is gone"
+
+
+def test_a_remote_whose_tags_cannot_be_listed_is_not_removed(tmp_path: Path) -> None:
+    ws, repo, _ = _lane_with_a_commit_only_a_pushed_tag_holds(tmp_path)
+    # Fetch skips this remote (skipFetchAll), so the fetch passes; asking it for its tags fails. An empty answer there
+    # must not read as "nothing to check": the lane is refused, unknown.
+    _git(repo, "remote", "add", "dead", str(tmp_path / "no-such-remote.git"))
+    _git(repo, "config", "remote.dead.skipFetchAll", "true")
+    _refused_untouched(ws, repo, _remove(ws), "lane_unpushed_unknown", "cannot list dead's tags")
+
+
+def test_lane_list_names_a_tag_only_commit_unchecked_not_unpushed(tmp_path: Path) -> None:
+    """The list does not fetch or ask remotes, so a commit only a tag holds is UNKNOWN there, never 'unpushed'."""
+    ws, _, tagged = _lane_with_a_commit_only_a_pushed_tag_holds(tmp_path)
+
+    result = runner.invoke(gr2_app.app, ["lane", "list", str(ws)])
+
+    assert result.exit_code == 0, result.output
+    row = next(line for line in result.output.splitlines() if line.startswith("atlas\tx\t"))
+    assert "\tkeep" in row and "lane_unpushed_unknown" in row and "reachable only from a tag" in row, row
+    assert "lane_has_unpushed_commit" not in row and tagged[:12] in row, row
+
+
 def _legacy_lane(tmp_path: Path) -> tuple[Path, Path]:
     """A lane with no recorded checkout_root: its clones live in the record directory beside lane.toml."""
     ws, _ = _pushed_exited_lane(tmp_path)

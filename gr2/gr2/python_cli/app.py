@@ -3348,12 +3348,45 @@ def _unpushed_commits(repo: Path, *, fetch: bool = True) -> list[str]:
     A fetch that fails is a refusal, never an empty answer: without it the remote refs are a
     claim from the last fetch, and "nothing unpushed" would be read off a stale copy. Only
     `lane list` passes fetch=False, and it says in its output that it did not fetch."""
+    held: list[str] = []
     if fetch:
         fetched = gitops.run_argv(["git", "fetch", "--quiet", "--all"], cwd=repo)
         if fetched.returncode != 0:
             raise SystemExit(f"cannot fetch in {repo}, so cannot show its commits are pushed: {fetched.stderr.strip()}")
-    out = git(repo, "log", "HEAD", "--branches", "--tags", "--not", "--remotes", "--format=%H").stdout
-    return [line for line in out.splitlines() if line]
+        held = _remote_tag_shas(repo)
+    # `--remotes` is refs/remotes/* only, and git keeps no remote-tag refs, so a commit reachable only from a tag is held
+    # by a remote exactly when the remote advertises that tag: its shas join the --not side (a release tag off every
+    # branch kept every lane). Through stdin, as ^sha lines: a remote can hold hundreds of tags.
+    out = gitops.run_argv(["git", "log", "HEAD", "--branches", "--tags", "--not", "--remotes", "--stdin", "--format=%H"],
+                          cwd=repo, input="".join(f"^{sha}\n" for sha in held)).stdout
+    found = [line for line in out.splitlines() if line]
+    if found and not fetch:
+        # Without a fetch the remote's tags are unknown. A lane whose only such commits are tag-reachable is not
+        # called unpushed: it is unknown, and says why (lane remove asks the remote).
+        on_branches = set(git(repo, "log", "HEAD", "--branches", "--not", "--remotes", "--format=%H").stdout.split())
+        if not on_branches.intersection(found):
+            raise SystemExit(f"{len(found)} commit(s) reachable only from a tag, {found[0][:12]} first: a remote may "
+                             f"hold the tag, and lane list does not ask; gr2 lane remove does")
+    return found
+
+
+def _remote_tag_shas(repo: Path) -> list[str]:
+    """Every sha a remote advertises under refs/tags (tag objects and their peeled commits) that this repo has.
+
+    A remote that cannot be asked is a refusal, as a failed fetch is: an empty answer would make a tag-only commit
+    look unpushed or, worse, a failed ask look like 'nothing held'. A sha this repo lacks cannot hide a local commit."""
+    shas: list[str] = []
+    for remote in git(repo, "remote").stdout.split():
+        listed = gitops.run_argv(["git", "ls-remote", "--tags", remote], cwd=repo)
+        if listed.returncode != 0:
+            raise SystemExit(f"cannot list {remote}'s tags in {repo}, so cannot show a tagged commit is pushed: "
+                             f"{listed.stderr.strip()}")
+        shas += [line.split()[0] for line in listed.stdout.splitlines() if line.strip()]
+    if not shas:
+        return []
+    have = gitops.run_argv(["git", "cat-file", "--batch-check=%(objectname)"], cwd=repo,
+                           input="".join(f"{sha}\n" for sha in dict.fromkeys(shas))).stdout
+    return [line for line in have.splitlines() if line and not line.endswith(" missing")]
 
 
 def _unlisted_entries(checkout_root: Path, repo_roots: list[Path]) -> list[Path]:

@@ -15,6 +15,11 @@ from pathlib import Path
 from . import gitops
 from .grip import GripReviewRefused
 
+# A shallow clone cuts the shared history even when both commits are present; else the head was re-cut or replaced.
+NO_MERGE_BASE_NEXT = ("next: if the clone is shallow (git rev-parse --is-shallow-repository), deepen it "
+                      "(git fetch --unshallow) and show again; if not, the head shares no commit with the target "
+                      "(a re-cut or replaced member branch): rebase it onto the target and pin again")
+
 # A reviewer's diff config must not swap in another program's output or recolour it.
 _PLAIN = ("--no-ext-diff", "--no-textconv", "--no-color")
 
@@ -37,7 +42,9 @@ def change(workspace: Path, member: dict[str, object], *, with_diff: bool) -> di
             raise exc
     fork = gitops.run(repo, "merge-base", base, head)
     if fork.returncode != 0:  # no common history: nothing the head adds to the target can be named
-        raise GripReviewRefused("member_no_merge_base", f"{member['key']} {base}", head)
+        exc = GripReviewRefused("member_no_merge_base", f"{member['key']} {base}", head)
+        exc.add_note(NO_MERGE_BASE_NEXT)
+        raise exc
     fork_sha = fork.stdout.strip()
     fields = _git(repo, "diff", *_PLAIN, "--numstat", "-z", fork_sha, head).split("\0")
     files: list[str] = []

@@ -397,3 +397,30 @@ def test_target_moved_past_the_branch_point_is_not_the_members_change(tmp_path, 
     made = _pin_at(w, tmp_path, "alpha", target, head)
     assert made.exit_code == 0, made.output
     _only_the_members_change(w, made.stdout.strip().splitlines()[-1], m, target, head, "later.txt")
+
+
+# member_no_merge_base names the next step, as member_objects_missing does. Pin can't make this case
+# (it runs no merge-base check without merges), so like the missing-objects row the clone is replaced after the pin:
+# a shallow clone holding both commits, whose cut history shares no commit, driven through `review show`.
+_NO_MERGE_BASE_NEXT = ("next: if the clone is shallow (git rev-parse --is-shallow-repository), deepen it (git fetch "
+                       "--unshallow) and show again; if not, the head shares no commit with the target (a re-cut or "
+                       "replaced member branch): rebase it onto the target and pin again")
+
+
+def test_no_merge_base_names_the_next_step(tmp_path, monkeypatch):
+    import shutil
+    w = build(tmp_path, monkeypatch, ["alpha"])
+    m = w["members"]["alpha"]
+    _mine(m)
+    rid, head = _repin(w, tmp_path, "alpha")
+    held = tmp_path / "alpha-held"
+    shutil.move(str(m["repo"]), str(held))
+    git(w["author"], "clone", "-q", "--depth", "1", "--branch", "main", f"file://{m['remote']}", "alpha")
+    git(m["repo"], "fetch", "-q", "--depth", "1", f"file://{held}", "HEAD")
+    assert git(m["repo"], "rev-parse", "FETCH_HEAD") == head and git(m["repo"], "rev-parse", "HEAD") == m["base"]
+    out = runner.invoke(app, ["review", "show", str(w["author"]), rid, "--diff"])
+    assert out.exit_code == 2, out.output
+    assert "member_no_merge_base" in out.stderr and _NO_MERGE_BASE_NEXT in out.stderr, out.stderr
+    assert "diff --git" not in out.stdout and "Traceback" not in out.stderr
+    data = runner.invoke(app, ["review", "show", str(w["author"]), rid, "--json", "--stat"])
+    assert data.exit_code == 2 and _NO_MERGE_BASE_NEXT in data.stdout, data.output

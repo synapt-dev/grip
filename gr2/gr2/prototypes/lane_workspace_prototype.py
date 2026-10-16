@@ -642,6 +642,10 @@ def record_fork_base(
         if not re.fullmatch(r"[0-9a-f]{40}", sha):
             raise SystemExit(f"fork_base sha for {repo} must be a 40-hex commit, got: {sha!r}")
         validated[repo] = {"branch": branch, "sha": sha}
+        if "start" in entry:
+            if entry["start"] not in ("tip", "pin", "local"):
+                raise SystemExit(f"fork_base start for {repo} must be tip, pin or local, got: {entry['start']!r}")
+            validated[repo]["start"] = entry["start"]
     document["fork_base"] = {repo: validated[repo] for repo in sorted(validated)}
     atomic_replace_text(path, serialize_toml(document))
 

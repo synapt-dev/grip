@@ -212,18 +212,53 @@ def test_PA_sync_after_materialize_keeps_the_pin(tmp_path: Path) -> None:
     assert got == pins["diverging"], f"sync moved the member to {got[:12]}"
 
 
-def test_PB_lane_create_bases_on_the_pin(tmp_path: Path) -> None:
-    """A lane is a copy of the declared state. If it is cut from the remote tip
-    instead, every lane silently starts from a commit the root never declared."""
+def _lane_start(root: Path, unit: str, lane: str, member: str) -> dict:
+    from gr2.prototypes import lane_workspace_prototype as lanes
+
+    return lanes.load_lane_doc(root, unit, lane)["fork_base"][member]
+
+
+def test_PB_lane_create_at_pin_bases_on_the_pin_on_a_spec_root(tmp_path: Path) -> None:
+    """A lane asked for the declared state with --at-pin is a copy of it. If --at-pin
+    is ignored, the lane silently starts from a commit the root never declared."""
     root, pins, _tip, _unit = _materialized_root(tmp_path)
     rc, out = _cli(
-        "lane", "create", str(root), "default", "feat", "--repos", "diverging", "--branch", "feat/x"
+        "lane", "create", str(root), "default", "feat", "--repos", "diverging", "--branch", "feat/x", "--at-pin"
     )
     assert rc == 0, out
     path = root / "agents" / "default" / "lanes" / "feat" / "repos" / "diverging"
     assert (path / ".git").is_dir(), "precondition: the lane created its ordinary checkout"
     got = _run("rev-parse", "HEAD", cwd=path).stdout.strip()
     assert got == pins["diverging"], f"{path} was based on {got[:12]}, not the pin"
+    assert _lane_start(root, "default", "feat", "diverging") == {"branch": "feat/x", "sha": pins["diverging"], "start": "pin"}
+
+
+def test_PB_lane_create_at_pin_bases_on_the_pin_on_a_native_root(tmp_path: Path) -> None:
+    """The same explicit form on a native root, whose member remote moved past the pin
+    after the root recorded it: --at-pin starts the branch at the pin, the doc says pin."""
+    from tests.test_lane_create_fork_base_cli import _git, _workspace as _native_workspace
+
+    ws, pins = _native_workspace(tmp_path, ["alpha"])
+    _commit(ws / "repos" / "alpha", "later.txt", "main moved on\n")
+    _git(ws / "repos" / "alpha", "push", "-q", "origin", "HEAD:main")
+    rc, out = _cli("lane", "create", str(ws), "atlas", "demo", "--branch", "fresh", "--at-pin")
+    assert rc == 0, out
+    path = ws / "agents" / "atlas" / "lanes" / "demo" / "repos" / "alpha"
+    assert _run("rev-parse", "HEAD", cwd=path).stdout.strip() == pins["alpha"]
+    assert _lane_start(ws, "atlas", "demo", "alpha") == {"branch": "fresh", "sha": pins["alpha"], "start": "pin"}
+
+
+def test_PB_without_at_pin_a_spec_root_starts_a_new_branch_at_the_live_tip(tmp_path: Path) -> None:
+    """The default moved: with no flag, a branch new to the remote
+    starts at the live tip of its target on a spec root too, and the doc says tip."""
+    root, pins, tip, _unit = _materialized_root(tmp_path)
+    rc, out = _cli(
+        "lane", "create", str(root), "default", "feat", "--repos", "diverging", "--branch", "feat/x"
+    )
+    assert rc == 0, out
+    path = root / "agents" / "default" / "lanes" / "feat" / "repos" / "diverging"
+    assert _run("rev-parse", "HEAD", cwd=path).stdout.strip() == tip != pins["diverging"]
+    assert _lane_start(root, "default", "feat", "diverging") == {"branch": "feat/x", "sha": tip, "start": "tip"}
 
 
 def test_PC_missing_root_member_is_cloned_at_its_pin(tmp_path: Path) -> None:

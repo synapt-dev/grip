@@ -238,7 +238,8 @@ def _pr_head_review_paths(
     )
 
 
-def _start_lane_branch(repo_name: str, repo: Path, branch: str, ref: str | None, *, seed_is_work: bool) -> str:
+def _start_lane_branch(repo_name: str, repo: Path, branch: str, ref: str | None, *, seed_is_work: bool,
+                       at_pin: bool = False, say_start: bool = False) -> tuple[str, str | None]:
     """Where a freshly materialized lane branch starts, and the fork base a review measures from.
 
     The clone was just made from the member's remote, so ``refs/remotes/origin/*`` is the remote as of now. A branch
@@ -249,8 +250,11 @@ def _start_lane_branch(repo_name: str, repo: Path, branch: str, ref: str | None,
     does not contain: that work is kept where it is and only tracks the remote, so nothing unpushed is dropped.
 
     The fork base of a continued branch is its merge-base with the integration ref, so a review still covers the
-    work already pushed on it. A branch the remote does not have starts where it did; when that start is behind
-    the integration ref, one line says by how much, because a lane on a stale pin otherwise looks current."""
+    work already pushed on it. A branch the remote does not have starts at the LIVE tip of the integration ref,
+    read by ``ls-remote`` now, so a new lane is not born on a stale pin. ``--at-pin`` (``at_pin``) is the explicit
+    form: the branch starts at the declared pin, and when that is behind the integration ref one line says by how much. A seed holding the author's own local branch is kept where it is ("local"), so nothing is dropped.
+    ``say_start`` prints that choice as one line; only ``lane create`` asks for it.
+    Returns the fork base and how the start was chosen ("tip", "pin", "local"; None for a continued branch)."""
     head = git(repo, "rev-parse", "HEAD").stdout.strip()
     integration = f"refs/remotes/origin/{ref or 'HEAD'}"
     remote = git(repo, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{branch}^{{commit}}")
@@ -270,17 +274,41 @@ def _start_lane_branch(repo_name: str, repo: Path, branch: str, ref: str | None,
         base = git(repo, "merge-base", head, integration)
         fork = base.stdout.strip() if base.returncode == 0 and base.stdout.strip() else head
         print(f"gr2: {repo_name}: continues origin/{branch} at {head[:12]}; fork base {fork[:12]}", file=sys.stderr)
-        return fork
+        return fork, None
+    start = "local" if seed_is_work else "pin" if at_pin else "tip"
+    if start == "tip":
+        target = f"refs/heads/{ref}" if ref else "HEAD"
+        live = git(repo, "ls-remote", "origin", target)
+        # ls-remote matches a pattern by its tail, so refs/heads/x/refs/heads/main answers for main: take the exact name.
+        rows = (line.split("\t", 1) for line in live.stdout.splitlines() if "\t" in line) if live.returncode == 0 else ()
+        tip = next((sha for sha, name in rows if name == target), "")
+        if not tip:
+            why = "cannot read the live tip of" if live.returncode else "the remote has no branch"
+            print(f"gr2: {repo_name}: {why} origin/{ref or 'HEAD'}; {branch} starts at the pin", file=sys.stderr)
+            start = "pin"
+        elif tip != head:
+            if git(repo, "cat-file", "-e", f"{tip}^{{commit}}").returncode:
+                git(repo, "fetch", "-q", "origin", target)
+            moved = git(repo, "checkout", "-q", "-B", branch, tip)
+            if moved.returncode:
+                raise SystemExit(f"cannot start {branch} at the live tip of origin/{ref or 'HEAD'} in {repo_name}: "
+                                 f"{moved.stderr.strip()}")
+            head = tip
+    from .context import quiet_from_env
+    if say_start and not quiet_from_env():
+        print(f"gr2: {repo_name}: {branch} {start} {head}", file=sys.stderr)
+    if start == "tip":
+        return head, start
     behind = git(repo, "rev-list", "--count", f"{head}..{integration}")
     if behind.returncode == 0 and behind.stdout.strip() not in ("", "0"):
         date = git(repo, "show", "-s", "--format=%cs", head).stdout.strip()
         count = behind.stdout.strip()
         print(f"gr2: {repo_name}: {branch} starts at {head[:12]} ({date}), {count} commit{'' if count == '1' else 's'} "
               f"behind origin/{ref or 'HEAD'}", file=sys.stderr)
-    return head
+    return head, start
 
 
-def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: str, *, manual_hooks: bool = False, created_checkout_roots: list | None = None, created_lane_file: list | None = None, workspace_commit: str | None = None) -> None:
+def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: str, *, manual_hooks: bool = False, created_checkout_roots: list | None = None, created_lane_file: list | None = None, workspace_commit: str | None = None, at_pin: bool = False, say_start: bool = False) -> None:
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
     branch_map = dict(lane_doc.get("branch_map", {}))
     lane_root = lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)
@@ -377,14 +405,17 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
             # Record the fork base = the point the lane forked from its integration branch, so
             # `review create-project` can pin base..head. A fresh clone first continues a branch the
             # remote already has (_start_lane_branch). Collected here, before this repo's hooks run below.
-            fork_sha = None
+            fork_sha, start = None, None
             if first_materialize:
-                fork_sha = _start_lane_branch(repo_name, target_repo_root, branch_map[repo_name], integration_ref,
-                                              seed_is_work=seed_is_work)
+                fork_sha, start = _start_lane_branch(repo_name, target_repo_root, branch_map[repo_name],
+                                                     integration_ref, seed_is_work=seed_is_work, at_pin=at_pin,
+                                                     say_start=say_start)
             head = git(target_repo_root, "rev-parse", "HEAD")
             head_sha = fork_sha or (head.stdout.strip() if head.returncode == 0 else "")
             if len(head_sha) == 40:
                 fork_base[repo_name] = {"branch": branch_map[repo_name], "sha": head_sha}
+                if start:
+                    fork_base[repo_name]["start"] = start
             hooks = load_repo_hooks(target_repo_root)
             if not hooks:
                 continue
@@ -3141,6 +3172,7 @@ def lane_create(
     manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual during lane materialization"),
     bind: Optional[Path] = typer.Option(None, "--bind", help="Bind the lane to an EXISTING clean, non-detached single-repo worktree instead of materializing a fresh clone. The receipt is stamped lane_kind=bound."),
     workspace_commit: Annotated[Optional[str], typer.Option("--workspace-commit", help="Native workspace commit to materialize. Omitted: current root HEAD.")] = None,
+    at_pin: bool = typer.Option(False, "--at-pin", help="A branch new to the remote starts at the live tip of its target, or at the declared pin when that tip cannot be read; with --at-pin it starts at the declared pin instead. A local branch of that name holding unpushed work starts at that work either way."),
     root: Optional[Path] = ROOT_OPTION,
     unit: Optional[str] = typer.Option(None, "--unit", help="The unit. Same as the UNIT argument; give one or the other."),
     ctx: typer.Context = None,  # type: ignore[assignment]
@@ -3164,6 +3196,9 @@ def lane_create(
     native_root = gitops.repo_path_state(workspace_root) == "repo_root" and (workspace_root / "grip.toml").is_file()
     if workspace_commit is not None and (bind is not None or not native_root):
         raise typer.BadParameter("--workspace-commit requires a native materialized workspace lane")
+    at_pin = at_pin is True  # a direct Python call gets the typer.Option default, which is truthy
+    if at_pin and bind is not None:
+        raise typer.BadParameter("--at-pin starts a materialized lane branch; --bind materializes nothing")
     if bind is None and native_root:
         resolved = git(workspace_root, "rev-parse", "--verify", f"{workspace_commit or 'HEAD'}^{{commit}}")
         if resolved.returncode:
@@ -3203,7 +3238,7 @@ def lane_create(
         # bound worktree), not from the --branch arg, which --bind ignores.
         if bind is None:
             try:
-                _materialize_lane_repos(workspace_root, owner_unit, lane_name, manual_hooks=manual_hooks, created_checkout_roots=created_checkout_roots, created_lane_file=getattr(ns, "created_lane_file", None), workspace_commit=selected_commit)
+                _materialize_lane_repos(workspace_root, owner_unit, lane_name, manual_hooks=manual_hooks, created_checkout_roots=created_checkout_roots, created_lane_file=getattr(ns, "created_lane_file", None), workspace_commit=selected_commit, at_pin=at_pin, say_start=True)
             except BaseException as primary:
                 if getattr(primary, "gr2_workspace_part_applied", None) is not None:
                     # The native owner has already detached the root and may

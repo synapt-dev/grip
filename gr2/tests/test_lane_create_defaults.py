@@ -199,9 +199,128 @@ def test_a_new_lane_on_a_stale_pin_says_how_far_behind_it_starts(tmp_path: Path)
     _git(src, "add", ".")
     _git(src, "commit", "-q", "-m", "main moved")
     _git(src, "push", "-q", "origin", "main")
-    res = runner.invoke(gr2_app.app, ["lane", "create", str(ws), "atlas", "second", "--branch", "fresh2"])
+    res = runner.invoke(gr2_app.app, ["lane", "create", str(ws), "atlas", "second", "--branch", "fresh2", "--at-pin"])
     assert res.exit_code == 0, res.output
     assert f"gr2: alpha: fresh2 starts at {tips['alpha'][:12]}" in _flat(res) and "1 commit behind origin/" in _flat(res)
+
+
+def _move_main(ws: Path, name: str) -> str:
+    """Push one commit onto the member's remote main AFTER the workspace pinned it; returns the new remote tip."""
+    src = ws / "repos" / name
+    (src / "later.txt").write_text("main moved on\n")
+    _git(src, "add", ".")
+    _git(src, "commit", "-q", "-m", "main moved")
+    _git(src, "push", "-q", "origin", "main")
+    return _git(src, "rev-parse", "HEAD")
+
+
+def test_a_branch_new_to_the_remote_starts_at_the_live_tip_and_the_doc_says_tip(tmp_path: Path) -> None:
+    """The remote's main moved past the workspace pin. A bare create on a branch the remote lacks starts
+    at the LIVE tip of the target (ls-remote), not the pin, and the doc and the output say `tip <sha>`.
+    Goes red if the branch is based at the pin (the mutant base-from-pin)."""
+    ws, tips = _native_workspace(tmp_path, ["alpha"])
+    live = _move_main(ws, "alpha")
+    res = _create(ws, "--branch", "fresh")
+    assert res.exit_code == 0, res.output
+    alpha = next(p for p in lanes.lane_checkout_root(ws, "atlas", "demo").rglob("alpha") if (p / ".git").exists())
+    assert _git(alpha, "rev-parse", "HEAD") == live != tips["alpha"]
+    assert lanes.load_lane_doc(ws, "atlas", "demo")["fork_base"]["alpha"] == {"branch": "fresh", "sha": live, "start": "tip"}
+    assert f"gr2: alpha: fresh tip {live}" in _flat(res)
+
+
+def test_workspace_commit_keeps_its_own_meaning_and_does_not_choose_the_pin(tmp_path: Path) -> None:
+    """--workspace-commit names which workspace commit is materialized, nothing more: with the remote moved and no
+    --at-pin, the new branch still starts at the live tip. Goes red if --workspace-commit is read as --at-pin."""
+    ws, tips = _native_workspace(tmp_path, ["alpha"])
+    live = _move_main(ws, "alpha")
+    res = _create(ws, "--branch", "fresh", "--workspace-commit", "HEAD")
+    assert res.exit_code == 0, res.output
+    alpha = next(p for p in lanes.lane_checkout_root(ws, "atlas", "demo").rglob("alpha") if (p / ".git").exists())
+    assert _git(alpha, "rev-parse", "HEAD") == live != tips["alpha"]
+    assert f"gr2: alpha: fresh tip {live}" in _flat(res)
+
+
+def test_at_pin_with_bind_is_refused_by_name(tmp_path: Path) -> None:
+    """--bind materializes no branch, so there is no start for --at-pin to choose; the pair is refused, not ignored."""
+    ws, _ = _native_workspace(tmp_path, ["alpha"])
+    res = _create(ws, "--bind", str(ws / "repos" / "alpha"), "--at-pin")
+    assert res.exit_code != 0
+    assert "--at-pin starts a materialized lane branch; --bind materializes nothing" in _flat(res)
+
+
+def test_a_branch_the_remote_already_has_keeps_its_path_and_records_no_start(tmp_path: Path) -> None:
+    """The existing-remote-branch path is unchanged by the tip rule even when main moved: the lane
+    continues origin/demo and the doc carries no tip/pin word for it."""
+    ws, tips = _native_workspace(tmp_path, ["alpha", "beta"])
+    tip = _push_branch(ws, "beta", "demo")
+    _move_main(ws, "beta")
+    res = _create(ws, "--branch", "demo")
+    assert res.exit_code == 0, res.output
+    beta = next(p for p in lanes.lane_checkout_root(ws, "atlas", "demo").rglob("beta") if (p / ".git").exists())
+    assert _git(beta, "rev-parse", "HEAD") == tip
+    assert lanes.load_lane_doc(ws, "atlas", "demo")["fork_base"]["beta"] == {"branch": "demo", "sha": tips["beta"]}
+    assert f"gr2: beta: continues origin/demo at {tip[:12]}" in _flat(res)
+
+
+def test_the_help_names_the_tip_default_and_the_at_pin_form_in_one_sentence() -> None:
+    """A user moving from the old pin default reads both starts in one place. Goes red if the help drops either."""
+    res = runner.invoke(gr2_app.app, ["lane", "create", "--help"], env={"COLUMNS": "400"})
+    assert res.exit_code == 0, res.output
+    assert ("A branch new to the remote starts at the live tip of its target, or at the declared pin when that tip "
+            "cannot be read; with --at-pin it starts at the declared pin instead. A local branch of that name holding "
+            "unpushed work starts at that work either way.") in _flat(res)
+
+
+def _git_moving_main_at_ls_remote(monkeypatch, ws: Path, name: str, *, fail: bool = False) -> dict:
+    """Wrap the CLI's git so the member's remote main moves (or the ls-remote fails) at the moment the live tip is
+    read: the lane clone then holds neither the new tip object nor a remote-tracking ref at it."""
+    real, seen = gr2_app.git, {}
+
+    def git(repo, *args, **kw):
+        if args[:1] == ("ls-remote",) and "live" not in seen:
+            seen["live"] = _move_main(ws, name)
+            if fail:
+                return subprocess.CompletedProcess(["git", *args], 128, "", "fatal: could not read from remote")
+        return real(repo, *args, **kw)
+
+    monkeypatch.setattr(gr2_app, "git", git)
+    return seen
+
+
+def test_the_live_tip_is_read_from_the_remote_and_fetched_when_the_clone_lacks_it(tmp_path: Path, monkeypatch) -> None:
+    """Main moves on the remote after the lane clone was made. The branch starts at the remote's tip as read then,
+    not at the clone's remote-tracking ref, and the missing commit is fetched before the checkout.
+    Goes red if the tip is read from refs/remotes/origin, or if the fetch of a missing tip is dropped."""
+    ws, tips = _native_workspace(tmp_path, ["alpha"])
+    seen = _git_moving_main_at_ls_remote(monkeypatch, ws, "alpha")
+    res = _create(ws, "--branch", "fresh")
+    assert res.exit_code == 0, res.output
+    live = seen["live"]
+    alpha = next(p for p in lanes.lane_checkout_root(ws, "atlas", "demo").rglob("alpha") if (p / ".git").exists())
+    assert _git(alpha, "rev-parse", "HEAD") == live != tips["alpha"]
+    assert lanes.load_lane_doc(ws, "atlas", "demo")["fork_base"]["alpha"] == {"branch": "fresh", "sha": live, "start": "tip"}
+
+
+def test_an_unreadable_live_tip_starts_at_the_pin_and_says_so(tmp_path: Path, monkeypatch) -> None:
+    """The remote cannot be asked for its tip: the branch starts at the pin, one line says why, the doc says pin."""
+    ws, tips = _native_workspace(tmp_path, ["alpha"])
+    _git_moving_main_at_ls_remote(monkeypatch, ws, "alpha", fail=True)
+    res = _create(ws, "--branch", "fresh")
+    assert res.exit_code == 0, res.output
+    alpha = next(p for p in lanes.lane_checkout_root(ws, "atlas", "demo").rglob("alpha") if (p / ".git").exists())
+    assert _git(alpha, "rev-parse", "HEAD") == tips["alpha"]
+    assert "gr2: alpha: cannot read the live tip of origin/" in _flat(res) and "fresh starts at the pin" in _flat(res)
+    assert lanes.load_lane_doc(ws, "atlas", "demo")["fork_base"]["alpha"]["start"] == "pin"
+
+
+def test_a_fork_base_start_outside_tip_pin_local_is_refused(tmp_path: Path) -> None:
+    """The lane doc's start word is one of three; any other is refused by name and nothing is written."""
+    ws, tips = _native_workspace(tmp_path, ["alpha"])
+    assert _create(ws, "--branch", "fresh").exit_code == 0
+    before = lanes.load_lane_doc(ws, "atlas", "demo")["fork_base"]
+    with pytest.raises(SystemExit, match="must be tip, pin or local, got: 'head'"):
+        lanes.record_fork_base(ws, "atlas", "demo", {"alpha": {"branch": "fresh", "sha": tips["alpha"], "start": "head"}})
+    assert lanes.load_lane_doc(ws, "atlas", "demo")["fork_base"] == before
 
 
 def test_an_unreadable_grip_toml_refuses_a_defaulted_branch_instead_of_skipping_the_check(tmp_path: Path) -> None:
@@ -517,3 +636,156 @@ def test_native_lane_requires_a_committed_workspace_before_materializing(two_mem
     assert not (root / ".grip" / "workspace_spec.toml").exists()
     assert not lanes.lane_file(root, "default", "demo").exists()
     assert _tree_bytes(root) == before
+
+
+def _unpushed_fresh(ws: Path, name: str) -> str:
+    """The author's own local `fresh` in the source, one commit the remote does not have; returns that commit."""
+    src = ws / "repos" / name
+    _git(src, "checkout", "-q", "-b", "fresh")
+    (src / "unpushed.txt").write_text("not on the remote yet\n")
+    _git(src, "add", ".")
+    _git(src, "commit", "-q", "-m", "unpushed work")
+    local = _git(src, "rev-parse", "HEAD")
+    _git(src, "checkout", "-q", "main")
+    return local
+
+
+def test_a_local_branch_new_to_the_remote_keeps_its_unpushed_work_and_the_doc_says_local(tmp_path: Path) -> None:
+    """A spec root: the author's local `fresh` holds one unpushed commit, and the remote's main moved on. The
+    branch is new to the remote, but the lane must start at the local commit, not the live tip, so no unpushed work
+    is dropped, and the doc says `local`. Goes red if the local start is dropped (the lane lands on the live tip)."""
+    ws, _ = _workspace(tmp_path, ["beta"])
+    local = _unpushed_fresh(ws, "beta")
+    live = _move_main(ws, "beta")
+    res = _create(ws, "--branch", "fresh")
+    assert res.exit_code == 0, res.output
+    assert _git(_lane_repo(ws, "beta"), "rev-parse", "HEAD") == local != live
+    assert lanes.load_lane_doc(ws, "atlas", "demo")["fork_base"]["beta"] == {"branch": "fresh", "sha": local, "start": "local"}
+    assert f"gr2: beta: fresh local {local}" in _flat(res)
+
+
+def test_at_pin_never_starts_a_local_branch_with_unpushed_work_at_the_pin(tmp_path: Path) -> None:
+    """--at-pin beside the author's unpushed local `fresh` on a spec root: the local work outranks the pin, so the lane
+    starts at the local commit and the doc says `local`. Goes red if the pin is chosen ahead of the local work."""
+    ws, _ = _workspace(tmp_path, ["beta"])
+    local = _unpushed_fresh(ws, "beta")
+    _move_main(ws, "beta")
+    res = _create(ws, "--branch", "fresh", "--at-pin")
+    assert res.exit_code == 0, res.output
+    assert _git(_lane_repo(ws, "beta"), "rev-parse", "HEAD") == local
+    assert lanes.load_lane_doc(ws, "atlas", "demo")["fork_base"]["beta"] == {"branch": "fresh", "sha": local, "start": "local"}
+    assert f"gr2: beta: fresh local {local}" in _flat(res)
+
+
+def test_a_member_that_declares_a_ref_starts_at_the_live_tip_of_that_ref_not_the_remote_default(tmp_path: Path) -> None:
+    """A spec root whose alpha declares `ref = "dev"`; dev is pushed ahead and main moves on too. A branch new to the
+    remote starts at the live tip of dev, the member's integration ref, not of the remote's HEAD (main).
+    Goes red if the live tip is always read from HEAD (the mutant target-always-HEAD)."""
+    ws, tips = _workspace(tmp_path, ["alpha"])
+    spec = ws / ".grip" / "workspace_spec.toml"
+    url_line = next(line for line in spec.read_text().splitlines() if line.startswith("url") and "/alpha.git" in line)
+    spec.write_text(spec.read_text().replace(url_line, f'{url_line}\nref = "dev"'))
+    src = ws / "repos" / "alpha"
+    _git(src, "checkout", "-q", "-b", "dev")
+    (src / "dev.txt").write_text("dev moved on\n")
+    _git(src, "add", ".")
+    _git(src, "commit", "-q", "-m", "dev moved")
+    _git(src, "push", "-q", "origin", "dev")
+    dev = _git(src, "rev-parse", "HEAD")
+    _git(src, "checkout", "-q", "main")
+    main = _move_main(ws, "alpha")
+    res = _create(ws, "--branch", "fresh")
+    assert res.exit_code == 0, res.output
+    assert _git(_lane_repo(ws, "alpha"), "rev-parse", "HEAD") == dev != main
+    assert dev != tips["alpha"]
+    assert lanes.load_lane_doc(ws, "atlas", "demo")["fork_base"]["alpha"] == {"branch": "fresh", "sha": dev, "start": "tip"}
+    assert f"gr2: alpha: fresh tip {dev}" in _flat(res)
+
+
+def test_a_direct_call_without_at_pin_materializes_at_the_live_tip(tmp_path: Path, capsys) -> None:
+    """lane_create called from Python, with --at-pin left at its typer default (a truthy OptionInfo): the lane is
+    materialized at the live tip, not the pin. Goes red if the `is True` normalisation is dropped."""
+    ws, tips = _native_workspace(tmp_path, ["alpha"])
+    live = _move_main(ws, "alpha")
+    gr2_app.lane_create(ws, "atlas", "demo", repos="alpha", branch="fresh", lane_type="feature", source="manual",
+                        command=[], manual_hooks=False, bind=None, workspace_commit=None, root=None, unit=None)
+    alpha = next(p for p in lanes.lane_checkout_root(ws, "atlas", "demo").rglob("alpha") if (p / ".git").exists())
+    assert _git(alpha, "rev-parse", "HEAD") == live != tips["alpha"]
+    assert lanes.load_lane_doc(ws, "atlas", "demo")["fork_base"]["alpha"] == {"branch": "fresh", "sha": live, "start": "tip"}
+    assert f"gr2: alpha: fresh tip {live}" in capsys.readouterr().err
+
+
+def _declare_ref(ws: Path, ref: str) -> None:
+    spec = ws / ".grip" / "workspace_spec.toml"
+    url_line = next(line for line in spec.read_text().splitlines() if line.startswith("url") and "/alpha.git" in line)
+    spec.write_text(spec.read_text().replace(url_line, f'{url_line}\nref = "{ref}"'))
+
+
+def test_a_remote_branch_whose_name_ends_in_the_target_does_not_answer_for_it(tmp_path: Path) -> None:
+    """ls-remote matches by tail: refs/heads/a/refs/heads/main answers a query for refs/heads/main and sorts first.
+    The lane starts at the live main, not at that branch. Goes red if the first ls-remote line is taken as the tip."""
+    ws, tips = _workspace(tmp_path, ["alpha"])
+    _declare_ref(ws, "main")
+    _git(ws / "repos" / "alpha", "push", "-q", "origin", f"{tips['alpha']}:refs/heads/a/refs/heads/main")
+    live = _move_main(ws, "alpha")
+    res = _create(ws, "--branch", "fresh")
+    assert res.exit_code == 0, res.output
+    assert _git(_lane_repo(ws, "alpha"), "rev-parse", "HEAD") == live != tips["alpha"]
+    assert lanes.load_lane_doc(ws, "atlas", "demo")["fork_base"]["alpha"] == {"branch": "fresh", "sha": live, "start": "tip"}
+
+
+def test_a_target_the_remote_holds_only_as_a_tag_says_no_branch_not_unreadable(tmp_path: Path) -> None:
+    """The remote answered; it has a tag v1 and no branch v1. The line says so, not that the tip could not be read.
+    Goes red if an empty answer is worded as an unreachable remote."""
+    ws, _ = _workspace(tmp_path, ["alpha"])
+    _declare_ref(ws, "v1")
+    src = ws / "repos" / "alpha"
+    _git(src, "tag", "v1")
+    _git(src, "push", "-q", "origin", "v1")
+    res = _create(ws, "--branch", "fresh")
+    assert res.exit_code == 0, res.output
+    assert "gr2: alpha: the remote has no branch origin/v1; fresh starts at the pin" in _flat(res)
+    assert "cannot read the live tip" not in _flat(res)
+    assert lanes.load_lane_doc(ws, "atlas", "demo")["fork_base"]["alpha"]["start"] == "pin"
+
+
+def test_a_live_tip_the_clone_cannot_fetch_refuses_instead_of_recording_a_start_it_did_not_take(tmp_path: Path, monkeypatch) -> None:
+    """Main moves on the remote at the ls-remote and the fetch of that tip fails: the checkout cannot start there, so
+    lane create refuses by name and no fork base says tip. Goes red if the failed checkout is ignored (the lane would
+    sit at the pin while the doc records the live tip)."""
+    ws, _ = _native_workspace(tmp_path, ["alpha"])
+    seen = _git_moving_main_at_ls_remote(monkeypatch, ws, "alpha")
+    moving = gr2_app.git
+
+    def git(repo, *args, **kw):
+        if args[:1] == ("fetch",) and "live" in seen:
+            return subprocess.CompletedProcess(["git", *args], 128, "", "fatal: could not read from remote")
+        return moving(repo, *args, **kw)
+
+    monkeypatch.setattr(gr2_app, "git", git)
+    res = _create(ws, "--branch", "fresh")
+    assert res.exit_code != 0
+    assert "cannot start fresh at the live tip of origin/main in alpha" in _flat(res)
+    doc = lanes.load_lane_doc(ws, "atlas", "demo") if (ws / ".grip" / "state" / "lanes" / "atlas" / "demo" / "lane.toml").exists() else {}
+    assert doc.get("fork_base", {}).get("alpha", {}).get("start") != "tip"
+
+
+def test_a_failed_ls_remote_is_not_read_for_a_tip_even_when_it_printed_one(tmp_path: Path, monkeypatch) -> None:
+    """ls-remote exits non-zero yet its stdout carries a row for the target: a failed answer is not a tip, so the
+    branch starts at the pin and the line says the tip could not be read. Goes red if stdout is read without rc 0."""
+    ws, tips = _native_workspace(tmp_path, ["alpha"])
+    live = _move_main(ws, "alpha")
+    real = gr2_app.git
+
+    def git(repo, *args, **kw):
+        if args[:1] == ("ls-remote",):
+            return subprocess.CompletedProcess(["git", *args], 128, f"{live}\trefs/heads/main\n", "fatal: early EOF")
+        return real(repo, *args, **kw)
+
+    monkeypatch.setattr(gr2_app, "git", git)
+    _declare_ref(ws, "main")
+    res = _create(ws, "--branch", "fresh")
+    assert res.exit_code == 0, res.output
+    assert _git(_lane_repo(ws, "alpha"), "rev-parse", "HEAD") == tips["alpha"] != live
+    assert "gr2: alpha: cannot read the live tip of origin/main; fresh starts at the pin" in _flat(res)
+    assert lanes.load_lane_doc(ws, "atlas", "demo")["fork_base"]["alpha"]["start"] == "pin"

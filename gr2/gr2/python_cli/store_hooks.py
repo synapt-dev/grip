@@ -431,17 +431,33 @@ def run_pre_commit(root: Path) -> int:
         if staged_bytes is None:
             return 0
         staged_text = staged_bytes.decode("utf-8")
+        # THE FENCE (section 9), the same function and the same reader `store push` uses: the pins the commit
+        # will RECORD (the staged grip.toml). The hook sees one commit, so it judges that commit's own edit (against
+        # HEAD); the push judges the whole range since the shadow, and backstops a commit made past the hook. In full
+        # mode it runs first. In compat it runs after the membership and rewind checks below and before the fold, so
+        # a rewind or an unclaimed gitlink is refused in its own words and a hand-edited pin line is still refused by
+        # name; compat's gitlink-bump fold is left as it was.
+        shadow = gc._shadow_value(root)
         if _staged_mode(staged_text) == "full":
-            # A full-mode commit carries field-commits as parents, which `git commit` cannot make: only `store commit`
-            # can, so this hook refuses before it reads a staged gitlink as a member's pin.
+            if shadow:
+                gc._refuse_unrecorded_pins(root, gc._recorded_pins(staged_text), "HEAD", "full", None)
+            # full_mode_hook, NARROWED: a hand commit that leaves every recorded pin unchanged (a root README) passes
+            # the fence above and is let through. Never read a staged gitlink here: in full mode it is the member's
+            # field commit, not its pin. With no shadow there is nothing to fence against, so it still refuses.
+            if shadow:
+                return 0
             raise gc.NativeStoreRefusal(
-                'full_mode_hook: this workspace\'s grip.toml says mode = "full"; commit through `gr2 store commit`, '
-                "which records each member's field-commit as a parent", 4)
+                'full_mode_hook: this workspace\'s grip.toml says mode = "full" and the branch has no shadow to '
+                "fence against; commit through `gr2 store commit`, which records each member's field-commit as a "
+                "parent", 4)
         members = _members_from(staged_text)
         staged = _index_gitlinks(root, index)
         committed = _head_gitlinks(root)
         partial = bool(index) and Path(index).name.startswith("next-index-")
         _refuse_unclaimed_gitlinks(members, staged, committed)   # BEFORE any write
+        if shadow and any(not member.get("pin") for member in members):
+            # A pin line removed by hand: the checks below read every member's pin, so the fence names it first.
+            gc._refuse_unrecorded_pins(root, gc._recorded_pins(staged_text), "HEAD", _staged_mode(staged_text), None)
         _sync_gitmodules(root, members, index, env_partial=partial)
         stale: list[dict[str, str]] = []
         adopted: dict[str, dict[str, str]] = {}
@@ -462,6 +478,8 @@ def run_pre_commit(root: Path) -> int:
                     adopted[member["name"]] = resolved
             if sha != member["pin"] or member["name"] in adopted:
                 stale.append(member)
+        if shadow:
+            gc._refuse_unrecorded_pins(root, gc._recorded_pins(staged_text), "HEAD", _staged_mode(staged_text), None)
         if stale:
             names = ", ".join(member["name"] for member in stale)
             if partial:

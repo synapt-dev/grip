@@ -453,6 +453,9 @@ def test_break_03_push_root_with_unpushed_member(two_member_ws: Path, tmp_path: 
     text = (root / "grip.toml").read_text()
     assert covered_pin in text, "the fixture must start from the pin store commit wrote"
     (root / "grip.toml").write_text(text.replace(covered_pin, uncovered))
+    # Section 9 (2026-10-13): STAGED, so the commit records the pin it says it does. Unstaged, HEAD kept the covered
+    # pin beside the uncovered gitlink, and the push's fence now refuses that (a stale pin, exit 4) before coverage.
+    _git(root, "add", "grip.toml")
     _git(root, "update-index", "--add", "--cacheinfo", f"160000,{uncovered},alpha")
     # v5, same class as the witnesses file: the root repo carries no identity by design, so
     # the production -c identity is supplied explicitly rather than borrowed from the desk.

@@ -327,9 +327,13 @@ def test_the_state_words_status_and_check_emit_are_in_their_published_schemas(tm
         line = next(p for p in JSON_SHAPES[f"store {verb}"] if p.startswith(".members[].state"))
         published = set(re.search(r"enum\((.*)\)", line).group(1).split(","))
         assert "layer" in emitted and emitted <= published, (verb, emitted, published)
-    # push returns check's own rows (`_native_store_push` calls `_native_store_check`), so it publishes the same enum.
-    state = [p for p in JSON_SHAPES["store push"] if p.startswith(".members[].state")]
-    assert state == [p for p in JSON_SHAPES["store check"] if p.startswith(".members[].state")]
+    # push returns check's own rows (`_native_store_push` calls `_native_store_check`), so it publishes check's enum,
+    # plus `unchecked`, the word `--recurse=none` gives a member whose coverage it did not ask.
+    def enum(verb):
+        line = next(p for p in JSON_SHAPES[f"store {verb}"] if p.startswith(".members[].state"))
+        return set(re.search(r"enum\((.*)\)", line).group(1).split(","))
+
+    assert enum("push") == enum("check") | {"unchecked"}, (enum("push"), enum("check"))
 
 
 def test_status_reads_missing_for_a_layered_record_once_the_root_is_switched_out_of_full_mode(tmp_path):

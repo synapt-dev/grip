@@ -213,9 +213,13 @@ Verify root gitlinks and member coverage against live upstreams.
 
 ### gr2 store push
 
-Check then push only the root branch, never member branches.
+Check, then push the root branch and its shadow in one atomic push; --atomic adds same-repo member refs.
 
 - `--to`: Record this URL or path as the root's origin when it has none, then push
+- `--atomic`: Also push the same-repo members' refs (members whose origin is the root's) in the same atomic push as the branch and its shadow: all move, or none
+- `--recurse` [default: check]: A member pin its upstream does not cover: check (refuse, exit 3), on-demand (push the member from its clone first) or none (skip coverage; the fence still runs)
+- `--snapshot`: Make the store commit first, then push it
+- `--allow-rewind`: A member whose pin may move backwards (repeatable); must name a member
 - `--json`: Emit machine-readable JSON
 
 ### gr2 store materialize

@@ -375,6 +375,136 @@ class TestCacheProvenance(CloneExecTestBase):
             )
         self.assertIn("seeded from", str(ctx.exception))
 
+    def _verify_seeded_from(self, seeded: str, declared: str) -> None:
+        run_git(self.cache_path, "remote", "set-url", "origin", seeded)
+        verify_cache_provenance(
+            self.cache_path, workspace_root=self.workspace_root, repo_url=declared
+        )
+
+    def test_same_github_repo_over_another_transport_passes(self):
+        """A cache seeded over https serves a manifest that declares ssh, and the
+        reverse: the transport is not the repository. With and without `.git`."""
+        same = [
+            ("https://github.com/O/R.git", "git@github.com:O/R.git"),
+            ("https://github.com/O/R", "git@github.com:O/R.git"),
+            ("https://github.com/O/R.git", "git@github.com:O/R"),
+            ("git@github.com:O/R.git", "https://github.com/O/R.git"),
+            ("git@github.com:O/R", "https://github.com/O/R"),
+            ("ssh://git@github.com/O/R.git", "https://github.com/O/R"),
+            ("https://user@GitHub.com/O/R/", "ssh://git@github.com:22/O/R.git"),
+            ("ssh://git@github.com:22/O/R", "git@github.com:O/R"),
+            ("https://github.com:443/O/R", "https://github.com/O/R"),
+            ("git://github.com:9418/O/R", "git://github.com/O/R"),
+        ]
+        for seeded, declared in same:
+            with self.subTest(seeded=seeded, declared=declared):
+                self._verify_seeded_from(seeded, declared)
+
+    def test_different_host_owner_or_repo_is_rejected(self):
+        different = [
+            ("https://gitlab.com/O/R.git", "git@github.com:O/R.git"),
+            ("git@gitlab.com:O/R", "https://github.com/O/R"),
+            ("https://github.com/X/R.git", "git@github.com:O/R.git"),
+            ("git@github.com:X/R", "https://github.com/O/R"),
+            ("https://github.com/O/S.git", "git@github.com:O/R.git"),
+            ("git@github.com:O/S", "https://github.com/O/R"),
+            ("https://github.com/O/R-fork.git", "git@github.com:O/R.git"),
+            ("https://github.com/O/R/extra", "git@github.com:O/R.git"),
+            ("https://git.corp:3000/O/R", "https://git.corp/O/R"),
+            ("https://github.com:8443/O/R", "https://github.com/O/R"),
+            ("ssh://git@github.com:2222/O/R", "git@github.com:O/R"),
+            ("https://user:pass@github.com/O/R", "https://github.com/O/R"),
+            ("https://a@b@github.com/O/R", "https://github.com/O/R"),
+            ("https://@github.com/O/R", "https://github.com/O/R"),
+            ("https:///O/R", "https://github.com/O/R"),
+            ("https://github.com\\@evil.com/O/R", "https://github.com/O/R"),
+            ("https://github.com:x/O/R", "https://github.com/O/R"),
+            ("https:///O/R.git", "https:///O/R"),
+            ("https://github.com/", "https://github.com"),
+        ]
+        for seeded, declared in different:
+            with self.subTest(seeded=seeded, declared=declared):
+                with self.assertRaises(CloneExecutionError) as ctx:
+                    self._verify_seeded_from(seeded, declared)
+                self.assertIn("seeded from", str(ctx.exception))
+
+    def test_url_git_reads_as_another_server_is_rejected(self):
+        """git takes everything after `#` or `?` as fragment or query, so these
+        connect to evil.com even though `@github.com/O/R` follows. A parser that
+        lets the user part swallow `#` or `?` sees github.com; refuse both, and
+        any fragment or query on an otherwise matching url."""
+        smuggled = [
+            ("https://evil.com#@github.com/O/R", "git@github.com:O/R.git"),
+            ("https://evil.com?@github.com/O/R.git", "git@github.com:O/R.git"),
+            ("https://127.0.0.1:9#@github.com/O/R", "https://github.com/O/R"),
+            ("https://github.com/O/R#frag", "https://github.com/O/R"),
+            ("https://github.com/O/R?x=1", "git@github.com:O/R"),
+            ("git@github.com:O/R#frag", "https://github.com/O/R"),
+        ]
+        for seeded, declared in smuggled:
+            with self.subTest(seeded=seeded, declared=declared):
+                with self.assertRaises(CloneExecutionError) as ctx:
+                    self._verify_seeded_from(seeded, declared)
+                self.assertIn("seeded from", str(ctx.exception))
+
+    def test_scheme_git_hands_to_a_remote_helper_is_rejected(self):
+        """Only ssh, git, http, https and the scp form get an identity. git sends
+        any other scheme to `git-remote-<scheme>`, and the helper picks the
+        server, so the host in the url proves nothing. git does not lowercase
+        the scheme, so `HTTPS://` and `Ssh://` are other schemes too."""
+        for scheme in ("foo", "ext", "codecommit", "ftp", "ftps", "file", "HTTPS", "Ssh"):
+            seeded = f"{scheme}://github.com/O/R"
+            with self.subTest(seeded=seeded):
+                with self.assertRaises(CloneExecutionError) as ctx:
+                    self._verify_seeded_from(seeded, "git@github.com:O/R.git")
+                self.assertIn("seeded from", str(ctx.exception))
+
+    def test_control_character_in_url_is_rejected(self):
+        """`urlsplit` silently drops a newline or tab, so it would read
+        `git<LF>hub.com` as github.com; git keeps the character and does not."""
+        controlled = [
+            ("https://git\nhub.com/O/R", "git@github.com:O/R.git"),
+            ("https://git\thub.com/O/R", "git@github.com:O/R.git"),
+            ("https://git\rhub.com/O/R", "https://github.com/O/R"),
+        ]
+        for seeded, declared in controlled:
+            with self.subTest(seeded=seeded, declared=declared):
+                with self.assertRaises(CloneExecutionError) as ctx:
+                    self._verify_seeded_from(seeded, declared)
+                self.assertIn("seeded from", str(ctx.exception))
+
+    def test_leading_space_in_the_declared_url_is_rejected(self):
+        """git keeps a leading space: ` https://` is an unsupported protocol
+        ` https`, and ` git@h:O/R` reaches ssh as user ` git`. `urlsplit` strips
+        it, so refuse any space and match exactly. The cache's own origin is
+        read back stripped, so the space can only arrive on the declared side."""
+        for declared in (" https://github.com/O/R", " git@github.com:O/R"):
+            with self.subTest(declared=declared):
+                with self.assertRaises(CloneExecutionError) as ctx:
+                    self._verify_seeded_from("https://github.com/O/R", declared)
+                self.assertIn("seeded from", str(ctx.exception))
+
+    def test_cache_with_no_origin_is_rejected(self):
+        run_git(self.cache_path, "remote", "remove", "origin")
+        with self.assertRaises(CloneExecutionError) as ctx:
+            verify_cache_provenance(
+                self.cache_path, workspace_root=self.workspace_root, repo_url=self.repo_url
+            )
+        self.assertIn("seeded from None", str(ctx.exception))
+
+    def test_file_url_upstream_still_matches_exactly(self):
+        """A file:// url is local; it gets no identity, so `.git` matters."""
+        with self.assertRaises(CloneExecutionError) as ctx:
+            self._verify_seeded_from("file://localhost/x.git", "file://localhost/x")
+        self.assertIn("seeded from", str(ctx.exception))
+
+    def test_local_path_upstream_still_matches_exactly(self):
+        """Only network remotes are compared by identity; a local path that
+        differs, even by a trailing `.git`, is a different upstream."""
+        with self.assertRaises(CloneExecutionError) as ctx:
+            self._verify_seeded_from(self.repo_url + ".git", self.repo_url)
+        self.assertIn("seeded from", str(ctx.exception))
+
     def test_non_bare_cache_is_rejected(self):
         not_bare = self.workspace_root / ".grip" / "cache" / "repos" / "notbare.git"
         self._make_clone(not_bare)

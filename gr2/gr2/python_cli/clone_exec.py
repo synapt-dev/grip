@@ -45,6 +45,7 @@ import stat
 import subprocess
 import tempfile
 import time
+import urllib.parse
 from pathlib import Path
 
 from . import gitops
@@ -302,6 +303,79 @@ def _read_alternate_entries(clone_root: Path) -> set[Path]:
     return _read_alternates_of(clone_root / ".git" / "objects")
 
 
+_SCP_URL = re.compile(r"\A(?P<user>[^@/:]+@)?(?P<host>[^/:]{2,}):(?!//)(?P<path>.+)\Z")
+# The only schemes that get an identity, each with its default port. git hands
+# any other scheme (`foo://`, `ext://`, `ftp://`, ...) to a remote helper, and
+# the helper, not the host in the url, decides which server it reaches.
+_DEFAULT_PORT = {"ssh": 22, "git": 9418, "http": 80, "https": 443}
+
+
+def _upstream_identity(url: str) -> tuple[str, int | None, str] | None:
+    """(host, port, path) for a network remote, ignoring the transport:
+    scheme, one plain user@, a port equal to the scheme's default (dropped, so
+    ssh on 22 matches https on 443; any other port is kept) and
+    a trailing `.git` or `/` do not change which repository it names, so
+    `git@github.com:O/R.git` and `https://github.com:443/O/R` are the same
+    upstream. The host is case-folded; the path is not. One premise: the scp
+    form `git@h:O/R` (relative to the user's home) is taken to name the same
+    repository as `ssh://h/O/R` (absolute). That holds on forges like GitHub;
+    on a plain sshd host the two can differ.
+
+    None means "no identity, compare exactly": a local path, a scheme other
+    than ssh, git, http or https, lowercase as git requires (the scp form
+    counts as ssh), and any url whose
+    server git could read differently than a parser does -- a control character
+    (`urlsplit` silently drops a newline or tab that git keeps), a fragment or query
+    (`https://evil.com#@github.com/O/R` connects to evil.com), a password or a
+    second `@` in the user, a backslash or a space, an empty host or path, or
+    a port that is not a number."""
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in url):
+        return None
+    if any(c in url for c in "#?\\ "):
+        return None
+    if "://" not in url:
+        scp = _SCP_URL.match(url)
+        if scp is None:
+            return None
+        url = f"ssh://{scp.group('user') or ''}{scp.group('host')}/{scp.group('path')}"
+    try:
+        parts = urllib.parse.urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return None
+    # The scheme as written: urlsplit lowercases it, git does not, and git hands
+    # `HTTPS://` to a `git-remote-HTTPS` helper, not to its https transport.
+    scheme = url.partition("://")[0]
+    if scheme not in _DEFAULT_PORT or parts.query or parts.fragment:
+        return None
+    userinfo, at, _ = parts.netloc.rpartition("@")
+    if at and (not userinfo or ":" in userinfo or "@" in userinfo):
+        return None
+    host = parts.hostname
+    if not host:
+        return None
+    if port == _DEFAULT_PORT[scheme]:
+        port = None
+    path = parts.path.strip("/")
+    if path.endswith(".git"):
+        path = path[: -len(".git")]
+    if not path:
+        return None
+    return host, port, path
+
+
+def _same_upstream(actual_url: str | None, declared_url: str) -> bool:
+    """A cache's origin matches the declared upstream when both name the same
+    host and repository path, whatever transport each one spells. Anything that
+    is not a network remote must match exactly."""
+    if actual_url is None:
+        return False
+    if actual_url == declared_url:
+        return True
+    actual, declared = _upstream_identity(actual_url), _upstream_identity(declared_url)
+    return actual is not None and actual == declared
+
+
 def verify_cache_provenance(cache_root: Path, *, workspace_root: Path, repo_url: str) -> None:
     """Section 8.2: object sharing is permitted ONLY against the workspace-managed
     cache, seeded from the declared upstream.
@@ -336,7 +410,7 @@ def verify_cache_provenance(cache_root: Path, *, workspace_root: Path, repo_url:
             f"declared object cache {cache_root} is not a bare git repository"
         )
     actual_url = gitops.remote_origin_url(cache_resolved)
-    if actual_url != repo_url:
+    if not _same_upstream(actual_url, repo_url):
         raise CloneExecutionError(
             f"declared object cache {cache_root} was seeded from {actual_url!r}, "
             f"not from the declared upstream {repo_url!r}"

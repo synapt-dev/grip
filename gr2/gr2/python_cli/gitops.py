@@ -78,6 +78,28 @@ def command_of(argv) -> str | None:
     return words[i] if i < len(words) else None
 
 
+#: Git locates a repository through these. gr2 always names its repository with `-C` (or a cwd), so a value
+#: inherited from the caller's environment (a hook, `GIT_DIR=... gr2 ...`) would aim git at a DIFFERENT
+#: repository. Each is dropped when its value is the inherited one; a caller that names its own value (a temporary
+#: GIT_INDEX_FILE) keeps it. The limit: a caller that names the SAME value it inherited gets it stripped too.
+LOCATING_ENV = (
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX", "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE",
+)
+
+
+def _child_env(env: dict | None) -> dict | None:
+    """The environment git runs with: `env` (or the inherited one) without the inherited locating variables."""
+    inherited = [key for key in LOCATING_ENV if key in os.environ]
+    if not inherited:
+        return env
+    child = dict(os.environ if env is None else env)
+    for key in inherited:
+        if child.get(key) == os.environ[key]:
+            del child[key]
+    return child
+
+
 def _spawn(argv: list[str], *, cwd: Path | None, input, binary: bool, env: dict | None,
            timeout: float | None, raise_timeout: bool) -> subprocess.CompletedProcess:
     """The one place gr2 starts git: an expiry is rc 124 with empty output unless the caller asks for the raise.
@@ -86,7 +108,7 @@ def _spawn(argv: list[str], *, cwd: Path | None, input, binary: bool, env: dict 
     if command_of(argv) == "clone":
         timeout = None
     try:
-        return subprocess.run(argv, cwd=cwd, input=input, env=env, capture_output=True, text=not binary,
+        return subprocess.run(argv, cwd=cwd, input=input, env=_child_env(env), capture_output=True, text=not binary,
                               check=False, timeout=timeout)
     except subprocess.TimeoutExpired:
         if raise_timeout:
@@ -122,7 +144,8 @@ def start(cwd: Path, *args: str) -> subprocess.Popen:
     caller owns its lifetime and must close it. stderr is discarded: batch commands answer on stdout."""
     try:
         return subprocess.Popen(["git", *NO_AUTO, "-C", str(cwd), *args],
-                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                env=_child_env(None))
     except FileNotFoundError as exc:
         if exc.filename == "git":
             raise GitMissingError("git is not on PATH; install git, then run the verb again") from None

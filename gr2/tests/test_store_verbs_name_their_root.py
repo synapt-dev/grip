@@ -170,3 +170,67 @@ def test_store_push_full_mode_options_act_on_the_named_root(option, where, form,
     payload = _json(result)
     assert witness(payload, a), f"push {option} from {where} did not act on A:\n{result.stdout}\n{result.stderr}"
     assert _head(b) == b_head
+
+
+# THE ADVICE CARRIES THE ROOT. A refusal or a finding that names a verb to run is followed from where the verb was
+# run; advice that dropped the -C acted on the current directory, B, with exit 0. Each row takes the printed
+# command, runs it as printed from inside B, and holds only if it acted on A.
+def _advised(text: str, pattern: str) -> list[str]:
+    import re
+    import shlex
+
+    found = re.search(pattern, text)
+    assert found, f"no advice matching {pattern!r} in:\n{text}"
+    words = shlex.split(found.group(1))
+    assert words[:2] == ["gr2", "store"], words
+    return words[2:]
+
+
+def _behind_its_pin(a: Path) -> str:
+    """A's alpha committed at a pushed pin, then reset one behind it; returns the pin."""
+    (a / "alpha" / "moved.txt").write_text("moved\n")
+    run(a / "alpha", "git", "add", "moved.txt")
+    run(a / "alpha", "git", "commit", "-q", "-m", "moved")
+    run(a / "alpha", "git", "push", "-q", "origin", "HEAD")
+    gr2(a, "commit", "-m", "pin moved")
+    pin = git(a / "alpha", "rev-parse", "HEAD").stdout.strip()
+    run(a / "alpha", "git", "reset", "-q", "--hard", "HEAD~1")
+    return pin
+
+
+def test_the_rewind_advice_run_as_printed_from_b_acts_on_a(pair) -> None:
+    a, b, _ = pair
+    pin = _behind_its_pin(a)
+    refused = gr2(b, "commit", "-C", str(a), "-m", "again", check=False)
+    assert refused.returncode == 3, f"{refused.stdout}\n{refused.stderr}"
+    words = _advised(refused.stderr, r"run `(gr2 store materialize[^`]*)` to bring the checkout to the pin")
+    result = gr2(b, *words, "--json", check=False)
+    assert _names(_json(result)) == ["alpha"], f"the advice acted on B:\n{result.stdout}"
+    assert git(a / "alpha", "rev-parse", "HEAD").stdout.strip() == pin
+
+
+def _hooks_removed(a: Path) -> None:
+    for name in ("pre-commit", "pre-push"):
+        (a / ".git" / "hooks" / name).unlink()
+
+
+def _hook_advice_acts_on_a(a: Path, b: Path) -> None:
+    _hooks_removed(a)
+    status = gr2(b, "status", "-C", str(a), check=False)
+    for name in ("pre-commit", "pre-push"):
+        words = _advised(status.stderr, rf"hooks: {name} is not installed; run (gr2 store materialize.*?) to install it\n")
+        result = gr2(b, *words, "--json", check=False)
+        assert _names(_json(result)) == ["alpha"], f"the {name} advice acted on B:\n{result.stdout}"
+        assert (a / ".git" / "hooks" / name).is_file(), f"the {name} advice did not install A's hook"
+        _hooks_removed(a)
+
+
+def test_the_hook_advice_run_as_printed_from_b_acts_on_a(pair) -> None:
+    a, b, _ = pair
+    _hook_advice_acts_on_a(a, b)
+
+
+def test_the_advice_quotes_a_root_with_a_space_in_it(tmp_path) -> None:
+    a = _workspace(tmp_path, "A spaced", "alpha")
+    b = _workspace(tmp_path, "B", "beta")
+    _hook_advice_acts_on_a(a, b)

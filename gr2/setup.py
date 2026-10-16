@@ -35,9 +35,11 @@ def _git(*args: str) -> str | None:
     git = shutil.which("git")
     if git is None:
         return None
+    # No inherited GIT_* (git exports GIT_DIR to hooks): git finds the repo from _HERE alone.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     try:
         proc = subprocess.run(
-            [git, *args], cwd=_HERE, capture_output=True, text=True, check=False
+            [git, *args], cwd=_HERE, env=env, capture_output=True, text=True, check=False
         )
     except OSError:
         return None

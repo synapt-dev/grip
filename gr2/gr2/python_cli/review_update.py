@@ -54,14 +54,6 @@ def merge_in_progress(repo: Path) -> bool:
     return gitops.run(repo, "rev-parse", "-q", "--verify", "MERGE_HEAD").returncode == 0
 
 
-def _default_branch(repo: Path, remote: str) -> str | None:
-    for line in gitops.run(repo, "ls-remote", "--symref", "--", remote, "HEAD").stdout.splitlines():
-        left, _, ref = line.partition("\t")
-        if ref == "HEAD" and left.startswith("ref: refs/heads/"):
-            return left.removeprefix("ref: refs/heads/")
-    return None
-
-
 def update(workspace: Path, review_id: str | None = None, into: str | None = None) -> tuple[int, dict]:
     ws = workspace.resolve()
     receipt: dict = {"review": review_id, "into": into, "members": [], "new_review": None, "exit": EXIT_REFUSED,
@@ -115,11 +107,15 @@ def update(workspace: Path, review_id: str | None = None, into: str | None = Non
     if dirty:
         return done(EXIT_REFUSED, f"member_dirty: {'; '.join(dirty)}; commit or stash, then run update again")
 
+    # The target is the one each member was pinned against. A review pinned before that was recorded names no
+    # target, and the remote's default is not one: after a promotion the default holds the old base too, so it
+    # would merge the wrong branch into the work. Such a review asks for --into.
     targets = {}
     for m in members:
-        branch = into or _default_branch(m["repo"], m["remote"])
+        branch = into or m.get("target", "").removeprefix("refs/heads/")
         if not branch:
-            return done(EXIT_REFUSED, f"into_unresolved: {m['key']}: its remote names no default branch; pass --into")
+            return done(EXIT_REFUSED, f"into_unresolved: {m['key']}: this review was pinned before its target was "
+                                      "recorded; pass --into <the branch it was pinned against>")
         targets[m["key"]] = branch
     receipt["into"] = into or (next(iter(set(targets.values()))) if len(set(targets.values())) == 1 else None)
 

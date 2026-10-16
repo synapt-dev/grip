@@ -33,10 +33,10 @@ from pathlib import Path
 from . import gitops
 
 PACKAGE = "dev.synapt.grip.review.v1alpha1"
-SCHEMA_COMMIT = "88babf4a0c55110a1e1badc53f07a6f0f8912f86"
+SCHEMA_COMMIT = "a2707c456d137ce5cbabb18f7aa836897818d147"
 SCHEMA_SOURCE = f"{PACKAGE}@{SCHEMA_COMMIT}"
 _PROTO_RESOURCE = f"schemas/{PACKAGE}/review.proto"
-_PROTO_SHA256 = "94e75f8ff703a20a2ab2cecd5226c24d25e9f8c1a1d295cdaf224ab0a2e73296"
+_PROTO_SHA256 = "4cc4162d6d15e098c3f24402bd7ae763661cde02ba83e48105d57aab41fd3c44"
 
 MAX_FIELD_NUMBER = 999
 # ASCII digits only and matched whole: \d admits other scripts' digits and $ admits a

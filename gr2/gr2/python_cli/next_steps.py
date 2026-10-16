@@ -149,6 +149,11 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
         # The one safe next command; a set is checked together, never member by member.
         return f"next: gr2 check set {_shown(workspace)} {_shown(review)} -- <your combined test command>"
     if refused.startswith("check_absent"):
+        if "set" in checks:
+            # Several members: a member tested alone cannot pass when it imports its siblings, so name the run that
+            # can, the members together at the pinned heads, recorded under the missing name.
+            return "\n".join(f"next: gr2 check set {_shown(workspace)} {_shown(review)} --name {_shown(n)} -- "
+                             f"<your combined {_shown(n)} command>" for n in checks if n != "set")
         # `check run --name` takes ONE name (a repeated flag keeps the last), so each required check gets its own line.
         return "\n".join(f"next: gr2 check run {_shown(path)} --remote {_shown(remote)} --head {_shown(head)}"
                          f"{'' if n == 'test' else f' --name {_shown(n)}'} -- <your {_shown(n)} command>" for n in checks

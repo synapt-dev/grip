@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for the next `v1.x` patch release. The gr2 changes already released are in `[gr2 2.0.0a9]` below.
 
+### Changed
+
+- **`gr2`: `review merge` after one passing `gr2 check set` merges a multi-member review with no `--check` flag.**
+  The default still requires `set` and each member's `test`, and a member whose recorded `test` is red still refuses.
+  What changed is a member with NO `test` record at its head: a passing `set` record for this review now decides it,
+  where before the merge refused `check_absent` and printed a per-member `gr2 check run`, which cannot pass when the
+  members import each other. A `test` named with `--check` is decided only by `test` records, and its refusal now prints
+  `gr2 check set <workspace> <review> --name test -- ...`. On a review of one member, a passing `set` record for this
+  review and these heads also decides the default `test`. A `set` record for another review or other heads never counts.
+
 ### Added
 
 - **`gr2`: a root made by `gr2 store init` works with `gr2 sync` at once, with no second init.** Before, `sync status`

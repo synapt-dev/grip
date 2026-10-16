@@ -133,16 +133,18 @@ def test_D8_with_no_check_a_member_whose_recorded_test_is_red_refuses_and_nothin
     assert untouched(s)
 
 
-def test_D8_with_no_check_a_member_with_no_recorded_test_refuses(slice2_no_test):
-    """No recorded test is not a pass by absence."""
+def test_D8_with_no_check_a_member_with_no_recorded_test_merges_on_the_passing_set(slice2_no_test):
+    """No recorded test of its own is decided by this review's passing set: the set ran every
+    member's tests together at the pinned heads, and members that import each other cannot pass one alone. A RED
+    recorded test still refuses (the row above, dcd4fe83's reason)."""
     s = slice2_no_test
     _record_test(s["members"]["alpha"], PASS)
     assert run_set(s)["result"] == "pass"
     code, receipt = merge(s)
-    assert code == merge_gate.EXIT_REFUSED, receipt
+    assert code == merge_gate.EXIT_MERGED, receipt
     rows = {m["key"]: m for m in receipt["members"]}
-    assert rows["beta"]["refused"].startswith("check_absent"), receipt
-    assert untouched(s)
+    assert rows["beta"]["check"]["source"] == {"test": "set"}, receipt
+    assert rows["alpha"]["check"]["source"] == {"test": "member"}, receipt
 
 
 def test_D8_an_explicit_check_set_still_merges_on_the_set_record_alone(slice2_no_test):

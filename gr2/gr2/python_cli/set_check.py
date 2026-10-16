@@ -275,7 +275,7 @@ def _fetch_remote_head(repo: Path, remote: str, branch: str) -> str:
     The fetch lands on a transient staging ref (the pattern check records use) and the ref is removed after; the
     objects stay, and no branch, tag or FETCH_HEAD of the member moves."""
     staging = f"refs/dev.synapt.grip/__remote_head_transfers__/{uuid.uuid4().hex}"
-    fetched = gitops.run(repo, "fetch", "--no-tags", "--no-write-fetch-head", remote, f"refs/heads/{branch}:{staging}")
+    fetched = gitops.run(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, f"refs/heads/{branch}:{staging}")
     if fetched.returncode:
         raise check_records.CheckRefused(f"remote_branch_absent: {branch!r} could not be fetched from {remote}")
     head = gitops.run(repo, "rev-parse", "--verify", "-q", f"{staging}^{{commit}}").stdout.strip()

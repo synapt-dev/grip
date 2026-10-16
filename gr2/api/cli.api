@@ -666,8 +666,11 @@ verb  review run                                                      stable
 # review show
 arg   review show commit <str>                                        stable
 arg   review show workspace_root <str>                                stable
+flag  review show --diff                                              stable
 flag  review show --json                                              stable
+flag  review show --member <str>                                      stable
 flag  review show --root/-C <str>                                     stable
+flag  review show --stat                                              stable
 verb  review show                                                     stable
 # review stamp
 arg   review stamp review_id <str>                                    stable

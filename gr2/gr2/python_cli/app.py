@@ -30,7 +30,7 @@ from . import add as add_ops
 from .version import version_line
 from . import branch as branch_ops
 from . import commit as commit_ops
-from . import execops, failures, grip, migration, next_steps, spec_apply, syncops
+from . import execops, failures, grip, migration, next_steps, review_diff, spec_apply, syncops
 from . import gitinclude
 from . import gitops
 from . import check_records, set_check
@@ -5024,13 +5024,28 @@ def review_show(
     workspace_root: Path,
     commit: Optional[str] = typer.Argument(None, help="The pinned review, as gr:<sha> or a bare sha; omitted only when the workspace has exactly one pinned review"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    diff: bool = typer.Option(False, "--diff", help="Also print each member's diff, git diff <base> <head> in its clone"),
+    stat: bool = typer.Option(False, "--stat", help="Also print each member's diff summary (files, +added -removed)"),
+    member: Optional[str] = typer.Option(None, "--member", help="Show only this member (its key)"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Show what a pinned review holds: each member's repository and commit range, the title and body it was pinned
-    with, and the files its range changes. Read-only; with no id, selects the workspace's sole pinned review."""
+    with, and the files its range changes. Read-only; with no id, selects the workspace's sole pinned review.
+    --diff adds each member's net change, `git diff <base> <head>` read from the objects in its clone (no network);
+    a clone lacking either commit refuses as member_objects_missing rather than read the pinned text."""
     if commit is None:
         commit = _the_one_review_bind(workspace_root.resolve(), "show")
     result = _review_call(grip.show_review_commit, workspace_root.resolve(), _strip_gr_prefix(commit))
+    if member is not None:
+        keys = [str(m["key"]) for m in result["members"]]
+        if member not in keys:
+            typer.echo(f"gr2: no member {next_steps._shown(member)} in {result['id']}; its members: "
+                       + ", ".join(next_steps._shown(k) for k in keys), err=True)
+            raise typer.Exit(code=2)
+        result["members"] = [m for m in result["members"] if m["key"] == member]
+    if diff or stat:
+        for m in result["members"]:
+            m.update(_review_call(review_diff.change, workspace_root.resolve(), m, with_diff=diff))
     runs = _review_call(merge_receipts.runs, workspace_root.resolve(), str(result["id"]))
     result["merge"] = runs[-1] if runs else None  # the latest `review merge` run's receipt, or null when never merged
     result["merge_runs"] = len(runs)
@@ -5053,6 +5068,10 @@ def review_show(
         if row is not None:
             typer.echo(f"  merge: {row['refusal']['code']} (refused)" if row.get("refusal")
                        else f"  merge: {row.get('final')} {str(row.get('merged') or '')[:12]}".rstrip())
+        if "diffstat" in m:
+            typer.echo("  " + ("diff: (not recorded)" if m["diffstat"] is None else review_diff.summary(m["diffstat"])))
+        for line in str(m.get("diff") or "").splitlines():
+            typer.echo(review_diff.printable(line))
 
 
 @review_app.command("verify", cls=json_refusing(ReviewTargetCommand))

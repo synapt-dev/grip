@@ -2045,7 +2045,8 @@ def _fetch_received_heads(workspace: Path, commit: str, source: str) -> list[dic
     A received review binds the record only; the set check reads every member's head from the member's own clone,
     so without this a reviewer's clone lacks the commits until a hand fetch. Only members whose recorded remote is
     `source` are fetched (another member's head is not this remote's to serve). One row per member: fetched,
-    already_present, not_this_remote, or not_fetched with its reason and the exact command that fetches it."""
+    already_present, not_this_remote (with the command that opens the review without the head), or not_fetched with
+    its reason and the exact command that fetches it."""
     from .review import ReviewError, canonical_source_identity
 
     def same(remote: str) -> str | None:
@@ -2062,7 +2063,11 @@ def _fetch_received_heads(workspace: Path, commit: str, source: str) -> list[dic
         repo = (root / str(m["path"])).resolve()
         row = {"key": key, "head": head}
         if want is None or same(str(m["remote"])) != want:
-            rows.append({**row, "status": "not_this_remote"})
+            # Not a failure: open builds a lane from the range the review carries; show --diff and stamp need the head.
+            rows.append({**row, "status": "not_this_remote",
+                         "reason": f"head_not_on_this_remote: its remote is {next_steps._shown(str(m['remote']))}; "
+                                   "open reads the carried range; show --diff and stamp need the head there",
+                         "next": next_steps._open_from_range(str(root), f"gr:{commit}")})
             continue
         if not repo.is_relative_to(root) or not (repo / ".git").exists():
             rows.append({**row, "status": "not_fetched", "reason": "member_clone_missing",

@@ -98,6 +98,13 @@ def _head_fetch(repo: str, remote: str, head: str) -> str:
     return f"git -C {_shown(repo)} fetch -- {_shown(remote)} {_shown(head)}"
 
 
+def _open_from_range(workspace: str, review: str) -> str:
+    # Private, so the skill's refusal table keeps one row per printed code. receive's line for a head on another
+    # remote: a lane opened from the range the review carries needs no fetch of the head. No --lane-dir placeholder,
+    # so the line runs as printed in a shell; open picks its default lane directory.
+    return f"gr2 review open {_shown(workspace)} {_shown(review)}"
+
+
 def _unpushed_pin(path: str, sha: str, remote: str, branch: str | None, grip_toml: str, compat: bool) -> str:
     """Private, so the skill's refusal table keeps one row per printed code: this is `store commit`'s and
     `store check`'s coverage refusal, which prints no `refused: <code>`.

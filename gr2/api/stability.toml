@@ -49,6 +49,13 @@ may-change = [
   "arg review receive commit <str>",
   "flag review receive --ref <str>",
   "flag review receive --remote <str>",
+  # Reading a PR of a repo outside the workspace is new; its arguments and the
+  # directory it leaves may still change.
+  "verb review read-pr",
+  "arg review read-pr owner_repo <str>",
+  "arg review read-pr pr_number <str>",
+  "flag review read-pr --dir <str>",
+  "flag review read-pr --url <str>",
   "verb store check",
   "flag store check --json",
   "verb store checkout",

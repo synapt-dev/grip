@@ -632,6 +632,12 @@ flag  review publish --ref <str>                                      may-change
 flag  review publish --remote <str>                                   may-change
 flag  review publish --root/-C <str>                                  stable
 verb  review publish                                                  may-change
+# review read-pr
+arg   review read-pr owner_repo <str>                                 may-change
+arg   review read-pr pr_number <str>                                  may-change
+flag  review read-pr --dir <str>                                      may-change
+flag  review read-pr --url <str>                                      may-change
+verb  review read-pr                                                  may-change
 # review rebind
 arg   review rebind frozen_dir <str>                                  stable
 flag  review rebind --allow-public-ref                                stable

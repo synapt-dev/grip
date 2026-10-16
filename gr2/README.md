@@ -106,8 +106,10 @@ Not there yet:
 | `exec` | status, run |
 | `repo` | status, projection-run |
 | `hooks` | trust, revoke, status, show, run |
-| `store` | init, commit, check, push, status, log, diff, checkout, materialize, migrate, migrate-reviews; each names its workspace with `-C/--root <root>`, else reads the current directory |
+| `store` | init, commit, check, push, status, log, diff, checkout, materialize, migrate, migrate-reviews |
 | `target`, `config` | stored PR target; config overlays |
+
+Every `store` verb names its workspace with `-C/--root <root>`, else reads the current directory.
 
 `review bind`, `review approve` and `review rebind` remain as aliases of `pin`, `stamp` and `repin`.
 

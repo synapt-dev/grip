@@ -184,7 +184,7 @@ json  grip migrate .root_commit                                       may-change
 json  grip migrate .status  enum(dry-run,migrated)                    may-change
 verb  grip migrate (hidden:grip)                                      stable
 # grip migrate-reviews
-arg   grip migrate-reviews workspace_root <str> (hidden:grip)         stable
+arg   grip migrate-reviews root <str> (hidden:grip)                   stable
 flag  grip migrate-reviews --json (hidden:grip)                       stable
 flag  grip migrate-reviews --root/-C <str> (hidden:grip)              stable
 json  grip migrate-reviews .receipt                                   stable
@@ -795,7 +795,7 @@ json  store migrate .root_commit                                      may-change
 json  store migrate .status  enum(dry-run,migrated)                   may-change
 verb  store migrate                                                   may-change
 # store migrate-reviews
-arg   store migrate-reviews workspace_root <str>                      stable
+arg   store migrate-reviews root <str>                                stable
 flag  store migrate-reviews --json                                    stable
 flag  store migrate-reviews --root/-C <str>                           stable
 json  store migrate-reviews .receipt                                  stable

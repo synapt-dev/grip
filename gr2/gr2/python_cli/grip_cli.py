@@ -3775,15 +3775,16 @@ def grip_migrate_cmd(
 
 @grip_app.command("migrate-reviews")
 def grip_migrate_reviews_cmd(
-    workspace_root: Optional[Path] = typer.Argument(None, help="The native store root whose pinned reviews to migrate"),
-    root: Optional[Path] = STORE_ROOT_OPTION,
+    root: Optional[Path] = typer.Argument(None, help="The native store root whose pinned reviews to migrate"),
+    root_option: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Give every legacy pinned review a field tree twin at the v1 ref; legacy refs stay as they are."""
-    if root is None and workspace_root is None:
-        typer.echo("Missing argument 'WORKSPACE_ROOT': name the native store root, or -C <root>", err=True)
+    # The positional keeps its contract name `root` (cli.api: `arg store migrate-reviews root`); -C binds beside it.
+    if root_option is None and root is None:
+        typer.echo("Missing argument 'ROOT': name the native store root, or -C <root>", err=True)
         raise typer.Exit(code=2)
-    root = _store_root(root, workspace_root)
+    root = _store_root(root_option, root)
     try:
         receipt, rows = grip_mod.migrate_review_binds(root)
     except grip_mod.GripCorruptError as exc:

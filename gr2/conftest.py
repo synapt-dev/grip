@@ -125,6 +125,18 @@ if "gr2" not in sys.modules:
 
 
 @pytest.fixture(autouse=True)
+def _no_seat_quiet_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drop the seat's GR2_QUIET_CONTEXT so no gr2 test reads it.
+
+    A seat that exports it silences the context line some rows assert on, so
+    those rows go red on that seat and green everywhere else. A test that
+    wants it quiet sets it itself. It lives here, not in `tests/conftest.py`,
+    so it reaches `gr2/overlay/tests/` too (see the module docstring above).
+    """
+    monkeypatch.delenv("GR2_QUIET_CONTEXT", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolated_git_config(tmp_path_factory, monkeypatch):
     """Every gr2 test runs against an isolated Git identity and no host options.
 

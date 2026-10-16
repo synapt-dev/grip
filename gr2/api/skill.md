@@ -333,7 +333,7 @@ Merge a pinned review into its members' remotes: preflight every member, merge n
 - `<review_id>` (optional)
 - `--into`: Target branch; default: the target the review was pinned against, else (a review pinned before that was recorded) the remote's default branch when it is the one branch at the reviewed base
 - `--from`: Feature branch; default: the members' current branch
-- `--check`: Required exact-head check name (repeatable); default `test`, and `test` plus `set` for a review over several members, where only `test` and `set` are accepted and `set` is always required
+- `--check`: Required exact-head check name (repeatable); default `test`, and `test` plus `set` for a review over several members, where only `test` and `set` are accepted and `set` is always required; a default `test` with no record at a member's head is decided by a passing `set` for this review, a red one refuses
 - `--no-set`: Single-member reviews only: a review over several members always requires `set` and refuses this flag
 - `--approvals`: Required distinct approvers; may raise the grip.toml [approvals] required floor. With neither set the merge refuses approvals_unset; 0 merges without approvals and says so
 - `--root/-C`: The workspace root. Same as the leading WORKSPACE_ROOT argument; give one or the other.

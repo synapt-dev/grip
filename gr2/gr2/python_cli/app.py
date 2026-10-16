@@ -5252,7 +5252,7 @@ def review_merge(
     review_id: Optional[str] = typer.Argument(None, help="Pinned review id, gr:<sha>; default: the pinned review at the members' current heads"),
     into: Optional[str] = typer.Option(None, "--into", help="Target branch; default: the target the review was pinned against, else (a review pinned before that was recorded) the remote's default branch when it is the one branch at the reviewed base"),
     feature: Optional[str] = typer.Option(None, "--from", help="Feature branch; default: the members' current branch"),
-    check: Optional[List[str]] = typer.Option(None, "--check", help="Required exact-head check name (repeatable); default `test`, and `test` plus `set` for a review over several members, where only `test` and `set` are accepted and `set` is always required"),
+    check: Optional[List[str]] = typer.Option(None, "--check", help="Required exact-head check name (repeatable); default `test`, and `test` plus `set` for a review over several members, where only `test` and `set` are accepted and `set` is always required; a default `test` with no record at a member's head is decided by a passing `set` for this review, a red one refuses"),
     no_set: bool = typer.Option(False, "--no-set", help="Single-member reviews only: a review over several members always requires `set` and refuses this flag"),
     approval_count: Optional[int] = typer.Option(None, "--approvals", help="Required distinct approvers; may raise the grip.toml [approvals] required floor. With neither set the merge refuses approvals_unset; 0 merges without approvals and says so"),
     root: Optional[Path] = ROOT_OPTION,
@@ -5298,6 +5298,13 @@ def review_merge(
         typer.echo(f"{stale['member']}: merged on its remote, but this clone's tracking ref still names the old tip "
                    f"({stale.get('reason')}), so `store commit` would record the pre-merge pin; run: {stale['command']}",
                    err=True)
+    # A member merged with no `test` record of its own at its head was accepted on the set's command alone, which is
+    # the author's argv: say so when it lands, so "never record a test" is visible where it is used.
+    on_set = [m["key"] for m in receipt.get("members", [])
+              if (m.get("check") or {}).get("source", {}).get("test") == "set" and m.get("final") == "merged"]
+    if on_set:
+        typer.echo(f"accepted on the set alone (no test record of its own at its head): {', '.join(on_set)}; "
+                   "the set's command is the only test evidence for them, so it must run their tests", err=True)
     if hint_error:
         typer.echo(hint_error, err=True)
     for set_name in sorted({(m.get("declared_set") or {}).get("set") for m in receipt.get("members", [])} - {None}):

@@ -275,9 +275,13 @@ observation retains its fields and adds a SHA-256 `observation_id`.
 A review over several members is checked as one set. `gr2 check set <workspace> <review> -- <command>`
 reconstructs every member at its pinned head side by side (`GR2_SET_ROOT`, `GR2_REVIEW_ID` and `GR2_SET_MEMBERS`
 name them), runs the command once, and publishes one `set` observation per member remote, carrying the review and the
-identity of the set. With no `--check`, `gr2 review merge` on a multi-member review requires that record AND a
-passing `test` record from `gr2 check run` at each member's head, so a member whose recorded test is red, or that has
-none, is refused and nothing lands. `--check set` merges on the set's record alone. The requirement comes from the
+identity of the set. With no `--check`, `gr2 review merge` on a multi-member review requires that record AND each
+member's `test` at its head: a member whose recorded `test` is red is refused and nothing lands, and a member with no
+`test` record of its own is decided by the passing set (members that import each other cannot pass a test alone), so
+one `check set` and the approvals are enough to merge. `--check test` names `test` explicitly and only a `test` record
+decides it (one that `check set --name test` wrote for this review counts); its refusal prints that `check set`. On a
+one-member review the default `test` is also decided by a passing `set` record for this review at that head. A `set`
+record for another review or other heads never counts. The requirement comes from the
 review, not from the person merging: on a multi-member review `--no-set` is refused, and so is any `--check` name other
 than `test` and `set`. `review pin` refuses a multi-member review whose rows do not each carry a `source` or a `range`,
 because `check set` could never run on it. `check show --require set --review <id>` reads a `set` record for another

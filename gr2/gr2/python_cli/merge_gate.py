@@ -311,7 +311,9 @@ def required_check_names(required: Sequence[str] | None, members: int, no_set: b
     several members always requires `set` (one command over all of them, at the pinned heads), and requires `test`
     (each member's own recorded check) unless only `set` is named. `no_set`, or a check name other than `test` or
     `set`, is refused there (RequirementRefused), because either would let the merging author choose the gate. A
-    single-member review requires `test` by default and `set` only when asked, and `no_set` changes nothing for it."""
+    single-member review requires `test` by default and `set` only when asked, and `no_set` changes nothing for it.
+    A DEFAULT `test` that is absent at a member's head yields to a passing `set` record for this review there; a red
+    one never does (review_merge)."""
     if members <= 1:
         return tuple(required) if required is not None else (MEMBER_CHECK_NAME,)
     if no_set:
@@ -358,6 +360,7 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         declaration = declared_sets.read(root)  # the committed grip.toml: a set is declared once, for every workspace
     except declared_sets.DeclaredSetError as exc:
         return _unmeasured(review_id, into, feature, f"declared_sets_invalid: {exc}")
+    test_by_default = required_checks is None  # a `test` the merger NAMED is never decided by a set record
     try:
         required_checks = required_check_names(required_checks, len(view["members"]), no_set)
     except RequirementRefused as exc:  # nothing read from a remote, nothing transferred
@@ -416,10 +419,24 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
             row["check"] = {k: check.get(k) for k in ("status", "record_id", "reason")}
             # A `fail` whose reason is not a verdict on a record is a transport or format fault, never a content answer.
             fault = check["status"] == "fail" and check["reason"] != "required_check_failed"
+            if (not fault and test_by_default and len(view["members"]) == 1 and plain_checks == (MEMBER_CHECK_NAME,)
+                    and check["status"] == "absent"):
+                # One member: `check set` over it is that member's test at that head, so a passing `set` record for
+                # THIS review and set identity decides `test` (one for another review stays stale and never counts).
+                verdict, _why = set_check.judge_set_records(check["records"], view["id"], expected_set_id)
+                if verdict == "pass":
+                    check = dict(check, status="pass", reason="required_checks_pass")
+                    row["check"].update(status="pass", reason="required_checks_pass", source={MEMBER_CHECK_NAME: "set"})
             if not fault and plain_checks and len(view["members"]) >= 2:
                 # Set evidence for X decides X on a multi-member review; the receipt says which source decided it.
                 judged = {n: set_check.judge_plain_check(check["records"], n, view["id"], expected_set_id)
                           for n in plain_checks}
+                if test_by_default and judged.get(MEMBER_CHECK_NAME, ("",))[0] in ("absent", "stale") and \
+                        set_check.judge_set_records(check["records"], view["id"], expected_set_id)[0] == "pass":
+                    # No `test` of this member's own at this head (members that import each other cannot pass one
+                    # alone), and the members passed together for this review: the set decides. A red `test` record
+                    # is evidence and still refuses below; no record is not.
+                    judged[MEMBER_CHECK_NAME] = ("pass", "required_checks_pass", "set")
                 row["check"]["source"] = {n: j[2] for n, j in judged.items()}
                 worst = next((j for want in ("fail", "stale", "absent") for j in judged.values() if j[0] == want), None)
                 if worst is not None:

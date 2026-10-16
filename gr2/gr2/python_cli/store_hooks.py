@@ -58,12 +58,9 @@ MARKER = "# gr2-store-hook v1"
 HOOK_NAMES = ("pre-commit", "pre-push")
 _ZERO = "0" * 40
 
-#: Git locates repositories through these. A hook inherits them, and the member checkouts the engine
-#: measures are DIFFERENT repositories, so they are removed before the shared helpers run.
-_LOCATING_ENV = (
-    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX", "GIT_COMMON_DIR",
-    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE",
-)
+#: Git locates repositories through these (one list, in gitops). A hook inherits them, and the member checkouts the
+#: engine measures are DIFFERENT repositories, so they are removed before the shared helpers run.
+_LOCATING_ENV = gitops.LOCATING_ENV
 
 
 # ── installing and reporting ─────────────────────────────────────────────────────────────────────

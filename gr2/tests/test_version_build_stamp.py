@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
 import tomllib
 import zipfile
 from pathlib import Path
@@ -242,6 +243,68 @@ def test_working_tree_encoding_edit_at_the_tag_is_never_released(tmp_path: Path)
         swapped = b"\xff\xfe" + text.encode("utf-16-le")
     _same_size_rewrite(data, raw, swapped)
     assert _git(["status", "--porcelain"], src) == ""
+
+    assert _installed_line(src, tmp_path) == (
+        f"{_VERSION}+g{sha}.dirty dev build, not a release"
+    )
+
+
+def _settled_same_size_edit(src: Path, config: list[str]) -> Path:
+    """A same-size edit to a module with its mtime put back (cp -p, rsync -t), index settled first."""
+    for pair in config:
+        _git(["config", *pair.split("=", 1)], src)
+    time.sleep(1.1)  # past the racy second, so the index entry is trusted on stat alone
+    _git(["update-index", "--refresh"], src)
+    module = src / "gr2" / "python_cli" / "version.py"
+    before = module.stat()
+    data = module.read_bytes()
+    assert data.count(b"The distinction is") == 1
+    module.write_bytes(data.replace(b"The distinction is", b"The~distinction is"))
+    os.utime(module, ns=(before.st_atime_ns, before.st_mtime_ns))
+    return module
+
+
+@pytest.mark.parametrize("config", ["core.trustctime=false", "core.checkStat=minimal"])
+def test_narrowed_stat_check_edit_at_the_tag_is_never_released(tmp_path: Path, config: str) -> None:
+    """Repo config that narrows the stat check hides a same-size, mtime-restored edit from status."""
+    src = _source(tmp_path)
+    _git([*_IDENT, "tag", f"gr2/v{_VERSION}"], src)
+    sha = _git(["rev-parse", "--short", "HEAD"], src)
+    _settled_same_size_edit(src, [config])
+    assert _git(["status", "--porcelain"], src) == ""
+
+    assert _installed_line(src, tmp_path) == (
+        f"{_VERSION}+g{sha}.dirty dev build, not a release"
+    )
+
+
+def test_fsmonitor_hook_reporting_nothing_at_the_tag_is_never_released(tmp_path: Path) -> None:
+    """An fsmonitor hook that reports no change makes status skip an edited file entirely."""
+    src = _source(tmp_path)
+    _git([*_IDENT, "tag", f"gr2/v{_VERSION}"], src)
+    sha = _git(["rev-parse", "--short", "HEAD"], src)
+    hook = tmp_path / "fsmonitor-nothing"
+    hook.write_text("#!/bin/sh\nprintf 'token\\0'\n", encoding="utf-8")
+    hook.chmod(0o755)
+    _git(["config", "core.fsmonitor", str(hook)], src)
+    _git(["update-index", "--fsmonitor"], src)
+    _git(["status", "--porcelain"], src)
+    module = src / "gr2" / "python_cli" / "version.py"
+    _same_size_rewrite(module, b"The distinction is", b"The~distinction is")
+    assert _git(["status", "--porcelain"], src) == ""
+
+    assert _installed_line(src, tmp_path) == (
+        f"{_VERSION}+g{sha}.dirty dev build, not a release"
+    )
+
+
+def test_settled_same_size_edit_under_default_config_is_dirty(tmp_path: Path) -> None:
+    """Control: the same edit under default config moves ctime, so status itself sees it."""
+    src = _source(tmp_path)
+    _git([*_IDENT, "tag", f"gr2/v{_VERSION}"], src)
+    sha = _git(["rev-parse", "--short", "HEAD"], src)
+    _settled_same_size_edit(src, [])
+    assert _git(["status", "--porcelain"], src) == "M gr2/python_cli/version.py"
 
     assert _installed_line(src, tmp_path) == (
         f"{_VERSION}+g{sha}.dirty dev build, not a release"

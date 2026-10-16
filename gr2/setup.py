@@ -10,7 +10,8 @@ it knows into the package as `gr2/python_cli/_build.json`:
 * `dirty` -- true when a file under this directory differs from `HEAD`, tracked, untracked
   or ignored (an untracked or `.gitignore`d module would ship in the wheel), or when a
   tracked file is marked skip-worktree or assume-unchanged (status cannot see its edits,
-  so any mark counts; a fresh checkout has none); only the
+  so any mark counts; a fresh checkout has none), whatever the repo's stat config (git
+  runs with checkStat, trustctime and fsmonitor pinned to their defaults); only the
   build's own output (`build/`, `dist/`, `*.egg-info/`) and `__pycache__/` are excluded,
   by pathspec, so no ignore file decides it. The cost: a local checkout with ignored files
   under this directory (a `.venv/`, `.pytest_cache/`) stamps dirty, never released. A
@@ -37,6 +38,13 @@ _STAMP = os.path.join("gr2", "python_cli", "_build.json")
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
 
+# status trusts stat data before content, and repo config can narrow what it compares: with
+# trustctime=false or checkStat=minimal a same-size edit with its mtime put back (cp -p,
+# rsync -t, a tar extract) is clean to status, and an fsmonitor hook can report nothing
+# changed. Pinned per call, so the builder's repo config never decides `dirty`.
+_PINS = ("-c", "core.checkStat=default", "-c", "core.trustctime=true", "-c", "core.fsmonitor=false")
+
+
 def _git(*args: str) -> str | None:
     git = shutil.which("git")
     if git is None:
@@ -45,7 +53,7 @@ def _git(*args: str) -> str | None:
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     try:
         proc = subprocess.run(
-            [git, *args], cwd=_HERE, env=env, capture_output=True, text=True, check=False
+            [git, *_PINS, *args], cwd=_HERE, env=env, capture_output=True, text=True, check=False
         )
     except OSError:
         return None

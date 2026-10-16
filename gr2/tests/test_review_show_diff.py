@@ -272,3 +272,66 @@ def test_missing_member_objects_refuse(tmp_path, monkeypatch):
     assert "diff --git" not in out.stdout and "Traceback" not in out.stderr
     data = runner.invoke(app, ["review", "show", str(w["author"]), rid, "--json", "--stat"])
     assert data.exit_code == 2 and "member_objects_missing" in data.stdout, data.output
+
+
+# plain `review show` (no --diff/--stat) lists `files:` from the same objects, so e5's forged
+# stanza is absent there too, in text and JSON.
+def test_plain_show_files_come_from_objects(tmp_path, monkeypatch):
+    w = build(tmp_path, monkeypatch, ["alpha"])
+    m = w["members"]["alpha"]
+    git(m["repo"], "reset", "-q", "--hard", m["base"])
+    (m["repo"] / "payload.txt").write_text("real change\n")
+    git(m["repo"], "commit", "-q", "-am", "real change")
+    git(m["repo"], "commit", "-q", "--allow-empty", "-m", _FORGED)
+    rid, head = _repin(w, tmp_path, "alpha")
+    data = runner.invoke(app, ["review", "show", str(w["author"]), rid, "--json"])
+    assert data.exit_code == 0, data.output
+    row = json.loads(data.stdout)["members"][0]
+    assert row["files"] == ["payload.txt"], row["files"]
+    assert "diff" not in row and "diffstat" not in row, row
+    out = runner.invoke(app, ["review", "show", str(w["author"]), rid])
+    assert out.exit_code == 0, out.output
+    assert "  files: payload.txt\n" in out.stdout, out.stdout
+    assert "forged" not in out.stdout and "FORGED" not in out.stdout, out.stdout
+
+
+# A name git would quote (a tab, a double quote) is listed by its real name on plain show; a control
+# character in a name is escaped in text, never sent raw to the terminal.
+def test_plain_show_lists_quoted_names_by_their_real_name(tmp_path, monkeypatch):
+    w = build(tmp_path, monkeypatch, ["alpha"])
+    m = w["members"]["alpha"]
+    git(m["repo"], "reset", "-q", "--hard", m["base"])
+    names = ["tab\there.txt", 'quo"te.txt', "esc\x1b[31m.txt"]
+    for name in names:
+        (m["repo"] / name).write_text("x\n")
+    git(m["repo"], "add", ".")
+    git(m["repo"], "commit", "-q", "-m", "quoted names")
+    rid, head = _repin(w, tmp_path, "alpha")
+    want = git(m["repo"], "diff", "--name-only", "-z", m["base"], head).strip("\0").split("\0")
+    data = runner.invoke(app, ["review", "show", str(w["author"]), rid, "--json"])
+    assert data.exit_code == 0, data.output
+    assert json.loads(data.stdout)["members"][0]["files"] == want == sorted(names), data.stdout
+    out = runner.invoke(app, ["review", "show", str(w["author"]), rid])
+    assert out.exit_code == 0, out.output
+    assert "  files: esc\\x1b[31m.txt, quo\"te.txt, tab\there.txt\n" in out.stdout, out.stdout
+    assert "\x1b" not in out.stdout, out.stdout
+
+
+# Plain show on a clone that lacks the head still lists the member (a received review, before its fetch) but
+# reads no files: `files` is null and names member_objects_missing; no fall back to range.patch.
+def test_plain_show_missing_member_objects_reads_no_files(tmp_path, monkeypatch):
+    import shutil
+    w = build(tmp_path, monkeypatch, ["alpha"])
+    m = w["members"]["alpha"]
+    (m["repo"] / "local.txt").write_text("never pushed\n")
+    git(m["repo"], "add", "local.txt")
+    git(m["repo"], "commit", "-q", "-m", "local only")
+    rid, head = _repin(w, tmp_path, "alpha")
+    shutil.rmtree(m["repo"])
+    git(w["author"], "clone", "-q", "--no-local", "--branch", "main", m["remote"], "alpha")
+    out = runner.invoke(app, ["review", "show", str(w["author"]), rid])
+    assert out.exit_code == 0, out.output
+    assert "  files: (not read: " in out.stdout and "member_objects_missing" in out.stdout, out.stdout
+    assert head in out.stdout and "local.txt" not in out.stdout, out.stdout
+    row = json.loads(runner.invoke(app, ["review", "show", str(w["author"]), rid, "--json"]).stdout)["members"][0]
+    assert row["files"] is None and row["files_unread"] == f"member_objects_missing alpha {head}", row

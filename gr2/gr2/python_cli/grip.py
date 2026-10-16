@@ -942,11 +942,12 @@ def list_review_binds(workspace: Path) -> list[tuple[str, str]]:
     return sorted(rows.items(), key=lambda r: (r[1], r[0]))
 
 
-def show_review_commit(workspace: Path, commit: str) -> dict[str, object]:
+def show_review_commit(workspace: Path, commit: str, *, migrate: bool = True) -> dict[str, object]:
     """What a bound review contains, read-only: per member the repository, the commit range (base and head), the
     title and body it was bound with, and the files its range changes. The id is the bind's own, as ``gr:<sha>``
-    or a bare sha; a commit that is not a bind is refused the way `verify` refuses it."""
-    _validate_bind_store(workspace)
+    or a bare sha; a commit that is not a bind is refused the way `verify` refuses it. ``migrate=False`` is
+    receive's read (see `_validate_bind_store`)."""
+    _validate_bind_store(workspace, migrate=migrate)
     commit = _resolve_bound(workspace, commit)
     if _is_field_tree_bind(workspace, commit):
         view = _field_tree_view(workspace, commit)
@@ -1617,7 +1618,8 @@ def _bind_commit_tree(workspace: Path, tree_sha: str, *, parent: str | None = No
     return proc.stdout.strip()
 
 
-def _validate_bind_store(workspace: Path, *, create: bool = False) -> tuple[list[str], str] | None:
+def _validate_bind_store(workspace: Path, *, create: bool = False,
+                         migrate: bool = True) -> tuple[list[str], str] | None:
     """A native root needs nothing but its own `.git` (a bind creates a ref, never a store), after
     any review binds an older gr2 left in `.grip/.git` have moved into refs (see
     `_migrate_legacy_binds`).
@@ -1633,7 +1635,10 @@ def _validate_bind_store(workspace: Path, *, create: bool = False) -> tuple[list
     up a store whose `.git` did not exist before, so a writer that then refuses can remove exactly
     those and only while nothing else has been published since; else None. An adopted root (one that
     already had its own `.git`) is never cleaned: a refused first bind there keeps the `grip.toml` and
-    the `/.grip/` exclude line that `store init` wrote, both harmless."""
+    the `/.grip/` exclude line that `store init` wrote, both harmless.
+
+    ``migrate=False`` (receive) leaves `.grip/.git` exactly as it is: receive publishes the one review
+    it fetched and moves nothing else; the next bind-touching verb migrates."""
     if not _is_native_workspace(workspace):
         legacy = _layout_grip_dir(workspace) / ".git"
         if legacy.is_dir() and _alpha_state_commits(legacy):
@@ -1651,9 +1656,11 @@ def _validate_bind_store(workspace: Path, *, create: bool = False) -> tuple[list
         _set_up_native_store(workspace)
         created = [] if had_git else sorted({entry.name for entry in workspace.iterdir()} - before)
         head = _bind_git(workspace, "rev-parse", "--verify", "--quiet", "HEAD").stdout.strip()
-        _migrate_legacy_binds(workspace)
+        if migrate:
+            _migrate_legacy_binds(workspace)
         return (created, head)
-    _migrate_legacy_binds(workspace)
+    if migrate:
+        _migrate_legacy_binds(workspace)
     return None
 
 
@@ -1971,7 +1978,7 @@ def receive_review_commit(workspace: Path, commit: str, remote: str,
     import uuid
     full, canonical = _review_transport_identity(commit, ref)
     source = _review_transport_remote(remote)
-    _validate_bind_store(workspace)
+    _validate_bind_store(workspace, migrate=False)  # a receive never moves the old store's pins
     if ref is None:
         # No spelling named: the exact v1 ref, then the exact legacy ref only when v1 is absent.
         # A v1 fault or a v1 at another target refuses; it never falls back.
@@ -2050,7 +2057,7 @@ def _fetch_received_heads(workspace: Path, commit: str, source: str) -> list[dic
     root = Path(workspace).resolve()
     want = same(source)
     rows: list[dict[str, str]] = []
-    for m in show_review_commit(workspace, commit)["members"]:
+    for m in show_review_commit(workspace, commit, migrate=False)["members"]:
         key, head = str(m["key"]), str(m["head"])
         repo = (root / str(m["path"])).resolve()
         row = {"key": key, "head": head}

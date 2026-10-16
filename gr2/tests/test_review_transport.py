@@ -16,7 +16,7 @@ except ImportError:  # older Typer uses the installed Click
     from click.utils import strip_ansi
 
 from tests.review_ref_helper import REVIEW_REF_PREFIX
-from gr2.python_cli import grip
+from gr2.python_cli import grip, next_steps
 from gr2.python_cli.app import app
 
 runner = CliRunner()
@@ -375,6 +375,33 @@ def test_receive_from_a_remote_that_is_not_the_members_fetches_nothing(handoff, 
     assert _rows(got)["member"]["status"] == "not_this_remote", got.stdout
     assert subprocess.run(["git", "cat-file", "-e", head + "^{commit}"], cwd=receiver / "member").returncode != 0
 
+
+def test_a_head_on_another_remote_names_open_and_what_still_needs_the_head(handoff, monkeypatch, tmp_path):
+    """A review published to a remote that is not the member's (a staging remote): receive says the head is not
+    there, that open reads the carried range while show --diff and stamp need the head, and names the open command,
+    which runs exactly as printed."""
+    author, receiver, remote, commit, _, _ = handoff
+    staging = tmp_path / "staging.git"
+    git(tmp_path, "init", "--bare", staging)
+    assert cli(author, monkeypatch, "publish", "gr:" + commit, "--remote", staging).exit_code == 0
+    got = cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", staging)
+    assert got.exit_code == 0, got.output
+    row = _rows(got)["member"]
+    assert row["status"] == "not_this_remote", row
+    assert row["reason"] == f"head_not_on_this_remote: its remote is {remote}; open reads the carried range; show --diff and stamp need the head there", row
+    assert row["next"] == f"gr2 review open {receiver} gr:{commit}", row
+    opened = runner.invoke(app, shlex.split(row["next"])[1:])  # the named next step runs as printed
+    assert opened.exit_code == 0, opened.output
+    lane = Path(opened.output.split("lane-dir=")[1].split()[0])
+    assert git(lane, "rev-parse", "HEAD^{tree}") == git(author / "member", "rev-parse", "HEAD^{tree}")
+    assert "head_not_fetched" in cli(receiver, monkeypatch, "stamp", receiver, "gr:" + commit).output  # as the reason says
+
+
+
+def test_the_open_line_for_a_head_on_another_remote_quotes_a_workspace_with_a_space():
+    """The printed open line splits back to the workspace path when the path has a space in it."""
+    line = next_steps._open_from_range("/x y/ws", "gr:abc")
+    assert shlex.split(line) == ["gr2", "review", "open", "/x y/ws", "gr:abc"], line
 
 def test_a_head_the_remote_does_not_serve_is_named_with_the_command_to_run(handoff, monkeypatch):
     """The author never pushed the head: receive still binds the review, and names the head it could not fetch and

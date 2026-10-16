@@ -45,7 +45,7 @@ from . import project_review
 from . import push as push_ops
 from .clone_exec import rmtree_or_refuse
 from .events import EventEmitError, EventType, emit, emit_after_outcome
-from .layout import grip_dir
+from .layout import GRIP_DIR, grip_dir
 from .root_option import ROOT_COMMIT_SUBJECT, ROOT_OPTION, ContextCommand, ReviewTargetCommand, ReviewHeadCommand, ReviewHeadTrailingCommand, ReviewOpenCommand, ReviewSubjectCommand, ReviewReaderSubjectCommand, RootOptionCommand, RootOptionalCommand
 from .gitops import (
     branch_exists,
@@ -3364,11 +3364,34 @@ def _lane_removal_refusals(workspace_root: Path, owner_unit: str, lane_name: str
                             f"until {lease.get('expires_at')}")
     repo_roots = [_lane_repo_root(workspace_root, owner_unit, lane_name, name) for name in lane_doc.get("repos", [])]
     checkout_root = lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)
+    # A lane made on a workspace with a snapshot store has a checkout root that is itself a store checkout. Its store
+    # files are not unlisted content: the root gets the checks a repo gets below, since it can hold unpushed store commits.
+    store_root = checkout_root if (checkout_root / ".git").is_dir() \
+        and checkout_root.resolve() not in {p.resolve() for p in repo_roots} else None
     if checkout_root.is_dir():
         # A lane with no recorded checkout_root keeps its clones in its record directory; the record's own files are not content.
         record = {"lane.toml", "context", "leases.json", "leases.lock"} if checkout_root.resolve() == lane_dir.resolve() else set()
+        if store_root is not None:
+            # .git and the tracked files are covered by the store checks, .gitignore is generated from .gitinclude, and
+            # the cache in GRIP_DIR holds mirrors gr2 refetches; anything else in GRIP_DIR is still named.
+            tracked = git(store_root, "ls-files", "-z").stdout.split("\0")
+            record |= {".git", ".gitignore", GRIP_DIR} | {name.split("/", 1)[0] for name in tracked if name}
+            if grip_dir(store_root).is_dir() and not grip_dir(store_root).is_symlink():
+                refusals.extend(f"lane_has_unlisted_content: {entry}" for entry in sorted(grip_dir(store_root).iterdir())
+                                if entry.name != "cache" or entry.is_symlink() or not entry.is_dir())
         refusals.extend(f"lane_has_unlisted_content: {entry}" for entry in _unlisted_entries(checkout_root, repo_roots)
                         if not (entry.parent.resolve() == checkout_root.resolve() and entry.name in record))
+    if store_root is not None:
+        # The members are checked on their own, so a member's new commits do not make the root dirty.
+        status = git(store_root, "status", "--porcelain", "--ignore-submodules=all")
+        if status.returncode != 0 or status.stdout.strip():
+            refusals.append(f"lane_has_uncommitted_work: lane-root ({store_root})")
+        for sha in git(store_root, "stash", "list", "--format=%H").stdout.split():
+            refusals.append(f"lane_has_stash: lane-root {sha}")
+        try:
+            refusals.extend(f"lane_has_unpushed_commit: lane-root {sha}" for sha in _unpushed_commits(store_root, fetch=fetch))
+        except SystemExit as exc:
+            refusals.append(f"lane_unpushed_unknown: lane-root: {exc}")
     for name in lane_doc.get("repos", []):
         path = _lane_repo_root(workspace_root, owner_unit, lane_name, name)
         if not path.exists():

@@ -88,7 +88,6 @@ Not there yet:
 
 - The full walk with **remote** PRs (`gr2 push`, `gr2 pr create`) is documented in `--help` but was not exercised in a clean environment for this README; treat those two as alpha.
 - `gr2 --help` and some verb output still say "prototype" in places; the wording is being cleaned up as verbs land.
-- `lane remove` refuses a lane made on a workspace with a snapshot store (the `store init` above): it names the lane's own store files (`.git`, `.gitignore`, `.gitinclude`, `.gitmodules`, `.grip`, `grip.toml`) as unlisted content and removes nothing. Until that is fixed the walk's last line refuses, and the lane stays.
 - The Rust `gr` (gr1) still owns `spawn`, `fleet`, and `manifest` until their gr2 ports land. Everything else — workspace sync, lanes, the multi-repo slice, its review — is gr2's job; if a verb is missing or wrong there, that is a bug worth reporting, not a reason to reach for gr1.
 
 ## Commands

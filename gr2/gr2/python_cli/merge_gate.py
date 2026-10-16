@@ -111,11 +111,11 @@ def _refresh_tracking(repo: Path, remote: str, into: str) -> dict | None:
     name = next((n for n in names if urls[n] and _url_key(urls[n], repo) == want), None)
     if name is None:
         target = "origin" if "origin" in names else names[0]
-        return {"command": f"git -C {repo} fetch --no-tags {remote} +refs/heads/{into}:refs/remotes/{target}/{into}",
+        return {"command": f"git -C {repo} fetch --no-tags --refmap= {remote} +refs/heads/{into}:refs/remotes/{target}/{into}",
                 "reason": f"no remote of this clone names {remote}"}
     spec = f"+refs/heads/{into}:refs/remotes/{name}/{into}"
     proc = gitops.run(repo, "fetch", "--no-tags", "-q", "--refmap=", name, spec, timeout=120)
-    return None if proc.returncode == 0 else {"command": f"git -C {repo} fetch --no-tags {name} {spec}",
+    return None if proc.returncode == 0 else {"command": f"git -C {repo} fetch --no-tags --refmap= {name} {spec}",
                                               "reason": "the fetch failed"}
 
 

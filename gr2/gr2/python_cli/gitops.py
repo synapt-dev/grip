@@ -526,7 +526,7 @@ def clone_repo(url: str, target_repo_root: Path, *, reference_repo_root: Path | 
         return False
     target_repo_root.parent.mkdir(parents=True, exist_ok=True)
     reference = ["--reference-if-able", str(reference_repo_root)] if reference_repo_root is not None else []
-    proc = clone(*reference, url, str(target_repo_root))
+    proc = clone(*reference, "--", url, str(target_repo_root))
     if proc.returncode != 0:
         raise SystemExit(f"failed to clone {url} -> {target_repo_root}:\n{proc.stderr or proc.stdout}")
     return True

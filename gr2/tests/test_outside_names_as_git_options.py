@@ -270,3 +270,56 @@ def test_status_refuses_an_upstream_whose_remote_part_is_an_option(two_member_ws
     toml_path.write_text(_set_member_upstream(toml_path.read_text(), "alpha", upstream))
     rc, out = _cli("store", "status")
     assert rc == 4 and "plain remote name" in out, (rc, out)
+
+
+def test_a_store_member_url_shaped_like_an_option_is_refused_by_name_where_the_members_load(
+    two_member_ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.test_store_break_attempts import _set_member_remote
+
+    marker = tmp_path / "PWNED"
+    monkeypatch.setenv("PWN_MARK", str(marker))
+    assert _cli("store", "init")[0] == 0
+    assert _cli("store", "commit", "-m", "first")[0] == 0
+    toml_path = two_member_ws / "grip.toml"
+    toml_path.write_text(_set_member_remote(toml_path.read_text(), "alpha", "origin", "--upload-pack=touch $PWN_MARK"))
+
+    for verb in (["store", "check"], ["store", "materialize"]):
+        rc, out = _cli(*verb)
+        assert not marker.exists(), f"{' '.join(verb)} ran the upload-pack command from grip.toml: rc={rc} {out}"
+        assert rc == 4 and "alpha" in out and "starts with '-'" in out, (verb, rc, out)
+
+
+def test_the_materialize_clone_reads_its_url_after_dashdash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A caller that reaches the clone without the load's refusal: the url is the repository, not an option.
+    from gr2.python_cli import gitops, grip_cli
+
+    url = "--upload-pack=touch PWNED"
+    member = {"name": "m", "path": "m", "pin": "0" * 40, "remote": url}
+    monkeypatch.setattr(grip_cli, "_grip_document", lambda root: {})
+    monkeypatch.setattr(grip_cli, "_native_members", lambda root, rev=None: [member])
+    monkeypatch.setattr(grip_cli, "_claimed_member_paths", lambda *a, **k: set())
+    monkeypatch.setattr(grip_cli, "_native_member_working_root", lambda root, member, claimed: tmp_path / "m")
+    errors: list[str] = []
+    real_clone = gitops.clone
+
+    def clone(*args, **kwargs):
+        result = real_clone(*args, **kwargs)
+        errors.append(result.stderr)
+        return result
+
+    monkeypatch.setattr(gitops, "clone", clone)
+    with pytest.raises(grip_cli.NativeStoreRefusal, match="cannot be served by origin"):
+        grip_cli._native_store_materialize.__wrapped__(tmp_path)
+    # Read as the repository, git names the url; read as an option, it names the member path as the repository.
+    assert errors and f"'{url}'" in errors[0], errors
+
+
+def test_the_member_clone_reads_its_url_after_dashdash(tmp_path: Path) -> None:
+    from gr2.python_cli import gitops
+
+    url = "--upload-pack=touch PWNED"
+    with pytest.raises(SystemExit) as exc:
+        gitops.clone_repo(url, tmp_path / "staging" / "a", reference_repo_root=tmp_path / "none")
+    # The message also echoes the url unquoted; git's own line quotes the repository it was handed.
+    assert f"'{url}'" in str(exc.value), str(exc.value)

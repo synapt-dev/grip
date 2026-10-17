@@ -5905,7 +5905,9 @@ def pr_view(
         # or review beside it would be a second subject the read ignores.
         if owner_unit is not None or review is not None:
             _refuse("--pr reads one PR by number; give it without OWNER_UNIT or --review")
-        if not repo_filter:
+        # A bare name is a member key, not a repository. Sent to gh it comes back as an unread
+        # read; refused here, it names the shape --pr needs before gh is asked anything.
+        if not repo_filter or "/" not in repo_filter:
             _refuse("--pr needs --repo OWNER/REPO; a PR number names a PR only inside one repository")
         source = {
             "source": "pr_number",
@@ -5981,6 +5983,10 @@ def pr_view(
             # change than the one that exists, which is the failure a reader cannot see.
             rows.append({"repo": repo, "number": int(number), "unread": str(exc)})
 
+    # A change with one unread member still has an answer: the members that were read. One PR
+    # read by number has no partial answer, so a failed read prints what it has and exits 1.
+    failed_read = source["source"] == "pr_number" and bool(rows) and bool(rows[0].get("unread"))
+
     if json_output:
         # The source is part of the ANSWER, not decoration. The human header prints where
         # the members came from; a bare array would leave a machine consumer unable to
@@ -5998,6 +6004,8 @@ def pr_view(
                 indent=2,
             )
         )
+        if failed_read:
+            raise typer.Exit(code=1)
         return
 
     # The machine value is a stable slug so a consumer can switch on it; the human form
@@ -6024,6 +6032,8 @@ def pr_view(
             continue
         typer.echo("\n".join(_render_pr_detail(row)))
         typer.echo("")
+    if failed_read:
+        raise typer.Exit(code=1)
 
 
 @pr_app.command("merge", cls=ReviewSubjectCommand)

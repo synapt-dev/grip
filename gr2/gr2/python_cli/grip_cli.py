@@ -505,8 +505,12 @@ def _native_members(root: Path, revision: str | None = None) -> list[dict[str, s
         if revision is not None:
             link = _store_git(root, "ls-tree", revision, "--", item["path"]).stdout.split()
             entry = link[2] if len(link) >= 3 and link[0] == "160000" else None
-            if full and entry is not None:
-                # In full mode the entry is a field-commit; the pin it records is what the document must agree with.
+            if full and entry is not None and _has_field_sidecar(root, revision):
+                # The gitlink is the member's own commit and the only pin; the document's pin line is not consulted.
+                item["pin"] = entry
+            elif full and entry is not None:
+                # A revision before the sidecar: the entry is a field-commit; the pin it records is what the document
+                # must agree with.
                 from . import member_field_tree as mft
                 try:
                     entry = mft.read(root, f"{entry}^{{tree}}")["pin"]
@@ -1823,23 +1827,74 @@ def _member_records(root: Path, member: dict[str, str]) -> list[str]:
     return sorted(trees)
 
 
-def _field_commit(root: Path, member: dict[str, str], layers: list[bytes] | None = None) -> str:
-    """The field-commit for a covered member in a full-mode workspace: its record is the pin, the member's url and
-    tracked ref, and the remote ref that covers the pin. The one the last root commit holds is kept when the record did
-    not move, so a member that did not change keeps the same field-commit id."""
+FIELDS_DIR = ".grip/fields"
+#: The sparse-checkout pattern that keeps the field sidecar out of the work tree. Readers read it from the object store.
+FIELDS_SPARSE_PATTERN = f"!/{FIELDS_DIR}/"
+
+
+def _stage_field_sidecar(root: Path, member: dict[str, str], layers: list[bytes] | None = None) -> list[str]:
+    """Stage a full-mode member's sidecar at `.grip/fields/<name>/`: the schema, the kind, the layer for the pin when no
+    remote holds it (`layers/<pin>`), and the records about the pin (`records/<pin>/<n>/`). The pin itself is the
+    gitlink and is not written here. Whatever the member's sidecar held for another pin is dropped. Returns the paths
+    staged."""
     from . import member_field_tree as mft
 
-    branch = member["upstream"].partition("/")[2]
-    link = _store_git(root, "ls-tree", "HEAD", "--", member["path"], check=False).stdout.split()
-    previous = link[2] if len(link) >= 3 and link[0] == "160000" else None
+    base = f"{FIELDS_DIR}/{member['name']}"
+    prior: set[str] = set()
+    if _store_git(root, "rev-parse", "--verify", "-q", "HEAD", check=False).returncode == 0:
+        if _has_field_sidecar(root, "HEAD"):
+            record = _field_record(root, member, "HEAD")
+            prior = set(record["records"]) if record and record["pin"] == member["pin"] else set()
+        else:
+            link = _store_git(root, "ls-tree", "HEAD", "--", member["path"], check=False).stdout.split()
+            prior = _prior_records(root, link[2] if len(link) >= 3 and link[0] == "160000" else None, member["pin"])
     # A clone holds neither the root's review refs nor the member's check ref, so the records found HERE can be fewer
     # than the ones the root already carries for this very pin. Those are kept: records about a pin are only added.
-    records = set(_member_records(root, member)) | _prior_records(root, previous, member["pin"])
-    record = dict(kind=mft.KIND_REPO, pin=member["pin"], url=member["remote"], ref=member.get("ref", "main"),
-                  covered_by="" if layers else f"refs/heads/{branch}",
-                  covered_test=0 if layers else mft.COVER_REACHABLE, layers=layers or [],
-                  records=sorted(records))
-    return mft.commit(root, record, f"field: {member['name']} @ {member['pin'][:7]}", previous)
+    records = sorted(set(_member_records(root, member)) | prior)
+    _store_git(root, "rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", base)
+    entries = [("schema", mft.PACKAGE.encode()), ("kind", bytes([mft.KIND_REPO]))]
+    if layers:
+        entries.append((f"layers/{member['pin']}", layers[-1]))
+    staged = []
+    for name, payload in entries:
+        blob = gitops.run(root, "hash-object", "-w", "--stdin", input=payload, binary=True).stdout.decode().strip()
+        staged.append((f"{base}/{name}", "100644", blob))
+    for number, tree in enumerate(records, 1):
+        listed = _store_git(root, "ls-tree", "-r", "-z", tree).stdout.split("\0")
+        for line in filter(None, listed):
+            head, path = line.split("\t", 1)
+            mode, _kind, oid = head.split()
+            staged.append((f"{base}/records/{member['pin']}/{number:07d}/{path}", mode, oid))
+    for path, mode, oid in staged:
+        _store_git(root, "update-index", "--add", "--cacheinfo", f"{mode},{oid},{path}")
+    return [path for path, _mode, _oid in staged]
+
+
+def _keep_fields_sparse(root: Path, staged: list[str]) -> None:
+    """Keep `.grip/fields/` out of the work tree. The pattern is ADDED to the sparse-checkout the root already has and
+    never replaces it; a root with none gets `/*` (every path) plus the pattern. A cone-mode sparse-checkout already
+    leaves `.grip/fields/` out unless its owner named `.grip`, and is left as it is. The paths just staged carry no
+    skip-worktree bit yet (a fresh index entry), so they are given one. `git sparse-checkout disable` brings the files
+    back to disk and changes no answer: every reader reads the object store."""
+    enabled = _store_git(root, "config", "--bool", "core.sparseCheckout", check=False).stdout.strip() == "true"
+    cone = _store_git(root, "config", "--bool", "core.sparseCheckoutCone", check=False).stdout.strip() == "true"
+    if not (enabled and cone):
+        target = Path(_store_git(root, "rev-parse", "--git-path", "info/sparse-checkout").stdout.strip())
+        target = target if target.is_absolute() else root / target
+        lines = target.read_text(encoding="utf-8").splitlines() if enabled and target.exists() else ["/*"]
+        if FIELDS_SPARSE_PATTERN not in lines:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("\n".join([*lines, FIELDS_SPARSE_PATTERN]) + "\n", encoding="utf-8")
+        if not enabled:
+            _store_git(root, "config", "core.sparseCheckoutCone", "false")
+            _store_git(root, "config", "core.sparseCheckout", "true")
+    if staged:
+        _store_git(root, "update-index", "--skip-worktree", "--", *staged)
+
+
+def _has_field_sidecar(root: Path, revision: str) -> bool:
+    """True when the root at ``revision`` holds the field sidecar; a revision without it records fields the old way."""
+    return _store_git(root, "cat-file", "-e", f"{revision}:{FIELDS_DIR}", check=False).returncode == 0
 
 
 def _prior_records(root: Path, previous: str | None, pin: str) -> set[str]:
@@ -1884,6 +1939,8 @@ def _field_record(root: Path, member: dict[str, str], revision: str = "HEAD") ->
     link = _store_git(root, "ls-tree", revision, "--", member["path"], check=False).stdout.split()
     if len(link) < 3 or link[0] != "160000":
         return None
+    if _has_field_sidecar(root, revision):
+        return _sidecar_record(root, member, revision, link[2])
     try:
         return mft.read(root, f"{link[2]}^{{tree}}")
     except (mft.FieldTreeError, RuntimeError, subprocess.SubprocessError, OSError) as exc:
@@ -1892,6 +1949,34 @@ def _field_record(root: Path, member: dict[str, str], revision: str = "HEAD") ->
         shallow = str(exc).startswith("git ") and not isinstance(exc, mft.MissingLocally)
         hint = "; a shallow clone does not carry it, so run `git fetch --unshallow`" if shallow else ""
         raise NativeStoreRefusal(f"{member['name']} field record cannot be read: {exc}{hint}", 4) from exc
+
+
+def _sidecar_record(root: Path, member: dict[str, str], revision: str, pin: str) -> dict:
+    """The member's record from the sidecar at ``revision``: the pin is the gitlink, the url and ref are grip.toml's,
+    the remote ref that covers the pin is derived from the upstream, and the layer and records are the ones keyed by
+    the pin. Entries keyed by another commit are ignored."""
+    from . import member_field_tree as mft
+
+    base = f"{revision}:{FIELDS_DIR}/{member['name']}"
+    schema = _store_git(root, "cat-file", "blob", f"{base}/schema", check=False)
+    if schema.returncode or schema.stdout != mft.PACKAGE:
+        raise NativeStoreRefusal(f"{member['name']} has no {mft.PACKAGE} record under {FIELDS_DIR}/{member['name']}", 4)
+    layers: list[bytes] = []
+    layer = f"{base}/layers/{pin}"
+    size = _store_git(root, "cat-file", "-s", layer, check=False)
+    if size.returncode == 0:
+        if int(size.stdout) > mft.MAX_LAYER_BYTES:
+            raise NativeStoreRefusal(f"{member['name']} layer is {size.stdout.strip()} bytes, over the "
+                                     f"{mft.MAX_LAYER_BYTES} a layer may carry", 4)
+        layers = [gitops.run(root, "cat-file", "blob", layer, binary=True).stdout]
+        if not layers[0].startswith(mft.BUNDLE_HEADERS):
+            raise NativeStoreRefusal(f"{member['name']} layer for {pin[:12]} is not a git bundle", 4)
+    listed = _store_git(root, "ls-tree", f"{base}/records/{pin}", check=False).stdout.splitlines()
+    records = [line.split()[2] for line in listed if line.split()[1:2] == ["tree"]]
+    branch = member["upstream"].partition("/")[2]
+    return dict(schema=mft.PACKAGE, kind=mft.KIND_REPO, pin=pin, url="", ref=member.get("ref", ""),
+                covered_by="" if layers else f"refs/heads/{branch}", layers=layers, records=records,
+                ref_defaulted=False, covered_test=0 if layers else mft.COVER_REACHABLE)
 
 
 def _recorded_pin(root: Path, member: dict[str, str], full: bool, revision: str = "HEAD") -> str | None:
@@ -1975,7 +2060,7 @@ def _member_record(root: Path, path: str, committed: str | None, full: bool) -> 
         return committed, "committed grip.toml"
     link = _store_git(root, "ls-tree", "HEAD", "--", path, check=False).stdout.split()
     entry = link[2] if len(link) >= 3 and link[0] == "160000" else None
-    if entry is not None and full:
+    if entry is not None and full and not _has_field_sidecar(root, "HEAD"):
         from . import member_field_tree as mft
         try:
             entry = mft.read(root, f"{entry}^{{tree}}")["pin"]
@@ -2283,7 +2368,7 @@ def _native_store_commit(
         head = _store_git(root, "rev-parse", "--verify", "HEAD", check=False)
         committed = set(_store_git(root, "ls-tree", "-r", "--name-only", "-z", "HEAD").stdout.split("\0")) if head.returncode == 0 else set()
         for path in dict.fromkeys(["grip.toml", *[m["path"] for m in changed], *filter(None, indexed)]):
-            if path in ENGINE_WRITTEN_FILES:
+            if path in ENGINE_WRITTEN_FILES or path.startswith(f"{FIELDS_DIR}/"):
                 continue   # written by this verb from grip.toml; the declaration cannot omit or ignore it
             if not path_is_included(declaration, path):
                 raise NativeStoreRefusal(f"{path} is not included by .gitinclude; update the declaration before store commit", 4)
@@ -2306,13 +2391,13 @@ def _native_store_commit(
         (root / ".gitmodules").unlink(missing_ok=True)
     if has_declaration:
         _store_git(root, "add", ".gitinclude")
-    carried: list[str] = []   # field-commits the grip commit carries as parents (full mode)
+    sidecar: list[str] = []   # the field sidecar paths staged (full mode)
     for member in changed:
-        entry = member["pin"]
         if full:
-            entry = _field_commit(root, member, layers_by_member.get(member["name"], []))
-            carried.append(entry)
-        _store_git(root, "update-index", "--add", "--cacheinfo", f"160000,{entry},{member['path']}")
+            sidecar += _stage_field_sidecar(root, member, layers_by_member.get(member["name"], []))
+        _store_git(root, "update-index", "--add", "--cacheinfo", f"160000,{member['pin']},{member['path']}")
+    if full:
+        _keep_fields_sparse(root, sidecar)
     if full and changed:
         _keep_member_paths_owned(root, changed)
     # Registered here, once every member's gitlink is in the index (init matches its paths against the index), and
@@ -2338,10 +2423,7 @@ def _native_store_commit(
     branch = _store_git(root, "symbolic-ref", "--short", "-q", "HEAD", check=False).stdout.strip()
     shadow_was = (_store_git(root, "rev-parse", "--verify", "-q", _shadow_ref_for(branch), check=False).stdout.strip()
                   if branch else "")
-    if full:
-        _commit_with_carried(root, message, carried)
-    else:
-        _store_git(root, *_commit_identity_args(root), "commit", "--no-verify", "-m", message)
+    _store_git(root, *_commit_identity_args(root), "commit", "--no-verify", "-m", message)
     if branch:
         _name_shadow(root, shadow_was)
     return True

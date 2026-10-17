@@ -1020,13 +1020,9 @@ def _repo_slug_from_url(url: str, fallback_name: str) -> str:
 
     A github.com URL that names no owner/repo (no path, only ".git", one segment) falls back
     to the bare name: an empty slug would reach gh as --repo '', which gh reads as no --repo
-    and answers for the repository in the current directory."""
-    cleaned = url.strip()
-    for prefix in ("git@github.com:", "https://github.com/"):
-        if cleaned.startswith(prefix):
-            slug = cleaned[len(prefix):].removesuffix(".git")
-            return slug if _GITHUB_SLUG.fullmatch(slug) else fallback_name
-    return fallback_name
+    and answers for the repository in the current directory. Trailing slashes are dropped before
+    ".git", so ".../owner/repo.git/" names owner/repo as ".../owner/repo.git" does."""
+    return _github_slug(url.strip().rstrip("/")) or fallback_name
 
 
 def _merge_verification_targets(

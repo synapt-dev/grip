@@ -1386,6 +1386,11 @@ def test_a_github_url_that_names_no_owner_repo_falls_back_to_the_bare_name(url: 
         "https://github.com/example/product",
         "git@github.com:example/product.git",
         " git@github.com:example/product\n",
+        "https://github.com/example/product/",
+        "https://github.com/example/product.git/",
+        " https://github.com/example/product.git/\n",
+        "ssh://git@github.com/example/product.git",
+        "ssh://git@github.com/example/product/",
     ],
 )
 def test_a_github_url_that_names_owner_repo_gives_that_slug(url: str) -> None:
@@ -1430,3 +1435,18 @@ def test_pr_create_for_a_github_url_without_owner_repo_hands_gh_the_bare_name(
 
     # The adapter records the first request and then raises, so one request is all this row reads.
     assert [request.repo for request in adapter.created] == ["app"], result.output
+
+
+def test_pr_create_for_a_github_url_with_a_trailing_slash_hands_gh_owner_repo(tmp_path: Path, monkeypatch) -> None:
+    workspace_root = _pr_create_lane(tmp_path)
+    spec_path = workspace_root / ".grip" / "workspace_spec.toml"
+    app_url = next(
+        repo["url"] for repo in lane_proto.load_workspace_spec(workspace_root)["repos"] if repo["name"] == "app"
+    )
+    spec_path.write_text(spec_path.read_text().replace(app_url, "https://github.com/acme/api/"))
+    adapter = _NeverCreateAdapter()
+    monkeypatch.setattr(app_module.platform_ops, "get_platform_adapter", lambda name="github": adapter)
+
+    result = runner.invoke(app, ["pr", "create", str(workspace_root), "atlas", "feat-router"])
+
+    assert [request.repo for request in adapter.created] == ["acme/api"], result.output

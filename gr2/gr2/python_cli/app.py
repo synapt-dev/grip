@@ -43,6 +43,7 @@ from . import prune as prune_ops
 from . import target as target_ops
 from . import project_review
 from . import push as push_ops
+from . import read_review
 from .clone_exec import rmtree_or_refuse
 from .events import EventEmitError, EventType, emit, emit_after_outcome
 from .layout import GRIP_DIR, grip_dir
@@ -2194,8 +2195,9 @@ def add_cmd(
     target = (repo_path or Path.cwd()).resolve()
     try:
         gitops.require_git_repo(target, "add")
+        read_review.refuse_if_read_only(target, "add")
         result = add_ops.stage_files(target, paths, include_bytecode=include_bytecode)
-    except (add_ops.AddError, gitops.OutsideRepoError, gitops.GitMissingError) as exc:
+    except (add_ops.AddError, gitops.OutsideRepoError, gitops.GitMissingError, read_review.ReadReviewError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     if result.staged_files:
@@ -2276,8 +2278,9 @@ def commit_cmd(
     target = (repo_path or Path.cwd()).resolve()
     try:
         gitops.require_git_repo(target, "commit")
+        read_review.refuse_if_read_only(target, "commit")
         receipt = commit_ops.create_commit(target, message, amend=amend)
-    except (commit_ops.CommitError, gitops.OutsideRepoError, gitops.GitMissingError) as exc:
+    except (commit_ops.CommitError, gitops.OutsideRepoError, gitops.GitMissingError, read_review.ReadReviewError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     action = "Amended" if receipt.amended else "Committed"
@@ -2302,13 +2305,14 @@ def push_cmd(
     """Push one branch and verify its immutable remote commit."""
     target = (repo_path or Path.cwd()).resolve()
     try:
+        read_review.refuse_if_read_only(target, "push")
         receipt = push_ops.push_current_branch(
             target,
             remote=remote,
             set_upstream=set_upstream,
             force_with_lease=force_with_lease,
         )
-    except push_ops.PushError as exc:
+    except (push_ops.PushError, read_review.ReadReviewError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(
@@ -4034,6 +4038,31 @@ def review_checkout_pr(
         typer.echo(json.dumps(payload, indent=2))
     else:
         typer.echo(json.dumps(payload, indent=2))
+
+
+@review_app.command("read-pr")
+def review_read_pr(
+    owner_repo: str = typer.Argument(..., metavar="OWNER/REPO", help="The repo whose PR to read; it need not be in your workspace"),
+    pr_number: int = typer.Argument(..., help="The PR number"),
+    dest: Optional[Path] = typer.Option(None, "--dir", help="Where to open it (default ./<repo>-pr<N>); must not exist"),
+    url: Optional[str] = typer.Option(None, "--url", help="Fetch from this URL instead of https://github.com/OWNER/REPO.git"),
+) -> None:
+    """Open a PR of any repo for reading: fetch its head and base into a fresh directory and print the diff summary.
+
+    The directory is read-only to gr2: add, commit and push refuse there. To work on a member of your workspace,
+    use `review checkout-pr`."""
+    target = dest or Path.cwd() / f"{owner_repo.rsplit('/', 1)[-1]}-pr{pr_number}"
+    try:
+        opened = read_review.open_read_review(owner_repo, pr_number, target, url=url)
+    except read_review.ReadReviewError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Opened {owner_repo}#{pr_number} read-only at {opened.path}")
+    typer.echo(f"head {opened.head}")
+    typer.echo(f"base {opened.base}")
+    if opened.stat:
+        typer.echo(opened.stat)
+    typer.echo(f"Read the full diff: git -C {opened.path} diff {opened.base}...{opened.head}")
 
 
 class _ReviewSelectRefused(typer.BadParameter):

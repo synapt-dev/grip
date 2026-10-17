@@ -311,10 +311,10 @@ def test_s_from_a_subdirectory_of_the_workspace(w, monkeypatch):
 # Each refusal a bare publish can raise -> the start of the next it prints, or None where no command is safe.
 PUBLISH_NEXT_TABLE = {
     "unresolved_merge": "gr2 review publish",
-    "no_branch": "gr2 review publish",
+    "no_branch": None,
     "head_moved_since_pin": "gr2 review pin",
-    "member_clone_missing": "gr2 workspace materialize",
-    "review_remote_required": "gr2 review publish",
+    "member_clone_missing": None,
+    "review_remote_required": None,
     "feature_moved": "gr2 review pin",
     "remote_unreadable": None,
     "remote_credentials": None,
@@ -335,9 +335,51 @@ def test_a4t_every_publish_refusal_names_its_next_or_a_deliberate_null(w, monkey
         assert nxt is None and "check: " in out.stderr, (refusal, nxt, out.stderr)
         return
     assert nxt, f"{refusal} lost its next"
+    assert "<" not in nxt, f"{refusal}'s next carries a placeholder and cannot run as printed: {nxt}"
     argv = shlex.split(nxt.split("   #", 1)[0])
     assert " ".join(argv).startswith(want) and Path(argv[3]).resolve() == w["author"].resolve(), (refusal, argv)
     assert f"next: {nxt}" in out.stderr, out.stderr
+
+
+def _run_next(out):
+    """The refusal's `next`, run as printed (the part before the comment) through the same CLI."""
+    nxt = receipt(out)["next"]
+    assert nxt and "<" not in nxt and f"next: {nxt}" in out.stderr, (nxt, out.stderr)
+    argv = shlex.split(nxt.split("   #", 1)[0])
+    assert argv[0] == "gr2", argv
+    return nxt, runner.invoke(app, argv[1:])
+
+
+def test_a4m_member_clone_missing_says_what_to_restore_and_publish_completes_after_it_exit_0(w):
+    # Not `gr2 workspace materialize`: it applies the whole workspace spec (refusing past 3 operations without --yes)
+    # and cannot know an unpushed pinned head, so as printed it never reached exit 0. A deliberate null + check.
+    import shutil
+    beta = w["members"]["beta"]
+    git(beta["repo"], "push", beta["remote"], "feat")
+    shutil.rmtree(beta["repo"])
+    out = publish(w["review"])
+    assert out.exit_code == 2 and receipt(out)["refused"].startswith("member_clone_missing"), out.output
+    assert receipt(out)["next"] is None and "check: the clone named in refused: is gone" in out.stderr, out.output
+    git(w["author"], "clone", "--no-local", "--branch", "feat", beta["remote"], "beta")
+    assert git(beta["repo"], "rev-parse", "HEAD") == beta["head"]
+    again = publish(w["review"])
+    assert again.exit_code == 0 and receipt(again)["complete"], again.output
+
+
+def test_a4h_head_moved_since_pin_runs_its_printed_repin_then_publishes_the_new_id_exit_0(w):
+    beta = w["members"]["beta"]
+    (beta["repo"] / "later.txt").write_text("after the pin\n")
+    git(beta["repo"], "add", "later.txt")
+    git(beta["repo"], "commit", "-m", "later")
+    out = publish(w["review"])
+    assert out.exit_code == 2 and receipt(out)["refused"].startswith("head_moved_since_pin"), out.output
+    nxt, ran = _run_next(out)
+    assert ran.exit_code == 0, (nxt, ran.output)
+    new = next(t for t in ran.stdout.split() if t.startswith("gr:"))
+    assert new != w["review"], ran.stdout
+    again = publish(new)
+    assert again.exit_code == 0 and receipt(again)["complete"], (nxt, again.output)
+    assert tip(beta["remote"], "refs/heads/feat") == git(beta["repo"], "rev-parse", "HEAD")
     out = publish(w["review"])
     assert out.exit_code == 0, out.output
     for m in w["members"].values():

@@ -100,25 +100,27 @@ def publish_unresolved_merge(workspace: str, review: str, path: str) -> str:
 # check instead (PUBLISH_REFUSED_CHECK). A refusal in neither table prints next: null and nothing to check.
 PUBLISH_REFUSED_NEXT = {
     "unresolved_merge": lambda ws, rid, key, clone, seen: publish_unresolved_merge(ws, rid, clone[len(ws.rstrip("/")) + 1:]),
-    "no_branch": lambda ws, rid, key, clone, seen: (
-        f"gr2 review publish {_shown(ws)} {_shown(rid)}   # after git -C {_shown(clone)} switch -c <branch> "
-        f"puts the pinned commit on a branch"),
+    "no_branch": None,
     "head_moved_since_pin": lambda ws, rid, key, clone, seen: (
         f"gr2 review pin {_shown(ws)}   # pins the clones' current heads as a new review; publish that gr: id. "
         f"To publish {_shown(rid)} instead, move {_shown(clone)} back to the pinned commit"),
-    "member_clone_missing": lambda ws, rid, key, clone, seen: (
-        f"gr2 workspace materialize {_shown(ws)}   # restores the {_shown(key)} clone; then "
-        f"gr2 review publish {_shown(ws)} {_shown(rid)}"),
-    "review_remote_required": lambda ws, rid, key, clone, seen: (
-        f"gr2 review publish {_shown(ws)} {_shown(rid)} --remote <https-url>   # {_shown(key)}'s recorded remote is "
-        f"neither HTTPS nor an absolute path; --remote sends the review ref only, push the heads yourself"),
+    "member_clone_missing": None,
+    "review_remote_required": None,
     "feature_moved": lambda ws, rid, key, clone, seen: (
         f"gr2 review pin {_shown(ws)}   # after git -C {_shown(clone)} pull --no-rebase brings in the remote's "
         f"commits ({_shown(seen)}); publish the new gr: id"),
     "remote_unreadable": None,
     "remote_credentials": None,
 }
+# A `next` runs as printed, so it never carries a `<placeholder>`: a value the review does not record is a check.
 PUBLISH_REFUSED_CHECK = {
+    "no_branch": ("check: name a branch for the pinned commit (the review records the base it targets, not the "
+                  "feature branch): git -C <clone> switch -c <branch>, then rerun gr2 review publish"),
+    "member_clone_missing": ("check: the clone named in refused: is gone, and with it any head not yet pushed; restore "
+                             "it at that path with the pinned head (gr2 review show prints it) on a branch, then "
+                             "rerun gr2 review publish"),
+    "review_remote_required": ("check: pass --remote <https url of the review remote>; the member's recorded remote "
+                               "is neither HTTPS nor an absolute path, and --remote sends the review ref only"),
     "remote_unreadable": "check: the member's recorded remote URL, the network, and your access to it; then rerun",
     "remote_credentials": "check: the recorded remote carries a credential; pin again from a clone whose remote has none",
 }

@@ -168,13 +168,26 @@ def update(workspace: Path, review_id: str | None = None, into: str | None = Non
         if proc.returncode == 0:
             row.update(state="merged", head=_head(repo))
             merged.append(key)
-        elif merge_in_progress(repo):
-            row.update(state="conflict", conflicts=_conflicts(repo), head=_head(repo))
+        elif conflicts := _conflicts(repo):
+            row.update(state="conflict", conflicts=conflicts, head=_head(repo))
             conflicted = True
         else:
+            # Not a conflict: no path is unmerged. A refusal that still left MERGE_HEAD (a pre-merge-commit hook
+            # that exits 1) is aborted first, so this member is as it was too.
+            if merge_in_progress(repo):
+                gitops.run(repo, "merge", "--abort")
+            # An earlier member left in conflict is aborted too, so exit 2 is true: every clone is as it was.
+            aborted = [r["key"] for r in receipt["members"] if r.get("state") == "conflict"
+                       and not gitops.run(repos[r["key"]], "merge", "--abort").returncode]
             restore()
+            for r in receipt["members"]:
+                if r["key"] in aborted:
+                    r.update(state="restored", conflicts=[], head=_head(repos[r["key"]]))
+            receipt["restored"] += aborted
             why = f"merge_failed: {key}: {(proc.stderr or proc.stdout).strip()}"
-            return done(EXIT_PARTIAL if merged else EXIT_REFUSED, why)
+            # A member whose abort failed is still in conflict, so exit 2 would be false: it is 4.
+            still = merged or any(r.get("state") == "conflict" for r in receipt["members"])
+            return done(EXIT_PARTIAL if still else EXIT_REFUSED, why)
     if conflicted:
         return done(EXIT_CONFLICT)
 

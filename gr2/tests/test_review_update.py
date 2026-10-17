@@ -542,3 +542,74 @@ def test_u30_a_merged_member_whose_restore_fails_on_a_merge_failure_stays_merged
     assert r["merged"] == ["alpha"] and "alpha" not in r.get("restored", []), r
     assert r["refused"] and r["refused"].startswith("merge_failed: beta:"), r
     assert out.exit_code == 4, out.output
+
+
+def test_u24_a_refusing_pre_merge_commit_hook_is_a_merge_failure_not_a_conflict(two):
+    """Beta's pre-merge-commit hook exits 1 after alpha merged. Git stops before the commit and leaves MERGE_HEAD,
+    but no path is unmerged, so it is a merge failure: beta's merge is aborted, alpha's undone, every clone is as
+    it was (no MERGE_HEAD left in beta) and the exit is 2."""
+    for name in two["members"]:
+        move_main(two, name)
+    beta = two["members"]["beta"]["repo"]
+    hook = beta / ".git" / "hooks" / "pre-merge-commit"
+    hook.write_text("#!/bin/sh\necho hook says no >&2\nexit 1\n")
+    hook.chmod(0o755)
+    before = {n: clone_state(m["repo"]) for n, m in two["members"].items()}
+    out = update(two)
+    r = receipt(out)
+    assert r["refused"] and r["refused"].startswith("merge_failed: beta:"), r
+    assert {n: clone_state(m["repo"]) for n, m in two["members"].items()} == before, "a refusal moves no clone"
+    assert not (beta / ".git" / "MERGE_HEAD").exists(), "the refused merge is aborted"
+    assert out.exit_code == 2 and r["merged"] == [] and r["restored"] == ["alpha"], r
+
+
+def test_u27_a_conflict_on_alpha_then_a_hook_refusal_on_beta_aborts_alpha_too(two):
+    """Alpha conflicts on shared.txt, then beta's pre-merge-commit hook exits 1. Exit 2 means nothing moved, so
+    alpha's conflicted merge is aborted as well: no MERGE_HEAD, no unmerged path, and the receipt names alpha."""
+    alpha = conflict(two, "alpha")
+    move_main(two, "beta")
+    beta = two["members"]["beta"]["repo"]
+    hook = beta / ".git" / "hooks" / "pre-merge-commit"
+    hook.write_text("#!/bin/sh\necho hook says no >&2\nexit 1\n")
+    hook.chmod(0o755)
+    before = {n: clone_state(m["repo"]) for n, m in two["members"].items()}
+    out = update(two)
+    r = receipt(out)
+    assert not (alpha / ".git" / "MERGE_HEAD").exists(), "alpha's conflicted merge is aborted"
+    assert git(alpha, "diff", "--name-only", "--diff-filter=U") == "", "no unmerged path is left in alpha"
+    assert {n: clone_state(m["repo"]) for n, m in two["members"].items()} == before, "a refusal moves no clone"
+    assert r["refused"] and r["refused"].startswith("merge_failed: beta:"), r
+    assert out.exit_code == 2 and r["merged"] == [] and r["restored"] == ["alpha"], r
+    assert r["members"][0]["state"] == "restored", r
+
+
+def test_u29_a_conflict_on_alpha_whose_abort_fails_stays_in_conflict_and_the_exit_is_4(two):
+    """Alpha conflicts on shared.txt, then beta's pre-merge-commit hook takes alpha's index.lock and exits 1, so
+    alpha's merge --abort fails. Alpha is still in conflict, so the exit is 4, not 2, and alpha is not restored."""
+    alpha = conflict(two, "alpha")
+    move_main(two, "beta")
+    beta = two["members"]["beta"]["repo"]
+    lock = alpha / ".git" / "index.lock"
+    hook = beta / ".git" / "hooks" / "pre-merge-commit"
+    hook.write_text(f"#!/bin/sh\n: > '{lock}'\necho hook says no >&2\nexit 1\n")
+    hook.chmod(0o755)
+    try:
+        out = update(two)
+    finally:
+        lock.unlink(missing_ok=True)
+    r = receipt(out)
+    assert (alpha / ".git" / "MERGE_HEAD").exists(), "alpha's abort failed, so its merge is still in progress"
+    assert r["members"][0]["state"] == "conflict", r
+    assert "alpha" not in r["restored"], r
+    assert r["refused"] and r["refused"].startswith("merge_failed: beta:"), r
+    assert out.exit_code == 4 and r["merged"] == [], r
+
+
+def test_u25_control_a_content_conflict_on_beta_is_still_a_conflict(two):
+    move_main(two, "alpha")
+    repo = conflict(two, "beta")
+    out = update(two)
+    r = receipt(out)
+    assert out.exit_code == 3 and r["refused"] is None, r
+    assert (r["members"][1]["state"], r["members"][1]["conflicts"]) == ("conflict", ["shared.txt"]), r
+    assert (repo / ".git" / "MERGE_HEAD").exists(), "a conflict is left for the author to resolve"

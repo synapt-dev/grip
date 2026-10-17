@@ -9,6 +9,7 @@ import tomllib
 from pathlib import Path
 
 from .events import EventType, emit, emit_after_outcome
+from .next_steps import _shown
 from . import gitops
 
 
@@ -844,7 +845,7 @@ def _report_unbound(
             + ", ".join(ignored)
             + " — consent is a local record on the host, never inside the hooks table"
         )
-    print(f"bind: gr2 hooks trust {ctx.repo_name}")
+    print(f"bind: gr2 hooks trust {_shown(ctx.repo_name)}")
 
 
 def run_lifecycle_stage(

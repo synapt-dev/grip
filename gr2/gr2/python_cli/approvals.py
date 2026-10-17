@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import approval_schema, gitops, grip
+from .next_steps import _shown
 
 PREFIX = "refs/dev.synapt.grip/__approvals__/v1/"
 SCHEMA = approval_schema.PACKAGE
@@ -151,14 +152,14 @@ def review_open_lane(lane: Path) -> tuple[Path, str, dict[str, Path]] | None:
         raise ApprovalRefused(f"approval_lane_names_no_workspace: {lane} was opened by an older gr2 and does not name "
                               "the workspace it was opened from",
                               next_step=f"next: open the review again, then stamp the new lane: "
-                                        f"gr2 review open <your-workspace> gr:{marker['gr_commit']} --lane-dir <new-lane>, "
+                                        f"gr2 review open <your-workspace> {_shown('gr:' + str(marker['gr_commit']))} --lane-dir <new-lane>, "
                                         "then gr2 review stamp <new-lane>")
     if not Path(marker["workspace_root"]).is_absolute():
         raise ApprovalRefused(f"approval_lane_workspace_not_absolute: {lane} names the workspace "
                               f"{marker['workspace_root']!r}, which is not absolute and would resolve against the "
                               "current directory; review open writes it absolute, so this marker was edited by hand or written elsewhere",
                               next_step=f"next: open the review again, then stamp the new lane: "
-                                        f"gr2 review open <your-workspace> gr:{marker['gr_commit']} --lane-dir <new-lane>, "
+                                        f"gr2 review open <your-workspace> {_shown('gr:' + str(marker['gr_commit']))} --lane-dir <new-lane>, "
                                         "then gr2 review stamp <new-lane>")
     try:
         members = ({rows[0]["key"]: lane} if len(rows) == 1
@@ -190,11 +191,12 @@ def _context(workspace: Path, review_id: str, member_dirs: dict[str, Path] | Non
             repo = member_dirs.get(m["key"])
             if repo is None:
                 keys = [r["key"] for r in view["members"]]
+                from . import next_steps
                 raise ApprovalRefused(
                     f"approval_lane_partial: this lane holds {', '.join(sorted(member_dirs))}; the review has "
                     f"{', '.join(keys)}",
-                    next_step=f"next: open the whole review and stamp that lane: gr2 review open {workspace} "
-                              f"gr:{rid} --lane-dir <new-lane>, then gr2 review stamp <new-lane>")
+                    next_step=f"next: open the whole review and stamp that lane: gr2 review open {next_steps._shown(workspace)} "
+                              f"{next_steps._shown('gr:' + rid)} --lane-dir <new-lane>, then gr2 review stamp <new-lane>")
             if merge_gate._toplevel(repo) != repo.resolve():
                 raise ApprovalRefused(f"approval_member_repo_mismatch: {m['key']}")
             repo = repo.resolve()

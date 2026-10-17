@@ -388,3 +388,54 @@ def test_an_unloadable_bound_lane_without_a_usable_worktree_does_not_hold_its_la
     made = _branch(repo, "other")
     assert made.exit_code == 0, made.output
     assert _git(repo, "branch", "--show-current") == "other"
+
+
+def test_the_lane_named_in_the_refusal_is_quoted_when_its_directories_hold_shell_text(tmp_path: Path) -> None:
+    # Rule: the unit and lane come from the lane doc's directory names, not from the person typing `gr2 branch`,
+    # so the printed lane create quotes them: shlex.split gives the unit as one argument, and the line run by a
+    # shell (gr2 stubbed) starts nothing the directory names hold.
+    from gr2.prototypes import lane_workspace_prototype as lanes
+    import subprocess
+
+    ws, _repos = _lane(tmp_path)
+    repo = _plain(ws / "solo-repo")
+    unit, lane = "u; touch MARKU", "l; touch MARKL"
+    path = lanes.lane_file(ws, unit, lane)
+    path.parent.mkdir(parents=True)
+    path.write_text(f'lane_kind = "bound"\nrepos = ["solo"]\nbound_worktree = "{repo}"\n')
+    moved = _branch(repo, "other")
+    assert moved.exit_code == 2, moved.output
+    assert f"lane {shlex.quote(f'{unit}/{lane}')}," in moved.output, moved.output
+    printed = moved.output.split("new lane: ", 1)[1].strip().replace("<workspace>", str(ws)).replace("<lane>", "next")
+    argv = shlex.split(printed)
+    assert argv[:6] == ["gr2", "lane", "create", str(ws), unit, "next"], printed
+    assert argv[-2:] == ["--branch", "other"], printed
+    ran = subprocess.run(["bash", "-c", "gr2() { :; }\n" + printed], cwd=tmp_path, capture_output=True, text=True)
+    assert ran.returncode == 0, ran.stderr
+    assert not (tmp_path / "MARKU").exists() and not (tmp_path / "MARKL").exists(), printed
+    assert list(tmp_path.glob("MARK*")) == [], printed
+
+
+def test_the_member_key_in_the_refusal_is_quoted_when_the_lane_record_holds_shell_text(tmp_path: Path) -> None:
+    # Rule: the `--repos` key comes from the lane record, not from the person typing `gr2 branch`, and a plain
+    # member key may hold ';' and a space (only separators, NUL and newline are refused), so the printed lane
+    # create quotes it: shlex.split gives the key as one argument, and the line run by a shell starts nothing.
+    from gr2.prototypes import lane_workspace_prototype as lanes
+    import subprocess
+
+    ws = tmp_path / "ws"  # a spec workspace (no native root), where the refusal names --repos
+    (ws / ".grip").mkdir(parents=True)
+    (ws / ".grip" / "workspace_spec.toml").write_text('schema_version = 1\nworkspace_name = "m"\n')
+    repo = _plain(ws / "solo-repo")
+    key = "s; touch MARKK #"
+    path = lanes.lane_file(ws, "u", "l")
+    path.parent.mkdir(parents=True)
+    path.write_text(f'lane_kind = "bound"\nrepos = ["{key}"]\nbound_worktree = "{repo}"\n')
+    moved = _branch(repo, "other")
+    assert moved.exit_code == 2, moved.output
+    printed = moved.output.split("new lane: ", 1)[1].strip().replace("<workspace>", str(ws)).replace("<lane>", "next")
+    argv = shlex.split(printed)
+    assert argv[6:] == ["--repos", key, "--branch", "other"], printed
+    ran = subprocess.run(["bash", "-c", "gr2() { :; }\n" + printed], cwd=tmp_path, capture_output=True, text=True)
+    assert ran.returncode == 0, ran.stderr
+    assert list(tmp_path.glob("MARK*")) == [], printed

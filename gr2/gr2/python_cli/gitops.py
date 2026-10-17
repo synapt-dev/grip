@@ -4,6 +4,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from . import next_steps
+
 
 _SSH_GITHUB_PREFIX = "git@github.com:"
 _HTTPS_GITHUB_PREFIX = "https://github.com/"
@@ -588,7 +590,7 @@ def checkout_declared_pin(repo_root: Path, pin: str, *, member: str) -> None:
             raise SystemExit(
                 f"member '{member}' declares pin {pin}, the clone cannot reach that commit, and "
                 f"fetching it by sha from origin did not provide it. Try "
-                f"`git -C {repo_root} fetch --depth 1 origin -- {pin}` by hand to see why. This verb "
+                f"`git -C {next_steps._shown(repo_root)} fetch --depth 1 origin -- {next_steps._shown(pin)}` by hand to see why. This verb "
                 "will not leave the member on its default branch instead: that is a commit the "
                 "root never declared."
             )

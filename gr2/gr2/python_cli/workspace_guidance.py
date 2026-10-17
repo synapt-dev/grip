@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from .layout import grip_dir
+from .next_steps import _shown
 
 GR1_ONLY_NEXT_STEP = (
     "This workspace is still in gr1 format. Run `gr2 workspace migrate-gr1 .` "
@@ -51,7 +52,7 @@ def missing_workspace_spec_message(workspace_root: Path) -> str:
 def workspace_init_command(target: object = "") -> str:
     """The one place a verb's advice spells the init command (a structural test holds every other text to it), so
     whether that advice suits the path is decided once, in `init_unless_inside_workspace`."""
-    return f"`gr2 workspace init {target}`" if str(target) else "`gr2 workspace init`"
+    return f"`gr2 workspace init {_shown(target)}`" if str(target) else "`gr2 workspace init`"
 
 
 def inside_workspace_sentence(path: Path, enclosing: Path) -> str:

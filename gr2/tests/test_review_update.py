@@ -341,3 +341,38 @@ def test_u17_a_bare_update_from_the_workspace_resolves_the_one_pinned_review(one
     r = receipt(out)
     assert r["review"] == one["review"] and r["new_review"], r
     assert parents(one["members"]["alpha"]["repo"]) == [one["members"]["alpha"]["head"], tip]
+
+
+def test_u19_a_pin_refused_after_members_merged_exits_4_and_names_what_moved(two, monkeypatch):
+    """The members merged, then the pin was refused: that is exit 4 (partial), not exit 2, because the
+    member clones moved and the receipt has to say which ones."""
+    from gr2.python_cli import grip
+
+    move_main(two, "alpha")
+    move_main(two, "beta")
+
+    def refuse(*args, **kwargs):
+        raise grip.GripReviewRefused("pin_refused_in_test", "a pin", "refused")
+
+    monkeypatch.setattr(grip, "create_review_bind_commit", refuse)
+    out = update(two)
+    r = receipt(out)
+    assert out.exit_code == 4, out.output
+    assert r["refused"].startswith("pin_refused") and r["merged"] == ["alpha", "beta"], r
+    assert "partial:" in out.stderr and "alpha, beta" in out.stderr, out.stderr
+
+
+def test_u20_a_target_fast_forwarded_to_the_reviewed_head_is_not_reported_current(one):
+    """The work already landed: the target is now the reviewed head. The member is up to date, but its base
+    moved, so the review is not current and a new pin is refused because the head is already on the remote.
+    It must not exit 0 as if nothing changed."""
+    m = one["members"]["alpha"]
+    git(m["repo"], "push", m["remote"], "feat:main")
+    before = binds(one)
+    out = update(one)
+    r = receipt(out)
+    assert out.exit_code == 2, out.output
+    assert r["refused"].startswith("pin_refused") and "head_already_on_remote" in r["refused"], r
+    assert r["merged"] == [] and r["new_review"] is None, r
+    assert r["members"][0]["state"] == "up_to_date" and r["members"][0]["base"] == m["head"], r
+    assert binds(one) == before

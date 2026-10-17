@@ -591,9 +591,12 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                 approval_receipt["skipped"] = True
         except (approvals.ApprovalRefused, grip.GripInitError, grip.GripCorruptError,
                 OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+            heads = (getattr(exc, "expected", None), getattr(exc, "observed", None))
             for r in rows:
                 if r["state"] == "ready":
                     r["refused"] = str(exc)
+                    if any(heads):
+                        r["_heads"] = heads
 
     if dry_run:
         for r, m in zip(rows, view["members"]):

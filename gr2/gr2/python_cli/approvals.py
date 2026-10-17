@@ -25,9 +25,11 @@ SCHEMA = approval_schema.PACKAGE
 class ApprovalRefused(RuntimeError):
     """A named refusal. `next_step`, when set, is the printed next line for the operator."""
 
-    def __init__(self, message: str, next_step: str | None = None) -> None:
+    def __init__(self, message: str, next_step: str | None = None, expected: str | None = None,
+                 observed: str | None = None) -> None:
         super().__init__(message)
         self.next_step = next_step
+        self.expected, self.observed = expected, observed
 
 
 def _git(repo: Path, *args: str, data: str | None = None, raw: bool = False) -> str:
@@ -378,17 +380,31 @@ def _reconcile(workspace: Path, root: dict, authors: set[str], tips: dict[str, s
     return tip
 
 
+def _refuse_split(root: dict, tips: dict[str, str | None]) -> None:
+    """Refuse remote tips that are not one chain. Members with no chain while every member that has one agrees are
+    a stamp still landing (incomplete); two different tips are a fork (divergent), named by both tips."""
+    present = [tip for tip in tips.values() if tip]
+    if len(set(present)) == 1:
+        keys = {m["remote"]: m["key"] for m in root["members"]}
+        missing = [keys.get(remote, remote) for remote, tip in tips.items() if not tip]
+        raise ApprovalRefused(f"approvals_incomplete: the approval chain at {present[0][:12]} is on {len(present)} of "
+                              f"{len(tips)} members, not yet on {', '.join(missing)}", expected=present[0])
+    other = next(tip for tip in present if tip != present[0])
+    raise ApprovalRefused("approval_chain_divergent: " + canonical(tips), expected=present[0], observed=other)
+
+
 def count_approvals(workspace: Path, review_id: str, member_dirs: dict[str, Path] | None = None) -> dict:
     root, authors = _context(workspace, review_id, member_dirs)
     tips = _remote_tips(workspace, root)
     if len(set(tips.values())) != 1:
-        raise ApprovalRefused("approval_chain_divergent: " + canonical(tips))
+        _refuse_split(root, tips)
     tip = next(iter(tips.values()))
     links = _walk(workspace, root, authors, tip)
     current = _remote_tips(workspace, root)
     if current != tips:
-        raise ApprovalRefused("approval_chain_divergent: " + canonical(current) if len(set(current.values())) != 1
-                              else "approval_chain_moved: retry the measurement")
+        if len(set(current.values())) != 1:
+            _refuse_split(root, current)
+        raise ApprovalRefused("approval_chain_moved: retry the measurement")
     distinct = {link["approver"]: link for link in links}
     return {"review_id": root["review_id"], "tip": tip, "count": len(distinct), "links": list(distinct.values()), "signed": False}
 

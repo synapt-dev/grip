@@ -45,6 +45,13 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **gr2: `review merge` reads an approval chain still being stamped as incomplete, not divergent.** A stamp writes
+  the chain to each member remote in turn; a merge that read it in that window, with the chain on some members and
+  none on the rest, refused `approval_chain_divergent` with no tips in its detail. It now refuses
+  `approvals_incomplete`, names the members still missing, and says to retry once the stamp finishes.
+  `approval_chain_divergent` is kept for two different tips, and its refusal detail now carries both of them as
+  `expected` and `observed`.
+
 - **`gr pr create` opens PRs for the branch you are on, not for every branch
   some repo happens to sit on.** It used to open one PR per branch group under
   the single `-t` title, so a repo (the manifest included) parked on an old

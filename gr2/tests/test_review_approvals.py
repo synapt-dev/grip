@@ -304,8 +304,9 @@ def test_divergent_remote_tips_refuse_and_approve_repairs_a_linear_partial(multi
     merged = runner.invoke(app, ["review", "merge"])
     assert merged.exit_code == 3, merged.output
     receipt = json.loads(merged.stdout)
-    assert all(row["refused"].startswith("approval_chain_divergent") for row in receipt["members"])
-    assert str(beta) in merged.output and str(multi["remote"]) in merged.output
+    assert all(row["refused"].startswith("approvals_incomplete") for row in receipt["members"])
+    assert all(row["refusal"]["expected"] == tip for row in receipt["members"])
+    assert "not yet on beta" in merged.output and "retry" in merged.output
     assert before == {str(m["remote"]): git(m["remote"], "rev-parse", "main") for m in multi["members"].values()}
     repaired = approve_as(multi, "Approver C")
     assert repaired.exit_code == 0, repaired.output
@@ -1036,3 +1037,100 @@ def test_stamp_names_only_the_member_whose_target_moved(multi, moved, still):
     assert f"base_moved: {moved}:" in refusal and f"{still}:" not in refusal, refusal
     for m in multi["members"].values():
         assert _approval_refs(m["remote"]) == "", m["remote"]
+
+
+FIVE = ("api", "app", "core", "store", "svc")
+
+
+def _five(monkeypatch, tips):
+    root, _ = _sample_link()
+    root = {**root, "members": [{**root["members"][0], "key": k, "remote": k + ".git"} for k in FIVE]}
+    reads = iter(tips if isinstance(tips, list) else [tips, tips])
+    monkeypatch.setattr(approvals, "_context", lambda *args: (root, {"Author A"}))
+    monkeypatch.setattr(approvals, "_remote_tips", lambda *args: next(reads))
+    monkeypatch.setattr(approvals, "_walk", lambda *args: [{"approver": "Approver B"}])
+    return root
+
+
+def test_a_chain_missing_on_one_member_while_the_rest_agree_is_incomplete(monkeypatch):
+    tips = {k + ".git": "b" * 40 for k in FIVE} | {"svc.git": None}
+    root = _five(monkeypatch, tips)
+    with pytest.raises(approvals.ApprovalRefused, match="^approvals_incomplete: ") as refused:
+        approvals.count_approvals(None, root["review_id"])
+    assert "4 of 5" in str(refused.value) and "not yet on svc" in str(refused.value)
+    assert "api" not in str(refused.value).split("not yet on", 1)[1]
+    assert (refused.value.expected, refused.value.observed) == ("b" * 40, None)
+
+
+@pytest.mark.parametrize("tips", [
+    {"api.git": "b" * 40, "app.git": "b" * 40, "core.git": "b" * 40, "store.git": "b" * 40, "svc.git": "c" * 40},
+    {"api.git": "b" * 40, "app.git": None, "core.git": "b" * 40, "store.git": None, "svc.git": "c" * 40},
+], ids=["last-differs", "with-missing"])
+def test_two_different_tips_are_divergent_with_both_tips_named(monkeypatch, tips):
+    root = _five(monkeypatch, tips)
+    with pytest.raises(approvals.ApprovalRefused, match="^approval_chain_divergent: ") as refused:
+        approvals.count_approvals(None, root["review_id"])
+    assert (refused.value.expected, refused.value.observed) == ("b" * 40, "c" * 40)
+
+
+def test_one_chain_on_every_member_counts(monkeypatch):
+    root = _five(monkeypatch, {k + ".git": "b" * 40 for k in FIVE})
+    assert approvals.count_approvals(None, root["review_id"])["count"] == 1
+
+
+def test_a_stamp_finishing_between_two_reads_is_incomplete_then_counts(monkeypatch):
+    late = {k + ".git": "b" * 40 for k in FIVE} | {"svc.git": None}
+    done = {k + ".git": "b" * 40 for k in FIVE}
+    root = _five(monkeypatch, [late, done, done])  # the refusal stops after its first read
+    with pytest.raises(approvals.ApprovalRefused, match="^approvals_incomplete: "):
+        approvals.count_approvals(None, root["review_id"])
+    assert approvals.count_approvals(None, root["review_id"])["count"] == 1
+
+
+def _merge(multi):
+    merged = runner.invoke(app, ["review", "merge"])
+    return merged, json.loads(merged.stdout)
+
+
+def test_merge_refuses_a_chain_still_landing_then_merges_when_the_stamp_finishes(multi):
+    set_policy(multi, 1)
+    made = approve_as(multi, "Approver B")
+    assert made.exit_code == 0, made.output
+    tip = json.loads(made.stdout)["tip"]
+    ref = approvals.PREFIX + multi["rid"]
+    beta = multi["members"]["beta"]["remote"]
+    git(beta, "update-ref", "-d", ref)
+    rec = set_check.run_set_check(multi["workspace"], multi["rid"], "set", [sys.executable, "-c", "pass"])
+    assert rec.get("result") == "pass", rec
+    merged, receipt = _merge(multi)
+    assert merged.exit_code == 3, merged.output
+    for row in receipt["members"]:
+        assert row["refusal"]["code"] == "approvals_incomplete", row
+        assert row["refusal"]["expected"] == tip
+    assert "not yet on beta" in merged.output and "next: " in merged.output and "retry" in merged.output
+    git(multi["workspace"], "push", beta, tip + ":" + ref)  # the stamp's last push lands
+    merged, receipt = _merge(multi)
+    assert merged.exit_code == 0, merged.output
+    assert receipt["approvals"]["count"] == 1
+
+
+def test_merge_names_both_tips_of_a_forked_chain(multi):
+    set_policy(multi, 1)
+    made = approve_as(multi, "Approver B")
+    assert made.exit_code == 0, made.output
+    tip = json.loads(made.stdout)["tip"]
+    previous = json.loads(git(multi["workspace"], "show", tip + ":approval.json"))
+    ref = approvals.PREFIX + multi["rid"]
+    forks = []
+    for name, member in zip(("Approver C", "Approver D"), multi["members"].values()):
+        record = {**previous, "approver": {"name": name, "key_id": ""}, "prev": approvals.digest(previous)}
+        fork = _write_link(multi, record, tip)
+        git(multi["workspace"], "push", member["remote"], fork + ":" + ref)
+        forks.append(fork)
+    rec = set_check.run_set_check(multi["workspace"], multi["rid"], "set", [sys.executable, "-c", "pass"])
+    assert rec.get("result") == "pass", rec
+    merged, receipt = _merge(multi)
+    assert merged.exit_code == 3, merged.output
+    for row in receipt["members"]:
+        assert row["refusal"]["code"] == "approval_chain_divergent", row
+        assert sorted([row["refusal"]["expected"], row["refusal"]["observed"]]) == sorted(forks)

@@ -493,7 +493,7 @@ def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | N
     seed_source = str(local_source) if seed_from_local else effective_url
 
     cache_repo_root.parent.mkdir(parents=True, exist_ok=True)
-    proc = clone("--mirror", seed_source, str(cache_repo_root))
+    proc = clone("--mirror", "--", seed_source, str(cache_repo_root))
     if proc.returncode != 0:
         raise SystemExit(f"failed to seed repo cache {seed_source} -> {cache_repo_root}:\n{proc.stderr or proc.stdout}")
 
@@ -735,8 +735,20 @@ def ensure_lane_checkout(
     )
 
 
+def branch_name_refusal(branch: object) -> str | None:
+    """Why ``branch`` cannot be handed to git as a branch name, or None. `-f` or `--detach` would be read as an option."""
+    if not isinstance(branch, str) or not branch or branch.startswith("-"):
+        return f"{branch!r} is not a branch name"
+    if run_argv(["git", "check-ref-format", "--branch", branch]).returncode:
+        return f"{branch!r} is not a valid branch name"
+    return None
+
+
 def checkout_branch(repo_root: Path, branch: str) -> None:
-    proc = git(repo_root, "checkout", branch)
+    refusal = branch_name_refusal(branch)
+    if refusal is not None:
+        raise SystemExit(f"failed to checkout in {repo_root}: {refusal}")
+    proc = git(repo_root, "checkout", branch, "--")
     if proc.returncode != 0:
         raise SystemExit(f"failed to checkout {branch} in {repo_root}:\n{proc.stderr or proc.stdout}")
 

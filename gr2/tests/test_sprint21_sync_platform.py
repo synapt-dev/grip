@@ -1411,3 +1411,22 @@ def test_merge_target_for_a_github_url_without_owner_repo_is_keyed_by_the_bare_n
 
     assert set(targets) == {"product"}
     assert targets["product"].remote == url
+
+
+@pytest.mark.parametrize("url", ["https://github.com/", "git@github.com:", "https://github.com/.git"])
+def test_pr_create_for_a_github_url_without_owner_repo_hands_gh_the_bare_name(
+    tmp_path: Path, monkeypatch, url: str
+) -> None:
+    workspace_root = _pr_create_lane(tmp_path)
+    spec_path = workspace_root / ".grip" / "workspace_spec.toml"
+    app_url = next(
+        repo["url"] for repo in lane_proto.load_workspace_spec(workspace_root)["repos"] if repo["name"] == "app"
+    )
+    spec_path.write_text(spec_path.read_text().replace(app_url, url))
+    adapter = _NeverCreateAdapter()
+    monkeypatch.setattr(app_module.platform_ops, "get_platform_adapter", lambda name="github": adapter)
+
+    result = runner.invoke(app, ["pr", "create", str(workspace_root), "atlas", "feat-router"])
+
+    # The adapter records the first request and then raises, so one request is all this row reads.
+    assert [request.repo for request in adapter.created] == ["app"], result.output

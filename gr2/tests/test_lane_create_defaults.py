@@ -109,15 +109,99 @@ def test_a_remote_branch_of_the_lane_name_at_other_work_refuses_naming_both_ways
     text = _flat(res)
     assert "'demo' already exists on beta's remote" in text and tip[:12] in text
     assert "pass --branch demo to use the existing branch" in text and "pick another lane name" in text
+    assert "the lane starts at its remote tip and tracks it" in text  # and the next row proves the sentence
     with pytest.raises(SystemExit, match="lane not found"):
         lanes.load_lane_doc(ws, "atlas", "demo")  # nothing was created
 
 
 def test_naming_the_existing_branch_is_the_way_through(tmp_path: Path) -> None:
+    """The refusal above says --branch continues the pushed work, so it must: the lane's beta is at the pushed tip
+    and tracks it. Goes red if the lane branch has no upstream."""
     ws, _ = _workspace(tmp_path, ["alpha", "beta"])
-    _push_branch(ws, "beta", "demo")
+    tip = _push_branch(ws, "beta", "demo")
     res = _create(ws, "--branch", "demo")
     assert res.exit_code == 0, res.output
+    beta = ws / "agents" / "atlas" / "lanes" / "demo" / "repos" / "beta"
+    assert _git(beta, "rev-parse", "HEAD") == tip
+    assert _git(beta, "rev-parse", "--abbrev-ref", "demo@{upstream}") == "origin/demo"
+
+
+# --- a branch the remote already has is continued, never shadowed -------------
+
+
+def _lane_repo(ws: Path, name: str, lane: str = "demo") -> Path:
+    native = ws / "agents" / "atlas" / "lanes" / lane / "repos" / name
+    return native
+
+
+def test_spec_lane_on_a_pushed_branch_the_source_does_not_hold_starts_at_the_remote_tip(tmp_path: Path) -> None:
+    """A spec root: `demo` is on beta's remote and NOT a local branch of the source. Before the fix
+    the lane's demo was made at the source's HEAD (main) with no upstream, a second history under the same name.
+    Goes red if HEAD is not the remote tip, there is no upstream, or the fork base is not the merge-base with main."""
+    ws, tips = _workspace(tmp_path, ["alpha", "beta"])
+    tip = _push_branch(ws, "beta", "demo")
+    _git(ws / "repos" / "beta", "branch", "-q", "-D", "demo")
+    res = _create(ws, "--branch", "demo")
+    assert res.exit_code == 0, res.output
+    beta = _lane_repo(ws, "beta")
+    assert _git(beta, "rev-parse", "HEAD") == tip
+    assert _git(beta, "rev-parse", "--abbrev-ref", "demo@{upstream}") == "origin/demo"
+    assert f"gr2: beta: continues origin/demo at {tip[:12]}" in _flat(res)
+    doc = lanes.load_lane_doc(ws, "atlas", "demo")
+    assert doc["fork_base"]["beta"]["sha"] == tips["beta"]  # the merge-base with main, so a review covers the pushed work
+    assert doc["fork_base"]["alpha"]["sha"] == tips["alpha"]  # control: a branch the remote lacks starts where it did
+    assert _git(_lane_repo(ws, "alpha"), "rev-parse", "HEAD") == tips["alpha"]
+
+
+def test_native_lane_on_a_pushed_branch_starts_at_the_remote_tip_not_the_pin(tmp_path: Path) -> None:
+    """A native root, --branch naming a branch on the remote ahead of the member's pin. Before
+    the fix `checkout -B demo <pin>` made demo at the pin with no upstream. Goes red if the remote-tip checkout is
+    removed (the mutant) or the upstream is not set."""
+    ws, tips = _native_workspace(tmp_path, ["alpha", "beta"])
+    tip = _push_branch(ws, "beta", "demo")
+    res = _create(ws, "--branch", "demo")
+    assert res.exit_code == 0, res.output
+    lane_root = lanes.lane_checkout_root(ws, "atlas", "demo")
+    beta = next(p for p in lane_root.rglob("beta") if (p / ".git").exists())
+    assert _git(beta, "rev-parse", "HEAD") == tip
+    assert _git(beta, "rev-parse", "--abbrev-ref", "demo@{upstream}") == "origin/demo"
+    assert lanes.load_lane_doc(ws, "atlas", "demo")["fork_base"]["beta"]["sha"] == tips["beta"]
+
+
+def test_a_local_branch_with_unpushed_work_is_kept_and_tracks_the_remote(tmp_path: Path) -> None:
+    """The author's own local demo is one commit ahead of the pushed demo. Continuing must not drop that commit:
+    the lane keeps it and tracks origin/demo, and says so. Goes red if the lane is reset to the remote tip."""
+    ws, _ = _workspace(tmp_path, ["beta"])
+    pushed = _push_branch(ws, "beta", "demo")
+    src = ws / "repos" / "beta"
+    _git(src, "checkout", "-q", "demo")
+    (src / "unpushed.txt").write_text("not on the remote yet\n")
+    _git(src, "add", ".")
+    _git(src, "commit", "-q", "-m", "unpushed work")
+    local = _git(src, "rev-parse", "HEAD")
+    _git(src, "checkout", "-q", "main")
+    res = _create(ws, "--branch", "demo")
+    assert res.exit_code == 0, res.output
+    beta = _lane_repo(ws, "beta")
+    assert _git(beta, "rev-parse", "HEAD") == local != pushed
+    assert _git(beta, "rev-parse", "--abbrev-ref", "demo@{upstream}") == "origin/demo"
+
+
+def test_a_new_lane_on_a_stale_pin_says_how_far_behind_it_starts(tmp_path: Path) -> None:
+    """A new branch forks at the workspace commit's pin, which can be far behind the remote's
+    integration tip. The pin still owns the fork point (10-06 rule); create now says how far behind it is. Goes red
+    if the line is missing; the control is the same create with the remote not moved, which prints no such line."""
+    ws, tips = _native_workspace(tmp_path, ["alpha"])
+    control = _create(ws, "--branch", "fresh")
+    assert control.exit_code == 0 and "behind origin/" not in _flat(control), control.output
+    src = ws / "repos" / "alpha"
+    (src / "later.txt").write_text("main moved on\n")
+    _git(src, "add", ".")
+    _git(src, "commit", "-q", "-m", "main moved")
+    _git(src, "push", "-q", "origin", "main")
+    res = runner.invoke(gr2_app.app, ["lane", "create", str(ws), "atlas", "second", "--branch", "fresh2"])
+    assert res.exit_code == 0, res.output
+    assert f"gr2: alpha: fresh2 starts at {tips['alpha'][:12]}" in _flat(res) and "1 commit behind origin/" in _flat(res)
 
 
 def test_an_unreadable_grip_toml_refuses_a_defaulted_branch_instead_of_skipping_the_check(tmp_path: Path) -> None:
@@ -233,6 +317,20 @@ def test_add_lane_stages_every_repo_of_the_entered_lane_and_says_where_it_read_t
     assert "alpha: staged 1 path(s): edit.txt" in res.output and "beta: staged 1 path(s): edit.txt" in res.output
 
 
+def test_add_lane_skips_untracked_bytecode_in_every_repo(tmp_path: Path, monkeypatch) -> None:
+    """The lane path shares stage_files, and each repo names its own skip."""
+    ws, lane_root = _entered_lane(tmp_path)
+    for repo in ("alpha", "beta"):
+        (lane_root / "repos" / repo / "__pycache__").mkdir()
+        (lane_root / "repos" / repo / "__pycache__" / "edit.cpython-313.pyc").write_bytes(b"\x00bytecode")
+    monkeypatch.chdir(ws)
+    res = runner.invoke(gr2_app.app, ["add", "--lane", "."])
+    assert res.exit_code == 0, res.output
+    assert _staged(lane_root / "repos" / "alpha") == ["edit.txt"] and _staged(lane_root / "repos" / "beta") == ["edit.txt"]
+    for repo in ("alpha", "beta"):
+        assert f"{repo}: Skipped 1 untracked bytecode path(s)" in res.output, res.output
+
+
 def test_add_dot_at_the_workspace_root_with_a_lane_entered_refuses_and_stages_nothing(tmp_path: Path, monkeypatch) -> None:
     """Goes red if the refusal is dropped (the root's own repository would be staged) or if it names only one way out."""
     ws, lane_root = _entered_lane(tmp_path)
@@ -315,15 +413,16 @@ def _store_init_only_root(two_member_ws: Path, *, commit: bool = True) -> Path:
 
 def test_bare_lane_create_on_a_store_init_root_builds_the_lane_from_the_grip_toml_members(two_member_ws: Path) -> None:
     """The smallest working proof of the first-release must: a root made by `store init` holds grip.toml and no
-    workspace spec, and a bare `lane create` makes the lane over its members, says it wrote the spec, and the lane
-    holds one clone per member on the lane's branch. Goes red if the spec is not written from the members."""
+    workspace spec, and a bare `lane create` makes the lane over its members from the spec derived from grip.toml,
+    writes no spec file (grip.toml stays the one record), and the lane holds one clone per member on the lane's
+    branch. Goes red if the lane is not built over the members, or if a spec file is written."""
     root = _store_init_only_root(two_member_ws)
     res = runner.invoke(gr2_app.app, ["lane", "create", str(root), "default", "demo"])
     assert res.exit_code == 0, res.output
     text = _flat(res)
-    assert "workspace spec written from the grip.toml members: alpha, beta" in text
+    assert "workspace spec written" not in text
     assert "gr2: repos=alpha,beta" in text and "gr2: branch=demo" in text
-    assert (root / ".grip" / "workspace_spec.toml").is_file()
+    assert not (root / ".grip" / "workspace_spec.toml").exists()
     for repo in ("alpha", "beta"):
         clone = root / "agents" / "default" / "lanes" / "demo" / repo
         assert clone.is_dir(), sorted(str(p.relative_to(root)) for p in root.rglob("repos/*"))

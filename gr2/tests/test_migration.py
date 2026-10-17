@@ -77,12 +77,14 @@ def _write_gr1_workspace(root: Path) -> None:
             },
         })
     )
+    # One unit works IN the root (`worktree = "main"`, path "."), the other declares no worktree
+    # and so lives nested inside it. Two units at "main" is two desks at one root: migrate-gr1
+    # refuses it and asks for --unit, and apply's validation refused the same spec before that.
     (gitgrip / "agents.toml").write_text(
         "[agents.atlas]\n"
         'worktree = "main"\n'
         'channel = "dev"\n\n'
         "[agents.apollo]\n"
-        'worktree = "main"\n'
         'channel = "dev"\n'
     )
     (gitgrip / "state.json").write_text(

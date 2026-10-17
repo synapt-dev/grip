@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_review_a4_v2 import _init, _invoke, _refs, _assert_only_bind_stdout
+from tests.test_review_a4_v2 import _cli, _init, _invoke, _refs, _assert_only_bind_stdout
 from tests.test_review_a4 import _flat
 from tests.test_review_bind_native_store import _unpushed_head
 from tests.test_store_break_attempts import two_member_ws  # noqa: F401
@@ -22,13 +22,17 @@ def _spec(ws: Path, remote: str, pin: str | None, **fields: str) -> None:
                     "\n".join(f"{key} = {json.dumps(value)}" for key, value in row.items()) + "\n")
 
 
-@pytest.mark.parametrize("pins", ["conflict", "manifest-only", "agree"])
-def test_inferred_bind_uses_shared_pin_merge(two_member_ws: Path, pins: str) -> None:
+@pytest.mark.parametrize("pins", ["conflict", "committed-conflict", "manifest-only", "agree"])
+def test_inferred_bind_uses_shared_pin_merge(two_member_ws: Path, pins: str, monkeypatch) -> None:
     ws = two_member_ws
     _init(ws)
+    if pins == "committed-conflict":
+        monkeypatch.chdir(ws)
+        code, out = _cli("store", "commit", "-m", "record")
+        assert code == 0, out
     remote, base, head = _unpushed_head(ws)
     _spec(ws, remote, None if pins == "manifest-only" else base, path="alpha", ref="main")
-    if pins == "conflict":
+    if pins in ("conflict", "committed-conflict"):
         manifest = ws / "grip.toml"
         original = manifest.read_text()
         assert original.count(base) == 1
@@ -37,13 +41,21 @@ def test_inferred_bind_uses_shared_pin_merge(two_member_ws: Path, pins: str) -> 
     before = _refs(ws)
     result = _invoke("review", "bind", str(ws))
     if pins == "conflict":
+        # The two files used to refuse as a pin conflict. This root has no commit yet, so HEAD records no pin and the
+        # working grip.toml is the record (as for `_committed_pin`): its pin, the unpushed head, is the pin, one
+        # stderr line names both, and with the checkout at that pin there is nothing to bind. Nothing is written.
         assert result.exit_code == 2, result.output
         text = _flat(result.stderr)
         assert "workspace_spec.toml" in text and "grip.toml" in text
-        assert base[:12] in text and head[:12] in text and "must agree" in text
+        assert base[:12] in text and head[:12] in text and "using the store's record" in text
+        assert "nothing to pin" in text and "must agree" not in text
         assert result.stdout == "" and "Traceback" not in result.stderr
         assert _refs(ws) == before
     else:
+        if pins == "committed-conflict":
+            # Only the WORKING grip.toml moved to the unpushed head; the root commit records base, as the spec does.
+            # The committed pin is the record, so the bind runs base..head and no line is printed.
+            assert "gr2: member" not in result.stderr and "must agree" not in result.stderr
         gr_id = _assert_only_bind_stdout(result)
         shown = _invoke("review", "show", str(ws), gr_id, "--json")
         assert shown.exit_code == 0, shown.output

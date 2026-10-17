@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for the next `v1.x` patch release. The gr2 changes already released are in `[gr2 2.0.0a9]` below.
+Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for the next `v1.x` patch release. The gr2 changes already released are in `[gr2 2.0.0a10]` below.
 
 ### Added
 
@@ -49,6 +49,202 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   regardless of branch, and `--repo manifest` now selects the manifest. A
   manifest with uncommitted changes but no commits ahead is no longer PR
   content.
+
+## [gr2 2.0.0a10] - 2026-10-17
+
+### Added
+
+- **A root made by `gr2 store init` works with `gr2 sync` at once, with no second init.** Before, `sync status`
+  on a fresh store refused ("run `gr2 workspace init <path>` first") until a spec file was written. Now, on a root
+  that has `grip.toml` and no `.grip/workspace_spec.toml`, the workspace spec is built from `grip.toml` in memory on
+  every read (one repo per member, its `origin` remote as url, its ref and pin, one default unit). Nothing is written,
+  so `grip.toml` stays the one record of each member and an edit there is what the next `sync` reads. A spec file
+  that exists is still the spec, unchanged.
+
+- **`gr2 review merge` lands a member through its hosting platform when it has an open PR at the reviewed
+  head.** The mode is chosen per member, with no flag: a member whose platform reports exactly one open PR whose
+  head is the reviewed head lands through that PR, and every other member is merged by push as before. The PR's
+  stack is followed down through each PR's base branch to the target; every PR in it must be open and not a draft,
+  checked for every member before anything merges (`platform_pr_not_ready`; more than one PR at the head is
+  `platform_pr_ambiguous`, a stack that does not reach the target is `platform_stack_unresolved`). The top PR is
+  merged with its head pinned, through GitHub's asynchronous merge, so a stack lands as one merge commit. After
+  the platform reports merged, the target must contain the reviewed head and the PR's head must still be the
+  reviewed head: a commit pushed to the PR while the land ran is left out of the merge under a PR that reads
+  merged, so that member is refused as `platform_head_moved_after_merge`, the commit is named, the run exits 4,
+  and no later member lands. If the PR's head cannot be read after a confirmed merge, that member is refused as
+  `platform_head_unmeasured_after_merge` (the merge holds the pinned head; whether a commit was left out is unknown),
+  the run exits 4, nothing is called stranded, and no later member lands. A merge the platform does not confirm is `platform_merge_not_confirmed`, naming the
+  PR's head when it moved, and nothing is called stranded. The GitHub adapter gains `pr_for_head`, `pr_for_branch`, `pr_head` and
+  `merge_pr_async`. A member counts as on GitHub for every spelling gr2's review records read as GitHub (https or
+  http, with a user or a token, scp-style or ssh); an ssh URL with a port, or an ssh-config host alias, is not resolved and
+  reads as plain Git.
+  A member whose remote is a GitHub URL refuses as `platform_unmeasurable` when the platform
+  cannot be read (`gh` absent or not authenticated, or an adapter without all four), with a next line to install
+  and authenticate `gh`, so it is never pushed past its PRs; a member on a plain-Git remote is merged by push as before.
+
+- **`gr2 review stamp <lane>` stamps a PR-head review.** Given a lane `review checkout-pr` or `review open`
+  made, it records an unsigned approval as git `user.name`, bound to the lane's recorded repo and PR head, and
+  prints the approvals of that (repo, head). The approval is a ref under
+  `refs/dev.synapt.grip/__approvals__/v1/pr/<head>` in the workspace's own clone of that repo: it is local, is
+  never pushed, and is still there after `review close` drops the lane. A lane whose HEAD is not the recorded head
+  is refused (`approval_head_moved`), and nothing is stamped. Stamping twice under one name counts once. As with
+  bind approvals, the name is self-declared; whether the approver wrote the PR is not checked.
+
+- **`gr2 proto json` prints a protobuf record as JSON, and `git diff` can show it.** It reads a file of
+  protobuf bytes, a blob, or a field tree. Without a schema, keys are field numbers and a length-delimited value
+  prints as text or `{"bytes_b64": ...}`, never guessed as nested; `--message` names fields from the bundled
+  review schema. Set `*.pb diff=protoblob` and `diff.protoblob.textconv = gr2 proto json --textconv`, and `git diff`
+  shows JSON. Bytes that are not protobuf are refused; under `--textconv` they print a one-line marker with the
+  file's sha256 and exit 0, so one bad file never stops the whole diff. A field number of 0 is now refused by the
+  field tree decoder, as protobuf requires.
+
+### Changed
+
+- **`review merge` after one passing `gr2 check set` merges a multi-member review with no `--check` flag.**
+  The default still requires `set` and each member's `test`, and a member whose recorded `test` is red still refuses.
+  What changed is a member with NO `test` record at its head: a passing `set` record for this review now decides it,
+  where before the merge refused `check_absent` and printed a per-member `gr2 check run`, which cannot pass when the
+  members import each other. A `test` named with `--check` is decided only by `test` records, and its refusal now prints
+  `gr2 check set <workspace> <review> --name test -- ...`. On a review of one member, a passing `set` record for this
+  review and these heads also decides the default `test`. A `set` record for another review or other heads never counts.
+
+- **`workspace migrate-gr1` migrates one root, the root it runs in.** A gr1 agents manifest lists every
+  desk, each beside the gripspace root at `../<worktree>`, and migrate-gr1 declared every one of them as a unit
+  of this root and read each desk's working state for its receipt. A gr2 workspace is one root, so a unit whose
+  desk is another directory is now another desk's root: it is not declared in the spec, nothing under it is read,
+  and the receipt names it under NOT MIGRATED HERE (`- unit atlas -> ../synapt-codex: another root, not migrated
+  here`). The root's own unit is the one whose worktree is `main`, or whose worktree names this directory. When
+  the manifest puts two or more units at this root, migrate-gr1 refuses, names them and writes no spec; the new
+  `--unit <name>` keeps one. A root with no unit of its own refuses too. A unit with no worktree still lives at
+  `agents/<unit>/home` and is kept. `bootstrap-gr1` and the regenerate path compile the same way. This retires
+  the fleet-root mapping and the NOT ADOPTED receipt; a spec written by hand that declares a sibling unit still
+  applies as before.
+
+- **A compat `store commit` refused for an unpushed pin names the next step.** When no remote branch holds
+  a member's pin, the refusal ("... push it first", exit 3, unchanged) now ends with the push that covers it,
+  `push it: git -C <member> push -u <remote> <branch>`, shell-quoted so it runs as printed (a member whose branch
+  does not hold the pin is told to push a branch holding it), and, in compat mode only, the way to keep it
+  unpushed: `mode = "full"` as the first line of the root's `grip.toml`, where the record carries it as a layer.
+  A pin some remote branch already holds keeps its own message and gets no push line.
+
+- **`gr2 add` skips untracked Python bytecode by default.** In a repository that ignores nothing, `add .`
+  used to stage `__pycache__/` directories and `*.pyc` / `*.pyo` files alongside the source. It now leaves untracked
+  bytecode out, in the single-repo and `--lane` forms alike, and prints one line with the count and an example path.
+  `--include-bytecode` stages it as before. Git's own ignore rules still apply first, and bytecode that is already
+  tracked stages as git stages it, a change or a delete.
+
+- **`review merge` refuses `approvals_unset` when nobody said how many approvals it needs.**
+  Before, with no `[approvals] required` in `grip.toml` and no `--approvals`, the merge required zero and
+  merged on no approvals without saying so. Now it refuses, and the next step names both fixes: pass
+  `--approvals N` (`--approvals 0` merges without approvals), or set `[approvals] required = N` in `grip.toml`.
+  An explicit zero still merges, and the receipt's `approvals` carries `skipped: true` and the `source` of the
+  count, and stderr prints `approvals: skipped, 0 required by <source>`. **Scripts that ran `review merge`
+  without either setting must add one.**
+
+- **A multi-member review merges only on a passing `set` record, and the person merging cannot lower that.**
+  `gr2 review merge` on a review over several members now refuses `--no-set` (`set_required`) and any `--check` name
+  other than `test` and `set` (`check_not_configured`), before anything is read from a remote, so a check recorded
+  under a new name cannot stand in for a red `test` record or a missing `set`. `gr2 review pin` refuses a multi-member
+  review whose rows do not each carry a `source` or a `range`, and mints no id, instead of minting one that `check set`
+  later refuses with `row_carries_no_objects`. A single-member review is unchanged.
+
+### Fixed
+
+- **`gr2 review merge` no longer prints a recorded remote that carries credentials.** The record writers
+  refuse such a remote, but a record made before they did still reached `review merge`, which printed the remote
+  in each receipt row, in the tracking advice and in the next steps. The merge now refuses as
+  `remote_credentials` before any row is built or any remote is read, naming the member and never the URL, and
+  exits 3. An ssh login (`git@host:...`) and a plain path are not refused.
+
+- **`gr2 review stamp` refuses a review whose target has moved past its base.** A merge needs each
+  member's target at the reviewed base, and a pinned review cannot move to a new base, so a stamp written after
+  a teammate's merge could never count, and nothing said so until the merge refused as `base_moved`. Stamp now
+  reads each member's remote before pushing anything and refuses as `base_moved` when no branch there sits at the
+  reviewed base, naming the member and asking for a new pin. Any branch at the base passes, so a review on a
+  non-default target needs no flag; an unrelated branch left at the base lets a stale stamp through, and the
+  merge still refuses it.
+
+- **`gr2 review receive` fetches each pinned head into its member clone, so a reviewer's `check set` runs with no
+  hand `git fetch`.** Receive bound only the review record, and `check set` reads every member's head from the member's own
+  clone, so a reviewer's set check stopped at exit 2 with `could not get object info`. Receive now fetches the head into each
+  member clone whose recorded remote is the one it received from, and its output gains a `heads` row per member
+  (`fetched`, `already_present`, `not_this_remote`, or `not_fetched` with the reason and the exact command). `check set`
+  names a missing head as `head_not_in_member_clone` with the fetch that brings it. Both printed commands are
+  shell-quoted, so a workspace path with a space runs as printed, and `check set` refuses a record whose remote carries
+  URL credentials as `remote_credentials` by member key, before any message could print the remote.
+
+- **`gr2 review merge` no longer prints a GitHub remote's token when a platform adapter cannot read it.**
+  When a version 2 platform adapter could not read a member's GitHub remote, the `platform_unmeasurable` refusal
+  printed the remote as spelled and the adapter's own error text, so a remote such as
+  `https://x-access-token:<token>@github.com/o/r.git` put its token into the refusal and the receipt. The refusal now
+  names the repository (`o/r`) and the type of the adapter's error, never the URL or the error text. The GitHub adapter
+  gr2 ships is version 1 and never took this path.
+
+- **`store commit` and `store migrate` record a member whose only changes are untracked files.** Both
+  refused such a member at exit 3 with "commit or stash changes first", and a plain `git stash` leaves untracked
+  files in place, so a desk with scratch files in a member could not record at all. Both record the member's HEAD,
+  which an untracked file cannot be part of, so they now count tracked changes only. `store checkout` still refuses
+  an untracked file, since one at a path the target pin tracks would fail the checkout after the root had moved;
+  its message now names `git stash -u`, which clears it.
+
+- **A root without a workspace spec refuses in one line, naming the step that suits it.** `review checkout-pr`
+  and `review open` printed a `FileNotFoundError` traceback on a native root (one with `grip.toml`) and on a gr1
+  desk not yet adopted. They now exit 1 with one line that names the root: a native root is told the verb reads a
+  workspace spec and does not support a native root yet, a gr1 desk is told to run `gr2 workspace migrate-gr1
+  <root>`, and a root with neither is told to run `gr2 workspace init <root>`.
+
+- **On a native store, the verbs that read the workspace spec use the store's record of each pin.**
+  `.grip/workspace_spec.toml` keeps its own copy of every member's pin, and that copy goes stale at the first ordinary
+  advance (`gr2 sync run`, then `gr2 store commit`), because only `grip.toml` and the root's gitlinks move. `gr2 apply`,
+  `gr2 workspace materialize` and `gr2 sync run` then recloned a missing member at the spec's OLD commit with exit 0,
+  while `gr2 store materialize` on the same root used the new one, and `gr2 review pin` with no rows refused with "they
+  must agree, so fix one of them". Now, on a root with `grip.toml`, `apply`, `workspace materialize`, `sync run`, a
+  unit's member convergence, `review pin`, `review run` and `pr create` take the pin the root commit records: the
+  committed `grip.toml`'s pin for the member's path, or the root's committed gitlink (read through the field record in
+  full mode) when that is not a commit. The working `grip.toml` is used only before the root's first commit, so a pin
+  edited back to an older commit there is not taken. One line on stderr names both commits when the spec named a
+  different one. A deleted working `grip.toml` does not make a root non-native: the root commit's record still answers,
+  whether the member is found there by path or by name and whether its committed pin is a commit or a branch name. The
+  store mode that says how to read a committed gitlink is the committed one, so an uncommitted edit to `mode` does not
+  change the pin. A
+  root that has never committed a `grip.toml`, and a member that neither the working `grip.toml` nor the root commit
+  lists, keep the spec's pin as before.
+  Behaviour change: the two-files-disagree refusal (`downstream_pin_conflict` in a review lane) no longer happens on
+  such a root; the lane runs at the store's record.
+
+- **`review close` closes a lane `review checkout-pr` made.** `checkout-pr` materialized its lane without
+  writing the review record that `review open` writes, so `review close WORKSPACE OWNER REPO PR` refused every such
+  lane ("lacks an owned .git directory or the review record") and the lane could not be removed through gr2. It now
+  records the same `(repo, base, head, lane_kind)` receipt: the head is the PR head it fetched, and it refuses to
+  record a lane that is not at that commit; the base comes from the one rule `review open` also uses. That record
+  is worked out before any lane state is written, so a refusal leaves nothing behind. Close is unchanged, so a lane
+  holding a reviewer's commit still refuses. `checkout-pr` takes `--platform` (default `github`), as `review open`
+  does, naming the adapter it asks. Behaviour changes: `checkout-pr` now asks that platform for the PR's base branch,
+  a `--branch` checkout included, and refuses when it cannot give it; like `review open`, it refuses an origin that
+  is a local path; and running it again after the PR's head moved now exits 2 instead of exiting 0 with the lane
+  still at the old head (the refusal prints the one `review close` command, workspace, PR and `--lane` filled in,
+  that drops that lane as printed; then check it out again).
+
+### Security
+
+- **Names gr2 reads from documents no longer reach git as options.** Three values went to git as positional
+  arguments with no check, so a value starting with `-` was read by git as an option.
+  - A store member's `upstream` in `grip.toml`, which reached `git fetch` in `gr2 store check`, `gr2 store status`
+    and the member push. Someone who can push to a workspace's store could commit an upstream such as
+    `--upload-pack=<command>; false/main`, and a teammate who cloned the store and ran `gr2 store check`, a
+    read-only verb, ran that command on their own machine. Affected: 2.0.0a6 to 2.0.0a9.
+  - A repo `url` in the workspace spec, including the spec built from `grip.toml` on a native root, which reached
+    `git ls-remote --symref` in `gr2 lane create` and `git clone --mirror` in the repo cache. A pushed url of
+    `--upload-pack=<command>` ran on a teammate's `lane create`. Affected: 2.0.0a3 to 2.0.0a9.
+  - A lane's `branch_map` value, which reached `git checkout`: `-f` discarded uncommitted work and `--detach`
+    detached HEAD, and a value that is a valid branch name and also a tracked path restored that file, which also
+    discarded uncommitted work. The lane doc is local state, not part of the store commit. Affected: 2.0.0a1 to
+    2.0.0a9.
+
+  A store upstream must now name a plain remote, a spec url starting with `-` is refused, and a `branch_map` value
+  that is not a valid branch name is refused, each where its document loads; the git calls pass `--` before the
+  value. The fix's tests commit and push each hostile value, clone the store as a teammate, and run `gr2 store
+  check` and `gr2 lane create`. Upgrade to 2.0.0a10.
 
 ## [gr2 2.0.0a9] - 2026-10-13
 

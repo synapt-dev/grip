@@ -786,3 +786,265 @@ def test_close_refuses_a_lane_inside_the_root_whose_head_has_moved(review_world)
     with pytest.raises(ReviewError, match="has moved|not the recorded"):
         close_review_lane(lane_repo_root=lane, review_lane_root=review_world["lane_root"], workspace_root=review_world["workspace_root"], owner_unit="atlas", lane_name="review-7", member="grip")
     assert lane.exists() and note.exists()
+
+
+# ---- a lane `review checkout-pr` made is recorded like one `review open` made, so `review close` drops it
+
+from gr2.python_cli.review import pr_lane_record as _UNSTUBBED_PR_LANE_RECORD  # noqa: E402
+
+
+def _checkout_pr_world(world, monkeypatch):
+    """The CLI world of the PR-head open/close row, with the record writer told the test origin is local."""
+    from types import SimpleNamespace
+    from gr2.python_cli import app as app_mod, review as review_mod
+
+    ws = world["workspace_root"]
+    (ws / ".grip").mkdir()
+    (ws / ".grip" / "workspace_spec.toml").write_text(
+        f'[[repos]]\nname = "grip"\npath = "{world["source"]}"\n\n'
+        '[[units]]\nname = "atlas"\npath = "agents/atlas/home"\nrepos = ["grip"]\n'
+    )
+    monkeypatch.setattr(review_mod, "host_pr_head_oid", lambda *args: world["head_sha"])
+    monkeypatch.setattr(app_mod, "_prepare_review_branch", lambda *args: world["review_branch"])
+    monkeypatch.setattr(app_mod.platform_ops, "get_platform_adapter", lambda *args: SimpleNamespace(
+        pr_status=lambda *args: SimpleNamespace(ref=SimpleNamespace(base_branch="main"))))
+    real_open = review_mod.open_review_lane
+    monkeypatch.setattr(review_mod, "open_review_lane", lambda **kw: real_open(**kw, allow_local=True))
+    real_record = review_mod.pr_lane_record
+    monkeypatch.setattr(review_mod, "pr_lane_record", lambda **kw: real_record(**kw, allow_local=True))
+    return ws, app_mod
+
+
+@pytest.mark.parametrize("producer", ["open", "checkout-pr"])
+def test_a_pr_head_lane_closes_after_either_producer(review_world, monkeypatch, producer):
+    from typer.testing import CliRunner
+
+    world = review_world
+    ws, app_mod = _checkout_pr_world(world, monkeypatch)
+    runner = CliRunner()
+    made = runner.invoke(app_mod.app, ["review", producer, str(ws), "atlas", "grip", "7", "--json"])
+    assert made.exit_code == 0, (made.output, made.exception)
+    lane = Path(json.loads(made.output[made.output.index("{\n"):])["lane_repo_root"])
+    assert _run(lane, "rev-parse", "HEAD") == world["head_sha"]
+    record = read_review_record(review_record_paths(ws, "atlas", "review-7", "grip", lane), notice=lambda _l: None)
+    assert record == {"repo": record["repo"], "base": world["base_sha"], "head": world["head_sha"],
+                      "lane_kind": "materialized"}
+    closed = runner.invoke(app_mod.app, ["review", "close", str(ws), "atlas", "grip", "7"])
+    assert closed.exit_code == 0, (closed.output, closed.exception)
+    assert not lane.exists()
+
+
+def test_a_checkout_pr_lane_holding_a_commit_still_refuses_close(review_world, monkeypatch):
+    """The record lets close drop the lane checkout-pr made, never one a reviewer has moved."""
+    from typer.testing import CliRunner
+
+    world = review_world
+    ws, app_mod = _checkout_pr_world(world, monkeypatch)
+    runner = CliRunner()
+    made = runner.invoke(app_mod.app, ["review", "checkout-pr", str(ws), "atlas", "grip", "7", "--json"])
+    assert made.exit_code == 0, (made.output, made.exception)
+    lane = Path(json.loads(made.output[made.output.index("{\n"):])["lane_repo_root"])
+    (lane / "notes.md").write_text("review notes\n")
+    _run(lane, "add", "notes.md")
+    _run(lane, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "notes")
+    closed = runner.invoke(app_mod.app, ["review", "close", str(ws), "atlas", "grip", "7"])
+    assert closed.exit_code != 0
+    assert "not the recorded review head" in str(closed.exception), (closed.output, closed.exception)
+    assert (lane / "notes.md").read_text() == "review notes\n"
+
+
+def test_a_checkout_pr_lane_not_at_the_fetched_head_is_not_recorded(review_world):
+    """The record's head is the PR head the checkout fetched; a lane at another commit is refused, and
+    nothing is written for close to trust."""
+    from gr2.python_cli import review as review_mod
+
+    world = review_world
+    lane = world["lane"]
+    lane.parent.mkdir(parents=True)
+    _run(lane.parent, "clone", "-q", str(world["source"]), lane.name)  # the lane sits at main, the base
+    assert _run(lane, "rev-parse", "HEAD") == world["base_sha"]
+    record = review_mod.pr_lane_record(source_repo_root=world["source"], head_sha=world["head_sha"],
+                                       base_sha=world["base_sha"], allow_local=True)
+    with pytest.raises(ReviewError, match="not the fetched PR head"):
+        review_mod.record_checked_out_pr_lane(
+            record, lane_repo_root=lane, workspace_root=world["workspace_root"], owner_unit="atlas",
+            lane_name="review-7", member="grip", pr_number=7)
+    paths = review_record_paths(world["workspace_root"], "atlas", "review-7", "grip", lane)
+    assert not paths.current.exists() and not paths.legacy.exists()
+
+
+def test_a_checkout_pr_whose_record_is_refused_leaves_no_lane_behind(review_world, monkeypatch):
+    """The record is worked out before any lane state is written: an origin the record refuses (here a
+    local path, as `review open` refuses it) stops checkout-pr with nothing on disk for close to strand."""
+    from typer.testing import CliRunner
+    from gr2.prototypes import lane_workspace_prototype as lanes
+
+    world = review_world
+    ws, app_mod = _checkout_pr_world(world, monkeypatch)
+    from gr2.python_cli import review as review_mod
+    monkeypatch.setattr(review_mod, "pr_lane_record", _UNSTUBBED_PR_LANE_RECORD)  # the local origin is refused
+    made = CliRunner().invoke(app_mod.app, ["review", "checkout-pr", str(ws), "atlas", "grip", "7"])
+    assert made.exit_code == 2, (made.output, made.exception)
+    assert "refused:" in made.output and "local" in made.output.lower(), made.output
+    assert not lanes.lane_file(ws, "atlas", "review-7").exists()
+    assert not lanes.lane_dir(ws, "atlas", "review-7").exists()
+    assert not (ws / "agents" / "atlas" / "lanes" / "review-7").exists()
+
+
+def test_checking_out_a_pr_again_after_its_head_moved_refuses_and_names_close(review_world, monkeypatch):
+    """Before the record, a second checkout-pr after the author pushed exited 0 with the lane still at the old
+    head. It now refuses, keeps the lane and its record at the old head, names `review close`, and close drops it."""
+    from typer.testing import CliRunner
+
+    world = review_world
+    ws, app_mod = _checkout_pr_world(world, monkeypatch)
+    runner = CliRunner()
+    made = runner.invoke(app_mod.app, ["review", "checkout-pr", str(ws), "atlas", "grip", "7", "--json"])
+    assert made.exit_code == 0, (made.output, made.exception)
+    lane = Path(json.loads(made.output[made.output.index("{\n"):])["lane_repo_root"])
+    old_head = world["head_sha"]
+    source = world["source"]
+    _run(source, "checkout", "-q", world["review_branch"])
+    (source / "pushed.txt").write_text("the author pushed\n")
+    _run(source, "add", "pushed.txt")
+    _run(source, "commit", "-q", "-m", "author push")
+    new_head = _run(source, "rev-parse", "HEAD")
+    _run(source, "checkout", "-q", "main")
+    assert new_head != old_head
+
+    again = runner.invoke(app_mod.app, ["review", "checkout-pr", str(ws), "atlas", "grip", "7"])
+    assert again.exit_code == 2, (again.output, again.exception)
+    assert f"not the fetched PR head {new_head}" in again.output and "gr2 review close" in again.output, again.output
+    assert _run(lane, "rev-parse", "HEAD") == old_head
+    record = read_review_record(review_record_paths(ws, "atlas", "review-7", "grip", lane), notice=lambda _l: None)
+    assert record["head"] == old_head
+    closed = runner.invoke(app_mod.app, ["review", "close", str(ws), "atlas", "grip", "7"])
+    assert closed.exit_code == 0, (closed.output, closed.exception)
+    assert not lane.exists()
+
+
+def test_checkout_pr_asks_the_platform_it_is_given_for_the_pr_base(review_world, monkeypatch):
+    """The base comes from the platform adapter `--platform` names, as for `review open`; github is only the
+    default. A `--branch` checkout asks it too."""
+    from types import SimpleNamespace
+    from typer.testing import CliRunner
+
+    world = review_world
+    ws, app_mod = _checkout_pr_world(world, monkeypatch)
+    asked = []
+
+    def adapter(name):
+        asked.append(name)
+        return SimpleNamespace(pr_status=lambda *args, **kw: SimpleNamespace(ref=SimpleNamespace(base_branch="main")))
+
+    monkeypatch.setattr(app_mod.platform_ops, "get_platform_adapter", adapter)
+    made = CliRunner().invoke(app_mod.app, ["review", "checkout-pr", str(ws), "atlas", "grip", "7",
+                                            "--branch", world["review_branch"], "--platform", "gitlab", "--json"])
+    assert made.exit_code == 0, (made.output, made.exception)
+    assert asked == ["gitlab"]
+    lane = Path(json.loads(made.output[made.output.index("{\n"):])["lane_repo_root"])
+    record = read_review_record(review_record_paths(ws, "atlas", "review-7", "grip", lane), notice=lambda _l: None)
+    assert record["base"] == world["base_sha"] and record["head"] == world["head_sha"]
+
+
+@pytest.mark.parametrize("lane_option", [[], ["--lane", "custom-7"]])
+def test_the_close_command_a_moved_pr_refusal_prints_drops_that_lane_as_printed(review_world, monkeypatch, lane_option):
+    """The refusal names the one `review close` command for this lane. Run as printed, word for word, it drops
+    the lane (a lane made with `--lane` included), and the PR then checks out again at its new head."""
+    import re
+    import shlex
+    from typer.testing import CliRunner
+
+    world = review_world
+    ws, app_mod = _checkout_pr_world(world, monkeypatch)
+    runner = CliRunner()
+    args = ["review", "checkout-pr", str(ws), "atlas", "grip", "7", *lane_option, "--json"]
+    made = runner.invoke(app_mod.app, args)
+    assert made.exit_code == 0, (made.output, made.exception)
+    lane = Path(json.loads(made.output[made.output.index("{\n"):])["lane_repo_root"])
+    source = world["source"]
+    _run(source, "checkout", "-q", world["review_branch"])
+    (source / "pushed.txt").write_text("the author pushed\n")
+    _run(source, "add", "pushed.txt")
+    _run(source, "commit", "-q", "-m", "author push")
+    new_head = _run(source, "rev-parse", "HEAD")
+    _run(source, "checkout", "-q", "main")
+
+    again = runner.invoke(app_mod.app, args[:-1])
+    assert again.exit_code == 2, (again.output, again.exception)
+    printed = re.search(r"run `(gr2 review close [^`]*)`", again.output)
+    assert printed, again.output
+    words = shlex.split(printed.group(1))
+    assert words[0] == "gr2"
+    closed = runner.invoke(app_mod.app, words[1:])
+    assert closed.exit_code == 0, (closed.output, closed.exception)
+    assert not lane.exists()
+    remade = runner.invoke(app_mod.app, args)
+    assert remade.exit_code == 0, (remade.output, remade.exception)
+    assert _run(lane, "rev-parse", "HEAD") == new_head
+
+
+# ---- `review stamp <lane>` on a checkout-pr lane binds its approval to the lane record's (repo, head)
+
+def _checked_out_lane(world, monkeypatch):
+    from typer.testing import CliRunner
+
+    ws, app_mod = _checkout_pr_world(world, monkeypatch)
+    made = CliRunner().invoke(app_mod.app, ["review", "checkout-pr", str(ws), "atlas", "grip", "7", "--json"])
+    assert made.exit_code == 0, (made.output, made.exception)
+    lane = Path(json.loads(made.output[made.output.index("{\n"):])["lane_repo_root"])
+    _run(lane, "config", "user.name", "Reviewer")
+    _run(lane, "config", "user.email", "r@example.invalid")
+    return ws, app_mod, lane
+
+
+def test_stamp_on_a_checkout_pr_lane_binds_the_approval_to_repo_and_head(review_world, monkeypatch):
+    from typer.testing import CliRunner
+    from gr2.python_cli import approvals
+
+    world = review_world
+    ws, app_mod, lane = _checked_out_lane(world, monkeypatch)
+    record = read_review_record(review_record_paths(ws, "atlas", "review-7", "grip", lane), notice=lambda _l: None)
+    stamped = CliRunner().invoke(app_mod.app, ["review", "stamp", str(lane)])
+    assert stamped.exit_code == 0, (stamped.output, stamped.exception)
+    result = json.loads(stamped.output)
+    assert (result["repo"], result["head"], result["count"]) == (record["repo"], world["head_sha"], 1)
+    back = approvals.pr_lane_approvals(lane)
+    assert back["count"] == 1 and back["head"] == world["head_sha"] and back["repo"] == record["repo"]
+    assert [(link["approver"]["name"], link["head"]) for link in back["links"]] == [("Reviewer", world["head_sha"])]
+    again = CliRunner().invoke(app_mod.app, ["review", "stamp", str(lane)])
+    assert again.exit_code == 0 and json.loads(again.output)["count"] == 1, again.output
+
+
+def test_stamp_on_a_checkout_pr_lane_whose_head_moved_refuses(review_world, monkeypatch):
+    from typer.testing import CliRunner
+    from gr2.python_cli import approvals
+
+    world = review_world
+    ws, app_mod, lane = _checked_out_lane(world, monkeypatch)
+    (lane / "notes.md").write_text("review notes\n")
+    _run(lane, "add", "notes.md")
+    _run(lane, "commit", "-q", "-m", "notes")
+    assert _run(lane, "rev-parse", "HEAD") != world["head_sha"]
+    stamped = CliRunner().invoke(app_mod.app, ["review", "stamp", str(lane)])
+    assert stamped.exit_code == 2, (stamped.output, stamped.exception)
+    assert "approval_head_moved" in stamped.output and world["head_sha"] in stamped.output, stamped.output
+    assert approvals.pr_head_approvals(world["source"], "any", world["head_sha"])["tip"] is None
+
+
+def test_a_pr_lane_approval_outlives_review_close_and_reads_back_by_repo_and_head(review_world, monkeypatch):
+    """The approval lives in the workspace's clone of the repo, not the lane, so closing the lane keeps it."""
+    from typer.testing import CliRunner
+    from gr2.python_cli import approvals
+
+    world = review_world
+    ws, app_mod, lane = _checked_out_lane(world, monkeypatch)
+    repo = approvals.pr_lane_record(lane)["repo"]
+    stamped = CliRunner().invoke(app_mod.app, ["review", "stamp", str(lane)])
+    assert stamped.exit_code == 0, (stamped.output, stamped.exception)
+    closed = CliRunner().invoke(app_mod.app, ["review", "close", str(ws), "atlas", "grip", "7"])
+    assert closed.exit_code == 0, (closed.output, closed.exception)
+    assert not lane.exists()
+    back = approvals.pr_head_approvals(world["source"], repo, world["head_sha"])
+    assert back["count"] == 1 and [link["approver"]["name"] for link in back["links"]] == ["Reviewer"], back
+    assert approvals.pr_head_approvals(world["source"], repo, world["base_sha"])["count"] == 0

@@ -106,19 +106,22 @@ def test_bind_refuses_when_base_is_not_live_head(tmp_path):
 def test_bind_refuses_when_head_already_on_remote(tmp_path):
     remote, base, head = _fixture_remote(tmp_path)
     ws = _grip_ws(tmp_path)
-    # Publish the head under some ref so it is present on the remote.
+    # Publish the head under a ref that is not a branch, so it is present on the remote. (An
+    # equal BRANCH tip now pins and records pushed_before_pin; see test_review_pin_after_push.)
     work2 = tmp_path / "work2"
     _git(tmp_path, "clone", remote, str(work2))
     _git(work2, "fetch", str(tmp_path / "work"), f"{head}:refs/heads/pushed")
-    _git(work2, "push", "origin", f"{head}:refs/heads/pushed")
+    _git(work2, "push", "origin", f"{head}:refs/tags/pushed")
 
     with pytest.raises(GripReviewRefused) as exc:
         grip.create_review_bind_commit(ws, [_row(remote, base, head)])
     assert exc.value.refusal == "head_already_on_remote"
 
-    # A named ratify receipt is the sanctioned fix-forward (a bare override is not).
-    commit = grip.create_review_bind_commit(ws, [_row(remote, base, head)], ratified="rcpt-1")
-    assert grip.verify_review_commit(ws, commit)["tree_matches"] is True
+    # A receipt must name a real, stamped earlier pin of this head; a string that names nothing
+    # refuses before any write. The accepted path is test_review_pin_ratified.py r4.
+    with pytest.raises(GripReviewRefused) as exc:
+        grip.create_review_bind_commit(ws, [_row(remote, base, head)], ratified="rcpt-1")
+    assert exc.value.refusal == "ratified_receipt_unknown"
 
 
 def test_bind_carries_frozen_set_and_verify_reproduces_objects(tmp_path):

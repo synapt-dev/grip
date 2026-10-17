@@ -15,7 +15,7 @@ from typer.testing import CliRunner
 
 from gr2.python_cli import check_records, merge_gate, set_check
 from gr2.python_cli.app import app
-from tests.test_review_merge_gate import _git_identity, git, mains, slice2  # noqa: F401  (fixtures)
+from tests.test_review_merge_gate import record_set, _git_identity, git, mains, slice2  # noqa: F401  (fixtures)
 
 runner = CliRunner()
 # Passes while beta's payload is the reviewed text; a breaking move rewrites it.
@@ -79,20 +79,21 @@ def test_a_benign_move_passes_at_the_current_heads(slice2, tmp_path):
 def test_the_record_neither_satisfies_nor_blocks_the_merge(slice2):
     # No move: a PASS at exactly the reviewed heads, under remote_set, must not stand in for the review's set record.
     assert at_remote(slice2)["result"] == "pass"
-    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", required_approvals=0)
     assert code == merge_gate.EXIT_REFUSED, receipt
     assert all(m["refused"].startswith("check_set_absent") for m in receipt["members"]), receipt
     # And a FAIL under remote_set does not block a merge the review's own set check allows.
     assert at_remote(slice2, [sys.executable, "-c", "import sys; sys.exit(2)"])["result"] == "fail"
     set_check.run_set_check(slice2["author"], slice2["review"], "set", [sys.executable, "-c", "pass"])
-    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat")
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", required_approvals=0)
     assert code == merge_gate.EXIT_MERGED, receipt
 
 
 def test_the_merge_still_refuses_a_moved_member_after_the_check(slice2, tmp_path):
+    record_set(slice2)  # a review over several members merges only on a passing set
     move_elsewhere(tmp_path, slice2["members"]["beta"], "beta")
     assert at_remote(slice2)["result"] == "pass"
-    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", required_approvals=0)
     assert code == merge_gate.EXIT_REFUSED, receipt
     assert {m["key"]: m.get("refused", "") for m in receipt["members"]}["beta"].startswith("feature_moved"), receipt
     assert mains(slice2) == {k: m["base"] for k, m in slice2["members"].items()}
@@ -138,9 +139,10 @@ def test_the_cli_refuses_at_remote_heads_beside_a_declared_set(slice2):
 
 
 def test_the_feature_moved_next_step_names_the_check_and_does_not_point_only_at_a_new_pin(slice2, tmp_path):
+    record_set(slice2)  # a review over several members merges only on a passing set
     # Before: "pin the new head with gr2 review pin", which head_already_on_remote then refuses for a pushed head.
     move_elsewhere(tmp_path, slice2["members"]["beta"], "beta")
-    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", required_approvals=0)
     assert code == merge_gate.EXIT_REFUSED, receipt
     beta = next(m for m in receipt["members"] if m["key"] == "beta")
     line = beta["next"]

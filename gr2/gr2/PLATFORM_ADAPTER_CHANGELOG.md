@@ -17,6 +17,22 @@ project's `CHANGELOG.md` and its GitHub releases.
 adapter cannot absorb. Version `2` is first carried by 2.0.0a9, and later 2.0.0a releases may add to it;
 an adapter that declares version `1`, or nothing, is still accepted and called as before.
 
+## Unreleased
+
+Optional, and `PLATFORM_ADAPTER_API_VERSION` is unchanged: an adapter without these is called exactly as before.
+
+- **Landing a PR stack.** `review merge` lands a member through the platform when its adapter has all four of
+  `pr_for_head(repo, sha)`, `pr_for_branch(repo, branch)`, `pr_head(repo, number)` and
+  `merge_pr_async(repo, number, sha, method="merge")`. The first three return PRs as dicts with `number`,
+  `state` (`open`, `closed` or `merged`), `draft`, `head` (the head commit) and `base` (the base branch);
+  `pr_for_head` returns only open PRs whose head is exactly `sha`, `pr_for_branch` the open PRs whose head
+  branch is `branch`. `merge_pr_async` merges with the head pinned to `sha` and returns `status` (`merged`,
+  `enqueued`, `failed` or `unknown`) and, when merged, the merge commit as `sha`. A version 2 adapter's
+  `resolve_target` decides which remotes it serves; for a version 1 adapter only GitHub URLs are considered.
+- **A GitHub member with no usable adapter refuses.** When the adapter cannot be built (for example, `gh` is not
+  installed) or lacks any of the four, a member whose remote is a GitHub URL is refused as `platform_unmeasurable`
+  instead of merging by push. Members on other remotes are called exactly as before.
+
 ## 2.0.0a9 (adapter API version 2)
 
 An adapter that declares no `platform_adapter_api_version` is a version 1 adapter and is called exactly as

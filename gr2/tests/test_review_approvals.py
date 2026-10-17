@@ -10,7 +10,7 @@ import pytest
 
 from typer.testing import CliRunner
 
-from gr2.python_cli import approvals, check_records, merge_gate
+from gr2.python_cli import approvals, check_records, merge_gate, set_check
 from gr2.python_cli.app import app
 
 runner = CliRunner()
@@ -108,6 +108,7 @@ def test_default_merge_reads_workspace_policy_and_counts_two_approvers(world):
     receipt = json.loads(merged.stdout)
     assert merged.exit_code == 0, merged.output
     assert receipt["approvals"]["count"] == 2 and receipt["approvals"]["required"] == 2
+    assert receipt["approvals"]["source"] == "grip.toml", "a counted receipt still says where its count came from"
     assert {link["approver"] for link in receipt["approvals"]["links"]} == {"Approver B", "Approver C"}
     assert git(world["remote"], "rev-list", "--parents", "-n", "1", "main").split()[1:] == [world["base"], world["head"]]
 
@@ -239,15 +240,23 @@ def test_invalid_or_signed_policy_refuses(tmp_path, setting):
         approvals.required_approvals(tmp_path)
 
 
-def test_policy_default_zero_and_explicit_override(tmp_path):
+def test_policy_unset_refuses_and_zero_is_explicit(tmp_path):
     p = tmp_path / "grip.toml"
     p.write_text("[workspace]\nname='test'\n")
-    assert approvals.required_approvals(tmp_path) == 0
+    with pytest.raises(approvals.ApprovalRefused, match="approvals_unset"):
+        approvals.required_approvals(tmp_path)
+    (tmp_path / "grip.toml").unlink()
+    with pytest.raises(approvals.ApprovalRefused, match="approvals_unset"):
+        approvals.required_approvals(tmp_path)
+    assert approvals.approval_policy(tmp_path, 0) == {"required": 0, "source": "--approvals"}
+    p.write_text("[approvals]\nrequired=0\n")
+    assert approvals.approval_policy(tmp_path) == {"required": 0, "source": "grip.toml"}
     p.write_text("[approvals]\nrequired=2\n")
     assert approvals.required_approvals(tmp_path) == 2
     assert approvals.required_approvals(tmp_path, 3) == 3
     assert approvals.required_approvals(tmp_path, 0) == 2
     assert approvals.required_approvals(tmp_path, 1) == 2
+    assert approvals.approval_policy(tmp_path, 3)["source"] == "grip.toml and --approvals"
 
 
 @pytest.fixture
@@ -269,8 +278,9 @@ def multi(world, tmp_path):
                "beta": dict(repo=beta, remote=remote, head=head, base=world["base"])}
     rows = [{"key": key, "path": key, "remote": str(m["remote"]), "head": m["head"], "base": m["base"],
              "ref": "refs/heads/main", "source": str(m["repo"])} for key, m in members.items()]
-    # The original member was already pushed by world; this names that local-fixture permission.
-    rid = grip.create_review_bind_commit(workspace, rows, ratified="local fixture")
+    # The original member was already pushed by world as its feature branch tip, which pins and records
+    # pushed_before_pin (1.0521306); no receipt is needed.
+    rid = grip.create_review_bind_commit(workspace, rows)
     git(workspace, "update-ref", "-d", "refs/dev.synapt.grip/__reviews__/v1/" + world["rid"])
     for m in members.values():
         git(m["repo"], "push", m["remote"], "feature")
@@ -288,7 +298,10 @@ def test_divergent_remote_tips_refuse_and_approve_repairs_a_linear_partial(multi
     beta = multi["members"]["beta"]["remote"]
     git(beta, "update-ref", "-d", ref)
     before = {str(m["remote"]): git(m["remote"], "rev-parse", "main") for m in multi["members"].values()}
-    merged = runner.invoke(app, ["review", "merge", "--no-set"])
+    # a review over several members merges only on a passing set; recorded so the approval chain is what refuses
+    rec = set_check.run_set_check(multi["workspace"], multi["rid"], "set", [sys.executable, "-c", "pass"])
+    assert rec.get("result") == "pass", rec
+    merged = runner.invoke(app, ["review", "merge"])
     assert merged.exit_code == 3, merged.output
     receipt = json.loads(merged.stdout)
     assert all(row["refused"].startswith("approval_chain_divergent") for row in receipt["members"])
@@ -648,7 +661,8 @@ def test_zero_required_skips_an_unmeasurable_approval_chain(world, monkeypatch):
     result = runner.invoke(app, ["review", "merge"])
     assert result.exit_code == 0, result.output
     assert calls == []
-    assert json.loads(result.stdout)["approvals"] == {"required": 0, "skipped": True}
+    assert json.loads(result.stdout)["approvals"] == {"required": 0, "skipped": True, "source": "grip.toml"}
+    assert "approvals: skipped, 0 required by grip.toml" in result.stderr, "a skip is said where a person reads it"
     assert git(world["remote"], "rev-list", "--parents", "-n", "1", "main").split()[1:] == [world["base"], world["head"]]
 
 
@@ -663,19 +677,33 @@ def test_positive_required_read_failure_is_not_skipped(world, monkeypatch):
     assert result.exit_code == 3, result.output
     receipt = json.loads(result.stdout)
     assert len(calls) == 1
-    assert receipt["approvals"] == {"required": 2}
+    assert receipt["approvals"] == {"required": 2, "source": "grip.toml"}
     assert receipt["members"][0]["refused"].startswith("approval_unmeasurable")
     assert git(world["remote"], "rev-parse", "main") == world["base"]
 
 
-def test_missing_policy_file_defaults_zero_and_merges(world, tmp_path):
-    # A missing file defaults the policy; a workspace without an approvals table
-    # still keeps its member-discovery configuration for the real merge.
-    assert approvals.required_approvals(tmp_path) == 0
+def test_unset_policy_refuses_and_an_explicit_zero_merges(world, tmp_path):
+    # Neither a grip.toml count nor --approvals: zero is never assumed. A missing file is the same as no table.
+    with pytest.raises(approvals.ApprovalRefused, match="approvals_unset"):
+        approvals.required_approvals(tmp_path)
     check_records.run_check(world["member"], str(world["remote"]), world["head"], "test", [sys.executable, "-c", "pass"])
     code, receipt = merge_gate.review_merge(world["workspace"], world["rid"], into="main", feature="feature")
-    assert code == 0, receipt
-    assert receipt["approvals"] == {"required": 0, "skipped": True}
+    assert code == merge_gate.EXIT_REFUSED, receipt
+    row = receipt["members"][0]
+    assert row["refused"].startswith("approvals_unset"), row
+    assert "--approvals N" in row["next"] and "[approvals] required = N" in row["next"], row
+    assert git(world["remote"], "rev-parse", "main") == world["base"], "nothing merges on an unset count"
+    # A count above what is recorded refuses as insufficient, not unset.
+    result = runner.invoke(app, ["review", "merge", "--approvals", "2"])
+    assert result.exit_code == 3, result.output
+    refused = json.loads(result.stdout)
+    assert refused["members"][0]["refused"] == "approvals_insufficient: 0 of 2"
+    assert refused["approvals"]["source"] == "--approvals", "a counted count given only by flag names the flag"
+    # Saying zero is the way to merge without approvals, and the skip is said on both surfaces.
+    result = runner.invoke(app, ["review", "merge", "--approvals", "0"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["approvals"] == {"required": 0, "skipped": True, "source": "--approvals"}
+    assert "approvals: skipped, 0 required by --approvals" in result.stderr
 
 
 def test_approve_uses_workspace_identity_from_a_member_cwd(world, monkeypatch):
@@ -717,6 +745,7 @@ def test_merge_defaults_keep_explicit_flags_with_approval_floor(world):
     receipt = json.loads(result.stdout)
     assert receipt["feature"] == "feature" and receipt["into"] == "main"
     assert receipt["approvals"]["required"] == 1 and receipt["approvals"]["count"] == 1
+    assert receipt["approvals"]["source"] == "grip.toml and --approvals", "a flag that cannot lower the floor is still named"
     assert "(given)" in result.stderr
     assert git(world["remote"], "rev-parse", "main^2") == world["head"]
 
@@ -782,7 +811,11 @@ def test_a_reviewer_who_stamps_before_receiving_gets_a_named_refusal_and_the_ord
 
 
 def _reviewer_without_the_head(world, tmp_path, monkeypatch):
-    """A reviewer's own workspace whose member clone was made before the head was pushed, then the review received."""
+    """A reviewer's own workspace whose member clone was made before the head was pushed, then the review received.
+
+    receive now fetches a head the receiving remote serves; a member whose head lives on another remote is not
+    fetched, and stamp fetches it. That is the path these rows keep: the head receive fetched is pruned again, so
+    the clone lacks it the way such a member's clone does."""
     reviewer = tmp_path / "reviewer-ws"
     reviewer.mkdir()
     # --no-local: a local clone copies every object, which would hide the case a real early clone meets
@@ -793,6 +826,9 @@ def _reviewer_without_the_head(world, tmp_path, monkeypatch):
     git(reviewer, "config", "user.email", "r@example.invalid")
     rid = "gr:" + world["rid"]
     assert runner.invoke(app, ["review", "receive", str(reviewer), rid, "--remote", str(world["remote"])]).exit_code == 0
+    # receive fetched the head by id onto no ref; drop it so stamp meets a clone without it
+    git(reviewer / "member", "reflog", "expire", "--expire=now", "--all")
+    git(reviewer / "member", "gc", "-q", "--prune=now")
     assert subprocess.run(["git", "-C", str(reviewer / "member"), "cat-file", "-e", world["head"] + "^{commit}"],
                           capture_output=True).returncode != 0, "precondition: the reviewer's clone lacks the head"
     return reviewer, rid
@@ -835,3 +871,168 @@ def test_a_head_the_member_remote_no_longer_has_still_refuses_head_not_fetched(w
     assert early.exit_code == 2 and "head_not_fetched: member" in early.output, early.output
     assert "unknown revision" not in early.output, early.output
     assert any(x.startswith("next: ") for x in early.output.splitlines()), early.output
+
+
+def test_a_bind_approval_push_carries_no_pr_lane_approval(world):
+    """PR-lane approvals (PREFIX + "pr/<head>") are local. The bind writer pushes only its own tip:ref, so a ref
+    under pr/ in the repo it pushes from stays home while the bind approval reaches the remote."""
+    workspace, remote, rid = world["workspace"], world["remote"], world["rid"]
+    pr_ref = approvals.PR_PREFIX + world["head"]
+    git(workspace, "update-ref", pr_ref, rid)  # any object the store holds; the review commit is one
+    stamped = approve_as(world, "Reviewer B")
+    assert stamped.exit_code == 0, stamped.output
+    on_remote = git(remote, "for-each-ref", "--format=%(refname)", approvals.PREFIX).splitlines()
+    assert approvals.PREFIX + rid in on_remote, on_remote  # control: the bind approval was pushed
+    assert not [r for r in on_remote if r.startswith(approvals.PR_PREFIX)], on_remote
+
+
+def _reviewer_in_another_gripspace(world, tmp_path, monkeypatch, *open_args):
+    """A reviewer whose own workspace does not hold the reviewed repo at all (another team's gripspace): it receives
+    the review and opens a lane, which is the only place the member is checked out."""
+    reviewer = tmp_path / "other-gripspace"
+    reviewer.mkdir()
+    # their own repo, with a remote of its own: nothing in this workspace is the reviewed member
+    theirs = tmp_path / "theirs.git"
+    git(tmp_path, "init", "--bare", "-b", "main", theirs)
+    git(reviewer, "clone", theirs, "their-own-repo")
+    git(reviewer / "their-own-repo", "commit", "--allow-empty", "-m", "theirs")
+    git(reviewer / "their-own-repo", "push", "origin", "main")
+    initialised = runner.invoke(app, ["store", "init", str(reviewer)])
+    assert initialised.exit_code == 0, initialised.output
+    monkeypatch.chdir(reviewer)
+    git(reviewer, "config", "user.name", "Reviewer R")
+    git(reviewer, "config", "user.email", "r@example.invalid")
+    rid = "gr:" + world["rid"]
+    got = runner.invoke(app, ["review", "receive", str(reviewer), rid, "--remote", str(world["remote"])])
+    assert got.exit_code == 0, got.output
+    lane = tmp_path / "review-lane"
+    opened = runner.invoke(app, ["review", "open", str(reviewer), rid, "--lane-dir", str(lane), *open_args])
+    assert opened.exit_code == 0, opened.output
+    return reviewer, rid, lane
+
+
+def test_a_reviewer_in_another_gripspace_stamps_from_the_review_lane(world, tmp_path, monkeypatch):
+    reviewer, rid, lane = _reviewer_in_another_gripspace(world, tmp_path, monkeypatch)
+    git(lane, "config", "user.name", "Lane Name")  # the approver is the store workspace's name, not the lane's
+    stamped = runner.invoke(app, ["review", "stamp", str(lane)])
+    assert stamped.exit_code == 0, stamped.output
+    receipt = json.loads(stamped.stdout)
+    assert receipt["review_id"] == rid and receipt["count"] == 1, receipt
+    assert [link["approver"] for link in receipt["links"]] == ["Reviewer R"], receipt
+    # the author's own workspace reads the same approval from the member remote
+    monkeypatch.chdir(world["workspace"])
+    seen = approvals.count_approvals(world["workspace"], world["rid"])
+    assert seen["count"] == 1 and [link["approver"] for link in seen["links"]] == ["Reviewer R"], seen
+
+
+def test_a_reviewer_in_another_gripspace_stamps_a_two_member_review_from_its_lane(multi, tmp_path, monkeypatch):
+    """Two members: the lane holds each at <lane>/<key>, and the stamp reaches both member remotes."""
+    reviewer, rid, lane = _reviewer_in_another_gripspace(multi, tmp_path, monkeypatch)
+    assert sorted(p.name for p in lane.iterdir() if (p / ".git").exists()) == ["beta", "member"]
+    stamped = runner.invoke(app, ["review", "stamp", str(lane)])
+    assert stamped.exit_code == 0, stamped.output
+    receipt = json.loads(stamped.stdout)
+    assert receipt["review_id"] == rid and receipt["count"] == 1, receipt
+    ref = approvals.PREFIX + multi["rid"]
+    tips = {key: git(m["remote"], "rev-parse", ref) for key, m in multi["members"].items()}
+    assert len(set(tips.values())) == 1 and receipt["tip"] in tips.values(), tips
+
+
+def test_a_member_directory_of_a_two_member_lane_stamps_its_lane(multi, tmp_path, monkeypatch):
+    reviewer, rid, lane = _reviewer_in_another_gripspace(multi, tmp_path, monkeypatch)
+    stamped = runner.invoke(app, ["review", "stamp", str(lane / "beta")])
+    assert stamped.exit_code == 0, stamped.output
+    assert json.loads(stamped.stdout)["count"] == 1, stamped.output
+
+
+def test_a_lane_holding_part_of_the_review_refuses_by_name_with_the_next_step(multi, tmp_path, monkeypatch):
+    reviewer, rid, lane = _reviewer_in_another_gripspace(multi, tmp_path, monkeypatch, "--repo", "beta")
+    refused = runner.invoke(app, ["review", "stamp", str(lane)])
+    assert refused.exit_code == 2, refused.output
+    assert "approval_lane_partial: this lane holds beta; the review has" in refused.output, refused.output
+    assert any(x.startswith("next: ") and "gr2 review open" in x for x in refused.output.splitlines()), refused.output
+    ref = approvals.PREFIX + multi["rid"]
+    assert all(subprocess.run(["git", "-C", str(m["remote"]), "rev-parse", "--verify", "-q", ref],
+                              capture_output=True).returncode != 0 for m in multi["members"].values())
+
+
+def test_a_lane_whose_marker_names_no_workspace_refuses_as_an_older_lane(world, tmp_path, monkeypatch):
+    reviewer, rid, lane = _reviewer_in_another_gripspace(world, tmp_path, monkeypatch)
+    marker = lane / ".grip-review-open.json"
+    record = json.loads(marker.read_text())
+    record.pop("workspace_root")
+    marker.write_text(json.dumps(record))
+    refused = runner.invoke(app, ["review", "stamp", str(lane)])
+    assert refused.exit_code == 2 and "approval_lane_names_no_workspace" in refused.output, refused.output
+    assert "unreadable" not in refused.output, refused.output
+
+
+def test_a_lane_whose_marker_names_a_relative_workspace_refuses_by_name(world, tmp_path, monkeypatch):
+    # review open writes workspace_root absolute; a hand-edited or foreign marker may not, and a relative root would
+    # resolve against the caller's cwd: here cwd makes "other-gripspace" the reviewer's real workspace, so it would stamp
+    reviewer, rid, lane = _reviewer_in_another_gripspace(world, tmp_path, monkeypatch)
+    marker = lane / ".grip-review-open.json"
+    record = json.loads(marker.read_text())
+    assert Path(record["workspace_root"]) == reviewer.resolve(), record
+    record["workspace_root"] = reviewer.name
+    marker.write_text(json.dumps(record))
+    monkeypatch.chdir(tmp_path)
+    refused = runner.invoke(app, ["review", "stamp", str(lane)])
+    assert refused.exit_code == 2 and "approval_lane_workspace_not_absolute" in refused.output, refused.output
+    assert subprocess.run(["git", "-C", str(world["remote"]), "rev-parse", "--verify", "-q",
+                           approvals.PREFIX + world["rid"]], capture_output=True).returncode != 0
+
+
+# A stamp on a review whose target has moved past the reviewed base can never be merged (merge refuses base_moved,
+# and the review cannot move: a new base is a new pin), so the stamp refuses before anything is pushed.
+
+def _advance(repo, remote, base, branch="main"):
+    """Move `branch` on `remote` one commit past `base`, as a teammate's merge does."""
+    tree = git(repo, "rev-parse", base + "^{tree}")
+    moved = git(repo, "commit-tree", tree, "-p", base, "-m", "main moved")
+    git(repo, "push", remote, f"{moved}:refs/heads/{branch}")
+    return moved
+
+
+def _approval_refs(remote):
+    return git(remote, "for-each-ref", "--format=%(refname)", approvals.PREFIX)
+
+
+def test_stamp_after_the_target_moved_refuses_base_moved_and_writes_nothing(world):
+    moved = _advance(world["member"], world["remote"], world["base"])
+    result = approve_as(world, "Approver B")
+    assert result.exit_code == 2, result.output
+    assert "base_moved" in result.output and "member" in result.output, result.output
+    assert world["base"][:12] in result.output and moved[:12] in result.output, result.output
+    advice = next(x for x in result.output.splitlines() if x.startswith("next: "))
+    assert "pin" in advice and "main" in advice, advice
+    assert _approval_refs(world["remote"]) == "", "no approval may be pushed for a review that cannot merge"
+
+
+def test_control_stamp_with_the_target_at_the_base_succeeds(world):
+    result = approve_as(world, "Approver B")
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["count"] == 1
+    assert _approval_refs(world["remote"]) != ""
+
+
+def test_stamp_succeeds_while_another_branch_still_sits_at_the_base(world):
+    """A review targeting a non-default branch (dev) stamps while that branch is at the base, even after main
+    moved. Known limit: an unrelated branch left at the base passes the same way; merge still refuses it."""
+    git(world["member"], "push", world["remote"], world["base"] + ":refs/heads/dev")
+    _advance(world["member"], world["remote"], world["base"])
+    result = approve_as(world, "Approver B")
+    assert result.exit_code == 0, result.output
+
+
+@pytest.mark.parametrize("moved, still", [("beta", "member"), ("member", "beta")])
+def test_stamp_names_only_the_member_whose_target_moved(multi, moved, still):
+    """Both orders: beta sorts first and member last, so a check of the first member alone fails one of them."""
+    m = multi["members"][moved]
+    _advance(m["repo"], m["remote"], m["base"])
+    result = approve_as(multi, "Approver B")
+    assert result.exit_code == 2, result.output
+    refusal = next(x for x in result.output.splitlines() if "base_moved" in x)
+    assert f"base_moved: {moved}:" in refusal and f"{still}:" not in refusal, refusal
+    for m in multi["members"].values():
+        assert _approval_refs(m["remote"]) == "", m["remote"]

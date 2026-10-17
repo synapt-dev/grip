@@ -90,7 +90,8 @@ def test_every_direct_site_has_the_classified_policy() -> None:
             ("lane_exit", "emit_after_outcome", "LANE_EXITED", False): 1,
             ("lane_lease_acquire", "emit_after_outcome", "LEASE_ACQUIRED", False): 1,
             ("lane_lease_release", "emit_after_outcome", "LEASE_RELEASED", False): 1,
-            ("review_bind", "emit_after_outcome", "REVIEW_BOUND", False): 1,
+            # the emit moved with the writer: `review pin` and `pr create --repo-path` both pin through _pin_rows
+            ("_pin_rows", "emit_after_outcome", "REVIEW_BOUND", False): 1,
             ("_emit_review_opened", "emit_after_outcome", "REVIEW_OPENED", False): 1,
             ("review_verify", "emit", "REVIEW_VERIFIED", False): 1,
             # the event type is the caller's (run_completed or run_refused), so the scan sees a variable

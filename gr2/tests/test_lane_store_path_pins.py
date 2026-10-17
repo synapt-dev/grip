@@ -78,7 +78,9 @@ def test_each_source_reads_as_itself_and_neither_reads_as_none(tmp_path: Path) -
     assert ld.load_members(tmp_path / "none") is None
 
 
-def test_both_sources_are_matched_by_name_and_never_resolved_silently(tmp_path: Path) -> None:
+def test_both_sources_are_matched_by_name_and_the_store_record_wins_out_loud(tmp_path: Path, capsys) -> None:
+    """Two disagreeing pins used to refuse (PinConflict). On a root with grip.toml the store's record is the pin
+    (grip.toml and the gitlinks own the pins), and one stderr line names both, so the choice is never silent."""
     root = tmp_path / "both"
     _write_spec(root, [{"name": "api", "url": "/r/api", "pin": A}, {"name": "x", "url": "/r/x"}])
     _write_grip_toml(root, [{"name": "api", "pin": A}, {"name": "x", "pin": B, "url": "/r/x2"}, {"name": "only", "pin": A, "url": "/r/o"}])
@@ -86,11 +88,12 @@ def test_both_sources_are_matched_by_name_and_never_resolved_silently(tmp_path: 
     assert got["api"]["pin"] == A and got["api"]["url"] == "/r/api"          # agree
     assert got["x"]["pin"] == B and got["x"]["url"] == "/r/x"                # a usable pin in one file only is used
     assert got["only"]["pin"] == A                                           # a member only in grip.toml is added
+    assert "gr2: member" not in capsys.readouterr().err                      # agreement prints nothing
     _write_grip_toml(root, [{"name": "api", "pin": B, "url": "/r/api"}])
-    with pytest.raises(ld.PinConflict) as exc:
-        ld.load_members(root)
-    text = str(exc.value)
-    assert exc.value.member == "api" and A[:12] in text and B[:12] in text and "grip.toml" in text and "workspace_spec.toml" in text
+    api = next(m for m in ld.load_members(root) if m["name"] == "api")
+    assert api["pin"] == B
+    err = capsys.readouterr().err
+    assert "member 'api'" in err and A[:12] in err and B[:12] in err and "using the store's record" in err
 
 
 @pytest.mark.parametrize("pin", ["main", "abc1234", "A" * 40, "g" * 40, ""])
@@ -158,16 +161,15 @@ def test_a_branch_name_in_grip_toml_refuses_as_unpinned_not_as_a_pin(tmp_path: P
     assert exc.value.code == "downstream_unpinned" and not (lane / "api").exists()
 
 
-def test_two_files_that_disagree_refuse_the_lane_naming_both_pins(tmp_path: Path) -> None:
+def test_two_files_that_disagree_run_the_lane_at_grip_tomls_pin(tmp_path: Path) -> None:
+    """Was a refusal (downstream_pin_conflict). The spec's pin is a commit nobody has; the lane runs downstream at
+    grip.toml's pin, which is the store's record."""
     lane, root, api_pin = _store_path_lane(tmp_path, pin="pin")
-    _write_spec(root, [{"name": "api", "url": str(root), "pin": "c" * 40}])
-    with pytest.raises(rr.ReviewRunRefused) as exc:
-        rr.run_review_lane(lane, pytest_args=["-q"])
-    assert exc.value.code == "downstream_pin_conflict"
-    assert api_pin[:12] in exc.value.detail and ("c" * 12) in exc.value.detail
-    assert not (lane / rr._VENV_DIRNAME).exists() and not (lane / "api").exists()
-    receipt = json.loads((lane / rr._RECEIPT_NAME).read_text())
-    assert receipt["refusal_code"] == "downstream_pin_conflict"
+    _write_spec(root, [{"name": "api", "pin": "c" * 40}])   # no url: grip.toml's remote is the member's
+    receipt = rr.run_review_lane(lane, pytest_args=["-q"])
+    assert receipt["result"] == "green", receipt
+    api_entry = next(m for m in receipt["members"] if m["key"] == "api")
+    assert api_entry["role"] == "downstream" and api_entry["bound_head"] == api_pin
 
 
 def test_the_workspace_spec_path_is_unchanged_when_only_the_spec_exists(tmp_path: Path) -> None:

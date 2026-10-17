@@ -49,7 +49,7 @@ def test_vendored_schema_is_the_pinned_schemas_commit():
     s = fd.schema()
     assert {n: f.name for n, f in s["ReviewBind"].items()} == {1: "schema", 2: "kind", 3: "policy", 4: "members", 5: "author"}
     assert s["Member"][10].name == "title" and s["Member"][13].type == "Evidence"
-    assert fd.SCHEMA_COMMIT == "88babf4a0c55110a1e1badc53f07a6f0f8912f86"
+    assert fd.SCHEMA_COMMIT == "a2707c456d137ce5cbabb18f7aa836897818d147"
     assert fd.SCHEMA_SOURCE == f"{fd.PACKAGE}@{fd.SCHEMA_COMMIT}"
 
 

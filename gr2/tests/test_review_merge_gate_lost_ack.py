@@ -12,7 +12,7 @@ import subprocess
 import pytest
 
 from gr2.python_cli import gitops, merge_gate
-from tests.test_review_merge_gate import _git_identity, check, git, merge, mains, slice2, world  # noqa: F401  (fixtures)
+from tests.test_review_merge_gate import record_set, _git_identity, check, git, merge, mains, slice2, world  # noqa: F401  (fixtures)
 
 REAL_RUN = subprocess.run
 
@@ -55,8 +55,9 @@ def test_a_lost_acknowledgement_reads_merged_never_nothing_moved(world, monkeypa
 
 
 def test_a_lost_acknowledgement_on_the_first_member_does_not_stop_the_set(slice2, monkeypatch):
+    record_set(slice2)  # a review over several members merges only on a passing set
     lose_acknowledgement(monkeypatch, only_first=True)
-    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", required_approvals=0)
     assert [r["state"] for r in receipt["members"]] == ["merged", "merged"], receipt
     assert code == merge_gate.EXIT_MERGED, receipt
     for k, m in slice2["members"].items():
@@ -131,10 +132,11 @@ def test_an_unreachable_remote_during_reconciliation_is_unknown_and_exit_four(wo
 
 
 def test_no_further_member_is_pushed_after_an_unknown_one(slice2, monkeypatch):
+    record_set(slice2)  # a review over several members merges only on a passing set
     alpha, beta = slice2["members"]["alpha"], slice2["members"]["beta"]
     pushes = lose_acknowledgement(monkeypatch, hide=alpha["remote"])
     try:
-        code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
+        code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", required_approvals=0)
     finally:
         away = alpha["remote"].with_name(alpha["remote"].name + ".away")
         if away.exists():
@@ -275,13 +277,14 @@ def test_a_nested_directory_never_selects_its_enclosing_repo(world, monkeypatch)
 def test_a_missing_bind_through_the_cli_is_a_json_receipt_not_a_traceback(world):
     from typer.testing import CliRunner
     from gr2.python_cli.app import app
-    out = CliRunner().invoke(app, ["review", "merge", str(world["author"]), "gr:" + "0" * 40, "--from", "feat"])
+    out = CliRunner().invoke(app, ["review", "merge", "--approvals", "0", str(world["author"]), "gr:" + "0" * 40, "--from", "feat"])
     assert out.exit_code == merge_gate.EXIT_PARTIAL, out.output
     receipt = json.loads(out.stdout)
     assert receipt["refused"].startswith("bind_unreadable") and receipt["members"] == []
 
 
 def test_a_later_member_moving_after_an_earlier_push_is_partial_not_none(slice2, monkeypatch):
+    record_set(slice2)  # a review over several members merges only on a passing set
     beta = slice2["members"]["beta"]
     real_run = subprocess.run
     fired = {"n": 0}
@@ -295,7 +298,7 @@ def test_a_later_member_moving_after_an_earlier_push_is_partial_not_none(slice2,
             git(beta["repo"], "push", beta["remote"], "feat")
         return result
     monkeypatch.setattr(merge_gate.subprocess, "run", run)
-    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", required_approvals=0)
     rows = {r["key"]: r for r in receipt["members"]}
     assert rows["alpha"]["final"] == "merged", receipt
     assert rows["beta"]["refused"].startswith("feature_moved_before_push"), receipt

@@ -78,6 +78,28 @@ def command_of(argv) -> str | None:
     return words[i] if i < len(words) else None
 
 
+#: Git locates a repository through these. gr2 always names its repository with `-C` (or a cwd), so a value
+#: inherited from the caller's environment (a hook, `GIT_DIR=... gr2 ...`) would aim git at a DIFFERENT
+#: repository. Each is dropped when its value is the inherited one; a caller that names its own value (a temporary
+#: GIT_INDEX_FILE) keeps it. The limit: a caller that names the SAME value it inherited gets it stripped too.
+LOCATING_ENV = (
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX", "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE",
+)
+
+
+def _child_env(env: dict | None) -> dict | None:
+    """The environment git runs with: `env` (or the inherited one) without the inherited locating variables."""
+    inherited = [key for key in LOCATING_ENV if key in os.environ]
+    if not inherited:
+        return env
+    child = dict(os.environ if env is None else env)
+    for key in inherited:
+        if child.get(key) == os.environ[key]:
+            del child[key]
+    return child
+
+
 def _spawn(argv: list[str], *, cwd: Path | None, input, binary: bool, env: dict | None,
            timeout: float | None, raise_timeout: bool) -> subprocess.CompletedProcess:
     """The one place gr2 starts git: an expiry is rc 124 with empty output unless the caller asks for the raise.
@@ -86,7 +108,7 @@ def _spawn(argv: list[str], *, cwd: Path | None, input, binary: bool, env: dict 
     if command_of(argv) == "clone":
         timeout = None
     try:
-        return subprocess.run(argv, cwd=cwd, input=input, env=env, capture_output=True, text=not binary,
+        return subprocess.run(argv, cwd=cwd, input=input, env=_child_env(env), capture_output=True, text=not binary,
                               check=False, timeout=timeout)
     except subprocess.TimeoutExpired:
         if raise_timeout:
@@ -122,7 +144,8 @@ def start(cwd: Path, *args: str) -> subprocess.Popen:
     caller owns its lifetime and must close it. stderr is discarded: batch commands answer on stdout."""
     try:
         return subprocess.Popen(["git", *NO_AUTO, "-C", str(cwd), *args],
-                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                env=_child_env(None))
     except FileNotFoundError as exc:
         if exc.filename == "git":
             raise GitMissingError("git is not on PATH; install git, then run the verb again") from None
@@ -470,7 +493,7 @@ def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | N
     seed_source = str(local_source) if seed_from_local else effective_url
 
     cache_repo_root.parent.mkdir(parents=True, exist_ok=True)
-    proc = clone("--mirror", seed_source, str(cache_repo_root))
+    proc = clone("--mirror", "--", seed_source, str(cache_repo_root))
     if proc.returncode != 0:
         raise SystemExit(f"failed to seed repo cache {seed_source} -> {cache_repo_root}:\n{proc.stderr or proc.stdout}")
 
@@ -685,6 +708,7 @@ def ensure_lane_checkout(
     branch: str,
     workspace_root: Path | None = None,
     seed_commit: str | None = None,
+    cache_root: Path | None = None,
 ) -> bool:
     """Ensure a real, state-isolated lane checkout exists (grip#807).
 
@@ -707,11 +731,24 @@ def ensure_lane_checkout(
         branch=branch,
         seed_commit=seed_commit,
         workspace_root=workspace_root,
+        cache_root=cache_root,
     )
 
 
+def branch_name_refusal(branch: object) -> str | None:
+    """Why ``branch`` cannot be handed to git as a branch name, or None. `-f` or `--detach` would be read as an option."""
+    if not isinstance(branch, str) or not branch or branch.startswith("-"):
+        return f"{branch!r} is not a branch name"
+    if run_argv(["git", "check-ref-format", "--branch", branch]).returncode:
+        return f"{branch!r} is not a valid branch name"
+    return None
+
+
 def checkout_branch(repo_root: Path, branch: str) -> None:
-    proc = git(repo_root, "checkout", branch)
+    refusal = branch_name_refusal(branch)
+    if refusal is not None:
+        raise SystemExit(f"failed to checkout in {repo_root}: {refusal}")
+    proc = git(repo_root, "checkout", branch, "--")
     if proc.returncode != 0:
         raise SystemExit(f"failed to checkout {branch} in {repo_root}:\n{proc.stderr or proc.stdout}")
 

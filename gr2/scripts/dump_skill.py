@@ -31,10 +31,11 @@ from gr2.python_cli.app import app  # noqa: E402
 
 INTRO = GR2 / "api" / "skill.intro.md"
 
-# The review flow, in the order an operator meets it. A curated list, not the whole app:
-# the skill is for one job.
-VERBS = ["store init", "store status", "review pin", "push", "review publish", "review receive", "review stamp",
-         "check run", "check show", "review merge"]
+# The verbs the skill's first screen names, in the order an operator meets them: the workspace move (its verb map
+# and recipes), then the review flow. A curated list, not the whole app: the skill is for these two jobs.
+VERBS = ["branch", "add", "commit", "store init", "store status", "store commit", "store check", "store push",
+         "store materialize", "review pin", "push", "review publish", "review receive", "review stamp",
+         "check run", "check set", "check show", "review merge"]
 NO_HELP = "(no help text in the code)"
 
 

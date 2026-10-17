@@ -20,7 +20,7 @@ _GR2_ROOT = Path(__file__).resolve().parents[1]  # gr2/ (the packaging root)
 _REPO_ROOT = _GR2_ROOT.parent
 _PYPROJECT = tomllib.loads((_GR2_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-_EXPECTED = "2.0.0a9"
+_EXPECTED = "2.0.0a10"
 
 
 def _cargo_version() -> str:
@@ -59,7 +59,7 @@ def test_gr2_version_is_decoupled_from_the_crate() -> None:
 
 
 def test_version_is_the_expected_prerelease() -> None:
-    """gr2 opens at the 2.0.0a9 pre-release."""
+    """gr2 opens at the 2.0.0a10 pre-release."""
     assert _PYPROJECT["project"]["version"] == _EXPECTED
 
 
@@ -90,9 +90,13 @@ def test_gr2_version_option_names_the_code_that_runs() -> None:
     line = result.stdout.strip()
     installed = importlib.metadata.version("gitgrip")
 
-    # one of the four declared forms, carrying the installed version when there is one
+    # one of the six declared forms, carrying the installed version when there is one; a
+    # non-editable install names its build (a dev commit, or an unknown build) unless the
+    # build stamp says it was made at the release tag
     assert re.fullmatch(
-        rf"(?:{re.escape(installed)}(?:\+g[0-9a-f]+|\+unknown| released)|unknown)", line
+        rf"(?:{re.escape(installed)}(?:\+g[0-9a-f]+|\+unknown| released"
+        rf"|\+g[0-9a-f]+(\.dirty)? dev build, not a release| unknown build, not a release)|unknown)",
+        line,
     ), (line, installed)
 
     # and NOT the bare metadata read, which is the whole point of the change

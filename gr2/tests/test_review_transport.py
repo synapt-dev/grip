@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 
 from pathlib import Path
@@ -15,7 +16,7 @@ except ImportError:  # older Typer uses the installed Click
     from click.utils import strip_ansi
 
 from tests.review_ref_helper import REVIEW_REF_PREFIX
-from gr2.python_cli import grip
+from gr2.python_cli import grip, next_steps
 from gr2.python_cli.app import app
 
 runner = CliRunner()
@@ -35,6 +36,11 @@ def cli(root, monkeypatch, *args):
 
 @pytest.fixture
 def handoff(tmp_path, monkeypatch):
+    return _handoff(tmp_path, monkeypatch)
+
+
+def _handoff(tmp_path, monkeypatch):
+    tmp_path.mkdir(parents=True, exist_ok=True)
     remote = tmp_path / "remote.git"
     seed = tmp_path / "seed"
     seed.mkdir()
@@ -145,6 +151,8 @@ def test_required_expectation_and_remote_are_not_inferred(handoff, monkeypatch, 
     display = required_input_display(missing_id, styled, "missing argument", "commit")
     (tmp_path / "missing-id.display.txt").write_text(display)
     assert calls == []
+    if verb == "publish":
+        return  # a bare publish is every member's own remote (tests/test_review_publish_all.py)
     missing_remote = runner.invoke(app, ["review", verb, "gr:" + commit], color=True)
     (tmp_path / "missing-remote.raw.txt").write_text(missing_remote.output)
     display = required_input_display(missing_remote, styled, "missing option", "--remote")
@@ -333,3 +341,150 @@ def test_a_legacy_bind_whose_tree_does_not_recompute_is_not_published(handoff, m
     assert result.exit_code == 2 and "review_tree_mismatch" in result.output, result.output
     assert git(receiver, "for-each-ref", "--format=%(refname)", PREFIX) == ""
     assert authority(receiver) == before
+
+
+def _rows(result):
+    return {r["key"]: r for r in json.loads(result.stdout)["heads"]}
+
+
+def test_receive_fetches_the_pinned_head_into_the_member_clone(handoff, monkeypatch):
+    """A reviewer's clone gets the pinned head from the remote it received from, so the set check can read it."""
+    author, receiver, remote, commit, _, head = handoff
+    git(author / "member", "push", remote, "HEAD:refs/heads/feat")
+    publish(handoff, monkeypatch)
+    clone = receiver / "member"
+    assert subprocess.run(["git", "cat-file", "-e", head + "^{commit}"], cwd=clone).returncode != 0  # control: absent
+    first = cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", remote)
+    assert first.exit_code == 0, first.output
+    assert _rows(first)["member"]["status"] == "fetched", first.stdout
+    assert git(clone, "cat-file", "-t", head) == "commit"
+    again = cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", remote)
+    assert again.exit_code == 0, again.output
+    assert _rows(again)["member"]["status"] == "already_present", again.stdout
+
+
+def test_receive_from_a_remote_that_is_not_the_members_fetches_nothing(handoff, monkeypatch, tmp_path):
+    author, receiver, remote, commit, _, head = handoff
+    git(author / "member", "push", remote, "HEAD:refs/heads/feat")
+    other = tmp_path / "other.git"
+    git(tmp_path, "init", "--bare", other)
+    result = cli(author, monkeypatch, "publish", "gr:" + commit, "--remote", other)
+    assert result.exit_code == 0, result.output
+    got = cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", other)
+    assert got.exit_code == 0, got.output
+    assert _rows(got)["member"]["status"] == "not_this_remote", got.stdout
+    assert subprocess.run(["git", "cat-file", "-e", head + "^{commit}"], cwd=receiver / "member").returncode != 0
+
+
+def test_a_head_on_another_remote_names_open_and_what_still_needs_the_head(handoff, monkeypatch, tmp_path):
+    """A review published to a remote that is not the member's (a staging remote): receive says the head is not
+    there, that open reads the carried range while show --diff and stamp need the head, and names the open command,
+    which runs exactly as printed."""
+    author, receiver, remote, commit, _, _ = handoff
+    staging = tmp_path / "staging.git"
+    git(tmp_path, "init", "--bare", staging)
+    assert cli(author, monkeypatch, "publish", "gr:" + commit, "--remote", staging).exit_code == 0
+    got = cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", staging)
+    assert got.exit_code == 0, got.output
+    row = _rows(got)["member"]
+    assert row["status"] == "not_this_remote", row
+    assert row["reason"] == f"head_not_on_this_remote: its remote is {remote}; open reads the carried range; show --diff and stamp need the head there", row
+    assert row["next"] == f"gr2 review open {receiver} gr:{commit}", row
+    opened = runner.invoke(app, shlex.split(row["next"])[1:])  # the named next step runs as printed
+    assert opened.exit_code == 0, opened.output
+    lane = Path(opened.output.split("lane-dir=")[1].split()[0])
+    assert git(lane, "rev-parse", "HEAD^{tree}") == git(author / "member", "rev-parse", "HEAD^{tree}")
+    assert "head_not_fetched" in cli(receiver, monkeypatch, "stamp", receiver, "gr:" + commit).output  # as the reason says
+
+
+
+def test_the_open_line_for_a_head_on_another_remote_quotes_a_workspace_with_a_space():
+    """The printed open line splits back to the workspace path when the path has a space in it."""
+    line = next_steps._open_from_range("/x y/ws", "gr:abc")
+    assert shlex.split(line) == ["gr2", "review", "open", "/x y/ws", "gr:abc"], line
+
+def test_a_head_the_remote_does_not_serve_is_named_with_the_command_to_run(handoff, monkeypatch):
+    """The author never pushed the head: receive still binds the review, and names the head it could not fetch and
+    the exact command that fetches it once the author pushes."""
+    _, receiver, remote, commit, _, head = handoff
+    publish(handoff, monkeypatch)
+    got = cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", remote)
+    assert got.exit_code == 0, got.output
+    row = _rows(got)["member"]
+    assert row["status"] == "not_fetched" and row["reason"].startswith("head_fetch_refused"), row
+    assert row["next"] == f"git -C {receiver / 'member'} fetch -- {remote} {head}", row
+    assert git(receiver, "rev-parse", PREFIX + commit) == commit  # the bind is published all the same
+
+
+def _set_check(root, monkeypatch, commit):
+    monkeypatch.chdir(root)
+    return runner.invoke(app, ["check", "set", str(root), "gr:" + commit, "--", "true"])
+
+
+def test_a_received_review_passes_the_set_check_with_no_hand_fetch(handoff, monkeypatch):
+    """The reviewer's flow end to end: receive, then the set check, with no git command in between."""
+    author, receiver, remote, commit, _, _ = handoff
+    git(author / "member", "push", remote, "HEAD:refs/heads/feat")
+    publish(handoff, monkeypatch)
+    got = cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", remote)
+    assert got.exit_code == 0, got.output
+    checked = _set_check(receiver, monkeypatch, commit)
+    assert checked.exit_code == 0, checked.output
+
+
+def test_a_set_check_on_a_clone_without_the_head_names_the_fetch(handoff, monkeypatch):
+    _, receiver, remote, commit, _, head = handoff
+    publish(handoff, monkeypatch)  # the author never pushed the head, so receive cannot fetch it
+    assert cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", remote).exit_code == 0
+    checked = _set_check(receiver, monkeypatch, commit)
+    assert checked.exit_code != 0, checked.output
+    assert "head_not_in_member_clone: member " + head in checked.output, checked.output
+    assert f"git -C {receiver / 'member'} fetch -- {remote} {head}" in checked.output, checked.output
+
+
+def test_a_head_a_force_push_left_unadvertised_is_named_with_the_command_to_run(handoff, monkeypatch):
+    """The head was pushed, then the branch was force-pushed back, so no ref on the remote points at it any more.
+    Whether a server serves a want for such a sha depends on the server (a local bare remote with this git does;
+    a server with uploadpack.allowAnySHA1InWant off may not), so the receipt must agree with the clone either way:
+    fetched means the head is there, not_fetched means it is not and names the command that fetches it."""
+    author, receiver, remote, commit, base, head = handoff
+    git(author / "member", "push", remote, "HEAD:refs/heads/feat")
+    git(author / "member", "push", "--force", remote, f"{base}:refs/heads/feat")
+    assert head not in git(receiver, "ls-remote", remote)  # control: no ref advertises the head
+    publish(handoff, monkeypatch)
+    got = cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", remote)
+    assert got.exit_code == 0, got.output
+    row = _rows(got)["member"]
+    present = subprocess.run(["git", "cat-file", "-e", head + "^{commit}"], cwd=receiver / "member").returncode == 0
+    if row["status"] == "fetched":
+        assert present, row
+    else:
+        assert row["status"] == "not_fetched" and row["reason"].startswith("head_fetch_refused"), row
+        assert not present and row["next"] == f"git -C {receiver / 'member'} fetch -- {remote} {head}", row
+
+
+def test_the_printed_fetch_runs_as_printed_from_a_path_with_a_space(tmp_path, monkeypatch):
+    """The author never pushed, so receive names the fetch; the author pushes, and the printed line, run verbatim
+    by a shell, brings the head into the clone. Unquoted, the space split the path and git exited 128."""
+    handoff = _handoff(tmp_path / "with space", monkeypatch)
+    author, receiver, remote, commit, _, head = handoff
+    publish(handoff, monkeypatch)
+    got = cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", remote)
+    assert got.exit_code == 0, got.output
+    row = _rows(got)["member"]
+    assert row["status"] == "not_fetched", row
+    git(author / "member", "push", remote, "HEAD:refs/heads/feat")
+    ran = subprocess.run(["sh", "-c", row["next"]], capture_output=True, text=True)
+    assert ran.returncode == 0, (row["next"], ran.stderr)
+    assert git(receiver / "member", "cat-file", "-t", head) == "commit"
+
+
+def test_the_set_check_fetch_command_round_trips_through_a_shell_from_a_path_with_a_space(tmp_path, monkeypatch):
+    handoff = _handoff(tmp_path / "with space", monkeypatch)
+    _, receiver, remote, commit, _, head = handoff
+    publish(handoff, monkeypatch)
+    assert cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", remote).exit_code == 0
+    checked = _set_check(receiver, monkeypatch, commit)
+    assert checked.exit_code != 0, checked.output
+    printed = strip_ansi(checked.output).split("`")[1]
+    assert shlex.split(printed) == ["git", "-C", str(receiver / "member"), "fetch", "--", str(remote), head], printed

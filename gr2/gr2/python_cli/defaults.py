@@ -29,6 +29,12 @@ def own_repo(path: Path) -> bool:
     return top is not None and Path(top).resolve() == path.resolve()
 
 
+def toplevel(path: Path) -> Path:
+    """The top level of the repository enclosing `path`, or `path` unchanged when it is not inside one."""
+    top = _git(path, "rev-parse", "--show-toplevel")
+    return Path(top) if top else path
+
+
 def current_head(path: Path) -> str | None:
     """The member clone's HEAD commit, or None when the path is not its own repository."""
     return _git(path, "rev-parse", "--verify", "HEAD^{commit}") if own_repo(path) else None
@@ -86,6 +92,21 @@ def branch(repos: list[Path], given: str | None) -> tuple[str, str]:
                            for r, n in names.items())
         raise Unresolved(f"feature_unresolved: members are not on one branch ({listed}); pass --from <branch>")
     return found.pop(), "current branch"
+
+
+def pinned_target(members: list[dict]) -> tuple[str, str] | None:
+    """(target branch, source) from the target each member was pinned against, or None for a review pinned before
+    the target was recorded (the caller then reads the remote, as before). Members pinned against different
+    targets refuse: one merge names one --into."""
+    recorded = {m["key"]: m["target"] for m in members if m.get("target")}
+    if not recorded:
+        return None
+    names = set(recorded.values())
+    if len(recorded) != len(members) or len(names) != 1:
+        listed = ", ".join(f"{m['key']}={recorded.get(m['key'], 'not recorded')}" for m in members)
+        raise Unresolved(f"into_unresolved: the members were pinned against different targets ({listed}); "
+                         "pass --into <branch>")
+    return names.pop().removeprefix("refs/heads/"), "pinned target"
 
 
 def target_branch(members: list[tuple[Path, str, str]], given: str | None) -> tuple[str, str]:

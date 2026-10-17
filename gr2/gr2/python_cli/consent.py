@@ -73,19 +73,29 @@ def workspace_spec_path(workspace_root: Path) -> Path:
     return grip_dir(workspace_root) / "workspace_spec.toml"
 
 
+def _declared_repos(workspace_root: Path) -> list:
+    """The spec's [[repos]]: the spec FILE's when the root has one (an unreadable file declares none), else the spec
+    derived from a native root's grip.toml (`spec_apply.derived_spec_doc`), so a store init root has the same member
+    keys and sibling boundary a written spec would give it."""
+    spec = workspace_spec_path(workspace_root)
+    if spec.exists():
+        try:
+            return tomllib.loads(spec.read_text()).get("repos", [])
+        except tomllib.TOMLDecodeError:
+            return []
+    from .spec_apply import derived_spec_doc  # spec_apply imports this module
+
+    derived = derived_spec_doc(workspace_root)
+    return list(derived["repos"]) if derived is not None else []
+
+
 def member_key(workspace_root: Path, repo_root: Path, repo_name: str) -> str:
     """The consent key for a member: the spec's declared path for this repo
     NAME when the spec names one (stable across lane copies of the member);
     otherwise the workspace-relative path of repo_root."""
-    spec = workspace_spec_path(workspace_root)
-    if spec.exists():
-        try:
-            doc = tomllib.loads(spec.read_text())
-        except tomllib.TOMLDecodeError:
-            doc = {}
-        for repo in doc.get("repos", []):
-            if str(repo.get("name", "")) == repo_name and repo.get("path"):
-                return str(repo["path"]).strip("/")
+    for repo in _declared_repos(workspace_root):
+        if str(repo.get("name", "")) == repo_name and repo.get("path"):
+            return str(repo["path"]).strip("/")
     try:
         return str(repo_root.resolve().relative_to(workspace_root.resolve()))
     except ValueError:
@@ -168,16 +178,9 @@ def declared_member_roots(workspace_root: Path, exclude: Path | None = None) -> 
     """The spec's [[repos]] paths (resolved), minus the caller's own member —
     the sibling-member boundary: a member may not write into another
     member's tree, even with consent."""
-    spec = workspace_spec_path(workspace_root)
-    if not spec.exists():
-        return []
-    try:
-        doc = tomllib.loads(spec.read_text())
-    except tomllib.TOMLDecodeError:
-        return []
     roots = []
     exclude_resolved = exclude.resolve() if exclude is not None else None
-    for repo in doc.get("repos", []):
+    for repo in _declared_repos(workspace_root):
         rel = str(repo.get("path", "")).strip("/")
         if not rel or rel in (".", ".."):
             continue

@@ -6,12 +6,14 @@ genuinely does not say.
 from __future__ import annotations
 
 import json
+import re
 import sys
 
 from typer.testing import CliRunner
 
+from gr2.python_cli import grip
 from gr2.python_cli.app import app
-from tests.test_review_merge_gate import _git_identity, check, git, slice2, world  # noqa: F401  (fixtures)
+from tests.test_review_merge_gate import _git_identity, check, git, publish, slice2, world  # noqa: F401  (fixtures)
 
 runner = CliRunner()
 
@@ -46,17 +48,17 @@ def test_no_upstream_and_no_origin_refuses_and_names_the_flag(world):
 
 def test_review_merge_with_no_arguments_merges_the_bind_at_the_current_heads(world):
     assert runner.invoke(app, ["check", "run", str(world["member"]), "--", sys.executable, "-c", "pass"]).exit_code == 0
-    merged = runner.invoke(app, ["review", "merge"])
+    merged = runner.invoke(app, ["review", "merge", "--approvals", "0"])
     assert merged.exit_code == 0, merged.output
     assert f"review={world['review']} (pinned review at the current heads)" in merged.stderr
-    assert "from=feat (current branch)" in merged.stderr and "into=main (default branch at the reviewed base)" in merged.stderr
+    assert "from=feat (current branch)" in merged.stderr and "into=main (pinned target)" in merged.stderr
     tip = git(world["remote"], "rev-parse", "main")
     assert git(world["remote"], "rev-list", "--parents", "-n", "1", tip).split()[1:] == [world["base"], world["head"]]
 
 
 def test_review_merge_overrides_still_win(world):
     assert runner.invoke(app, ["check", "run", str(world["member"]), "--", sys.executable, "-c", "pass"]).exit_code == 0
-    merged = runner.invoke(app, ["review", "merge", world["review"], "--from", "feat", "--into", "main"])
+    merged = runner.invoke(app, ["review", "merge", "--approvals", "0", world["review"], "--from", "feat", "--into", "main"])
     assert merged.exit_code == 0, merged.output
     assert "(given)" in merged.stderr
 
@@ -65,7 +67,7 @@ def test_a_member_moved_locally_matches_no_bind_and_refuses(world):
     (world["member"] / "later.txt").write_text("later\n")
     git(world["member"], "add", "later.txt")
     git(world["member"], "commit", "-m", "later")
-    merged = runner.invoke(app, ["review", "merge"])
+    merged = runner.invoke(app, ["review", "merge", "--approvals", "0"])
     assert merged.exit_code == 3, merged.output
     receipt = out(merged)
     assert receipt["refused"].startswith("review_ambiguous: no pinned review")
@@ -75,7 +77,7 @@ def test_a_member_moved_locally_matches_no_bind_and_refuses(world):
 
 def test_members_on_different_branches_refuse_the_feature_default(slice2):
     git(slice2["members"]["beta"]["repo"], "checkout", "-q", "-b", "other")
-    merged = runner.invoke(app, ["review", "merge", slice2["review"]])
+    merged = runner.invoke(app, ["review", "merge", "--approvals", "0", slice2["review"]])
     assert merged.exit_code == 3, merged.output
     assert out(merged)["refused"].startswith("feature_unresolved") and "--from" in out(merged)["refused"]
 
@@ -86,27 +88,60 @@ def test_two_binds_at_the_current_heads_refuse_and_list_both(world, monkeypatch)
     monkeypatch.setenv("GIT_AUTHOR_DATE", "2001-01-01T00:00:00Z")
     again = runner.invoke(app, ["review", "bind", "--repo", "member", "--remote", str(world["remote"]),
                                 "--base", world["base"], "--head", world["head"], "--ref", "refs/heads/main",
-                                "--source", str(world["member"]), "--ratified", "second-look"])
+                                "--source", str(world["member"])])  # pushed as the feature tip: pins without a receipt
     assert again.exit_code == 0, again.output
-    merged = runner.invoke(app, ["review", "merge"])
+    merged = runner.invoke(app, ["review", "merge", "--approvals", "0"])
     assert merged.exit_code == 3, merged.output
     reason = out(merged)["refused"]
     assert reason.startswith("review_ambiguous: several pinned reviews") and reason.count("gr:") == 2, reason
     assert git(world["remote"], "rev-parse", "main") == world["base"]
 
 
-def test_two_branches_at_the_reviewed_base_refuse_even_when_the_remote_head_names_one(world):
-    """With dev cut at the base and the remote's HEAD moved to dev, no default is guessed."""
+def _old_pin(world, monkeypatch):
+    """The same heads pinned the way a bind did before the target was recorded (no `target` field), dated apart
+    from the fixture's bind so the two are two commits. Returns its id."""
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2001-01-01T00:00:00Z")
+    monkeypatch.setenv("GIT_AUTHOR_DATE", "2001-01-01T00:00:00Z")
+    with monkeypatch.context() as mp:
+        mp.setattr(grip, "_PINNED_TARGET", re.compile(r"(?!)"))
+        made = runner.invoke(app, ["review", "bind", "--repo", "member", "--remote", str(world["remote"]),
+                                   "--base", world["base"], "--head", world["head"], "--ref", "refs/heads/main",
+                                   "--source", str(world["member"])])  # pushed as the feature tip: pins without a receipt
+    assert made.exit_code == 0, made.output
+    refs = git(world["author"], "for-each-ref", "--format=%(refname)", "refs/dev.synapt.grip/__reviews__/").split()
+    old = ["gr:" + r.rsplit("/", 1)[1] for r in refs if not r.endswith(world["review"].removeprefix("gr:"))]
+    assert len(old) == 1, refs
+    assert "target" not in grip.show_review_commit(world["author"], old[0].removeprefix("gr:"))["members"][0], "fixture: an old pin"
+    assert "target" in grip.show_review_commit(world["author"], world["review"].removeprefix("gr:"))["members"][0], "fixture: a new pin"
+    publish(world["author"], old[0], world["remote"])
+    return old[0]
+
+
+def test_two_branches_at_the_reviewed_base_refuse_even_when_the_remote_head_names_one(world, monkeypatch):
+    """A review pinned before the target was recorded: with dev cut at the base and the remote's HEAD moved to
+    dev, no default is guessed."""
+    old = _old_pin(world, monkeypatch)
     git(world["remote"], "branch", "dev", world["base"])
     git(world["remote"], "symbolic-ref", "HEAD", "refs/heads/dev")
     assert runner.invoke(app, ["check", "run", str(world["member"]), "--", sys.executable, "-c", "pass"]).exit_code == 0
-    merged = runner.invoke(app, ["review", "merge"])
+    merged = runner.invoke(app, ["review", "merge", "--approvals", "0", old])
     assert merged.exit_code == 3, merged.output
     assert out(merged)["refused"].startswith("into_unresolved: no remote's default branch") and "--into" in out(merged)["refused"]
     assert git(world["remote"], "rev-parse", "dev") == world["base"] == git(world["remote"], "rev-parse", "main")
-    named = runner.invoke(app, ["review", "merge", "--into", "main"])
+    named = runner.invoke(app, ["review", "merge", "--approvals", "0", old, "--into", "main"])
     assert named.exit_code == 0, named.output
     assert git(world["remote"], "rev-parse", "dev") == world["base"]
+
+
+def test_two_branches_at_the_reviewed_base_merge_into_the_pinned_target(world):
+    """The same remote, the review pinned with its target recorded: the pin says main, so nothing is guessed."""
+    git(world["remote"], "branch", "dev", world["base"])
+    git(world["remote"], "symbolic-ref", "HEAD", "refs/heads/dev")
+    assert runner.invoke(app, ["check", "run", str(world["member"]), "--", sys.executable, "-c", "pass"]).exit_code == 0
+    merged = runner.invoke(app, ["review", "merge", "--approvals", "0"])
+    assert merged.exit_code == 0, merged.output
+    assert "into=main (pinned target)" in merged.stderr, merged.stderr
+    assert git(world["remote"], "rev-parse", "dev") == world["base"] != git(world["remote"], "rev-parse", "main")
 
 
 def test_an_upstream_whose_names_hold_a_slash_resolves_its_remote(world):
@@ -140,8 +175,10 @@ def test_a_member_dir_that_is_not_its_own_repo_never_borrows_the_enclosing_branc
         raise AssertionError("a non-repository member resolved a branch")
 
 
-def test_a_stale_branch_left_at_the_base_is_never_the_default_target(world):
-    """main moves after review; a hold branch still sits at the reviewed base. Nothing is pushed anywhere."""
+def test_a_stale_branch_left_at_the_base_is_never_the_default_target(world, monkeypatch):
+    """A review pinned before the target was recorded: main moves after review; a hold branch still sits at the
+    reviewed base. Nothing is pushed anywhere."""
+    old = _old_pin(world, monkeypatch)
     member = world["member"]
     git(member, "checkout", "-q", "-b", "later", world["base"])
     (member / "later.txt").write_text("later\n")
@@ -152,12 +189,12 @@ def test_a_stale_branch_left_at_the_base_is_never_the_default_target(world):
     git(member, "checkout", "-q", "feat")
     assert runner.invoke(app, ["check", "run", str(member), "--", sys.executable, "-c", "pass"]).exit_code == 0
     before = git(world["remote"], "for-each-ref", "--format=%(refname) %(objectname)")
-    merged = runner.invoke(app, ["review", "merge"])
+    merged = runner.invoke(app, ["review", "merge", "--approvals", "0", old])
     assert merged.exit_code == 3, merged.output
     assert out(merged)["refused"].startswith("into_unresolved") and "--into" in out(merged)["refused"]
     after = git(world["remote"], "for-each-ref", "--format=%(refname) %(objectname)")
     assert after == before, "a refused default must push nothing"
-    named = runner.invoke(app, ["review", "merge", "--into", "hold/stale"])
+    named = runner.invoke(app, ["review", "merge", "--approvals", "0", old, "--into", "hold/stale"])
     assert named.exit_code == 0, named.output
 
 
@@ -193,7 +230,7 @@ def _moved_local_head_inside_an_opened_review(world, tmp_path, monkeypatch):
 def test_an_opened_review_marker_supplies_the_workspace_never_the_review(world, tmp_path, monkeypatch):
     """Inside an opened review, a bare merge still selects by the members' current heads, not the marker's bind."""
     _moved_local_head_inside_an_opened_review(world, tmp_path, monkeypatch)
-    merged = runner.invoke(app, ["review", "merge"])
+    merged = runner.invoke(app, ["review", "merge", "--approvals", "0"])
     assert merged.exit_code == 3, merged.output
     assert out(merged)["refused"].startswith("review_ambiguous: no pinned review")
     assert git(world["remote"], "rev-parse", "main") == world["base"]
@@ -201,7 +238,7 @@ def test_an_opened_review_marker_supplies_the_workspace_never_the_review(world, 
 
 def test_an_explicit_old_review_still_merges_from_inside_a_marker(world, tmp_path, monkeypatch):
     _moved_local_head_inside_an_opened_review(world, tmp_path, monkeypatch)
-    merged = runner.invoke(app, ["review", "merge", world["review"], "--from", "feat", "--into", "main"])
+    merged = runner.invoke(app, ["review", "merge", "--approvals", "0", world["review"], "--from", "feat", "--into", "main"])
     assert merged.exit_code == 0, merged.output
     assert git(world["remote"], "rev-list", "--parents", "-n", "1", "main").split()[1:] == [world["base"], world["head"]]
 

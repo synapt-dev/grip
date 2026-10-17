@@ -35,7 +35,10 @@ gr2 workspace init ~/ws                 # scans the folder; writes .grip/workspa
 gr2 workspace materialize ~/ws --yes    # builds the .grip layout and a default unit
 gr2 workspace status ~/ws               # what kind of workspace this is
 gr2 store init ~/ws                     # the workspace snapshot store (needed before review)
+gr2 store commit -m "first snapshot"    # record the workspace once; lanes start from a recorded snapshot
 ```
+
+`store commit` reads the workspace from the current directory, which is why the walk starts with `cd ~/ws`; from anywhere else, name it: `gr2 store commit -C ~/ws -m "..."`. It prints nothing on success; each repo it records for the first time gets one note on stderr.
 
 A **unit** is one worker — you, or one agent — and `default` is created for you. A **lane** is one piece of work spanning repos, with its own clones, so two lanes never step on each other:
 
@@ -44,24 +47,25 @@ gr2 lane create ~/ws default feat-x --repos repo-a,repo-b --branch feat/x
 gr2 lane enter  ~/ws default feat-x --actor human:you
 ```
 
-Both commands print, per repo, the absolute directory you work in:
+`lane create` prints the lane's record, then, per repo, the absolute directory you work in (`lane enter` prints the same directories as `repo_paths`):
 
 ```
-repo-a: ~/ws/.grip/state/lanes/default/feat-x/repos/repo-a
-repo-b: ~/ws/.grip/state/lanes/default/feat-x/repos/repo-b
+~/ws/.grip/state/lanes/default/feat-x/lane.toml
+repo-a: ~/ws/agents/default/lanes/feat-x/repo-a
+repo-b: ~/ws/agents/default/lanes/feat-x/repo-b
 ```
 
 Edit there — not in your original clones. Stage and commit across the lane's repos:
 
 ```bash
-gr2 add . --repo-path ~/ws/.grip/state/lanes/default/feat-x/repos/repo-a
+gr2 add . --repo-path ~/ws/agents/default/lanes/feat-x/repo-a
 gr2 commit -m "my change" --workspace-root ~/ws --owner-unit default
 ```
 
 `commit` with the lane flags commits every lane repo that has staged changes and names the repos it skipped. If every repo was skipped it exits non-zero with one sentence naming where it looked — and, when it can see them, where your staged changes actually are. Run one command across every lane repo, then turn the lane into one reviewable object:
 
 ```bash
-gr2 exec run ~/ws default --actor human:you -- pytest -q   # one command, every lane repo
+gr2 exec run ~/ws default --actor human:you -- git status --short   # one command, every lane repo
 gr2 review create-project ~/ws default feat-x              # prints gr:<sha>: one object to review
 gr2 lane push ~/ws default feat-x                          # push every lane repo, each verified on its remote
 gr2 lane show ~/ws default                                 # where am I?
@@ -70,7 +74,7 @@ gr2 lane list ~/ws                                         # each lane: removabl
 gr2 lane remove ~/ws default feat-x                        # end it: its clones and record go
 ```
 
-`lane remove` refuses while the lane is entered or leased, or was made by `lane bind`, while any of its repos holds uncommitted work, a stash, or a commit no remote has (on any branch or tag), or while its checkout holds anything that is not one of its repos; it names each one and removes nothing. `exec run` and `lane exit` require `--actor`. Every group and verb takes `--help`; `gr2 --help` lists them all.
+`lane remove` refuses while the lane is entered or leased, or was made by `lane bind`, while any of its repos holds uncommitted work, a stash, or a commit no remote has (on any branch or tag), or while its checkout holds anything that is not one of its repos; it names each one and removes nothing. `exec run` runs whatever follows `--` in each lane repo, with your own `PATH`: a test runner works there only if it is installed where your shell finds it. `review create-project` refuses a lane repo holding any uncommitted or untracked file, so whatever a command leaves behind (`__pycache__/` after a pytest run, say) has to be in the repo's `.gitignore`. `exec run` and `lane exit` require `--actor`. Every group and verb takes `--help`; `gr2 --help` lists them all.
 
 ## What works today, and what is not there yet
 
@@ -93,16 +97,19 @@ Not there yet:
 | `workspace` | init, init-from-topology, materialize, status, convert-clone, detect-gr1, migrate-gr1, retire-gr1, migrate-lane-state, bootstrap-gr1, gitinclude |
 | `spec` | show, validate |
 | `lane` | create, enter, exit, show, resolve, bind, lease, list, push, remove |
-| (top level) | branch, add, commit, push, prune, status, plan, apply |
+| (top level) | branch, add, commit, push, prune, status, plan, apply, update |
 | `sync` | status, run |
 | `pr` | create, status, checks, merge, view |
 | `check` | run, show, set |
-| `review` | open, close, checkout-pr, run, check, pin, publish, receive, verify, show, stamp, merge, repin, create-project, bind, approve, rebind |
+| `proto` | json |
+| `review` | open, close, checkout-pr, run, check, pin, publish, receive, verify, show, stamp, merge, update, repin, create-project, bind, approve, rebind |
 | `exec` | status, run |
 | `repo` | status, projection-run |
 | `hooks` | trust, revoke, status, show, run |
 | `store` | init, commit, check, push, status, log, diff, checkout, materialize, migrate, migrate-reviews |
 | `target`, `config` | stored PR target; config overlays |
+
+Every `store` verb names its workspace with `-C/--root <root>`, else reads the current directory.
 
 `review bind`, `review approve` and `review rebind` remain as aliases of `pin`, `stamp` and `repin`.
 
@@ -116,6 +123,18 @@ a reviewer stamps it as the workspace's Git `user.name`:
 ```bash
 gr2 review stamp
 gr2 review merge
+```
+
+A reviewer whose own workspace does not hold the reviewed repos (another team's
+gripspace) receives the review, opens a lane, and stamps from the lane (or from one
+repo directory in it). The stamp uses the store of the workspace the lane was opened
+from and the repos checked out in the lane, and records the git `user.name` of that
+workspace, not of the lane:
+
+```bash
+gr2 review receive <their-workspace> gr:<id> --remote <member-remote>
+gr2 review open <their-workspace> gr:<id> --lane-dir <lane>
+gr2 review stamp <lane>
 ```
 
 The author recorded by the pin, and anyone who authored a commit in its range,
@@ -161,6 +180,18 @@ Set it with `git config user.name 'Your Name'` there if Git has no configured na
 `review show --json` and `review verify --json` include this author; older pinned reviews
 remain readable without an author field, and reading them does not invent one.
 
+## Run a review's tests
+
+`gr2 review run` runs the reviewed tree's tests inside the review's lane, and only after it proves the lane equals the pinned tree. What to install and what to test comes from the reviewed repo itself: a tracked `.review-install` file at the repo root, read whenever the flags are left out. For a Python repo tested with pytest it needs two lines: the package the run must import from inside the lane, and an install that brings pytest:
+
+```
+# .review-install
+package = mypkg
+install = {venv} -m pip install -e {lane} pytest
+```
+
+`{venv}` is the lane venv's Python executable, not its directory, and `{lane}` is the lane's checkout of the repo; both are filled in per token. Without an `install` line the run uses `<lane venv python> -m pip install -e <lane>`, which installs your package and no test runner, so a pytest repo without the line refuses (`pytest_not_installed`). Either way the repo must be pip-installable (a `pyproject.toml` or `setup.py` declaring that package). For another language, declare the runner and its command instead, for example `runner = cargo` and `test = cargo test`. The recognised keys are `install`, `package`, `runner`, `test` and `reports`; any other key is refused (`bad_hint`). A repo with no `.review-install` must pass `--package` and/or `--install`, and with neither the run refuses (`no_package`). `gr2 review run --help` has the full list.
+
 
 ## Transfer a native review
 
@@ -189,6 +220,13 @@ local review ref. A valid same-ID receive is idempotent. A conflicting existing 
 is refused. Object downloads may remain after refusal. The owned temporary ref
 is removed separately, and cleanup failure is reported without replacing a
 primary failure.
+
+Receive also fetches each member's pinned head from the remote it read the review
+from, one `heads` row per member. A member whose recorded remote is another one
+(a review published to a staging remote) is `not_this_remote`. `gr2 review open`
+builds the lane from the range the review carries, and the row's `next` names that
+command. `gr2 review show --diff` and `gr2 review stamp` still need the head: they
+refuse until the author pushes it to the member's own remote and it is fetched.
 
 The review commit carries its trees, blobs and range patches. It does not make
 its recorded base or original member head reachable as Git parents. Keep each
@@ -244,8 +282,17 @@ observation retains its fields and adds a SHA-256 `observation_id`.
 A review over several members is checked as one set. `gr2 check set <workspace> <review> -- <command>`
 reconstructs every member at its pinned head side by side (`GR2_SET_ROOT`, `GR2_REVIEW_ID` and `GR2_SET_MEMBERS`
 name them), runs the command once, and publishes one `set` observation per member remote, carrying the review and the
-identity of the set. `gr2 review merge` requires that record on a multi-member review (`--no-set` says otherwise),
-and `check show --require set --review <id>` reads a `set` record for another review as stale.
+identity of the set. With no `--check`, `gr2 review merge` on a multi-member review requires that record AND each
+member's `test` at its head: a member whose recorded `test` is red is refused and nothing lands, and a member with no
+`test` record of its own is decided by the passing set (members that import each other cannot pass a test alone), so
+one `check set` and the approvals are enough to merge. `--check test` names `test` explicitly and only a `test` record
+decides it (one that `check set --name test` wrote for this review counts); its refusal prints that `check set`. On a
+one-member review the default `test` is also decided by a passing `set` record for this review at that head. A `set`
+record for another review or other heads never counts. The requirement comes from the
+review, not from the person merging: on a multi-member review `--no-set` is refused, and so is any `--check` name other
+than `test` and `set`. `review pin` refuses a multi-member review whose rows do not each carry a `source` or a `range`,
+because `check set` could never run on it. `check show --require set --review <id>` reads a `set` record for another
+review as stale.
 
 A failed command is recorded and `check run` exits 1. Publication or execution
 refusals exit 2. `check show` returns `pass`, `fail` or `absent` in its JSON;

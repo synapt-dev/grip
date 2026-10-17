@@ -356,15 +356,16 @@ def test_verify_flags_structural_corruption_nonzero(tmp_path):
     ws = _grip_ws(tmp_path)
     grc = _bind(ws, remote, base, head, work)
     # An entry no field tree may hold. A field tree is verified as written, so verify REFUSES it
-    # (exit 2, a named reason, nothing on stdout) rather than reporting tree_matches false, which is
-    # what a legacy-layout bind reports for the same drift.
+    # (exit 2, a named reason as one JSON refusal on stdout) rather than reporting tree_matches false,
+    # which is what a legacy-layout bind reports for the same drift.
     corrupt = _add_root_entry(ws, grc, "unexpected.txt", b"unexpected\n")
 
     verified = runner.invoke(app, ["review", "verify", str(ws), corrupt, "--json"])
     assert verified.exit_code == 2, verified.output   # structural drift is never green
     assert "Traceback" not in verified.output
-    assert "review record" in verified.output and "unexpected.txt" in verified.output
-    assert verified.stdout == ""
+    refusal = json.loads(verified.stdout)
+    assert refusal["status"] == "refused" and refusal["refusal"] == "corrupt"
+    assert "review record" in refusal["message"] and "unexpected.txt" in refusal["message"]
 
 
 # --- multi-row bind from the CLI (N rows in ONE commit) -------

@@ -244,6 +244,54 @@ def test_a_commit_reachable_only_from_a_local_tag_is_not_removed(tmp_path: Path)
     _refused_untouched(ws, repo, _remove(ws), "lane_has_unpushed_commit", tagged[:12])
 
 
+def _lane_with_a_commit_only_a_pushed_tag_holds(tmp_path: Path) -> tuple[Path, Path, str]:
+    """A release tag off every branch, pushed (an annotated tag is this shape), and it kept every lane: refs/remotes/*
+    holds no tags, so `--tags --not --remotes` read the commit as unpushed."""
+    ws, repo = _pushed_exited_lane(tmp_path)
+    _git(repo, "checkout", "-q", "--detach")
+    (repo / "r.txt").write_text("a release, off every branch\n")
+    _git(repo, "add", "r.txt")
+    _git(repo, "commit", "-q", "-m", "release")
+    tagged = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "tag", "-a", "-m", "release", "v9.9.9")
+    _git(repo, "push", "-q", "origin", "refs/tags/v9.9.9")
+    _git(repo, "checkout", "-q", "feat/x")
+    assert _git(repo, "log", "HEAD", "--branches", "--tags", "--not", "--remotes", "--format=%H") == tagged, \
+        "the old query reads the pushed tag's commit as unpushed"
+    return ws, repo, tagged
+
+
+def test_a_commit_reachable_only_from_a_tag_the_remote_holds_is_removed(tmp_path: Path) -> None:
+    ws, repo, _ = _lane_with_a_commit_only_a_pushed_tag_holds(tmp_path)
+
+    result = _remove(ws)
+
+    assert result.exit_code == 0, result.output
+    assert not repo.exists(), "the lane's clone is gone"
+    assert not lane_proto.lane_file(ws, "atlas", "x").exists(), "the lane record is gone"
+
+
+def test_a_remote_whose_tags_cannot_be_listed_is_not_removed(tmp_path: Path) -> None:
+    ws, repo, _ = _lane_with_a_commit_only_a_pushed_tag_holds(tmp_path)
+    # Fetch skips this remote (skipFetchAll), so the fetch passes; asking it for its tags fails. An empty answer there
+    # must not read as "nothing to check": the lane is refused, unknown.
+    _git(repo, "remote", "add", "dead", str(tmp_path / "no-such-remote.git"))
+    _git(repo, "config", "remote.dead.skipFetchAll", "true")
+    _refused_untouched(ws, repo, _remove(ws), "lane_unpushed_unknown", "cannot list dead's tags")
+
+
+def test_lane_list_names_a_tag_only_commit_unchecked_not_unpushed(tmp_path: Path) -> None:
+    """The list does not fetch or ask remotes, so a commit only a tag holds is UNKNOWN there, never 'unpushed'."""
+    ws, _, tagged = _lane_with_a_commit_only_a_pushed_tag_holds(tmp_path)
+
+    result = runner.invoke(gr2_app.app, ["lane", "list", str(ws)])
+
+    assert result.exit_code == 0, result.output
+    row = next(line for line in result.output.splitlines() if line.startswith("atlas\tx\t"))
+    assert "\tkeep" in row and "lane_unpushed_unknown" in row and "reachable only from a tag" in row, row
+    assert "lane_has_unpushed_commit" not in row and tagged[:12] in row, row
+
+
 def _legacy_lane(tmp_path: Path) -> tuple[Path, Path]:
     """A lane with no recorded checkout_root: its clones live in the record directory beside lane.toml."""
     ws, _ = _pushed_exited_lane(tmp_path)
@@ -327,3 +375,86 @@ def test_a_lane_record_without_a_lane_name_is_named_and_kept(tmp_path: Path) -> 
 
 def test_an_empty_lane_record_is_named_and_neither_record_nor_clone_is_removed(tmp_path: Path) -> None:
     _broken_record_rows(*_two_lanes_with_a_broken_record(tmp_path, lambda _: ""))
+
+
+def _native_lane(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
+    """The README walk up to `lane create` on a workspace with a snapshot store: the lane root
+    agents/default/lanes/x is itself a store checkout. Returns (ws, lane root)."""
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home" / ".gitconfig").write_text("[user]\n\tname = t\n\temail = t@e.invalid\n")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    remote = tmp_path / "app.git"
+    _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(remote))
+    _git(tmp_path, "clone", "-q", str(remote), str(ws / "app"))
+    _git(ws / "app", "checkout", "-q", "-B", "main")
+    (ws / "app" / "README").write_text("app\n")
+    _git(ws / "app", "add", "README")
+    _git(ws / "app", "commit", "-qm", "init")
+    _git(ws / "app", "push", "-q", "origin", "main")
+    monkeypatch.chdir(ws)
+    for argv in (["workspace", "init", str(ws)], ["workspace", "materialize", str(ws), "--yes"],
+                 ["store", "init", str(ws)], ["store", "commit", "-m", "first snapshot"],
+                 ["lane", "create", str(ws), "default", "x", "--repos", "app", "--branch", "feat/x"]):
+        result = runner.invoke(gr2_app.app, argv)
+        assert result.exit_code == 0, f"{argv}: {result.output}"
+    root = ws / "agents" / "default" / "lanes" / "x"
+    assert (root / ".git").is_dir() and (root / "grip.toml").is_file(), "fixture check: the lane root is a store checkout"
+    return ws, root
+
+
+def _remove_native(ws: Path):
+    return runner.invoke(gr2_app.app, ["lane", "remove", str(ws), "default", "x"])
+
+
+def test_a_native_lane_whose_store_and_repos_are_all_pushed_is_removed(tmp_path: Path, monkeypatch) -> None:
+    ws, root = _native_lane(tmp_path, monkeypatch)
+    result = _remove_native(ws)
+    assert result.exit_code == 0, result.output
+    assert not root.exists()
+
+
+def test_a_native_lane_root_holding_an_unpushed_store_commit_is_not_removed(tmp_path: Path, monkeypatch) -> None:
+    ws, root = _native_lane(tmp_path, monkeypatch)
+    _git(root, "commit", "-q", "--allow-empty", "-m", "store work that exists only here")
+    commit = _git(root, "rev-parse", "HEAD")
+    result = _remove_native(ws)
+    assert result.exit_code != 0
+    assert f"lane_has_unpushed_commit: lane-root {commit}" in result.output, result.output
+    assert "lane_has_unlisted_content" not in result.output, result.output
+    assert _git(root, "rev-parse", "HEAD") == commit
+
+
+def test_a_native_lane_root_with_an_edited_store_file_is_not_removed(tmp_path: Path, monkeypatch) -> None:
+    ws, root = _native_lane(tmp_path, monkeypatch)
+    with (root / "grip.toml").open("a") as fh:
+        fh.write("# an edit that exists only here\n")
+    result = _remove_native(ws)
+    assert result.exit_code != 0
+    assert "lane_has_uncommitted_work: lane-root" in result.output, result.output
+    assert (root / "grip.toml").is_file()
+
+
+def test_a_native_lane_root_holding_a_store_stash_is_not_removed(tmp_path: Path, monkeypatch) -> None:
+    ws, root = _native_lane(tmp_path, monkeypatch)
+    with (root / "grip.toml").open("a") as fh:
+        fh.write("# stashed\n")
+    _git(root, "stash", "-q")
+    result = _remove_native(ws)
+    assert result.exit_code != 0
+    assert "lane_has_stash: lane-root" in result.output, result.output
+    assert root.exists()
+
+
+def test_a_stray_file_in_a_native_lane_root_is_still_named(tmp_path: Path, monkeypatch) -> None:
+    ws, root = _native_lane(tmp_path, monkeypatch)
+    (root / "notes.txt").write_text("ignored by the store, so only the unlisted check sees it\n")
+    (root / ".grip" / "mine").write_text("not the mirror cache\n")
+    result = _remove_native(ws)
+    assert result.exit_code != 0
+    assert f"lane_has_unlisted_content: {root / 'notes.txt'}" in result.output, result.output
+    assert f"lane_has_unlisted_content: {root / '.grip' / 'mine'}" in result.output, result.output
+    assert f"lane_has_unlisted_content: {root / '.git'}" not in result.output, result.output
+    assert (root / "notes.txt").is_file()

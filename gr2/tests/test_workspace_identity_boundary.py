@@ -73,8 +73,11 @@ def _write_workspace_spec(workspace_root: Path, repo_name: str, repo_url: str, *
 
 
 def test_compile_gr1_workspace_spec_omits_agent_id() -> None:
+    # The root IS atlas's desk (`worktree = "atlas-tree"` names this directory), so atlas is the
+    # root's own unit. A unit whose worktree names ANOTHER directory is another desk's root and is
+    # not migrated here (see tests/test_migrate_gr1_one_root.py).
     compiled = migration.compile_gr1_to_workspace_spec(
-        Path("/tmp/example"),
+        Path("/tmp/atlas-tree"),
         {
             "repos": {
                 "app": {"path": "./repos/app", "url": "https://example.com/app.git"},
@@ -90,17 +93,16 @@ def test_compile_gr1_workspace_spec_omits_agent_id() -> None:
     assert compiled["units"] == [
         {
             "name": "atlas",
-            # The unit path is now the REAL location gr1 declared. `worktree =
-            # "atlas-tree"` is a sibling desk, so the emitted path is
-            # `../atlas-tree`; it used to be the hard-coded `agents/atlas/home`,
-            # which is the defect this change replaces — a user who applied it got a nested
-            # home while their actual desk sat untouched beside the root.
+            # The unit path is the REAL location gr1 declared: `worktree =
+            # "atlas-tree"` is this root, so the emitted path is ".". It used to be
+            # the hard-coded `agents/atlas/home` -- a user who applied it got a nested
+            # home while their actual desk sat untouched.
             #
             # THIS ASSERTION IS NOT THE POINT OF THIS TEST. The boundary claim
             # is the `agent_id` assertion below: the compiler reads a directory
             # name and must not turn it into an agent IDENTITY. Nothing here
             # adds an identity field, which is why that assertion is untouched.
-            "path": "../atlas-tree",
+            "path": ".",
             "repos": ["app"],
             "migration_source": {"worktree": "atlas-tree", "channel": "#dev"},
         }

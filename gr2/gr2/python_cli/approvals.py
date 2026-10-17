@@ -87,8 +87,12 @@ def current_review(workspace: Path) -> str:
         raise ApprovalRefused(f"approval_bind_not_unique: {exc}") from exc
 
 
-def required_approvals(workspace: Path, given: int | None = None) -> int:
-    """Workspace policy is a floor, default zero; a CLI count can raise it."""
+def approval_policy(workspace: Path, given: int | None = None) -> dict:
+    """The approval count a merge requires, and where it came from.
+
+    grip.toml `[approvals] required` is a floor; `--approvals N` can raise it. When NEITHER is given the merge
+    refuses with `approvals_unset` rather than merging on zero approvals: zero is a choice someone makes
+    (`required = 0`, or `--approvals 0`), never a default nobody saw."""
     try:
         policy = tomllib.loads((workspace / "grip.toml").read_text()).get("approvals", {})
     except FileNotFoundError:
@@ -101,15 +105,71 @@ def required_approvals(workspace: Path, given: int | None = None) -> int:
         raise ApprovalRefused("approval_policy_invalid: require_signed must be a boolean")
     if policy.get("require_signed"):
         raise ApprovalRefused("approval_signed_unsupported")
+    configured = "required" in policy
     required = policy.get("required", 0)
     if type(required) is not int or required < 0:
         raise ApprovalRefused("approval_policy_invalid: required must be a nonnegative integer")
     if given is not None and (type(given) is not int or given < 0):
         raise ApprovalRefused("approval_policy_invalid: requested count must be a nonnegative integer")
-    return max(required, given or 0)
+    if not configured and given is None:
+        raise ApprovalRefused("approvals_unset: grip.toml has no [approvals] required and no --approvals was given")
+    source = [name for name, present in (("grip.toml", configured), ("--approvals", given is not None)) if present]
+    return {"required": max(required, given or 0), "source": " and ".join(source)}
 
 
-def _context(workspace: Path, review_id: str) -> tuple[dict, set[str]]:
+def required_approvals(workspace: Path, given: int | None = None) -> int:
+    """The required count alone; refuses `approvals_unset` as `approval_policy` does."""
+    return approval_policy(workspace, given)["required"]
+
+
+def review_open_lane(lane: Path) -> tuple[Path, str, dict[str, Path]] | None:
+    """A lane `review open` made: (the store workspace it was opened from, the review id, each member's checkout).
+
+    A reviewer in another gripspace has no member clone in their own workspace; the lane is the only checkout of
+    the reviewed repos, so stamp reads the members there and the store from the workspace the marker names.
+    A member directory of a multi-member lane (`<lane>/<key>`) resolves to its lane. None when neither holds a
+    review-open marker."""
+    from . import review_run
+    lane = Path(lane).resolve()
+    path = review_run.find_marker(lane)
+    if path is None:
+        parent = review_run.find_marker(lane.parent)
+        if parent is None:
+            return None
+        found = review_open_lane(lane.parent)
+        return found if found is not None and found[2].get(lane.name) == lane else None
+    try:
+        marker = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise ApprovalRefused(f"approval_review_record_unreadable: {path}") from exc
+    rows = marker.get("repos") if isinstance(marker, dict) else None
+    if (not review_run.marker_kind_ok(marker) or not isinstance(marker.get("gr_commit"), str)
+            or not isinstance(rows, list) or not rows
+            or not all(isinstance(r, dict) and isinstance(r.get("key"), str) for r in rows)):
+        raise ApprovalRefused(f"approval_review_record_unreadable: {path}")
+    if not isinstance(marker.get("workspace_root"), str):
+        raise ApprovalRefused(f"approval_lane_names_no_workspace: {lane} was opened by an older gr2 and does not name "
+                              "the workspace it was opened from",
+                              next_step=f"next: open the review again, then stamp the new lane: "
+                                        f"gr2 review open <your-workspace> gr:{marker['gr_commit']} --lane-dir <new-lane>, "
+                                        "then gr2 review stamp <new-lane>")
+    if not Path(marker["workspace_root"]).is_absolute():
+        raise ApprovalRefused(f"approval_lane_workspace_not_absolute: {lane} names the workspace "
+                              f"{marker['workspace_root']!r}, which is not absolute and would resolve against the "
+                              "current directory; review open writes it absolute, so this marker was edited by hand or written elsewhere",
+                              next_step=f"next: open the review again, then stamp the new lane: "
+                                        f"gr2 review open <your-workspace> gr:{marker['gr_commit']} --lane-dir <new-lane>, "
+                                        "then gr2 review stamp <new-lane>")
+    try:
+        members = ({rows[0]["key"]: lane} if len(rows) == 1
+                   else {r["key"]: review_run._member_dir(lane, r["key"]) for r in rows})
+    except review_run.ReviewRunRefused as exc:
+        raise ApprovalRefused(f"approval_review_record_unreadable: {exc.detail}") from exc
+    return Path(marker["workspace_root"]).resolve(), marker["gr_commit"], members
+
+
+def _context(workspace: Path, review_id: str, member_dirs: dict[str, Path] | None = None) -> tuple[dict, set[str]]:
+    """`member_dirs` (key -> checkout) reads the members from a review lane instead of the workspace's own clones."""
     from . import merge_gate
     workspace = workspace.resolve()
     if merge_gate._toplevel(workspace) != workspace or not merge_gate._store_inside(workspace, workspace):
@@ -126,9 +186,22 @@ def _context(workspace: Path, review_id: str) -> tuple[dict, set[str]]:
     members = []
     root = workspace.resolve()
     for m in view["members"]:
-        repo = (root / m["path"]).resolve()
-        if not repo.is_relative_to(root) or merge_gate._toplevel(repo) != repo or not merge_gate._store_inside(repo, root):
-            raise ApprovalRefused(f"approval_member_repo_mismatch: {m['key']}")
+        if member_dirs is not None:
+            repo = member_dirs.get(m["key"])
+            if repo is None:
+                keys = [r["key"] for r in view["members"]]
+                raise ApprovalRefused(
+                    f"approval_lane_partial: this lane holds {', '.join(sorted(member_dirs))}; the review has "
+                    f"{', '.join(keys)}",
+                    next_step=f"next: open the whole review and stamp that lane: gr2 review open {workspace} "
+                              f"gr:{rid} --lane-dir <new-lane>, then gr2 review stamp <new-lane>")
+            if merge_gate._toplevel(repo) != repo.resolve():
+                raise ApprovalRefused(f"approval_member_repo_mismatch: {m['key']}")
+            repo = repo.resolve()
+        else:
+            repo = (root / m["path"]).resolve()
+            if not repo.is_relative_to(root) or merge_gate._toplevel(repo) != repo or not merge_gate._store_inside(repo, root):
+                raise ApprovalRefused(f"approval_member_repo_mismatch: {m['key']}")
         # A reviewer's clone made before the head was pushed does not hold it, so the exact reviewed head is
         # fetched from the member remote the review names (the remote the approval chain is read from below).
         # Only when that remote cannot serve it: a named refusal with the next step, not a raw `unknown revision`.
@@ -148,7 +221,34 @@ def _context(workspace: Path, review_id: str) -> tuple[dict, set[str]]:
             raise ApprovalRefused(f"approval_head_tree_unmeasurable: {m['key']}")
         authors.update(_git(repo, "log", "--format=%an", f"{m['base']}..{m['head']}").splitlines())
         members.append({"key": m["key"], "remote": m["remote"], "head_commit": m["head"], "head_tree": tree})
+    # Every local refusal comes first; then one remote read per member, before any approval is pushed.
+    for m in view["members"]:
+        _refuse_moved_base(workspace, m["key"], m["remote"], m["base"], "gr:" + rid)
     return {"review_id": "gr:" + rid, "author": author, "members": members}, authors
+
+
+def _refuse_moved_base(workspace: Path, key: str, remote: str, base: str, review: str) -> None:
+    """Refuse a stamp the merge could never count: a merge needs its target at the reviewed base, so when no branch
+    on the member's remote still sits at that base, the target has moved and the review needs a new pin. Read
+    before any approval is pushed. Any branch at the base passes (a review may target a branch other than the
+    default), so a stale branch left at the base lets the stamp through; the merge still refuses that case."""
+    if remote.startswith("-") or any(ord(c) < 32 or ord(c) == 127 for c in remote):
+        raise ApprovalRefused("approval_remote_invalid")
+    default, at_base, tips = None, False, {}
+    for line in _git(workspace, "ls-remote", "--symref", "--", remote, "HEAD", "refs/heads/*").splitlines():
+        left, _, ref = line.partition("\t")
+        if left.startswith("ref: refs/heads/") and ref == "HEAD":
+            default = left.removeprefix("ref: refs/heads/")
+        elif ref.startswith("refs/heads/"):
+            tips[ref.removeprefix("refs/heads/")] = left
+            at_base = at_base or left == base
+    if at_base:
+        return
+    from . import next_steps
+    branch = default or "<target branch>"
+    now = f" ({branch} is now {tips[branch][:12]})" if branch in tips else ""
+    raise ApprovalRefused(f"base_moved: {key}: no branch on its remote is at the reviewed base {base[:12]}{now}",
+                          next_steps._stamp_base_moved(branch, review))
 
 
 def _remote_tips(workspace: Path, root: dict) -> dict[str, str | None]:
@@ -276,8 +376,8 @@ def _reconcile(workspace: Path, root: dict, authors: set[str], tips: dict[str, s
     return tip
 
 
-def count_approvals(workspace: Path, review_id: str) -> dict:
-    root, authors = _context(workspace, review_id)
+def count_approvals(workspace: Path, review_id: str, member_dirs: dict[str, Path] | None = None) -> dict:
+    root, authors = _context(workspace, review_id, member_dirs)
     tips = _remote_tips(workspace, root)
     if len(set(tips.values())) != 1:
         raise ApprovalRefused("approval_chain_divergent: " + canonical(tips))
@@ -291,10 +391,10 @@ def count_approvals(workspace: Path, review_id: str) -> dict:
     return {"review_id": root["review_id"], "tip": tip, "count": len(distinct), "links": list(distinct.values()), "signed": False}
 
 
-def approve(workspace: Path, review_id: str | None = None) -> dict:
+def approve(workspace: Path, review_id: str | None = None, member_dirs: dict[str, Path] | None = None) -> dict:
     workspace = workspace.resolve()
     rid = review_id.removeprefix("gr:") if review_id else current_review(workspace)
-    root, authors = _context(workspace, rid)
+    root, authors = _context(workspace, rid, member_dirs)
     name = _git(workspace, "config", "user.name")
     if not name.strip():
         raise ApprovalRefused("approval_identity_missing")
@@ -316,4 +416,114 @@ def approve(workspace: Path, review_id: str | None = None) -> dict:
         old = tip
         _git(workspace, "push", f"--force-with-lease={ref}:{old or ''}", "--", remote, f"{commit}:{ref}")
     _git(workspace, "update-ref", ref, commit)
-    return count_approvals(workspace, rid)
+    return count_approvals(workspace, rid, member_dirs)
+
+
+# ---- a PR-head review: the lane `review checkout-pr` (or `review open`) made, stamped by its (repo, head) record
+#
+# The approval is a commit chain under PREFIX + "pr/<head>" in the WORKSPACE'S OWN CLONE of the reviewed repo (the
+# member checkout the PR was fetched into): local, never pushed, and it outlives the lane, which `review close`
+# drops. A workspace a checkout-pr lane lives in need not have a root store, so the member clone is the store.
+# As for bind approvals, the approver is the self-declared Git user.name; who wrote the PR is not checked here.
+
+PR_LANE_SCHEMA = "gr2.pr-lane-approval.v1"
+PR_PREFIX = PREFIX + "pr/"
+
+
+def pr_lane_record(lane: Path) -> dict | None:
+    """The (repo, base, head, lane_kind) record of the review lane at `lane`, or None when `lane` is not one."""
+    from .review_records import ReviewRecordLocationError, worktree_git_path
+    if not (Path(lane) / ".git").exists():
+        return None
+    try:
+        path = worktree_git_path(lane, "grip-review.json")
+    except ReviewRecordLocationError:
+        return None
+    if not path.is_file():
+        return None
+    try:
+        record = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise ApprovalRefused(f"approval_review_record_unreadable: {path}") from exc
+    if not isinstance(record, dict) or not all(isinstance(record.get(k), str) for k in ("repo", "base", "head")):
+        raise ApprovalRefused(f"approval_review_record_unreadable: {path}")
+    return record
+
+
+def pr_lane_store(lane: Path) -> Path:
+    """The workspace member clone a review lane was made from: the nearest enclosing workspace's repo named as
+    the lane's repo directory. Refused, naming the lane, when there is none."""
+    from ..prototypes import lane_workspace_prototype as lane_proto
+    lane = Path(lane).resolve()
+    from .layout import grip_dir
+    ws = next((p for p in lane.parents if (grip_dir(p) / "workspace_spec.toml").is_file()), None)
+    if ws is None:
+        raise ApprovalRefused(f"approval_no_workspace: no .grip/workspace_spec.toml encloses {lane}")
+    for repo in lane_proto.load_workspace_spec(ws).get("repos", []):
+        if repo.get("name") == lane.name:
+            source = Path(str(repo.get("path", "")))
+            source = (source if source.is_absolute() else ws / source).resolve()
+            if source == lane or not (source / ".git").exists():
+                break
+            return source
+    raise ApprovalRefused(f"approval_no_member_clone: the workspace {ws} has no clone of repo {lane.name!r} to hold the approval")
+
+
+def pr_head_approvals(store: Path, repo: str, head: str) -> dict:
+    """The approvals of (repo, head) held in `store`, the workspace member clone. Readable after the lane is gone."""
+    ref = PR_PREFIX + head
+    tip = gitops.git(Path(store), "rev-parse", "--verify", "-q", ref + "^{commit}").stdout.strip()
+    links = []
+    if tip:
+        for commit in _git(store, "rev-list", tip).splitlines():
+            try:
+                link = json.loads(_git(store, "show", f"{commit}:approval.json"))
+            except ValueError as exc:
+                raise ApprovalRefused(f"approval_record_unreadable: {ref} at {commit}") from exc
+            if link.get("repo") == repo and link.get("head") == head:
+                links.append(link)
+    links.reverse()
+    return {"repo": repo, "head": head, "tip": tip or None,
+            "count": len({link["approver"]["name"] for link in links}), "links": links, "signed": False}
+
+
+def pr_lane_approvals(lane: Path) -> dict:
+    """The approvals bound to the lane's review record (repo, head)."""
+    lane = Path(lane).resolve()
+    record = pr_lane_record(lane)
+    if record is None:
+        raise ApprovalRefused(f"approval_not_a_review_lane: {lane} holds no review record")
+    return {**pr_head_approvals(pr_lane_store(lane), record["repo"], record["head"]), "base": record["base"]}
+
+
+def approve_pr_lane(lane: Path) -> dict:
+    """Stamp a PR-head review: an unsigned approval as git user.name, bound to the lane record's (repo, head).
+    A lane whose HEAD is not the recorded head is refused, so an approval never lands on bytes nobody read."""
+    lane = Path(lane).resolve()
+    record = pr_lane_record(lane)
+    if record is None:
+        raise ApprovalRefused(f"approval_not_a_review_lane: {lane} holds no review record")
+    head = gitops.git(lane, "rev-parse", "HEAD")
+    actual = head.stdout.strip() if head.returncode == 0 else ""
+    if actual != record["head"]:
+        raise ApprovalRefused(
+            f"approval_head_moved: lane {lane} is at {actual or '(unreadable)'!s}, the review record's head is "
+            f"{record['head']}; nothing was stamped",
+            next_step="close this lane with `gr2 review close` and check the PR out again, then stamp the new head")
+    name = gitops.git(lane, "config", "user.name").stdout.strip()
+    if not name:
+        raise ApprovalRefused("approval_identity_missing")
+    store = pr_lane_store(lane)
+    current = pr_head_approvals(store, record["repo"], record["head"])
+    if name not in {link["approver"]["name"] for link in current["links"]}:
+        link = {"schema": PR_LANE_SCHEMA, "repo": record["repo"], "base": record["base"], "head": record["head"],
+                "approver": {"name": name, "key_id": ""}, "verdict": "approve",
+                "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
+        blob = _git(store, "hash-object", "-w", "--stdin", data=canonical(link))
+        tree = _git(store, "mktree", data=f"100644 blob {blob}\tapproval.json\n")
+        parent = ["-p", current["tip"]] if current["tip"] else []
+        commit = _git(store, "-c", f"user.name={name}", "-c", "user.email=gr2@localhost",
+                      "commit-tree", tree, *parent, "-m", f"Approve {record['repo']} {record['head']}")
+        # compare-and-swap on the tip read above, so two stamps at once cannot drop one
+        _git(store, "update-ref", PR_PREFIX + record["head"], commit, current["tip"] or "0" * 40)
+    return pr_lane_approvals(lane)

@@ -69,7 +69,7 @@ def test_a_failure_raises_the_callers_error_type(tmp_path):
 # whose every binding in its scope is the same literal and whose first word nothing rewrites. Anything else (a
 # parameter, disagreeing bindings, an item or slice write, an in-place method that can change the first word) is
 # UNRESOLVED, and an unresolved spawn is allowed only at a named seam that runs a user's or a tool's command. A
-# literal whose basename is `git` (`/usr/bin/git`) is git. prototypes/ is outside this guard and this change.
+# literal whose basename is `git` (`/usr/bin/git`) is git. prototypes/ is outside this guard, but for GUARDED_PROTOTYPES.
 SPAWNS = {"run", "Popen", "check_output", "check_call", "call"}
 _HEAD_WRITERS = {"insert", "clear", "pop", "remove", "reverse", "sort", "__setitem__"}
 _FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
@@ -215,10 +215,14 @@ USER_COMMAND_SEAMS = {
 }
 
 
+# The prototypes that back a shipped verb (`repo status`, `workspace convert-clone`) are held to the same rule.
+GUARDED_PROTOTYPES = {"prototypes/repo_maintenance_prototype.py"}
+
+
 def _package_files():
     for path in sorted(PACKAGE.rglob("*.py")):
         rel = path.relative_to(PACKAGE).as_posix()
-        if rel.startswith("prototypes/") or "/tests/" in f"/{rel}":
+        if (rel.startswith("prototypes/") and rel not in GUARDED_PROTOTYPES) or "/tests/" in f"/{rel}":
             continue
         yield rel, path
 
@@ -323,7 +327,7 @@ def _one_member_merge(monkeypatch, tmp_path, merge_tree):
         assert "merge-tree" in argv
         return merge_tree(argv)
     monkeypatch.setattr(gitops.subprocess, "run", spawn)
-    code, receipt = merge_gate.review_merge(tmp_path, rid, into="main", feature="feat")
+    code, receipt = merge_gate.review_merge(tmp_path, rid, into="main", feature="feat", required_approvals=0)
     return code, receipt["members"][0]["refused"], calls
 
 

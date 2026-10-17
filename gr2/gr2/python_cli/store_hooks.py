@@ -58,12 +58,9 @@ MARKER = "# gr2-store-hook v1"
 HOOK_NAMES = ("pre-commit", "pre-push")
 _ZERO = "0" * 40
 
-#: Git locates repositories through these. A hook inherits them, and the member checkouts the engine
-#: measures are DIFFERENT repositories, so they are removed before the shared helpers run.
-_LOCATING_ENV = (
-    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX", "GIT_COMMON_DIR",
-    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE",
-)
+#: Git locates repositories through these (one list, in gitops). A hook inherits them, and the member checkouts the
+#: engine measures are DIFFERENT repositories, so they are removed before the shared helpers run.
+_LOCATING_ENV = gitops.LOCATING_ENV
 
 
 # ── installing and reporting ─────────────────────────────────────────────────────────────────────
@@ -184,6 +181,8 @@ def install_store_hooks(root: Path) -> dict[str, str]:
 
 def hook_problems(root: Path, states: dict[str, str]) -> list[str]:
     """One line per hook that will NOT run the store's checks, for `store init` and `store status`."""
+    from . import grip_cli as gc
+
     lines: list[str] = []
     override = hooks_path_override(root)
     if override:
@@ -200,14 +199,14 @@ def hook_problems(root: Path, states: dict[str, str]) -> list[str]:
                 f"run on it; call `{entry} {name}` from that hook to enable them"
             )
         elif state == "absent":
-            lines.append(f"hooks: {name} is not installed; run gr2 store materialize to install it")
+            lines.append(f"hooks: {name} is not installed; run {gc._store_advice(root, 'materialize')} to install it")
         elif state == "installed":
             interpreter = _recorded_interpreter(_hooks_dir(root) / name)
             if interpreter and not os.access(interpreter, os.X_OK):
                 verb = "commit" if name == "pre-commit" else "push"
                 lines.append(
                     f"hooks: {name} records interpreter {interpreter}, which is missing, so it refuses every git "
-                    f"{verb} until `gr2 store materialize` (or `gr2 store init`) rewrites it"
+                    f"{verb} until `{gc._store_advice(root, 'materialize')}` (or `{gc._store_advice(root, 'init')}`) rewrites it"
                 )
     return lines
 
@@ -431,17 +430,33 @@ def run_pre_commit(root: Path) -> int:
         if staged_bytes is None:
             return 0
         staged_text = staged_bytes.decode("utf-8")
+        # THE FENCE (section 9), the same function and the same reader `store push` uses: the pins the commit
+        # will RECORD (the staged grip.toml). The hook sees one commit, so it judges that commit's own edit (against
+        # HEAD); the push judges the whole range since the shadow, and backstops a commit made past the hook. In full
+        # mode it runs first. In compat it runs after the membership and rewind checks below and before the fold, so
+        # a rewind or an unclaimed gitlink is refused in its own words and a hand-edited pin line is still refused by
+        # name; compat's gitlink-bump fold is left as it was.
+        shadow = gc._shadow_value(root)
         if _staged_mode(staged_text) == "full":
-            # A full-mode commit carries field-commits as parents, which `git commit` cannot make: only `store commit`
-            # can, so this hook refuses before it reads a staged gitlink as a member's pin.
+            if shadow:
+                gc._refuse_unrecorded_pins(root, gc._recorded_pins(staged_text), "HEAD", "full", None)
+            # full_mode_hook, NARROWED: a hand commit that leaves every recorded pin unchanged (a root README) passes
+            # the fence above and is let through. Never read a staged gitlink here: in full mode it is the member's
+            # field commit, not its pin. With no shadow there is nothing to fence against, so it still refuses.
+            if shadow:
+                return 0
             raise gc.NativeStoreRefusal(
-                'full_mode_hook: this workspace\'s grip.toml says mode = "full"; commit through `gr2 store commit`, '
-                "which records each member's field-commit as a parent", 4)
+                'full_mode_hook: this workspace\'s grip.toml says mode = "full" and the branch has no shadow to '
+                "fence against; commit through `gr2 store commit`, which records each member's field-commit as a "
+                "parent", 4)
         members = _members_from(staged_text)
         staged = _index_gitlinks(root, index)
         committed = _head_gitlinks(root)
         partial = bool(index) and Path(index).name.startswith("next-index-")
         _refuse_unclaimed_gitlinks(members, staged, committed)   # BEFORE any write
+        if shadow and any(not member.get("pin") for member in members):
+            # A pin line removed by hand: the checks below read every member's pin, so the fence names it first.
+            gc._refuse_unrecorded_pins(root, gc._recorded_pins(staged_text), "HEAD", _staged_mode(staged_text), None)
         _sync_gitmodules(root, members, index, env_partial=partial)
         stale: list[dict[str, str]] = []
         adopted: dict[str, dict[str, str]] = {}
@@ -462,6 +477,8 @@ def run_pre_commit(root: Path) -> int:
                     adopted[member["name"]] = resolved
             if sha != member["pin"] or member["name"] in adopted:
                 stale.append(member)
+        if shadow:
+            gc._refuse_unrecorded_pins(root, gc._recorded_pins(staged_text), "HEAD", _staged_mode(staged_text), None)
         if stale:
             names = ", ".join(member["name"] for member in stale)
             if partial:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
+import functools
 import importlib.metadata
 import io
 import json
@@ -17,8 +19,10 @@ from typing import Annotated, List, Mapping, NoReturn, Optional
 import typer
 try:
     from typer._click.core import ParameterSource
+    from typer._click.exceptions import UsageError
 except ImportError:  # Older Typer uses the separately installed Click.
     from click.core import ParameterSource
+    from click.exceptions import UsageError
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 from gr2.prototypes import repo_maintenance_prototype as repo_proto
 
@@ -26,7 +30,7 @@ from . import add as add_ops
 from .version import version_line
 from . import branch as branch_ops
 from . import commit as commit_ops
-from . import execops, failures, grip, migration, next_steps, spec_apply, syncops
+from . import execops, failures, grip, migration, next_steps, review_diff, spec_apply, syncops
 from . import gitinclude
 from . import gitops
 from . import check_records, set_check
@@ -41,7 +45,7 @@ from . import project_review
 from . import push as push_ops
 from .clone_exec import rmtree_or_refuse
 from .events import EventEmitError, EventType, emit, emit_after_outcome
-from .layout import grip_dir
+from .layout import GRIP_DIR, grip_dir
 from .root_option import ROOT_COMMIT_SUBJECT, ROOT_OPTION, ContextCommand, ReviewTargetCommand, ReviewHeadCommand, ReviewHeadTrailingCommand, ReviewOpenCommand, ReviewSubjectCommand, ReviewReaderSubjectCommand, RootOptionCommand, RootOptionalCommand
 from .gitops import (
     branch_exists,
@@ -144,6 +148,33 @@ app.add_typer(hooks_app, name="hooks")
 app.add_typer(grip_app, name="store")
 app.add_typer(grip_app, name="grip", hidden=True)
 app.add_typer(config_cli_app, name="config")
+proto_app = typer.Typer(help="Render stored protobuf records")
+app.add_typer(proto_app, name="proto")
+
+
+@proto_app.command("json")
+def proto_json_cmd(
+    target: str = typer.Argument(..., help="A file of protobuf bytes (what git hands a textconv), or a blob, field tree, or rev:path"),
+    message: Optional[str] = typer.Option(None, "--message", help="Name fields from the bundled review schema, e.g. ReviewBind"),
+    repo_path: Path | None = typer.Option(None, "--repo-path", help="Repo that holds an object target (defaults to cwd)"),
+    textconv: bool = typer.Option(False, "--textconv", help="For git: print a one-line marker and exit 0 on bytes that are not protobuf, so one bad file never stops a diff"),
+) -> None:
+    """Print one protobuf record as JSON, keys by field number unless --message names them.
+
+    As a git textconv: `*.pb diff=protoblob` in .gitattributes and
+    `git config diff.protoblob.textconv "gr2 proto json --textconv"`; then git diff shows JSON.
+    """
+    from . import proto_json
+    from .review_field_tree import ReviewRecordError
+    try:
+        buf = proto_json.load(target, repo_path or Path.cwd())
+        typer.echo(proto_json.dumps(proto_json.render(buf, message)), nl=False)
+    except ReviewRecordError as exc:
+        if textconv:
+            typer.echo(proto_json.textconv_marker(target, exc), nl=False)
+            return
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
 
 def _workspace_repo_spec(workspace_root: Path, repo_name: str) -> dict[str, object]:
@@ -206,6 +237,48 @@ def _pr_head_review_paths(
     )
 
 
+def _start_lane_branch(repo_name: str, repo: Path, branch: str, ref: str | None, *, seed_is_work: bool) -> str:
+    """Where a freshly materialized lane branch starts, and the fork base a review measures from.
+
+    The clone was just made from the member's remote, so ``refs/remotes/origin/*`` is the remote as of now. A branch
+    that already EXISTS there is continued: the lane branch moves to its remote tip and tracks it, the way
+    ``git switch <branch>`` would. Before this the branch was made at the workspace commit's pin under the same name,
+    with no upstream: a second, unrelated history that a push would collide with.
+    The one exception is a seed that is the author's own local branch of that name holding commits the remote
+    does not contain: that work is kept where it is and only tracks the remote, so nothing unpushed is dropped.
+
+    The fork base of a continued branch is its merge-base with the integration ref, so a review still covers the
+    work already pushed on it. A branch the remote does not have starts where it did; when that start is behind
+    the integration ref, one line says by how much, because a lane on a stale pin otherwise looks current."""
+    head = git(repo, "rev-parse", "HEAD").stdout.strip()
+    integration = f"refs/remotes/origin/{ref or 'HEAD'}"
+    remote = git(repo, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{branch}^{{commit}}")
+    if remote.returncode == 0:
+        tip = remote.stdout.strip()
+        if head != tip and seed_is_work and git(repo, "merge-base", "--is-ancestor", head, tip).returncode != 0:
+            print(f"gr2: {repo_name}: {branch} keeps the local work at {head[:12]}, which origin/{branch} "
+                  f"({tip[:12]}) does not contain; it tracks origin/{branch}", file=sys.stderr)
+        elif head != tip:
+            moved = git(repo, "checkout", "-q", "-B", branch, tip)
+            if moved.returncode:
+                raise SystemExit(f"cannot start {branch} at origin/{branch} in {repo_name}: {moved.stderr.strip()}")
+            head = tip
+        tracked = git(repo, "branch", f"--set-upstream-to=origin/{branch}", branch)
+        if tracked.returncode:
+            raise SystemExit(f"cannot set {branch} to track origin/{branch} in {repo_name}: {tracked.stderr.strip()}")
+        base = git(repo, "merge-base", head, integration)
+        fork = base.stdout.strip() if base.returncode == 0 and base.stdout.strip() else head
+        print(f"gr2: {repo_name}: continues origin/{branch} at {head[:12]}; fork base {fork[:12]}", file=sys.stderr)
+        return fork
+    behind = git(repo, "rev-list", "--count", f"{head}..{integration}")
+    if behind.returncode == 0 and behind.stdout.strip() not in ("", "0"):
+        date = git(repo, "show", "-s", "--format=%cs", head).stdout.strip()
+        count = behind.stdout.strip()
+        print(f"gr2: {repo_name}: {branch} starts at {head[:12]} ({date}), {count} commit{'' if count == '1' else 's'} "
+              f"behind origin/{ref or 'HEAD'}", file=sys.stderr)
+    return head
+
+
 def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: str, *, manual_hooks: bool = False, created_checkout_roots: list | None = None, created_lane_file: list | None = None, workspace_commit: str | None = None) -> None:
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
     branch_map = dict(lane_doc.get("branch_map", {}))
@@ -249,6 +322,7 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
                 if checkout.returncode:
                     raise SystemExit(f"cannot select lane branch: {checkout.stderr}")
                 first_materialize = True
+                integration_ref, seed_is_work = member.get("ref") or None, False
             else:
                 repo_spec = _workspace_repo_spec(workspace_root, repo_name)
                 source_repo_root = (workspace_root / str(repo_spec["path"])).resolve()
@@ -284,19 +358,30 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
                 elif state == "neither":
                     raise SystemExit(f"run gr2 workspace materialize first: {source_repo_root} is not a repository")
                 target_repo_root = _lane_repo_root(workspace_root, owner_unit, lane_name, repo_name)
-                cache_root = grip_dir(workspace_root) / "cache" / "repos" / f"{source_repo_root.name}.git"
+                # Keyed by the member's spec NAME, the key materialize and sync write; the directory
+                # basename differs for a renamed or nested member and collides for two `*/home` members.
+                cache_root = spec_apply.repo_cache_path(workspace_root, repo_name)
                 gitops.ensure_repo_cache(gitops.remote_origin_url(source_repo_root), cache_root, local_source=source_repo_root)
+                # The seed is the author's own work when the source already holds a branch of this name
+                # (clone_exec seeds from it); otherwise it is the source's HEAD.
+                seed_is_work = git(source_repo_root, "show-ref", "--verify", "-q", f"refs/heads/{branch_map[repo_name]}").returncode == 0
+                integration_ref = str(repo_spec["ref"]) if repo_spec.get("ref") else None
                 first_materialize = ensure_lane_checkout(
                     source_repo_root=source_repo_root,
                     target_repo_root=target_repo_root,
                     branch=branch_map[repo_name],
                     workspace_root=workspace_root,
+                    cache_root=cache_root,
                 )
-            # Record the fork base = the materialization point (the branch the lane forked
-            # from and the sha it started at), so `review create-project` can pin base..head
-            # Collected here, before this repo's hooks run below.
+            # Record the fork base = the point the lane forked from its integration branch, so
+            # `review create-project` can pin base..head. A fresh clone first continues a branch the
+            # remote already has (_start_lane_branch). Collected here, before this repo's hooks run below.
+            fork_sha = None
+            if first_materialize:
+                fork_sha = _start_lane_branch(repo_name, target_repo_root, branch_map[repo_name], integration_ref,
+                                              seed_is_work=seed_is_work)
             head = git(target_repo_root, "rev-parse", "HEAD")
-            head_sha = head.stdout.strip() if head.returncode == 0 else ""
+            head_sha = fork_sha or (head.stdout.strip() if head.returncode == 0 else "")
             if len(head_sha) == 40:
                 fork_base[repo_name] = {"branch": branch_map[repo_name], "sha": head_sha}
             hooks = load_repo_hooks(target_repo_root)
@@ -411,6 +496,29 @@ def _prepare_review_branch(workspace_root: Path, repo: str, pr_number: int, bran
 
     fetch_ref(repo_root, "origin", source_ref, target_branch)
     return target_branch
+
+
+def _pr_base_sha(source_repo_root: Path, repo: str, pr_number: int, head_sha: str, platform: str) -> str:
+    """The base pin of a PR-head review: merge-base(head, base-branch tip). The base branch comes from the
+    PR itself, so the pin is what the PR is actually measured against. One rule for `review open` and
+    `review checkout-pr`."""
+    repo_slug = _repo_slug_from_url(remote_origin_url(source_repo_root) or "", repo)
+    head_adapter = platform_ops.get_platform_adapter(platform)
+    head_route: dict[str, object] = {}
+    if platform_ops.adapter_api_version(head_adapter) >= 2:
+        origin = remote_origin_url(source_repo_root) or ""
+        if not origin:
+            _refuse(f"{repo}: no origin url, so a v2 platform adapter cannot route its PR")
+        head_route = {"target": head_adapter.resolve_target(origin)}  # type: ignore[attr-defined]
+    base_branch = head_adapter.pr_status(repo_slug, pr_number, **head_route).ref.base_branch or "main"
+    if git(source_repo_root, "check-ref-format", f"refs/heads/{base_branch}").returncode != 0:
+        _refuse(f"{repo}: PR #{pr_number} names base branch {base_branch!r}, which git cannot hold as a branch")
+    fetched = git(source_repo_root, "fetch", "--quiet", "--refmap=", "--no-tags", "--", "origin", f"refs/heads/{base_branch}")
+    if fetched.returncode != 0:
+        _refuse(f"{repo}: could not fetch base branch {base_branch!r} of PR #{pr_number}")
+    base_tip = git(source_repo_root, "rev-parse", "--verify", "FETCH_HEAD^{commit}").stdout.strip()
+    merged = git(source_repo_root, "merge-base", head_sha, base_tip)
+    return merged.stdout.strip() if merged.returncode == 0 else base_tip
 
 
 def _create_review_lane_metadata(
@@ -550,8 +658,65 @@ def _group_state_from_statuses(statuses: list[dict[str, object]]) -> str:
 
 
 def _refuse(message: str) -> NoReturn:
+    if _JSON_REFUSALS.get():
+        _refuse_json(*_refusal_from_message(message), 2)
     typer.echo(f"refused: {message}", err=True)
     raise typer.Exit(code=2)
+
+
+# Set while a json_refusing command runs with --json: _refuse and _review_call then leave the printing to it.
+_JSON_REFUSALS: contextvars.ContextVar[bool] = contextvars.ContextVar("_JSON_REFUSALS", default=False)
+
+
+def _refusal_from_message(message: str) -> tuple[str, str]:
+    """`code: sentence` names its code; any other message is a plain `refused`."""
+    head, sep, rest = message.partition(": ")
+    if sep and re.fullmatch(r"[a-z][a-z0-9_]*", head):
+        return head, rest
+    return "refused", message
+
+
+@functools.cache
+def json_refusing(base: type) -> type:
+    """A command class whose every refusal under --json is one `_refuse_json` object on stdout, with the
+    exit code the text form gives: usage errors while reading the arguments, BadParameter and the
+    sole-pinned-review selection, engine refusals, `_refuse`, and `SystemExit("message")`. The text form
+    is untouched. Every review verb with --json uses it, so a new refusal path cannot print text there."""
+
+    class JsonRefusing(base):
+        def parse_args(self, ctx, args):
+            # Read before parsing: click's parser consumes `args` in place.
+            wants_json = "--json" in (args[:args.index("--")] if "--" in args else args)
+            try:
+                return super().parse_args(ctx, args)
+            except UsageError as exc:
+                if not wants_json:
+                    raise
+                _refuse_json("usage", exc.format_message(), exc.exit_code)
+
+        def invoke(self, ctx):
+            if not ctx.params.get("json_output"):
+                return super().invoke(ctx)
+            token = _JSON_REFUSALS.set(True)
+            try:
+                return super().invoke(ctx)
+            except _ReviewSelectRefused as exc:
+                _refuse_json(exc.refusal, exc.message, exc.exit_code)
+            except UsageError as exc:
+                _refuse_json("usage", exc.format_message(), exc.exit_code)
+            except _REVIEW_REFUSALS as exc:
+                refusal, message, extra = _review_refusal(exc)
+                _refuse_json(refusal, message, 2, extra + list(getattr(exc, "__notes__", [])))
+            except SystemExit as exc:
+                if not isinstance(exc.code, str):
+                    raise
+                _refuse_json(*_refusal_from_message(exc.code), 1)
+            finally:
+                _JSON_REFUSALS.reset(token)
+
+    # Keep the base's name: the root-option partition places a command by its class name.
+    JsonRefusing.__name__, JsonRefusing.__qualname__ = base.__name__, base.__qualname__
+    return JsonRefusing
 
 
 def _refuse_review_beside_unit(owner_unit: Optional[str], review: Optional[str]) -> None:
@@ -710,6 +875,107 @@ def _pr_create_for_review(workspace_root, review, platform, base_branch, draft, 
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1)
     typer.echo(json.dumps(payload, indent=2))
+
+
+def _live_remote_tips(workspace_root: Path, remote: str, *refs: str) -> dict[str, str]:
+    """The tip of each named ref on `remote`, read by ls-remote from the workspace root at this moment, the way
+    `review pin` dials: {full ref name: sha}. A ref the remote does not hold is absent from the answer."""
+    seen = git(workspace_root, "ls-remote", "--", remote, *refs, timeout=_REMOTE_TIP_TIMEOUT)
+    if seen.returncode != 0:
+        _refuse(f"cannot read {' and '.join(refs)} on the remote: {seen.stderr.strip()}")
+    tips = {}
+    for line in seen.stdout.splitlines():
+        sha, _, name = line.partition("\t")
+        if name in refs:  # ls-remote matches a pattern by its tail, so refs/heads/x also lists a/refs/heads/x
+            tips[name] = sha
+    return tips
+
+
+def pin_single_member(workspace_root: Path, repo_path: Path, base_branch: str) -> str:
+    """Pin the one-branch review `pr create --repo-path` stands on, and return its id (gr:<sha>).
+
+    The member is the workspace member whose checkout is `repo_path`; its checkout's HEAD is the head and the LIVE
+    tip of refs/heads/<base_branch> on its remote is the base, so behind-must-be-0 holds by construction. The pin
+    is written by the writer `review pin` uses, which reads that tip again and refuses ``base_not_live_head`` if
+    the base moved in between. The head must already be the tip of the member's branch on the remote, because the PR
+    carries the remote branch; a head pushed as a branch other than the base needs no --ratified, which is only for
+    a head found at the base, a tag or a review ref (the pin records the order as Pushed-before-pin).
+
+    Other pinned reviews are never consulted to choose one: a pin that holds EXACTLY this row (one member, the same
+    key, path, remote, base, head and target, no title or body) is reused and no ref is made; otherwise a new pin is
+    made, whatever else the workspace has pinned. The id comes back explicitly, so the caller never asks which of
+    several pins is "the" review."""
+    from . import lane_downstream, review_members
+
+    checkout = repo_path.resolve()
+    try:
+        members = review_members.workspace_members(workspace_root)
+    except (lane_downstream.MembersUnreadable, lane_downstream.PinConflict) as exc:
+        _refuse(str(exc))
+    member = next((m for m in members if (workspace_root / m.path).resolve() == checkout), None)
+    if member is None:
+        _refuse(f"{checkout} is not a member checkout of the workspace {workspace_root} "
+                f"(members: {', '.join(m.name for m in members) or 'none'})")
+    key = member.name
+    remote = member.url
+    if not remote:
+        origin = git(checkout, "remote", "get-url", "origin")
+        remote = origin.stdout.strip() if origin.returncode == 0 else ""
+    if not remote:
+        _refuse(f"{key}: the workspace records no remote url for it and its checkout has no origin")
+    if grip.url_has_credentials(remote):
+        _refuse(f"{key}: its url carries credentials or cannot be parsed; use a url without them")
+    at = git(checkout, "rev-parse", "--verify", "HEAD")
+    if at.returncode != 0:
+        _refuse(f"{key}: cannot read HEAD in {checkout}: {at.stderr.strip()}")
+    head = at.stdout.strip()
+    branch = git(checkout, "branch", "--show-current").stdout.strip()
+    if not branch:
+        _refuse(f"{key} has a detached HEAD; check out the branch to open its PR from")
+    base = base_branch.removeprefix("refs/heads/")
+    if branch == base:
+        _refuse(f"{key} is on {base}, the base itself; a PR needs the work on a branch of its own, pushed")
+    tips = _live_remote_tips(workspace_root, remote, f"refs/heads/{branch}", f"refs/heads/{base}")
+    pushed = tips.get(f"refs/heads/{branch}")
+    if pushed != head:
+        _refuse(f"{key}: {branch} on the remote is {pushed[:12] if pushed else 'absent'}, not HEAD {head[:12]}; "
+                "push it first with `gr2 push`, since the PR carries the remote branch")
+    live_base = tips.get(f"refs/heads/{base}")
+    if live_base is None:
+        _refuse(f"{key}: {base} is not a branch on the remote, so there is no base to open the PR against")
+    if live_base == head:
+        _refuse(f"{key}: HEAD is already the tip of {base} on the remote; there is nothing to open a PR for")
+    row = {"key": key, "remote": remote, "path": member.path, "head": head, "base": live_base,
+           "ref": f"refs/heads/{base}", "title": "", "body": ""}
+    what = f"{key} {base}@{live_base[:12]}..{branch}@{head[:12]}"
+    reused = _pin_holding_exactly(workspace_root, row)
+    if reused is not None:
+        typer.echo(f"gr2: reusing {reused}: it pins exactly {what}", err=True)
+        return reused
+    review_id = f"gr:{_pin_rows(workspace_root, [row])}"
+    typer.echo(f"gr2: pinned {review_id}: {what} (its HEAD on the remote, over the live tip of the base)", err=True)
+    return review_id
+
+
+def _pin_holding_exactly(workspace_root: Path, row: dict) -> Optional[str]:
+    """The id of the newest pinned review that holds exactly `row` and nothing else, or None. Every bind in the
+    workspace is a candidate (the lister keeps closed ones too) and one that cannot be read is not a match."""
+    try:
+        binds = grip.list_review_binds(workspace_root)
+    except grip.ReviewStoreAbsent:  # nothing has been pinned here yet
+        return None
+    except _REVIEW_REFUSALS as exc:
+        _refuse_text(exc)
+    for commit, _when in reversed(binds):
+        try:
+            members = grip.show_review_commit(workspace_root, commit)["members"]
+        except (grip.GripCorruptError, grip.GripInitError, RuntimeError, OSError, ValueError, KeyError):
+            continue
+        if len(members) == 1 and all(members[0].get(f) == v for f, v in (
+                ("key", row["key"]), ("path", row["path"]), ("remote", row["remote"]), ("base", row["base"]),
+                ("head", row["head"]), ("target", row["ref"]), ("title", ""), ("body", ""))):
+            return f"gr:{commit}"
+    return None
 
 
 def _repo_slug_from_url(url: str, fallback_name: str) -> str:
@@ -1547,10 +1813,19 @@ def workspace_migrate_gr1(
     force: bool = typer.Option(False, "--force", help="Allow overwrite of an existing .grip/workspace_spec.toml"),
     apply: bool = typer.Option(False, "--apply", help="After migration, validate and apply the spec in one step"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    unit: Optional[str] = typer.Option(
+        None,
+        "--unit",
+        help="When the gr1 agents manifest puts more than one unit at this root, the one to keep",
+    ),
 ) -> None:
-    """Convert an existing gr1 (.gitgrip) workspace into parallel gr2 (.grip) layout."""
+    """Convert an existing gr1 (.gitgrip) workspace into parallel gr2 (.grip) layout.
+
+    Only this root's own unit (and units inside it) are migrated. A unit the gr1 agents manifest
+    places beside the root is another desk's root: it is named and not read.
+    """
     workspace_root = _resolve_workspace_root(workspace_root)
-    payload = migration.migrate_gr1_workspace(workspace_root, force=force)
+    payload = migration.migrate_gr1_workspace(workspace_root, force=force, unit=unit)
     if apply:
         issues = spec_apply.validate_spec(workspace_root)
         errors = [i for i in issues if i.level == "error"]
@@ -1622,6 +1897,11 @@ def workspace_bootstrap_gr1(
     receipt: Optional[Path] = typer.Option(None, "--receipt"),
     rollback_receipt: Optional[Path] = typer.Option(None, "--rollback-receipt"),
     expected_current_spec_sha256: Optional[str] = typer.Option(None, "--expected-current-spec-sha256"),
+    unit: Optional[str] = typer.Option(
+        None,
+        "--unit",
+        help="When the gr1 agents manifest puts more than one unit at this root, the one to keep",
+    ),
 ) -> None:
     """Compile the canonical gr1 manifest and initialize the gr2 grip store."""
     workspace_root = _resolve_workspace_root(workspace_root)
@@ -1639,9 +1919,11 @@ def workspace_bootstrap_gr1(
     elif regenerate:
         if expected_spec_sha256 is None or receipt is None:
             raise typer.BadParameter("--regenerate requires --expected-spec-sha256 and --receipt")
-        payload = migration.regenerate_gr1_workspace(workspace_root, expected_spec_sha256=expected_spec_sha256, receipt_path=receipt)
+        payload = migration.regenerate_gr1_workspace(
+            workspace_root, expected_spec_sha256=expected_spec_sha256, receipt_path=receipt, unit=unit
+        )
     else:
-        payload = migration.bootstrap_gr1_workspace(workspace_root)
+        payload = migration.bootstrap_gr1_workspace(workspace_root, unit=unit)
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
     else:
@@ -1759,6 +2041,39 @@ def branch_cmd(
     typer.echo(f"Switched to branch '{name}'")
 
 
+@app.command("update")
+def update_cmd(
+    into: str = typer.Option(..., "--into", help="The integration branch to merge in, fetched live from --remote"),
+    remote: str = typer.Option("origin", "--remote", help="The remote holding both branches"),
+    repo_path: Path | None = typer.Option(
+        None,
+        "--repo-path",
+        help="Repo to operate on (defaults to cwd; gr2 verbs are single-repo, not gripspace-wide)",
+    ),
+) -> None:
+    """Bring the pushed branch you are on up to a moved integration branch, with a merge (no review pin needed).
+
+    Fetches --into from --remote and merges its tip into the current branch. Pushes nothing and pins nothing.
+    Refuses before anything moves on an --into that is not a plain branch name, such as one with a colon or a
+    leading '+' or '-' (bad_into), a --remote that is not a configured remote (bad_remote), a detached head (detached_head), standing on --into itself (same_branch), a
+    merge in progress (unresolved_merge), tracked changes (dirty), commits the branch of the same name on --remote
+    lacks (unpushed) or has that this one lacks (behind_remote), --into missing on --remote (fetch_failed), and
+    untracked files the merge would overwrite (untracked_in_the_way). The configured upstream is not consulted: a
+    renamed branch counts as unpushed. Always a merge commit, even under merge.ff=only. A conflict aborts the merge
+    and leaves the tree as it was; any other failed merge is aborted too (merge_failed). Prints its JSON receipt on
+    stdout.
+    Exit 0 done (merged, or already up to date), 2 refused, 3 conflict.
+    """
+    from . import branch_update
+
+    code, receipt = branch_update.update((repo_path or Path.cwd()), into, remote)
+    typer.echo(json.dumps(receipt))
+    if receipt["refused"]:
+        typer.echo(f"gr2 update: {receipt['refused']}", err=True)
+    if code:
+        raise typer.Exit(code)
+
+
 def _workspace_above_cwd():
     """(root Resolved, entered units) for the workspace the current directory is inside, or None when it is inside
     none (a plain repository: `add` behaves as it always did there)."""
@@ -1794,7 +2109,7 @@ def _refuse_add_at_a_workspace_root_with_a_lane() -> None:
     raise typer.Exit(code=2)
 
 
-def _add_in_lane(paths: list[str]) -> None:
+def _add_in_lane(paths: list[str], include_bytecode: bool = False) -> None:
     """`add --lane`: stage the paths in EVERY repo of the entered lane. The root, the unit and the lane come from
     the resolver (the workspace above the current directory, the only unit with an entered lane, that unit's
     current lane), each announced on stderr; none of them can be guessed between two candidates."""
@@ -1810,10 +2125,24 @@ def _add_in_lane(paths: list[str]) -> None:
     ctx_mod.announce({"root": root, "unit": unit, "lane": lane_item}, root=root, quiet=ctx_mod.quiet_from_env())
     workspace_root = Path(root.value).resolve()
     doc = lane_proto.load_lane_doc(workspace_root, unit.value, lane_item.value)
+    targets = commit_ops._lane_repo_targets(workspace_root, unit.value, lane_item.value, doc)
+    here = Path.cwd().resolve()
+    for key, repo_root in targets:
+        top = repo_root.resolve()
+        if here != top and here.is_relative_to(top):
+            # The paths are read at the root of every lane repo; typed from below one, a relative path means a
+            # different file (or none) there. Refuse before staging anything rather than stage the wrong one.
+            typer.echo(
+                f"Error: {here} is a subdirectory of the lane repo {key} ({top}); --lane reads each path from the "
+                "root of every lane repo, not from here. Nothing was staged. To stage here, drop --lane (or pass "
+                f"--repo-path {top}); to stage in every lane repo, run from {top} with paths from that root.",
+                err=True,
+            )
+            raise typer.Exit(code=2)
     failed = False
-    for key, repo_root in commit_ops._lane_repo_targets(workspace_root, unit.value, lane_item.value, doc):
+    for key, repo_root in targets:
         try:
-            result = add_ops.stage_files(repo_root, paths)
+            result = add_ops.stage_files(repo_root, paths, include_bytecode=include_bytecode)
         except (add_ops.AddError, gitops.OutsideRepoError, gitops.GitMissingError) as exc:
             typer.echo(f"{key}: FAILED: {exc}", err=True)
             failed = True
@@ -1823,6 +2152,8 @@ def _add_in_lane(paths: list[str]) -> None:
             if result.staged_files
             else f"{key}: no changes staged for the requested paths"
         )
+        if result.skipped_bytecode:
+            typer.echo(f"{key}: {add_ops.skip_line(result.skipped_bytecode)}")
     if failed:
         raise typer.Exit(code=1)
 
@@ -1840,24 +2171,30 @@ def add_cmd(
         "--lane",
         help="Stage in EVERY repo of the entered lane (the workspace, unit and lane are read from where you are)",
     ),
+    include_bytecode: bool = typer.Option(
+        False,
+        "--include-bytecode",
+        help="Also stage untracked Python bytecode (__pycache__/, *.pyc, *.pyo), which add skips by default",
+    ),
 ) -> None:
     """Stage paths in one repository, including tracked deletions.
 
     Standing inside a lane's repo, `add .` stages that repo. Standing at the workspace root with a lane entered,
     it refuses rather than stage the root's own repository by accident: pass --lane for every repo of the lane,
-    or --repo-path for one."""
+    or --repo-path for one. Untracked Python bytecode (__pycache__/, *.pyc, *.pyo) is skipped and named in one
+    line, on top of git's own ignore rules; tracked bytecode stages as git stages it."""
     if lane and repo_path is not None:
         typer.echo("Error: --lane stages every repo of the lane; do not combine it with --repo-path", err=True)
         raise typer.Exit(code=2)
     if lane:
-        _add_in_lane(paths)
+        _add_in_lane(paths, include_bytecode)
         return
     if repo_path is None:
         _refuse_add_at_a_workspace_root_with_a_lane()
     target = (repo_path or Path.cwd()).resolve()
     try:
         gitops.require_git_repo(target, "add")
-        result = add_ops.stage_files(target, paths)
+        result = add_ops.stage_files(target, paths, include_bytecode=include_bytecode)
     except (add_ops.AddError, gitops.OutsideRepoError, gitops.GitMissingError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -1865,6 +2202,8 @@ def add_cmd(
         typer.echo(f"Staged {len(result.staged_files)} path(s): {', '.join(result.staged_files)}")
     else:
         typer.echo("No changes staged for the requested paths")
+    if result.skipped_bytecode:
+        typer.echo(add_ops.skip_line(result.skipped_bytecode))
 
 
 @app.command("commit")
@@ -2662,13 +3001,17 @@ def _announce_context(ctx: typer.Context, *, actor: Optional[str] = None, with_a
 
 def _spec_for_lane_create(workspace_root: Path, default_unit: str) -> bool:
     """Lanes are made from the workspace spec. A root made by `store init` holds only grip.toml, whose [[members]]
-    already say which repos the workspace is, so the spec is written from them (one announced stderr line) and the
-    lane is built as usual. With neither a spec nor members there is nothing to build from: refused first, before a
+    already say which repos the workspace is: when the spec derives from them (`spec_apply.derived_spec_doc`) nothing
+    is written, so grip.toml stays the one record. Members the derive refuses (one with no origin remote) are still
+    written as the spec (one announced stderr line) and the lane is built as usual. With neither a spec nor members there is nothing to build from: refused first, before a
     default is chosen, a remote is asked or a byte is written, in one sentence with the way out."""
     from . import lane_defaults, lane_downstream
-    from .spec_apply import workspace_spec_path
+    from .spec_apply import derived_spec_doc, workspace_spec_path
+    from .workspace_guidance import init_unless_inside_workspace, workspace_init_command
 
     if workspace_spec_path(workspace_root).is_file():
+        return False
+    if derived_spec_doc(workspace_root) is not None:
         return False
     members: list[dict[str, object]] = []
     grip_toml = workspace_root / "grip.toml"
@@ -2676,7 +3019,7 @@ def _spec_for_lane_create(workspace_root: Path, default_unit: str) -> bool:
         try:
             raw = lane_downstream._read_toml(grip_toml).get("members", [])
         except lane_downstream.MembersUnreadable as exc:
-            raise typer.BadParameter(f"{exc}; fix the file, or write the spec with `gr2 workspace init {workspace_root}`")
+            raise typer.BadParameter(f"{exc}; fix the file, or write the spec with {workspace_init_command(workspace_root)}")
         for m in raw:
             if isinstance(m, dict) and isinstance(m.get("name"), str) and m["name"]:
                 remotes = m.get("remotes") if isinstance(m.get("remotes"), dict) else {}
@@ -2692,8 +3035,10 @@ def _spec_for_lane_create(workspace_root: Path, default_unit: str) -> bool:
         typer.echo(
             f"Error: {workspace_root} has no workspace spec ({workspace_spec_path(workspace_root).relative_to(workspace_root)}) "
             "and no grip.toml members, and a lane is made from one of them. "
-            f"Run `gr2 workspace init {workspace_root}` to write the spec from the repos beside it, then create the lane again. "
-            "Nothing was created.",
+            + init_unless_inside_workspace(
+                workspace_root,
+                f"Run {workspace_init_command(workspace_root)} to write the spec from the repos beside it, then create the lane again.")
+            + " Nothing was created.",
             err=True,
         )
         raise typer.Exit(code=2)
@@ -2751,8 +3096,9 @@ def _lane_create_defaults(workspace_root: Path, lane_name: str, repos: Optional[
             more = f" (and {len(result.collisions) - 1} more repo{'s' if len(result.collisions) > 2 else ''})" if len(result.collisions) > 1 else ""
             raise typer.BadParameter(
                 f"the branch {branch!r} already exists on {c.repo}'s remote at {c.remote_tip[:12]}{more}, which is not the tip of {c.base_ref} "
-                f"({c.base_tip[:12]}) the lane forks from, so it is work that is already pushed. Two readings: to continue that work, "
-                f"pass --branch {branch} to use the existing branch; to start something new, pick another lane name."
+                f"({c.base_tip[:12]}), so it is work that is already pushed. Two readings: to continue that work, "
+                f"pass --branch {branch} to use the existing branch (the lane starts at its remote tip and tracks it); "
+                f"to start something new, pick another lane name."
             )
         if result.not_checked:  # a skipped SAFETY check is not information to hush
             print(f"gr2: branch {branch!r} was not checked against the remote for: {'; '.join(result.not_checked)}", file=sys.stderr)
@@ -3115,9 +3461,13 @@ def lane_exit(
         exit_results = _run_lane_stage(workspace_root, owner_unit, lane_name, "on_exit", manual_hooks=manual_hooks)
     except SystemExit as exc:
         # A stash or an on_exit hook refused after earlier work may already have been stashed:
-        # the lane stays entered and the receipt still names every stash this call made.
+        # the lane stays entered and the receipt still names every stash this call made, and every
+        # member that still holds uncommitted work.
         typer.echo(f"refused: {exc}; the lane {owner_unit}/{lane_name} is still entered", err=True)
-        _refuse_exit_json("exit_step_failed", owner_unit, lane_name, [], stashed)
+        still_dirty = [(name, path) for name, path in lane_repos if path.exists() and repo_dirty(path)]
+        for name, path in still_dirty:
+            typer.echo(f"still holds uncommitted work: {name} ({path})", err=True)
+        _refuse_exit_json("exit_step_failed", owner_unit, lane_name, still_dirty, stashed)
     # An on_exit hook runs in the lane and can leave work of its own; exit does not hide that either.
     hook_dirty = [(name, path) for name, path in lane_repos if path.exists() and repo_dirty(path)]
     if hook_dirty:
@@ -3155,12 +3505,45 @@ def _unpushed_commits(repo: Path, *, fetch: bool = True) -> list[str]:
     A fetch that fails is a refusal, never an empty answer: without it the remote refs are a
     claim from the last fetch, and "nothing unpushed" would be read off a stale copy. Only
     `lane list` passes fetch=False, and it says in its output that it did not fetch."""
+    held: list[str] = []
     if fetch:
         fetched = gitops.run_argv(["git", "fetch", "--quiet", "--all"], cwd=repo)
         if fetched.returncode != 0:
             raise SystemExit(f"cannot fetch in {repo}, so cannot show its commits are pushed: {fetched.stderr.strip()}")
-    out = git(repo, "log", "HEAD", "--branches", "--tags", "--not", "--remotes", "--format=%H").stdout
-    return [line for line in out.splitlines() if line]
+        held = _remote_tag_shas(repo)
+    # `--remotes` is refs/remotes/* only, and git keeps no remote-tag refs, so a commit reachable only from a tag is held
+    # by a remote exactly when the remote advertises that tag: its shas join the --not side (a release tag off every
+    # branch kept every lane). Through stdin, as ^sha lines: a remote can hold hundreds of tags.
+    out = gitops.run_argv(["git", "log", "HEAD", "--branches", "--tags", "--not", "--remotes", "--stdin", "--format=%H"],
+                          cwd=repo, input="".join(f"^{sha}\n" for sha in held)).stdout
+    found = [line for line in out.splitlines() if line]
+    if found and not fetch:
+        # Without a fetch the remote's tags are unknown. A lane whose only such commits are tag-reachable is not
+        # called unpushed: it is unknown, and says why (lane remove asks the remote).
+        on_branches = set(git(repo, "log", "HEAD", "--branches", "--not", "--remotes", "--format=%H").stdout.split())
+        if not on_branches.intersection(found):
+            raise SystemExit(f"{len(found)} commit(s) reachable only from a tag, {found[0][:12]} first: a remote may "
+                             f"hold the tag, and lane list does not ask; gr2 lane remove does")
+    return found
+
+
+def _remote_tag_shas(repo: Path) -> list[str]:
+    """Every sha a remote advertises under refs/tags (tag objects and their peeled commits) that this repo has.
+
+    A remote that cannot be asked is a refusal, as a failed fetch is: an empty answer would make a tag-only commit
+    look unpushed or, worse, a failed ask look like 'nothing held'. A sha this repo lacks cannot hide a local commit."""
+    shas: list[str] = []
+    for remote in git(repo, "remote").stdout.split():
+        listed = gitops.run_argv(["git", "ls-remote", "--tags", remote], cwd=repo)
+        if listed.returncode != 0:
+            raise SystemExit(f"cannot list {remote}'s tags in {repo}, so cannot show a tagged commit is pushed: "
+                             f"{listed.stderr.strip()}")
+        shas += [line.split()[0] for line in listed.stdout.splitlines() if line.strip()]
+    if not shas:
+        return []
+    have = gitops.run_argv(["git", "cat-file", "--batch-check=%(objectname)"], cwd=repo,
+                           input="".join(f"{sha}\n" for sha in dict.fromkeys(shas))).stdout
+    return [line for line in have.splitlines() if line and not line.endswith(" missing")]
 
 
 def _unlisted_entries(checkout_root: Path, repo_roots: list[Path]) -> list[Path]:
@@ -3223,11 +3606,34 @@ def _lane_removal_refusals(workspace_root: Path, owner_unit: str, lane_name: str
                             f"until {lease.get('expires_at')}")
     repo_roots = [_lane_repo_root(workspace_root, owner_unit, lane_name, name) for name in lane_doc.get("repos", [])]
     checkout_root = lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)
+    # A lane made on a workspace with a snapshot store has a checkout root that is itself a store checkout. Its store
+    # files are not unlisted content: the root gets the checks a repo gets below, since it can hold unpushed store commits.
+    store_root = checkout_root if (checkout_root / ".git").is_dir() \
+        and checkout_root.resolve() not in {p.resolve() for p in repo_roots} else None
     if checkout_root.is_dir():
         # A lane with no recorded checkout_root keeps its clones in its record directory; the record's own files are not content.
         record = {"lane.toml", "context", "leases.json", "leases.lock"} if checkout_root.resolve() == lane_dir.resolve() else set()
+        if store_root is not None:
+            # .git and the tracked files are covered by the store checks, .gitignore is generated from .gitinclude, and
+            # the cache in GRIP_DIR holds mirrors gr2 refetches; anything else in GRIP_DIR is still named.
+            tracked = git(store_root, "ls-files", "-z").stdout.split("\0")
+            record |= {".git", ".gitignore", GRIP_DIR} | {name.split("/", 1)[0] for name in tracked if name}
+            if grip_dir(store_root).is_dir() and not grip_dir(store_root).is_symlink():
+                refusals.extend(f"lane_has_unlisted_content: {entry}" for entry in sorted(grip_dir(store_root).iterdir())
+                                if entry.name != "cache" or entry.is_symlink() or not entry.is_dir())
         refusals.extend(f"lane_has_unlisted_content: {entry}" for entry in _unlisted_entries(checkout_root, repo_roots)
                         if not (entry.parent.resolve() == checkout_root.resolve() and entry.name in record))
+    if store_root is not None:
+        # The members are checked on their own, so a member's new commits do not make the root dirty.
+        status = git(store_root, "status", "--porcelain", "--ignore-submodules=all")
+        if status.returncode != 0 or status.stdout.strip():
+            refusals.append(f"lane_has_uncommitted_work: lane-root ({store_root})")
+        for sha in git(store_root, "stash", "list", "--format=%H").stdout.split():
+            refusals.append(f"lane_has_stash: lane-root {sha}")
+        try:
+            refusals.extend(f"lane_has_unpushed_commit: lane-root {sha}" for sha in _unpushed_commits(store_root, fetch=fetch))
+        except SystemExit as exc:
+            refusals.append(f"lane_unpushed_unknown: lane-root: {exc}")
     for name in lane_doc.get("repos", []):
         path = _lane_repo_root(workspace_root, owner_unit, lane_name, name)
         if not path.exists():
@@ -3516,8 +3922,8 @@ def lane_lease_show(
     _exit(lane_proto.show_lane_leases(ns))
 
 
-@review_app.command("check", cls=RootOptionalCommand)
-@review_app.command("requirements", hidden=True, cls=RootOptionalCommand)
+@review_app.command("check", cls=json_refusing(RootOptionalCommand))
+@review_app.command("requirements", hidden=True, cls=json_refusing(RootOptionalCommand))
 def review_check(
     ctx: typer.Context,
     workspace_root: Path,
@@ -3542,7 +3948,7 @@ def review_check(
     _exit(lane_proto.check_review_requirements(ns))
 
 
-@review_app.command("checkout-pr", cls=RootOptionalCommand)
+@review_app.command("checkout-pr", cls=json_refusing(RootOptionalCommand))
 def review_checkout_pr(
     workspace_root: Path,
     owner_unit: str,
@@ -3554,11 +3960,27 @@ def review_checkout_pr(
     actor: Optional[str] = typer.Option(None, "--actor", help="Actor label to use when entering the lane"),
     manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual during materialization/enter"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    platform: str = typer.Option("github", "--platform", help="Platform adapter name"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Create and materialize a review lane for a PR."""
     workspace_root = workspace_root.resolve()
     resolved_branch = _prepare_review_branch(workspace_root, repo, pr_number, branch)
+    # The record `review close` needs, worked out before any lane state is written, so a refusal leaves
+    # nothing behind: the head is the PR head this checkout fetched, the base comes from the rule
+    # `review open` uses.
+    from . import review as review_mod
+
+    source_repo_root = (workspace_root / str(_workspace_repo_spec(workspace_root, repo)["path"])).resolve()
+    try:
+        head_sha = review_mod.fetched_review_head(source_repo_root, resolved_branch)
+        record = review_mod.pr_lane_record(
+            source_repo_root=source_repo_root,
+            head_sha=head_sha,
+            base_sha=_pr_base_sha(source_repo_root, repo, pr_number, head_sha, platform),
+        )
+    except review_mod.ReviewError as exc:
+        _refuse(str(exc))
     resolved_lane = _create_review_lane_metadata(
         workspace_root,
         owner_unit,
@@ -3568,6 +3990,18 @@ def review_checkout_pr(
         branch=resolved_branch,
     )
     _materialize_lane_repos(workspace_root, owner_unit, resolved_lane, manual_hooks=manual_hooks)
+    try:
+        review_mod.record_checked_out_pr_lane(
+            record,
+            lane_repo_root=_lane_repo_root(workspace_root, owner_unit, resolved_lane, repo),
+            workspace_root=workspace_root,
+            owner_unit=owner_unit,
+            lane_name=resolved_lane,
+            member=repo,
+            pr_number=pr_number,
+        )
+    except review_mod.ReviewError as exc:
+        _refuse(str(exc))
 
     entered = False
     if enter:
@@ -3602,17 +4036,29 @@ def review_checkout_pr(
         typer.echo(json.dumps(payload, indent=2))
 
 
+class _ReviewSelectRefused(typer.BadParameter):
+    """The sole-pinned-review selection refused; `refusal` names which way, for a --json reader."""
+
+    def __init__(self, message: str, refusal: str) -> None:
+        super().__init__(message)
+        self.refusal = refusal
+
+
 def _the_one_review_bind(workspace_root: Path, verb: str = "open") -> str:
     """Select the workspace's sole pinned review, announced on stderr. Refuse zero or
     several binds and name the invoking reader in the remedy."""
     binds = _review_call(grip.list_review_binds, workspace_root)
     if not binds:
-        raise typer.BadParameter(f"this workspace has no pinned review to {verb}; make one with `review pin` first, or name the target")
+        raise _ReviewSelectRefused(
+            f"this workspace has no pinned review to {verb}; make one with `review pin` first, or name the target",
+            "no_pinned_review",
+        )
     if len(binds) > 1:
         listing = "; ".join(f"gr:{c} ({when})" for c, when in binds)
-        raise typer.BadParameter(
+        raise _ReviewSelectRefused(
             f"{len(binds)} pinned reviews exist and `{verb}` will not choose between them: {listing}. Name one, "
-            f"for example `review {verb} <root> gr:<sha>`"
+            f"for example `review {verb} <root> gr:<sha>`",
+            "several_pinned_reviews",
         )
     commit = binds[0][0]
     typer.echo(f"gr2: target=gr:{commit} (the only pinned review in this workspace)", err=True)
@@ -3633,7 +4079,7 @@ def _default_review_lane_dir(workspace_root: Path, target: str) -> Path:
     return path
 
 
-@review_app.command("open", cls=ReviewOpenCommand)
+@review_app.command("open", cls=json_refusing(ReviewOpenCommand))
 def review_open(
     workspace_root: Path,
     target: Optional[str] = typer.Argument(None, help="What to open: a PR number (PR-head lane), a gr:<sha> pinned review id (reconstruction), or a project-review id. Omitted: the workspace's one pinned review"),
@@ -3722,21 +4168,7 @@ def review_open(
     # ref against expected_head and refuses a wrong/tampered fetch before the seam.
     review_branch = _prepare_review_branch(workspace_root, repo, pr_number, None)
 
-    # Base pin = merge-base(head, base-branch tip). The base branch comes from the
-    # PR itself, so the pin is what the PR is actually measured against.
-    repo_slug = _repo_slug_from_url(remote_origin_url(source_repo_root) or "", repo)
-    head_adapter = platform_ops.get_platform_adapter(platform)
-    head_route: dict[str, object] = {}
-    if platform_ops.adapter_api_version(head_adapter) >= 2:
-        origin = remote_origin_url(source_repo_root) or ""
-        if not origin:
-            _refuse(f"{repo}: no origin url, so a v2 platform adapter cannot route its PR")
-        head_route = {"target": head_adapter.resolve_target(origin)}  # type: ignore[attr-defined]
-    base_branch = head_adapter.pr_status(repo_slug, pr_number, **head_route).ref.base_branch or "main"
-    git(source_repo_root, "fetch", "--quiet", "origin", base_branch)
-    base_tip = git(source_repo_root, "rev-parse", "FETCH_HEAD").stdout.strip()
-    merged = git(source_repo_root, "merge-base", expected_head, base_tip)
-    base_sha = merged.stdout.strip() if merged.returncode == 0 else base_tip
+    base_sha = _pr_base_sha(source_repo_root, repo, pr_number, expected_head, platform)
 
     record = review_mod.open_review_lane(
         source_repo_root=source_repo_root,
@@ -3769,7 +4201,7 @@ def review_open(
         typer.echo(json.dumps(payload, indent=2))
 
 
-@review_app.command("close")
+@review_app.command("close", cls=json_refusing(typer.core.TyperCommand))
 def review_close(
     target: Annotated[Optional[Path], typer.Argument(help="Reconstruction lane directory; omitted inside its marked lane. PR-head form: WORKSPACE_ROOT")] = None,
     owner_unit: Optional[str] = typer.Argument(None, help="PR-head only: owner unit"),
@@ -3843,6 +4275,7 @@ def pr_create(
     platform: str = typer.Option("github", "--platform", help="Platform adapter name"),
     base_branch: Optional[str] = typer.Option(None, "--base", help="Base branch for created PRs. A lane defaults to main; a review uses each member's tracked branch."),
     review: Optional[str] = typer.Option(None, "--review", help="Review ID (gr:<sha>) to open PRs for; defaults to the workspace's only pinned review"),
+    repo_path: Optional[Path] = typer.Option(None, "--repo-path", help="A one-branch PR from this member checkout, whose HEAD must already be pushed. Pins it over the live tip of --base (required), reusing a pin that holds exactly that row, then opens the PR for that review. The workspace's other pinned reviews are not consulted."),
     draft: bool = typer.Option(True, "--draft/--no-draft", help="Create drafts by default. --no-draft explicitly publishes PRs."),
     title: Optional[str] = typer.Option(None, "--title", help="Title for every PR in the group. Defaults to the lane name, which makes every PR in a set read identically; pass one when a reviewer must be able to tell the PRs apart."),
     body: Optional[str] = typer.Option(None, "--body", help="Body for every PR in the group. Defaults to a line naming the group and listing its repos."),
@@ -3853,7 +4286,16 @@ def pr_create(
     """Create a grouped set of per-repo PRs for a lane, or for the current review."""
     workspace_root = workspace_root.resolve()
     _refuse_review_beside_unit(owner_unit, review)
+    if repo_path is not None:
+        if owner_unit is not None:
+            _refuse("--repo-path opens the PR of one branch for the review form; do not combine it with OWNER_UNIT")
+        if review is not None:
+            _refuse("--repo-path pins its own review and --review names one; give one or the other")
+        if base_branch is None:
+            _refuse("--repo-path needs --base <branch>: the branch the PR opens against")
     if owner_unit is None:
+        if repo_path is not None:
+            review = pin_single_member(workspace_root, repo_path, base_branch)
         _pr_create_for_review(workspace_root, review, platform, base_branch, draft, title, body, body_file)
         return
     base_branch = base_branch or "main"
@@ -4096,7 +4538,10 @@ def review_exit_gr(
 
 
 def _strip_gr_prefix(commit: str) -> str:
-    """A review commit is addressed as ``gr:<sha>``; accept a bare sha too."""
+    """A review commit is addressed as ``gr:<sha>``; accept a bare sha too. A NUL byte is refused
+    here, before the id reaches git or the filesystem (where it would raise ValueError)."""
+    if "\x00" in commit:
+        _refuse(f"invalid_id: review id {commit!r} contains a NUL byte; give a gr:<sha> review id")
     return commit[3:] if commit.startswith("gr:") else commit
 
 
@@ -4131,6 +4576,39 @@ def _echo_notes(exc: BaseException) -> None:
         typer.echo(note, err=True)
 
 
+_REVIEW_REFUSALS = (grip.GripReviewRefused, grip.GripCorruptError, grip.StoreSetupRefused,
+                    grip.AlphaRootRefused, grip.ReviewStoreAbsent, grip.GripInitError)
+
+
+def _review_refusal(exc: BaseException) -> tuple[str, str, list[str]]:
+    """Name an engine refusal: its code, the sentence after the code, and any remedy lines."""
+    if isinstance(exc, grip.GripReviewRefused):
+        extra = []
+        if exc.refusal == "head_already_on_remote":
+            extra = [next_steps.head_already_on_remote()]
+        elif exc.refusal == "head_behind_remote_branch":  # observed is "<branch> <remote tip>"
+            extra = [next_steps.head_behind_remote_branch(str(exc.observed).split()[-1])]
+        elif exc.refusal == "remote_branch_diverged":
+            extra = [next_steps.remote_branch_diverged()]
+        if exc.refusal == "unresolved_merge":  # a member and its unmerged paths, not two values that disagreed
+            return exc.refusal, f"{exc.expected}: {exc.observed}", extra
+        return exc.refusal, f"expected {exc.expected!r}, observed {exc.observed!r}", extra
+    if isinstance(exc, grip.GripCorruptError):
+        return "corrupt", str(exc), []
+    if isinstance(exc, grip.StoreSetupRefused):
+        return "store_init_refused", str(exc), []
+    if isinstance(exc, grip.AlphaRootRefused):
+        return "alpha_root", str(exc), []
+    if isinstance(exc, grip.ReviewStoreAbsent):
+        # A native root where nothing has been bound. Not a setup error, so no remedy that
+        # sends the caller back to the verb they already ran.
+        return "not_bound", str(exc), []
+    # GripInitError: the engine's own message already names what's missing and where
+    # (workspace path included); add the remediation verb rather than re-deriving the
+    # diagnosis, since _validate_grip_repo already did the naming precisely.
+    return "not_initialized", f"{exc} Run `gr2 grip init` to create it.", []
+
+
 def _review_call(fn, *args, **kwargs):
     """Run an engine review function, converting a refusal or corruption into a
     clean nonzero exit (code 2) with real error text on stderr — never a
@@ -4139,41 +4617,26 @@ def _review_call(fn, *args, **kwargs):
     failure surface loudly, not swallowed and not as a Python stack trace."""
     try:
         return fn(*args, **kwargs)
-    except grip.GripReviewRefused as exc:
-        typer.echo(
-            f"refused: {exc.refusal}: expected {exc.expected!r}, observed {exc.observed!r}",
-            err=True,
-        )
-        if exc.refusal == "head_already_on_remote":
-            typer.echo(next_steps.head_already_on_remote(), err=True)
-        _echo_notes(exc)
-        raise typer.Exit(code=2)
-    except grip.GripCorruptError as exc:
-        typer.echo(f"corrupt: {exc}", err=True)
-        _echo_notes(exc)
-        raise typer.Exit(code=2)
-    except grip.StoreSetupRefused as exc:
-        typer.echo(f"store_init_refused: {exc}", err=True)
-        _echo_notes(exc)
-        raise typer.Exit(code=2)
-    except grip.AlphaRootRefused as exc:
-        typer.echo(f"alpha_root: {exc}", err=True)
-        _echo_notes(exc)
-        raise typer.Exit(code=2)
-    except grip.ReviewStoreAbsent as exc:
-        # A native root where nothing has been bound. Not a setup error, so no remedy that
-        # sends the caller back to the verb they already ran.
-        typer.echo(f"not_bound: {exc}", err=True)
-        _echo_notes(exc)
-        raise typer.Exit(code=2)
-    except grip.GripInitError as exc:
-        # The engine's own message already names what's missing and where
-        # (workspace path included); add the remediation verb rather than
-        # re-deriving the diagnosis, since _validate_grip_repo already did
-        # the naming precisely.
-        typer.echo(f"not_initialized: {exc} Run `gr2 grip init` to create it.", err=True)
-        _echo_notes(exc)
-        raise typer.Exit(code=2)
+    except _REVIEW_REFUSALS as exc:
+        if _JSON_REFUSALS.get():
+            raise  # the --json command class prints it as one object
+        _refuse_text(exc)
+
+
+def _refuse_text(exc: BaseException) -> NoReturn:
+    refusal, message, extra = _review_refusal(exc)
+    prefix = "refused: " if isinstance(exc, grip.GripReviewRefused) else ""
+    typer.echo(f"{prefix}{refusal}: {message}", err=True)
+    for line in extra:
+        typer.echo(line, err=True)
+    _echo_notes(exc)
+    raise typer.Exit(code=2)
+
+
+def _refuse_json(refusal: str, message: str, code: int, notes: list[str] = ()) -> NoReturn:
+    """A --json reader's refusal: one JSON object on stdout naming it, and the same exit code as the text form."""
+    typer.echo(json.dumps({"status": "refused", "refusal": refusal, "message": message, "notes": list(notes)}, indent=2))
+    raise typer.Exit(code=code)
 
 
 _ROW_REQUIRED = ("key", "remote", "base", "head")
@@ -4221,6 +4684,21 @@ def _normalize_review_row(raw: object) -> dict:
     return row
 
 
+def _pin_rows(workspace_root: Optional[Path], rows: list[dict], ratified: Optional[str] = None) -> str:
+    """Pin `rows` as one review gr commit and record `review.bound`; returns the commit. The one writer behind
+    `review pin` and `pr create --repo-path`, so both make the same pin from the same rows, under the same refusals."""
+    bind_root = _resolve_workspace_root(workspace_root)
+    commit = _review_call(grip.create_review_bind_commit, bind_root, rows, ratified=ratified)
+    emit_after_outcome(
+        event_type=EventType.REVIEW_BOUND,
+        workspace_root=Path(bind_root).resolve(),
+        actor="system",
+        owner_unit="workspace",
+        payload={"bind_commit": f"gr:{commit}", "repos": [str(r.get("key", "")) for r in rows]},
+    )
+    return commit
+
+
 @review_app.command("pin")
 def review_bind(
     ctx: typer.Context,
@@ -4235,8 +4713,8 @@ def review_bind(
     from_range: Optional[Path] = typer.Option(None, "--from-range", help="A frozen range.patch (freeze-public-range.sh output). Carries the range so `review open` reconstructs, deriving the head-tree by applying it over --base in a throwaway clone — NO author clone that holds the head is needed. Exclusive with --source."),
     title: str = typer.Option("", "--title", help="Platform title text (NORM-hashed into the object)"),
     body: str = typer.Option("", "--body", help="Platform body text (NORM-hashed into the object)"),
-    rows_json: Optional[Path] = typer.Option(None, "--rows-json", help="A JSON file with a list of row objects (key/remote/base/head, optional path/ref/title/body/source); pins ALL rows into ONE gr commit. Exclusive with the single-row flags."),
-    ratified: Optional[str] = typer.Option(None, "--ratified", help="Named ratify receipt id: the sanctioned fix-forward when a --head is already on the remote"),
+    rows_json: Optional[Path] = typer.Option(None, "--rows-json", help="A JSON file with a list of row objects (key/remote/base/head, optional path/ref/title/body; source or range is optional on a single row but required on every row when the file holds more than one); pins ALL rows into ONE gr commit. Exclusive with the single-row flags."),
+    ratified: Optional[str] = typer.Option(None, "--ratified", help="gr:<id> of an earlier pin of this same head that was stamped: the one way to pin a --head already on the remote; recorded in the review"),
     members: Optional[str] = typer.Option(None, "--members", help="With no rows given: pin only these members (comma-separated names)"),
 ) -> None:
     """Pin a review gr commit for one or more repository rows; print ``gr:<commit>``.
@@ -4324,15 +4802,18 @@ def review_bind(
             except OSError as exc:
                 raise typer.BadParameter(f"--from-range {from_range}: {exc.strerror or exc}")
         rows = [row]
-    bind_root = _resolve_workspace_root(workspace_root)
-    commit = _review_call(grip.create_review_bind_commit, bind_root, rows, ratified=ratified)
-    emit_after_outcome(
-        event_type=EventType.REVIEW_BOUND,
-        workspace_root=Path(bind_root).resolve(),
-        actor="system",
-        owner_unit="workspace",
-        payload={"bind_commit": f"gr:{commit}", "repos": [str(r.get("key", "")) for r in rows]},
-    )
+    if len(rows) > 1:
+        # A review over several members merges only on a `set` record, and `check set` needs every member's objects;
+        # a row with neither a source nor a range would mint an id that can never be set-checked or merged.
+        bare = [str(r.get("key")) for r in rows if not r.get("source") and not r.get("range_patch")]
+        if bare:
+            raise typer.BadParameter(
+                f"cannot pin {len(rows)} members without each one's source: {', '.join(bare)} carries neither a "
+                "\"source\" (the author clone that holds its head) nor a \"range\". `check set` needs every member's "
+                "objects to test them together at the pinned heads, and a review over several members merges only on "
+                "that record. No review id was minted; add the source or range to each row and pin again"
+            )
+    commit = _pin_rows(workspace_root, rows, ratified)
     typer.echo(f"gr:{commit}")
 
 
@@ -4471,7 +4952,7 @@ def review_open_gr(
             _review_call(grip.require_reconstructable, workspace_root.resolve(), sha, keys)
             results = {
                 row_key: _review_call(
-                    grip.reconstruct_review_lane, workspace_root.resolve(), sha, row_key, root / row_key
+                    grip.reconstruct_review_lane, workspace_root.resolve(), sha, row_key, root / row_key, reader=True
                 )
                 for row_key in keys
             }
@@ -4486,10 +4967,11 @@ def review_open_gr(
             else:
                 for row_key, res in results.items():
                     match = res["bound_head_tree"] == res["reconstructed_tree"]
-                    typer.echo(f"{row_key}: lane={res['lane']} tree_match={match}")
+                    typer.echo(f"{row_key}: lane={res['lane']} tree_match={match} "
+                               f"source={res['source']} profile={res['profile']}")
             return
     result = _review_call(
-        grip.reconstruct_review_lane, workspace_root.resolve(), sha, key, root
+        grip.reconstruct_review_lane, workspace_root.resolve(), sha, key, root, reader=True
     )
     from . import open_gr_review
     from .review_allocation import record_created_allocation
@@ -4503,6 +4985,7 @@ def review_open_gr(
         typer.echo(f"bound_head: {result['bound_head']}")
         typer.echo(f"reconstructed_head: {result['reconstructed_head']}")
         typer.echo(f"tree_match: {result['bound_head_tree'] == result['reconstructed_tree']}")
+        typer.echo(f"source: {result['source']}  profile: {result['profile']}")
 
 
 @review_app.command("close-gr", hidden=True)  # hidden alias for one release, dropped at 2.0 GA
@@ -4737,13 +5220,51 @@ def review_run(
 def review_publish(
     workspace_root: Path,
     commit: str = typer.Argument(..., help="Full gr:<sha> review ID"),
-    remote: str = typer.Option(..., "--remote", help="HTTPS URL or absolute local remote path"),
+    remote: Optional[str] = typer.Option(None, "--remote", help="HTTPS URL or absolute local remote path: publish the review ref there only; without it, every member's pinned head and the review go to that member's own recorded remote"),
     ref: Optional[str] = typer.Option(None, "--ref", help="Exact native review ref, otherwise derived from ID"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
-    """Publish the existing native review ref and verify its remote ID."""
-    result = _review_call(grip.publish_review_commit, workspace_root.resolve(), commit, remote, ref)
-    typer.echo(json.dumps(result))
+    """Publish the existing native review ref and verify its remote ID.
+
+    With --remote, the review ref goes to that one remote and nothing else. Without it, every member's pinned head
+    goes to its own recorded remote (on the clone's current branch, never forced), then the review ref, each verified.
+    Every member is checked before anything leaves the host. Prints one JSON receipt on stdout either way; the
+    bare form's per-member lines go to stderr. Exit (bare form) 0 all published, 2 refused before anything left,
+    3 a failure that landed nothing, 4 partial: rerun the same command to resume."""
+    ws = workspace_root.resolve()
+    if remote is not None:
+        result = _review_call(grip.publish_review_commit, ws, commit, remote, ref)
+        typer.echo(json.dumps(result))
+        return
+    try:
+        code, receipt = grip.publish_review_all(ws, commit, ref)
+    except (grip.GripReviewRefused, grip.GripCorruptError, grip.ReviewStoreAbsent, grip.GripInitError) as exc:
+        refused = (f"{exc.refusal}: {exc.expected}: {exc.observed}" if isinstance(exc, grip.GripReviewRefused)
+                   else str(exc))
+        typer.echo(json.dumps({"id": commit if commit.startswith("gr:") else f"gr:{commit}", "ref": ref,
+                               "complete": False, "exit": grip.PUBLISH_EXIT_REFUSED, "members": [], "remotes": [],
+                               "refused": refused, "next": None}))
+        typer.echo(f"refused: {refused} (nothing left this host)", err=True)
+        _echo_notes(exc)
+        raise typer.Exit(grip.PUBLISH_EXIT_REFUSED)
+    typer.echo(json.dumps(receipt))
+    _publish_lines(receipt)
+    if code:
+        raise typer.Exit(code)
+
+
+def _publish_lines(receipt: dict) -> None:
+    """The bare publish form's human lines, on stderr: one per member, then the summary and the next command."""
+    for m in receipt["members"]:
+        head = f"{m['branch']}@{str(m['head'])[:7]} ({m['head_state']})" if m["head_state"] else "-"
+        tail = f"  error: {m['error']}" if m["error"] else ""
+        typer.echo(f"{m['state']}: {m['key']}  {m['remote']}  head={head}{tail}", err=True)
+    done = sum(m["state"] in ("published", "already_published") for m in receipt["members"])
+    if receipt["complete"]:
+        typer.echo(f"published: {done} of {len(receipt['members'])} members, review {receipt['ref']}", err=True)
+    else:
+        typer.echo(f"{'partial' if done else 'failed'}: {done} of {len(receipt['members'])} published", err=True)
+        typer.echo(f"next: {receipt['next']}", err=True)
 
 
 @review_app.command("receive", cls=ReviewTargetCommand)
@@ -4759,18 +5280,41 @@ def review_receive(
     typer.echo(json.dumps(result))
 
 
-@review_app.command("show", cls=ReviewTargetCommand)
+@review_app.command("show", cls=json_refusing(ReviewTargetCommand))
 def review_show(
     workspace_root: Path,
     commit: Optional[str] = typer.Argument(None, help="The pinned review, as gr:<sha> or a bare sha; omitted only when the workspace has exactly one pinned review"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    diff: bool = typer.Option(False, "--diff", help="Also print each member's diff, git diff <base> <head> in its clone"),
+    stat: bool = typer.Option(False, "--stat", help="Also print each member's diff summary (files, +added -removed)"),
+    member: Optional[str] = typer.Option(None, "--member", help="Show only this member (its key)"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Show what a pinned review holds: each member's repository and commit range, the title and body it was pinned
-    with, and the files its range changes. Read-only; with no id, selects the workspace's sole pinned review."""
+    with, and the files its range changes (`git diff --numstat -z <base> <head>` in its clone, never the pinned
+    text). Read-only; with no id, selects the workspace's sole pinned review.
+    --diff adds each member's net change, `git diff <base> <head>` read from the objects in its clone (no network);
+    a clone lacking either commit refuses as member_objects_missing rather than read the pinned text."""
     if commit is None:
         commit = _the_one_review_bind(workspace_root.resolve(), "show")
     result = _review_call(grip.show_review_commit, workspace_root.resolve(), _strip_gr_prefix(commit))
+    if member is not None:
+        keys = [str(m["key"]) for m in result["members"]]
+        if member not in keys:
+            typer.echo(f"gr2: no member {next_steps._shown(member)} in {result['id']}; its members: "
+                       + ", ".join(next_steps._shown(k) for k in keys), err=True)
+            raise typer.Exit(code=2)
+        result["members"] = [m for m in result["members"] if m["key"] == member]
+    for m in result["members"]:  # files (and any count) come from the objects, never the range.patch text
+        if diff or stat:
+            m.update(_review_call(review_diff.change, workspace_root.resolve(), m, with_diff=diff))
+            continue
+        try:  # plain show still lists the members of a review received before its clones are fetched
+            m["files"] = review_diff.change(workspace_root.resolve(), m, with_diff=False)["files"]
+        except grip.GripReviewRefused as exc:
+            if exc.refusal != "member_objects_missing":
+                raise
+            m["files"], m["files_unread"] = None, f"{exc.refusal} {exc.expected}"
     runs = _review_call(merge_receipts.runs, workspace_root.resolve(), str(result["id"]))
     result["merge"] = runs[-1] if runs else None  # the latest `review merge` run's receipt, or null when never merged
     result["merge_runs"] = len(runs)
@@ -4788,14 +5332,19 @@ def review_show(
         if body:
             typer.echo("  body: " + body.replace("\n", "\n        "))
         files = m["files"]
-        typer.echo("  files: " + (", ".join(files) if files else "(none)" if files == [] else "(not recorded)"))
+        typer.echo("  files: " + (", ".join(review_diff.printable(f) for f in files) if files else "(none)" if files == []
+                                  else f"(not read: {next_steps._shown(str(m.get('files_unread')))}; fetch the head)"))
         row = merged_rows.get(m["key"])
         if row is not None:
             typer.echo(f"  merge: {row['refusal']['code']} (refused)" if row.get("refusal")
                        else f"  merge: {row.get('final')} {str(row.get('merged') or '')[:12]}".rstrip())
+        if "diffstat" in m:
+            typer.echo("  " + ("diff: (not recorded)" if m["diffstat"] is None else review_diff.summary(m["diffstat"])))
+        for line in str(m.get("diff") or "").splitlines():
+            typer.echo(review_diff.printable(line))
 
 
-@review_app.command("verify", cls=ReviewTargetCommand)
+@review_app.command("verify", cls=json_refusing(ReviewTargetCommand))
 def review_verify(
     workspace_root: Path,
     commit: Optional[str] = typer.Argument(None, help="The pinned review commit, as gr:<sha> or a bare sha; omitted only when the workspace has exactly one pinned review"),
@@ -4847,7 +5396,9 @@ def _resolve_merge_defaults(ws: Path, review_id: Optional[str], into: Optional[s
         return review_id, into or "", feature or ""
     paths = [(ws / m["path"]).resolve() for m in view["members"]]
     feature, fsrc = defaults.branch(paths, feature)
-    into, isrc = defaults.target_branch([(p, m["remote"], m["base"]) for p, m in zip(paths, view["members"])], into)
+    pinned = None if into else defaults.pinned_target(view["members"])
+    into, isrc = pinned or defaults.target_branch(
+        [(p, m["remote"], m["base"]) for p, m in zip(paths, view["members"])], into)
     typer.echo(f"resolved: review={view['id']} ({rsrc}), from={feature} ({fsrc}), into={into} ({isrc})", err=True)
     return view["id"], into, feature
 
@@ -4858,10 +5409,23 @@ def review_approve(
     review_id: Optional[str] = typer.Argument(None, help="Review id; default is the pinned review at the current member heads"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
-    """Stamp the review: append an unsigned exact-head approval as git user.name, on every member remote."""
+    """Stamp the review: append an unsigned exact-head approval as git user.name, on every member remote.
+
+    WORKSPACE_ROOT may be a lane `review open` made, or one member directory in it: the stamp then uses the store
+    of the workspace the lane was opened from and the members checked out in the lane, so a reviewer in another
+    gripspace stamps from the lane. The approver is the git user.name of the workspace the lane was opened from."""
     from . import approvals
     try:
-        result = approvals.approve(workspace_root.resolve(), review_id)
+        # A review lane (`review checkout-pr` or `review open`) carries its (repo, head) record; stamp binds to it.
+        opened = approvals.review_open_lane(workspace_root.resolve()) if review_id is None else None
+        if opened is not None:
+            # A `review open` lane: the store is the workspace it was opened from, the members are read here.
+            store, rid, members = opened
+            result = approvals.approve(store, rid, members)
+        elif review_id is None and approvals.pr_lane_record(workspace_root.resolve()) is not None:
+            result = approvals.approve_pr_lane(workspace_root.resolve())
+        else:
+            result = approvals.approve(workspace_root.resolve(), review_id)
     except grip.ReviewStoreAbsent as exc:
         # The review was never received here (a reviewer's own workspace): a named refusal and the order that
         # works, never a traceback.
@@ -4893,18 +5457,22 @@ review_app.command("approve", help="Alias of `review stamp`.", cls=ReviewHeadCom
 def review_merge(
     workspace_root: Path,
     review_id: Optional[str] = typer.Argument(None, help="Pinned review id, gr:<sha>; default: the pinned review at the members' current heads"),
-    into: Optional[str] = typer.Option(None, "--into", help="Target branch; default: the remote's default branch when it is the one branch at the reviewed base"),
+    into: Optional[str] = typer.Option(None, "--into", help="Target branch; default: the target the review was pinned against, else (a review pinned before that was recorded) the remote's default branch when it is the one branch at the reviewed base"),
     feature: Optional[str] = typer.Option(None, "--from", help="Feature branch; default: the members' current branch"),
-    check: Optional[List[str]] = typer.Option(None, "--check", help="Required exact-head check name (repeatable); default `test`, or `set` for a review over several members"),
-    no_set: bool = typer.Option(False, "--no-set", help="Do not add the `set` requirement to a review over several members"),
-    approval_count: Optional[int] = typer.Option(None, "--approvals", help="Required distinct approvers; may raise the workspace approvals.required floor, default 0"),
+    check: Optional[List[str]] = typer.Option(None, "--check", help="Required exact-head check name (repeatable); default `test`, and `test` plus `set` for a review over several members, where only `test` and `set` are accepted and `set` is always required; a default `test` with no record at a member's head is decided by a passing `set` for this review, a red one refuses"),
+    no_set: bool = typer.Option(False, "--no-set", help="Single-member reviews only: a review over several members always requires `set` and refuses this flag"),
+    approval_count: Optional[int] = typer.Option(None, "--approvals", help="Required distinct approvers; may raise the grip.toml [approvals] required floor. With neither set the merge refuses approvals_unset; 0 merges without approvals and says so"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
-    """Merge a pinned review into plain Git remotes: preflight every member, push nothing if any member fails it.
+    """Merge a pinned review into its members' remotes: preflight every member, merge nothing if any member fails it.
 
     Requires, per member: the remote feature branch at the reviewed head, the target at the reviewed base,
-    and a passing exact-head check. Merges are separate pushes, not atomic across repos. Exit 0 all merged,
-    3 none merged (refused), 4 partial or unknown; computed from the remote state after the run.
+    and a passing exact-head check. A member whose hosting platform has exactly one open PR at the reviewed head
+    lands through that PR (its stack down to the target must be open and not a draft), and its PR head must still
+    be the reviewed head after the merge. A member on a GitHub URL whose platform cannot be read (gh absent or not
+    authenticated) refuses as platform_unmeasurable; every other member is merged by push. Merges are separate, not atomic
+    across repos. Exit 0 all merged, 3 none merged (refused), 4 partial or unknown; computed from the remote state
+    after the run.
     """
     ws = workspace_root.resolve()
     try:
@@ -4930,10 +5498,20 @@ def review_merge(
                                             required_checks=tuple(check) if check else None,
                                             required_approvals=approval_count, no_set=no_set)
     typer.echo(json.dumps(receipt))
+    approval = receipt.get("approvals") or {}
+    if approval.get("skipped"):
+        typer.echo(f"approvals: skipped, 0 required by {approval.get('source')}", err=True)
     for stale in receipt.get("tracking_stale", []):
         typer.echo(f"{stale['member']}: merged on its remote, but this clone's tracking ref still names the old tip "
                    f"({stale.get('reason')}), so `store commit` would record the pre-merge pin; run: {stale['command']}",
                    err=True)
+    # A member merged with no `test` record of its own at its head was accepted on the set's command alone, which is
+    # the author's argv: say so when it lands, so "never record a test" is visible where it is used.
+    on_set = [m["key"] for m in receipt.get("members", [])
+              if (m.get("check") or {}).get("source", {}).get("test") == "set" and m.get("final") == "merged"]
+    if on_set:
+        typer.echo(f"accepted on the set alone (no test record of its own at its head): {', '.join(on_set)}; "
+                   "the set's command is the only test evidence for them, so it must run their tests", err=True)
     if hint_error:
         typer.echo(hint_error, err=True)
     for set_name in sorted({(m.get("declared_set") or {}).get("set") for m in receipt.get("members", [])} - {None}):
@@ -4943,7 +5521,33 @@ def review_merge(
         raise typer.Exit(code)
 
 
-@review_app.command("repin")
+@review_app.command("update", cls=ReviewHeadCommand)
+def review_update(
+    workspace_root: Path,
+    review_id: Optional[str] = typer.Argument(None, help="Pinned review id, gr:<sha>, whose target moved after the pin; default: the pinned review at the members' current heads"),
+    into: Optional[str] = typer.Option(None, "--into", help="Target branch; default: the target each member was pinned against (a review pinned before that was recorded needs --into)"),
+    root: Optional[Path] = ROOT_OPTION,
+) -> None:
+    """Bring every member of a pinned review up to its moved target and pin the result again.
+
+    Fetches the target from each member's recorded remote, merges it into the member's feature branch, and when
+    every member is clean pins the merged heads as a new review (printed as new_review). Pushes nothing and resolves
+    nothing; stamps on the old review do not carry. Refuses before merging anything when a member has uncommitted
+    changes. Prints its JSON receipt on stdout; the next steps go on stderr. Exit 0 done, 2 refused (nothing moved),
+    3 conflicts (nothing pinned), 4 partial (a member merged, then a later step failed).
+    """
+    from . import review_update as ru
+
+    ws = workspace_root.resolve()
+    code, receipt = ru.update(ws, review_id, into)
+    typer.echo(json.dumps(receipt))
+    for line in next_steps._update_lines(str(ws), receipt):
+        typer.echo(line, err=True)
+    if code:
+        raise typer.Exit(code)
+
+
+@review_app.command("repin", cls=json_refusing(typer.core.TyperCommand))
 def review_rebind_cmd(
     frozen_dir: Path = typer.Argument(..., help="A frozen gate directory (freeze-public-range.sh output) to rebase onto the moved base"),
     repo: Path = typer.Option(..., "--repo", help="A clone whose origin remote hosts the target branch (used to read the live base head)"),
@@ -4968,8 +5572,7 @@ def review_rebind_cmd(
             out_dir.resolve(), allow_public_ref=allow_public_ref,
         )
     except review_rebind.RebindRefused as exc:
-        typer.echo(f"refused: {exc}", err=True)
-        raise typer.Exit(code=2)
+        _refuse(str(exc))
     if json_output:
         typer.echo(json.dumps({
             "outcome": result.outcome,
@@ -4987,7 +5590,7 @@ def review_rebind_cmd(
 
 
 # `rebind` is the earlier name of `review repin`; it stays as an alias with the same options and output.
-review_app.command("rebind", help="Alias of `review repin`.")(review_rebind_cmd)
+review_app.command("rebind", help="Alias of `review repin`.", cls=json_refusing(typer.core.TyperCommand))(review_rebind_cmd)
 
 
 @pr_app.command("status", cls=ReviewSubjectCommand)
@@ -5430,6 +6033,22 @@ def _resolve_remote_head(repo: Path, remote: Optional[str], head: Optional[str])
     return url, sha
 
 
+def _require_repo(repo: Path) -> Path:
+    """The top of the repository `repo` is in, the way git resolves it, so a directory inside a member runs
+    against the member. A path that is not there or not inside a repository is refused by naming the path,
+    before any remote is looked for: otherwise the missing remote of a repo that does not exist is the cause."""
+    path = repo.resolve()
+    if not path.exists():
+        raise check_records.CheckRefused(f"repo_not_found: {path} does not exist")
+    try:
+        proc = gitops.git(path, "rev-parse", "--show-toplevel") if path.is_dir() else None
+    except PermissionError:
+        proc = None
+    if proc is None or proc.returncode != 0 or not proc.stdout.strip():
+        raise check_records.CheckRefused(f"not_a_repository: {path} is not inside a git repository")
+    return Path(proc.stdout.strip())
+
+
 @check_app.command("run")
 def check_run(
     repo: Path,
@@ -5440,6 +6059,7 @@ def check_run(
 ) -> None:
     """Execute at the exact commit and publish its observation."""
     try:
+        repo = _require_repo(repo)
         remote, head = _resolve_remote_head(repo, remote, head)
         result = check_records.run_check(repo, remote, head, name, command)
     except (check_records.CheckRefused, defaults.Unresolved, subprocess.SubprocessError, OSError) as exc:
@@ -5455,7 +6075,7 @@ def check_set(
     workspace_root: Path,
     review_id: str = typer.Argument(..., help="The pinned review, gr:<sha>"),
     command: List[str] = typer.Argument(None, help="The command to run, after --"),
-    name: str = typer.Option(set_check.SET_CHECK_NAME, "--name"),
+    name: str = typer.Option(set_check.SET_CHECK_NAME, "--name", help="Name the set record is stored under"),
     root_commit: Optional[str] = typer.Option(
         None, "--root-commit",
         help="Check a DECLARED set (a [[sets]] table in grip.toml) at this root commit instead of a review"),
@@ -5517,6 +6137,7 @@ def check_show(
 
     A `set` record written by `check set` names the review it was run for. Without --review the answer is about the
     head alone; with it, a `set` record for another review reads as absent (reason required_check_stale)."""
+    repo = defaults.toplevel(repo)  # the same repo `check run` recorded, so a subdirectory reads the same snapshot
     try:
         remote, head = _resolve_remote_head(repo, remote, head)
     except defaults.Unresolved as exc:

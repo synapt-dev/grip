@@ -72,12 +72,25 @@ def _temp_repo(path: Path, *, marker: str = "seed") -> str:
     return _git(["rev-parse", "--short", "HEAD"], path)
 
 
+def _stamp(root: Path, di: Path, stamp: dict | None = None) -> None:
+    """The build stamp setup.py writes into a wheel, listed in the dist-info's RECORD.
+
+    The default is a release stamp: the rows that hand-write a dist-info model a released
+    wheel whose `direct_url.json` is odd, and a released wheel carries this stamp.
+    """
+    target = root / "gr2" / "python_cli" / "_build.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(stamp or {"commit": "abc1234", "release": True}))
+    (di / "RECORD").write_text("gr2/python_cli/_build.json,,\n")
+
+
 def _dist_info(
     root: Path,
     *,
     version: str,
     editable: Path | None = None,
     install_dir: Path | None = None,
+    stamp: dict | None = {"commit": "abc1234", "release": True},
 ) -> None:
     """Write a real dist-info that `importlib.metadata` will find.
 
@@ -90,6 +103,8 @@ def _dist_info(
     (di / "METADATA").write_text(
         f"Metadata-Version: 2.1\nName: {DIST}\nVersion: {version}\n"
     )
+    if stamp is not None:
+        _stamp(root, di, stamp)
     if editable is not None:
         (di / "direct_url.json").write_text(
             json.dumps({"url": editable.as_uri(), "dir_info": {"editable": True}})
@@ -205,9 +220,14 @@ def test_the_cli_prints_one_line_of_a_declared_shape() -> None:
 
     assert res.exit_code == 0, res.output
     line = _one_line(res.output)
-    assert re.fullmatch(r"\S+(?:\+g[0-9a-f]+|\+unknown| released)|unknown", line), (
-        "not one of the four declared forms "
-        "(<version>+g<sha> | <version> released | <version>+unknown | unknown): " + repr(line)
+    assert re.fullmatch(
+        r"\S+(?:\+g[0-9a-f]+(?: dev build, not a release)?|\+unknown| released"
+        r"| unknown build, not a release)|unknown",
+        line,
+    ), (
+        "not one of the declared forms (<version>+g<sha> | <version> released | "
+        "<version>+g<sha> dev build, not a release | <version> unknown build, not a release "
+        "| <version>+unknown | unknown): " + repr(line)
     )
 
 
@@ -488,6 +508,7 @@ def test_a_windows_shaped_editable_record_answers_unknown_and_does_not_raise(
     di = fixture_path / f"{DIST}-2.0.0a5.dist-info"
     di.mkdir(parents=True)
     (di / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {DIST}\nVersion: 2.0.0a5\n")
+    _stamp(fixture_path, di)
     (di / "direct_url.json").write_text(
         _json.dumps({"url": "file:///C:/Users/someone/repo", "dir_info": {"editable": True}})
     )
@@ -530,6 +551,7 @@ def test_a_direct_url_whose_dir_info_is_not_an_object_answers_and_does_not_raise
     di = fixture_path / f"{DIST}-2.0.0a5.dist-info"
     di.mkdir(parents=True)
     (di / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {DIST}\nVersion: 2.0.0a5\n")
+    _stamp(fixture_path, di)
     (di / "direct_url.json").write_text(
         _json.dumps({"url": "file:///tmp/somewhere", "dir_info": dir_info})
     )
@@ -555,6 +577,7 @@ def test_the_same_non_object_dir_info_with_editable_absent_is_also_readable(
     di = fixture_path / f"{DIST}-2.0.0a5.dist-info"
     di.mkdir(parents=True)
     (di / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {DIST}\nVersion: 2.0.0a5\n")
+    _stamp(fixture_path, di)
     (di / "direct_url.json").write_text(
         _json.dumps({"url": "https://example.invalid/repo.git", "vcs_info": {"vcs": "git"}})
     )
@@ -575,6 +598,7 @@ def test_a_non_utf8_record_answers_and_does_not_raise(fixture_path: Path) -> Non
     di = fixture_path / f"{DIST}-2.0.0a5.dist-info"
     di.mkdir(parents=True)
     (di / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {DIST}\nVersion: 2.0.0a5\n")
+    _stamp(fixture_path, di)
     (di / "direct_url.json").write_bytes(
         b'{"url": "file:///tmp/somewhere", "dir_info": {"editable": \xff\xfe}}'
     )
@@ -593,6 +617,7 @@ def test_a_symlink_loop_in_the_record_answers_and_does_not_raise(fixture_path: P
     di = fixture_path / f"{DIST}-2.0.0a5.dist-info"
     di.mkdir(parents=True)
     (di / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {DIST}\nVersion: 2.0.0a5\n")
+    _stamp(fixture_path, di)
     loop = di / "loop"
     os.symlink(str(loop), str(loop))
     os.symlink(str(loop), str(di / "direct_url.json"))
@@ -725,6 +750,7 @@ def test_a_record_whose_url_cannot_be_parsed_answers_unknown_and_does_not_raise(
     di = fixture_path / f"{DIST}-2.0.0a5.dist-info"
     di.mkdir(parents=True)
     (di / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {DIST}\nVersion: 2.0.0a5\n")
+    _stamp(fixture_path, di)
     (di / "direct_url.json").write_text(
         _json.dumps({"url": "file://[::1/repo", "dir_info": {"editable": True}})
     )
@@ -744,6 +770,7 @@ def test_a_well_formed_ipv6_url_is_not_the_failing_case(fixture_path: Path) -> N
     di = fixture_path / f"{DIST}-2.0.0a5.dist-info"
     di.mkdir(parents=True)
     (di / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {DIST}\nVersion: 2.0.0a5\n")
+    _stamp(fixture_path, di)
     (di / "direct_url.json").write_text(
         _json.dumps({"url": "file://[fe80::1]:80/x", "dir_info": {"editable": True}})
     )
@@ -770,6 +797,7 @@ def test_a_record_naming_no_path_answers_unknown(fixture_path: Path, url: str) -
     di = fixture_path / f"{DIST}-2.0.0a5.dist-info"
     di.mkdir(parents=True)
     (di / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {DIST}\nVersion: 2.0.0a5\n")
+    _stamp(fixture_path, di)
     (di / "direct_url.json").write_text(
         _json.dumps({"url": url, "dir_info": {"editable": True}})
     )
@@ -795,6 +823,7 @@ def test_the_answer_does_not_move_with_the_callers_working_directory(
     di = fixture_path / f"{DIST}-2.0.0a5.dist-info"
     di.mkdir(parents=True)
     (di / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {DIST}\nVersion: 2.0.0a5\n")
+    _stamp(fixture_path, di)
     (di / "direct_url.json").write_text(
         _json.dumps({"url": "file://", "dir_info": {"editable": True}})
     )
@@ -831,6 +860,7 @@ def test_a_double_slash_authority_answers_unknown_and_does_not_raise(fixture_pat
     di = fixture_path / f"{DIST}-2.0.0a5.dist-info"
     di.mkdir(parents=True)
     (di / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {DIST}\nVersion: 2.0.0a5\n")
+    _stamp(fixture_path, di)
     (di / "direct_url.json").write_text(
         _json.dumps({"url": "file:////host/share", "dir_info": {"editable": True}})
     )
@@ -880,6 +910,7 @@ def test_every_url_shape_answers_a_declared_form_and_the_call_raises_two_classes
     di = fixture_path / f"{DIST}-2.0.0a5.dist-info"
     di.mkdir(parents=True)
     (di / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {DIST}\nVersion: 2.0.0a5\n")
+    _stamp(fixture_path, di)
 
     outcomes: list[tuple[str, str]] = []
     for url in _URL_SHAPES:
@@ -925,6 +956,7 @@ def test_a_conversion_raising_oserror_is_caught_like_a_valueerror(
     di = fixture_path / f"{DIST}-2.0.0a5.dist-info"
     di.mkdir(parents=True)
     (di / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {DIST}\nVersion: 2.0.0a5\n")
+    _stamp(fixture_path, di)
     (di / "direct_url.json").write_text(
         _json.dumps({"url": "file:////host/share", "dir_info": {"editable": True}})
     )

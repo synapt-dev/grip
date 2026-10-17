@@ -14,7 +14,9 @@ The rules:
 - Unknown entries are carried byte for byte, name included.
 - An edit replaces one entry and leaves every other object as written.
 - Verify checks the objects as written; it never rebuilds names from the schema.
-- The tree IS the record; protobuf binary is derived on request and never stored.
+- One stored form per message, declared by the schema (field tree by default; one
+  canonical protobuf blob when the message declares `leaf` at its top); never convert
+  a stored record between forms. `gr2 proto json` renders either form as JSON.
 
 The schema has one owner outside gr2, one branch per package. gr2 carries a copy,
 pinned to the commit of that branch it came from (SCHEMA_COMMIT) and to its
@@ -31,10 +33,10 @@ from pathlib import Path
 from . import gitops
 
 PACKAGE = "dev.synapt.grip.review.v1alpha1"
-SCHEMA_COMMIT = "88babf4a0c55110a1e1badc53f07a6f0f8912f86"
+SCHEMA_COMMIT = "a2707c456d137ce5cbabb18f7aa836897818d147"
 SCHEMA_SOURCE = f"{PACKAGE}@{SCHEMA_COMMIT}"
 _PROTO_RESOURCE = f"schemas/{PACKAGE}/review.proto"
-_PROTO_SHA256 = "94e75f8ff703a20a2ab2cecd5226c24d25e9f8c1a1d295cdaf224ab0a2e73296"
+_PROTO_SHA256 = "4cc4162d6d15e098c3f24402bd7ae763661cde02ba83e48105d57aab41fd3c44"
 
 MAX_FIELD_NUMBER = 999
 # ASCII digits only and matched whole: \d admits other scripts' digits and $ admits a
@@ -197,6 +199,8 @@ def fields(buf: bytes) -> list[tuple[int, int, bytes]]:
     while i < len(buf):
         key, i = _read_varint(buf, i)
         number, wt = key >> 3, key & 7
+        if number == 0:
+            raise ReviewRecordError("field number 0 is not a protobuf field")
         if wt == 0:
             _, j = _read_varint(buf, i)
         elif wt == 1:

@@ -1,5 +1,5 @@
 
-Î
+æ
 ,dev/synapt/grip/review/v1alpha1/review.protodev.synapt.grip.review.v1alpha1"«
 
 ReviewBind
@@ -7,7 +7,7 @@ ReviewBind
 kind (	Rkind
 policy (	RpolicyA
 members (2'.dev.synapt.grip.review.v1alpha1.MemberRmembers
-author (	Rauthor"þ
+author (	Rauthor"–
 Member
 key (	Rkey
 path (	Rpath
@@ -26,7 +26,8 @@ remoteHead
 
 committers (R
 committersE
-evidence (2).dev.synapt.grip.review.v1alpha1.EvidenceRevidence"F
+evidence (2).dev.synapt.grip.review.v1alpha1.EvidenceRevidence
+target (	Rtarget"F
 Evidence
 commands (Rcommands
 

@@ -30,12 +30,13 @@ from .gitops import (
 )
 from .events import EventType, emit, emit_after_outcome
 from .hooks import load_repo_hooks
-from .workspace_guidance import missing_gr2_workspace_guidance
+from .workspace_guidance import init_unless_inside_workspace, workspace_init_command
 from .spec_apply import (
     ValidationIssue,
     _run_materialize_hooks,
     _find_repo,
     _record_apply_state,
+    derived_spec_doc,
     load_workspace_spec_doc,
     repo_cache_path,
     validate_spec,
@@ -257,10 +258,11 @@ def build_sync_plan(
     workspace_root = workspace_root.resolve()
     dirty_mode = _normalize_dirty_mode(dirty_mode)
     spec_path = workspace_spec_path(workspace_root)
-    if not spec_path.exists():
-        next_step = missing_gr2_workspace_guidance(
+    # A native root with no spec file is answered by the spec derived from grip.toml (spec_apply.derived_spec_doc).
+    if not spec_path.exists() and derived_spec_doc(workspace_root) is None:
+        next_step = init_unless_inside_workspace(
             workspace_root,
-            "run `gr2 workspace init <path>` first or create .grip/workspace_spec.toml explicitly",
+            f"run {workspace_init_command(workspace_root)} first or create .grip/workspace_spec.toml explicitly",
         )
         raise SystemExit(
             f"workspace spec not found: {spec_path}\n"
@@ -647,11 +649,13 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
         cache_path = repo_cache_path(workspace_root, str(repo_spec["name"]))
         # A root member deleted from the workspace is re-cloned HERE, and cloning
         # straight onto the default tip left it on a commit the root never
-        # declared while sync exited 0.
+        # declared while sync exited 0. On a native root the pin is the store's record, not the spec's copy, which
+        # goes stale at the first advance.
+        from .lane_downstream import record_pin
         first_materialize = clone_and_pin(
             str(repo_spec["url"]),
             repo_root,
-            pin=str(repo_spec.get("pin") or ""),
+            pin=str(record_pin(workspace_root, repo_spec["name"], repo_spec.get("path"), repo_spec.get("pin")) or ""),
             member=str(repo_spec["name"]),
             reference_repo_root=cache_path,
         )
@@ -735,6 +739,7 @@ def _execute_operation(workspace_root: Path, spec: dict[str, object], op: SyncOp
             target_repo_root=target_repo_root,
             branch=expected_branch,
             workspace_root=workspace_root,
+            cache_root=repo_cache_path(workspace_root, repo_name),
         )
         _run_materialize_hooks(workspace_root, target_repo_root, repo_name, first_materialize, manual_hooks=False)
         after_sha = current_head_sha(target_repo_root)

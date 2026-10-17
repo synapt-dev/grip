@@ -183,6 +183,9 @@ jobs:
       prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history and tags: setup.py stamps release only when HEAD carries gr2/v<version>.
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -220,6 +223,18 @@ jobs:
           print(f"wheel {built} == tag {tag}", file=sys.stderr)
           print(f"version={built}")
           print(f"prerelease={'true' if built.is_prerelease else 'false'}")
+          PY
+
+      - name: Assert the wheel's build stamp says release at this commit
+        run: |
+          python - <<'PY'
+          import glob, json, os, zipfile
+          (whl,) = glob.glob("dist/gitgrip-*-py3-none-any.whl")
+          stamp = json.loads(zipfile.ZipFile(whl).read("gr2/python_cli/_build.json"))
+          sha = os.environ["GITHUB_SHA"]
+          assert stamp.get("release") is True, f"stamp {stamp} is not a release"
+          assert stamp.get("commit") and sha.startswith(stamp["commit"]), f"stamp {stamp} != {sha}"
+          print(f"stamp {stamp} matches {sha}")
           PY
 
       - name: Upload Python dist artifact

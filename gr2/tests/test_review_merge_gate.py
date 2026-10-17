@@ -11,7 +11,7 @@ import sys
 import pytest
 from typer.testing import CliRunner
 
-from gr2.python_cli import check_records, merge_gate
+from gr2.python_cli import check_records, merge_gate, set_check
 from gr2.python_cli.app import app
 from tests.review_ref_helper import REVIEW_REF_PREFIX
 
@@ -77,7 +77,7 @@ def check(w):
 
 
 def merge(w):
-    return merge_gate.review_merge(w["author"], w["review"], into="main", feature="feat")
+    return merge_gate.review_merge(w["author"], w["review"], into="main", feature="feat", required_approvals=0)
 
 
 def test_merges_the_reviewed_head_and_a_rerun_is_idempotent(world):
@@ -169,6 +169,12 @@ def slice2(tmp_path, monkeypatch):
     return out
 
 
+def record_set(s):
+    """A passing `set` record at the pinned heads: what a review over several members merges on."""
+    rec = set_check.run_set_check(s["author"], s["review"], "set", [sys.executable, "-c", "pass"])
+    assert rec.get("result") == "pass", rec
+
+
 def move(m, tmp_path_name="moved.txt"):
     (m["repo"] / tmp_path_name).write_text("after review\n")
     git(m["repo"], "add", tmp_path_name)
@@ -181,7 +187,8 @@ def mains(s):
 
 
 def test_a_two_member_slice_merges_as_a_set(slice2):
-    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
+    record_set(slice2)  # a review over several members merges only on a passing set
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", required_approvals=0)
     assert code == merge_gate.EXIT_MERGED, receipt
     for k, m in slice2["members"].items():
         parents = git(m["remote"], "rev-list", "--parents", "-n", "1", "main").split()[1:]
@@ -189,20 +196,22 @@ def test_a_two_member_slice_merges_as_a_set(slice2):
 
 
 def test_moving_the_last_member_refuses_the_whole_set(slice2):
+    record_set(slice2)  # a review over several members merges only on a passing set
     move(slice2["members"]["beta"])
-    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", required_approvals=0)
     assert code == merge_gate.EXIT_REFUSED, receipt
     assert mains(slice2) == {k: m["base"] for k, m in slice2["members"].items()}, "no member may merge"
 
 
 def test_a_rerun_after_an_earlier_partial_reports_partial_not_refused(slice2):
+    record_set(slice2)  # a review over several members merges only on a passing set
     # alpha merged by an earlier run; then beta moves; the rerun refuses beta but the STATE is partial.
-    code, _ = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
+    code, _ = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", required_approvals=0)
     assert code == merge_gate.EXIT_MERGED
     beta = slice2["members"]["beta"]
     git(beta["remote"], "update-ref", "refs/heads/main", beta["base"])  # undo beta's merge on the remote
     move(beta)
-    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", no_set=True)
+    code, receipt = merge_gate.review_merge(slice2["author"], slice2["review"], feature="feat", required_approvals=0)
     assert code == merge_gate.EXIT_PARTIAL, receipt
 
 
@@ -264,12 +273,19 @@ def test_a_missing_check_names_check_run_and_the_printed_command_gets_past_it(wo
 
 
 def test_pinning_a_head_already_pushed_names_the_non_destructive_path(world):
+    # Now a head that IS the pushed branch tip pins (test_review_pin_after_push); the
+    # refusal that remains is a branch that moved past the head after the push.
+    (world["member"] / "later.txt").write_text("later\n")
+    git(world["member"], "add", "later.txt")
+    git(world["member"], "commit", "-m", "later")
+    tip = git(world["member"], "rev-parse", "HEAD")
+    git(world["member"], "push", str(world["remote"]), "feat")
     again = runner.invoke(app, ["review", "pin", "--repo", "member", "--remote", str(world["remote"]),
                                 "--base", world["base"], "--head", world["head"], "--ref", "refs/heads/main",
                                 "--source", str(world["member"])])
-    assert again.exit_code == 2 and "head_already_on_remote" in again.output, again.output
+    assert again.exit_code == 2 and "head_behind_remote_branch" in again.output, again.output
     line = next(x for x in again.output.splitlines() if x.startswith("next: "))
-    assert "--ratified" in line and not any(f in line.lower() for f in FORBIDDEN_ADVICE), line
+    assert f"--head {tip}" in line and not any(f in line.lower() for f in FORBIDDEN_ADVICE), line
 
 
 def test_no_next_line_and_no_help_line_suggests_an_identity_or_delete_trick():
@@ -298,7 +314,7 @@ def test_review_help_gives_the_order_of_the_steps():
 
 def test_two_required_checks_get_one_check_run_line_each_and_both_lines_get_past_the_refusal(world):
     code, receipt = merge_gate.review_merge(world["author"], world["review"], into="main", feature="feat",
-                                            required_checks=("lint", "test"))
+                                            required_checks=("lint", "test"), required_approvals=0)
     row = receipt["members"][0]
     assert code == merge_gate.EXIT_REFUSED and row["refused"].startswith("check_absent"), receipt
     lines = row["next"].splitlines()
@@ -308,7 +324,7 @@ def test_two_required_checks_get_one_check_run_line_each_and_both_lines_get_past
         ran = runner.invoke(app, next_argv(line, [sys.executable, "-c", "pass"]))
         assert ran.exit_code == 0, ran.output
     code, receipt = merge_gate.review_merge(world["author"], world["review"], into="main", feature="feat",
-                                            required_checks=("lint", "test"))
+                                            required_checks=("lint", "test"), required_approvals=0)
     assert code == merge_gate.EXIT_MERGED, receipt
 
 

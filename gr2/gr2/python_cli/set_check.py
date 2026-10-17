@@ -19,7 +19,7 @@ import uuid
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from . import check_records, gitops, grip
+from . import check_records, gitops, grip, next_steps
 
 SET_CHECK_NAME = "set"
 _KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
@@ -50,6 +50,30 @@ def judge_set_records(rows: Sequence[Mapping], review: str, expected_set_id: str
     if any(r.get("result") != "pass" for r in mine):
         return "fail", "the set check failed at these heads"
     return "pass", "the set check passed at these heads"
+
+
+def judge_plain_check(rows: Sequence[Mapping], name: str, review: str, expected_set_id: str) -> tuple[str, str, str]:
+    """(status, reason, source) for a plain required name X on a review of two or more members, at one member's head.
+
+    A record named X that carries THIS review and THIS set identity (written by `check set --name X`) is evidence that
+    the members passed X together, and when any exists it alone decides X: a member tested alone is not the set.
+    A record that carries a review or set identity but not this one is stale and never counted, in either direction.
+    Without set evidence, the member's own X records (no review field) decide X exactly as a single member's would."""
+    named = [r for r in rows if r.get("name") == name]
+    scoped = [r for r in named if "review" in r or "set_id" in r]
+    mine = [r for r in scoped if r.get("review") == review and r.get("set_id") == expected_set_id]
+    if mine:
+        if any(r.get("result") != "pass" for r in mine):
+            return "fail", f"the {name} check failed as a set at these heads", "set"
+        return "pass", "required_checks_pass", "set"
+    own = [r for r in named if r not in scoped]
+    if any(r.get("result") != "pass" for r in own):
+        return "fail", "required_check_failed", "member"
+    if own:
+        return "pass", "required_checks_pass", "member"
+    if scoped:
+        return "stale", f"a {name} record exists at this head but not for this review and set", "member"
+    return "absent", "required_check_absent", "member"
 
 
 def read_for_review(remote: str, member: Mapping, head: str, required: Sequence[str], review: str) -> dict:
@@ -106,9 +130,19 @@ def run_set_check(workspace: Path, review_id: str, name: str, argv: Sequence[str
             raise check_records.CheckRefused(f"member_key_unsafe: {key!r} cannot name a directory in the lane")
     repos: dict[str, Path] = {}
     for m in members:
+        if grip.url_has_credentials(m["remote"]):  # every message below may name the remote, so refuse by key first
+            raise check_records.CheckRefused(
+                f"remote_credentials: {m['key']}: the recorded remote cannot be parsed or carries URL userinfo; "
+                "pin again from a remote without it and use a credential helper")
         repo = (workspace / m["path"]).resolve()
         if not repo.is_relative_to(root):
             raise check_records.CheckRefused(f"member_path_outside_workspace: {m['path']}")
+        if gitops.run(repo, "cat-file", "-e", f"{m['head']}^{{commit}}").returncode != 0:
+            # Named with its next step: a reviewer's clone lacks the head until it is fetched (`review receive`
+            # fetches it from the member's own remote).
+            raise check_records.CheckRefused(
+                f"head_not_in_member_clone: {m['key']} {m['head']}; fetch it with "
+                f"`{next_steps._head_fetch(str(repo), m['remote'], m['head'])}`")
         check_records._oid(repo, m["head"])  # a full commit id that this member's repo holds
         check_records._remote(m["remote"])
         repos[m["key"]] = repo
@@ -241,7 +275,7 @@ def _fetch_remote_head(repo: Path, remote: str, branch: str) -> str:
     The fetch lands on a transient staging ref (the pattern check records use) and the ref is removed after; the
     objects stay, and no branch, tag or FETCH_HEAD of the member moves."""
     staging = f"refs/dev.synapt.grip/__remote_head_transfers__/{uuid.uuid4().hex}"
-    fetched = gitops.run(repo, "fetch", "--no-tags", "--no-write-fetch-head", remote, f"refs/heads/{branch}:{staging}")
+    fetched = gitops.run(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, f"refs/heads/{branch}:{staging}")
     if fetched.returncode:
         raise check_records.CheckRefused(f"remote_branch_absent: {branch!r} could not be fetched from {remote}")
     head = gitops.run(repo, "rev-parse", "--verify", "-q", f"{staging}^{{commit}}").stdout.strip()

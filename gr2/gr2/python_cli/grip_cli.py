@@ -10,6 +10,7 @@ import datetime
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tomllib
@@ -23,13 +24,14 @@ from .check_records import JSON_SHAPES as CHECK_JSON_SHAPES
 from . import gitops
 from . import grip as grip_mod
 from . import names as name_rules
+from . import next_steps
 from . import store_hooks
 from . import workspace_mode
 from .gitops import git, repo_dirty
 from .layout import MOVED_MARKER, grip_dir
 from .root_option import ROOT_OPTION, RootOptionalCommand
 from .spec_apply import unit_member_path, validate_grip_toml
-from .workspace_guidance import missing_gr2_workspace_guidance
+from .workspace_guidance import init_unless_inside_workspace, workspace_init_command
 
 grip_app = typer.Typer(
     help="Grip object model: workspace snapshots and history. Exit codes: 0 ok, "
@@ -129,10 +131,8 @@ def _validate_grip_dir(workspace: Path) -> None:
     """Check .grip/ directory exists."""
     grip_dir = workspace / ".grip"
     if not grip_dir.exists():
-        typer.echo(
-            f"No .grip/ directory at {workspace}. "
-            f"{missing_gr2_workspace_guidance(workspace, 'Run `gr2 workspace init .` first.')}"
-        )
+        init_advice = f"Run {workspace_init_command('.')} first."
+        typer.echo(f"No .grip/ directory at {workspace}. {init_unless_inside_workspace(workspace, init_advice)}")
         raise typer.Exit(code=1)
 
 
@@ -313,6 +313,9 @@ class PinRewindRefusal(NativeStoreRefusal):
 
 #: A moved workspace tracks `MOVED_MARKER` at its root, or holds its state under this ref: either
 #: one means a newer gr2 owns this workspace and this one must not touch it.
+#: gr2's own store ref root. The older store constants (reviews, approvals, checks, merge receipts, moved state)
+#: each spell it; new store refs are built from this one.
+GRIP_REF_ROOT = "refs/dev.synapt.grip/"
 MOVED_STATE_REF = "refs/dev.synapt.grip/__state__/v1"
 
 
@@ -443,6 +446,10 @@ def _refuse_symlinked_members(root: Path, members: list[dict[str, str]]) -> None
             )
 
 
+#: A remote name gr2 hands to git: no leading `-` or `.`, no `..`, nothing git or a shell reads specially.
+_PLAIN_REMOTE = re.compile(r"^(?!.*\.\.)[A-Za-z0-9_][A-Za-z0-9._-]*$")
+
+
 def _native_members(root: Path, revision: str | None = None) -> list[dict[str, str]]:
     # A selected workspace commit owns the whole document, not only its pins.
     data = (_grip_document(root) if revision is None else
@@ -458,6 +465,11 @@ def _native_members(root: Path, revision: str | None = None) -> list[dict[str, s
         if not isinstance(remotes, dict) or not isinstance(remotes.get("origin"), str):
             raise NativeStoreRefusal(f"{item.get('name', 'member')} has no origin remote", 4)
         item["remote"] = remotes["origin"]
+        # Refused at the read, so every verb that splits `upstream` gets it: its remote part reaches `git fetch` and
+        # `git push` as the remote name, where `--upload-pack=...` runs a program.
+        upstream = item.get("upstream")
+        if upstream is not None and (not isinstance(upstream, str) or not _PLAIN_REMOTE.match(upstream.partition("/")[0])):
+            raise NativeStoreRefusal(f"{item.get('name', 'member')} upstream {upstream!r} does not start with a plain remote name", 4)
         # Refused at the read, before any verb hands a url to git: a `<name>::` or unknown-scheme url runs a program
         # (owner: grip.url_transport_refusal; gitops.TRANSPORTS is the second layer).
         for remote_name, remote_url in remotes.items():
@@ -1127,12 +1139,44 @@ def _refuse_init_disagreement(root: Path, members: list[dict[str, str]] | None =
 STORE_INCOMPLETE_PREFIX = "cannot complete this store verb: "
 STORE_COMMIT_UNCHANGED = "Nothing to record: every pin already matches the root's last commit."
 
+#: Every store verb names its root the same way: `--root/-C`, else the current directory (the shared spelling of
+#: root_option.ROOT_OPTION). A walk run from outside a workspace, or from inside another one, names the one it means.
+STORE_ROOT_OPTION = typer.Option(
+    None, "--root", "-C", help="The workspace root to act on (default: the current directory).")
 
-def _echo_layered(layered: list[str]) -> None:
+
+def _store_root(root: Path | None, positional: Path | None = None) -> Path:
+    """The root a store verb acts on: `--root/-C`, the verb's own root argument (init, migrate-reviews), or cwd."""
+    if root is not None and positional is not None:
+        typer.echo("the workspace root was given twice: as the first argument and with --root/-C", err=True)
+        raise typer.Exit(code=2)
+    chosen = root if root is not None else positional
+    return Path.cwd() if chosen is None else chosen.resolve()
+
+
+def _store_advice(root: Path | None, verb: str) -> str:
+    """`gr2 store <verb>` as it must be typed from the current directory to act on `root`.
+
+    Advice a verb prints is run from where the verb was run. A root named with -C that the advice did not carry
+    acted on the current directory instead, with exit 0: the wrong workspace. So the root goes in as `-C <root>`,
+    quoted to paste, whenever it is not the current directory (a hook runs at the root, so its advice stays bare).
+    """
+    advice = f"gr2 store {verb}"
+    if root is None:
+        return advice
+    try:
+        here = Path.cwd().resolve()
+    except OSError:
+        here = None
+    if Path(root).resolve() != here:
+        advice += f" -C {shlex.quote(str(root))}"
+    return advice
+
+
+def _echo_layered(root: Path, layered: list[str]) -> None:
     """One line per member whose pin went into the record as a layer."""
     import typer
 
-    root = Path.cwd()
     pins = {m["name"]: m["pin"] for m in _native_members(root)}
     for name in layered:
         typer.echo(f"{name}: pin {pins[name][:12]} is on no remote; carried as a layer in the record")
@@ -1505,12 +1549,30 @@ def _remote_branches_holding(path: Path, sha: str) -> list[str]:
     return [name for name in held.stdout.split() if held.returncode == 0 and not name.endswith("/HEAD")]
 
 
-def _not_on_upstream(name: str, path: Path, sha: str, upstream: str) -> str:
+def _unpushed_steps(root: Path, path: Path, sha: str, upstream: str) -> str:
+    """The next steps after "push it first", for a pin no remote branch holds (run 4: two operators met the bare
+    line and neither learned what to push or that full mode keeps it unpushed). The push names the member's branch
+    only when that branch contains the pin; `store check` asks about a recorded pin the HEAD may have left."""
+    on = _store_git(path, "branch", "--show-current", check=False).stdout.strip() or None
+    if on and _store_git(path, "merge-base", "--is-ancestor", sha, "HEAD", check=False).returncode:
+        on = None
+    compat = _workspace_mode(_grip_document(root)) != "full"
+    return next_steps._unpushed_pin(str(path), sha, upstream.partition("/")[0], on, str(root / "grip.toml"), compat)
+
+
+def _push_or_switch(name: str, again: str) -> str:
+    """The two ways out of a pin no remote branch holds: push it, or the member is on the wrong branch."""
+    return f"push it first, or switch {name} to the branch it should be recorded on, then {again}"
+
+
+def _not_on_upstream(root: Path, name: str, path: Path, sha: str, upstream: str) -> str:
     """The refusal for a pin its upstream does not reach. "push it first" is the advice only for a pin no remote
-    branch holds; a pushed pin is named where it is, since pushing again would change nothing."""
+    branch holds, and it names the steps; a pushed pin is named where it is, since pushing again would change
+    nothing."""
     elsewhere = _remote_branches_holding(path, sha)
     if not elsewhere:
-        return f"{name} pin {sha} is not on {upstream}; push it first"
+        return (f"{name} pin {sha} is not on {upstream}; {_push_or_switch(name, 'commit again')}\n"
+                f"{_unpushed_steps(root, path, sha, upstream)}")
     return (f"{name} pin {sha} is on {', '.join(elsewhere)} but not on {upstream}; check out that branch in the "
             f"member so its upstream covers the pin, then commit again")
 
@@ -1539,7 +1601,7 @@ def _resolve_member_pin(
         if _member_covers(root, moved, sha, claimed):
             chosen = moved
     if allow is not None:
-        _refuse_pin_rewind({**chosen, "pin": _committed_pin(root, member)}, path, sha, member.get("ref"), allow=allow)
+        _refuse_pin_rewind({**chosen, "pin": _committed_pin(root, member)}, path, sha, member.get("ref"), allow=allow, root=root)
     if chosen is moved:
         return moved
     try:
@@ -1547,7 +1609,9 @@ def _resolve_member_pin(
     except NativeStoreRefusal as exc:
         if moved is not None and exc.code == 3:
             elsewhere = _remote_branches_holding(path, sha)
-            where = f"the pin is on {', '.join(elsewhere)}" if elsewhere else "push it first"
+            where = (f"the pin is on {', '.join(elsewhere)}" if elsewhere else
+                     f"{_push_or_switch(member['name'], 'commit again')}\n"
+                     f"{_unpushed_steps(root, path, sha, moved['upstream'])}")
             raise NativeStoreRefusal(
                 f"{member['name']} pin {sha} is not on {moved['upstream']} (it is on {on}) or on its recorded "
                 f"upstream {member['upstream']}; {where}", 3) from None
@@ -1602,7 +1666,7 @@ def _member_coverage(
     remote, separator, branch = upstream.partition("/")
     if not separator or not remote or not branch:
         raise NativeStoreRefusal(f"{member['name']} has invalid upstream {upstream!r}", 4)
-    if _store_git(path, "fetch", remote, check=False).returncode:
+    if _store_git(path, "fetch", "--", remote, check=False).returncode:
         raise NativeStoreRefusal(f"{member['name']} cannot fetch {remote}", 5)
     answer = _coverage_of(path, sha, upstream)
     if answer == COVERAGE_LANDED:
@@ -1610,7 +1674,7 @@ def _member_coverage(
             f"{member['name']} pin {sha} landed on {upstream} under a different commit (squash or rebase); "
             f"re-pin to the tip of {upstream}, do not push it", 3)
     if answer != COVERAGE_REACHABLE:
-        raise NativeStoreRefusal(_not_on_upstream(member["name"], path, sha, upstream), 3)
+        raise NativeStoreRefusal(_not_on_upstream(root, member["name"], path, sha, upstream), 3)
 
 
 def _layer_for(root: Path, member: dict[str, str], path: Path, head: str) -> list[bytes]:
@@ -1793,18 +1857,131 @@ def _committed_pin(root: Path, member: dict) -> str | None:
     line set back to an older sha is not the record; the working pin is used only when HEAD records none (a first
     commit, or the empty root commit of a full-mode workspace). The record is found by the member's PATH, not its name:
     a name is a label the working file can change, while the path is where the member's commits live."""
-    want = str(PurePosixPath(str(member["path"])))
+    return _head_member_pin(root, str(member["path"])) or member.get("pin")
+
+
+def _head_grip_toml(root: Path) -> dict:
+    """HEAD:grip.toml parsed, or {} when HEAD holds none (no commit yet, or no grip.toml in it)."""
     try:
-        members = tomllib.loads(_store_git(root, "show", "HEAD:grip.toml").stdout).get("members", [])
+        return tomllib.loads(_store_git(root, "show", "HEAD:grip.toml").stdout)
     except (RuntimeError, tomllib.TOMLDecodeError):
-        members = []
-    committed = next((str(m["pin"]) for m in members if isinstance(m, dict) and m.get("pin")
-                      and str(PurePosixPath(str(m.get("path", "")))) == want), None)
-    return committed or member.get("pin")
+        return {}
+
+
+def _head_member_entry(document: dict, path: str, name: str | None = None) -> dict | None:
+    """The committed entry (from HEAD:grip.toml, parsed) with a pin for the member at ``path``, matched by PATH because a
+    name is a label the working file can change. With ``name``, a member no committed entry holds at ``path`` is then
+    matched by its committed name, which no working edit can change."""
+    members = document.get("members", [])
+    entries = [m for m in members if isinstance(m, dict) and m.get("pin")] if isinstance(members, list) else []
+    want = str(PurePosixPath(str(path)))
+    found = next((m for m in entries if str(PurePosixPath(str(m.get("path", "")))) == want), None)
+    if found is None and name:
+        found = next((m for m in entries if m.get("name") == name), None)
+    return found
+
+
+def _head_member_pin(root: Path, path: str, name: str | None = None) -> str | None:
+    """The pin HEAD:grip.toml records for the member at ``path`` (then by ``name``), or None when HEAD records none.
+    `_committed_pin` and `recorded_member_pin` both read the committed entry through `_head_member_entry`."""
+    entry = _head_member_entry(_head_grip_toml(root), path, name)
+    return str(entry["pin"]) if entry else None
+
+
+def _member_record(root: Path, path: str, committed: str | None, full: bool) -> tuple[str | None, str]:
+    """The one reader of a member's record in the root commit, for the member whose committed entry is at ``path``:
+    ``committed`` (HEAD:grip.toml's pin there) when it is a full lowercase commit; otherwise the root's committed
+    gitlink at ``path``, read through the field record when ``full`` (the gitlink is then a field-commit, not the
+    member's commit). Returns ``(pin, source)``, or ``(None, "")`` when the commit gives no pin."""
+    if committed is not None and _FULL_SHA.match(committed):
+        return committed, "committed grip.toml"
+    link = _store_git(root, "ls-tree", "HEAD", "--", path, check=False).stdout.split()
+    entry = link[2] if len(link) >= 3 and link[0] == "160000" else None
+    if entry is not None and full:
+        from . import member_field_tree as mft
+        try:
+            entry = mft.read(root, f"{entry}^{{tree}}")["pin"]
+        except (mft.FieldTreeError, RuntimeError, subprocess.SubprocessError, OSError, KeyError):
+            entry = None
+    if isinstance(entry, str) and _FULL_SHA.match(entry):
+        return entry, "gitlink"
+    return None, ""
+
+
+_FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+def recorded_member_pin(root: Path, name: str, path: str | None = None) -> tuple[bool, str | None, str]:
+    """The store's own record of one member's pin on a native root, for the verbs that read the workspace spec.
+
+    Returns ``(listed, pin, source)``. ``listed`` is False when neither the working grip.toml (matched by path, then by
+    name) nor the root commit's grip.toml (by path, then by name) lists the member, which includes a root that has never
+    committed a grip.toml, and the caller keeps its own value. A deleted working grip.toml does not make a root
+    non-native: the root commit's record still answers. A listed member's pin is the one the root COMMIT records,
+    read by `_member_record` whichever file listed it: HEAD:grip.toml's pin for the member's path when it is a full
+    lowercase commit; otherwise the root's committed gitlink at that path, read through the field record in a
+    full-mode store, where the entry is a field-commit and not the member's commit. The working grip.toml's pin is
+    used only when HEAD records none (a store not committed yet): the working file is editable, so a pin set back to
+    an older commit there is not the record. ``pin`` is None when nothing gives one. The spec is never consulted
+    here: its copy goes stale at the first advance.
+
+    What still comes from the WORKING grip.toml, and nothing else does: (1) which entry lists the member (by path,
+    then by name), and so the path at which the committed record is read; (2) the member's pin, only when HEAD records
+    none (before the first store commit); (3) the store mode, only when HEAD holds no grip.toml. The committed pin,
+    the gitlink and, whenever HEAD has a grip.toml, the store mode that says how to read that gitlink are HEAD's."""
+    grip_toml = root / "grip.toml"
+    if not grip_toml.is_file():
+        # The working file is gone, but a root whose commit holds grip.toml is still native by its record.
+        return _committed_record(root, str(path or name), name)
+    try:
+        document = tomllib.loads(grip_toml.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return False, None, ""
+    members = [m for m in document.get("members", []) if isinstance(m, dict)] if isinstance(
+        document.get("members"), list) else []
+    member = None
+    if path:
+        want = str(PurePosixPath(str(path)))
+        member = next((m for m in members if str(PurePosixPath(str(m.get("path", "")))) == want), None)
+    if member is None:
+        member = next((m for m in members if m.get("name") == name), None)
+    if member is None:
+        # Dropped from the working file but still in the root commit: the working file is editable, so the commit's
+        # pin is still the record.
+        return _committed_record(root, str(path or name), name)
+    member_path = str(PurePosixPath(str(member.get("path") or path or name)))
+    head = _head_grip_toml(root)
+    entry = _head_member_entry(head, member_path)
+    committed = str(entry["pin"]) if entry else None
+    # The gitlink read below is HEAD's, so the mode that says what it is (member commit or field-commit) is HEAD's
+    # too; the working file's mode is used only when HEAD holds no grip.toml (no store commit yet).
+    recorded, source = _member_record(root, member_path, committed, _workspace_mode(head or document) == "full")
+    if recorded is not None:
+        return True, recorded, source
+    pin = member.get("pin")
+    if committed is None and isinstance(pin, str) and _FULL_SHA.match(pin):
+        return True, pin, "grip.toml, not committed yet"
+    return True, None, ""
+
+
+def _committed_record(root: Path, path: str, name: str) -> tuple[bool, str | None, str]:
+    """``recorded_member_pin``'s answer from the root commit alone, for a member the working grip.toml does not list
+    (or when that file is gone). The committed entry is found by ``path``, then by ``name``; its record is read by
+    `_member_record` at the ENTRY's path (a name match can sit at another path than the caller's) and in the committed
+    store mode, since the working file that would name the mode is gone or no longer speaks for this member. No
+    committed entry: not listed."""
+    document = _head_grip_toml(root)
+    entry = _head_member_entry(document, path, name)
+    if entry is None:
+        return False, None, ""
+    entry_path = str(PurePosixPath(str(entry.get("path") or path)))
+    recorded, source = _member_record(root, entry_path, str(entry["pin"]), _workspace_mode(document) == "full")
+    return True, recorded, source
 
 
 def _refuse_pin_rewind(
-    member: dict, path: Path, head: str, recorded_ref: str | None = None, allow: str = "pass --allow-rewind"
+    member: dict, path: Path, head: str, recorded_ref: str | None = None, allow: str = "pass --allow-rewind",
+    root: Path | None = None,
 ) -> None:
     """Refuse (3) a pin that would move BACKWARDS: HEAD is behind the recorded pin, or lacks it entirely.
 
@@ -1818,7 +1995,7 @@ def _refuse_pin_rewind(
     if not recorded or recorded == head:
         return
     name = member["name"]
-    hint = f"run `gr2 store materialize` to bring the checkout to the pin, or {allow} to record it anyway"
+    hint = f"run `{_store_advice(root, 'materialize')}` to bring the checkout to the pin, or {allow} to record it anyway"
     if _store_git(path, "cat-file", "-e", f"{recorded}^{{commit}}", check=False).returncode:
         shallow = _store_git(path, "rev-parse", "--is-shallow-repository", check=False).stdout.strip() == "true"
         if shallow:
@@ -1859,6 +2036,107 @@ def _refuse_pin_rewind(
             raise RuntimeError(f"cannot compare {name}'s HEAD with its recorded pin: {_git_detail(contains)}")
 
 
+# SECTION 9 (S1): HEAD is the shadow. Every commit the verb makes gets a second name in the store's own namespace,
+# `refs/dev.synapt.grip/__branches__/<branch>/SHADOW`, set to the SAME commit: one commit, two names. A commit on the
+# branch that the shadow does not name was not made through the verb (a hand commit), which is what the fence reads.
+# The name: a plural keyword names the collection, the bare name under it the one, a moving head ends in SHADOW, and
+# no version, under gr2's own store root.
+SHADOW_REF_ROOT = f"{GRIP_REF_ROOT}__branches__/"
+
+
+def _shadow_ref_for(branch: str) -> str:
+    return f"{SHADOW_REF_ROOT}{branch}/SHADOW"
+
+
+def _shadow_ref(root: Path) -> str:
+    return _shadow_ref_for(_store_git(root, "symbolic-ref", "--short", "HEAD").stdout.strip())
+
+
+def _name_shadow(root: Path, was: str) -> None:
+    """Point the branch's shadow at the commit the verb just made, compare-and-swap against the value read before the
+    commit (`was`, empty when the shadow did not exist), so a second writer is refused rather than overwritten."""
+    head = _store_git(root, "rev-parse", "HEAD").stdout.strip()
+    _store_git(root, "update-ref", "-m", "store commit: shadow", _shadow_ref(root), head, was or "0" * len(head))
+
+
+def _shadow_value(root: Path) -> str:
+    """The commit the branch's shadow names, empty when the branch has none yet (or HEAD names no branch)."""
+    branch = _store_git(root, "symbolic-ref", "--short", "-q", "HEAD", check=False).stdout.strip()
+    if not branch:
+        return ""
+    return _store_git(root, "rev-parse", "--verify", "-q", _shadow_ref_for(branch), check=False).stdout.strip()
+
+
+def _recorded_pins(text: str, root: Path | None = None) -> dict[str, str]:
+    """The pins a grip.toml TEXT records, {name: pin}. A member with no pin line was edited by hand (the verb always
+    writes one): it is refused by name here, the one reader the hook and `store push` share, not raised as a KeyError."""
+    members = tomllib.loads(text).get("members", [])
+    unpinned = sorted(str(member.get("name", "?")) for member in members if "pin" not in member)
+    if unpinned:
+        raise NativeStoreRefusal(
+            f"pin line removed by hand, not recorded by the verb: {', '.join(unpinned)}; record pins through "
+            f"`{_store_advice(root, 'commit')}`", 4)
+    return {str(member["name"]): str(member["pin"]) for member in members}
+
+
+def _gitlink_may_be_pin(mode: str) -> bool:
+    """THE MODE SPLIT, in one place (a design decision): may a commit's own gitlink count as the pin it
+    records? Compat: yes, the gitlink IS the pin, so a pin the hook folded to it is recorded. Full: no, the gitlink is
+    the member's field commit and only the verb records a pin. If full mode's gitlink becomes the member's real commit
+    (an open design question), this returns True for both and the split is gone."""
+    return mode != "full"
+
+
+def _gitlinks_at(root: Path, revision: str, pins: dict[str, str]) -> dict[str, str]:
+    """{name: the gitlink `revision`'s tree holds at the member's path} for the members its grip.toml records."""
+    text = _store_git(root, "show", f"{revision}:grip.toml").stdout
+    links: dict[str, str] = {}
+    for member in tomllib.loads(text).get("members", []):
+        if str(member["name"]) in pins:
+            entry = _store_git(root, "ls-tree", revision, "--", str(member["path"])).stdout.split()
+            links[str(member["name"])] = entry[2] if len(entry) >= 3 and entry[0] == "160000" else ""
+    return links
+
+
+def _refuse_unrecorded_pins(root: Path, pins: dict[str, str], base: str, mode: str,
+                            gitlinks: dict[str, str] | None) -> None:
+    """THE FENCE (section 9), the one check the pre-commit hook and `store push` both call. `pins` are the
+    pins a commit RECORDS (its grip.toml); a pin that differs from the one `base` records (the shadow at the push,
+    HEAD at the hook) was edited by hand, so it is refused by the member's name. A commit whose pins equal the base's
+    carries nothing unresolved (a hand README commit), and passes.
+
+    `gitlinks` are the commit's OWN gitlinks (the push passes HEAD's; the hook passes None, because a commit's
+    gitlinks are not settled until the compat fold has run). Where `_gitlink_may_be_pin(mode)` (compat), a moved pin
+    equal to the commit's own gitlink is RECORDED (the hook's fold), and a pin that differs from it is refused naming
+    both (a hand bump past the hook, a stale fold). Otherwise the gitlink is never compared: in full mode it is the
+    member's field commit, not its pin (#1233 v3 failed 47 full-mode rows on that)."""
+    shown = _store_git(root, "show", f"{base}:grip.toml", check=False)
+    recorded = _recorded_pins(shown.stdout, root) if not shown.returncode else {}
+    dropped = sorted(name for name in recorded if name not in pins)
+    if dropped:
+        raise NativeStoreRefusal(
+            f"member dropped by hand, not recorded by the verb: {', '.join(dropped)}; record pins through "
+            f"`{_store_advice(root, 'commit')}`", 4)
+    if gitlinks is not None and _gitlink_may_be_pin(mode):
+        stale = [f"{name} (gitlink {gitlinks.get(name, '')[:12] or 'none'}, pin {pin[:12]})"
+                 for name, pin in sorted(pins.items()) if gitlinks.get(name) != pin]
+        if stale:
+            raise NativeStoreRefusal(
+                f"gitlink is not the pin grip.toml records: {', '.join(stale)}; commit with the hook on so it folds "
+                f"the pin, or record pins through `{_store_advice(root, 'commit')}`", 4)
+        return
+    shown = _store_git(root, "show", f"{base}:grip.toml", check=False)
+    if shown.returncode:
+        return  # the base records no grip.toml: there is nothing to compare against
+    recorded = _recorded_pins(shown.stdout, root)
+    moved = [f"{name} ({recorded.get(name, 'none')[:12]} -> {pin[:12]})" for name, pin in sorted(pins.items())
+             if recorded.get(name) != pin]
+    if moved:
+        raise NativeStoreRefusal(
+            f"pin edited by hand, not recorded by the verb: {', '.join(moved)}; record pins through "
+            f"`{_store_advice(root, 'commit')}`", 4)
+
+
 @_refuses_moved_workspace
 def _native_store_commit(
     root: Path, message: str, layered: list[str] | None = None, allow_rewind: bool = False
@@ -1895,7 +2173,10 @@ def _native_store_commit(
         # Section 5's commit row refuses a dirty member at exit 3, and it is checked BEFORE
         # coverage so the refusal names the thing the author has to fix first. Before this,
         # no verb in the group refused a dirty member, though the row names it.
-        if _store_git(path, "status", "--porcelain").stdout.strip():
+        # Untracked files do not count: the record is the member's HEAD, and an untracked file
+        # cannot be in it either way. Counting them refused a desk whose only changes were
+        # scratch files, with advice (stash) that does not stash them.
+        if _store_git(path, "status", "--porcelain", "--untracked-files=no").stdout.strip():
             raise NativeStoreRefusal(
                 f"{member['name']} is dirty; commit or stash changes first", 3
             )
@@ -1971,16 +2252,24 @@ def _native_store_commit(
         layered.extend(m["name"] for m in changed if m["name"] in layers_by_member)
     # `--no-verify`: this verb has just run the same checks the pre-commit hook runs (coverage and the
     # pin write above), so the hook would repeat a network fetch per member for no new answer.
+    # A detached root (`store checkout <rev>` leaves one) names no branch, so it has no shadow to read or move: the
+    # commit is made and both shadow steps are skipped.
+    branch = _store_git(root, "symbolic-ref", "--short", "-q", "HEAD", check=False).stdout.strip()
+    shadow_was = (_store_git(root, "rev-parse", "--verify", "-q", _shadow_ref_for(branch), check=False).stdout.strip()
+                  if branch else "")
     if full:
         _commit_with_carried(root, message, carried)
-        return True
-    _store_git(root, *_commit_identity_args(root), "commit", "--no-verify", "-m", message)
+    else:
+        _store_git(root, *_commit_identity_args(root), "commit", "--no-verify", "-m", message)
+    if branch:
+        _name_shadow(root, shadow_was)
     return True
 
 
 @_refuses_moved_workspace
-def _native_store_check(root: Path) -> list[dict[str, str]]:
-    """Verify the committed root pins against each live member upstream."""
+def _native_store_check(root: Path, coverage: bool = True) -> list[dict[str, str]]:
+    """Verify the committed root pins against each live member upstream. `coverage=False` (push --recurse=none) still
+    compares every gitlink with its pin, and names each member whose coverage it did not ask as `unchecked`."""
     _refuse_beta(root)
     issues = validate_grip_toml(root)
     if issues:
@@ -1988,6 +2277,7 @@ def _native_store_check(root: Path) -> list[dict[str, str]]:
     _require_root_commit(root)
     full = _workspace_mode(_grip_document(root)) == "full"
     members = _native_members(root)
+    _refuse_undeclared_gitlinks(root, members)
     checked: list[dict[str, str]] = []
     for member in members:
         claimed = _claimed_member_paths(root, members, exclude=member)
@@ -2006,6 +2296,9 @@ def _native_store_check(root: Path) -> list[dict[str, str]]:
         # §5a's input is the RECORDED PIN, not the member's current HEAD: this verb asks
         # whether the pin the root publishes is still covered, and a member whose HEAD has
         # moved is `unpinned` (a status observation) whose recorded pin may be fine.
+        if not coverage:
+            checked.append({"name": member["name"], "pin": member["pin"], "upstream": member["upstream"], "state": "unchecked"})
+            continue
         record = _field_record(root, member) if full else None
         if record and record["layers"]:
             # A layered pin is on no remote by design; it is covered when the record's layers carry it.
@@ -2015,6 +2308,29 @@ def _native_store_check(root: Path) -> list[dict[str, str]]:
         _member_coverage(root, member, member["pin"], claimed)
         checked.append({"name": member["name"], "pin": member["pin"], "upstream": member["upstream"], "state": "upstream"})
     return checked
+
+
+def _refuse_undeclared_gitlinks(root: Path, members: list[dict[str, str]]) -> None:
+    """Refuse a root index holding a gitlink at a path no member of grip.toml declares.
+
+    A nested repository staged at the root (`git add -f`, or a root without the generated
+    .gitignore) is a gitlink the next commit would publish as a pin nobody declared, and the
+    member loop below never looks at it. The check is local and runs before any upstream is
+    asked, so it answers offline too. The advice carries -f because plain `git rm --cached` refuses a
+    freshly staged gitlink ("staged content different from both the file and the HEAD"); with
+    --cached it touches only the index, and the nested repository stays on disk."""
+    lines = _undeclared_gitlink_lines(root, members)
+    if lines:
+        raise NativeStoreRefusal("\n".join(lines), 3)
+
+
+def _undeclared_gitlink_lines(root: Path, members: list[dict[str, str]]) -> list[str]:
+    """One refusal line per root-index gitlink that no member declares; `check` raises them, `status` prints them."""
+    declared = {str(PurePosixPath(member["path"])) for member in members}   # the index spells `./a` and `a/` as `a`
+    stray = sorted(path for path in store_hooks._index_gitlinks(root, None) if path not in declared)
+    return [f"undeclared gitlink {path!r} in the root index: grip.toml has no member at that path; "
+            f"declare it as a member, or remove it from the index with `git rm --cached -f -- {shlex.quote(path)}`"
+            for path in stray]
 
 
 def _layers_carry_pin(root: Path, member: dict[str, str]) -> bool:
@@ -2057,7 +2373,7 @@ def _root_origin_for_push(root: Path, to: str | None) -> str | None:
         if not have:
             raise NativeStoreRefusal(
                 "the root has no origin remote, so there is nowhere to push; record one and push with "
-                "`gr2 store push --to <url>`", 5)
+                f"`{_store_advice(root, 'push --to <url>')}`", 5)
         return None
     if to.startswith("-"):
         raise NativeStoreRefusal("--to must be a URL or path, not an option", 2)
@@ -2071,19 +2387,309 @@ def _root_origin_for_push(root: Path, to: str | None) -> str | None:
         if have != to:
             raise NativeStoreRefusal(
                 f"the root's origin is already {have}; --to names {to}. gr2 does not repoint origin. "
-                f"Run `gr2 store push` to push to the recorded origin", 4)
+                f"Run `{_store_advice(root, 'push')}` to push to the recorded origin", 4)
         return None
     _store_git(root, "remote", "add", "origin", to)
     return to
 
 
-def _native_store_push(root: Path, to: str | None = None) -> dict[str, object]:
-    """Push only the checked root record. Member publication is a prior verb."""
-    members = _native_store_check(root)
+def _atomic_push(root: Path, refspecs: list[tuple[str, str]], verify: bool = True,
+                 leases: dict[str, str] | None = None) -> bool:
+    """ONE `git push --atomic` of every (commit, ref), so the remote moves all of them or none. A refusal names
+    each rejected ref with git's reason, plus the remote's own lines (a pre-receive hook declines every ref in the
+    push, so only its message says which one it refused).
+
+    Returns False when this push moved the refs, True when it was refused but origin already holds EVERY ref at its
+    target: another push of the same refs landed first (two `store push` from one workspace at once; the loser's
+    receive-pack fails its lock on the shadow). One ref anywhere else is a real loss and refuses as before."""
+    # `verify=False` is push --recurse=none: the pre-push hook asks coverage, which that mode skips by name; the
+    # verb has run the fence and the gitlink comparison itself.
+    # `leases` maps a ref to the value this push last recorded for it on origin (empty: absent); git refuses the
+    # whole atomic push when origin's advertised value differs, so a writer landing after the freshness check is
+    # turned away and nothing moves.
+    leased = [f"--force-with-lease={ref}:{value}" for ref, value in (leases or {}).items()]
+    proc = _store_git(root, "push", "--porcelain", "--atomic", *leased, *([] if verify else ["--no-verify"]), "origin",
+                      *[f"{sha}:{ref}" for sha, ref in refspecs], check=False)
+    if proc.returncode == 0:
+        return False
+    listed = _store_git(root, "ls-remote", "origin", *[ref for _, ref in refspecs], check=False)
+    held = {parts[1]: parts[0] for parts in (line.split("\t") for line in listed.stdout.splitlines()) if len(parts) == 2}
+    if listed.returncode == 0 and all(held.get(ref) == sha for sha, ref in refspecs):
+        return True
+    rejected = [line.split("\t") for line in proc.stdout.splitlines() if line.startswith("!")]
+    named = "; ".join(f"{parts[1].split(':', 1)[1]} {parts[2]}" for parts in rejected if len(parts) >= 3)
+    remote = " | ".join(line.strip() for line in proc.stderr.splitlines() if line.startswith("remote:"))
+    raise RuntimeError(f"atomic push refused, no ref moved on origin: {named or proc.stderr.strip()[:300]}"
+                       + (f" ({remote})" if remote else ""))
+
+
+def _normalised_origin(url: str) -> str:
+    """The url with one trailing `/` and then one `.git` stripped and the host case-folded (`scheme://host/...` or
+    scp-like `user@host:path`). Used only to REFUSE an alias, never to include one."""
+    url = url[:-1] if url.endswith("/") else url
+    url = url[:-4] if url.endswith(".git") else url
+    scheme = re.match(r"^([A-Za-z][A-Za-z0-9+.-]*://)([^/]*)(.*)$", url)
+    if scheme:
+        return scheme.group(1) + scheme.group(2).lower() + scheme.group(3)
+    scp = re.match(r"^([^/:@]+@)?([^/:]+):(?!//)(.*)$", url)
+    if scp and not re.match(r"^[A-Za-z]:[\\/]", url):
+        return (scp.group(1) or "") + scp.group(2).lower() + ":" + scp.group(3)
+    return url
+
+
+def _same_repo_member_refs(root: Path, branch: str) -> list[tuple[str, str, str]]:
+    """(name, pin, ref) for each member HEAD records whose origin IS the root's origin (the same url string, compared
+    exactly), its pin under `refs/heads/<ref>`. The pin is fetched from the member's checkout into the root first: the
+    push sends root objects, and the member's commits live in the member's own clone.
+
+    Inclusion stays exact-string. A member whose origin differs from the root's only as an
+    alias (a trailing `/`, a `.git`, the host's case) is REFUSED, exit 4, naming the member and both strings: it is
+    very likely the same repository, and leaving it out silently would publish a root record whose pinned ref did not
+    move with it. A member in a genuinely different repository is still left out silently."""
+    origin = _store_git(root, "remote", "get-url", "origin").stdout.strip()
+    members = _native_members(root, "HEAD")
+    found: list[tuple[str, str, str]] = []
+    for member in members:
+        if member["remote"] != origin:
+            if _normalised_origin(member["remote"]) == _normalised_origin(origin):
+                raise NativeStoreRefusal(
+                    f"{member['name']}'s origin {member['remote']!r} names the root's origin {origin!r} by another "
+                    f"string; --atomic includes only an exact match, so record one url for both and push again", 4)
+            continue
+        ref = f"refs/heads/{member['ref']}"
+        if member["ref"] == branch:
+            raise NativeStoreRefusal(
+                f"{member['name']} lives in the root's repository on the root's own branch {branch}; one push "
+                f"cannot move {ref} to both the root commit and the member's pin", 4)
+        claimed = _claimed_member_paths(root, members, exclude=member)
+        path = _native_member_working_root(root, member, claimed)
+        _store_git(root, "fetch", "-q", "--no-tags", "--no-write-fetch-head", str(path), member["pin"])
+        found.append((member["name"], member["pin"], ref))
+    return found
+
+
+RECURSE_MODES = ("check", "on-demand", "none")
+
+
+def _push_uncovered_members(root: Path, same_repo_origin: str) -> list[dict[str, str]]:
+    """push --recurse=on-demand: each member whose recorded pin its upstream does not cover is pushed from its own
+    clone to its upstream branch, BEFORE the root, so a failed member push stops the root. A member in the root's own
+    repository is left to the root's atomic push. Returns one entry per member: pushed, covered or same-repo."""
+    members = _native_members(root, "HEAD")
+    done: list[dict[str, str]] = []
+    for member in members:
+        if member["remote"] == same_repo_origin:
+            done.append({"name": member["name"], "pin": member["pin"], "action": "same-repo"})
+            continue
+        claimed = _claimed_member_paths(root, members, exclude=member)
+        try:
+            path = _native_member_working_root(root, member, claimed)
+            top = _store_git(path, "rev-parse", "--show-toplevel", check=False)
+            here = not top.returncode and Path(top.stdout.strip()).resolve() == path.resolve()
+        except NativeStoreRefusal:
+            here = False
+        if not here or _store_git(path, "cat-file", "-e", f"{member['pin']}^{{commit}}", check=False).returncode:
+            raise NativeStoreRefusal(
+                f"{member['name']} has no clone in this workspace that holds its pin {member['pin']}, so "
+                f"--recurse=on-demand cannot push it; materialize it, or push it where it lives", 3)
+        try:
+            _member_coverage(root, member, member["pin"], claimed)
+            done.append({"name": member["name"], "pin": member["pin"], "action": "covered"})
+            continue
+        except NativeStoreRefusal as exc:
+            if exc.code != 3:
+                raise
+        remote, _, branch = member["upstream"].partition("/")
+        pushed = _store_git(path, "push", "--porcelain", "--", remote, f"{member['pin']}:refs/heads/{branch}", check=False)
+        if pushed.returncode:
+            detail = " | ".join(line.strip() for line in pushed.stderr.splitlines() if line.strip())[:300]
+            raise NativeStoreRefusal(
+                f"{member['name']} push to {member['upstream']} was refused, so the root was not pushed: {detail}", 5)
+        done.append({"name": member["name"], "pin": member["pin"], "action": "pushed"})
+    return done
+
+
+def _shadow_fetch_line() -> str:
+    return f"+{SHADOW_REF_ROOT}*:refs/remotes/origin/{SHADOW_REF_ROOT[len('refs/'):]}*"
+
+
+def _tracking_ref(ref: str) -> str:
+    """Where this clone records origin's value of `ref`: refs/heads/<b> -> refs/remotes/origin/<b>, a shadow under
+    refs/remotes/origin/ by the fetch line `_ensure_shadow_fetch_line` writes."""
+    if ref.startswith("refs/heads/"):
+        return f"refs/remotes/origin/{ref[len('refs/heads/'):]}"
+    return f"refs/remotes/origin/{ref[len('refs/'):]}"
+
+
+def _ensure_shadow_fetch_line(root: Path) -> str | None:
+    """Add the fetch line that tracks origin's shadows, once: only when origin carries no exact copy of it, and never
+    rewriting an existing refspec. Returns the line added, or None; the caller says it (stderr in text mode, the
+    payload's `notes` under --json, so a JSON reader of stdout and stderr together still reads one document)."""
+    line = _shadow_fetch_line()
+    have = _store_git(root, "config", "--get-all", "remote.origin.fetch", check=False).stdout.splitlines()
+    if line in have:
+        return None
+    _store_git(root, "config", "--add", "remote.origin.fetch", line)
+    return line
+
+
+def _leases(root: Path, tip: str, refs: list[str]) -> dict[str, str]:
+    """Leases 3 and 1 (plan section 5) on the branch and its shadow, before anything is sent.
+
+    Lease 3, freshness: origin's value of each ref must equal this clone's tracking ref for it; a clone that has
+    never recorded a ref origin holds must fetch first. Lease 1: origin's value must sit on tip's FIRST-PARENT line,
+    so a behind tip, a rewrite and a merge that took origin's commit as a side parent are each refused by name (git's
+    own non-fast-forward check accepts the last). Returns the leases for the push: ref -> tracked value."""
+    listed = _store_git(root, "ls-remote", "origin", *refs, check=False)
+    if listed.returncode:
+        detail = " | ".join(line.strip() for line in listed.stderr.splitlines() if line.strip())[:300]
+        raise NativeStoreRefusal(f"cannot verify origin's shadow, so nothing was pushed: {detail}", 5)
+    held = {parts[1]: parts[0] for parts in (line.split("\t") for line in listed.stdout.splitlines()) if len(parts) == 2}
+    leases: dict[str, str] = {}
+    for ref in refs:
+        now = held.get(ref, "")
+        tracked = _store_git(root, "rev-parse", "--verify", "-q", _tracking_ref(ref), check=False).stdout.strip()
+        if now and not tracked:
+            raise NativeStoreRefusal(
+                f"fetch first: origin holds {ref} at {now} and this clone has no record of it; "
+                f"run `git -C {shlex.quote(str(root))} fetch origin`, then push again", 3)
+        if now != tracked:
+            raise NativeStoreRefusal(
+                f"stale tracking: origin's {ref} is {now or 'absent'}, this clone last recorded {tracked or 'absent'}; "
+                f"run `git -C {shlex.quote(str(root))} fetch origin`, re-snapshot (store commit) and push again", 3)
+        if now and now != tip:
+            line = _store_git(root, "rev-list", "--first-parent", tip).stdout.split()
+            if now not in line:
+                if _store_git(root, "merge-base", "--is-ancestor", tip, now, check=False).returncode == 0:
+                    why = "behind: this push's tip is an ancestor of it"
+                elif _store_git(root, "merge-base", "--is-ancestor", now, tip, check=False).returncode:
+                    why = "rewrite: it is not an ancestor of this push's tip"
+                else:
+                    why = "not on the first-parent line of this push's tip (a merge took it as a side parent)"
+                raise NativeStoreRefusal(f"origin's {ref} is {now}, this push's tip is {tip}; {why}", 3)
+        leases[ref] = tracked
+    return leases
+
+
+def _member_rewinds(root: Path, tip: str, recorded: str, allow_rewind: list[str]) -> list[dict[str, str]]:
+    """Lease 2 (plan section 5): each member's pin at `tip` must fast-forward from the pin
+    origin's shadow `recorded` records. The walk is LOCAL, in the member's own clone, by the org cut's walker
+    (shadow._walk): a commit not held is fetched from the member's remote once, and still missing is refused as
+    unverifiable (exit 5), offline included. A rewind or a rewrite is refused by member and both shas (exit 3) unless
+    `allow_rewind` names the member; each one taken is returned. A member new since `recorded`, or unchanged, is
+    never walked. No `recorded` (origin holds no shadow yet) walks nothing."""
+    if not recorded:
+        return []
+    from . import shadow as shadow_mod
+    was = _native_members_at(root, recorded)
+    members = {member["name"]: member for member in _native_members(root, tip)}
+    taken: list[dict[str, str]] = []
+    for name, pin in _native_members_at(root, tip).items():
+        old = was.get(name)
+        if not old or old == pin:
+            continue
+        member = members[name]
+        claimed = _claimed_member_paths(root, list(members.values()), exclude=member)
+        path = _native_member_working_root(root, member, claimed)
+        remote = member.get("upstream", "origin/main").partition("/")[0] or "origin"
+        try:
+            kind = shadow_mod._walk(path, name, old, pin, remote)
+        except shadow_mod.CannotVerify as exc:
+            raise NativeStoreRefusal(f"{exc}; nothing was pushed", 5) from exc
+        if kind in ("rewind", "rewrite"):
+            if name not in allow_rewind:
+                raise NativeStoreRefusal(
+                    f"{name}: {kind}: its pin {pin} does not descend from the pin origin's shadow records, {old}; "
+                    f"nothing was pushed (--allow-rewind {name} takes it)", 3)
+            taken.append({"name": name, "kind": kind, "old": old, "new": pin})
+    return taken
+
+
+def _rewound_record(root: Path, tip: str, rewound: list[dict[str, str]]) -> tuple[str, str] | None:
+    """A rewind taken under --allow-rewind is WRITTEN DOWN on origin, not only in the result: a rewind needs
+    --allow-rewind, and is written down. The record is one commit at refs/dev.synapt.grip/rewound/<tip>: its
+    parent is the tip and its tree the tip's, so it carries no object the tip does not, and its message names each
+    member, the kind and both pins. It rides the root's ONE atomic push, so it lands with the tip or not at all; one
+    ref per tip needs no lease (a second push of the same tip rewinds nothing). None when nothing was taken."""
+    if not rewound:
+        return None
+    lines = [f"{r['name']}: {r['kind']}: {r['old']} -> {r['new']}" for r in rewound]
+    message = f"store push: rewound under --allow-rewind at {tip}\n\n" + "\n".join(lines) + "\n"
+    tree = _store_git(root, "rev-parse", f"{tip}^{{tree}}").stdout.strip()
+    record = _store_git(root, "commit-tree", tree, "-p", tip, "-m", message).stdout.strip()
+    return record, f"refs/dev.synapt.grip/rewound/{tip}"
+
+
+def _native_store_push(root: Path, to: str | None = None, atomic: bool = False, recurse: str = "check",
+                       snapshot: bool = False, allow_rewind: list[str] | None = None,
+                       notes: list[str] | None = None) -> dict[str, object]:
+    """Push only the checked root record. Member publication is a prior verb, or `recurse="on-demand"`.
+
+    `recurse` names what the push does with a member pin its upstream does not cover: `check` refuses (exit 3),
+    `none` skips coverage (the fence and the gitlink comparison still run) and names each member `unchecked`,
+    `on-demand` pushes each such member from its clone first. `snapshot` makes the store commit first.
+    `allow_rewind` names members whose pin may move backwards against origin's recorded pin (lease 2); each must be
+    a member, and each one taken is named in the result's `rewound`. `notes` (the caller's list, so a refusal keeps
+    what was already said) collects side effects worth a line, such as a fetch line added; the result carries them.
+
+    The branch and its shadow ref (section 9, S1) go in ONE `git push --atomic`, always, both naming the branch tip,
+    so origin never holds a branch the shadow does not name. `atomic` adds the same-repo members' refs (members whose
+    origin is the root's) to that same push, so the root record and the member refs it pins move together or not."""
+    notes = [] if notes is None else notes
+    if recurse not in RECURSE_MODES:
+        raise NativeStoreRefusal(f"--recurse must be one of {', '.join(RECURSE_MODES)}, not {recurse!r}", 2)
+    if allow_rewind:
+        known = {member["name"] for member in _native_members(root)}
+        unknown = [name for name in allow_rewind if name not in known]
+        if unknown:
+            raise NativeStoreRefusal(f"--allow-rewind names {', '.join(unknown)}, which is not a member of this "
+                                     f"workspace (members: {', '.join(sorted(known))})", 2)
+    made = _native_store_commit(root, "store push --snapshot") if snapshot else False
+    shadow = _shadow_value(root)
+    if shadow and shadow != _store_git(root, "rev-parse", "HEAD").stdout.strip():
+        # THE FENCE first, so a hand-edited pin gets its own name and not a later reader's: a hand commit whose
+        # recorded pins equal the shadow's pushes, and the shadow advances to it in the same atomic push (the implicit
+        # --snapshot); one that edits a pin is refused before anything moves.
+        pins = _native_members_at(root, "HEAD")
+        mode = _workspace_mode(tomllib.loads(_store_git(root, "show", "HEAD:grip.toml").stdout))
+        _refuse_unrecorded_pins(root, pins, shadow, mode, _gitlinks_at(root, "HEAD", pins))
+    recursed: list[dict[str, str]] = []
+    if recurse == "on-demand":
+        _require_root_commit(root)
+    else:
+        members = _native_store_check(root, coverage=recurse != "none")
     branch = _store_git(root, "symbolic-ref", "--short", "HEAD").stdout.strip()
     recorded = _root_origin_for_push(root, to)
+    tip = _store_git(root, "rev-parse", "HEAD").stdout.strip()
     try:
-        _store_git(root, "push", "origin", branch)
+        # A same-repo member under on-demand rides the root's ONE atomic push, as --atomic's members do.
+        same_repo = _same_repo_member_refs(root, branch) if atomic or recurse == "on-demand" else []
+        added = _ensure_shadow_fetch_line(root)
+        if added:
+            notes.append(f"added to remote.origin.fetch: {added}")
+        # Leases 3, 1 and 2 run BEFORE on-demand publishes any member: a lease refusal says nothing was pushed, so
+        # nothing may have been (a member's remote moved, then lease 2 refused the root). The walk reads only the
+        # member clones, which hold both pins.
+        leases = _leases(root, tip, [f"refs/heads/{branch}", _shadow_ref(root)])
+        rewound = _member_rewinds(root, tip, leases[_shadow_ref(root)], list(allow_rewind or []))
+        rewound_ref = _rewound_record(root, tip, rewound)
+        if recurse == "on-demand":
+            origin = _store_git(root, "remote", "get-url", "origin", check=False).stdout.strip()
+            recursed = _push_uncovered_members(root, origin or to or "")
+            members = _native_store_check(root, coverage=True)
+        landed_by_another = _atomic_push(root, [(tip, f"refs/heads/{branch}"), (tip, _shadow_ref(root)),
+                                                *[(pin, ref) for _, pin, ref in same_repo],
+                                                *([rewound_ref] if rewound_ref else [])],
+                                         verify=recurse != "none", leases=leases)
+        for ref in leases:
+            _store_git(root, "update-ref", "-m", "store push: tracking", _tracking_ref(ref), tip)
+        if shadow != tip:
+            # Compare-and-swap from the shadow this push read; a concurrent push of the same tip may have moved it
+            # first, which is the same outcome, so only a shadow left anywhere but `tip` is a failure.
+            moved = _store_git(root, "update-ref", "-m", "store push: shadow", _shadow_ref(root), tip,
+                               shadow or "0" * len(tip), check=False)
+            if moved.returncode and _shadow_value(root) != tip:
+                raise RuntimeError(moved.stderr.strip() or "update-ref of the local shadow failed")
     except Exception:
         # The origin this push recorded is taken back when the push fails (a typo in --to), so the corrected
         # `--to` is a first record, not a repoint, and no raw `git remote` step is needed to recover.
@@ -2093,9 +2699,20 @@ def _native_store_push(root: Path, to: str | None = None) -> dict[str, object]:
     return {
         "status": "pushed",
         "root_branch": branch,
-        "root_commit": _store_git(root, "rev-parse", "HEAD").stdout.strip(),
+        "root_commit": tip,
+        "shadow": _shadow_ref(root),
+        "member_refs": [{"name": name, "pin": pin, "ref": ref} for name, pin, ref in same_repo],
         "origin_recorded": recorded is not None,
+        "landed_by_another": landed_by_another,
         "members": members,
+        "recurse": recurse,
+        "recursed": recursed,
+        "unchecked": [member["name"] for member in members if member["state"] == "unchecked"],
+        "snapshot": tip if made else None,
+        "allow_rewind": list(allow_rewind or []),
+        "rewound": rewound,
+        "rewound_record": rewound_ref[1] if rewound_ref else None,
+        "notes": list(notes),
     }
 
 
@@ -2104,9 +2721,7 @@ def _native_members_at(root: Path, revision: str) -> dict[str, str]:
         raise NativeStoreRefusal(
             f"{revision} is the empty root commit that holds the first-parent place in a full-mode workspace; "
             f"it records no members, so name a commit that carries grip.toml", 5)
-    text = _store_git(root, "show", f"{revision}:grip.toml").stdout
-    document = tomllib.loads(text)
-    return {str(member["name"]): str(member["pin"]) for member in document.get("members", [])}
+    return _recorded_pins(_store_git(root, "show", f"{revision}:grip.toml").stdout, root)
 
 
 @_refuses_moved_workspace
@@ -2223,6 +2838,7 @@ def _native_store_checkout(root: Path, revision: str) -> tuple[str, list[dict[st
     "fatal: invalid object name 'HEAD~1'". A name that means one thing and then another is
     the same class as a control that answers a different question than the one asked.
     """
+    _grip_document(root)  # a cwd that is not a store refuses before git resolves the ref in an enclosing repo
     target = _store_git(root, "rev-parse", "--verify", f"{revision}^{{commit}}", check=False)
     if target.returncode:
         raise NativeStoreRefusal(
@@ -2242,8 +2858,14 @@ def _native_store_checkout(root: Path, revision: str) -> tuple[str, list[dict[st
             top = _store_git(path, "rev-parse", "--show-toplevel", check=False)
             if top.returncode or Path(top.stdout.strip()).resolve() != path.resolve():
                 raise NativeStoreRefusal(f"{member['name']} selected path {path} is not its own checkout", 5)
+            # Untracked files DO count here, unlike commit: an untracked file at a path the pin
+            # tracks makes git's own checkout fail inside the member loop, after the root moved,
+            # which is the part-applied state this planning pass exists to prevent. A plain
+            # `git stash` leaves untracked files in place, so the advice names `stash -u`.
             if _store_git(path, "status", "--porcelain").stdout.strip():
-                raise NativeStoreRefusal(f"{member['name']} is dirty; commit or stash changes first", 3)
+                raise NativeStoreRefusal(
+                    f"{member['name']} is dirty; commit, `git stash -u`, or remove untracked files first", 3
+                )
         elif path.exists() and any(path.iterdir()):
             raise NativeStoreRefusal(f"{member['name']} path {path} is not an empty checkout placeholder", 3)
         planned.append((member, path, exists))
@@ -2329,7 +2951,7 @@ def _native_store_checkout(root: Path, revision: str) -> tuple[str, list[dict[st
 STORE_STATUS_NOTES = {
     "layer": "  (the record's layers carry the pin; no remote has it, by design in full mode)",
     "missing": "  (the upstream branch does not contain the pin, and no layer carries it)",
-    "no-pin": "  (grip.toml records no pin for this member; gr2 store commit records one)",
+    "no-pin": "  (grip.toml records no pin for this member; {commit} records one)",
     "stale": "  (the upstream has moved past the pin)",
     "unpinned": "  (the checkout has moved off the pin)",
 }
@@ -2406,7 +3028,7 @@ def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[
                          **_member_inspection(path, None)})
             continue
         remote, separator, branch = member["upstream"].partition("/")
-        fetched = _store_git(path, "fetch", remote, check=False) if separator else None
+        fetched = _store_git(path, "fetch", "--", remote, check=False) if separator else None
         measured = bool(separator and remote and branch and fetched is not None and not fetched.returncode)
         if not measured:
             state = "cannot-measure"
@@ -2429,7 +3051,8 @@ def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[
     if root_read.returncode:
         raise RuntimeError(root_read.stderr.strip() or "git command failed")
     porcelain = root_read.stdout.splitlines()
-    return rows, {"state": "dirty" if porcelain else "clean", "porcelain": porcelain}
+    return rows, {"state": "dirty" if porcelain else "clean", "porcelain": porcelain,
+                  "undeclared": _undeclared_gitlink_lines(root, members)}
 
 
 def _apply_layer(path: Path, member: dict[str, str], number: int, layer: bytes, done: list[dict[str, str]]) -> None:
@@ -2663,7 +3286,9 @@ def _native_store_migrate(root: Path, *, dry_run: bool = False) -> dict[str, obj
         path = root / name
         if not isinstance(pin, str) or len(pin) != 40:
             raise NativeStoreRefusal(f"{name} alpha snapshot has no valid pin", 4)
-        if repo_dirty(path):
+        # Tracked changes only, as at store commit: migration records each member's HEAD, and
+        # an untracked file cannot be in a pin.
+        if _store_git(path, "status", "--porcelain", "--untracked-files=no").stdout.strip():
             raise NativeStoreRefusal(f"{name} is dirty; commit or stash changes first", 3)
         remote = _store_git(path, "remote", "get-url", "origin", check=False)
         if remote.returncode:
@@ -2677,7 +3302,8 @@ def _native_store_migrate(root: Path, *, dry_run: bool = False) -> dict[str, obj
         # is checked against the upstream init would write (`origin/core/main`, not a literal).
         _ref, upstream = _infer_member_branch(path)
         if _store_git(path, "merge-base", "--is-ancestor", pin, upstream, check=False).returncode:
-            raise NativeStoreRefusal(f"{name} pin {pin} is not on {upstream}; push it first", 3)
+            raise NativeStoreRefusal(
+                f"{name} pin {pin} is not on {upstream}; {_push_or_switch(name, 'migrate')}", 3)
         planned[name] = pin
 
     if dry_run:
@@ -2764,11 +3390,29 @@ _STORE_JSON_SHAPES: dict[str, tuple[str, ...]] = {
         ".status  enum(pushed)",
         ".root_branch",
         ".root_commit",
+        ".shadow",
+        ".member_refs[].name",
+        ".member_refs[].pin",
+        ".member_refs[].ref",
         ".origin_recorded  bool",
+        ".landed_by_another  bool",
         ".members[].name",
         ".members[].pin",
         ".members[].upstream",
-        ".members[].state  enum(upstream,layer)",
+        ".members[].state  enum(upstream,layer,unchecked)",
+        ".recurse  enum(check,on-demand,none)",
+        ".recursed[].name",
+        ".recursed[].pin",
+        ".recursed[].action  enum(same-repo,covered,pushed)",
+        ".unchecked[]",
+        ".snapshot",
+        ".allow_rewind[]",
+        ".rewound[].name",
+        ".rewound[].kind  enum(rewind,rewrite)",
+        ".rewound[].old",
+        ".rewound[].new",
+        ".rewound_record",
+        ".notes[]",
     ),
     "status": (
         ".status  enum(status)",
@@ -2840,6 +3484,59 @@ JSON_SHAPES: dict[str, tuple[str, ...]] = {
 JSON_SHAPES.update(CHECK_JSON_SHAPES)
 
 
+#: A launcher may read `<root>/.gr2-slot` (one line, a build name) to choose which gr2 runs in this root.
+#: `store init` writes it from this variable and nothing else; unset means no file, as before.
+SLOT_ENV = "GR2_SLOT"
+SLOT_FILE = ".gr2-slot"
+
+
+#: A slot name is one plain entry: a letter or digit, then letters, digits, '.', '_' or '-'; no
+#: trailing '.', no '..', at most 64 characters. Anything else is refused (an allowlist, not a denylist).
+_SLOT_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9_-])?")
+
+
+def _slot_name_refused(value: str) -> bool:
+    """True when `value` is not one plain directory entry a launcher can join under slots/."""
+    return not _SLOT_NAME.fullmatch(value) or ".." in value
+
+
+def _write_slot_pointer(root: Path) -> str | None:
+    """Write `<root>/.gr2-slot` from GR2_SLOT; return a stderr line when the value is refused.
+
+    A pointer file a launcher may read. Never overwrites an existing file and never writes through
+    a symlink, even a dangling one, including one that appears while init runs. A value that is not one plain entry is refused with no file, so
+    a launcher joining `slots/<name>` can only ever land on one child of slots/."""
+    value = os.environ.get(SLOT_ENV)
+    if value is None:
+        return None
+    if _slot_name_refused(value):
+        return f"{SLOT_ENV} {value!r} is not a slot name (a letter or digit, then letters, digits, '.', '_' or '-'; no trailing '.' or '..'; at most 64); no {SLOT_FILE} written"
+    # One open both checks and creates, so a second init racing on the same root, or a link
+    # planted after any check, cannot be written through: O_EXCL fails on any existing entry,
+    # a dangling symlink included.
+    # The store is already on disk here, so a pointer that cannot be written is one stderr line,
+    # never a traceback or exit 1.
+    unwritten = f"{SLOT_ENV} {value!r}: could not write {SLOT_FILE} ({{}}); the store is initialized, with no pointer"
+    try:
+        fd = os.open(root / SLOT_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    except FileExistsError:
+        return None
+    except OSError as exc:  # mut:openerr
+        return unwritten.format(exc.strerror or exc)
+    try:
+        with os.fdopen(fd, "w") as slot:
+            slot.write(value + "\n")  # mut:slotwrite
+    except OSError as exc:  # mut:writeerr
+        # O_EXCL made this entry ours, and an existing pointer is never touched again, so a
+        # partial one would stay for good: remove it.
+        try:
+            os.unlink(root / SLOT_FILE)  # mut:unlink
+        except OSError:
+            pass
+        return unwritten.format(exc.strerror or exc)
+    return None
+
+
 @grip_app.command("init")
 def grip_init_cmd(
     workspace_root: Path | None = typer.Argument(None),
@@ -2860,13 +3557,15 @@ def grip_init_cmd(
             "(repeatable). The root is created when it does not exist."
         ),
     ),
+    root: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Initialize a native store at cwd or the supplied root."""
-    root = Path.cwd() if workspace_root is None else workspace_root.resolve()
+    root = _store_root(root, workspace_root)
     try:
         clones = _parse_clone_values(clone_values) if clone_values else None
         hook_states = _native_store_init(root, member_paths=member_paths, clones=clones)
+        slot_problem = _write_slot_pointer(root)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
@@ -2883,6 +3582,8 @@ def grip_init_cmd(
     else:
         typer.echo(f"Initialized git-native store at {root}")
     # stderr in both modes, so neither stdout contract moves
+    if slot_problem:
+        typer.echo(slot_problem, err=True)
     for line in store_hooks.hook_problems(root, hook_states):
         typer.echo(line, err=True)
     for line in store_hooks.gitmodules_problems(root):
@@ -2892,7 +3593,8 @@ def grip_init_cmd(
 
 @grip_app.command("commit")
 def grip_commit_cmd(
-    message: str = typer.Option(..., "--message", "-m"),
+    message: str = typer.Option(..., "--message", "-m", help="Message for the root commit that records the member pins"),
+    root: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     allow_rewind: bool = typer.Option(
         False, "--allow-rewind", help="Record a member pin that is behind the one already recorded"
@@ -2904,9 +3606,10 @@ def grip_commit_cmd(
     commits its upstream lacks are carried as a layer in the member's record, so `store push` and a clone
     plus `store materialize` rebuild it on another machine without pushing the member.
     """
+    root = _store_root(root)
     layered: list[str] = []
     try:
-        committed = _native_store_commit(Path.cwd(), message, layered, allow_rewind=allow_rewind)
+        committed = _native_store_commit(root, message, layered, allow_rewind=allow_rewind)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
@@ -2919,21 +3622,23 @@ def grip_commit_cmd(
         typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
     if json_output:
-        root_commit = _store_git(Path.cwd(), "rev-parse", "HEAD").stdout.strip()
+        root_commit = _store_git(root, "rev-parse", "HEAD").stdout.strip()
         typer.echo(json.dumps({"status": "committed" if committed else "unchanged", "root_commit": root_commit, "layered": layered}))
     elif not committed:
         typer.echo(STORE_COMMIT_UNCHANGED)
     else:
-        _echo_layered(layered)
+        _echo_layered(root, layered)
 
 
 @grip_app.command("check")
 def grip_check_cmd(
+    root: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Verify root gitlinks and member coverage against live upstreams."""
+    root = _store_root(root)
     try:
-        members = _native_store_check(Path.cwd())
+        members = _native_store_check(root)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
@@ -2955,12 +3660,34 @@ def grip_check_cmd(
 def grip_push_cmd(
     to: str | None = typer.Option(
         None, "--to", help="Record this URL or path as the root's origin when it has none, then push"),
+    atomic: bool = typer.Option(
+        False, "--atomic", help="Also push the same-repo members' refs (members whose origin is the root's) in the same atomic push "
+             "as the branch and its shadow: all move, or none"),
+    recurse: str = typer.Option(
+        "check", "--recurse", help="A member pin its upstream does not cover: check (refuse, exit 3), on-demand (push "
+                                   "the member from its clone first) or none (skip coverage; the fence still runs)"),
+    snapshot: bool = typer.Option(False, "--snapshot", help="Make the store commit first, then push it"),
+    allow_rewind: list[str] = typer.Option(
+        [], "--allow-rewind", help="A member whose pin may move backwards (repeatable); must name a member"),
+    root: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
-    """Check then push only the root branch, never member branches."""
+    """Check, then push the root branch and its shadow in one atomic push; --atomic adds same-repo member refs."""
+    root = _store_root(root)
+    notes: list[str] = []
+
+    def say_notes(refused: bool = False) -> None:
+        # Under --json a success carries its notes in the payload, so stderr stays empty for a reader that takes stdout
+        # and stderr together. A refusal prints no payload, and its own text is already on stderr, so its notes go
+        # there too: what the push changed before it was refused (a fetch line added) is never silent.
+        if not json_output or refused:
+            for note in notes:
+                typer.echo(f"gr2: {note}", err=True)
+
     try:
-        payload = _native_store_push(Path.cwd(), to)
+        payload = _native_store_push(root, to, atomic, recurse, snapshot, allow_rewind, notes)
     except NativeStoreRefusal as exc:
+        say_notes(refused=True)
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
     except RuntimeError as exc:
@@ -2969,12 +3696,23 @@ def grip_push_cmd(
         # could not COMPLETE, which is the 5 row, and it is prefixed so a raw git message
         # cannot read as a contract refusal (an unaudited backstop is the one that will
         # fire).
+        say_notes(refused=True)
         typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
+    say_notes()
     if json_output:
         typer.echo(json.dumps(payload))
     else:
+        if payload["snapshot"]:
+            typer.echo(f"Committed {payload['snapshot']} (--snapshot)")
+        for entry in payload["recursed"]:
+            if entry["action"] == "pushed":
+                typer.echo(f"Pushed member {entry['name']} at {entry['pin']}")
         typer.echo(f"Pushed root {payload['root_branch']} at {payload['root_commit']}")
+        if payload["unchecked"]:
+            typer.echo(f"Coverage not checked (--recurse=none): {', '.join(payload['unchecked'])}")
+        if payload["landed_by_another"]:
+            typer.echo("Another push landed the same refs first; origin holds every ref at its target")
 
 
 def _store_status_line(member: dict) -> str:
@@ -2993,11 +3731,13 @@ def _store_status_line(member: dict) -> str:
 
 @grip_app.command("status")
 def grip_status_cmd(
+    root: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Show each member's branch, head, pin, ahead/behind its upstream, and uncommitted entries."""
+    root = _store_root(root)
     try:
-        members, root_status = _native_store_status(Path.cwd())
+        members, root_status = _native_store_status(root)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
@@ -3013,12 +3753,12 @@ def grip_status_cmd(
         typer.echo(json.dumps({"status": "status", "members": members, "root": root_status}))
     else:
         for member in members:
-            note = STORE_STATUS_NOTES.get(member["state"], "")
+            note = STORE_STATUS_NOTES.get(member["state"], "").format(commit=_store_advice(root, "commit"))
             typer.echo(_store_status_line(member) + note)
     # A hook that will not run is a finding, not a pass: said on stderr in both modes so stdout is unchanged.
-    for line in store_hooks.hook_problems(Path.cwd(), store_hooks.hook_states(Path.cwd())):
+    for line in store_hooks.hook_problems(root, store_hooks.hook_states(root)):
         typer.echo(line, err=True)
-    for line in store_hooks.gitmodules_problems(Path.cwd()):
+    for line in store_hooks.gitmodules_problems(root):
         typer.echo(line, err=True)
     # THE TABLE PRINTS IN EVERY CASE, and the code follows it. A diagnostic that exits 0 on
     # an inconsistency is the silent-success class: the root snapshot a clone would
@@ -3028,24 +3768,32 @@ def grip_status_cmd(
     if disagreed:
         for member in disagreed:
             if member["pin"] is None:
-                typer.echo(f"{member['name']}: grip.toml has no pin; run gr2 store commit to record one", err=True)
+                typer.echo(f"{member['name']}: grip.toml has no pin; run {_store_advice(root, 'commit')} to record one", err=True)
                 continue
             typer.echo(
                 f"{member['name']} gitlink {member['gitlink'] or '<missing>'} disagrees with pin {member['pin']}",
                 err=True,
             )
         raise typer.Exit(code=4)
+    # An undeclared gitlink in the root index is the refusal `check` gives (exit 3), said after the
+    # table. It is a measured local fact, so it outranks 5 (a member that could not be measured).
+    if root_status["undeclared"]:
+        for line in root_status["undeclared"]:
+            typer.echo(line, err=True)
+        raise typer.Exit(code=3)
     if any(member["state"] == "cannot-measure" for member in members):
         raise typer.Exit(code=5)
 
 
 @grip_app.command("materialize")
 def grip_materialize_cmd(
+    root: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Materialize each canonical pin from its declared origin."""
+    root = _store_root(root)
     try:
-        members = _native_store_materialize(Path.cwd())
+        members = _native_store_materialize(root)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
@@ -3062,9 +3810,9 @@ def grip_materialize_cmd(
     # another owner's hook or into a core.hooksPath, and reports both. The members are already in place here, so a
     # hook that cannot be written is reported, never a failed verb.
     try:
-        hook_lines = store_hooks.hook_problems(Path.cwd(), store_hooks.install_store_hooks(Path.cwd()))
+        hook_lines = store_hooks.hook_problems(root, store_hooks.install_store_hooks(root))
     except OSError as exc:
-        hook_lines = [f"hooks: could not be installed ({exc}); run gr2 store materialize again to install them"]
+        hook_lines = [f"hooks: could not be installed ({exc}); run {_store_advice(root, 'materialize')} again to install them"]
     if json_output:
         typer.echo(json.dumps({"status": "materialized", "members": members}))
     else:
@@ -3084,11 +3832,13 @@ def grip_materialize_cmd(
 @grip_app.command("migrate")
 def grip_migrate_cmd(
     dry_run: bool = typer.Option(False, "--dry-run", help="Print the alpha-to-native plan without writing"),
+    root: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Convert alpha .grip/.git HEAD into one native root commit."""
+    root = _store_root(root)
     try:
-        payload = _native_store_migrate(Path.cwd(), dry_run=dry_run)
+        payload = _native_store_migrate(root, dry_run=dry_run)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
@@ -3110,12 +3860,18 @@ def grip_migrate_cmd(
 
 @grip_app.command("migrate-reviews")
 def grip_migrate_reviews_cmd(
-    root: Path = typer.Argument(..., help="The native store root whose pinned reviews to migrate"),
+    root: Optional[Path] = typer.Argument(None, help="The native store root whose pinned reviews to migrate"),
+    root_option: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Give every legacy pinned review a field tree twin at the v1 ref; legacy refs stay as they are."""
+    # The positional keeps its contract name `root` (cli.api: `arg store migrate-reviews root`); -C binds beside it.
+    if root_option is None and root is None:
+        typer.echo("Missing argument 'ROOT': name the native store root, or -C <root>", err=True)
+        raise typer.Exit(code=2)
+    root = _store_root(root_option, root)
     try:
-        receipt, rows = grip_mod.migrate_review_binds(root.resolve())
+        receipt, rows = grip_mod.migrate_review_binds(root)
     except grip_mod.GripCorruptError as exc:
         typer.echo(f"refused: {exc}", err=True)
         raise typer.Exit(code=4)
@@ -3135,6 +3891,7 @@ def grip_migrate_reviews_cmd(
 @grip_app.command("snapshot", hidden=True)
 def grip_snapshot_cmd(
     message: str = typer.Option(..., "--message", "-m", help="Snapshot message"),
+    root: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     allow_rewind: bool = typer.Option(
         False, "--allow-rewind", help="Record a member pin that is behind the one already recorded"
@@ -3154,34 +3911,36 @@ def grip_snapshot_cmd(
     commit and carries only commit's flags. This UNWIRES the verb; it does not delete the
     alpha writer, because `store migrate` (section 6a) reads that store and is a later step.
     """
+    root = _store_root(root)
     layered: list[str] = []
     try:
-        committed = _native_store_commit(Path.cwd(), message, layered, allow_rewind=allow_rewind)
+        committed = _native_store_commit(root, message, layered, allow_rewind=allow_rewind)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
     except RuntimeError as exc:
         typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
-    root_commit = _store_git(Path.cwd(), "rev-parse", "HEAD").stdout.strip()
+    root_commit = _store_git(root, "rev-parse", "HEAD").stdout.strip()
     if json_output:
         typer.echo(json.dumps({"status": "committed" if committed else "unchanged", "root_commit": root_commit, "layered": layered}))
     elif not committed:
         typer.echo(STORE_COMMIT_UNCHANGED)
     else:
         typer.echo(f"grip snapshot {root_commit[:12]}")
-        _echo_layered(layered)
+        _echo_layered(root, layered)
 
 
 @grip_app.command("log")
 def grip_log_cmd(
     max_count: int = typer.Option(10, "--max-count", "-n", help="Max entries to show"),
+    root: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """The root's commit history, with the pins each commit recorded (design section 5).
 
     Section 5 line 99 puts `log` in the same row as diff and checkout -- "`log` is the root's
-    `git log` with pins per commit" -- so it acts on the cwd like every other verb in the
+    `git log` with pins per commit" -- so it acts on the root (-C, else the cwd) like every other verb in the
     group, and its entries are native: a root `commit`, its `message`, and the `pins` that
     changed.
 
@@ -3193,8 +3952,9 @@ def grip_log_cmd(
     verb with two branches that answer different questions presents as ported whenever a
     caller happens to use the branch that was ported.
     """
+    root = _store_root(root)
     try:
-        entries = _native_store_log(Path.cwd(), max_count)
+        entries = _native_store_log(root, max_count)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
@@ -3212,18 +3972,19 @@ def grip_log_cmd(
 def grip_diff_cmd(
     ref_a: str = typer.Argument(None, help="First root commit (default: HEAD~1)"),
     ref_b: str = typer.Argument(None, help="Second root commit (default: HEAD)"),
+    root: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Pin changes between two root commits (design section 5).
 
     Section 5 line 99: "`diff` is pin changes between two root commits", and the row's
-    stability is "as `materialize`". It acts on the cwd, like every other verb in the group:
+    stability is "as `materialize`". It acts on the root (-C, else the cwd), like every other verb in the group:
     the old signature took a positional `workspace_root` and read the alpha snapshot index,
     so calling it the way the row describes failed on a missing argument before reaching any
     of this (measured 2026-09-28: `store diff HEAD~1 HEAD --json` on the base exited 2 with
     "Missing argument 'ref_b'").
     """
-    root = Path.cwd()
+    root = _store_root(root)
     a = ref_a or "HEAD~1"
     b = ref_b or "HEAD"
     try:
@@ -3245,6 +4006,7 @@ def grip_diff_cmd(
 @grip_app.command("checkout")
 def grip_checkout_cmd(
     ref: str = typer.Argument(..., help="Root commit to materialize the members at"),
+    root: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Materialize the members at a root commit (design section 5).
@@ -3255,7 +4017,7 @@ def grip_checkout_cmd(
     rather than leaving a silent partial tree) and defines no second materialization path. It
     delegates to the same helper materialize uses for exactly that reason.
     """
-    root = Path.cwd()
+    root = _store_root(root)
     try:
         resolved, members = _native_store_checkout(root, ref)
     except NativeStoreRefusal as exc:

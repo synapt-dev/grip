@@ -425,3 +425,125 @@ def test_since_my_stamp_refused_still_carries_the_doubt(world):
     out = approvals.since_my_stamp(world["workspace"], "gr:" + world["rid"])
     assert out["refused"].startswith("no_stamp")
     assert out["since_may_be_older"] is True and out["skipped"]
+
+
+def bind_rows(world, rows):
+    """Bind one pin of (key, remote, head, clone) rows on the world's base, as the author, then push each feature."""
+    path = world["workspace"].parent / "rows.json"
+    path.write_text(json.dumps([{"key": k, "remote": str(r), "base": world["base"], "head": h, "ref": "refs/heads/main",
+                                 "source": str(c)} for k, r, h, c in rows]))
+    git(world["workspace"], "config", "user.name", "Author A")
+    before = {pin for pin, _ in approvals.grip.list_review_binds(world["workspace"])}
+    bound = runner.invoke(app, ["review", "bind", "--rows-json", str(path)])
+    assert bound.exit_code == 0, bound.output
+    for _, r, _, c in rows:
+        git(c, "push", r, "feature")
+    [pin] = {pin for pin, _ in approvals.grip.list_review_binds(world["workspace"])} - before
+    return pin
+
+
+def commit_file(clone, name):
+    (clone / name).write_text(name + "\n")
+    git(clone, "add", name)
+    git(clone, "commit", "-m", name)
+    return git(clone, "rev-parse", "HEAD")
+
+
+def test_since_my_stamp_measures_each_member_from_my_stamp_on_that_member(world):
+    """My newest stamp is on a pin without `member`; my older stamp on `member` is still the point it moved from."""
+    assert approve_as(world, "Approver B").exit_code == 0  # stamp 1: member at world head
+    remote, seed = world["remote"].parent / "other.git", world["remote"].parent / "other-seed"
+    git(remote.parent, "init", "--bare", "-b", "main", remote)
+    git(remote.parent, "clone", "-q", "-b", "main", world["remote"], seed)
+    git(seed, "push", remote, "main")
+    other = world["workspace"] / "other"
+    git(world["workspace"], "clone", remote, other)
+    git(other, "checkout", "-b", "feature")
+    other_head = commit_file(other, "added")
+    pin = "gr:" + bind_rows(world, [("other", remote, other_head, other)])
+    published = runner.invoke(app, ["review", "publish", pin, "--remote", str(remote)])
+    assert published.exit_code == 0, published.output
+    git(world["workspace"], "config", "user.name", "Approver B")
+    stamped = runner.invoke(app, ["review", "approve", pin])  # stamp 2, newer: other only
+    assert stamped.exit_code == 0, stamped.output
+    moved = commit_file(world["member"], "second")
+    other_moved = commit_file(other, "more")
+    bind_rows(world, [("member", world["remote"], moved, world["member"]), ("other", remote, other_moved, other)])
+    result = since(world)
+    assert result.exit_code == 0, result.output
+    rows = {m["key"]: m for m in json.loads(result.stdout)["members"]}
+    assert old(rows["member"]) == {"key": "member", "stamped_head": world["head"], "current_head": moved, "changed": True,
+                              "range": f"{world['head']}..{moved}", "commits": [moved], "paths": ["second"]}
+    assert rows["other"]["range"] == f"{other_head}..{other_moved}" and rows["other"]["paths"] == ["more"]
+
+
+@pytest.mark.parametrize("stale", [False, True], ids=["main-moved", "stale-branch-at-old-base"])
+def test_since_my_stamp_after_a_rebase_onto_a_moved_main_names_only_what_the_feature_changed(world, stale):
+    """Main moved and the same feature change was rebased onto it: main's files are not the feature's moves. With a
+    branch left at the old base too (the stamp's moved-base check passes there): no file of main's is named."""
+    assert approve_as(world, "Approver B").exit_code == 0
+    member = world["member"]
+    if stale:
+        git(member, "push", world["remote"], f"{world['base']}:refs/heads/release")
+    git(member, "checkout", "-q", "main")
+    moved_base = commit_file(member, "mainline")
+    git(member, "push", world["remote"], "main")
+    git(member, "checkout", "-q", "feature")
+    git(member, "rebase", "-q", "main")
+    head = git(member, "rev-parse", "HEAD")
+    git(member, "push", "-f", world["remote"], "feature")
+    git(world["workspace"], "config", "user.name", "Author A")
+    bound = runner.invoke(app, ["review", "bind", "--repo", "member", "--remote", str(world["remote"]),
+                               "--base", moved_base, "--head", head, "--ref", "refs/heads/main",
+                               "--source", str(member)])
+    assert bound.exit_code == 0, bound.output
+    result = since(world)
+    assert result.exit_code == 0, result.output
+    [m] = json.loads(result.stdout)["members"]
+    assert old(m) == {"key": "member", "stamped_head": world["head"], "current_head": head, "changed": True,
+                 "range": None, "commits": [], "paths": []}
+
+
+def test_since_my_stamp_after_a_rebase_onto_a_moved_main_names_a_feature_file_that_changed(world):
+    """The same rebase, plus an edit to the reviewed file: that file is named, main's is not."""
+    assert approve_as(world, "Approver B").exit_code == 0
+    member = world["member"]
+    git(member, "checkout", "-q", "main")
+    moved_base = commit_file(member, "mainline")
+    git(member, "push", world["remote"], "main")
+    git(member, "checkout", "-q", "feature")
+    git(member, "rebase", "-q", "main")
+    (member / "payload").write_text("reviewed \n")  # whitespace only: still a change the reviewer never read
+    git(member, "commit", "-qam", "edit")
+    head = git(member, "rev-parse", "HEAD")
+    git(member, "push", "-f", world["remote"], "feature")
+    git(world["workspace"], "config", "user.name", "Author A")
+    bound = runner.invoke(app, ["review", "bind", "--repo", "member", "--remote", str(world["remote"]),
+                               "--base", moved_base, "--head", head, "--ref", "refs/heads/main",
+                               "--source", str(member)])
+    assert bound.exit_code == 0, bound.output
+    [m] = json.loads(since(world).stdout)["members"]
+    assert m["range"] is None and m["paths"] == ["payload"]
+
+
+def test_since_my_stamp_names_a_reviewed_file_whose_change_landed_on_the_moved_main(world):
+    """Main took the reviewed change itself: the feature no longer changes that file, which is a move to name."""
+    assert approve_as(world, "Approver B").exit_code == 0
+    member = world["member"]
+    git(member, "checkout", "-q", "main")
+    (member / "payload").write_text("reviewed\n")
+    git(member, "commit", "-qam", "landed")
+    moved_base = git(member, "rev-parse", "HEAD")
+    git(member, "push", world["remote"], "main")
+    git(member, "checkout", "-q", "-B", "feature", "main")
+    head = commit_file(member, "extra")
+    git(member, "push", "-f", world["remote"], "feature")
+    git(world["workspace"], "config", "user.name", "Author A")
+    bound = runner.invoke(app, ["review", "bind", "--repo", "member", "--remote", str(world["remote"]),
+                               "--base", moved_base, "--head", head, "--ref", "refs/heads/main",
+                               "--source", str(member)])
+    assert bound.exit_code == 0, bound.output
+    result = since(world)
+    assert result.exit_code == 0, result.output
+    [m] = json.loads(result.stdout)["members"]
+    assert m["range"] is None and m["paths"] == ["extra", "payload"]

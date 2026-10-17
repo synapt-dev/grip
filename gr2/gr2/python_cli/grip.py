@@ -574,6 +574,11 @@ def _judge_remote_branch(workspace: Path, remote: str, source: str, head: str, r
     absent. A remote tip past the head (ahead) or beside it (diverged) refuses before any write,
     with a non-destructive next step; the tip is the live one from ``tips`` (ls-remote at pin time)."""
     upstream = _source_upstream(source)
+    if upstream == ref:
+        # `git checkout -b feat origin/trunk` sets feat's merge ref to --ref itself; the remote branch the
+        # head belongs to is then the one of its own name, so that is the one judged.
+        branch = gitops.run(Path(source), "symbolic-ref", "-q", "HEAD").stdout.strip()
+        upstream = branch or None
     if upstream is None or upstream == ref or upstream not in tips:
         return
     tip = tips[upstream]

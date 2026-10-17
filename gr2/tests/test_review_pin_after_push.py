@@ -264,3 +264,33 @@ def test_p10b_a_hold_ref_outside_refs_heads_still_refuses(tmp_path):
     assert "refused: head_already_on_remote" in result.output
     assert "pin a head before you push it" in result.output
     assert _review_refs(w["ws"]) == ""
+
+
+def _world_from_ref(tmp_path: Path) -> dict:
+    """feat made by `git checkout -b feat origin/trunk`, so its configured merge ref is refs/heads/trunk, the --ref itself; feat is pushed by name without -u."""
+    w = _world(tmp_path, push_head=False)
+    _git(w["src"], "checkout", "-q", "trunk")
+    _git(w["src"], "branch", "-qD", "feat")
+    _git(w["src"], "checkout", "-qb", "feat", "origin/trunk")
+    assert _git(w["src"], "config", "--get", "branch.feat.merge") == "refs/heads/trunk"
+    w["head"] = _commit(w["src"], "b")
+    _git(w["src"], "push", "-q", "origin", "feat")
+    return w
+
+
+def test_p10_upstream_is_ref_still_judges_the_remote_branch_of_the_same_name(tmp_path):
+    w = _world_from_ref(tmp_path)
+    tip = _advance_remote_feat(tmp_path, w, "past")
+    result = _pin(w)  # the remote's feat holds a commit past HEAD; the merge ref points at --ref
+    assert result.exit_code == 2, result.output
+    assert "refused: head_behind_remote_branch" in result.output
+    assert f"--head {tip}" in result.output
+    assert _review_refs(w["ws"]) == ""
+
+
+def test_p10b_upstream_is_ref_and_the_remote_branch_is_behind_pins(tmp_path):
+    w = _world_from_ref(tmp_path)
+    newer = _commit(w["src"], "c")  # the remote's feat is behind the head: the usual order
+    result = _pin(w, head=newer)
+    assert result.exit_code == 0, result.output
+    assert _gr_id(result)

@@ -5462,11 +5462,26 @@ def review_receive(
     commit: str = typer.Argument(..., help="Independent expected full gr:<sha> review ID"),
     remote: str = typer.Option(..., "--remote", help="HTTPS URL or absolute local remote path"),
     ref: Optional[str] = typer.Option(None, "--ref", help="Exact native review ref, otherwise derived from ID"),
+    all_members: bool = typer.Option(False, "--all", help="Also fetch every member's pinned head from that member's own recorded remote: one call for the whole review"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
-    """Receive and validate an exact native review before pinning it locally."""
-    result = _review_call(grip.receive_review_commit, workspace_root.resolve(), commit, remote, ref)
+    """Receive and validate an exact native review before pinning it locally.
+
+    The review is read from --remote. Without --all, only members whose remote is --remote get their head fetched;
+    with --all, every member's head is fetched from its own recorded remote, one row per member on stderr, and the
+    exit is 4 when the review is received but any member's head is not (rerun the same command)."""
+    result = _review_call(grip.receive_review_commit, workspace_root.resolve(), commit, remote, ref, all_members)
     typer.echo(json.dumps(result))
+    if all_members:
+        missed = 0
+        for h in result["heads"]:
+            ok = h["status"] in ("fetched", "already_present")
+            missed += not ok
+            typer.echo(f"{h['status']}: {h['key']}  head={str(h['head'])[:7]}"
+                       + ("" if ok else f"  {h.get('reason')}  next: {h.get('next')}"), err=True)
+        typer.echo(f"received: {result['id']}, heads {len(result['heads']) - missed} of {len(result['heads'])}", err=True)
+        if missed:
+            raise typer.Exit(code=4)
 
 
 @review_app.command("show", cls=json_refusing(ReviewTargetCommand))

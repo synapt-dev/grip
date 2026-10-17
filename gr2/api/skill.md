@@ -114,8 +114,8 @@ Run it in YOUR workspace: the approval is made as that workspace's `git user.nam
 set -euo pipefail
 WS=/path/to/your/workspace                         # EDIT: your workspace root
 REVIEW=gr:0000000000000000000000000000000000000000 # EDIT: the full review ID the author sent you
-REMOTES="/path/to/alpha.git /path/to/beta.git"     # EDIT: every member's remote
-for r in $REMOTES; do gr2 review receive "$WS" "$REVIEW" --remote "$r"; done   # also fetches each pinned head into its member clone
+REMOTE=/path/to/alpha.git                          # EDIT: any one member's remote (the author published the review to each)
+gr2 review receive "$WS" "$REVIEW" --remote "$REMOTE" --all   # also fetches every member's pinned head from its own remote; exit 4 names any it could not
 gr2 review show "$WS" "$REVIEW"                    # each member's commit range and the files it changes
 [ "${APPROVE:-}" = 1 ] || { echo "Read each member's range above (git diff <start>..<end> in that member), then run this again with APPROVE=1 to test and stamp."; exit 0; }
 T=$(mktemp -d)
@@ -280,6 +280,7 @@ Receive and validate an exact native review before pinning it locally.
 - `<commit>`
 - `--remote`: HTTPS URL or absolute local remote path
 - `--ref`: Exact native review ref, otherwise derived from ID
+- `--all`: Also fetch every member's pinned head from that member's own recorded remote: one call for the whole review
 - `--root/-C`: The workspace root. Same as the leading WORKSPACE_ROOT argument; give one or the other.
 
 ### gr2 review stamp

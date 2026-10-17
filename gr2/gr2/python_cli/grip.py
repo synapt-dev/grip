@@ -1980,8 +1980,11 @@ def publish_review_all(workspace: Path, commit: str, ref: str | None = None) -> 
 
 
 def receive_review_commit(workspace: Path, commit: str, remote: str,
-                          ref: str | None = None) -> dict[str, str]:
+                          ref: str | None = None, all_members: bool = False) -> dict[str, str]:
     """Validate fetched review content before create-only local bind publication.
+
+    all_members: also fetch every other member's head from that member's own recorded remote, so one call
+    does what one call per member remote did.
 
     Object downloads/recomputation are not approval, allocation or cleanup authority.
     """
@@ -2029,7 +2032,7 @@ def receive_review_commit(workspace: Path, commit: str, remote: str,
         except RuntimeError as exc:
             raise GripCorruptError(f"review_bind_publication_failed: {exc}") from exc
         return {"id": f"gr:{actual}", "ref": canonical, "remote": source,
-                "heads": _fetch_received_heads(workspace, actual, source)}
+                "heads": _fetch_received_heads(workspace, actual, source, all_members)}
     except BaseException as exc:
         primary = exc
         raise
@@ -2049,14 +2052,18 @@ def receive_review_commit(workspace: Path, commit: str, remote: str,
                 raise GripCorruptError(f"review_staging_cleanup_failed: {cleanup}") from cleanup
 
 
-def _fetch_received_heads(workspace: Path, commit: str, source: str) -> list[dict[str, str]]:
+def _fetch_received_heads(workspace: Path, commit: str, source: str,
+                          all_members: bool = False) -> list[dict[str, str]]:
     """Bring each pinned head into its member's clone, from the remote this receive read the review from.
 
     A received review binds the record only; the set check reads every member's head from the member's own clone,
     so without this a reviewer's clone lacks the commits until a hand fetch. Only members whose recorded remote is
     `source` are fetched (another member's head is not this remote's to serve). One row per member: fetched,
     already_present, not_this_remote (with the command that opens the review without the head), or not_fetched with
-    its reason and the exact command that fetches it."""
+    its reason and the exact command that fetches it. With all_members, each member's head comes from its own
+    recorded remote instead, so no row is not_this_remote; one member failing leaves the others' rows as they are. A
+    member whose recorded remote names the same repository as `source` in another spelling (ssh, git@, https) is
+    fetched from `source`, as the per-member form fetches it."""
     from .review import ReviewError, canonical_source_identity
 
     def same(remote: str) -> str | None:
@@ -2072,7 +2079,17 @@ def _fetch_received_heads(workspace: Path, commit: str, source: str) -> list[dic
         key, head = str(m["key"]), str(m["head"])
         repo = (root / str(m["path"])).resolve()
         row = {"key": key, "head": head}
-        if want is None or same(str(m["remote"])) != want:
+        src = source
+        if all_members and want is not None and same(str(m["remote"])) == want:
+            pass  # the remote this receive already dialled: the per-member form fetches it from there too
+        elif all_members:
+            try:
+                src = _review_transport_remote(str(m["remote"]))
+            except GripCorruptError as exc:
+                rows.append({**row, "status": "not_fetched", "reason": f"member_remote_unusable: {exc}",
+                             "next": f"fetch {head} into {next_steps._shown(str(repo))} by hand"})
+                continue
+        elif want is None or same(str(m["remote"])) != want:
             # Not a failure: open builds a lane from the range the review carries; show --diff and stamp need the head.
             rows.append({**row, "status": "not_this_remote",
                          "reason": f"head_not_on_this_remote: its remote is {next_steps._shown(str(m['remote']))}; "
@@ -2081,19 +2098,19 @@ def _fetch_received_heads(workspace: Path, commit: str, source: str) -> list[dic
             continue
         if not repo.is_relative_to(root) or not (repo / ".git").exists():
             rows.append({**row, "status": "not_fetched", "reason": "member_clone_missing",
-                         "next": f"clone {source} at {repo}, then receive again"})
+                         "next": f"clone {src} at {repo}, then receive again"})
             continue
         if git(repo, "cat-file", "-e", f"{head}^{{commit}}").returncode == 0:
             rows.append({**row, "status": "already_present"})
             continue
-        proc = git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--", source, head, timeout=60)
+        proc = git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--", src, head, timeout=60)
         if proc.returncode == 0 and git(repo, "cat-file", "-e", f"{head}^{{commit}}").returncode == 0:
             rows.append({**row, "status": "fetched"})
         else:
             said = (proc.stderr or "").strip().splitlines()
             rows.append({**row, "status": "not_fetched",
                          "reason": f"head_fetch_refused: {said[-1] if said else 'the remote did not serve the head'}",
-                         "next": next_steps._head_fetch(str(repo), source, head)})
+                         "next": next_steps._head_fetch(str(repo), src, head)})
     return rows
 
 

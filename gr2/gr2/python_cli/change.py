@@ -3,7 +3,8 @@
 Phase 0 reads every member and writes nothing; any refusal stops the verb
 before the first write, so a refused run leaves every member as it was.
 Phase 1 then writes per member, in the order given: branch, stage, commit.
-Two git calls per member to read, four to write.
+Two git calls per member to read, three to write; the new head is read off
+the commit's own summary line rather than asked for again.
 
 A write that fails (a pre-commit hook refusing, say) is undone in every member
 already touched, in reverse order: HEAD back to the original branch, the index
@@ -13,6 +14,7 @@ of them touch the worktree, so the user's uncommitted change is still there.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -113,6 +115,13 @@ def undo(member: Member, branch: str) -> str | None:
     return None
 
 
+def _summary_head(stdout: str, branch: str) -> str:
+    """The full sha from commit's "[<branch> <sha>] <subject>" line, or ""."""
+    pattern = re.compile(rf"^\[{re.escape(branch)} ([0-9a-f]{{40,64}})\] ", re.M)
+    found = pattern.findall(stdout)
+    return found[-1] if found else ""
+
+
 def write(members: list[Member], branch: str, message: str) -> None:
     written: list[Member] = []
     for member in members:
@@ -121,20 +130,23 @@ def write(members: list[Member], branch: str, message: str) -> None:
         for args in (
             ("checkout", "-q", "-b", branch),
             ("add", "-A"),
-            ("commit", "-q", "-m", message),
+            ("-c", "core.abbrev=no", "commit", "-m", message),
         ):
             proc = git(member.path, *args)
             if proc.returncode == 0:
                 if args[0] == "checkout":
                     written.append(member)
                 continue
-            observed = proc.stderr.strip() or f"git {args[0]} exited {proc.returncode}"
+            verb = args[2] if args[0] == "-c" else args[0]
+            observed = proc.stderr.strip() or f"git {verb} exited {proc.returncode}"
             stuck = [f"{m.name}: {err}" for m in reversed(written) if (err := undo(m, branch))]
             if stuck:
-                raise ChangeFailed(f"{member.name}: git {args[0]} failed: {observed}; NOT undone: {'; '.join(stuck)}")
-            raise ChangeUndone(f"{args[0]}_failed", member.name, observed, [m.name for m in reversed(written)])
-        proc = git(member.path, "rev-parse", "HEAD")
-        member.head = proc.stdout.strip()
+                raise ChangeFailed(f"{member.name}: git {verb} failed: {observed}; NOT undone: {'; '.join(stuck)}")
+            raise ChangeUndone(f"{verb}_failed", member.name, observed, [m.name for m in reversed(written)])
+        member.head = _summary_head(proc.stdout, branch)
+        if not member.head:
+            # A summary we cannot read costs one more call, never a wrong sha.
+            member.head = git(member.path, "rev-parse", "HEAD").stdout.strip()
 
 
 def change(paths: list[Path], branch: str, message: str) -> list[Member]:

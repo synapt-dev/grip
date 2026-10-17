@@ -97,10 +97,13 @@ def test_c1_one_change_commits_every_member(members: list[Path], git_log: Path) 
         assert _git(path, "show", "HEAD:README.md") == f"# {path.name} edited\n"
         assert _git(path, "show", "HEAD:new.txt") == "new\n"
         assert _git(path, "status", "--porcelain") == ""
-        assert f"{path.name}: feat " in result.output
+        head = _git(path, "rev-parse", "HEAD").strip()
+        assert f"{path.name}: feat {head[:7]} " in result.output
     per_member = {p.name: sum(1 for m, _ in calls if m == p.name) for p in members}
     print(f"git calls per member: {per_member} total {sum(per_member.values())}")
-    assert all(n <= 6 for n in per_member.values()), per_member
+    # Two reads and three writes: what plain git needs for the same refusals.
+    assert all(n <= 5 for n in per_member.values()), per_member
+    assert sum(per_member.values()) <= 25, per_member
 
 
 @pytest.mark.parametrize(

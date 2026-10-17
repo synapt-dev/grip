@@ -432,6 +432,10 @@ def lane_checkout_root(workspace_root: Path, owner_unit: str, lane_name: str) ->
     if kind == "bound":
         if "checkout_root" in doc or not isinstance(doc.get("bound_worktree"), str) or not doc["bound_worktree"]:
             raise SystemExit("bound lane needs its explicit bound_worktree and no checkout_root")
+        # A relative path would resolve against the process CWD, not the workspace; create --bind writes it absolute.
+        if not Path(doc["bound_worktree"]).is_absolute():
+            raise SystemExit(f"bound lane {owner_unit}/{lane_name} needs an absolute bound_worktree, "
+                             f"not {doc['bound_worktree']!r}")
         return Path(doc["bound_worktree"]).resolve()
     if kind not in {"materialized", "review-ephemeral"} or doc.get("bound_worktree") is not None:
         raise SystemExit("invalid or conflicting lane checkout coordinates")

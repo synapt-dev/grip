@@ -3732,7 +3732,8 @@ def lane_list(
 ) -> None:
     """List lanes, each marked removable or keep with every reason.
 
-    Removable is a state (not entered, not bound or leased, clean, no stash, nothing unpushed), never an age.
+    Removable is a state (not entered or leased, clean, no stash, nothing unpushed), never an age; a bound lane's
+    worktree is not weighed, since removing the lane drops only its record.
     The list reads remote-tracking refs WITHOUT fetching, and says so; `lane remove` fetches and checks again."""
     workspace_root = workspace_root.resolve()
     typer.echo("# remote refs not fetched; gr2 lane remove fetches before it removes anything")

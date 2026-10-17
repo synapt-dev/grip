@@ -7,8 +7,11 @@ exists nowhere else. First row: a local commit that was never pushed.
 """
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 from gr2.python_cli import app as gr2_app
@@ -197,6 +200,69 @@ def test_a_bound_worktree_inside_the_lane_record_is_not_removed(tmp_path: Path) 
     before = _tree_state(inner)
     _refused_untouched(ws, inner, _remove(ws), "lane_record_holds_bound_worktree")
     assert _tree_state(inner) == before
+
+
+def _inner_worktree(ws: Path, owner_dir: Path) -> Path:
+    inner = owner_dir / "x" / "inner"
+    inner.mkdir()
+    _git(inner, "init", "-q")
+    _git(inner, "-c", "user.email=t@e.invalid", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init")
+    (inner / "untracked.txt").write_text("work no commit holds\n")
+    return inner
+
+
+def _point_record_at(ws: Path, value: str) -> None:
+    toml = lane_proto.lane_file(ws, "atlas", "x")
+    old = lane_proto.load_lane_doc(ws, "atlas", "x")["bound_worktree"]
+    toml.write_text(toml.read_text().replace(json.dumps(old), json.dumps(value)))
+    assert lane_proto.load_lane_doc(ws, "atlas", "x")["bound_worktree"] == value
+
+
+@pytest.mark.parametrize("cwd", ["workspace", "elsewhere"])
+def test_a_relative_bound_worktree_is_refused_from_any_cwd(tmp_path: Path, monkeypatch, cwd: str) -> None:
+    ws, _ = _bound_lane(tmp_path)
+    inner = _inner_worktree(ws, lane_proto.lane_state_root(ws) / "atlas")
+    # A hand-edited record: relative to the workspace it names a worktree inside the record, but a relative
+    # path resolves against the CWD, so from elsewhere it would name nothing the record holds.
+    value = ".grip/state/lanes/atlas/x/inner"
+    _point_record_at(ws, value)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(ws if cwd == "workspace" else elsewhere)
+    before = _tree_state(inner)
+
+    result = _remove(ws)
+
+    _refused_untouched(ws, inner, result, "lane_record_invalid: atlas/x:",
+                       f"bound lane atlas/x needs an absolute bound_worktree, not {value!r}")
+    assert _tree_state(inner) == before, "the worktree inside the record, untracked file included, is unchanged"
+    listed = runner.invoke(gr2_app.app, ["lane", "list", str(ws)])
+    assert f"atlas\tx\tkeep\tlane_record_invalid: atlas/x: bound lane atlas/x needs an absolute" in listed.output, \
+        listed.output
+
+
+def test_a_bound_worktree_inside_the_record_is_refused_through_a_symlinked_owner_dir(tmp_path: Path) -> None:
+    ws, _ = _bound_lane(tmp_path)
+    # The record's own path passes through a symlink, so the worktree's resolved path is only inside the record
+    # once the record's path is resolved too.
+    owners = lane_proto.lane_state_root(ws)
+    (owners / "atlas").rename(owners / "atlas-real")
+    (owners / "atlas").symlink_to("atlas-real", target_is_directory=True)
+    inner = _inner_worktree(ws, owners / "atlas-real")
+    _point_record_at(ws, str(inner.resolve()))
+    before = _tree_state(inner)
+    _refused_untouched(ws, inner, _remove(ws), "lane_record_holds_bound_worktree")
+    assert _tree_state(inner) == before
+
+
+def test_an_entered_bound_lane_is_not_removed(tmp_path: Path) -> None:
+    ws, wt = _bound_lane(tmp_path)
+    (wt / "new.txt").write_text("an untracked file\n")
+    result = runner.invoke(gr2_app.app, ["lane", "enter", str(ws), "atlas", "x", "--actor", "agent:s"])
+    assert result.exit_code == 0, result.output
+    before = _tree_state(wt)
+    _refused_untouched(ws, wt, _remove(ws), "lane_is_entered")
+    assert _tree_state(wt) == before
 
 
 def test_a_lane_whose_origin_cannot_be_fetched_is_not_removed(tmp_path: Path) -> None:

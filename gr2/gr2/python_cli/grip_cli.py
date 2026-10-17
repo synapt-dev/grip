@@ -591,13 +591,13 @@ def _register_submodules(root: Path, paths: list[str]) -> None:
         done = _store_git(root, "submodule", "init", "--", path, check=False)
         if done.returncode:
             typer.echo(f"{path}: not registered as a submodule ({_git_detail(done)}); plain `git submodule` verbs "
-                       f"need `git submodule init {path}` first", err=True)
+                       f"need `git submodule init -- {next_steps._shown(path)}` first", err=True)
             continue
         now = _registered_submodule_urls(root)
         new, registered = now - registered, now
         if new:
             typer.echo(f"{path}: registered as a submodule, so plain `git submodule` verbs act on it "
-                       f"(`git submodule deinit {path}` lasts until the next store commit)", err=True)
+                       f"(`git submodule deinit -- {next_steps._shown(path)}` lasts until the next store commit)", err=True)
 
 
 def _existing_sets(root: Path) -> list[dict]:
@@ -2013,7 +2013,7 @@ def _refuse_pin_rewind(
             # says nothing about direction there; materialize would be the wrong advice for a checkout ahead.
             raise PinRewindRefusal(
                 f"{name}: cannot tell whether HEAD {head[:12]} is behind the recorded pin {recorded[:12]}: this "
-                f"checkout is shallow and does not reach it; run `git fetch --unshallow` in {member['path']} and "
+                f"checkout is shallow and does not reach it; run `git fetch --unshallow` in {next_steps._shown(member['path'])} and "
                 f"commit again, or {allow} to record HEAD anyway",
                 3,
             )
@@ -3831,7 +3831,7 @@ def grip_materialize_cmd(
             if member["branch"] is None:
                 typer.echo(
                     f"{member['name']}: left detached at {member['pin'][:12]}: {member['detached']}; "
-                    f"to work on a branch: git -C {member['path']} switch -c <branch>",
+                    f"to work on a branch: git -C {next_steps._shown(member['path'])} switch -c <branch>",
                     err=True,
                 )
     # stderr in both modes, so neither stdout contract moves

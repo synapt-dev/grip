@@ -48,7 +48,7 @@ import time
 import urllib.parse
 from pathlib import Path
 
-from . import gitops
+from . import gitops, next_steps
 from .spec_apply import (
     MaterializationPlanError,
     ValidatedPlan,
@@ -972,7 +972,7 @@ def _reuse_existing_lane(
         raise CloneExecutionError(
             f"existing lane at {dest} is on branch {actual_branch!r}, not the expected "
             f"{expected_branch!r}. Materialization never switches a lane's branch; move "
-            f"it back with `git -C {dest} checkout {expected_branch}` or remove the lane "
+            f"it back with `git -C {next_steps._shown(dest)} checkout {next_steps._shown(expected_branch)}` or remove the lane "
             "to re-materialize (grip#807 step 6)"
         )
     if expected_seed is not None and actual_head != expected_seed:

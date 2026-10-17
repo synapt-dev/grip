@@ -1851,7 +1851,8 @@ def _stage_field_sidecar(root: Path, member: dict[str, str], layers: list[bytes]
     # A clone holds neither the root's review refs nor the member's check ref, so the records found HERE can be fewer
     # than the ones the root already carries for this very pin. Those are kept: records about a pin are only added.
     records = sorted(set(_member_records(root, member)) | prior)
-    _store_git(root, "rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", base)
+    # --sparse: the sidecar's entries are skip-worktree, and without it git rm matches none of them and says nothing
+    _store_git(root, "rm", "-r", "-q", "--cached", "--sparse", "--ignore-unmatch", "--", base)
     entries = [("schema", mft.PACKAGE.encode()), ("kind", bytes([mft.KIND_REPO]))]
     if layers:
         entries.append((f"layers/{member['pin']}", layers[-1]))

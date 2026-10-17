@@ -133,3 +133,70 @@ def test_the_cli_json_carries_the_rows(tmp_path: Path) -> None:
     ]
     summary = json.loads((root / ".grip" / "migrations" / "gr1" / "migration-summary.json").read_text())
     assert summary["member_origins"] == payload["member_origins"]
+
+
+# --- a checkout's origin is data from .git/config: never a credential, never TOML syntax --------------------
+
+TOKEN = "TOKEN123"
+
+
+def _all_text(root: Path, payload: dict) -> str:
+    return "\n".join([
+        (root / ".grip" / "workspace_spec.toml").read_text(),
+        (root / ".grip" / "migrations" / "gr1" / "migration-summary.json").read_text(),
+        render_migration(payload),
+        json.dumps(payload),
+    ])
+
+
+def test_userinfo_in_a_checkout_origin_is_stripped_everywhere(tmp_path: Path) -> None:
+    """A PAT in an https origin is a common setup; the spec is a file a root commits."""
+    root = _gr1_root(tmp_path, {"alpha": MANIFEST_URL})
+    _checkout(root / "alpha", f"https://user:{TOKEN}@example.invalid/a.git")
+    payload = migrate_gr1_workspace(root)
+    assert TOKEN not in _all_text(root, payload)
+    assert "user" not in _spec_urls(root)["alpha"]
+    assert _spec_urls(root) == {"alpha": "https://example.invalid/a.git"}
+    assert payload["member_origins"] == [
+        {"repo": "alpha", "manifest_url": MANIFEST_URL, "checkout_url": "https://example.invalid/a.git"}
+    ]
+
+
+def test_a_credential_that_cannot_be_stripped_keeps_the_manifest_url_and_says_so(tmp_path: Path) -> None:
+    """A token in a query parameter is not userinfo; the checkout's origin is not used and not printed."""
+    root = _gr1_root(tmp_path, {"alpha": MANIFEST_URL})
+    _checkout(root / "alpha", f"https://example.invalid/a.git?access_token={TOKEN}")
+    payload = migrate_gr1_workspace(root)
+    assert TOKEN not in _all_text(root, payload)
+    assert _spec_urls(root) == {"alpha": MANIFEST_URL}
+    assert payload["member_origins"] == [
+        {"repo": "alpha", "manifest_url": MANIFEST_URL, "checkout_url": None, "refused": "credentials"}
+    ]
+    assert "credentials" in render_migration(payload)
+
+
+def test_an_ssh_login_is_not_a_credential(tmp_path: Path) -> None:
+    root = _gr1_root(tmp_path, {"alpha": MANIFEST_URL, "beta": MANIFEST_URL.replace("alpha", "beta")})
+    _checkout(root / "alpha", "ssh://git@example.invalid/a.git")
+    _checkout(root / "beta", "git@example.invalid:org/b.git")
+    migrate_gr1_workspace(root)
+    assert _spec_urls(root) == {"alpha": "ssh://git@example.invalid/a.git", "beta": "git@example.invalid:org/b.git"}
+
+
+def test_an_origin_with_toml_syntax_is_written_as_data(tmp_path: Path) -> None:
+    """A quote broke the spec; a quote and a newline injected a key; a backslash was read as an escape."""
+    origins = {
+        "quote": 'https://example.invalid/a.git"',
+        "inject": 'https://example.invalid/a.git"\npin = "deadbeef',
+        "backslash": "https://example.invalid/a\\tb.git",
+        "delete": "https://example.invalid/a\x7fb.git",
+    }
+    root = _gr1_root(tmp_path, {name: f"https://example.invalid/{name}.git" for name in origins})
+    for name, origin in origins.items():
+        _checkout(root / name, origin)
+    migrate_gr1_workspace(root)
+    spec = tomllib.loads((root / ".grip" / "workspace_spec.toml").read_text())
+    by_name = {repo["name"]: repo for repo in spec["repos"]}
+    for name, origin in origins.items():
+        assert by_name[name]["url"] == origin, name
+        assert set(by_name[name]) == {"name", "path", "url", "default_branch"}, by_name[name]

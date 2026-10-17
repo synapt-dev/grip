@@ -11,6 +11,7 @@ import tempfile
 import tomllib
 import contextlib
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from urllib.parse import urlsplit, urlunsplit
 
 import yaml
 
@@ -807,6 +808,21 @@ def _member_checkout_origin(workspace_root: Path, member_path: str) -> str | Non
     return remote_origin_url(checkout)
 
 
+_SSH_SCHEMES = frozenset({"ssh", "git+ssh", "ssh+git"})
+
+
+def _strip_url_userinfo(url: str) -> str:
+    """The url without its userinfo, except an SSH login (`ssh://git@host/...`), which names an account and
+    holds no secret. An scp-like `git@host:path` has no scheme and is returned as written."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    if "@" not in parts.netloc or parts.scheme.lower() in _SSH_SCHEMES:
+        return url
+    return urlunsplit(parts._replace(netloc=parts.netloc.rpartition("@")[2]))
+
+
 def compile_gr1_to_workspace_spec(
     workspace_root: Path,
     manifest: dict[str, object],
@@ -831,11 +847,22 @@ def compile_gr1_to_workspace_spec(
         # The checkout at the member's path is what this desk actually fetches from; the manifest's url
         # is what it said when the repo was added, and the two drift (a renamed repo, an SSH url, a fork).
         checkout_url = _member_checkout_origin(workspace_root, normalized_path)
-        url = checkout_url or manifest_url
-        if checkout_url and checkout_url != manifest_url:
-            member_origins.append(
-                {"repo": safe_repo_name, "manifest_url": manifest_url, "checkout_url": checkout_url}
-            )
+        url = manifest_url
+        if checkout_url is not None:
+            # A credential never leaves the checkout's own git config: userinfo is stripped, and an origin that
+            # still carries one (a token in the query, a fragment) is not used and not printed.
+            checkout_url = _strip_url_userinfo(checkout_url)
+            if grip.url_has_credentials(checkout_url):
+                member_origins.append(
+                    {"repo": safe_repo_name, "manifest_url": manifest_url, "checkout_url": None,
+                     "refused": "credentials"}
+                )
+            else:
+                url = checkout_url
+                if checkout_url != manifest_url:
+                    member_origins.append(
+                        {"repo": safe_repo_name, "manifest_url": manifest_url, "checkout_url": checkout_url}
+                    )
         repo_item = {
             "name": safe_repo_name,
             "path": normalized_path,
@@ -1091,30 +1118,37 @@ def preserve_gr1_state(workspace_root: Path, migration_dir: Path) -> dict[str, s
     return snapshots
 
 
+def _toml_str(value: object) -> str:
+    """A TOML basic string holding exactly `value`: a quote, backslash, newline or other control character in a url
+    or name stays data. An ASCII-only JSON string is one, since json.dumps escapes every character outside
+    space..tilde (DEL included, which TOML forbids raw); keep ensure_ascii on."""
+    return json.dumps(str(value))
+
+
 def render_workspace_spec(compiled: dict[str, object]) -> str:
     lines = [
-        f'workspace_name = "{compiled["workspace_name"]}"',
+        f'workspace_name = {_toml_str(compiled["workspace_name"])}',
         "",
     ]
     constraints = compiled.get("workspace_constraints") or {}
     if constraints:
         lines.append("[workspace_constraints]")
         for key, value in constraints.items():
-            lines.append(f'{key} = "{value}"')
+            lines.append(f'{key} = {_toml_str(value)}')
         lines.append("")
 
     for repo in compiled["repos"]:
         lines.extend(
             [
                 "[[repos]]",
-                f'name = "{repo["name"]}"',
-                f'path = "{repo["path"]}"',
-                f'url = "{repo["url"]}"',
+                f'name = {_toml_str(repo["name"])}',
+                f'path = {_toml_str(repo["path"])}',
+                f'url = {_toml_str(repo["url"])}',
             ]
         )
         default_branch = str(repo.get("default_branch", "")).strip()
         if default_branch:
-            lines.append(f'default_branch = "{default_branch}"')
+            lines.append(f'default_branch = {_toml_str(default_branch)}')
         if repo.get("reference", False):
             lines.append("reference = true")
         lines.append("")
@@ -1123,9 +1157,9 @@ def render_workspace_spec(compiled: dict[str, object]) -> str:
         lines.extend(
             [
                 "[[units]]",
-                f'name = "{unit["name"]}"',
-                f'path = "{unit["path"]}"',
-                "repos = [" + ", ".join(f'"{repo}"' for repo in unit["repos"]) + "]",
+                f'name = {_toml_str(unit["name"])}',
+                f'path = {_toml_str(unit["path"])}',
+                "repos = [" + ", ".join(_toml_str(repo) for repo in unit["repos"]) + "]",
             ]
         )
         lines.append("")
@@ -1175,12 +1209,19 @@ def render_migration(payload: dict[str, object]) -> str:
     if member_origins:
         lines.append("MEMBER ORIGIN")
         for row in member_origins:
+            if row.get("refused") == "credentials":
+                lines.append(
+                    f"- {_printable(row['repo'])}: the checkout's origin carries credentials and was not used;"
+                    f" the spec keeps {_printable(row['manifest_url'])}. Remove the credential from the url and use a"
+                    " credential helper."
+                )
+                continue
             lines.append(
                 f"- {_printable(row['repo'])}: {_printable(row['manifest_url'])} -> {_printable(row['checkout_url'])}"
             )
         lines.append(
             f"{len(member_origins)} member(s) differ from the gr1 manifest; the spec records each checkout's own"
-            " origin, which is what this desk fetches from."
+            " origin (userinfo removed), which is what this desk fetches from."
         )
     lines.append("SNAPSHOTS")
     lines.extend(f"- {name}\t{path}" for name, path in payload["snapshots"].items())

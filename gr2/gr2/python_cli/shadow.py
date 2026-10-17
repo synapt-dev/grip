@@ -114,11 +114,13 @@ def _walk(repo: Path, member: str, old: str, new: str, remote: str) -> str:
 
 
 def _pins_of(repo: Path, commit: str) -> dict[str, str]:
-    out = gitops.run(repo, "ls-tree", "-r", f"{commit}:{PINS}")
+    out = gitops.run(repo, "ls-tree", "-r", "-z", f"{commit}:{PINS}")
     if out.returncode:
         return {}
     pins = {}
-    for line in out.stdout.splitlines():
+    for line in out.stdout.split("\0"):
+        if not line:
+            continue
         meta, path = line.split("\t", 1)
         pins[path] = meta.split()[2]
     return pins
@@ -139,11 +141,12 @@ def _tree_with_pins(repo: Path, base_tree: str, pins: dict[str, str]) -> str:
             lines.append(f"040000 tree {build(sub)}\t{name}")
         return _run(repo, "mktree", data="".join(line + "\n" for line in sorted(lines, key=lambda l: l.split("\t")[1]))).strip()
 
-    top = [line for line in _run(repo, "ls-tree", base_tree).splitlines() if line]
+    top = [line for line in _run(repo, "ls-tree", "-z", base_tree).split("\0") if line]
     if any(line.split("\t", 1)[1] == PINS for line in top):
         raise ValueError(f"the record already has a top-level {PINS!r} entry; a shadow cannot pin beside it")
     top.append(f"040000 tree {build(pins)}\t{PINS}")
-    return _run(repo, "mktree", data="".join(line + "\n" for line in sorted(top, key=lambda l: l.split("\t")[1]))).strip()
+    return _run(repo, "mktree", "-z",
+                data="".join(line + "\0" for line in sorted(top, key=lambda l: l.split("\t", 1)[1]))).strip()
 
 
 def cut(repo: Path, stook: str, members: list[str], *, org: str, remote: str = "origin",

@@ -82,3 +82,31 @@ def test_pr_base_fetch_that_fails_is_refused_not_pinned_to_a_stale_fetch_head(tm
 
     with pytest.raises(typer.Exit):
         app._pr_base_sha(work, "repo", 1, git(work, "rev-parse", "dev"), "fake")
+
+
+class _Stop(Exception):
+    pass
+
+
+class RecordingAdapter:
+    """Records the repo the PR status is asked for, then stops before any fetch dials origin."""
+
+    def __init__(self):
+        self.repos = []
+
+    def pr_status(self, repo, number):
+        self.repos.append(repo)
+        raise _Stop
+
+
+@pytest.mark.parametrize("url", ["https://github.com/", "git@github.com:", "https://github.com/.git"])
+def test_pr_base_for_a_github_url_without_owner_repo_asks_for_the_bare_name(tmp_path, monkeypatch, url):
+    work = tmp_path / "work"
+    subprocess.run(["git", "init", "-q", "-b", "dev", str(work)], check=True)
+    git(work, "remote", "add", "origin", url)
+    adapter = RecordingAdapter()
+    monkeypatch.setattr(app.platform_ops, "get_platform_adapter", lambda platform: adapter)
+
+    with pytest.raises(_Stop):
+        app._pr_base_sha(work, "repo", 1, "0" * 40, "fake")
+    assert adapter.repos == ["repo"]

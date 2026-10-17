@@ -2046,6 +2046,98 @@ def workspace_apply(
         typer.echo(spec_apply.render_apply_result(payload))
 
 
+def _lane_member_branch(target: Path) -> tuple[str, str, str, str, str] | None:
+    """(unit, lane, repo key, the lane's branch for it, the ` --repos ...` a new lane for it takes, empty in a native workspace) when `target` is
+    inside a repo of a lane of the workspace above it, else None. Every workspace above is asked, not only the nearest: a lane's own checkout
+    looks like a workspace root too. Lane docs that cannot be read, or whose fields have the wrong types, are
+    skipped: they name no member here. A doc whose load is refused but whose raw repos still hold this repo
+    (a `branch_map` the load refuses) is refused outright. `branch_map` is read as the load reads it."""
+    top = gitops.run_argv(["git", "rev-parse", "--show-toplevel"], cwd=str(target))
+    if top.returncode != 0:
+        return None
+    repo_top = Path(top.stdout.strip()).resolve()
+    for workspace_root in repo_top.parents:
+        if _is_workspace_root(workspace_root):
+            found = _lane_member_branch_in(workspace_root, repo_top)
+            if found is not None:
+                return found
+    return None
+
+
+def _lane_member_branch_in(workspace_root: Path, repo_top: Path) -> tuple[str, str, str, str, str] | None:
+    for path in lane_proto.iter_lane_files(workspace_root):
+        unit, lane_name = path.parent.parent.name, path.parent.name
+        try:
+            doc = lane_proto.load_lane_doc(workspace_root, unit, lane_name)
+            targets = commit_ops._lane_repo_targets(workspace_root, unit, lane_name, doc)
+            key = next((str(k) for k, member_root in targets if member_root.resolve() == repo_top), None)
+            # As load_lane_doc reads it, so this verb names the branch the load checked.
+            branch_map = dict(doc.get("branch_map", {}))
+        except (SystemExit, TypeError, AttributeError, ValueError) as exc:
+            # The load refused a doc that may still bind this repo: its targets come from the raw doc.
+            if _unloadable_lane_doc_holds(workspace_root, unit, lane_name, path, repo_top):
+                typer.echo(
+                    f"Error: this repo is in lane {unit}/{lane_name}, whose branch_map does not load ({exc}); "
+                    f"no branch was created or switched to. Fix that lane doc's branch_map first.",
+                    err=True,
+                )
+                raise typer.Exit(code=2) from None
+            continue
+        except (commit_ops.CommitError, spec_apply.MaterializationPlanError, OSError, tomllib.TOMLDecodeError):
+            continue
+        if key is not None:
+            # A native workspace lane materializes every member of the selected workspace commit, which can
+            # differ from this lane's repos once the store grows: name no --repos there, so lane create takes them all.
+            repos = "" if grip._is_native_workspace(workspace_root) else f" --repos {key}"
+            return unit, lane_name, key, str(branch_map.get(key) or lane_name), repos
+    return None
+
+
+def _unloadable_lane_doc_holds(workspace_root: Path, unit: str, lane_name: str, path: Path, repo_top: Path) -> bool:
+    """Whether a lane doc the load refuses still holds `repo_top`, read from the raw doc's paths alone (every lane
+    path helper re-loads the doc, and would refuse it again). A bound lane holds its bound worktree, an absolute path
+    only; a materialized lane holds any repo under its checkout_root or under its lane dir. A doc that gives no usable
+    path holds nothing."""
+    try:
+        doc = tomllib.loads(path.read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return False
+    roots: list[Path] = []
+    if doc.get("lane_kind", "materialized") == "bound":
+        worktree = doc.get("bound_worktree")
+        if isinstance(worktree, str) and worktree and "\0" not in worktree and Path(worktree).is_absolute():
+            return Path(worktree).resolve() == repo_top
+        return False
+    roots.append(lane_proto.lane_dir(workspace_root, unit, lane_name).resolve())
+    checkout_root = doc.get("checkout_root")
+    if isinstance(checkout_root, str) and checkout_root:
+        try:
+            roots.append(spec_apply.canonicalize_workspace_path(workspace_root, checkout_root, field_name="lane.checkout_root"))
+        except (spec_apply.MaterializationPlanError, ValueError, OSError):
+            pass
+    return any(root == repo_top or root in repo_top.parents for root in roots)
+
+
+def _refuse_branching_a_lane_member(target: Path, name: str) -> None:
+    """A lane's branch is lane state (`branch_map`, the recorded fork base): moving one member to another
+    branch would leave `lane push` and `pr create` on the old one. Refuse, and name the way out. Switching
+    to the lane's own branch is allowed."""
+    found = _lane_member_branch(target)
+    if found is None:
+        return
+    unit, lane_name, key, lane_branch, repos = found
+    if name == lane_branch:
+        return
+    typer.echo(
+        f"Error: {key} is a repo of lane {unit}/{lane_name}, whose branch for it is '{lane_branch}'; "
+        f"'{name}' was not created or switched to. The lane records its branch and fork base, so work on "
+        f"another branch belongs in a new lane: gr2 lane create <workspace> {unit} <lane>{repos} "
+        f"--branch {name}",
+        err=True,
+    )
+    raise typer.Exit(code=2)
+
+
 @app.command("branch")
 def branch_cmd(
     name: str,
@@ -2071,6 +2163,7 @@ def branch_cmd(
         raise typer.Exit(code=1) from exc
     try:
         gitops.require_git_repo(target, "branch")
+        _refuse_branching_a_lane_member(target, name)
         branch_ops.create_branch(target, name, base=base)
     except (branch_ops.BranchError, gitops.OutsideRepoError, gitops.GitMissingError) as exc:
         typer.echo(f"Error: {exc}", err=True)

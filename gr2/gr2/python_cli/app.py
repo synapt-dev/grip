@@ -91,7 +91,9 @@ from .platform import PRRef
 app = typer.Typer(
     help=(
         "The workspace layer for multi-repo work: a workspace over your repos, "
-        "isolated lanes to work in, and one grouped review per slice."
+        "isolated lanes to work in, and one grouped review per slice.\n\n"
+        "To land a reviewed change: gr2 review pin, publish, stamp, gr2 check, then gr2 review merge; "
+        "the steps are in gr2 review --help."
     )
 )
 

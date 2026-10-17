@@ -3503,8 +3503,10 @@ def lane_exit(
     )
 
 
-def _unpushed_commits(repo: Path, *, fetch: bool = True) -> list[str]:
-    """Commits on HEAD, any local branch or any tag that no remote-tracking ref holds, after a fetch.
+def _unpushed_commits(repo: Path, *, fetch: bool = True) -> list[tuple[str, str]]:
+    """Commits on HEAD, any local branch or any tag that no remote-tracking ref holds, after a fetch, each as
+    (sha, the ref it was found on): a branch if one reaches it, else HEAD, else a tag, so a stray local tag reads
+    apart from a desk's own work.
 
     A fetch that fails is a refusal, never an empty answer: without it the remote refs are a
     claim from the last fetch, and "nothing unpushed" would be read off a stale copy. Only
@@ -3518,17 +3520,24 @@ def _unpushed_commits(repo: Path, *, fetch: bool = True) -> list[str]:
     # `--remotes` is refs/remotes/* only, and git keeps no remote-tag refs, so a commit reachable only from a tag is held
     # by a remote exactly when the remote advertises that tag: its shas join the --not side (a release tag off every
     # branch kept every lane). Through stdin, as ^sha lines: a remote can hold hundreds of tags.
-    out = gitops.run_argv(["git", "log", "HEAD", "--branches", "--tags", "--not", "--remotes", "--stdin", "--format=%H"],
-                          cwd=repo, input="".join(f"^{sha}\n" for sha in held)).stdout
-    found = [line for line in out.splitlines() if line]
+    not_held = "".join(f"^{sha}\n" for sha in held)
+    found: dict[str, str] = {}
+    # %S is the short name the walk started from, so each pass puts back its own namespace: a branch and a tag may share one.
+    for tips, prefix in ((["--branches"], "refs/heads/"), (["HEAD"], ""), (["--tags"], "refs/tags/")):
+        out = gitops.run_argv(["git", "log", "--source", *tips, "--not", "--remotes", "--stdin", "--format=%H %S"],
+                              cwd=repo, input=not_held).stdout
+        for line in out.splitlines():
+            sha, _, ref = line.partition(" ")
+            found.setdefault(sha, prefix + ref.removeprefix(prefix))
     if found and not fetch:
         # Without a fetch the remote's tags are unknown. A lane whose only such commits are tag-reachable is not
         # called unpushed: it is unknown, and says why (lane remove asks the remote).
         on_branches = set(git(repo, "log", "HEAD", "--branches", "--not", "--remotes", "--format=%H").stdout.split())
         if not on_branches.intersection(found):
-            raise SystemExit(f"{len(found)} commit(s) reachable only from a tag, {found[0][:12]} first: a remote may "
-                             f"hold the tag, and lane list does not ask; gr2 lane remove does")
-    return found
+            sha, ref = next(iter(found.items()))
+            raise SystemExit(f"{len(found)} commit(s) reachable only from a tag, {sha[:12]} ({ref}) first: a remote "
+                             f"may hold the tag, and lane list does not ask; gr2 lane remove does")
+    return list(found.items())
 
 
 def _remote_tag_shas(repo: Path) -> list[str]:
@@ -3635,7 +3644,7 @@ def _lane_removal_refusals(workspace_root: Path, owner_unit: str, lane_name: str
         for sha in git(store_root, "stash", "list", "--format=%H").stdout.split():
             refusals.append(f"lane_has_stash: lane-root {sha}")
         try:
-            refusals.extend(f"lane_has_unpushed_commit: lane-root {sha}" for sha in _unpushed_commits(store_root, fetch=fetch))
+            refusals.extend(f"lane_has_unpushed_commit: lane-root {sha} (on {ref})" for sha, ref in _unpushed_commits(store_root, fetch=fetch))
         except SystemExit as exc:
             refusals.append(f"lane_unpushed_unknown: lane-root: {exc}")
     for name in lane_doc.get("repos", []):
@@ -3647,7 +3656,7 @@ def _lane_removal_refusals(workspace_root: Path, owner_unit: str, lane_name: str
         for sha in git(path, "stash", "list", "--format=%H").stdout.split():
             refusals.append(f"lane_has_stash: {name} {sha}")
         try:
-            refusals.extend(f"lane_has_unpushed_commit: {name} {sha}" for sha in _unpushed_commits(path, fetch=fetch))
+            refusals.extend(f"lane_has_unpushed_commit: {name} {sha} (on {ref})" for sha, ref in _unpushed_commits(path, fetch=fetch))
         except SystemExit as exc:
             refusals.append(f"lane_unpushed_unknown: {name}: {exc}")
     return refusals

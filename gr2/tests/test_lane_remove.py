@@ -244,6 +244,34 @@ def test_a_commit_reachable_only_from_a_local_tag_is_not_removed(tmp_path: Path)
     _refused_untouched(ws, repo, _remove(ws), "lane_has_unpushed_commit", tagged[:12])
 
 
+def _lane_with_a_local_tag_commit(tmp_path: Path) -> tuple[Path, Path, str]:
+    """A commit off every branch that only a local tag (0.5.0, never pushed) reaches; the clone back on feat/x."""
+    ws, repo = _pushed_exited_lane(tmp_path)
+    _git(repo, "checkout", "-q", "--detach")
+    (repo / "t.txt").write_text("a stray release commit\n")
+    _git(repo, "add", "t.txt")
+    _git(repo, "commit", "-q", "-m", "0.5.0")
+    tagged = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "tag", "0.5.0")
+    _git(repo, "checkout", "-q", "feat/x")
+    return ws, repo, tagged
+
+
+def test_the_refusal_names_the_local_tag_that_reaches_the_commit(tmp_path: Path) -> None:
+    """A sha alone cannot tell a stray local tag from unpushed work; the row names the ref the commit was found on."""
+    ws, repo, tagged = _lane_with_a_local_tag_commit(tmp_path)
+    _refused_untouched(ws, repo, _remove(ws), f"lane_has_unpushed_commit: app {tagged} (on refs/tags/0.5.0)")
+
+
+def test_the_refusal_names_the_branch_when_a_branch_and_a_tag_both_reach_the_commit(tmp_path: Path) -> None:
+    """The control: once a local branch reaches the tagged commit it is a desk's work, and the branch is named, not the tag."""
+    ws, repo, tagged = _lane_with_a_local_tag_commit(tmp_path)
+    _git(repo, "branch", "mine", tagged)
+    result = _remove(ws)
+    _refused_untouched(ws, repo, result, f"lane_has_unpushed_commit: app {tagged} (on refs/heads/mine)")
+    assert "refs/tags/0.5.0" not in result.output, result.output
+
+
 def _lane_with_a_commit_only_a_pushed_tag_holds(tmp_path: Path) -> tuple[Path, Path, str]:
     """A release tag off every branch, pushed (an annotated tag is this shape), and it kept every lane: refs/remotes/*
     holds no tags, so `--tags --not --remotes` read the commit as unpushed."""
@@ -289,7 +317,7 @@ def test_lane_list_names_a_tag_only_commit_unchecked_not_unpushed(tmp_path: Path
     assert result.exit_code == 0, result.output
     row = next(line for line in result.output.splitlines() if line.startswith("atlas\tx\t"))
     assert "\tkeep" in row and "lane_unpushed_unknown" in row and "reachable only from a tag" in row, row
-    assert "lane_has_unpushed_commit" not in row and tagged[:12] in row, row
+    assert "lane_has_unpushed_commit" not in row and f"{tagged[:12]} (refs/tags/" in row, row
 
 
 def _legacy_lane(tmp_path: Path) -> tuple[Path, Path]:
@@ -422,7 +450,7 @@ def test_a_native_lane_root_holding_an_unpushed_store_commit_is_not_removed(tmp_
     commit = _git(root, "rev-parse", "HEAD")
     result = _remove_native(ws)
     assert result.exit_code != 0
-    assert f"lane_has_unpushed_commit: lane-root {commit}" in result.output, result.output
+    assert f"lane_has_unpushed_commit: lane-root {commit} (on " in result.output, result.output
     assert "lane_has_unlisted_content" not in result.output, result.output
     assert _git(root, "rev-parse", "HEAD") == commit
 

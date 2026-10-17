@@ -109,8 +109,25 @@ def _record_with_layers(root: Path, layers: list[bytes], pin: str | None = None)
     return root
 
 
+def _sidecar_with_layer(root: Path, layer: bytes, pin: str | None = None) -> Path:
+    """The same store with alpha's sidecar rewritten to carry `layer` as `layers/<pin>` and the gitlink set to `pin`, in
+    a root commit made by plain git, as any pusher could."""
+    pin = pin or _member_head(root, "alpha")
+    import subprocess
+    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=root, input=layer, capture_output=True,
+                          check=True).stdout.decode().strip()
+    git(root, "update-index", "--add", "--cacheinfo", f"100644,{blob},.grip/fields/alpha/layers/{pin}")
+    git(root, "update-index", "--add", "--cacheinfo", f"160000,{pin},alpha")
+    tree = git(root, "write-tree").stdout.strip()
+    head = git(root, "rev-parse", "HEAD").stdout.strip()
+    made = git(root, "-c", "user.name=x", "-c", "user.email=x@example.invalid", "commit-tree", tree,
+               "-p", head, "-m", "carry the forged layer").stdout.strip()
+    git(root, "update-ref", "HEAD", made)
+    return root
+
+
 def test_a_layer_that_is_not_a_git_bundle_is_refused_at_the_read(tmp_path):
-    root = _record_with_layers(_full_store(tmp_path), [b"not a bundle"])
+    root = _sidecar_with_layer(_full_store(tmp_path), b"not a bundle")
     git(tmp_path, "clone", str(root), "victim")
 
     made = gr2(tmp_path / "victim", "materialize", check=False)
@@ -128,7 +145,7 @@ def test_a_layer_that_does_not_carry_the_pin_is_refused_by_name(tmp_path):
     git(root / "alpha", "commit", "-m", "a different commit")
     raw = _bundle_bytes(root / "alpha", "HEAD")
     git(root / "alpha", "switch", "-q", "--detach", pin)
-    forged = _record_with_layers(root, [raw], pin=pin)
+    forged = _sidecar_with_layer(root, raw, pin=pin)
 
     checked = gr2(forged, "check", check=False)
 
@@ -173,7 +190,7 @@ def test_a_push_whose_layer_does_not_carry_the_pin_is_refused_by_the_hook(tmp_pa
     git(root / "alpha", "commit", "-m", "a different commit")
     raw = _bundle_bytes(root / "alpha", "HEAD")
     git(root / "alpha", "switch", "-q", "--detach", pin)
-    forged = _record_with_layers(root, [raw], pin=pin)
+    forged = _sidecar_with_layer(root, raw, pin=pin)
     bare = tmp_path / "root.git"
     git(tmp_path, "init", "--bare", str(bare))
 
@@ -191,7 +208,7 @@ def test_materialize_refuses_by_name_when_the_layer_does_not_carry_the_pin(tmp_p
     git(root / "alpha", "commit", "-m", "a different commit")
     raw = _bundle_bytes(root / "alpha", "HEAD")
     git(root / "alpha", "switch", "-q", "--detach", pin)
-    forged = _record_with_layers(root, [raw], pin=pin)
+    forged = _sidecar_with_layer(root, raw, pin=pin)
     git(tmp_path, "clone", str(forged), "victim")
     victim = tmp_path / "victim"
     configure_identity(victim)
@@ -263,7 +280,7 @@ def test_a_record_with_an_oversize_layer_is_refused_without_advising_unshallow(t
     """The unshallow advice is for a record this clone does not hold; an oversize layer is held and refused."""
     root = _full_store(tmp_path)
     layer = b"# v2 git bundle\n" + b"x" * mft.MAX_LAYER_BYTES   # one byte over the bound once the header is counted
-    forged = _record_with_layers(root, [layer])
+    forged = _sidecar_with_layer(root, layer)
 
     checked = gr2(forged, "check", check=False)
 

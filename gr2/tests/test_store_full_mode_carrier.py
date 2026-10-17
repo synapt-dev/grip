@@ -329,7 +329,35 @@ def _evil_root(tmp_path: Path, marker: Path, covered_by: str) -> Path:
     return root
 
 
-def test_a_record_whose_covering_ref_is_an_option_is_refused_and_runs_nothing(tmp_path):
+def _evil_upstream_root(tmp_path: Path, branch: str) -> Path:
+    """A full-mode root with a sidecar whose grip.toml names alpha's upstream branch `branch`, the field the sidecar
+    reader derives covered_by from, carried in a root commit made by plain git, as any pusher could."""
+    root = _full_store(tmp_path)
+    text = (root / "grip.toml").read_text(encoding="utf-8")
+    first = text.index('upstream = "origin/main"')
+    text = text[:first] + f'upstream = "origin/{branch}"' + text[first + len('upstream = "origin/main"'):]
+    (root / "grip.toml").write_text(text, encoding="utf-8")
+    git(root, "add", "grip.toml")
+    git(root, "-c", "user.name=x", "-c", "user.email=x@example.invalid", "commit", "-q", "--no-verify", "-m",
+        "carry the evil upstream")
+    return root
+
+
+def test_a_sidecar_whose_covering_ref_is_an_option_is_refused_and_runs_nothing(tmp_path):
+    """The sidecar shape of the row below: covered_by is derived from grip.toml's upstream, so the option rides there."""
+    marker = tmp_path / "PWNED"
+    root = _evil_upstream_root(tmp_path, f"--upload-pack=touch {marker}; git-upload-pack")
+    git(tmp_path, "clone", str(root), "victim")
+
+    made = gr2(tmp_path / "victim", "materialize", check=False)
+
+    out = f"{made.stdout}\n{made.stderr}"
+    assert made.returncode != 0, out
+    assert not marker.exists(), "the upstream ran as a command"
+    assert "covered_by" in out and "Traceback" not in out, out
+
+
+def test_legacy_a_record_whose_covering_ref_is_an_option_is_refused_and_runs_nothing(tmp_path):
     """A record whose covered_by is an option (`--upload-pack=<command>`) is refused and nothing runs: it was handed to
     `git fetch` and ran."""
     marker = tmp_path / "PWNED"

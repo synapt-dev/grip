@@ -2001,9 +2001,15 @@ def _sidecar_record(root: Path, member: dict[str, str], revision: str, pin: str)
     listed = _store_git(root, "ls-tree", f"{base}/records/{pin}", check=False).stdout.splitlines()
     records = [line.split()[2] for line in listed if line.split()[1:2] == ["tree"]]
     branch = member["upstream"].partition("/")[2]
-    return dict(schema=mft.PACKAGE, kind=mft.KIND_REPO, pin=pin, url="", ref=member.get("ref", ""),
-                covered_by="" if layers else f"refs/heads/{branch}", layers=layers, records=records,
-                ref_defaulted=False, covered_test=0 if layers else mft.COVER_REACHABLE)
+    record = dict(schema=mft.PACKAGE, kind=mft.KIND_REPO, pin=pin, url="", ref=member.get("ref", ""),
+                  covered_by="" if layers else f"refs/heads/{branch}", layers=layers, records=records,
+                  ref_defaulted=False, covered_test=0 if layers else mft.COVER_REACHABLE)
+    # the derived covered_by, ref and pin reach git fetch and checkout: the same read-time check the field-commit had
+    try:
+        mft._validate(root, record)
+    except mft.FieldTreeError as exc:
+        raise NativeStoreRefusal(f"{member['name']} field record cannot be read: {exc}", 4) from exc
+    return record
 
 
 def _recorded_pin(root: Path, member: dict[str, str], full: bool, revision: str = "HEAD") -> str | None:

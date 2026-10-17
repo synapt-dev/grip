@@ -1318,7 +1318,7 @@ def bind_bound_lane(
             f"bind_bound_lane: bound lane {owner_unit}/{lane_name} is missing "
             "bound_worktree or bound_head; it was not created by lane create --bind"
         )
-    resolved = worktree.resolve()
+    resolved = lane_checkout_root(workspace_root.resolve(), owner_unit, lane_name)
     if not gitops.is_git_repo(resolved):
         raise SystemExit(f"bind refuses: bound worktree {resolved} is no longer a git work tree")
     if not gitops.current_branch(resolved):
@@ -1402,7 +1402,7 @@ def pr_create_bound_lane(
     worktree = Path(lane_doc.get("bound_worktree") or "")
     if not worktree:
         raise SystemExit(f"pr create refuses: bound lane {owner_unit}/{lane_name} has no bound_worktree")
-    resolved = worktree.resolve()
+    resolved = lane_checkout_root(workspace_root.resolve(), owner_unit, lane_name)
     members = lane_doc.get("repos", [])
     if len(members) != 1:
         raise SystemExit("pr create refuses: a bound lane must name exactly one member")

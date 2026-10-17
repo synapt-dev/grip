@@ -255,6 +255,79 @@ def test_a_bound_worktree_inside_the_record_is_refused_through_a_symlinked_owner
     assert _tree_state(inner) == before
 
 
+@pytest.mark.parametrize("shape", ["dotdot", "symlink"])
+def test_an_absolute_bound_worktree_that_lands_inside_the_record_is_refused(tmp_path: Path, shape: str) -> None:
+    ws, wt = _bound_lane(tmp_path)
+    inner = _inner_worktree(ws, lane_proto.lane_state_root(ws) / "atlas")
+    # Absolute, but only its resolved path shows it is inside the record: `..` segments back into the record,
+    # or a symlinked directory outside the record that points into it.
+    if shape == "dotdot":
+        value = str(wt.resolve() / ".." / ".grip" / "state" / "lanes" / "atlas" / "x" / "inner")
+    else:
+        (tmp_path / "link").symlink_to(lane_proto.lane_state_root(ws) / "atlas", target_is_directory=True)
+        value = str(tmp_path.resolve() / "link" / "x" / "inner")
+    _point_record_at(ws, value)
+    assert Path(value).resolve() == inner.resolve(), "control: the value names the worktree inside the record"
+    before = _tree_state(inner)
+    _refused_untouched(ws, inner, _remove(ws), "lane_record_holds_bound_worktree")
+    assert _tree_state(inner) == before
+
+
+def _receipts_under(repo: Path) -> list[Path]:
+    return sorted(p for p in (repo / ".git").rglob("grip-review*"))
+
+
+def _bind(ws: Path, base: str):
+    return runner.invoke(gr2_app.app, ["lane", "bind", str(ws), "atlas", "x", "--base", base, "--allow-local"])
+
+
+@pytest.mark.parametrize("cwd", ["workspace", "elsewhere"])
+def test_lane_bind_refuses_a_relative_bound_worktree_from_any_cwd(tmp_path: Path, monkeypatch, cwd: str) -> None:
+    ws, wt = _bound_lane(tmp_path)
+    base = _git(wt, "rev-parse", "HEAD")
+    # From the workspace a relative "wt" names the real worktree; from elsewhere it names a decoy clone that
+    # sits at elsewhere/wt with the same head. Neither may receive the receipt.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _git(elsewhere, "clone", "-q", str(wt), "wt")
+    decoy = elsewhere / "wt"
+    _git(decoy, "checkout", "-q", "feat/x")
+    _point_record_at(ws, "wt")
+    monkeypatch.chdir(ws if cwd == "workspace" else elsewhere)
+
+    result = _bind(ws, base)
+
+    assert result.exit_code == 2, result.output
+    assert "bound lane atlas/x needs an absolute bound_worktree, not 'wt'" in result.output, result.output
+    assert _receipts_under(wt) == [], "the real worktree holds no receipt"
+    assert _receipts_under(decoy) == [], "the decoy holds no receipt"
+    _point_record_at(ws, str(wt.resolve()))
+    control = _bind(ws, base)
+    assert control.exit_code == 0 and _receipts_under(wt), "control: the absolute record binds from the same CWD"
+
+
+def test_pr_create_refuses_a_relative_bound_worktree_before_any_push(tmp_path: Path, monkeypatch) -> None:
+    ws, wt = _bound_lane(tmp_path)
+    base = _git(wt, "rev-parse", "HEAD")
+    (wt / "f.txt").write_text("the reviewed change\n")
+    _git(wt, "commit", "-q", "-am", "change")
+    toml = lane_proto.lane_file(ws, "atlas", "x")
+    doc = lane_proto.load_lane_doc(ws, "atlas", "x")
+    toml.write_text(lane_proto.serialize_toml({**doc, "bound_head": _git(wt, "rev-parse", "HEAD")}))
+    assert _bind(ws, base).exit_code == 0
+    pushes: list = []
+    monkeypatch.setattr(lane_proto._push, "push_current_branch", lambda repo, **kw: pushes.append(repo))
+    monkeypatch.chdir(ws)
+    lane_proto.pr_create_bound_lane(ws, "atlas", "x")
+    assert pushes == [wt.resolve()], "control: the absolute record reaches the push seam"
+    # From the workspace a relative "wt" names that same bound worktree and its valid receipt.
+    _point_record_at(ws, "wt")
+
+    with pytest.raises(SystemExit, match="needs an absolute bound_worktree, not 'wt'"):
+        lane_proto.pr_create_bound_lane(ws, "atlas", "x")
+    assert pushes == [wt.resolve()], "the relative record pushed nothing"
+
+
 def test_an_entered_bound_lane_is_not_removed(tmp_path: Path) -> None:
     ws, wt = _bound_lane(tmp_path)
     (wt / "new.txt").write_text("an untracked file\n")

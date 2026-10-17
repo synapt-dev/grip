@@ -205,11 +205,18 @@ def out_bytes(cwd: Path, *args: str, error: type[Exception] | None = None, **kw)
     return proc.stdout
 
 
+def positional(value: str, kind: str, error: type[Exception] = RuntimeError) -> str:
+    """A user value bound for a git argv as a positional (a remote, a ref, a path, a url) that git would parse as
+    an option (e.g. --upload-pack=..., which runs a program) never reaches it. A configured remote name, a path and
+    a url all pass; callers still place the value after ``--`` where the git command takes one."""
+    if not value or value.startswith("-"):
+        raise error(f"{kind}_option_shaped: refusing a {kind} that begins with '-'")
+    return value
+
+
 def plain_remote(remote: str, error: type[Exception] = RuntimeError) -> str:
     """A remote git would parse as an option (e.g. --upload-pack=...) never reaches a git argv."""
-    if not remote or remote.startswith("-"):
-        raise error("remote_option_shaped: refusing a remote that begins with '-'")
-    return remote
+    return positional(remote, "remote", error)
 
 
 def git(
@@ -678,8 +685,12 @@ def probe_remote(url: str) -> tuple[bool, str]:
     stderr/stdout on failure. Used by ``sync status`` (never ``sync run``'s
     own internal plan-building) to surface a refused remote as an ISSUE
     before ``sync run`` would hit it mid-operation."""
+    try:
+        positional(url, "url", ValueError)
+    except ValueError as exc:
+        return False, str(exc)
     effective_url = _effective_remote_url(url)
-    proc = run_argv(["git", "ls-remote", effective_url])
+    proc = run_argv(["git", "ls-remote", "--", effective_url])
     if proc.returncode == 0:
         return True, ""
     return False, (proc.stderr or proc.stdout).strip()

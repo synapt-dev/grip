@@ -570,6 +570,7 @@ def checkout_declared_pin(repo_root: Path, pin: str, *, member: str) -> None:
     # is what found this -- the docstring promised a no-op the code did not do.
     if not pin:
         return
+    positional(pin, "pin", SystemExit)
 
     have = lambda: git(repo_root, "cat-file", "-e", f"{pin}^{{commit}}").returncode == 0
     if not have():
@@ -581,13 +582,13 @@ def checkout_declared_pin(repo_root: Path, pin: str, *, member: str) -> None:
         shallow = git(repo_root, "rev-parse", "--is-shallow-repository").stdout.strip() == "true"
         if shallow:
             fetch_args.extend(["--depth", "1"])
-        fetch_args.extend(["origin", pin])
+        fetch_args.extend(["origin", "--", pin])
         git(repo_root, *fetch_args)
         if not have():
             raise SystemExit(
                 f"member '{member}' declares pin {pin}, the clone cannot reach that commit, and "
                 f"fetching it by sha from origin did not provide it. Try "
-                f"`git -C {repo_root} fetch --depth 1 origin {pin}` by hand to see why. This verb "
+                f"`git -C {repo_root} fetch --depth 1 origin -- {pin}` by hand to see why. This verb "
                 "will not leave the member on its default branch instead: that is a commit the "
                 "root never declared."
             )

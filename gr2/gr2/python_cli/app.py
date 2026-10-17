@@ -29,6 +29,7 @@ from gr2.prototypes import repo_maintenance_prototype as repo_proto
 from . import add as add_ops
 from .version import version_line
 from . import branch as branch_ops
+from . import change as change_ops
 from . import commit as commit_ops
 from . import execops, failures, grip, migration, next_steps, review_diff, spec_apply, syncops
 from . import gitinclude
@@ -2171,6 +2172,39 @@ def branch_cmd(
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(f"Switched to branch '{name}'")
+
+
+@app.command("change")
+def change_cmd(
+    branch: str,
+    message: str = typer.Option(..., "--message", "-m", help="Commit message for every member"),
+    repo_path: List[Path] = typer.Option(
+        ...,
+        "--repo-path",
+        help="A member repo (repeat once per member; written in the order given)",
+    ),
+) -> None:
+    """Branch, stage and commit one change across members; refuses before any write."""
+    try:
+        name_rules.git_ref(branch, "branch name")
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    paths = [p.resolve() for p in repo_path]
+    try:
+        members = change_ops.change(paths, branch, message)
+    except change_ops.ChangeRefused as exc:
+        typer.echo(f"refused: {exc}", err=True)
+        typer.echo("nothing was written", err=True)
+        raise typer.Exit(code=2) from exc
+    except change_ops.ChangeFailed as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    for member in members:
+        if member.changed:
+            typer.echo(f"{member.name}: {branch} {member.head[:7]} ({len(member.entries)} paths)")
+        else:
+            typer.echo(f"{member.name}: unchanged")
 
 
 @app.command("update")

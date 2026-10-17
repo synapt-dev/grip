@@ -389,8 +389,8 @@ def _longest(workspace: Path, tips: dict[str, str | None]) -> list[str]:
 def _refuse_split(workspace: Path, root: dict, tips: dict[str, str | None]) -> None:
     """Refuse remote tips that are not one chain. Members with no chain, or behind on it, while every present tip is
     an ancestor of one tip are a stamp still landing (incomplete); two tips not in line are a fork (divergent),
-    named by both tips."""
-    present = [tip for tip in tips.values() if tip]
+    named by the first two tips that are not an ancestor of another present tip."""
+    present = list(dict.fromkeys(tip for tip in tips.values() if tip))
     longest = _longest(workspace, tips)
     if len(longest) == 1:
         keys = {m["remote"]: m["key"] for m in root["members"]}
@@ -398,8 +398,9 @@ def _refuse_split(workspace: Path, root: dict, tips: dict[str, str | None]) -> N
         on = len(tips) - len(missing)
         raise ApprovalRefused(f"approvals_incomplete: the approval chain at {longest[0][:12]} is on {on} of "
                               f"{len(tips)} members, not yet on {', '.join(missing)}", expected=longest[0])
-    other = next(tip for tip in present if tip != present[0])
-    raise ApprovalRefused("approval_chain_divergent: " + canonical(tips), expected=present[0], observed=other)
+    ancestry = {tip: _ancestors(workspace, tip) for tip in present}
+    heads = [tip for tip in present if not any(tip in ancestry[other] for other in present if other != tip)]
+    raise ApprovalRefused("approval_chain_divergent: " + canonical(tips), expected=heads[0], observed=heads[1])
 
 
 def count_approvals(workspace: Path, review_id: str, member_dirs: dict[str, Path] | None = None) -> dict:

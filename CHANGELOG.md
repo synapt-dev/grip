@@ -51,7 +51,8 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   was on some members while the rest still had the link before it, read the same way. Both now refuse
   `approvals_incomplete` with the longest tip as `expected`, name the members still missing it, and say to retry
   once the stamp finishes. `approval_chain_divergent` is kept for two tips that are not in line, and its refusal
-  detail now carries both of them as `expected` and `observed`.
+  detail now carries both of them as `expected` and `observed`. With a member behind a fork, those are the two
+  tips of the fork, never the member behind it.
 
 - **`gr pr create` opens PRs for the branch you are on, not for every branch
   some repo happens to sit on.** It used to open one PR per branch group under

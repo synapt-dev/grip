@@ -1112,6 +1112,24 @@ def test_a_link_on_some_members_extending_the_rest_is_incomplete_at_the_longest_
     assert (refused.value.expected, refused.value.observed) == ("c" * 40, None)
 
 
+@pytest.mark.parametrize("order, heads", [
+    (("a", "b", "c"), ("b", "c")),
+    (("b", "a", "c"), ("b", "c")),
+    (("c", "a", "b"), ("c", "b")),
+    (("b", "a", "b", "c"), ("b", "c")),
+    (("a", "b", "c", "d"), ("b", "c")),
+], ids=["behind-first", "behind-middle", "behind-middle-reversed", "fork-tip-on-two-members", "three-way-fork"])
+def test_a_fork_with_a_member_behind_it_is_named_by_the_two_fork_tips(monkeypatch, order, heads):
+    tips = {k + ".git": tip * 40 for k, tip in zip(FIVE, order)}
+    root = _five(monkeypatch, tips)
+    root["members"] = root["members"][:len(order)]
+    # b, c and d each build on a: a fork, with the member on a behind every side
+    monkeypatch.setattr(approvals, "_ancestors", lambda workspace, tip: {"a" * 40, tip})
+    with pytest.raises(approvals.ApprovalRefused, match="^approval_chain_divergent: ") as refused:
+        approvals.count_approvals(None, root["review_id"])
+    assert (refused.value.expected, refused.value.observed) == tuple(h * 40 for h in heads)
+
+
 def _merge(multi):
     merged = runner.invoke(app, ["review", "merge"])
     return merged, json.loads(merged.stdout)

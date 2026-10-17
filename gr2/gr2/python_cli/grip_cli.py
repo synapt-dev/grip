@@ -1943,6 +1943,7 @@ def _field_record(root: Path, member: dict[str, str], revision: str = "HEAD") ->
 
     The record is a commit the grip commit carries as a PARENT, so a shallow clone does not have it: that is a named
     refusal with the remedy, never a raw git failure."""
+    from . import legacy_field_commit
     from . import member_field_tree as mft
 
     link = _store_git(root, "ls-tree", revision, "--", member["path"], check=False).stdout.split()
@@ -1951,11 +1952,14 @@ def _field_record(root: Path, member: dict[str, str], revision: str = "HEAD") ->
     if _has_field_sidecar(root, revision):
         return _sidecar_record(root, member, revision, link[2])
     try:
-        return mft.read(root, f"{link[2]}^{{tree}}")
-    except (mft.FieldTreeError, RuntimeError, subprocess.SubprocessError, OSError) as exc:
+        return legacy_field_commit.read(root, link[2])
+    except (legacy_field_commit.LegacyRecordError, mft.FieldTreeError, RuntimeError, subprocess.SubprocessError,
+            OSError) as exc:
+        # legacy_field_commit keeps the reader's own error as the cause, so the hint is read from that error.
         # The unshallow advice is for a record this clone does not hold (a git failure), not for one it holds and refuses,
         # nor for one a partial clone left out: that refusal already names the fetch that brings it in.
-        shallow = str(exc).startswith("git ") and not isinstance(exc, mft.MissingLocally)
+        cause = exc.__cause__ if isinstance(exc, legacy_field_commit.LegacyRecordError) and exc.__cause__ else exc
+        shallow = str(cause).startswith("git ") and not isinstance(cause, mft.MissingLocally)
         hint = "; a shallow clone does not carry it, so run `git fetch --unshallow`" if shallow else ""
         raise NativeStoreRefusal(f"{member['name']} field record cannot be read: {exc}{hint}", 4) from exc
 

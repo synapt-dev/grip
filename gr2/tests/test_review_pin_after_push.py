@@ -294,3 +294,14 @@ def test_p10b_upstream_is_ref_and_the_remote_branch_is_behind_pins(tmp_path):
     result = _pin(w, head=newer)
     assert result.exit_code == 0, result.output
     assert _gr_id(result)
+
+
+def test_q6_upstream_is_ref_and_the_remote_branch_diverged_refuses(tmp_path):
+    """remote_branch_diverged when the merge ref is --ref."""
+    w = _world_from_ref(tmp_path)
+    _advance_remote_feat(tmp_path, w, "theirs")
+    mine = _commit(w["src"], "mine")  # a local head beside the remote's tip, not behind it
+    result = _pin(w, head=mine)
+    assert result.exit_code == 2, result.output
+    assert "refused: remote_branch_diverged" in result.output
+    assert _review_refs(w["ws"]) == ""

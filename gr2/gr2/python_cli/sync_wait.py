@@ -5,7 +5,10 @@ caller last saw: its checkout's ``refs/remotes/origin/<ref>`` when that exists, 
 poll. Measured against a starting "now" alone, a move between the caller's last look and the start would never be seen.
 
 Exit codes (``exit_codes.EXIT_CODES["sync"]``): 0 the condition holds; 6 the timeout came first (the same code as
-`store wait`); 3 a member cannot be waited on (no url, or its remote unreadable at the start), named.
+`store wait`); 3 a member cannot be waited on (no url, or its remote unreadable at the start), named; 7 a member's
+remote could not be read on two polls running, named with git's first stderr line. A failed read is never counted as
+"not moved": one failure is retried at the next poll, and a second ends the wait, because under --until all a remote
+that has gone away would otherwise run out the whole timeout and report a silence as a fact.
 """
 from __future__ import annotations
 
@@ -19,21 +22,24 @@ from .review_members import Member, workspace_members
 EXIT_MET = 0
 EXIT_REFUSED = 3
 EXIT_TIMEOUT = 6
+EXIT_UNREADABLE = 7
 
 
 def _remote_ref(m: Member) -> str:
     return f"refs/heads/{m.ref}" if m.ref else "HEAD"
 
 
-def _remote_oid(workspace_root: Path, m: Member) -> str | None:
+def _read_remote(workspace_root: Path, m: Member) -> tuple[str | None, str]:
+    """(oid, "") on a read, (None, why) on a failure: git's first stderr line, or the ref being absent."""
     proc = gitops.git(workspace_root, "ls-remote", m.url or "", _remote_ref(m))
     if proc.returncode != 0:
-        return None
+        lines = (proc.stderr or "").strip().splitlines()
+        return None, lines[0] if lines else f"git ls-remote exited {proc.returncode}"
     for line in proc.stdout.splitlines():
         oid, _, name = line.partition("\t")
         if name == _remote_ref(m):
-            return oid
-    return None
+            return oid, ""
+    return None, f"no {_remote_ref(m)} on the remote"
 
 
 def _seen_oid(workspace_root: Path, m: Member) -> str | None:
@@ -71,20 +77,28 @@ def wait(
         if seen:
             baseline[m.name] = seen
             continue
-        oid = _remote_oid(workspace_root, m)
+        oid, _why = _read_remote(workspace_root, m)
         if oid is None:
             echo(f"refused: cannot read {_remote_ref(m)} of {m.name} at {m.url}")
             return EXIT_REFUSED
         baseline[m.name] = first[m.name] = oid
     echo(f"waiting for {until} of {len(members)} members to move: {', '.join(m.name for m in members)}")
     moved: dict[str, str] = {}
+    failed: set[str] = set()  # members whose last read failed; a second failure in a row ends the wait
     deadline = clock() + timeout
     while True:
         for m in members:
             if m.name in moved:
                 continue
-            oid = first.pop(m.name, None) or _remote_oid(workspace_root, m)
-            if oid is not None and oid != baseline[m.name]:
+            oid, why = (first.pop(m.name), "") if m.name in first else _read_remote(workspace_root, m)
+            if oid is None:
+                if m.name in failed:
+                    echo(f"unreadable: {m.name} {why}")
+                    return EXIT_UNREADABLE
+                failed.add(m.name)
+                continue
+            failed.discard(m.name)
+            if oid != baseline[m.name]:
                 moved[m.name] = oid
                 echo(f"moved: {m.name} {baseline[m.name][:12]} -> {oid[:12]}")
         if (until == "any" and moved) or len(moved) == len(members):

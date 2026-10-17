@@ -119,3 +119,26 @@ def test_a_refusal_exits_3_from_the_sync_exit_table_and_a_usage_error_stays_2(tm
     assert no_url.exit_code == 3 and "refused: no url for: alpha" in no_url.output, no_url.output
     usage = runner.invoke(app, ["sync", "wait", str(ws), "--timeout", "soon"])
     assert usage.exit_code == 2, usage.output
+
+
+def test_a_remote_that_vanishes_mid_wait_ends_it_unreadable_not_as_a_timeout(tmp_path, monkeypatch):
+    ws, seeds = _workspace(tmp_path)
+    gone = tmp_path / "remotes" / "beta.git"
+    result, polls = _run(monkeypatch, ws, "all", lambda k: gone.rename(gone.with_name("gone.git")) if k == 1 else None)
+    assert result.exit_code == sync_wait.EXIT_UNREADABLE == 7, result.output
+    line = next(ln for ln in result.output.splitlines() if ln.startswith("unreadable: "))
+    assert line.startswith("unreadable: beta ") and len(line) > len("unreadable: beta "), line
+    assert "timeout" not in result.output and "not moved" not in result.output
+    assert len(polls) == 3  # read at poll 1, failed at poll 2 (retried), failed at poll 3 (ends)
+
+
+def test_a_checkout_behind_its_remote_at_start_reports_moved_at_the_first_poll(tmp_path, monkeypatch):
+    ws, seeds = _workspace(tmp_path)
+    _git(tmp_path, "clone", "-q", str(tmp_path / "remotes" / "alpha.git"), str(ws / "alpha"))
+    seen = _git(ws / "alpha", "rev-parse", "refs/remotes/origin/main")
+    _move(tmp_path, seeds, "alpha")
+    now = _git(seeds["alpha"], "rev-parse", "HEAD")
+    result, polls = _run(monkeypatch, ws, "any", lambda k: None)
+    assert result.exit_code == 0, result.output
+    assert f"moved: alpha {seen[:12]} -> {now[:12]}" in result.output
+    assert len(polls) == 1

@@ -1524,7 +1524,7 @@ def sync_wait(
     timeout: float = typer.Option(1800.0, "--timeout", help="Seconds before giving up (exit 6)"),
     interval: float = typer.Option(30.0, "--interval", help="Seconds between polls"),
 ) -> None:
-    """Wait until any or all members move on their remote: one ls-remote per member per poll. Exit 0 met, 6 timeout, 3 refused."""
+    """Wait until any or all members move on their remote: one ls-remote per member per poll. Exit 0 met, 6 timeout, 3 refused, 7 unreadable."""
     from . import sync_wait as sync_wait_ops
 
     if not all_members:

@@ -34,6 +34,7 @@ EXIT_CODES: dict[str, dict[int, str]] = {
         2: "usage",
         3: "refused",
         6: "timeout",
+        7: "unreadable",
     },
 }
 

@@ -911,6 +911,7 @@ exit  sync 0 ok                                                       stable
 exit  sync 2 usage                                                    stable
 exit  sync 3 refused                                                  stable
 exit  sync 6 timeout                                                  stable
+exit  sync 7 unreadable                                               stable
 # sync run
 arg   sync run workspace_root <str>                                   stable
 flag  sync run --dirty <str>                                          stable

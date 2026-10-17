@@ -95,6 +95,40 @@ def publish_unresolved_merge(workspace: str, review: str, path: str) -> str:
             f"to keep the merge instead, commit it and run gr2 review update {_shown(workspace)} {_shown(review)}")
 
 
+# The `next` of each refusal a bare `review publish` raises, keyed by refusal: (workspace, review, member key, clone,
+# observed) -> the next command. None is deliberate: no command is safe to print, so the human lines say what to
+# check instead (PUBLISH_REFUSED_CHECK). A refusal in neither table prints next: null and nothing to check.
+PUBLISH_REFUSED_NEXT = {
+    "unresolved_merge": lambda ws, rid, key, clone, seen: publish_unresolved_merge(ws, rid, clone[len(ws.rstrip("/")) + 1:]),
+    "no_branch": lambda ws, rid, key, clone, seen: (
+        f"gr2 review publish {_shown(ws)} {_shown(rid)}   # after git -C {_shown(clone)} switch -c <branch> "
+        f"puts the pinned commit on a branch"),
+    "head_moved_since_pin": lambda ws, rid, key, clone, seen: (
+        f"gr2 review pin {_shown(ws)}   # pins the clones' current heads as a new review; publish that gr: id. "
+        f"To publish {_shown(rid)} instead, move {_shown(clone)} back to the pinned commit"),
+    "member_clone_missing": lambda ws, rid, key, clone, seen: (
+        f"gr2 workspace materialize {_shown(ws)}   # restores the {_shown(key)} clone; then "
+        f"gr2 review publish {_shown(ws)} {_shown(rid)}"),
+    "review_remote_required": lambda ws, rid, key, clone, seen: (
+        f"gr2 review publish {_shown(ws)} {_shown(rid)} --remote <https-url>   # {_shown(key)}'s recorded remote is "
+        f"neither HTTPS nor an absolute path; --remote sends the review ref only, push the heads yourself"),
+    "feature_moved": lambda ws, rid, key, clone, seen: (
+        f"gr2 review pin {_shown(ws)}   # after git -C {_shown(clone)} pull --no-rebase brings in the remote's "
+        f"commits ({_shown(seen)}); publish the new gr: id"),
+    "remote_unreadable": None,
+    "remote_credentials": None,
+}
+PUBLISH_REFUSED_CHECK = {
+    "remote_unreadable": "check: the member's recorded remote URL, the network, and your access to it; then rerun",
+    "remote_credentials": "check: the recorded remote carries a credential; pin again from a clone whose remote has none",
+}
+
+
+def publish_refused_next(workspace: str, review: str, refusal: str, key: str, clone: str, observed: str) -> str | None:
+    build = PUBLISH_REFUSED_NEXT.get(refusal)
+    return build(workspace, review, key, clone, observed) if build else None
+
+
 def _update_lines(workspace: str, receipt: dict) -> list[str]:
     # Private: `review update` prints its refusal inside its JSON receipt, not as a `refused: <code>` line.
     lines, rid, new = [], receipt.get("review") or "<review>", receipt.get("new_review")

@@ -5776,16 +5776,20 @@ def review_publish(
         refused = (f"{exc.refusal}: {exc.expected}: {exc.observed}" if isinstance(exc, grip.GripReviewRefused)
                    else str(exc))
         review_id = commit if commit.startswith("gr:") else f"gr:{commit}"
-        nxt = None
-        if isinstance(exc, grip.GripReviewRefused) and exc.refusal == "unresolved_merge":
+        nxt = check = None
+        if isinstance(exc, grip.GripReviewRefused):
             paths = [m["path"] for m in grip.show_review_commit(ws, review_id[3:])["members"] if m["key"] == exc.expected]
-            nxt = next_steps.publish_unresolved_merge(str(ws), review_id, paths[0]) if paths else None
+            clone = f"{str(ws).rstrip('/')}/{paths[0]}" if paths else str(ws)
+            nxt = next_steps.publish_refused_next(str(ws), review_id, exc.refusal, exc.expected, clone, exc.observed)
+            check = next_steps.PUBLISH_REFUSED_CHECK.get(exc.refusal)
         typer.echo(json.dumps({"id": review_id, "ref": ref,
                                "complete": False, "exit": grip.PUBLISH_EXIT_REFUSED, "members": [], "remotes": [],
                                "refused": refused, "next": nxt}))
         typer.echo(f"refused: {refused} (nothing left this host)", err=True)
         if nxt:
             typer.echo(f"next: {nxt}", err=True)
+        if check:
+            typer.echo(check, err=True)
         _echo_notes(exc)
         raise typer.Exit(grip.PUBLISH_EXIT_REFUSED)
     typer.echo(json.dumps(receipt))

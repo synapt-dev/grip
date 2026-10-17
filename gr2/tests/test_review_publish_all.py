@@ -306,6 +306,38 @@ def test_s_from_a_subdirectory_of_the_workspace(w, monkeypatch):
     sub = w["author"] / "alpha" / "docs"
     sub.mkdir()
     monkeypatch.chdir(sub)
+
+
+# Each refusal a bare publish can raise -> the start of the next it prints, or None where no command is safe.
+PUBLISH_NEXT_TABLE = {
+    "unresolved_merge": "gr2 review publish",
+    "no_branch": "gr2 review publish",
+    "head_moved_since_pin": "gr2 review pin",
+    "member_clone_missing": "gr2 workspace materialize",
+    "review_remote_required": "gr2 review publish",
+    "feature_moved": "gr2 review pin",
+    "remote_unreadable": None,
+    "remote_credentials": None,
+}
+
+
+@pytest.mark.parametrize("refusal", sorted(PUBLISH_NEXT_TABLE))
+def test_a4t_every_publish_refusal_names_its_next_or_a_deliberate_null(w, monkeypatch, refusal):
+    from gr2.python_cli import grip as grip_mod
+
+    def refuse(*_a, **_k):
+        raise grip_mod.GripReviewRefused(refusal, "beta", "remote feat at " + "0" * 40)
+    monkeypatch.setattr(grip_mod, "publish_review_all", refuse)
+    out = publish(w["review"])
+    assert out.exit_code == 2, out.output
+    nxt, want = receipt(out)["next"], PUBLISH_NEXT_TABLE[refusal]
+    if want is None:
+        assert nxt is None and "check: " in out.stderr, (refusal, nxt, out.stderr)
+        return
+    assert nxt, f"{refusal} lost its next"
+    argv = shlex.split(nxt.split("   #", 1)[0])
+    assert " ".join(argv).startswith(want) and Path(argv[3]).resolve() == w["author"].resolve(), (refusal, argv)
+    assert f"next: {nxt}" in out.stderr, out.stderr
     out = publish(w["review"])
     assert out.exit_code == 0, out.output
     for m in w["members"].values():

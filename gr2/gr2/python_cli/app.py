@@ -4518,6 +4518,7 @@ def review_close(
     lane_name: Optional[str] = typer.Option(None, "--lane", help="Override the review lane name"),
     json_output: bool = typer.Option(False, "--json", help="gr reconstruction only: machine-readable JSON"),
     workspace: Optional[Path] = typer.Option(None, "--workspace", help="Owning workspace for reconstruction cleanup recovery"),
+    adopt: bool = typer.Option(False, "--adopt", help="PR-head only: record a lane an older gr2 made without a review record (its origin and HEAD must match the PR head the workspace fetched, and that PR head must already be merged into the member's checkout), then close it; a lane holding local work (uncommitted or untracked changes, a stash, unpushed or reflog-only commits, a file marked assume-unchanged or skip-worktree, a linked worktree) is refused; files git ignores are not kept"),
 ) -> None:
     """Drop a review lane. ``close`` reads the lane's marker to tell a reconstruction
     lane from a PR lane: a directory carrying a reconstruction
@@ -4538,6 +4539,8 @@ def review_close(
         target = review_context.lane
 
     if workspace is not None or review_dispatch.classify_close_lane(target) == "reconstruction":
+        if adopt:
+            _refuse("--adopt is for a PR-head review lane (WORKSPACE_ROOT OWNER_UNIT REPO PR_NUMBER), not a reconstruction lane")
         return review_close_gr(target, json_output=json_output, workspace=workspace)
 
     # PR-head path: target is the WORKSPACE_ROOT.
@@ -4553,6 +4556,22 @@ def review_close(
     lane_proto.validate_lane_path_component(repo, "repo")
     lane_proto.validate_lane_path_component(resolved_lane, "lane_name")
     review_lane_root, lane_repo_root = _pr_head_review_paths(workspace_root, owner_unit, resolved_lane, repo)
+    if adopt:
+        source_repo_root = (workspace_root / str(_workspace_repo_spec(workspace_root, repo)["path"])).resolve()
+        try:
+            review_mod.adopt_review_lane(
+                lane_repo_root=lane_repo_root,
+                review_lane_root=review_lane_root,
+                source_repo_root=source_repo_root,
+                review_branch=f"pr/{pr_number}",
+                workspace_root=workspace_root,
+                owner_unit=owner_unit,
+                lane_name=resolved_lane,
+                member=repo,
+                echo=typer.echo,
+            )
+        except review_mod.ReviewError as exc:
+            _refuse(str(exc))
     review_mod.close_review_lane(
         lane_repo_root=lane_repo_root,
         review_lane_root=review_lane_root,

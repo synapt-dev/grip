@@ -15,6 +15,17 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   pins at the base it was cut on, read-only (nothing is rebased), and the pin names
   that base as at-base (`review show` reports `at_base`). Without the flag a moved
   ref still refuses with `base_not_live_head`.
+- **`gr2`: `review close --adopt` closes a PR-head review lane an older gr2 made without a review record.**
+  Before 2.0.0a9, `review checkout-pr` never wrote the lane's `(repo, base, head, lane_kind)` record, and plain `close`
+  refuses such a lane, merged or not. With `--adopt`, the lane must be strictly beneath the managed lane root, own a real
+  `.git` directory, carry no record, have the workspace member's origin identity, and sit at the PR head the workspace
+  fetched as `pr/<number>`, and that head must be merged into the workspace member's checkout. Only then is the record written and the lane closed through the unchanged close. Any other
+  directory (an ordinary clone of the same repository, a clone of another repository, or one that is not a repository)
+  is refused and left as it is. Because the close deletes the lane, a lane holding local work (an uncommitted or
+  untracked change, a stash, a commit the workspace member does not have, on a side branch or only in the reflog, an
+  edit to a file marked assume-unchanged or skip-worktree, or a linked worktree) is refused before anything is recorded.
+  A remote-tracking ref in the lane counts only when a ref of the workspace member contains its commit, so a commit the member holds only as an unreachable object does not count. Files git ignores are not kept. Plain `close` is exactly as strict as before.
+
 - **`gr spawn up` interactive fallback.** When tmux is not installed (native
   Windows, a bare container) or `--interactive` is passed, one named agent runs
   in the foreground of the current terminal with the same command, cwd, env, and

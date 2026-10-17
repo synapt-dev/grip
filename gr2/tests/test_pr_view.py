@@ -695,3 +695,40 @@ def test_pr_view_by_number_refuses_beside_a_lane(monkeypatch, tmp_path: Path) ->
     assert res.exit_code == 2
     assert "--pr reads one PR by number; give it without OWNER_UNIT or --review" in res.output
     assert not (tmp_path / "gh-argv.txt").exists()
+
+
+def test_pr_view_by_number_refuses_beside_a_review(monkeypatch, tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    (ws / ".grip").mkdir(parents=True)
+    stub = _gh_stub(tmp_path, details={}, lists={})
+    _use_stub(monkeypatch, stub)
+
+    res = CliRunner().invoke(
+        gr2_app.app, ["pr", "view", str(ws), "--pr", "7", "--repo", "octo/widget", "--review", "gr:abc"]
+    )
+    assert res.exit_code == 2
+    assert "--pr reads one PR by number; give it without OWNER_UNIT or --review" in res.output
+    assert not (tmp_path / "gh-argv.txt").exists()
+
+
+@pytest.mark.parametrize("number", ["0", "-3"])
+def test_pr_view_by_number_refuses_a_number_below_one(monkeypatch, tmp_path: Path, number: str) -> None:
+    ws = tmp_path / "ws"
+    (ws / ".grip").mkdir(parents=True)
+    stub = _gh_stub(tmp_path, details={}, lists={})
+    _use_stub(monkeypatch, stub)
+
+    res = CliRunner().invoke(gr2_app.app, ["pr", "view", str(ws), "--pr", number, "--repo", "octo/widget"])
+    assert res.exit_code == 2
+    assert not (tmp_path / "gh-argv.txt").exists()
+
+
+def test_pr_view_by_number_refuses_a_number_that_is_not_an_integer(monkeypatch, tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    (ws / ".grip").mkdir(parents=True)
+    stub = _gh_stub(tmp_path, details={}, lists={})
+    _use_stub(monkeypatch, stub)
+
+    res = CliRunner().invoke(gr2_app.app, ["pr", "view", str(ws), "--pr", "abc", "--repo", "octo/widget"])
+    assert res.exit_code == 2
+    assert not (tmp_path / "gh-argv.txt").exists()

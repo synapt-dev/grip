@@ -3639,9 +3639,8 @@ def _lane_removal_refusals(workspace_root: Path, owner_unit: str, lane_name: str
                 or not isinstance(lane_doc.get("repos", []), list):
             return [f"lane_record_invalid: {owner_unit}/{lane_name}: lane.toml does not name this lane "
                     f"with a list of repos"]
-        if lane_doc.get("lane_kind", "materialized") == "bound":
-            return [f"lane_is_bound: {owner_unit}/{lane_name} uses a worktree it does not own"]
-        lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)
+        bound = lane_doc.get("lane_kind", "materialized") == "bound"
+        checkout_root = lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)
     except spec_apply.MaterializationPlanError as exc:
         return [f"lane_path_escapes_workspace: {exc}"]
     except (SystemExit, tomllib.TOMLDecodeError, KeyError, TypeError, ValueError) as exc:
@@ -3658,8 +3657,13 @@ def _lane_removal_refusals(workspace_root: Path, owner_unit: str, lane_name: str
         if not lane_proto.is_stale_lease(lease):
             refusals.append(f"lane_has_live_lease: {lease.get('actor')} ({lease.get('mode')}) "
                             f"until {lease.get('expires_at')}")
+    if bound:
+        # A bound lane labels a worktree it did not create. Removing it drops the record and nothing else, so the
+        # worktree's own work is not weighed here; but a worktree inside the record would go with the record.
+        if checkout_root.is_relative_to(lane_dir.resolve()):
+            refusals.append(f"lane_record_holds_bound_worktree: {checkout_root} is inside {lane_dir}")
+        return refusals
     repo_roots = [_lane_repo_root(workspace_root, owner_unit, lane_name, name) for name in lane_doc.get("repos", [])]
-    checkout_root = lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)
     # A lane made on a workspace with a snapshot store has a checkout root that is itself a store checkout. Its store
     # files are not unlisted content: the root gets the checks a repo gets below, since it can hold unpushed store commits.
     store_root = checkout_root if (checkout_root / ".git").is_dir() \
@@ -3778,7 +3782,8 @@ def lane_list(
 ) -> None:
     """List lanes, each marked removable or keep with every reason.
 
-    Removable is a state (not entered, not bound or leased, clean, no stash, nothing unpushed), never an age.
+    Removable is a state (not entered or leased, clean, no stash, nothing unpushed), never an age; a bound lane's
+    worktree is not weighed, since removing the lane drops only its record.
     The list reads remote-tracking refs WITHOUT fetching, and says so; `lane remove` fetches and checks again."""
     workspace_root = workspace_root.resolve()
     typer.echo("# remote refs not fetched; gr2 lane remove fetches before it removes anything")
@@ -3802,7 +3807,8 @@ def lane_remove(
 ) -> None:
     """End a lane: remove its clones and its record.
 
-    Refused while the lane is entered, bound, or leased, while any of its repos holds uncommitted
+    A bound lane owns no clone: its record is removed and its worktree is left exactly as it is.
+    Refused while the lane is entered or leased, while any of its repos holds uncommitted
     work, a stash, or a commit that no remote has (HEAD, every local branch and every tag, after a fetch),
     or while its checkout holds anything that is not one of its repos. Every refusal is named, and nothing
     is removed. The workspace's own clones are never touched."""
@@ -3815,10 +3821,16 @@ def lane_remove(
         typer.echo(f"nothing was removed; the lane {owner_unit}/{lane_name} is as it was", err=True)
         raise typer.Exit(code=1)
     checkout_root = lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)
-    rmtree_or_refuse(checkout_root)
+    bound = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name).get("lane_kind") == "bound"
+    if not bound:
+        rmtree_or_refuse(checkout_root)
     lane_dir = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
     if lane_dir.exists():
         rmtree_or_refuse(lane_dir)
+    if bound:
+        typer.echo(f"removed lane {owner_unit}/{lane_name} (its record only); the bound worktree {checkout_root} "
+                   f"was not created by the lane and is left as it was")
+        return
     typer.echo(f"removed lane {owner_unit}/{lane_name}")
 
 

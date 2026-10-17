@@ -432,6 +432,10 @@ def lane_checkout_root(workspace_root: Path, owner_unit: str, lane_name: str) ->
     if kind == "bound":
         if "checkout_root" in doc or not isinstance(doc.get("bound_worktree"), str) or not doc["bound_worktree"]:
             raise SystemExit("bound lane needs its explicit bound_worktree and no checkout_root")
+        # A relative path would resolve against the process CWD, not the workspace; create --bind writes it absolute.
+        if not Path(doc["bound_worktree"]).is_absolute():
+            raise SystemExit(f"bound lane {owner_unit}/{lane_name} needs an absolute bound_worktree, "
+                             f"not {doc['bound_worktree']!r}")
         return Path(doc["bound_worktree"]).resolve()
     if kind not in {"materialized", "review-ephemeral"} or doc.get("bound_worktree") is not None:
         raise SystemExit("invalid or conflicting lane checkout coordinates")
@@ -1322,7 +1326,7 @@ def bind_bound_lane(
             f"bind_bound_lane: bound lane {owner_unit}/{lane_name} is missing "
             "bound_worktree or bound_head; it was not created by lane create --bind"
         )
-    resolved = worktree.resolve()
+    resolved = lane_checkout_root(workspace_root.resolve(), owner_unit, lane_name)
     if not gitops.is_git_repo(resolved):
         raise SystemExit(f"bind refuses: bound worktree {resolved} is no longer a git work tree")
     if not gitops.current_branch(resolved):
@@ -1406,7 +1410,7 @@ def pr_create_bound_lane(
     worktree = Path(lane_doc.get("bound_worktree") or "")
     if not worktree:
         raise SystemExit(f"pr create refuses: bound lane {owner_unit}/{lane_name} has no bound_worktree")
-    resolved = worktree.resolve()
+    resolved = lane_checkout_root(workspace_root.resolve(), owner_unit, lane_name)
     members = lane_doc.get("repos", [])
     if len(members) != 1:
         raise SystemExit("pr create refuses: a bound lane must name exactly one member")

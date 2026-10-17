@@ -168,7 +168,11 @@ def _lane_repo_targets(
                 f"bound lane {owner_unit}/{lane_name} records no bound_worktree"
             )
         key = repos[0] if repos else "bound"
-        return [(key, Path(worktree))]
+        try:
+            root = lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)
+        except SystemExit as exc:
+            raise CommitError(str(exc)) from None
+        return [(key, root)]
     return [(repo, lane_proto.lane_repo_root(workspace_root, owner_unit, lane_name, repo)) for repo in repos]
 
 

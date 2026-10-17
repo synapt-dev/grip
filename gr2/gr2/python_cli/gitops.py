@@ -739,7 +739,7 @@ def branch_name_refusal(branch: object) -> str | None:
     """Why ``branch`` cannot be handed to git as a branch name, or None. `-f` or `--detach` would be read as an option."""
     if not isinstance(branch, str) or not branch or branch.startswith("-"):
         return f"{branch!r} is not a branch name"
-    if subprocess.run(["git", "check-ref-format", "--branch", branch], capture_output=True).returncode:
+    if run_argv(["git", "check-ref-format", "--branch", branch]).returncode:
         return f"{branch!r} is not a valid branch name"
     return None
 

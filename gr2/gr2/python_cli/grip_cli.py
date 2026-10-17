@@ -473,6 +473,13 @@ def _native_members(root: Path, revision: str | None = None) -> list[dict[str, s
         # Refused at the read, before any verb hands a url to git: a `<name>::` or unknown-scheme url runs a program
         # (owner: grip.url_transport_refusal; gitops.TRANSPORTS is the second layer).
         for remote_name, remote_url in remotes.items():
+            # A url reaches `clone` and `ls-remote` as the repository, where one starting with '-' is read as an option.
+            if isinstance(remote_url, str) and remote_url.startswith("-"):
+                raise NativeStoreRefusal(
+                    f"{item.get('name', 'member')} remote {remote_name} url {remote_url[:60]!r} starts with '-', "
+                    f"which git reads as an option",
+                    4,
+                )
             transport = grip_mod.url_transport_refusal(remote_url) if isinstance(remote_url, str) else None
             if transport is not None:
                 raise NativeStoreRefusal(
@@ -3163,7 +3170,7 @@ def _native_store_materialize(root: Path) -> list[dict[str, str]]:
                         f"materialize will not clear it -- move or remove what is there",
                         3,
                     ) from exc
-            result = gitops.clone(member["remote"], str(path))
+            result = gitops.clone("--", member["remote"], str(path))
             if result.returncode:
                 done = ", ".join(item["name"] for item in materialized) or "none"
                 raise NativeStoreRefusal(

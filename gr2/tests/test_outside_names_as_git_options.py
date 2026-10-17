@@ -222,14 +222,16 @@ def test_a_hostile_member_url_pushed_to_the_store_runs_nothing_at_a_teammates_la
     git(teammate / "alpha", "remote", "set-head", "origin", "-d")
     assert hostile in (teammate / "grip.toml").read_text(), "precondition: the teammate's clone carries the url"
 
-    env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1])}
+    # Wide and colorless reading: Rich wraps at COLUMNS and colors under FORCE_COLOR, splitting the phrase.
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1]), "COLUMNS": "2000"}
     result = subprocess.run(
         [sys.executable, "-m", "gr2.python_cli.app", "lane", "create", str(teammate), "default", "x", "--branch", "feat/x"],
         cwd=teammate, text=True, capture_output=True, env=env,
     )
     ran = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("PWNED"))
     assert ran == [], f"gr2 lane create in a teammate's clone ran the pushed command: {ran} {result.stderr}"
-    assert result.returncode != 0 and "starts with '-'" in result.stdout + result.stderr, result
+    text = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout + result.stderr)
+    assert result.returncode == 4 and "starts with '-'" in text and "Traceback" not in text, result
 
 
 def test_a_spec_url_shaped_like_an_option_is_refused_where_the_spec_loads(tmp_path: Path) -> None:
@@ -270,3 +272,87 @@ def test_status_refuses_an_upstream_whose_remote_part_is_an_option(two_member_ws
     toml_path.write_text(_set_member_upstream(toml_path.read_text(), "alpha", upstream))
     rc, out = _cli("store", "status")
     assert rc == 4 and "plain remote name" in out, (rc, out)
+
+
+def test_a_store_member_url_shaped_like_an_option_is_refused_by_name_where_the_members_load(
+    two_member_ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.test_store_break_attempts import _set_member_remote
+
+    marker = tmp_path / "PWNED"
+    monkeypatch.setenv("PWN_MARK", str(marker))
+    assert _cli("store", "init")[0] == 0
+    assert _cli("store", "commit", "-m", "first")[0] == 0
+    toml_path = two_member_ws / "grip.toml"
+    toml_path.write_text(_set_member_remote(toml_path.read_text(), "alpha", "origin", "--upload-pack=touch $PWN_MARK"))
+
+    for verb in (["store", "check"], ["store", "materialize"]):
+        rc, out = _cli(*verb)
+        assert not marker.exists(), f"{' '.join(verb)} ran the upload-pack command from grip.toml: rc={rc} {out}"
+        assert rc == 4 and "alpha" in out and "starts with '-'" in out, (verb, rc, out)
+
+
+def test_the_materialize_clone_reads_its_url_after_dashdash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A caller that reaches the clone without the load's refusal: the url is the repository, not an option.
+    from gr2.python_cli import gitops, grip_cli
+
+    url = "--upload-pack=touch PWNED"
+    member = {"name": "m", "path": "m", "pin": "0" * 40, "remote": url}
+    monkeypatch.setattr(grip_cli, "_grip_document", lambda root: {})
+    monkeypatch.setattr(grip_cli, "_native_members", lambda root, rev=None: [member])
+    monkeypatch.setattr(grip_cli, "_claimed_member_paths", lambda *a, **k: set())
+    monkeypatch.setattr(grip_cli, "_native_member_working_root", lambda root, member, claimed: tmp_path / "m")
+    errors: list[str] = []
+    real_clone = gitops.clone
+
+    def clone(*args, **kwargs):
+        result = real_clone(*args, **kwargs)
+        errors.append(result.stderr)
+        return result
+
+    monkeypatch.setattr(gitops, "clone", clone)
+    with pytest.raises(grip_cli.NativeStoreRefusal, match="cannot be served by origin"):
+        grip_cli._native_store_materialize.__wrapped__(tmp_path)
+    # Read as the repository, git names the url; read as an option, it names the member path as the repository.
+    assert errors and f"'{url}'" in errors[0], errors
+
+
+def test_the_member_clone_reads_its_url_after_dashdash(tmp_path: Path) -> None:
+    from gr2.python_cli import gitops
+
+    url = "--upload-pack=touch PWNED"
+    with pytest.raises(SystemExit) as exc:
+        gitops.clone_repo(url, tmp_path / "staging" / "a", reference_repo_root=tmp_path / "none")
+    # The message also echoes the url unquoted; git's own line quotes the repository it was handed.
+    assert f"'{url}'" in str(exc.value), str(exc.value)
+
+
+@pytest.mark.parametrize("verb", ["enter", "push"])
+def test_a_hostile_member_url_in_a_lane_root_commit_is_refused_by_the_lane_verbs_that_load_it(tmp_path: Path, verb: str) -> None:
+    """A native lane's root commit owns its members; every lane verb that loads the lane document reads them. A url
+    shaped like an option committed there is refused by name with exit 4, and no verb shows a traceback."""
+    import os
+    import sys
+
+    from tests.test_store_break_attempts import _set_member_remote
+    from tests.test_store_commit_keeps_record import _root_with_declarations
+    from tests.test_store_git_native_smoke import git
+
+    root, _ = _root_with_declarations(tmp_path)
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1]), "COLUMNS": "2000", "GR2_ACTOR": "agent:test"}
+
+    def run(*args: str) -> tuple[subprocess.CompletedProcess, str]:
+        result = subprocess.run([sys.executable, "-m", "gr2.python_cli.app", *args], cwd=root, text=True, capture_output=True, env=env)
+        return result, re.sub(r"\x1b\[[0-9;]*m", "", result.stdout + result.stderr)
+
+    created, text = run("lane", "create", str(root), "default", "x", "--branch", "feat/x")
+    assert created.returncode == 0, text
+    lane_root = root / "agents" / "default" / "lanes" / "x"
+    hostile = "--upload-pack=touch PWNED"
+    toml_path = lane_root / "grip.toml"
+    toml_path.write_text(_set_member_remote(toml_path.read_text(), "alpha", "origin", hostile))
+    git(lane_root, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-am", "retarget alpha")
+
+    result, text = run("lane", verb, str(root), "default", "x")
+    assert sorted(tmp_path.rglob("PWNED")) == [], text
+    assert result.returncode == 4 and "starts with '-'" in text and "Traceback" not in text, result

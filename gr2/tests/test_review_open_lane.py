@@ -1313,3 +1313,25 @@ def test_a_pr_lane_approval_outlives_review_close_and_reads_back_by_repo_and_hea
     back = approvals.pr_head_approvals(world["source"], repo, world["head_sha"])
     assert back["count"] == 1 and [link["approver"]["name"] for link in back["links"]] == ["Reviewer"], back
     assert approvals.pr_head_approvals(world["source"], repo, world["base_sha"])["count"] == 0
+
+
+def test_canonical_identity_reads_a_file_url_as_its_path(tmp_path, monkeypatch):
+    repo = tmp_path / "bare.git"
+    repo.mkdir()
+    monkeypatch.chdir(tmp_path)
+    as_path = canonical_source_identity(str(repo), allow_local=True)
+    assert as_path == f"local:{repo.resolve()}"
+    # the same repository spelled as a file:// URL is the same identity
+    assert canonical_source_identity(f"file://{repo}", allow_local=True) == as_path
+    assert canonical_source_identity(f"file://localhost{repo}", allow_local=True) == as_path
+    # control: a relative path still resolves against cwd
+    assert canonical_source_identity("bare.git", allow_local=True) == as_path
+
+
+def test_canonical_identity_refuses_a_file_url_naming_another_host():
+    # file://host/p names a path on another machine; resolving it here would
+    # alias whatever sits at /p on this one
+    with pytest.raises(ReviewError, match="names host 'elsewhere'"):
+        canonical_source_identity("file://elsewhere/some/bare.git", allow_local=True)
+    with pytest.raises(ReviewError, match="not a canonical GitHub source"):
+        canonical_source_identity("file:///some/bare.git")

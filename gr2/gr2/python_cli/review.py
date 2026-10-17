@@ -37,6 +37,7 @@ import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 from . import gitops
 from .clone_exec import CloneExecutionError, IncompleteRemoval, rmtree_or_refuse
@@ -113,7 +114,19 @@ def canonical_source_identity(remote_url: str, *, allow_local: bool = False) -> 
         if match:
             return f"https://github.com/{match.group('owner').lower()}/{match.group('repo').lower()}"
     if allow_local:
-        return f"local:{Path(url).resolve()}"
+        path = url
+        if url.lower().startswith("file://"):
+            # A file:// URL and the path it spells are one repository. A
+            # non-local host names another machine's path; refuse it rather
+            # than alias whatever sits at that path on this one.
+            parts = urlsplit(url)
+            if parts.netloc not in ("", "localhost"):
+                raise ReviewError(
+                    f"origin {url!r} names host {parts.netloc!r}; a local "
+                    "identity must be a path on this machine."
+                )
+            path = unquote(parts.path)
+        return f"local:{Path(path).resolve()}"
     raise ReviewError(
         f"origin {url!r} is not a canonical GitHub source; a review record's repo "
         "identity must be a portable https://github.com/<owner>/<repo> (no .git). "

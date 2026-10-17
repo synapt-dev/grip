@@ -179,6 +179,22 @@ def test_a4b_the_mid_merge_refusal_names_the_paths_and_says_what_to_do(w, form):
     assert "expected" not in out.stderr, out.stderr
 
 
+def test_a4c_the_bare_mid_merge_refusal_names_one_runnable_next_and_it_publishes_after_the_abort(w):
+    beta = w["members"]["beta"]
+    _mid_merge(beta)
+    out = publish(w["review"])
+    assert out.exit_code == 2, out.output
+    nxt = receipt(out)["next"]
+    assert nxt and f"next: {nxt}" in out.stderr, (nxt, out.stderr)
+    argv = shlex.split(nxt.split("   #", 1)[0])
+    assert argv[:3] == ["gr2", "review", "publish"] and argv[4] == w["review"], argv
+    assert Path(argv[3]).resolve() == w["author"].resolve(), argv
+    assert f"{beta['repo']} merge --abort" in nxt, nxt
+    git(beta["repo"], "merge", "--abort")
+    again = publish(*argv[3:])
+    assert again.exit_code == 0 and receipt(again)["complete"], again.output
+
+
 def _reject_pushes(m):
     hook = m["remote"] / "hooks" / "pre-receive"
     hook.write_text("#!/bin/sh\necho 'fixture: rejected' >&2\nexit 1\n")

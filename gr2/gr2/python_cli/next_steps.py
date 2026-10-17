@@ -87,6 +87,14 @@ def _stamp_remote_unreadable(remote: str | None, review: str) -> str:
             f"from this machine, then stamp {_shown(review)} again")
 
 
+def publish_unresolved_merge(workspace: str, review: str, path: str) -> str:
+    """The `next` of a bare `review publish` refused because a member clone is mid-merge. Not update's line: a merge
+    commit moves HEAD past the pin (publish then refuses head_moved_since_pin), so the publish rerun follows an abort."""
+    clone = f"{workspace.rstrip('/')}/{path}"
+    return (f"gr2 review publish {_shown(workspace)} {_shown(review)}   # after git -C {_shown(clone)} merge --abort; "
+            f"to keep the merge instead, commit it and run gr2 review update {_shown(workspace)} {_shown(review)}")
+
+
 def _update_lines(workspace: str, receipt: dict) -> list[str]:
     # Private: `review update` prints its refusal inside its JSON receipt, not as a `refused: <code>` line.
     lines, rid, new = [], receipt.get("review") or "<review>", receipt.get("new_review")

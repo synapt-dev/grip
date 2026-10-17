@@ -6,6 +6,8 @@ U+2028/U+0085, cutting one line in two and failing the unpack.
 Rows:
 L1 check_members reads a pinned member named with the separator, under quotePath true and false:
    absent on the remote it is refused naming the member; present at the pin it passes;
+L3 a shadow tree is built over a record whose top level holds an entry named with the separator,
+   or a newline, under quotePath true and false: the entry is kept byte-equal beside the pins tree;
 L2 delete reads an ls-remote listing that holds a ref with the separator, and deletes its record.
 """
 from __future__ import annotations
@@ -55,3 +57,23 @@ def test_l2_delete_reads_a_listing_with_a_line_separator_ref(dl, world, sep):  #
     git(me, "fetch", "-q", "origin")
     assert dl.delete(me, stook("a"), org=ORG) == [stook("a"), shadow("a")]
     assert git(origin, "for-each-ref", "--format=%(refname)", stray) == stray
+
+
+@pytest.mark.parametrize("sep", ["\u2028", "\u0085", "\n"], ids=["u2028", "u0085", "newline"])
+@pytest.mark.parametrize("quote_path", ["true", "false"])
+def test_l3_shadow_tree_keeps_a_top_level_entry_with_a_line_separator(tmp_path, sep, quote_path):
+    sh = importlib.import_module("gr2.python_cli.shadow")
+    repo = tmp_path / "r"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    git(repo, "config", "core.quotePath", quote_path)
+    mk = lambda data, *a: subprocess.run(["git", "-C", str(repo), *a], input=data, capture_output=True,
+                                         check=True).stdout.decode().strip()
+    blob = mk(b"x", "hash-object", "-w", "--stdin")
+    member = git(repo, "commit-tree", mk(f"100644 blob {blob}\tf\n".encode(), "mktree"), "-m", "m")
+    name = f"a{sep}x"
+    base = mk(f"100644 blob {blob}\t{name}\x00100644 blob {blob}\tb\x00".encode(), "mktree", "-z")
+    tree = sh._tree_with_pins(repo, base, {"m": member})
+    listed = subprocess.run(["git", "-C", str(repo), "ls-tree", "-r", "-z", tree], capture_output=True,
+                            check=True).stdout.decode().split("\0")
+    assert sorted(e for e in listed if e) == sorted([f"100644 blob {blob}\t{name}", f"100644 blob {blob}\tb",
+                                                    f"160000 commit {member}\t{sh.PINS}/m"])

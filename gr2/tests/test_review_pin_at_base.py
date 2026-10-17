@@ -99,3 +99,50 @@ def test_at_base_without_a_range_is_refused(tmp_path: Path) -> None:
                                  "--base", w["base"], "--head", w["head"], "--ref", "refs/heads/trunk",
                                  "--source", str(w["src"]), "--at-base"])
     assert result.exit_code == 2 and "--at-base requires --from-range" in result.output, result.output
+
+
+def _side_base(tmp_path: Path, push_side: bool) -> dict:
+    """A range cut on an orphan `side` branch whose base trunk never reached; pushed (reachable) or not."""
+    w = _world(tmp_path)
+    side = tmp_path / "side"
+    _git(tmp_path, "clone", "-q", str(w["remote"]), str(side))
+    _git(side, "checkout", "-q", "--orphan", "side")
+    base = _commit(side, "z")
+    if push_side:
+        _git(side, "push", "-q", "origin", "side")
+    _git(side, "checkout", "-qb", "feat2")
+    head = _commit(side, "y")
+    w["patch"].write_text(_git(side, "format-patch", "--stdout", f"{base}..{head}") + "\n")
+    w.update(base=base, head=head)
+    return w
+
+
+def test_at_base_refuses_a_base_the_ref_never_passed_through(tmp_path: Path) -> None:
+    # Row: a base on a side branch trunk never reached pinned, exit 0.
+    w = _side_base(tmp_path, push_side=True)
+    result = _pin(w, "--at-base")
+    assert result.exit_code == 2 and "at_base_not_ancestor" in result.output, result.output
+    assert "check: " in result.output and "pin without --at-base" in result.output, result.output
+    assert _git(w["ws"], "for-each-ref", "refs/dev.synapt.grip/") == ""
+
+
+def test_at_base_names_a_base_the_remote_does_not_hold(tmp_path: Path) -> None:
+    w = _side_base(tmp_path, push_side=False)
+    result = _pin(w, "--at-base")
+    assert result.exit_code == 2 and "at_base_unreachable" in result.output, result.output
+    assert "corrupt" not in result.output and "check: " in result.output, result.output
+    assert _git(w["ws"], "for-each-ref", "refs/dev.synapt.grip/") == ""
+
+
+def test_at_base_at_the_live_tip_writes_no_at_base_trailer(tmp_path: Path) -> None:
+    w = _world(tmp_path)
+    tip = w["tip"]
+    _git(w["src"], "fetch", "-q", "origin", "trunk")
+    _git(w["src"], "rebase", "-q", tip)
+    head = _git(w["src"], "rev-parse", "HEAD")
+    w["patch"].write_text(_git(w["src"], "format-patch", "--stdout", f"{tip}..{head}") + "\n")
+    w.update(base=tip, head=head)
+    result = _pin(w, "--at-base")
+    found = re.search(r"gr:[0-9a-f]{40}", result.output)
+    assert result.exit_code == 0 and found, result.output
+    assert "At-base" not in _git(w["ws"], "log", "-1", "--format=%B", found.group(0)[3:])

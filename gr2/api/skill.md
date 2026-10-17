@@ -353,6 +353,14 @@ next: more approvers are required; each one stamps from their own checkout: gr2 
 
 next: say how many approvals this merge needs: rerun with --approvals N (--approvals 0 merges without approvals), or set [approvals] required = N in '<workspace>'/grip.toml
 
+### at_base_not_ancestor
+
+check: the range's base is not in the history of the ref's tip '<observed>'; re-freeze the range on '<observed>', or pin without --at-base
+
+### at_base_unreachable
+
+check: the range's base is not on the remote; push the base the range was cut on, re-freeze the range on the live tip, or pin without --at-base
+
 ### base_moved
 
 next: the target moved after the pin; bring every member up to it and pin again: gr2 review update '<workspace>' '<review>' --into '<branch>'

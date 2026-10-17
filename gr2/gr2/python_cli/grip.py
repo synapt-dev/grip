@@ -138,7 +138,8 @@ def _apply_range_in_lane(lane: Path, range_patch: str, committers: str | None) -
 
 
 def _carry_objects_from_range(workspace: Path, remote: str, base: str, range_patch: str,
-                              committers: str | None = None, expected_head: str | None = None) -> dict[str, str]:
+                              committers: str | None = None, expected_head: str | None = None,
+                              at_base_of: str | None = None) -> dict[str, str]:
     """Derive the carried objects for a project-review pin from a frozen RANGE.
 
     The producer of a gate review holds the range.patch (the frozen artifact), not a
@@ -170,7 +171,12 @@ def _carry_objects_from_range(workspace: Path, remote: str, base: str, range_pat
             return p
 
         if _lg("rev-parse", "--verify", f"{base}^{{commit}}", allow_fail=True).returncode != 0:
+            if at_base_of:
+                raise GripReviewRefused("at_base_unreachable", base, remote)
             raise GripCorruptError(f"base {base} not reachable on {remote} to derive review head-tree")
+        # --at-base: the frozen base must be history the ref has passed through, not any commit the remote holds.
+        if at_base_of and _lg("merge-base", "--is-ancestor", base, at_base_of, allow_fail=True).returncode != 0:
+            raise GripReviewRefused("at_base_not_ancestor", base, at_base_of)
         _lg("checkout", "--detach", base)
         try:
             _apply_range_in_lane(lane, range_patch, committers)
@@ -784,7 +790,8 @@ def _bind_review_rows_body(
         if row.get("at_base"):
             if not row.get("range_patch"):
                 raise GripReviewRefused("at_base_needs_range", key, "--at-base pins a frozen range only")
-            at_base[key] = base
+            if base != observed:  # at the live tip the pin is an ordinary one; no trailer
+                at_base[key] = base
         elif base != observed:
             raise GripReviewRefused("base_not_live_head", base, observed)
         # Refusal 2: head must not already be on the remote (unless ratified), except as the tip of a
@@ -847,7 +854,8 @@ def _bind_review_rows_body(
                 raise GripReviewRefused("range_no_from_header", key, "range.patch carries no From <sha> header")
             if from_head != head:
                 raise GripReviewRefused("range_head_mismatch", head, from_head)
-            obj = _carry_objects_from_range(workspace, remote, base, range_patch)
+            obj = _carry_objects_from_range(workspace, remote, base, range_patch,
+                                            at_base_of=observed if row.get("at_base") else None)
         if obj is not None:
             member.update(range_patch=obj["range.patch"], metadata=obj["metadata"], head_tree=obj["head-tree"])
             scan_items.append((f"{key}.range.patch", obj["range.patch"]))

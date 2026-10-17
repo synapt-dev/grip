@@ -130,6 +130,16 @@ def head_already_on_remote() -> str:
             "pushing, or pin this one with --ratified gr:<id>, naming an earlier pin of this same head that was stamped")
 
 
+def at_base_not_ancestor(observed: str) -> str:
+    return (f"check: the range's base is not in the history of the ref's tip {_shown(observed)}; re-freeze the range "
+            f"on {_shown(observed)}, or pin without --at-base")
+
+
+def at_base_unreachable() -> str:
+    return ("check: the range's base is not on the remote; push the base the range was cut on, re-freeze the range "
+            "on the live tip, or pin without --at-base")
+
+
 def head_behind_remote_branch(remote_tip: str) -> str:
     return (f"next: the remote branch already holds commits past this head; pin what it holds: "
             f"gr2 review pin <workspace> --head {_shown(remote_tip)} with your other flags unchanged")

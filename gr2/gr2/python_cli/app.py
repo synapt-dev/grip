@@ -1516,6 +1516,29 @@ def sync_run(
         raise typer.Exit(code=1)
 
 
+@sync_app.command("wait")
+def sync_wait(
+    workspace_root: Optional[Path] = typer.Argument(None),
+    all_members: bool = typer.Option(False, "--all-members", help="Wait on every member the workspace declares"),
+    until: str = typer.Option("any", "--until", help="any: return when one member moves; all: when every member has"),
+    timeout: float = typer.Option(1800.0, "--timeout", help="Seconds before giving up (exit 6)"),
+    interval: float = typer.Option(30.0, "--interval", help="Seconds between polls"),
+) -> None:
+    """Wait until any or all members move on their remote: one ls-remote per member per poll. Exit 0 met, 6 timeout, 3 refused."""
+    from . import sync_wait as sync_wait_ops
+
+    if not all_members:
+        typer.echo("refused: name the members to wait on: --all-members", err=True)
+        raise typer.Exit(code=sync_wait_ops.EXIT_REFUSED)
+    if until not in {"any", "all"}:
+        typer.echo(f"refused: --until must be any or all, not {until!r}", err=True)
+        raise typer.Exit(code=sync_wait_ops.EXIT_REFUSED)
+    workspace_root = _resolve_workspace_root(workspace_root)
+    code = sync_wait_ops.wait(workspace_root, until=until, timeout=timeout, interval=interval, echo=typer.echo)
+    if code:
+        raise typer.Exit(code=code)
+
+
 def _require_superproject(workspace_root: Path) -> None:
     """Refuse ``--from-superproject`` on a root whose tree pins no members.
 

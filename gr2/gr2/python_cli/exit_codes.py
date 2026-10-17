@@ -29,6 +29,12 @@ EXIT_CODES: dict[str, dict[int, str]] = {
         4: "refused-inconsistent",
         5: "cannot-measure",
     },
+    "sync": {
+        0: "ok",
+        2: "usage",
+        3: "refused",
+        6: "timeout",
+    },
 }
 
 # The (group, code) pairs whose message carries a prefix, and the name of the

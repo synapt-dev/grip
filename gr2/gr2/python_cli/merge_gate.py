@@ -111,11 +111,15 @@ def _refresh_tracking(repo: Path, remote: str, into: str) -> dict | None:
     name = next((n for n in names if urls[n] and _url_key(urls[n], repo) == want), None)
     if name is None:
         target = "origin" if "origin" in names else names[0]
-        return {"command": f"git -C {repo} fetch --no-tags --refmap= {remote} +refs/heads/{into}:refs/remotes/{target}/{into}",
+        shown = next_steps._shown  # every value quoted whole: a refname may hold ';', so the line runs as printed
+        return {"command": f"git -C {shown(repo)} fetch --no-tags --refmap= -- {shown(remote)} "
+                           f"{shown(f'+refs/heads/{into}:refs/remotes/{target}/{into}')}",
                 "reason": f"no remote of this clone names {remote}"}
     spec = f"+refs/heads/{into}:refs/remotes/{name}/{into}"
     proc = gitops.run(repo, "fetch", "--no-tags", "-q", "--refmap=", name, spec, timeout=120)
-    return None if proc.returncode == 0 else {"command": f"git -C {repo} fetch --no-tags --refmap= {name} {spec}",
+    shown = next_steps._shown
+    return None if proc.returncode == 0 else {"command": f"git -C {shown(repo)} fetch --no-tags --refmap= -- {shown(name)} "
+                                                         f"{shown(spec)}",
                                               "reason": "the fetch failed"}
 
 
@@ -652,7 +656,8 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         try:
             failed = _refresh_tracking(repo, m["remote"], into)
         except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
-            failed = {"command": f"git -C {repo} fetch --no-tags <remote> +refs/heads/{into}:refs/remotes/<remote>/{into}",
+            spec = next_steps._shown(f"+refs/heads/{into}:refs/remotes/<remote>/{into}")
+            failed = {"command": f"git -C {next_steps._shown(repo)} fetch --no-tags <remote> {spec}",
                       "reason": f"the clone could not be read: {exc}"}
         if failed:
             tracking_stale.append({"member": m["key"], **failed})

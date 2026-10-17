@@ -1678,7 +1678,7 @@ def workspace_init(
             lines.append("no origin: materialize refuses these repos until a url is set:")
             for repo in without_url:
                 lines.append(
-                    f"- {repo['name']}: git -C {workspace_root / repo['path']} "
+                    f"- {repo['name']}: git -C {next_steps._shown(workspace_root / repo['path'])} "
                     "remote add origin <url>"
                 )
         typer.echo("\n".join(lines))
@@ -2087,7 +2087,7 @@ def _lane_member_branch_in(workspace_root: Path, repo_top: Path) -> tuple[str, s
         if key is not None:
             # A native workspace lane materializes every member of the selected workspace commit, which can
             # differ from this lane's repos once the store grows: name no --repos there, so lane create takes them all.
-            repos = "" if grip._is_native_workspace(workspace_root) else f" --repos {key}"
+            repos = "" if grip._is_native_workspace(workspace_root) else f" --repos {next_steps._shown(key)}"
             return unit, lane_name, key, str(branch_map.get(key) or lane_name), repos
     return None
 
@@ -2128,9 +2128,9 @@ def _refuse_branching_a_lane_member(target: Path, name: str) -> None:
     if name == lane_branch:
         return
     typer.echo(
-        f"Error: {key} is a repo of lane {unit}/{lane_name}, whose branch for it is '{lane_branch}'; "
+        f"Error: {key} is a repo of lane {next_steps._shown(f'{unit}/{lane_name}')}, whose branch for it is '{lane_branch}'; "
         f"'{name}' was not created or switched to. The lane records its branch and fork base, so work on "
-        f"another branch belongs in a new lane: gr2 lane create <workspace> {unit} <lane>{repos} "
+        f"another branch belongs in a new lane: gr2 lane create <workspace> {next_steps._shown(unit)} <lane>{repos} "
         f"--branch {name}",
         err=True,
     )
@@ -2788,12 +2788,12 @@ def repo_status(
         if state == "changed":
             hook_lines.append(
                 f"hooks changed since grant {getattr(target, 'name', target.path.name)} "
-                f"(sha {hooks_sha(target.path)[:12]}) — re-bind: gr2 hooks trust {getattr(target, 'name', target.path.name)}"
+                f"(sha {hooks_sha(target.path)[:12]}) — re-bind: gr2 hooks trust {next_steps._shown(getattr(target, 'name', target.path.name))}"
             )
         else:
             hook_lines.append(
                 f"hooks unbound {getattr(target, 'name', target.path.name)} "
-                f"(sha {hooks_sha(target.path)[:12]}) — bind: gr2 hooks trust {getattr(target, 'name', target.path.name)}"
+                f"(sha {hooks_sha(target.path)[:12]}) — bind: gr2 hooks trust {next_steps._shown(getattr(target, 'name', target.path.name))}"
             )
 
     if json_output:
@@ -2967,9 +2967,9 @@ def hooks_status(
         if row["state"] == "bound":
             typer.echo(f"hooks bound {row['member']} (sha {row['hooks_sha']}, granted {row['granted_at']})")
         elif row["state"] == "changed":
-            typer.echo(f"hooks changed since grant {row['member']} (now sha {row['hooks_sha']}) — re-bind: gr2 hooks trust {row['member']}")
+            typer.echo(f"hooks changed since grant {row['member']} (now sha {row['hooks_sha']}) — re-bind: gr2 hooks trust {next_steps._shown(row['member'])}")
         else:
-            typer.echo(f"hooks unbound {row['member']} (sha {row['hooks_sha']}) — bind: gr2 hooks trust {row['member']}")
+            typer.echo(f"hooks unbound {row['member']} (sha {row['hooks_sha']}) — bind: gr2 hooks trust {next_steps._shown(row['member'])}")
 
 
 @hooks_app.command("show")
@@ -4219,7 +4219,7 @@ def review_read_pr(
     typer.echo(f"base {opened.base}")
     if opened.stat:
         typer.echo(opened.stat)
-    typer.echo(f"Read the full diff: git -C {opened.path} diff {opened.base}...{opened.head}")
+    typer.echo(f"Read the full diff: git -C {next_steps._shown(opened.path)} diff {next_steps._shown(f'{opened.base}...{opened.head}')}")
 
 
 class _ReviewSelectRefused(typer.BadParameter):

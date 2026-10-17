@@ -143,4 +143,22 @@ def test_a_member_git_refuses_to_register_is_named_and_the_commit_still_succeeds
 
     assert done.returncode == 0, done.stderr
     assert "beta: not registered as a submodule" in done.stderr, done.stderr
-    assert "git submodule init beta" in done.stderr, done.stderr
+    assert "git submodule init -- beta" in done.stderr, done.stderr
+
+
+def test_init_ends_options_before_the_member_path(tmp_path: Path, monkeypatch) -> None:
+    # A member path is spec text; '--' keeps one that starts with '-' from reading as a git option.
+    import subprocess
+
+    from gr2.python_cli import grip_cli
+
+    calls: list[tuple[str, ...]] = []
+
+    def fake(root, *args, check=True):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(grip_cli, "_store_git", fake)
+    grip_cli._register_submodules(tmp_path, ["--upload-pack=x", "alpha"])
+    assert [c for c in calls if c[:2] == ("submodule", "init")] == [
+        ("submodule", "init", "--", "--upload-pack=x"), ("submodule", "init", "--", "alpha")]

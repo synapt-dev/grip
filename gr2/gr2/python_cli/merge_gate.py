@@ -859,6 +859,17 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         if merged:
             r["merged"] = merged
         final.append(state)
+    # A partial whose refused member's feature moved: its old pin cannot merge it, so its next is the new pin alone.
+    landed = [r["key"] for r in rows if r.get("final") == "merged"]
+    for r, m in zip(rows, view["members"]):
+        if landed and (r["refused"] or "").startswith("feature_moved") and r.get("final") == "unmerged":
+            r["next"] = next_steps._partial_moved_row(
+                workspace=str(root), key=m["key"], member_path=m["path"], path=str((workspace / m["path"]).resolve()),
+                remote=m["remote"], base=m["base"], into=into, feature=feature, landed=landed,
+                approvals=required_approvals,
+                waiting=[{"key": w["key"], "member_path": w["path"], "path": str((workspace / w["path"]).resolve()),
+                          "remote": w["remote"], "base": w["base"], "head": w["head"]}
+                         for o, w in zip(rows, view["members"]) if o.get("final") == "unmerged" and not o["refused"]])
     # The remote holds each merged member's merge; the clone must know it too, or the next `store commit` records the
     # pre-merge pin. A fetch that fails here never changes the exit (the merge stands), and is never silent.
     tracking_stale = []

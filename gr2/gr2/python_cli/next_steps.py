@@ -298,3 +298,33 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
     if refused.startswith("platform_pr_ambiguous"):
         return "next: close the extra PRs so one open PR has this head, then run the merge again; nothing was merged"
     return None
+
+
+
+def _partial_moved_row(*, workspace: str, key: str, member_path: str, path: str, remote: str, base: str, into: str,
+                      feature: str, landed: list[str], approvals: int | None, waiting: list[dict] = ()) -> str:
+    """The refused member's next on a PARTIAL merge whose feature branch moved: the old pin cannot merge it (the
+    check over the moved set does not move the pin), and a pin over every member refuses on the merged ones' old
+    base, so the recovery is a new pin of this member alone, merged as its own review. Members the run left unpushed
+    (`waiting`: key/path/member_path/remote/base/head) follow, each pinned alone at its pinned head, which is already
+    its feature tip. One line, in the order it runs; `$R` carries the id each pin prints, and only the operator's
+    commit and test command are placeholders."""
+    def segment(k, mpath, p, rem, b, head, push):
+        merge = f'gr2 review merge {_shown(workspace)} "$R" --from {_shown(feature)} --into {_shown(into)}'
+        if approvals is not None:
+            merge += f" --approvals {approvals}"
+        pushed = f" && git -C {_shown(p)} push {_shown(rem)} {_shown(feature)}" if push else ""
+        return (f"R=$(gr2 review pin {_shown(workspace)} --repo {_shown(k)} --path {_shown(mpath)} --remote "
+                f"{_shown(rem)} --base {_shown(b)} --head {head} --ref {_shown('refs/heads/' + into)} --source "
+                f"{_shown(p)}){pushed} && gr2 review publish {_shown(workspace)} \"$R\" --remote {_shown(rem)} && "
+                f"gr2 check run {_shown(p)} --remote {_shown(rem)} --head {head} -- <your test command> && {merge}")
+
+    steps = [segment(key, member_path, path, remote, base, "<your new commit>", True)]
+    steps += [segment(w["key"], w["member_path"], w["path"], w["remote"], w["base"], _shown(w["head"]), False)
+              for w in waiting]
+    then = (f" (then {', '.join(_shown(w['key']) for w in waiting)}, not pushed after the refusal, each pinned alone "
+            "at its pinned head)") if waiting else ""
+    return (f"next: {', '.join(_shown(k) for k in landed)} already merged and {_shown(key)}'s feature branch moved, so "
+            f"this review cannot merge {_shown(key)}; pin {_shown(key)} alone on a new head{then}. First bring the "
+            f"branch up and commit your change: git -C {_shown(path)} pull --ff-only {_shown(remote)} "
+            f"{_shown(feature)}; then, with <your new commit> its sha, run: {' && '.join(steps)}")

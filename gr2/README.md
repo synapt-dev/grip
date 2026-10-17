@@ -321,7 +321,11 @@ branch on each remote that still sits at the reviewed base, and prints what it r
 branches sit there, it asks for `--into`. It merges only if every member's remote feature
 branch is still the reviewed head, the target is still the reviewed base, and the exact-head check
 passes. If any member fails that preflight, nothing is pushed. Merges are separate pushes, not atomic
-across repos: a member that moves after an earlier member was pushed is refused, and the run exits 4.
+across repos: a member that moves after an earlier member was pushed is refused, and the run exits 4. That
+member's `next` is the recovery that reaches exit 0, in the order it runs. A check over the moved branch
+(`gr2 check set --at-remote-heads`) passes but never moves the pin, so the same review still exits 4, and a new pin
+over every member is refused (`base_not_live_head`: the merged members' target moved). So commit a new head on that
+member, pin that member alone before you push, push, publish, check, and `gr2 review merge` the new review.
 
 Exit codes:
 - 0: all merged;

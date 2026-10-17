@@ -47,6 +47,35 @@ def test_review_pr_reader_missing_group_names_a_runnable_by_number_read(reviewed
     assert "State:     MERGED" in ran.output
 
 
+def test_lane_pr_reader_runs_the_printed_by_number_read_from_inside_the_lane(opened, monkeypatch, tmp_path):
+    cwd = opened["lane"] / "alpha"
+    result = gr2(cwd, monkeypatch, "pr", "view")
+    assert result.exit_code != 0
+    diagnostic = result.output + str(result.exception)
+    printed = re.findall(r"`(gr2 pr view --pr [^`]*)`", diagnostic)
+    assert set(printed) == {"gr2 pr view --pr <N> --repo <OWNER/REPO>"}
+
+    stub_dir = tmp_path / "gh-stub"
+    stub_dir.mkdir()
+    stub = _gh_stub(
+        stub_dir,
+        details={"octo/widget": _detail(number=7, title="t", url="u", head="topic", base="dev", state="MERGED")},
+        lists={},
+    )
+    _use_stub(monkeypatch, stub)
+    monkeypatch.setattr(app_mod.platform_ops, "get_platform_adapter", lambda *a: GitHubAdapter())
+    line = printed[0].replace("<N>", "7").replace("<OWNER/REPO>", "octo/widget")
+    ran = gr2(cwd, monkeypatch, *shlex.split(line)[1:])
+    assert ran.exit_code == 0, ran.output
+    assert "State:     MERGED" in ran.output
+    argv = (stub_dir / "gh-argv.txt").read_text().splitlines()
+    assert argv[0].startswith("pr view 7 --repo octo/widget --json ")
+
+    joined = gr2(cwd, monkeypatch, "pr", "view", "--pr=7", "--repo=octo/widget")
+    assert joined.exit_code == 0, joined.output
+    assert "State:     MERGED" in joined.output
+
+
 @pytest.mark.parametrize("verb", ["checks", "view"])
 def test_review_pr_reader_invalid_explicit_never_uses_sole_bind(reviewed, monkeypatch, verb):
     calls = []

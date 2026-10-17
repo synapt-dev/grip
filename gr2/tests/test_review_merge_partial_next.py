@@ -13,25 +13,37 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from gr2.python_cli.app import app
-from tests.test_review_merge_gate import _git_identity, git, move, record_set, slice2  # noqa: F401  (fixtures)
+import pytest
+
+from tests.test_review_merge_gate import _git_identity, git, make_slice, move, record_set, slice2  # noqa: F401  (fixtures)
+
+
+@pytest.fixture
+def slice3(tmp_path, monkeypatch):
+    return make_slice(tmp_path, monkeypatch, ("alpha", "beta", "gamma"))
 
 
 def _staged_partial(s):
-    """alpha merged, beta's merge undone on its remote and its feature branch moved: the rerun is a partial."""
+    """alpha merged, beta's merge undone on its remote and its feature branch moved: the rerun is a partial. Any
+    later member's merge is undone too, so the refusal leaves it unpushed at its pinned head."""
     record_set(s)
     argv = ["review", "merge", "--approvals", "0", str(s["author"]), s["review"], "--from", "feat", "--into", "main"]
     assert CliRunner().invoke(app, argv).exit_code == 0
     beta = s["members"]["beta"]
-    git(beta["remote"], "update-ref", "refs/heads/main", beta["base"])
+    for k, m in s["members"].items():
+        if k != "alpha":
+            git(m["remote"], "update-ref", "refs/heads/main", m["base"])
     move(beta)
     ran = CliRunner().invoke(app, argv)
     assert ran.exit_code == 4, ran.output
     return {r["key"]: r for r in json.loads(ran.stdout)["members"]}
 
 
-def test_the_partial_next_pins_the_moved_member_alone_and_reaches_exit_0_as_printed(slice2, tmp_path):
-    rows = _staged_partial(slice2)
-    alpha, beta = slice2["members"]["alpha"], slice2["members"]["beta"]
+def _run_next_as_printed(s, tmp_path):
+    """Stage the partial, run beta's printed next (the operator's pull + commit, then the line as printed), and
+    return the rows, alpha's main before the run, beta's new commit and the last merge receipt."""
+    rows = _staged_partial(s)
+    alpha, beta = s["members"]["alpha"], s["members"]["beta"]
     alpha_main = git(alpha["remote"], "rev-parse", "main")
     assert rows["beta"]["refused"].startswith("feature_moved"), rows
     step = rows["beta"]["next"]
@@ -57,10 +69,25 @@ def test_the_partial_next_pins_the_moved_member_alone_and_reaches_exit_0_as_prin
     ran = subprocess.run(["sh", "-c", line], capture_output=True, text=True, env=env, timeout=300,
                          stdin=subprocess.DEVNULL)
     assert ran.returncode == 0, (ran.stdout, ran.stderr)
-    merged = json.loads(ran.stdout.strip().splitlines()[-1])
-    assert merged["exit"] == 0 and [m["key"] for m in merged["members"]] == ["beta"], merged
     assert git(alpha["remote"], "rev-parse", "main") == alpha_main
     git(beta["remote"], "merge-base", "--is-ancestor", commit, "main")
+    return rows, json.loads(ran.stdout.strip().splitlines()[-1])
+
+
+def test_the_partial_next_pins_the_moved_member_alone_and_reaches_exit_0_as_printed(slice2, tmp_path):
+    _, merged = _run_next_as_printed(slice2, tmp_path)
+    assert merged["exit"] == 0 and [m["key"] for m in merged["members"]] == ["beta"], merged
+
+
+def test_a_member_left_unpushed_by_the_refusal_is_merged_by_the_same_next(slice3, tmp_path):
+    # alpha merged earlier, beta refused feature_moved, gamma passed preflight but was never pushed: beta's next
+    # also pins gamma alone at its pinned head and merges it.
+    rows, merged = _run_next_as_printed(slice3, tmp_path)
+    gamma = slice3["members"]["gamma"]
+    assert rows["gamma"]["final"] == "unmerged" and not rows["gamma"]["refused"], rows["gamma"]
+    assert git(gamma["remote"], "rev-parse", "main") != gamma["base"], "gamma was merged by the printed next"
+    git(gamma["remote"], "merge-base", "--is-ancestor", gamma["head"], "main")
+    assert merged["exit"] == 0 and [m["key"] for m in merged["members"]] == ["gamma"], merged
 
 
 def test_the_readme_names_why_the_check_set_next_does_not_recover_a_partial():

@@ -500,3 +500,38 @@ def test_pr_view_maps_the_gh_payload_to_a_detail(monkeypatch, tmp_path: Path) ->
     assert detail.is_draft is False
     assert detail.mergeable == "MERGEABLE"
     assert [r.user for r in detail.reviews] == ["sentinel"]
+
+
+def test_pr_view_reads_a_lane_member_through_its_spec_url_owner_repo(monkeypatch, tmp_path: Path) -> None:
+    # A lane records its members by workspace name (`review checkout-pr` writes `web-app`), and gh
+    # refuses a bare name: "expected the [HOST/]OWNER/REPO format". The name is read through the member's
+    # url in the workspace spec, as `pr create` does, so the call names the repo the member points at.
+    ws = _lane_workspace(tmp_path, repos=["web-app", "api"])
+    (ws / ".grip" / "workspace_spec.toml").write_text(
+        'workspace_name = "ws"\n\n'
+        '[[repos]]\nname = "web-app"\npath = "repos/web-app"\n'
+        'url = "https://github.com/acme/web-app.git"\n\n'
+        '[[repos]]\nname = "api"\npath = "repos/api"\nurl = "git@github.com:acme/api.git"\n'
+    )
+    stub = _gh_stub(
+        tmp_path,
+        details={
+            "acme/web-app": _detail(number=7, title="t7", url="https://x/7", head="fathom/slice", base="dev"),
+            "acme/api": _detail(number=8, title="t8", url="https://x/8", head="fathom/slice", base="dev"),
+        },
+        lists={
+            "acme/web-app": [{"number": 7, "url": "https://x/7", "headRefName": "fathom/slice",
+                                   "baseRefName": "dev", "title": "t7"}],
+            "acme/api": [{"number": 8, "url": "https://x/8", "headRefName": "fathom/slice",
+                          "baseRefName": "dev", "title": "t8"}],
+        },
+    )
+    _use_stub(monkeypatch, stub)
+
+    res = CliRunner().invoke(gr2_app.app, ["pr", "view", str(ws), "fathom", "pr-view-witness", "--json"])
+
+    assert res.exit_code == 0, res.output
+    calls = (tmp_path / "gh-argv.txt").read_text().splitlines()
+    assert {c.split("--repo ")[1].split()[0] for c in calls} == {"acme/web-app", "acme/api"}, calls
+    rows = json.loads(res.output)["members"]
+    assert sorted(r["number"] for r in rows) == [7, 8] and not any("unread" in r for r in rows), rows

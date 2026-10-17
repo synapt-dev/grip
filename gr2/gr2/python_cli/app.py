@@ -5753,12 +5753,26 @@ def _pr_view_source(workspace_root: Path, owner_unit: str, lane_name: str) -> di
                 }
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
     branch_map = lane_doc.get("branch_map") or {}
+    # The lane names its members by workspace name; the host knows them as OWNER/REPO. Each name is
+    # read through its spec url when the PR is looked up, the way `pr create` names them, so a lane
+    # recorded before this rule reads the same as one recorded after it.
+    try:
+        spec_urls = {
+            str(item.get("name")): str(item.get("url", "")).strip()
+            for item in lane_proto.load_workspace_spec(workspace_root).get("repos", [])
+        }
+    except lane_proto.WorkspaceSpecMissing:
+        spec_urls = {}
     return {
         "source": "lane_record",
         "pr_group_id": None,
         "platform": "github",
         "members": [
-            {"repo": str(repo), "number": None, "branch": branch_map.get(str(repo))}
+            {
+                "repo": _repo_slug_from_url(spec_urls.get(str(repo), ""), str(repo)),
+                "number": None,
+                "branch": branch_map.get(str(repo)),
+            }
             for repo in lane_doc.get("repos", [])
         ],
     }

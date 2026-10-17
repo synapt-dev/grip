@@ -231,7 +231,7 @@ def test_a_hostile_member_url_pushed_to_the_store_runs_nothing_at_a_teammates_la
     ran = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("PWNED"))
     assert ran == [], f"gr2 lane create in a teammate's clone ran the pushed command: {ran} {result.stderr}"
     text = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout + result.stderr)
-    assert result.returncode != 0 and "starts with '-'" in text, result
+    assert result.returncode == 4 and "starts with '-'" in text and "Traceback" not in text, result
 
 
 def test_a_spec_url_shaped_like_an_option_is_refused_where_the_spec_loads(tmp_path: Path) -> None:
@@ -325,3 +325,34 @@ def test_the_member_clone_reads_its_url_after_dashdash(tmp_path: Path) -> None:
         gitops.clone_repo(url, tmp_path / "staging" / "a", reference_repo_root=tmp_path / "none")
     # The message also echoes the url unquoted; git's own line quotes the repository it was handed.
     assert f"'{url}'" in str(exc.value), str(exc.value)
+
+
+@pytest.mark.parametrize("verb", ["enter", "push"])
+def test_a_hostile_member_url_in_a_lane_root_commit_is_refused_by_the_lane_verbs_that_load_it(tmp_path: Path, verb: str) -> None:
+    """A native lane's root commit owns its members; every lane verb that loads the lane document reads them. A url
+    shaped like an option committed there is refused by name with exit 4, and no verb shows a traceback."""
+    import os
+    import sys
+
+    from tests.test_store_break_attempts import _set_member_remote
+    from tests.test_store_commit_keeps_record import _root_with_declarations
+    from tests.test_store_git_native_smoke import git
+
+    root, _ = _root_with_declarations(tmp_path)
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1]), "COLUMNS": "2000", "GR2_ACTOR": "agent:test"}
+
+    def run(*args: str) -> tuple[subprocess.CompletedProcess, str]:
+        result = subprocess.run([sys.executable, "-m", "gr2.python_cli.app", *args], cwd=root, text=True, capture_output=True, env=env)
+        return result, re.sub(r"\x1b\[[0-9;]*m", "", result.stdout + result.stderr)
+
+    created, text = run("lane", "create", str(root), "default", "x", "--branch", "feat/x")
+    assert created.returncode == 0, text
+    lane_root = root / "agents" / "default" / "lanes" / "x"
+    hostile = "--upload-pack=touch PWNED"
+    toml_path = lane_root / "grip.toml"
+    toml_path.write_text(_set_member_remote(toml_path.read_text(), "alpha", "origin", hostile))
+    git(lane_root, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-am", "retarget alpha")
+
+    result, text = run("lane", verb, str(root), "default", "x")
+    assert sorted(tmp_path.rglob("PWNED")) == [], text
+    assert result.returncode == 4 and "starts with '-'" in text and "Traceback" not in text, result

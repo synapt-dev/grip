@@ -610,7 +610,11 @@ def native_lane_members(workspace_root: Path, doc: dict) -> list[dict[str, str]]
     if top.returncode or Path(top.stdout.strip()).resolve() != root.resolve():
         raise SystemExit(f"native lane root is not its own Git checkout: {root}")
     head = gitops.current_head_sha(root)
-    return grip_cli._native_members(root, head)
+    try:
+        return grip_cli._native_members(root, head)
+    except grip_cli.NativeStoreRefusal as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(exc.code) from None
 
 
 def record_fork_base(

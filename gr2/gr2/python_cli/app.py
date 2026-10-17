@@ -3165,7 +3165,11 @@ def lane_create(
         if resolved.returncode:
             raise typer.BadParameter("cannot resolve selected native workspace commit; record the workspace with gr2 store commit --message MESSAGE, or name an existing --workspace-commit")
         selected_commit = resolved.stdout.strip()
-        selected_members = grip_cli._native_members(workspace_root, selected_commit)
+        try:
+            selected_members = grip_cli._native_members(workspace_root, selected_commit)
+        except grip_cli.NativeStoreRefusal as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=exc.code)
         selected_names = [m["name"] for m in selected_members]
         if repos is not None and set(r.strip() for r in repos.split(",")) != set(selected_names):
             raise typer.BadParameter("a native workspace lane materializes the complete selected member set")

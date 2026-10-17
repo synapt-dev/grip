@@ -762,7 +762,10 @@ def _find_review_pr_group(workspace_root: Path, target: str) -> tuple[Path, dict
     """The PR group opened for review `target`. None or several is a refusal that names the review."""
     matches = pr_ops.review_pr_groups(workspace_root, target)
     if not matches:
-        raise SystemExit(f"no PR group for review {target}; open one with `gr2 pr create`")
+        raise SystemExit(
+            f"no PR group for review {target}; open one with `gr2 pr create`, "
+            "or read one PR by number with `gr2 pr view --pr <N> --repo <OWNER/REPO>`"
+        )
     if len(matches) > 1:
         raise SystemExit(f"{len(matches)} PR groups claim review {target}: " + ", ".join(str(p) for p, _ in matches))
     return matches[0]
@@ -6136,12 +6139,31 @@ def pr_view(
     review: Optional[str] = typer.Option(None, "--review", help="Review ID (gr:<sha>); defaults to the workspace's only pinned review"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     repo_filter: Optional[str] = typer.Option(None, "--repo", help="Restrict the view to one member"),
+    pr_number: Optional[int] = typer.Option(
+        None, "--pr", min=1, help="Read one PR by number; needs --repo OWNER/REPO. For a change with no PR group"
+    ),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
-    """Show the member PRs of one change."""
+    """Show the member PRs of one change, or one PR by number."""
     workspace_root = workspace_root.resolve()
     _refuse_review_beside_unit(owner_unit, review)
-    if owner_unit is None:
+    if pr_number is not None:
+        # A number is a PR only inside one repository, and it names no change: there is no
+        # group or lane to read members from, so the repository has to be given, and a unit
+        # or review beside it would be a second subject the read ignores.
+        if owner_unit is not None or review is not None:
+            _refuse("--pr reads one PR by number; give it without OWNER_UNIT or --review")
+        # A bare name is a member key, not a repository. Sent to gh it comes back as an unread
+        # read; refused here, it names the shape --pr needs before gh is asked anything.
+        if not repo_filter or "/" not in repo_filter:
+            _refuse("--pr needs --repo OWNER/REPO; a PR number names a PR only inside one repository")
+        source = {
+            "source": "pr_number",
+            "pr_group_id": None,
+            "platform": "github",
+            "members": [{"repo": repo_filter, "number": pr_number, "branch": None, "remote": repo_filter, "target": None}],
+        }
+    elif owner_unit is None:
         target, _ = resolve_review_subject(workspace_root, review)
         _, group = _find_review_pr_group(workspace_root, target)
         owner_unit, resolved_lane = str(group.get("owner_unit")), str(group.get("lane_name"))
@@ -6209,6 +6231,10 @@ def pr_view(
             # change than the one that exists, which is the failure a reader cannot see.
             rows.append({"repo": repo, "number": int(number), "unread": str(exc)})
 
+    # A change with one unread member still has an answer: the members that were read. One PR
+    # read by number has no partial answer, so a failed read prints what it has and exits 1.
+    failed_read = source["source"] == "pr_number" and bool(rows) and bool(rows[0].get("unread"))
+
     if json_output:
         # The source is part of the ANSWER, not decoration. The human header prints where
         # the members came from; a bare array would leave a machine consumer unable to
@@ -6226,6 +6252,8 @@ def pr_view(
                 indent=2,
             )
         )
+        if failed_read:
+            raise typer.Exit(code=1)
         return
 
     # The machine value is a stable slug so a consumer can switch on it; the human form
@@ -6233,8 +6261,12 @@ def pr_view(
     source_label = {
         "pr_group": "the PR group record",
         "lane_record": "the lane record",
+        "pr_number": "the number given",
     }.get(str(source["source"]), str(source["source"]))
-    header = f"change {owner_unit}/{resolved_lane}"
+    if source["source"] == "pr_number":
+        header = f"pr {repo_filter}#{pr_number}"
+    else:
+        header = f"change {owner_unit}/{resolved_lane}"
     if source["pr_group_id"]:
         header += f"  pr group {source['pr_group_id']}"
     typer.echo(header + f"  (members from {source_label})")
@@ -6248,6 +6280,8 @@ def pr_view(
             continue
         typer.echo("\n".join(_render_pr_detail(row)))
         typer.echo("")
+    if failed_read:
+        raise typer.Exit(code=1)
 
 
 @pr_app.command("merge", cls=ReviewSubjectCommand)

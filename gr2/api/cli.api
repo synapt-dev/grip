@@ -444,6 +444,7 @@ arg   pr view lane_name <str>                                         stable
 arg   pr view owner_unit <str>                                        stable
 arg   pr view workspace_root <str>                                    stable
 flag  pr view --json                                                  stable
+flag  pr view --pr <str>                                              stable
 flag  pr view --repo <str>                                            stable
 flag  pr view --review <str>                                          stable
 flag  pr view --root/-C <str>                                         stable

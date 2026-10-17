@@ -570,6 +570,8 @@ def _spec_workspace(tmp_path: Path, url: str) -> Path:
         ("https://github.com/acme/api.git/", "acme/api"),
     ],
 )
+
+
 def test_pr_view_hands_gh_only_an_exact_owner_repo(monkeypatch, tmp_path: Path, url: str, expected: str) -> None:
     # gh reads `--repo ""` as no --repo and answers for the cwd's repo, reads a third segment as a HOST,
     # and a value starting with "-" is option-shaped. A spec url that names no exact OWNER/REPO hands gh
@@ -596,6 +598,8 @@ def test_pr_view_hands_gh_only_an_exact_owner_repo(monkeypatch, tmp_path: Path, 
     ],
     ids=["toml", "utf8", "repos-str", "repos-item", "repos-int", "dir"],
 )
+
+
 def test_pr_view_shows_the_lane_when_the_workspace_spec_is_malformed(
     monkeypatch, tmp_path: Path, spec: bytes | None
 ) -> None:
@@ -636,3 +640,155 @@ def test_pr_view_repo_filter_matches_a_lane_member_by_name_or_owner_repo(
 
     assert res.exit_code == 0, res.output
     assert _repo_values(tmp_path) == ["acme/api"]
+
+
+def test_pr_view_by_number_reads_one_pr_with_no_group_or_lane(monkeypatch, tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    (ws / ".grip").mkdir(parents=True)
+    stub = _gh_stub(
+        tmp_path,
+        details={
+            "octo/widget": _detail(
+                number=7, title="merged one", url="https://x/widget/pull/7",
+                head="topic", base="dev", state="MERGED",
+            ),
+        },
+        lists={},
+    )
+    _use_stub(monkeypatch, stub)
+
+    res = CliRunner().invoke(gr2_app.app, ["pr", "view", str(ws), "--pr", "7", "--repo", "octo/widget"])
+    assert res.exit_code == 0, res.output
+    assert "pr octo/widget#7  (members from the number given)" in res.output
+    assert "State:     MERGED" in res.output
+    argv = (tmp_path / "gh-argv.txt").read_text().splitlines()
+    assert argv[0].startswith("pr view 7 --repo octo/widget --json ")
+
+    res = CliRunner().invoke(gr2_app.app, ["pr", "view", str(ws), "--pr", "7", "--repo", "octo/widget", "--json"])
+    assert res.exit_code == 0, res.output
+    payload = json.loads(res.output)
+    assert payload["source"] == "pr_number" and payload["pr_group_id"] is None
+    assert [(m["repo"], m["number"], m["state"]) for m in payload["members"]] == [("octo/widget", 7, "MERGED")]
+
+
+@pytest.mark.parametrize("json_mode", [False, True])
+def test_pr_view_by_number_exits_nonzero_when_the_read_fails(monkeypatch, tmp_path: Path, json_mode: bool) -> None:
+    ws = tmp_path / "ws"
+    (ws / ".grip").mkdir(parents=True)
+    # The stub has no detail for octo/missing, so its `gh pr view` fails.
+    stub = _gh_stub(tmp_path, details={}, lists={})
+    _use_stub(monkeypatch, stub)
+
+    args = ["pr", "view", str(ws), "--pr", "7", "--repo", "octo/missing"] + (["--json"] if json_mode else [])
+    res = CliRunner().invoke(gr2_app.app, args)
+    assert res.exit_code == 1, res.output
+    argv = (tmp_path / "gh-argv.txt").read_text().splitlines()
+    assert argv[0].startswith("pr view 7 --repo octo/missing ")
+    if json_mode:
+        payload = json.loads(res.output)
+        assert payload["source"] == "pr_number"
+        assert [(m["repo"], m["number"]) for m in payload["members"]] == [("octo/missing", 7)]
+        assert payload["members"][0]["unread"]
+    else:
+        assert "pr octo/missing#7  (members from the number given)" in res.output
+        assert "unread:" in res.output
+
+
+@pytest.mark.parametrize("json_mode", [False, True])
+def test_pr_view_change_with_its_first_member_unread_still_exits_zero(
+    monkeypatch, tmp_path: Path, json_mode: bool
+) -> None:
+    ws = _group_workspace(tmp_path, members=[("octo/missing", 3), ("octo/widget", 7)])
+    stub = _gh_stub(
+        tmp_path,
+        details={"octo/widget": _detail(number=7, title="t7", url="https://x/widget/pull/7", head="h", base="dev")},
+        lists={},
+    )
+    _use_stub(monkeypatch, stub)
+
+    group = json.loads((ws / ".grip" / "pr_groups" / "pg_view.json").read_text())
+    args = ["pr", "view", str(ws), group["owner_unit"], group["lane_name"]] + (["--json"] if json_mode else [])
+    res = CliRunner().invoke(gr2_app.app, args)
+    assert res.exit_code == 0, res.output
+    if json_mode:
+        members = json.loads(res.output)["members"]
+        assert members[0]["repo"] == "octo/missing" and members[0]["unread"]
+        assert members[1]["repo"] == "octo/widget" and "unread" not in members[1]
+    else:
+        assert "unread:" in res.output and "octo/widget" in res.output
+
+
+@pytest.mark.parametrize("repo", ["widget", ""])
+def test_pr_view_by_number_refuses_a_repo_with_no_owner(monkeypatch, tmp_path: Path, repo: str) -> None:
+    ws = tmp_path / "ws"
+    (ws / ".grip").mkdir(parents=True)
+    stub = _gh_stub(tmp_path, details={}, lists={})
+    _use_stub(monkeypatch, stub)
+
+    res = CliRunner().invoke(gr2_app.app, ["pr", "view", str(ws), "--pr", "7", "--repo", repo])
+    assert res.exit_code == 2
+    assert "--pr needs --repo OWNER/REPO" in res.output
+    assert not (tmp_path / "gh-argv.txt").exists()
+
+
+def test_pr_view_by_number_refuses_without_a_repo(monkeypatch, tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    (ws / ".grip").mkdir(parents=True)
+    stub = _gh_stub(tmp_path, details={}, lists={})
+    _use_stub(monkeypatch, stub)
+
+    res = CliRunner().invoke(gr2_app.app, ["pr", "view", str(ws), "--pr", "7"])
+    assert res.exit_code == 2
+    assert "--pr needs --repo OWNER/REPO" in res.output
+    assert not (tmp_path / "gh-argv.txt").exists()
+
+
+def test_pr_view_by_number_refuses_beside_a_lane(monkeypatch, tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    (ws / ".grip").mkdir(parents=True)
+    stub = _gh_stub(tmp_path, details={}, lists={})
+    _use_stub(monkeypatch, stub)
+
+    res = CliRunner().invoke(
+        gr2_app.app, ["pr", "view", str(ws), "someunit", "somelane", "--pr", "7", "--repo", "octo/widget"]
+    )
+    assert res.exit_code == 2
+    assert "--pr reads one PR by number; give it without OWNER_UNIT or --review" in res.output
+    assert not (tmp_path / "gh-argv.txt").exists()
+
+
+def test_pr_view_by_number_refuses_beside_a_review(monkeypatch, tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    (ws / ".grip").mkdir(parents=True)
+    stub = _gh_stub(tmp_path, details={}, lists={})
+    _use_stub(monkeypatch, stub)
+
+    res = CliRunner().invoke(
+        gr2_app.app, ["pr", "view", str(ws), "--pr", "7", "--repo", "octo/widget", "--review", "gr:abc"]
+    )
+    assert res.exit_code == 2
+    assert "--pr reads one PR by number; give it without OWNER_UNIT or --review" in res.output
+    assert not (tmp_path / "gh-argv.txt").exists()
+
+
+@pytest.mark.parametrize("number", ["0", "-3"])
+def test_pr_view_by_number_refuses_a_number_below_one(monkeypatch, tmp_path: Path, number: str) -> None:
+    ws = tmp_path / "ws"
+    (ws / ".grip").mkdir(parents=True)
+    stub = _gh_stub(tmp_path, details={}, lists={})
+    _use_stub(monkeypatch, stub)
+
+    res = CliRunner().invoke(gr2_app.app, ["pr", "view", str(ws), "--pr", number, "--repo", "octo/widget"])
+    assert res.exit_code == 2
+    assert not (tmp_path / "gh-argv.txt").exists()
+
+
+def test_pr_view_by_number_refuses_a_number_that_is_not_an_integer(monkeypatch, tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    (ws / ".grip").mkdir(parents=True)
+    stub = _gh_stub(tmp_path, details={}, lists={})
+    _use_stub(monkeypatch, stub)
+
+    res = CliRunner().invoke(gr2_app.app, ["pr", "view", str(ws), "--pr", "abc", "--repo", "octo/widget"])
+    assert res.exit_code == 2
+    assert not (tmp_path / "gh-argv.txt").exists()

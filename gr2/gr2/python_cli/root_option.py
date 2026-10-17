@@ -314,7 +314,8 @@ class ReviewReaderSubjectCommand(ReviewSubjectCommand):
                 explicit_review = any(word == "--review" or word.startswith("--review=")
                                       for word in option_tokens)
                 inferred = [str(review_context.workspace)]
-                if not explicit_review:
+                by_number = any(word == "--pr" or word.startswith("--pr=") for word in option_tokens)
+                if not explicit_review and not by_number:
                     inferred.extend(["--review", review_context.commit])
                 args[0:0] = inferred
         return super().parse_args(ctx, args)

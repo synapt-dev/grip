@@ -581,7 +581,7 @@ def _judge_remote_branch(workspace: Path, remote: str, source: str, head: str, r
         return
     if gitops.run(Path(source), "cat-file", "-e", f"{tip}^{{commit}}").returncode != 0:
         # Objects only: no ref and no FETCH_HEAD is written in the author's clone.
-        _source_capture(source, "fetch", "-q", "--no-write-fetch-head", "--", remote, upstream)
+        _source_capture(source, "fetch", "-q", "--no-tags", "--refmap=", "--no-write-fetch-head", "--", remote, upstream)
         if gitops.run(Path(source), "cat-file", "-e", f"{tip}^{{commit}}").returncode != 0:
             raise GripReviewRefused("remote_unreadable", f"{upstream} {tip}", "the remote branch moved during the pin")
     if gitops.run(Path(source), "merge-base", "--is-ancestor", tip, head).returncode == 0:

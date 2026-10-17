@@ -5760,13 +5760,16 @@ def _pr_view_source(workspace_root: Path, owner_unit: str, lane_name: str) -> di
     # read through its spec url when the PR is looked up, the way `pr create` names them, so a lane
     # recorded before this rule reads the same as one recorded after it.
     try:
-        spec_urls = {
-            str(item.get("name")): str(item.get("url", "")).strip()
-            for item in lane_proto.load_workspace_spec(workspace_root).get("repos", [])
-        }
-    except (lane_proto.WorkspaceSpecMissing, tomllib.TOMLDecodeError):
+        spec_repos = lane_proto.load_workspace_spec(workspace_root).get("repos")
+    except (lane_proto.WorkspaceSpecMissing, tomllib.TOMLDecodeError, UnicodeDecodeError, OSError):
         # A spec that cannot be read names nothing; the lane still shows, by its workspace names.
-        spec_urls = {}
+        spec_repos = []
+    # A spec that reads but does not hold repo tables names nothing either.
+    spec_urls = {
+        str(item.get("name")): str(item.get("url", "")).strip()
+        for item in (spec_repos if isinstance(spec_repos, list) else [])
+        if isinstance(item, dict)
+    }
 
     def _member_slug(name: str) -> str:
         # gh reads `--repo ""` as no --repo (the cwd's repo), a third segment as a HOST, and a leading

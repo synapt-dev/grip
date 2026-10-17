@@ -565,6 +565,7 @@ def _spec_workspace(tmp_path: Path, url: str) -> Path:
         ("https://github.com/-x/r.git", "api"),
         ("https://github.com/ghe.example/acme/api", "api"),
         ("https://github.com/acme", "api"),
+        ("https://github.com/acme/api/x", "api"),
         ("https://github.com/acme/api/", "acme/api"),
         ("https://github.com/acme/api.git/", "acme/api"),
     ],
@@ -583,10 +584,29 @@ def test_pr_view_hands_gh_only_an_exact_owner_repo(monkeypatch, tmp_path: Path, 
     assert values == [expected], values
 
 
-def test_pr_view_shows_the_lane_when_the_workspace_spec_is_malformed(monkeypatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "spec",
+    [
+        b'workspace_name = "ws\n[[repos]\n',
+        b'workspace_name = "\xff"\n',
+        b'workspace_name = "ws"\nrepos = "x"\n',
+        b'workspace_name = "ws"\nrepos = [1]\n',
+        b'workspace_name = "ws"\nrepos = 1\n',
+        None,
+    ],
+    ids=["toml", "utf8", "repos-str", "repos-item", "repos-int", "dir"],
+)
+def test_pr_view_shows_the_lane_when_the_workspace_spec_is_malformed(
+    monkeypatch, tmp_path: Path, spec: bytes | None
+) -> None:
     # Before the spec was read for urls a broken spec never stopped `pr view`; it still shows the lane.
     ws = _lane_workspace(tmp_path, repos=["api"])
-    (ws / ".grip" / "workspace_spec.toml").write_text('workspace_name = "ws\n[[repos]\n')
+    spec_path = ws / ".grip" / "workspace_spec.toml"
+    if spec is None:
+        spec_path.unlink(missing_ok=True)
+        spec_path.mkdir()
+    else:
+        spec_path.write_bytes(spec)
     _use_stub(monkeypatch, _gh_stub(tmp_path, details={}, lists={}))
 
     res = CliRunner().invoke(gr2_app.app, ["pr", "view", str(ws), "fathom", "pr-view-witness", "--json"])

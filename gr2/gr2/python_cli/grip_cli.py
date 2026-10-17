@@ -1879,17 +1879,26 @@ def _keep_fields_sparse(root: Path, staged: list[str]) -> None:
     enabled = _store_git(root, "config", "--bool", "core.sparseCheckout", check=False).stdout.strip() == "true"
     cone = _store_git(root, "config", "--bool", "core.sparseCheckoutCone", check=False).stdout.strip() == "true"
     if not (enabled and cone):
-        target = Path(_store_git(root, "rev-parse", "--git-path", "info/sparse-checkout").stdout.strip())
-        target = target if target.is_absolute() else root / target
-        lines = target.read_text(encoding="utf-8").splitlines() if enabled and target.exists() else ["/*"]
-        if FIELDS_SPARSE_PATTERN not in lines:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text("\n".join([*lines, FIELDS_SPARSE_PATTERN]) + "\n", encoding="utf-8")
-        if not enabled:
-            _store_git(root, "config", "core.sparseCheckoutCone", "false")
-            _store_git(root, "config", "core.sparseCheckout", "true")
+        _add_sparse_patterns(root, [FIELDS_SPARSE_PATTERN])
     if staged:
         _store_git(root, "update-index", "--skip-worktree", "--", *staged)
+
+
+def _add_sparse_patterns(root: Path, patterns: list[str]) -> bool:
+    """ADD non-cone ``patterns`` to the root's sparse-checkout, after the ones its owner set, never replacing them; a
+    root with none gets `/*` (every path) first. True when the file changed. A cone-mode file is turned non-cone, which
+    keeps its lines as they are."""
+    enabled = _store_git(root, "config", "--bool", "core.sparseCheckout", check=False).stdout.strip() == "true"
+    target = Path(_store_git(root, "rev-parse", "--git-path", "info/sparse-checkout").stdout.strip())
+    target = target if target.is_absolute() else root / target
+    lines = target.read_text(encoding="utf-8").splitlines() if enabled and target.exists() else ["/*"]
+    added = [pattern for pattern in patterns if pattern not in lines]
+    if added or not enabled:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("\n".join([*lines, *added]) + "\n", encoding="utf-8")
+    _store_git(root, "config", "core.sparseCheckoutCone", "false")
+    _store_git(root, "config", "core.sparseCheckout", "true")
+    return bool(added) or not enabled
 
 
 def _has_field_sidecar(root: Path, revision: str) -> bool:
@@ -3235,11 +3244,12 @@ def _own_member_paths(root: Path, members: list[dict[str, str]]) -> None:
     would show the member as modified. The root marks each member path skip-worktree through sparse-checkout, with the
     pattern '!/<path>' (no trailing slash: a gitlink is a file entry, and a slash pattern matches directories only),
     and sets sparse.expectFilesOutsideOfPatterns so git does not clear skip-worktree when the member's checkout appears
-    there. Both are set BEFORE any member is cloned in. info/exclude does nothing here: the gitlink is tracked.
-    Measured on git 2.50."""
+    there. Both are set BEFORE any member is cloned in. info/exclude does nothing here: the gitlink is tracked. The
+    patterns are ADDED to the ones the root's owner set, never replacing them. Measured on git 2.50."""
     _store_git(root, "config", "sparse.expectFilesOutsideOfPatterns", "true")
-    patterns = ["/*", *[f"!/{m['path'].strip('/')}" for m in members]]
-    _store_git(root, "sparse-checkout", "set", "--no-cone", *patterns)
+    patterns = [f"!/{m['path'].strip('/')}" for m in members]
+    if _add_sparse_patterns(root, patterns):
+        _store_git(root, "sparse-checkout", "reapply")
 
 
 

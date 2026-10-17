@@ -380,6 +380,7 @@ def test_count_refuses_divergence_without_writes(monkeypatch):
     monkeypatch.setattr(approvals, "_context", lambda *args: (root, {"Author A"}))
     monkeypatch.setattr(approvals, "_remote_tips", lambda *args: tips)
     monkeypatch.setattr(approvals, "_walk", lambda *args: [])
+    monkeypatch.setattr(approvals, "_ancestors", lambda workspace, tip: {tip})  # unrelated fake tips: a fork
     with pytest.raises(approvals.ApprovalRefused, match="approval_chain_divergent"):
         approvals.count_approvals(None, root["review_id"])
 
@@ -1049,6 +1050,8 @@ def _five(monkeypatch, tips):
     monkeypatch.setattr(approvals, "_context", lambda *args: (root, {"Author A"}))
     monkeypatch.setattr(approvals, "_remote_tips", lambda *args: next(reads))
     monkeypatch.setattr(approvals, "_walk", lambda *args: [{"approver": "Approver B"}])
+    # fake tips are unrelated commits: each is its own only ancestor, so two of them are a fork
+    monkeypatch.setattr(approvals, "_ancestors", lambda workspace, tip: {tip})
     return root
 
 
@@ -1085,6 +1088,28 @@ def test_a_stamp_finishing_between_two_reads_is_incomplete_then_counts(monkeypat
     with pytest.raises(approvals.ApprovalRefused, match="^approvals_incomplete: "):
         approvals.count_approvals(None, root["review_id"])
     assert approvals.count_approvals(None, root["review_id"])["count"] == 1
+
+
+@pytest.mark.parametrize("second, code, heads", [
+    ({k + ".git": "b" * 40 for k in FIVE} | {"svc.git": None}, "approvals_incomplete", ("b" * 40, None)),
+    ({k + ".git": "b" * 40 for k in FIVE} | {"svc.git": "c" * 40}, "approval_chain_divergent", ("b" * 40, "c" * 40)),
+], ids=["second-read-missing", "second-read-forked"])
+def test_a_chain_that_splits_during_the_walk_is_named_by_the_second_read(monkeypatch, second, code, heads):
+    agree = {k + ".git": "b" * 40 for k in FIVE}
+    root = _five(monkeypatch, [agree, second])
+    with pytest.raises(approvals.ApprovalRefused, match=f"^{code}: ") as refused:
+        approvals.count_approvals(None, root["review_id"])
+    assert (refused.value.expected, refused.value.observed) == heads
+
+
+def test_a_link_on_some_members_extending_the_rest_is_incomplete_at_the_longest_tip(monkeypatch):
+    tips = {"api.git": "b" * 40, "app.git": "c" * 40, "core.git": "b" * 40, "store.git": None, "svc.git": "b" * 40}
+    root = _five(monkeypatch, tips)
+    monkeypatch.setattr(approvals, "_ancestors", lambda workspace, tip: {"b" * 40, "c" * 40} if tip == "c" * 40 else {tip})
+    with pytest.raises(approvals.ApprovalRefused, match="^approvals_incomplete: ") as refused:
+        approvals.count_approvals(None, root["review_id"])
+    assert "at " + "c" * 12 + " is on 1 of 5 members, not yet on api, core, store, svc" in str(refused.value)
+    assert (refused.value.expected, refused.value.observed) == ("c" * 40, None)
 
 
 def _merge(multi):
@@ -1134,3 +1159,30 @@ def test_merge_names_both_tips_of_a_forked_chain(multi):
     for row in receipt["members"]:
         assert row["refusal"]["code"] == "approval_chain_divergent", row
         assert sorted([row["refusal"]["expected"], row["refusal"]["observed"]]) == sorted(forks)
+
+
+def test_merge_reads_a_second_approval_still_landing_as_incomplete_then_counts_it(multi):
+    set_policy(multi, 1)
+    made = approve_as(multi, "Approver B")
+    assert made.exit_code == 0, made.output
+    tip = json.loads(made.stdout)["tip"]
+    previous = json.loads(git(multi["workspace"], "show", tip + ":approval.json"))
+    ref = approvals.PREFIX + multi["rid"]
+    record = {**previous, "approver": {"name": "Approver C", "key_id": ""}, "prev": approvals.digest(previous)}
+    second = _write_link(multi, record, tip)
+    beta = multi["members"]["beta"]["remote"]
+    for key, member in multi["members"].items():
+        if key != "beta":  # the second stamp's first push lands; beta still has only B's link
+            git(multi["workspace"], "push", member["remote"], second + ":" + ref)
+    rec = set_check.run_set_check(multi["workspace"], multi["rid"], "set", [sys.executable, "-c", "pass"])
+    assert rec.get("result") == "pass", rec
+    merged, receipt = _merge(multi)
+    assert merged.exit_code == 3, merged.output
+    for row in receipt["members"]:
+        assert row["refusal"]["code"] == "approvals_incomplete", row
+        assert row["refusal"]["expected"] == second
+    assert "1 of 2" in merged.output and "not yet on beta" in merged.output and "retry" in merged.output
+    git(multi["workspace"], "push", beta, second + ":" + ref)  # the second stamp's last push lands
+    merged, receipt = _merge(multi)
+    assert merged.exit_code == 0, merged.output
+    assert receipt["approvals"]["count"] == 2

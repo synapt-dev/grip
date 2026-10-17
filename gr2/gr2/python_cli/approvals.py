@@ -362,11 +362,7 @@ def _reconcile(workspace: Path, root: dict, authors: set[str], tips: dict[str, s
         _walk(workspace, root, authors, tip)
     if not candidates:
         return None
-    longest = []
-    for candidate in candidates:
-        ancestors = set(_git(workspace, "rev-list", candidate).splitlines())
-        if all(tip is None or tip in ancestors for tip in tips.values()):
-            longest.append(candidate)
+    longest = _longest(workspace, tips)
     if len(longest) != 1:
         raise ApprovalRefused("approval_chain_divergent: " + canonical(tips))
     tip = longest[0]
@@ -380,15 +376,28 @@ def _reconcile(workspace: Path, root: dict, authors: set[str], tips: dict[str, s
     return tip
 
 
-def _refuse_split(root: dict, tips: dict[str, str | None]) -> None:
-    """Refuse remote tips that are not one chain. Members with no chain while every member that has one agrees are
-    a stamp still landing (incomplete); two different tips are a fork (divergent), named by both tips."""
+def _ancestors(workspace: Path, tip: str) -> set[str]:
+    return set(_git(workspace, "rev-list", tip).splitlines())
+
+
+def _longest(workspace: Path, tips: dict[str, str | None]) -> list[str]:
+    """The present tips every other present tip is an ancestor of: one for a linear chain, none for a fork."""
+    present = set(tips.values()) - {None}
+    return [c for c in present if present <= _ancestors(workspace, c)]
+
+
+def _refuse_split(workspace: Path, root: dict, tips: dict[str, str | None]) -> None:
+    """Refuse remote tips that are not one chain. Members with no chain, or behind on it, while every present tip is
+    an ancestor of one tip are a stamp still landing (incomplete); two tips not in line are a fork (divergent),
+    named by both tips."""
     present = [tip for tip in tips.values() if tip]
-    if len(set(present)) == 1:
+    longest = _longest(workspace, tips)
+    if len(longest) == 1:
         keys = {m["remote"]: m["key"] for m in root["members"]}
-        missing = [keys.get(remote, remote) for remote, tip in tips.items() if not tip]
-        raise ApprovalRefused(f"approvals_incomplete: the approval chain at {present[0][:12]} is on {len(present)} of "
-                              f"{len(tips)} members, not yet on {', '.join(missing)}", expected=present[0])
+        missing = [keys.get(remote, remote) for remote, tip in tips.items() if tip != longest[0]]
+        on = len(tips) - len(missing)
+        raise ApprovalRefused(f"approvals_incomplete: the approval chain at {longest[0][:12]} is on {on} of "
+                              f"{len(tips)} members, not yet on {', '.join(missing)}", expected=longest[0])
     other = next(tip for tip in present if tip != present[0])
     raise ApprovalRefused("approval_chain_divergent: " + canonical(tips), expected=present[0], observed=other)
 
@@ -397,13 +406,13 @@ def count_approvals(workspace: Path, review_id: str, member_dirs: dict[str, Path
     root, authors = _context(workspace, review_id, member_dirs)
     tips = _remote_tips(workspace, root)
     if len(set(tips.values())) != 1:
-        _refuse_split(root, tips)
+        _refuse_split(workspace, root, tips)
     tip = next(iter(tips.values()))
     links = _walk(workspace, root, authors, tip)
     current = _remote_tips(workspace, root)
     if current != tips:
         if len(set(current.values())) != 1:
-            _refuse_split(root, current)
+            _refuse_split(workspace, root, current)
         raise ApprovalRefused("approval_chain_moved: retry the measurement")
     distinct = {link["approver"]: link for link in links}
     return {"review_id": root["review_id"], "tip": tip, "count": len(distinct), "links": list(distinct.values()), "signed": False}

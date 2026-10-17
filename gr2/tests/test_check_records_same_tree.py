@@ -88,3 +88,29 @@ def test_an_empty_fanout_tree_beside_a_valid_record_is_refused(tmp_path, monkeyp
     remote, repo, head = _store_with_empty_fanout(tmp_path, monkeypatch, with_record=True)
     got = check_records.read_remote_check(str(remote), {"path": repo, "key": "r", "remote": str(remote)}, head)
     assert (got["status"], got["reason"], got["records"]) == ("fail", "empty_checks_fanout", []), got
+
+
+def test_a_fail_and_a_pass_stored_as_different_blobs_at_one_head_both_survive_a_publish(tmp_path, monkeypatch):
+    for name, value in (("GIT_AUTHOR_NAME", "t"), ("GIT_AUTHOR_EMAIL", "t@example.invalid"), ("GIT_COMMITTER_NAME", "t"),
+                        ("GIT_COMMITTER_EMAIL", "t@example.invalid"), ("GIT_CONFIG_NOSYSTEM", "1")):
+        monkeypatch.setenv(name, value)
+    import os
+    env = dict(os.environ)
+    remote_a, remote_b, repo = tmp_path / "a.git", tmp_path / "b.git", tmp_path / "repo"
+    for remote in (remote_a, remote_b):
+        _git(tmp_path, "init", "--bare", "-b", "main", remote, env=env)
+    _git(tmp_path, "init", "-b", "main", repo, env=env)
+    tree = _git(repo, "mktree", env=env)
+    x = _git(repo, "commit-tree", tree, "-m", "x", env=env)
+    y = _git(repo, "commit-tree", tree, "-p", x, "-m", "y", env=env)
+
+    def record(head, result, exit_code):
+        return dict(v=1, head=head, observed_head=head, name="test", result=result, exit_code=exit_code)
+
+    check_records.publish_observation(repo, str(remote_a), record(x, "fail", 1))
+    _git(repo, "update-ref", "-d", check_records.CHECK_REF, env=env)
+    check_records.publish_observation(repo, str(remote_b), record(x, "pass", 0))
+    check_records.publish_observation(repo, str(remote_a), record(y, "pass", 0))
+    got = check_records.read_remote_check(str(remote_a), {"path": repo, "key": "r", "remote": str(remote_a)}, x)
+    assert sorted(r["result"] for r in got["records"]) == ["fail", "pass"], got
+    assert got["status"] == "fail", got

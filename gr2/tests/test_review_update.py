@@ -144,7 +144,7 @@ def test_u3_p1_the_printed_next_lines_run_as_printed_and_the_review_then_lands(o
     out = update(one)
     assert out.exit_code == 0, out.output
     nexts = [l for l in out.stderr.splitlines() if l.startswith("next: ")]
-    assert [shlex.split(l)[1] for l in nexts] == ["git", "gr2"], nexts
+    assert [shlex.split(l)[1:3] for l in nexts] == [["gr2", "review"]], nexts
     for line in nexts:
         assert run_printed(line, one["tmp"]) == 0, line
     m, new = one["members"]["alpha"], receipt(out)["new_review"]

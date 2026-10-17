@@ -1,6 +1,7 @@
 """The help text names the one flow that lands a reviewed change, and the review commands print their next step once."""
 from __future__ import annotations
 
+import json
 import re
 import shlex
 import sys
@@ -9,7 +10,7 @@ from typer.testing import CliRunner
 
 from gr2.python_cli import check_records
 from gr2.python_cli.app import app
-from tests.test_review_update import _env, move_main, two  # noqa: F401  (fixtures: real git, bare local remotes)
+from tests.test_review_update import _env, conflict, git, move_main, two  # noqa: F401  (fixtures: real git, bare local remotes)
 
 runner = CliRunner()
 
@@ -45,3 +46,18 @@ def test_merge_on_a_moved_base_prints_its_next_line_on_stderr_once(two):
     nexts = [line for line in out.stderr.splitlines() if line.startswith("next: ")]
     assert nexts == [f"next: the target moved after the pin; bring every member up to it and pin again: "
                      f"gr2 review update {shlex.quote(str(two['author']))} {two['review']} --into main"], out.stderr
+
+
+def test_the_update_after_a_resolved_conflict_prints_one_bare_publish(two):
+    repos = [conflict(two, name) for name in two["members"]]
+    first = runner.invoke(app, ["review", "update", str(two["author"]), two["review"]])
+    assert first.exit_code == 3, first.output
+    for repo in repos:
+        (repo / "shared.txt").write_text("both\n")
+        git(repo, "commit", "-am", "resolved")
+    second = runner.invoke(app, ["review", "update", str(two["author"]), two["review"]])
+    assert second.exit_code == 0, second.output
+    new = json.loads(second.stdout)["new_review"]
+    nexts = [line for line in second.stderr.splitlines() if line.startswith("next: ")]
+    assert nexts == [f"next: gr2 review publish {shlex.quote(str(two['author']))} {new}"], second.stderr
+    assert runner.invoke(app, ["review", "publish", str(two["author"]), new]).exit_code == 0, "it runs as printed"

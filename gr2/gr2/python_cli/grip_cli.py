@@ -1287,6 +1287,9 @@ def _parse_clone_values(values: list[str]) -> list[tuple[str, str]]:
         except ValueError as exc:
             problems.append(str(exc))
             continue
+        if url.startswith("-"):
+            problems.append(f"member {name!r}: url must not start with '-', which git reads as an option")
+            continue
         if name in seen:
             problems.append(f"member name {name!r} is given twice")
             continue
@@ -1357,7 +1360,7 @@ def _make_clones(root: Path, todo: list[tuple[str, str]]) -> None:
     """Clone each planned member at its name. A failure names the member and the ones already done."""
     done: list[str] = []
     for name, url in todo:
-        result = gitops.clone(url, str(root / name))
+        result = gitops.clone("--", url, str(root / name))
         if result.returncode:
             raise NativeStoreRefusal(
                 f"{STORE_INCOMPLETE_PREFIX}{name} could not be cloned from its url "

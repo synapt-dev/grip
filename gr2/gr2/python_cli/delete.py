@@ -28,8 +28,9 @@ def delete(repo: Path, stook: str, *, org: str, remote: str = "origin") -> list[
     """Delete ``stook`` and its SHADOW from the remote and here; returns the refs deleted."""
     shadow = sh.shadow_of(stook)
     path = sh._member_path(stook, org)                    # under refs/<org>/, a STOOK
+    gitops.plain_remote(remote, lambda why: leased_push.PushRefused(stook, why))
     track_root = f"refs/{org}/{tracking.REMOTES}/{remote}/{org}/"
-    proc = gitops.run(repo, "ls-remote", remote, f"refs/{org}/*")
+    proc = gitops.run(repo, "ls-remote", "--", remote, f"refs/{org}/*")
     if proc.returncode:
         raise leased_push.PushRefused(stook, f"ls-remote {remote} failed: {proc.stderr.strip()[:200]}")
     now = {}
@@ -53,7 +54,7 @@ def delete(repo: Path, stook: str, *, org: str, remote: str = "origin") -> list[
     if stook not in now:
         raise leased_push.PushRefused(stook, f"no such record on {remote}")
     refs = [stook] + ([shadow] if shadow in now else [])
-    args = ["push", "--porcelain", "--atomic"] + [f"--force-with-lease={r}:{now[r]}" for r in refs] + [remote] + [f":{r}" for r in refs]
+    args = ["push", "--porcelain", "--atomic"] + [f"--force-with-lease={r}:{now[r]}" for r in refs] + ["--", remote] + [f":{r}" for r in refs]
     proc = gitops.run(repo, *args)
     if proc.returncode:
         raise leased_push.PushRejected(f"delete turned away by {remote}: {(proc.stdout + proc.stderr).strip()[-400:]}")

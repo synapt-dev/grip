@@ -407,7 +407,11 @@ def resolve_sources_from_pins(
             # desk clone's stale branches must never become the shared mirror's
             # branches. These refs/localsrc/* refs persist until gr2's next
             # `remote update --prune` on this mirror.
-            fetched = git(mirror, "fetch", "--quiet", str(Path(local)), pin.head)
+            try:
+                review.gitops.positional(str(local), "path")
+            except RuntimeError as exc:
+                raise OpenGrReviewError(f"local source for {pin.key!r}: {exc}") from exc
+            fetched = git(mirror, "fetch", "--quiet", "--", str(Path(local)), pin.head)
             if fetched.returncode != 0:
                 raise OpenGrReviewError(
                     f"cannot top up review mirror for {pin.key!r} from local source "

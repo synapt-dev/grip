@@ -29,17 +29,30 @@ def _bash(command):
     return subprocess.run(["bash", "-c", command], capture_output=True, text=True)
 
 
-def _armed(tmp_path, world):
-    """A target branch whose name is a shell command that would create MARK, made on both remotes."""
+# The marker's absolute path goes into a refname through this variable, never as text: a temporary path can hold a
+# component that starts with `.` (~/.synapt/...), and git refuses such a refname, so the fixture itself failed there.
+# `$`, `{` and `}` are legal in a refname, and bash expands the variable when a pasted line runs it unquoted.
+MARK_VAR = "${GR2_TEST_MARK}"
+
+
+def _mark(tmp_path, monkeypatch):
+    """The marker file, its path in GR2_TEST_MARK for the whole test, so gr2's own calls see it too."""
     mark = tmp_path / "MARK"
-    into = "x;touch${IFS}" + str(mark)
+    monkeypatch.setenv("GR2_TEST_MARK", str(mark))
+    return mark
+
+
+def _armed(tmp_path, world, monkeypatch):
+    """A target branch whose name is a shell command that would create MARK, made on both remotes."""
+    mark = _mark(tmp_path, monkeypatch)
+    into = "x;touch${IFS}" + MARK_VAR
     base = git(world["remote"], "rev-parse", "main")
     git(world["remote"], "update-ref", f"refs/heads/{into}", base)
     return mark, into, base
 
 
-def test_a_semicolon_target_prints_a_command_that_runs_with_no_marker(world, tmp_path):
-    mark, into, base = _armed(tmp_path, world)
+def test_a_semicolon_target_prints_a_command_that_runs_with_no_marker(world, tmp_path, monkeypatch):
+    mark, into, base = _armed(tmp_path, world, monkeypatch)
     other = tmp_path / "other.git"
     git(tmp_path, "clone", "--bare", "-q", world["remote"], other)
     _respell_origin(world, str(other))  # no remote of the clone names the member url: the path at _refresh_tracking
@@ -59,10 +72,10 @@ def test_a_semicolon_target_prints_a_command_that_runs_with_no_marker(world, tmp
     assert git(world["member"], "rev-parse", f"refs/remotes/origin/{into}") == git(world["remote"], "rev-parse", into)
 
 
-def _clone_with_metachars(tmp_path):
+def _clone_with_metachars(tmp_path, monkeypatch):
     """A clone, its remote and a member url whose paths each hold `;`, so every value in the command is armed."""
-    mark = tmp_path / "MARK"
-    arm = "a;touch${IFS}" + str(mark) + ";b"
+    mark = _mark(tmp_path, monkeypatch)
+    arm = "a;touch${IFS}" + MARK_VAR + ";b"
     remote = tmp_path / f"remote{arm}.git"
     seed = tmp_path / "seed"
     git(tmp_path, "init", "--bare", "-q", "-b", "main", remote)
@@ -78,8 +91,8 @@ def _clone_with_metachars(tmp_path):
     return mark, into, remote, repo, arm
 
 
-def test_every_value_of_a_no_matching_remote_command_is_quoted(tmp_path, _git_identity):
-    mark, into, remote, repo, arm = _clone_with_metachars(tmp_path)
+def test_every_value_of_a_no_matching_remote_command_is_quoted(tmp_path, _git_identity, monkeypatch):
+    mark, into, remote, repo, arm = _clone_with_metachars(tmp_path, monkeypatch)
     elsewhere = tmp_path / f"elsewhere{arm}.git"
 
     failed = merge_gate._refresh_tracking(repo, str(elsewhere), into)
@@ -91,9 +104,9 @@ def test_every_value_of_a_no_matching_remote_command_is_quoted(tmp_path, _git_id
     assert not mark.exists(), failed["command"]
 
 
-def test_every_value_of_a_failed_fetch_command_is_quoted(tmp_path, _git_identity):
-    mark, into, remote, repo, _ = _clone_with_metachars(tmp_path)
-    git(repo, "remote", "rename", "origin", "o;touch${IFS}" + str(mark))
+def test_every_value_of_a_failed_fetch_command_is_quoted(tmp_path, _git_identity, monkeypatch):
+    mark, into, remote, repo, _ = _clone_with_metachars(tmp_path, monkeypatch)
+    git(repo, "remote", "rename", "origin", "o;touch${IFS}" + MARK_VAR)
     name = git(repo, "remote").strip()
     lock = repo / ".git" / "refs" / "remotes" / name / f"{into}.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
@@ -112,7 +125,7 @@ def test_every_value_of_a_failed_fetch_command_is_quoted(tmp_path, _git_identity
 
 
 def test_an_unreadable_clone_names_a_quoted_spec(world, tmp_path, monkeypatch):
-    mark, into, _ = _armed(tmp_path, world)
+    mark, into, _ = _armed(tmp_path, world, monkeypatch)
     check(world)
 
     def unreadable(*_args):
@@ -148,8 +161,8 @@ def test_control_a_plain_target_prints_the_same_git_command_as_before(world, tmp
     assert git(world["member"], "rev-parse", "origin/main") == git(world["remote"], "rev-parse", "main")
 
 
-def test_an_option_shaped_url_is_never_read_as_an_option(tmp_path, _git_identity):
-    mark, into, remote, repo, _ = _clone_with_metachars(tmp_path)
+def test_an_option_shaped_url_is_never_read_as_an_option(tmp_path, _git_identity, monkeypatch):
+    mark, into, remote, repo, _ = _clone_with_metachars(tmp_path, monkeypatch)
     url = f"--upload-pack=touch {mark}"
 
     failed = merge_gate._refresh_tracking(repo, url, into)

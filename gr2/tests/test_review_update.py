@@ -495,3 +495,50 @@ def test_u22_a_second_refused_update_does_not_stack_another_merge(two):
     for n, m in two["members"].items():
         assert git(m["repo"], "rev-parse", "HEAD") == heads[n], f"{n}: refused runs stacked a merge"
         assert len(parents(m["repo"])) == 1, n
+
+
+def test_u23_a_merge_that_fails_on_a_later_member_restores_the_earlier_ones(two):
+    """Beta's merge fails for a reason that is not a conflict (its index.lock is held, so git refuses the
+    merge and leaves no MERGE_HEAD) after alpha merged. Alpha's merge is undone, so every clone is as it
+    was and the exit is 2, naming the merge_failed member and the restored one."""
+    for name in two["members"]:
+        move_main(two, name)
+    before = {n: clone_state(m["repo"]) for n, m in two["members"].items()}
+    lock = two["members"]["beta"]["repo"] / ".git" / "index.lock"
+    lock.write_text("")
+    out = update(two)
+    lock.unlink()
+    r = receipt(out)
+    assert r["refused"].startswith("merge_failed: beta:"), r
+    assert {n: clone_state(m["repo"]) for n, m in two["members"].items()} == before, "a refusal moves no clone"
+    assert out.exit_code == 2 and r["merged"] == [] and r["restored"] == ["alpha"], r
+
+
+def test_u30_a_merged_member_whose_restore_fails_on_a_merge_failure_stays_merged_and_the_exit_is_4(two, monkeypatch):
+    """Alpha merges cleanly, then beta's merge fails (its index.lock is held) and alpha's index.lock is taken
+    after alpha's merge, so the restore cannot reset alpha. Alpha keeps its merge and stays in merged: exit 4."""
+    from gr2.python_cli import gitops
+
+    for name in two["members"]:
+        move_main(two, name)
+    alpha, beta = two["members"]["alpha"], two["members"]["beta"]
+    locks = [beta["repo"] / ".git" / "index.lock", alpha["repo"] / ".git" / "index.lock"]
+    real = gitops.run
+
+    def run(repo, *args, **kwargs):
+        if args[:1] == ("merge",) and repo == beta["repo"]:
+            locks[1].write_text("")
+        return real(repo, *args, **kwargs)
+
+    monkeypatch.setattr(gitops, "run", run)
+    locks[0].write_text("")
+    try:
+        out = update(two)
+    finally:
+        for lock in locks:
+            lock.unlink(missing_ok=True)
+    r = receipt(out)
+    assert git(alpha["repo"], "rev-parse", "HEAD") != alpha["head"], "alpha's reset failed, so it keeps its merge"
+    assert r["merged"] == ["alpha"] and "alpha" not in r.get("restored", []), r
+    assert r["refused"] and r["refused"].startswith("merge_failed: beta:"), r
+    assert out.exit_code == 4, out.output

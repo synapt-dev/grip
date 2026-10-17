@@ -11,7 +11,7 @@ land (a two-parent merge of base and head) takes the shape it already expects.
 
 Exit codes match `review merge` where they overlap: 0 done (pinned again, or every member already up to date and
 the pin current), 2 refused before anything moved (unresolved_merge, member_dirty, member_untracked_in_the_way, fetch_failed, an
-unreadable or unresolved review, an unresolved target, or a refused pin whose merges were all undone), 3 a conflict in at least one member (nothing pinned), 4 partial (a member
+unreadable or unresolved review, an unresolved target, or a refused pin or non-conflict merge failure whose merges were all undone), 3 a conflict in at least one member (nothing pinned), 4 partial (a member
 was merged before a later step failed in a way other than a conflict; the receipt names what moved).
 """
 from __future__ import annotations
@@ -140,7 +140,20 @@ def update(workspace: Path, review_id: str | None = None, into: str | None = Non
 
     # Phase two: merge.
     merged, conflicted = [], False
+    repos = {m["key"]: m["repo"] for m in members}
     receipt["merged"] = merged  # filled as members merge, so a partial names what moved
+
+    def restore() -> None:
+        # A refusal after a merge must leave each clone as it found it: reset every member this run merged back
+        # to its head before the merge. The tracked tree was clean before (member_dirty) and nothing untracked
+        # was in the way, so --hard drops only the merge. A member that cannot be reset stays in merged.
+        restored = receipt["restored"] = []
+        for r in receipt["members"]:
+            if r["key"] in merged and not gitops.run(repos[r["key"]], "reset", "-q", "--hard", r["before"]).returncode:
+                r.update(state="restored", head=_head(repos[r["key"]]))
+                restored.append(r["key"])
+        merged[:] = [k for k in merged if k not in restored]
+
     for m in members:
         repo, key = m["repo"], m["key"]
         row = {"key": key, "path": m["path"], "remote": m["remote"], "into": targets[key], "conflicts": []}
@@ -159,6 +172,7 @@ def update(workspace: Path, review_id: str | None = None, into: str | None = Non
             row.update(state="conflict", conflicts=_conflicts(repo), head=_head(repo))
             conflicted = True
         else:
+            restore()
             why = f"merge_failed: {key}: {(proc.stderr or proc.stdout).strip()}"
             return done(EXIT_PARTIAL if merged else EXIT_REFUSED, why)
     if conflicted:
@@ -174,14 +188,7 @@ def update(workspace: Path, review_id: str | None = None, into: str | None = Non
     try:
         receipt["new_review"] = "gr:" + grip.create_review_bind_commit(ws, rows)
     except (grip.GripReviewRefused, grip.GripCorruptError, grip.GripInitError) as exc:
-        # The pin reads the merged heads, so it can only refuse after the merges. A refusal must leave each clone
-        # as it found it: reset every member this run merged back to its head before the merge. The tracked tree
-        # was clean before (member_dirty) and nothing untracked was in the way, so --hard drops only the merge.
-        restored = receipt["restored"] = []
-        for r, m in zip(receipt["members"], members):
-            if r["key"] in merged and not gitops.run(m["repo"], "reset", "-q", "--hard", r["before"]).returncode:
-                r.update(state="restored", head=_head(m["repo"]))
-                restored.append(r["key"])
-        merged[:] = [k for k in merged if k not in restored]
+        # The pin reads the merged heads, so it can only refuse after the merges.
+        restore()
         return done(EXIT_PARTIAL if merged else EXIT_REFUSED, f"pin_refused: {exc}")
     return done(EXIT_DONE)

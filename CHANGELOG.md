@@ -46,6 +46,12 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **gr2 `review pin` judges a branch made from the target.** A branch created with
+  `git checkout -b feat origin/trunk` has the target itself as its merge ref, so the
+  remote-branch judge used to skip it and a remote `feat` already past the head pinned
+  with rc 0. When the merge ref is `--ref`, the judge now reads the remote branch of the
+  same name, and refuses with `head_behind_remote_branch` or `remote_branch_diverged`.
+
 - **`gr pr create` opens PRs for the branch you are on, not for every branch
   some repo happens to sit on.** It used to open one PR per branch group under
   the single `-t` title, so a repo (the manifest included) parked on an old

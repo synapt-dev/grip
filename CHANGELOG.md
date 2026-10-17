@@ -25,6 +25,19 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Changed
 
+- **`gr2`: `workspace migrate-gr1` records each member's url from the member's own checkout.**
+  A gr1 manifest's url is what the manifest said when the repo was added; the checkout at the member's path is
+  what the workspace actually fetches from, and the two drift (a repo renamed upstream, an SSH url, a fork). When
+  the member is a repository of its own at its path and its `origin` differs from the manifest, the spec now
+  records the checkout's `origin`, and the receipt names each such member in a `MEMBER ORIGIN` block
+  (`--json`: `member_origins`), also kept in `migration-summary.json`. A member with no checkout, a checkout with no
+  `origin`, or a plain folder inside the root keeps the manifest's url. Before this, `materialize`, `--apply` and a
+  native lane fetched from the manifest's url even when every member pointed elsewhere. A credential never leaves the
+  checkout's own git config: userinfo is removed from the recorded url (an SSH login such as `git@` is kept), and an
+  origin that still carries one (a token in a query parameter, a fragment) is not used and not printed; the receipt
+  says the manifest url was kept. The spec writer now escapes every string it writes, so a url or name holding a
+  quote, a backslash or a control character is recorded as data instead of breaking or extending the spec.
+
 - **With only gr1 installed, `gr` runs gr1.** Outside any workspace with gr2 not installed, the `gr` in the
   gr1 binary runs gr1 and prints one line naming the gr2 install; a gr2 workspace with gr2 missing still
   refuses with exit 69. `gr --which` reports what a plain run would run.

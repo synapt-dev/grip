@@ -142,3 +142,29 @@ def test_expected_mirror_source_linkage_and_wrong_source_refusal(tmp_path, monke
         allocation._legacy_transport_source(member, expected)
     subprocess.run(["git", "-C", str(mirror), "remote", "set-url", "origin", str(source)], check=True, capture_output=True)
     assert allocation._legacy_transport_source(member, expected) == expected
+
+
+@pytest.mark.parametrize("site", ["origin", "source"])
+@pytest.mark.parametrize("tail", ["\x1f", "\u0085"])
+def test_legacy_mirror_git_output_carries_control_raw_to_the_identity_check(tmp_path, monkeypatch, site, tail):
+    # Both reads take git's stdout minus its one newline; a str.strip() would drop \x1f and U+0085 before the check.
+    from gr2.python_cli.review import ReviewError
+
+    workspace, member = _owned(tmp_path)
+    source = tmp_path / "source"
+    subprocess.run(["git", "clone", "-q", str(member), str(source)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(source), "remote", "set-url", "origin", str(source)], check=True, capture_output=True)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    mirror = cache / "source.git"
+    subprocess.run(["git", "clone", "-q", "--mirror", str(source), str(mirror)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(member), "remote", "add", "origin", str(mirror)], check=True, capture_output=True)
+    monkeypatch.setenv("SYNAPT_REVIEW_CACHE_ROOT", str(cache))
+    expected = "local:" + str(source.resolve())
+    assert allocation._legacy_transport_source(member, expected) == expected
+    repo, url = (member, str(mirror) + tail) if site == "origin" else (mirror, str(source) + tail)
+    subprocess.run(["git", "-C", str(repo), "remote", "set-url", "origin", url], check=True, capture_output=True)
+    read = subprocess.run(["git", "-C", str(repo), "remote", "get-url", "origin"], check=True, capture_output=True, text=True)
+    assert read.stdout == url + "\n"
+    with pytest.raises(ReviewError, match="remote_control_character"):
+        allocation._legacy_transport_source(member, expected)

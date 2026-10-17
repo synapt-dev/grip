@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import unicodedata
 from pathlib import Path
 
 from . import next_steps
@@ -76,6 +77,25 @@ def fsck_bad_name(name: str) -> str | None:
     if _is_hfs_dot(name, "gitattributes") or _is_ntfs_dot(name, "gitattributes", "gi7d29"):
         return "gitattributesBlob"
     return None
+
+
+# One table for unsafe text, two public names. Both refuse Cc (C0, DEL, C1 such as U+0085 and the one-byte CSI U+009B),
+# Zl and Zp (U+2028, U+2029) and Cf, which holds the bidi controls (U+202A..U+202E, U+2066..U+2069, LRM, RLM, ALM) and
+# the zero-width and invisible characters (U+200B, WJ, BOM, SHY): printed raw, one can rewrite or hide what a reader
+# sees, and a NUL handed to a path or a git argument raises. A person's name keeps only U+200C ZWNJ and U+200D ZWJ,
+# which Persian and Kurdish names are written with; an identifier (a remote, a path, a ref) refuses those too.
+_UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
+_NAME_KEEPS = frozenset({"\u200c", "\u200d"})
+
+
+def unsafe_in_name(text: str) -> bool:
+    """True if a person's name carries a Cc, Cf, Zl or Zp character other than U+200C ZWNJ and U+200D ZWJ."""
+    return any(c not in _NAME_KEEPS and unicodedata.category(c) in _UNSAFE_CATEGORIES for c in text)
+
+
+def unsafe_in_identifier(text: str) -> bool:
+    """True if a remote, path or ref carries any Cc, Cf, Zl or Zp character (bidi controls are Cf)."""
+    return any(unicodedata.category(c) in _UNSAFE_CATEGORIES for c in text)
 
 
 _SSH_GITHUB_PREFIX = "git@github.com:"
@@ -488,7 +508,8 @@ def remote_origin_url(path: Path) -> str | None:
     proc = git(path, "config", "--get", "remote.origin.url")
     if proc.returncode != 0:
         return None
-    value = proc.stdout.strip()
+    # git's one line terminator only: str.strip() would drop U+0085 and U+001C..U+001F before the identity check.
+    value = proc.stdout.removesuffix("\n")
     return value or None
 
 

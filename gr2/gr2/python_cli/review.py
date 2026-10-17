@@ -101,10 +101,13 @@ def canonical_source_identity(remote_url: str, *, allow_local: bool = False) -> 
     portable committed-lock identity; it is refused unless ``allow_local`` is
     set, in which case it is marked ``local:<path>`` so it can never masquerade
     as a projectable identity."""
+    # Checked raw, before any strip: str.strip() drops U+0085, U+001C..U+001F and \t, which would hide them. A caller
+    # reading git output removes git's one trailing newline itself (gitops.remote_origin_url). Past the check every
+    # control character is refused, so the full strip() only drops whitespace that prints as nothing (U+00A0, U+3000).
+    if gitops.unsafe_in_identifier(remote_url or ""):
+        # Never a repository identity, a display spoof where printed raw, and a NUL reaches the filesystem as a ValueError.
+        raise ReviewError(f"remote_control_character: origin {remote_url!r} carries a control character")
     url = (remote_url or "").strip()
-    if any(ord(c) < 0x20 or c == "\x7f" for c in url):
-        # NUL, the rest of C0 and DEL: never a repository identity, and a NUL reaches the filesystem as a ValueError.
-        raise ReviewError(f"remote_control_character: origin {url!r} carries a control character")
     for pattern in (_GITHUB_SSH_SCP, _GITHUB_SSH_URL, _GITHUB_HTTPS):
         match = pattern.match(url)
         if match:

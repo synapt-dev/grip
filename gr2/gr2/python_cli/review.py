@@ -37,7 +37,6 @@ import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from . import gitops
 from .clone_exec import CloneExecutionError, IncompleteRemoval, rmtree_or_refuse
@@ -119,19 +118,22 @@ def canonical_source_identity(remote_url: str, *, allow_local: bool = False) -> 
             # A file:// URL and the path it spells are one repository. A
             # non-local host names another machine's path; refuse it rather
             # than alias whatever sits at that path on this one.
-            parts = urlsplit(url)
-            if parts.netloc not in ("", "localhost"):
+            # Slice the raw text, not urlsplit: git reads '#' and '?' in a
+            # file:// path literally, and urlsplit would cut them off.
+            host, _, rest = url[len("file://"):].partition("/")
+            if host.lower() not in ("", "localhost"):
                 raise ReviewError(
-                    f"origin {url!r} names host {parts.netloc!r}; a local "
+                    f"origin {url!r} names host {host!r}; a local "
                     "identity must be a path on this machine."
                 )
             # url2pathname is the platform's own reading: /C:/p is C:\p on
             # Windows and stays /p on POSIX, with %-escapes decoded on both.
+            # It splits off '#' and '?' itself (3.14), so they go in escaped.
             # Imported here, not at module top: urllib.request is one of the slow modules the CLI
             # keeps out of its import (tests/test_cli_import_deferred.py).
             from urllib.request import url2pathname
 
-            path = url2pathname(parts.path)
+            path = url2pathname("/" + rest.replace("#", "%23").replace("?", "%3F"))
         return f"local:{Path(path).resolve()}"
     raise ReviewError(
         f"origin {url!r} is not a canonical GitHub source; a review record's repo "

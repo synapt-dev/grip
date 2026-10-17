@@ -1358,3 +1358,22 @@ def test_canonical_identity_reads_a_file_url_as_a_windows_path(url, want, monkey
     monkeypatch.setattr("urllib.request.url2pathname", nturl2path.url2pathname)
     monkeypatch.setattr(review_mod, "Path", _WindowsPath)
     assert canonical_source_identity(url, allow_local=True) == want
+
+
+@pytest.mark.parametrize("mark", ["#", "?"])
+def test_canonical_identity_keeps_a_hash_or_query_mark_in_a_file_url_path(mark, tmp_path):
+    # git reads '#' and '?' in a file:// path literally, so a#1.git and a#2.git are two repos,
+    # and each one's URL and path spellings must be one identity
+    ids = []
+    for name in (f"a{mark}1.git", f"a{mark}2.git"):
+        repo = tmp_path / name
+        repo.mkdir()
+        from_url = canonical_source_identity(f"file://{repo}", allow_local=True)
+        assert from_url == canonical_source_identity(str(repo), allow_local=True)
+        ids.append(from_url)
+    assert ids[0] != ids[1]
+
+
+def test_canonical_identity_accepts_an_upper_case_localhost(tmp_path):
+    # a host name is case-insensitive; LOCALHOST is this machine like localhost
+    assert canonical_source_identity(f"file://LOCALHOST{tmp_path}", allow_local=True) == f"local:{tmp_path.resolve()}"

@@ -511,8 +511,12 @@ def _pr_base_sha(source_repo_root: Path, repo: str, pr_number: int, head_sha: st
             _refuse(f"{repo}: no origin url, so a v2 platform adapter cannot route its PR")
         head_route = {"target": head_adapter.resolve_target(origin)}  # type: ignore[attr-defined]
     base_branch = head_adapter.pr_status(repo_slug, pr_number, **head_route).ref.base_branch or "main"
-    git(source_repo_root, "fetch", "--quiet", "origin", base_branch)
-    base_tip = git(source_repo_root, "rev-parse", "FETCH_HEAD").stdout.strip()
+    if git(source_repo_root, "check-ref-format", f"refs/heads/{base_branch}").returncode != 0:
+        _refuse(f"{repo}: PR #{pr_number} names base branch {base_branch!r}, which git cannot hold as a branch")
+    fetched = git(source_repo_root, "fetch", "--quiet", "--refmap=", "--no-tags", "--", "origin", f"refs/heads/{base_branch}")
+    if fetched.returncode != 0:
+        _refuse(f"{repo}: could not fetch base branch {base_branch!r} of PR #{pr_number}")
+    base_tip = git(source_repo_root, "rev-parse", "--verify", "FETCH_HEAD^{commit}").stdout.strip()
     merged = git(source_repo_root, "merge-base", head_sha, base_tip)
     return merged.stdout.strip() if merged.returncode == 0 else base_tip
 

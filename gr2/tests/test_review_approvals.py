@@ -1130,6 +1130,22 @@ def test_a_fork_with_a_member_behind_it_is_named_by_the_two_fork_tips(monkeypatc
     assert (refused.value.expected, refused.value.observed) == tuple(h * 40 for h in heads)
 
 
+@pytest.mark.parametrize("order, heads", [
+    (("b", "c", "d"), ("c", "d")),
+    (("d", "b", "c"), ("d", "c")),
+], ids=["behind-one-side-first", "behind-one-side-middle"])
+def test_a_member_behind_one_side_of_a_fork_is_not_named(monkeypatch, order, heads):
+    tips = {k + ".git": tip * 40 for k, tip in zip(FIVE, order)}
+    root = _five(monkeypatch, tips)
+    root["members"] = root["members"][:len(order)]
+    # b and c build on a; d builds on b: the member on b is behind one side of the fork only
+    chain = {"b": "ab", "c": "ac", "d": "abd"}
+    monkeypatch.setattr(approvals, "_ancestors", lambda workspace, tip: {t * 40 for t in chain[tip[0]]})
+    with pytest.raises(approvals.ApprovalRefused, match="^approval_chain_divergent: ") as refused:
+        approvals.count_approvals(None, root["review_id"])
+    assert (refused.value.expected, refused.value.observed) == tuple(h * 40 for h in heads)
+
+
 def _merge(multi):
     merged = runner.invoke(app, ["review", "merge"])
     return merged, json.loads(merged.stdout)

@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for the next `v1.x` patch release. The gr2 changes already released are in `[gr2 2.0.0a11]` below.
+Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for the next `v1.x` patch release. The gr2 changes already released are in `[gr2 2.0.0a12]` below.
 
 ### Added
 
@@ -24,19 +24,6 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   foreground launch.
 
 ### Changed
-
-- **`gr2`: `workspace migrate-gr1` records each member's url from the member's own checkout.**
-  A gr1 manifest's url is what the manifest said when the repo was added; the checkout at the member's path is
-  what the workspace actually fetches from, and the two drift (a repo renamed upstream, an SSH url, a fork). When
-  the member is a repository of its own at its path and its `origin` differs from the manifest, the spec now
-  records the checkout's `origin`, and the receipt names each such member in a `MEMBER ORIGIN` block
-  (`--json`: `member_origins`), also kept in `migration-summary.json`. A member with no checkout, a checkout with no
-  `origin`, or a plain folder inside the root keeps the manifest's url. Before this, `materialize`, `--apply` and a
-  native lane fetched from the manifest's url even when every member pointed elsewhere. A credential never leaves the
-  checkout's own git config: userinfo is removed from the recorded url (an SSH login such as `git@` is kept), and an
-  origin that still carries one (a token in a query parameter, a fragment) is not used and not printed; the receipt
-  says the manifest url was kept. The spec writer now escapes every string it writes, so a url or name holding a
-  quote, a backslash or a control character is recorded as data instead of breaking or extending the spec.
 
 - **With only gr1 installed, `gr` runs gr1.** Outside any workspace with gr2 not installed, the `gr` in the
   gr1 binary runs gr1 and prints one line naming the gr2 install; a gr2 workspace with gr2 missing still
@@ -62,6 +49,60 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   regardless of branch, and `--repo manifest` now selects the manifest. A
   manifest with uncommitted changes but no commits ahead is no longer PR
   content.
+
+## [gr2 2.0.0a12] - 2026-10-17
+
+### Security
+
+- **Commands gr2 prints for you to paste are quoted from 2.0.0a12 on.** gr2 prints commands for a person to copy:
+  in a refusal's next step, in a receipt, and on stderr. Some of those lines put in a value the person did not type
+  in that command, unquoted: a value from a lane record, a workspace spec, a remote, or a PR. A value holding shell
+  text such as `;` then ran when the line was pasted. gr2 itself never ran it; the precondition is a crafted value
+  (a branch name, a spec or record field) and a person who copies the printed line. Each such value is now quoted
+  whole, the rule gr2's other printed lines already used, and a printed `git` command puts `--` before a remote or
+  path that git would otherwise read as an option when it begins with `-`. The lines, with the releases that print
+  each one in the form this release changes:
+  - `gr2 review merge`, the `tracking_stale` fetch lines in the receipt and on stderr: the unreadable-clone line
+    in 2.0.0a9 through 2.0.0a11, and the failed-fetch and no-matching-remote lines in 2.0.0a11. 2.0.0a9 and
+    2.0.0a10 print those two lines unquoted in an earlier wording.
+  - `gr2 workspace init`, the no-origin line: 2.0.0a2 through 2.0.0a11; its advice helper: 2.0.0a10 and 2.0.0a11.
+  - The move-back line when a lane member is on the wrong branch: 2.0.0a1 through 2.0.0a11.
+  - The `gr2 hooks trust` lines in repo status, in `gr2 hooks status`, and when hooks are skipped: 2.0.0a4 through
+    2.0.0a11.
+  - The partial-lane approval refusal and the `gr2 review open` line in the old-marker approval refusals: 2.0.0a10
+    and 2.0.0a11.
+  - The `git submodule init` and `deinit` advice (now with `--` before the path), the shallow-pin refusal and the
+    detached-member switch line: 2.0.0a9 through 2.0.0a11.
+  - `gr2 branch` inside a lane member (unit, name and `--repos` key), the `gr2 review read-pr` diff line, and the
+    by-hand fetch line for an unreachable pin: 2.0.0a11.
+
+  A new test walks every f-string in gr2 and fails on an unquoted value inside a printed `git` or `gr2` command; an
+  allowlist names each remaining site and why it may stay, and the test's docstring names the shapes it cannot see.
+  It is a check on this release's printed-line format, not a proof about every printed command.
+
+  RAN: before this fix, the `gr2 branch` refusal inside a lane member printed a lane record key of the form
+  `s; touch <file> #` bare, and pasting the line created the file. A mutant that removes the quoting or the `--` at
+  a guarded site fails a test row or the guard test. RAN: which
+  releases print each line, by searching every published tag's source for the exact line this release changes; a
+  site printed in an earlier wording is not counted.
+
+  Known, not changed in this release: values the person typed into that same command are still printed as typed.
+  Upgrade to 2.0.0a12.
+
+### Changed
+
+- **`workspace migrate-gr1` records each member's url from the member's own checkout.**
+  A gr1 manifest's url is what the manifest said when the repo was added; the checkout at the member's path is
+  what the workspace actually fetches from, and the two drift (a repo renamed upstream, an SSH url, a fork). When
+  the member is a repository of its own at its path and its `origin` differs from the manifest, the spec now
+  records the checkout's `origin`, and the receipt names each such member in a `MEMBER ORIGIN` block
+  (`--json`: `member_origins`), also kept in `migration-summary.json`. A member with no checkout, a checkout with no
+  `origin`, or a plain folder inside the root keeps the manifest's url. Before this, `materialize`, `--apply` and a
+  native lane fetched from the manifest's url even when every member pointed elsewhere. A credential never leaves the
+  checkout's own git config: userinfo is removed from the recorded url (an SSH login such as `git@` is kept), and an
+  origin that still carries one (a token in a query parameter, a fragment) is not used and not printed; the receipt
+  says the manifest url was kept. The spec writer now escapes every string it writes, so a url or name holding a
+  quote, a backslash or a control character is recorded as data instead of breaking or extending the spec.
 
 ## [gr2 2.0.0a11] - 2026-10-17
 

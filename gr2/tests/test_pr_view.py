@@ -570,6 +570,8 @@ def _spec_workspace(tmp_path: Path, url: str) -> Path:
         ("https://github.com/acme/api.git/", "acme/api"),
     ],
 )
+
+
 def test_pr_view_hands_gh_only_an_exact_owner_repo(monkeypatch, tmp_path: Path, url: str, expected: str) -> None:
     # gh reads `--repo ""` as no --repo and answers for the cwd's repo, reads a third segment as a HOST,
     # and a value starting with "-" is option-shaped. A spec url that names no exact OWNER/REPO hands gh
@@ -596,6 +598,8 @@ def test_pr_view_hands_gh_only_an_exact_owner_repo(monkeypatch, tmp_path: Path, 
     ],
     ids=["toml", "utf8", "repos-str", "repos-item", "repos-int", "dir"],
 )
+
+
 def test_pr_view_shows_the_lane_when_the_workspace_spec_is_malformed(
     monkeypatch, tmp_path: Path, spec: bytes | None
 ) -> None:
@@ -636,3 +640,58 @@ def test_pr_view_repo_filter_matches_a_lane_member_by_name_or_owner_repo(
 
     assert res.exit_code == 0, res.output
     assert _repo_values(tmp_path) == ["acme/api"]
+
+
+def test_pr_view_by_number_reads_one_pr_with_no_group_or_lane(monkeypatch, tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    (ws / ".grip").mkdir(parents=True)
+    stub = _gh_stub(
+        tmp_path,
+        details={
+            "octo/widget": _detail(
+                number=7, title="merged one", url="https://x/widget/pull/7",
+                head="topic", base="dev", state="MERGED",
+            ),
+        },
+        lists={},
+    )
+    _use_stub(monkeypatch, stub)
+
+    res = CliRunner().invoke(gr2_app.app, ["pr", "view", str(ws), "--pr", "7", "--repo", "octo/widget"])
+    assert res.exit_code == 0, res.output
+    assert "pr octo/widget#7  (members from the number given)" in res.output
+    assert "State:     MERGED" in res.output
+    argv = (tmp_path / "gh-argv.txt").read_text().splitlines()
+    assert argv[0].startswith("pr view 7 --repo octo/widget --json ")
+
+    res = CliRunner().invoke(gr2_app.app, ["pr", "view", str(ws), "--pr", "7", "--repo", "octo/widget", "--json"])
+    assert res.exit_code == 0, res.output
+    payload = json.loads(res.output)
+    assert payload["source"] == "pr_number" and payload["pr_group_id"] is None
+    assert [(m["repo"], m["number"], m["state"]) for m in payload["members"]] == [("octo/widget", 7, "MERGED")]
+
+
+def test_pr_view_by_number_refuses_without_a_repo(monkeypatch, tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    (ws / ".grip").mkdir(parents=True)
+    stub = _gh_stub(tmp_path, details={}, lists={})
+    _use_stub(monkeypatch, stub)
+
+    res = CliRunner().invoke(gr2_app.app, ["pr", "view", str(ws), "--pr", "7"])
+    assert res.exit_code == 2
+    assert "--pr needs --repo OWNER/REPO" in res.output
+    assert not (tmp_path / "gh-argv.txt").exists()
+
+
+def test_pr_view_by_number_refuses_beside_a_lane(monkeypatch, tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    (ws / ".grip").mkdir(parents=True)
+    stub = _gh_stub(tmp_path, details={}, lists={})
+    _use_stub(monkeypatch, stub)
+
+    res = CliRunner().invoke(
+        gr2_app.app, ["pr", "view", str(ws), "someunit", "somelane", "--pr", "7", "--repo", "octo/widget"]
+    )
+    assert res.exit_code == 2
+    assert "--pr reads one PR by number; give it without OWNER_UNIT or --review" in res.output
+    assert not (tmp_path / "gh-argv.txt").exists()

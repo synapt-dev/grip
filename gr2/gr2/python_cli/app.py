@@ -762,7 +762,10 @@ def _find_review_pr_group(workspace_root: Path, target: str) -> tuple[Path, dict
     """The PR group opened for review `target`. None or several is a refusal that names the review."""
     matches = pr_ops.review_pr_groups(workspace_root, target)
     if not matches:
-        raise SystemExit(f"no PR group for review {target}; open one with `gr2 pr create`")
+        raise SystemExit(
+            f"no PR group for review {target}; open one with `gr2 pr create`, "
+            "or read one PR by number with `gr2 pr view --pr <N> --repo <OWNER/REPO>`"
+        )
     if len(matches) > 1:
         raise SystemExit(f"{len(matches)} PR groups claim review {target}: " + ", ".join(str(p) for p, _ in matches))
     return matches[0]
@@ -5888,12 +5891,29 @@ def pr_view(
     review: Optional[str] = typer.Option(None, "--review", help="Review ID (gr:<sha>); defaults to the workspace's only pinned review"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     repo_filter: Optional[str] = typer.Option(None, "--repo", help="Restrict the view to one member"),
+    pr_number: Optional[int] = typer.Option(
+        None, "--pr", min=1, help="Read one PR by number; needs --repo OWNER/REPO. For a change with no PR group"
+    ),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
-    """Show the member PRs of one change."""
+    """Show the member PRs of one change, or one PR by number."""
     workspace_root = workspace_root.resolve()
     _refuse_review_beside_unit(owner_unit, review)
-    if owner_unit is None:
+    if pr_number is not None:
+        # A number is a PR only inside one repository, and it names no change: there is no
+        # group or lane to read members from, so the repository has to be given, and a unit
+        # or review beside it would be a second subject the read ignores.
+        if owner_unit is not None or review is not None:
+            _refuse("--pr reads one PR by number; give it without OWNER_UNIT or --review")
+        if not repo_filter:
+            _refuse("--pr needs --repo OWNER/REPO; a PR number names a PR only inside one repository")
+        source = {
+            "source": "pr_number",
+            "pr_group_id": None,
+            "platform": "github",
+            "members": [{"repo": repo_filter, "number": pr_number, "branch": None, "remote": repo_filter, "target": None}],
+        }
+    elif owner_unit is None:
         target, _ = resolve_review_subject(workspace_root, review)
         _, group = _find_review_pr_group(workspace_root, target)
         owner_unit, resolved_lane = str(group.get("owner_unit")), str(group.get("lane_name"))
@@ -5985,8 +6005,12 @@ def pr_view(
     source_label = {
         "pr_group": "the PR group record",
         "lane_record": "the lane record",
+        "pr_number": "the number given",
     }.get(str(source["source"]), str(source["source"]))
-    header = f"change {owner_unit}/{resolved_lane}"
+    if source["source"] == "pr_number":
+        header = f"pr {repo_filter}#{pr_number}"
+    else:
+        header = f"change {owner_unit}/{resolved_lane}"
     if source["pr_group_id"]:
         header += f"  pr group {source['pr_group_id']}"
     typer.echo(header + f"  (members from {source_label})")

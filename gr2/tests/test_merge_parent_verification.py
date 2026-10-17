@@ -393,3 +393,38 @@ def test_completed_merge_cannot_be_rewritten_after_construction(
 
     assert completed.receipt is receipt
     assert completed.parent_verdict.kind is ParentVerdictKind.VERIFIED
+
+
+def test_a_stored_remote_shaped_like_an_option_never_reaches_fetch_as_one(tmp_path: Path) -> None:
+    # The remote comes from a stored PR group; the receipt oid is hex. A directory in the repo named by
+    # that oid is a repository git would fetch from, so an option-shaped remote would run its program.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    oid = "a" * 40
+    _git(tmp_path, "init", "-q", "--bare", str(repo / oid))
+    marker = tmp_path / "UPLOAD_PACK_RAN"
+    verdict = verify_parent_shape(
+        repo_root=repo,
+        receipt=_receipt(oid),
+        remote=f"--upload-pack=touch {marker}; git-upload-pack",
+    )
+    assert not marker.exists()
+    assert verdict.kind is not None
+
+
+def test_a_receipt_commit_shaped_like_an_option_never_reaches_fetch_as_one(tmp_path: Path) -> None:
+    # The receipt's commit id comes from the host and is not checked as hex; git parses options after positionals,
+    # so without `--` a commit id shaped like an option would run its program even with a plain remote.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    remote = tmp_path / "remote.git"
+    _git(tmp_path, "init", "-q", "--bare", str(remote))
+    marker = tmp_path / "UPLOAD_PACK_RAN"
+    verify_parent_shape(
+        repo_root=repo,
+        receipt=_receipt(f"--upload-pack=touch {marker}; git-upload-pack"),
+        remote=str(remote),
+    )
+    assert not marker.exists()

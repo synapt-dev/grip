@@ -3475,6 +3475,59 @@ JSON_SHAPES: dict[str, tuple[str, ...]] = {
 JSON_SHAPES.update(CHECK_JSON_SHAPES)
 
 
+#: A launcher may read `<root>/.gr2-slot` (one line, a build name) to choose which gr2 runs in this root.
+#: `store init` writes it from this variable and nothing else; unset means no file, as before.
+SLOT_ENV = "GR2_SLOT"
+SLOT_FILE = ".gr2-slot"
+
+
+#: A slot name is one plain entry: a letter or digit, then letters, digits, '.', '_' or '-'; no
+#: trailing '.', no '..', at most 64 characters. Anything else is refused (an allowlist, not a denylist).
+_SLOT_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9_-])?")
+
+
+def _slot_name_refused(value: str) -> bool:
+    """True when `value` is not one plain directory entry a launcher can join under slots/."""
+    return not _SLOT_NAME.fullmatch(value) or ".." in value
+
+
+def _write_slot_pointer(root: Path) -> str | None:
+    """Write `<root>/.gr2-slot` from GR2_SLOT; return a stderr line when the value is refused.
+
+    A pointer file a launcher may read. Never overwrites an existing file and never writes through
+    a symlink, even a dangling one, including one that appears while init runs. A value that is not one plain entry is refused with no file, so
+    a launcher joining `slots/<name>` can only ever land on one child of slots/."""
+    value = os.environ.get(SLOT_ENV)
+    if value is None:
+        return None
+    if _slot_name_refused(value):
+        return f"{SLOT_ENV} {value!r} is not a slot name (a letter or digit, then letters, digits, '.', '_' or '-'; no trailing '.' or '..'; at most 64); no {SLOT_FILE} written"
+    # One open both checks and creates, so a second init racing on the same root, or a link
+    # planted after any check, cannot be written through: O_EXCL fails on any existing entry,
+    # a dangling symlink included.
+    # The store is already on disk here, so a pointer that cannot be written is one stderr line,
+    # never a traceback or exit 1.
+    unwritten = f"{SLOT_ENV} {value!r}: could not write {SLOT_FILE} ({{}}); the store is initialized, with no pointer"
+    try:
+        fd = os.open(root / SLOT_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    except FileExistsError:
+        return None
+    except OSError as exc:  # mut:openerr
+        return unwritten.format(exc.strerror or exc)
+    try:
+        with os.fdopen(fd, "w") as slot:
+            slot.write(value + "\n")  # mut:slotwrite
+    except OSError as exc:  # mut:writeerr
+        # O_EXCL made this entry ours, and an existing pointer is never touched again, so a
+        # partial one would stay for good: remove it.
+        try:
+            os.unlink(root / SLOT_FILE)  # mut:unlink
+        except OSError:
+            pass
+        return unwritten.format(exc.strerror or exc)
+    return None
+
+
 @grip_app.command("init")
 def grip_init_cmd(
     workspace_root: Path | None = typer.Argument(None),
@@ -3503,6 +3556,7 @@ def grip_init_cmd(
     try:
         clones = _parse_clone_values(clone_values) if clone_values else None
         hook_states = _native_store_init(root, member_paths=member_paths, clones=clones)
+        slot_problem = _write_slot_pointer(root)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code)
@@ -3519,6 +3573,8 @@ def grip_init_cmd(
     else:
         typer.echo(f"Initialized git-native store at {root}")
     # stderr in both modes, so neither stdout contract moves
+    if slot_problem:
+        typer.echo(slot_problem, err=True)
     for line in store_hooks.hook_problems(root, hook_states):
         typer.echo(line, err=True)
     for line in store_hooks.gitmodules_problems(root):

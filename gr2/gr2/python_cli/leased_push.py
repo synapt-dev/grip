@@ -41,7 +41,9 @@ def _remote_values(repo: Path, remote: str, refs: list[str]) -> dict[str, str]:
     if proc.returncode:
         raise PushRefused(refs[0], f"ls-remote {remote} failed: {proc.stderr.strip()[:200]}")
     out = {}
-    for line in proc.stdout.splitlines():
+    for line in proc.stdout.split("\n"):
+        if not line:
+            continue
         sha, name = line.split("\t", 1)
         if not name.endswith("^{}"):
             out[name] = sha

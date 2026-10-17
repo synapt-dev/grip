@@ -34,7 +34,9 @@ def delete(repo: Path, stook: str, *, org: str, remote: str = "origin") -> list[
     if proc.returncode:
         raise leased_push.PushRefused(stook, f"ls-remote {remote} failed: {proc.stderr.strip()[:200]}")
     now = {}
-    for line in proc.stdout.splitlines():
+    for line in proc.stdout.split("\n"):
+        if not line:
+            continue
         sha, name = line.split("\t", 1)
         if not name.endswith("^{}"):
             now[name] = sha

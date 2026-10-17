@@ -114,11 +114,13 @@ def _walk(repo: Path, member: str, old: str, new: str, remote: str) -> str:
 
 
 def _pins_of(repo: Path, commit: str) -> dict[str, str]:
-    out = gitops.run(repo, "ls-tree", "-r", f"{commit}:{PINS}")
+    out = gitops.run(repo, "ls-tree", "-r", "-z", f"{commit}:{PINS}")
     if out.returncode:
         return {}
     pins = {}
-    for line in out.stdout.splitlines():
+    for line in out.stdout.split("\0"):
+        if not line:
+            continue
         meta, path = line.split("\t", 1)
         pins[path] = meta.split()[2]
     return pins

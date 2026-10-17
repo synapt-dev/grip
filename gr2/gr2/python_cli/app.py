@@ -1813,10 +1813,19 @@ def workspace_migrate_gr1(
     force: bool = typer.Option(False, "--force", help="Allow overwrite of an existing .grip/workspace_spec.toml"),
     apply: bool = typer.Option(False, "--apply", help="After migration, validate and apply the spec in one step"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    unit: Optional[str] = typer.Option(
+        None,
+        "--unit",
+        help="When the gr1 agents manifest puts more than one unit at this root, the one to keep",
+    ),
 ) -> None:
-    """Convert an existing gr1 (.gitgrip) workspace into parallel gr2 (.grip) layout."""
+    """Convert an existing gr1 (.gitgrip) workspace into parallel gr2 (.grip) layout.
+
+    Only this root's own unit (and units inside it) are migrated. A unit the gr1 agents manifest
+    places beside the root is another desk's root: it is named and not read.
+    """
     workspace_root = _resolve_workspace_root(workspace_root)
-    payload = migration.migrate_gr1_workspace(workspace_root, force=force)
+    payload = migration.migrate_gr1_workspace(workspace_root, force=force, unit=unit)
     if apply:
         issues = spec_apply.validate_spec(workspace_root)
         errors = [i for i in issues if i.level == "error"]
@@ -1888,6 +1897,11 @@ def workspace_bootstrap_gr1(
     receipt: Optional[Path] = typer.Option(None, "--receipt"),
     rollback_receipt: Optional[Path] = typer.Option(None, "--rollback-receipt"),
     expected_current_spec_sha256: Optional[str] = typer.Option(None, "--expected-current-spec-sha256"),
+    unit: Optional[str] = typer.Option(
+        None,
+        "--unit",
+        help="When the gr1 agents manifest puts more than one unit at this root, the one to keep",
+    ),
 ) -> None:
     """Compile the canonical gr1 manifest and initialize the gr2 grip store."""
     workspace_root = _resolve_workspace_root(workspace_root)
@@ -1905,9 +1919,11 @@ def workspace_bootstrap_gr1(
     elif regenerate:
         if expected_spec_sha256 is None or receipt is None:
             raise typer.BadParameter("--regenerate requires --expected-spec-sha256 and --receipt")
-        payload = migration.regenerate_gr1_workspace(workspace_root, expected_spec_sha256=expected_spec_sha256, receipt_path=receipt)
+        payload = migration.regenerate_gr1_workspace(
+            workspace_root, expected_spec_sha256=expected_spec_sha256, receipt_path=receipt, unit=unit
+        )
     else:
-        payload = migration.bootstrap_gr1_workspace(workspace_root)
+        payload = migration.bootstrap_gr1_workspace(workspace_root, unit=unit)
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
     else:

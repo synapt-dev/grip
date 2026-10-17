@@ -75,6 +75,17 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Changed
 
+- **`gr2`: `workspace migrate-gr1` migrates one root, the root it runs in.** A gr1 agents manifest lists every
+  desk, each beside the gripspace root at `../<worktree>`, and migrate-gr1 declared every one of them as a unit
+  of this root and read each desk's working state for its receipt. A gr2 workspace is one root, so a unit whose
+  desk is another directory is now another desk's root: it is not declared in the spec, nothing under it is read,
+  and the receipt names it under NOT MIGRATED HERE (`- unit atlas -> ../synapt-codex: another root, not migrated
+  here`). The root's own unit is the one whose worktree is `main`, or whose worktree names this directory. When
+  the manifest puts two or more units at this root, migrate-gr1 refuses, names them and writes no spec; the new
+  `--unit <name>` keeps one. A root with no unit of its own refuses too. A unit with no worktree still lives at
+  `agents/<unit>/home` and is kept. `bootstrap-gr1` and the regenerate path compile the same way. This retires
+  the fleet-root mapping and the NOT ADOPTED receipt; a spec written by hand that declares a sibling unit still
+  applies as before.
 - **`gr2`: a compat `store commit` refused for an unpushed pin names the next step.** When no remote branch holds
   a member's pin, the refusal ("... push it first", exit 3, unchanged) now ends with the push that covers it,
   `push it: git -C <member> push -u <remote> <branch>`, shell-quoted so it runs as printed (a member whose branch

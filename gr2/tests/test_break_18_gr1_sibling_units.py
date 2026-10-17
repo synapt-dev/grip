@@ -123,31 +123,54 @@ def sibling_workspace(tmp_path: Path) -> Path:
     return _write_gr1_sibling_workspace(tmp_path)
 
 
+def _write_fleet_spec(root: Path, agents: dict[str, str] | None = None) -> None:
+    """Write the FLEET-shaped spec by hand: every agent's desk declared as a unit of this root.
+
+    migrate-gr1 no longer writes this shape (it migrates one root's own unit and names the
+    rest), but apply still has to handle a spec that declares a sibling desk, because a spec
+    can be written by hand. These apply rows read that spec from here, at the same paths
+    `_gr1_unit_path` gives each worktree.
+    """
+    from gr2.python_cli import migration
+
+    agents = _SIBLING_AGENTS if agents is None else agents
+    manifest = yaml.safe_load((root / ".gitgrip" / "spaces" / "main" / "gripspace.yml").read_text())
+    compiled = migration.compile_gr1_to_workspace_spec(root, manifest, {})
+    writable = [repo["name"] for repo in compiled["repos"] if not repo.get("reference")]
+    compiled["units"] = [
+        {"name": name, "path": migration._gr1_unit_path(name, {"worktree": worktree}), "repos": writable}
+        for name, worktree in agents.items()
+    ]
+    (root / ".grip").mkdir(parents=True, exist_ok=True)
+    (root / ".grip" / "workspace_spec.toml").write_text(migration.render_workspace_spec(compiled))
+
+
 # ---------------------------------------------------------------------------
 # Break 18, first half: the emitted paths are the siblings
 # ---------------------------------------------------------------------------
 
 class TestBreak18EmittedUnitPaths:
-    def test_emitted_unit_paths_are_the_gr1_siblings(self, sibling_workspace: Path) -> None:
-        """THE SIBLING-LAYOUT DEFECT. Before the fix every unit is `agents/<u>/home`.
+    def test_emitted_units_are_this_roots_own_and_the_siblings_are_named(self, sibling_workspace: Path) -> None:
+        """THE SIBLING-LAYOUT DEFECT, and the one-root rule that replaced the fleet mapping.
 
-        gr1 declares `worktree = "synapt-dev"` for apollo, so the emitted path
-        must be `../synapt-dev` — and `"."` for the desk whose worktree is the
-        root itself, because that agent works IN the root.
+        Before the first fix every unit was `agents/<u>/home`. The desk whose worktree is
+        "main" works IN the root, so it is declared at ".". The four sibling desks are
+        other roots: they are not declared in this spec at all, and each is named, at the
+        path gr1 gave it, in the receipt.
         """
-        migrate_gr1_workspace(sibling_workspace)
+        payload = migrate_gr1_workspace(sibling_workspace)
 
         spec = tomllib.loads(
             (sibling_workspace / ".grip" / "workspace_spec.toml").read_text()
         )
         got = {unit["name"]: unit["path"] for unit in spec["units"]}
 
-        assert got == {
+        assert got == {"opus": "."}
+        assert {row["unit"]: row["path"] for row in payload["not_migrated"]} == {
             "apollo": "../synapt-dev",
             "atlas": "../synapt-codex",
             "fathom": "../synapt-fathom",
             "sentinel": "../synapt-global",
-            "opus": ".",
         }
 
     def test_no_unit_path_is_the_hard_coded_nested_default(self, sibling_workspace: Path) -> None:
@@ -221,20 +244,14 @@ def test_control_mutation_hard_coded_unit_path_turns_break_18_red(
     spec = tomllib.loads((root / ".grip" / "workspace_spec.toml").read_text())
     got = {unit["name"]: unit["path"] for unit in spec["units"]}
 
-    repaired = {
-        "apollo": "../synapt-dev",
-        "atlas": "../synapt-codex",
-        "fathom": "../synapt-fathom",
-        "sentinel": "../synapt-global",
-        "opus": ".",
-    }
+    repaired = {"opus": "."}
     assert got != repaired, (
         "restoring the hard-coded path did NOT change the emitted units, so "
         f"break 18 does not pin the fix. Emitted: {got!r}"
     )
     # State the mutant's shape too, so the row says WHICH wrong answer the
     # fixture catches rather than only that it caught something.
-    assert got == {name: f"agents/{name}/home" for name in repaired}, (
+    assert got == {name: f"agents/{name}/home" for name in _SIBLING_AGENTS}, (
         f"the mutant produced something other than the nested default: {got!r}"
     )
 
@@ -276,7 +293,7 @@ class TestBreak18ApplyAcceptsSiblingUnitsNowThatTheConsumerLanded:
         means migrate-gr1's own output cannot be applied, which is the whole path
         section 6b promises.
         """
-        migrate_gr1_workspace(sibling_workspace)
+        _write_fleet_spec(sibling_workspace)
         plan, operations = build_plan(sibling_workspace)
         got = {unit["name"]: unit["path"] for unit in plan["units"]}
         assert got["apollo"] == "../synapt-dev", got
@@ -304,7 +321,7 @@ class TestBreak18ApplyAcceptsSiblingUnitsNowThatTheConsumerLanded:
         checkout. Asserted on the PLAN, so a green here means the resolver, not a
         clone that happened not to run.
         """
-        migrate_gr1_workspace(sibling_workspace)
+        _write_fleet_spec(sibling_workspace)
         _, operations = build_plan(sibling_workspace)
         # THE `"."` UNIT IS EXCLUDED, and the exclusion is the fixture's shape
         # rather than a convenience: `opus` works IN the root, and this fixture
@@ -354,16 +371,21 @@ class TestBreak18ApplyAcceptsSiblingUnitsNowThatTheConsumerLanded:
         """
         root = _write_gr1_sibling_workspace(tmp_path)
         (root / ".gitgrip" / "agents.toml").write_text(
+            '[agents.opus]\nworktree = "main"\nchannel = "dev"\n\n'
             '[agents.nested]\nworktree = "agents/nested"\nchannel = "dev"\n'
         )
-        migrate_gr1_workspace(root)
+        payload = migrate_gr1_workspace(root)
         spec_path = root / ".grip" / "workspace_spec.toml"
         assert spec_path.exists(), (
             "no spec was written — the migration failed instead of translating"
         )
         spec = tomllib.loads(spec_path.read_text())
         got = {unit["name"]: unit["path"] for unit in spec["units"]}
-        assert got == {"nested": "../agents-nested"}, got
+        assert got == {"opus": "."}, got
+        # The translated sibling is another root: named at gr1's translated path, not declared.
+        assert [(row["unit"], row["path"]) for row in payload["not_migrated"]] == [
+            ("nested", "../agents-nested")
+        ]
 
     def test_the_sanitised_sibling_is_appliable_too(self, tmp_path: Path) -> None:
         """Was `test_the_sanitised_sibling_is_still_refused_by_apply`.
@@ -375,10 +397,7 @@ class TestBreak18ApplyAcceptsSiblingUnitsNowThatTheConsumerLanded:
         that the next verb refuses.
         """
         root = _write_gr1_sibling_workspace(tmp_path)
-        (root / ".gitgrip" / "agents.toml").write_text(
-            '[agents.nested]\nworktree = "agents/nested"\nchannel = "dev"\n'
-        )
-        migrate_gr1_workspace(root)
+        _write_fleet_spec(root, {"nested": "agents/nested"})
         plan, _ = build_plan(root)
         got = {unit["name"]: unit["path"] for unit in plan["units"]}
         assert got["nested"] == "../agents-nested", got
@@ -392,7 +411,7 @@ class TestBreak18ApplyAcceptsSiblingUnitsNowThatTheConsumerLanded:
         control below still holds the other direction — a generic spec error must
         not claim 4 either.
         """
-        migrate_gr1_workspace(sibling_workspace)
+        _write_fleet_spec(sibling_workspace)
         build_plan(sibling_workspace)  # must not raise at all
 
     def test_control_a_generic_spec_error_does_not_claim_exit_four(
@@ -447,11 +466,7 @@ class TestBreak18ApplyAcceptsSiblingUnitsNowThatTheConsumerLanded:
         units at one path means one unit's worktree lands on the other's.
         """
         root = _write_gr1_sibling_workspace(tmp_path)
-        (root / ".gitgrip" / "agents.toml").write_text(
-            '[agents.one]\nworktree = "x/y"\nchannel = "dev"\n\n'
-            '[agents.two]\nworktree = "x-y"\nchannel = "dev"\n'
-        )
-        migrate_gr1_workspace(root)
+        _write_fleet_spec(root, {"one": "x/y", "two": "x-y"})
         with pytest.raises(SystemExit):
             build_plan(root)
         message = capsys.readouterr().err

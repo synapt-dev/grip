@@ -275,6 +275,8 @@ def _start_lane_branch(repo_name: str, repo: Path, branch: str, ref: str | None,
         fork = base.stdout.strip() if base.returncode == 0 and base.stdout.strip() else head
         print(f"gr2: {repo_name}: continues origin/{branch} at {head[:12]}; fork base {fork[:12]}", file=sys.stderr)
         return fork, None
+    if seed_is_work and git(repo, "merge-base", "--is-ancestor", head, integration).returncode == 0:
+        seed_is_work = False  # the local branch holds nothing its target lacks: there is no work to keep
     start = "local" if seed_is_work else "pin" if at_pin else "tip"
     if start == "tip":
         target = f"refs/heads/{ref}" if ref else "HEAD"

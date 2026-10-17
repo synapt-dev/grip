@@ -677,6 +677,21 @@ def test_at_pin_never_starts_a_local_branch_with_unpushed_work_at_the_pin(tmp_pa
     assert f"gr2: beta: fresh local {local}" in _flat(res)
 
 
+def test_a_local_branch_with_no_unpushed_work_starts_at_the_live_tip_and_the_doc_says_tip(tmp_path: Path) -> None:
+    """A spec root: the author's local `fresh` sits at the pin with nothing the remote lacks, and the remote's main
+    moved on. There is no work to keep, so the lane starts at the live tip and the doc says `tip`, not `local`.
+    Goes red if a local branch counts as work only because it exists (the lane lands on the pin)."""
+    ws, _ = _workspace(tmp_path, ["beta"])
+    src = ws / "repos" / "beta"
+    _git(src, "branch", "fresh")
+    pin = _git(src, "rev-parse", "fresh")
+    live = _move_main(ws, "beta")
+    res = _create(ws, "--branch", "fresh")
+    assert res.exit_code == 0, res.output
+    assert _git(_lane_repo(ws, "beta"), "rev-parse", "HEAD") == live != pin
+    assert lanes.load_lane_doc(ws, "atlas", "demo")["fork_base"]["beta"] == {"branch": "fresh", "sha": live, "start": "tip"}
+    assert f"gr2: beta: fresh tip {live}" in _flat(res)
+
 def test_a_member_that_declares_a_ref_starts_at_the_live_tip_of_that_ref_not_the_remote_default(tmp_path: Path) -> None:
     """A spec root whose alpha declares `ref = "dev"`; dev is pushed ahead and main moves on too. A branch new to the
     remote starts at the live tip of dev, the member's integration ref, not of the remote's HEAD (main).

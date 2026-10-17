@@ -3108,6 +3108,7 @@ def _native_store_checkout(root: Path, revision: str) -> tuple[str, list[dict[st
 STORE_STATUS_NOTES = {
     "layer": "  (the record's layers carry the pin; no remote has it, by design in full mode)",
     "missing": "  (the upstream branch does not contain the pin, and no layer carries it)",
+    "missing-full": "  (unpushed pin, no layer: no remote has the pin and the record carries no layer for it)",
     "no-pin": "  (grip.toml records no pin for this member; {commit} records one)",
     "stale": "  (the upstream has moved past the pin)",
     "unpinned": "  (the checkout has moved off the pin)",
@@ -3926,8 +3927,10 @@ def grip_status_cmd(
     if json_output:
         typer.echo(json.dumps({"status": "status", "members": members, "root": root_status}))
     else:
+        full = _workspace_mode(_grip_document(root)) == "full"
         for member in members:
-            note = STORE_STATUS_NOTES.get(member["state"], "").format(commit=_store_advice(root, "commit"))
+            key = "missing-full" if full and member["state"] == "missing" else member["state"]
+            note = STORE_STATUS_NOTES.get(key, "").format(commit=_store_advice(root, "commit"))
             typer.echo(_store_status_line(member) + note)
     # A hook that will not run is a finding, not a pass: said on stderr in both modes so stdout is unchanged.
     for line in store_hooks.hook_problems(root, store_hooks.hook_states(root)):

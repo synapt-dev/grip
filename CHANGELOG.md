@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for the next `v1.x` patch release. The gr2 changes already released are in `[gr2 2.0.0a10]` below.
+Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for the next `v1.x` patch release. The gr2 changes already released are in `[gr2 2.0.0a11]` below.
 
 ### Added
 
@@ -49,6 +49,123 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   regardless of branch, and `--repo manifest` now selects the manifest. A
   manifest with uncommitted changes but no commits ahead is no longer PR
   content.
+
+## [gr2 2.0.0a11] - 2026-10-17
+
+### Security
+
+- **Values gr2 passes to git as positional arguments no longer reach git as options.** Some values gr2 passes to
+  git as positional arguments come from the command line or from a workspace spec file. A value beginning with `-`
+  could be read by git as an option, such as `--upload-pack=<command>`, which makes git run that command on this
+  machine. gr2 now refuses an empty or `-`-led value before git sees it, and passes the value after `--`, at each of
+  these:
+  - `gr2 sync status`: a spec url read by the remote probe. The probe is present in 2.0.0a1 through 2.0.0a10; from
+    2.0.0a10 a spec url beginning with `-` is already refused when the spec loads.
+  - `gr2 apply`, `gr2 workspace materialize`, `gr2 workspace migrate-gr1` and `gr2 sync run`: a repo pin from the
+    workspace spec, in 2.0.0a5 through 2.0.0a10. The pin is now also refused when the spec loads unless it is shaped
+    like a commit id, tag or ref name.
+  - `gr2 review open-project --enter`: a `--local-source` path, in 2.0.0a1 through 2.0.0a10.
+  - `gr2 store init --clone NAME=URL`: the url, in 2.0.0a9 and 2.0.0a10.
+
+  The lane seed fetch from a `--sources-json` path now also passes the path after `--`.
+
+  RAN: on the code before this fix, a pin of the form `--upload-pack=touch <file>` passed to `gr2 apply` created the
+  file; on this release `gr2 apply`, `gr2 workspace materialize` and `gr2 sync run` refuse it when the spec loads, and
+  `gr2 store init` refuses an option-shaped url. A commit id pin, a tag pin, a local path and a `file://` url still
+  work; an https url and an scp-style url pass the check and reach the network step. Each site has a test row that
+  passes such a value and asserts that no file is created. RAN: which releases contain each site, by searching every
+  published tag's source. READ, not run end to end: `gr2 workspace migrate-gr1` (it goes through the same spec load as
+  `gr2 apply`).
+
+  Known, not changed in this release: a review record in the old format names a remote that is cloned without this
+  check, and a rebind reads a ref name from the review request into `git ls-remote` after the url. Probes at both
+  found no command run; they are named here so they are not silent. Upgrade to 2.0.0a11.
+
+### Added
+
+- **`gr2 review read-pr OWNER/REPO N` reads a PR of a repo outside the workspace.** `review checkout-pr` builds its
+  lane from the workspace spec, so another project's PR was refused as "repo not found in workspace spec". `read-pr`
+  fetches the PR head and the forge's default branch by URL into a new directory (`--dir`, which must not exist and
+  must not be a symlink; `--url` names another source), checks out the head detached, and prints the head, the base
+  (merge-base) and the diff stat. The directory has no remote and carries `gr2.readOnlyReview=true`, so `gr2 add`,
+  `commit` and `push` refuse in it; raw git is not fenced. The fetch passes `--` before the source, `--refmap=` and
+  `--no-tags`, and `-c protocol.ext.allow=never`; its error line masks userinfo in the url, and a failed fetch
+  removes the directory it made.
+
+- **Read verbs on a review: `review stamps`, `review blockers`, `review merged` and `review list`.** None of them
+  moves a remote ref. `stamps` reads the approval chain, and `stamps --since-my-stamp` shows, per member, what changed
+  between the head you (git `user.name`) last stamped and the current head, exit 3 `no_stamp` when you have none.
+  `blockers` is the merge gate's preflight and stops before any build or push. `merged` resolves `--into` from the
+  receipt, else the members' remote default branch, so a target that moved but did not merge reads exit 3, none
+  merged. `list` prints `[{id, pinned_at}]` oldest first (`[]` with no pins), the same JSON with or without `--json`.
+  `--help` on a verb whose workspace root may be left out now prints the help outside a workspace instead of exit 2.
+  `review check` no longer reports "satisfied" for a repo nothing names: such a repo exits 2 with `unknown_repo`, and
+  a declared repo's PR that no review lane, PR group or policy names exits 0 with satisfied false and basis
+  `no_lane_or_group_names_this_pr`.
+
+### Changed
+
+- **`lane create` starts a branch new to the remote at the live tip of its target, not at the declared pin.**
+  This is a changed default, on native and spec roots alike: a lane used to start where the workspace pinned the
+  member, and now starts where the member's remote is, read by `ls-remote` when the lane is made. If you relied on the
+  old default, pass the new `--at-pin` to start at the declared pin. The lane doc's `fork_base` records which start
+  was taken (`tip`, `pin`, or `local` when your own unpushed local branch is kept), and one line says it. A branch the
+  remote already has continues it, as before; `--workspace-commit` still only names which workspace commit is
+  materialized.
+
+- **gr2's targeted fetches write only what they name.** A fetch by remote name with an explicit refspec also wrote
+  the refs the remote's configured `remote.<name>.fetch` refspecs map to, and `remote.<name>.tagOpt=--tags` brought
+  every tag. The approval chain's transfer fetch, the push check's lane-branch fetch, the pin's source remote-branch
+  fetch, the PR branch fetch behind `review checkout-pr` and `review open`, and `review update`'s target fetch now pass
+  `--refmap=` and `--no-tags`, as do the two fallback commands the merge gate prints. `review checkout-pr` and
+  `review open` no longer bring in tags with the one PR branch they fetch.
+
+- **`lane remove` ends a bound lane by removing its record.** A lane made with `lane create --bind` used to be refused
+  outright. Now its record is removed and the bound worktree is left as it was, and the worktree's own uncommitted or
+  unpushed work does not block the removal. An entered or leased bound lane is still refused, and so is a record whose
+  bound worktree sits inside the record directory. A `bound_worktree` that is not absolute is now refused by every
+  reader of a bound lane's root, naming the lane and the value; `lane create --bind` already writes an absolute path.
+  `lane bind`, `pr create` and `lane commit` on a bound lane read the root the same way, so `lane bind` no longer
+  writes its review receipt into a clone at the same relative path under the current directory.
+
+### Fixed
+
+- **`review pin` judges a branch made from the target.** A branch created with
+  `git checkout -b feat origin/trunk` has the target itself as its merge ref, so the
+  remote-branch judge used to skip it and a remote `feat` already past the head pinned
+  with rc 0. When the merge ref is `--ref`, the judge now reads the remote branch of the
+  same name, and refuses with `head_behind_remote_branch` or `remote_branch_diverged`.
+
+- **`review pin` records the remote branch its judge reads.** For a branch whose merge ref is `--ref`, the
+  `pushed_before_pin` record read the raw merge ref and fell back to the first branch by name holding the head, so it
+  could name another branch at the same tip. It now records the current branch, as the judge reads it.
+
+- **A member url is read as the repository, never as an option.** When the store members load, a remote url
+  starting with `-` is refused with exit 4, naming the member and the remote; `lane create`, `lane enter` and
+  `lane push` print that refusal with no traceback. The `store materialize` clone and the shared clone helper pass
+  `--` before the url. Before, such a url failed in `git clone` with a message naming the target path instead.
+
+- **`lane remove` names the ref that reaches each unpushed commit.** Each refusal row now reads
+  `lane_has_unpushed_commit: <repo> <sha> (on <ref>)`, naming a branch if one reaches the commit, otherwise `HEAD`,
+  otherwise a tag, so a stray local tag is told apart from a desk's own work. The lane-root row and the no-fetch
+  message for tag-only commits name the ref too.
+
+- **`pr view` names a lane member by its spec url's OWNER/REPO.** With no PR group yet it passed the bare workspace
+  name, which gh refuses. Each member is now read through its url in the workspace spec, and gh is handed the slug only
+  when it is exactly OWNER/REPO; any other url falls back to the workspace name. A workspace spec that does not load no
+  longer stops `pr view` with a traceback, and `--repo` matches a member by its workspace name or its OWNER/REPO.
+
+- **A github.com url that names no OWNER/REPO hands gh the bare repo name, never an empty slug.** `pr create`, merge
+  verification and the PR base pin got `''` for urls such as `https://github.com/`, and gh reads `--repo ''` as no
+  `--repo`, answering for the repository in the current directory. The bare name is refused by gh before any network
+  call. A trailing slash and the `ssh://git@github.com/` form keep their OWNER/REPO.
+
+- **`gr2 branch` inside a lane's repo refuses to leave the lane's branch.** It used to switch the repo to any branch
+  with exit 0. It now exits 2 unless the name is the lane's own branch for that repo, and names `gr2 lane create` as
+  the way out. A lane doc whose `branch_map` does not load still holds its repos; a repo in no lane branches as before.
+
+- **A test of the plugin write bound no longer fails when the plugin is killed before its first log line.** The row
+  read an empty or missing progress log as an error; it now reads it as zero. The bound it asserts is unchanged.
 
 ## [gr2 2.0.0a10] - 2026-10-17
 

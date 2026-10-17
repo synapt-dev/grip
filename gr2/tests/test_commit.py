@@ -301,6 +301,26 @@ def test_bound_lane_commits_only_the_bound_worktree(tmp_path: Path) -> None:
     # Bound lanes stay single-repo: the one target is the bound worktree, not a
     # repos/<key> checkout under the lane state tree.
     wt = _init_repo(tmp_path / "wt")
-    doc = {"lane_kind": "bound", "repos": ["only"], "bound_worktree": str(wt)}
+    doc = {"lane_name": "b", "owner_unit": "atlas", "lane_kind": "bound", "repos": ["only"],
+           "bound_worktree": str(wt)}
+    _write_lane_record(tmp_path, doc)
     targets = commit_ops._lane_repo_targets(tmp_path, "atlas", "b", doc)
-    assert targets == [("only", Path(str(wt)))]
+    assert targets == [("only", wt.resolve())]
+
+
+def _write_lane_record(ws: Path, doc: dict) -> None:
+    record = lanes.lane_file(ws, "atlas", "b")
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(lanes.serialize_toml(doc))
+
+
+def test_bound_lane_commit_refuses_a_relative_bound_worktree(tmp_path: Path, monkeypatch) -> None:
+    # A relative path would resolve against the CWD: from the workspace "wt" names a real repo, and it is
+    # still refused rather than committed.
+    wt = _init_repo(tmp_path / "wt")
+    doc = {"lane_name": "b", "owner_unit": "atlas", "lane_kind": "bound", "repos": ["only"], "bound_worktree": "wt"}
+    _write_lane_record(tmp_path, doc)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(commit_ops.CommitError, match="needs an absolute bound_worktree, not 'wt'"):
+        commit_ops._lane_repo_targets(tmp_path, "atlas", "b", doc)
+    assert wt.is_dir()

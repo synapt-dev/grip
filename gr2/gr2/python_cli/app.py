@@ -43,6 +43,7 @@ from . import prune as prune_ops
 from . import target as target_ops
 from . import project_review
 from . import push as push_ops
+from . import read_review
 from .clone_exec import rmtree_or_refuse
 from .events import EventEmitError, EventType, emit, emit_after_outcome
 from .layout import GRIP_DIR, grip_dir
@@ -237,7 +238,8 @@ def _pr_head_review_paths(
     )
 
 
-def _start_lane_branch(repo_name: str, repo: Path, branch: str, ref: str | None, *, seed_is_work: bool) -> str:
+def _start_lane_branch(repo_name: str, repo: Path, branch: str, ref: str | None, *, seed_is_work: bool,
+                       at_pin: bool = False, say_start: bool = False) -> tuple[str, str | None]:
     """Where a freshly materialized lane branch starts, and the fork base a review measures from.
 
     The clone was just made from the member's remote, so ``refs/remotes/origin/*`` is the remote as of now. A branch
@@ -248,8 +250,11 @@ def _start_lane_branch(repo_name: str, repo: Path, branch: str, ref: str | None,
     does not contain: that work is kept where it is and only tracks the remote, so nothing unpushed is dropped.
 
     The fork base of a continued branch is its merge-base with the integration ref, so a review still covers the
-    work already pushed on it. A branch the remote does not have starts where it did; when that start is behind
-    the integration ref, one line says by how much, because a lane on a stale pin otherwise looks current."""
+    work already pushed on it. A branch the remote does not have starts at the LIVE tip of the integration ref,
+    read by ``ls-remote`` now, so a new lane is not born on a stale pin. ``--at-pin`` (``at_pin``) is the explicit
+    form: the branch starts at the declared pin, and when that is behind the integration ref one line says by how much. A seed holding the author's own local branch is kept where it is ("local"), so nothing is dropped.
+    ``say_start`` prints that choice as one line; only ``lane create`` asks for it.
+    Returns the fork base and how the start was chosen ("tip", "pin", "local"; None for a continued branch)."""
     head = git(repo, "rev-parse", "HEAD").stdout.strip()
     integration = f"refs/remotes/origin/{ref or 'HEAD'}"
     remote = git(repo, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{branch}^{{commit}}")
@@ -269,17 +274,43 @@ def _start_lane_branch(repo_name: str, repo: Path, branch: str, ref: str | None,
         base = git(repo, "merge-base", head, integration)
         fork = base.stdout.strip() if base.returncode == 0 and base.stdout.strip() else head
         print(f"gr2: {repo_name}: continues origin/{branch} at {head[:12]}; fork base {fork[:12]}", file=sys.stderr)
-        return fork
+        return fork, None
+    if seed_is_work and git(repo, "merge-base", "--is-ancestor", head, integration).returncode == 0:
+        seed_is_work = False  # the local branch holds nothing its target lacks: there is no work to keep
+    start = "local" if seed_is_work else "pin" if at_pin else "tip"
+    if start == "tip":
+        target = f"refs/heads/{ref}" if ref else "HEAD"
+        live = git(repo, "ls-remote", "origin", target)
+        # ls-remote matches a pattern by its tail, so refs/heads/x/refs/heads/main answers for main: take the exact name.
+        rows = (line.split("\t", 1) for line in live.stdout.splitlines() if "\t" in line) if live.returncode == 0 else ()
+        tip = next((sha for sha, name in rows if name == target), "")
+        if not tip:
+            why = "cannot read the live tip of" if live.returncode else "the remote has no branch"
+            print(f"gr2: {repo_name}: {why} origin/{ref or 'HEAD'}; {branch} starts at the pin", file=sys.stderr)
+            start = "pin"
+        elif tip != head:
+            if git(repo, "cat-file", "-e", f"{tip}^{{commit}}").returncode:
+                git(repo, "fetch", "-q", "origin", target)
+            moved = git(repo, "checkout", "-q", "-B", branch, tip)
+            if moved.returncode:
+                raise SystemExit(f"cannot start {branch} at the live tip of origin/{ref or 'HEAD'} in {repo_name}: "
+                                 f"{moved.stderr.strip()}")
+            head = tip
+    from .context import quiet_from_env
+    if say_start and not quiet_from_env():
+        print(f"gr2: {repo_name}: {branch} {start} {head}", file=sys.stderr)
+    if start == "tip":
+        return head, start
     behind = git(repo, "rev-list", "--count", f"{head}..{integration}")
     if behind.returncode == 0 and behind.stdout.strip() not in ("", "0"):
         date = git(repo, "show", "-s", "--format=%cs", head).stdout.strip()
         count = behind.stdout.strip()
         print(f"gr2: {repo_name}: {branch} starts at {head[:12]} ({date}), {count} commit{'' if count == '1' else 's'} "
               f"behind origin/{ref or 'HEAD'}", file=sys.stderr)
-    return head
+    return head, start
 
 
-def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: str, *, manual_hooks: bool = False, created_checkout_roots: list | None = None, created_lane_file: list | None = None, workspace_commit: str | None = None) -> None:
+def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: str, *, manual_hooks: bool = False, created_checkout_roots: list | None = None, created_lane_file: list | None = None, workspace_commit: str | None = None, at_pin: bool = False, say_start: bool = False) -> None:
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
     branch_map = dict(lane_doc.get("branch_map", {}))
     lane_root = lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)
@@ -376,14 +407,17 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
             # Record the fork base = the point the lane forked from its integration branch, so
             # `review create-project` can pin base..head. A fresh clone first continues a branch the
             # remote already has (_start_lane_branch). Collected here, before this repo's hooks run below.
-            fork_sha = None
+            fork_sha, start = None, None
             if first_materialize:
-                fork_sha = _start_lane_branch(repo_name, target_repo_root, branch_map[repo_name], integration_ref,
-                                              seed_is_work=seed_is_work)
+                fork_sha, start = _start_lane_branch(repo_name, target_repo_root, branch_map[repo_name],
+                                                     integration_ref, seed_is_work=seed_is_work, at_pin=at_pin,
+                                                     say_start=say_start)
             head = git(target_repo_root, "rev-parse", "HEAD")
             head_sha = fork_sha or (head.stdout.strip() if head.returncode == 0 else "")
             if len(head_sha) == 40:
                 fork_base[repo_name] = {"branch": branch_map[repo_name], "sha": head_sha}
+                if start:
+                    fork_base[repo_name]["start"] = start
             hooks = load_repo_hooks(target_repo_root)
             if not hooks:
                 continue
@@ -978,15 +1012,17 @@ def _pin_holding_exactly(workspace_root: Path, row: dict) -> Optional[str]:
     return None
 
 
+_GH_OWNER_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._][A-Za-z0-9._-]*")
+
+
 def _repo_slug_from_url(url: str, fallback_name: str) -> str:
-    cleaned = url.strip()
-    if cleaned.startswith("git@github.com:"):
-        slug = cleaned.split("git@github.com:", 1)[1]
-        return slug.removesuffix(".git")
-    if cleaned.startswith("https://github.com/"):
-        slug = cleaned.split("https://github.com/", 1)[1]
-        return slug.removesuffix(".git")
-    return fallback_name
+    """The github.com owner/repo a remote URL names, else the bare repo name.
+
+    A github.com URL that names no owner/repo (no path, only ".git", one segment) falls back
+    to the bare name: an empty slug would reach gh as --repo '', which gh reads as no --repo
+    and answers for the repository in the current directory. Trailing slashes are dropped before
+    ".git", so ".../owner/repo.git/" names owner/repo as ".../owner/repo.git" does."""
+    return _github_slug(url.strip().rstrip("/")) or fallback_name
 
 
 def _merge_verification_targets(
@@ -2009,6 +2045,98 @@ def workspace_apply(
         typer.echo(spec_apply.render_apply_result(payload))
 
 
+def _lane_member_branch(target: Path) -> tuple[str, str, str, str, str] | None:
+    """(unit, lane, repo key, the lane's branch for it, the ` --repos ...` a new lane for it takes, empty in a native workspace) when `target` is
+    inside a repo of a lane of the workspace above it, else None. Every workspace above is asked, not only the nearest: a lane's own checkout
+    looks like a workspace root too. Lane docs that cannot be read, or whose fields have the wrong types, are
+    skipped: they name no member here. A doc whose load is refused but whose raw repos still hold this repo
+    (a `branch_map` the load refuses) is refused outright. `branch_map` is read as the load reads it."""
+    top = gitops.run_argv(["git", "rev-parse", "--show-toplevel"], cwd=str(target))
+    if top.returncode != 0:
+        return None
+    repo_top = Path(top.stdout.strip()).resolve()
+    for workspace_root in repo_top.parents:
+        if _is_workspace_root(workspace_root):
+            found = _lane_member_branch_in(workspace_root, repo_top)
+            if found is not None:
+                return found
+    return None
+
+
+def _lane_member_branch_in(workspace_root: Path, repo_top: Path) -> tuple[str, str, str, str, str] | None:
+    for path in lane_proto.iter_lane_files(workspace_root):
+        unit, lane_name = path.parent.parent.name, path.parent.name
+        try:
+            doc = lane_proto.load_lane_doc(workspace_root, unit, lane_name)
+            targets = commit_ops._lane_repo_targets(workspace_root, unit, lane_name, doc)
+            key = next((str(k) for k, member_root in targets if member_root.resolve() == repo_top), None)
+            # As load_lane_doc reads it, so this verb names the branch the load checked.
+            branch_map = dict(doc.get("branch_map", {}))
+        except (SystemExit, TypeError, AttributeError, ValueError) as exc:
+            # The load refused a doc that may still bind this repo: its targets come from the raw doc.
+            if _unloadable_lane_doc_holds(workspace_root, unit, lane_name, path, repo_top):
+                typer.echo(
+                    f"Error: this repo is in lane {unit}/{lane_name}, whose branch_map does not load ({exc}); "
+                    f"no branch was created or switched to. Fix that lane doc's branch_map first.",
+                    err=True,
+                )
+                raise typer.Exit(code=2) from None
+            continue
+        except (commit_ops.CommitError, spec_apply.MaterializationPlanError, OSError, tomllib.TOMLDecodeError):
+            continue
+        if key is not None:
+            # A native workspace lane materializes every member of the selected workspace commit, which can
+            # differ from this lane's repos once the store grows: name no --repos there, so lane create takes them all.
+            repos = "" if grip._is_native_workspace(workspace_root) else f" --repos {key}"
+            return unit, lane_name, key, str(branch_map.get(key) or lane_name), repos
+    return None
+
+
+def _unloadable_lane_doc_holds(workspace_root: Path, unit: str, lane_name: str, path: Path, repo_top: Path) -> bool:
+    """Whether a lane doc the load refuses still holds `repo_top`, read from the raw doc's paths alone (every lane
+    path helper re-loads the doc, and would refuse it again). A bound lane holds its bound worktree, an absolute path
+    only; a materialized lane holds any repo under its checkout_root or under its lane dir. A doc that gives no usable
+    path holds nothing."""
+    try:
+        doc = tomllib.loads(path.read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return False
+    roots: list[Path] = []
+    if doc.get("lane_kind", "materialized") == "bound":
+        worktree = doc.get("bound_worktree")
+        if isinstance(worktree, str) and worktree and "\0" not in worktree and Path(worktree).is_absolute():
+            return Path(worktree).resolve() == repo_top
+        return False
+    roots.append(lane_proto.lane_dir(workspace_root, unit, lane_name).resolve())
+    checkout_root = doc.get("checkout_root")
+    if isinstance(checkout_root, str) and checkout_root:
+        try:
+            roots.append(spec_apply.canonicalize_workspace_path(workspace_root, checkout_root, field_name="lane.checkout_root"))
+        except (spec_apply.MaterializationPlanError, ValueError, OSError):
+            pass
+    return any(root == repo_top or root in repo_top.parents for root in roots)
+
+
+def _refuse_branching_a_lane_member(target: Path, name: str) -> None:
+    """A lane's branch is lane state (`branch_map`, the recorded fork base): moving one member to another
+    branch would leave `lane push` and `pr create` on the old one. Refuse, and name the way out. Switching
+    to the lane's own branch is allowed."""
+    found = _lane_member_branch(target)
+    if found is None:
+        return
+    unit, lane_name, key, lane_branch, repos = found
+    if name == lane_branch:
+        return
+    typer.echo(
+        f"Error: {key} is a repo of lane {unit}/{lane_name}, whose branch for it is '{lane_branch}'; "
+        f"'{name}' was not created or switched to. The lane records its branch and fork base, so work on "
+        f"another branch belongs in a new lane: gr2 lane create <workspace> {unit} <lane>{repos} "
+        f"--branch {name}",
+        err=True,
+    )
+    raise typer.Exit(code=2)
+
+
 @app.command("branch")
 def branch_cmd(
     name: str,
@@ -2034,6 +2162,7 @@ def branch_cmd(
         raise typer.Exit(code=1) from exc
     try:
         gitops.require_git_repo(target, "branch")
+        _refuse_branching_a_lane_member(target, name)
         branch_ops.create_branch(target, name, base=base)
     except (branch_ops.BranchError, gitops.OutsideRepoError, gitops.GitMissingError) as exc:
         typer.echo(f"Error: {exc}", err=True)
@@ -2194,8 +2323,9 @@ def add_cmd(
     target = (repo_path or Path.cwd()).resolve()
     try:
         gitops.require_git_repo(target, "add")
+        read_review.refuse_if_read_only(target, "add")
         result = add_ops.stage_files(target, paths, include_bytecode=include_bytecode)
-    except (add_ops.AddError, gitops.OutsideRepoError, gitops.GitMissingError) as exc:
+    except (add_ops.AddError, gitops.OutsideRepoError, gitops.GitMissingError, read_review.ReadReviewError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     if result.staged_files:
@@ -2276,8 +2406,9 @@ def commit_cmd(
     target = (repo_path or Path.cwd()).resolve()
     try:
         gitops.require_git_repo(target, "commit")
+        read_review.refuse_if_read_only(target, "commit")
         receipt = commit_ops.create_commit(target, message, amend=amend)
-    except (commit_ops.CommitError, gitops.OutsideRepoError, gitops.GitMissingError) as exc:
+    except (commit_ops.CommitError, gitops.OutsideRepoError, gitops.GitMissingError, read_review.ReadReviewError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     action = "Amended" if receipt.amended else "Committed"
@@ -2302,13 +2433,14 @@ def push_cmd(
     """Push one branch and verify its immutable remote commit."""
     target = (repo_path or Path.cwd()).resolve()
     try:
+        read_review.refuse_if_read_only(target, "push")
         receipt = push_ops.push_current_branch(
             target,
             remote=remote,
             set_upstream=set_upstream,
             force_with_lease=force_with_lease,
         )
-    except push_ops.PushError as exc:
+    except (push_ops.PushError, read_review.ReadReviewError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(
@@ -3137,6 +3269,7 @@ def lane_create(
     manual_hooks: bool = typer.Option(False, "--manual-hooks", help="Also run lifecycle hooks marked when=manual during lane materialization"),
     bind: Optional[Path] = typer.Option(None, "--bind", help="Bind the lane to an EXISTING clean, non-detached single-repo worktree instead of materializing a fresh clone. The receipt is stamped lane_kind=bound."),
     workspace_commit: Annotated[Optional[str], typer.Option("--workspace-commit", help="Native workspace commit to materialize. Omitted: current root HEAD.")] = None,
+    at_pin: bool = typer.Option(False, "--at-pin", help="A branch new to the remote starts at the live tip of its target, or at the declared pin when that tip cannot be read; with --at-pin it starts at the declared pin instead. A local branch of that name holding unpushed work starts at that work either way."),
     root: Optional[Path] = ROOT_OPTION,
     unit: Optional[str] = typer.Option(None, "--unit", help="The unit. Same as the UNIT argument; give one or the other."),
     ctx: typer.Context = None,  # type: ignore[assignment]
@@ -3160,12 +3293,19 @@ def lane_create(
     native_root = gitops.repo_path_state(workspace_root) == "repo_root" and (workspace_root / "grip.toml").is_file()
     if workspace_commit is not None and (bind is not None or not native_root):
         raise typer.BadParameter("--workspace-commit requires a native materialized workspace lane")
+    at_pin = at_pin is True  # a direct Python call gets the typer.Option default, which is truthy
+    if at_pin and bind is not None:
+        raise typer.BadParameter("--at-pin starts a materialized lane branch; --bind materializes nothing")
     if bind is None and native_root:
         resolved = git(workspace_root, "rev-parse", "--verify", f"{workspace_commit or 'HEAD'}^{{commit}}")
         if resolved.returncode:
             raise typer.BadParameter("cannot resolve selected native workspace commit; record the workspace with gr2 store commit --message MESSAGE, or name an existing --workspace-commit")
         selected_commit = resolved.stdout.strip()
-        selected_members = grip_cli._native_members(workspace_root, selected_commit)
+        try:
+            selected_members = grip_cli._native_members(workspace_root, selected_commit)
+        except grip_cli.NativeStoreRefusal as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=exc.code)
         selected_names = [m["name"] for m in selected_members]
         if repos is not None and set(r.strip() for r in repos.split(",")) != set(selected_names):
             raise typer.BadParameter("a native workspace lane materializes the complete selected member set")
@@ -3199,7 +3339,7 @@ def lane_create(
         # bound worktree), not from the --branch arg, which --bind ignores.
         if bind is None:
             try:
-                _materialize_lane_repos(workspace_root, owner_unit, lane_name, manual_hooks=manual_hooks, created_checkout_roots=created_checkout_roots, created_lane_file=getattr(ns, "created_lane_file", None), workspace_commit=selected_commit)
+                _materialize_lane_repos(workspace_root, owner_unit, lane_name, manual_hooks=manual_hooks, created_checkout_roots=created_checkout_roots, created_lane_file=getattr(ns, "created_lane_file", None), workspace_commit=selected_commit, at_pin=at_pin, say_start=True)
             except BaseException as primary:
                 if getattr(primary, "gr2_workspace_part_applied", None) is not None:
                     # The native owner has already detached the root and may
@@ -3499,8 +3639,10 @@ def lane_exit(
     )
 
 
-def _unpushed_commits(repo: Path, *, fetch: bool = True) -> list[str]:
-    """Commits on HEAD, any local branch or any tag that no remote-tracking ref holds, after a fetch.
+def _unpushed_commits(repo: Path, *, fetch: bool = True) -> list[tuple[str, str]]:
+    """Commits on HEAD, any local branch or any tag that no remote-tracking ref holds, after a fetch, each as
+    (sha, the ref it was found on): a branch if one reaches it, else HEAD, else a tag, so a stray local tag reads
+    apart from a desk's own work.
 
     A fetch that fails is a refusal, never an empty answer: without it the remote refs are a
     claim from the last fetch, and "nothing unpushed" would be read off a stale copy. Only
@@ -3514,17 +3656,24 @@ def _unpushed_commits(repo: Path, *, fetch: bool = True) -> list[str]:
     # `--remotes` is refs/remotes/* only, and git keeps no remote-tag refs, so a commit reachable only from a tag is held
     # by a remote exactly when the remote advertises that tag: its shas join the --not side (a release tag off every
     # branch kept every lane). Through stdin, as ^sha lines: a remote can hold hundreds of tags.
-    out = gitops.run_argv(["git", "log", "HEAD", "--branches", "--tags", "--not", "--remotes", "--stdin", "--format=%H"],
-                          cwd=repo, input="".join(f"^{sha}\n" for sha in held)).stdout
-    found = [line for line in out.splitlines() if line]
+    not_held = "".join(f"^{sha}\n" for sha in held)
+    found: dict[str, str] = {}
+    # %S is the short name the walk started from, so each pass puts back its own namespace: a branch and a tag may share one.
+    for tips, prefix in ((["--branches"], "refs/heads/"), (["HEAD"], ""), (["--tags"], "refs/tags/")):
+        out = gitops.run_argv(["git", "log", "--source", *tips, "--not", "--remotes", "--stdin", "--format=%H %S"],
+                              cwd=repo, input=not_held).stdout
+        for line in out.splitlines():
+            sha, _, ref = line.partition(" ")
+            found.setdefault(sha, prefix + ref.removeprefix(prefix))
     if found and not fetch:
         # Without a fetch the remote's tags are unknown. A lane whose only such commits are tag-reachable is not
         # called unpushed: it is unknown, and says why (lane remove asks the remote).
         on_branches = set(git(repo, "log", "HEAD", "--branches", "--not", "--remotes", "--format=%H").stdout.split())
         if not on_branches.intersection(found):
-            raise SystemExit(f"{len(found)} commit(s) reachable only from a tag, {found[0][:12]} first: a remote may "
-                             f"hold the tag, and lane list does not ask; gr2 lane remove does")
-    return found
+            sha, ref = next(iter(found.items()))
+            raise SystemExit(f"{len(found)} commit(s) reachable only from a tag, {sha[:12]} ({ref}) first: a remote "
+                             f"may hold the tag, and lane list does not ask; gr2 lane remove does")
+    return list(found.items())
 
 
 def _remote_tag_shas(repo: Path) -> list[str]:
@@ -3585,9 +3734,8 @@ def _lane_removal_refusals(workspace_root: Path, owner_unit: str, lane_name: str
                 or not isinstance(lane_doc.get("repos", []), list):
             return [f"lane_record_invalid: {owner_unit}/{lane_name}: lane.toml does not name this lane "
                     f"with a list of repos"]
-        if lane_doc.get("lane_kind", "materialized") == "bound":
-            return [f"lane_is_bound: {owner_unit}/{lane_name} uses a worktree it does not own"]
-        lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)
+        bound = lane_doc.get("lane_kind", "materialized") == "bound"
+        checkout_root = lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)
     except spec_apply.MaterializationPlanError as exc:
         return [f"lane_path_escapes_workspace: {exc}"]
     except (SystemExit, tomllib.TOMLDecodeError, KeyError, TypeError, ValueError) as exc:
@@ -3604,8 +3752,13 @@ def _lane_removal_refusals(workspace_root: Path, owner_unit: str, lane_name: str
         if not lane_proto.is_stale_lease(lease):
             refusals.append(f"lane_has_live_lease: {lease.get('actor')} ({lease.get('mode')}) "
                             f"until {lease.get('expires_at')}")
+    if bound:
+        # A bound lane labels a worktree it did not create. Removing it drops the record and nothing else, so the
+        # worktree's own work is not weighed here; but a worktree inside the record would go with the record.
+        if checkout_root.is_relative_to(lane_dir.resolve()):
+            refusals.append(f"lane_record_holds_bound_worktree: {checkout_root} is inside {lane_dir}")
+        return refusals
     repo_roots = [_lane_repo_root(workspace_root, owner_unit, lane_name, name) for name in lane_doc.get("repos", [])]
-    checkout_root = lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)
     # A lane made on a workspace with a snapshot store has a checkout root that is itself a store checkout. Its store
     # files are not unlisted content: the root gets the checks a repo gets below, since it can hold unpushed store commits.
     store_root = checkout_root if (checkout_root / ".git").is_dir() \
@@ -3631,7 +3784,7 @@ def _lane_removal_refusals(workspace_root: Path, owner_unit: str, lane_name: str
         for sha in git(store_root, "stash", "list", "--format=%H").stdout.split():
             refusals.append(f"lane_has_stash: lane-root {sha}")
         try:
-            refusals.extend(f"lane_has_unpushed_commit: lane-root {sha}" for sha in _unpushed_commits(store_root, fetch=fetch))
+            refusals.extend(f"lane_has_unpushed_commit: lane-root {sha} (on {ref})" for sha, ref in _unpushed_commits(store_root, fetch=fetch))
         except SystemExit as exc:
             refusals.append(f"lane_unpushed_unknown: lane-root: {exc}")
     for name in lane_doc.get("repos", []):
@@ -3643,7 +3796,7 @@ def _lane_removal_refusals(workspace_root: Path, owner_unit: str, lane_name: str
         for sha in git(path, "stash", "list", "--format=%H").stdout.split():
             refusals.append(f"lane_has_stash: {name} {sha}")
         try:
-            refusals.extend(f"lane_has_unpushed_commit: {name} {sha}" for sha in _unpushed_commits(path, fetch=fetch))
+            refusals.extend(f"lane_has_unpushed_commit: {name} {sha} (on {ref})" for sha, ref in _unpushed_commits(path, fetch=fetch))
         except SystemExit as exc:
             refusals.append(f"lane_unpushed_unknown: {name}: {exc}")
     return refusals
@@ -3724,7 +3877,8 @@ def lane_list(
 ) -> None:
     """List lanes, each marked removable or keep with every reason.
 
-    Removable is a state (not entered, not bound or leased, clean, no stash, nothing unpushed), never an age.
+    Removable is a state (not entered or leased, clean, no stash, nothing unpushed), never an age; a bound lane's
+    worktree is not weighed, since removing the lane drops only its record.
     The list reads remote-tracking refs WITHOUT fetching, and says so; `lane remove` fetches and checks again."""
     workspace_root = workspace_root.resolve()
     typer.echo("# remote refs not fetched; gr2 lane remove fetches before it removes anything")
@@ -3748,7 +3902,8 @@ def lane_remove(
 ) -> None:
     """End a lane: remove its clones and its record.
 
-    Refused while the lane is entered, bound, or leased, while any of its repos holds uncommitted
+    A bound lane owns no clone: its record is removed and its worktree is left exactly as it is.
+    Refused while the lane is entered or leased, while any of its repos holds uncommitted
     work, a stash, or a commit that no remote has (HEAD, every local branch and every tag, after a fetch),
     or while its checkout holds anything that is not one of its repos. Every refusal is named, and nothing
     is removed. The workspace's own clones are never touched."""
@@ -3761,10 +3916,16 @@ def lane_remove(
         typer.echo(f"nothing was removed; the lane {owner_unit}/{lane_name} is as it was", err=True)
         raise typer.Exit(code=1)
     checkout_root = lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)
-    rmtree_or_refuse(checkout_root)
+    bound = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name).get("lane_kind") == "bound"
+    if not bound:
+        rmtree_or_refuse(checkout_root)
     lane_dir = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
     if lane_dir.exists():
         rmtree_or_refuse(lane_dir)
+    if bound:
+        typer.echo(f"removed lane {owner_unit}/{lane_name} (its record only); the bound worktree {checkout_root} "
+                   f"was not created by the lane and is left as it was")
+        return
     typer.echo(f"removed lane {owner_unit}/{lane_name}")
 
 
@@ -4034,6 +4195,31 @@ def review_checkout_pr(
         typer.echo(json.dumps(payload, indent=2))
     else:
         typer.echo(json.dumps(payload, indent=2))
+
+
+@review_app.command("read-pr")
+def review_read_pr(
+    owner_repo: str = typer.Argument(..., metavar="OWNER/REPO", help="The repo whose PR to read; it need not be in your workspace"),
+    pr_number: int = typer.Argument(..., help="The PR number"),
+    dest: Optional[Path] = typer.Option(None, "--dir", help="Where to open it (default ./<repo>-pr<N>); must not exist"),
+    url: Optional[str] = typer.Option(None, "--url", help="Fetch from this URL instead of https://github.com/OWNER/REPO.git"),
+) -> None:
+    """Open a PR of any repo for reading: fetch its head and base into a fresh directory and print the diff summary.
+
+    The directory is read-only to gr2: add, commit and push refuse there. To work on a member of your workspace,
+    use `review checkout-pr`."""
+    target = dest or Path.cwd() / f"{owner_repo.rsplit('/', 1)[-1]}-pr{pr_number}"
+    try:
+        opened = read_review.open_read_review(owner_repo, pr_number, target, url=url)
+    except read_review.ReadReviewError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Opened {owner_repo}#{pr_number} read-only at {opened.path}")
+    typer.echo(f"head {opened.head}")
+    typer.echo(f"base {opened.base}")
+    if opened.stat:
+        typer.echo(opened.stat)
+    typer.echo(f"Read the full diff: git -C {opened.path} diff {opened.base}...{opened.head}")
 
 
 class _ReviewSelectRefused(typer.BadParameter):
@@ -5344,6 +5530,18 @@ def review_show(
             typer.echo(review_diff.printable(line))
 
 
+@review_app.command("list", cls=RootOptionalCommand)
+def review_list(
+    workspace_root: Path,
+    json_output: bool = typer.Option(False, "--json", help="Accepted for symmetry; the output is JSON either way"),
+    root: Optional[Path] = ROOT_OPTION,
+) -> None:
+    """Read-only: every pinned review in this workspace as a JSON list of {id, pinned_at}, oldest first; `[]` when
+    there are none. The ids are the ones `review show`, `stamps`, `merged` and `blockers` take."""
+    binds = _review_call(grip.list_review_binds, workspace_root.resolve())
+    typer.echo(json.dumps([{"id": f"gr:{commit}", "pinned_at": when} for commit, when in binds], indent=2))
+
+
 @review_app.command("verify", cls=json_refusing(ReviewTargetCommand))
 def review_verify(
     workspace_root: Path,
@@ -5401,6 +5599,56 @@ def _resolve_merge_defaults(ws: Path, review_id: Optional[str], into: Optional[s
         [(p, m["remote"], m["base"]) for p, m in zip(paths, view["members"])], into)
     typer.echo(f"resolved: review={view['id']} ({rsrc}), from={feature} ({fsrc}), into={into} ({isrc})", err=True)
     return view["id"], into, feature
+
+
+def _resolve_merged_defaults(ws: Path, review_id: Optional[str], into: Optional[str]) -> tuple[str, str]:
+    """The review id and --into for `review merged`. Not `defaults.target_branch`: that is the merge's precondition
+    (the target still at the reviewed base), false by construction once the merge ran and false again once the
+    target moves. Without --into: (a) this clone's own merge receipt; else (b) the members' remote default branch
+    (HEAD), with no ancestor test: whether the head is merged there is the read's own answer; members that disagree,
+    or a default nobody can read, refuse. Say on stderr what was resolved and from where."""
+    def members(bind: str) -> list[tuple[Path, str]]:
+        return [((ws / m["path"]).resolve(), m["head"]) for m in grip.show_review_commit(ws, bind)["members"]]
+
+    rsrc = "given"
+    if not review_id:
+        review_id, rsrc = defaults.review([b for b, _ in grip.list_review_binds(ws)], members, defaults.current_head)
+    if into:
+        return review_id, into
+    try:
+        view = grip.show_review_commit(ws, review_id.removeprefix("gr:"))
+    except (grip.GripInitError, grip.GripCorruptError, RuntimeError, OSError, ValueError, KeyError,
+            subprocess.SubprocessError):
+        if rsrc != "given":
+            raise
+        return review_id, ""  # the read reports bind_unreadable
+    try:
+        receipts = [r for r in merge_receipts.runs(ws, view["id"]) if r.get("into")]
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError):
+        receipts = []
+    if receipts:
+        into, isrc = receipts[-1]["into"], "receipt"
+    else:
+        found: set[str] = set()
+        for m in view["members"]:
+            repo = (ws / m["path"]).resolve()
+            try:
+                out = merge_gate._git(repo, "ls-remote", "--symref", "--", m["remote"], "HEAD")
+            except (RuntimeError, subprocess.SubprocessError, OSError):
+                out = ""
+            default = next((left.removeprefix("ref: refs/heads/") for left, _, ref in
+                            (line.partition("\t") for line in out.splitlines())
+                            if left.startswith("ref: refs/heads/") and ref == "HEAD"), None)
+            if default is None:
+                raise defaults.Unresolved(f"into_unresolved: {m['path']}: no remote default branch readable; "
+                                          "pass --into <branch>")
+            found.add(default)
+        if len(found) > 1:
+            raise defaults.Unresolved(f"into_unresolved: members' default branches disagree ({', '.join(sorted(found))}); "
+                                      "pass --into <branch>")
+        into, isrc = found.pop(), "remote default"
+    typer.echo(f"resolved: review={view['id']} ({rsrc}), into={into} ({isrc})", err=True)
+    return view["id"], into
 
 
 @review_app.command("stamp", cls=ReviewHeadCommand)
@@ -5543,6 +5791,100 @@ def review_update(
     typer.echo(json.dumps(receipt))
     for line in next_steps._update_lines(str(ws), receipt):
         typer.echo(line, err=True)
+    if code:
+        raise typer.Exit(code)
+
+
+@review_app.command("blockers", cls=ReviewHeadCommand)
+def review_blockers(
+    workspace_root: Path,
+    review_id: Optional[str] = typer.Argument(None, help="Pinned review id, gr:<sha>; default: the pinned review at the members' current heads"),
+    into: Optional[str] = typer.Option(None, "--into", help="Target branch; default as `review merge`"),
+    feature: Optional[str] = typer.Option(None, "--from", help="Feature branch; default as `review merge`"),
+    check: Optional[List[str]] = typer.Option(None, "--check", help="Required exact-head check name (repeatable); default as `review merge`"),
+    no_set: bool = typer.Option(False, "--no-set", help="As `review merge --no-set`"),
+    approval_count: Optional[int] = typer.Option(None, "--approvals", help="As `review merge --approvals`"),
+    root: Optional[Path] = ROOT_OPTION,
+) -> None:
+    """Read-only: what would stop `review merge` now. The merge gate's preflight and approval count, then stop:
+    no merge build, no push, no receipt. Exit 0 ready (blockers empty), 3 blocked, 5 not measurable."""
+    ws = workspace_root.resolve()
+    try:
+        review_id, into, feature = _resolve_merge_defaults(ws, review_id, into, feature)
+    except (defaults.Unresolved, grip.GripInitError, grip.GripCorruptError) as exc:
+        typer.echo(json.dumps({"id": review_id, "into": into, "feature": feature, "dry_run": True, "ready": None,
+                               "refused": str(exc)}))
+        raise typer.Exit(5)
+    code, receipt = merge_gate.review_merge(ws, review_id, into=into, feature=feature,
+                                            required_checks=tuple(check) if check else None,
+                                            required_approvals=approval_count, no_set=no_set, dry_run=True)
+    if not receipt.get("dry_run"):  # a bind fault: no member's remote was measured
+        receipt.update(dry_run=True, ready=None)
+        code = 5
+    typer.echo(json.dumps(receipt))
+    if code:
+        raise typer.Exit(code)
+
+
+@review_app.command("stamps", cls=ReviewHeadCommand)
+def review_stamps(
+    workspace_root: Path,
+    review_id: Optional[str] = typer.Argument(None, help="Review id; default is the pinned review at the current member heads"),
+    approval_count: Optional[int] = typer.Option(None, "--approvals", help="As `review merge --approvals`"),
+    since_my_stamp: bool = typer.Option(False, "--since-my-stamp", help="Instead: what moved since your own newest stamp (as git user.name) on any pin of these members: per member the stamped and current heads, the range, its commits and changed paths"),
+    root: Optional[Path] = ROOT_OPTION,
+) -> None:
+    """Read-only: who stamped this review, when, and at which link commit; the count against the required number,
+    and each member's pinned head. Writes nothing. Exit 0 measured, 5 not measurable; with --since-my-stamp,
+    3 when you have no stamp on any pin of these members."""
+    from . import approvals
+    ws = workspace_root.resolve()
+    try:
+        rid = (review_id or approvals.current_review(ws)).removeprefix("gr:")
+        if since_my_stamp:
+            result = approvals.since_my_stamp(ws, rid)
+            typer.echo(json.dumps(result))
+            if "refused" in result:
+                raise typer.Exit(3)  # a measured no, as `blockers` "not ready"; 5 stays for what cannot be read
+            return
+        result = approvals.count_approvals(ws, rid)
+        # Who stamped is a fact about the chain; a missing merge policy must not hide it. The merge still refuses on
+        # approvals_unset; this read reports the policy as unset. Every other policy refusal still refuses here.
+        try:
+            result["required"], result["required_state"] = approvals.required_approvals(ws, approval_count), "set"
+        except approvals.ApprovalRefused as exc:
+            if not str(exc).startswith("approvals_unset"):
+                raise
+            result["required"], result["required_state"] = None, "unset"
+        result["members"] = [{"key": m["key"], "head": m["head"]} for m in grip.show_review_commit(ws, rid)["members"]]
+        # The chain walk keeps the approver per link; the stamp's own record holds when it was made.
+        result["stamps"] = [{"approver": l["approver"], "link": l["commit"],
+                             "created_at": approvals._read_link(ws, l["commit"]).get("created_at")}
+                            for l in result.pop("links")]
+    except (grip.ReviewStoreAbsent, approvals.ApprovalRefused, grip.GripInitError, grip.GripCorruptError,
+            OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+        typer.echo(json.dumps({"review_id": review_id, "refused": f"{type(exc).__name__}: {exc}"}))
+        raise typer.Exit(5)
+    typer.echo(json.dumps(result))
+
+
+@review_app.command("merged", cls=ReviewHeadCommand)
+def review_merged(
+    workspace_root: Path,
+    review_id: Optional[str] = typer.Argument(None, help="Pinned review id, gr:<sha>; default: the pinned review at the members' current heads"),
+    into: Optional[str] = typer.Option(None, "--into", help="Target branch; default: this clone's merge receipt, else the members' remote default branch"),
+    root: Optional[Path] = ROOT_OPTION,
+) -> None:
+    """Read-only: was each member's reviewed head merged on its REMOTE target, by which commit, and when (the merge's
+    committer date). Works from a clone that never ran the merge. Exit 0 all merged, 3 none, 4 some or unmeasured."""
+    ws = workspace_root.resolve()
+    try:
+        review_id, into = _resolve_merged_defaults(ws, review_id, into)
+    except (defaults.Unresolved, grip.GripInitError, grip.GripCorruptError) as exc:
+        typer.echo(json.dumps({"id": review_id, "into": into, "members": [], "refused": str(exc)}))
+        raise typer.Exit(merge_gate.EXIT_PARTIAL)
+    code, receipt = merge_gate.review_merged(ws, review_id, into=into)
+    typer.echo(json.dumps(receipt))
     if code:
         raise typer.Exit(code)
 
@@ -5724,12 +6066,38 @@ def _pr_view_source(workspace_root: Path, owner_unit: str, lane_name: str) -> di
                 }
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
     branch_map = lane_doc.get("branch_map") or {}
+    # The lane names its members by workspace name; the host knows them as OWNER/REPO. Each name is
+    # read through its spec url when the PR is looked up, the way `pr create` names them, so a lane
+    # recorded before this rule reads the same as one recorded after it.
+    try:
+        spec_repos = lane_proto.load_workspace_spec(workspace_root).get("repos")
+    except (lane_proto.WorkspaceSpecMissing, tomllib.TOMLDecodeError, UnicodeDecodeError, OSError):
+        # A spec that cannot be read names nothing; the lane still shows, by its workspace names.
+        spec_repos = []
+    # A spec that reads but does not hold repo tables names nothing either.
+    spec_urls = {
+        str(item.get("name")): str(item.get("url", "")).strip()
+        for item in (spec_repos if isinstance(spec_repos, list) else [])
+        if isinstance(item, dict)
+    }
+
+    def _member_slug(name: str) -> str:
+        # gh reads `--repo ""` as no --repo (the cwd's repo), a third segment as a HOST, and a leading
+        # "-" is option-shaped: only an exact OWNER/REPO is handed over, else the name, which gh refuses.
+        slug = _repo_slug_from_url(spec_urls.get(name, ""), name).removesuffix("/").removesuffix(".git")
+        return slug if _GH_OWNER_REPO.fullmatch(slug) else name
+
     return {
         "source": "lane_record",
         "pr_group_id": None,
         "platform": "github",
         "members": [
-            {"repo": str(repo), "number": None, "branch": branch_map.get(str(repo))}
+            {
+                "repo": _member_slug(str(repo)),
+                "name": str(repo),
+                "number": None,
+                "branch": branch_map.get(str(repo)),
+            }
             for repo in lane_doc.get("repos", [])
         ],
     }
@@ -5793,8 +6161,10 @@ def pr_view(
     # A filter that matched nothing must not read the same as a change with no members.
     # The reader cannot tell a typo from an empty change, and the line above has just told
     # them the members came from an authoritative record.
+    # A lane member answers to its workspace name as well as the OWNER/REPO it is read by.
     member_names = [str(item["repo"]) for item in source["members"]]
-    if repo_filter is not None and repo_filter not in member_names:
+    known_names = set(member_names) | {str(item["name"]) for item in source["members"] if item.get("name")}
+    if repo_filter is not None and repo_filter not in known_names:
         typer.echo(
             f"gr2: --repo {repo_filter} is not a member of this change; members are: "
             + (", ".join(member_names) if member_names else "(none named)"),
@@ -5805,7 +6175,7 @@ def pr_view(
     rows: list[dict[str, object]] = []
     for member in source["members"]:
         repo = str(member["repo"])
-        if repo_filter is not None and repo != repo_filter:
+        if repo_filter is not None and repo_filter not in (repo, member.get("name")):
             continue
         number = member["number"]
         try:

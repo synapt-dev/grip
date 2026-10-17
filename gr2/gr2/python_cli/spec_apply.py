@@ -7,6 +7,7 @@ import hmac
 import importlib.resources
 import json
 import os
+import re
 import secrets
 import stat
 import sys
@@ -137,13 +138,20 @@ def load_workspace_spec_doc(workspace_root: Path) -> dict[str, object]:
         return _refuse_option_urls(tomllib.load(fh))
 
 
+_PIN_SHAPE = re.compile(r"[0-9A-Za-z_][0-9A-Za-z_./+-]*")
+
+
 def _refuse_option_urls(spec: dict[str, object]) -> dict[str, object]:
     """Refused at the load, so every reader gets it: a repo url reaches `ls-remote` and `clone` as the repository,
-    and one starting with '-' is read there as an option (`--upload-pack=<command>` runs the command)."""
+    and one starting with '-' is read there as an option (`--upload-pack=<command>` runs the command). A pin reaches
+    `fetch origin <pin>`, so one that is not a sha or a ref name is refused here too."""
     for row in spec.get("repos", []) if isinstance(spec.get("repos"), list) else []:
         url = row.get("url") if isinstance(row, dict) else None
         if isinstance(url, str) and url.lstrip().startswith("-"):
             raise SystemExit(f"workspace spec repo {row.get('name')!r}: url {url!r} starts with '-', which git reads as an option")
+        pin = row.get("pin") if isinstance(row, dict) else None
+        if isinstance(pin, str) and pin and (not _PIN_SHAPE.fullmatch(pin) or ".." in pin):
+            raise SystemExit(f"workspace spec repo {row.get('name')!r}: pin {pin!r} is neither a commit sha nor a ref name")
     return spec
 
 

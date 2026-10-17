@@ -1082,13 +1082,13 @@ def materialize_lane_clone(
         # path (the commit may be unpushed and absent from the origin URL). A path
         # fetch adds no persistent remote. Fetch the exact object; local transport
         # advertises ref tips and the seed is one, so a by-SHA fetch resolves it.
-        fetch = gitops.git(staging, "fetch", "--no-tags", str(source_repo_root), seed_sha)
+        fetch = gitops.git(staging, "fetch", "--no-tags", "--", str(source_repo_root), seed_sha)
         if fetch.returncode != 0:
             # Some server configs refuse a by-SHA want; fall back to the containing
             # ref, then still check out the bound SHA below.
             if seed_commit is None:
                 assert seed_ref is not None
-                fetch = gitops.git(staging, "fetch", "--no-tags", str(source_repo_root), seed_ref)
+                fetch = gitops.git(staging, "fetch", "--no-tags", "--", str(source_repo_root), seed_ref)
                 if fetch.returncode != 0:
                     raise CloneExecutionError(
                         f"failed to fetch seed {seed_sha} from lane source {source_repo_root}:\n"

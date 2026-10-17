@@ -174,6 +174,13 @@ def test_an_oversize_answer_is_refused_not_parsed(tmp_path: Path) -> None:
     assert one(tmp_path, body, max_bytes=100_000)("describe", describe_req(tmp_path))["ok"] is True  # the bound is the only difference
 
 
+def bytes_logged(progress: Path) -> int:
+    """The largest running total a writing plugin logged. The runner may kill it after its first write and before
+    it logs a line, so a missing or empty log reads 0. A line cut by the kill reads short, never long."""
+    lines = progress.read_text().split() if progress.exists() else []
+    return max((int(x) for x in lines), default=0)
+
+
 def test_a_plugin_that_never_stops_writing_is_killed_at_the_bound_not_at_the_timeout(tmp_path: Path) -> None:
     pidfile = tmp_path / "pid"
     progress = tmp_path / "progress"
@@ -196,8 +203,34 @@ def test_a_plugin_that_never_stops_writing_is_killed_at_the_bound_not_at_the_tim
     assert "over the 1000 byte bound" in exc.value.detail, exc.value.detail  # the bound, not "no answer within"
     elapsed = time.monotonic() - t0
     assert elapsed < 10, f"killed after {elapsed:.1f} s, not long before the 30 s timeout"
-    written = max(int(x) for x in progress.read_text().split() if x)  # a line cut by the kill reads short, never long
+    written = bytes_logged(progress)
     assert written < 1000 + 1_000_000, f"the plugin was left writing long after the bound: {written} bytes written"
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pidfile.read_text()), 0)
+
+
+@pytest.mark.parametrize("log_opened_first", [True, False], ids=["empty-log", "no-log"])
+def test_a_plugin_killed_at_the_bound_before_it_logs_a_line_reads_as_zero_written(tmp_path: Path, log_opened_first: bool) -> None:
+    """The first write is already over the bound and the log line comes slowly, so the kill lands before any line."""
+    pidfile = tmp_path / "pid"
+    progress = tmp_path / "progress"
+    body = (
+        "import os, sys, time\n"
+        f"open({str(pidfile)!r}, 'w').write(str(os.getpid()))\n"
+        + (f"log = open({str(progress)!r}, 'a')\n" if log_opened_first else "")
+        + "sys.stdin.read()\n"
+        "sys.stdout.write('x' * 4096)\n"
+        "sys.stdout.flush()\n"
+        "time.sleep(30)\n"
+        f"open({str(progress)!r}, 'a').write('4096\\n')\n"
+    )
+    t0 = time.monotonic()
+    with pytest.raises(LaneRefused) as exc:
+        one(tmp_path, body, timeout=60.0, max_bytes=1000)("describe", describe_req(tmp_path))
+    assert "over the 1000 byte bound" in exc.value.detail, exc.value.detail
+    assert time.monotonic() - t0 < 10
+    assert progress.exists() is log_opened_first
+    assert bytes_logged(progress) == 0
     with pytest.raises(ProcessLookupError):
         os.kill(int(pidfile.read_text()), 0)
 

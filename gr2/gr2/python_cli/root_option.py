@@ -103,8 +103,16 @@ class RootOptionCommand(typer.core.TyperCommand):
             i += 1
         return positions, root_value
 
+    def _help_asked(self, ctx, args: list[str]) -> bool:
+        """--help asks about the verb, not a workspace: it is answered before any root is resolved or checked."""
+        help_option = self.get_help_option(ctx)
+        option_tokens = args[:args.index("--")] if "--" in args else args
+        return help_option is not None and any(word in help_option.opts for word in option_tokens)
+
     def parse_args(self, ctx, args):
         args = list(args)
+        if self._help_asked(ctx, args):
+            return typer.core.TyperCommand.parse_args(self, ctx, args)
         required = self._required_positionals  # counted before the root is made optional, so it includes the root
         optional = self._optional_positionals
         positions, root_value = self._scan(args)
@@ -361,6 +369,8 @@ class ContextCommand(RootOptionalCommand):
         from . import context as c
 
         args = list(args)
+        if self._help_asked(ctx, args):
+            return typer.core.TyperCommand.parse_args(self, ctx, args)
         unit_value, args = self._take_unit_option(args, ctx)
         positions, root_value = self._scan(args)
         words = [args[i] for i in positions]

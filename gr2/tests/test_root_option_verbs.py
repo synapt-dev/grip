@@ -41,7 +41,7 @@ FIXED_ARITY = [  # RootOptionalCommand: the 18, and ContextCommand: the 7 above
     "lane/list", "lane/remove", "lane/push",
     "lane/lease/acquire", "lane/lease/release", "lane/lease/show",
     "review/check", "review/requirements", "review/checkout-pr", "review/create-project", "review/open-project",
-    "review/exit-gr", "review/open-gr",
+    "review/exit-gr", "review/open-gr", "review/list",
     "hooks/run", "config/restore",
 ]
 OPTIONAL_TRAILING = [  # RootOptionCommand: the two execution verbs
@@ -50,7 +50,7 @@ OPTIONAL_TRAILING = [  # RootOptionCommand: the two execution verbs
 REVIEW_READER_SUBJECTS = ["pr/checks", "pr/view"]  # reconstruction-aware readers
 REVIEW_SUBJECTS = ["pr/create", "pr/status", "pr/merge", *REVIEW_READER_SUBJECTS]
 REVIEW_TARGETS = ["review/show", "review/verify"]
-REVIEW_HEADS = ["review/approve", "review/merge", "review/stamp", "review/update"]
+REVIEW_HEADS = ["review/approve", "review/blockers", "review/merge", "review/merged", "review/stamp", "review/stamps", "review/update"]
 REVIEW_HEAD_TRAILING = ["check/set"]  # a review head that ends in the user's own command; the words after `--` are not positionals  # stamp is approve's new name; both stay
 REVIEW_TRANSPORTS = ["review/publish", "review/receive"]
 REVIEW_OPENS = ["review/open"]

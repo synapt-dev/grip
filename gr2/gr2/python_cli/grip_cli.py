@@ -473,6 +473,13 @@ def _native_members(root: Path, revision: str | None = None) -> list[dict[str, s
         # Refused at the read, before any verb hands a url to git: a `<name>::` or unknown-scheme url runs a program
         # (owner: grip.url_transport_refusal; gitops.TRANSPORTS is the second layer).
         for remote_name, remote_url in remotes.items():
+            # A url reaches `clone` and `ls-remote` as the repository, where one starting with '-' is read as an option.
+            if isinstance(remote_url, str) and remote_url.startswith("-"):
+                raise NativeStoreRefusal(
+                    f"{item.get('name', 'member')} remote {remote_name} url {remote_url[:60]!r} starts with '-', "
+                    f"which git reads as an option",
+                    4,
+                )
             transport = grip_mod.url_transport_refusal(remote_url) if isinstance(remote_url, str) else None
             if transport is not None:
                 raise NativeStoreRefusal(
@@ -1280,6 +1287,9 @@ def _parse_clone_values(values: list[str]) -> list[tuple[str, str]]:
         except ValueError as exc:
             problems.append(str(exc))
             continue
+        if url.startswith("-"):
+            problems.append(f"member {name!r}: url must not start with '-', which git reads as an option")
+            continue
         if name in seen:
             problems.append(f"member name {name!r} is given twice")
             continue
@@ -1350,7 +1360,7 @@ def _make_clones(root: Path, todo: list[tuple[str, str]]) -> None:
     """Clone each planned member at its name. A failure names the member and the ones already done."""
     done: list[str] = []
     for name, url in todo:
-        result = gitops.clone(url, str(root / name))
+        result = gitops.clone("--", url, str(root / name))
         if result.returncode:
             raise NativeStoreRefusal(
                 f"{STORE_INCOMPLETE_PREFIX}{name} could not be cloned from its url "
@@ -3163,7 +3173,7 @@ def _native_store_materialize(root: Path) -> list[dict[str, str]]:
                         f"materialize will not clear it -- move or remove what is there",
                         3,
                     ) from exc
-            result = gitops.clone(member["remote"], str(path))
+            result = gitops.clone("--", member["remote"], str(path))
             if result.returncode:
                 done = ", ".join(item["name"] for item in materialized) or "none"
                 raise NativeStoreRefusal(

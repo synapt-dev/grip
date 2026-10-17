@@ -38,6 +38,7 @@ from gr2.python_cli import gitops
 from gr2.python_cli import review as _review
 from gr2.python_cli import push as _push
 from gr2.python_cli import review_records as _records
+from gr2.python_cli.layout import grip_dir as _layout_grip_dir
 
 LANE_SCHEMA_VERSION = 1
 SCRATCHPAD_SCHEMA_VERSION = 1
@@ -432,6 +433,10 @@ def lane_checkout_root(workspace_root: Path, owner_unit: str, lane_name: str) ->
     if kind == "bound":
         if "checkout_root" in doc or not isinstance(doc.get("bound_worktree"), str) or not doc["bound_worktree"]:
             raise SystemExit("bound lane needs its explicit bound_worktree and no checkout_root")
+        # A relative path would resolve against the process CWD, not the workspace; create --bind writes it absolute.
+        if not Path(doc["bound_worktree"]).is_absolute():
+            raise SystemExit(f"bound lane {owner_unit}/{lane_name} needs an absolute bound_worktree, "
+                             f"not {doc['bound_worktree']!r}")
         return Path(doc["bound_worktree"]).resolve()
     if kind not in {"materialized", "review-ephemeral"} or doc.get("bound_worktree") is not None:
         raise SystemExit("invalid or conflicting lane checkout coordinates")
@@ -610,7 +615,11 @@ def native_lane_members(workspace_root: Path, doc: dict) -> list[dict[str, str]]
     if top.returncode or Path(top.stdout.strip()).resolve() != root.resolve():
         raise SystemExit(f"native lane root is not its own Git checkout: {root}")
     head = gitops.current_head_sha(root)
-    return grip_cli._native_members(root, head)
+    try:
+        return grip_cli._native_members(root, head)
+    except grip_cli.NativeStoreRefusal as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(exc.code) from None
 
 
 def record_fork_base(
@@ -642,6 +651,10 @@ def record_fork_base(
         if not re.fullmatch(r"[0-9a-f]{40}", sha):
             raise SystemExit(f"fork_base sha for {repo} must be a 40-hex commit, got: {sha!r}")
         validated[repo] = {"branch": branch, "sha": sha}
+        if "start" in entry:
+            if entry["start"] not in ("tip", "pin", "local"):
+                raise SystemExit(f"fork_base start for {repo} must be tip, pin or local, got: {entry['start']!r}")
+            validated[repo]["start"] = entry["start"]
     document["fork_base"] = {repo: validated[repo] for repo in sorted(validated)}
     atomic_replace_text(path, serialize_toml(document))
 
@@ -1314,7 +1327,7 @@ def bind_bound_lane(
             f"bind_bound_lane: bound lane {owner_unit}/{lane_name} is missing "
             "bound_worktree or bound_head; it was not created by lane create --bind"
         )
-    resolved = worktree.resolve()
+    resolved = lane_checkout_root(workspace_root.resolve(), owner_unit, lane_name)
     if not gitops.is_git_repo(resolved):
         raise SystemExit(f"bind refuses: bound worktree {resolved} is no longer a git work tree")
     if not gitops.current_branch(resolved):
@@ -1398,7 +1411,7 @@ def pr_create_bound_lane(
     worktree = Path(lane_doc.get("bound_worktree") or "")
     if not worktree:
         raise SystemExit(f"pr create refuses: bound lane {owner_unit}/{lane_name} has no bound_worktree")
-    resolved = worktree.resolve()
+    resolved = lane_checkout_root(workspace_root.resolve(), owner_unit, lane_name)
     members = lane_doc.get("repos", [])
     if len(members) != 1:
         raise SystemExit("pr create refuses: a bound lane must name exactly one member")
@@ -1783,15 +1796,31 @@ def create_review_lane(args: argparse.Namespace) -> int:
     return 0
 
 
+def _pr_group_names(workspace_root: Path):
+    for path in sorted((_layout_grip_dir(workspace_root) / "pr_groups").glob("*.json")):
+        try:
+            doc = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        prs = doc.get("prs") if isinstance(doc, dict) else None
+        for item in prs if isinstance(prs, list) else []:
+            if isinstance(item, dict) and item.get("repo") is not None:
+                yield str(item.get("repo")), str(item.get("pr_number"))
+
+
 def check_review_requirements(args: argparse.Namespace) -> int:
     workspace_root = args.workspace_root.resolve()
     ref = f"{args.repo}#{args.pr_number}"
-    required = int(
-        workspace_constraints(workspace_root).get("required_reviewers", {}).get(args.repo, 0)
-    )
+    spec = load_workspace_spec(workspace_root)
+    policy = spec.get("workspace_constraints", {}).get("required_reviewers", {})
+    required = int(policy.get(args.repo, 0))
+    group_prs = set(_pr_group_names(workspace_root))
+    known_repos = {str(row.get("name")) for row in spec.get("repos", [])} | set(policy)
+    known_repos.update(repo for repo, _ in group_prs)
     matching: list[dict] = []
     for path in iter_lane_files(workspace_root):
         doc = tomllib.loads(path.read_text())
+        known_repos.update(doc.get("repos", []))
         if doc.get("lane_type") != "review":
             continue
         refs = [item["ref"] for item in doc.get("pr_associations", [])]
@@ -1804,15 +1833,26 @@ def check_review_requirements(args: argparse.Namespace) -> int:
                 "repos": doc.get("repos", []),
             }
         )
+    # A FALSE YES IS WORSE THAN NO ANSWER. With no policy, 0 required >= 0 actual made any repo and any
+    # number "satisfied". A repo nothing names is refused: the count would describe nothing. A PR of a declared
+    # repo that no review lane, PR group or policy names is reported, but not satisfied, with the basis named:
+    # the workspace cannot know which PR numbers exist upstream. A policy keeps 0/N as a true "not satisfied".
+    if args.repo not in known_repos:
+        print(json.dumps({"refused": "unknown_repo", "repo": args.repo, "pr_number": args.pr_number}))
+        print(f"gr2: unknown_repo: no workspace member, review lane or PR group names repo {args.repo}", file=sys.stderr)
+        return 2
+    unnamed = not matching and required == 0 and (args.repo, str(args.pr_number)) not in group_prs
     reviewer_units = sorted({row["owner_unit"] for row in matching})
     payload = {
         "repo": args.repo,
         "pr_number": args.pr_number,
         "required_reviewers": required,
         "actual_reviewers": len(reviewer_units),
-        "satisfied": len(reviewer_units) >= required,
+        "satisfied": len(reviewer_units) >= required and not unnamed,
         "review_lanes": matching,
     }
+    if unnamed:
+        payload["basis"] = "no_lane_or_group_names_this_pr"
     if args.json:
         print(json.dumps(payload, indent=2))
     else:

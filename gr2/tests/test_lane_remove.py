@@ -7,8 +7,11 @@ exists nowhere else. First row: a local commit that was never pushed.
 """
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 from gr2.python_cli import app as gr2_app
@@ -131,7 +134,8 @@ def test_a_lane_with_a_live_lease_is_not_removed(tmp_path: Path) -> None:
     _refused_untouched(ws, repo, _remove(ws), "lane_has_live_lease", "agent:other")
 
 
-def test_a_bound_lane_is_not_removed_and_its_worktree_is_untouched(tmp_path: Path) -> None:
+def _bound_lane(tmp_path: Path) -> tuple[Path, Path]:
+    """A lane bound to a worktree the lane did not create. Returns (ws, the bound worktree)."""
     ws, _, _ = _workspace_with_enter_hook(tmp_path, command="exit 0")
     wt = ws / "wt"
     wt.mkdir()
@@ -145,8 +149,193 @@ def test_a_bound_lane_is_not_removed_and_its_worktree_is_untouched(tmp_path: Pat
     result = runner.invoke(gr2_app.app, ["lane", "create", str(ws), "atlas", "x", "--repos", "app",
                                          "--branch", "app=feat/x", "--bind", str(wt)])
     assert result.exit_code == 0, result.output
-    _refused_untouched(ws, wt, _remove(ws), "lane_is_bound")
-    assert (wt / ".git").is_dir()
+    return ws, wt
+
+
+def _tree_state(wt: Path) -> tuple:
+    files = {p.relative_to(wt).as_posix(): p.read_bytes() for p in sorted(wt.rglob("*")) if p.is_file()}
+    return _git(wt, "rev-parse", "HEAD"), _git(wt, "symbolic-ref", "HEAD"), _git(wt, "status", "--porcelain"), files
+
+
+def test_a_bound_lane_is_removed_as_a_record_and_its_worktree_is_untouched(tmp_path: Path) -> None:
+    ws, wt = _bound_lane(tmp_path)
+    # The worktree holds work that is in no remote: it is the worktree's owner's, not the lane's, so it neither
+    # blocks the record's removal nor goes with it.
+    (wt / "f.txt").write_text("an uncommitted edit\n")
+    (wt / "new.txt").write_text("an untracked file\n")
+    before = _tree_state(wt)
+    assert "atlas\tx\t" in runner.invoke(gr2_app.app, ["lane", "list", str(ws)]).output, "control: the lane is listed"
+
+    result = _remove(ws)
+
+    assert result.exit_code == 0, result.output
+    assert not lane_proto.lane_dir(ws, "atlas", "x").exists(), "the lane record is gone"
+    assert _tree_state(wt) == before, "the bound worktree's files, HEAD, branch and status are unchanged"
+    assert "record only" in result.output and str(wt.resolve()) in result.output, result.output
+    listed = runner.invoke(gr2_app.app, ["lane", "list", str(ws)])
+    assert listed.exit_code == 0 and "atlas\tx\t" not in listed.output, listed.output
+
+
+def test_a_leased_bound_lane_is_not_removed(tmp_path: Path) -> None:
+    ws, wt = _bound_lane(tmp_path)
+    result = runner.invoke(gr2_app.app, ["lane", "lease", "acquire", str(ws), "atlas", "x",
+                                         "--actor", "agent:other", "--mode", "edit"])
+    assert result.exit_code == 0, result.output
+    before = _tree_state(wt)
+    _refused_untouched(ws, wt, _remove(ws), "lane_has_live_lease", "agent:other")
+    assert _tree_state(wt) == before
+
+
+def test_a_bound_worktree_inside_the_lane_record_is_not_removed(tmp_path: Path) -> None:
+    ws, _ = _bound_lane(tmp_path)
+    # A hand-edited record that points the lane at a worktree inside its own record directory: removing the
+    # record would remove the worktree with it.
+    inner = lane_proto.lane_dir(ws, "atlas", "x") / "inner"
+    inner.mkdir()
+    _git(inner, "init", "-q")
+    _git(inner, "-c", "user.email=t@e.invalid", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init")
+    toml = lane_proto.lane_file(ws, "atlas", "x")
+    old = lane_proto.load_lane_doc(ws, "atlas", "x")["bound_worktree"]
+    toml.write_text(toml.read_text().replace(old, str(inner.resolve())))
+    before = _tree_state(inner)
+    _refused_untouched(ws, inner, _remove(ws), "lane_record_holds_bound_worktree")
+    assert _tree_state(inner) == before
+
+
+def _inner_worktree(ws: Path, owner_dir: Path) -> Path:
+    inner = owner_dir / "x" / "inner"
+    inner.mkdir()
+    _git(inner, "init", "-q")
+    _git(inner, "-c", "user.email=t@e.invalid", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init")
+    (inner / "untracked.txt").write_text("work no commit holds\n")
+    return inner
+
+
+def _point_record_at(ws: Path, value: str) -> None:
+    toml = lane_proto.lane_file(ws, "atlas", "x")
+    old = lane_proto.load_lane_doc(ws, "atlas", "x")["bound_worktree"]
+    toml.write_text(toml.read_text().replace(json.dumps(old), json.dumps(value)))
+    assert lane_proto.load_lane_doc(ws, "atlas", "x")["bound_worktree"] == value
+
+
+@pytest.mark.parametrize("cwd", ["workspace", "elsewhere"])
+def test_a_relative_bound_worktree_is_refused_from_any_cwd(tmp_path: Path, monkeypatch, cwd: str) -> None:
+    ws, _ = _bound_lane(tmp_path)
+    inner = _inner_worktree(ws, lane_proto.lane_state_root(ws) / "atlas")
+    # A hand-edited record: relative to the workspace it names a worktree inside the record, but a relative
+    # path resolves against the CWD, so from elsewhere it would name nothing the record holds.
+    value = ".grip/state/lanes/atlas/x/inner"
+    _point_record_at(ws, value)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(ws if cwd == "workspace" else elsewhere)
+    before = _tree_state(inner)
+
+    result = _remove(ws)
+
+    _refused_untouched(ws, inner, result, "lane_record_invalid: atlas/x:",
+                       f"bound lane atlas/x needs an absolute bound_worktree, not {value!r}")
+    assert _tree_state(inner) == before, "the worktree inside the record, untracked file included, is unchanged"
+    listed = runner.invoke(gr2_app.app, ["lane", "list", str(ws)])
+    assert f"atlas\tx\tkeep\tlane_record_invalid: atlas/x: bound lane atlas/x needs an absolute" in listed.output, \
+        listed.output
+
+
+def test_a_bound_worktree_inside_the_record_is_refused_through_a_symlinked_owner_dir(tmp_path: Path) -> None:
+    ws, _ = _bound_lane(tmp_path)
+    # The record's own path passes through a symlink, so the worktree's resolved path is only inside the record
+    # once the record's path is resolved too.
+    owners = lane_proto.lane_state_root(ws)
+    (owners / "atlas").rename(owners / "atlas-real")
+    (owners / "atlas").symlink_to("atlas-real", target_is_directory=True)
+    inner = _inner_worktree(ws, owners / "atlas-real")
+    _point_record_at(ws, str(inner.resolve()))
+    before = _tree_state(inner)
+    _refused_untouched(ws, inner, _remove(ws), "lane_record_holds_bound_worktree")
+    assert _tree_state(inner) == before
+
+
+@pytest.mark.parametrize("shape", ["dotdot", "symlink"])
+def test_an_absolute_bound_worktree_that_lands_inside_the_record_is_refused(tmp_path: Path, shape: str) -> None:
+    ws, wt = _bound_lane(tmp_path)
+    inner = _inner_worktree(ws, lane_proto.lane_state_root(ws) / "atlas")
+    # Absolute, but only its resolved path shows it is inside the record: `..` segments back into the record,
+    # or a symlinked directory outside the record that points into it.
+    if shape == "dotdot":
+        value = str(wt.resolve() / ".." / ".grip" / "state" / "lanes" / "atlas" / "x" / "inner")
+    else:
+        (tmp_path / "link").symlink_to(lane_proto.lane_state_root(ws) / "atlas", target_is_directory=True)
+        value = str(tmp_path.resolve() / "link" / "x" / "inner")
+    _point_record_at(ws, value)
+    assert Path(value).resolve() == inner.resolve(), "control: the value names the worktree inside the record"
+    before = _tree_state(inner)
+    _refused_untouched(ws, inner, _remove(ws), "lane_record_holds_bound_worktree")
+    assert _tree_state(inner) == before
+
+
+def _receipts_under(repo: Path) -> list[Path]:
+    return sorted(p for p in (repo / ".git").rglob("grip-review*"))
+
+
+def _bind(ws: Path, base: str):
+    return runner.invoke(gr2_app.app, ["lane", "bind", str(ws), "atlas", "x", "--base", base, "--allow-local"])
+
+
+@pytest.mark.parametrize("cwd", ["workspace", "elsewhere"])
+def test_lane_bind_refuses_a_relative_bound_worktree_from_any_cwd(tmp_path: Path, monkeypatch, cwd: str) -> None:
+    ws, wt = _bound_lane(tmp_path)
+    base = _git(wt, "rev-parse", "HEAD")
+    # From the workspace a relative "wt" names the real worktree; from elsewhere it names a decoy clone that
+    # sits at elsewhere/wt with the same head. Neither may receive the receipt.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _git(elsewhere, "clone", "-q", str(wt), "wt")
+    decoy = elsewhere / "wt"
+    _git(decoy, "checkout", "-q", "feat/x")
+    _point_record_at(ws, "wt")
+    monkeypatch.chdir(ws if cwd == "workspace" else elsewhere)
+
+    result = _bind(ws, base)
+
+    assert result.exit_code == 2, result.output
+    assert "bound lane atlas/x needs an absolute bound_worktree, not 'wt'" in result.output, result.output
+    assert _receipts_under(wt) == [], "the real worktree holds no receipt"
+    assert _receipts_under(decoy) == [], "the decoy holds no receipt"
+    _point_record_at(ws, str(wt.resolve()))
+    control = _bind(ws, base)
+    assert control.exit_code == 0 and _receipts_under(wt), "control: the absolute record binds from the same CWD"
+
+
+def test_pr_create_refuses_a_relative_bound_worktree_before_any_push(tmp_path: Path, monkeypatch) -> None:
+    ws, wt = _bound_lane(tmp_path)
+    base = _git(wt, "rev-parse", "HEAD")
+    (wt / "f.txt").write_text("the reviewed change\n")
+    _git(wt, "commit", "-q", "-am", "change")
+    toml = lane_proto.lane_file(ws, "atlas", "x")
+    doc = lane_proto.load_lane_doc(ws, "atlas", "x")
+    toml.write_text(lane_proto.serialize_toml({**doc, "bound_head": _git(wt, "rev-parse", "HEAD")}))
+    assert _bind(ws, base).exit_code == 0
+    pushes: list = []
+    monkeypatch.setattr(lane_proto._push, "push_current_branch", lambda repo, **kw: pushes.append(repo))
+    monkeypatch.chdir(ws)
+    lane_proto.pr_create_bound_lane(ws, "atlas", "x")
+    assert pushes == [wt.resolve()], "control: the absolute record reaches the push seam"
+    # From the workspace a relative "wt" names that same bound worktree and its valid receipt.
+    _point_record_at(ws, "wt")
+
+    with pytest.raises(SystemExit, match="needs an absolute bound_worktree, not 'wt'"):
+        lane_proto.pr_create_bound_lane(ws, "atlas", "x")
+    assert pushes == [wt.resolve()], "the relative record pushed nothing"
+
+
+def test_an_entered_bound_lane_is_not_removed(tmp_path: Path) -> None:
+    ws, wt = _bound_lane(tmp_path)
+    (wt / "new.txt").write_text("an untracked file\n")
+    result = runner.invoke(gr2_app.app, ["lane", "enter", str(ws), "atlas", "x", "--actor", "agent:s"])
+    assert result.exit_code == 0, result.output
+    before = _tree_state(wt)
+    _refused_untouched(ws, wt, _remove(ws), "lane_is_entered")
+    assert _tree_state(wt) == before
 
 
 def test_a_lane_whose_origin_cannot_be_fetched_is_not_removed(tmp_path: Path) -> None:
@@ -244,6 +433,34 @@ def test_a_commit_reachable_only_from_a_local_tag_is_not_removed(tmp_path: Path)
     _refused_untouched(ws, repo, _remove(ws), "lane_has_unpushed_commit", tagged[:12])
 
 
+def _lane_with_a_local_tag_commit(tmp_path: Path) -> tuple[Path, Path, str]:
+    """A commit off every branch that only a local tag (0.5.0, never pushed) reaches; the clone back on feat/x."""
+    ws, repo = _pushed_exited_lane(tmp_path)
+    _git(repo, "checkout", "-q", "--detach")
+    (repo / "t.txt").write_text("a stray release commit\n")
+    _git(repo, "add", "t.txt")
+    _git(repo, "commit", "-q", "-m", "0.5.0")
+    tagged = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "tag", "0.5.0")
+    _git(repo, "checkout", "-q", "feat/x")
+    return ws, repo, tagged
+
+
+def test_the_refusal_names_the_local_tag_that_reaches_the_commit(tmp_path: Path) -> None:
+    """A sha alone cannot tell a stray local tag from unpushed work; the row names the ref the commit was found on."""
+    ws, repo, tagged = _lane_with_a_local_tag_commit(tmp_path)
+    _refused_untouched(ws, repo, _remove(ws), f"lane_has_unpushed_commit: app {tagged} (on refs/tags/0.5.0)")
+
+
+def test_the_refusal_names_the_branch_when_a_branch_and_a_tag_both_reach_the_commit(tmp_path: Path) -> None:
+    """The control: once a local branch reaches the tagged commit it is a desk's work, and the branch is named, not the tag."""
+    ws, repo, tagged = _lane_with_a_local_tag_commit(tmp_path)
+    _git(repo, "branch", "mine", tagged)
+    result = _remove(ws)
+    _refused_untouched(ws, repo, result, f"lane_has_unpushed_commit: app {tagged} (on refs/heads/mine)")
+    assert "refs/tags/0.5.0" not in result.output, result.output
+
+
 def _lane_with_a_commit_only_a_pushed_tag_holds(tmp_path: Path) -> tuple[Path, Path, str]:
     """A release tag off every branch, pushed (an annotated tag is this shape), and it kept every lane: refs/remotes/*
     holds no tags, so `--tags --not --remotes` read the commit as unpushed."""
@@ -289,7 +506,7 @@ def test_lane_list_names_a_tag_only_commit_unchecked_not_unpushed(tmp_path: Path
     assert result.exit_code == 0, result.output
     row = next(line for line in result.output.splitlines() if line.startswith("atlas\tx\t"))
     assert "\tkeep" in row and "lane_unpushed_unknown" in row and "reachable only from a tag" in row, row
-    assert "lane_has_unpushed_commit" not in row and tagged[:12] in row, row
+    assert "lane_has_unpushed_commit" not in row and f"{tagged[:12]} (refs/tags/" in row, row
 
 
 def _legacy_lane(tmp_path: Path) -> tuple[Path, Path]:
@@ -422,7 +639,7 @@ def test_a_native_lane_root_holding_an_unpushed_store_commit_is_not_removed(tmp_
     commit = _git(root, "rev-parse", "HEAD")
     result = _remove_native(ws)
     assert result.exit_code != 0
-    assert f"lane_has_unpushed_commit: lane-root {commit}" in result.output, result.output
+    assert f"lane_has_unpushed_commit: lane-root {commit} (on " in result.output, result.output
     assert "lane_has_unlisted_content" not in result.output, result.output
     assert _git(root, "rev-parse", "HEAD") == commit
 

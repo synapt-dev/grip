@@ -205,11 +205,18 @@ def out_bytes(cwd: Path, *args: str, error: type[Exception] | None = None, **kw)
     return proc.stdout
 
 
+def positional(value: str, kind: str, error: type[Exception] = RuntimeError) -> str:
+    """A user value bound for a git argv as a positional (a remote, a ref, a path, a url) that git would parse as
+    an option (e.g. --upload-pack=..., which runs a program) never reaches it. A configured remote name, a path and
+    a url all pass; callers still place the value after ``--`` where the git command takes one."""
+    if not value or value.startswith("-"):
+        raise error(f"{kind}_option_shaped: refusing a {kind} that begins with '-'")
+    return value
+
+
 def plain_remote(remote: str, error: type[Exception] = RuntimeError) -> str:
     """A remote git would parse as an option (e.g. --upload-pack=...) never reaches a git argv."""
-    if not remote or remote.startswith("-"):
-        raise error("remote_option_shaped: refusing a remote that begins with '-'")
-    return remote
+    return positional(remote, "remote", error)
 
 
 def git(
@@ -526,7 +533,7 @@ def clone_repo(url: str, target_repo_root: Path, *, reference_repo_root: Path | 
         return False
     target_repo_root.parent.mkdir(parents=True, exist_ok=True)
     reference = ["--reference-if-able", str(reference_repo_root)] if reference_repo_root is not None else []
-    proc = clone(*reference, url, str(target_repo_root))
+    proc = clone(*reference, "--", url, str(target_repo_root))
     if proc.returncode != 0:
         raise SystemExit(f"failed to clone {url} -> {target_repo_root}:\n{proc.stderr or proc.stdout}")
     return True
@@ -563,6 +570,7 @@ def checkout_declared_pin(repo_root: Path, pin: str, *, member: str) -> None:
     # is what found this -- the docstring promised a no-op the code did not do.
     if not pin:
         return
+    positional(pin, "pin", SystemExit)
 
     have = lambda: git(repo_root, "cat-file", "-e", f"{pin}^{{commit}}").returncode == 0
     if not have():
@@ -574,13 +582,13 @@ def checkout_declared_pin(repo_root: Path, pin: str, *, member: str) -> None:
         shallow = git(repo_root, "rev-parse", "--is-shallow-repository").stdout.strip() == "true"
         if shallow:
             fetch_args.extend(["--depth", "1"])
-        fetch_args.extend(["origin", pin])
+        fetch_args.extend(["origin", "--", pin])
         git(repo_root, *fetch_args)
         if not have():
             raise SystemExit(
                 f"member '{member}' declares pin {pin}, the clone cannot reach that commit, and "
                 f"fetching it by sha from origin did not provide it. Try "
-                f"`git -C {repo_root} fetch --depth 1 origin {pin}` by hand to see why. This verb "
+                f"`git -C {repo_root} fetch --depth 1 origin -- {pin}` by hand to see why. This verb "
                 "will not leave the member on its default branch instead: that is a commit the "
                 "root never declared."
             )
@@ -597,7 +605,7 @@ def branch_exists(repo_root: Path, branch: str) -> bool:
 
 
 def fetch_ref(repo_root: Path, remote: str, source_ref: str, local_branch: str) -> None:
-    proc = git(repo_root, "fetch", remote, f"{source_ref}:refs/heads/{local_branch}")
+    proc = git(repo_root, "fetch", "--no-tags", "--refmap=", remote, f"{source_ref}:refs/heads/{local_branch}")
     if proc.returncode != 0:
         raise SystemExit(
             f"failed to fetch {source_ref} from {remote} into {local_branch} in {repo_root}:\n{proc.stderr or proc.stdout}"
@@ -605,7 +613,7 @@ def fetch_ref(repo_root: Path, remote: str, source_ref: str, local_branch: str) 
 
 
 def refresh_existing_branch(repo_root: Path, remote: str, source_ref: str, local_branch: str) -> None:
-    proc = git(repo_root, "fetch", remote, source_ref)
+    proc = git(repo_root, "fetch", "--no-tags", "--refmap=", remote, source_ref)
     if proc.returncode != 0:
         raise SystemExit(
             f"failed to fetch {source_ref} from {remote} in {repo_root}:\n{proc.stderr or proc.stdout}"
@@ -678,8 +686,12 @@ def probe_remote(url: str) -> tuple[bool, str]:
     stderr/stdout on failure. Used by ``sync status`` (never ``sync run``'s
     own internal plan-building) to surface a refused remote as an ISSUE
     before ``sync run`` would hit it mid-operation."""
+    try:
+        positional(url, "url", ValueError)
+    except ValueError as exc:
+        return False, str(exc)
     effective_url = _effective_remote_url(url)
-    proc = run_argv(["git", "ls-remote", effective_url])
+    proc = run_argv(["git", "ls-remote", "--", effective_url])
     if proc.returncode == 0:
         return True, ""
     return False, (proc.stderr or proc.stdout).strip()

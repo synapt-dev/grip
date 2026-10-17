@@ -36,7 +36,8 @@ def _value(repo: Path, ref: str) -> str | None:
 
 
 def _remote_values(repo: Path, remote: str, refs: list[str]) -> dict[str, str]:
-    proc = gitops.run(repo, "ls-remote", remote, *refs)
+    gitops.plain_remote(remote, lambda why: PushRefused(refs[0], why))
+    proc = gitops.run(repo, "ls-remote", "--", remote, *refs)
     if proc.returncode:
         raise PushRefused(refs[0], f"ls-remote {remote} failed: {proc.stderr.strip()[:200]}")
     out = {}
@@ -72,7 +73,7 @@ def push(repo: Path, refs: list[str], *, org: str, remote: str = "origin", atomi
             raise PushRefused(r, f"{kind}: {local[r]} does not descend from the remote's {old} (allow_rewind to take it)")
     args = ["push", "--porcelain"] + (["--atomic"] if atomic else [])
     args += [f"--force-with-lease={r}:{tracked[r] or ''}" for r in refs]
-    args += [remote] + [f"{r}:{r}" for r in refs]
+    args += ["--", remote] + [f"{r}:{r}" for r in refs]
     proc = gitops.run(repo, *args)
     if proc.returncode:
         raise PushRejected(f"push to {remote} turned away: {(proc.stdout + proc.stderr).strip()[-400:]}")

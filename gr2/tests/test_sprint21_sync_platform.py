@@ -1360,3 +1360,93 @@ def test_pr_create_refuses_a_body_file_it_cannot_read(tmp_path: Path, monkeypatc
         f"the refusal must name the file; stderr={result.stderr!r}"
     )
     assert adapter.created == [], "the refusal must land before any PR is created"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com/",
+        "git@github.com:",
+        "https://github.com/.git",
+        "git@github.com:.git",
+        "https://github.com/owner",
+        "git@github.com:owner.git",
+        "https://github.com/owner/repo/extra",
+        "https://github.com/owner/re po",
+    ],
+)
+def test_a_github_url_that_names_no_owner_repo_falls_back_to_the_bare_name(url: str) -> None:
+    assert app_module._repo_slug_from_url(url, "product") == "product"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com/example/product.git",
+        "https://github.com/example/product",
+        "git@github.com:example/product.git",
+        " git@github.com:example/product\n",
+        "https://github.com/example/product/",
+        "https://github.com/example/product.git/",
+        " https://github.com/example/product.git/\n",
+        "ssh://git@github.com/example/product.git",
+        "ssh://git@github.com/example/product/",
+    ],
+)
+def test_a_github_url_that_names_owner_repo_gives_that_slug(url: str) -> None:
+    assert app_module._repo_slug_from_url(url, "fallback") == "example/product"
+
+
+@pytest.mark.parametrize("url", ["https://github.com/", "git@github.com:", "https://github.com/.git"])
+def test_merge_target_for_a_github_url_without_owner_repo_is_keyed_by_the_bare_name(
+    tmp_path: Path, url: str
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    repo_root = workspace_root / "repos" / "product"
+    repo_root.mkdir(parents=True)
+    assert _git(repo_root, "init", "-b", "main").returncode == 0
+    spec_path = workspace_root / ".grip" / "workspace_spec.toml"
+    spec_path.parent.mkdir(parents=True)
+    spec_path.write_text(
+        'workspace_name = "no-slug"\n\n[[repos]]\nname = "product"\npath = "repos/product"\n'
+        f'url = "{url}"\n'
+    )
+
+    targets = app_module._merge_verification_targets(workspace_root)
+
+    assert set(targets) == {"product"}
+    assert targets["product"].remote == url
+
+
+@pytest.mark.parametrize("url", ["https://github.com/", "git@github.com:", "https://github.com/.git"])
+def test_pr_create_for_a_github_url_without_owner_repo_hands_gh_the_bare_name(
+    tmp_path: Path, monkeypatch, url: str
+) -> None:
+    workspace_root = _pr_create_lane(tmp_path)
+    spec_path = workspace_root / ".grip" / "workspace_spec.toml"
+    app_url = next(
+        repo["url"] for repo in lane_proto.load_workspace_spec(workspace_root)["repos"] if repo["name"] == "app"
+    )
+    spec_path.write_text(spec_path.read_text().replace(app_url, url))
+    adapter = _NeverCreateAdapter()
+    monkeypatch.setattr(app_module.platform_ops, "get_platform_adapter", lambda name="github": adapter)
+
+    result = runner.invoke(app, ["pr", "create", str(workspace_root), "atlas", "feat-router"])
+
+    # The adapter records the first request and then raises, so one request is all this row reads.
+    assert [request.repo for request in adapter.created] == ["app"], result.output
+
+
+def test_pr_create_for_a_github_url_with_a_trailing_slash_hands_gh_owner_repo(tmp_path: Path, monkeypatch) -> None:
+    workspace_root = _pr_create_lane(tmp_path)
+    spec_path = workspace_root / ".grip" / "workspace_spec.toml"
+    app_url = next(
+        repo["url"] for repo in lane_proto.load_workspace_spec(workspace_root)["repos"] if repo["name"] == "app"
+    )
+    spec_path.write_text(spec_path.read_text().replace(app_url, "https://github.com/acme/api/"))
+    adapter = _NeverCreateAdapter()
+    monkeypatch.setattr(app_module.platform_ops, "get_platform_adapter", lambda name="github": adapter)
+
+    result = runner.invoke(app, ["pr", "create", str(workspace_root), "atlas", "feat-router"])
+
+    assert [request.repo for request in adapter.created] == ["acme/api"], result.output

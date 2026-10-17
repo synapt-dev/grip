@@ -267,7 +267,7 @@ def _remote_tips(workspace: Path, root: dict) -> dict[str, str | None]:
         if tip:
             temporary = "refs/dev.synapt.grip/__approval_transfers__/" + uuid.uuid4().hex
             try:
-                _git(workspace, "fetch", "--no-tags", "--no-write-fetch-head", "--", remote, f"{ref}:{temporary}")
+                _git(workspace, "fetch", "--no-tags", "--refmap=", "--no-write-fetch-head", "--", remote, f"{ref}:{temporary}")
                 if _git(workspace, "rev-parse", temporary) != tip:
                     raise ApprovalRefused("approval_chain_moved")
             finally:
@@ -417,6 +417,45 @@ def approve(workspace: Path, review_id: str | None = None, member_dirs: dict[str
         _git(workspace, "push", f"--force-with-lease={ref}:{old or ''}", "--", remote, f"{commit}:{ref}")
     _git(workspace, "update-ref", ref, commit)
     return count_approvals(workspace, rid, member_dirs)
+
+
+def since_my_stamp(workspace: Path, review_id: str) -> dict:
+    """What moved since this reviewer's newest stamp: the reviewer is the workspace's Git user.name (the identity
+    `approve` writes), the stamp the newest by created_at on any pin sharing a member key with this one. Per member:
+    the stamped and current heads, the commits and the changed paths between them. Reads; writes no ref."""
+    workspace = workspace.resolve()
+    rid = review_id.removeprefix("gr:")
+    name = _git(workspace, "config", "user.name")
+    current = {m["key"]: m for m in grip.show_review_commit(workspace, rid)["members"]}
+    stamps = []
+    for pin, _ in grip.list_review_binds(workspace):
+        pinned = {m["key"]: m for m in grip.show_review_commit(workspace, pin)["members"]}
+        if not set(pinned) & set(current):
+            continue
+        for link in count_approvals(workspace, pin)["links"]:
+            if link["approver"] == name:
+                stamps.append((_read_link(workspace, link["commit"])["created_at"], pin, pinned))
+    result = {"review_id": "gr:" + rid, "approver": name}
+    if not stamps:
+        return {**result, "refused": f"no_stamp: {name} has no stamp on any pin for these members"}
+    at, pin, pinned = max(stamps, key=lambda s: s[0])
+    members = []
+    for key, m in sorted(current.items()):
+        then, now = (pinned.get(key) or {}).get("head"), m["head"]
+        row = {"key": key, "stamped_head": then, "current_head": now, "changed": then != now,
+               "range": None, "commits": [], "paths": []}
+        repo = (workspace / m["path"]).resolve()
+        if then is None:  # not in the stamped pin: everything this pin reviews is new to the reviewer
+            row["paths"] = sorted(m["files"] or [])
+        elif then != now:
+            if gitops.run(repo, "merge-base", "--is-ancestor", then, now).returncode == 0:
+                row["range"] = f"{then}..{now}"
+                row["commits"] = _git(repo, "rev-list", "--reverse", row["range"]).splitlines()
+            # A rebased head has no range; the paths are still the diff between the two trees.
+            row["paths"] = sorted(_git(repo, "diff", "--name-only", then, now).splitlines())
+        members.append(row)
+    return {**result, "stamped_review": "gr:" + pin, "stamped_at": at,
+            "changed": any(r["changed"] for r in members), "members": members}
 
 
 # ---- a PR-head review: the lane `review checkout-pr` (or `review open`) made, stamped by its (repo, head) record

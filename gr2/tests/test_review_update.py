@@ -376,3 +376,41 @@ def test_u20_a_target_fast_forwarded_to_the_reviewed_head_is_not_reported_curren
     assert r["merged"] == [] and r["new_review"] is None, r
     assert r["members"][0]["state"] == "up_to_date" and r["members"][0]["base"] == m["head"], r
     assert binds(one) == before
+
+
+def test_update_by_remote_name_writes_no_configured_ref_or_tag(tmp_path, monkeypatch):
+    """A pin row may name its remote (`origin`) when the workspace resolves it; update's fetch of the target then goes
+    by that name in the member clone, where a configured refspec and tagOpt=--tags would write refs and tags."""
+    author, remote, seed = tmp_path / "au thor", tmp_path / "a.git", tmp_path / "seed"
+    author.mkdir()
+    seed.mkdir()
+    git(tmp_path, "init", "--bare", "-b", "main", remote)
+    git(seed, "init", "-b", "main")
+    (seed / "payload.txt").write_text("base\n")
+    git(seed, "add", ".")
+    git(seed, "commit", "-m", "base")
+    git(seed, "push", remote, "main")
+    git(author, "clone", "--no-local", "--branch", "main", remote, "a")
+    repo, base = author / "a", git(seed, "rev-parse", "HEAD")
+    assert runner.invoke(app, ["store", "init", str(author)]).exit_code == 0
+    git(author, "remote", "add", "origin", remote)
+    git(repo, "checkout", "-b", "feat")
+    (repo / "payload.txt").write_text("reviewed\n")
+    git(repo, "commit", "-am", "reviewed")
+    rows = [{"key": "a", "path": "a", "remote": "origin", "base": base, "head": git(repo, "rev-parse", "HEAD"),
+             "ref": "refs/heads/main", "source": str(repo)}]
+    (tmp_path / "rows.json").write_text(json.dumps(rows))
+    monkeypatch.chdir(author)
+    made = runner.invoke(app, ["review", "pin", str(author), "--rows-json", str(tmp_path / "rows.json")])
+    assert made.exit_code == 0, made.output
+    git(repo, "push", "origin", "feat")
+    git(seed, "commit", "--allow-empty", "-m", "moved")
+    git(seed, "push", remote, "main")
+    git(remote, "tag", "t1", "main")
+    git(repo, "branch", "keep", base)
+    git(repo, "config", "--replace-all", "remote.origin.fetch", "+refs/heads/main:refs/heads/keep")
+    git(repo, "config", "remote.origin.tagOpt", "--tags")
+    out = runner.invoke(app, ["review", "update", str(author), made.stdout.strip().splitlines()[-1]])
+    assert out.exit_code == 0, out.output
+    assert git(repo, "rev-parse", "keep") == base
+    assert git(repo, "tag", "-l") == ""

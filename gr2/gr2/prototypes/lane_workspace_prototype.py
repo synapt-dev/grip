@@ -38,6 +38,7 @@ from gr2.python_cli import gitops
 from gr2.python_cli import review as _review
 from gr2.python_cli import push as _push
 from gr2.python_cli import review_records as _records
+from gr2.python_cli.layout import grip_dir as _layout_grip_dir
 
 LANE_SCHEMA_VERSION = 1
 SCRATCHPAD_SCHEMA_VERSION = 1
@@ -1795,15 +1796,31 @@ def create_review_lane(args: argparse.Namespace) -> int:
     return 0
 
 
+def _pr_group_names(workspace_root: Path):
+    for path in sorted((_layout_grip_dir(workspace_root) / "pr_groups").glob("*.json")):
+        try:
+            doc = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        prs = doc.get("prs") if isinstance(doc, dict) else None
+        for item in prs if isinstance(prs, list) else []:
+            if isinstance(item, dict) and item.get("repo") is not None:
+                yield str(item.get("repo")), str(item.get("pr_number"))
+
+
 def check_review_requirements(args: argparse.Namespace) -> int:
     workspace_root = args.workspace_root.resolve()
     ref = f"{args.repo}#{args.pr_number}"
-    required = int(
-        workspace_constraints(workspace_root).get("required_reviewers", {}).get(args.repo, 0)
-    )
+    spec = load_workspace_spec(workspace_root)
+    policy = spec.get("workspace_constraints", {}).get("required_reviewers", {})
+    required = int(policy.get(args.repo, 0))
+    group_prs = set(_pr_group_names(workspace_root))
+    known_repos = {str(row.get("name")) for row in spec.get("repos", [])} | set(policy)
+    known_repos.update(repo for repo, _ in group_prs)
     matching: list[dict] = []
     for path in iter_lane_files(workspace_root):
         doc = tomllib.loads(path.read_text())
+        known_repos.update(doc.get("repos", []))
         if doc.get("lane_type") != "review":
             continue
         refs = [item["ref"] for item in doc.get("pr_associations", [])]
@@ -1816,15 +1833,26 @@ def check_review_requirements(args: argparse.Namespace) -> int:
                 "repos": doc.get("repos", []),
             }
         )
+    # A FALSE YES IS WORSE THAN NO ANSWER. With no policy, 0 required >= 0 actual made any repo and any
+    # number "satisfied". A repo nothing names is refused: the count would describe nothing. A PR of a declared
+    # repo that no review lane, PR group or policy names is reported, but not satisfied, with the basis named:
+    # the workspace cannot know which PR numbers exist upstream. A policy keeps 0/N as a true "not satisfied".
+    if args.repo not in known_repos:
+        print(json.dumps({"refused": "unknown_repo", "repo": args.repo, "pr_number": args.pr_number}))
+        print(f"gr2: unknown_repo: no workspace member, review lane or PR group names repo {args.repo}", file=sys.stderr)
+        return 2
+    unnamed = not matching and required == 0 and (args.repo, str(args.pr_number)) not in group_prs
     reviewer_units = sorted({row["owner_unit"] for row in matching})
     payload = {
         "repo": args.repo,
         "pr_number": args.pr_number,
         "required_reviewers": required,
         "actual_reviewers": len(reviewer_units),
-        "satisfied": len(reviewer_units) >= required,
+        "satisfied": len(reviewer_units) >= required and not unnamed,
         "review_lanes": matching,
     }
+    if unnamed:
+        payload["basis"] = "no_lane_or_group_names_this_pr"
     if args.json:
         print(json.dumps(payload, indent=2))
     else:

@@ -335,8 +335,11 @@ def required_check_names(required: Sequence[str] | None, members: int, no_set: b
 
 def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature: str,
                  required_checks: Sequence[str] | None = None, required_approvals: int | None = None,
-                 no_set: bool = False) -> tuple[int, dict]:
-    """required_checks names what each member's remote must hold at its reviewed head (see required_check_names for
+                 no_set: bool = False, dry_run: bool = False) -> tuple[int, dict]:
+    """dry_run (`review blockers`) stops after the approval count: no merge build, no push, no receipt, so the
+    remote refs are unchanged; it returns every refusal the real merge would have stopped on.
+
+    required_checks names what each member's remote must hold at its reviewed head (see required_check_names for
     the default). The name `set` is not judged by name: it must be a record `check set` wrote for THIS review and
     THIS set of heads (set_check.judge_set_records)."""
     review_id = review_id.removeprefix("gr:")
@@ -521,6 +524,23 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                 if r["state"] == "ready":
                     r["refused"] = str(exc)
 
+    if dry_run:
+        for r, m in zip(rows, view["members"]):
+            if r["refused"]:
+                step = next_steps.merge_row(r["refused"], workspace=str(root), review="gr:" + view["id"].removeprefix("gr:"),
+                                            remote=m["remote"], path=str((workspace / m["path"]).resolve()),
+                                            head=m["head"], checks=tuple(required_checks))
+                if step:
+                    r["next"] = step
+            expected, observed = r.pop("_heads", (None, None))
+            r.setdefault("records", None)
+            r["refusal"] = None if not r["refused"] else {
+                "code": r["refused"].split(":", 1)[0], "member": r["key"], "expected": expected, "observed": observed}
+        blockers = [r["refusal"] for r in rows if r["refusal"]]
+        return (EXIT_REFUSED if blockers else 0), {
+            "id": view["id"], "into": into, "feature": feature, "dry_run": True, "ready": not blockers,
+            "blockers": blockers, "members": rows, "approvals": approval_receipt}
+
     if not any(r["refused"] for r in rows):
         # Build every merge before any push.
         builds = {}
@@ -660,3 +680,36 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
     except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
         receipt["stored"] = f"receipt_not_stored: {exc}"
     return code, receipt
+
+
+def review_merged(workspace: Path, review_id: str, *, into: str = "main") -> tuple[int, dict]:
+    """Read-only (`review merged`): for each member, the merge of its reviewed head on the REMOTE target, with the
+    merge's committer date, and whether this clone holds a `review merge` receipt for the review. The remote is the
+    answer, so a clone that never ran the merge still finds it. Exit 0 all merged, 3 none, 4 some or unmeasured."""
+    review_id = review_id.removeprefix("gr:")
+    try:
+        view = grip.show_review_commit(workspace, review_id)
+    except (grip.GripInitError, grip.GripCorruptError, RuntimeError, OSError, ValueError, KeyError,
+            subprocess.SubprocessError) as exc:
+        return _unmeasured(review_id, into, "", f"bind_unreadable: {type(exc).__name__}: {exc}")
+    root = Path(workspace).resolve()
+    try:
+        receipts = merge_receipts.runs(root, view["id"])
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError):
+        receipts = None  # an unreadable local receipt never changes the remote answer; it reads as null
+    rows, states = [], []
+    for m in view["members"]:
+        repo = (workspace / m["path"]).resolve()
+        row = {"key": m["key"], "head": m["head"], "merged": None, "merged_at": None, "refused": None}
+        rows.append(row)
+        try:
+            target = _remote_tip(repo, m["remote"], into)
+            row["merged"] = _merged_at(repo, target, m["head"]) if target else None
+            if row["merged"]:
+                row["merged_at"] = _git(repo, "show", "-s", "--format=%cI", row["merged"])
+        except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
+            row["refused"] = f"remote_unmeasurable: {exc}"
+        states.append("unknown" if row["refused"] else ("merged" if row["merged"] else "unmerged"))
+    code = (EXIT_MERGED if all(s == "merged" for s in states) else
+            EXIT_REFUSED if all(s == "unmerged" for s in states) else EXIT_PARTIAL)
+    return code, {"id": view["id"], "into": into, "exit": code, "members": rows, "receipt_here": None if receipts is None else bool(receipts)}

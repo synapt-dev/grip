@@ -512,6 +512,16 @@ flag  review bind --rows-json <str>                                   stable
 flag  review bind --source <str>                                      stable
 flag  review bind --title <str>                                       stable
 verb  review bind                                                     stable
+# review blockers
+arg   review blockers review_id <str>                                 stable
+arg   review blockers workspace_root <str>                            stable
+flag  review blockers --approvals <str>                               stable
+flag  review blockers --check <str>                                   stable
+flag  review blockers --from <str>                                    stable
+flag  review blockers --into <str>                                    stable
+flag  review blockers --no-set                                        stable
+flag  review blockers --root/-C <str>                                 stable
+verb  review blockers                                                 stable
 # review check
 arg   review check pr_number <str>                                    stable
 arg   review check repo <str>                                         stable
@@ -564,6 +574,11 @@ flag  review exit-gr --adopt-legacy (hidden)                          stable
 flag  review exit-gr --json (hidden)                                  stable
 flag  review exit-gr --root/-C <str> (hidden)                         stable
 verb  review exit-gr (hidden)                                         stable
+# review list
+arg   review list workspace_root <str>                                stable
+flag  review list --json                                              stable
+flag  review list --root/-C <str>                                     stable
+verb  review list                                                     stable
 # review merge
 arg   review merge review_id <str>                                    stable
 arg   review merge workspace_root <str>                               stable
@@ -574,6 +589,12 @@ flag  review merge --into <str>                                       stable
 flag  review merge --no-set                                           stable
 flag  review merge --root/-C <str>                                    stable
 verb  review merge                                                    stable
+# review merged
+arg   review merged review_id <str>                                   stable
+arg   review merged workspace_root <str>                              stable
+flag  review merged --into <str>                                      stable
+flag  review merged --root/-C <str>                                   stable
+verb  review merged                                                   stable
 # review open
 arg   review open pr_number <str>                                     stable
 arg   review open repo <str>                                          stable
@@ -697,6 +718,13 @@ arg   review stamp review_id <str>                                    stable
 arg   review stamp workspace_root <str>                               stable
 flag  review stamp --root/-C <str>                                    stable
 verb  review stamp                                                    stable
+# review stamps
+arg   review stamps review_id <str>                                   stable
+arg   review stamps workspace_root <str>                              stable
+flag  review stamps --approvals <str>                                 stable
+flag  review stamps --root/-C <str>                                   stable
+flag  review stamps --since-my-stamp                                  stable
+verb  review stamps                                                   stable
 # review update
 arg   review update review_id <str>                                   stable
 arg   review update workspace_root <str>                              stable

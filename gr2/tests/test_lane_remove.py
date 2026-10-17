@@ -131,7 +131,8 @@ def test_a_lane_with_a_live_lease_is_not_removed(tmp_path: Path) -> None:
     _refused_untouched(ws, repo, _remove(ws), "lane_has_live_lease", "agent:other")
 
 
-def test_a_bound_lane_is_not_removed_and_its_worktree_is_untouched(tmp_path: Path) -> None:
+def _bound_lane(tmp_path: Path) -> tuple[Path, Path]:
+    """A lane bound to a worktree the lane did not create. Returns (ws, the bound worktree)."""
     ws, _, _ = _workspace_with_enter_hook(tmp_path, command="exit 0")
     wt = ws / "wt"
     wt.mkdir()
@@ -145,8 +146,57 @@ def test_a_bound_lane_is_not_removed_and_its_worktree_is_untouched(tmp_path: Pat
     result = runner.invoke(gr2_app.app, ["lane", "create", str(ws), "atlas", "x", "--repos", "app",
                                          "--branch", "app=feat/x", "--bind", str(wt)])
     assert result.exit_code == 0, result.output
-    _refused_untouched(ws, wt, _remove(ws), "lane_is_bound")
-    assert (wt / ".git").is_dir()
+    return ws, wt
+
+
+def _tree_state(wt: Path) -> tuple:
+    files = {p.relative_to(wt).as_posix(): p.read_bytes() for p in sorted(wt.rglob("*")) if p.is_file()}
+    return _git(wt, "rev-parse", "HEAD"), _git(wt, "symbolic-ref", "HEAD"), _git(wt, "status", "--porcelain"), files
+
+
+def test_a_bound_lane_is_removed_as_a_record_and_its_worktree_is_untouched(tmp_path: Path) -> None:
+    ws, wt = _bound_lane(tmp_path)
+    # The worktree holds work that is in no remote: it is the worktree's owner's, not the lane's, so it neither
+    # blocks the record's removal nor goes with it.
+    (wt / "f.txt").write_text("an uncommitted edit\n")
+    (wt / "new.txt").write_text("an untracked file\n")
+    before = _tree_state(wt)
+    assert "atlas\tx\t" in runner.invoke(gr2_app.app, ["lane", "list", str(ws)]).output, "control: the lane is listed"
+
+    result = _remove(ws)
+
+    assert result.exit_code == 0, result.output
+    assert not lane_proto.lane_dir(ws, "atlas", "x").exists(), "the lane record is gone"
+    assert _tree_state(wt) == before, "the bound worktree's files, HEAD, branch and status are unchanged"
+    assert "record only" in result.output and str(wt.resolve()) in result.output, result.output
+    listed = runner.invoke(gr2_app.app, ["lane", "list", str(ws)])
+    assert listed.exit_code == 0 and "atlas\tx\t" not in listed.output, listed.output
+
+
+def test_a_leased_bound_lane_is_not_removed(tmp_path: Path) -> None:
+    ws, wt = _bound_lane(tmp_path)
+    result = runner.invoke(gr2_app.app, ["lane", "lease", "acquire", str(ws), "atlas", "x",
+                                         "--actor", "agent:other", "--mode", "edit"])
+    assert result.exit_code == 0, result.output
+    before = _tree_state(wt)
+    _refused_untouched(ws, wt, _remove(ws), "lane_has_live_lease", "agent:other")
+    assert _tree_state(wt) == before
+
+
+def test_a_bound_worktree_inside_the_lane_record_is_not_removed(tmp_path: Path) -> None:
+    ws, _ = _bound_lane(tmp_path)
+    # A hand-edited record that points the lane at a worktree inside its own record directory: removing the
+    # record would remove the worktree with it.
+    inner = lane_proto.lane_dir(ws, "atlas", "x") / "inner"
+    inner.mkdir()
+    _git(inner, "init", "-q")
+    _git(inner, "-c", "user.email=t@e.invalid", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init")
+    toml = lane_proto.lane_file(ws, "atlas", "x")
+    old = lane_proto.load_lane_doc(ws, "atlas", "x")["bound_worktree"]
+    toml.write_text(toml.read_text().replace(old, str(inner.resolve())))
+    before = _tree_state(inner)
+    _refused_untouched(ws, inner, _remove(ws), "lane_record_holds_bound_worktree")
+    assert _tree_state(inner) == before
 
 
 def test_a_lane_whose_origin_cannot_be_fetched_is_not_removed(tmp_path: Path) -> None:

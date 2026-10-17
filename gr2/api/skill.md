@@ -248,6 +248,7 @@ Pin a review gr commit for one or more repository rows; print ``gr:<commit>``.
 - `--path`: Workspace path for the row (defaults to --repo)
 - `--source`: Author clone holding the pre-push head; required to carry the range so `review open` can reconstruct
 - `--from-range`: A frozen range.patch (freeze-public-range.sh output). Carries the range so `review open` reconstructs, deriving the head-tree by applying it over --base in a throwaway clone — NO author clone that holds the head is needed. Exclusive with --source.
+- `--at-base`: With --from-range: pin at --base, the dev the range was cut on, even when --ref has moved past it; read-only (nothing is rebased) and recorded in the pin as at-base
 - `--title`: Platform title text (NORM-hashed into the object)
 - `--body`: Platform body text (NORM-hashed into the object)
 - `--rows-json`: A JSON file with a list of row objects (key/remote/base/head, optional path/ref/title/body; source or range is optional on a single row but required on every row when the file holds more than one); pins ALL rows into ONE gr commit. Exclusive with the single-row flags.

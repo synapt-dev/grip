@@ -755,6 +755,7 @@ def _bind_review_rows_body(
     seen: set[str] = set()
     pushed_before: dict[str, str] = {}
     ratified_by: dict[str, str] = {}
+    at_base: dict[str, str] = {}
     # A named receipt is resolved before any row is read, so an id that names nothing refuses on its own.
     receipt = _ratified_receipt(workspace, ratified) if ratified else None
     for row in sorted(rows, key=lambda item: item.get("key", "")):
@@ -778,7 +779,13 @@ def _bind_review_rows_body(
         _refuse_option_shaped_remote(key, remote)
         # Refusal 1: base must be the live remote head of the target ref.
         observed, target = _pin_target(workspace, remote, ref, f"{key}/ref")
-        if base != observed:
+        # --at-base (a frozen range only): pin at the base the range was cut on, read-only, when the ref has moved
+        # past it; the base is recorded as at-base in the bind's message, so nothing is rebased to make it pass.
+        if row.get("at_base"):
+            if not row.get("range_patch"):
+                raise GripReviewRefused("at_base_needs_range", key, "--at-base pins a frozen range only")
+            at_base[key] = base
+        elif base != observed:
             raise GripReviewRefused("base_not_live_head", base, observed)
         # Refusal 2: head must not already be on the remote (unless ratified), except as the tip of a
         # branch other than --ref: then the bytes on the remote ARE the head, and the bind records
@@ -863,6 +870,7 @@ def _bind_review_rows_body(
     # schema (a pinned copy) is unchanged. One trailer per member pinned after its push.
     trailers = [f"{_PUSHED_BEFORE_PIN} {key} {branch}" for key, branch in sorted(pushed_before.items())]
     trailers += [f"{_RATIFIED_BY} {key} {rid}" for key, rid in sorted(ratified_by.items())]
+    trailers += [f"{_AT_BASE} {key} {sha}" for key, sha in sorted(at_base.items())]
     message = "grip review bind" + ("\n\n" + "\n".join(trailers) if trailers else "")
     commit = _bind_commit_tree(workspace, root_tree, message=message)
     return _publish_bind(workspace, commit, "grip review bind", ref=_review_ref_v1(commit))
@@ -870,6 +878,7 @@ def _bind_review_rows_body(
 
 _PUSHED_BEFORE_PIN = "Pushed-before-pin:"
 _RATIFIED_BY = "Ratified-by:"
+_AT_BASE = "At-base:"
 
 
 def _bind_trailers(workspace: Path, commit: str, name: str) -> dict[str, str]:
@@ -963,12 +972,14 @@ def show_review_commit(workspace: Path, commit: str, *, migrate: bool = True) ->
         view = _field_tree_view(workspace, commit)
         pushed = _pushed_before_pin(workspace, commit)
         ratified_by = _bind_trailers(workspace, commit, _RATIFIED_BY)
+        at_base = _bind_trailers(workspace, commit, _AT_BASE)
         return {"id": f"gr:{commit}", **({"author": view["author"]} if "author" in view else {}), "members": [{
             "key": key, "remote": m["repo"]["remote"], "path": m["repo"]["path"],
             "base": m["repo"]["base"], "head": m["repo"]["commit"], "title": m["title"], "body": m["body"],
             "files": _range_files(None if m["objects"] is None else m["objects"]["range.patch"]),
             **({"pushed_before_pin": pushed[key]} if key in pushed else {}),
             **({"ratified_by": ratified_by[key]} if key in ratified_by else {}),
+            **({"at_base": at_base[key]} if key in at_base else {}),
             **({"target": m["target"]} if "target" in m else {}),
         } for key, m in sorted(view["members"].items())]}
     if _bind_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip() != _REVIEW_BIND_SCHEMA:

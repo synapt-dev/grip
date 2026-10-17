@@ -505,6 +505,7 @@ flag  review approve --root/-C <str>                                  stable
 verb  review approve                                                  stable
 # review bind
 arg   review bind workspace_root <str>                                stable
+flag  review bind --at-base                                           stable
 flag  review bind --base <str>                                        stable
 flag  review bind --body <str>                                        stable
 flag  review bind --from-range <str>                                  stable
@@ -640,6 +641,7 @@ flag  review open-project --sources-json <str> (hidden)               stable
 verb  review open-project (hidden)                                    stable
 # review pin
 arg   review pin workspace_root <str>                                 stable
+flag  review pin --at-base                                            stable
 flag  review pin --base <str>                                         stable
 flag  review pin --body <str>                                         stable
 flag  review pin --from-range <str>                                   stable

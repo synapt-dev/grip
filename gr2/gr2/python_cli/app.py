@@ -5834,6 +5834,11 @@ def review_merge(
     if on_set:
         typer.echo(f"accepted on the set alone (no test record of its own at its head): {', '.join(on_set)}; "
                    "the set's command is the only test evidence for them, so it must run their tests", err=True)
+    # A moved target refuses every member with the same update line; say it once where an operator reads, not only
+    # inside each member's row of the receipt.
+    for line in dict.fromkeys(m["next"] for m in receipt.get("members", [])
+                              if m.get("next") and (m.get("refused") or "").startswith("base_moved")):
+        typer.echo(line, err=True)
     if hint_error:
         typer.echo(hint_error, err=True)
     for set_name in sorted({(m.get("declared_set") or {}).get("set") for m in receipt.get("members", [])} - {None}):

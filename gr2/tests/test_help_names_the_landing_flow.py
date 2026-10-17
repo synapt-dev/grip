@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import re
+import shlex
+import sys
 
 from typer.testing import CliRunner
 
+from gr2.python_cli import check_records
 from gr2.python_cli.app import app
+from tests.test_review_update import _env, move_main, two  # noqa: F401  (fixtures: real git, bare local remotes)
 
 runner = CliRunner()
 
@@ -30,3 +34,14 @@ def test_review_help_lets_publish_push_the_heads_and_check_set_alone_satisfy_mer
     assert "five steps" in text and "2. gr2 review publish push every member's pinned head to its own remote" in text
     assert ("a review over several members needs only gr2 check set, one command over every member: merge accepts on "
             "the set alone") in text, out.stdout
+
+
+def test_merge_on_a_moved_base_prints_its_next_line_on_stderr_once(two):
+    for name, m in two["members"].items():
+        move_main(two, name)
+        check_records.run_check(m["repo"], str(m["remote"]), m["head"], "test", [sys.executable, "-c", "pass"])
+    out = runner.invoke(app, ["review", "merge", str(two["author"]), two["review"], "--approvals", "0"])
+    assert out.exit_code == 3, out.output
+    nexts = [line for line in out.stderr.splitlines() if line.startswith("next: ")]
+    assert nexts == [f"next: the target moved after the pin; bring every member up to it and pin again: "
+                     f"gr2 review update {shlex.quote(str(two['author']))} {two['review']} --into main"], out.stderr

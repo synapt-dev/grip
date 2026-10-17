@@ -102,6 +102,9 @@ def canonical_source_identity(remote_url: str, *, allow_local: bool = False) -> 
     set, in which case it is marked ``local:<path>`` so it can never masquerade
     as a projectable identity."""
     url = (remote_url or "").strip()
+    if any(ord(c) < 0x20 or c == "\x7f" for c in url):
+        # NUL, the rest of C0 and DEL: never a repository identity, and a NUL reaches the filesystem as a ValueError.
+        raise ReviewError(f"remote_control_character: origin {url!r} carries a control character")
     for pattern in (_GITHUB_SSH_SCP, _GITHUB_SSH_URL, _GITHUB_HTTPS):
         match = pattern.match(url)
         if match:

@@ -1772,8 +1772,15 @@ def _review_transport_identity(commit: str, ref: str | None) -> tuple[str, str]:
     return full, ref or canonical
 
 
+def _has_control_character(text: str) -> bool:
+    """NUL, the rest of C0 and DEL: no remote spells one, and a NUL handed to a path or a git argument raises."""
+    return any(ord(c) < 0x20 or c == "\x7f" for c in text)
+
+
 def _review_transport_remote(remote: str) -> str:
     from .gitops import _effective_remote_url
+    if _has_control_character(remote or ""):
+        raise GripCorruptError(f"review_remote_control_character: {remote!r}")
     if not remote or remote.startswith("-") or not (
         remote.startswith("https://") or Path(remote).is_absolute()
     ):
@@ -2079,6 +2086,11 @@ def _fetch_received_heads(workspace: Path, commit: str, source: str,
         key, head = str(m["key"]), str(m["head"])
         repo = (root / str(m["path"])).resolve()
         row = {"key": key, "head": head}
+        if _has_control_character(str(m["remote"])):
+            # The record is read as written: a control character in a member remote refuses that member, by name.
+            rows.append({**row, "status": "refused",
+                         "reason": f"member_remote_control_character: {str(m['remote'])!r}"})
+            continue
         src = source
         if all_members and want is not None and same(str(m["remote"])) == want:
             pass  # the remote this receive already dialled: the per-member form fetches it from there too

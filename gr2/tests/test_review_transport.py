@@ -488,3 +488,49 @@ def test_the_set_check_fetch_command_round_trips_through_a_shell_from_a_path_wit
     assert checked.exit_code != 0, checked.output
     printed = strip_ansi(checked.output).split("`")[1]
     assert shlex.split(printed) == ["git", "-C", str(receiver / "member"), "fetch", "--", str(remote), head], printed
+
+
+def test_a_member_remote_with_a_nul_refuses_that_member_and_fetches_the_other(handoff, monkeypatch):
+    """A record whose member remote carries a NUL: that member is a refused row naming why, the other member's head
+    is still fetched, and the receipt is printed. Before, Path(remote).resolve() raised ValueError out of receive."""
+    author, receiver, remote, commit, _, head = handoff
+    git(author / "member", "push", remote, "HEAD:refs/heads/feat")
+    publish(handoff, monkeypatch)
+    shown = grip.show_review_commit
+
+    def with_nul_member(*args, **kwargs):
+        out = shown(*args, **kwargs)
+        out["members"] = [{**out["members"][0], "key": "bad", "path": "bad", "remote": "/x\0y"}, *out["members"]]
+        return out
+
+    monkeypatch.setattr(grip, "show_review_commit", with_nul_member)
+    got = cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", remote)
+    assert got.exit_code == 0 and "Traceback" not in got.output, got.output
+    rows = _rows(got)
+    assert rows["bad"]["status"] == "refused", rows
+    assert rows["bad"]["reason"] == "member_remote_control_character: '/x\\x00y'", rows
+    assert rows["member"]["status"] == "fetched", rows
+    assert git(receiver / "member", "cat-file", "-t", head) == "commit"
+
+
+@pytest.mark.parametrize("bad", ["/x\0y", "/x\ny", "/x\x1fy", "/x\x7fy", "https://github.com/o/a\0b"])
+def test_a_control_character_in_the_receive_remote_is_refused_before_any_git_call(handoff, monkeypatch, bad):
+    _, receiver, _, commit, _, _ = handoff
+
+    def no_git(*args, **kwargs):
+        raise AssertionError(f"git ran: {args}")
+
+    monkeypatch.setattr(grip, "git", no_git)
+    monkeypatch.setattr(grip, "_bind_git", no_git)
+    with pytest.raises(grip.GripCorruptError, match=r"\Areview_remote_control_character: "):
+        grip.receive_review_commit(receiver, "gr:" + commit, bad)
+
+
+@pytest.mark.parametrize("bad", ["git@github.com:o/a\0.git", "https://github.com/o/a\x01b", "/x\0y", "/x\ty",
+                                 "/x\x7fy", "ssh://git@github.com/o/a\x1b.git"])
+@pytest.mark.parametrize("allow_local", [False, True])
+def test_canonical_source_identity_refuses_a_control_character(bad, allow_local):
+    """Never an identity with a NUL in it (the GitHub patterns took one), never a ValueError from the filesystem."""
+    from gr2.python_cli.review import ReviewError, canonical_source_identity
+    with pytest.raises(ReviewError, match=r"\Aremote_control_character: "):
+        canonical_source_identity(bad, allow_local=allow_local)

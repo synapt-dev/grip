@@ -69,6 +69,14 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   detail now carries both of them as `expected` and `observed`. With a member behind a fork, those are the two
   tips of the fork, never the member behind it.
 
+- **`gr2 review stamp` on a PR lane refuses the PR's own author.** On a PR's review lane (the lane `review
+  checkout-pr` makes), the stamp used to accept the PR author's own approval and count it. It now refuses with exit 2
+  and `self_approval`, by the same check a pinned review uses: the approver's git `user.name` may not be the PR
+  head's author or the author of any commit in the PR's base..head. The 2.0.0a10 entry below says "As with bind
+  approvals, the name is self-declared; whether the approver wrote the PR is not checked."; its second half was
+  wrong: a bind approval refuses its author. The stamp output on a PR lane now carries `"counts_toward_merge":
+  false`: `review merge` counts only pinned-review approvals and never reads a PR-lane stamp.
+
 - **`gr pr create` opens PRs for the branch you are on, not for every branch
   some repo happens to sit on.** It used to open one PR per branch group under
   the single `-t` title, so a repo (the manifest included) parked on an old

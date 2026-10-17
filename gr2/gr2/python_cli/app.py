@@ -5853,7 +5853,7 @@ def review_approve(
         typer.echo(str(exc), err=True)
         if getattr(exc, "next_step", None):
             typer.echo(exc.next_step, err=True)
-        if str(exc) == "self_approval":
+        if str(exc) == "self_approval" and not getattr(exc, "next_step", None):
             try:
                 rid = review_id or approvals.current_review(workspace_root.resolve())
             except Exception:  # the next line is advice; a review id we cannot resolve still leaves the command shape

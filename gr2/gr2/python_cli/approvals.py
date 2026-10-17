@@ -323,6 +323,12 @@ def check_approver_name(name) -> None:
         raise ApprovalRefused("approval_chain_broken: invalid approver name")
 
 
+def _refuse_self_approval(name: str, authors: set[str], next_step: str | None = None) -> None:
+    """The one self-approval rule: an approver may not be the author or any commit author in the reviewed range."""
+    if name in authors:
+        raise ApprovalRefused("self_approval", next_step=next_step)
+
+
 def _validate_link(record: dict, root: dict, authors: set[str]) -> str:
     required = {"schema", "review_id", "members", "approver", "author", "verdict", "prev", "created_at"}
     if not required.issubset(record) or set(record) - required - {"sig", "keyring_tip"}:
@@ -336,8 +342,7 @@ def _validate_link(record: dict, root: dict, authors: set[str]) -> str:
         raise ApprovalRefused("approval_chain_broken: approver fields")
     name = identity["name"]
     check_approver_name(name)
-    if name in authors:
-        raise ApprovalRefused("self_approval")
+    _refuse_self_approval(name, authors)
     if "sig" in record or identity["key_id"] != "" or record.get("keyring_tip", "") != "":
         raise ApprovalRefused("approval_signed_unsupported")
     if not isinstance(record["prev"], str) or not re.fullmatch(r"[0-9a-f]{64}", record["prev"]):
@@ -448,8 +453,7 @@ def approve(workspace: Path, review_id: str | None = None, member_dirs: dict[str
     name = _git(workspace, "config", "user.name")
     if not name.strip():
         raise ApprovalRefused("approval_identity_missing")
-    if name in authors:
-        raise ApprovalRefused("self_approval")
+    _refuse_self_approval(name, authors)
     tips = _remote_tips(workspace, root)
     tip = _reconcile(workspace, root, authors, tips)
     _walk(workspace, root, authors, tip)
@@ -514,7 +518,8 @@ def since_my_stamp(workspace: Path, review_id: str) -> dict:
 # The approval is a commit chain under PREFIX + "pr/<head>" in the WORKSPACE'S OWN CLONE of the reviewed repo (the
 # member checkout the PR was fetched into): local, never pushed, and it outlives the lane, which `review close`
 # drops. A workspace a checkout-pr lane lives in need not have a root store, so the member clone is the store.
-# As for bind approvals, the approver is the self-declared Git user.name; who wrote the PR is not checked here.
+# As for bind approvals, the approver is the self-declared Git user.name, and the PR head's author or any commit
+# author in base..head may not stamp it. Nothing in the merge gate reads this chain: it never counts toward a merge.
 
 PR_LANE_SCHEMA = "gr2.pr-lane-approval.v1"
 PR_PREFIX = PREFIX + "pr/"
@@ -594,7 +599,9 @@ def pr_lane_approvals(lane: Path) -> dict:
     record = pr_lane_record(lane)
     if record is None:
         raise ApprovalRefused(f"approval_not_a_review_lane: {lane} holds no review record")
-    return {**pr_head_approvals(pr_lane_store(lane), record["repo"], record["head"]), "base": record["base"]}
+    # No merge reads the pr/ chain (the gate counts only pinned-review approvals), so the count is said not to gate one.
+    return {**pr_head_approvals(pr_lane_store(lane), record["repo"], record["head"]), "base": record["base"],
+            "counts_toward_merge": False}
 
 
 def approve_pr_lane(lane: Path) -> dict:
@@ -615,6 +622,12 @@ def approve_pr_lane(lane: Path) -> dict:
     if not name:
         raise ApprovalRefused("approval_identity_missing")
     check_approver_name(name)
+    # The PR head's author, and every commit author in base..head, as the pinned path reads its range.
+    authors = {_git(lane, "show", "-s", "--format=%an", "--end-of-options", record["head"])}
+    authors.update(_git(lane, "log", "--format=%an", "--end-of-options",
+                        f"{record['base']}..{record['head']}").splitlines())
+    _refuse_self_approval(name, authors, next_step="next: a different approver checks the PR out in their own "
+                                                   "workspace and stamps that lane: gr2 review stamp <their-lane>")
     store = pr_lane_store(lane)
     current = pr_head_approvals(store, record["repo"], record["head"])
     if name not in {link["approver"]["name"] for link in current["links"]}:

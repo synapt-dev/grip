@@ -8,11 +8,10 @@ push) call :func:`refuse_if_read_only` and refuse in such a directory with one s
 from __future__ import annotations
 
 import re
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import gitops
+from . import clone_exec, gitops
 
 READ_ONLY_KEY = "gr2.readOnlyReview"
 _OWNER_REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
@@ -65,9 +64,12 @@ def open_read_review(owner_repo: str, pr_number: int, dest: Path, url: str | Non
         raise ReadReviewError(f"cannot create {dest}: {exc.strerror}") from exc
     try:
         return _fill(dest, owner_repo, pr_number, source)
-    except ReadReviewError:
+    except ReadReviewError as exc:
         # A half-made directory would make the retry fail with "already exists".
-        shutil.rmtree(dest, ignore_errors=True)
+        try:
+            clone_exec.rmtree_or_refuse(dest)
+        except clone_exec.IncompleteRemoval as left:
+            raise ReadReviewError(f"{exc}; and the half-made directory was not removed: {left}") from exc
         raise
 
 

@@ -122,6 +122,22 @@ def test_a_failed_fetch_leaves_no_directory_so_a_retry_works(tmp_path: Path, for
     assert _git(dest, "rev-parse", "HEAD") == head
 
 
+def test_a_failed_cleanup_after_a_failed_fetch_names_both_and_the_dir_left(tmp_path: Path, monkeypatch) -> None:
+    from gr2.python_cli import clone_exec, read_review
+
+    def stuck(path: Path) -> None:
+        raise clone_exec.IncompleteRemoval(f"{path} could not be fully removed; stuck.lock remains")
+
+    monkeypatch.setattr(clone_exec, "rmtree_or_refuse", stuck)
+    dest = tmp_path / "widget-pr7"
+    with pytest.raises(read_review.ReadReviewError) as refused:
+        read_review.open_read_review("acme/widget", 9, dest, url=str(tmp_path / "no-such.git"))
+    words = str(refused.value)
+    assert "fetching PR 9 of acme/widget" in words
+    assert f"{dest} could not be fully removed" in words
+    assert isinstance(refused.value.__cause__, read_review.ReadReviewError)
+
+
 @pytest.mark.parametrize(
     "verb",
     [

@@ -11,7 +11,7 @@ land (a two-parent merge of base and head) takes the shape it already expects.
 
 Exit codes match `review merge` where they overlap: 0 done (pinned again, or every member already up to date and
 the pin current), 2 refused before anything moved (unresolved_merge, member_dirty, member_untracked_in_the_way, fetch_failed, an
-unreadable or unresolved review, an unresolved target), 3 a conflict in at least one member (nothing pinned), 4 partial (a member
+unreadable or unresolved review, an unresolved target, or a refused pin whose merges were all undone), 3 a conflict in at least one member (nothing pinned), 4 partial (a member
 was merged before a later step failed in a way other than a conflict; the receipt names what moved).
 """
 from __future__ import annotations
@@ -38,9 +38,10 @@ def _head(repo: Path) -> str:
 
 def _in_the_way(repo: Path, tip: str) -> list[str]:
     """Untracked paths the merge of `tip` would overwrite: what the target changed since the merge base, against
-    `ls-files --others` (ignored files excluded, as git's own merge treats them). A file where the target adds a
-    directory, or the reverse, counts too. Untracked files anywhere else stay allowed."""
-    untracked = _paths(repo, "ls-files", "--others", "--exclude-standard")
+    `ls-files --others`, ignored files included (git's merge overwrites an ignored file without a word, and an undo
+    deletes it, but it is still the user's). A file where the target adds a directory, or the reverse, counts too.
+    Untracked or ignored files anywhere else stay allowed."""
+    untracked = _paths(repo, "ls-files", "--others")
     if not untracked:
         return []
     base = gitops.run(repo, "merge-base", "HEAD", tip).stdout.strip()
@@ -145,6 +146,7 @@ def update(workspace: Path, review_id: str | None = None, into: str | None = Non
         row = {"key": key, "path": m["path"], "remote": m["remote"], "into": targets[key], "conflicts": []}
         receipt["members"].append(row)
         tip = row["base"] = tips[key]
+        row["before"] = _head(repo)
         if gitops.is_ancestor(repo, tip, "HEAD") is True:
             row.update(state="up_to_date", head=_head(repo))
             continue
@@ -172,5 +174,14 @@ def update(workspace: Path, review_id: str | None = None, into: str | None = Non
     try:
         receipt["new_review"] = "gr:" + grip.create_review_bind_commit(ws, rows)
     except (grip.GripReviewRefused, grip.GripCorruptError, grip.GripInitError) as exc:
+        # The pin reads the merged heads, so it can only refuse after the merges. A refusal must leave each clone
+        # as it found it: reset every member this run merged back to its head before the merge. The tracked tree
+        # was clean before (member_dirty) and nothing untracked was in the way, so --hard drops only the merge.
+        restored = receipt["restored"] = []
+        for r, m in zip(receipt["members"], members):
+            if r["key"] in merged and not gitops.run(m["repo"], "reset", "-q", "--hard", r["before"]).returncode:
+                r.update(state="restored", head=_head(m["repo"]))
+                restored.append(r["key"])
+        merged[:] = [k for k in merged if k not in restored]
         return done(EXIT_PARTIAL if merged else EXIT_REFUSED, f"pin_refused: {exc}")
     return done(EXIT_DONE)

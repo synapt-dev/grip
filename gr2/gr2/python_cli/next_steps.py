@@ -77,6 +77,8 @@ def _update_lines(workspace: str, receipt: dict) -> list[str]:
         moved = receipt.get("merged") or []
         if moved:
             lines.append(f"partial: merged in the member clones (not pushed, not pinned): {', '.join(moved)}")
+        if receipt.get("restored"):
+            lines.append(f"restored: the update's merge was undone in {', '.join(receipt['restored'])}")
         if receipt["refused"].startswith("unresolved_merge"):
             for m in receipt.get("members", []):
                 clone = f"{workspace.rstrip('/')}/{m['path']}"

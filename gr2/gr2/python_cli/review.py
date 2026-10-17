@@ -611,3 +611,134 @@ def close_review_lane(
         where = f"; recovery at {paths.closing}" if recovery is not None else ""
         raise ReviewError(f"review close did not complete: {exc}{where}") from exc
     echo(f"review lane dropped: {lane}")
+
+
+def adopt_review_lane(
+    *, lane_repo_root: Path, review_lane_root: Path, source_repo_root: Path, review_branch: str,
+    workspace_root: Path, owner_unit: str, lane_name: str, member: str, echo: Echo = print
+) -> ReviewRecord:
+    """Write the review record an older build never wrote, for a lane the caller names, so the normal
+    `close_review_lane` can drop it. Nothing here deletes, and nothing is relaxed in close.
+
+    The record is earned from what the lane itself shows, never from the caller: the lane is strictly
+    beneath the managed review-lane root, owns a real ``.git`` directory, carries no record yet, has the
+    same origin identity as the workspace member, and its HEAD is the PR head the workspace fetched for this
+    review (``review_branch`` in the member, the branch `review checkout-pr` fetched into). An ordinary clone
+    of the same repo sits at some other commit and is refused; a directory that is not a repository has no
+    HEAD and is refused. A lane holding local work (see `_adopt_local_work`) is refused before anything is
+    written, since the close that follows deletes the lane."""
+    if Path(lane_repo_root).is_symlink():
+        raise ReviewError("refusing to adopt a symlink lane")
+    lane = Path(lane_repo_root).resolve()
+    root = Path(review_lane_root).resolve()
+    if root not in lane.parents:
+        raise ReviewError(f"{lane} is not strictly beneath the review-lane root {root}; refusing to adopt it.")
+    git_dir = lane / ".git"
+    if not (git_dir.is_dir() and not git_dir.is_symlink()):
+        raise ReviewError(f"{lane} has no owned .git directory, so it is not a review lane; refusing to adopt it.")
+    try:
+        paths = review_record_paths(workspace_root, owner_unit, lane_name, member, lane)
+        existing = read_review_record_at(paths, notice=echo)
+    except (ReviewRecordLocationError, OSError) as exc:
+        raise ReviewError(str(exc)) from exc
+    if existing is not None:
+        raise ReviewError(f"{lane} already carries a review record; close it without --adopt.")
+    source = Path(source_repo_root)
+    source_identity = canonical_source_identity(gitops.remote_origin_url(source) or "", allow_local=True)
+    lane_identity = canonical_source_identity(gitops.remote_origin_url(lane) or "", allow_local=True)
+    if lane_identity != source_identity:
+        raise ReviewError(
+            f"{lane} has origin identity {lane_identity!r}, not the workspace member's {source_identity!r}; "
+            "it is not a review lane of this member, refusing to adopt it."
+        )
+    head = fetched_review_head(source, review_branch)
+    lane_head = gitops.git(lane, "rev-parse", "HEAD")
+    if lane_head.returncode != 0 or lane_head.stdout.strip() != head:
+        raise ReviewError(
+            f"{lane} is at HEAD {lane_head.stdout.strip()!r}, not the review head {head} the workspace "
+            f"fetched as {review_branch!r}; it is not that review lane (or it has moved), refusing to adopt it."
+        )
+    work = _adopt_local_work(lane, head, source)
+    if work:
+        raise ReviewError(
+            f"{lane} holds work that exists nowhere else, and close would delete it; commit and push it, "
+            "or move it out, then adopt again (nothing was recorded):\n  " + "\n  ".join(work)
+        )
+    # The base an older build never recorded: where the review head meets the member's checkout.
+    base = gitops.git(source, "merge-base", head, "HEAD")
+    if base.returncode != 0 or not _SHA40.match(base.stdout.strip()):
+        raise ReviewError(f"no merge-base between {head} and {source} HEAD; refusing to adopt {lane}.")
+    # Close deletes the lane, so adopt only a review the member's checkout already holds. Any answer but
+    # yes refuses: a squash or rebase merge leaves the head off the base and is refused on the safe side.
+    if gitops.git(source, "merge-base", "--is-ancestor", head, "HEAD").returncode != 0:
+        raise ReviewError(
+            f"the review head {head} is not merged into {source} HEAD, so {lane} may be the only copy of the "
+            "review; refusing to adopt it (nothing was recorded). If the PR is merged another way, check the "
+            "lane holds nothing you need and remove it by hand."
+        )
+    record = ReviewRecord(repo=lane_identity, base=base.stdout.strip(), head=head, lane_kind="materialized")
+    write_review_record(paths, record.to_dict())
+    echo(f"review lane adopted: {lane} (head {head})")
+    return record
+
+
+def _member_has(source: Path, shas: list[str]) -> list[str]:
+    """The shas the workspace member has as commits, read offline by `cat-file --batch-check`."""
+    if not shas:
+        return []
+    proc = gitops.run(source, "cat-file", "--batch-check=%(objectname) %(objecttype)", input="\n".join(shas) + "\n")
+    if proc.returncode != 0:
+        raise ReviewError(f"could not read the workspace member {source} (git cat-file); refusing to adopt.")
+    return [parts[0] for parts in (line.split() for line in proc.stdout.splitlines()) if parts[1:] == ["commit"]]
+
+
+def _member_publishes(source: Path, shas: list[str]) -> list[str]:
+    """The shas some ref of the workspace member contains, read offline by `for-each-ref --contains`.
+    Having the commit is not enough: an unreachable object lasts only until the member's gc."""
+    published = []
+    for sha in _member_has(source, shas):
+        proc = gitops.run(source, "for-each-ref", "--count=1", "--format=%(objectname)", "--contains", sha)
+        if proc.returncode != 0:
+            raise ReviewError(f"could not read the workspace member {source} (git for-each-ref); refusing to adopt.")
+        if proc.stdout.strip():
+            published.append(sha)
+    return published
+
+
+def _adopt_local_work(lane: Path, head: str, source: Path) -> list[str]:
+    """What a lane holds that exists nowhere else, by the same probes the reconstruction close uses: a
+    staged, unstaged or untracked change, a stash, or a commit (on any ref or only in a reflog) that the
+    workspace member does not have and the review head does not contain. Unlike that close, nothing is
+    allowlisted: an old lane carries no run receipt to name the review's own files. Work `git status`
+    cannot see is probed too: a file marked assume-unchanged or skip-worktree, and a linked worktree
+    whose index and HEAD live inside the lane's `.git`. The lane's own remote-tracking refs are not
+    taken on its word (one can outlive its branch upstream); a tip counts as published only when a
+    ref of the member contains that commit. A probe git cannot answer refuses too. Files git ignores are not examined."""
+
+    def ask(*args: str) -> str:
+        proc = gitops.git(lane, *args)
+        if proc.returncode != 0:
+            raise ReviewError(
+                f"could not read {lane} (git {args[0]}): {(proc.stderr or proc.stdout).strip()}; refusing to adopt it."
+            )
+        return proc.stdout
+
+    found = [f"uncommitted work: {line}" for line in ask("status", "--porcelain", "--untracked-files=all").splitlines()]
+    # `ls-files -v` tags a file marked assume-unchanged in lowercase and one marked skip-worktree `S`;
+    # `git status` hides an edit to either.
+    for line in ask("ls-files", "-v").splitlines():
+        tag, _, name = line.partition(" ")
+        if tag.islower() or tag.upper() == "S":
+            found.append(f"a file git status does not show (assume-unchanged or skip-worktree): {name}")
+    worktrees = [line for line in ask("worktree", "list", "--porcelain").splitlines() if line.startswith("worktree ")]
+    if len(worktrees) > 1:
+        found.append(f"linked worktrees, whose index and HEAD live in this lane: {', '.join(w[9:] for w in worktrees[1:])}")
+    stashes = ask("stash", "list", "--format=%H").split()
+    if stashes:
+        found.append(f"a stash ({len(stashes)} entr{'y' if len(stashes) == 1 else 'ies'})")
+    published = _member_publishes(source, ask("for-each-ref", "--format=%(objectname)", "refs/remotes").split())
+    # The stashes are reported above, so their commits are left out here.
+    unpublished = ask("rev-list", "--exclude=refs/stash", "--all", "--reflog", "--not", *published, head, *stashes).split()
+    if unpublished:
+        found.append(f"unpublished commits: {', '.join(c[:12] for c in unpublished)}")
+    return found

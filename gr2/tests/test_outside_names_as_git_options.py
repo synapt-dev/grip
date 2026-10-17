@@ -222,14 +222,16 @@ def test_a_hostile_member_url_pushed_to_the_store_runs_nothing_at_a_teammates_la
     git(teammate / "alpha", "remote", "set-head", "origin", "-d")
     assert hostile in (teammate / "grip.toml").read_text(), "precondition: the teammate's clone carries the url"
 
-    env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1])}
+    # Wide and colorless reading: Rich wraps at COLUMNS and colors under FORCE_COLOR, splitting the phrase.
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1]), "COLUMNS": "2000"}
     result = subprocess.run(
         [sys.executable, "-m", "gr2.python_cli.app", "lane", "create", str(teammate), "default", "x", "--branch", "feat/x"],
         cwd=teammate, text=True, capture_output=True, env=env,
     )
     ran = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("PWNED"))
     assert ran == [], f"gr2 lane create in a teammate's clone ran the pushed command: {ran} {result.stderr}"
-    assert result.returncode != 0 and "starts with '-'" in result.stdout + result.stderr, result
+    text = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout + result.stderr)
+    assert result.returncode != 0 and "starts with '-'" in text, result
 
 
 def test_a_spec_url_shaped_like_an_option_is_refused_where_the_spec_loads(tmp_path: Path) -> None:

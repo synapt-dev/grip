@@ -979,6 +979,9 @@ def _pin_holding_exactly(workspace_root: Path, row: dict) -> Optional[str]:
     return None
 
 
+_GH_OWNER_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._][A-Za-z0-9._-]*")
+
+
 def _repo_slug_from_url(url: str, fallback_name: str) -> str:
     cleaned = url.strip()
     if cleaned.startswith("git@github.com:"):
@@ -5761,15 +5764,24 @@ def _pr_view_source(workspace_root: Path, owner_unit: str, lane_name: str) -> di
             str(item.get("name")): str(item.get("url", "")).strip()
             for item in lane_proto.load_workspace_spec(workspace_root).get("repos", [])
         }
-    except lane_proto.WorkspaceSpecMissing:
+    except (lane_proto.WorkspaceSpecMissing, tomllib.TOMLDecodeError):
+        # A spec that cannot be read names nothing; the lane still shows, by its workspace names.
         spec_urls = {}
+
+    def _member_slug(name: str) -> str:
+        # gh reads `--repo ""` as no --repo (the cwd's repo), a third segment as a HOST, and a leading
+        # "-" is option-shaped: only an exact OWNER/REPO is handed over, else the name, which gh refuses.
+        slug = _repo_slug_from_url(spec_urls.get(name, ""), name).removesuffix("/").removesuffix(".git")
+        return slug if _GH_OWNER_REPO.fullmatch(slug) else name
+
     return {
         "source": "lane_record",
         "pr_group_id": None,
         "platform": "github",
         "members": [
             {
-                "repo": _repo_slug_from_url(spec_urls.get(str(repo), ""), str(repo)),
+                "repo": _member_slug(str(repo)),
+                "name": str(repo),
                 "number": None,
                 "branch": branch_map.get(str(repo)),
             }
@@ -5836,8 +5848,10 @@ def pr_view(
     # A filter that matched nothing must not read the same as a change with no members.
     # The reader cannot tell a typo from an empty change, and the line above has just told
     # them the members came from an authoritative record.
+    # A lane member answers to its workspace name as well as the OWNER/REPO it is read by.
     member_names = [str(item["repo"]) for item in source["members"]]
-    if repo_filter is not None and repo_filter not in member_names:
+    known_names = set(member_names) | {str(item["name"]) for item in source["members"] if item.get("name")}
+    if repo_filter is not None and repo_filter not in known_names:
         typer.echo(
             f"gr2: --repo {repo_filter} is not a member of this change; members are: "
             + (", ".join(member_names) if member_names else "(none named)"),
@@ -5848,7 +5862,7 @@ def pr_view(
     rows: list[dict[str, object]] = []
     for member in source["members"]:
         repo = str(member["repo"])
-        if repo_filter is not None and repo != repo_filter:
+        if repo_filter is not None and repo_filter not in (repo, member.get("name")):
             continue
         number = member["number"]
         try:

@@ -16,6 +16,7 @@ import os
 import stat
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from gr2.python_cli import app as gr2_app
@@ -76,6 +77,8 @@ def _gh_stub(tmp_path: Path, *, details: dict[str, dict], lists: dict[str, list]
         "args = sys.argv[1:]\n"
         "with open(LOG, 'a') as fh:\n"
         "    fh.write(' '.join(args) + '\\n')\n"
+        "with open(LOG + '.jsonl', 'a') as fh:\n"
+        "    fh.write(json.dumps(args) + '\\n')\n"
         "def opt(name):\n"
         "    return args[args.index(name) + 1]\n"
         "if args[:2] == ['pr', 'view']:\n"
@@ -535,3 +538,81 @@ def test_pr_view_reads_a_lane_member_through_its_spec_url_owner_repo(monkeypatch
     assert {c.split("--repo ")[1].split()[0] for c in calls} == {"acme/web-app", "acme/api"}, calls
     rows = json.loads(res.output)["members"]
     assert sorted(r["number"] for r in rows) == [7, 8] and not any("unread" in r for r in rows), rows
+
+
+def _repo_values(tmp_path: Path) -> list[str]:
+    """Every value gh was handed after --repo, from the argv log that keeps an empty value."""
+    lines = (tmp_path / "gh-argv.txt.jsonl").read_text().splitlines()
+    return [args[args.index("--repo") + 1] for args in map(json.loads, lines)]
+
+
+def _spec_workspace(tmp_path: Path, url: str) -> Path:
+    ws = _lane_workspace(tmp_path, repos=["api"])
+    (ws / ".grip" / "workspace_spec.toml").write_text(
+        f'workspace_name = "ws"\n\n[[repos]]\nname = "api"\npath = "repos/api"\nurl = {json.dumps(url)}\n'
+    )
+    return ws
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://github.com/", "api"),
+        ("git@github.com:", "api"),
+        ("https://github.com/.git", "api"),
+        ("https://github.com/--help", "api"),
+        ("git@github.com:--version", "api"),
+        ("https://github.com/-x/r.git", "api"),
+        ("https://github.com/ghe.example/acme/api", "api"),
+        ("https://github.com/acme", "api"),
+        ("https://github.com/acme/api/", "acme/api"),
+        ("https://github.com/acme/api.git/", "acme/api"),
+    ],
+)
+def test_pr_view_hands_gh_only_an_exact_owner_repo(monkeypatch, tmp_path: Path, url: str, expected: str) -> None:
+    # gh reads `--repo ""` as no --repo and answers for the cwd's repo, reads a third segment as a HOST,
+    # and a value starting with "-" is option-shaped. A spec url that names no exact OWNER/REPO hands gh
+    # the member's own name, which gh refuses, as before the spec was read.
+    ws = _spec_workspace(tmp_path, url)
+    _use_stub(monkeypatch, _gh_stub(tmp_path, details={}, lists={}))
+
+    CliRunner().invoke(gr2_app.app, ["pr", "view", str(ws), "fathom", "pr-view-witness", "--json"])
+
+    values = _repo_values(tmp_path)
+    assert values and all(v and not v.startswith("-") for v in values), values
+    assert values == [expected], values
+
+
+def test_pr_view_shows_the_lane_when_the_workspace_spec_is_malformed(monkeypatch, tmp_path: Path) -> None:
+    # Before the spec was read for urls a broken spec never stopped `pr view`; it still shows the lane.
+    ws = _lane_workspace(tmp_path, repos=["api"])
+    (ws / ".grip" / "workspace_spec.toml").write_text('workspace_name = "ws\n[[repos]\n')
+    _use_stub(monkeypatch, _gh_stub(tmp_path, details={}, lists={}))
+
+    res = CliRunner().invoke(gr2_app.app, ["pr", "view", str(ws), "fathom", "pr-view-witness", "--json"])
+
+    assert res.exit_code == 0, res.output
+    assert json.loads(res.output)["members"] == [
+        {"repo": "api", "number": None, "unread": "no open PR for branch 'fathom/slice'"}
+    ]
+    assert _repo_values(tmp_path) == ["api"]
+
+
+@pytest.mark.parametrize("repo_filter", ["api", "acme/api"])
+def test_pr_view_repo_filter_matches_a_lane_member_by_name_or_owner_repo(
+    monkeypatch, tmp_path: Path, repo_filter: str
+) -> None:
+    ws = _lane_workspace(tmp_path, repos=["api", "web"])
+    (ws / ".grip" / "workspace_spec.toml").write_text(
+        'workspace_name = "ws"\n\n'
+        '[[repos]]\nname = "api"\npath = "repos/api"\nurl = "https://github.com/acme/api.git"\n\n'
+        '[[repos]]\nname = "web"\npath = "repos/web"\nurl = "https://github.com/acme/web.git"\n'
+    )
+    _use_stub(monkeypatch, _gh_stub(tmp_path, details={}, lists={}))
+
+    res = CliRunner().invoke(
+        gr2_app.app, ["pr", "view", str(ws), "fathom", "pr-view-witness", "--repo", repo_filter, "--json"]
+    )
+
+    assert res.exit_code == 0, res.output
+    assert _repo_values(tmp_path) == ["acme/api"]

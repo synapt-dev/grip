@@ -4,6 +4,11 @@ Phase 0 reads every member and writes nothing; any refusal stops the verb
 before the first write, so a refused run leaves every member as it was.
 Phase 1 then writes per member, in the order given: branch, stage, commit.
 Two git calls per member to read, four to write.
+
+A write that fails (a pre-commit hook refusing, say) is undone in every member
+already touched, in reverse order: HEAD back to the original branch, the index
+back to its HEAD, the new branch deleted. Three git calls per member, and none
+of them touch the worktree, so the user's uncommitted change is still there.
 """
 
 from __future__ import annotations
@@ -26,11 +31,20 @@ class ChangeFailed(Exception):
     pass
 
 
+class ChangeUndone(ChangeRefused):
+    """A write failed and every member written was put back as it was."""
+
+    def __init__(self, reason: str, member: str, observed: str, undone: list[str]) -> None:
+        super().__init__(reason, member, observed)
+        self.undone = undone
+
+
 @dataclass
 class Member:
     name: str
     path: Path
     changed: bool = False
+    branch: str = ""
     entries: list[str] = field(default_factory=list)
     head: str = ""
 
@@ -73,6 +87,7 @@ def preflight(paths: list[Path], branch: str) -> list[Member]:
         exists = git(path, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
         if exists.returncode == 0:
             raise ChangeRefused("branch_exists", member.name, f"{branch} at {exists.stdout.strip()[:7]}")
+        member.branch = head_branch
         member.entries = entries
         member.changed = bool(entries)
         members.append(member)
@@ -81,7 +96,25 @@ def preflight(paths: list[Path], branch: str) -> list[Member]:
     return members
 
 
+def undo(member: Member, branch: str) -> str | None:
+    """Put one member back on its original branch and index; None if it worked.
+
+    No checkout and no reset --hard: either would rewrite the worktree, which
+    still holds the user's change and is the one thing this verb never owned.
+    """
+    for args in (
+        ("symbolic-ref", "HEAD", f"refs/heads/{member.branch}"),
+        ("reset", "-q"),
+        ("branch", "-q", "-D", branch),
+    ):
+        proc = git(member.path, *args)
+        if proc.returncode != 0:
+            return f"git {args[0]} failed: {proc.stderr.strip()}"
+    return None
+
+
 def write(members: list[Member], branch: str, message: str) -> None:
+    written: list[Member] = []
     for member in members:
         if not member.changed:
             continue
@@ -91,8 +124,15 @@ def write(members: list[Member], branch: str, message: str) -> None:
             ("commit", "-q", "-m", message),
         ):
             proc = git(member.path, *args)
-            if proc.returncode != 0:
-                raise ChangeFailed(f"{member.name}: git {args[0]} failed: {proc.stderr.strip()}")
+            if proc.returncode == 0:
+                if args[0] == "checkout":
+                    written.append(member)
+                continue
+            observed = proc.stderr.strip() or f"git {args[0]} exited {proc.returncode}"
+            stuck = [f"{m.name}: {err}" for m in reversed(written) if (err := undo(m, branch))]
+            if stuck:
+                raise ChangeFailed(f"{member.name}: git {args[0]} failed: {observed}; NOT undone: {'; '.join(stuck)}")
+            raise ChangeUndone(f"{args[0]}_failed", member.name, observed, [m.name for m in reversed(written)])
         proc = git(member.path, "rev-parse", "HEAD")
         member.head = proc.stdout.strip()
 

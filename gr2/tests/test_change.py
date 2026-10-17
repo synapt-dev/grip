@@ -121,3 +121,26 @@ def test_c3_refusal_writes_nothing_in_any_member(members: list[Path], git_log: P
     writes = [(m, a) for m, a in _calls(git_log) if set(a.split(" ")) & set(WRITES)]
     assert writes == []
     assert [_state(p) for p in members] == before
+
+
+def test_c2_refused_commit_undoes_every_member_written(members: list[Path], git_log: Path) -> None:
+    hook = members[2] / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\necho 'm3 refuses this commit' >&2\nexit 1\n")
+    hook.chmod(0o755)
+    before = [_state(p) for p in members]
+    git_log.write_text("")
+    result = _run(members)
+    calls = _calls(git_log)
+    assert result.exit_code == 2, result.output
+    assert "refused: commit_failed: m3:" in result.output
+    assert "undone: m3, m2, m1" in result.output
+    assert [_state(p) for p in members] == before
+    for path in members:
+        assert (path / "README.md").read_text() == f"# {path.name} edited\n"
+        assert _git(path, "branch", "--list", "feat") == ""
+    undo_verbs = {"symbolic-ref", "reset", "branch"}
+    undo = {p.name: [a for m, a in calls if m == p.name and set(a.split(" ")) & undo_verbs] for p in members}
+    print(f"undo git calls per member: { {m: len(a) for m, a in undo.items()} }")
+    assert [len(undo[p.name]) for p in members] == [3, 3, 3, 0, 0], undo
+    order = [m for m, a in calls if "symbolic-ref" in a.split(" ")]
+    assert order == ["m3", "m2", "m1"], order

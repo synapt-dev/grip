@@ -2193,6 +2193,10 @@ def change_cmd(
     paths = [p.resolve() for p in repo_path]
     try:
         members = change_ops.change(paths, branch, message)
+    except change_ops.ChangeUndone as exc:
+        typer.echo(f"refused: {exc}", err=True)
+        typer.echo(f"undone: {', '.join(exc.undone)}", err=True)
+        raise typer.Exit(code=2) from exc
     except change_ops.ChangeRefused as exc:
         typer.echo(f"refused: {exc}", err=True)
         typer.echo("nothing was written", err=True)

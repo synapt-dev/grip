@@ -1907,6 +1907,19 @@ def _has_field_sidecar(root: Path, revision: str) -> bool:
     return _store_git(root, "cat-file", "-e", f"{revision}:{FIELDS_DIR}", check=False).returncode == 0
 
 
+def _gitlink_disagreement(root: Path, member: dict, gitlink: str | None, full: bool) -> str:
+    """The line for a member whose committed gitlink is not its grip.toml pin. In full mode with the sidecar, a
+    gitlink that moved while grip.toml did not is a plain `git commit` at the root (gr2 writes both together), so the
+    line names that state and the one command that records it; anything else keeps the plain disagreement."""
+    if full and gitlink and member.get("pin") and _has_field_sidecar(root, "HEAD"):
+        layer = _store_git(root, "cat-file", "-e", f"HEAD:{FIELDS_DIR}/{member['name']}/layers/{gitlink}",
+                           check=False).returncode == 0
+        return (f"{member['name']}: the root commit moved its gitlink to {gitlink[:7]} outside gr2 (a plain git commit), "
+                f"so grip.toml still pins {member['pin'][:7]} and the sidecar has "
+                f"{'a layer' if layer else 'no layer'} for {gitlink[:7]}; run {_store_advice(root, 'commit')} to record it")
+    return f"{member['name']} gitlink {gitlink or '<missing>'} disagrees with pin {member['pin']}"
+
+
 def _prior_records(root: Path, previous: str | None, pin: str) -> set[str]:
     """The records the root's current entry for a member carries, when that entry is a field-commit for ``pin``.
     Anything else (no entry, a compat gitlink to the member's own commit, which this root does not hold, a record for
@@ -2467,9 +2480,7 @@ def _native_store_check(root: Path, coverage: bool = True) -> list[dict[str, str
         # values" goes red -- measured 2026-09-28 when this helper was introduced.
         gitlink = _recorded_pin(root, member, full) or ""
         if gitlink != member["pin"]:
-            raise NativeStoreRefusal(
-                f"{member['name']} gitlink {gitlink or '<missing>'} disagrees with pin {member['pin']}", 4
-            )
+            raise NativeStoreRefusal(_gitlink_disagreement(root, member, gitlink or None, full), 4)
         # §5a's input is the RECORDED PIN, not the member's current HEAD: this verb asks
         # whether the pin the root publishes is still covered, and a member whose HEAD has
         # moved is `unpinned` (a status observation) whose recorded pin may be fine.
@@ -3939,10 +3950,10 @@ def grip_status_cmd(
         # fire).
         typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
+    full = _workspace_mode(_grip_document(root)) == "full"
     if json_output:
         typer.echo(json.dumps({"status": "status", "members": members, "root": root_status}))
     else:
-        full = _workspace_mode(_grip_document(root)) == "full"
         for member in members:
             key = "missing-full" if full and member["state"] == "missing" else member["state"]
             note = STORE_STATUS_NOTES.get(key, "").format(commit=_store_advice(root, "commit"))
@@ -3962,10 +3973,7 @@ def grip_status_cmd(
             if member["pin"] is None:
                 typer.echo(f"{member['name']}: grip.toml has no pin; run {_store_advice(root, 'commit')} to record one", err=True)
                 continue
-            typer.echo(
-                f"{member['name']} gitlink {member['gitlink'] or '<missing>'} disagrees with pin {member['pin']}",
-                err=True,
-            )
+            typer.echo(_gitlink_disagreement(root, member, member["gitlink"], full), err=True)
         raise typer.Exit(code=4)
     # An undeclared gitlink in the root index is the refusal `check` gives (exit 3), said after the
     # table. It is a measured local fact, so it outranks 5 (a member that could not be measured).

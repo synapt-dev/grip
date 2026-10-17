@@ -305,3 +305,12 @@ def test_q6_upstream_is_ref_and_the_remote_branch_diverged_refuses(tmp_path):
     assert result.exit_code == 2, result.output
     assert "refused: remote_branch_diverged" in result.output
     assert _review_refs(w["ws"]) == ""
+
+
+def test_p11_merge_ref_is_ref_records_the_branch_of_the_same_name(tmp_path):
+    w = _world_from_ref(tmp_path)
+    _git(w["src"], "push", "-q", "origin", "feat:refs/heads/aaa")  # the head is also the tip of aaa, which sorts first
+    result = _pin(w)
+    assert result.exit_code == 0, result.output
+    members = _show(w["ws"], _gr_id(result))["members"]
+    assert [m.get("pushed_before_pin") for m in members] == ["refs/heads/feat"]

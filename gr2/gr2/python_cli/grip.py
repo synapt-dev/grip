@@ -568,17 +568,22 @@ def _source_upstream(source: str) -> str | None:
     return merge or f"refs/heads/{branch}"
 
 
+def _head_branch(source: str, ref: str) -> str | None:
+    """The remote branch the head belongs to: the source's upstream, except when that upstream is --ref
+    itself (`git checkout -b feat origin/trunk` sets feat's merge ref to trunk); then it is the branch of
+    the current branch's own name. None for a detached HEAD. One answer for the judge and the record."""
+    upstream = _source_upstream(source)
+    if upstream == ref:
+        upstream = gitops.run(Path(source), "symbolic-ref", "-q", "HEAD").stdout.strip() or None
+    return upstream
+
+
 def _judge_remote_branch(workspace: Path, remote: str, source: str, head: str, ref: str,
                          tips: dict[str, str]) -> None:
     """With a source clone, the remote branch the head belongs to must be the head, behind it, or
     absent. A remote tip past the head (ahead) or beside it (diverged) refuses before any write,
     with a non-destructive next step; the tip is the live one from ``tips`` (ls-remote at pin time)."""
-    upstream = _source_upstream(source)
-    if upstream == ref:
-        # `git checkout -b feat origin/trunk` sets feat's merge ref to --ref itself; the remote branch the
-        # head belongs to is then the one of its own name, so that is the one judged.
-        branch = gitops.run(Path(source), "symbolic-ref", "-q", "HEAD").stdout.strip()
-        upstream = branch or None
+    upstream = _head_branch(source, ref)
     if upstream is None or upstream == ref or upstream not in tips:
         return
     tip = tips[upstream]
@@ -793,7 +798,7 @@ def _bind_review_rows_body(
         if row.get("source"):
             _judge_remote_branch(workspace, remote, row["source"], head, target, tips)
         if pushed_at:  # a fact about the order, recorded under --ratified too
-            upstream = _source_upstream(row["source"]) if row.get("source") else None
+            upstream = _head_branch(row["source"], target) if row.get("source") else None
             pushed_before[key] = upstream if upstream in pushed_at else pushed_at[0]
 
         title = _norm_text(row.get("title", ""))

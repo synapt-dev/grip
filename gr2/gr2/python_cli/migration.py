@@ -1120,9 +1120,18 @@ def preserve_gr1_state(workspace_root: Path, migration_dir: Path) -> dict[str, s
 
 def _toml_str(value: object) -> str:
     """A TOML basic string holding exactly `value`: a quote, backslash, newline or other control character in a url
-    or name stays data. An ASCII-only JSON string is one, since json.dumps escapes every character outside
-    space..tilde (DEL included, which TOML forbids raw); keep ensure_ascii on."""
-    return json.dumps(str(value))
+    or name stays data. Only what TOML requires is escaped (the quote, the backslash, U+0000..U+001F and U+007F);
+    everything else is written literally, since TOML is UTF-8 and an escaped surrogate pair (what an ASCII-only
+    JSON string makes of a character above U+FFFF) is not a value TOML will load."""
+    out = []
+    for ch in str(value):
+        if ch in ('"', "\\"):
+            out.append("\\" + ch)
+        elif ord(ch) < 0x20 or ord(ch) == 0x7F:
+            out.append(f"\\u{ord(ch):04X}")
+        else:
+            out.append(ch)
+    return '"' + "".join(out) + '"'
 
 
 def render_workspace_spec(compiled: dict[str, object]) -> str:
@@ -1211,7 +1220,8 @@ def render_migration(payload: dict[str, object]) -> str:
         for row in member_origins:
             if row.get("refused") == "credentials":
                 lines.append(
-                    f"- {_printable(row['repo'])}: the checkout's origin carries credentials and was not used;"
+                    f"- {_printable(row['repo'])}: the checkout's origin carries credentials or cannot be parsed and"
+                    " was not used;"
                     f" the spec keeps {_printable(row['manifest_url'])}. Remove the credential from the url and use a"
                     " credential helper."
                 )

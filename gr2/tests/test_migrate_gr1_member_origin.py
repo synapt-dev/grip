@@ -190,6 +190,10 @@ def test_an_origin_with_toml_syntax_is_written_as_data(tmp_path: Path) -> None:
         "inject": 'https://example.invalid/a.git"\npin = "deadbeef',
         "backslash": "https://example.invalid/a\\tb.git",
         "delete": "https://example.invalid/a\x7fb.git",
+        # TOML is UTF-8: a character above U+FFFF must stay literal (an escaped surrogate pair does not load)
+        "emoji": "https://example.invalid/\U0001F600.git",
+        "accent": "https://example.invalid/café.git",
+        "line-separator": "https://example.invalid/a b.git",
     }
     root = _gr1_root(tmp_path, {name: f"https://example.invalid/{name}.git" for name in origins})
     for name, origin in origins.items():
@@ -200,3 +204,12 @@ def test_an_origin_with_toml_syntax_is_written_as_data(tmp_path: Path) -> None:
     for name, origin in origins.items():
         assert by_name[name]["url"] == origin, name
         assert set(by_name[name]) == {"name", "path", "url", "default_branch"}, by_name[name]
+
+
+def test_an_origin_that_cannot_be_parsed_keeps_the_manifest_url_and_says_why(tmp_path: Path) -> None:
+    root = _gr1_root(tmp_path, {"alpha": MANIFEST_URL})
+    _checkout(root / "alpha", "http://[::1/a.git")
+    payload = migrate_gr1_workspace(root)
+    assert _spec_urls(root) == {"alpha": MANIFEST_URL}
+    assert payload["member_origins"][0]["refused"] == "credentials"
+    assert "cannot be parsed" in render_migration(payload)

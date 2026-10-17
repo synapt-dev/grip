@@ -57,7 +57,7 @@ def test_selected_commit_checkout_preserves_key_coordinate(selected_workspace,mo
 def test_native_lane_display_enter_and_alternates_follow_selected_commit(selected_workspace):
     ws,remote,commits,rows=selected_workspace
     for unit,commit,members in zip(['a','b'],commits,rows):
-        result=runner.invoke(app.app,['lane','create',str(ws),unit,'feature','--branch','feature/shared','--workspace-commit',commit])
+        result=runner.invoke(app.app,['lane','create',str(ws),unit,'feature','--branch','feature/shared','--workspace-commit',commit,'--at-pin'])
         assert result.exit_code==0,result.output
         output=result.stdout.splitlines(); root=ws/f'agents/{unit}/lanes/feature'
         assert _git(root,'rev-parse','HEAD')==commit
@@ -181,7 +181,7 @@ def test_snapshot_metadata_comes_from_committed_native_members(selected_workspac
     from gr2.python_cli.workspace_snapshot import resolve_lane_repos
     from gr2.python_cli.project_review import pins_from_lane
     ws, remote, commits, rows = selected_workspace
-    result = runner.invoke(app.app, ['lane','create',str(ws),'a','snapshot','--workspace-commit',commits[1]])
+    result = runner.invoke(app.app, ['lane','create',str(ws),'a','snapshot','--workspace-commit',commits[1],'--at-pin'])
     assert result.exit_code == 0, result.output
     for ambient in ['absent', 'same-key-conflict']:
         if ambient == 'same-key-conflict':

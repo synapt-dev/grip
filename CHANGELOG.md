@@ -25,6 +25,14 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Changed
 
+- **`gr2`: `lane create` starts a branch new to the remote at the live tip of its target, not at the declared pin.**
+  This is a changed default, on native and spec roots alike: a lane used to start where the workspace pinned the
+  member, and now starts where the member's remote is, read by `ls-remote` when the lane is made. If you relied on the
+  old default, pass the new `--at-pin` to start at the declared pin. The lane doc's `fork_base` records which start
+  was taken (`tip`, `pin`, or `local` when your own unpushed local branch is kept), and one line says it. A branch the
+  remote already has continues it, as before; `--workspace-commit` still only names which workspace commit is
+  materialized.
+
 - **With only gr1 installed, `gr` runs gr1.** Outside any workspace with gr2 not installed, the `gr` in the
   gr1 binary runs gr1 and prints one line naming the gr2 install; a gr2 workspace with gr2 missing still
   refuses with exit 69. `gr --which` reports what a plain run would run.

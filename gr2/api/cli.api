@@ -289,6 +289,7 @@ verb  lane bind                                                       stable
 arg   lane create lane_name <str>                                     stable
 arg   lane create owner_unit <str>                                    stable
 arg   lane create workspace_root <str>                                stable
+flag  lane create --at-pin                                            stable
 flag  lane create --bind <str>                                        stable
 flag  lane create --branch <str>                                      stable
 flag  lane create --command <str>                                     stable

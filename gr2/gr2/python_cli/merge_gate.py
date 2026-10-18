@@ -12,8 +12,10 @@ an unresolved member is `unknown`; no further member is pushed after one.
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -31,6 +33,61 @@ def _git(repo: Path, *args: str, check: bool = True) -> str:
 
 
 _plain_remote = gitops.plain_remote
+
+
+def _text(raw: bytes | str | None) -> str:
+    """A binary git run's output as text; bytes that are not UTF-8 read as \\xNN, never a crash."""
+    return raw.decode("utf-8", "backslashreplace") if isinstance(raw, bytes) else (raw or "")
+
+
+def _pre_push_refused(trace: Path) -> bool | None:
+    """Whether the push's own pre-push hook exited nonzero, read from git's trace2 event file; None if unreadable.
+
+    Only the top-level process counts, named by the sid of the first "version" event (under a git alias that sid
+    has a "/" too, from the inherited GIT_TRACE2_PARENT_SID): a git run inside the hook logs under a child sid.
+    """
+    try:
+        events = [json.loads(ln) for ln in trace.read_text(encoding="utf-8", errors="replace").splitlines() if ln]
+    except (OSError, ValueError):
+        return None
+    top = next((e.get("sid") for e in events if isinstance(e, dict) and e.get("event") == "version"), None)
+    if not isinstance(top, str):
+        return None
+    mine = [e for e in events if isinstance(e, dict) and e.get("sid") == top]
+    hooks = {e.get("child_id") for e in mine if e.get("event") == "child_start"
+             and e.get("child_class") == "hook" and e.get("hook_name") == "pre-push"}
+    return any(e.get("event") == "child_exit" and e.get("child_id") in hooks and e.get("code") != 0 for e in mine)
+
+
+def _push_verdict(out: list[str], into: str, url: str | None = None) -> list[str]:
+    """Git's own porcelain "!" line for refs/heads/<into>, read only in the LAST "To " block, up to "Done".
+
+    Git prints the URL rewritten (insteadOf, pushInsteadOf, scp form) and with any credential dropped, so the
+    block is found by place, never by matching the remote's URL; a pre-push hook that said no is read apart, from
+    trace2, before this is asked. With no trace2 to read, `url` keeps the older reading: only the block after
+    "To <url>" exactly, so a hook's echoed "!" line is not read as the remote's.
+    """
+    block: list[str] | None = None
+    last: list[str] | None = None
+    for ln in out:
+        if ln.startswith("To "):
+            block = [] if url is None or ln == f"To {url}" else None
+        elif block is not None and ln == "Done":
+            if url is not None:
+                break
+            last, block = block, None
+        elif block is not None:
+            block.append(ln)
+    if block is None and url is None:
+        block = last
+    return [ln.replace("\t", " ") for ln in block or ()
+            if ln.startswith("!") and ln.split("\t")[1:2] and ln.split("\t")[1].endswith(f":refs/heads/{into}")]
+
+
+def _capped(text: str, cap: int = 300) -> str:
+    """Printable text, escaped FIRST and then cut to its head, so the cap counts what is printed."""
+    shown = next_steps._escaped(text)
+    return shown if len(shown) <= cap else f"{shown[:cap]} [{len(shown) - cap} chars cut]"
 
 
 def _advertised(repo: Path, remote: str, ref: str) -> str | None:
@@ -420,6 +477,10 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         if feat != m["head"]:
             row["refused"] = f"feature_moved: remote {feature} is {feat}, reviewed {m['head']}"
             row["_heads"] = (m["head"], feat)
+        elif target != m["base"] and ancestor == m["head"]:
+            # The target moved to the reviewed head or past it: the work is already in.
+            row["refused"] = f"head_already_on_target: the reviewed head {m['head']} is already in {into} at {target}"
+            row["_heads"] = (m["base"], target)
         elif target != m["base"]:
             row["refused"] = f"base_moved: remote {into} is {target}, reviewed base {m['base']}"
             row["_heads"] = (m["base"], target)
@@ -615,18 +676,67 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                         r["_heads"], r["stranded"] = (m["head"], now), now
                         break  # land no further member after a stranded one
                     continue
+                remote_said = unconfirmed = False
                 try:
-                    # An expiry is rc 124 here, so it lands in push_error and the state below is re-measured.
-                    proc = gitops.run(repo, "push", f"--force-with-lease=refs/heads/{into}:{m['base']}",
-                                      m["remote"], f"{builds[r['key']]}:refs/heads/{into}", timeout=120)
-                    push_error = proc.stderr.strip()[-300:] if proc.returncode else None
+                    # --porcelain marks a refusal the remote made ("[remote rejected]") apart from a push that never
+                    # reached it; binary, because a hook may print bytes that are not UTF-8.
+                    # trace2 tells a refusing pre-push hook apart from the remote, whatever the hook prints (this
+                    # one push overrides a user's own GIT_TRACE2_EVENT); git < 2.27 writes no file: read stdout alone.
+                    with tempfile.TemporaryDirectory(prefix="gr2-push-") as tmp:
+                        trace = Path(tmp) / "trace2.json"
+                        proc = gitops.run(repo, "push", "--porcelain",
+                                          f"--force-with-lease=refs/heads/{into}:{m['base']}", m["remote"],
+                                          f"{builds[r['key']]}:refs/heads/{into}", binary=True, timeout=120,
+                                          env={**os.environ, "GIT_TRACE2_EVENT": str(trace)})
+                        hook_said = _pre_push_refused(trace)
+                    out, err = (_text(b).split("\n") for b in (proc.stdout, proc.stderr))
+                    status = [] if hook_said else _push_verdict(out, into, None if hook_said is False else m["remote"])
+                    remote_said = any("[remote rejected]" in ln for ln in status)
+                    if proc.returncode == 124:  # gitops' expiry: the push may still land after it
+                        push_error, unconfirmed = f"push_unconfirmed: {_capped(chr(10).join(err).strip())}", True
+                    elif remote_said:  # the remote's own words and git's verdict line, never the URL it repeats
+                        push_error = _capped("\n".join([ln for ln in err if ln.startswith("remote:")] + status))
+                    elif proc.returncode:
+                        why = [ln for ln in err if ln.strip() and not ln.startswith(("To ", "error: failed to push"))]
+                        push_error = _capped("\n".join(why + status) or f"git push exit {next_steps._shown(str(proc.returncode))}")
+                    else:
+                        push_error = None
                 except (subprocess.SubprocessError, OSError) as exc:  # a timeout is not evidence nothing moved
-                    push_error = f"push_unconfirmed: {type(exc).__name__}"
+                    push_error, unconfirmed = f"push_unconfirmed: {_capped(f'{type(exc).__name__}: {exc}')}", True
                 state, merged = _state(repo, m["remote"], into, m["head"])
                 by = "this_run" if merged == builds[r["key"]] else ("another_writer" if merged else None)
                 r.update(state=state, merged=merged, merged_by=by)
                 if push_error and by != "this_run":
                     r["push_error"] = push_error  # e.g. our lease lost to a writer who merged the same head
+                if push_error and state != "merged":
+                    # The push failed and the member did not land: name why, never a bare unmerged or unknown, and
+                    # push no further member (the set lands on the base it was checked on, or not at all).
+                    if unconfirmed:  # the push may still land: no read now tells this member's outcome
+                        r["refused"], r["_unmeasured"] = push_error, True
+                        break
+                    try:
+                        now, unread = _remote_tip(repo, m["remote"], into), None
+                        # One more git call, on this failure path only: is the reviewed head already in the moved target?
+                        landed = bool(now and now != m["base"]) and gitops.is_ancestor(repo, m["head"], now) is True
+                    except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
+                        now, unread, landed = None, f"{type(exc).__name__}: {exc}", False
+                    if unread:
+                        r["refused"] = f"target_unread_at_push: {_capped(unread)}"
+                    elif now is None:
+                        r["refused"] = f"target_deleted_at_push: remote {into} is gone, the gate read {m['base']}"
+                        r["_heads"] = (m["base"], None)
+                    elif landed:
+                        r["refused"] = (f"head_already_on_target: the reviewed head {m['head']} is already in {into} "
+                                        f"at {now}")
+                        r["_heads"] = (m["base"], now)
+                    elif now != m["base"]:
+                        r["refused"] = f"target_moved_at_push: remote {into} is {now}, the gate read {m['base']}"
+                        r["_heads"] = (m["base"], now)
+                    elif remote_said:  # still at the base the gate read: a hook or a protected branch said no
+                        r["refused"] = f"push_rejected: {push_error}"
+                    else:  # still at the base, and the remote never answered: auth, network or a local hook
+                        r["refused"] = f"push_failed: {push_error}"
+                    break
                 if state == "unknown":
                     break  # push no further members after an unresolved one
 

@@ -11,14 +11,18 @@ import re
 import shlex
 
 
-def _shown(value: str) -> str:
-    """A value as it may appear in a printed command: every non-printable character escaped (\\xNN, \\uNNNN) so
-    a name cannot colour the terminal or start a forged line, and shell-quoted so the line runs as printed."""
+def _escaped(value: str) -> str:
+    """A value as it may appear in printed text: every non-printable character escaped (\\xNN, \\uNNNN)."""
     # Not only C0, DEL and C1: anything Python does not call printable (bidi overrides such as U+202E, line and
     # paragraph separators, zero-width spaces) can reorder or split a printed line, so it is escaped too.
-    safe = "".join(c if c.isprintable() else (f"\\x{ord(c):02x}" if ord(c) < 256 else f"\\u{ord(c):04x}")
+    return "".join(c if c.isprintable() else (f"\\x{ord(c):02x}" if ord(c) < 256 else f"\\u{ord(c):04x}")
                    for c in str(value))
-    return shlex.quote(safe)
+
+
+def _shown(value: str) -> str:
+    """A value as it may appear in a printed command: escaped (see _escaped) so a name cannot colour the terminal or
+    start a forged line, and shell-quoted so the line runs as printed."""
+    return shlex.quote(_escaped(value))
 
 REVIEW_ORDER = """\b
 A review goes through five steps, in this order:
@@ -46,6 +50,14 @@ def head_not_fetched(repo: str, remote: str, head: str, workspace: str, review: 
     # has to reach that remote first.
     return (f"next: the member remote {_shown(remote)} does not serve the reviewed head {_shown(head)}; once the "
             f"author has pushed it there, stamp again: gr2 review stamp {_shown(workspace)} {_shown(review)}")
+
+
+def _nothing_to_merge() -> str:
+    # Private, so the skill's refusal table keeps one row for head_already_on_target. True whether the target reached
+    # the head by a fast-forward or through a merge commit.
+    return ("next: nothing to merge; the reviewed head is already in the target, so the reviewed work is there and no "
+            "gr2 command lands it again. Confirm the target's tip is what you meant to ship; for new work, commit a "
+            "new head and pin it")
 
 
 def _stamp_base_moved(branch: str, review: str) -> str:
@@ -192,6 +204,39 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
         into = moved.group(1).removeprefix("refs/heads/") if moved else "<branch>"
         return (f"next: the target moved after the pin; bring every member up to it and pin again: "
                 f"gr2 review update {_shown(workspace)} {_shown(review)} --into {_shown(into)}")
+    if refused.startswith("head_already_on_target"):
+        # Not base_moved's answer: update would pin this same head again and refuse head_already_on_remote.
+        return _nothing_to_merge()
+    if refused.startswith("target_moved_at_push"):
+        # The gate passed, then the target moved before the push landed: the same answer as base_moved.
+        moved = re.match(r"target_moved_at_push: remote (\S+) is ", refused)
+        into = moved.group(1).removeprefix("refs/heads/") if moved else "<branch>"
+        return (f"next: the target moved after the gate read it, so nothing was pushed; bring every member up to it "
+                f"and pin again: gr2 review update {_shown(workspace)} {_shown(review)} --into {_shown(into)}")
+    if refused.startswith("target_deleted_at_push"):
+        gone = re.match(r"target_deleted_at_push: remote (\S+) is gone", refused)
+        into = gone.group(1).removeprefix("refs/heads/") if gone else "<branch>"
+        return (f"next: the target {_shown(into)} was deleted on the remote after the gate read it, so nothing was pushed "
+                f"for this member or any after it; restore it at the base the review was pinned on, then run the same "
+                f"gr2 review merge again")
+    if refused.startswith("push_rejected"):
+        return ("next: the remote refused the push (the reason is git's message in the refusal: a hook or a protected "
+                "branch) and the target is still at the base the gate read, so nothing was pushed for this member or "
+                "any after it; clear the rejection on the remote, then run the same gr2 review merge again")
+    if refused.startswith("push_failed"):
+        return ("next: the push did not reach the remote (git's message says why: auth, network, a local hook) and the "
+                "target is still at the base the gate read, so nothing was pushed for this member or any after it; fix "
+                "that, then run the same gr2 review merge again")
+    if refused.startswith("push_unconfirmed"):
+        return (f"next: the push did not finish (a timeout or a failed start), so whether this member landed is unknown "
+                f"and no member after it was pushed; when the remote answers, read it with gr2 review merged "
+                f"{_shown(workspace)} {_shown(review)}, then run the same gr2 review merge again (a landed member "
+                f"reads merged and is not pushed twice)")
+    if refused.startswith("target_unread_at_push"):
+        return (f"next: the push failed and the target could not be read after it, so whether this member landed is "
+                f"unknown and no member after it was pushed; when the remote answers, read it with gr2 review merged "
+                f"{_shown(workspace)} {_shown(review)}, then run the same gr2 review merge again (a landed member "
+                f"reads merged and is not pushed twice)")
     if refused.startswith("platform_head_moved_after_merge"):
         late = re.search(r"head is (\S+);", refused)
         return (f"next: this member landed at the pinned head, and the later commit {late.group(1) if late else '<sha>'} "

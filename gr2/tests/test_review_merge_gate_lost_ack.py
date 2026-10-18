@@ -94,7 +94,8 @@ def test_a_push_oserror_that_never_landed_is_unconfirmed_not_a_crash(world, monk
     code, receipt = merge(world)
     row = receipt["members"][0]
     assert row["state"] == "unmerged" and row["push_error"].startswith("push_unconfirmed"), row
-    assert code == merge_gate.EXIT_REFUSED, receipt
+    assert row["refused"] == "push_unconfirmed: OSError: git vanished", row
+    assert code == merge_gate.EXIT_PARTIAL, receipt  # the push may have landed: never read as a clean refusal
     assert git(world["remote"], "rev-parse", "main") == world["base"]
 
 

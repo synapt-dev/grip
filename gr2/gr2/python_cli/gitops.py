@@ -7,6 +7,16 @@ from pathlib import Path
 from . import next_steps
 
 
+# fsck's name rules ported from git: fsck.c fsck_tree, path.c is_ntfs_dotgit and is_ntfs_dot_generic,
+# utf8.c is_hfs_dotgit. A Windows or macOS checkout reads each such name as the repository's own entry.
+def fsck_bad_name(name: str) -> str | None:
+    """The message id git fsck reports for a tree or gitlink entry named ``name``, or None when fsck accepts
+    the name. A tree built here holds no entry fsck would reject."""
+    if not name:
+        return "emptyName"
+    return None
+
+
 _SSH_GITHUB_PREFIX = "git@github.com:"
 _HTTPS_GITHUB_PREFIX = "https://github.com/"
 

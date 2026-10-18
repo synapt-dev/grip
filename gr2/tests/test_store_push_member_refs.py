@@ -164,3 +164,49 @@ def test_m7_control_the_exact_string_member_is_still_pushed(tmp_path, mode):
     assert result.returncode == 0
     assert _refs(origin)[LIB] == _pin(root)
     assert json.loads(result.stdout)["member_refs"] == [{"name": "gamma", "pin": _pin(root), "ref": LIB}]
+
+
+# The refusal folds every spelling of one repository that the remote-URL key folds, so a member recorded by its scp,
+# ssh, http, user@, file:// or relative spelling of the root's origin is refused, not silently left out.
+# (member's recorded origin, root's origin). store commit fetches each member's origin, so the member's spelling is an
+# ssh one served from the local bare repository by a stand-in ssh; the root's origin is read, never fetched, here.
+NETWORK_ALIASES = {"scp-vs-https": ("git@github.com:org/x.git", "https://github.com/org/x"),
+                   "ssh-user-port-vs-https": ("ssh://git@GitHub.com:22/org/x.git", "https://github.com/org/x/"),
+                   "http": ("git@github.com:org/x.git", "http://github.com/org/x"),
+                   "https-user": ("git@github.com:org/x.git", "https://u@github.com/org/x")}
+LOCAL_ALIASES = {"file-url": lambda origin: f"file://{origin}/", "relative": lambda origin: "../../root.git"}
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("alias", sorted(NETWORK_ALIASES))
+def test_m8_a_network_alias_of_the_root_origin_is_refused_by_name(tmp_path, monkeypatch, mode, alias):
+    member_url, root_url = NETWORK_ALIASES[alias]
+    ssh = tmp_path / "ssh"
+    ssh.write_text(f'#!/bin/sh\nexec git-upload-pack "{tmp_path / "root.git"}"\n')
+    ssh.chmod(0o755)
+    monkeypatch.setenv("GIT_SSH_COMMAND", str(ssh))
+    monkeypatch.setenv("GIT_SSH_VARIANT", "ssh")
+    root, origin = _same_repo_store(tmp_path, mode, member_url=member_url)
+    git(root, "remote", "set-url", "origin", root_url)
+    before = _refs(origin)
+
+    result = gr2(root, "push", "--atomic", check=False)
+
+    assert result.returncode == 4, (result.returncode, result.stdout, result.stderr)
+    assert "gamma" in result.stderr and repr(member_url) in result.stderr and repr(root_url) in result.stderr, result.stderr
+    assert _refs(origin) == before
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("alias", sorted(LOCAL_ALIASES))
+def test_m9_a_file_url_or_relative_alias_of_the_root_origin_is_refused_by_name(tmp_path, mode, alias):
+    origin = tmp_path / "root.git"
+    spelled = LOCAL_ALIASES[alias](origin)
+    root, _ = _same_repo_store(tmp_path, mode, member_url=spelled)
+    before = _refs(origin)
+
+    result = gr2(root, "push", "--atomic", check=False)
+
+    assert result.returncode == 4, (result.returncode, result.stdout, result.stderr)
+    assert "gamma" in result.stderr and repr(spelled) in result.stderr, result.stderr
+    assert _refs(origin) == before

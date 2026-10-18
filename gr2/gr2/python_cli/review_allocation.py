@@ -9,6 +9,7 @@ import tomllib
 from pathlib import Path
 
 from .gitops import git
+from .keys import member_path_key
 from .layout import grip_dir
 
 
@@ -126,8 +127,8 @@ def require_member_relationship(workspace: Path, target: Path, owner: str,
     doc = _read_allocation(workspace, target, owner_unit=owner, check_head=False)
     if doc["lane_name"] != lane or doc["state"] != "open":
         raise ReviewAllocationError("project review relationship is not active in this lane")
-    expected = str(member.relative_to(target))
-    if not any(item["path"] == expected for item in doc["members"]):
+    expected = member_path_key(member.relative_to(target))
+    if not any(member_path_key(item["path"]) == expected for item in doc["members"]):
         raise ReviewAllocationError("project allocation does not declare this member")
 
 

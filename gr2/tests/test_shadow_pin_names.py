@@ -100,3 +100,9 @@ def test_a_pin_hfs_reads_as_dotgit_is_refused_escaped(world, pin):
     assert f"pin {pin!r}" in message and "\\u" in message and "hasDotgit" in message
 
 
+@pytest.mark.parametrize("pins", [["a", "a/b"], ["a/b/c", "a/b"], ["x/y", "a", "a/b/c"]])
+def test_a_pin_under_another_pin_is_refused(world, pins):
+    message = _refused(world, pins)
+    assert "is under pin 'a" in message
+
+

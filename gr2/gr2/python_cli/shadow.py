@@ -128,12 +128,17 @@ def _pins_of(repo: Path, commit: str) -> dict[str, str]:
 
 def _check_pins(pins: dict[str, str]) -> None:
     """Each pin path becomes nested tree entries, one per component; a component git fsck rejects is refused
-    here, by pin, before any tree is written."""
+    here, by pin, before any tree is written. So is a pin under another pin: one name would be both a gitlink and a
+    tree in the same tree, the duplicate entry fsck's verify_ordered rejects."""
     for path in pins:
         for part in path.split("/"):
             bad = gitops.fsck_bad_name(part)
             if bad:
                 raise ValueError(f"pin {path!r} has an entry git fsck rejects ({bad}): {part!r}")
+        parts = path.split("/")
+        for k in range(1, len(parts)):
+            if "/".join(parts[:k]) in pins:
+                raise ValueError(f"pin {path!r} is under pin {'/'.join(parts[:k])!r}; a name cannot be both")
 
 
 def _tree_with_pins(repo: Path, base_tree: str, pins: dict[str, str]) -> str:

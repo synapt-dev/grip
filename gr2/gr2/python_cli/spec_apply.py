@@ -18,7 +18,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
 
-from jsonschema import Draft202012Validator
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # jsonschema costs about 33 ms to import; load it only where a schema is checked
+    from jsonschema import Draft202012Validator
 
 from .events import EventType, emit_after_outcome
 from . import gitops
@@ -72,6 +75,8 @@ def validate_grip_toml(workspace_root: Path) -> list[ValidationIssue]:
         return []
     with path.open("rb") as fh:
         document = tomllib.load(fh)
+    from jsonschema import Draft202012Validator
+
     schema = json.loads(importlib.resources.files("gr2.schemas").joinpath("gr2-workspace-spec-v1.schema.json").read_text())
     return [ValidationIssue("error", "grip_toml_schema", error.message, ".".join(map(str, error.path)) or None)
             for error in Draft202012Validator(schema).iter_errors(document)]
@@ -1165,6 +1170,8 @@ def _load_plan_validator() -> Draft202012Validator:
                 f"{_PLAN_SCHEMA_SHA256}, got {actual} -- refusing to validate against "
                 "an unpinned schema"
             )
+        from jsonschema import Draft202012Validator
+
         _plan_validator = Draft202012Validator(json.loads(raw))
     return _plan_validator
 

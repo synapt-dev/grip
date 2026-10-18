@@ -3,7 +3,6 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import functools
-import importlib.metadata
 import io
 import json
 import os

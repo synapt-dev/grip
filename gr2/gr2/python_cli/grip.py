@@ -1165,8 +1165,10 @@ def _check_field_tree(repo: Path, tree: str) -> dict[str, object]:
 def _decode_field_tree(repo: Path, tree: str) -> dict[str, object]:
     from . import review_field_tree as fd
     try:
-        fd.verify_tree(repo, tree)
-        record = fd.read_record(repo, tree)
+        # one reader for both passes: one ls-tree and one cat-file --batch for the whole tree
+        with fd.BatchReader(repo) as reader:
+            fd.verify_tree(repo, tree, reader=reader)
+            record = fd.read_record(repo, tree, reader=reader)
     except fd.ReviewRecordError as exc:
         raise GripCorruptError(f"invalid field tree review record: {exc}") from exc
     if record.get("schema") != _REVIEW_BIND_SCHEMA or record.get("kind") != "review":

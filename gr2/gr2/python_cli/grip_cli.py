@@ -23,6 +23,7 @@ from . import config as config_mod
 from .check_records import JSON_SHAPES as CHECK_JSON_SHAPES
 from . import gitops
 from . import grip as grip_mod
+from . import keys
 from . import names as name_rules
 from . import next_steps
 from . import store_hooks
@@ -1345,7 +1346,7 @@ def _plan_clones(root: Path, clones: list[tuple[str, str]]) -> list[tuple[str, s
         elif path.is_dir() and _is_member_checkout(root, name):
             origin = _store_git(path, "remote", "get-url", "origin", check=False)
             have = _clone_url(origin.stdout.strip()) if origin.returncode == 0 else None
-            if have != url:
+            if have is None or keys.remote_url_key(have, path) != keys.remote_url_key(url, path):
                 problems.append(f"{name}: the checkout at {path} has another origin; move it or name that origin")
         elif path.is_dir() and any(path.iterdir()):
             problems.append(f"{name}: {path} holds files and is not a checkout; init will not clone over it")

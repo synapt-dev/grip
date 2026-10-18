@@ -18,7 +18,7 @@ import uuid
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from . import check_records, declared_sets, gitops, grip, merge_receipts, next_steps, set_check
+from . import check_records, declared_sets, gitops, grip, keys, merge_receipts, next_steps, set_check
 
 EXIT_MERGED, EXIT_REFUSED, EXIT_PARTIAL = 0, 3, 4
 
@@ -77,23 +77,7 @@ def _state(repo: Path, remote: str, into: str, head: str) -> tuple[str, str | No
     return ("merged", merged) if merged else ("unmerged", None)
 
 
-def _url_key(url: str, base: Path) -> tuple[str, str]:
-    """One repository, however its URL is spelled: (host, path) for a network URL, ("", realpath) for a local one.
-
-    A `file://` scheme, a trailing '/', and a trailing '.git' on a network path do not change the repository, and
-    neither does the user or port in front of the host, so an SSH spelling (`git@host:org/x.git`, `ssh://...`) and
-    an HTTPS one (`https://host/org/x`) of the same repository give the same key. A relative local path resolves
-    against `base`, the clone, which is where git resolves it."""
-    u = url.strip()
-    if u.startswith("file://"):
-        u = u[len("file://"):]
-    if "://" in u:
-        hostpart, _, path = u.split("://", 1)[1].partition("/")
-        return hostpart.rsplit("@", 1)[-1].split(":", 1)[0].lower(), path.strip("/").removesuffix(".git")
-    head, sep, tail = u.partition(":")
-    if sep and head and "/" not in head:  # git's scp-like form: a colon before any slash
-        return head.rsplit("@", 1)[-1].lower(), tail.strip("/").removesuffix(".git")
-    return "", os.path.realpath(u if os.path.isabs(u) else base / u)
+_url_key = keys.remote_url_key  # the one remote-URL key; the alias keeps existing callers
 
 
 def _refresh_tracking(repo: Path, remote: str, into: str) -> dict | None:

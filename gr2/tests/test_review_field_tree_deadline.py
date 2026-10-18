@@ -274,6 +274,40 @@ def test_batch_reader_lists_and_checks_a_tree_clone_without_fetching(tmp_path):
             reader.close()
 
 
+def test_git_reader_refuses_an_absent_blob_without_fetching(tmp_path):
+    """In a blob:none clone the tree is local and the blob is absent. The remote stays in place, so a lazy fetch
+    would succeed: the one-shot reader's cat-file and the record check that uses it both refuse, and nothing
+    reaches the remote, which a plain cat-file then does."""
+    if tuple(int(n) for n in re.findall(r"\d+", git(tmp_path, "version"))[:2]) < (2, 44):
+        pytest.skip("git before 2.44 ignores GIT_NO_LAZY_FETCH")
+    remote = tmp_path / "remote"
+    git(tmp_path, "init", "-q", str(remote))
+    git(remote, "config", "uploadpack.allowFilter", "true")
+    (remote / "001.2_a").write_text("far\n")
+    git(remote, "add", ".")
+    git(remote, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "a")
+    root = git(remote, "rev-parse", "HEAD^{tree}")
+    oid = git(remote, "rev-parse", "HEAD:001.2_a")
+    clone = tmp_path / "clone"
+    git(tmp_path, "clone", "-q", "--no-checkout", "--filter=blob:none", remote.as_uri(), str(clone))
+    # a fetch from the remote runs this upload-pack, which leaves a mark and then serves the blob
+    mark = tmp_path / "fetched"
+    pack = tmp_path / "upload-pack"
+    pack.write_text(f"#!/bin/sh\ntouch {mark}\nexec git-upload-pack \"$@\"\n")
+    pack.chmod(0o755)
+    git(clone, "config", "remote.origin.uploadpack", str(pack))
+    reader = fd.GitReader(clone)
+    assert [e[3] for e in reader.ls(root)] == ["001.2_a"]  # the tree is local
+    with pytest.raises(fd.ReviewRecordError) as refused:
+        reader.blob(oid)
+    assert "git cat-file failed" in str(refused.value)
+    assert not mark.exists(), "GitReader.blob tried to fetch"
+    with pytest.raises(fd.ReviewRecordError):
+        fd.verify_tree(clone, root, message=None)  # the default reader is the one-shot reader
+    assert not mark.exists(), "the record check tried to fetch"
+    assert git(clone, "cat-file", "blob", oid) == "far"  # without the variable the same read fetches, and succeeds
+    assert mark.exists()
+
 def _far_clone(tmp_path: Path) -> tuple[Path, str]:
     """A blob:none clone of a one-file remote, and the file's blob id, absent here; the remote is then moved
     away, so a lazy fetch would fail rather than succeed quietly."""

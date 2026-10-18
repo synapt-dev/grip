@@ -23,6 +23,13 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   launch command is now built by one shared path used by both the pane and the
   foreground launch.
 
+- **`gr2 store init --mode full` makes a full-mode workspace without editing `grip.toml`.** It writes the
+  top-level `mode = "full"` that a hand edit used to add, so the first `store commit` records each member as a
+  field-commit. `--mode compat`, or no `--mode`, writes no mode line, as before. A `grip.toml` that declares
+  another mode, or an existing store in another mode (a store with no mode line is compat), is refused with exit 4
+  before anything is cloned or written; init does not switch a workspace's mode. A `grip.toml` alone with no mode
+  line takes the mode asked for. An unknown mode is a usage error (exit 2).
+
 ### Changed
 
 - **With only gr1 installed, `gr` runs gr1.** Outside any workspace with gr2 not installed, the `gr` in the

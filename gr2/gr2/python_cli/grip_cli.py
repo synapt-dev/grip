@@ -681,7 +681,7 @@ def _existing_mode(root: Path) -> str:
         return "compat"
 
 
-def _write_native_members(root: Path, members: list[dict[str, str]]) -> None:
+def _write_native_members(root: Path, members: list[dict[str, str]], mode: str | None = None) -> None:
     document = _existing_document(root)
     # The record's name, not this checkout's directory name: a second machine's clone sits in a directory of its own
     # choosing, and its first commit renamed the workspace to it. Derived only when there is no record.
@@ -690,7 +690,7 @@ def _write_native_members(root: Path, members: list[dict[str, str]]) -> None:
     lines = ["schema_version = 1", f"workspace_name = {_toml_str(name)}"]
     # `mode` is the owner's declaration, like `[[sets]]`: carried through, or the first `store commit` would turn a
     # full-mode workspace back into a compat one. Top-level, so it comes before the first table.
-    if _existing_mode(root) == "full":
+    if (mode or _existing_mode(root)) == "full":
         lines.append('mode = "full"')
     carried = {k: v for k, v in document.items() if k not in _WRITER_OWNS}
     # Other top-level values also come before the first table, or TOML would read them as the table's keys.
@@ -1389,14 +1389,39 @@ def _refuse_enclosing_repo(root: Path) -> None:
             )
 
 
+def _init_current_mode(root: Path) -> str | None:
+    """The mode `store init --mode` must agree with: the grip.toml's own `mode` key when it has one, compat for an
+    existing store (its own `.git` and a grip.toml) with no key, and None when nothing has declared a mode yet."""
+    if not (root / "grip.toml").exists():
+        return None
+    try:
+        document = tomllib.loads((root / "grip.toml").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        document = {}
+    if "mode" in document:
+        return _workspace_mode(document)
+    return "compat" if (root / ".git").exists() else None
+
+
 @_refuses_moved_workspace
 def _native_store_init(root: Path, member_paths: list[str] | None = None,
-                      clones: list[tuple[str, str]] | None = None) -> dict[str, str]:
+                      clones: list[tuple[str, str]] | None = None, mode: str | None = None) -> dict[str, str]:
     """Initialize the store and return the per-hook install states (`installed`, `foreign`, `hidden`).
 
     `clones` are `(name, url)` members cloned at `<root>/<name>` first and then named like `--member`
     paths, so the record they get is the one an existing checkout would get.
+
+    `mode` is the workspace mode a NEW store is written with ("compat" or "full"; None keeps what the root's
+    grip.toml says, compat when it says nothing). Refused (exit 4) before anything is cloned or written, since init
+    does not switch a workspace's mode: a grip.toml that declares another mode, and an existing store (its own
+    `.git` and a grip.toml) in another mode, where no mode line means compat. A grip.toml alone with no mode line
+    declares nothing, so it takes the mode asked for.
     """
+    current = _init_current_mode(root) if mode is not None else None
+    if current is not None and current != mode:
+        raise NativeStoreRefusal(
+            f"{root} is in mode {current!r}; --mode {mode} sets the mode of a new store only, so init does not "
+            f"switch it", 4)
     if clones:
         clones = [(name, _clone_url(url)) for name, url in clones]
         todo = _plan_clones(root, clones)
@@ -1442,7 +1467,7 @@ def _native_store_init(root: Path, member_paths: list[str] | None = None,
     # and pointing GIT_CONFIG_GLOBAL at an empty file -- exactly the blank-config host a
     # stranger has. `-b` makes the branch a property of the verb, not of the machine.
     _store_git(root, "init", "-b", "main")
-    _write_native_members(root, members)
+    _write_native_members(root, members, mode=mode)
     if created_repo:
         _write_gitignore(root, members)
     else:
@@ -3556,14 +3581,27 @@ def grip_init_cmd(
             "(repeatable). The root is created when it does not exist."
         ),
     ),
+    mode: Optional[str] = typer.Option(
+        None,
+        "--mode",
+        help=(
+            'The workspace mode of a new store: "compat" (the default) or "full". Full writes '
+            '`mode = "full"` into grip.toml, so each member is recorded as a field-commit and a pin '
+            "need not be on a remote. A grip.toml that declares another mode, or an existing store in "
+            "another mode (no mode line is compat), is refused."
+        ),
+    ),
     root: Optional[Path] = STORE_ROOT_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Initialize a native store at cwd or the supplied root."""
     root = _store_root(root, workspace_root)
+    if mode is not None and mode not in workspace_mode.MODES:
+        typer.echo(f'--mode must be "compat" or "full", got {mode!r}', err=True)
+        raise typer.Exit(code=2)
     try:
         clones = _parse_clone_values(clone_values) if clone_values else None
-        hook_states = _native_store_init(root, member_paths=member_paths, clones=clones)
+        hook_states = _native_store_init(root, member_paths=member_paths, clones=clones, mode=mode)
         slot_problem = _write_slot_pointer(root)
     except NativeStoreRefusal as exc:
         typer.echo(str(exc), err=True)

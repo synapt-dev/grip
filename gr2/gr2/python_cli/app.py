@@ -4839,6 +4839,8 @@ def _review_refusal(exc: BaseException) -> tuple[str, str, list[str]]:
             extra = [next_steps.at_base_not_ancestor(str(exc.observed))]
         elif exc.refusal == "at_base_unreachable":  # observed is the remote
             extra = [next_steps.at_base_unreachable()]
+        elif exc.refusal == "at_base_tip_unfetchable":  # expected is the ref's tip, observed the remote
+            extra = [next_steps.at_base_tip_unfetchable()]
         if exc.refusal == "unresolved_merge":  # a member and its unmerged paths, not two values that disagreed
             return exc.refusal, f"{exc.expected}: {exc.observed}", extra
         return exc.refusal, f"expected {exc.expected!r}, observed {exc.observed!r}", extra

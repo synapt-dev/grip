@@ -156,3 +156,47 @@ def test_at_base_refuses_a_ref_the_remote_does_not_have(tmp_path: Path) -> None:
                                  "--from-range", str(w["patch"]), "--at-base"])
     assert result.exit_code == 2 and "base_not_live_head" in result.output, result.output
     assert _git(w["ws"], "for-each-ref", "refs/dev.synapt.grip/") == ""
+
+
+def _review_ref_world(tmp_path: Path) -> dict:
+    """The world above, plus a commit on the base pushed only as refs/review/x: a ref no clone carries."""
+    w = _world(tmp_path)
+    other = tmp_path / "review"
+    _git(tmp_path, "clone", "-q", str(w["remote"]), str(other))
+    _git(other, "checkout", "-q", "--detach", w["base"])
+    w["review_tip"] = _commit(other, "x")
+    _git(other, "push", "-q", "origin", "HEAD:refs/review/x")
+    return w
+
+
+def _pin_review_ref(w: dict, remote: str):
+    return runner.invoke(app, ["review", "pin", str(w["ws"]), "--repo", "src", "--remote", remote,
+                               "--base", w["base"], "--head", w["head"], "--ref", "refs/review/x",
+                               "--from-range", str(w["patch"]), "--at-base"])
+
+
+def test_at_base_reads_the_history_of_a_ref_outside_branches_and_tags(tmp_path: Path) -> None:
+    # The base is in the ref's history; over file:// the tip is not cloned, and the pin refused at_base_not_ancestor.
+    w = _review_ref_world(tmp_path)
+    result = _pin_review_ref(w, "file://" + str(w["remote"]))
+    assert result.exit_code == 0 and re.search(r"gr:[0-9a-f]{40}", result.output), result.output
+    assert "at_base_not_ancestor" not in result.output, result.output
+
+
+def test_at_base_names_a_ref_tip_the_remote_will_not_serve(tmp_path: Path, monkeypatch) -> None:
+    # The ref moved after it was read, or the fetch failed in transport or auth: the refusal says the tip was not
+    # fetched, not that the base is off its history.
+    from gr2.python_cli import gitops
+    w = _review_ref_world(tmp_path)
+    real = gitops.run
+
+    def refuse_fetch(cwd, *args, **kw):
+        if "fetch" in args and Path(cwd).name == "recon":
+            return subprocess.CompletedProcess(["git", *args], 128, "", "fatal: Server does not allow request")
+        return real(cwd, *args, **kw)
+
+    monkeypatch.setattr(gitops, "run", refuse_fetch)
+    result = _pin_review_ref(w, "file://" + str(w["remote"]))
+    assert result.exit_code == 2 and "at_base_tip_unfetchable" in result.output, result.output
+    assert "at_base_not_ancestor" not in result.output and "check: " in result.output, result.output
+    assert _git(w["ws"], "for-each-ref", "refs/dev.synapt.grip/") == ""

@@ -140,6 +140,11 @@ def at_base_unreachable() -> str:
             "on the live tip, or pin without --at-base")
 
 
+def at_base_tip_unfetchable() -> str:
+    return ("check: the ref's tip could not be fetched from the remote, so its history was not read; the ref moved "
+            "after it was read, or the fetch failed in transport or auth; pin again on the live tip, or pin without --at-base")
+
+
 def head_behind_remote_branch(remote_tip: str) -> str:
     return (f"next: the remote branch already holds commits past this head; pin what it holds: "
             f"gr2 review pin <workspace> --head {_shown(remote_tip)} with your other flags unchanged")

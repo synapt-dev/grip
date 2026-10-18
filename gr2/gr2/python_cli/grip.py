@@ -170,6 +170,10 @@ def _carry_objects_from_range(workspace: Path, remote: str, base: str, range_pat
                 raise GripCorruptError(f"range reconstruction failed ({' '.join(a)}): {p.stderr.strip()[:160]}")
             return p
 
+        # A clone carries branches and tags only; a ref outside them (refs/review/x) needs its tip fetched by sha.
+        if at_base_of and _lg("cat-file", "-e", f"{at_base_of}^{{commit}}", allow_fail=True).returncode != 0:
+            if _lg("fetch", "--quiet", "origin", at_base_of, allow_fail=True).returncode != 0:
+                raise GripReviewRefused("at_base_tip_unfetchable", at_base_of, remote)
         if _lg("rev-parse", "--verify", f"{base}^{{commit}}", allow_fail=True).returncode != 0:
             if at_base_of:
                 raise GripReviewRefused("at_base_unreachable", base, remote)

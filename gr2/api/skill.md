@@ -357,6 +357,10 @@ next: say how many approvals this merge needs: rerun with --approvals N (--appro
 
 check: the range's base is not in the history of the ref's tip '<observed>'; re-freeze the range on '<observed>', or pin without --at-base
 
+### at_base_tip_unfetchable
+
+check: the ref's tip could not be fetched from the remote, so its history was not read; the ref moved after it was read, or the fetch failed in transport or auth; pin again on the live tip, or pin without --at-base
+
 ### at_base_unreachable
 
 check: the range's base is not on the remote; push the base the range was cut on, re-freeze the range on the live tip, or pin without --at-base

@@ -20,7 +20,9 @@ from gr2.python_cli import consent as consent_mod
 from gr2.python_cli.consent import (
     PENDING_DIR,
     _exact_name_exists,
+    bind_ctx,
     consent_state,
+    member_key,
     pending_marker_path,
     plain_relative_key,
     take_pending_marker,
@@ -87,6 +89,38 @@ def test_a_spec_declared_path_with_a_dotdot_part_does_not_run_the_hook(ws: Path)
     assert not (other / "marker").exists()
     # no consent record and no pending marker written anywhere (the event log of the skip is expected)
     assert {f for f in _files(ws) if not f.startswith(".grip/events")} == before
+
+
+@pytest.mark.parametrize("declared, plain", [
+    ("./alpha", "alpha"), ("a//b", "a/b"), ("a/./b", "a/b"), ("alpha/", "alpha"), ("alpha", "alpha"),
+])
+def test_a_spec_declared_path_is_keyed_as_its_plain_member_path(ws: Path, declared: str, plain: str) -> None:
+    """A hand-written spec spells the member's path the ways git accepts for a gitlink. validate_spec refuses those
+    spellings (the row below), but the consent readers take the spec unvalidated: the key is the plain path, so the
+    member reads unbound (not invalid) and binds."""
+    repo = _member(ws / plain)
+    _spec_declares(ws, "alpha", declared)
+    ctx = HookContext(
+        workspace_root=ws, unit_root=ws / "default", lane_root=ws / "lanes" / "default" / "feat",
+        repo_root=repo, repo_name="alpha", lane_owner="default", lane_subject="alpha", lane_name="feat",
+    )
+    key = member_key(ws, repo, "alpha")
+
+    assert consent_state(ws, key, repo)[0] == "unbound"
+    bind_ctx(ctx)
+    assert consent_state(ws, key, repo)[0] == "bound"
+
+
+@pytest.mark.parametrize("declared, refused", [
+    ("./alpha", True), ("alpha/", True), ("a//b", True), ("a/./b", True), ("alpha", False),
+])
+def test_validate_spec_refuses_the_spellings_the_consent_key_folds(ws: Path, declared: str, refused: bool) -> None:
+    """The fold above serves readers that skip validation; apply and sync validate first and never take such a spec."""
+    from gr2.python_cli import spec_apply
+
+    _spec_declares(ws, "alpha", declared)
+    messages = [issue.message for issue in spec_apply.validate_spec(ws)]
+    assert any("must not contain empty, '.', or '..' segments" in m for m in messages) is refused, messages
 
 
 @pytest.mark.parametrize("arg", ["../outside", "../deep/outside", "ABSOLUTE"])

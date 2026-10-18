@@ -38,6 +38,7 @@ import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .keys import member_path_key
 from .layout import GRIP_DIR, grip_dir
 
 
@@ -95,7 +96,7 @@ def member_key(workspace_root: Path, repo_root: Path, repo_name: str) -> str:
     otherwise the workspace-relative path of repo_root."""
     for repo in _declared_repos(workspace_root):
         if str(repo.get("name", "")) == repo_name and repo.get("path"):
-            return str(repo["path"]).strip("/")
+            return member_path_key(str(repo["path"]).strip("/"))
     try:
         return str(repo_root.resolve().relative_to(workspace_root.resolve()))
     except ValueError:

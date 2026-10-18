@@ -25,3 +25,34 @@ def test_behaviour_change_a_dot_dot_path_no_longer_matches_the_member_it_resolve
     declaration = declared_sets.parse({"members": [{"name": "alpha", "path": "alpha"}]})
     assert declaration.member_name("not-a-name", "a/../alpha") is None
     assert declaration.member_name("not-a-name", "./alpha/") == "alpha"
+
+
+def _git(cwd, *args):
+    import subprocess
+
+    subprocess.run(["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@t", *args], check=True,
+                   capture_output=True, text=True)
+
+
+def test_a_member_spelled_dot_slash_alpha_keeps_its_pin_and_its_declared_ref(tmp_path, monkeypatch):
+    from gr2.python_cli import app as app_mod
+
+    root = tmp_path / "root"
+    member = root / "alpha"
+    member.mkdir(parents=True)
+    _git(member, "init", "-q", "-b", "main")
+    _git(member, "commit", "-q", "--allow-empty", "-m", "m")
+    _git(root, "init", "-q", "-b", "main")
+    (root / ".gitmodules").write_text('[submodule "alpha"]\n\tpath = ./alpha\n\turl = ./alpha\n\tbranch = dev\n')
+    _git(root, "add", ".gitmodules", "alpha")
+    _git(root, "commit", "-q", "-m", "root")
+    pin = app_mod.repo_proto.root_gitlink_pins(root)["alpha"]
+    seen = {}
+
+    def spy(path, *, pinned=None, declared_ref=None):
+        seen[path.name] = (pinned, declared_ref)
+        return {}
+
+    monkeypatch.setattr(app_mod.repo_proto, "declared_repo_state", spy)
+    app_mod._scan_existing_repos(root)
+    assert seen["alpha"] == (pin, "dev")

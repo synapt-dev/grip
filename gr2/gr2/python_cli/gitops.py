@@ -155,7 +155,32 @@ class GitError(RuntimeError):
 
     def __init__(self, args: tuple[str, ...], returncode: int, stderr: str):
         self.git_args, self.returncode, self.stderr = args, returncode, stderr
-        super().__init__(f"git {' '.join(args[:2])}: {stderr}".rstrip(": "))
+        shown = [_shown_arg(arg) for arg in args[:2]]
+        for arg in args:  # git strips userinfo from the URLs it prints, not a credential in the query
+            if (redacted := _shown_arg(arg)) != arg:
+                stderr = stderr.replace(arg, redacted).replace(_strip_userinfo(arg), redacted)
+        super().__init__(f"git {' '.join(shown)}: {stderr}".rstrip(": "))
+
+
+_CREDENTIAL_SHOWN = "<a remote with a credential>"
+
+
+def _strip_userinfo(url: str) -> str:
+    from .migration import _strip_url_userinfo  # lazy: migration imports this module's importers
+
+    return _strip_url_userinfo(url)
+
+
+def _shown_arg(arg: str) -> str:
+    """An argument as an error message may show it: a URL loses its userinfo, and a URL that still carries a
+    credential after that (a token in the query, an unparsable address) is named, not shown. Any other argument is
+    returned as written."""
+    from .grip import url_has_credentials  # lazy, as above
+
+    if "://" not in arg or not url_has_credentials(arg):
+        return arg
+    stripped = _strip_userinfo(arg)
+    return _CREDENTIAL_SHOWN if url_has_credentials(stripped) else stripped
 
 
 # Git's global options that take their value as the next word; `--opt=value` forms are one word.

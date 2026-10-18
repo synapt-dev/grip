@@ -313,6 +313,24 @@ def plain_remote(remote: str, error: type[Exception] = RuntimeError) -> str:
     return positional(remote, "remote", error)
 
 
+class LsRemoteMalformed(ValueError):
+    """An ls-remote answer holding a non-empty line without a tab: a fault, never an absent ref."""
+
+
+def ls_remote_rows(listing: str) -> list[tuple[str, str]]:
+    """(oid, name) per row of ls-remote output, split on "\n" only: str.splitlines and str.split() also cut at U+2028
+    and U+0085, which a ref name may hold. A non-empty line without a tab raises LsRemoteMalformed: dropping it would
+    read a garbled answer as "the remote does not hold that ref", so each caller turns it into its own fault."""
+    rows = []
+    for line in listing.split("\n"):
+        if not line:
+            continue
+        if "\t" not in line:
+            raise LsRemoteMalformed(f"ls-remote answered a line that is not a row: {line[:80]!r}")
+        rows.append(tuple(line.split("\t", 1)))
+    return rows
+
+
 def git(
     cwd: Path, *args: str, timeout: float | None = DEFAULT_TIMEOUT
 ) -> subprocess.CompletedProcess[str]:

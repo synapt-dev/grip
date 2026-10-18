@@ -2470,7 +2470,10 @@ def _atomic_push(root: Path, refspecs: list[tuple[str, str]], verify: bool = Tru
     if proc.returncode == 0:
         return False
     listed = _store_git(root, "ls-remote", "origin", *[ref for _, ref in refspecs], check=False)
-    held = {parts[1]: parts[0] for parts in (line.split("\t") for line in listed.stdout.splitlines()) if len(parts) == 2}
+    try:
+        held = {name: sha for sha, name in gitops.ls_remote_rows(listed.stdout)}
+    except gitops.LsRemoteMalformed:
+        held = {}  # an unreadable answer proves nothing landed: the refusal below names the push's own rejection
     if listed.returncode == 0 and all(held.get(ref) == sha for sha, ref in refspecs):
         return True
     rejected = [line.split("\t") for line in proc.stdout.splitlines() if line.startswith("!")]
@@ -2589,7 +2592,10 @@ def _leases(root: Path, tip: str, refs: list[str]) -> dict[str, str]:
     if listed.returncode:
         detail = " | ".join(line.strip() for line in listed.stderr.splitlines() if line.strip())[:300]
         raise NativeStoreRefusal(f"cannot verify origin's shadow, so nothing was pushed: {detail}", 5)
-    held = {parts[1]: parts[0] for parts in (line.split("\t") for line in listed.stdout.splitlines()) if len(parts) == 2}
+    try:
+        held = {name: sha for sha, name in gitops.ls_remote_rows(listed.stdout)}
+    except gitops.LsRemoteMalformed as exc:
+        raise NativeStoreRefusal(f"cannot verify origin's shadow, so nothing was pushed: {exc}", 5) from None
     leases: dict[str, str] = {}
     for ref in refs:
         now = held.get(ref, "")

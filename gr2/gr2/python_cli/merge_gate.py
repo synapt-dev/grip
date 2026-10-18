@@ -32,11 +32,13 @@ def _git(repo: Path, *args: str, check: bool = True, raw: bool = False) -> str:
     return proc.stdout if raw else proc.stdout.strip()
 
 
-def _ls_remote(repo: Path, remote: str, pattern: str) -> list[list[str]]:
+def _ls_remote(repo: Path, remote: str, pattern: str) -> list[tuple[str, str]]:
     """(oid, name) per advertised ref, split on "\n" from the raw output: str.splitlines and strip would cut a
     name at U+2028 or U+0085."""
-    return [line.split("\t", 1) for line in _git(repo, "ls-remote", remote, pattern, raw=True).split("\n")
-            if "\t" in line]
+    try:
+        return gitops.ls_remote_rows(_git(repo, "ls-remote", remote, pattern, raw=True))
+    except gitops.LsRemoteMalformed as exc:
+        raise RuntimeError(f"ls-remote {remote} {pattern}: {exc}") from None
 
 
 _plain_remote = gitops.plain_remote

@@ -16,7 +16,6 @@ import json
 import os
 import subprocess
 import tempfile
-import uuid
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -32,13 +31,13 @@ def _git(repo: Path, *args: str, check: bool = True, raw: bool = False) -> str:
     return proc.stdout if raw else proc.stdout.strip()
 
 
-def _ls_remote(repo: Path, remote: str, pattern: str) -> list[tuple[str, str]]:
+def _ls_remote(repo: Path, remote: str, *patterns: str) -> list[tuple[str, str]]:
     """(oid, name) per advertised ref, split on "\n" from the raw output: str.splitlines and strip would cut a
     name at U+2028 or U+0085."""
     try:
-        return gitops.ls_remote_rows(_git(repo, "ls-remote", remote, pattern, raw=True))
+        return gitops.ls_remote_rows(_git(repo, "ls-remote", remote, *patterns, raw=True))
     except gitops.LsRemoteMalformed as exc:
-        raise RuntimeError(f"ls-remote {remote} {pattern}: {exc}") from None
+        raise RuntimeError(f"ls-remote {remote} {' '.join(patterns)}: {exc}") from None
 
 
 _plain_remote = gitops.plain_remote
@@ -131,14 +130,17 @@ def feature_moves(workspace: Path, members: list[dict], feature: str | None) -> 
     return out
 
 
-def _remote_tips(repo: Path, remote: str, branches: tuple[str, ...], listed: tuple[str, ...] = ()) -> dict[str, str | None]:
+def _remote_tips(repo: Path, remote: str, branches: tuple[str, ...], listed: tuple[str, ...] = (),
+                 scan: str = "") -> dict[str, str | None]:
     """One read of a remote for several exact refs: each branch's commit (its objects fetched by id) and each listed
-    ref's advertised oid, None when absent. One ls-remote and one fetch per remote, and no private ref to make or delete."""
+    ref's advertised oid, None when absent; with `scan`, also every ref advertised under that prefix, by its oid and
+    not fetched. One ls-remote and one fetch per remote, and no private ref to make or delete."""
     _plain_remote(remote)
     refs = tuple(f"refs/heads/{b}" for b in branches) + listed
-    hits = [line.split("\t") for line in _git(repo, "ls-remote", remote, *refs).splitlines()]
+    hits = _ls_remote(repo, remote, *refs, *((f"{scan}*",) if scan else ()))
+    scanned = tuple(dict.fromkeys(name for _, name in hits if scan and name.startswith(scan) and name not in refs))
     tips: dict[str, str | None] = {}
-    for ref in refs:  # ls-remote patterns also match nested refs by tail
+    for ref in refs + scanned:  # ls-remote patterns also match nested refs by tail
         exact = {oid for oid, name in hits if name == ref}
         if len([name for _, name in hits if name == ref]) > 1:
             raise RuntimeError(f"ls-remote: {ref} advertised more than once")
@@ -212,10 +214,6 @@ _REVIEW_REF_PREFIX = "refs/dev.synapt.grip/__reviews__/"
 _REVIEW_SCAN_CAP = 200  # reviews read per member remote; over it is a named refusal, never a silent partial read
 
 
-def _review_refs(repo: Path, remote: str) -> list[str]:
-    return [name for _, name in _ls_remote(repo, remote, f"{_REVIEW_REF_PREFIX}*") if name.startswith(_REVIEW_REF_PREFIX)]
-
-
 def _pin_tie(root: Path, declaration: declared_sets.Declaration, into: str):
     """The tie for the OTHER members of a declared set: `tie(member, pin)` returns None when that pin is merged into
     the member's target on its remote, or when a review published on that remote names the member at exactly that
@@ -231,20 +229,17 @@ def _pin_tie(root: Path, declaration: declared_sets.Declaration, into: str):
             return (f"declared_set_pin_unmeasured: {name} has no readable repository and remote here, so its pin "
                     f"{short} cannot be tied to a merged or reviewed head")
         try:
-            tip = _remote_tip(repo, remote, into)
+            tips = _remote_tips(repo, remote, (into,), scan=_REVIEW_REF_PREFIX)  # the target and every review, one read
+            tip = tips.pop(f"refs/heads/{into}")
             if tip and gitops.run(repo, "merge-base", "--is-ancestor", pin, tip).returncode == 0:
                 return None
-            refs = _review_refs(repo, remote)
-            if len(refs) > _REVIEW_SCAN_CAP:
-                return (f"declared_set_pin_unmeasured: {name}'s remote advertises {len(refs)} reviews, over the "
+            if len(tips) > _REVIEW_SCAN_CAP:
+                return (f"declared_set_pin_unmeasured: {name}'s remote advertises {len(tips)} reviews, over the "
                         f"{_REVIEW_SCAN_CAP} this gate reads; its pin {short} cannot be tied to a reviewed head")
-            for ref in refs:
-                staging = f"refs/dev.synapt.grip/__merge_transfers__/{uuid.uuid4().hex}"
-                try:
-                    _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, f"{ref}:{staging}")
-                    state = grip._read_repo_state(repo, staging, bind=True)
-                finally:
-                    _git(repo, "update-ref", "-d", staging, check=False)
+            if tips:  # every review's objects in one fetch by id, read by id: no private ref to make or delete
+                _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, *sorted(set(tips.values())))
+            for oid in tips.values():
+                state = grip._read_repo_state(repo, oid, bind=True)
                 for key, fields in state.items():
                     if fields.get("commit") == pin and declaration.member_name(key, fields.get("path", "")) == name:
                         return None

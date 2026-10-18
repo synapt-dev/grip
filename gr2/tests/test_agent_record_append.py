@@ -55,6 +55,12 @@ EVENTS = fd.parse_proto(EVENT_PROTO)
 ENV = dict(os.environ, GIT_AUTHOR_NAME="append-test", GIT_AUTHOR_EMAIL="append-test@example.invalid",
            GIT_COMMITTER_NAME="append-test", GIT_COMMITTER_EMAIL="append-test@example.invalid")
 
+# Every writer stamps its event from CLOCK, frozen so every round shares one second whatever the
+# wall clock does: two reads of time.time() can straddle a second boundary, and that is not a defect.
+FROZEN_TS = 1_700_000_000.0
+CLOCK = lambda: FROZEN_TS  # noqa: E731
+PAUSE: dict[str, float] = {}  # writer -> seconds slept after each barrier, before its clock read
+
 
 @pytest.fixture
 def agent_record():
@@ -80,10 +86,13 @@ def _writer(repo: str, agent: str, by: str, rounds: int, barrier, q) -> None:
     os.environ.update({k: v for k, v in ENV.items() if k.startswith("GIT_")})
     try:
         append = importlib.import_module("gr2.python_cli.agent_record").append
-        tally = {"cas": 0, "lock": 0, "secs": [], "ordinals": []}
+        tally = {"cas": 0, "lock": 0, "secs": [], "ordinals": [], "slept": []}
         for i in range(1, rounds + 1):
             barrier.wait(timeout=60)
-            t = time.time()
+            t0 = time.monotonic()
+            time.sleep(PAUSE.get(by, 0))
+            tally["slept"].append(time.monotonic() - t0)
+            t = CLOCK()
             got = append(Path(repo), agent, {"by": by, "seq": str(i), "ts": str(int(t))}, org=ORG, message="Event", schema=EVENTS)
             tally["cas"] += got.retries_cas
             tally["lock"] += got.retries_lock
@@ -125,8 +134,9 @@ def run(repo: Path, layout: str, rounds: int = ROUNDS) -> dict:
             "retries_cas": sum(t["cas"] for t in got.values()),
             "retries_lock": sum(t["lock"] for t in got.values()),
             "same_second_rounds": sum(x == y for x, y in zip(got["a"]["secs"], got["b"]["secs"])),
-            "ordinals": {w: t["ordinals"] for w, t in got.items()}}
-    print("\nRUN", repo.name, layout, {k: v for k, v in got.items() if k != "ordinals"})
+            "ordinals": {w: t["ordinals"] for w, t in got.items()},
+            "slept": {w: t["slept"] for w, t in got.items()}}
+    print("\nRUN", repo.name, layout, {k: v for k, v in got.items() if k not in ("ordinals", "slept")})
     return got
 
 
@@ -150,12 +160,27 @@ def test_r0_append_writes_the_next_ordinal_as_a_field_tree_under_the_callers_sch
 
 
 def test_r1_files_own_stooks_lost_0_numbered_intact_same_second(agent_record, tmp_path):
-    """R1: files, own STOOKs: 200 writes, lost 0, NUMBERED 0000001..n, 100/100 rounds same second."""
+    """R1: files, own STOOKs: 200 writes, lost 0, NUMBERED 0000001..n when every round's two writes
+    carry the same second. The frozen CLOCK makes that collision happen every round; the last
+    assertion checks the premise, it is not the property under test."""
     got = run(make_repo(tmp_path, "files"), "own")
     assert (got["writes"], got["lost"], got["extra"], got["refs"]) == (200, 0, 0, 2), got
     assert got["numbered_ok"], got
     assert got["ordinals"] == {w: list(range(1, ROUNDS + 1)) for w in WRITERS}
-    assert got["same_second_rounds"] == ROUNDS, got
+    assert got["same_second_rounds"] == ROUNDS, ("premise: every round shares one second", got)
+
+
+def test_r1b_a_slow_writer_still_stamps_every_round_in_the_same_second(agent_record, tmp_path, monkeypatch):
+    """R1b: writer b sleeps 1.1 s after each barrier, so its wall clock is a second past a's every round;
+    the frozen CLOCK keeps all 3 rounds in one second, and writes, ordinals and numbering are as in R1.
+    The first assertion checks b really slept, so a writer that lost PAUSE (a spawn context) cannot pass."""
+    monkeypatch.setitem(PAUSE, "b", 1.1)
+    got = run(make_repo(tmp_path, "files"), "own", rounds=3)
+    assert min(got["slept"]["b"]) >= 1.1, ("premise: b slept 1.1 s each round", got["slept"])
+    assert (got["writes"], got["lost"], got["extra"], got["refs"]) == (6, 0, 0, 2), got
+    assert got["numbered_ok"], got
+    assert got["ordinals"] == {w: [1, 2, 3] for w in WRITERS}
+    assert got["same_second_rounds"] == 3, got
 
 
 def test_r2_files_own_stooks_different_refs_never_contend(agent_record, tmp_path):

@@ -5,9 +5,11 @@
 ## Install
 
 ```bash
-uv tool install --pre gitgrip    # the PyPI package is "gitgrip"; it installs `gr` and `gr2`
+uv tool install --compile-bytecode --pre gitgrip    # the PyPI package is "gitgrip"; it installs `gr` and `gr2`
 gr2 --version
 ```
+
+`--compile-bytecode` writes the `.pyc` files at install time; without it uv leaves them to the first `gr2` call, which then takes about a third of a second longer. pip compiles at install on its own.
 
 Without uv, a venv and pip do the same:
 

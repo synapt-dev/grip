@@ -7,11 +7,13 @@ Remote URLs have two keys, because readers ask two questions whose safe errors p
 
 - `remote_url_key` answers "which repository does this URL name?" for a reader that matches or includes on equality
   (store init's checkout-origin check, the merge gate). Its safe error is a false DIFFERENT, so it folds only
-  spellings that cannot name two repositories, and a local path keeps its `.git`.
+  spellings that name one repository on a forge (the scheme, the user `git` or a user outside a home path, a
+  default port, a trailing `.git` on a network path); on a plain ssh server some of these can name two. A local
+  path keeps its `.git`.
 - `may_be_same_repository` answers "could these two URLs be one repository?" for a reader that only REFUSES on a
   match (store push --atomic's aliased-member check). Its safe error is a false SAME, so it folds everything
   `remote_url_key` folds, also treats a local path with and without `.git` as one (git resolves either), and also
-  folds any user and any port on a network host, which `remote_url_key` keeps."""
+  folds any user and any port on a network host, some of which `remote_url_key` keeps."""
 from __future__ import annotations
 
 import os
@@ -27,14 +29,17 @@ def member_path_key(path: object) -> str:
 _DEFAULT_PORTS = {"ssh": "22", "git+ssh": "22", "ssh+git": "22", "https": "443", "http": "80", "git": "9418"}
 
 
-def _host_key(hostpart: str, default_port: str | None) -> str:
-    """The host, lowercased, with the user kept unless it is `git` and the port kept unless it is the default."""
+def _host_key(hostpart: str, default_port: str | None, home: bool) -> str:
+    """The host, lowercased, with the port kept unless it is the default. The user is kept only when `home` is set
+    (the path is relative to that login's home) and it is not `git`; anywhere else the user names no repository and
+    may carry a credential, so it never enters the key. A password after the user (`u:pw@host`) never enters it either."""
     user, at, hostport = hostpart.rpartition("@")
     host, colon, port = hostport.partition(":")
     key = host.lower()
     if colon and port and port != default_port:
         key = f"{key}:{port}"
-    if at and user != "git":
+    user = user.partition(":")[0]
+    if home and at and user != "git":
         key = f"{user}@{key}"
     return key
 
@@ -43,11 +48,12 @@ def remote_url_key(url: str, base: Path) -> tuple[str, str]:
     """One repository, however its URL is spelled: (host, path) for a network URL, ("", realpath) for a local one.
 
     A `file://` scheme, a trailing '/', and a trailing '.git' on a network path do not change the repository. The
-    user `git` (the forge convention) and the scheme's default port do not either, so an SSH spelling
-    (`git@host:org/x.git`, `ssh://git@host:22/...`) and an HTTPS one (`https://host/org/x`) of the same repository
-    give the same key. Any other user or port stays in the key: on a plain ssh server `alice@host:repo` and
-    `bob@host:repo` are two repositories (a path with no leading '/' is relative to the login's home), and so are
-    two ports on one host. A relative local path resolves against `base`, the clone, which is where git resolves
+    scheme's default port does not either, and the user is dropped except where it chooses a home: an scp-like path
+    with no leading '/', or an ssh:// path starting '~', is relative to that login's home, so `alice@host:repo` and
+    `bob@host:repo` are two repositories on a plain ssh server. Anywhere else the user names no repository and may
+    carry a credential (`https://x-access-token:...@host/...`), so it never enters the key. The forge user `git` is
+    dropped everywhere, so `git@host:org/x.git` and `https://host/org/x` give the same key. A non-default port stays
+    in the key. A relative local path resolves against `base`, the clone, which is where git resolves
     it. The '.git' fold on a network path assumes a forge; a plain ssh server can hold both."""
     u = url.strip()
     if u.startswith("file://"):
@@ -55,10 +61,11 @@ def remote_url_key(url: str, base: Path) -> tuple[str, str]:
     if "://" in u:
         scheme, rest = u.split("://", 1)
         hostpart, _, path = rest.partition("/")
-        return _host_key(hostpart, _DEFAULT_PORTS.get(scheme.lower())), path.strip("/").removesuffix(".git")
+        home = scheme.lower() in ("ssh", "git+ssh", "ssh+git") and path.startswith("~")
+        return _host_key(hostpart, _DEFAULT_PORTS.get(scheme.lower()), home), path.strip("/").removesuffix(".git")
     head, sep, tail = u.partition(":")
     if sep and head and "/" not in head:  # git's scp-like form: a colon before any slash
-        return _host_key(head, None), tail.strip("/").removesuffix(".git")
+        return _host_key(head, None, not tail.startswith("/")), tail.strip("/").removesuffix(".git")
     return "", os.path.realpath(u if os.path.isabs(u) else base / u)
 
 

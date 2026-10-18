@@ -99,13 +99,26 @@ def test_store_init_still_refuses_a_checkout_of_another_repository(tmp_path):
     assert "has another origin" in out, out
 
 
-def test_a_user_other_than_git_or_a_non_default_port_is_part_of_the_key(tmp_path):
+def test_a_user_is_part_of_the_key_only_where_it_chooses_a_home(tmp_path):
     """On a plain ssh server alice@host:repo and bob@host:repo are two repositories (a path with no leading / is
-    relative to the login's home), and so are two ports on one host. The forge user `git` and the default port
-    still fold, so the SSH and HTTPS spellings of one forge repository stay one key."""
+    relative to the login's home), and so are ssh://alice@host/~/x and ssh://bob@host/~/x. Anywhere else the user
+    names no repository and may carry a credential, so it is dropped; the forge user `git` always is."""
+    token = "https://x-access-token:FAKETOKEN123@github.com/org/x"
+    assert key(token, tmp_path) == key("https://github.com/org/x", tmp_path)
+    assert "FAKETOKEN123" not in repr(key(token, tmp_path))
+    assert key("ssh://alice@host/org/x", tmp_path) == key("ssh://bob@host/org/x", tmp_path)
+    assert key("alice@host:/srv/repo", tmp_path) == key("bob@host:/srv/repo", tmp_path)
     assert key("alice@host:repo", tmp_path) != key("bob@host:repo", tmp_path)
-    assert key("ssh://alice@host/org/x", tmp_path) != key("ssh://bob@host/org/x", tmp_path)
+    assert key("ssh://alice@host/~/x", tmp_path) != key("ssh://bob@host/~/x", tmp_path)
+    assert key("ssh://u:pw@host/~/x", tmp_path) == key("ssh://u@host/~/x", tmp_path)
+    assert "pw" not in repr(key("ssh://u:pw@host/~/x", tmp_path))
+    assert key("git@github.com:org/x.git", tmp_path) == key("https://github.com/org/x", tmp_path)
+
+
+def test_a_non_default_port_is_part_of_the_key(tmp_path):
+    """Two ports on one host are two servers; the scheme's default port folds."""
     assert key("ssh://host:2222/org/x", tmp_path) != key("ssh://host/org/x", tmp_path)
+    assert key("https://host:8443/org/x", tmp_path) != key("https://host/org/x", tmp_path)
     assert key("ssh://git@host:22/org/x", tmp_path) == key("git@host:org/x", tmp_path)
     assert key("https://host:443/org/x", tmp_path) == key("https://host/org/x", tmp_path)
 

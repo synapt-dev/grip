@@ -179,9 +179,9 @@ def test_a_remote_that_accepts_and_never_answers_ends_by_the_timeout(tmp_path):
     assert "timeout after 1s reading bad at the start: git timed out" in result.stderr
 
 
-@pytest.mark.parametrize("interval,timeout", [("0", "5"), ("-5", "5"), ("nan", "5"), ("1", "-1"), ("1", "nan")])
+@pytest.mark.parametrize("interval,timeout", [("0", "5"), ("-5", "5"), ("nan", "5"), ("0.5", "5"), ("1", "-1"), ("1", "nan"), ("1", "inf")])
 def test_an_out_of_range_interval_or_timeout_is_refused_before_any_read(tmp_path, monkeypatch, interval, timeout):
-    """--interval below 1 would poll without pause and nan would never end; each is refused before any ls-remote."""
+    """--interval below 1 would poll without pause and nan or inf would never end; each is refused before any ls-remote."""
     ws, _seeds = _workspace(tmp_path)
     reads = [0]
     real = gitops.git
@@ -214,3 +214,52 @@ def test_a_flaky_remote_that_fails_twice_but_never_in_a_row_runs_to_the_timeout(
     assert result.exit_code == 6, result.output
     assert "unreadable" not in result.output
     assert len(polls) > 5, polls
+
+
+def test_a_remote_that_stops_answering_mid_wait_ends_by_the_timeout_and_is_not_called_not_moved(tmp_path, monkeypatch):
+    """Start reads answer, every poll read hangs: --timeout bounds the poll reads, and a failed last read is not "not moved"."""
+    ws, _seeds = _workspace(tmp_path)
+    listener = socket.create_server(("127.0.0.1", 0))
+    held: list[socket.socket] = []
+    threading.Thread(target=lambda: held.append(listener.accept()[0]), daemon=True).start()
+    hung = f"git://127.0.0.1:{listener.getsockname()[1]}/x"
+    real, reads = gitops.git, [0]
+
+    def hangs_after_the_start(cwd, *args, **kw):
+        if "ls-remote" in args:
+            reads[0] += 1
+            if reads[0] > 3:  # the three start reads answer; every poll read goes to the listener
+                args = tuple(hung if a.startswith("file:") or a.startswith("/") else a for a in args)
+        return real(cwd, *args, **kw)
+
+    monkeypatch.setattr(gitops, "git", hangs_after_the_start)
+    start = time.monotonic()
+    result = CliRunner().invoke(app, ["sync", "wait", str(ws), "--all-members", "--until", "all", "--timeout", "2"])
+    took = time.monotonic() - start
+    listener.close()
+    assert took < 10, took
+    assert result.exit_code == 6, result.output
+    assert "not moved" not in result.output, result.output
+    assert "all not met; last read failed: alpha (git timed out" in result.output, result.output
+
+def test_mixed_timeout_names_not_moved_and_failed_apart(tmp_path, monkeypatch):
+    """Alpha's poll reads hang while beta and gamma answer unmoved: the timeout line names each in its own clause."""
+    ws, _seeds = _workspace(tmp_path)
+    listener = socket.create_server(("127.0.0.1", 0))
+    held: list[socket.socket] = []
+    threading.Thread(target=lambda: held.append(listener.accept()[0]), daemon=True).start()
+    hung = f"git://127.0.0.1:{listener.getsockname()[1]}/x"
+    real, reads = gitops.git, [0]
+
+    def alpha_hangs_after_the_start(cwd, *args, **kw):
+        if "ls-remote" in args:
+            reads[0] += 1
+            if reads[0] > 3:
+                args = tuple(hung if "alpha.git" in a else a for a in args)
+        return real(cwd, *args, **kw)
+
+    monkeypatch.setattr(gitops, "git", alpha_hangs_after_the_start)
+    result = CliRunner().invoke(app, ["sync", "wait", str(ws), "--all-members", "--until", "all", "--timeout", "2"])
+    listener.close()
+    assert result.exit_code == 6, result.output
+    assert "all not met; not moved: beta, gamma; last read failed: alpha (git timed out" in result.output, result.output

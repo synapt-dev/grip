@@ -106,7 +106,7 @@ def wait(
         baseline[m.name] = first[m.name] = oid
     echo(f"waiting for {until} of {len(members)} members to move: {', '.join(m.name for m in members)}")
     moved: dict[str, str] = {}
-    failed: set[str] = set()  # members whose last read failed; a second failure in a row ends the wait
+    failed: dict[str, str] = {}  # members whose last read failed, with git's reason; a second failure in a row ends the wait
     while True:
         for m in members:
             if m.name in moved:
@@ -116,9 +116,9 @@ def wait(
                 if m.name in failed:
                     err(f"unreadable: {m.name} {why}")
                     return EXIT_UNREADABLE
-                failed.add(m.name)
+                failed[m.name] = why
                 continue
-            failed.discard(m.name)
+            failed.pop(m.name, None)
             if oid != baseline[m.name]:
                 moved[m.name] = oid
                 echo(f"moved: {m.name} {baseline[m.name][:12]} -> {oid[:12]}")
@@ -126,7 +126,10 @@ def wait(
             echo(f"met: {until}: moved {', '.join(moved)}")
             return EXIT_MET
         if clock() >= deadline:
-            still = [m.name for m in members if m.name not in moved]
-            echo(f"timeout after {timeout:g}s: {until} not met; not moved: {', '.join(still)}")
+            still = [m.name for m in members if m.name not in moved and m.name not in failed]
+            why = [f"not moved: {', '.join(still)}"] if still else []
+            if failed:
+                why.append("last read failed: " + ", ".join(f"{n} ({w})" for n, w in failed.items()))
+            echo(f"timeout after {timeout:g}s: {until} not met; {'; '.join(why)}")
             return EXIT_TIMEOUT
         sleep(max(0.0, min(interval, deadline - clock())))

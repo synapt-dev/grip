@@ -513,6 +513,29 @@ def test_a_member_remote_with_a_nul_refuses_that_member_and_fetches_the_other(ha
     assert git(receiver / "member", "cat-file", "-t", head) == "commit"
 
 
+def test_a_member_path_with_a_nul_refuses_that_member_and_fetches_the_other(handoff, monkeypatch):
+    """The same crash one field over: a member PATH carrying a NUL is a refused row naming the path, never a ValueError
+    from resolving it, and the other member's head is still fetched."""
+    author, receiver, remote, commit, _, head = handoff
+    git(author / "member", "push", remote, "HEAD:refs/heads/feat")
+    publish(handoff, monkeypatch)
+    shown = grip.show_review_commit
+
+    def with_nul_path(*args, **kwargs):
+        out = shown(*args, **kwargs)
+        out["members"] = [{**out["members"][0], "key": "bad", "path": "b\0ad"}, *out["members"]]
+        return out
+
+    monkeypatch.setattr(grip, "show_review_commit", with_nul_path)
+    got = cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", remote)
+    assert got.exit_code == 0 and "Traceback" not in got.output, got.output
+    rows = _rows(got)
+    assert rows["bad"]["status"] == "refused", rows
+    assert rows["bad"]["reason"] == "member_path_control_character: 'b\\x00ad'", rows
+    assert rows["member"]["status"] == "fetched", rows
+    assert git(receiver / "member", "cat-file", "-t", head) == "commit"
+
+
 @pytest.mark.parametrize("bad", ["/x\0y", "/x\ny", "/x\x1fy", "/x\x7fy", "https://github.com/o/a\0b"])
 def test_a_control_character_in_the_receive_remote_is_refused_before_any_git_call(handoff, monkeypatch, bad):
     _, receiver, _, commit, _, _ = handoff

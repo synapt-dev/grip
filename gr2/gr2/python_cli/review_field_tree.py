@@ -28,6 +28,7 @@ import hashlib
 import importlib.resources
 import re
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from . import gitops
@@ -337,6 +338,70 @@ class GitReader:
         self.close()
 
 
+class _Deadlined:
+    """The batch process's stdout with every silence bounded by ``deadline`` seconds. A read runs on a
+    thread, not under select, so a stream with no file descriptor reads the same way. A read that
+    outlasts the deadline is an answer git will never finish (a loose object whose header claims
+    more bytes than its body holds keeps ``cat-file --batch`` alive with the read short): the
+    process is killed, the reader closed, and the blob refused as truncated."""
+
+    def __init__(self, stream, proc: subprocess.Popen, reader: "BatchReader", deadline: float):
+        self._stream, self._proc, self._reader, self._deadline = stream, proc, reader, deadline
+
+    def _within(self, op, *args) -> bytes:
+        got: list = []
+
+        def run() -> None:
+            try:
+                got.append(op(*args))
+            except BaseException as exc:  # handed to the caller below
+                got.append(exc)
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        t.join(self._deadline)
+        if t.is_alive():
+            self._proc.kill()
+            t.join(1)  # the kill ends the pipe; let the read return before the stream closes
+            self._reader.close()
+            raise ReviewRecordError(f"git cat-file blob failed: answer truncated, "
+                                    f"the batch process sent nothing for {self._deadline:g}s")
+        if isinstance(got[0], BaseException):
+            raise got[0]
+        return got[0]
+
+    def readline(self) -> bytes:
+        return self._within(self._stream.readline)
+
+    def read(self, n: int = -1) -> bytes:
+        # the deadline bounds silence, not size: a big body reads in chunks, each under the deadline
+        if n < 0:
+            return self._within(self._stream.read, n)
+        parts: list[bytes] = []
+        while n > 0:
+            part = self._within(self._stream.read1, min(n, 1 << 20))
+            if not part:
+                break
+            parts.append(part)
+            n -= len(part)
+        return b"".join(parts)
+
+    def close(self) -> None:
+        self._stream.close()
+
+
+class _Bounded:
+    """The batch process as the reader sees it: ``stdout`` reads under the deadline, everything else
+    is the process's own. The process is left untouched, so a stand-in for it keeps its own stdout."""
+
+    def __init__(self, proc: subprocess.Popen, reader: "BatchReader", deadline: float):
+        self._proc = proc
+        self.stdout = _Deadlined(proc.stdout, proc, reader, deadline)
+
+    def __getattr__(self, name: str):
+        return getattr(self._proc, name)
+
+
 class BatchReader(GitReader):
     """Two git processes for a whole record: one ``ls-tree -r -t`` per root tree, indexed
     by tree id so every subtree it names is listed without another process, and one
@@ -347,6 +412,19 @@ class BatchReader(GitReader):
         super().__init__(repo)
         self._trees: dict[str, list[Entry]] = {}
         self._cat: subprocess.Popen | None = None
+
+    # local git answers a blob in milliseconds and streams it without pause: 30 s of silence is room
+    # for a cold disk or a loaded runner, and a stall still ends the verb
+    DEADLINE = 30.0
+
+    @property
+    def _cat(self) -> _Bounded | None:
+        return self.__cat
+
+    @_cat.setter
+    def _cat(self, proc: subprocess.Popen | None) -> None:
+        # every process the reader starts reads under the deadline, whichever line reads it
+        self.__cat = None if proc is None else _Bounded(proc, self, self.DEADLINE)
 
     def ls(self, tree: str) -> list[Entry]:
         if tree not in self._trees:

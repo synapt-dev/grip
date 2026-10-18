@@ -15,6 +15,8 @@ of them touch the worktree, so the user's uncommitted change is still there.
 from __future__ import annotations
 
 import re
+import signal
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -108,6 +110,17 @@ def preflight(paths: list[Path], branch: str) -> list[Member]:
     return members
 
 
+@contextmanager
+def _shielded():
+    """Ignore SIGINT and SIGTERM while an undo runs: a second Ctrl-C must not leave it half done."""
+    old = {sig: signal.signal(sig, signal.SIG_IGN) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        yield
+    finally:
+        for sig, handler in old.items():
+            signal.signal(sig, handler)
+
+
 def undo(member: Member, branch: str) -> str | None:
     """Put one member back on its original branch and index; None if it worked.
 
@@ -139,8 +152,9 @@ def write(members: list[Member], branch: str, message: str) -> None:
     except KeyboardInterrupt:
         # A checkout cut short may have made the branch before `written` saw it; preflight
         # refused any member that already had it, so a branch here is ours to undo.
-        touched = [m for m in members if m in written or (m.changed and _has_branch(m, branch))]
-        errors = {m.name: undo(m, branch) for m in reversed(touched)}
+        with _shielded():
+            touched = [m for m in members if m in written or (m.changed and _has_branch(m, branch))]
+            errors = {m.name: undo(m, branch) for m in reversed(touched)}
         raise ChangeInterrupted(
             [name for name, err in errors.items() if not err],
             [f"{name}: {err}" for name, err in errors.items() if err],
@@ -167,7 +181,8 @@ def _write(members: list[Member], branch: str, message: str, written: list[Membe
                 continue
             verb = args[2] if args[0] == "-c" else args[0]
             observed = proc.stderr.strip() or f"git {verb} exited {proc.returncode}"
-            stuck = [f"{m.name}: {err}" for m in reversed(written) if (err := undo(m, branch))]
+            with _shielded():
+                stuck = [f"{m.name}: {err}" for m in reversed(written) if (err := undo(m, branch))]
             if stuck:
                 raise ChangeFailed(f"{member.name}: git {verb} failed: {observed}; NOT undone: {'; '.join(stuck)}")
             raise ChangeUndone(f"{verb}_failed", member.name, observed, [m.name for m in reversed(written)])

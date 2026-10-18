@@ -187,3 +187,73 @@ def test_c5_signal_mid_write_undoes_every_member_touched(members: list[Path], tm
     assert "undone: m2, m1" in err
     assert "NOT undone" not in err
     assert [_state(p) for p in members] == before
+
+
+@pytest.mark.parametrize("second_signal", ["INT", "TERM"])
+def test_c8_second_signal_during_the_undo_does_not_cut_it_short(
+    members: list[Path], tmp_path: Path, second_signal: str
+) -> None:
+    # m2's post-commit hook sends the first SIGINT; a git shim sends the second (SIGINT or SIGTERM) as the
+    # undo starts on m2 (gitops puts -c options before the verb, so the shim matches the verb anywhere).
+    hook = members[1] / ".git" / "hooks" / "post-commit"
+    hook.write_text('#!/bin/sh\nkill -INT "$(ps -o ppid= -p $PPID | tr -d " ")"\n')
+    hook.chmod(0o755)
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+    second = tmp_path / "second.sent"
+    shim = shim_dir / "git"
+    shim.write_text(
+        f'#!/bin/sh\ncase "$(basename "$PWD") $*" in "m2 "*" symbolic-ref "*)\n'
+        f'  kill -{second_signal} $PPID; echo sent > "{second}"; sleep 0.5;;\nesac\nexec "{shutil.which("git")}" "$@"\n'
+    )
+    shim.chmod(0o755)
+    before = [_state(p) for p in members]
+    args = [os.sys.executable, "-m", "gr2.python_cli", "change", "feat", "-m", "one change"]
+    for path in members:
+        args += ["--repo-path", str(path)]
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
+        "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+    }
+    proc = subprocess.run(args, env=env, capture_output=True, text=True, timeout=60)
+    assert second.exists()
+    assert proc.returncode == 130, (proc.stdout, proc.stderr)
+    assert "interrupted: SIGINT" in proc.stderr
+    assert "undone: m2, m1" in proc.stderr
+    assert "NOT undone" not in proc.stderr
+    assert [_state(p) for p in members] == before
+
+
+def test_c9_second_sigint_during_the_failure_undo_does_not_cut_it_short(members: list[Path], tmp_path: Path) -> None:
+    # m3's pre-commit hook refuses, so the undo runs m3, m2, m1; a git shim sends SIGINT as it reaches m2.
+    hook = members[2] / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\necho 'm3 refuses this commit' >&2\nexit 1\n")
+    hook.chmod(0o755)
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+    sent = tmp_path / "sigint.sent"
+    shim = shim_dir / "git"
+    shim.write_text(
+        f'#!/bin/sh\ncase "$(basename "$PWD") $*" in "m2 "*" symbolic-ref "*)\n'
+        f'  kill -INT $PPID; echo sent > "{sent}"; sleep 0.5;;\nesac\nexec "{shutil.which("git")}" "$@"\n'
+    )
+    shim.chmod(0o755)
+    before = [_state(p) for p in members]
+    args = [os.sys.executable, "-m", "gr2.python_cli", "change", "feat", "-m", "one change"]
+    for path in members:
+        args += ["--repo-path", str(path)]
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
+        "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+    }
+    proc = subprocess.run(args, env=env, capture_output=True, text=True, timeout=60)
+    assert sent.exists()
+    after = [_state(p) for p in members]
+    assert after == before, [(p.name, a) for p, a, b in zip(members, after, before) if a != b]
+    assert not [p.name for p in members if (p / ".git" / "refs" / "heads" / "feat.lock").exists()]
+    assert proc.returncode == 2, (proc.stdout, proc.stderr)
+    assert "refused: commit_failed: m3:" in proc.stderr
+    assert "undone: m3, m2, m1" in proc.stderr
+    assert "NOT undone" not in proc.stderr

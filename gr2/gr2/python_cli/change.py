@@ -33,6 +33,15 @@ class ChangeFailed(Exception):
     pass
 
 
+class ChangeInterrupted(Exception):
+    """A signal stopped the writes; every member touched was undone, or `stuck` says where it stopped."""
+
+    def __init__(self, undone: list[str], stuck: list[str]) -> None:
+        super().__init__("interrupted")
+        self.undone = undone
+        self.stuck = stuck
+
+
 class ChangeUndone(ChangeRefused):
     """A write failed and every member written was put back as it was."""
 
@@ -125,6 +134,24 @@ def _summary_head(stdout: str, branch: str) -> str:
 
 def write(members: list[Member], branch: str, message: str) -> None:
     written: list[Member] = []
+    try:
+        _write(members, branch, message, written)
+    except KeyboardInterrupt:
+        # A checkout cut short may have made the branch before `written` saw it; preflight
+        # refused any member that already had it, so a branch here is ours to undo.
+        touched = [m for m in members if m in written or (m.changed and _has_branch(m, branch))]
+        errors = {m.name: undo(m, branch) for m in reversed(touched)}
+        raise ChangeInterrupted(
+            [name for name, err in errors.items() if not err],
+            [f"{name}: {err}" for name, err in errors.items() if err],
+        ) from None
+
+
+def _has_branch(member: Member, branch: str) -> bool:
+    return git(member.path, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0
+
+
+def _write(members: list[Member], branch: str, message: str, written: list[Member]) -> None:
     for member in members:
         if not member.changed:
             continue

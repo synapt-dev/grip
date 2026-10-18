@@ -149,3 +149,25 @@ def test_c2_refused_commit_undoes_every_member_written(members: list[Path], git_
     assert [len(undo[p.name]) for p in members] == [3, 3, 3, 0, 0], undo
     order = [m for m, a in calls if "symbolic-ref" in a.split(" ")]
     assert order == ["m3", "m2", "m1"], order
+
+
+@pytest.mark.parametrize("sig, code", [("INT", 130), ("TERM", 143)])
+def test_c5_signal_mid_write_undoes_every_member_touched(members: list[Path], tmp_path: Path, sig, code) -> None:
+    # m2's post-commit hook signals gr2 itself: the hook's parent is git, and git's parent is gr2.
+    told = tmp_path / "signalled.pid"
+    hook = members[1] / ".git" / "hooks" / "post-commit"
+    hook.write_text(f'#!/bin/sh\ngr2=$(ps -o ppid= -p $PPID | tr -d " ")\necho "$gr2" > "{told}"\nkill -{sig} "$gr2"\n')
+    hook.chmod(0o755)
+    before = [_state(p) for p in members]
+    args = [os.sys.executable, "-m", "gr2.python_cli", "change", "feat", "-m", "one change"]
+    for path in members:
+        args += ["--repo-path", str(path)]
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
+    proc = subprocess.Popen(args, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    out, err = proc.communicate(timeout=60)
+    assert told.read_text().strip() == str(proc.pid)
+    assert proc.returncode == code, (out, err)
+    assert f"interrupted: SIG{sig}" in err
+    assert "undone: m2, m1" in err
+    assert "NOT undone" not in err
+    assert [_state(p) for p in members] == before

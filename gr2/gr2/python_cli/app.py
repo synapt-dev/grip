@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import tomllib
@@ -2191,8 +2192,21 @@ def change_cmd(
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     paths = [p.resolve() for p in repo_path]
+    stopped_by = [signal.SIGINT]
+
+    def _on_term(signum, frame):
+        stopped_by[0] = signal.SIGTERM
+        raise KeyboardInterrupt
+
+    old_term = signal.signal(signal.SIGTERM, _on_term)
     try:
         members = change_ops.change(paths, branch, message)
+    except change_ops.ChangeInterrupted as exc:
+        typer.echo(f"interrupted: {signal.Signals(stopped_by[0]).name}", err=True)
+        typer.echo(f"undone: {', '.join(exc.undone) or 'none'}", err=True)
+        if exc.stuck:
+            typer.echo(f"NOT undone: {'; '.join(exc.stuck)}", err=True)
+        raise typer.Exit(code=128 + stopped_by[0]) from exc
     except change_ops.ChangeUndone as exc:
         typer.echo(f"refused: {exc}", err=True)
         typer.echo(f"undone: {', '.join(exc.undone)}", err=True)
@@ -2204,6 +2218,8 @@ def change_cmd(
     except change_ops.ChangeFailed as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
+    finally:
+        signal.signal(signal.SIGTERM, old_term)
     for member in members:
         if member.changed:
             typer.echo(f"{member.name}: {branch} {member.head[:7]} ({len(member.entries)} paths)")

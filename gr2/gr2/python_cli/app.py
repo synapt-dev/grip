@@ -1522,7 +1522,7 @@ def sync_wait(
     all_members: bool = typer.Option(False, "--all-members", help="Wait on every member the workspace declares"),
     until: str = typer.Option("any", "--until", help="any: return when one member moves; all: when every member has"),
     timeout: float = typer.Option(1800.0, "--timeout", help="Seconds before giving up (exit 6)"),
-    interval: float = typer.Option(30.0, "--interval", help="Seconds between polls"),
+    interval: float = typer.Option(30.0, "--interval", help="Seconds between polls (>= 1)"),
 ) -> None:
     """Wait until any or all members move on their remote: one ls-remote per member per poll. Exit 0 met, 6 timeout, 3 refused, 7 unreadable."""
     from . import sync_wait as sync_wait_ops
@@ -1534,7 +1534,8 @@ def sync_wait(
         typer.echo(f"refused: --until must be any or all, not {until!r}", err=True)
         raise typer.Exit(code=sync_wait_ops.EXIT_REFUSED)
     workspace_root = _resolve_workspace_root(workspace_root)
-    code = sync_wait_ops.wait(workspace_root, until=until, timeout=timeout, interval=interval, echo=typer.echo)
+    code = sync_wait_ops.wait(workspace_root, until=until, timeout=timeout, interval=interval, echo=typer.echo,
+                                 err=lambda line: typer.echo(line, err=True))
     if code:
         raise typer.Exit(code=code)
 

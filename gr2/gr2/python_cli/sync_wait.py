@@ -9,9 +9,17 @@ Exit codes (``exit_codes.EXIT_CODES["sync"]``): 0 the condition holds; 6 the tim
 remote could not be read on two polls running, named with git's first stderr line. A failed read is never counted as
 "not moved": one failure is retried at the next poll, and a second ends the wait, because under --until all a remote
 that has gone away would otherwise run out the whole timeout and report a silence as a fact.
+
+Every read is `ls-remote -- <url> <ref>`, bounded by min(30 s, the time left): the `--` keeps a member url such as
+``--upload-pack=<cmd>`` a repository name rather than an option git runs, and the bound
+keeps a remote that accepts and never answers inside --timeout instead of gitops' 600 s default; a git timeout is an
+ordinary failed read. --timeout must be finite and >= 0 and --interval finite and >= 1, refused (exit 3) before any
+read: nan never ends, and an interval of 0 would poll without pause. Refusals and the
+unreadable line go to ``err`` (stderr from the CLI) with git's reason.
 """
 from __future__ import annotations
 
+import math
 import time
 from pathlib import Path
 from typing import Callable
@@ -23,15 +31,17 @@ EXIT_MET = 0
 EXIT_REFUSED = 3
 EXIT_TIMEOUT = 6
 EXIT_UNREADABLE = 7
+READ_BOUND = 30.0  # seconds; one ls-remote never waits longer than this or the time left, whichever is less
 
 
 def _remote_ref(m: Member) -> str:
     return f"refs/heads/{m.ref}" if m.ref else "HEAD"
 
 
-def _read_remote(workspace_root: Path, m: Member) -> tuple[str | None, str]:
+def _read_remote(workspace_root: Path, m: Member, left: float) -> tuple[str | None, str]:
     """(oid, "") on a read, (None, why) on a failure: git's first stderr line, or the ref being absent."""
-    proc = gitops.git(workspace_root, "ls-remote", m.url or "", _remote_ref(m))
+    proc = gitops.git(workspace_root, "ls-remote", "--", m.url or "", _remote_ref(m),
+                      timeout=max(0.1, min(READ_BOUND, left)))
     if proc.returncode != 0:
         lines = (proc.stderr or "").strip().splitlines()
         return None, lines[0] if lines else f"git ls-remote exited {proc.returncode}"
@@ -57,18 +67,27 @@ def wait(
     timeout: float,
     interval: float,
     echo: Callable[[str], None] = print,
+    err: Callable[[str], None] | None = None,
     sleep: Callable[[float], None] | None = None,
     clock: Callable[[], float] | None = None,
 ) -> int:
     sleep = sleep or time.sleep
     clock = clock or time.monotonic
+    err = err or echo
+    if not (math.isfinite(timeout) and timeout >= 0):
+        err(f"refused: --timeout must be a finite number of seconds >= 0, not {timeout:g}")
+        return EXIT_REFUSED
+    if not (math.isfinite(interval) and interval >= 1):
+        err(f"refused: --interval must be a finite number of seconds >= 1, not {interval:g}")
+        return EXIT_REFUSED
+    deadline = clock() + timeout
     members = workspace_members(workspace_root)
     if not members:
-        echo("refused: the workspace declares no members")
+        err("refused: the workspace declares no members")
         return EXIT_REFUSED
     unusable = [m.name for m in members if not m.url]
     if unusable:
-        echo(f"refused: no url for: {', '.join(unusable)}")
+        err(f"refused: no url for: {', '.join(unusable)}")
         return EXIT_REFUSED
     baseline: dict[str, str] = {}
     first: dict[str, str] = {}
@@ -77,23 +96,25 @@ def wait(
         if seen:
             baseline[m.name] = seen
             continue
-        oid, _why = _read_remote(workspace_root, m)
+        oid, why = _read_remote(workspace_root, m, deadline - clock())
         if oid is None:
-            echo(f"refused: cannot read {_remote_ref(m)} of {m.name} at {m.url}")
+            if clock() >= deadline:
+                err(f"timeout after {timeout:g}s reading {m.name} at the start: {why}")
+                return EXIT_TIMEOUT
+            err(f"refused: cannot read {_remote_ref(m)} of {m.name} at {m.url}: {why}")
             return EXIT_REFUSED
         baseline[m.name] = first[m.name] = oid
     echo(f"waiting for {until} of {len(members)} members to move: {', '.join(m.name for m in members)}")
     moved: dict[str, str] = {}
     failed: set[str] = set()  # members whose last read failed; a second failure in a row ends the wait
-    deadline = clock() + timeout
     while True:
         for m in members:
             if m.name in moved:
                 continue
-            oid, why = (first.pop(m.name), "") if m.name in first else _read_remote(workspace_root, m)
+            oid, why = (first.pop(m.name), "") if m.name in first else _read_remote(workspace_root, m, deadline - clock())
             if oid is None:
                 if m.name in failed:
-                    echo(f"unreadable: {m.name} {why}")
+                    err(f"unreadable: {m.name} {why}")
                     return EXIT_UNREADABLE
                 failed.add(m.name)
                 continue

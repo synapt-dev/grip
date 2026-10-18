@@ -1836,6 +1836,10 @@ def _prior_records(root: Path, previous: str | None, pin: str) -> set[str]:
         return set()
     try:
         prior = mft.read(root, tree)
+    except mft.MissingLocally as exc:
+        # the entry IS a field-commit whose record a partial clone does not hold; carrying on would drop its records
+        raise NativeStoreRefusal(f"the record this clone last committed for pin {pin[:12]} cannot be read: {exc}",
+                                 4) from exc
     except mft.FieldTreeError:
         return set()   # not a field record (a compat gitlink's own commit tree)
     return set(prior["records"]) if prior["pin"] == pin else set()
@@ -1857,8 +1861,10 @@ def _field_record(root: Path, member: dict[str, str], revision: str = "HEAD") ->
     try:
         return mft.read(root, f"{link[2]}^{{tree}}")
     except (mft.FieldTreeError, RuntimeError, subprocess.SubprocessError, OSError) as exc:
-        # The unshallow advice is for a record this clone does not hold (a git failure), not for one it holds and refuses.
-        hint = "; a shallow clone does not carry it, so run `git fetch --unshallow`" if str(exc).startswith("git ") else ""
+        # The unshallow advice is for a record this clone does not hold (a git failure), not for one it holds and refuses,
+        # nor for one a partial clone left out: that refusal already names the fetch that brings it in.
+        shallow = str(exc).startswith("git ") and not isinstance(exc, mft.MissingLocally)
+        hint = "; a shallow clone does not carry it, so run `git fetch --unshallow`" if shallow else ""
         raise NativeStoreRefusal(f"{member['name']} field record cannot be read: {exc}{hint}", 4) from exc
 
 
@@ -1947,6 +1953,9 @@ def _member_record(root: Path, path: str, committed: str | None, full: bool) -> 
         from . import member_field_tree as mft
         try:
             entry = mft.read(root, f"{entry}^{{tree}}")["pin"]
+        except mft.MissingLocally as exc:
+            # a partial clone left the record out: say so, rather than report that the commit gives no pin
+            raise NativeStoreRefusal(f"the field record for {path} cannot be read: {exc}", 4) from exc
         except (mft.FieldTreeError, RuntimeError, subprocess.SubprocessError, OSError, KeyError):
             entry = None
     if isinstance(entry, str) and _FULL_SHA.match(entry):

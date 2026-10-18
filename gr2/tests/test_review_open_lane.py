@@ -1377,3 +1377,11 @@ def test_canonical_identity_keeps_a_hash_or_query_mark_in_a_file_url_path(mark, 
 def test_canonical_identity_accepts_an_upper_case_localhost(tmp_path):
     # a host name is case-insensitive; LOCALHOST is this machine like localhost
     assert canonical_source_identity(f"file://LOCALHOST{tmp_path}", allow_local=True) == f"local:{tmp_path.resolve()}"
+
+
+@pytest.mark.parametrize("prefix", ["file:///", "file://localhost/"])
+def test_canonical_identity_refuses_a_file_url_with_an_extra_slash(tmp_path, prefix):
+    # git accepts file:////p and file://localhost//p; url2pathname('//p')
+    # raises URLError, which must surface as a refusal, not a traceback
+    with pytest.raises(ReviewError):
+        canonical_source_identity(f"{prefix}{tmp_path}", allow_local=True)

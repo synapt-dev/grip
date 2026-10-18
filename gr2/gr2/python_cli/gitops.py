@@ -12,12 +12,12 @@ from . import next_steps
 
 # fsck's name rules ported from git: fsck.c fsck_tree, path.c is_ntfs_dotgit and is_ntfs_dot_generic,
 # utf8.c is_hfs_dotgit. A Windows or macOS checkout reads each such name as the repository's own entry.
-_HFS_IGNORED = frozenset([*range(0x200C, 0x2010), *range(0x202A, 0x202F), *range(0x206A, 0x2070), 0xFEFF])
+HFS_IGNORED = frozenset([*range(0x200C, 0x2010), *range(0x202A, 0x202F), *range(0x206A, 0x2070), 0xFEFF])
 
 
 def _is_hfs_dot(name: str, needle: str) -> bool:
     """HFS+ drops these code points and folds ASCII case, so ".g\u200cit" opens .git."""
-    folded = "".join(c for c in name if ord(c) not in _HFS_IGNORED)
+    folded = "".join(c for c in name if ord(c) not in HFS_IGNORED)
     return folded.isascii() and folded.lower() == "." + needle
 
 

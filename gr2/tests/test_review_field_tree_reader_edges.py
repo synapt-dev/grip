@@ -103,9 +103,14 @@ def test_a_member_key_a_filesystem_reads_as_dotgit_or_venv_is_refused(record_wor
     assert not (tmp_path / "lane").exists()
 
 
-@pytest.mark.parametrize("key", [".gitx", ".git-hooks", "git~2", "agit~1", ".venvs", "venv~2", "VENV~10", "a.git", "\u00e9.git"])
+@pytest.mark.parametrize("key", [".gitx", ".git-hooks", ".venvs", "a.git", "\u00e9.git"])
 def test_a_name_only_near_dotgit_stays_a_plain_member_key(key):
     assert grip.plain_member_key(key)
+
+
+@pytest.mark.parametrize("key", ["git~2", "agit~1", "venv~2", "VENV~10", ".gitmodules", ".GitAttributes"])
+def test_a_short_name_or_a_name_fsck_refuses_is_not_a_member_key(key):
+    assert not grip.plain_member_key(key)
 
 
 @pytest.mark.parametrize("field", ["remote", "path", "commit", "base"])

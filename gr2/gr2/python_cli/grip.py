@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import re
 import ipaddress
+import unicodedata
 import socket
 from urllib.parse import parse_qsl, urlsplit
 
@@ -777,9 +778,9 @@ def _bind_review_rows_body(
         # The same rule the readers apply, so the writer never makes a record its readers refuse.
         if not plain_member_key(key):
             raise GripCorruptError(f"invalid review key: {key!r}")
-        if key in seen:
+        if member_key_fold(key) in seen:
             raise GripCorruptError(f"duplicate review key: {key!r}")
-        seen.add(key)
+        seen.add(member_key_fold(key))
         remote, path, head, base, ref = (
             row.get("remote", ""), row.get("path", ""), row.get("head", ""),
             row.get("base", ""), row.get("ref", ""),
@@ -1163,10 +1164,22 @@ def plain_member_key(key: str) -> bool:
     own control files (`.grip-review*`, every run log included), and no separator, NUL or newline.
     A name some filesystem resolves to ".git", ".venv" or a control file (".GIT", ".git.", "git~1", ".venv ",
     "VENV~1", ".GRIP-REVIEW-run.log") is refused as that name. Other dot names are real repository keys (an
-    org's `.github`). Readers apply this rule to every bind before any path is built."""
+    org's `.github`).
+    Nor, since two such names are one directory there, any key with a trailing dot or space, a ":", a "~"
+    before a digit (an NTFS short name) or a code point HFS+ ignores, nor a name git fsck refuses as a tree
+    entry (gitops.fsck_bad_name). Readers apply this rule to every bind before any path is built."""
     alias = _filesystem_alias(key)
     return (bool(key) and key not in (".", "..") and alias not in ("", ".git", "git~1", LANE_VENV, "venv~1")
-            and not alias.startswith(LANE_CONTROL_PREFIX) and not any(c in key for c in "/\\\0\n"))
+            and not alias.startswith(LANE_CONTROL_PREFIX) and not any(c in key for c in "/\\\0\n:")
+            and gitops.fsck_bad_name(key) is None and not key.endswith((".", " "))
+            and not re.search(r"~[0-9]", key) and not any(ord(c) in gitops.HFS_IGNORED for c in key))
+
+
+def member_key_fold(key: str) -> str:
+    """The one name a case- and normalization-insensitive filesystem (APFS, HFS+, NTFS) reads a member key
+    as: case folded and Unicode decomposed, so "Demo-core" and an NFD spelling of an NFC key fold to one name.
+    Two keys of one lane with the same fold are one directory."""
+    return unicodedata.normalize("NFD", unicodedata.normalize("NFD", key).casefold())
 
 
 def _is_field_tree_bind(workspace: Path, commit: str) -> bool:

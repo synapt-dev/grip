@@ -25,12 +25,14 @@ SHA-256, and refuses to load any other bytes.
 from __future__ import annotations
 
 import hashlib
+import os
 import importlib.resources
 import re
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
-from . import gitops
+from . import gitops, next_steps
 
 PACKAGE = "dev.synapt.grip.review.v1alpha1"
 SCHEMA_COMMIT = "a2707c456d137ce5cbabb18f7aa836897818d147"
@@ -41,6 +43,8 @@ _PROTO_SHA256 = "4cc4162d6d15e098c3f24402bd7ae763661cde02ba83e48105d57aab41fd3c4
 MAX_FIELD_NUMBER = 999
 # ASCII digits only and matched whole: \d admits other scripts' digits and $ admits a
 # trailing newline, and either would give one field number two spellings.
+# a full object id as ls-tree names it: 40 hex (sha1) or 64 (sha256)
+_FULL_OID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 _ENTRY = re.compile(r"([0-9]{3})\.([0125])(r?)(?:_([A-Za-z0-9_]+))?")
 _BLOB_MODE, _TREE_MODE = "100644", "040000"
 
@@ -278,8 +282,8 @@ def decode(buf: bytes, message: str = "ReviewBind", schema: Schema | None = None
 
 # --- field trees -----------------------------------------------------------------
 
-def _git(repo: Path, *args: str, data: bytes | None = None) -> bytes:
-    proc = gitops.run(repo, *args, input=data, binary=True)
+def _git(repo: Path, *args: str, data: bytes | None = None, env: dict | None = None) -> bytes:
+    proc = gitops.run(repo, *args, input=data, binary=True, env=env)
     if proc.returncode != 0:
         raise ReviewRecordError(f"git {args[0]} failed: {proc.stderr.decode(errors='replace').strip()[:200]}")
     return proc.stdout
@@ -299,9 +303,9 @@ def _mktree(repo: Path, entries: list[Entry]) -> str:
     return _git(repo, "mktree", "-z", data=data).decode().strip()
 
 
-def _ls(repo: Path, tree: str) -> list[Entry]:
+def _ls(repo: Path, tree: str, env: dict | None = None) -> list[Entry]:
     out = []
-    for line in _git(repo, "ls-tree", "-z", tree).split(b"\0"):
+    for line in _git(repo, "ls-tree", "-z", tree, env=env).split(b"\0"):
         if not line:
             continue
         meta, name = line.split(b"\t", 1)
@@ -311,6 +315,12 @@ def _ls(repo: Path, tree: str) -> list[Entry]:
 
 
 # --- readers: how a stored record's objects are fetched ------------------------------
+
+def _local() -> dict:
+    """The environment for a review read: in a partial clone, an absent object answers missing at once rather
+    than reaching the network (git before 2.44 ignores the variable)."""
+    return {**os.environ, "GIT_NO_LAZY_FETCH": "1"}
+
 # A reader has ls(tree) -> entries, exactly as ls-tree reports them, and blob(oid) ->
 # bytes. The readers differ only in how many git processes they start, never in what
 # they return.
@@ -322,10 +332,10 @@ class GitReader:
         self.repo = Path(repo)
 
     def ls(self, tree: str) -> list[Entry]:
-        return _ls(self.repo, tree)
+        return _ls(self.repo, tree, env=_local())
 
     def blob(self, oid: str) -> bytes:
-        return _git(self.repo, "cat-file", "blob", oid)
+        return _git(self.repo, "cat-file", "blob", oid, env=_local())
 
     def close(self) -> None:
         pass
@@ -335,6 +345,79 @@ class GitReader:
 
     def __exit__(self, *exc) -> None:
         self.close()
+
+
+class _Deadlined:
+    """The batch process's stdout with every silence bounded by ``deadline`` seconds. A read runs on a
+    thread, not under select, so a stream with no file descriptor reads the same way. A read that
+    outlasts the deadline is an answer git will never finish (a loose object whose header claims
+    more bytes than its body holds keeps ``cat-file --batch`` alive with the read short): the
+    process is killed, the reader closed, and the blob refused as truncated."""
+
+    def __init__(self, stream, proc: subprocess.Popen, reader: "BatchReader", deadline: float):
+        self._stream, self._proc, self._reader, self._deadline = stream, proc, reader, deadline
+
+    def _within(self, op, *args) -> bytes:
+        got: list = []
+
+        def run() -> None:
+            try:
+                got.append(op(*args))
+            except BaseException as exc:  # handed to the caller below
+                got.append(exc)
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        t.join(self._deadline)
+        if t.is_alive():
+            self._proc.kill()
+            t.join(1)  # the kill ends the pipe; let the read return before the stream closes
+            # a child of the process that still holds stdout keeps the read (and the stream's lock) past
+            # the kill: closing stdout would wait on it, so the reader lets go of the stream unclosed, and
+            # the daemon thread ends when the pipe does
+            self._reader.close(stdout=not t.is_alive())
+            raise ReviewRecordError(f"git cat-file blob failed: answer truncated, "
+                                    f"the batch process sent nothing for {self._deadline:g}s")
+        if isinstance(got[0], BaseException):
+            raise got[0]
+        return got[0]
+
+    def readline(self) -> bytes:
+        return self._within(self._stream.readline)
+
+    def read(self, n: int = -1) -> bytes:
+        # the deadline bounds silence, not size: a big body reads in chunks, each under the deadline
+        if n < 0:
+            return self._within(self._stream.read, n)
+        parts: list[bytes] = []
+        while n > 0:
+            part = self._within(self._stream.read1, min(n, 1 << 20))
+            if not part:
+                break
+            parts.append(part)
+            n -= len(part)
+        return b"".join(parts)
+
+    def close(self) -> None:
+        self._stream.close()
+
+
+class _Bounded:
+    """The batch process as the reader sees it: ``stdout`` reads under the deadline, everything else
+    is the process's own. The process is left untouched, so a stand-in for it keeps its own stdout."""
+
+    def __init__(self, proc: subprocess.Popen, reader: "BatchReader", deadline: float):
+        self._proc = proc
+        self.stdout = _Deadlined(proc.stdout, proc, reader, deadline)
+
+    def __getattr__(self, name: str):
+        return getattr(self._proc, name)
+
+
+def _blob_id(body: bytes, like: str) -> str:
+    """The blob id of ``body`` in the hash of ``like`` (40 hex: sha1, 64: sha256)."""
+    algo = hashlib.sha1 if len(like) == 40 else hashlib.sha256
+    return algo(b"blob %d\0" % len(body) + body).hexdigest()
 
 
 class BatchReader(GitReader):
@@ -348,6 +431,19 @@ class BatchReader(GitReader):
         self._trees: dict[str, list[Entry]] = {}
         self._cat: subprocess.Popen | None = None
 
+    # local git answers a blob in milliseconds and streams it without pause: 30 s of silence is room
+    # for a cold disk or a loaded runner, and a stall still ends the verb
+    DEADLINE = 30.0
+
+    @property
+    def _cat(self) -> _Bounded | None:
+        return self.__cat
+
+    @_cat.setter
+    def _cat(self, proc: subprocess.Popen | None) -> None:
+        # every process the reader starts reads under the deadline, whichever line reads it
+        self.__cat = None if proc is None else _Bounded(proc, self, self.DEADLINE)
+
     def ls(self, tree: str) -> list[Entry]:
         if tree not in self._trees:
             self._index(tree)
@@ -356,7 +452,7 @@ class BatchReader(GitReader):
     def _index(self, root: str) -> None:
         tree_at = {"": root}
         rows: list[tuple[str, Entry]] = []
-        for line in _git(self.repo, "ls-tree", "-r", "-t", "-z", root).split(b"\0"):
+        for line in _git(self.repo, "ls-tree", "-r", "-t", "-z", root, env=_local()).split(b"\0"):
             if not line:
                 continue
             meta, raw = line.split(b"\t", 1)
@@ -373,30 +469,77 @@ class BatchReader(GitReader):
             self._trees[oid] = listed[path]
 
     def blob(self, oid: str) -> bytes:
+        # every caller asks by an id ls-tree named, so the header must echo it byte for byte
+        if not _FULL_OID.fullmatch(oid):
+            raise ReviewRecordError(f"git cat-file blob failed: {oid!r} is not a full object id")
         if self._cat is None:
-            self._cat = gitops.start(self.repo, "cat-file", "--batch")
+            # a review read is local: an absent blob answers "missing" rather than fetching under the deadline
+            self._cat = gitops.start(self.repo, "cat-file", "--batch", env=_local())
         self._cat.stdin.write(oid.encode() + b"\n")
         self._cat.stdin.flush()
         header = self._cat.stdout.readline().split()
+        if len(header) == 3 and header[0] != oid.encode():
+            self._abandon()  # an answer for another object, refused before any of its body is read
+            raise ReviewRecordError(f"git cat-file blob failed: {oid} answered for another object")
+        if len(header) == 2 and header[0] != oid.encode():
+            self._abandon()  # "missing" for another object: the stream is out of step, not the object absent
+            raise ReviewRecordError(f"git cat-file blob failed: {oid} answered for another object")
         if len(header) == 3 and header[1] != b"blob":
-            # a present object of another kind still sends its body: read it off the stream, so a refusal
-            # leaves the reader serving the next request (a "missing" header has two fields and no body)
-            self._cat.stdout.read(int(header[2]) + 1)
-        if len(header) != 3 or header[1] != b"blob":
+            # only a blob's body can be checked against the id asked, so another kind's is not read off the
+            # stream: draining it would trust a size nothing verifies, and the next answer would start there
+            self._abandon()
+            raise ReviewRecordError(f"git cat-file blob failed: {oid} is "
+                                    f"{header[1].decode(errors='replace')}, not a blob; its body is left unread, "
+                                    f"so the stream is out of step")
+        if len(header) == 3 and not header[2].isdigit():
+            self._abandon()  # a size that is not ASCII digits: the header is not git's
+            raise ReviewRecordError(f"git cat-file blob failed: {oid} answered with an unreadable size")
+        remote = self._promisor() if header[1:] == [b"missing"] else None
+        if remote is not None:
+            raise ReviewRecordError(f"git cat-file blob failed: {oid} is missing locally (partial clone?); "
+                                    f"bring it in with: git -C {next_steps._shown(str(self.repo))} fetch -- "
+                                    f"{next_steps._shown(remote)} {next_steps._shown(oid)}")
+        if len(header) != 3:
+            if header[1:] != [b"missing"]:
+                self._abandon()  # an empty or unreadable header: the stream is gone or out of step
             raise ReviewRecordError(f"git cat-file blob failed: {oid} is "
                                     f"{header[1].decode(errors='replace') if len(header) > 1 else 'unreadable'}, not a blob")
         size = int(header[2])
         data = self._cat.stdout.read(size + 1)
-        if len(data) != size + 1:
-            self.close()  # the stream stopped mid-object; nothing after it can be trusted
-            raise ReviewRecordError(f"git cat-file blob failed: {oid} truncated")
-        return data[:size]
+        body = data[:size]
+        # no length or newline check proves where an answer ends: only the body hashing to the id asked does
+        if data[size:] != b"\n" or _blob_id(body, oid) != oid:
+            self._abandon()  # nothing after it can be trusted
+            raise ReviewRecordError(f"git cat-file blob failed: {oid} truncated, or answered with another object's bytes")
+        return body
 
-    def close(self) -> None:
+    def _abandon(self) -> None:
+        # kill before close: git may be blocked writing the rest of an overlong body into a full pipe,
+        # and close() waits for it to exit
+        self._cat.kill()
+        self.close()
+
+    def _promisor(self) -> str | None:
+        """The remote a partial clone fetches absent objects from: extensions.partialclone (git's own name for
+        it), else the first remote.<name>.promisor that is true (what a --filter clone writes); None when the repo
+        has neither, since then git has nowhere to fetch an absent object from."""
+        named = gitops.run(self.repo, "config", "--get", "extensions.partialclone", env=_local()).stdout.strip()
+        if named:
+            return named
+        found = gitops.run(self.repo, "config", "-z", "--type=bool", "--get-regexp", r"^remote\..*\.promisor$",
+                           env=_local())
+        for entry in found.stdout.split("\0"):
+            key, _, value = entry.partition("\n")
+            if value == "true":
+                return key.removeprefix("remote.").removesuffix(".promisor")
+        return None
+
+    def close(self, stdout: bool = True) -> None:
         if self._cat is not None:
             self._cat.stdin.close()
             self._cat.wait()
-            self._cat.stdout.close()
+            if stdout:
+                self._cat.stdout.close()
             self._cat = None
 
 
@@ -543,7 +686,7 @@ def verify_tree(repo: Path, tree: str, message: str = "ReviewBind", schema: Sche
     schema knows; occurrences run 0000001..n; and the record decodes by number. Names
     are never regenerated from the schema and compared. This checks a tree, not WHICH
     tree: binding a record to its identity is the ref writer's job."""
-    proc = gitops.run(repo, "fsck", "--strict", "--no-dangling", tree, binary=True)
+    proc = gitops.run(repo, "fsck", "--strict", "--no-dangling", tree, binary=True, env=_local())
     if proc.returncode != 0:
         raise ReviewRecordError(f"fsck refused record {tree}: {proc.stderr.decode(errors='replace').strip()[:200]}")
     reader = reader or GitReader(repo)

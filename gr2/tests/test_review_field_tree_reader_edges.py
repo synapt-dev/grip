@@ -83,9 +83,10 @@ _HFS_IGNORED = "\u200c\u200d\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u206a\u20
 _FILESYSTEM_ALIASES = {
     "case": [".GIT", ".Git", ".VENV"],
     "ntfs_trailing": [".git.", ".git ", ".git. .", ".venv "],
-    "ntfs_short_name": ["GIT~1", "git~1", "Git~1. "],
+    "ntfs_short_name": ["GIT~1", "git~1", "Git~1. ", "VENV~1", "venv~1"],
     "ntfs_stream": [".git::$INDEX_ALLOCATION", "git~1:stream", ".venv:x"],
     "hfs_ignorable": [".g" + c + "it" for c in _HFS_IGNORED] + [_HFS_IGNORED[0] + ".venv"],
+    "control_case": [".GRIP-REVIEW-run.log", ".Grip-Review-open.json"],
 }
 
 
@@ -102,7 +103,7 @@ def test_a_member_key_a_filesystem_reads_as_dotgit_or_venv_is_refused(record_wor
     assert not (tmp_path / "lane").exists()
 
 
-@pytest.mark.parametrize("key", [".gitx", ".git-hooks", "git~2", "agit~1", ".venvs", "a.git", "\u00e9.git"])
+@pytest.mark.parametrize("key", [".gitx", ".git-hooks", "git~2", "agit~1", ".venvs", "venv~2", "VENV~10", "a.git", "\u00e9.git"])
 def test_a_name_only_near_dotgit_stays_a_plain_member_key(key):
     assert grip.plain_member_key(key)
 

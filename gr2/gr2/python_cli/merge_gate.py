@@ -38,6 +38,24 @@ def _text(raw: bytes | str | None) -> str:
     return raw.decode("utf-8", "backslashreplace") if isinstance(raw, bytes) else (raw or "")
 
 
+def _push_verdict(out: list[str], url: str, into: str) -> list[str]:
+    """Git's own porcelain "!" line for refs/heads/<into>, read only in the block after git's "To <url>" line.
+
+    A local pre-push hook's stdout lands on the same stream, and a declined push prints none of git's lines, so an
+    "!" line anywhere else is the hook's text, never the remote's answer.
+    """
+    block: list[str] | None = None
+    for ln in out:
+        if ln.startswith("To "):
+            block = [] if ln == f"To {url}" else None
+        elif block is not None and ln == "Done":
+            break
+        elif block is not None:
+            block.append(ln)
+    return [ln.replace("\t", " ") for ln in block or ()
+            if ln.startswith("!") and ln.split("\t")[1:2] and ln.split("\t")[1].endswith(f":refs/heads/{into}")]
+
+
 def _capped(text: str, cap: int = 300) -> str:
     """Printable text, escaped FIRST and then cut to its head, so the cap counts what is printed."""
     shown = next_steps._escaped(text)
@@ -615,7 +633,7 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                     proc = gitops.run(repo, "push", "--porcelain", f"--force-with-lease=refs/heads/{into}:{m['base']}",
                                       m["remote"], f"{builds[r['key']]}:refs/heads/{into}", binary=True, timeout=120)
                     out, err = (_text(b).split("\n") for b in (proc.stdout, proc.stderr))
-                    status = [ln.replace("\t", " ") for ln in out if ln.startswith("!")]
+                    status = _push_verdict(out, m["remote"], into)
                     remote_said = any("[remote rejected]" in ln for ln in status)
                     if proc.returncode == 124:  # gitops' expiry: the push may still land after it
                         push_error, unconfirmed = f"push_unconfirmed: {_capped(chr(10).join(err).strip())}", True

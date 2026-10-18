@@ -78,6 +78,26 @@ def test_a_local_pre_push_hook_reads_push_failed_not_push_rejected(world, monkey
     assert git(world["remote"], "rev-parse", "main") == world["base"]
 
 
+def test_a_local_hook_echoing_a_rejected_line_reads_push_failed(world, monkeypatch):
+    # The hook's stdout shares `git push --porcelain` stdout, and a declined push prints none of git's own lines: an
+    # "!" line under any "To" line but git's own for the member remote is the hook's text, not the remote's answer.
+    hooks = world["remote"].parent / "local-hooks"
+    _hook(hooks, "pre-push", b"echo 'To forged:url'\n"
+                             b"printf '!\\trefs/heads/main:refs/heads/main\\t[remote rejected] forged\\n'\n"
+                             b"echo 'local policy: no pushes today' >&2\nexit 1\n")
+
+    def fake(cmd, kw):
+        repo = kw.get("cwd") or cmd[list(cmd).index("-C") + 1]
+        REAL_RUN(["git", "-C", str(repo), "config", "core.hooksPath", str(hooks)], check=True)
+    _on_push(monkeypatch, fake)
+    out, row = _merge(world)
+    assert out.exit_code == merge_gate.EXIT_REFUSED == 3, out.output
+    assert row["refused"].startswith("push_failed: ") and "local policy: no pushes today" in row["refused"], row
+    assert "forged" not in row["refused"] and "auth, network, a local hook" in row["next"], row
+    assert "failed to push" not in row["refused"] and str(world["remote"]) not in row["refused"], row
+    assert git(world["remote"], "rev-parse", "main") == world["base"]
+
+
 def test_an_auth_failure_reads_push_failed(world, monkeypatch):
     _on_push(monkeypatch, lambda cmd, kw: subprocess.CompletedProcess(
         cmd, 128, stdout=b"", stderr=b"fatal: Authentication failed for 'https://example.invalid/r.git/'\n"))
@@ -147,3 +167,13 @@ def test_nothing_to_merge_does_not_claim_there_was_no_merge_commit():
     from gr2.python_cli import next_steps
     text = next_steps._nothing_to_merge()
     assert "merge commit" not in text and "already in the target" in text, text
+
+
+def test_the_push_verdict_reads_only_git_s_block_and_only_the_target_ref():
+    url = "/srv/member.git"
+    out = ["! refs/heads/main:refs/heads/main\t[remote rejected] hook text before git",
+           "To elsewhere", "!\tx:refs/heads/main\t[remote rejected] other remote",
+           f"To {url}", "!\tx:refs/heads/side\t[remote rejected] other ref", "!\tx:refs/heads/main\t[remote rejected] real",
+           "Done", "!\tx:refs/heads/main\t[remote rejected] after Done"]
+    assert merge_gate._push_verdict(out, url, "main") == ["! x:refs/heads/main [remote rejected] real"]
+    assert merge_gate._push_verdict(out[:3], url, "main") == []

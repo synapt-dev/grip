@@ -67,7 +67,7 @@ def test_approvals_one_with_the_target_moved_still_reads_base_moved(world, monke
     assert git(world["remote"], "rev-parse", "main") == moved
 
 
-# --- v2: the loop stops at the first member whose push failed, and every such member says why ---------------------
+# --- the loop stops at the first member whose push failed, and every such member says why ---------------------
 
 from tests.test_review_merge_gate import git as mgit, record_set, slice2  # noqa: E402,F401  (fixtures)
 
@@ -212,7 +212,7 @@ def test_single_member_target_deleted_at_the_push(world, monkeypatch):
     assert "restore it" in row["next"], row
 
 
-# --- v3: a writer moved the target to the reviewed head (or past it) with no merge commit -------------------------
+# --- a writer moved the target to the reviewed head (or past it) with no merge commit -------------------------
 
 def _ff_main(w, past: bool) -> str:
     """Move the bare remote's main to the reviewed head, or one commit past it, as a fast-forward writer would."""

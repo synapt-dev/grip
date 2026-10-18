@@ -35,8 +35,11 @@ class ApprovalRefused(RuntimeError):
 
 #: The chain is read as the commits really are: a local graft or replace object could make two links each other's
 #: ancestor, a cycle no pushed chain can hold, so they are off for every read through _run (and the commit-graph
-#: with them); _git reads through it. The one read outside it is the `cat-file -e` presence check before a fetch:
-#: a replace object there can at most cause an extra fetch, and the head is then read through _git.
+#: with them); _git reads through it, and so does pr_head_approvals' read of the chain tip. The gitops reads left
+#: outside it: the `cat-file -e` presence check (a replace object there can at most cause an extra fetch, and the
+#: head is then read through _git); the `fetch` it gates (a transfer, which reads no chain link); the lane's
+#: `rev-parse HEAD` (it resolves a ref and peels nothing, and a replace object never changes a ref); and the
+#: lane's `config user.name` (an identity, not history).
 _TRUE_HISTORY = {"GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull}
 
 
@@ -554,7 +557,7 @@ def pr_lane_store(lane: Path) -> Path:
 def pr_head_approvals(store: Path, repo: str, head: str) -> dict:
     """The approvals of (repo, head) held in `store`, the workspace member clone. Readable after the lane is gone."""
     ref = PR_PREFIX + head
-    tip = gitops.git(Path(store), "rev-parse", "--verify", "-q", ref + "^{commit}").stdout.strip()
+    tip = _run(Path(store), "rev-parse", "--verify", "-q", ref + "^{commit}").stdout.strip()
     links = []
     if tip:
         for commit in _git(store, "rev-list", tip).splitlines():

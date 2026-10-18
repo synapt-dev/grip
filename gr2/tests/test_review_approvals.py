@@ -1295,3 +1295,32 @@ def test_merge_reads_a_second_approval_still_landing_as_incomplete_then_counts_i
     merged, receipt = _merge(multi)
     assert merged.exit_code == 0, merged.output
     assert receipt["approvals"]["count"] == 2
+
+
+def test_a_pr_chain_tip_reached_through_a_replaced_tag_reads_the_real_links(tmp_path, monkeypatch):
+    for key in ("AUTHOR", "COMMITTER"):
+        monkeypatch.setenv(f"GIT_{key}_NAME", "Author A")
+        monkeypatch.setenv(f"GIT_{key}_EMAIL", "a@example.invalid")
+    store, head = tmp_path / "store", "1" * 40
+    git(tmp_path, "init", "-q", store)
+
+    def link(name):
+        body = json.dumps({"repo": "api", "head": head, "approver": {"name": name}})
+        blob = subprocess.run(["git", "-C", str(store), "hash-object", "-w", "--stdin"], input=body,
+                              capture_output=True, text=True, check=True).stdout.strip()
+        tree = subprocess.run(["git", "-C", str(store), "mktree"], input=f"100644 blob {blob}\tapproval.json\n",
+                              capture_output=True, text=True, check=True).stdout.strip()
+        return git(store, "commit-tree", tree, "-m", name)
+
+    real, other = link("Real Approver"), link("Never Approved")
+    git(store, "tag", "-a", "-m", "real", "real", real)
+    git(store, "tag", "-a", "-m", "other", "other", other)
+    git(store, "update-ref", approvals.PR_PREFIX + head, git(store, "rev-parse", "real"))
+    git(store, "replace", "-f", git(store, "rev-parse", "real"), git(store, "rev-parse", "other"))
+    # the replacement is live for plain git: the PR ref now peels to the other commit
+    assert git(store, "rev-parse", approvals.PR_PREFIX + head + "^{commit}") == other
+    got = approvals.pr_head_approvals(store, "api", head)
+    assert [link["approver"]["name"] for link in got["links"]] == ["Real Approver"]
+    assert (got["tip"], got["count"]) == (real, 1)
+    # a head with no PR ref still reads as no chain
+    assert approvals.pr_head_approvals(store, "api", "2" * 40)["tip"] is None

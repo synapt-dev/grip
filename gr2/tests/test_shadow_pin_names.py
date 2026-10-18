@@ -70,3 +70,9 @@ def test_a_pin_through_dot_or_dotdot_is_refused(world, pin, bad):
     assert f"pin {pin!r}" in message and f"({bad})" in message
 
 
+@pytest.mark.parametrize("pin", [".git", ".GIT", "a/.Git"])
+def test_a_pin_named_dotgit_in_any_case_is_refused(world, pin):
+    message = _refused(world, [pin])
+    assert f"pin {pin!r}" in message and "hasDotgit" in message
+
+

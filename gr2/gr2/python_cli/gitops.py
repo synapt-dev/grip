@@ -18,6 +18,8 @@ def fsck_bad_name(name: str) -> str | None:
         return "hasDot"
     if name == "..":
         return "hasDotdot"
+    if name.isascii() and name.lower() == ".git":
+        return "hasDotgit"
     return None
 
 

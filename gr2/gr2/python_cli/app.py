@@ -264,7 +264,7 @@ def _start_lane_branch(repo_name: str, repo: Path, branch: str, ref: str | None,
     remote = git(repo, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{branch}^{{commit}}")
     if remote.returncode == 0:
         tip = remote.stdout.strip()
-        if head != tip and seed_is_work and git(repo, "merge-base", "--is-ancestor", head, tip).returncode != 0:
+        if head != tip and seed_is_work and gitops.is_ancestor(repo, head, tip, via_cwd=True) is not True:
             print(f"gr2: {repo_name}: {branch} keeps the local work at {head[:12]}, which origin/{branch} "
                   f"({tip[:12]}) does not contain; it tracks origin/{branch}", file=sys.stderr)
         elif head != tip:
@@ -279,7 +279,7 @@ def _start_lane_branch(repo_name: str, repo: Path, branch: str, ref: str | None,
         fork = base.stdout.strip() if base.returncode == 0 and base.stdout.strip() else head
         print(f"gr2: {repo_name}: continues origin/{branch} at {head[:12]}; fork base {fork[:12]}", file=sys.stderr)
         return fork, None
-    if seed_is_work and git(repo, "merge-base", "--is-ancestor", head, integration).returncode == 0:
+    if seed_is_work and gitops.is_ancestor(repo, head, integration, via_cwd=True) is True:
         seed_is_work = False  # the local branch holds nothing its target lacks: there is no work to keep
     start = "local" if seed_is_work else "pin" if at_pin else "tip"
     if start == "tip":

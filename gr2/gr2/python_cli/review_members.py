@@ -70,7 +70,7 @@ def changed_member_rows(workspace_root: Path, only: list[str] | None = None) -> 
         if sha == m.pin:
             skipped.append(f"{m.name} (checkout is at the workspace's pin)")
             continue
-        ancestry = gitops.git(checkout, "merge-base", "--is-ancestor", m.pin, sha)
+        ancestry = gitops.ancestry_proc(checkout, m.pin, sha, via_cwd=True)
         if ancestry.returncode == 1:
             skipped.append(f"{m.name} (checkout does not descend from the workspace's pin)")
             continue

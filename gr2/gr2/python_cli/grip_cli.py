@@ -1553,7 +1553,7 @@ def _coverage_of(path: Path, pin: str, upstream: str) -> str:
     A merge commit in the pin's range can carry content of its own (a conflict resolution, or a file added in the
     merge), and the commit-by-commit read never sees it. So a range holding any merge, or one whose merges cannot be
     listed, is answered from the combined diff alone, which includes that content."""
-    if not _store_git(path, "merge-base", "--is-ancestor", pin, upstream, check=False).returncode:
+    if gitops.is_ancestor(path, pin, upstream) is True:
         return COVERAGE_REACHABLE
     base = _store_git(path, "merge-base", pin, upstream, check=False).stdout.strip()
     if not base:
@@ -1599,7 +1599,7 @@ def _unpushed_steps(root: Path, path: Path, sha: str, upstream: str) -> str:
     line and neither learned what to push or that full mode keeps it unpushed). The push names the member's branch
     only when that branch contains the pin; `store check` asks about a recorded pin the HEAD may have left."""
     on = _store_git(path, "branch", "--show-current", check=False).stdout.strip() or None
-    if on and _store_git(path, "merge-base", "--is-ancestor", sha, "HEAD", check=False).returncode:
+    if on and gitops.is_ancestor(path, sha, "HEAD") is not True:
         on = None
     compat = _workspace_mode(_grip_document(root)) != "full"
     return next_steps._unpushed_pin(str(path), sha, upstream.partition("/")[0], on, str(root / "grip.toml"), compat)
@@ -2067,7 +2067,7 @@ def _refuse_pin_rewind(
             f"HEAD could undo it; {hint}",
             3,
         )
-    behind = _store_git(path, "merge-base", "--is-ancestor", head, recorded, check=False)
+    behind = gitops.ancestry_proc(path, head, recorded)
     if behind.returncode == 0:
         raise PinRewindRefusal(
             f"{name}: HEAD {head[:12]} is behind the recorded pin {recorded[:12]}; recording it would undo "
@@ -2079,7 +2079,7 @@ def _refuse_pin_rewind(
     if recorded_ref and member.get("ref") != recorded_ref:
         # A member switched to another branch is adopted when that branch's upstream covers HEAD, but the record
         # then forgets the old pin: if HEAD does not contain it, its commits leave the record with exit 0.
-        contains = _store_git(path, "merge-base", "--is-ancestor", recorded, head, check=False)
+        contains = gitops.ancestry_proc(path, recorded, head)
         if contains.returncode == 1:
             raise PinRewindRefusal(
                 f"{name}: HEAD {head[:12]} on {member.get('ref')} does not contain the recorded pin {recorded[:12]} "
@@ -2603,9 +2603,9 @@ def _leases(root: Path, tip: str, refs: list[str]) -> dict[str, str]:
         if now and now != tip:
             line = _store_git(root, "rev-list", "--first-parent", tip).stdout.split()
             if now not in line:
-                if _store_git(root, "merge-base", "--is-ancestor", tip, now, check=False).returncode == 0:
+                if gitops.is_ancestor(root, tip, now) is True:
                     why = "behind: this push's tip is an ancestor of it"
-                elif _store_git(root, "merge-base", "--is-ancestor", now, tip, check=False).returncode:
+                elif gitops.is_ancestor(root, now, tip) is not True:
                     why = "rewrite: it is not an ancestor of this push's tip"
                 else:
                     why = "not on the first-parent line of this push's tip (a merge took it as a side parent)"
@@ -3075,7 +3075,7 @@ def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[
         measured = bool(separator and remote and branch and fetched is not None and not fetched.returncode)
         if not measured:
             state = "cannot-measure"
-        elif _store_git(path, "merge-base", "--is-ancestor", member["pin"], member["upstream"], check=False).returncode:
+        elif gitops.is_ancestor(path, member["pin"], member["upstream"]) is not True:
             # Full mode records a pin no remote has in LAYERS, so "upstream lacks the pin" is the
             # designed state there, not a loss: `check` calls it `layer`, and status must say the same
             # word for the same member (a healthy layered member used to read `missing`).
@@ -3344,7 +3344,7 @@ def _native_store_migrate(root: Path, *, dry_run: bool = False) -> dict[str, obj
         # The branch the member is ON, read by the same helper init records it with, so the pin
         # is checked against the upstream init would write (`origin/core/main`, not a literal).
         _ref, upstream = _infer_member_branch(path)
-        if _store_git(path, "merge-base", "--is-ancestor", pin, upstream, check=False).returncode:
+        if gitops.is_ancestor(path, pin, upstream) is not True:
             raise NativeStoreRefusal(
                 f"{name} pin {pin} is not on {upstream}; {_push_or_switch(name, 'migrate')}", 3)
         planned[name] = pin

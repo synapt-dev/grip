@@ -104,7 +104,7 @@ def _walk(repo: Path, member: str, old: str, new: str, remote: str) -> str:
                 raise CannotVerify(f"cannot verify {member}: {sha} not held"
                                    f" (fetch from {remote}: {(got.stderr or 'nothing fetched').strip()[:160]})")
     def descends(a: str, b: str) -> bool:
-        proc = gitops.run(repo, "merge-base", "--is-ancestor", a, b)
+        proc = gitops.ancestry_proc(repo, a, b)
         if proc.returncode not in (0, 1):
             raise CannotVerify(f"cannot verify {member}: the walk from {a} to {b} stopped: {proc.stderr.strip()[:160]}")
         return proc.returncode == 0

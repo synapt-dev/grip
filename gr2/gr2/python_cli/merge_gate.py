@@ -860,7 +860,9 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
             r["merged"] = merged
         final.append(state)
     # A partial whose refused member's feature moved: its old pin cannot merge it, so its next is the new pin alone.
+    # The members the run left unpushed ride on the first such next only, so no two printed lines pin them twice.
     landed = [r["key"] for r in rows if r.get("final") == "merged"]
+    waiting_given = False
     for r, m in zip(rows, view["members"]):
         if landed and (r["refused"] or "").startswith("feature_moved") and r.get("final") == "unmerged":
             r["next"] = next_steps._partial_moved_row(
@@ -869,7 +871,9 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                 approvals=required_approvals,
                 waiting=[{"key": w["key"], "member_path": w["path"], "path": str((workspace / w["path"]).resolve()),
                           "remote": w["remote"], "base": w["base"], "head": w["head"]}
-                         for o, w in zip(rows, view["members"]) if o.get("final") == "unmerged" and not o["refused"]])
+                         for o, w in zip(rows, view["members"])
+                         if not waiting_given and o.get("final") == "unmerged" and not o["refused"]])
+            waiting_given = True
     # The remote holds each merged member's merge; the clone must know it too, or the next `store commit` records the
     # pre-merge pin. A fetch that fails here never changes the exit (the merge stands), and is never silent.
     tracking_stale = []

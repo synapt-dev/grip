@@ -12,6 +12,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+from gr2.python_cli import next_steps
 from gr2.python_cli.app import app
 import pytest
 
@@ -88,6 +89,40 @@ def test_a_member_left_unpushed_by_the_refusal_is_merged_by_the_same_next(slice3
     assert git(gamma["remote"], "rev-parse", "main") != gamma["base"], "gamma was merged by the printed next"
     git(gamma["remote"], "merge-base", "--is-ancestor", gamma["head"], "main")
     assert merged["exit"] == 0 and [m["key"] for m in merged["members"]] == ["gamma"], merged
+
+
+def test_two_moved_members_print_the_unpushed_member_once(tmp_path, monkeypatch):
+    # beta and delta both moved, gamma was left unpushed: only the first moved member's next pins gamma, so running
+    # both printed lines never pins gamma twice.
+    s = make_slice(tmp_path, monkeypatch, ("alpha", "beta", "gamma", "delta"))
+    record_set(s)
+    argv = ["review", "merge", "--approvals", "0", str(s["author"]), s["review"], "--from", "feat", "--into", "main"]
+    assert CliRunner().invoke(app, argv).exit_code == 0
+    for k, m in s["members"].items():
+        if k != "alpha":
+            git(m["remote"], "update-ref", "refs/heads/main", m["base"])
+    move(s["members"]["beta"])
+    move(s["members"]["delta"])
+    ran = CliRunner().invoke(app, argv)
+    assert ran.exit_code == 4, ran.output
+    rows = {r["key"]: r for r in json.loads(ran.stdout)["members"]}
+    assert rows["gamma"]["final"] == "unmerged" and not rows["gamma"]["refused"], rows["gamma"]
+    assert rows["delta"]["refused"].startswith("feature_moved"), rows["delta"]
+    assert rows["beta"]["next"].count("--repo gamma ") == 1, rows["beta"]["next"]
+    assert "gamma" not in rows["delta"]["next"], rows["delta"]["next"]
+
+
+def test_every_head_in_the_partial_next_is_quoted():
+    # A waiting member's head comes from the record, not from git, so it is quoted like every other value.
+    head = "$(touch pwned)"
+    line = next_steps._partial_moved_row(
+        workspace="/ws", key="beta", member_path="beta", path="/ws/beta", remote="origin", base="b" * 40, into="main",
+        feature="feat", landed=["alpha"], approvals=None,
+        waiting=[{"key": "gamma", "member_path": "gamma", "path": "/ws/gamma", "remote": "origin", "base": "c" * 40,
+                  "head": head}])
+    assert line.count(f"--head {shlex.quote(head)} ") == 2, line
+    assert line.count("--head '<your new commit>' ") == 2, line
+    assert f"--head {head}" not in line, line
 
 
 def test_the_readme_names_why_the_check_set_next_does_not_recover_a_partial():

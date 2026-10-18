@@ -57,6 +57,10 @@ ALLOWLIST: dict[tuple[str, str], str] = {
         'spec is built quoted: next_steps._shown(refspec), merge_gate.py:659',
     ('gr2/python_cli/next_steps.py', 'f"{\'\' if n == \'test\' else f\' --name {_shown(n)}\'} -- <your {_shown(n)} command>" for n in checks'):
         "the value is '' or a nested f-string that quotes n with _shown (walked on its own)",
+    ('gr2/python_cli/next_steps.py', 'f"{_shown(p)}){pushed} && gr2 review publish {_shown(workspace)} \\"$R\\" --remote {_shown(rem)} && "'):
+        'pushed is built quoted: _shown(p), _shown(rem), _shown(feature), next_steps.py:231',
+    ('gr2/python_cli/next_steps.py', 'f"gr2 check run {_shown(p)} --remote {_shown(rem)} --head {_shown(head)} -- <your test command> && {merge}")'):
+        'merge is built quoted: _shown(workspace), _shown(feature), _shown(into), an int, next_steps.py:228',
     ('gr2/python_cli/open_gr_review.py', 'raise OpenGrReviewError(f"lane {target}: could not read {path} (git {args[0]}): "'):
         'diagnostic: names the git verb gr2 ran, not a line to run',
     ('gr2/python_cli/review_diff.py', 'return (f"next: if the clone is shallow (git -C {clone} rev-parse --is-shallow-repository), deepen it from the "'):

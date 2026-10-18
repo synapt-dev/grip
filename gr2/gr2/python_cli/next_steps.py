@@ -315,12 +315,12 @@ def _partial_moved_row(*, workspace: str, key: str, member_path: str, path: str,
             merge += f" --approvals {approvals}"
         pushed = f" && git -C {_shown(p)} push {_shown(rem)} {_shown(feature)}" if push else ""
         return (f"R=$(gr2 review pin {_shown(workspace)} --repo {_shown(k)} --path {_shown(mpath)} --remote "
-                f"{_shown(rem)} --base {_shown(b)} --head {head} --ref {_shown('refs/heads/' + into)} --source "
+                f"{_shown(rem)} --base {_shown(b)} --head {_shown(head)} --ref {_shown('refs/heads/' + into)} --source "
                 f"{_shown(p)}){pushed} && gr2 review publish {_shown(workspace)} \"$R\" --remote {_shown(rem)} && "
-                f"gr2 check run {_shown(p)} --remote {_shown(rem)} --head {head} -- <your test command> && {merge}")
+                f"gr2 check run {_shown(p)} --remote {_shown(rem)} --head {_shown(head)} -- <your test command> && {merge}")
 
     steps = [segment(key, member_path, path, remote, base, "<your new commit>", True)]
-    steps += [segment(w["key"], w["member_path"], w["path"], w["remote"], w["base"], _shown(w["head"]), False)
+    steps += [segment(w["key"], w["member_path"], w["path"], w["remote"], w["base"], w["head"], False)
               for w in waiting]
     then = (f" (then {', '.join(_shown(w['key']) for w in waiting)}, not pushed after the refusal, each pinned alone "
             "at its pinned head)") if waiting else ""

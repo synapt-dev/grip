@@ -33,7 +33,9 @@ _PLAIN = ("--no-ext-diff", "--no-textconv", "--no-color")
 
 
 def _git(repo: Path, *args: str) -> str:
-    proc = gitops.run(repo, *args, binary=True)
+    # Every read here is review content between two commits, so it reads the real history (replace refs, grafts and
+    # commit-graph files ignored): a forged replace ref must not move the fork point, the commit count or the diff.
+    proc = gitops.real_history_run(repo, *args, binary=True)
     if proc.returncode != 0:
         raise GripReviewRefused("member_diff_failed", " ".join(args), proc.stderr.decode("utf-8", "replace").strip())
     return proc.stdout.decode("utf-8", "replace")
@@ -48,7 +50,7 @@ def change(workspace: Path, member: dict[str, object], *, with_diff: bool) -> di
             exc = GripReviewRefused("member_objects_missing", f"{member['key']} {sha}", str(repo))
             exc.add_note("next: fetch the member's head into its clone (git fetch <remote> <head>), then show again")
             raise exc
-    fork = gitops.run(repo, "merge-base", base, head)
+    fork = gitops.real_history_run(repo, "merge-base", base, head)
     if fork.returncode != 0:  # no common history: nothing the head adds to the target can be named
         exc = GripReviewRefused("member_no_merge_base", f"{member['key']} {base}", head)
         exc.add_note(no_merge_base_next(repo, head))

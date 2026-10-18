@@ -2,7 +2,7 @@
 refs. A literal "--is-ancestor" outside gitops.py is a site that reads replaced history (and often rc 128 as "no").
 
 This row counts them by AST, so reverting a migrated site back to a raw `gitops.run(..., "--is-ancestor", ...)`
-goes red. The allowlist below is the sites not yet migrated; whoever migrates one lowers or drops its count.
+goes red. The allowlist below is empty; a new literal site goes through gitops.is_ancestor instead.
 """
 from __future__ import annotations
 
@@ -14,16 +14,9 @@ from gr2.python_cli import gitops
 #: The gr2 package dir (gr2/gr2), found through a module so a namespace-package import can't blank it.
 PACKAGE = Path(gitops.__file__).resolve().parents[1]
 
-#: Literal "--is-ancestor" strings still allowed outside gitops.py, by path under the gr2 package.
-ALLOWED = {
-    # approvals.py:453 `gitops.run(repo, "merge-base", "--is-ancestor", then, now)`: owed to the in-flight
-    # approvals / merge-gate changes that rewrite this function; migrating it here would conflict with them.
-    "python_cli/approvals.py": 1,
-    # merge_gate.py:146 `gitops.run(repo, "merge-base", "--is-ancestor", pin, tip)`: owed to the same in-flight
-    # changes. If one of them lands with a second literal in merge_gate, the second to land sets this to 2 or
-    # migrates that site.
-    "python_cli/merge_gate.py": 1,
-}
+#: Literal "--is-ancestor" strings still allowed outside gitops.py, by path under the gr2 package: none. The
+#: approvals.py and merge_gate.py sites moved onto gitops.is_ancestor with the review ancestry reads.
+ALLOWED: dict[str, int] = {}
 
 
 def _literal_is_ancestor_counts() -> dict[str, int]:

@@ -156,10 +156,7 @@ class GitError(RuntimeError):
     def __init__(self, args: tuple[str, ...], returncode: int, stderr: str):
         self.git_args, self.returncode, self.stderr = args, returncode, stderr
         shown = [_shown_arg(arg) for arg in args[:2]]
-        for arg in args:  # git strips userinfo from the URLs it prints, not a credential in the query
-            if (redacted := _shown_arg(arg)) != arg:
-                stderr = stderr.replace(arg, redacted).replace(_strip_userinfo(arg), redacted)
-        super().__init__(f"git {' '.join(shown)}: {stderr}".rstrip(": "))
+        super().__init__(f"git {' '.join(shown)}: {_shown_stderr(args, stderr)}".rstrip(": "))
 
 
 _CREDENTIAL_SHOWN = "<a remote with a credential>"
@@ -181,6 +178,15 @@ def _shown_arg(arg: str) -> str:
         return arg
     stripped = _strip_userinfo(arg)
     return _CREDENTIAL_SHOWN if url_has_credentials(stripped) else stripped
+
+
+def _shown_stderr(args, stderr: str) -> str:
+    """git's stderr for a command run with `args`, each argument that carries a credential replaced as `_shown_arg`
+    shows it. git strips userinfo from the URLs it prints, not a credential in the query, so both forms are replaced."""
+    for arg in args:
+        if (redacted := _shown_arg(str(arg))) != str(arg):
+            stderr = stderr.replace(str(arg), redacted).replace(_strip_userinfo(str(arg)), redacted)
+    return stderr
 
 
 # Git's global options that take their value as the next word; `--opt=value` forms are one word.

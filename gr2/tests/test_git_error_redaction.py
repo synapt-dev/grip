@@ -11,13 +11,18 @@ import subprocess
 
 import pytest
 
-from gr2.python_cli import declared_sets, gitops, merge_gate
+from gr2.python_cli import declared_sets, gitops, merge_gate, next_steps
+from gr2.python_cli.app import app
 from tests.test_declared_sets import merge, record, world  # noqa: F401  (fixture and helpers)
 from tests.test_review_merge_gate import _git_identity  # noqa: F401  (fixture)
+from tests.test_review_merge_gate import check as gate_check, runner
+from tests.test_review_merge_gate import world as gate_world  # noqa: F401  (fixture: one reviewed member)
 
 TOKEN = "FAKETOKEN"
+PLAIN = "https://127.0.0.1:9/a.git"
 USERINFO = f"https://x:{TOKEN}@127.0.0.1:9/a.git"
 QUERY = f"https://127.0.0.1:9/a.git?access_token={TOKEN}"
+REAL_RUN = subprocess.run
 
 
 def _with_remotes(monkeypatch, remotes):
@@ -81,3 +86,79 @@ def test_git_error_keeps_the_host_of_a_userinfo_remote():
                                   ("rev-parse", "refs/heads/a#b"), ("cat-file", "HEAD@{1}"), ("fetch", "origin")])
 def test_git_error_shows_a_plain_argument_as_written(args):
     assert _error(*args) == f"git {' '.join(args)}: fatal: unable to access"
+
+
+def _cli_merge(w):
+    res = runner.invoke(app, ["review", "merge", w["review"], "--into", "main", "--from", "feat", "--approvals", "0",
+                              "--root", str(w["author"])])
+    return res, json.loads(res.stdout.splitlines()[0]), res.stdout + res.stderr
+
+
+def _refresh_with(monkeypatch, remote):
+    """The merge lands, and the tracking refresh after it is handed `remote`, which no remote of the clone names."""
+    real, seen = merge_gate._refresh_tracking, []
+    monkeypatch.setattr(merge_gate, "_refresh_tracking", lambda repo, _, into: seen.append(repo) or real(repo, remote, into))
+    return seen
+
+
+@pytest.mark.parametrize("remote", [USERINFO, QUERY], ids=["userinfo", "query"])
+def test_refresh_hint_never_shows_a_credential_remote(gate_world, monkeypatch, remote):
+    gate_check(gate_world)
+    _refresh_with(monkeypatch, remote)
+
+    res, receipt, text = _cli_merge(gate_world)
+
+    assert res.exit_code == 0 and receipt["tracking_stale"], text
+    assert text.count(TOKEN) == 0, text
+
+
+def test_refresh_hint_shows_a_plain_remote_as_before(gate_world, monkeypatch):
+    gate_check(gate_world)
+    seen = _refresh_with(monkeypatch, PLAIN)
+
+    res, receipt, text = _cli_merge(gate_world)
+
+    shown = next_steps._shown
+    assert res.exit_code == 0, text
+    assert [{k: v for k, v in s.items() if k != "member"} for s in receipt["tracking_stale"]] == [
+        {"command": f"git -C {shown(seen[0])} fetch --no-tags --refmap= -- {shown(PLAIN)} "
+                    f"{shown('+refs/heads/main:refs/remotes/origin/main')}",
+         "reason": f"no remote of this clone names {PLAIN}"}], text
+
+
+def _push_to(monkeypatch, w, remote):
+    """The real `git push` of the merge runs against `remote` and fails; its stderr is kept for the row."""
+    pushed = []
+
+    def run(cmd, *a, **kw):
+        if isinstance(cmd, (list, tuple)) and cmd[:1] == ["git"] and gitops.command_of(cmd) == "push":
+            cmd = [remote if str(x) == str(w["remote"]) else x for x in cmd]
+            kw["timeout"] = 20
+            pushed.append(REAL_RUN(cmd, *a, **kw))
+            return pushed[-1]
+        return REAL_RUN(cmd, *a, **kw)
+
+    monkeypatch.setattr(merge_gate.subprocess, "run", run)
+    return pushed
+
+
+def test_push_error_never_shows_a_query_token(gate_world, monkeypatch):
+    gate_check(gate_world)
+    _push_to(monkeypatch, gate_world, QUERY)
+
+    res, receipt, text = _cli_merge(gate_world)
+
+    push_error = receipt["members"][0].get("push_error") or ""
+    assert res.exit_code == 3 and "unable to access" in push_error, text
+    assert text.count(TOKEN) == 0, text
+
+
+def test_push_error_shows_a_plain_remote_as_before(gate_world, monkeypatch):
+    gate_check(gate_world)
+    pushed = _push_to(monkeypatch, gate_world, PLAIN)
+
+    res, receipt, text = _cli_merge(gate_world)
+
+    assert res.exit_code == 3 and pushed, text
+    push_error = receipt["members"][0]["push_error"]
+    assert "unable to access" in push_error and "https://127.0.0.1:9/a.git" in push_error, text

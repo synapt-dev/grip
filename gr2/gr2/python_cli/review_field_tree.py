@@ -548,6 +548,13 @@ class BatchReader(GitReader):
     def _promisor(self) -> str | None:
         return _promisor(self.repo)
 
+    def __exit__(self, kind, *exc) -> None:
+        # a raise can land with a body still on the pipe: git blocks writing it, and close() would wait forever
+        if kind is not None and self._cat is not None:
+            self._abandon()
+        else:
+            self.close()
+
     def close(self, stdout: bool = True) -> None:
         if self._cat is not None:
             self._cat.stdin.close()

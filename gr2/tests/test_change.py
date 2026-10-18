@@ -269,6 +269,41 @@ def test_c3_refusal_writes_nothing_in_any_member(members: list[Path], git_log: P
 
 
 
+def test_c3_no_member_changed_refuses_nothing_changed(members: list[Path], git_log: Path) -> None:
+    for path in members:
+        _git(path, "checkout", "-q", "--", "README.md")
+        (path / "new.txt").unlink()
+    before = [_state(p) for p in members]
+    git_log.write_text("")
+    result = _run(members)
+    assert result.exit_code == 2, result.output
+    assert "refused: nothing_changed: m1,m2,m3,m4,m5: no member has a change" in result.output
+    assert "nothing was written" in result.output
+    writes = [(m, a) for m, a in _calls(git_log) if set(a.split(" ")) & set(WRITES)]
+    assert writes == []
+    assert [_state(p) for p in members] == before
+
+
+def test_c3_repo_path_not_a_repo_refuses_not_a_repo(
+    members: list[Path], git_log: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The ceiling keeps git from finding a repo above tmp_path, so m3 reads as no repo wherever the run lives.
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    shutil.rmtree(members[2] / ".git")
+    others = [p for p in members if p != members[2]]
+    before = [_state(p) for p in others]
+    listing = sorted(p.name for p in members[2].iterdir())
+    git_log.write_text("")
+    result = _run(members)
+    assert result.exit_code == 2, result.output
+    assert "refused: not_a_repo: m3:" in result.output
+    assert "nothing was written" in result.output
+    writes = [(m, a) for m, a in _calls(git_log) if set(a.split(" ")) & set(WRITES)]
+    assert writes == []
+    assert [_state(p) for p in others] == before
+    assert sorted(p.name for p in members[2].iterdir()) == listing
+
+
 def test_c3_member_inside_an_enclosing_repo_refuses_not_a_repo(
     members: list[Path], git_log: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

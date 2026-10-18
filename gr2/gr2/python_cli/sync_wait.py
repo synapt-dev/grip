@@ -13,8 +13,9 @@ that has gone away would otherwise run out the whole timeout and report a silenc
 Every read is `ls-remote -- <url> <ref>`, bounded by min(30 s, the time left): the `--` keeps a member url such as
 ``--upload-pack=<cmd>`` a repository name rather than an option git runs, and the bound
 keeps a remote that accepts and never answers inside --timeout instead of gitops' 600 s default; a git timeout is an
-ordinary failed read. The last poll starts at least min(30 s, --interval) before the deadline, so its read is never
-cut to nothing; the wait then sleeps out --timeout and reports that poll. --timeout must be finite and >= 0 and --interval finite and >= 1, refused (exit 3) before any
+ordinary failed read. A poll starts at most --interval after the last, and early enough that a poll as long as the
+last one ends by the deadline; a read the deadline cut short is not a failed read, and the timeout line names, for each
+member not moved, when its last read was. --timeout must be finite and >= 0 and --interval finite and >= 1, refused (exit 3) before any
 read: nan never ends, and an interval of 0 would poll without pause. Refusals and the
 unreadable line go to ``err`` (stderr from the CLI) with git's reason.
 """
@@ -109,12 +110,23 @@ def wait(
         baseline[m.name] = first[m.name] = oid
     echo(f"waiting for {until} of {len(members)} members to move: {', '.join(m.name for m in members)}")
     moved: dict[str, str] = {}
+    t0, read_at = deadline - timeout, {m.name: clock() for m in members if m.name in first}
     failed: dict[str, str] = {}  # members whose last read failed, with git's reason; a second failure in a row ends the wait
+    dur, last, cut = max(clock() - t0, 0.1), False, set()
     while True:
+        began, need, opening = clock(), dur, bool(first)
         for m in members:
             if m.name in moved:
                 continue
-            oid, why = (first.pop(m.name), "") if m.name in first else _read_remote(workspace_root, m, deadline - clock())
+            if m.name not in first and clock() >= deadline:
+                continue  # no time left to start a read: the member keeps its last read
+            fresh, left = m.name not in first, deadline - clock()
+            oid, why = _read_remote(workspace_root, m, left) if fresh else (first.pop(m.name), "")
+            if oid is None and left < need:
+                cut.add(m.name)  # started with less than a poll's time left, so the deadline cut it: not a failed read
+                failed.pop(m.name, None)
+                continue
+            cut.discard(m.name)
             if oid is None:
                 if m.name in failed:
                     err(f"unreadable: {m.name} {why}")
@@ -122,22 +134,30 @@ def wait(
                 failed[m.name] = why
                 continue
             failed.pop(m.name, None)
+            if fresh:
+                read_at[m.name] = clock()
             if oid != baseline[m.name]:
                 moved[m.name] = oid
                 echo(f"moved: {m.name} {baseline[m.name][:12]} -> {oid[:12]}")
         if (until == "any" and moved) or len(moved) == len(members):
             echo(f"met: {until}: moved {', '.join(moved)}")
             return EXIT_MET
-        # The next poll starts at least one read (min(30 s, --interval)) before the deadline: a poll at the deadline
-        # would get a 0.1 s read, and a remote slower than that would be reported as a failed read, not unmoved.
-        room, left = min(READ_BOUND, interval), deadline - clock()
-        if left <= room:
-            if left > 0:
-                sleep(left)  # no room for another full read: sleep out --timeout, then report the last poll
+        # The next poll starts --interval after this one, or earlier, so that a poll as long as this one (or the start
+        # reads) ends by the deadline; a poll at the deadline would read nothing.
+        dur, left = max(dur if opening else 0.0, clock() - began, 0.1), deadline - clock()
+        if last or left <= 0:
             still = [m.name for m in members if m.name not in moved and m.name not in failed]
-            why = [f"not moved: {', '.join(still)}"] if still else []
+            unread = [n for n in still if n in cut or n not in read_at]
+            why = []
+            if any(n not in unread for n in still):
+                why.append("not moved as of the last read: " + ", ".join(
+                    f"{n} at {round(read_at[n] - t0, 1):g}s" for n in still if n not in unread))
+            if unread:
+                why.append("not read before the deadline: " + ", ".join(unread))
             if failed:
                 why.append("last read failed: " + ", ".join(f"{n} ({w})" for n, w in failed.items()))
             echo(f"timeout after {timeout:g}s: {until} not met; {'; '.join(why)}")
             return EXIT_TIMEOUT
-        sleep(min(interval, left - room))
+        nap = min(interval, left - dur)
+        last = nap < 0.1  # too close to the deadline for another nap: this poll is the last
+        sleep(max(0.0, nap))

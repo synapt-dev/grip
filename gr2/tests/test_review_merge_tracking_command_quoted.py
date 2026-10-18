@@ -116,8 +116,9 @@ def test_every_value_of_a_no_matching_remote_command_is_quoted(tmp_path, _git_id
 
 def test_every_value_of_a_failed_fetch_command_is_quoted(tmp_path, _git_identity, monkeypatch):
     mark, into, remote, repo, _ = _clone_with_metachars(tmp_path, monkeypatch)
-    _prove_armed("o;touch${IFS}" + MARK_VAR, mark)
-    git(repo, "remote", "rename", "origin", "o;touch${IFS}" + MARK_VAR)
+    arm = "o;touch${IFS}" + MARK_VAR
+    _prove_armed(arm, mark)
+    git(repo, "remote", "rename", "origin", arm)
     name = git(repo, "remote").strip()
     lock = repo / ".git" / "refs" / "remotes" / name / f"{into}.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)

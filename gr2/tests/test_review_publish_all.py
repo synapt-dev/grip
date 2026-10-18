@@ -45,7 +45,7 @@ def _git_identity(monkeypatch):
     monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
 
 
-def build(tmp_path, monkeypatch, *, shared=False, visibility=None, names=("alpha", "beta")):
+def build(tmp_path, monkeypatch, *, shared=False, visibility=None, names=("alpha", "beta"), nest=""):
     """Two members, alpha and beta, pinned into ONE review; nothing pushed, nothing published.
     shared=True puts both on one bare remote (alpha's), on branches feat-alpha and feat-beta.
     visibility=None declares every member private; a member a given dict does not name binds undeclared (no field)."""
@@ -65,8 +65,8 @@ def build(tmp_path, monkeypatch, *, shared=False, visibility=None, names=("alpha
             git(seed, "add", "payload.txt")
             git(seed, "commit", "-m", "base")
             git(seed, "push", remote, "main")
-        git(author, "clone", "--no-local", "--branch", "main", remote, name)
-        w["members"][name] = {"remote": remote, "base": git(author / name, "rev-parse", "HEAD"), "repo": author / name,
+        git(author, "clone", "--no-local", "--branch", "main", remote, nest + name)
+        w["members"][name] = {"remote": remote, "base": git(author / (nest + name), "rev-parse", "HEAD"), "repo": author / (nest + name),
                               "branch": f"feat-{name}" if shared else "feat"}
     assert runner.invoke(app, ["store", "init", str(author)]).exit_code == 0
     rows = []
@@ -76,7 +76,7 @@ def build(tmp_path, monkeypatch, *, shared=False, visibility=None, names=("alpha
         git(m["repo"], "add", "payload.txt")
         git(m["repo"], "commit", "-m", "reviewed")
         m["head"] = git(m["repo"], "rev-parse", "HEAD")
-        rows.append({"key": name, "path": name, "remote": str(m["remote"]), "base": m["base"], "head": m["head"],
+        rows.append({"key": name, "path": nest + name, "remote": str(m["remote"]), "base": m["base"], "head": m["head"],
                      "ref": "refs/heads/main", "source": str(m["repo"])})
         if name in visibility:
             rows[-1]["visibility"] = visibility[name]
@@ -401,6 +401,7 @@ def test_a4f_feature_moved_next_runs_as_printed_pull_then_pin_then_publish_exit_
     assert pull, receipt(out)["next"]
     argv = shlex.split(pull.group(1))
     assert argv[:4] == ["git", "-C", str(beta["repo"]), "pull"], argv
+    assert argv[4:7] == ["--no-rebase", str(beta["remote"]), "feat"], argv
     pulled = subprocess.run(argv, capture_output=True, text=True)
     assert pulled.returncode == 0, (argv, pulled.stderr)
     assert git(beta["repo"], "rev-parse", "HEAD") == ahead
@@ -410,6 +411,25 @@ def test_a4f_feature_moved_next_runs_as_printed_pull_then_pin_then_publish_exit_
     again = publish(new)
     assert again.exit_code == 0 and receipt(again)["complete"], (nxt, again.output)
     assert tip(beta["remote"], "refs/heads/feat") == ahead
+
+
+def test_a4q_feature_moved_next_runs_in_a_shell_with_a_space_a_quote_and_a_member_path_unlike_its_key(tmp_path, monkeypatch):
+    root = tmp_path / "sp ace'q"
+    root.mkdir()
+    w = build(root, monkeypatch, nest="m-")
+    beta = w["members"]["beta"]
+    other = root / "someone"
+    git(root, "clone", "--no-local", "--branch", "feat", beta["remote"] if tip(beta["remote"], "refs/heads/feat") else beta["repo"], other)
+    (other / "t.txt").write_text("t\n")
+    git(other, "add", "t.txt")
+    git(other, "commit", "-m", "t")
+    git(other, "push", beta["remote"], "feat")
+    out = publish(w["review"])
+    assert out.exit_code == 2, out.output
+    pull = re.search(r"# after (git .*?); publish", receipt(out)["next"]).group(1)
+    ran = subprocess.run(["bash", "-c", pull], capture_output=True, text=True)
+    assert ran.returncode == 0, (pull, ran.stderr)
+    assert git(beta["repo"], "rev-parse", "HEAD") == tip(beta["remote"], "refs/heads/feat")
     out = publish(w["review"])
     assert out.exit_code == 0, out.output
     for m in w["members"].values():

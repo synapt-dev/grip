@@ -531,7 +531,13 @@ class BatchReader(GitReader):
         if size > MAX_BLOB_BYTES:
             self._abandon()  # its body is left unread, so the stream is out of step
             raise ReviewRecordError(f"git cat-file blob failed: {oid} is {size} bytes, over the {MAX_BLOB_BYTES} byte limit")
-        data = self._cat.stdout.read(size + 1)
+        try:
+            data = self._cat.stdout.read(size + 1)
+        except BaseException:
+            # a caller may swallow this raise and close() cleanly: end git here, while it may be blocked writing
+            if self._cat is not None:
+                self._abandon()
+            raise
         body = data[:size]
         # no length or newline check proves where an answer ends: only the body hashing to the id asked does
         if data[size:] != b"\n" or _blob_id(body, oid) != oid:

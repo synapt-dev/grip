@@ -144,3 +144,34 @@ def test_a_raise_mid_body_through_the_check_store_ends_the_batch_process(tmp_pat
     assert isinstance(box.get("exc"), _Raised)
     assert _gone_within(box["proc"], 2), f"git still alive: {_git_children()}"
     assert box["store"]._reader._cat is None
+
+
+def test_a_swallowed_raise_mid_body_in_read_remote_check_ends_the_batch_process(tmp_path, monkeypatch):
+    # _read_remote_check turns an OSError into a fail status inside `with own:`, so the store exits
+    # cleanly: the reader itself must end git when the body read raises, or close() waits on it
+    repo, oid = _repo(tmp_path, 300 << 10)
+    git(repo, "add", "big")
+    git(repo, "commit", "-qm", "c")
+    head = git(repo, "rev-parse", "HEAD")
+    box: dict = {}
+    orig = fd.gitops.start
+    def start(*a, **k):
+        box["proc"] = orig(*a, **k)
+        return box["proc"]
+    def partial(self, n=-1):
+        self._stream.read1(4096)
+        raise OSError(5, "EIO mid-body")
+    monkeypatch.setattr(fd.gitops, "start", start)
+    monkeypatch.setattr(fd._Deadlined, "read", partial)
+    monkeypatch.setattr(check_records, "_snapshot", lambda *a: "0" * len(head))
+    monkeypatch.setattr(check_records, "_entries", lambda *a: {head[:2] + "/" + head[2:]: oid})
+    member = dict(path=str(repo), remote="origin", key="m")
+    t = threading.Thread(target=lambda: box.update(
+        result=check_records.read_remote_check("origin", member, head, ["ci"])), daemon=True)
+    t.start()
+    t.join(10)
+    assert not t.is_alive(), "HUNG: the swallowed raise let the store close() and wait on git blocked writing"
+    assert box["result"]["status"] == "fail"
+    assert "EIO mid-body" in box["result"]["reason"]
+    assert _gone_within(box["proc"], 2), f"git still alive: {_git_children()}"
+    assert _git_children() == []

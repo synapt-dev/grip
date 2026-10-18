@@ -13,9 +13,11 @@ import typer
 from gr2.overlay import introspection, workspace_spec
 from gr2.overlay.activate import activate_overlay, deactivate_overlay
 from gr2.overlay.types import OverlayRef
+from gr2.typer_settings import group_settings
 
 overlay_app = typer.Typer(
     help="Config overlay capture, composition, and materialization (Tier A).",
+    **group_settings(),
 )
 
 

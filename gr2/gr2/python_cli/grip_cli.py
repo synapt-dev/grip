@@ -32,15 +32,17 @@ from .gitops import git, repo_dirty
 from .layout import MOVED_MARKER, grip_dir
 from .root_option import ROOT_OPTION, RootOptionalCommand
 from .spec_apply import unit_member_path, validate_grip_toml
+from ..typer_settings import group_settings
 from .workspace_guidance import init_unless_inside_workspace, workspace_init_command
 
 grip_app = typer.Typer(
     help="Grip object model: workspace snapshots and history. Exit codes: 0 ok, "
     "2 usage, 3 refused on coverage or cleanliness, 4 refused as inconsistent or "
     "beta, 5 cannot measure (a verb that could not complete also reports 5 and "
-    'prefixes its message with "cannot complete this store verb:")'
+    'prefixes its message with "cannot complete this store verb:")',
+    **group_settings(),
 )
-config_cli_app = typer.Typer(help="Config base+overlay management")
+config_cli_app = typer.Typer(help="Config base+overlay management", **group_settings())
 
 
 def _resolve_repos(workspace: Path, repos_csv: str) -> dict[str, Path]:

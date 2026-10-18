@@ -178,3 +178,54 @@ def test_the_root_exemption_is_narrow() -> None:
     assert probe(exempt) != [], "a plain command with a leading optional root is still named"
     assert probe(other_name, RootOptionalCommand) != [], "another leading optional on that class is still named"
     assert probe(in_the_middle, RootOptionalCommand) != [], "the root optional in the middle is still named"
+
+
+def _groups(group, path: str = "gr2") -> list[tuple[str, object]]:
+    out: list[tuple[str, object]] = [(path, group)]
+    for name, cmd in sorted(getattr(group, "commands", {}).items()):
+        if hasattr(cmd, "commands"):
+            out.extend(_groups(cmd, f"{path} {name}"))
+    return out
+
+
+def _groups_without_first_touch_help(root) -> list[str]:
+    """Groups a user cannot get help from on first touch: a bare group that errors with
+    "Missing command" instead of printing its help, or one where `-h` is "No such option"."""
+    offenders = []
+    for path, group in _groups(root):
+        names = (group.context_settings or {}).get("help_option_names") or []
+        if not group.no_args_is_help or "-h" not in names:
+            offenders.append(path)
+    return offenders
+
+
+def test_every_group_prints_help_bare_and_takes_dash_h() -> None:
+    """A user's first command is `gr2` by itself or `gr2 -h`; both failed on every group
+    before typer_settings.group_settings(). The walk counts the groups so it cannot pass
+    by seeing none."""
+    root = typer.main.get_command(app)
+    groups = _groups(root)
+    assert len(groups) >= 16, f"the walk found only {len(groups)} groups; it is not seeing the app"
+    offenders = _groups_without_first_touch_help(root)
+    assert not offenders, f"groups built without typer_settings.group_settings(): {offenders}"
+
+
+def test_the_first_touch_witness_reports_a_group_built_without_the_settings() -> None:
+    """The mutation: a new sub-app made with a plain typer.Typer() must be named, while the
+    same tree made through group_settings() is clean."""
+    from gr2.typer_settings import group_settings
+
+    def documented() -> None:
+        """Has help."""
+
+    outer = typer.Typer(**group_settings())
+    inner = typer.Typer()
+    inner.command("documented")(documented)
+    outer.add_typer(inner, name="probe")
+    assert _groups_without_first_touch_help(typer.main.get_command(outer)) == ["gr2 probe"]
+
+    outer_clean = typer.Typer(**group_settings())
+    inner_clean = typer.Typer(**group_settings())
+    inner_clean.command("documented")(documented)
+    outer_clean.add_typer(inner_clean, name="probe")
+    assert _groups_without_first_touch_help(typer.main.get_command(outer_clean)) == []

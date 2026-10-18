@@ -54,6 +54,19 @@ class FieldTreeError(ValueError):
     """A member record that cannot be written or read as a field tree."""
 
 
+class MissingLocally(FieldTreeError):
+    """A record object this partial clone does not hold. The read refuses it rather than fetching it, so a caller
+    that treats an unreadable tree as "not a record" must refuse here instead: the record exists, it is only absent."""
+
+
+class _AbsentObject(rft.ReviewRecordError):
+    """The local reader's refusal for an object a partial clone does not hold (see ``_local``)."""
+
+
+def _field_error(exc: Exception) -> FieldTreeError:
+    return MissingLocally(str(exc)) if isinstance(exc, _AbsentObject) else FieldTreeError(str(exc))
+
+
 def write(repo: Path, record: dict) -> str:
     """The tree id of ``record`` (keys: kind, pin, url, ref, covered_by, layers, records, ref_defaulted, covered_test;
     the schema entry is always this package). A field at its default is not written; ``records`` holds tree ids."""
@@ -83,19 +96,49 @@ def write(repo: Path, record: dict) -> str:
     return rft._mktree(repo, entries)
 
 
+class _LocalReader(rft.GitReader):
+    """The one-shot reader, with an object a partial clone does not hold refused by name rather than fetched."""
+
+    def ls(self, tree: str) -> list[rft.Entry]:
+        return _local(self.repo, "ls-tree", tree, lambda: super(_LocalReader, self).ls(tree))
+
+    def blob(self, oid: str) -> bytes:
+        return _local(self.repo, "cat-file blob", oid, lambda: super(_LocalReader, self).blob(oid))
+
+    def size(self, oid: str) -> int:
+        return int(_local(self.repo, "cat-file -s", oid, lambda: rft._git(self.repo, "cat-file", "-s", oid, env=rft._local())))
+
+
+def _local(repo: Path, verb: str, oid: str, read):
+    # every read runs under GIT_NO_LAZY_FETCH, so an absent object fails at once; when it is absent from a partial
+    # clone, the refusal names the fetch, as the review readers' does
+    try:
+        return read()
+    except rft.ReviewRecordError:
+        if rft._promisor(repo) is None or rft.gitops.run(repo, "cat-file", "-e", oid, env=rft._local()).returncode == 0:
+            raise
+        # ``oid`` may be an expression (``<commit>^{tree}``). Name the object it resolves to; when it does not resolve
+        # here (a shallow clone without the commit), the absent object is not one a fetch of the tree brings in.
+        named = rft.gitops.run(repo, "rev-parse", "--verify", "-q", oid, env=rft._local())
+        if named.returncode != 0:
+            raise
+        raise _AbsentObject(rft.missing_locally(repo, verb, named.stdout.strip())) from None
+
+
 def read(repo: Path, tree: str) -> dict:
     """The record in ``tree``, decoded by field NUMBER (the name is a hint). Refuses a tree for another package."""
     out: dict = dict(schema="", kind=0, pin="", url="", ref="", covered_by="", layers=[], records=[],
                      ref_defaulted=False, covered_test=0)
+    reader = _LocalReader(repo)   # a record read is local: it never fetches from a promisor remote
     try:
-        entries = rft._ls(repo, tree)   # a tree object this clone does not hold is a git failure, not a record
+        entries = reader.ls(tree)   # a tree object this clone does not hold is a git failure, not a record
     except rft.ReviewRecordError as exc:
-        raise FieldTreeError(str(exc)) from exc
+        raise _field_error(exc) from exc
     for mode, kind, oid, name in entries:
         try:
             number, wire, repeated = rft.parse_entry(name)
         except rft.ReviewRecordError as exc:
-            raise FieldTreeError(str(exc)) from exc
+            raise _field_error(exc) from exc
         spec = _FIELDS.get(number)
         if spec is None:
             continue
@@ -104,29 +147,32 @@ def read(repo: Path, tree: str) -> dict:
                 raise FieldTreeError(f"entry {name!r} is not the {spec[0]} field this schema defines")
             if number in _TREE_OCCURRENCES:
                 try:
-                    kids = rft._occurrences(repo, name, oid)
+                    kids = rft._occurrences(repo, name, oid, reader)
                 except rft.ReviewRecordError as exc:
-                    raise FieldTreeError(str(exc)) from exc
+                    raise _field_error(exc) from exc
                 if any(kid[1] != "tree" for kid in kids):
                     raise FieldTreeError(f"entry {name!r} holds an occurrence that is not a record tree")
                 out[spec[2]] = [kid[2] for kid in kids]
                 continue
             try:
-                kids = rft._occurrences(repo, name, oid)
+                kids = rft._occurrences(repo, name, oid, reader)
                 blobs = []
                 for index, kid in enumerate(kids, 1):
                     # The size is asked for first, so a record cannot make this read load what it will then refuse.
-                    size = int(rft._git(repo, "cat-file", "-s", kid[2]))
+                    size = reader.size(kid[2])
                     if size > MAX_LAYER_BYTES:
                         raise FieldTreeError(f"layer {index} is {size} bytes, over the {MAX_LAYER_BYTES} a layer may carry")
-                    blobs.append(rft._git(repo, "cat-file", "blob", kid[2]))
+                    blobs.append(reader.blob(kid[2]))
                 out[spec[2]] = blobs
             except rft.ReviewRecordError as exc:
-                raise FieldTreeError(str(exc)) from exc
+                raise _field_error(exc) from exc
             continue
         if kind != "blob" or repeated or wire != spec[1]:
             raise FieldTreeError(f"entry {name!r} is not the {spec[0]} field this schema defines")
-        payload = rft._git(repo, "cat-file", "blob", oid)
+        try:
+            payload = reader.blob(oid)
+        except rft.ReviewRecordError as exc:
+            raise _field_error(exc) from exc
         if wire == 2:
             out[spec[2]] = payload.decode("utf-8")
         else:

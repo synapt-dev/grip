@@ -321,6 +321,26 @@ def _local() -> dict:
     than reaching the network (git before 2.44 ignores the variable)."""
     return {**os.environ, "GIT_NO_LAZY_FETCH": "1"}
 
+def _promisor(repo: Path) -> str | None:
+    """The remote a partial clone fetches absent objects from: extensions.partialclone (git's own name for
+    it), else the first remote.<name>.promisor that is true (what a --filter clone writes); None when the repo
+    has neither, since then git has nowhere to fetch an absent object from."""
+    named = gitops.run(repo, "config", "--get", "extensions.partialclone", env=_local()).stdout.strip()
+    if named:
+        return named
+    found = gitops.run(repo, "config", "-z", "--type=bool", "--get-regexp", r"^remote\..*\.promisor$", env=_local())
+    for entry in found.stdout.split("\0"):
+        key, _, value = entry.partition("\n")
+        if value == "true":
+            return key.removeprefix("remote.").removesuffix(".promisor")
+    return None
+
+
+def missing_locally(repo: Path, verb: str, oid: str) -> str:
+    """The refusal for an object a partial clone does not hold: it names the fetch that brings it in."""
+    return (f"git {verb} failed: {oid} is missing locally (partial clone?); bring it in with: git -C "
+            f"{next_steps._shown(str(repo))} fetch -- {next_steps._shown(_promisor(repo))} {next_steps._shown(oid)}")
+
 # A reader has ls(tree) -> entries, exactly as ls-tree reports them, and blob(oid) ->
 # bytes. The readers differ only in how many git processes they start, never in what
 # they return.
@@ -496,9 +516,7 @@ class BatchReader(GitReader):
             raise ReviewRecordError(f"git cat-file blob failed: {oid} answered with an unreadable size")
         remote = self._promisor() if header[1:] == [b"missing"] else None
         if remote is not None:
-            raise ReviewRecordError(f"git cat-file blob failed: {oid} is missing locally (partial clone?); "
-                                    f"bring it in with: git -C {next_steps._shown(str(self.repo))} fetch -- "
-                                    f"{next_steps._shown(remote)} {next_steps._shown(oid)}")
+            raise ReviewRecordError(missing_locally(self.repo, "cat-file blob", oid))
         if len(header) != 3:
             if header[1:] != [b"missing"]:
                 self._abandon()  # an empty or unreadable header: the stream is gone or out of step
@@ -520,19 +538,7 @@ class BatchReader(GitReader):
         self.close()
 
     def _promisor(self) -> str | None:
-        """The remote a partial clone fetches absent objects from: extensions.partialclone (git's own name for
-        it), else the first remote.<name>.promisor that is true (what a --filter clone writes); None when the repo
-        has neither, since then git has nowhere to fetch an absent object from."""
-        named = gitops.run(self.repo, "config", "--get", "extensions.partialclone", env=_local()).stdout.strip()
-        if named:
-            return named
-        found = gitops.run(self.repo, "config", "-z", "--type=bool", "--get-regexp", r"^remote\..*\.promisor$",
-                           env=_local())
-        for entry in found.stdout.split("\0"):
-            key, _, value = entry.partition("\n")
-            if value == "true":
-                return key.removeprefix("remote.").removesuffix(".promisor")
-        return None
+        return _promisor(self.repo)
 
     def close(self, stdout: bool = True) -> None:
         if self._cat is not None:

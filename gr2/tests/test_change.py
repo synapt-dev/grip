@@ -370,11 +370,65 @@ def test_c3_member_rev_parse_that_fails_refuses_not_a_repo(
     git_log.write_text("")
     result = _run(members)
     assert result.exit_code == 2, result.output
-    assert "refused: not_a_repo: m3:" in result.output
+    printed = "refused: not_a_repo: m3: git rev-parse exited 0 but printed {} lines for 7 paths"
+    expected = {"fails": "refused: not_a_repo: m3:", "empty": printed.format(0), "short": printed.format(1)}[mode]
+    assert expected in result.output
     assert "nothing was written" in result.output
     assert _not_reads(git_log) == []
     assert any(m == "m3" and " rev-parse --show-toplevel " in f" {a}" for m, a in _calls(git_log))
     assert [_state(p) for p in members] == before
+
+
+def test_c3_separate_git_dir_with_newline_and_merge_in_progress_refuses(
+    members: list[Path], git_log: Path, tmp_path: Path
+) -> None:
+    # m3's git dir lives apart, at a path holding "\n": every --git-path prints two lines. Read by count alone, the
+    # shifted lines would miss MERGE_HEAD and commit onto the merge.
+    gitdir = tmp_path / "sep\ngit"
+    (members[2] / ".git").rename(gitdir)
+    (members[2] / ".git").write_text(f"gitdir: {gitdir}\n")
+    _merge_in_progress(members[2])
+    before = [_state(p) for p in members]
+    git_log.write_text("")
+    result = _run(members)
+    assert result.exit_code == 2, result.output
+    assert "refused: not_a_repo: m3: git rev-parse exited 0 but printed 13 lines for 7 paths" in result.output
+    assert "nothing was written" in result.output
+    assert _not_reads(git_log) == []
+    assert [_state(p) for p in members] == before
+    assert (gitdir / "MERGE_HEAD").exists()
+
+
+def test_c3_member_path_with_newline_refuses(members: list[Path], git_log: Path, tmp_path: Path) -> None:
+    named = tmp_path / "m\n3"
+    members[2].rename(named)
+    members[2] = named
+    before = [_state(p) for p in members]
+    git_log.write_text("")
+    result = _run(members)
+    assert result.exit_code == 2, result.output
+    assert "git rev-parse exited 0 but printed 8 lines for 7 paths" in result.output
+    assert "nothing was written" in result.output
+    # The log's member column breaks at m3's "\n"; each call's arguments still follow its tab.
+    assert [a for a in git_log.read_text().split("\n") if "\t" in a and _verb(a.split("\t", 1)[1]) not in READS] == []
+    assert [_state(p) for p in members] == before
+
+
+@pytest.mark.parametrize("char", ["\u2028", "\f"], ids=["line_separator", "form_feed"])
+def test_c1_member_path_that_splitlines_breaks_commits(
+    members: list[Path], git_log: Path, tmp_path: Path, char
+) -> None:
+    # git prints the path as one line; only "\n" ends it.
+    named = tmp_path / f"m{char}3"
+    members[2].rename(named)
+    members[2] = named
+    bases = [_git(p, "rev-parse", "HEAD").strip() for p in members]
+    result = _run(members)
+    assert result.exit_code == 0, result.output
+    for path, base in zip(members, bases):
+        assert _git(path, "branch", "--show-current").strip() == "feat"
+        assert _git(path, "rev-parse", "HEAD~1").strip() == base
+        assert _git(path, "status", "--porcelain") == ""
 
 
 def test_c1_clean_member_beside_changed_ones_is_left_alone(members: list[Path], git_log: Path) -> None:

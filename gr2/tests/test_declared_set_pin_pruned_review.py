@@ -222,3 +222,16 @@ def test_one_of_two_reviews_retracted_after_the_scan_still_ties_by_the_other(wor
     assert done == [(oid, ref)] and _reviews(remote) == [[oid, second]], done
     assert code == merge_gate.EXIT_MERGED, receipt
 
+
+def test_a_review_republished_after_the_scan_with_the_same_content_still_ties(world, monkeypatch):
+    assert record(world, PASS)["result"] == "pass"
+    remote = world["members"]["beta"]["remote"]
+    (oid, ref), = _reviews(remote)
+    again = _git_out(remote, "commit-tree", f"{oid}^{{tree}}", "-m", "re-published")  # new oid, same content
+    done = _retract_after_scan(monkeypatch, remote, to=again)
+
+    code, receipt = merge(world, "alpha")
+
+    assert done == [(oid, ref)] and _reviews(remote) == [[again, ref]] and again != oid, done
+    assert code == merge_gate.EXIT_MERGED, receipt
+

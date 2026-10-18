@@ -258,17 +258,24 @@ def _pin_tie(root: Path, declaration: declared_sets.Declaration, into: str):
                             failed[oid] = _first_error(exc)
             states: dict[str, dict] = {}
             retracted = ""
-            named = []  # reviews whose recorded state names the pin, read by the oid the scan saw
-            for ref in [ref for ref in sorted(tips) if tips[ref] not in failed]:
-                if tips[ref] not in states:
-                    states[tips[ref]] = grip._read_repo_state(repo, tips[ref], bind=True)
-                if any(fields.get("commit") == pin and declaration.member_name(key, fields.get("path", "")) == name
-                       for key, fields in states[tips[ref]].items()):
-                    named.append(ref)
-            if named:  # a review counts only while its ref still names the oid read: deleted or moved is retracted
+
+            def names(oid: str) -> bool:
+                if oid not in states:
+                    states[oid] = grip._read_repo_state(repo, oid, bind=True)
+                return any(fields.get("commit") == pin and declaration.member_name(key, fields.get("path", "")) == name
+                           for key, fields in states[oid].items())
+
+            named = [ref for ref in sorted(tips) if tips[ref] not in failed and names(tips[ref])]  # by the oid scanned
+            if named:  # a review counts only while its ref still names the pin: deleted, or moved off it, is retracted
                 now = _remote_tips(repo, remote, (), tuple(named))
-                if any(now[ref] == tips[ref] for ref in named):
-                    return None
+                for ref in [ref for ref in named if now[ref]]:  # any one still naming it ties; re-published counts
+                    try:
+                        if now[ref] != tips[ref]:  # moved: read the new oid, which may hold the same review
+                            _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, now[ref])
+                        if names(now[ref]):
+                            return None
+                    except (RuntimeError, grip.GripCorruptError):
+                        continue  # the new oid does not read as a review: moved off the pin
                 retracted = ", ".join(next_steps._shown(ref) for ref in named)
             if failed:  # no review that read names the pin, and one that did not read might: unmeasured, by ref
                 lost = ", ".join(next_steps._shown(ref) for ref in sorted(tips) if tips[ref] in failed)

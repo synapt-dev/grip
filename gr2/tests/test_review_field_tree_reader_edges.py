@@ -77,6 +77,36 @@ def test_a_plain_member_key_is_read(record_world, key):
     assert grip.review_row_keys(record_world["author"], commit) == [key]
 
 
+# Names a case-insensitive Windows or macOS checkout resolves to ".git" or ".venv", one group per rule in
+# git's verify_dotfile, is_ntfs_dotgit and is_hfs_dotgit.
+_HFS_IGNORED = "\u200c\u200d\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u206a\u206b\u206c\u206d\u206e\u206f\ufeff"
+_FILESYSTEM_ALIASES = {
+    "case": [".GIT", ".Git", ".VENV"],
+    "ntfs_trailing": [".git.", ".git ", ".git. .", ".venv "],
+    "ntfs_short_name": ["GIT~1", "git~1", "Git~1. "],
+    "ntfs_stream": [".git::$INDEX_ALLOCATION", "git~1:stream", ".venv:x"],
+    "hfs_ignorable": [".g" + c + "it" for c in _HFS_IGNORED] + [_HFS_IGNORED[0] + ".venv"],
+}
+
+
+@pytest.mark.parametrize("key", [pytest.param(k, id=f"{rule}-{i}") for rule, keys in _FILESYSTEM_ALIASES.items()
+                                 for i, k in enumerate(keys)])
+def test_a_member_key_a_filesystem_reads_as_dotgit_or_venv_is_refused(record_world, tmp_path, key):
+    w = record_world
+    assert not grip.plain_member_key(key)
+    commit = _bound_variant(w, key=key)
+    for call, args in ((grip.show_review_commit, ()), (grip.verify_review_commit, ()), (grip.review_row_keys, ()),
+                       (grip.reconstruct_review_lane, (key, tmp_path / "lane"))):
+        with pytest.raises(grip.GripCorruptError, match="member key"):
+            call(w["author"], commit, *args)
+    assert not (tmp_path / "lane").exists()
+
+
+@pytest.mark.parametrize("key", [".gitx", ".git-hooks", "git~2", "agit~1", ".venvs", "a.git", "\u00e9.git"])
+def test_a_name_only_near_dotgit_stays_a_plain_member_key(key):
+    assert grip.plain_member_key(key)
+
+
 @pytest.mark.parametrize("field", ["remote", "path", "commit", "base"])
 def test_a_member_missing_a_repository_field_is_refused(record_world, field):
     commit = _bound_variant(record_world, **{field: None})

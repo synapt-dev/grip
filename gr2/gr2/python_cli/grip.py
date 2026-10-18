@@ -1114,14 +1114,28 @@ def _tree_keys(workspace: Path, commit: str, path: str) -> set[str]:
 # observed/, texts/, objects/, evidence/); a field tree record (review_field_tree) is one entry per protobuf
 # field. Readers ask the helpers below and never spell a layout's paths themselves.
 
+# Code points HFS+ drops when it compares names (git's next_hfs_char in utf8.c), so ".\u200cgit" is ".git".
+_HFS_IGNORED = frozenset("\u200c\u200d\u200e\u200f\u202a\u202b\u202c\u202d\u202e"
+                         "\u206a\u206b\u206c\u206d\u206e\u206f\ufeff")
+
+
+def _filesystem_alias(key: str) -> str:
+    """The name a case-insensitive Windows or macOS filesystem resolves a key to, after git's own rules
+    (verify_dotfile, is_ntfs_dotgit, is_hfs_dotgit): ASCII case is folded, HFS+ ignorable code points are
+    dropped, and NTFS drops an alternate data stream (`:...`) and trailing dots and spaces."""
+    key = "".join(c for c in key if c not in _HFS_IGNORED).split(":", 1)[0].rstrip(". ")
+    return "".join(c.lower() if c.isascii() else c for c in key)
+
+
 def plain_member_key(key: str) -> bool:
     """A member key names a directory in a lane (`<lane>/<key>`), so it must be one plain name: not
     empty, not ".", ".." or ".git", not the lane's shared environment (`.venv`), not one of the lane's
     own control files (`.grip-review*`, every run log included), and no separator, NUL or newline.
-    Other dot names are real repository keys (an org's `.github`).
+    A name some filesystem resolves to ".git" or ".venv" (".GIT", ".git.", "git~1", ".venv ") is refused
+    as that name. Other dot names are real repository keys (an org's `.github`).
     Readers apply this rule to every bind before any path is built."""
-    return (bool(key) and key not in (".", "..", ".git", LANE_VENV) and not key.startswith(LANE_CONTROL_PREFIX)
-            and not any(c in key for c in "/\\\0\n"))
+    return (bool(key) and key not in (".", "..") and _filesystem_alias(key) not in ("", ".git", "git~1", LANE_VENV)
+            and not key.startswith(LANE_CONTROL_PREFIX) and not any(c in key for c in "/\\\0\n"))
 
 
 def _is_field_tree_bind(workspace: Path, commit: str) -> bool:

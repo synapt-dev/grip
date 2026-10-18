@@ -231,8 +231,7 @@ def rebind(frozen_dir: Path, repo: Path, target_ref: str, out_dir: Path,
         # since the frozen base, so the rebased range would be EMPTY — which the
         # patch-id check below reads as a divergence. Detect it first and name the
         # landing tip, rather than refusing a range that is simply already there.
-        anc = _git(clone, "merge-base", "--is-ancestor", frozen_base, live_base, check=False)
-        if anc.returncode == 0:
+        if gitops.is_ancestor(clone, frozen_base, live_base) is True:
             frozen_ids = {
                 x for x in _patch_ids((frozen_dir / "range.patch").read_text()).splitlines() if x
             }
@@ -276,8 +275,7 @@ def rebind(frozen_dir: Path, repo: Path, target_ref: str, out_dir: Path,
         d_new = _norm_diff(
             _git(clone, "diff", "--find-renames", f"{live_base}..{new_head}").stdout
         )
-        anc2 = _git(clone, "merge-base", "--is-ancestor", frozen_base, new_head, check=False)
-        if anc2.returncode == 0:
+        if gitops.is_ancestor(clone, frozen_base, new_head) is True:
             scratch = f"_rebind_frozen_{os.getpid()}"
             _git(clone, "checkout", "--quiet", "-b", scratch, frozen_base, check=False)
             am2 = _git(clone, "am", "--3way", "--empty=keep", str(frozen_dir / "range.patch"), check=False)

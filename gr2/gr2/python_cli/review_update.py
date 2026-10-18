@@ -145,7 +145,7 @@ def update(workspace: Path, review_id: str | None = None, into: str | None = Non
         row = {"key": key, "path": m["path"], "remote": m["remote"], "into": targets[key], "conflicts": []}
         receipt["members"].append(row)
         tip = row["base"] = tips[key]
-        if gitops.run(repo, "merge-base", "--is-ancestor", tip, "HEAD").returncode == 0:
+        if gitops.is_ancestor(repo, tip, "HEAD") is True:
             row.update(state="up_to_date", head=_head(repo))
             continue
         proc = gitops.run(repo, "merge", "--no-edit", "--no-ff", "-m",

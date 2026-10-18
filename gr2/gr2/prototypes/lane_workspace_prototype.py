@@ -1354,7 +1354,7 @@ def bind_bound_lane(
         raise SystemExit(
             f"bind refuses: base {base!r} is not a full 40-hex commit sha"
         )
-    if gitops.git(resolved, "merge-base", "--is-ancestor", base, current_head).returncode != 0:
+    if gitops.is_ancestor(resolved, base, current_head, via_cwd=True) is not True:
         raise SystemExit(
             f"bind refuses: base {base} is not an ancestor of the worktree head {current_head} "
             "(not a commit, or head does not descend from it); it cannot bound the reviewed range"
@@ -1434,7 +1434,7 @@ def pr_create_bound_lane(
             or receipt.get("repo") != identity or receipt.get("lane_kind") != "bound"
             or not all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value) for value in (base, head))
             or head != lane_doc.get("bound_head")
-            or gitops.git(resolved, "merge-base", "--is-ancestor", base, head).returncode != 0):
+            or gitops.is_ancestor(resolved, base, head, via_cwd=True) is not True):
         raise SystemExit("pr create refuses: review receipt does not match the bound worktree identity/range")
     if base == head:
         raise SystemExit(

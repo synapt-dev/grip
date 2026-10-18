@@ -169,14 +169,11 @@ def test_ancestry_error_not_selected(two_member_ws: Path, monkeypatch: pytest.Mo
     ws = two_member_ws
     _init(ws)
     _unpushed_head(ws)
-    original = gitops.git
     calls = []
-    def broken(cwd, *args):
-        if args[:2] == ("merge-base", "--is-ancestor"):
-            calls.append((cwd, args))
-            return subprocess.CompletedProcess(args, 128, "", "ancestry unavailable")
-        return original(cwd, *args)
-    monkeypatch.setattr(gitops, "git", broken)
+    def broken(cwd, ancestor, descendant, **kwargs):
+        calls.append((cwd, ancestor, descendant))
+        return subprocess.CompletedProcess(["git", "merge-base", "--is-ancestor"], 128, "", "ancestry unavailable")
+    monkeypatch.setattr(gitops, "ancestry_proc", broken)
     before = _refs(ws)
     result = _invoke("review", "bind", str(ws))
     assert len(calls) == 1
@@ -219,16 +216,17 @@ def test_unreadable_ancestry_refuses_the_whole_set(two_member_ws: Path, monkeypa
     _init(ws)
     _, a_base, a_head = _unpushed_head(ws)
     b_head = _beta_ahead(ws)
-    original = gitops.git
+    original = gitops.ancestry_proc
     calls = []
 
-    def broken(cwd, *args):
-        if broken_member and args[:2] == ("merge-base", "--is-ancestor") and Path(cwd).name == broken_member:
+    def broken(cwd, ancestor, descendant, **kwargs):
+        if broken_member and Path(cwd).name == broken_member:
             calls.append(Path(cwd).name)
-            return subprocess.CompletedProcess(args, 128, "", "fatal: Not a valid commit name")
-        return original(cwd, *args)
+            return subprocess.CompletedProcess(["git", "merge-base", "--is-ancestor"], 128, "",
+                                               "fatal: Not a valid commit name")
+        return original(cwd, ancestor, descendant, **kwargs)
 
-    monkeypatch.setattr(gitops, "git", broken)
+    monkeypatch.setattr(gitops, "ancestry_proc", broken)
     before = _refs(ws)
     result = _invoke("review", "bind", str(ws))
     print(f"SUBJECT broken={broken_member} rc={result.exit_code} stdout={result.stdout!r}")

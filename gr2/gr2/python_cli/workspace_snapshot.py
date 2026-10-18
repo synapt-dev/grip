@@ -15,7 +15,7 @@ from pathlib import Path
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 
 from . import grip
-from .gitops import git, repo_dirty
+from .gitops import git, is_ancestor, repo_dirty
 
 
 class WorkspaceSnapshotError(Exception):
@@ -46,7 +46,7 @@ def _resolve_head(repo_root: Path, key: str, fork_base_sha: str | None) -> tuple
         raise WorkspaceSnapshotError(
             f"repo {key} recorded fork base {fork_base_sha} is not a commit in this repo"
         )
-    if git(repo_root, "merge-base", "--is-ancestor", fork_base_sha, commit).returncode != 0:
+    if is_ancestor(repo_root, fork_base_sha, commit, via_cwd=True) is not True:
         raise WorkspaceSnapshotError(
             f"repo {key} recorded fork base {fork_base_sha} is not an ancestor of HEAD {commit}"
         )

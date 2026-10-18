@@ -25,17 +25,17 @@ def _shown(value: str) -> str:
     return shlex.quote(_escaped(value))
 
 REVIEW_ORDER = """\b
-A review goes through six steps, in this order:
+A review goes through five steps, in this order:
   1. gr2 review pin      pin the head before pushing it (needs gr2 store init)
-  2. push the head       gr2 push, or git push
-  3. gr2 review publish  put the pinned review on each member remote
-  4. gr2 review stamp    an approver other than the author stamps it; in their
+  2. gr2 review publish  push every member's pinned head to its own remote,
+                         then put the pinned review there
+  3. gr2 review stamp    an approver other than the author stamps it; in their
                          own workspace, after gr2 review receive
-  5. gr2 check run       record the check at the exact head on the remote, for
-                         every member; a review over several members is also
-                         checked together with gr2 check set, one command over
-                         every member
-  6. gr2 review merge    merges only if heads still match the pin and check
+  4. gr2 check run       record the check at the exact head on the remote; a
+                         review over several members needs only gr2 check set,
+                         one command over every member: merge accepts on the
+                         set alone
+  5. gr2 review merge    merges only if heads still match the pin and check
 Each refusal along the way names the next command."""
 
 
@@ -93,11 +93,8 @@ def _update_lines(workspace: str, receipt: dict) -> list[str]:
             lines.append(f"next: resolve in {_shown(clone)}, git add, git commit, then run "
                          f"gr2 review update {_shown(workspace)} {_shown(rid)}")
     if new:
-        for m in receipt["members"]:
-            clone = f"{workspace.rstrip('/')}/{m['path']}"
-            lines.append(f"next: git -C {_shown(clone)} push -- {_shown(m['remote'])} HEAD")
-        for remote in dict.fromkeys(m["remote"] for m in receipt["members"]):
-            lines.append(f"next: gr2 review publish {_shown(workspace)} {_shown(new)} --remote {_shown(remote)}")
+        # One line: a bare publish pushes every member's pinned head to its own remote, then the review.
+        lines.append(f"next: gr2 review publish {_shown(workspace)} {_shown(new)}")
         lines.append(f"stamps and checks on {rid} do not carry; ask for stamps and run checks on {new}")
     elif not receipt.get("refused") and not any(m["state"] == "conflict" for m in receipt.get("members", [])):
         lines.append(f"{rid} is current: every member is at its target's tip; nothing to pin")

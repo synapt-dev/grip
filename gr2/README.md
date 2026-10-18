@@ -5,9 +5,11 @@
 ## Install
 
 ```bash
-uv tool install --pre gitgrip    # the PyPI package is "gitgrip"; it installs `gr` and `gr2`
+uv tool install --compile-bytecode --pre gitgrip    # the PyPI package is "gitgrip"; it installs `gr` and `gr2`
 gr2 --version
 ```
+
+`--compile-bytecode` writes the `.pyc` files at install time; without it uv leaves them to the first `gr2` call, which then takes about a third of a second longer. pip compiles at install on its own.
 
 Without uv, a venv and pip do the same:
 
@@ -144,7 +146,9 @@ gr2 review stamp <lane>
 The author recorded by the pin, and anyone who authored a commit in its range,
 cannot stamp it. A stamp records an approval; approver names are self-declared and receipts say `signed: false`.
 Repeated stamps by the same name count once. A moved head needs a new pin
-and fresh stamps. Signing is not implemented by these commands.
+and fresh stamps. Signing is not implemented by these commands. `review stamps` still counts
+stamps on a pin whose feature branch has moved, and says so per member (`moved_since_pin`, `null` when
+unreadable) with one stderr line, since `blockers` and `merge` will refuse it.
 
 The workspace's `grip.toml` sets the number required before merging:
 

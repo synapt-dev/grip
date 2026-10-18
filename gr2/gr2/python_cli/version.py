@@ -54,14 +54,13 @@ sha when a tracked file differed from that commit at build time), and
 
 from __future__ import annotations
 
-import importlib.metadata
+import importlib
 import json
 import re
 import shutil
 import subprocess
 from pathlib import Path, PurePath, PureWindowsPath
 from urllib.parse import urlparse
-from urllib.request import url2pathname
 
 DISTRIBUTION = "gitgrip"
 
@@ -94,6 +93,8 @@ def _matching_distributions(distribution: str) -> list[importlib.metadata.Distri
     """
     wanted = _normalise(distribution)
     found: list[importlib.metadata.Distribution] = []
+    import importlib.metadata  # about 17 ms; only --version and the version stamp need it
+
     for dist in importlib.metadata.distributions():
         try:
             metadata = dist.metadata
@@ -248,6 +249,8 @@ def _file_url_to_path(url: str) -> PurePath:
     rather than growing the caller's catch. Named here because it is a design debt this
     version pays a shape at a time instead of retiring.
     """
+    from urllib.request import url2pathname  # urllib.request pulls in http.client; only file:// URLs need it
+
     native = url2pathname(urlparse(url).path)
     if not native:
         # THE SEVENTH SHAPE, AND IT IS THE WORST OF THEM: a CONFIDENT FALSE ANSWER rather

@@ -594,9 +594,9 @@ def _judge_remote_branch(workspace: Path, remote: str, source: str, head: str, r
         _source_capture(source, "fetch", "-q", "--no-tags", "--refmap=", "--no-write-fetch-head", "--", remote, upstream)
         if gitops.run(Path(source), "cat-file", "-e", f"{tip}^{{commit}}").returncode != 0:
             raise GripReviewRefused("remote_unreadable", f"{upstream} {tip}", "the remote branch moved during the pin")
-    if gitops.run(Path(source), "merge-base", "--is-ancestor", tip, head).returncode == 0:
+    if gitops.is_ancestor(Path(source), tip, head) is True:
         return
-    if gitops.run(Path(source), "merge-base", "--is-ancestor", head, tip).returncode == 0:
+    if gitops.is_ancestor(Path(source), head, tip) is True:
         raise GripReviewRefused("head_behind_remote_branch", head, f"{upstream} {tip}")
     raise GripReviewRefused("remote_branch_diverged", head, f"{upstream} {tip}")
 
@@ -648,7 +648,7 @@ def _carry_objects(workspace: Path, source: str, base: str, head: str) -> dict[s
     if merges:
         # A flattened range rebuilds the head's tree, so it must contain the base: otherwise the rebuild lacks what the
         # base gained since the author's last merge, and a passing set check would attest a combination never tested.
-        if gitops.run(Path(source), "merge-base", "--is-ancestor", base, head).returncode != 0:
+        if gitops.is_ancestor(Path(source), base, head) is not True:
             exc = GripReviewRefused("base_not_ancestor_of_head", base, head)
             exc.add_note("next: merge the target again (git merge origin/<branch>), resolve, and bind the new head")
             raise exc
@@ -842,6 +842,10 @@ def _bind_review_rows_body(
                 raise GripReviewRefused("range_head_mismatch", head, from_head)
             obj = _carry_objects_from_range(workspace, remote, base, range_patch)
         if obj is not None:
+            size = len(obj["range.patch"].encode())
+            if size > fd.MAX_BLOB_BYTES:
+                # Refused here, before anything is written, so the store never holds a record its own reader refuses.
+                raise GripReviewRefused("range_patch_over_limit", f"<= {fd.MAX_BLOB_BYTES} bytes", f"{size} bytes")
             member.update(range_patch=obj["range.patch"], metadata=obj["metadata"], head_tree=obj["head-tree"])
             scan_items.append((f"{key}.range.patch", obj["range.patch"]))
         evidence = row.get("evidence")
@@ -1165,8 +1169,10 @@ def _check_field_tree(repo: Path, tree: str) -> dict[str, object]:
 def _decode_field_tree(repo: Path, tree: str) -> dict[str, object]:
     from . import review_field_tree as fd
     try:
-        fd.verify_tree(repo, tree)
-        record = fd.read_record(repo, tree)
+        # one reader for both passes: one ls-tree and one cat-file --batch for the whole tree
+        with fd.BatchReader(repo) as reader:
+            fd.verify_tree(repo, tree, reader=reader)
+            record = fd.read_record(repo, tree, reader=reader)
     except fd.ReviewRecordError as exc:
         raise GripCorruptError(f"invalid field tree review record: {exc}") from exc
     if record.get("schema") != _REVIEW_BIND_SCHEMA or record.get("kind") != "review":
@@ -1909,7 +1915,7 @@ def publish_review_all(workspace: Path, commit: str, ref: str | None = None) -> 
             raise GripReviewRefused("remote_unreadable", str(row["key"]), on_remote.stderr.strip())
         theirs = on_remote.stdout.split()[0] if on_remote.stdout.strip() else None
         if theirs is not None and theirs != row["head"] and \
-                git(Path(row["clone"]), "merge-base", "--is-ancestor", theirs, str(row["head"])).returncode != 0:
+                gitops.is_ancestor(Path(row["clone"]), theirs, str(row["head"]), via_cwd=True) is not True:
             raise GripReviewRefused("feature_moved", str(row["key"]), f"remote {row['branch']} at {theirs}")
         row.update(destination=destination, branch_ref=branch_ref, theirs=theirs)
         try:

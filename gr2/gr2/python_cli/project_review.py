@@ -11,7 +11,7 @@ from pathlib import PurePosixPath, PureWindowsPath
 from typing import Literal
 
 from gr2.prototypes import lane_workspace_prototype as lanes
-from . import grip, review, spec_apply
+from . import grip, keys, review, spec_apply
 from .gitops import git
 
 _SHA40 = re.compile(r"\A[0-9a-f]{40}\Z")
@@ -86,7 +86,7 @@ def _normalized_path(value: str) -> str:
     path = PurePosixPath(value)
     if not value or path.is_absolute() or ".." in path.parts or str(path) in {".", ""}:
         raise ValueError(f"invalid project review path: {value!r}")
-    return path.as_posix()
+    return keys.member_path_key(value)
 
 
 def _canonical_pin(pin: ProjectReviewPin) -> ProjectReviewPin:

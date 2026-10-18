@@ -18,10 +18,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
 
-from jsonschema import Draft202012Validator
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # jsonschema costs about 33 ms to import; load it only where a schema is checked
+    from jsonschema import Draft202012Validator
 
 from .events import EventType, emit_after_outcome
 from . import gitops
+from . import keys
 from .gitops import (
     ensure_repo_cache,
     is_git_dir,
@@ -72,6 +76,8 @@ def validate_grip_toml(workspace_root: Path) -> list[ValidationIssue]:
         return []
     with path.open("rb") as fh:
         document = tomllib.load(fh)
+    from jsonschema import Draft202012Validator
+
     schema = json.loads(importlib.resources.files("gr2.schemas").joinpath("gr2-workspace-spec-v1.schema.json").read_text())
     return [ValidationIssue("error", "grip_toml_schema", error.message, ".".join(map(str, error.path)) or None)
             for error in Draft202012Validator(schema).iter_errors(document)]
@@ -737,7 +743,7 @@ def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -
         # the pending key is the member's declared PATH; the spec names repos
         # by name — resolve path -> spec row, then use the row's own name.
         repo_spec = next(
-            (r for r in spec.get("repos", []) if str(r.get("path", "")).strip("/") == member_key),
+            (r for r in spec.get("repos", []) if keys.member_path_key(r.get("path", "")) == keys.member_path_key(member_key)),
             None,
         )
         if repo_spec is None:
@@ -1165,6 +1171,8 @@ def _load_plan_validator() -> Draft202012Validator:
                 f"{_PLAN_SCHEMA_SHA256}, got {actual} -- refusing to validate against "
                 "an unpinned schema"
             )
+        from jsonschema import Draft202012Validator
+
         _plan_validator = Draft202012Validator(json.loads(raw))
     return _plan_validator
 

@@ -242,3 +242,77 @@ def test_a_shallow_clone_refuses_rather_than_drop_the_records_it_cannot_see(tmp_
 
     assert refused.returncode == 4
     assert "unshallow" in refused.stdout + refused.stderr
+
+
+def _git_at_least(tmp_path: Path, major: int, minor: int) -> bool:
+    import re
+    found = re.findall(r"\d+", git(tmp_path, "version").stdout)[:2]
+    return tuple(int(n) for n in found) >= (major, minor)
+
+
+def test_a_partial_clone_refuses_rather_than_drop_the_records_it_cannot_read(tmp_path):
+    """A blob:none clone holds the field-commit but not its record's blobs. The record read refuses the absent blob
+    instead of fetching it, and the commit must refuse too: treating it as "not a record" would carry the member's
+    field-commit forward with its records dropped."""
+    import pytest
+
+    if not _git_at_least(tmp_path, 2, 44):
+        pytest.skip("git before 2.44 ignores GIT_NO_LAZY_FETCH")
+    root, _ = _root_with_a_check_on_alpha(tmp_path)
+    git(root, "config", "uploadpack.allowFilter", "true")
+    git(tmp_path, "clone", "-q", "--filter=blob:none", f"file://{root}", "partial")
+    partial = tmp_path / "partial"
+    configure_identity(partial)
+    for name in ("alpha", "beta"):
+        git(tmp_path, "clone", "-q", git(root / name, "remote", "get-url", "origin").stdout.strip(), str(partial / name))
+        configure_identity(partial / name)
+    before = _gitlink(partial, "alpha")
+    _advance(partial, "beta", push=True)
+
+    refused = gr2(partial, "commit", "-m", "from a partial clone", check=False)
+
+    out = refused.stdout + refused.stderr
+    assert refused.returncode == 4, out
+    assert "is missing locally" in out and " fetch -- origin " in out
+    assert "Traceback" not in out
+    assert _gitlink(partial, "alpha") == before   # nothing was committed over alpha's record
+    records = mft.read(root, git(root, "rev-parse", f"{_gitlink(root, 'alpha')}^{{tree}}").stdout.strip())["records"]
+    assert len(records) == 1   # and the root still carries alpha's check
+
+
+def test_a_partial_clone_names_the_absent_record_when_reading_a_members_pin(tmp_path):
+    """The pin reader of a full-mode root reads the gitlink through the field record. In a blob:none clone that read
+    is refused, and the reader says so rather than reporting that the commit gives no pin."""
+    import pytest
+    from gr2.python_cli import grip_cli
+
+    if not _git_at_least(tmp_path, 2, 44):
+        pytest.skip("git before 2.44 ignores GIT_NO_LAZY_FETCH")
+    root, _ = _root_with_a_check_on_alpha(tmp_path)
+    git(root, "config", "uploadpack.allowFilter", "true")
+    git(tmp_path, "clone", "-q", "--filter=blob:none", f"file://{root}", "partial")
+    partial = tmp_path / "partial"
+
+    with pytest.raises(grip_cli.NativeStoreRefusal) as refused:
+        grip_cli._member_record(partial, "alpha", None, True)
+    assert "is missing locally" in str(refused.value)
+    assert grip_cli._member_record(root, "alpha", None, True)[1] == "gitlink"   # control: the full root reads it
+
+
+def test_a_shallow_partial_clone_keeps_the_unshallow_advice_for_a_record_it_does_not_reach(tmp_path):
+    """A clone that is both shallow and partial does not hold the field-commit at all. That is a shallow clone's
+    absence, so the refusal names `git fetch --unshallow`, not a fetch of an unresolved `<commit>^{tree}`."""
+    import pytest
+    from gr2.python_cli import grip_cli
+
+    if not _git_at_least(tmp_path, 2, 44):
+        pytest.skip("git before 2.44 ignores GIT_NO_LAZY_FETCH")
+    root, _ = _root_with_a_check_on_alpha(tmp_path)
+    git(root, "config", "uploadpack.allowFilter", "true")
+    git(tmp_path, "clone", "-q", "--depth", "1", "--filter=blob:none", f"file://{root}", "both")
+    both = tmp_path / "both"
+
+    with pytest.raises(grip_cli.NativeStoreRefusal) as refused:
+        grip_cli._field_record(both, {"name": "alpha", "path": "alpha"}, "HEAD")
+    assert "--unshallow" in str(refused.value)
+    assert "is missing locally" not in str(refused.value) and " fetch -- " not in str(refused.value)

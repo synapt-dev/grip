@@ -8,7 +8,7 @@ import tempfile
 import tomllib
 from pathlib import Path
 
-from .gitops import git
+from .gitops import git, is_ancestor
 from .keys import member_path_key
 from .layout import grip_dir
 
@@ -225,8 +225,8 @@ def adopt_legacy_project_allocation(workspace: Path, owner_unit: str, lane_name:
             if record["repo"] != expected_repo or _legacy_transport_source(member, expected_repo) != expected_repo:
                 raise ValueError("legacy member source identity differs from workspace")
             head = git(member, "rev-parse", "HEAD")
-            base = git(member, "merge-base", "--is-ancestor", record["base"], record["head"])
-            if head.returncode or head.stdout.strip() != record["head"] or base.returncode:
+            base = is_ancestor(member, record["base"], record["head"], via_cwd=True)
+            if head.returncode or head.stdout.strip() != record["head"] or base is not True:
                 raise ValueError("legacy member HEAD/base differs from workspace safety evidence")
             actual.append(member)
         doc = record_created_allocation(workspace, target, owner_unit, lane_name, actual,

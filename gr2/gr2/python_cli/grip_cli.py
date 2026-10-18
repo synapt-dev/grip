@@ -490,8 +490,17 @@ def _native_members(root: Path, revision: str | None = None) -> list[dict[str, s
                 )
         if revision is not None:
             item["path"] = _normalise_member_path(root, str(item["path"]))
-            if any(previous["name"] == item["name"] or previous["path"] == item["path"] for previous in result):
-                raise NativeStoreRefusal("selected workspace commit has duplicate member names or paths", 4)
+        # Keyed for the working document too: `./alpha` and `alpha` are one gitlink, so two members there collide.
+        # There it compares PATHS only: a duplicate NAME is left to the fallback's containment (see
+        # _native_member_working_root), which refuses only the collision it can act on.
+        path_key = keys.member_path_key(item.get("path"))
+        if revision is None:
+            if any(keys.member_path_key(previous.get("path")) == path_key for previous in result):  # mut:pathsonly
+                raise NativeStoreRefusal("grip.toml has duplicate member paths", 4)
+        elif any(previous.get("name") == item.get("name")
+                 or keys.member_path_key(previous.get("path")) == path_key for previous in result):
+            raise NativeStoreRefusal("selected workspace commit has duplicate member names or paths", 4)
+        if revision is not None:
             link = _store_git(root, "ls-tree", revision, "--", item["path"]).stdout.split()
             entry = link[2] if len(link) >= 3 and link[0] == "160000" else None
             if full and entry is not None:
@@ -924,7 +933,7 @@ def _claimed_member_paths(
             continue
         claimed.add((root / member["path"]).resolve())
         name = str(member.get("name", ""))
-        if name and name != member["path"]:
+        if name and keys.member_path_key(name) != keys.member_path_key(member["path"]):
             try:
                 claimed.add((root / _normalise_member_path(root, name)).resolve())
             except NativeStoreRefusal:
@@ -964,7 +973,7 @@ def _native_member_working_root(
     if _is_member_checkout(root, member["path"]):
         return declared
     name = str(member.get("name", ""))
-    if name and name != member["path"]:
+    if name and keys.member_path_key(name) != keys.member_path_key(member["path"]):
         try:
             # THE NAME IS A PATH COORDINATE, so it goes through the SAME normaliser the declared
             # path does. Without this the fallback was a second door into the escape that
@@ -1428,8 +1437,8 @@ def _native_store_init(root: Path, member_paths: list[str] | None = None,
         # The --member paths are checked BEFORE anything is cloned, like every other refusal decidable up front:
         # `--clone a=<url> --member nope` used to clone a and only then refuse nope, leaving a stray a/. A path
         # --clone itself creates is skipped here; it cannot be a checkout until it is cloned.
-        cloned_names = {name for name, _ in clones}
-        named = [p for p in (member_paths or []) if str(PurePosixPath(p.strip())) not in cloned_names]
+        cloned_names = {keys.member_path_key(name.strip()) for name, _ in clones}
+        named = [p for p in (member_paths or []) if keys.member_path_key(p.strip()) not in cloned_names]
         if named:  # mut:earlymember
             _discover_members(root, declared=named)
         if not (root / ".git").exists():
@@ -1544,7 +1553,7 @@ def _coverage_of(path: Path, pin: str, upstream: str) -> str:
     A merge commit in the pin's range can carry content of its own (a conflict resolution, or a file added in the
     merge), and the commit-by-commit read never sees it. So a range holding any merge, or one whose merges cannot be
     listed, is answered from the combined diff alone, which includes that content."""
-    if not _store_git(path, "merge-base", "--is-ancestor", pin, upstream, check=False).returncode:
+    if gitops.is_ancestor(path, pin, upstream) is True:
         return COVERAGE_REACHABLE
     base = _store_git(path, "merge-base", pin, upstream, check=False).stdout.strip()
     if not base:
@@ -1590,7 +1599,7 @@ def _unpushed_steps(root: Path, path: Path, sha: str, upstream: str) -> str:
     line and neither learned what to push or that full mode keeps it unpushed). The push names the member's branch
     only when that branch contains the pin; `store check` asks about a recorded pin the HEAD may have left."""
     on = _store_git(path, "branch", "--show-current", check=False).stdout.strip() or None
-    if on and _store_git(path, "merge-base", "--is-ancestor", sha, "HEAD", check=False).returncode:
+    if on and gitops.is_ancestor(path, sha, "HEAD") is not True:
         on = None
     compat = _workspace_mode(_grip_document(root)) != "full"
     return next_steps._unpushed_pin(str(path), sha, upstream.partition("/")[0], on, str(root / "grip.toml"), compat)
@@ -1764,7 +1773,8 @@ def _member_records(root: Path, member: dict[str, str]) -> list[str]:
             # a ref under the review root that does not name a bind (or names one it does not point at) is not a review
             # record; any other failure (no store, a git read that fails) is raised, never read as "no records"
             continue
-        if not any(m["path"] == member["path"] and m["head"] == member["pin"] for m in view["members"]):
+        wanted = keys.member_path_key(member["path"])
+        if not any(keys.member_path_key(m["path"]) == wanted and m["head"] == member["pin"] for m in view["members"]):
             continue
         trees.add(_store_git(root, "rev-parse", f"{commit}^{{tree}}").stdout.strip())
         approval_ref = f"{APPROVAL_REF_ROOT}{commit}"
@@ -1826,6 +1836,10 @@ def _prior_records(root: Path, previous: str | None, pin: str) -> set[str]:
         return set()
     try:
         prior = mft.read(root, tree)
+    except mft.MissingLocally as exc:
+        # the entry IS a field-commit whose record a partial clone does not hold; carrying on would drop its records
+        raise NativeStoreRefusal(f"the record this clone last committed for pin {pin[:12]} cannot be read: {exc}",
+                                 4) from exc
     except mft.FieldTreeError:
         return set()   # not a field record (a compat gitlink's own commit tree)
     return set(prior["records"]) if prior["pin"] == pin else set()
@@ -1847,8 +1861,10 @@ def _field_record(root: Path, member: dict[str, str], revision: str = "HEAD") ->
     try:
         return mft.read(root, f"{link[2]}^{{tree}}")
     except (mft.FieldTreeError, RuntimeError, subprocess.SubprocessError, OSError) as exc:
-        # The unshallow advice is for a record this clone does not hold (a git failure), not for one it holds and refuses.
-        hint = "; a shallow clone does not carry it, so run `git fetch --unshallow`" if str(exc).startswith("git ") else ""
+        # The unshallow advice is for a record this clone does not hold (a git failure), not for one it holds and refuses,
+        # nor for one a partial clone left out: that refusal already names the fetch that brings it in.
+        shallow = str(exc).startswith("git ") and not isinstance(exc, mft.MissingLocally)
+        hint = "; a shallow clone does not carry it, so run `git fetch --unshallow`" if shallow else ""
         raise NativeStoreRefusal(f"{member['name']} field record cannot be read: {exc}{hint}", 4) from exc
 
 
@@ -1910,8 +1926,8 @@ def _head_member_entry(document: dict, path: str, name: str | None = None) -> di
     matched by its committed name, which no working edit can change."""
     members = document.get("members", [])
     entries = [m for m in members if isinstance(m, dict) and m.get("pin")] if isinstance(members, list) else []
-    want = str(PurePosixPath(str(path)))
-    found = next((m for m in entries if str(PurePosixPath(str(m.get("path", "")))) == want), None)
+    want = keys.member_path_key(path)
+    found = next((m for m in entries if keys.member_path_key(m.get("path", "")) == want), None)
     if found is None and name:
         found = next((m for m in entries if m.get("name") == name), None)
     return found
@@ -1937,6 +1953,9 @@ def _member_record(root: Path, path: str, committed: str | None, full: bool) -> 
         from . import member_field_tree as mft
         try:
             entry = mft.read(root, f"{entry}^{{tree}}")["pin"]
+        except mft.MissingLocally as exc:
+            # a partial clone left the record out: say so, rather than report that the commit gives no pin
+            raise NativeStoreRefusal(f"the field record for {path} cannot be read: {exc}", 4) from exc
         except (mft.FieldTreeError, RuntimeError, subprocess.SubprocessError, OSError, KeyError):
             entry = None
     if isinstance(entry, str) and _FULL_SHA.match(entry):
@@ -1977,15 +1996,15 @@ def recorded_member_pin(root: Path, name: str, path: str | None = None) -> tuple
         document.get("members"), list) else []
     member = None
     if path:
-        want = str(PurePosixPath(str(path)))
-        member = next((m for m in members if str(PurePosixPath(str(m.get("path", "")))) == want), None)
+        want = keys.member_path_key(path)
+        member = next((m for m in members if keys.member_path_key(m.get("path", "")) == want), None)
     if member is None:
         member = next((m for m in members if m.get("name") == name), None)
     if member is None:
         # Dropped from the working file but still in the root commit: the working file is editable, so the commit's
         # pin is still the record.
         return _committed_record(root, str(path or name), name)
-    member_path = str(PurePosixPath(str(member.get("path") or path or name)))
+    member_path = keys.member_path_key(member.get("path") or path or name)
     head = _head_grip_toml(root)
     entry = _head_member_entry(head, member_path)
     committed = str(entry["pin"]) if entry else None
@@ -2010,7 +2029,7 @@ def _committed_record(root: Path, path: str, name: str) -> tuple[bool, str | Non
     entry = _head_member_entry(document, path, name)
     if entry is None:
         return False, None, ""
-    entry_path = str(PurePosixPath(str(entry.get("path") or path)))
+    entry_path = keys.member_path_key(entry.get("path") or path)
     recorded, source = _member_record(root, entry_path, str(entry["pin"]), _workspace_mode(document) == "full")
     return True, recorded, source
 
@@ -2048,7 +2067,7 @@ def _refuse_pin_rewind(
             f"HEAD could undo it; {hint}",
             3,
         )
-    behind = _store_git(path, "merge-base", "--is-ancestor", head, recorded, check=False)
+    behind = gitops.ancestry_proc(path, head, recorded)
     if behind.returncode == 0:
         raise PinRewindRefusal(
             f"{name}: HEAD {head[:12]} is behind the recorded pin {recorded[:12]}; recording it would undo "
@@ -2060,7 +2079,7 @@ def _refuse_pin_rewind(
     if recorded_ref and member.get("ref") != recorded_ref:
         # A member switched to another branch is adopted when that branch's upstream covers HEAD, but the record
         # then forgets the old pin: if HEAD does not contain it, its commits leave the record with exit 0.
-        contains = _store_git(path, "merge-base", "--is-ancestor", recorded, head, check=False)
+        contains = gitops.ancestry_proc(path, recorded, head)
         if contains.returncode == 1:
             raise PinRewindRefusal(
                 f"{name}: HEAD {head[:12]} on {member.get('ref')} does not contain the recorded pin {recorded[:12]} "
@@ -2362,7 +2381,7 @@ def _refuse_undeclared_gitlinks(root: Path, members: list[dict[str, str]]) -> No
 
 def _undeclared_gitlink_lines(root: Path, members: list[dict[str, str]]) -> list[str]:
     """One refusal line per root-index gitlink that no member declares; `check` raises them, `status` prints them."""
-    declared = {str(PurePosixPath(member["path"])) for member in members}   # the index spells `./a` and `a/` as `a`
+    declared = {keys.member_path_key(member["path"]) for member in members}   # the index spells `./a` and `a/` as `a`
     stray = sorted(path for path in store_hooks._index_gitlinks(root, None) if path not in declared)
     return [f"undeclared gitlink {path!r} in the root index: grip.toml has no member at that path; "
             f"declare it as a member, or remove it from the index with `git rm --cached -f -- {shlex.quote(path)}`"
@@ -2584,9 +2603,9 @@ def _leases(root: Path, tip: str, refs: list[str]) -> dict[str, str]:
         if now and now != tip:
             line = _store_git(root, "rev-list", "--first-parent", tip).stdout.split()
             if now not in line:
-                if _store_git(root, "merge-base", "--is-ancestor", tip, now, check=False).returncode == 0:
+                if gitops.is_ancestor(root, tip, now) is True:
                     why = "behind: this push's tip is an ancestor of it"
-                elif _store_git(root, "merge-base", "--is-ancestor", now, tip, check=False).returncode:
+                elif gitops.is_ancestor(root, now, tip) is not True:
                     why = "rewrite: it is not an ancestor of this push's tip"
                 else:
                     why = "not on the first-parent line of this push's tip (a merge took it as a side parent)"
@@ -3056,7 +3075,7 @@ def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[
         measured = bool(separator and remote and branch and fetched is not None and not fetched.returncode)
         if not measured:
             state = "cannot-measure"
-        elif _store_git(path, "merge-base", "--is-ancestor", member["pin"], member["upstream"], check=False).returncode:
+        elif gitops.is_ancestor(path, member["pin"], member["upstream"]) is not True:
             # Full mode records a pin no remote has in LAYERS, so "upstream lacks the pin" is the
             # designed state there, not a loss: `check` calls it `layer`, and status must say the same
             # word for the same member (a healthy layered member used to read `missing`).
@@ -3325,7 +3344,7 @@ def _native_store_migrate(root: Path, *, dry_run: bool = False) -> dict[str, obj
         # The branch the member is ON, read by the same helper init records it with, so the pin
         # is checked against the upstream init would write (`origin/core/main`, not a literal).
         _ref, upstream = _infer_member_branch(path)
-        if _store_git(path, "merge-base", "--is-ancestor", pin, upstream, check=False).returncode:
+        if gitops.is_ancestor(path, pin, upstream) is not True:
             raise NativeStoreRefusal(
                 f"{name} pin {pin} is not on {upstream}; {_push_or_switch(name, 'migrate')}", 3)
         planned[name] = pin

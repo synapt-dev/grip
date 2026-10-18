@@ -3,7 +3,6 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import functools
-import importlib.metadata
 import io
 import json
 import os
@@ -29,6 +28,7 @@ from gr2.prototypes import repo_maintenance_prototype as repo_proto
 
 from . import add as add_ops
 from .version import version_line
+from .keys import member_path_key
 from . import branch as branch_ops
 from . import change as change_ops
 from . import commit as commit_ops
@@ -91,7 +91,9 @@ from .platform import PRRef
 app = typer.Typer(
     help=(
         "The workspace layer for multi-repo work: a workspace over your repos, "
-        "isolated lanes to work in, and one grouped review per slice."
+        "isolated lanes to work in, and one grouped review per slice.\n\n"
+        "To land a reviewed change: gr2 review pin, publish, stamp, gr2 check, then gr2 review merge; "
+        "the steps are in gr2 review --help."
     )
 )
 
@@ -262,7 +264,7 @@ def _start_lane_branch(repo_name: str, repo: Path, branch: str, ref: str | None,
     remote = git(repo, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{branch}^{{commit}}")
     if remote.returncode == 0:
         tip = remote.stdout.strip()
-        if head != tip and seed_is_work and git(repo, "merge-base", "--is-ancestor", head, tip).returncode != 0:
+        if head != tip and seed_is_work and gitops.is_ancestor(repo, head, tip, via_cwd=True) is not True:
             print(f"gr2: {repo_name}: {branch} keeps the local work at {head[:12]}, which origin/{branch} "
                   f"({tip[:12]}) does not contain; it tracks origin/{branch}", file=sys.stderr)
         elif head != tip:
@@ -277,7 +279,7 @@ def _start_lane_branch(repo_name: str, repo: Path, branch: str, ref: str | None,
         fork = base.stdout.strip() if base.returncode == 0 and base.stdout.strip() else head
         print(f"gr2: {repo_name}: continues origin/{branch} at {head[:12]}; fork base {fork[:12]}", file=sys.stderr)
         return fork, None
-    if seed_is_work and git(repo, "merge-base", "--is-ancestor", head, integration).returncode == 0:
+    if seed_is_work and gitops.is_ancestor(repo, head, integration, via_cwd=True) is True:
         seed_is_work = False  # the local branch holds nothing its target lacks: there is no work to keep
     start = "local" if seed_is_work else "pin" if at_pin else "tip"
     if start == "tip":
@@ -1289,6 +1291,9 @@ def _scan_existing_repos(workspace_root: Path) -> list[dict[str, object]]:
     pins = _root_gitlink_pins(workspace_root)
     declared_refs = repo_proto.root_submodule_branches(workspace_root)
     modules = repo_proto.root_submodule_declarations(workspace_root)
+    # The same, as member keys, for the declared-state lookup: `.gitmodules` may spell a path `./alpha` or `alpha/`.
+    pins_by_key = {member_path_key(path): pin for path, pin in pins.items()}
+    declared_refs_by_key = {member_path_key(path): ref for path, ref in declared_refs.items()}
 
     if pins:
         # A root that pins members has a KNOWN member set, at ANY depth: the
@@ -1360,8 +1365,8 @@ def _scan_existing_repos(workspace_root: Path) -> list[dict[str, object]]:
         repo.update(
             repo_proto.declared_repo_state(
                 child,
-                pinned=pins.get(str(repo["path"])),
-                declared_ref=declared_refs.get(str(repo["path"])),
+                pinned=pins_by_key.get(member_path_key(repo["path"])),
+                declared_ref=declared_refs_by_key.get(member_path_key(repo["path"])),
             )
         )
         repos.append(repo)
@@ -5832,6 +5837,11 @@ def review_merge(
     if on_set:
         typer.echo(f"accepted on the set alone (no test record of its own at its head): {', '.join(on_set)}; "
                    "the set's command is the only test evidence for them, so it must run their tests", err=True)
+    # A moved target refuses every member with the same update line; say it once where an operator reads, not only
+    # inside each member's row of the receipt.
+    for line in dict.fromkeys(m["next"] for m in receipt.get("members", [])
+                              if m.get("next") and (m.get("refused") or "").startswith("base_moved")):
+        typer.echo(line, err=True)
     if hint_error:
         typer.echo(hint_error, err=True)
     for set_name in sorted({(m.get("declared_set") or {}).get("set") for m in receipt.get("members", [])} - {None}):
@@ -5898,6 +5908,27 @@ def review_blockers(
         raise typer.Exit(code)
 
 
+def _stamps_moved(ws: Path, rid: str, rows: list[dict], head_field: str) -> None:
+    """A stamp is valid for its pin; say per member whether the remote feature branch has left the pin since."""
+    members = grip.show_review_commit(ws, rid)["members"]
+    try:
+        feature = defaults.branch([(ws / m["path"]).resolve() for m in members], None)[0]
+    except defaults.Unresolved:
+        feature = None
+    moves = merge_gate.feature_moves(ws, members, feature)
+    for row in rows:
+        move = moves.get(row["key"], {"moved_since_pin": None, "branch_head": None, "feature": feature,
+                                      "unmeasured": "not in this pin"})
+        row.update(move)
+        if move["moved_since_pin"]:
+            typer.echo(f"{row['key']} moved since the pin: stamps cover {row[head_field]}, the branch "
+                       f"{next_steps._shown(feature)} is at {move['branch_head'] or 'nothing (absent)'}; "
+                       "blockers and merge will refuse", err=True)
+        elif move["moved_since_pin"] is None:
+            typer.echo(f"{row['key']}: unknown whether the branch moved since the pin ({move['unmeasured']}); "
+                       f"stamps cover {row[head_field]}", err=True)
+
+
 @review_app.command("stamps", cls=ReviewHeadCommand)
 def review_stamps(
     workspace_root: Path,
@@ -5915,6 +5946,7 @@ def review_stamps(
         rid = (review_id or approvals.current_review(ws)).removeprefix("gr:")
         if since_my_stamp:
             result = approvals.since_my_stamp(ws, rid)
+            _stamps_moved(ws, rid, result.get("members", []), "current_head")
             typer.echo(json.dumps(result))
             if "refused" in result:
                 raise typer.Exit(3)  # a measured no, as `blockers` "not ready"; 5 stays for what cannot be read
@@ -5933,6 +5965,7 @@ def review_stamps(
         result["stamps"] = [{"approver": l["approver"], "link": l["commit"],
                              "created_at": approvals._read_link(ws, l["commit"]).get("created_at")}
                             for l in result.pop("links")]
+        _stamps_moved(ws, rid, result["members"], "head")
     except (grip.ReviewStoreAbsent, approvals.ApprovalRefused, grip.GripInitError, grip.GripCorruptError,
             OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
         typer.echo(json.dumps({"review_id": review_id, "refused": f"{type(exc).__name__}: {exc}"}))

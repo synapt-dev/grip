@@ -1159,6 +1159,36 @@ def test_a_bad_checkout_pr_stamp_refusal_names_the_ref_and_commit_and_its_next_s
     assert cleared.exit_code == 0 and json.loads(cleared.output)["count"] == 1, (cleared.output, cleared.exception)
 
 
+# The printed delete names the tip it saw. A good stamp that lands after the refusal is printed moves
+# the ref, so the printed command must refuse and leave every ref where it was, deleting nothing.
+def test_a_bad_checkout_pr_stamp_next_step_refuses_once_a_later_stamp_moved_the_ref(review_world, monkeypatch):
+    from typer.testing import CliRunner
+    from gr2.python_cli import approvals
+
+    world = review_world
+    ws, app_mod, lane = _checked_out_lane(world, monkeypatch)
+    stamped = CliRunner().invoke(app_mod.app, ["review", "stamp", str(lane)])
+    assert stamped.exit_code == 0, (stamped.output, stamped.exception)
+    repo = approvals.pr_lane_record(lane)["repo"]
+    good = approvals.pr_head_approvals(world["source"], repo, world["head_sha"])
+    name = "Re\nnext: forged\x1b[2Jviewer"
+    _plant_pr_lane_stamp(world["source"], {**good["links"][0], "approver": {"name": name, "key_id": ""}}, good["tip"])
+    ref = approvals.PR_PREFIX + world["head_sha"]
+    bad = _run(world["source"], "rev-parse", ref)
+    again = CliRunner().invoke(app_mod.app, ["review", "stamp", str(lane)])
+    assert again.exit_code == 2, (again.output, again.exception)
+    command = again.output.splitlines()[1].split("then stamp it again: ", 1)[1]
+    _plant_pr_lane_stamp(world["source"], {**good["links"][0], "approver": {"name": "Later", "key_id": ""}}, bad)
+    moved = _run(world["source"], "rev-parse", ref)
+    assert moved != bad
+    listed = ["git", "-C", str(world["source"]), "for-each-ref", "--format=%(refname) %(objectname)"]
+    before = subprocess.run(listed, capture_output=True, text=True, check=True).stdout
+    ran = subprocess.run(command, shell=True, capture_output=True, text=True)
+    assert ran.returncode != 0 and "cannot lock ref" in ran.stderr and "expected" in ran.stderr, (ran.returncode, ran.stderr)
+    assert subprocess.run(listed, capture_output=True, text=True, check=True).stdout == before
+    assert _run(world["source"], "rev-parse", ref) == moved
+
+
 def test_a_pr_lane_approval_outlives_review_close_and_reads_back_by_repo_and_head(review_world, monkeypatch):
     """The approval lives in the workspace's clone of the repo, not the lane, so closing the lane keeps it."""
     from typer.testing import CliRunner

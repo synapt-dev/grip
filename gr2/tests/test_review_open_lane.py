@@ -1032,6 +1032,32 @@ def test_stamp_on_a_checkout_pr_lane_whose_head_moved_refuses(review_world, monk
     assert approvals.pr_head_approvals(world["source"], "any", world["head_sha"])["tip"] is None
 
 
+# The pinned lane's name rule (approvals.check_approver_name) refuses C0 controls and DEL; a line or paragraph
+# separator or a zero-width space inside the name passes it, so the checkout-pr stamp passes them too.
+@pytest.mark.parametrize("char, refused", [
+    (chr(9), True), (chr(127), True), (chr(1), True), (chr(10), True), (chr(0x2028), False), (chr(0x200B), False),
+], ids=["tab", "del", "x01", "newline", "u2028", "u200b"])
+def test_stamp_on_a_checkout_pr_lane_applies_the_pinned_lane_name_rule(review_world, monkeypatch, char, refused):
+    from typer.testing import CliRunner
+    from gr2.python_cli import approvals
+
+    world = review_world
+    ws, app_mod, lane = _checked_out_lane(world, monkeypatch)
+    name = "Re" + char + "viewer"
+    subprocess.run(["git", "-C", str(lane), "config", "user.name", name], check=True)
+    assert subprocess.run(["git", "-C", str(lane), "config", "user.name"], capture_output=True,
+                          text=True, check=True).stdout[:-1] == name
+    stamped = CliRunner().invoke(app_mod.app, ["review", "stamp", str(lane)])
+    back = approvals.pr_head_approvals(world["source"], approvals.pr_lane_record(lane)["repo"], world["head_sha"])
+    if refused:
+        assert stamped.exit_code == 2, (stamped.output, stamped.exception)
+        assert stamped.output.splitlines()[0] == "approval_chain_broken: invalid approver name", stamped.output
+        assert back["tip"] is None
+    else:
+        assert stamped.exit_code == 0, (stamped.output, stamped.exception)
+        assert [link["approver"]["name"] for link in back["links"]] == [name]
+
+
 def test_a_pr_lane_approval_outlives_review_close_and_reads_back_by_repo_and_head(review_world, monkeypatch):
     """The approval lives in the workspace's clone of the repo, not the lane, so closing the lane keeps it."""
     from typer.testing import CliRunner

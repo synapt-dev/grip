@@ -7,6 +7,77 @@ from pathlib import Path
 from . import next_steps
 
 
+# fsck's name rules ported from git: fsck.c fsck_tree, path.c is_ntfs_dotgit and is_ntfs_dot_generic,
+# utf8.c is_hfs_dotgit. A Windows or macOS checkout reads each such name as the repository's own entry.
+_HFS_IGNORED = frozenset([*range(0x200C, 0x2010), *range(0x202A, 0x202F), *range(0x206A, 0x2070), 0xFEFF])
+
+
+def _is_hfs_dot(name: str, needle: str) -> bool:
+    """HFS+ drops these code points and folds ASCII case, so ".g\u200cit" opens .git."""
+    folded = "".join(c for c in name if ord(c) not in _HFS_IGNORED)
+    return folded.isascii() and folded.lower() == "." + needle
+
+
+def _ntfs_tail(rest: str) -> bool:
+    """NTFS drops trailing spaces and dots, and reads ":<stream>" as a stream of the name before it."""
+    return rest.split(":", 1)[0].strip(" .") == ""
+
+
+def _is_ntfs_dotgit(name: str) -> bool:
+    """git ends this name at a backslash as well as at ':' (is_xplatform_dir_sep), and fsck checks every part after a backslash again; _is_ntfs_dot does neither."""
+    for part in name.split("\\"):
+        for head in (".git", "git~1"):
+            if part[:len(head)].isascii() and part[:len(head)].lower() == head and _ntfs_tail(part[len(head):]):
+                return True
+    return False
+
+
+def _is_ntfs_dot(name: str, needle: str, short_prefix: str) -> bool:
+    """`.<needle>`, its short name (six letters, ~1 to ~4), or the hashed fall-back short name."""
+    lowered = lambda s: s.isascii() and s.lower()
+    if name[:1] == "." and lowered(name[1:1 + len(needle)]) == needle:
+        return _ntfs_tail(name[1 + len(needle):])
+    if lowered(name[:6]) == needle[:6] and name[6:7] == "~" and "1" <= name[7:8] <= "4" and name[7:8]:
+        return _ntfs_tail(name[8:])
+    i, saw_tilde = 0, False
+    while i < 8:
+        c = name[i:i + 1]
+        if not c:
+            return False
+        if saw_tilde:
+            if not "0" <= c <= "9":
+                return False
+        elif c == "~":
+            i += 1
+            if not "1" <= name[i:i + 1] <= "9" or not name[i:i + 1]:
+                return False
+            saw_tilde = True
+        elif i >= 6 or not c.isascii() or c.lower() != short_prefix[i]:
+            return False
+        i += 1
+    return _ntfs_tail(name[8:])
+
+
+def fsck_bad_name(name: str) -> str | None:
+    """The message id git fsck reports for a tree or gitlink entry named ``name``, or None when fsck accepts
+    the name. A tree built here holds no entry fsck would reject."""
+    if not name:
+        return "emptyName"
+    if name == ".":
+        return "hasDot"
+    if name == "..":
+        return "hasDotdot"
+    if _is_hfs_dot(name, "git") or _is_ntfs_dotgit(name):
+        return "hasDotgit"
+    # fsck checks the name after every backslash again for .gitmodules (not .gitattributes).
+    tails = [name, *(name[i + 1:] for i, c in enumerate(name) if c == "\\")]
+    if _is_hfs_dot(name, "gitmodules") or any(_is_ntfs_dot(t, "gitmodules", "gi7eba") for t in tails):
+        return "gitmodulesBlob"
+    if _is_hfs_dot(name, "gitattributes") or _is_ntfs_dot(name, "gitattributes", "gi7d29"):
+        return "gitattributesBlob"
+    return None
+
+
 _SSH_GITHUB_PREFIX = "git@github.com:"
 _HTTPS_GITHUB_PREFIX = "https://github.com/"
 

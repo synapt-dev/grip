@@ -126,8 +126,24 @@ def _pins_of(repo: Path, commit: str) -> dict[str, str]:
     return pins
 
 
+def _check_pins(pins: dict[str, str]) -> None:
+    """Each pin path becomes nested tree entries, one per component; a component git fsck rejects is refused
+    here, by pin, before any tree is written. So is a pin under another pin: one name would be both a gitlink and a
+    tree in the same tree, the duplicate entry fsck's verify_ordered rejects."""
+    for path in pins:
+        for part in path.split("/"):
+            bad = gitops.fsck_bad_name(part)
+            if bad:
+                raise ValueError(f"pin {path!r} has an entry git fsck rejects ({bad}): {part!r}")
+        parts = path.split("/")
+        for k in range(1, len(parts)):
+            if "/".join(parts[:k]) in pins:
+                raise ValueError(f"pin {path!r} is under pin {'/'.join(parts[:k])!r}; a name cannot be both")
+
+
 def _tree_with_pins(repo: Path, base_tree: str, pins: dict[str, str]) -> str:
     """base_tree plus a ``pins`` tree of gitlinks, nested by path component."""
+    _check_pins(pins)
     def build(entries: dict[str, str]) -> str:
         children: dict[str, dict[str, str]] = {}
         lines = []
@@ -139,7 +155,8 @@ def _tree_with_pins(repo: Path, base_tree: str, pins: dict[str, str]) -> str:
                 lines.append(f"160000 commit {sha}\t{first}")
         for name, sub in children.items():
             lines.append(f"040000 tree {build(sub)}\t{name}")
-        return _run(repo, "mktree", data="".join(line + "\n" for line in sorted(lines, key=lambda l: l.split("\t")[1]))).strip()
+        return _run(repo, "mktree", "-z",
+                    data="".join(line + "\0" for line in sorted(lines, key=lambda l: l.split("\t", 1)[1]))).strip()
 
     top = [line for line in _run(repo, "ls-tree", "-z", base_tree).split("\0") if line]
     if any(line.split("\t", 1)[1] == PINS for line in top):

@@ -1,0 +1,119 @@
+"""A shadow's pins tree is one git fsck must accept: a pin whose path would make an entry fsck rejects is
+refused by name, escaped, before any tree is written."""
+from __future__ import annotations
+
+import subprocess
+
+import pytest
+
+from gr2.python_cli import shadow as sh
+
+
+def _git(repo, *args, data=b""):
+    return subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                          input=data, capture_output=True, check=True).stdout.decode()
+
+
+@pytest.fixture
+def world(tmp_path):
+    repo = tmp_path / "r"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    blob = _git(repo, "hash-object", "-w", "--stdin", data=b"x").strip()
+    base = _git(repo, "mktree", data=f"100644 blob {blob}\tf\n".encode()).strip()
+    member = _git(repo, "commit-tree", base, "-m", "m").strip()
+    return repo, base, member
+
+
+def _refused(world, pins):
+    repo, base, member = world
+    with pytest.raises(ValueError) as caught:
+        sh._tree_with_pins(repo, base, dict.fromkeys(pins, member))
+    return str(caught.value)
+
+
+def test_pins_fsck_accepts_are_built(world):
+    repo, base, member = world
+    names = ["ok/b", ".github", ".gitx", "gits", "git~2", "a.git", ".git~1", "x/.gitmodulesx", "gitmod~5", "gi7eba~x", ".gitattribute", "x/.g\u200cithub",
+             "x/.git.x", "x/git~1x"]
+    tree = sh._tree_with_pins(repo, base, dict.fromkeys(names, member))
+    _git(repo, "update-ref", "refs/heads/t", _git(repo, "commit-tree", tree, "-m", "s").strip())
+    fsck = subprocess.run(["git", "-C", str(repo), "fsck", "--strict", "--no-dangling"], capture_output=True,
+                          text=True)
+    assert fsck.returncode == 0, fsck.stderr
+    listed = _git(repo, "ls-tree", "-r", "-z", "--name-only", tree, "--", sh.PINS).split("\0")
+    assert sorted(n for n in listed if n) == sorted(f"{sh.PINS}/{n}" for n in names)
+
+
+@pytest.mark.parametrize("pin", ['".git"', 'a/".GIT"', '".gitmodules"', "a/b\nc", '"\\056git"'])
+def test_a_pin_is_written_by_its_literal_name(world, pin):
+    """mktree in text mode C-unquotes a name that starts with a quote ('".git"' would become .git); each tree is
+    written NUL-terminated, so the name fsck_bad_name checked is the name in the tree."""
+    repo, base, member = world
+    tree = sh._tree_with_pins(repo, base, {pin: member})
+    _git(repo, "update-ref", "refs/heads/t", _git(repo, "commit-tree", tree, "-m", "s").strip())
+    fsck = subprocess.run(["git", "-C", str(repo), "fsck", "--strict", "--no-dangling"], capture_output=True,
+                          text=True)
+    assert fsck.returncode == 0, fsck.stderr
+    listed = _git(repo, "ls-tree", "-r", "-z", "--name-only", tree, "--", sh.PINS).split("\0")
+    assert [n for n in listed if n] == [f"{sh.PINS}/{pin}"]
+
+
+@pytest.mark.parametrize("pin", ["/x", "a/", "a//b", ""])
+def test_a_pin_with_an_empty_entry_is_refused(world, pin):
+    message = _refused(world, [pin])
+    assert f"pin {pin!r}" in message and "emptyName" in message
+
+
+@pytest.mark.parametrize("pin,bad", [(".", "hasDot"), ("a/.", "hasDot"), ("..", "hasDotdot"), ("../a", "hasDotdot")])
+def test_a_pin_through_dot_or_dotdot_is_refused(world, pin, bad):
+    message = _refused(world, [pin])
+    assert f"pin {pin!r}" in message and f"({bad})" in message
+
+
+@pytest.mark.parametrize("pin", [".git", ".GIT", "a/.Git"])
+def test_a_pin_named_dotgit_in_any_case_is_refused(world, pin):
+    message = _refused(world, [pin])
+    assert f"pin {pin!r}" in message and "hasDotgit" in message
+
+
+@pytest.mark.parametrize("pin", ["git~1", "GIT~1", ".git.", ".git ", ".git. .", ".git::$INDEX_ALLOCATION",
+                                 "a/git~1:s", ".git\\", "GIT~1\\", "git~1.\\", ".git.\\x",
+                                 "a\\.git", "x\\.Git.\\y", "a\\b\\.git "])
+def test_a_pin_ntfs_reads_as_dotgit_is_refused(world, pin):
+    message = _refused(world, [pin])
+    assert f"pin {pin!r}" in message and "hasDotgit" in message
+
+
+def test_a_backslash_ends_only_a_dotgit_name(world):
+    repo, base, member = world
+    names = [".gitmodules\\", ".gitattributes\\", "gitmod~1\\x", "a\\.gitx", "a\\b", "a\\.gitattributes",
+             "a\\.gitmodules\\x"]
+    tree = sh._tree_with_pins(repo, base, dict.fromkeys(names, member))
+    _git(repo, "update-ref", "refs/heads/t", _git(repo, "commit-tree", tree, "-m", "s").strip())
+    fsck = subprocess.run(["git", "-C", str(repo), "fsck", "--strict", "--no-dangling"], capture_output=True,
+                          text=True)
+    assert fsck.returncode == 0, fsck.stderr
+
+
+@pytest.mark.parametrize("pin", [".git\u200c", ".g\u200dit", "\ufeff.GIT", "a/.gi\u206ft", "\u202a.git"])
+def test_a_pin_hfs_reads_as_dotgit_is_refused_escaped(world, pin):
+    message = _refused(world, [pin])
+    assert f"pin {pin!r}" in message and "\\u" in message and "hasDotgit" in message
+
+
+@pytest.mark.parametrize("pins", [["a", "a/b"], ["a/b/c", "a/b"], ["x/y", "a", "a/b/c"]])
+def test_a_pin_under_another_pin_is_refused(world, pins):
+    message = _refused(world, pins)
+    assert "is under pin 'a" in message
+
+
+@pytest.mark.parametrize("pin,bad", [(".gitmodules", "gitmodulesBlob"), ("a/.GITMODULES", "gitmodulesBlob"),
+                                     ("gitmod~1", "gitmodulesBlob"), ("GI7EBA~9", "gitmodulesBlob"),
+                                     (".gitmodules\u200c/b", "gitmodulesBlob"), (".gitmodules. :x", "gitmodulesBlob"),
+                                     (".gitattributes", "gitattributesBlob"), ("gitatt~4", "gitattributesBlob"),
+                                     ("gi7d29~1", "gitattributesBlob"), ("\ufeff.gitattributes", "gitattributesBlob"),
+                                     ("a\\.gitmodules", "gitmodulesBlob"), ("a\\GITMOD~1", "gitmodulesBlob"),
+                                     ("a\\b\\.gitmodules", "gitmodulesBlob")])
+def test_a_pin_named_gitmodules_or_gitattributes_is_refused(world, pin, bad):
+    message = _refused(world, [pin])
+    assert f"pin {pin!r}" in message and f"({bad})" in message

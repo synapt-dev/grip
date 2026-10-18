@@ -3,7 +3,7 @@
 Phase 0 reads every member and writes nothing; any refusal stops the verb
 before the first write, so a refused run leaves every member as it was.
 Phase 1 then writes per member, in the order given: branch, stage, commit.
-Two git calls per member to read, three to write; the new head is read off
+Three git calls per member to read, three to write; the new head is read off
 the commit's own summary line rather than asked for again.
 
 A write that fails (a pre-commit hook refusing, say) is undone in every member
@@ -89,7 +89,21 @@ def preflight(paths: list[Path], branch: str) -> list[Member]:
     members: list[Member] = []
     for path in paths:
         member = Member(name=path.name, path=path)
+        if not path.is_dir():
+            raise ChangeRefused("not_a_repo", member.name, "not a directory")
         head_branch, entries = _status_entries(path)
+        # One read for both: a member that is a subdirectory of a repo (its add -A takes the whole repo), and
+        # the operation-in-progress markers below.
+        pending = git(
+            path, "rev-parse", "--show-toplevel",
+            "--git-path", "MERGE_HEAD", "--git-path", "CHERRY_PICK_HEAD", "--git-path", "REVERT_HEAD",
+            "--git-path", "rebase-apply", "--git-path", "rebase-merge", "--git-path", "sequencer",
+        )
+        top, *paths_pending = pending.stdout.split("\n")
+        if pending.returncode != 0:
+            raise ChangeRefused("not_a_repo", member.name, pending.stderr.strip() or "git rev-parse failed")
+        if Path(top).resolve() != path.resolve():
+            raise ChangeRefused("not_a_repo", member.name, f"inside the repo at {top}")
         if head_branch == "(detached)":
             raise ChangeRefused("detached_head", member.name, "HEAD is detached")
         for rec in entries:
@@ -98,6 +112,11 @@ def preflight(paths: list[Path], branch: str) -> list[Member]:
             # An intent-to-add entry (`git add -N`) reads ".A": the undo's reset would drop the mark.
             if rec[0] in "12" and (rec[2] != "." or rec[3] == "A"):
                 raise ChangeRefused("staged_index", member.name, "the index already differs from HEAD")
+        # A merge, cherry-pick, revert, am or rebase in progress: `git switch` refuses, and checkout -b would drop it.
+        if any((path / p).exists() for p in paths_pending if p):
+            raise ChangeRefused(
+                "operation_in_progress", member.name, "a merge, cherry-pick, revert, am or rebase is in progress"
+            )
         exists = git(path, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
         if exists.returncode == 0:
             raise ChangeRefused("branch_exists", member.name, f"{branch} at {exists.stdout.strip()[:7]}")

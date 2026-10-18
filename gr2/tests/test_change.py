@@ -101,9 +101,118 @@ def test_c1_one_change_commits_every_member(members: list[Path], git_log: Path) 
         assert f"{path.name}: feat {head[:7]} " in result.output
     per_member = {p.name: sum(1 for m, _ in calls if m == p.name) for p in members}
     print(f"git calls per member: {per_member} total {sum(per_member.values())}")
-    # Two reads and three writes: what plain git needs for the same refusals.
-    assert all(n <= 5 for n in per_member.values()), per_member
-    assert sum(per_member.values()) <= 25, per_member
+    # Three reads and three writes: what plain git needs for the same refusals.
+    assert all(n == 6 for n in per_member.values()), per_member
+    assert sum(per_member.values()) == 30, per_member
+
+
+def _merge_in_progress(path: Path) -> None:
+    # `merge --no-commit -s ours` leaves MERGE_HEAD with the index still equal to HEAD.
+    side = _git(path, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "side").strip()
+    _git(path, "branch", "side", side)
+    _git(path, "merge", "-q", "--no-commit", "--no-ff", "-s", "ours", "side")
+    assert (Path(_git(path, "rev-parse", "--absolute-git-dir").strip()) / "MERGE_HEAD").exists()
+
+
+def _linked_merge_in_progress(path: Path) -> None:
+    # A linked worktree whose main repo path holds a space: `--git-path` prints an absolute path.
+    main = path.parent / f"main {path.name}"
+    path.rename(main)
+    _git(main, "worktree", "add", "-q", "-b", "linked", str(path))
+    _edit(path)
+    _merge_in_progress(path)
+
+
+def _cherry_pick_in_progress(path: Path) -> None:
+    # Picking an empty commit stops with CHERRY_PICK_HEAD and the index still equal to HEAD.
+    empty = _git(path, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "empty").strip()
+    subprocess.run(["git", "cherry-pick", empty], cwd=path, capture_output=True)
+    assert (path / ".git" / "CHERRY_PICK_HEAD").exists()
+
+
+def _am_in_progress(path: Path) -> None:
+    # A patch for a file main never had stops `git am` with rebase-apply and HEAD still on main.
+    mbox = path.parent / f"{path.name}.mbox"
+    mbox.write_text(
+        "From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001\n"
+        "From: Test <test@example.com>\nSubject: absent\n\n---\n"
+        "diff --git a/absent.txt b/absent.txt\n--- a/absent.txt\n+++ b/absent.txt\n"
+        "@@ -1 +1 @@\n-a\n+b\n"
+    )
+    assert subprocess.run(["git", "am", str(mbox)], cwd=path, capture_output=True).returncode != 0
+    assert _git(path, "branch", "--show-current").strip() == "main"
+    assert (path / ".git" / "rebase-apply").is_dir()
+
+
+def _rebase_in_progress(path: Path) -> None:
+    # An interactive rebase stopped at `break`, then `checkout main`: rebase-merge stays with HEAD on main.
+    _git(path, "stash", "-q", "-u")
+    env = {**os.environ, "GIT_SEQUENCE_EDITOR": "perl -i -pe 'print qq(break\\n) if $.==1'"}
+    subprocess.run(["git", "rebase", "-q", "-i", "HEAD"], cwd=path, env=env, check=True, capture_output=True)
+    _git(path, "checkout", "-q", "main")
+    _git(path, "stash", "pop", "-q")
+    assert _git(path, "branch", "--show-current").strip() == "main"
+    assert (path / ".git" / "rebase-merge").is_dir()
+
+
+def _stopped_resolved(path: Path, verb: str, pending: str) -> None:
+    # A conflicted pick or revert, resolved back to HEAD: no unmerged path is left, the operation is.
+    _git(path, "stash", "-q", "-u")
+    (path / "c.txt").write_text("a\n")
+    _git(path, "add", "c.txt")
+    _git(path, "commit", "-q", "-m", "c a")
+    added = _git(path, "rev-parse", "HEAD").strip()
+    _git(path, "switch", "-q", "-c", "side", "HEAD~1")
+    (path / "c.txt").write_text("b\n")
+    _git(path, "add", "c.txt")
+    _git(path, "commit", "-q", "-m", "c b")
+    side = _git(path, "rev-parse", "HEAD").strip()
+    _git(path, "switch", "-q", "main")
+    if verb == "revert":
+        (path / "c.txt").write_text("z\n")
+        _git(path, "commit", "-q", "-am", "c z")
+    target = side if verb == "cherry-pick" else added
+    assert subprocess.run(["git", verb, target], cwd=path, capture_output=True).returncode != 0
+    _git(path, "checkout", "HEAD", "--", "c.txt")
+    _git(path, "stash", "pop", "-q")
+    assert (path / ".git" / pending).exists()
+    assert "u " not in _git(path, "status", "--porcelain=v2")
+
+
+def _sequence_left(path: Path, verb: str) -> None:
+    # Two picks or reverts, the first conflicting, resolved and committed by hand: the *_HEAD file
+    # is gone but .git/sequencer stays; a later --continue would land the rest on the new branch.
+    _git(path, "stash", "-q", "-u")
+    (path / "c.txt").write_text("a\n")
+    _git(path, "add", "c.txt")
+    _git(path, "commit", "-q", "-m", "c a")
+    added = _git(path, "rev-parse", "HEAD").strip()
+    _git(path, "switch", "-q", "-c", "side", "HEAD~1")
+    (path / "c.txt").write_text("b\n")
+    _git(path, "add", "c.txt")
+    _git(path, "commit", "-q", "-m", "c b")
+    first = _git(path, "rev-parse", "HEAD").strip()
+    (path / "d.txt").write_text("d\n")
+    _git(path, "add", "d.txt")
+    _git(path, "commit", "-q", "-m", "d")
+    second = _git(path, "rev-parse", "HEAD").strip()
+    _git(path, "switch", "-q", "main")
+    if verb == "revert":
+        (path / "c.txt").write_text("z\n")
+        _git(path, "commit", "-q", "-am", "c z")
+        (path / "e.txt").write_text("e\n")
+        _git(path, "add", "e.txt")
+        _git(path, "commit", "-q", "-m", "e")
+        first, second = added, _git(path, "rev-parse", "HEAD").strip()
+    proc = subprocess.run(["git", verb, "--no-edit", first, second], cwd=path, capture_output=True)
+    assert proc.returncode != 0
+    (path / "c.txt").write_text("r\n")
+    _git(path, "add", "c.txt")
+    _git(path, "-c", "core.editor=true", "commit", "-q", "--no-edit")
+    _git(path, "stash", "pop", "-q")
+    assert not (path / ".git" / "CHERRY_PICK_HEAD").exists()
+    assert not (path / ".git" / "REVERT_HEAD").exists()
+    assert (path / ".git" / "sequencer").is_dir()
 
 
 @pytest.mark.parametrize(
@@ -112,8 +221,21 @@ def test_c1_one_change_commits_every_member(members: list[Path], git_log: Path) 
         ("staged_index", lambda p: _git(p, "add", "README.md")),
         ("branch_exists", lambda p: _git(p, "branch", "feat", "HEAD")),
         ("staged_index", lambda p: (p / "later.txt").write_text("later\n") and _git(p, "add", "-N", "later.txt")),
+        ("operation_in_progress", _merge_in_progress),
+        ("operation_in_progress", _linked_merge_in_progress),
+        ("operation_in_progress", _cherry_pick_in_progress),
+        ("operation_in_progress", _am_in_progress),
+        ("operation_in_progress", _rebase_in_progress),
+        ("operation_in_progress", lambda p: _stopped_resolved(p, "cherry-pick", "CHERRY_PICK_HEAD")),
+        ("operation_in_progress", lambda p: _stopped_resolved(p, "revert", "REVERT_HEAD")),
+        ("operation_in_progress", lambda p: _sequence_left(p, "cherry-pick")),
+        ("operation_in_progress", lambda p: _sequence_left(p, "revert")),
     ],
-    ids=["staged", "branch_exists", "intent_to_add"],
+    ids=[
+        "staged", "branch_exists", "intent_to_add", "merge_in_progress", "linked_spaced_main", "cherry_pick",
+        "am", "rebase_merge", "cherry_pick_resolved", "revert_resolved", "cherry_pick_sequence",
+        "revert_sequence",
+    ],
 )
 def test_c3_refusal_writes_nothing_in_any_member(members: list[Path], git_log: Path, reason, spoil) -> None:
     spoil(members[2])
@@ -127,6 +249,45 @@ def test_c3_refusal_writes_nothing_in_any_member(members: list[Path], git_log: P
     assert writes == []
     assert [_state(p) for p in members] == before
 
+
+
+def test_c3_member_inside_an_enclosing_repo_refuses_not_a_repo(
+    members: list[Path], git_log: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No ceiling: m3 is a plain directory inside a repo, as a member is inside a gripspace that is itself a repo.
+    monkeypatch.delenv("GIT_CEILING_DIRECTORIES", raising=False)
+    _git(tmp_path, "init", "-q", "-b", "main")
+    shutil.rmtree(members[2] / ".git")
+    others = [p for p in members if p != members[2]]
+    before = [_state(p) for p in others]
+    git_log.write_text("")
+    result = _run(members)
+    assert result.exit_code == 2, result.output
+    assert f"refused: not_a_repo: m3: inside the repo at {tmp_path}" in result.output
+    assert "nothing was written" in result.output
+    writes = [(m, a) for m, a in _calls(git_log) if set(a.split(" ")) & set(WRITES)]
+    assert writes == []
+    assert [_state(p) for p in others] == before
+    assert _git(tmp_path, "for-each-ref") == ""
+    assert _git(tmp_path, "ls-files", "-s") == ""
+
+
+@pytest.mark.parametrize("kind", ["file", "missing"])
+def test_c3_member_not_a_directory_refuses_not_a_repo(members: list[Path], git_log: Path, kind) -> None:
+    shutil.rmtree(members[2])
+    if kind == "file":
+        members[2].write_text("not a repo\n")
+    others = [p for p in members if p != members[2]]
+    before = [_state(p) for p in others]
+    git_log.write_text("")
+    result = _run(members)
+    assert result.exit_code == 2, result.output
+    assert "refused: not_a_repo: m3: not a directory" in result.output
+    assert "nothing was written" in result.output
+    writes = [(m, a) for m, a in _calls(git_log) if set(a.split(" ")) & set(WRITES)]
+    assert writes == []
+    assert [_state(p) for p in others] == before
+    assert members[2].is_file() == (kind == "file")
 
 def test_c2_refused_commit_undoes_every_member_written(members: list[Path], git_log: Path) -> None:
     hook = members[2] / ".git" / "hooks" / "pre-commit"
@@ -218,11 +379,13 @@ def test_c8_second_signal_during_the_undo_does_not_cut_it_short(
     }
     proc = subprocess.run(args, env=env, capture_output=True, text=True, timeout=60)
     assert second.exists()
+    # The tree first, so a red names the half-restored member rather than the stderr text.
+    after = [_state(p) for p in members]
+    assert after == before, [(p.name, a) for p, a, b in zip(members, after, before) if a != b]
     assert proc.returncode == 130, (proc.stdout, proc.stderr)
     assert "interrupted: SIGINT" in proc.stderr
     assert "undone: m2, m1" in proc.stderr
     assert "NOT undone" not in proc.stderr
-    assert [_state(p) for p in members] == before
 
 
 def test_c9_second_sigint_during_the_failure_undo_does_not_cut_it_short(members: list[Path], tmp_path: Path) -> None:

@@ -34,14 +34,19 @@ class ApprovalRefused(RuntimeError):
 
 
 #: The chain is read as the commits really are: a local graft or replace object could make two links each other's
-#: ancestor, a cycle no pushed chain can hold, so they are off for every read here (and the commit-graph with them).
+#: ancestor, a cycle no pushed chain can hold, so they are off for every read through _run (and the commit-graph
+#: with them); _git reads through it. The one read outside it is the `cat-file -e` presence check before a fetch:
+#: a replace object there can at most cause an extra fetch, and the head is then read through _git.
 _TRUE_HISTORY = {"GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull}
+
+
+def _run(repo: Path, *args: str, **kw) -> subprocess.CompletedProcess:
+    return gitops.run(repo, "-c", "core.commitGraph=false", *args, env={**os.environ, **_TRUE_HISTORY}, **kw)
 
 
 def _git(repo: Path, *args: str, data: str | None = None, raw: bool = False) -> str:
     try:
-        p = gitops.run(repo, "-c", "core.commitGraph=false", *args, input=data, env={**os.environ, **_TRUE_HISTORY},
-                       timeout=60, raise_timeout=True)
+        p = _run(repo, *args, input=data, timeout=60, raise_timeout=True)
     except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
         raise ApprovalRefused(f"approval_unmeasurable: {type(exc).__name__}") from exc
     if p.returncode:
@@ -485,7 +490,8 @@ def since_my_stamp(workspace: Path, review_id: str) -> dict:
         if then is None:  # not in the stamped pin: everything this pin reviews is new to the reviewer
             row["paths"] = sorted(m["files"] or [])
         elif then != now:
-            if gitops.run(repo, "merge-base", "--is-ancestor", then, now).returncode == 0:
+            # Read through _run, the same view as the rev-list below: a local graft cannot invent a range.
+            if _run(repo, "merge-base", "--is-ancestor", then, now).returncode == 0:
                 row["range"] = f"{then}..{now}"
                 row["commits"] = _git(repo, "rev-list", "--reverse", row["range"]).splitlines()
             # A rebased head has no range; the paths are still the diff between the two trees.

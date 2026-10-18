@@ -1,6 +1,9 @@
 """The read-only review verbs. `review blockers` is the merge gate's preflight and stops before any build or
 push; `review stamps` reads the approval chain. Neither moves a remote ref."""
 import json
+from pathlib import Path
+
+import pytest
 
 from gr2.python_cli import approvals
 from gr2.python_cli.app import app
@@ -347,3 +350,32 @@ def test_since_my_stamp_on_a_rebased_head_has_no_range_and_the_tree_diff(world):
     [m] = json.loads(result.stdout)["members"]
     assert old(m) == {"key": "member", "stamped_head": world["head"], "current_head": head, "changed": True,
                  "range": None, "commits": [], "paths": ["payload", "rebased"]}
+
+
+@pytest.mark.parametrize("graft", ["replace-graft", "grafts-file"])
+def test_since_my_stamp_on_a_rebased_head_ignores_a_local_graft_onto_the_stamped_head(world, graft):
+    """A local graft or replace object making the stamped head a parent of the rebased one invents no range."""
+    assert approve_as(world, "Approver B").exit_code == 0
+    member = world["member"]
+    git(member, "reset", "-q", "--hard", world["base"])
+    (member / "rebased").write_text("rebased\n")
+    git(member, "add", "rebased")
+    git(member, "commit", "-m", "rebased")
+    head = git(member, "rev-parse", "HEAD")
+    git(member, "push", "-f", world["remote"], "feature")
+    git(world["workspace"], "config", "user.name", "Author A")
+    bound = runner.invoke(app, ["review", "bind", "--repo", "member", "--remote", str(world["remote"]),
+                               "--base", world["base"], "--head", head, "--ref", "refs/heads/main",
+                               "--source", str(member)])
+    assert bound.exit_code == 0, bound.output
+    if graft == "replace-graft":
+        git(member, "replace", "--graft", head, world["head"])
+    else:
+        (Path(git(member, "rev-parse", "--absolute-git-dir")) / "info" / "grafts").write_text(
+            f"{head} {world['head']}\n")
+    result = since(world)
+    assert result.exit_code == 0, result.output
+    [m] = json.loads(result.stdout)["members"]
+    assert {k: m[k] for k in ("stamped_head", "current_head", "range", "commits", "paths")} == {
+        "stamped_head": world["head"], "current_head": head, "range": None, "commits": [],
+        "paths": ["payload", "rebased"]}

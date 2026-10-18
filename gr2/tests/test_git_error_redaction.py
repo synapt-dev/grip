@@ -162,3 +162,25 @@ def test_push_error_shows_a_plain_remote_as_before(gate_world, monkeypatch):
     assert res.exit_code == 3 and pushed, text
     push_error = receipt["members"][0]["push_error"]
     assert "unable to access" in push_error and "https://127.0.0.1:9/a.git" in push_error, text
+
+
+def _named_remote_error(tmp_path, url):
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "r", url], check=True)
+    with pytest.raises(gitops.GitError) as caught:
+        gitops.out(repo, "ls-remote", "r")
+    return caught.value
+
+
+def test_git_error_never_shows_a_query_token_of_a_named_remote(tmp_path):
+    exc = _named_remote_error(tmp_path, QUERY)
+
+    assert "unable to access" in exc.stderr, exc.stderr
+    assert TOKEN not in str(exc), str(exc)
+
+
+def test_git_error_shows_a_plain_named_remote_as_before(tmp_path):
+    exc = _named_remote_error(tmp_path, PLAIN)
+
+    assert PLAIN in exc.stderr and str(exc) == f"git ls-remote r: {exc.stderr}", str(exc)

@@ -182,11 +182,16 @@ def _shown_arg(arg: str) -> str:
 
 def _shown_stderr(args, stderr: str) -> str:
     """git's stderr for a command run with `args`, each argument that carries a credential replaced as `_shown_arg`
-    shows it. git strips userinfo from the URLs it prints, not a credential in the query, so both forms are replaced."""
+    shows it. git strips userinfo from the URLs it prints, not a credential in the query, so both forms are replaced.
+    A remote named in `args` prints the URL from git's config, so every URL in the stderr is shown as `_shown_arg`
+    shows it too."""
     for arg in args:
         if (redacted := _shown_arg(str(arg))) != str(arg):
             stderr = stderr.replace(str(arg), redacted).replace(_strip_userinfo(str(arg)), redacted)
-    return stderr
+    return _URL_IN_TEXT.sub(lambda m: _shown_arg(m.group(0)), stderr)
+
+
+_URL_IN_TEXT = re.compile(r"""[A-Za-z][A-Za-z0-9+.-]*://[^\s'"]+""")
 
 
 # Git's global options that take their value as the next word; `--opt=value` forms are one word.

@@ -159,6 +159,11 @@ def _walked_items() -> list[api_core.Row]:
         # Hidden is the leaf's own flag OR an ancestor group's, which the walk
         # reports as the name of the group that did it.
         hidden = bool(getattr(cmd, "hidden", False)) or hidden_by is not None
+        # A leaf hidden by its OWN flag is marked `(hidden)` even under a hidden
+        # group: the own flag is what makes it an alias (`repo hook-run` under the
+        # hidden `repo` plumbing group), and `(hidden:repo)` would lose that.
+        if getattr(cmd, "hidden", False):
+            hidden_by = None
         # THE GROUP IS THE COMMAND PATH, and this is the only place the tree is
         # in hand -- so nothing downstream has to re-derive a command by
         # splitting a spelling, and an item cannot be filed under a command the

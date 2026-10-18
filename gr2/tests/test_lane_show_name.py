@@ -1,16 +1,19 @@
 """`lane show` is the verb; `lane current` is its hidden alias on the registry's drop path.
 
 `show` prints a stored thing, as `target show` and `lane lease show` already do. The old
-spelling must answer exactly as the new one does and must not appear in `lane --help`.
+spelling must answer exactly as the new one does and is listed nowhere; `lane show` itself is
+plumbing, listed by `gr2 help -a`.
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
+import typer.main
 from typer.testing import CliRunner
 
 from gr2.prototypes import lane_workspace_prototype as lane_proto
+from gr2.python_cli import surface
 from gr2.python_cli.app import app
 
 
@@ -41,6 +44,10 @@ def _hidden_flags(group: str) -> dict[str, bool]:
 
 
 def test_the_old_spelling_is_hidden_and_the_new_one_is_listed() -> None:
+    # Since the help surface split, `lane show` is plumbing: hidden from `lane --help` and
+    # listed by `gr2 help -a`. The old spelling stays listed nowhere.
     flags = _hidden_flags("lane")
-    assert flags["show"] is False, "lane show must be a listed verb"
     assert flags["current"] is True, "lane current must be a hidden alias"
+    listed = {path for path, _ in surface.plumbing(typer.main.get_command(app))}
+    assert "lane show" in listed, "lane show must be listed by gr2 help -a"
+    assert "lane current" not in listed, "lane current must be listed nowhere"

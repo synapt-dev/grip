@@ -139,10 +139,9 @@ def test_both_names_enumerate_the_same_verbs():
     extraction cannot silently return option rows, and the hidden alias is asserted
     INVOCABLE while unlisted -- hidden means unlisted, not removed.
     """
-    expected = {
-        "init", "commit", "check", "push", "status", "materialize", "migrate",
-        "log", "diff", "checkout",
-    }
+    expected = {"init", "commit", "check", "push", "status", "materialize"}
+    # Plumbing since the help surface split: unlisted in `--help`, listed by `gr2 help -a`.
+    plumbing = {"migrate", "log", "diff", "checkout"}
     for group in ("store", "grip"):
         raw = runner.invoke(app, [group, "--help"]).output or ""
         # v5 — ANSI IS STRIPPED, NOT THE ENVIRONMENT CHANGED. typer/rich_utils forces a
@@ -173,6 +172,7 @@ def test_both_names_enumerate_the_same_verbs():
                 continue
             listed.add(body.split()[0])
         assert expected <= listed, f"{group}: missing {sorted(expected - listed)} from {sorted(listed)}"
+        assert not plumbing & listed, f"{group}: plumbing listed in --help: {sorted(plumbing & listed)}"
         assert "snapshot" not in listed, (
             f"{group}: the hidden alias must not be listed as its own command: {sorted(listed)}"
         )
@@ -184,3 +184,7 @@ def test_both_names_enumerate_the_same_verbs():
     # hidden means UNLISTED, not removed: the alias still runs
     r = runner.invoke(app, ["store", "snapshot", "--help"])
     assert r.exit_code == 0, r.output
+    help_all = runner.invoke(app, ["help", "-a"]).output
+    for verb in sorted(plumbing):
+        assert runner.invoke(app, ["store", verb, "--help"]).exit_code == 0, verb
+        assert f"gr2 store {verb} " in help_all, verb

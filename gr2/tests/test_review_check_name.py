@@ -1,7 +1,7 @@
 """The visible check spelling and the requirements alias run the same read-only check.
 
 Rows go red if either name changes the compiled counts, the alias contaminates JSON,
-root inference is lost, the new name is hidden, or the old name becomes visible.
+root inference is lost, the new name drops out of `gr2 help -a`, or the old name becomes visible.
 """
 from __future__ import annotations
 
@@ -66,11 +66,14 @@ def test_both_spellings_infer_the_nearest_workspace(tmp_path, monkeypatch, verb)
 
 @pytest.mark.parametrize("colored", [False, True])
 def test_review_help_lists_check_and_hides_the_old_spelling(monkeypatch, colored):
+    # Since the help surface split, `review check` is plumbing: `gr2 help -a` lists it, and
+    # `requirements`, the old spelling, is listed in neither `review --help` nor `help -a`.
     monkeypatch.setattr(rich_utils, "FORCE_TERMINAL", colored)
-    result = runner.invoke(app, ["review", "--help"])
+    result = runner.invoke(app, ["help", "-a"])
     assert result.exit_code == 0
     assert ("\x1b[" in result.stdout) is colored
     lines = Text.from_ansi(result.stdout).plain.splitlines()
-    command_lines = [line for line in lines if line.lstrip(" │").startswith("check ")]
-    assert command_lines
-    assert not [line for line in lines if line.lstrip(" │").startswith("requirements ")]
+    assert [line for line in lines if line.lstrip().startswith("gr2 review check ")]
+    assert not [line for line in lines if line.lstrip().startswith("gr2 review requirements ")]
+    review = Text.from_ansi(runner.invoke(app, ["review", "--help"]).stdout).plain.splitlines()
+    assert not [line for line in review if line.lstrip(" │").startswith("requirements ")]

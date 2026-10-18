@@ -34,6 +34,7 @@ from . import branch as branch_ops
 from . import change as change_ops
 from . import commit as commit_ops
 from . import execops, failures, grip, migration, next_steps, review_diff, spec_apply, syncops
+from . import surface
 from . import gitinclude
 from . import gitops
 from . import check_records, set_check
@@ -94,7 +95,8 @@ app = typer.Typer(
         "The workspace layer for multi-repo work: a workspace over your repos, "
         "isolated lanes to work in, and one grouped review per slice.\n\n"
         "To land a reviewed change: gr2 review pin, publish, stamp, gr2 check, then gr2 review merge; "
-        "the steps are in gr2 review --help."
+        "the steps are in gr2 review --help.\n\n"
+        "Plumbing commands (for scripts, CI and other gr2 verbs) are hidden here; gr2 help -a lists them."
     ),
     **group_settings(),
 )
@@ -124,6 +126,22 @@ def _root(
     """gr2 workspace CLI."""
 
 
+@app.command("help", hidden=True)
+def help_command(
+    ctx: typer.Context,
+    all_commands: bool = typer.Option(
+        False, "-a", "--all", help="Also list the plumbing commands hidden from gr2 --help."
+    ),
+) -> None:
+    """Show gr2's help; with -a, also every plumbing command, each of which runs by its full path."""
+    root = ctx.find_root()
+    typer.echo(root.get_help())
+    if all_commands:
+        typer.echo("\nPlumbing (hidden from gr2 --help; each runs by its full path):")
+        for path, text in surface.plumbing(root.command):
+            typer.echo(f"  gr2 {path:<34} {text}")
+
+
 repo_app = typer.Typer(help="Repo maintenance and inspection", **group_settings())
 lane_app = typer.Typer(help="Lane creation and navigation", **group_settings())
 lease_app = typer.Typer(help="Lane lease operations", **group_settings())
@@ -136,27 +154,27 @@ exec_app = typer.Typer(help="Lane-aware execution planning and execution", **gro
 sync_app = typer.Typer(help="Workspace-wide sync inspection and execution", **group_settings())
 target_app = typer.Typer(help="Stored PR target (settings.target) that prune and future verbs default to", **group_settings())
 
-app.add_typer(repo_app, name="repo")
+app.add_typer(repo_app, name="repo", hidden=True)
 app.add_typer(lane_app, name="lane")
-lane_app.add_typer(lease_app, name="lease")
+lane_app.add_typer(lease_app, name="lease", hidden=True)
 app.add_typer(review_app, name="review")
 app.add_typer(check_app, name="check")
 app.add_typer(pr_app, name="pr")
-app.add_typer(workspace_app, name="workspace")
-app.add_typer(spec_app, name="spec")
-app.add_typer(exec_app, name="exec")
+app.add_typer(workspace_app, name="workspace", hidden=True)
+app.add_typer(spec_app, name="spec", hidden=True)
+app.add_typer(exec_app, name="exec", hidden=True)
 app.add_typer(sync_app, name="sync")
-app.add_typer(target_app, name="target")
+app.add_typer(target_app, name="target", hidden=True)
 hooks_app = typer.Typer(help="Bind (trust) or revoke member-hook consent records.", **group_settings())
-app.add_typer(hooks_app, name="hooks")
+app.add_typer(hooks_app, name="hooks", hidden=True)
 # The snapshot store over .grip/.git. Its verb is `store` (init/snapshot/log/diff/
 # checkout); `grip` stays as a hidden alias for one release so existing callers keep
 # working. Both names resolve to the same grip_app callbacks.
 app.add_typer(grip_app, name="store")
 app.add_typer(grip_app, name="grip", hidden=True)
-app.add_typer(config_cli_app, name="config")
+app.add_typer(config_cli_app, name="config", hidden=True)
 proto_app = typer.Typer(help="Render stored protobuf records", **group_settings())
-app.add_typer(proto_app, name="proto")
+app.add_typer(proto_app, name="proto", hidden=True)
 
 
 @proto_app.command("json")
@@ -1527,7 +1545,7 @@ def sync_run(
         raise typer.Exit(code=1)
 
 
-@sync_app.command("wait")
+@sync_app.command("wait", hidden=True)
 def sync_wait(
     workspace_root: Optional[Path] = typer.Argument(None),
     all_members: bool = typer.Option(False, "--all-members", help="Wait on every member the workspace declares"),
@@ -2060,7 +2078,7 @@ def spec_validate(
         raise typer.Exit(code=4)
 
 
-@app.command("plan")
+@app.command("plan", hidden=True)
 def workspace_plan(
     workspace_root: Optional[Path] = typer.Argument(None),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
@@ -2074,7 +2092,7 @@ def workspace_plan(
         typer.echo(spec_apply.render_plan(operations))
 
 
-@app.command("apply")
+@app.command("apply", hidden=True)
 def workspace_apply(
     workspace_root: Optional[Path] = typer.Argument(None),
     yes: bool = typer.Option(False, "--yes", help="Pre-approve plans with more than 3 operations"),
@@ -2215,7 +2233,7 @@ def branch_cmd(
     typer.echo(f"Switched to branch '{name}'")
 
 
-@app.command("change")
+@app.command("change", hidden=True)
 def change_cmd(
     branch: str,
     message: str = typer.Option(..., "--message", "-m", help="Commit message for every member"),
@@ -2546,7 +2564,7 @@ def push_cmd(
     )
 
 
-@app.command("prune")
+@app.command("prune", hidden=True)
 def prune_cmd(
     target: str | None = typer.Option(
         None,
@@ -3609,7 +3627,7 @@ def lane_enter(
     )
 
 
-@lane_app.command("resolve", cls=ContextCommand)
+@lane_app.command("resolve", hidden=True, cls=ContextCommand)
 def lane_resolve(
     workspace_root: Path,
     owner_unit: str,
@@ -4033,7 +4051,7 @@ def lane_remove(
     typer.echo(f"removed lane {owner_unit}/{lane_name}")
 
 
-@lane_app.command("show", cls=ContextCommand)
+@lane_app.command("show", hidden=True, cls=ContextCommand)
 @lane_app.command("current", hidden=True, cls=ContextCommand)  # hidden alias, dropped at 2.0 GA
 def lane_current(
     ctx: typer.Context,
@@ -4068,7 +4086,7 @@ def lane_current(
     _exit(lane_proto.current_lane(ns))
 
 
-@lane_app.command("bind", cls=RootOptionalCommand)
+@lane_app.command("bind", hidden=True, cls=RootOptionalCommand)
 def lane_bind(
     workspace_root: Path,
     owner_unit: str,
@@ -4187,7 +4205,7 @@ def lane_lease_show(
     _exit(lane_proto.show_lane_leases(ns))
 
 
-@review_app.command("check", cls=json_refusing(RootOptionalCommand))
+@review_app.command("check", hidden=True, cls=json_refusing(RootOptionalCommand))
 @review_app.command("requirements", hidden=True, cls=json_refusing(RootOptionalCommand))
 def review_check(
     ctx: typer.Context,
@@ -4213,7 +4231,7 @@ def review_check(
     _exit(lane_proto.check_review_requirements(ns))
 
 
-@review_app.command("checkout-pr", cls=json_refusing(RootOptionalCommand))
+@review_app.command("checkout-pr", hidden=True, cls=json_refusing(RootOptionalCommand))
 def review_checkout_pr(
     workspace_root: Path,
     owner_unit: str,
@@ -4301,7 +4319,7 @@ def review_checkout_pr(
         typer.echo(json.dumps(payload, indent=2))
 
 
-@review_app.command("read-pr")
+@review_app.command("read-pr", hidden=True)
 def review_read_pr(
     owner_repo: str = typer.Argument(..., metavar="OWNER/REPO", help="The repo whose PR to read; it need not be in your workspace"),
     pr_number: int = typer.Argument(..., help="The PR number"),
@@ -4658,7 +4676,7 @@ def pr_create(
         typer.echo(json.dumps(payload, indent=2))
 
 
-@review_app.command("create-project", cls=RootOptionalCommand)
+@review_app.command("create-project", hidden=True, cls=RootOptionalCommand)
 def review_create_project(
     workspace_root: Path,
     owner_unit: str = typer.Argument(..., help="Owner unit whose materialized lane to pin"),
@@ -5108,7 +5126,7 @@ def review_bind(
 
 
 # `bind` is the earlier name of `review pin`; it stays as an alias with the same options and output.
-review_app.command("bind", help="Alias of `review pin`.")(review_bind)
+review_app.command("bind", hidden=True, help="Alias of `review pin`.")(review_bind)
 
 
 def _review_lane_workspace(lane_dir: Path) -> Path | None:
@@ -5649,7 +5667,7 @@ def review_show(
             typer.echo(review_diff.printable(line))
 
 
-@review_app.command("list", cls=RootOptionalCommand)
+@review_app.command("list", hidden=True, cls=RootOptionalCommand)
 def review_list(
     workspace_root: Path,
     json_output: bool = typer.Option(False, "--json", help="Accepted for symmetry; the output is JSON either way"),
@@ -5661,7 +5679,7 @@ def review_list(
     typer.echo(json.dumps([{"id": f"gr:{commit}", "pinned_at": when} for commit, when in binds], indent=2))
 
 
-@review_app.command("verify", cls=json_refusing(ReviewTargetCommand))
+@review_app.command("verify", hidden=True, cls=json_refusing(ReviewTargetCommand))
 def review_verify(
     workspace_root: Path,
     commit: Optional[str] = typer.Argument(None, help="The pinned review commit, as gr:<sha> or a bare sha; omitted only when the workspace has exactly one pinned review"),
@@ -5817,10 +5835,14 @@ def review_approve(
 
 
 # `approve` is the earlier name of `review stamp`; it stays as an alias with the same options and output.
-review_app.command("approve", help="Alias of `review stamp`.", cls=ReviewHeadCommand)(review_approve)
+review_app.command("approve", hidden=True, help="Alias of `review stamp`.", cls=ReviewHeadCommand)(review_approve)
 
 
-@review_app.command("merge", cls=ReviewHeadCommand)
+@review_app.command(
+    "merge",
+    cls=ReviewHeadCommand,
+    short_help="Land a pinned review into its members' remotes. To merge the grouped GitHub PRs instead, use pr merge.",
+)
 def review_merge(
     workspace_root: Path,
     review_id: Optional[str] = typer.Argument(None, help="Pinned review id, gr:<sha>; default: the pinned review at the members' current heads"),
@@ -5832,6 +5854,8 @@ def review_merge(
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Merge a pinned review into its members' remotes: preflight every member, merge nothing if any member fails it.
+
+    To merge the grouped GitHub PRs of a lane or review instead, use `gr2 pr merge`.
 
     Requires, per member: the remote feature branch at the reviewed head, the target at the reviewed base,
     and a passing exact-head check. A member whose hosting platform has exactly one open PR at the reviewed head
@@ -5919,7 +5943,7 @@ def review_update(
         raise typer.Exit(code)
 
 
-@review_app.command("blockers", cls=ReviewHeadCommand)
+@review_app.command("blockers", hidden=True, cls=ReviewHeadCommand)
 def review_blockers(
     workspace_root: Path,
     review_id: Optional[str] = typer.Argument(None, help="Pinned review id, gr:<sha>; default: the pinned review at the members' current heads"),
@@ -5971,7 +5995,7 @@ def _stamps_moved(ws: Path, rid: str, rows: list[dict], head_field: str) -> None
                        f"stamps cover {row[head_field]}", err=True)
 
 
-@review_app.command("stamps", cls=ReviewHeadCommand)
+@review_app.command("stamps", hidden=True, cls=ReviewHeadCommand)
 def review_stamps(
     workspace_root: Path,
     review_id: Optional[str] = typer.Argument(None, help="Review id; default is the pinned review at the current member heads"),
@@ -6015,7 +6039,7 @@ def review_stamps(
     typer.echo(json.dumps(result))
 
 
-@review_app.command("merged", cls=ReviewHeadCommand)
+@review_app.command("merged", hidden=True, cls=ReviewHeadCommand)
 def review_merged(
     workspace_root: Path,
     review_id: Optional[str] = typer.Argument(None, help="Pinned review id, gr:<sha>; default: the pinned review at the members' current heads"),
@@ -6036,7 +6060,7 @@ def review_merged(
         raise typer.Exit(code)
 
 
-@review_app.command("repin", cls=json_refusing(typer.core.TyperCommand))
+@review_app.command("repin", hidden=True, cls=json_refusing(typer.core.TyperCommand))
 def review_rebind_cmd(
     frozen_dir: Path = typer.Argument(..., help="A frozen gate directory (freeze-public-range.sh output) to rebase onto the moved base"),
     repo: Path = typer.Option(..., "--repo", help="A clone whose origin remote hosts the target branch (used to read the live base head)"),
@@ -6079,7 +6103,7 @@ def review_rebind_cmd(
 
 
 # `rebind` is the earlier name of `review repin`; it stays as an alias with the same options and output.
-review_app.command("rebind", help="Alias of `review repin`.", cls=json_refusing(typer.core.TyperCommand))(review_rebind_cmd)
+review_app.command("rebind", hidden=True, help="Alias of `review repin`.", cls=json_refusing(typer.core.TyperCommand))(review_rebind_cmd)
 
 
 @pr_app.command("status", cls=ReviewSubjectCommand)
@@ -6128,7 +6152,7 @@ def pr_status(
         typer.echo(json.dumps(payload, indent=2))
 
 
-@pr_app.command("checks", cls=ReviewReaderSubjectCommand)
+@pr_app.command("checks", hidden=True, cls=ReviewReaderSubjectCommand)
 def pr_checks(
     workspace_root: Path,
     owner_unit: Optional[str] = typer.Argument(None, help="Owner unit of a lane. Omit for the current review's PRs."),
@@ -6428,7 +6452,11 @@ def pr_view(
         raise typer.Exit(code=1)
 
 
-@pr_app.command("merge", cls=ReviewSubjectCommand)
+@pr_app.command(
+    "merge",
+    cls=ReviewSubjectCommand,
+    short_help="Merge the grouped GitHub PRs of a lane or review. To land a pinned review into its members' remotes, use review merge.",
+)
 def pr_merge(
     workspace_root: Path,
     owner_unit: Optional[str] = typer.Argument(None, help="Owner unit of a lane. Omit to merge the current review's PRs."),
@@ -6454,7 +6482,9 @@ def pr_merge(
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Merge grouped PRs for a lane, or for the current review. A review's PRs are
-    pinned to its reviewed commits unless --match-head-commit names other pins."""
+    pinned to its reviewed commits unless --match-head-commit names other pins.
+
+    To land a pinned review into its members' remotes instead, use `gr2 review merge`."""
     workspace_root = workspace_root.resolve()
     _refuse_review_beside_unit(owner_unit, review)
     subject_targets = None

@@ -13,6 +13,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
+from gr2.python_cli import surface
 from gr2.python_cli.app import app
 
 runner = CliRunner()
@@ -35,8 +36,13 @@ def _offending(text: str) -> list[str]:
 
 
 def _review_verbs() -> list[str]:
-    group = typer.main.get_command(app).commands["review"]
-    return sorted(name for name, cmd in group.commands.items() if not cmd.hidden and name not in ALIASES)
+    # Every review verb a reader can find: shown in `review --help`, or plumbing listed by `gr2 help -a` (its one-line
+    # help is printed there). Aliases and compatibility paths, listed nowhere, keep their old words.
+    root = typer.main.get_command(app)
+    listed = {path for path, _ in surface.plumbing(root)}
+    group = root.commands["review"]
+    return sorted(name for name, cmd in group.commands.items()
+                  if name not in ALIASES and (not cmd.hidden or f"review {name}" in listed))
 
 
 @pytest.mark.parametrize("verb", _review_verbs())

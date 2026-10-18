@@ -216,7 +216,53 @@ DUMP = GR2 / "api" / "cli.api"
 # is a DECISION with a sentence; a name that is neither registered nor listed is a
 # defect, which is the whole point of the sweep. Empty today is a legitimate state and
 # is NOT the same as "nothing to do" -- see the assertion below.
-EXEMPT: dict[str, str] = {}
+EXEMPT: dict[str, str] = {
+    "help": "the lister of the plumbing (gr2 help -a); hidden so the porcelain keeps its count, named in the root help",
+}
+
+
+def _plumbing_names() -> set[str]:
+    """Hidden names that are PLUMBING, not aliases: every dump row that marks the name
+    hidden is a path `gr2 help -a` lists, so a stranger can find it and nothing is being
+    retired. A name that marks even one path listed nowhere (python_cli/surface.py's
+    COMPAT_PATHS) is not plumbing and must be registered."""
+    import typer.main
+
+    from gr2.python_cli import surface
+    from gr2.python_cli.app import app
+
+    listed = {path for path, _ in surface.plumbing(typer.main.get_command(app))}
+    paths: dict[str, set[str]] = {}
+    for line in DUMP.read_text(encoding="utf-8").splitlines():
+        m = re.match(r"^verb\s+(.+?)\s+\(hidden(?::([A-Za-z0-9_-]+))?\)", line)
+        if m:
+            row = m.group(1).strip()
+            paths.setdefault(m.group(2) or row.split()[-1], set()).add(row)
+    # A row under a registered alias GROUP (surface.COMPAT_GROUPS, e.g. `grip`) is accounted by that group's own
+    # registry entry, so it does not make its last segment an unregistered alias; the group itself must be registered.
+    registered = {k.split()[1] for k in tomllib.loads(REGISTRY.read_text(encoding="utf-8"))["removed-at"]
+                  if k.startswith("alias ")}
+    under_alias = {row for rows in paths.values() for row in rows
+                   if row.split()[0] in surface.COMPAT_GROUPS and row.split()[0] in registered}
+    return {name for name, rows in paths.items() if rows <= listed | under_alias}
+
+
+def test_every_registered_alias_group_is_listed_nowhere() -> None:
+    """A registered alias that names a whole group of the CLI must be in surface.COMPAT_GROUPS, so `gr2 help -a`
+    lists none of its paths; otherwise listing them would exempt the group from this registry."""
+    import typer.main
+
+    from gr2.python_cli import surface
+    from gr2.python_cli.app import app
+
+    groups = {name for name, cmd in typer.main.get_command(app).commands.items() if hasattr(cmd, "commands")}
+    aliases = {k.split()[1] for k in tomllib.loads(REGISTRY.read_text(encoding="utf-8"))["removed-at"]
+               if k.startswith("alias ")}
+    # Registry names are bare, so a verb alias can share a group's spelling. Each such case is named here with why.
+    verb_aliases = {"hooks": "the old `repo hooks` verb, whose spelling the `hooks` group shares (see the registry)"}
+    group_aliases = (aliases & groups) - set(verb_aliases)
+    assert group_aliases, "no registered alias names a group: the reader is matching nothing"
+    assert group_aliases <= surface.COMPAT_GROUPS, sorted(group_aliases - surface.COMPAT_GROUPS)
 
 
 def _hidden_aliases() -> dict[str, str]:
@@ -225,9 +271,11 @@ def _hidden_aliases() -> dict[str, str]:
     THE DUMP MARKS TWO SHAPES AND BOTH MUST BE READ -- measured on `api/cli.api`:
 
         verb  review open-gr  (hidden)         <- a bare marker; the alias is the verb
-        verb  grip snapshot   (hidden:grip)    <- the marker names the GROUP; the
+        verb  grip init       (hidden:grip)    <- the marker names the GROUP; the
                                                   hidden thing is `grip` itself, not
-                                                  the row's own command
+                                                  the row's own command (a leaf hidden
+                                                  by its own flag, such as `grip
+                                                  snapshot`, is marked bare)
 
     A pattern matching only the colon form returns ONE alias (`grip`) and misses the
     other five, and a test built on it passes while five aliases stay unregistered --
@@ -266,7 +314,8 @@ def test_every_hidden_alias_is_registered_or_explicitly_exempted() -> None:
         f"which is why the count is asserted rather than assumed."
     )
     registered = {spelling.partition(" ")[2] for spelling in _registered()}
-    unaccounted = sorted(n for n in aliases if n not in registered and n not in EXEMPT)
+    plumbing = _plumbing_names()
+    unaccounted = sorted(n for n in aliases if n not in registered and n not in EXEMPT and n not in plumbing)
     assert not unaccounted, (
         "these names are hidden but neither registered in api/deprecations.toml nor "
         "explicitly exempted:\n  "

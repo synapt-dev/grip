@@ -14,6 +14,10 @@ import sys
 from pathlib import Path
 
 import pytest
+import typer.main
+
+from gr2.python_cli import surface
+from gr2.python_cli.app import app
 
 GR2 = Path(__file__).resolve().parents[1]
 VOCABULARY = GR2 / "docs" / "vocabulary.json"
@@ -89,11 +93,15 @@ def test_each_term_is_defined_once():
 
 def test_every_command_it_names_is_a_live_visible_command():
     visible, hidden = _verbs(CLI_API.read_text())
+    # A hidden command `gr2 help -a` lists is plumbing a reader can find; only one listed nowhere is refused.
+    plumbing = {path for path, _ in surface.plumbing(typer.main.get_command(app))}
     bad = []
     for entry in _load()["terms"]:
         for command in entry["gr2"]:
             if command in EARLIER_NAMES:
                 bad.append(f"{entry['term']}: `gr2 {command}` is an earlier name, name the current command")
+            elif command in plumbing:
+                continue
             elif command in hidden and command not in visible:
                 bad.append(f"{entry['term']}: `gr2 {command}` is hidden")
             elif not _exists(command, visible):

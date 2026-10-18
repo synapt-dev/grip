@@ -13,7 +13,8 @@ that has gone away would otherwise run out the whole timeout and report a silenc
 Every read is `ls-remote -- <url> <ref>`, bounded by min(30 s, the time left): the `--` keeps a member url such as
 ``--upload-pack=<cmd>`` a repository name rather than an option git runs, and the bound
 keeps a remote that accepts and never answers inside --timeout instead of gitops' 600 s default; a git timeout is an
-ordinary failed read. --timeout must be finite and >= 0 and --interval finite and >= 1, refused (exit 3) before any
+ordinary failed read. The last poll starts at least min(30 s, --interval) before the deadline, so its read is never
+cut to nothing; the wait then sleeps out --timeout and reports that poll. --timeout must be finite and >= 0 and --interval finite and >= 1, refused (exit 3) before any
 read: nan never ends, and an interval of 0 would poll without pause. Refusals and the
 unreadable line go to ``err`` (stderr from the CLI) with git's reason.
 """
@@ -127,11 +128,16 @@ def wait(
         if (until == "any" and moved) or len(moved) == len(members):
             echo(f"met: {until}: moved {', '.join(moved)}")
             return EXIT_MET
-        if clock() >= deadline:
+        # The next poll starts at least one read (min(30 s, --interval)) before the deadline: a poll at the deadline
+        # would get a 0.1 s read, and a remote slower than that would be reported as a failed read, not unmoved.
+        room, left = min(READ_BOUND, interval), deadline - clock()
+        if left <= room:
+            if left > 0:
+                sleep(left)  # no room for another full read: sleep out --timeout, then report the last poll
             still = [m.name for m in members if m.name not in moved and m.name not in failed]
             why = [f"not moved: {', '.join(still)}"] if still else []
             if failed:
                 why.append("last read failed: " + ", ".join(f"{n} ({w})" for n, w in failed.items()))
             echo(f"timeout after {timeout:g}s: {until} not met; {'; '.join(why)}")
             return EXIT_TIMEOUT
-        sleep(max(0.0, min(interval, deadline - clock())))
+        sleep(min(interval, left - room))

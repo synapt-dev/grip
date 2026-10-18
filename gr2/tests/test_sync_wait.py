@@ -92,8 +92,27 @@ def test_all_keeps_waiting_while_one_has_moved_and_times_out_with_its_own_exit(t
     assert result.exit_code == sync_wait.EXIT_TIMEOUT == 6, result.output
     assert "moved: beta" in result.output
     assert "not moved: alpha, gamma" in result.output
-    # start reads, then polls at 1 s (beta seen to move), 2 s and 3 s (the deadline): beta is not read again
-    assert polls == [3, 3, 2, 2], polls
+    # start reads, then polls at 1 s (beta seen to move) and 2 s, the last with a full read (1 s) before the
+    # deadline; then the wait sleeps out --timeout without a read: beta is not read again
+    assert polls == [3, 3, 2, 0], polls
+
+
+def test_a_slow_remote_that_never_moves_times_out_as_not_moved_not_as_a_failed_read(tmp_path, monkeypatch):
+    """Remotes that answer in 0.5 s and never move: no poll lands on the deadline with a 0.1 s read, so none fails."""
+    ws, _seeds = _workspace(tmp_path)
+    real = gitops.git
+
+    def answers_in_half_a_second(cwd, *args, **kw):
+        if "ls-remote" in args and kw.get("timeout", 600) < 0.5:
+            return subprocess.CompletedProcess(args, 128, "", f"fatal: git timed out after {kw['timeout']}s")
+        return real(cwd, *args, **kw)
+
+    monkeypatch.setattr(gitops, "git", answers_in_half_a_second)
+    result, polls = _run(monkeypatch, ws, "all", lambda k: None, timeout="3")
+    assert result.exit_code == 6, result.output
+    assert "last read failed" not in result.output, result.output
+    assert "all not met; not moved: alpha, beta, gamma" in result.output, result.output
+    assert polls == [3, 3, 3, 0], polls
 
 
 def test_all_returns_once_every_member_has_moved(tmp_path, monkeypatch):
@@ -218,7 +237,7 @@ def test_a_flaky_remote_that_fails_twice_but_never_in_a_row_runs_to_the_timeout(
     result, polls = _run(monkeypatch, ws, "all", on_sleep, timeout="5")
     assert result.exit_code == 6, result.output
     assert "unreadable" not in result.output
-    assert polls == [3, 3, 3, 3, 3, 3], polls  # start reads, then 1 s to 5 s: fail, read, fail, read, then the deadline
+    assert polls == [3, 3, 3, 3, 3, 0], polls  # start reads, then 1 s to 4 s: fail, read, fail, read, then sleep to 5 s
 
 
 def test_a_remote_that_stops_answering_mid_wait_ends_by_the_timeout_and_is_not_called_not_moved(tmp_path, monkeypatch):
@@ -239,7 +258,8 @@ def test_a_remote_that_stops_answering_mid_wait_ends_by_the_timeout_and_is_not_c
 
     monkeypatch.setattr(gitops, "git", hangs_after_the_start)
     start = time.monotonic()
-    result = CliRunner().invoke(app, ["sync", "wait", str(ws), "--all-members", "--until", "all", "--timeout", "2"])
+    result = CliRunner().invoke(app, ["sync", "wait", str(ws), "--all-members", "--until", "all", "--timeout", "2",
+                                      "--interval", "1"])  # poll 1 at 1 s leaves a 1 s read before the deadline
     took = time.monotonic() - start
     listener.close()
     assert took < 10, took
@@ -264,7 +284,8 @@ def test_mixed_timeout_names_not_moved_and_failed_apart(tmp_path, monkeypatch):
         return real(cwd, *args, **kw)
 
     monkeypatch.setattr(gitops, "git", alpha_hangs_after_the_start)
-    result = CliRunner().invoke(app, ["sync", "wait", str(ws), "--all-members", "--until", "all", "--timeout", "2"])
+    result = CliRunner().invoke(app, ["sync", "wait", str(ws), "--all-members", "--until", "all", "--timeout", "2",
+                                      "--interval", "1"])  # poll 1 at 1 s leaves a 1 s read before the deadline
     listener.close()
     assert result.exit_code == 6, result.output
     assert "all not met; not moved: beta, gamma; last read failed: alpha (git timed out" in result.output, result.output

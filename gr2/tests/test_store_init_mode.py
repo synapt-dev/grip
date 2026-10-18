@@ -78,3 +78,18 @@ def test_reinit_with_the_same_mode_is_idempotent(tmp_path):
     assert gr2(root, "init", "--mode", "full").returncode == 0
 
     assert (root / "grip.toml").read_bytes() == before
+
+
+@pytest.mark.parametrize("args,refused", [((), False), (("--mode", "compat"), True)], ids=["control", "mode-compat"])
+def test_the_mode_refusal_comes_before_any_clone(tmp_path, args, refused):
+    """A root holding only a grip.toml that declares full mode: with no --mode, --clone clones (the control, so the
+    refusal row cannot pass because cloning was refused for some other reason); with --mode compat, nothing is cloned."""
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "grip.toml").write_text('mode = "full"\n', encoding="utf-8")
+    gamma, _ = make_member(tmp_path, "gamma")
+
+    result = gr2(root, "init", *args, "--clone", f"gamma={gamma}", check=False)
+
+    assert result.returncode == (4 if refused else 0), (result.stdout, result.stderr)
+    assert (root / "gamma").exists() is not refused

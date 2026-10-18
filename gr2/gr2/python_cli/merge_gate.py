@@ -236,13 +236,26 @@ def _pin_tie(root: Path, declaration: declared_sets.Declaration, into: str):
             if len(tips) > _REVIEW_SCAN_CAP:
                 return (f"declared_set_pin_unmeasured: {name}'s remote advertises {len(tips)} reviews, over the "
                         f"{_REVIEW_SCAN_CAP} this gate reads; its pin {short} cannot be tied to a reviewed head")
+            failed: dict[str, str] = {}  # oid -> git's first line, for reviews the remote advertises but cannot serve
             if tips:  # every review's objects in one fetch by id, read by id: no private ref to make or delete
-                _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, *sorted(set(tips.values())))
-            for oid in tips.values():
+                try:
+                    _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, *sorted(set(tips.values())))
+                except RuntimeError:  # one oid the remote no longer has fails the whole fetch: read the rest one by one
+                    for oid in sorted(set(tips.values())):
+                        try:
+                            _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, oid)
+                        except RuntimeError as exc:
+                            failed[oid] = str(exc).splitlines()[0] if str(exc) else "the fetch failed"
+            for oid in [tips[ref] for ref in sorted(tips) if tips[ref] not in failed]:
                 state = grip._read_repo_state(repo, oid, bind=True)
                 for key, fields in state.items():
                     if fields.get("commit") == pin and declaration.member_name(key, fields.get("path", "")) == name:
                         return None
+            if failed:  # no review that read names the pin, and one that did not read might: unmeasured, by ref
+                lost = ", ".join(next_steps._shown(ref) for ref in sorted(tips) if tips[ref] in failed)
+                said = "".join(c if c.isprintable() else ascii(c)[1:-1] for c in next(iter(failed.values())))
+                return (f"declared_set_pin_unmeasured: {name}'s pin {short} is named by no review its remote serves, "
+                        f"and these reviews could not be read from it: {lost}: {said}")
         except (RuntimeError, subprocess.SubprocessError, OSError, grip.GripCorruptError) as exc:
             return f"declared_set_pin_unmeasured: {name}'s pin {short} could not be read from its remote: {exc}"
         return (f"declared_set_pin_unreviewed: {name} is pinned at {short}, which is neither merged into {into} nor "

@@ -131,17 +131,30 @@ def feature_moves(workspace: Path, members: list[dict], feature: str | None) -> 
     return out
 
 
-def _remote_tip(repo: Path, remote: str, branch: str) -> str | None:
-    """Fetch one remote branch into a private ref and return its commit, None when absent."""
+def _remote_tips(repo: Path, remote: str, branches: tuple[str, ...], listed: tuple[str, ...] = ()) -> dict[str, str | None]:
+    """One read of a remote for several exact refs: each branch's commit (its objects fetched by id) and each listed
+    ref's advertised oid, None when absent. One ls-remote and one fetch per remote, and no private ref to make or delete."""
     _plain_remote(remote)
-    if _advertised(repo, remote, f"refs/heads/{branch}") is None:
-        return None
-    staging = f"refs/dev.synapt.grip/__merge_transfers__/{uuid.uuid4().hex}"
-    try:
-        _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, f"refs/heads/{branch}:{staging}")
-        return _git(repo, "rev-parse", "--verify", f"{staging}^{{commit}}")
-    finally:
-        _git(repo, "update-ref", "-d", staging, check=False)
+    refs = tuple(f"refs/heads/{b}" for b in branches) + listed
+    hits = [line.split("\t") for line in _git(repo, "ls-remote", remote, *refs).splitlines()]
+    tips: dict[str, str | None] = {}
+    for ref in refs:  # ls-remote patterns also match nested refs by tail
+        exact = {oid for oid, name in hits if name == ref}
+        if len([name for _, name in hits if name == ref]) > 1:
+            raise RuntimeError(f"ls-remote: {ref} advertised more than once")
+        tips[ref] = exact.pop() if exact else None
+    wanted = sorted({tips[f"refs/heads/{b}"] for b in branches} - {None})
+    if wanted:
+        _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, *wanted)
+    for b in branches:
+        if tips[f"refs/heads/{b}"]:
+            tips[f"refs/heads/{b}"] = _git(repo, "rev-parse", "--verify", f"{tips[f'refs/heads/{b}']}^{{commit}}")
+    return tips
+
+
+def _remote_tip(repo: Path, remote: str, branch: str) -> str | None:
+    """One remote branch's commit, None when absent."""
+    return _remote_tips(repo, remote, (branch,))[f"refs/heads/{branch}"]
 
 
 def _merged_at(repo: Path, target: str, head: str) -> str | None:
@@ -469,9 +482,9 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
             continue
         selected.add(m["key"])
         try:
-            target = _remote_tip(repo, m["remote"], into)
-            feat = _remote_tip(repo, m["remote"], feature)
-            published = _advertised(repo, m["remote"], f"refs/dev.synapt.grip/__reviews__/v1/{review_id}")
+            review_ref = f"refs/dev.synapt.grip/__reviews__/v1/{review_id}"
+            tips = _remote_tips(repo, m["remote"], (into, feature), (review_ref,))
+            target, feat, published = tips[f"refs/heads/{into}"], tips[f"refs/heads/{feature}"], tips[review_ref]
             merged = _merged_at(repo, target, m["head"]) if target else None
             ancestor = _git(repo, "merge-base", m["head"], target) if target else ""
         except (RuntimeError, subprocess.SubprocessError, OSError) as exc:

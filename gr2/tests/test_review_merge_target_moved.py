@@ -7,6 +7,7 @@ the user nothing to act on. With an approval count the stamp read refuses `base_
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 
 from gr2.python_cli import gitops, merge_gate
@@ -276,6 +277,39 @@ def test_one_past_head_before_the_gate_under_approvals_one_reads_head_already_on
     assert approve_as(world, "Approver B").exit_code == 0
     now = _ff_main(world, past=True)
     _assert_already_on_target(runner.invoke(app, ["review", "merge", "--approvals", "1"]), world, now)
+
+
+def test_a_replace_ref_does_not_make_a_moved_target_read_head_already_on_target(world, monkeypatch):
+    # main moves to X, a commit off the head line; a replace ref in the member clone gives X the head as parent.
+    # The real history says X does not hold the head, so the push failure is target_moved_at_push.
+    set_policy(world, 0)
+    when = {k: "1700000000 +0000" for k in ("GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE")}
+    moved = {}
+
+    def commit(repo, parent):
+        tree = git(repo, "rev-parse", f"{world['base']}^{{tree}}")
+        return subprocess.run(["git", "-C", str(repo), "commit-tree", tree, "-p", parent, "-m", "moved"],
+                              env={**os.environ, **when}, capture_output=True, text=True,
+                              check=True).stdout.strip()
+
+    def run(cmd, *a, **kw):
+        if (not moved and isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "git"
+                and gitops.command_of(cmd) == "push" and str(cmd[-1]).endswith(":refs/heads/main")):
+            moved["oid"] = None
+            x = commit(world["remote"], world["base"])
+            assert commit(world["member"], world["base"]) == x
+            git(world["member"], "replace", x, commit(world["member"], world["head"]))
+            git(world["remote"], "update-ref", "refs/heads/main", x)
+            moved["oid"] = x
+        return REAL_RUN(cmd, *a, **kw)
+
+    monkeypatch.setattr(merge_gate.subprocess, "run", run)
+    out = runner.invoke(app, ["review", "merge", "--approvals", "0"])
+    assert moved["oid"], "the race never fired: no push ran"
+    assert git(world["member"], "merge-base", "--is-ancestor", world["head"], moved["oid"]) == "", "replace not seen"
+    row = json.loads(out.stdout)["members"][0]
+    assert row["refused"] == (f"target_moved_at_push: remote main is {moved['oid']}, "
+                              f"the gate read {world['base']}"), row
 
 
 def test_a_target_moved_off_the_head_line_still_reads_target_moved_at_push(world, monkeypatch):

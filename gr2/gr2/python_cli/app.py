@@ -5780,9 +5780,9 @@ def review_publish(
         if isinstance(exc, grip.GripReviewRefused):
             hit = [m for m in grip.show_review_commit(ws, review_id[3:])["members"] if m["key"] == exc.expected]
             clone = f"{str(ws).rstrip('/')}/{hit[0]['path']}" if hit else str(ws)
-            nxt = next_steps.publish_refused_next(str(ws), review_id, exc.refusal, exc.expected, clone,
+            nxt = next_steps._publish_refused_next(str(ws), review_id, exc.refusal, exc.expected, clone,
                                                   hit[0]["remote"] if hit else "", exc.observed)
-            check = next_steps.publish_refused_check(exc.refusal, clone)
+            check = next_steps._publish_refused_check(exc.refusal, clone)
         typer.echo(json.dumps({"id": review_id, "ref": ref,
                                "complete": False, "exit": grip.PUBLISH_EXIT_REFUSED, "members": [], "remotes": [],
                                "refused": refused, "next": nxt}))

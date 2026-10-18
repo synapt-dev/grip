@@ -87,7 +87,7 @@ def _stamp_remote_unreadable(remote: str | None, review: str) -> str:
             f"from this machine, then stamp {_shown(review)} again")
 
 
-def publish_unresolved_merge(workspace: str, review: str, path: str) -> str:
+def _publish_unresolved_merge(workspace: str, review: str, path: str) -> str:
     """The `next` of a bare `review publish` refused because a member clone is mid-merge. Not update's line: a merge
     commit moves HEAD past the pin (publish then refuses head_moved_since_pin), so the publish rerun follows an abort."""
     clone = f"{workspace.rstrip('/')}/{path}"
@@ -95,7 +95,7 @@ def publish_unresolved_merge(workspace: str, review: str, path: str) -> str:
             f"to keep the merge instead, commit it and run gr2 review update {_shown(workspace)} {_shown(review)}")
 
 
-def publish_feature_moved(workspace: str, clone: str, remote: str, observed: str) -> str | None:
+def _publish_feature_moved(workspace: str, clone: str, remote: str, observed: str) -> str | None:
     """feature_moved's `next`: pull the remote's commits, then pin again. publish pushes head:refs/heads/<branch>
     without -u, so the clone usually has no upstream and a bare pull fails; the pull names the member's recorded
     remote and the branch the refusal observed (`remote <branch> at <sha>`). Neither known: no command is safe."""
@@ -111,14 +111,14 @@ def publish_feature_moved(workspace: str, clone: str, remote: str, observed: str
 # remote, observed) -> the next command. None is deliberate: no command is safe to print, so the human lines say what to
 # check instead (PUBLISH_REFUSED_CHECK). A refusal in neither table prints next: null and nothing to check.
 PUBLISH_REFUSED_NEXT = {
-    "unresolved_merge": lambda ws, rid, key, clone, remote, seen: publish_unresolved_merge(ws, rid, clone[len(ws.rstrip("/")) + 1:]),
+    "unresolved_merge": lambda ws, rid, key, clone, remote, seen: _publish_unresolved_merge(ws, rid, clone[len(ws.rstrip("/")) + 1:]),
     "no_branch": None,
     "head_moved_since_pin": lambda ws, rid, key, clone, remote, seen: (
         f"gr2 review pin {_shown(ws)}   # pins the clones' current heads as a new review; publish that gr: id. "
         f"To publish {_shown(rid)} instead, move {_shown(clone)} back to the pinned commit"),
     "member_clone_missing": None,
     "review_remote_required": None,
-    "feature_moved": lambda ws, rid, key, clone, remote, seen: publish_feature_moved(ws, clone, remote, seen),
+    "feature_moved": lambda ws, rid, key, clone, remote, seen: _publish_feature_moved(ws, clone, remote, seen),
     "remote_unreadable": None,
     "remote_credentials": None,
 }
@@ -138,13 +138,13 @@ PUBLISH_REFUSED_CHECK = {
 }
 
 
-def publish_refused_next(workspace: str, review: str, refusal: str, key: str, clone: str, remote: str,
+def _publish_refused_next(workspace: str, review: str, refusal: str, key: str, clone: str, remote: str,
                          observed: str) -> str | None:
     build = PUBLISH_REFUSED_NEXT.get(refusal)
     return build(workspace, review, key, clone, remote, observed) if build else None
 
 
-def publish_refused_check(refusal: str, clone: str) -> str | None:
+def _publish_refused_check(refusal: str, clone: str) -> str | None:
     check = PUBLISH_REFUSED_CHECK.get(refusal)
     return check(clone) if callable(check) else check
 

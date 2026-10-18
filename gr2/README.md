@@ -146,7 +146,9 @@ gr2 review stamp <lane>
 The author recorded by the pin, and anyone who authored a commit in its range,
 cannot stamp it. A stamp records an approval; approver names are self-declared and receipts say `signed: false`.
 Repeated stamps by the same name count once. A moved head needs a new pin
-and fresh stamps. Signing is not implemented by these commands.
+and fresh stamps. Signing is not implemented by these commands. `review stamps` still counts
+stamps on a pin whose feature branch has moved, and says so per member (`moved_since_pin`, `null` when
+unreadable) with one stderr line, since `blockers` and `merge` will refuse it.
 
 The workspace's `grip.toml` sets the number required before merging:
 

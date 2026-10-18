@@ -7,6 +7,11 @@ from gr2.python_cli.app import app
 from tests.test_review_approvals import approve_as, git, runner, set_policy, world  # noqa: F401  (world is a fixture)
 
 
+def old(row):
+    """A member row without the live-branch fields (rowed in test_review_stamps_moved.py): the shape before them."""
+    return {k: v for k, v in row.items() if k not in ("moved_since_pin", "branch_head", "feature", "unmeasured")}
+
+
 def refs(remote):
     return git(remote, "for-each-ref", "--format=%(objectname) %(refname)")
 
@@ -59,7 +64,7 @@ def test_stamps_reads_who_and_when_and_writes_nothing(world):
     assert out["count"] == approvals.count_approvals(world["workspace"], world["rid"])["count"] == 2
     assert {s["approver"] for s in out["stamps"]} == {"Approver B", "Approver C"}
     assert all(s["created_at"].endswith("Z") and len(s["link"]) == 40 for s in out["stamps"])
-    assert out["members"] == [{"key": out["members"][0]["key"], "head": world["head"]}]
+    assert [old(m) for m in out["members"]] == [{"key": out["members"][0]["key"], "head": world["head"]}]
     assert (out["required"], out["required_state"]) == (None, "unset")  # dev refuses approvals_unset; the read reports it
     assert refs(world["remote"]) == before
 
@@ -243,7 +248,7 @@ def test_since_my_stamp_on_the_current_pin_is_unchanged(world):
     assert result.exit_code == 0, result.output
     out = json.loads(result.stdout)
     assert out["changed"] is False and out["stamped_review"] == out["review_id"] == "gr:" + world["rid"]
-    assert out["members"] == [{"key": "member", "stamped_head": world["head"], "current_head": world["head"],
+    assert [old(m) for m in out["members"]] == [{"key": "member", "stamped_head": world["head"], "current_head": world["head"],
                                "changed": False, "range": None, "commits": [], "paths": []}]
 
 
@@ -317,7 +322,7 @@ def test_since_my_stamp_names_a_member_added_after_the_stamp_as_new(world):
     out = json.loads(result.stdout)
     assert out["stamped_review"] == "gr:" + world["rid"] and out["changed"] is True
     rows = {m["key"]: m for m in out["members"]}
-    assert rows["other"] == {"key": "other", "stamped_head": None, "current_head": head, "changed": True,
+    assert old(rows["other"]) == {"key": "other", "stamped_head": None, "current_head": head, "changed": True,
                              "range": None, "commits": [], "paths": ["added"]}
     assert rows["member"]["changed"] is True and rows["member"]["range"] == f"{world['head']}..{moved}"
 
@@ -340,5 +345,5 @@ def test_since_my_stamp_on_a_rebased_head_has_no_range_and_the_tree_diff(world):
     result = since(world)
     assert result.exit_code == 0, result.output
     [m] = json.loads(result.stdout)["members"]
-    assert m == {"key": "member", "stamped_head": world["head"], "current_head": head, "changed": True,
+    assert old(m) == {"key": "member", "stamped_head": world["head"], "current_head": head, "changed": True,
                  "range": None, "commits": [], "paths": ["payload", "rebased"]}

@@ -43,6 +43,28 @@ def _advertised(repo: Path, remote: str, ref: str) -> str | None:
     return exact[0] if exact else None
 
 
+def feature_moves(workspace: Path, members: list[dict], feature: str | None) -> dict[str, dict]:
+    """Per member: does the remote feature branch still name the pinned head? The advertisement read `_remote_tip`
+    makes first (ls-remote: no fetch, no ref written). moved_since_pin is None when it cannot be read, never False. feature names the branch
+    compared, so a reviewer whose checkouts sit on main sees that main is what moved."""
+    out = {}
+    for m in members:
+        row = {"moved_since_pin": None, "branch_head": None, "feature": feature}
+        if not feature:
+            row["unmeasured"] = "feature_unresolved: members are not on one branch"
+        elif grip.url_has_credentials(m["remote"]):  # a git error names its argv, so refuse by key before any call
+            row["unmeasured"] = "remote_credentials: the recorded remote cannot be parsed or carries URL userinfo"
+        else:
+            try:
+                tip = _advertised((Path(workspace) / m["path"]).resolve(), m["remote"], f"refs/heads/{feature}")
+                row.update(moved_since_pin=tip != m["head"], branch_head=tip)
+            except (RuntimeError, subprocess.SubprocessError, OSError, ValueError) as exc:
+                # Never the exception text: a git error names its argv, the remote URL included.
+                row["unmeasured"] = f"{type(exc).__name__}: the remote's advertisement of the feature branch could not be read"
+        out[m["key"]] = row
+    return out
+
+
 def _remote_tip(repo: Path, remote: str, branch: str) -> str | None:
     """Fetch one remote branch into a private ref and return its commit, None when absent."""
     _plain_remote(remote)

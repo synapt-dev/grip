@@ -5908,6 +5908,27 @@ def review_blockers(
         raise typer.Exit(code)
 
 
+def _stamps_moved(ws: Path, rid: str, rows: list[dict], head_field: str) -> None:
+    """A stamp is valid for its pin; say per member whether the remote feature branch has left the pin since."""
+    members = grip.show_review_commit(ws, rid)["members"]
+    try:
+        feature = defaults.branch([(ws / m["path"]).resolve() for m in members], None)[0]
+    except defaults.Unresolved:
+        feature = None
+    moves = merge_gate.feature_moves(ws, members, feature)
+    for row in rows:
+        move = moves.get(row["key"], {"moved_since_pin": None, "branch_head": None, "feature": feature,
+                                      "unmeasured": "not in this pin"})
+        row.update(move)
+        if move["moved_since_pin"]:
+            typer.echo(f"{row['key']} moved since the pin: stamps cover {row[head_field]}, the branch "
+                       f"{next_steps._shown(feature)} is at {move['branch_head'] or 'nothing (absent)'}; "
+                       "blockers and merge will refuse", err=True)
+        elif move["moved_since_pin"] is None:
+            typer.echo(f"{row['key']}: unknown whether the branch moved since the pin ({move['unmeasured']}); "
+                       f"stamps cover {row[head_field]}", err=True)
+
+
 @review_app.command("stamps", cls=ReviewHeadCommand)
 def review_stamps(
     workspace_root: Path,
@@ -5925,6 +5946,7 @@ def review_stamps(
         rid = (review_id or approvals.current_review(ws)).removeprefix("gr:")
         if since_my_stamp:
             result = approvals.since_my_stamp(ws, rid)
+            _stamps_moved(ws, rid, result.get("members", []), "current_head")
             typer.echo(json.dumps(result))
             if "refused" in result:
                 raise typer.Exit(3)  # a measured no, as `blockers` "not ready"; 5 stays for what cannot be read
@@ -5943,6 +5965,7 @@ def review_stamps(
         result["stamps"] = [{"approver": l["approver"], "link": l["commit"],
                              "created_at": approvals._read_link(ws, l["commit"]).get("created_at")}
                             for l in result.pop("links")]
+        _stamps_moved(ws, rid, result["members"], "head")
     except (grip.ReviewStoreAbsent, approvals.ApprovalRefused, grip.GripInitError, grip.GripCorruptError,
             OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
         typer.echo(json.dumps({"review_id": review_id, "refused": f"{type(exc).__name__}: {exc}"}))

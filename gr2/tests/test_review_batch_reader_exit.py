@@ -9,6 +9,8 @@ import subprocess
 import threading
 import time
 
+import pytest
+
 from gr2.python_cli import check_records
 from gr2.python_cli import review_field_tree as fd
 from tests.test_review_transport import git
@@ -23,6 +25,25 @@ def _repo(tmp_path, size):
     git(tmp_path, "init", "-q", str(repo))
     (repo / "big").write_bytes(os.urandom(size))
     return repo, git(repo, "hash-object", "-w", "big")
+
+
+@pytest.fixture(autouse=True)
+def _reap_own_git(monkeypatch):
+    """Kill and reap every git this row started, so a git one row leaves hung is never counted by the next."""
+    started = []
+    orig = fd.gitops.start
+
+    def start(*a, **k):
+        proc = orig(*a, **k)
+        started.append(proc)
+        return proc
+
+    monkeypatch.setattr(fd.gitops, "start", start)
+    yield
+    for proc in started:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(5)
 
 
 def _git_children():

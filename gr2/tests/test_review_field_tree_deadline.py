@@ -325,6 +325,7 @@ def _far_clone(tmp_path: Path) -> tuple[Path, str]:
     return clone, oid
 
 
+@pytest.mark.skipif(tuple(int(n) for n in re.findall(r"\d+", git(Path(), "version"))[:2]) < (2, 44), reason="git before 2.44 ignores GIT_NO_LAZY_FETCH")
 def test_batch_reader_keeps_its_process_after_a_real_missing_line_in_a_partial_clone(tmp_path):
     """A real '<oid> missing' (two fields, no size) is not refused by the size check that runs first: the hint
     comes out, and the same git process then serves a present blob (a missing answer leaves the stream in step)."""

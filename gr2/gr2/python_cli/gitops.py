@@ -331,6 +331,13 @@ def ls_remote_rows(listing: str) -> list[tuple[str, str]]:
     return rows
 
 
+def for_each_ref_rows(listing: str) -> list[str]:
+    """The non-empty rows of for-each-ref output, split on "\n" only. A ref name cannot hold "\n" (or any control
+    character), but it may hold U+2028 and U+0085, which str.splitlines also cuts at and str.strip/str.split() also
+    eat; each caller splits its own --format fields from the row."""
+    return [line for line in listing.split("\n") if line]
+
+
 def git(
     cwd: Path, *args: str, timeout: float | None = DEFAULT_TIMEOUT
 ) -> subprocess.CompletedProcess[str]:

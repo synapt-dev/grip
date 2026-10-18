@@ -936,7 +936,7 @@ def list_review_binds(workspace: Path) -> list[tuple[str, str]]:
     _validate_bind_store(workspace)
     out = _bind_git(workspace, "for-each-ref", "--format=%(refname)\t%(committerdate:iso-strict)", _REVIEW_REF_PREFIX)
     rows: dict[str, str] = {}
-    for line in out.stdout.splitlines():
+    for line in gitops.for_each_ref_rows(out.stdout):
         ref, _, when = line.partition("\t")
         if ref.startswith(_REVIEW_REF_PREFIX):
             parsed = _review_ref_id(ref)
@@ -2151,7 +2151,7 @@ def migrate_review_binds(workspace: Path) -> tuple[Path, list[dict[str, str]]]:
     _validate_bind_store(workspace)
     repo = _bind_dir(workspace)
     out = _bind_git(workspace, "for-each-ref", "--format=%(refname) %(objectname)", _REVIEW_REF_PREFIX)
-    targets = dict(line.split(" ", 1) for line in out.stdout.splitlines() if " " in line)
+    targets = dict(line.split(" ", 1) for line in gitops.for_each_ref_rows(out.stdout) if " " in line)
     legacy = sorted(r[len(_REVIEW_REF_PREFIX):] for r in targets
                     if r.startswith(_REVIEW_REF_PREFIX) and _SHA40.fullmatch(r[len(_REVIEW_REF_PREFIX):]))
     rows: list[dict[str, str]] = []

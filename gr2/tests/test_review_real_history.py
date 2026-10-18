@@ -8,13 +8,21 @@ histories. Both reads go through gitops.real_history_run (GIT_NO_REPLACE_OBJECTS
 core.commitGraph=false reds the second."""
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+
 import pytest
 
-from gr2.python_cli import review_diff
+from gr2.python_cli import read_review, review_diff
+from gr2.python_cli.app import app
 from gr2.python_cli.grip import GripReviewRefused
 
 from tests.test_is_ancestor_commit_graph import _forge, _world
 from tests.test_is_ancestor_replace import _git, _replace_with_fake_child, _setup
+from tests.test_review_approvals import approve_as, runner, set_policy, world  # noqa: F401  (world is a fixture)
+from tests.test_review_read_pr import forge  # noqa: F401  (a fixture)
+from tests.test_review_reads import repin, since
 
 
 def _member(work, base: str, head: str) -> dict[str, object]:
@@ -43,3 +51,85 @@ def test_change_under_a_forged_commit_graph_has_no_fork_point(tmp_path):
     with pytest.raises(GripReviewRefused) as caught:
         review_diff.change(tmp_path, _member(w, x, t), with_diff=False)
     assert "member_no_merge_base" in str(caught.value)
+
+
+def _fake(repo, tree: str, *parents: str, name: str = "t") -> str:
+    """A commit object with `tree` and `parents`, authored by `name`; nothing points at it."""
+    args = [a for p in parents for a in ("-p", p)]
+    env = {**os.environ, "GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": "t@example.invalid",
+           "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": "t@example.invalid"}
+    return subprocess.run(["git", "-C", str(repo), "commit-tree", tree, *args, "-m", "fake"], env=env, check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+def test_read_pr_diffstat_under_a_forged_replace_ref_is_the_real_change(tmp_path, forge):
+    """read_review:92: the three-dot stat reads the fork point's tree itself; a replace ref that gives the fork point
+    main's tree would make the stat read c.txt as removed by the PR."""
+    bare, base, head = forge
+    dest = tmp_path / "dest"
+    _git(tmp_path, "init", "-q", str(dest))
+    _git(dest, "fetch", "-q", str(bare), "main:refs/x/main")
+    _git(dest, "replace", base, _fake(dest, _git(dest, "rev-parse", "refs/x/main^{tree}")))
+    read = read_review._fill(dest, "acme/widget", 7, str(bare))
+    assert "c.txt" in _git(dest, "diff", "--stat", f"{base}...{head}")  # the probe is real: plain git reads the forge
+    assert read.base == base and "b.txt" in read.stat and "c.txt" not in read.stat, read.stat
+
+
+def test_since_my_stamp_under_a_forged_replace_ref_reads_the_real_range(world):
+    """approvals:457: a replace ref that gives the new head an invented parent would add a commit to the range the
+    reviewer is shown. (A forged tree on a pinned head is refused before :459, approval_head_tree_unmeasurable.)"""
+    assert approve_as(world, "Approver B").exit_code == 0
+    _, old = world["rid"], world["head"]
+    _, new = repin(world, "moved\n")
+    member = world["member"]
+    tree = _git(member, "rev-parse", f"{new}^{{tree}}")
+    _git(member, "replace", new, _fake(member, tree, _fake(member, tree, old)))
+    assert len(_git(member, "rev-list", f"{old}..{new}").split()) == 2  # the probe is real
+    out = json.loads(since(world).stdout)
+    assert "members" in out, out
+    [m] = out["members"]
+    assert m["commits"] == [new] and m["paths"] == ["payload"], m
+
+
+def test_merge_under_a_forged_replace_ref_reads_the_real_fork_point(world):
+    """merge_gate:403: the receipt's merge-base must be the target; a replace ref that makes the head a root commit
+    would make plain git find no merge-base and refuse a head the real history carries."""
+    set_policy(world, 1)
+    assert approve_as(world, "Approver B").exit_code == 0
+    member, head = world["member"], world["head"]
+    _git(member, "replace", head, _fake(member, _git(member, "rev-parse", f"{head}^{{tree}}")))
+    probe = subprocess.run(["git", "-C", str(member), "merge-base", head, world["base"]], capture_output=True, text=True)
+    assert probe.returncode == 1 and not probe.stdout  # the probe is real: plain git finds no fork point
+    merged = runner.invoke(app, ["review", "merge"])
+    [row] = json.loads(merged.stdout)["members"]
+    # The gate's own merge-tree (merge_gate:558) still reads the forge and refuses merge_conflict, a follow-on; the
+    # ancestry read at :403 is what this row pins, so the refusal is neither of the two that read would give.
+    # The None in the tuple holds that merge_conflict in place: when :558 moves this row must change
+    # to assert the merge.
+    assert row["state"] == "ready" and row["refused"] not in ("base_not_ancestor_of_head", None), merged.output
+    assert not row["refused"].startswith("remote_unmeasurable"), merged.output
+
+
+def test_approve_under_a_forged_replace_ref_reads_the_real_authors(world):
+    """approvals:226: the approver is refused when they authored the range; a replace ref that slips a commit by the
+    approver under the head would refuse a stamp the real history allows."""
+    member = world["member"]
+    tree = _git(member, "rev-parse", f"{world['head']}^{{tree}}")
+    planted = _fake(member, tree, world["base"], name="Approver B")
+    _git(member, "replace", world["head"], _fake(member, tree, planted))
+    assert "Approver B" in _git(member, "log", "--format=%an", f"{world['base']}..{world['head']}")  # the probe is real
+    approved = approve_as(world, "Approver B")
+    assert approved.exit_code == 0, approved.output
+
+
+def test_read_pr_base_under_a_forged_replace_ref_is_the_real_fork_point(tmp_path, forge):
+    """read_review:90: a replace ref that makes the PR head a root commit would leave plain git no fork point."""
+    bare, base, head = forge
+    dest = tmp_path / "dest"
+    _git(tmp_path, "init", "-q", str(dest))
+    _git(dest, "fetch", "-q", str(bare), f"{head}:refs/x/head")
+    _git(dest, "replace", head, _fake(dest, _git(dest, "rev-parse", f"{head}^{{tree}}")))
+    probe = subprocess.run(["git", "-C", str(dest), "merge-base", base, head], capture_output=True, text=True)
+    assert probe.returncode == 1  # the probe is real: plain git finds no fork point
+    read = read_review._fill(dest, "acme/widget", 7, str(bare))
+    assert read.base == base and read.head == head, read

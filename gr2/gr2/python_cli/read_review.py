@@ -89,7 +89,7 @@ def _fill(dest: Path, owner_repo: str, pr_number: int, source: str) -> ReadRevie
     head = _check(gitops.git(dest, "rev-parse", "--verify", f"{_HEAD_REF}^{{commit}}"), "resolving the PR head")
     base = _check(gitops.real_history_run(dest, "merge-base", _BASE_REF, _HEAD_REF, via_cwd=True), "finding the PR base")
     _check(gitops.git(dest, "checkout", "-q", "--detach", head), "checking out the PR head")
-    stat = _check(gitops.git(dest, "diff", "--stat", f"{base}...{head}"), "summarizing the diff")
+    stat = _check(gitops.real_history_run(dest, "diff", "--stat", f"{base}...{head}", via_cwd=True), "summarizing the diff")
     return ReadReview(path=dest.resolve(), url=source, head=head, base=base, stat=stat)
 
 

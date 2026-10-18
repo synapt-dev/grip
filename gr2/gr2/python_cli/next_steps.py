@@ -172,7 +172,7 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
                     f"--remote {_shown(found['remote'])}")
         if found.get("base"):  # pin the sibling at its pin against its target's live head; its publish comes next
             return (f"next: gr2 review pin {_shown(workspace)} --repo {_shown(tied[1])} --remote {_shown(found['remote'])} "
-                    f"--base {found['base']} --head {found['pin']} --ref {_shown(found['ref'])} "
+                    f"--base {_shown(found['base'])} --head {_shown(found['pin'])} --ref {_shown(found['ref'])} "
                     f"--path {_shown(found['member_path'])} --source {_shown(found['path'])}")
         # No live head of the target to pin against, so no pin command would run as printed: say so, not as a next.
         return (f"note: no review of {_shown(tied[1])} at {tied[2]} is pinned in {_shown(workspace)}, and its remote "

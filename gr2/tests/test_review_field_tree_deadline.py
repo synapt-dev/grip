@@ -302,9 +302,10 @@ def test_git_reader_refuses_an_absent_blob_without_fetching(tmp_path):
         reader.blob(oid)
     assert "git cat-file failed" in str(refused.value)
     assert not mark.exists(), "GitReader.blob tried to fetch"
-    with pytest.raises(fd.ReviewRecordError):
+    with pytest.raises(Exception) as vt:
         fd.verify_tree(clone, root, message=None)  # the default reader is the one-shot reader
     assert not mark.exists(), "the record check tried to fetch"
+    assert vt.type is fd.ReviewRecordError and "git cat-file failed" in str(vt.value)
     assert git(clone, "cat-file", "blob", oid) == "far"  # without the variable the same read fetches, and succeeds
     assert mark.exists()
 

@@ -99,10 +99,17 @@ def preflight(paths: list[Path], branch: str) -> list[Member]:
             "--git-path", "MERGE_HEAD", "--git-path", "CHERRY_PICK_HEAD", "--git-path", "REVERT_HEAD",
             "--git-path", "rebase-apply", "--git-path", "rebase-merge", "--git-path", "sequencer",
         )
-        # One line per argument; a run that failed or printed fewer would skip the markers it left out.
-        lines = pending.stdout.splitlines()
-        if pending.returncode != 0 or len(lines) != 7:
+        if pending.returncode != 0:
             raise ChangeRefused("not_a_repo", member.name, pending.stderr.strip() or "git rev-parse failed")
+        # One line per argument, split on "\n" alone: splitlines() also breaks at U+2028 or "\f", which git prints
+        # inside a path. A path holding "\n" prints more lines; fewer or more would misread the markers.
+        lines = pending.stdout.split("\n")
+        if lines[-1] == "":
+            lines.pop()
+        if len(lines) != 7:
+            raise ChangeRefused(
+                "not_a_repo", member.name, f"git rev-parse exited 0 but printed {len(lines)} lines for 7 paths"
+            )
         top, *paths_pending = lines
         if Path(top).resolve() != path.resolve():
             raise ChangeRefused("not_a_repo", member.name, f"inside the repo at {top}")

@@ -53,7 +53,7 @@ for m in $MEMBERS; do echo "$m $(git -C "$WS/$m" rev-parse HEAD)"; done
 
 The record carries every member at its current commit, including commits no member remote has; nothing is pushed to any member remote. Run it from the workspace root after Recipe 1.
 
-It needs a FULL-mode workspace: `mode = "full"` as a top-level key of the root's `grip.toml`, above its first `[table]`. A plain `gr2 store init` writes no top-level mode, which means compat, and in compat `store commit` refuses a member commit that is on no remote ("push it first"). For a new workspace, add that line before the first `store commit`; the script stops and says so when it is missing.
+It needs a FULL-mode workspace: `mode = "full"` as a top-level key of the root's `grip.toml`, above its first `[table]`. Make a new workspace with `gr2 store init --mode full`, which writes that line. A plain `gr2 store init` writes no top-level mode, which means compat, and in compat `store commit` refuses a member commit that is on no remote ("push it first"); `--mode` does not switch an existing store, so for one made without it, add the line by hand before the next `store commit`. The script stops and says so when it is missing.
 
 ```bash
 #!/bin/bash
@@ -62,7 +62,7 @@ WS=/path/to/workspace                              # EDIT
 ROOT=/path/to/root.git                             # EDIT: the one address (an empty bare repository)
 cd "$WS"
 awk '/^\[/{exit} {print}' grip.toml | grep -q '^mode *= *"full"' \
-  || { echo 'grip.toml has no top-level mode = "full"; add it as the first line (see above), then run again' >&2; exit 1; }
+  || { echo 'grip.toml has no top-level mode = "full"; init a new workspace with --mode full, or add it as the first line (see above), then run again' >&2; exit 1; }
 gr2 store commit -m "workspace at its current commits"
 gr2 store check                                    # every member's pin is carried by the record
 gr2 store push --to "$ROOT"                        # pushes the record, and nothing to any member remote
@@ -189,6 +189,7 @@ Initialize a native store at cwd or the supplied root.
 - `<workspace_root>` (optional)
 - `--member`: Declare a member checkout by its path relative to the root (repeatable). Named paths win over the root's own spec and over sibling discovery; a named path that is not a checkout refuses the verb.
 - `--clone`: Declare a member from a url: NAME=URL clones it at <root>/NAME and records it (repeatable). The root is created when it does not exist.
+- `--mode`: The workspace mode of a new store: "compat" (the default) or "full". Full writes `mode = "full"` into grip.toml, so each member is recorded as a field-commit and a pin need not be on a remote. A root whose grip.toml already declares another mode is refused.
 - `--root/-C`: The workspace root to act on (default: the current directory).
 - `--json`: Emit machine-readable JSON
 

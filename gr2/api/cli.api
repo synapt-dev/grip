@@ -156,6 +156,7 @@ arg   grip init workspace_root <str> (hidden:grip)                    stable
 flag  grip init --clone <str> (hidden:grip)                           stable
 flag  grip init --json (hidden:grip)                                  stable
 flag  grip init --member <str> (hidden:grip)                          stable
+flag  grip init --mode <str> (hidden:grip)                            stable
 flag  grip init --root/-C <str> (hidden:grip)                         stable
 json  grip init .path                                                 may-change
 json  grip init .status  enum(initialized)                            may-change
@@ -805,6 +806,7 @@ arg   store init workspace_root <str>                                 may-change
 flag  store init --clone <str>                                        stable
 flag  store init --json                                               may-change
 flag  store init --member <str>                                       may-change
+flag  store init --mode <str>                                         stable
 flag  store init --root/-C <str>                                      stable
 json  store init .path                                                may-change
 json  store init .status  enum(initialized)                           may-change

@@ -19,6 +19,11 @@ arg   branch name <str>                                               stable
 flag  branch --base/--from/--start-point <str>                        stable
 flag  branch --repo-path <str>                                        stable
 verb  branch                                                          stable
+# change
+arg   change branch <str>                                             stable
+flag  change --message/-m <str>                                       stable
+flag  change --repo-path <str>                                        stable
+verb  change                                                          stable
 # check run
 arg   check run command <str>                                         stable
 arg   check run repo <str>                                            stable

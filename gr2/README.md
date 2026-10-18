@@ -97,7 +97,7 @@ Not there yet:
 | `workspace` | init, init-from-topology, materialize, status, convert-clone, detect-gr1, migrate-gr1, retire-gr1, migrate-lane-state, bootstrap-gr1, gitinclude |
 | `spec` | show, validate |
 | `lane` | create, enter, exit, show, resolve, bind, lease, list, push, remove |
-| (top level) | branch, add, commit, push, prune, status, plan, apply, update |
+| (top level) | branch, add, commit, change, push, prune, status, plan, apply, update |
 | `sync` | status, run |
 | `pr` | create, status, checks, merge, view |
 | `check` | run, show, set |
@@ -108,6 +108,8 @@ Not there yet:
 | `hooks` | trust, revoke, status, show, run |
 | `store` | init, commit, check, push, status, log, diff, checkout, materialize, migrate, migrate-reviews |
 | `target`, `config` | stored PR target; config overlays |
+
+`gr2 change` commits and branches every changed member in one command, at the same safety as git itself. It refuses before any write when a member cannot take the change, and on a failure or an interrupt it undoes the members it touched, in reverse order.
 
 Every `store` verb names its workspace with `-C/--root <root>`, else reads the current directory.
 

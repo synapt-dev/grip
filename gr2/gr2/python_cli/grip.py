@@ -1883,6 +1883,19 @@ def publish_review_commit(workspace: Path, commit: str, remote: str,
 PUBLISH_EXIT_OK, PUBLISH_EXIT_REFUSED, PUBLISH_EXIT_FAILED, PUBLISH_EXIT_PARTIAL = 0, 2, 3, 4
 
 
+_LS_REMOTE_ROW = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\t.+")
+
+
+def _remote_tip(listing: str, ref: str) -> str | None:
+    """The tip ``ls-remote <dest> <ref>`` lists for exactly ``ref``, or None when it lists no such row. ls-remote matches
+    by tail, so refs/heads/a/<ref> answers too and may sort first; the row is chosen by its whole name. A non-empty
+    line that is not "<oid>\t<name>" raises ValueError: a listing that cannot be read is a fault, not absence."""
+    for line in listing.split("\n"):
+        if line and not _LS_REMOTE_ROW.fullmatch(line):
+            raise ValueError(f"ls-remote listed a malformed row {line[:80]!r}")
+    return gitops.ls_remote_oid(listing, ref)
+
+
 def publish_review_all(workspace: Path, commit: str, ref: str | None = None) -> tuple[int, dict[str, object]]:
     """Publish a pinned review to every member's own recorded remote: the PINNED head to the clone's current branch
     (never forced), then the review ref once per distinct remote, each verified by ls-remote.
@@ -1912,7 +1925,10 @@ def publish_review_all(workspace: Path, commit: str, ref: str | None = None) -> 
         on_remote = git(Path(workspace), "ls-remote", "--refs", destination, branch_ref, timeout=30)
         if on_remote.returncode:
             raise GripReviewRefused("remote_unreadable", str(row["key"]), on_remote.stderr.strip())
-        theirs = on_remote.stdout.split()[0] if on_remote.stdout.strip() else None
+        try:
+            theirs = _remote_tip(on_remote.stdout, branch_ref)
+        except ValueError as exc:
+            raise GripReviewRefused("remote_unreadable", str(row["key"]), str(exc)) from exc
         if theirs is not None and theirs != row["head"] and \
                 gitops.is_ancestor(Path(row["clone"]), theirs, str(row["head"]), via_cwd=True) is not True:
             raise GripReviewRefused("feature_moved", str(row["key"]), f"remote {row['branch']} at {theirs}")
@@ -1940,11 +1956,20 @@ def publish_review_all(workspace: Path, commit: str, ref: str | None = None) -> 
             proc = git(Path(row["clone"]), "push", str(row["destination"]),
                        f"{row['head']}:{row['branch_ref']}", timeout=60)
             seen = git(Path(workspace), "ls-remote", "--refs", str(row["destination"]), str(row["branch_ref"]),
-                       timeout=30).stdout.split()
-            if proc.returncode or not seen or seen[0] != row["head"]:
+                       timeout=30)
+            there, fault = None, None
+            if seen.returncode == 0:
+                try:
+                    there = _remote_tip(seen.stdout, str(row["branch_ref"]))
+                except ValueError as exc:
+                    fault = f"remote_unreadable: {exc}"
+            if proc.returncode or there != row["head"]:
                 lines = proc.stderr.strip().splitlines()
-                m.update(head_state="failed", state="failed",
-                         error=lines[-1] if lines else f"head not at the pin on the remote after the push")
+                if proc.returncode and lines:
+                    error = lines[-1]
+                else:
+                    error = fault or (lines[-1] if lines else "head not at the pin on the remote after the push")
+                m.update(head_state="failed", state="failed", error=error)
                 failed = True
                 break
             m["head_state"] = "pushed"

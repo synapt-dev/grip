@@ -86,7 +86,8 @@ def test_a_pin_ntfs_reads_as_dotgit_is_refused(world, pin):
 
 def test_a_backslash_ends_only_a_dotgit_name(world):
     repo, base, member = world
-    names = [".gitmodules\\", ".gitattributes\\", "gitmod~1\\x", "a\\.gitx", "a\\b"]
+    names = [".gitmodules\\", ".gitattributes\\", "gitmod~1\\x", "a\\.gitx", "a\\b", "a\\.gitattributes",
+             "a\\.gitmodules\\x"]
     tree = sh._tree_with_pins(repo, base, dict.fromkeys(names, member))
     _git(repo, "update-ref", "refs/heads/t", _git(repo, "commit-tree", tree, "-m", "s").strip())
     fsck = subprocess.run(["git", "-C", str(repo), "fsck", "--strict", "--no-dangling"], capture_output=True,
@@ -106,3 +107,13 @@ def test_a_pin_under_another_pin_is_refused(world, pins):
     assert "is under pin 'a" in message
 
 
+@pytest.mark.parametrize("pin,bad", [(".gitmodules", "gitmodulesBlob"), ("a/.GITMODULES", "gitmodulesBlob"),
+                                     ("gitmod~1", "gitmodulesBlob"), ("GI7EBA~9", "gitmodulesBlob"),
+                                     (".gitmodules\u200c/b", "gitmodulesBlob"), (".gitmodules. :x", "gitmodulesBlob"),
+                                     (".gitattributes", "gitattributesBlob"), ("gitatt~4", "gitattributesBlob"),
+                                     ("gi7d29~1", "gitattributesBlob"), ("\ufeff.gitattributes", "gitattributesBlob"),
+                                     ("a\\.gitmodules", "gitmodulesBlob"), ("a\\GITMOD~1", "gitmodulesBlob"),
+                                     ("a\\b\\.gitmodules", "gitmodulesBlob")])
+def test_a_pin_named_gitmodules_or_gitattributes_is_refused(world, pin, bad):
+    message = _refused(world, [pin])
+    assert f"pin {pin!r}" in message and f"({bad})" in message

@@ -32,6 +32,32 @@ def _is_ntfs_dotgit(name: str) -> bool:
     return False
 
 
+def _is_ntfs_dot(name: str, needle: str, short_prefix: str) -> bool:
+    """`.<needle>`, its short name (six letters, ~1 to ~4), or the hashed fall-back short name."""
+    lowered = lambda s: s.isascii() and s.lower()
+    if name[:1] == "." and lowered(name[1:1 + len(needle)]) == needle:
+        return _ntfs_tail(name[1 + len(needle):])
+    if lowered(name[:6]) == needle[:6] and name[6:7] == "~" and "1" <= name[7:8] <= "4" and name[7:8]:
+        return _ntfs_tail(name[8:])
+    i, saw_tilde = 0, False
+    while i < 8:
+        c = name[i:i + 1]
+        if not c:
+            return False
+        if saw_tilde:
+            if not "0" <= c <= "9":
+                return False
+        elif c == "~":
+            i += 1
+            if not "1" <= name[i:i + 1] <= "9" or not name[i:i + 1]:
+                return False
+            saw_tilde = True
+        elif i >= 6 or not c.isascii() or c.lower() != short_prefix[i]:
+            return False
+        i += 1
+    return _ntfs_tail(name[8:])
+
+
 def fsck_bad_name(name: str) -> str | None:
     """The message id git fsck reports for a tree or gitlink entry named ``name``, or None when fsck accepts
     the name. A tree built here holds no entry fsck would reject."""
@@ -43,6 +69,12 @@ def fsck_bad_name(name: str) -> str | None:
         return "hasDotdot"
     if _is_hfs_dot(name, "git") or _is_ntfs_dotgit(name):
         return "hasDotgit"
+    # fsck checks the name after every backslash again for .gitmodules (not .gitattributes).
+    tails = [name, *(name[i + 1:] for i, c in enumerate(name) if c == "\\")]
+    if _is_hfs_dot(name, "gitmodules") or any(_is_ntfs_dot(t, "gitmodules", "gi7eba") for t in tails):
+        return "gitmodulesBlob"
+    if _is_hfs_dot(name, "gitattributes") or _is_ntfs_dot(name, "gitattributes", "gi7d29"):
+        return "gitattributesBlob"
     return None
 
 

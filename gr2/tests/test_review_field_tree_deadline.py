@@ -12,6 +12,7 @@ import re
 import shlex
 import signal
 import subprocess
+import sys
 import threading
 import time
 import zlib
@@ -21,6 +22,7 @@ import pytest
 
 from gr2.python_cli import gitops
 from gr2.python_cli import review_field_tree as fd
+from tests.test_field_tree_schema_reader import _ANSWER
 from tests.test_review_transport import git
 
 GUARD = 15.0
@@ -270,3 +272,58 @@ def test_batch_reader_lists_and_checks_a_tree_clone_without_fetching(tmp_path):
         assert not mark.exists(), "the record check tried to fetch"
         if reader:
             reader.close()
+
+
+def _far_clone(tmp_path: Path) -> tuple[Path, str]:
+    """A blob:none clone of a one-file remote, and the file's blob id, absent here; the remote is then moved
+    away, so a lazy fetch would fail rather than succeed quietly."""
+    remote = tmp_path / "remote"
+    git(tmp_path, "init", "-q", str(remote))
+    git(remote, "config", "uploadpack.allowFilter", "true")
+    (remote / "f").write_text("far\n")
+    git(remote, "add", "f")
+    git(remote, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "f")
+    oid = git(remote, "rev-parse", "HEAD:f")
+    clone = tmp_path / "clone"
+    git(tmp_path, "clone", "-q", "--no-checkout", "--filter=blob:none", remote.as_uri(), str(clone))
+    remote.rename(tmp_path / "gone")
+    return clone, oid
+
+
+def test_batch_reader_keeps_its_process_after_a_real_missing_line_in_a_partial_clone(tmp_path):
+    """A real '<oid> missing' (two fields, no size) is not refused by the size check that runs first: the hint
+    comes out, and the same git process then serves a present blob (a missing answer leaves the stream in step)."""
+    clone, oid = _far_clone(tmp_path)
+    here = git(clone, "hash-object", "-w", "--stdin", input="here\n")
+    with fd.BatchReader(clone) as batch:
+        assert batch.blob(here) == b"here\n"
+        first = batch._cat._proc
+        with pytest.raises(fd.ReviewRecordError) as refused:
+            batch.blob(oid)
+        assert f"{oid} is missing locally (partial clone?)" in str(refused.value)
+        assert "fetch -- origin " + oid in str(refused.value)
+        assert batch._cat is not None and batch._cat._proc is first and first.poll() is None
+        assert batch.blob(here) == b"here\n"
+        assert batch._cat._proc is first
+
+
+def test_batch_reader_refuses_a_missing_line_for_another_object_in_a_partial_clone(tmp_path, monkeypatch):
+    """In a clone that does have a promisor, '<other> missing' is an out-of-step stream, not an absent object:
+    the id check runs before the hint, so the reader is abandoned and no fetch is offered for either id."""
+    clone, oid = _far_clone(tmp_path)
+    other = "e" * 40
+    started: list[subprocess.Popen] = []
+
+    def start(cwd, *args, **kwargs):
+        started.append(subprocess.Popen([sys.executable, "-c", _ANSWER, f"{other} missing\n".encode().hex()],
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE))
+        return started[-1]
+
+    monkeypatch.setattr(gitops, "start", start)
+    with fd.BatchReader(clone) as batch:
+        with pytest.raises(fd.ReviewRecordError) as refused:
+            batch.blob(oid)
+        assert "answered for another object" in str(refused.value)
+        assert "partial clone" not in str(refused.value) and "fetch" not in str(refused.value)
+        assert batch._cat is None
+    assert started and started[0].wait(5) is not None

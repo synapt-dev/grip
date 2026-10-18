@@ -84,7 +84,8 @@ def preflight(paths: list[Path], branch: str) -> list[Member]:
         for rec in entries:
             if rec.startswith("u "):
                 raise ChangeRefused("unresolved", member.name, "unmerged paths")
-            if rec[0] in "12" and rec[2] != ".":
+            # An intent-to-add entry (`git add -N`) reads ".A": the undo's reset would drop the mark.
+            if rec[0] in "12" and (rec[2] != "." or rec[3] == "A"):
                 raise ChangeRefused("staged_index", member.name, "the index already differs from HEAD")
         exists = git(path, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
         if exists.returncode == 0:

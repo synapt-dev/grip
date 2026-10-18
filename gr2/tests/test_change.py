@@ -111,7 +111,9 @@ def test_c1_one_change_commits_every_member(members: list[Path], git_log: Path) 
     [
         ("staged_index", lambda p: _git(p, "add", "README.md")),
         ("branch_exists", lambda p: _git(p, "branch", "feat", "HEAD")),
+        ("staged_index", lambda p: (p / "later.txt").write_text("later\n") and _git(p, "add", "-N", "later.txt")),
     ],
+    ids=["staged", "branch_exists", "intent_to_add"],
 )
 def test_c3_refusal_writes_nothing_in_any_member(members: list[Path], git_log: Path, reason, spoil) -> None:
     spoil(members[2])

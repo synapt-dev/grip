@@ -19,6 +19,13 @@ from tests.native_root_helper import native_root
 
 runner = CliRunner()
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    """Strip ANSI so forced color (CI) does not break a substring of a Rich-rendered error panel."""
+    return _ANSI_RE.sub("", text)
+
 
 def _git(cwd: Path, *args: str) -> str:
     env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e", "GIT_COMMITTER_NAME": "t",
@@ -98,7 +105,7 @@ def test_at_base_without_a_range_is_refused(tmp_path: Path) -> None:
     result = runner.invoke(app, ["review", "pin", str(w["ws"]), "--repo", "src", "--remote", str(w["remote"]),
                                  "--base", w["base"], "--head", w["head"], "--ref", "refs/heads/trunk",
                                  "--source", str(w["src"]), "--at-base"])
-    assert result.exit_code == 2 and "--at-base requires --from-range" in result.output, result.output
+    assert result.exit_code == 2 and "--at-base requires --from-range" in _plain(result.output), result.output
 
 
 def _side_base(tmp_path: Path, push_side: bool) -> dict:

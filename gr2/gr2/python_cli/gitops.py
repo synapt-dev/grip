@@ -160,6 +160,8 @@ class GitError(RuntimeError):
 
 
 _CREDENTIAL_SHOWN = "<a remote with a credential>"
+# git's own rule for an scp-form address: a colon before the first slash (so `./a:b` stays a local path)
+_SCP_ADDRESS = re.compile(r"[^/]*:")
 
 
 def _strip_userinfo(url: str) -> str:
@@ -170,11 +172,14 @@ def _strip_userinfo(url: str) -> str:
 
 def _shown_arg(arg: str) -> str:
     """An argument as an error message may show it: a URL loses its userinfo, and a URL that still carries a
-    credential after that (a token in the query, an unparsable address) is named, not shown. Any other argument is
+    credential after that (a token in the query, an unparsable address) is named, not shown. An scp-form address
+    (user@host:path, which git reaches over ssh) that carries a credential is named too. Any other argument is
     returned as written."""
     from .grip import url_has_credentials  # lazy, as above
 
-    if "://" not in arg or not url_has_credentials(arg):
+    if "://" not in arg:
+        return _CREDENTIAL_SHOWN if _SCP_ADDRESS.match(arg) and url_has_credentials(arg) else arg
+    if not url_has_credentials(arg):
         return arg
     stripped = _strip_userinfo(arg)
     return _CREDENTIAL_SHOWN if url_has_credentials(stripped) else stripped

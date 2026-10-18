@@ -187,6 +187,23 @@ def test_git_error_shows_a_plain_named_remote_as_before(tmp_path):
     assert PLAIN in exc.stderr and str(exc) == f"git ls-remote r: {exc.stderr}", str(exc)
 
 
+def test_git_error_never_shows_a_query_token_of_an_scp_address(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_SSH_COMMAND", "false")  # git reaches an scp address over ssh; fail it offline
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    with pytest.raises(gitops.GitError) as caught:
+        gitops.out(repo, "ls-remote", f"git@127.0.0.1:x.git?access_token={TOKEN}")
+
+    assert caught.value.returncode != 0
+    assert TOKEN not in str(caught.value), str(caught.value)
+
+
+@pytest.mark.parametrize("args", [("push", "HEAD:refs/heads/x"), ("ls-remote", "git@127.0.0.1:x.git"),
+                                  ("ls-remote", "./a:b")])
+def test_git_error_shows_an_scp_address_and_a_colon_argument_as_written(args):
+    assert _error(*args) == f"git {' '.join(args)}: fatal: unable to access"
+
+
 @pytest.mark.parametrize("url, token", [
     ("ssh://us%3Aer%40x:FAKE%40TOK@127.0.0.1:9/x.git", "FAKE%40TOK"),
     ("https://user%3AFAKETOK@127.0.0.1:9/x.git", "FAKETOK"),

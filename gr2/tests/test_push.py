@@ -175,9 +175,9 @@ def test_acknowledged_push_without_matching_receipt_evidence_refuses(
             return subprocess.CompletedProcess(["git", *args], 0, "upstream\n", "")
         if args == ("rev-parse", "--verify", "HEAD"):
             return subprocess.CompletedProcess(["git", *args], 0, "a" * 40 + "\n", "")
-        if args[:3] == ("push", "--porcelain", "upstream"):
+        if args[:4] == ("push", "--porcelain", "--", "upstream"):
             return subprocess.CompletedProcess(["git", *args], 0, "", "")
-        if args[:3] == ("ls-remote", "--heads", "upstream"):
+        if args[:4] == ("ls-remote", "--heads", "--", "upstream"):
             return subprocess.CompletedProcess(["git", *args], 0, "", "")
         raise AssertionError(args)
 
@@ -210,7 +210,7 @@ def test_force_with_lease_is_threaded_to_git_without_raw_force(
         if args[0] == "push":
             push_args = args
             return subprocess.CompletedProcess(["git", *args], 0, "", "")
-        if args[:3] == ("ls-remote", "--heads", "upstream"):
+        if args[:4] == ("ls-remote", "--heads", "--", "upstream"):
             row = "a" * 40 + "\trefs/heads/main\n"
             return subprocess.CompletedProcess(["git", *args], 0, row, "")
         raise AssertionError(args)

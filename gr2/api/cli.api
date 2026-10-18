@@ -672,6 +672,7 @@ verb  review rebind                                                   stable
 # review receive
 arg   review receive commit <str>                                     may-change
 arg   review receive workspace_root <str>                             stable
+flag  review receive --all                                            stable
 flag  review receive --ref <str>                                      may-change
 flag  review receive --remote <str>                                   may-change
 flag  review receive --root/-C <str>                                  stable

@@ -114,8 +114,8 @@ Run it in YOUR workspace: the approval is made as that workspace's `git user.nam
 set -euo pipefail
 WS=/path/to/your/workspace                         # EDIT: your workspace root
 REVIEW=gr:0000000000000000000000000000000000000000 # EDIT: the full review ID the author sent you
-REMOTES="/path/to/alpha.git /path/to/beta.git"     # EDIT: every member's remote
-for r in $REMOTES; do gr2 review receive "$WS" "$REVIEW" --remote "$r"; done   # also fetches each pinned head into its member clone
+REMOTE=/path/to/alpha.git                          # EDIT: any one member's remote (the author published the review to each)
+gr2 review receive "$WS" "$REVIEW" --remote "$REMOTE" --all   # also fetches every member's pinned head from its own remote; exit 4 names any it could not
 gr2 review show "$WS" "$REVIEW"                    # each member's commit range and the files it changes
 [ "${APPROVE:-}" = 1 ] || { echo "Read each member's range above (git diff <start>..<end> in that member), then run this again with APPROVE=1 to test and stamp."; exit 0; }
 T=$(mktemp -d)

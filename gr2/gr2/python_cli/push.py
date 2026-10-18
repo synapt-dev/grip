@@ -98,7 +98,7 @@ def _head_sha(repo: Path) -> str:
 def _remote_branch_sha(repo: Path, remote: str, branch: str) -> str:
     ref = f"refs/heads/{branch}"
     try:
-        result = git(repo, "ls-remote", "--heads", remote, ref)
+        result = git(repo, "ls-remote", "--heads", "--", remote, ref)
     except OSError as exc:
         raise PushEvidenceError(
             f"push was acknowledged but remote receipt evidence was unavailable: {exc}"
@@ -160,7 +160,8 @@ def push_current_branch(
         args.append("--set-upstream")
     if force_with_lease:
         args.append("--force-with-lease")
-    args.extend([selected_remote, branch])
+    # "--": git takes a remote named "--receive-pack=..." (`git remote add -- <name>`); unfenced it is an option.
+    args.extend(["--", selected_remote, branch])
     try:
         pushed = git(repo, *args)
     except OSError as exc:
@@ -214,7 +215,7 @@ def _lane_branch_uncovered(repo: Path, receipt: PushReceipt, lane_branch: str) -
         return None
     where = f"{receipt.remote}/{lane_branch}"
     not_on = f"head {receipt.local_sha} is not on {where}; push it first"
-    listed = git(repo, "ls-remote", "--heads", receipt.remote, f"refs/heads/{lane_branch}")
+    listed = git(repo, "ls-remote", "--heads", "--", receipt.remote, f"refs/heads/{lane_branch}")
     if listed.returncode != 0:
         return f"cannot tell whether head {receipt.local_sha} is on {where}: ls-remote failed"
     if not listed.stdout.strip():
@@ -222,7 +223,7 @@ def _lane_branch_uncovered(repo: Path, receipt: PushReceipt, lane_branch: str) -
     tip = listed.stdout.split()[0]
     ancestry = git(repo, "merge-base", "--is-ancestor", receipt.local_sha, tip)
     if ancestry.returncode not in (0, 1):
-        fetched = git(repo, "fetch", "--no-tags", "--refmap=", "--no-write-fetch-head", receipt.remote, f"refs/heads/{lane_branch}")
+        fetched = git(repo, "fetch", "--no-tags", "--refmap=", "--no-write-fetch-head", "--", receipt.remote, f"refs/heads/{lane_branch}")
         if fetched.returncode != 0:
             return f"cannot tell whether head {receipt.local_sha} is on {where}: its tip could not be fetched"
         ancestry = git(repo, "merge-base", "--is-ancestor", receipt.local_sha, tip)

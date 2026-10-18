@@ -201,6 +201,8 @@ def test_a_push_whose_layer_does_not_carry_the_pin_is_refused_by_the_hook(tmp_pa
 
 
 def test_materialize_refuses_by_name_when_the_layer_does_not_carry_the_pin(tmp_path):
+    """materialize does not call _layer_carries: its check is the checkout of the pin after every layer is applied, so
+    the assertion names that refusal's own words ("not in its layers or on"), not only the code both checks share."""
     root, pin = _layered_store(tmp_path)
     git(root / "alpha", "switch", "-q", "-c", "other", "origin/main")
     (root / "alpha" / "other.txt").write_text("other\n")
@@ -217,8 +219,97 @@ def test_materialize_refuses_by_name_when_the_layer_does_not_carry_the_pin(tmp_p
 
     made = gr2(victim, "materialize", check=False)
 
-    assert made.returncode == 3 and "full_mode_layer_does_not_carry_pin" in f"{made.stdout}{made.stderr}", (
+    out = f"{made.stdout}{made.stderr}"
+    assert made.returncode == 3 and f"full_mode_layer_does_not_carry_pin: alpha pin {pin} is not in its layers or on" in out, (
         made.stdout, made.stderr)
+
+
+def _legacy_record_with_layers(root: Path, layers: list[bytes], pin: str | None = None) -> Path:
+    """`_record_with_layers` in the shape a root wrote before the sidecar: no `.grip/fields`, and every member's gitlink
+    names a field-commit, which is the record the reader takes."""
+    git(root, "rm", "-r", "-q", "--cached", "--sparse", "--ignore-unmatch", ".grip/fields")
+    pin = pin or _member_head(root, "alpha")
+    parents = []
+    for name, record_layers, record_pin in (("alpha", layers, pin), ("beta", [], _member_head(root, "beta"))):
+        url = git(root / name, "remote", "get-url", "origin").stdout.strip()
+        forged = mft.commit(root, dict(kind=mft.KIND_REPO, pin=record_pin, url=url, ref="main", layers=record_layers),
+                            "forged record")
+        git(root, "update-index", "--add", "--cacheinfo", f"160000,{forged},{name}")
+        parents += ["-p", forged]
+    tree = git(root, "write-tree").stdout.strip()
+    head = git(root, "rev-parse", "HEAD").stdout.strip()
+    made = git(root, "-c", "user.name=x", "-c", "user.email=x@example.invalid", "commit-tree", tree,
+               "-p", head, *parents, "-m", "carry the forged records").stdout.strip()
+    git(root, "update-ref", "HEAD", made)
+    return root
+
+
+def _legacy_layer_of_another_commit(tmp_path: Path) -> tuple[Path, str]:
+    """A legacy-shaped root whose alpha record carries a real bundle of a commit that is not its pin, and that pin."""
+    root, pin = _layered_store(tmp_path)
+    git(root / "alpha", "switch", "-q", "-c", "other", "origin/main")
+    (root / "alpha" / "other.txt").write_text("other\n")
+    git(root / "alpha", "add", "other.txt")
+    git(root / "alpha", "commit", "-m", "a different commit")
+    raw = _bundle_bytes(root / "alpha", "HEAD")
+    git(root / "alpha", "switch", "-q", "--detach", pin)
+    return _legacy_record_with_layers(root, [raw], pin=pin), pin
+
+
+def test_legacy_a_layer_that_is_not_a_git_bundle_is_refused_at_the_read(tmp_path):
+    root = _legacy_record_with_layers(_full_store(tmp_path), [b"not a bundle"])
+    git(tmp_path, "clone", str(root), "victim")
+
+    made = gr2(tmp_path / "victim", "materialize", check=False)
+
+    out = f"{made.stdout}\n{made.stderr}"
+    assert made.returncode != 0 and "is not a git bundle" in out and "Traceback" not in out, out
+
+
+def test_legacy_a_layer_that_does_not_carry_the_pin_is_refused_by_name(tmp_path):
+    forged, _ = _legacy_layer_of_another_commit(tmp_path)
+
+    checked = gr2(forged, "check", check=False)
+
+    assert checked.returncode == 3 and "full_mode_layer_does_not_carry_pin" in f"{checked.stdout}{checked.stderr}", (
+        checked.stdout, checked.stderr)
+
+
+def test_legacy_a_push_whose_layer_does_not_carry_the_pin_is_refused_by_the_hook(tmp_path):
+    forged, _ = _legacy_layer_of_another_commit(tmp_path)
+    bare = tmp_path / "root.git"
+    git(tmp_path, "init", "--bare", str(bare))
+
+    pushed = git(forged, "push", str(bare), "HEAD:refs/heads/main", check=False)
+
+    assert pushed.returncode != 0 and "full_mode_layer_does_not_carry_pin" in f"{pushed.stdout}{pushed.stderr}", (
+        pushed.stdout, pushed.stderr)
+
+
+def test_legacy_materialize_refuses_by_name_when_the_layer_does_not_carry_the_pin(tmp_path):
+    forged, pin = _legacy_layer_of_another_commit(tmp_path)
+    git(tmp_path, "clone", str(forged), "victim")
+    victim = tmp_path / "victim"
+    configure_identity(victim)
+    url = git(forged / "alpha", "remote", "get-url", "origin").stdout.strip()
+    git(victim, "clone", "--no-local", url, "alpha")
+
+    made = gr2(victim, "materialize", check=False)
+
+    out = f"{made.stdout}{made.stderr}"
+    assert made.returncode == 3 and f"full_mode_layer_does_not_carry_pin: alpha pin {pin} is not in its layers or on" in out, (
+        made.stdout, made.stderr)
+
+
+def test_legacy_a_record_with_an_oversize_layer_is_refused_without_advising_unshallow(tmp_path):
+    root = _full_store(tmp_path)
+    layer = b"# v2 git bundle\n" + b"x" * mft.MAX_LAYER_BYTES
+    forged = _legacy_record_with_layers(root, [layer])
+
+    checked = gr2(forged, "check", check=False)
+
+    out = f"{checked.stdout}{checked.stderr}"
+    assert checked.returncode == 4 and "over the" in out and "unshallow" not in out, (checked.returncode, out[-300:])
 
 
 def test_two_layer_lists_with_the_same_bytes_joined_are_measured_separately_by_the_hook(tmp_path):

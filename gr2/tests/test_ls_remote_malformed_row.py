@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 import typer
 
-from gr2.python_cli import app, gitops, grip_cli, merge_gate, push
+from gr2.python_cli import app, defaults, gitops, grip_cli, merge_gate, merge_receipts, push
 
 BAD = "not-a-valid-ls-remote-row"
 OID = "1" * 40
@@ -45,6 +45,8 @@ CALLS = {
     "merge_gate_advertised": lambda r: merge_gate._advertised(r, "origin", "refs/heads/x"),
     "grip_leases": lambda r: grip_cli._leases(r, OID, ["refs/heads/x"]),
     "app_live_remote_tips": lambda r: app._live_remote_tips(r, "origin", "refs/heads/x"),
+    "app_remote_tag_shas": lambda r: app._remote_tag_shas(r),
+    "defaults_target_branch": lambda r: defaults.target_branch([(r, "origin", OID)], None),
 }
 
 
@@ -88,3 +90,11 @@ def test_pr_create_refuses(shim, capsys, monkeypatch):
         app._pr_create_for_review(shim, None, "github", "main", False, None, None, None)
     err = capsys.readouterr().err
     assert "refused:" in err and "not a row" in err and BAD in err, err
+
+
+def test_merged_defaults_unresolved(shim, monkeypatch):
+    monkeypatch.setattr(app.grip, "show_review_commit",
+                        lambda ws, rid: {"id": "gr:t", "members": [{"path": shim.name, "remote": "origin"}]})
+    monkeypatch.setattr(merge_receipts, "runs", lambda ws, rid: [])
+    with pytest.raises(defaults.Unresolved, match="into_unresolved"):
+        app._resolve_merged_defaults(shim.parent, "gr:t", None)

@@ -3784,7 +3784,11 @@ def _remote_tag_shas(repo: Path) -> list[str]:
         if listed.returncode != 0:
             raise SystemExit(f"cannot list {remote}'s tags in {repo}, so cannot show a tagged commit is pushed: "
                              f"{listed.stderr.strip()}")
-        shas += [line.split()[0] for line in listed.stdout.splitlines() if line.strip()]
+        try:
+            shas += [oid for oid, _ in gitops.ls_remote_rows(listed.stdout)]
+        except gitops.LsRemoteMalformed as exc:
+            raise SystemExit(f"cannot list {remote}'s tags in {repo}, so cannot show a tagged commit is pushed: "
+                             f"{exc}") from None
     if not shas:
         return []
     have = gitops.run_argv(["git", "cat-file", "--batch-check=%(objectname)"], cwd=repo,
@@ -5745,11 +5749,11 @@ def _resolve_merged_defaults(ws: Path, review_id: Optional[str], into: Optional[
         for m in view["members"]:
             repo = (ws / m["path"]).resolve()
             try:
-                out = merge_gate._git(repo, "ls-remote", "--symref", "--", m["remote"], "HEAD")
-            except (RuntimeError, subprocess.SubprocessError, OSError):
-                out = ""
-            default = next((left.removeprefix("ref: refs/heads/") for left, _, ref in
-                            (line.partition("\t") for line in out.splitlines())
+                out = merge_gate._git(repo, "ls-remote", "--symref", "--", m["remote"], "HEAD", raw=True)
+                rows = gitops.ls_remote_rows(out)
+            except (RuntimeError, subprocess.SubprocessError, OSError, gitops.LsRemoteMalformed):
+                rows = []
+            default = next((left.removeprefix("ref: refs/heads/") for left, ref in rows
                             if left.startswith("ref: refs/heads/") and ref == "HEAD"), None)
             if default is None:
                 raise defaults.Unresolved(f"into_unresolved: {m['path']}: no remote default branch readable; "

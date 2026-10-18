@@ -1,9 +1,12 @@
 """gr2's ancestry answers read the real history: a replace ref (refs/replace/<sha>) never fakes descent.
 
 A replace ref swaps a commit for another on every read git makes, so a feature tip replaced by a commit whose parent is
-the target tip would read as already containing it. gitops.is_ancestor runs the check with GIT_NO_REPLACE_OBJECTS=1."""
+the target tip would read as already containing it. A "<feature> <target>" line in .git/info/grafts does the same and
+is not turned off by GIT_NO_REPLACE_OBJECTS. gitops.is_ancestor runs the check with GIT_NO_REPLACE_OBJECTS=1 and
+GIT_GRAFT_FILE pointed at an empty file."""
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -79,3 +82,32 @@ def test_is_ancestor_true_false_none_and_replace(tmp_path):
     assert gitops.is_ancestor(work, target, feature, via_cwd=True) is False
     proc = gitops.ancestry_proc(work, target, feature)
     assert proc.returncode == 1
+
+
+def _graft_onto(work: Path, feature: str, target: str) -> None:
+    """.git/info/grafts gives feature the single parent target."""
+    grafts = work / ".git" / "info" / "grafts"
+    grafts.parent.mkdir(parents=True, exist_ok=True)
+    grafts.write_text(f"{feature} {target}\n")
+    # The probe is real: plain git reads target as an ancestor of feature, with replace refs off too.
+    assert subprocess.run(["git", "-C", str(work), "merge-base", "--is-ancestor", target, feature],
+                          env={**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"}, capture_output=True).returncode == 0
+
+
+def test_is_ancestor_ignores_grafts(tmp_path):
+    work, feature, target = _setup(tmp_path)
+    base = _git(work, "rev-parse", f"{feature}^")
+    _graft_onto(work, feature, target)
+    assert gitops.is_ancestor(work, target, feature) is False
+    assert gitops.is_ancestor(work, target, feature, via_cwd=True) is False
+    assert gitops.ancestry_proc(work, target, feature).returncode == 1
+    # The real parent still reads as an ancestor: the graft file is ignored, not the history.
+    assert gitops.is_ancestor(work, base, feature) is True
+
+
+def test_update_does_not_read_a_grafted_tip_as_up_to_date(tmp_path):
+    work, feature, target = _setup(tmp_path)
+    _graft_onto(work, feature, target)
+    code, receipt = branch_update.update(work, "main")
+    assert receipt["state"] != "up_to_date", receipt
+    assert receipt["base"] == target

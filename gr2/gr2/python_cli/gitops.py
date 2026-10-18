@@ -330,20 +330,22 @@ def git(
 
 
 #: A replace ref (refs/replace/<sha>) swaps one object for another on every read, so a tip replaced by a commit
-#: whose parent is X would read as descending from X. An ancestry answer gr2 acts on reads the real history.
-NO_REPLACE_ENV = {"GIT_NO_REPLACE_OBJECTS": "1"}
+#: whose parent is X would read as descending from X; a line "<tip> <X>" in .git/info/grafts gives the tip X as a
+#: parent the same way, and GIT_NO_REPLACE_OBJECTS does not turn grafts off. An ancestry answer gr2 acts on reads
+#: the real history: no replace refs, and an empty graft file in place of info/grafts.
+REAL_HISTORY_ENV = {"GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull}
 
 
 def ancestry_proc(repo: Path, ancestor: str, descendant: str, *, via_cwd: bool = False) -> subprocess.CompletedProcess:
-    """`git merge-base --is-ancestor ancestor descendant` with replace refs ignored, for a caller that reports git's
-    own stderr; rc 0 is yes, 1 is no, anything else is "could not tell". `via_cwd` as in run()."""
+    """`git merge-base --is-ancestor ancestor descendant` in the real history (replace refs and grafts
+    ignored), for a caller that reports git's own stderr; rc 0 is yes, 1 is no, anything else is "could not tell". `via_cwd` as in run()."""
     return run(repo, "merge-base", "--is-ancestor", ancestor, descendant,
-               env={**os.environ, **NO_REPLACE_ENV}, via_cwd=via_cwd)
+               env={**os.environ, **REAL_HISTORY_ENV}, via_cwd=via_cwd)
 
 
 def is_ancestor(repo: Path, ancestor: str, descendant: str, *, via_cwd: bool = False) -> bool | None:
-    """True when `ancestor` is an ancestor of `descendant` in the real history (replace refs ignored), False when
-    it is not, None when git could not tell (a missing object, a bad name, a timeout)."""
+    """True when `ancestor` is an ancestor of `descendant` in the real history (replace refs and grafts ignored),
+    False when it is not, None when git could not tell (a missing object, a bad name, a timeout)."""
     rc = ancestry_proc(repo, ancestor, descendant, via_cwd=via_cwd).returncode
     return True if rc == 0 else False if rc == 1 else None
 

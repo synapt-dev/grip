@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 
+from gr2.python_cli import check_records
 from gr2.python_cli import review_field_tree as fd
 from tests.test_review_transport import git
 
@@ -105,3 +106,41 @@ def test_a_raise_between_blobs_ends_the_batch_process(tmp_path, monkeypatch):
     assert isinstance(box.get("exc"), _Raised)
     assert _gone_within(box["proc"], 2), f"git still alive: {_git_children()}"
     assert box["r"]._cat is None
+
+
+def test_a_raise_mid_body_through_the_check_store_ends_the_batch_process(tmp_path, monkeypatch):
+    # check_records._Store owns a BatchReader; its __exit__ must hand the raise on, not close() and wait
+    repo, oid = _repo(tmp_path, 1 << 20)
+    box: dict = {}
+    orig = fd.gitops.start
+
+    def start(*a, **k):
+        box["proc"] = orig(*a, **k)
+        return box["proc"]
+
+    def partial(self, n=-1):
+        self._stream.read1(4096)
+        raise _Raised("mid-body")
+
+    monkeypatch.setattr(fd.gitops, "start", start)
+    monkeypatch.setattr(fd._Deadlined, "read", partial)
+
+    def run():
+        try:
+            with check_records._Store(repo) as store:
+                box["store"] = store
+                store.blob(oid)
+        except BaseException as exc:  # handed to the row below
+            box["exc"] = exc
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(10)
+    hung = t.is_alive()
+    if hung and "proc" in box:
+        box["proc"].kill()  # let the thread go; the row is red either way
+        t.join(5)
+    assert not hung, "HUNG: _Store.__exit__ waited in close() while git was blocked writing the unread body"
+    assert isinstance(box.get("exc"), _Raised)
+    assert _gone_within(box["proc"], 2), f"git still alive: {_git_children()}"
+    assert box["store"]._reader._cat is None

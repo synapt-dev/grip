@@ -50,9 +50,10 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from . import gitops
+from .keys import member_path_key
 
 MARKER = "# gr2-store-hook v1"
 HOOK_NAMES = ("pre-commit", "pre-push")
@@ -229,9 +230,8 @@ def gitmodules_problems(root: Path) -> list[str]:
 # ── the engine, shared with the verbs ────────────────────────────────────────────────────────────
 
 
-def _git_path(path: object) -> str:
-    """A member path as git spells its gitlink: `./alpha` and `alpha/` are both `alpha`."""
-    return str(PurePosixPath(str(path)))
+# The member-path key now lives in keys (one canonical key per kind); the old name stays for its callers.
+_git_path = member_path_key
 
 
 def _refuse_unclaimed_gitlinks(members: list[dict[str, str]], staged: dict[str, str], committed: dict[str, str]) -> None:

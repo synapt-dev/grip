@@ -190,6 +190,7 @@ def verify_parent_shape(
             repo_root,
             "fetch",
             "--no-write-fetch-head",
+            "--",
             remote,
             commit_sha,
         )

@@ -315,11 +315,14 @@ def test_a_compat_store_that_flips_to_full_drops_the_gitmodules_gr2_wrote(tmp_pa
 
 
 def _evil_root(tmp_path: Path, marker: Path, covered_by: str) -> Path:
-    """A full-mode root whose alpha record names `covered_by`, carried in a root commit as any pusher could."""
+    """A full-mode root in the field-commit shape whose alpha record names `covered_by`, carried in a root commit as any
+    pusher could."""
     root = _full_store(tmp_path)
     pin = _member_head(root, "alpha")
     evil = mft.commit(root, dict(kind=mft.KIND_REPO, pin=pin, url=git(root / "alpha", "remote", "get-url", "origin").stdout.strip(),
                                  ref="main", covered_by=covered_by, covered_test=mft.COVER_REACHABLE), "evil record")
+    # the shape before the sidecar: with `.grip/fields` left in place the reader takes the sidecar and never reads this
+    git(root, "rm", "-r", "-q", "--cached", "--sparse", "--ignore-unmatch", ".grip/fields")
     git(root, "update-index", "--add", "--cacheinfo", f"160000,{evil},alpha")
     tree = git(root, "write-tree").stdout.strip()
     head = git(root, "rev-parse", "HEAD").stdout.strip()

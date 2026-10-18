@@ -596,3 +596,93 @@ def test_c9_second_sigint_during_the_failure_undo_does_not_cut_it_short(members:
     assert "refused: commit_failed: m3:" in proc.stderr
     assert "undone: m3, m2, m1" in proc.stderr
     assert "NOT undone" not in proc.stderr
+
+
+def _rename(members: list[Path], i: int, name: str) -> None:
+    named = members[i].parent / name
+    members[i].rename(named)
+    members[i] = named
+
+
+def test_c3_member_path_not_utf8_refuses_before_any_git_call(members: list[Path], git_log: Path) -> None:
+    # Read as text, the \xff in m3's top raised UnicodeDecodeError; read as bytes alone, m1 and m2 committed and the
+    # print of m3's name then raised. The path refuses up front, printed escaped.
+    _rename(members, 2, os.fsdecode(b"m\xff3"))
+    before = [_state(p) for p in members]
+    git_log.write_text("")
+    result = _run(members)
+    assert result.exit_code == 2, result.output
+    assert isinstance(result.exception, SystemExit), result.exception
+    assert "refused: not_utf8: m\\xff3: the member path is not UTF-8" in result.output
+    assert "nothing was written" in result.output
+    assert _not_reads(git_log) == []
+    assert not any(a.startswith(b"m\xff3\t") for a in git_log.read_bytes().split(b"\n"))
+    assert [_state(p) for p in members] == before
+
+
+def test_c3_member_holding_a_file_not_utf8_refuses(members: list[Path], git_log: Path) -> None:
+    # The member path is UTF-8; the name git prints from status is not.
+    (Path(os.fsdecode(bytes(members[2]) + b"/f\xff"))).write_text("x\n")
+    before = [_state(p) for p in members]
+    git_log.write_text("")
+    result = _run(members)
+    assert result.exit_code == 2, result.output
+    assert isinstance(result.exception, SystemExit), result.exception
+    assert "refused: not_utf8: m3: git status printed a path that is not UTF-8" in result.output
+    assert "nothing was written" in result.output
+    assert _not_reads(git_log) == []
+    assert [_state(p) for p in members] == before
+
+
+@pytest.mark.parametrize("name", ["m\r3", "m3\r"], ids=["cr_inside", "cr_last"])
+def test_c1_member_path_holding_cr_commits(members: list[Path], git_log: Path, name) -> None:
+    # Text mode turned "\r" into "\n" (and "\r\n" into "\n"): m\r3 split into 8 lines, m3\r read its top as m3.
+    _rename(members, 2, name)
+    bases = [_git(p, "rev-parse", "HEAD").strip() for p in members]
+    result = _run(members)
+    assert result.exit_code == 0, result.output
+    for path, base in zip(members, bases):
+        assert _git(path, "branch", "--show-current").strip() == "feat"
+        assert _git(path, "rev-parse", "HEAD~1").strip() == base
+        assert _git(path, "status", "--porcelain") == ""
+
+
+def _stub_m3_rev_parse(tmp_path: Path, git_log: Path, monkeypatch: pytest.MonkeyPatch, act: str) -> None:
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    (bad / "git").write_text(
+        f'#!/bin/sh\nlogged="{git_log.parent / "shim" / "git"}"\n'
+        f'case "$(basename "$PWD") $*" in "m3 "*" rev-parse --show-toplevel "*) {act};; esac\nexec "$logged" "$@"\n'
+    )
+    (bad / "git").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bad}{os.pathsep}{os.environ['PATH']}")
+
+
+def test_c1_rev_parse_without_final_newline_commits(
+    members: list[Path], git_log: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Seven lines, the last unterminated: dropping the last line unconditionally would read six and refuse.
+    _stub_m3_rev_parse(tmp_path, git_log, monkeypatch, 'printf "%s" "$("$logged" "$@")"; exit 0')
+    result = _run(members)
+    assert result.exit_code == 0, result.output
+    assert any(m == "m3" and " rev-parse --show-toplevel " in f" {a}" for m, a in _calls(git_log))
+    for path in members:
+        assert _git(path, "branch", "--show-current").strip() == "feat"
+
+
+def test_c3_top_that_is_not_above_the_member_is_not_called_its_repo(
+    members: list[Path], git_log: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # git names a top that does not exist and holds no member: the refusal must not say m3 is inside it.
+    gone = tmp_path / "gone"
+    _stub_m3_rev_parse(
+        tmp_path, git_log, monkeypatch, f'"$logged" "$@" | sed "1s|.*|{gone}|"; exit 0'
+    )
+    before = [_state(p) for p in members]
+    git_log.write_text("")
+    result = _run(members)
+    assert result.exit_code == 2, result.output
+    assert f"refused: not_a_repo: m3: git rev-parse named {gone} as its top, not this path" in result.output
+    assert "inside the repo at" not in result.output
+    assert _not_reads(git_log) == []
+    assert [_state(p) for p in members] == before

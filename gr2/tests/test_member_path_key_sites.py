@@ -149,3 +149,19 @@ def test_clone_dot_slash_a_with_member_a_is_not_refused_before_the_clone(tmp_pat
     except Stop:
         pass
     assert asked == []
+
+
+def test_a_pending_marker_for_alpha_finds_the_spec_row_spelled_dot_slash_alpha(tmp_path, monkeypatch):
+    from gr2.python_cli import spec_apply
+
+    (tmp_path / "alpha").mkdir()
+    ran = []
+    spec = {"repos": [{"name": "alpha", "path": "./alpha", "url": "https://example.invalid/alpha"}]}
+    monkeypatch.setattr(spec_apply, "build_plan", lambda _root: (spec, []))
+    monkeypatch.setattr(spec_apply, "pending_members", lambda _root: ["alpha"])
+    monkeypatch.setattr(spec_apply, "consent_member_key", lambda _root, _repo_root, name: name)
+    monkeypatch.setattr(spec_apply, "consent_state", lambda _root, _key, _repo_root: ("bound",))
+    monkeypatch.setattr(spec_apply, "_run_materialize_hooks",
+                        lambda _root, _repo_root, name, _first, manual_hooks: ran.append(name) or {"projected_files": []})
+    spec_apply.apply_plan(tmp_path, yes=True)
+    assert ran == ["alpha"]

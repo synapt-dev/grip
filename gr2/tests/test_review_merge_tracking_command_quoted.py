@@ -116,7 +116,9 @@ def test_every_value_of_a_no_matching_remote_command_is_quoted(tmp_path, _git_id
 
 def test_every_value_of_a_failed_fetch_command_is_quoted(tmp_path, _git_identity, monkeypatch):
     mark, into, remote, repo, _ = _clone_with_metachars(tmp_path, monkeypatch)
-    git(repo, "remote", "rename", "origin", "o;touch${IFS}" + MARK_VAR)
+    arm = "o;touch${IFS}" + MARK_VAR
+    _prove_armed(arm, mark)
+    git(repo, "remote", "rename", "origin", arm)
     name = git(repo, "remote").strip()
     lock = repo / ".git" / "refs" / "remotes" / name / f"{into}.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
@@ -174,6 +176,9 @@ def test_control_a_plain_target_prints_the_same_git_command_as_before(world, tmp
 def test_an_option_shaped_url_is_never_read_as_an_option(tmp_path, _git_identity, monkeypatch):
     mark, into, remote, repo, _ = _clone_with_metachars(tmp_path, monkeypatch)
     url = f"--upload-pack=touch {mark}"
+    subprocess.run(["git", "-C", str(repo), "fetch", url, str(remote)], capture_output=True, text=True)
+    assert mark.exists(), f"git did not read the url as an option: {url}"
+    mark.unlink()
 
     failed = merge_gate._refresh_tracking(repo, url, into)
 
@@ -227,6 +232,7 @@ def test_a_partial_lane_names_the_record_workspace_and_review_quoted(tmp_path, m
     workspace = tmp_path / armed
     workspace.mkdir(parents=True)  # the name holds the marker path, so its slashes nest
     rid = "abc;touch " + str(mark)
+    _prove_armed(rid, mark)
     monkeypatch.setattr(merge_gate, "_toplevel", lambda p: p)
     monkeypatch.setattr(merge_gate, "_store_inside", lambda *_a: True)
     monkeypatch.setattr(approvals.grip, "verify_review_commit", lambda *_a: {"tree_matches": True, "rows": [{"key": "k"}]})
@@ -271,6 +277,8 @@ def test_a_read_pr_diff_line_names_the_pr_values_quoted(tmp_path, monkeypatch):
     path = tmp_path / armed
     opened = read_review.ReadReview(path=path, url="u", head="h;touch " + str(mark), base="b$(touch " + str(mark) + ")",
                                     stat="")
+    _prove_armed(opened.head, mark)
+    _prove_armed(opened.base, mark)
     monkeypatch.setattr(read_review, "open_read_review", lambda *_a, **_k: opened)
 
     result = runner.invoke(app, ["review", "read-pr", "o/r", "1", "--dir", str(path)])

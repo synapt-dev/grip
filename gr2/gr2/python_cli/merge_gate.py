@@ -33,6 +33,11 @@ def _git(repo: Path, *args: str, check: bool = True) -> str:
 _plain_remote = gitops.plain_remote
 
 
+def _text(raw: bytes | str | None) -> str:
+    """A binary git run's output as text; bytes that are not UTF-8 read as \\xNN, never a crash."""
+    return raw.decode("utf-8", "backslashreplace") if isinstance(raw, bytes) else (raw or "")
+
+
 def _capped(text: str, cap: int = 300) -> str:
     """Printable text, escaped FIRST and then cut to its head, so the cap counts what is printed."""
     shown = next_steps._escaped(text)
@@ -405,7 +410,7 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
             row["refused"] = f"feature_moved: remote {feature} is {feat}, reviewed {m['head']}"
             row["_heads"] = (m["head"], feat)
         elif target != m["base"] and ancestor == m["head"]:
-            # A writer moved the target to the reviewed head or past it with no merge commit: the work is already in.
+            # The target moved to the reviewed head or past it: the work is already in.
             row["refused"] = f"head_already_on_target: the reviewed head {m['head']} is already in {into} at {target}"
             row["_heads"] = (m["base"], target)
         elif target != m["base"]:
@@ -603,13 +608,26 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                         r["_heads"], r["stranded"] = (m["head"], now), now
                         break  # land no further member after a stranded one
                     continue
+                remote_said = unconfirmed = False
                 try:
-                    # An expiry is rc 124 here, so it lands in push_error and the state below is re-measured.
-                    proc = gitops.run(repo, "push", f"--force-with-lease=refs/heads/{into}:{m['base']}",
-                                      m["remote"], f"{builds[r['key']]}:refs/heads/{into}", timeout=120)
-                    push_error = _capped('\n'.join(ln for ln in proc.stderr.strip().split('\n') if not ln.startswith(('To ', 'error: failed to push')))) if proc.returncode else None
+                    # --porcelain marks a refusal the remote made ("[remote rejected]") apart from a push that never
+                    # reached it; binary, because a hook may print bytes that are not UTF-8.
+                    proc = gitops.run(repo, "push", "--porcelain", f"--force-with-lease=refs/heads/{into}:{m['base']}",
+                                      m["remote"], f"{builds[r['key']]}:refs/heads/{into}", binary=True, timeout=120)
+                    out, err = (_text(b).split("\n") for b in (proc.stdout, proc.stderr))
+                    status = [ln.replace("\t", " ") for ln in out if ln.startswith("!")]
+                    remote_said = any("[remote rejected]" in ln for ln in status)
+                    if proc.returncode == 124:  # gitops' expiry: the push may still land after it
+                        push_error, unconfirmed = f"push_unconfirmed: {_capped(chr(10).join(err).strip())}", True
+                    elif remote_said:  # the remote's own words and git's verdict line, never the URL it repeats
+                        push_error = _capped("\n".join([ln for ln in err if ln.startswith("remote:")] + status))
+                    elif proc.returncode:
+                        why = [ln for ln in err if ln.strip() and not ln.startswith(("To ", "error: failed to push"))]
+                        push_error = _capped("\n".join(why + status) or f"git push exit {proc.returncode}")
+                    else:
+                        push_error = None
                 except (subprocess.SubprocessError, OSError) as exc:  # a timeout is not evidence nothing moved
-                    push_error = f"push_unconfirmed: {type(exc).__name__}"
+                    push_error, unconfirmed = f"push_unconfirmed: {_capped(f'{type(exc).__name__}: {exc}')}", True
                 state, merged = _state(repo, m["remote"], into, m["head"])
                 by = "this_run" if merged == builds[r["key"]] else ("another_writer" if merged else None)
                 r.update(state=state, merged=merged, merged_by=by)
@@ -618,6 +636,9 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                 if push_error and state != "merged":
                     # The push failed and the member did not land: name why, never a bare unmerged or unknown, and
                     # push no further member (the set lands on the base it was checked on, or not at all).
+                    if unconfirmed:  # the push may still land: no read now tells this member's outcome
+                        r["refused"], r["_unmeasured"] = push_error, True
+                        break
                     try:
                         now, unread = _remote_tip(repo, m["remote"], into), None
                         # One more git call, on this failure path only: is the reviewed head already in the moved target?
@@ -637,8 +658,10 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                     elif now != m["base"]:
                         r["refused"] = f"target_moved_at_push: remote {into} is {now}, the gate read {m['base']}"
                         r["_heads"] = (m["base"], now)
-                    else:  # still at the base the gate read: a hook or a protected branch said no
+                    elif remote_said:  # still at the base the gate read: a hook or a protected branch said no
                         r["refused"] = f"push_rejected: {push_error}"
+                    else:  # still at the base, and the remote never answered: auth, network or a local hook
+                        r["refused"] = f"push_failed: {push_error}"
                     break
                 if state == "unknown":
                     break  # push no further members after an unresolved one

@@ -382,7 +382,7 @@ next: pin a head before you push it. For this head, either commit a new head and
 
 ### head_already_on_target
 
-next: nothing to merge; a writer moved the target to the reviewed head, or past it, with no merge commit, so the reviewed work is already there and no gr2 command lands it again. Confirm the target's tip is what you meant to ship; for new work, commit a new head and pin it
+next: nothing to merge; the reviewed head is already in the target, so the reviewed work is there and no gr2 command lands it again. Confirm the target's tip is what you meant to ship; for new work, commit a new head and pin it
 
 ### head_behind_remote_branch
 
@@ -416,9 +416,17 @@ next: mark the PR ready (or reopen it) on the platform, then run the merge again
 
 next: install the GitHub CLI (gh) and authenticate it (gh auth login), then run the merge again; nothing was merged
 
+### push_failed
+
+next: the push did not reach the remote (git's message says why: auth, network, a local hook) and the target is still at the base the gate read, so nothing was pushed for this member or any after it; fix that, then run the same gr2 review merge again
+
 ### push_rejected
 
 next: the remote refused the push (the reason is git's message in the refusal: a hook or a protected branch) and the target is still at the base the gate read, so nothing was pushed for this member or any after it; clear the rejection on the remote, then run the same gr2 review merge again
+
+### push_unconfirmed
+
+next: the push did not finish (a timeout or a failed start), so whether this member landed is unknown and no member after it was pushed; when the remote answers, read it with gr2 review merged '<workspace>' '<review>', then run the same gr2 review merge again (a landed member reads merged and is not pushed twice)
 
 ### remote_branch_diverged
 

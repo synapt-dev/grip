@@ -52,6 +52,14 @@ def head_not_fetched(repo: str, remote: str, head: str, workspace: str, review: 
             f"author has pushed it there, stamp again: gr2 review stamp {_shown(workspace)} {_shown(review)}")
 
 
+def _nothing_to_merge() -> str:
+    # Private, so the skill's refusal table keeps one row for head_already_on_target. True whether the target reached
+    # the head by a fast-forward or through a merge commit.
+    return ("next: nothing to merge; the reviewed head is already in the target, so the reviewed work is there and no "
+            "gr2 command lands it again. Confirm the target's tip is what you meant to ship; for new work, commit a "
+            "new head and pin it")
+
+
 def _stamp_base_moved(branch: str, review: str) -> str:
     # Private, so the skill's refusal table keeps one row per printed code (base_moved is merge_row's).
     # A merge needs the target at the reviewed base, and a pinned review cannot move to a new base, so a stamp here
@@ -201,9 +209,7 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
                 f"gr2 review update {_shown(workspace)} {_shown(review)} --into {_shown(into)}")
     if refused.startswith("head_already_on_target"):
         # Not base_moved's answer: update would pin this same head again and refuse head_already_on_remote.
-        return ("next: nothing to merge; a writer moved the target to the reviewed head, or past it, with no merge "
-                "commit, so the reviewed work is already there and no gr2 command lands it again. Confirm the target's "
-                "tip is what you meant to ship; for new work, commit a new head and pin it")
+        return _nothing_to_merge()
     if refused.startswith("target_moved_at_push"):
         # The gate passed, then the target moved before the push landed: the same answer as base_moved.
         moved = re.match(r"target_moved_at_push: remote (\S+) is ", refused)
@@ -220,6 +226,15 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
         return ("next: the remote refused the push (the reason is git's message in the refusal: a hook or a protected "
                 "branch) and the target is still at the base the gate read, so nothing was pushed for this member or "
                 "any after it; clear the rejection on the remote, then run the same gr2 review merge again")
+    if refused.startswith("push_failed"):
+        return ("next: the push did not reach the remote (git's message says why: auth, network, a local hook) and the "
+                "target is still at the base the gate read, so nothing was pushed for this member or any after it; fix "
+                "that, then run the same gr2 review merge again")
+    if refused.startswith("push_unconfirmed"):
+        return (f"next: the push did not finish (a timeout or a failed start), so whether this member landed is unknown "
+                f"and no member after it was pushed; when the remote answers, read it with gr2 review merged "
+                f"{_shown(workspace)} {_shown(review)}, then run the same gr2 review merge again (a landed member "
+                f"reads merged and is not pushed twice)")
     if refused.startswith("target_unread_at_push"):
         return (f"next: the push failed and the target could not be read after it, so whether this member landed is "
                 f"unknown and no member after it was pushed; when the remote answers, read it with gr2 review merged "

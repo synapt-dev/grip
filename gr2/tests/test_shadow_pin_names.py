@@ -64,3 +64,9 @@ def test_a_pin_with_an_empty_entry_is_refused(world, pin):
     assert f"pin {pin!r}" in message and "emptyName" in message
 
 
+@pytest.mark.parametrize("pin,bad", [(".", "hasDot"), ("a/.", "hasDot"), ("..", "hasDotdot"), ("../a", "hasDotdot")])
+def test_a_pin_through_dot_or_dotdot_is_refused(world, pin, bad):
+    message = _refused(world, [pin])
+    assert f"pin {pin!r}" in message and f"({bad})" in message
+
+

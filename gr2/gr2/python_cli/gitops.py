@@ -14,6 +14,10 @@ def fsck_bad_name(name: str) -> str | None:
     the name. A tree built here holds no entry fsck would reject."""
     if not name:
         return "emptyName"
+    if name == ".":
+        return "hasDot"
+    if name == "..":
+        return "hasDotdot"
     return None
 
 

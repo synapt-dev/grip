@@ -42,7 +42,7 @@ def _edit(path: Path) -> None:
 
 def _state(path: Path) -> tuple[str, ...]:
     return (
-        _git(path, "symbolic-ref", "-q", "HEAD").strip(),
+        _git(path, "rev-parse", "--symbolic-full-name", "HEAD").strip(),
         _git(path, "rev-parse", "HEAD").strip(),
         _git(path, "ls-files", "-s"),
         _git(path, "status", "--porcelain=v1", "-uall"),
@@ -104,6 +104,22 @@ def test_c1_one_change_commits_every_member(members: list[Path], git_log: Path) 
     # Three reads and three writes: what plain git needs for the same refusals.
     assert all(n == 6 for n in per_member.values()), per_member
     assert sum(per_member.values()) == 30, per_member
+
+
+def _detached(path: Path) -> None:
+    # The worktree edit carries over; `git switch -c` from here would branch off a commit no branch names.
+    _git(path, "checkout", "-q", "--detach")
+    assert _git(path, "branch", "--show-current").strip() == ""
+
+
+def _unresolved(path: Path) -> None:
+    # Stages 1-3 for one path with no merge in progress: status lists it as unmerged ("u ").
+    blobs = [subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=path, input=t, capture_output=True,
+                            text=True, check=True).stdout.strip() for t in ("base\n", "ours\n", "theirs\n")]
+    info = "".join(f"100644 {b} {i}\tconflict.txt\n" for i, b in enumerate(blobs, 1))
+    subprocess.run(["git", "update-index", "--index-info"], cwd=path, input=info, text=True, check=True)
+    (path / "conflict.txt").write_text("<<<<<<< ours\nours\n=======\ntheirs\n>>>>>>> theirs\n")
+    assert _git(path, "ls-files", "-u").count("conflict.txt") == 3
 
 
 def _merge_in_progress(path: Path) -> None:
@@ -230,11 +246,13 @@ def _sequence_left(path: Path, verb: str) -> None:
         ("operation_in_progress", lambda p: _stopped_resolved(p, "revert", "REVERT_HEAD")),
         ("operation_in_progress", lambda p: _sequence_left(p, "cherry-pick")),
         ("operation_in_progress", lambda p: _sequence_left(p, "revert")),
+        ("detached_head", _detached),
+        ("unresolved", _unresolved),
     ],
     ids=[
         "staged", "branch_exists", "intent_to_add", "merge_in_progress", "linked_spaced_main", "cherry_pick",
         "am", "rebase_merge", "cherry_pick_resolved", "revert_resolved", "cherry_pick_sequence",
-        "revert_sequence",
+        "revert_sequence", "detached_head", "unresolved",
     ],
 )
 def test_c3_refusal_writes_nothing_in_any_member(members: list[Path], git_log: Path, reason, spoil) -> None:

@@ -22,6 +22,7 @@ from jsonschema import Draft202012Validator
 
 from .events import EventType, emit_after_outcome
 from . import gitops
+from . import keys
 from .gitops import (
     ensure_repo_cache,
     is_git_dir,
@@ -737,7 +738,7 @@ def apply_plan(workspace_root: Path, *, yes: bool, manual_hooks: bool = False) -
         # the pending key is the member's declared PATH; the spec names repos
         # by name — resolve path -> spec row, then use the row's own name.
         repo_spec = next(
-            (r for r in spec.get("repos", []) if str(r.get("path", "")).strip("/") == member_key),
+            (r for r in spec.get("repos", []) if keys.member_path_key(r.get("path", "")) == keys.member_path_key(member_key)),
             None,
         )
         if repo_spec is None:

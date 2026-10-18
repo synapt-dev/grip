@@ -15,7 +15,6 @@ it was made for, and an edited declaration does not ride an old record.
 """
 from __future__ import annotations
 
-import posixpath
 import re
 import tomllib
 from dataclasses import dataclass
@@ -23,6 +22,7 @@ from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 from . import gitops
+from .keys import member_path_key
 
 DECLARED_SET_CHECK = "declared_set"
 _HEX40 = re.compile(r"[0-9a-f]{40}")
@@ -48,10 +48,11 @@ class Declaration:
         return next((s for s in self.sets if s.name == name), None)
 
     def member_name(self, key: str, path: str) -> str | None:
-        """The store member a review member is: its key is a member's name, or its path is a member's path."""
-        wanted = posixpath.normpath(path) if path else path
+        """The store member a review member is: its key is a member's name, or its path is a member's path, both sides
+        as member keys (``./alpha`` and ``alpha/`` are ``alpha``; ``a/../alpha`` is not)."""
+        wanted = member_path_key(path) if path else path
         for name, member in self.members.items():
-            if name == key or member["path"] == wanted:
+            if name == key or member_path_key(member["path"]) == wanted:
                 return name
         return None
 
@@ -71,7 +72,7 @@ def parse(document: Mapping) -> Declaration:
         if not isinstance(member, Mapping) or not isinstance(member.get("name"), str) or not isinstance(member.get("path"), str):
             continue  # the member reader owns the refusal for a malformed member
         origin = remotes.get("origin") if isinstance(remotes, Mapping) else None
-        members[member["name"]] = {"path": posixpath.normpath(member["path"]), "remote": origin if isinstance(origin, str) else ""}
+        members[member["name"]] = {"path": member_path_key(member["path"]), "remote": origin if isinstance(origin, str) else ""}
     raw = document.get("sets", [])
     if raw in (None, []):
         return Declaration((), members, mode)

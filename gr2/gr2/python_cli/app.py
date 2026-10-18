@@ -29,6 +29,7 @@ from gr2.prototypes import repo_maintenance_prototype as repo_proto
 
 from . import add as add_ops
 from .version import version_line
+from .keys import member_path_key
 from . import branch as branch_ops
 from . import change as change_ops
 from . import commit as commit_ops
@@ -1291,6 +1292,9 @@ def _scan_existing_repos(workspace_root: Path) -> list[dict[str, object]]:
     pins = _root_gitlink_pins(workspace_root)
     declared_refs = repo_proto.root_submodule_branches(workspace_root)
     modules = repo_proto.root_submodule_declarations(workspace_root)
+    # The same, as member keys, for the declared-state lookup: `.gitmodules` may spell a path `./alpha` or `alpha/`.
+    pins_by_key = {member_path_key(path): pin for path, pin in pins.items()}
+    declared_refs_by_key = {member_path_key(path): ref for path, ref in declared_refs.items()}
 
     if pins:
         # A root that pins members has a KNOWN member set, at ANY depth: the
@@ -1362,8 +1366,8 @@ def _scan_existing_repos(workspace_root: Path) -> list[dict[str, object]]:
         repo.update(
             repo_proto.declared_repo_state(
                 child,
-                pinned=pins.get(str(repo["path"])),
-                declared_ref=declared_refs.get(str(repo["path"])),
+                pinned=pins_by_key.get(member_path_key(repo["path"])),
+                declared_ref=declared_refs_by_key.get(member_path_key(repo["path"])),
             )
         )
         repos.append(repo)

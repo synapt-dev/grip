@@ -1773,7 +1773,9 @@ def _review_transport_identity(commit: str, ref: str | None) -> tuple[str, str]:
 
 
 def _review_transport_remote(remote: str) -> str:
-    from .gitops import _effective_remote_url
+    from .gitops import _effective_remote_url, unsafe_in_identifier
+    if unsafe_in_identifier(remote or ""):
+        raise GripCorruptError(f"review_remote_control_character: {remote!r}")
     if not remote or remote.startswith("-") or not (
         remote.startswith("https://") or Path(remote).is_absolute()
     ):
@@ -2077,8 +2079,19 @@ def _fetch_received_heads(workspace: Path, commit: str, source: str,
     rows: list[dict[str, str]] = []
     for m in show_review_commit(workspace, commit, migrate=False)["members"]:
         key, head = str(m["key"]), str(m["head"])
-        repo = (root / str(m["path"])).resolve()
         row = {"key": key, "head": head}
+        refused = False
+        for field in ("remote", "path"):
+            if gitops.unsafe_in_identifier(str(m[field])):
+                # The record is read as written: a control character in a member remote or path refuses that member,
+                # by name, before the path is resolved or anything is run with it.
+                rows.append({**row, "status": "refused",
+                             "reason": f"member_{field}_control_character: {str(m[field])!r}"})
+                refused = True
+                break
+        if refused:
+            continue
+        repo = (root / str(m["path"])).resolve()
         src = source
         if all_members and want is not None and same(str(m["remote"])) == want:
             pass  # the remote this receive already dialled: the per-member form fetches it from there too

@@ -153,7 +153,7 @@ def _legacy_transport_source(member: Path, expected_repo: str) -> str:
     origin = git(member, "remote", "get-url", "origin")
     if origin.returncode:
         raise ValueError("legacy member source origin unavailable")
-    transport = location(origin.stdout.strip())
+    transport = location(origin.stdout.removesuffix("\n"))
     direct = canonical_source_identity(transport, allow_local=True)
     if direct == expected_repo:
         return direct
@@ -167,7 +167,7 @@ def _legacy_transport_source(member: Path, expected_repo: str) -> str:
     source = git(mirror, "remote", "get-url", "origin")
     if bare.returncode or bare.stdout.strip() != "true" or source.returncode:
         raise ValueError("legacy mirror source provenance unavailable")
-    identity = canonical_source_identity(location(source.stdout.strip()), allow_local=True)
+    identity = canonical_source_identity(location(source.stdout.removesuffix("\n")), allow_local=True)
     if identity != expected_repo:
         raise ValueError("legacy mirror source identity differs from workspace")
     return identity

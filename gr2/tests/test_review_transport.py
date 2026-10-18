@@ -488,3 +488,227 @@ def test_the_set_check_fetch_command_round_trips_through_a_shell_from_a_path_wit
     assert checked.exit_code != 0, checked.output
     printed = strip_ansi(checked.output).split("`")[1]
     assert shlex.split(printed) == ["git", "-C", str(receiver / "member"), "fetch", "--", str(remote), head], printed
+
+
+def test_a_member_remote_with_a_nul_refuses_that_member_and_fetches_the_other(handoff, monkeypatch):
+    """A record whose member remote carries a NUL: that member is a refused row naming why, the other member's head
+    is still fetched, and the receipt is printed. Before, Path(remote).resolve() raised ValueError out of receive."""
+    author, receiver, remote, commit, _, head = handoff
+    git(author / "member", "push", remote, "HEAD:refs/heads/feat")
+    publish(handoff, monkeypatch)
+    shown = grip.show_review_commit
+
+    def with_nul_member(*args, **kwargs):
+        out = shown(*args, **kwargs)
+        out["members"] = [{**out["members"][0], "key": "bad", "path": "bad", "remote": "/x\0y"}, *out["members"]]
+        return out
+
+    monkeypatch.setattr(grip, "show_review_commit", with_nul_member)
+    got = cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", remote)
+    assert got.exit_code == 0 and "Traceback" not in got.output, got.output
+    rows = _rows(got)
+    assert rows["bad"]["status"] == "refused", rows
+    assert rows["bad"]["reason"] == "member_remote_control_character: '/x\\x00y'", rows
+    assert rows["member"]["status"] == "fetched", rows
+    assert git(receiver / "member", "cat-file", "-t", head) == "commit"
+
+
+def test_a_member_path_with_a_nul_refuses_that_member_and_fetches_the_other(handoff, monkeypatch):
+    """The same crash one field over: a member PATH carrying a NUL is a refused row naming the path, never a ValueError
+    from resolving it, and the other member's head is still fetched."""
+    author, receiver, remote, commit, _, head = handoff
+    git(author / "member", "push", remote, "HEAD:refs/heads/feat")
+    publish(handoff, monkeypatch)
+    shown = grip.show_review_commit
+
+    def with_nul_path(*args, **kwargs):
+        out = shown(*args, **kwargs)
+        out["members"] = [{**out["members"][0], "key": "bad", "path": "b\0ad"}, *out["members"]]
+        return out
+
+    monkeypatch.setattr(grip, "show_review_commit", with_nul_path)
+    got = cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", remote)
+    assert got.exit_code == 0 and "Traceback" not in got.output, got.output
+    rows = _rows(got)
+    assert rows["bad"]["status"] == "refused", rows
+    assert rows["bad"]["reason"] == "member_path_control_character: 'b\\x00ad'", rows
+    assert rows["member"]["status"] == "fetched", rows
+    assert git(receiver / "member", "cat-file", "-t", head) == "commit"
+
+
+@pytest.mark.parametrize("bad", ["/x\0y", "/x\ny", "/x\x1fy", "/x\x7fy", "https://github.com/o/a\0b"])
+def test_a_control_character_in_the_receive_remote_is_refused_before_any_git_call(handoff, monkeypatch, bad):
+    _, receiver, _, commit, _, _ = handoff
+
+    def no_git(*args, **kwargs):
+        raise AssertionError(f"git ran: {args}")
+
+    monkeypatch.setattr(grip, "git", no_git)
+    monkeypatch.setattr(grip, "_bind_git", no_git)
+    with pytest.raises(grip.GripCorruptError, match=r"\Areview_remote_control_character: "):
+        grip.receive_review_commit(receiver, "gr:" + commit, bad)
+
+
+@pytest.mark.parametrize("bad", ["git@github.com:o/a\0.git", "https://github.com/o/a\x01b", "/x\0y", "/x\ty",
+                                 "/x\x7fy", "ssh://git@github.com/o/a\x1b.git"])
+@pytest.mark.parametrize("allow_local", [False, True])
+def test_canonical_source_identity_refuses_a_control_character(bad, allow_local):
+    """Never an identity with a NUL in it (the GitHub patterns took one), never a ValueError from the filesystem."""
+    from gr2.python_cli.review import ReviewError, canonical_source_identity
+    with pytest.raises(ReviewError, match=r"\Aremote_control_character: "):
+        canonical_source_identity(bad, allow_local=allow_local)
+
+
+# C1 (U+0085 NEL, U+009B one-byte CSI), bidi (U+202E), zero-width (U+200B), line separator (U+2028): each passed the
+# C0+DEL check, and U+202E / U+009B landed inside an identity, a display spoof wherever it is printed raw.
+_UNSAFE = ["\x9b", "\u202e", "\u200b", "\u2028", "\x85", "\u200c", "\u200d"]
+_LEGIT = ["ünï", "日本", "\U0001f600"]
+
+
+def _member_row(handoff, monkeypatch, member_remote):
+    author, receiver, remote, commit, _, head = handoff
+    git(author / "member", "push", remote, "HEAD:refs/heads/feat")
+    publish(handoff, monkeypatch)
+    shown = grip.show_review_commit
+
+    def with_member(*args, **kwargs):
+        out = shown(*args, **kwargs)
+        out["members"] = [{**out["members"][0], "key": "odd", "path": "odd", "remote": member_remote},
+                          *out["members"]]
+        return out
+
+    monkeypatch.setattr(grip, "show_review_commit", with_member)
+    got = cli(receiver, monkeypatch, "receive", "gr:" + commit, "--remote", remote)
+    assert got.exit_code == 0 and "Traceback" not in got.output, got.output
+    rows = _rows(got)
+    assert rows["member"]["status"] == "fetched", rows
+    return rows["odd"]
+
+
+@pytest.mark.parametrize("ch", _UNSAFE)
+def test_a_member_remote_with_unsafe_text_is_a_refused_row(handoff, monkeypatch, ch):
+    bad = f"/x{ch}y"
+    row = _member_row(handoff, monkeypatch, bad)
+    assert row["status"] == "refused" and row["reason"] == f"member_remote_control_character: {bad!r}", row
+
+
+@pytest.mark.parametrize("ch", _LEGIT)
+def test_a_member_remote_with_non_ascii_letters_is_not_refused(handoff, monkeypatch, ch):
+    row = _member_row(handoff, monkeypatch, f"/x{ch}y")
+    assert row["status"] != "refused", row
+
+
+@pytest.mark.parametrize("ch", _UNSAFE)
+@pytest.mark.parametrize("shape", ["/x{}y", "https://github.com/o/a{}b"])
+def test_unsafe_text_in_the_receive_remote_is_refused_before_any_git_call(handoff, monkeypatch, ch, shape):
+    _, receiver, _, commit, _, _ = handoff
+
+    def no_git(*args, **kwargs):
+        raise AssertionError(f"git ran: {args}")
+
+    monkeypatch.setattr(grip, "git", no_git)
+    monkeypatch.setattr(grip, "_bind_git", no_git)
+    with pytest.raises(grip.GripCorruptError, match=r"\Areview_remote_control_character: "):
+        grip.receive_review_commit(receiver, "gr:" + commit, shape.format(ch))
+
+
+@pytest.mark.parametrize("ch", _LEGIT)
+def test_a_receive_remote_with_non_ascii_letters_is_not_refused(tmp_path, ch):
+    path = tmp_path / f"r{ch}"
+    path.mkdir()
+    assert grip._review_transport_remote(str(path)).endswith(f"r{ch}")
+
+
+@pytest.mark.parametrize("ch", _UNSAFE)
+@pytest.mark.parametrize("shape", ["git@github.com:o/a{}.git", "https://github.com/o/a{}b", "/x{}y",
+                                   "ssh://git@github.com/{}o/a.git"])
+@pytest.mark.parametrize("allow_local", [False, True])
+def test_canonical_source_identity_refuses_unsafe_text(ch, shape, allow_local):
+    from gr2.python_cli.review import ReviewError, canonical_source_identity
+    with pytest.raises(ReviewError, match=r"\Aremote_control_character: "):
+        canonical_source_identity(shape.format(ch), allow_local=allow_local)
+
+
+@pytest.mark.parametrize("ch", _LEGIT)
+def test_canonical_source_identity_keeps_non_ascii_letters(ch):
+    from gr2.python_cli.review import canonical_source_identity
+    assert canonical_source_identity(f"https://github.com/o/a{ch}") == f"https://github.com/o/a{ch}".lower()
+    assert canonical_source_identity(f"/x{ch}y", allow_local=True).endswith(f"/x{ch}y")
+
+
+@pytest.mark.parametrize("url", ["\x1fgit@github.com:o/a.git", "git@github.com:o/a.git\x1f", "git@github.com:o/a.git\x85",
+                                 "git@github.com:o/a.git\t", "https://github.com/o/a\n", "https://github.com/o/a\u2028"])
+@pytest.mark.parametrize("allow_local", [False, True])
+def test_canonical_source_identity_checks_the_raw_input(url, allow_local):
+    """The check reads the input before any strip: str.strip() drops \\t, U+0085 and U+001C..U+001F, so a stripped
+    check would turn these into https://github.com/o/a while grip refuses the same raw remote."""
+    from gr2.python_cli.review import ReviewError, canonical_source_identity
+    with pytest.raises(ReviewError, match=r"\Aremote_control_character: "):
+        canonical_source_identity(url, allow_local=allow_local)
+
+
+def test_canonical_source_identity_still_strips_spaces():
+    from gr2.python_cli.review import canonical_source_identity
+    assert canonical_source_identity(" https://github.com/O/A.git ") == "https://github.com/o/a"
+
+
+@pytest.mark.parametrize("ws", ["\u00a0", "\u3000", "\u2000"])
+@pytest.mark.parametrize("url", ["git@github.com:O/A.git{}", "{}git@github.com:O/A.git", "{}https://github.com/O/A{}"])
+@pytest.mark.parametrize("allow_local", [False, True])
+def test_canonical_source_identity_strips_unicode_whitespace_to_the_plain_identity(ws, url, allow_local):
+    """A space that prints as nothing is not a second identity: a trailing U+00A0 or U+3000 keys the same as the plain
+    URL, and a leading one does not turn a GitHub origin into local:<cwd>/..."""
+    from gr2.python_cli.review import canonical_source_identity
+    assert canonical_source_identity(url.format(ws, ws), allow_local=allow_local) == "https://github.com/o/a"
+
+
+@pytest.mark.parametrize("prefix, suffix", [("\x1f", ""), ("", "\x1f"), ("", "\x85")])
+def test_remote_origin_url_keeps_unicode_whitespace_for_the_check(tmp_path, prefix, suffix):
+    """remote_origin_url drops git's one line terminator only, so the identity check sees what git config holds."""
+    import subprocess
+    from gr2.python_cli.gitops import remote_origin_url
+    from gr2.python_cli.review import ReviewError, canonical_source_identity
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, stdin=subprocess.DEVNULL)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "remote.origin.url", "git@github.com:o/a.git"], check=True)
+    assert remote_origin_url(tmp_path) == "git@github.com:o/a.git"
+    raw = f"{prefix}git@github.com:o/a.git{suffix}"
+    subprocess.run(["git", "-C", str(tmp_path), "config", "remote.origin.url", raw], check=True)
+    assert remote_origin_url(tmp_path) == raw
+    with pytest.raises(ReviewError, match=r"\Aremote_control_character: "):
+        canonical_source_identity(remote_origin_url(tmp_path), allow_local=True)
+
+
+# The predicate table, owned here (not read from gitops). A person's name keeps U+200C ZWNJ and U+200D ZWJ (Persian and
+# Kurdish names are written with them) and refuses every other Cf; an identifier (remote, path, ref) refuses every Cf.
+# Each character sits in the middle of the text, so a check of only the first or last character does not pass.
+_BIDI = ["\u202a", "\u202b", "\u202c", "\u202d", "\u202e", "\u2066", "\u2067", "\u2068", "\u2069"]
+_REFUSED_BY_BOTH = [*_BIDI, "\x00", "\x1b", "\x7f", "\x85", "\x9b", "\u2028", "\u2029",
+                    "\u200b", "\u200e", "\u200f", "\u2060", "\ufeff", "\u00ad", "\u061c"]
+_NAME_ONLY = ["\u200c", "\u200d"]
+_ACCEPTED_BY_BOTH = ["ü", "日", "\U0001f600", " ", "-", "\u200a", "\u0640"]
+
+
+@pytest.mark.parametrize("ch", _REFUSED_BY_BOTH)
+def test_both_forms_refuse_controls_separators_and_bidi(ch):
+    from gr2.python_cli.gitops import unsafe_in_identifier, unsafe_in_name
+    assert unsafe_in_name(f"ab{ch}cd") is True
+    assert unsafe_in_identifier(f"ab{ch}cd") is True
+
+
+@pytest.mark.parametrize("ch", _NAME_ONLY)
+def test_a_name_keeps_zwnj_and_zwj(ch):
+    from gr2.python_cli.gitops import unsafe_in_name
+    assert unsafe_in_name(f"\u0645\u0647\u0631{ch}\u0646\u0648\u0634") is False
+
+
+@pytest.mark.parametrize("ch", _NAME_ONLY)
+def test_an_identifier_refuses_zwnj_and_zwj(ch):
+    from gr2.python_cli.gitops import unsafe_in_identifier
+    assert unsafe_in_identifier(f"ab{ch}cd") is True
+
+
+@pytest.mark.parametrize("ch", _ACCEPTED_BY_BOTH)
+def test_both_forms_accept_letters_and_ordinary_spaces(ch):
+    from gr2.python_cli.gitops import unsafe_in_identifier, unsafe_in_name
+    assert unsafe_in_name(f"ab{ch}cd") is False
+    assert unsafe_in_identifier(f"ab{ch}cd") is False

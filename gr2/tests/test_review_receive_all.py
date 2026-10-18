@@ -215,3 +215,25 @@ def test_p6_two_uncanonical_remotes_are_not_one_repository(tmp_path, monkeypatch
     head = rows["beta"]["head"]
     assert not any(a[:1] == ("fetch",) and a[-1] == head and alpha in a for a in seen), seen
     assert rows["beta"]["status"] == "fetched" and beta in srcs, (rows, srcs)
+
+
+def test_a_member_path_with_a_nul_is_its_row_only_under_all(tmp_path, monkeypatch):
+    """--all reads the member path from the record too: a path with a NUL is a refused row naming the path, checked
+    before the path is resolved (resolving it raised ValueError out of receive), and the other member is fetched."""
+    w = _published(tmp_path, monkeypatch)
+    ws = _reviewer(tmp_path, w, "rv")
+    real = grip.show_review_commit
+
+    def fake(*a, **k):
+        out = real(*a, **k)
+        for m in out["members"]:
+            if m["key"] == "beta":
+                m["path"] = "b\0eta"
+        return out
+    monkeypatch.setattr(grip, "show_review_commit", fake)
+    got = _receive(ws, w, w["members"]["alpha"]["remote"], "--all")
+    assert "Traceback" not in got.output, got.output
+    rows = _heads(got)
+    assert rows["alpha"]["status"] == "fetched", rows
+    assert rows["beta"]["status"] == "refused", rows
+    assert rows["beta"]["reason"] == "member_path_control_character: 'b\\x00eta'", rows

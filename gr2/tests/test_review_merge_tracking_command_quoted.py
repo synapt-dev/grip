@@ -42,10 +42,19 @@ def _mark(tmp_path, monkeypatch):
     return mark
 
 
+def _prove_armed(text, mark, cwd=None):
+    """Run the armed text once UNQUOTED and see MARK appear, then remove it: without this, a fixture that lost its
+    GR2_TEST_MARK would run a bare `touch`, create nothing, and every "no marker" assertion would pass vacuously."""
+    subprocess.run(["bash", "-c", text], capture_output=True, text=True, cwd=cwd)
+    assert mark.exists(), f"the armed text did not create the marker: {text}"
+    mark.unlink()
+
+
 def _armed(tmp_path, world, monkeypatch):
     """A target branch whose name is a shell command that would create MARK, made on both remotes."""
     mark = _mark(tmp_path, monkeypatch)
     into = "x;touch${IFS}" + MARK_VAR
+    _prove_armed(into, mark)
     base = git(world["remote"], "rev-parse", "main")
     git(world["remote"], "update-ref", f"refs/heads/{into}", base)
     return mark, into, base
@@ -76,6 +85,7 @@ def _clone_with_metachars(tmp_path, monkeypatch):
     """A clone, its remote and a member url whose paths each hold `;`, so every value in the command is armed."""
     mark = _mark(tmp_path, monkeypatch)
     arm = "a;touch${IFS}" + MARK_VAR + ";b"
+    _prove_armed(arm, mark)
     remote = tmp_path / f"remote{arm}.git"
     seed = tmp_path / "seed"
     git(tmp_path, "init", "--bare", "-q", "-b", "main", remote)
@@ -181,6 +191,7 @@ class TestAClonePathHoldingAShellCommand:
     def tmp_path(self, tmp_path_factory):
         armed = tmp_path_factory.mktemp("w") / "a;touch${IFS}MARK;b"
         armed.mkdir()
+        _prove_armed(f"true {armed}", armed.parent / "MARK", cwd=armed.parent)
         return armed
 
     def test_the_unreadable_clone_line_names_that_exact_path_and_runs_with_no_marker(self, world, tmp_path,
@@ -206,7 +217,9 @@ class TestAClonePathHoldingAShellCommand:
 
 def _armed_value(tmp_path, name):
     mark = tmp_path / f"MARK{name}"
-    return mark, f"{name};touch " + str(mark)
+    armed = f"{name};touch " + str(mark)
+    _prove_armed(armed, mark)
+    return mark, armed
 
 
 def test_a_partial_lane_names_the_record_workspace_and_review_quoted(tmp_path, monkeypatch):

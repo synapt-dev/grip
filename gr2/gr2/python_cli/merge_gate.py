@@ -33,6 +33,12 @@ def _git(repo: Path, *args: str, check: bool = True) -> str:
 _plain_remote = gitops.plain_remote
 
 
+def _capped(text: str, cap: int = 300) -> str:
+    """Printable text, escaped FIRST and then cut to its head, so the cap counts what is printed."""
+    shown = next_steps._escaped(text)
+    return shown if len(shown) <= cap else f"{shown[:cap]} [{len(shown) - cap} chars cut]"
+
+
 def _advertised(repo: Path, remote: str, ref: str) -> str | None:
     """The oid the remote advertises for EXACTLY ref; ls-remote patterns also match nested refs by tail."""
     _plain_remote(remote)
@@ -597,7 +603,7 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                     # An expiry is rc 124 here, so it lands in push_error and the state below is re-measured.
                     proc = gitops.run(repo, "push", f"--force-with-lease=refs/heads/{into}:{m['base']}",
                                       m["remote"], f"{builds[r['key']]}:refs/heads/{into}", timeout=120)
-                    push_error = proc.stderr.strip()[-300:] if proc.returncode else None
+                    push_error = _capped('\n'.join(ln for ln in proc.stderr.strip().split('\n') if not ln.startswith(('To ', 'error: failed to push')))) if proc.returncode else None
                 except (subprocess.SubprocessError, OSError) as exc:  # a timeout is not evidence nothing moved
                     push_error = f"push_unconfirmed: {type(exc).__name__}"
                 state, merged = _state(repo, m["remote"], into, m["head"])
@@ -605,16 +611,24 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                 r.update(state=state, merged=merged, merged_by=by)
                 if push_error and by != "this_run":
                     r["push_error"] = push_error  # e.g. our lease lost to a writer who merged the same head
-                if push_error and state == "unmerged":
-                    # The lease lost because the target moved after the gate read it: name it, never a bare unmerged.
+                if push_error and state != "merged":
+                    # The push failed and the member did not land: name why, never a bare unmerged or unknown, and
+                    # push no further member (the set lands on the base it was checked on, or not at all).
                     try:
-                        now = _remote_tip(repo, m["remote"], into)
-                    except (RuntimeError, subprocess.SubprocessError, OSError):
-                        now = None
-                    if now and now != m["base"]:
+                        now, unread = _remote_tip(repo, m["remote"], into), None
+                    except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
+                        now, unread = None, f"{type(exc).__name__}: {exc}"
+                    if unread:
+                        r["refused"] = f"target_unread_at_push: {_capped(unread)}"
+                    elif now is None:
+                        r["refused"] = f"target_deleted_at_push: remote {into} is gone, the gate read {m['base']}"
+                        r["_heads"] = (m["base"], None)
+                    elif now != m["base"]:
                         r["refused"] = f"target_moved_at_push: remote {into} is {now}, the gate read {m['base']}"
                         r["_heads"] = (m["base"], now)
-                        break  # the set lands on the base it was checked on, or not at all
+                    else:  # still at the base the gate read: a hook or a protected branch said no
+                        r["refused"] = f"push_rejected: {push_error}"
+                    break
                 if state == "unknown":
                     break  # push no further members after an unresolved one
 

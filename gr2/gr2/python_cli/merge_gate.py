@@ -605,6 +605,16 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                 r.update(state=state, merged=merged, merged_by=by)
                 if push_error and by != "this_run":
                     r["push_error"] = push_error  # e.g. our lease lost to a writer who merged the same head
+                if push_error and state == "unmerged":
+                    # The lease lost because the target moved after the gate read it: name it, never a bare unmerged.
+                    try:
+                        now = _remote_tip(repo, m["remote"], into)
+                    except (RuntimeError, subprocess.SubprocessError, OSError):
+                        now = None
+                    if now and now != m["base"]:
+                        r["refused"] = f"target_moved_at_push: remote {into} is {now}, the gate read {m['base']}"
+                        r["_heads"] = (m["base"], now)
+                        break  # the set lands on the base it was checked on, or not at all
                 if state == "unknown":
                     break  # push no further members after an unresolved one
 

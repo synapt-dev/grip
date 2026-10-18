@@ -423,3 +423,7 @@ next: gr2 review publish '<workspace>' '<review>' --remote '<remote>'
 ### self_approval
 
 next: a different approver stamps it from their own workspace, after receiving it there: gr2 review receive <their-workspace> '<review>' --remote <member-remote>, then gr2 review stamp <their-workspace> '<review>'
+
+### target_moved_at_push
+
+next: the target moved after the gate read it, so nothing was pushed; bring every member up to it and pin again: gr2 review update '<workspace>' '<review>' --into '<branch>'

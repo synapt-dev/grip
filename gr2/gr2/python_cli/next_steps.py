@@ -195,6 +195,12 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
         into = moved.group(1).removeprefix("refs/heads/") if moved else "<branch>"
         return (f"next: the target moved after the pin; bring every member up to it and pin again: "
                 f"gr2 review update {_shown(workspace)} {_shown(review)} --into {_shown(into)}")
+    if refused.startswith("target_moved_at_push"):
+        # The gate passed, then the target moved before the push landed: the same answer as base_moved.
+        moved = re.match(r"target_moved_at_push: remote (\S+) is ", refused)
+        into = moved.group(1).removeprefix("refs/heads/") if moved else "<branch>"
+        return (f"next: the target moved after the gate read it, so nothing was pushed; bring every member up to it "
+                f"and pin again: gr2 review update {_shown(workspace)} {_shown(review)} --into {_shown(into)}")
     if refused.startswith("platform_head_moved_after_merge"):
         late = re.search(r"head is (\S+);", refused)
         return (f"next: this member landed at the pinned head, and the later commit {late.group(1) if late else '<sha>'} "

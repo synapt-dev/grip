@@ -72,3 +72,80 @@ def test_a_grip_toml_dot_slash_alpha_carries_the_review_record_for_alpha(tmp_pat
                         lambda _root, _commit: {"members": [{"path": "alpha", "head": pin}]})
     records = grip_cli._member_records(root, {"path": "./alpha", "pin": pin})
     assert len(records) == 1
+
+
+def _member(name: str, path: str) -> str:
+    return f'[[members]]\nname = "{name}"\npath = "{path}"\n[members.remotes]\norigin = "https://example.invalid/x/{name}"\n'
+
+
+def test_the_working_grip_toml_refuses_dot_slash_alpha_beside_alpha(tmp_path):
+    import pytest
+
+    from gr2.python_cli import grip_cli
+
+    (tmp_path / "grip.toml").write_text(_member("alpha", "./alpha") + _member("beta", "alpha"))
+    with pytest.raises(grip_cli.NativeStoreRefusal) as refusal:
+        grip_cli._native_members(tmp_path)
+    assert "grip.toml has duplicate member paths" in str(refusal.value)
+
+
+def test_the_working_grip_toml_keeps_a_duplicate_name_on_different_paths(tmp_path):
+    # Names are compared only for a selected commit; a duplicate name in the working document is the fallback's to
+    # contain, so refusing it here would refuse the whole workspace for a collision only one fallback can act on.
+    from gr2.python_cli import grip_cli
+
+    (tmp_path / "grip.toml").write_text(_member("alpha", "alpha") + _member("alpha", "beta"))
+    members = grip_cli._native_members(tmp_path)
+    assert [m["path"] for m in members] == ["alpha", "beta"]
+
+
+def test_a_selected_commit_still_refuses_a_duplicate_name(tmp_path, monkeypatch):
+    import subprocess
+
+    import pytest
+
+    from gr2.python_cli import grip_cli
+
+    pin = "1" * 40
+    document = (_member("alpha", "alpha") + _member("alpha", "beta")).replace("[members.remotes]", f'pin = "{pin}"\n[members.remotes]')
+
+    def store_git(_root, *args):
+        out = document if args[0] == "show" else f"160000 commit {pin}\t{args[-1]}\n"
+        return subprocess.CompletedProcess(list(args), 0, out, "")
+
+    monkeypatch.setattr(grip_cli, "_store_git", store_git)
+    with pytest.raises(grip_cli.NativeStoreRefusal) as refusal:
+        grip_cli._native_members(tmp_path, "HEAD")
+    assert "selected workspace commit has duplicate member names or paths" in str(refusal.value)
+
+
+def test_a_name_that_spells_its_own_path_differently_claims_one_directory(tmp_path):
+    # READ: resolve() already folds `./alpha` and `alpha`, so this held before the key too; it pins that the keyed
+    # compare does not add a second claim or send the member to a fallback at its own directory.
+    from gr2.python_cli import grip_cli
+
+    member = {"name": "alpha", "path": "./alpha"}
+    assert grip_cli._claimed_member_paths(tmp_path, [member]) == {(tmp_path / "alpha").resolve()}
+    root = grip_cli._native_member_working_root(tmp_path, member, set())
+    assert root.resolve() == (tmp_path / "alpha").resolve()
+
+
+def test_clone_dot_slash_a_with_member_a_is_not_refused_before_the_clone(tmp_path, monkeypatch):
+    from gr2.python_cli import grip_cli
+
+    asked = []
+
+    class Stop(Exception):
+        pass
+
+    def stop(_root):
+        raise Stop
+
+    monkeypatch.setattr(grip_cli, "_plan_clones", lambda _root, clones: list(clones))
+    monkeypatch.setattr(grip_cli, "_discover_members", lambda _root, declared: asked.append(declared))
+    monkeypatch.setattr(grip_cli, "_refuse_enclosing_repo", stop)
+    try:
+        grip_cli._native_store_init(tmp_path / "root", member_paths=["a"], clones=[("./a", "https://example.invalid/a")])
+    except Stop:
+        pass
+    assert asked == []

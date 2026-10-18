@@ -490,8 +490,17 @@ def _native_members(root: Path, revision: str | None = None) -> list[dict[str, s
                 )
         if revision is not None:
             item["path"] = _normalise_member_path(root, str(item["path"]))
-            if any(previous["name"] == item["name"] or previous["path"] == item["path"] for previous in result):
-                raise NativeStoreRefusal("selected workspace commit has duplicate member names or paths", 4)
+        # Keyed for the working document too: `./alpha` and `alpha` are one gitlink, so two members there collide.
+        # There it compares PATHS only: a duplicate NAME is left to the fallback's containment (see
+        # _native_member_working_root), which refuses only the collision it can act on.
+        path_key = keys.member_path_key(item.get("path"))
+        if revision is None:
+            if any(keys.member_path_key(previous.get("path")) == path_key for previous in result):  # mut:pathsonly
+                raise NativeStoreRefusal("grip.toml has duplicate member paths", 4)
+        elif any(previous.get("name") == item.get("name")
+                 or keys.member_path_key(previous.get("path")) == path_key for previous in result):
+            raise NativeStoreRefusal("selected workspace commit has duplicate member names or paths", 4)
+        if revision is not None:
             link = _store_git(root, "ls-tree", revision, "--", item["path"]).stdout.split()
             entry = link[2] if len(link) >= 3 and link[0] == "160000" else None
             if full and entry is not None:
@@ -924,7 +933,7 @@ def _claimed_member_paths(
             continue
         claimed.add((root / member["path"]).resolve())
         name = str(member.get("name", ""))
-        if name and name != member["path"]:
+        if name and keys.member_path_key(name) != keys.member_path_key(member["path"]):
             try:
                 claimed.add((root / _normalise_member_path(root, name)).resolve())
             except NativeStoreRefusal:
@@ -964,7 +973,7 @@ def _native_member_working_root(
     if _is_member_checkout(root, member["path"]):
         return declared
     name = str(member.get("name", ""))
-    if name and name != member["path"]:
+    if name and keys.member_path_key(name) != keys.member_path_key(member["path"]):
         try:
             # THE NAME IS A PATH COORDINATE, so it goes through the SAME normaliser the declared
             # path does. Without this the fallback was a second door into the escape that
@@ -1428,8 +1437,8 @@ def _native_store_init(root: Path, member_paths: list[str] | None = None,
         # The --member paths are checked BEFORE anything is cloned, like every other refusal decidable up front:
         # `--clone a=<url> --member nope` used to clone a and only then refuse nope, leaving a stray a/. A path
         # --clone itself creates is skipped here; it cannot be a checkout until it is cloned.
-        cloned_names = {name for name, _ in clones}
-        named = [p for p in (member_paths or []) if str(PurePosixPath(p.strip())) not in cloned_names]
+        cloned_names = {keys.member_path_key(name.strip()) for name, _ in clones}
+        named = [p for p in (member_paths or []) if keys.member_path_key(p.strip()) not in cloned_names]
         if named:  # mut:earlymember
             _discover_members(root, declared=named)
         if not (root / ".git").exists():

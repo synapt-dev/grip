@@ -66,7 +66,7 @@ def test_init_does_not_switch_an_existing_stores_mode(tmp_path, first, second):
     result = gr2(root, "init", "--mode", second, check=False)
 
     assert result.returncode == 4, (result.stdout, result.stderr)
-    assert f"declares mode {first!r}" in result.stderr and f"--mode {second}" in result.stderr
+    assert f"in mode {first!r}" in result.stderr and f"--mode {second}" in result.stderr
     assert (root / "grip.toml").read_bytes() == before
 
 
@@ -93,3 +93,15 @@ def test_the_mode_refusal_comes_before_any_clone(tmp_path, args, refused):
 
     assert result.returncode == (4 if refused else 0), (result.stdout, result.stderr)
     assert (root / "gamma").exists() is not refused
+
+
+def test_a_grip_toml_with_no_mode_line_and_no_store_takes_the_mode_asked_for(tmp_path):
+    """A spec-only root (a grip.toml with no `mode` line and no `.git` of its own) has declared nothing, so
+    `--mode full` writes full mode rather than reading the absent key as compat and refusing."""
+    root = _two_members(tmp_path)
+    (root / "grip.toml").write_text('schema_version = 1\nworkspace_name = "workspace"\n', encoding="utf-8")
+
+    result = gr2(root, "init", "--mode", "full", check=False)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert workspace_mode.of_root(root) == "full"

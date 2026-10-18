@@ -1388,6 +1388,20 @@ def _refuse_enclosing_repo(root: Path) -> None:
             )
 
 
+def _init_current_mode(root: Path) -> str | None:
+    """The mode `store init --mode` must agree with: the grip.toml's own `mode` key when it has one, compat for an
+    existing store (its own `.git` and a grip.toml) with no key, and None when nothing has declared a mode yet."""
+    if not (root / "grip.toml").exists():
+        return None
+    try:
+        document = tomllib.loads((root / "grip.toml").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        document = {}
+    if "mode" in document:
+        return _workspace_mode(document)
+    return "compat" if (root / ".git").exists() else None
+
+
 @_refuses_moved_workspace
 def _native_store_init(root: Path, member_paths: list[str] | None = None,
                       clones: list[tuple[str, str]] | None = None, mode: str | None = None) -> dict[str, str]:
@@ -1397,13 +1411,16 @@ def _native_store_init(root: Path, member_paths: list[str] | None = None,
     paths, so the record they get is the one an existing checkout would get.
 
     `mode` is the workspace mode a NEW store is written with ("compat" or "full"; None keeps what the root's
-    grip.toml says, compat when it says nothing). A root whose grip.toml already declares another mode is refused
-    (exit 4) before anything is cloned or written: init does not switch a workspace's mode.
+    grip.toml says, compat when it says nothing). Refused (exit 4) before anything is cloned or written, since init
+    does not switch a workspace's mode: a grip.toml that declares another mode, and an existing store (its own
+    `.git` and a grip.toml) in another mode, where no mode line means compat. A grip.toml alone with no mode line
+    declares nothing, so it takes the mode asked for.
     """
-    if mode is not None and (root / "grip.toml").exists() and _existing_mode(root) != mode:
+    current = _init_current_mode(root) if mode is not None else None
+    if current is not None and current != mode:
         raise NativeStoreRefusal(
-            f"{root / 'grip.toml'} declares mode {_existing_mode(root)!r}; --mode {mode} sets the mode of a new "
-            f"store only, so init does not switch it", 4)
+            f"{root} is in mode {current!r}; --mode {mode} sets the mode of a new store only, so init does not "
+            f"switch it", 4)
     if clones:
         clones = [(name, _clone_url(url)) for name, url in clones]
         todo = _plan_clones(root, clones)
@@ -3581,7 +3598,8 @@ def grip_init_cmd(
         help=(
             'The workspace mode of a new store: "compat" (the default) or "full". Full writes '
             '`mode = "full"` into grip.toml, so each member is recorded as a field-commit and a pin '
-            "need not be on a remote. A root whose grip.toml already declares another mode is refused."
+            "need not be on a remote. A grip.toml that declares another mode, or an existing store in "
+            "another mode (no mode line is compat), is refused."
         ),
     ),
     root: Optional[Path] = STORE_ROOT_OPTION,

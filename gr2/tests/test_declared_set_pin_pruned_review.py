@@ -2,9 +2,11 @@
 
 The tie reads every review on a sibling's remote in one fetch by id. When one oid is gone that fetch fails whole, so the
 tie falls back to one fetch per review: a review that still reads and names the pin ties it, as the review-by-review
-read did before. When none does, the refusal names the ref(s) whose oid failed and prints git's fatal line once."""
+read did before. When none does, the refusal names the ref(s) whose oid failed and prints git's first fatal or error
+line once. Any other batch failure refuses with it, after that one fetch."""
 from __future__ import annotations
 
+import os
 import subprocess
 
 from gr2.python_cli import merge_gate
@@ -13,7 +15,7 @@ from tests.test_declared_sets import merge
 from tests.test_declared_sets import PASS, record, untouched, world  # noqa: F401  (fixtures)
 
 PRUNED = "refs/dev.synapt.grip/__reviews__/zz-pruned"
-GONE = "d" * 40
+GONE = "0" * 39 + "1"  # sorts before every real oid, so the per-review read meets it first
 
 
 def _plant_pruned(world, ref=PRUNED):
@@ -57,3 +59,102 @@ def test_a_pruned_review_ref_with_a_bidi_override_is_printed_escaped(world):
     assert code == merge_gate.EXIT_REFUSED, receipt
     assert "\u202e" not in why and "zz-pruned\\u202e" in why, why
     assert untouched(world)
+
+
+def _reviews(remote):
+    out = subprocess.run(["git", "-C", str(remote), "for-each-ref", "--format=%(objectname) %(refname)",
+                          "refs/dev.synapt.grip/__reviews__/"], capture_output=True, text=True, check=True).stdout
+    return [line.split(" ", 1) for line in out.splitlines()]
+
+
+def _review_fetches(monkeypatch, oids):
+    """Every fetch the gate makes that asks for a review oid."""
+    calls, real = [], merge_gate._git
+
+    def spy(repo, *args, **kw):
+        if args[:1] == ("fetch",) and set(args) & oids:
+            calls.append(args)
+        return real(repo, *args, **kw)
+    monkeypatch.setattr(merge_gate, "_git", spy)
+    return calls
+
+
+def test_a_warning_before_git_s_error_prints_the_error_line(world):
+    moved = _move_beta(world, push=True)
+    remote = world["members"]["beta"]["remote"]
+    stores = sorted(p for p in (remote / "objects").iterdir() if p.is_dir())
+    for store in stores:  # the remote's objects unreadable: every fetch warns first, then errors
+        os.chmod(store, 0)
+    try:
+        code, why, receipt = _refusal(world)
+    finally:
+        for store in stores:
+            os.chmod(store, 0o755)
+
+    assert code == merge_gate.EXIT_REFUSED, receipt
+    assert why.startswith(f"declared_set_pin_unmeasured: beta's pin {moved[:12]} is named by no review"), why
+    assert why.endswith(": git fetch --no-tags: error: unable to open object pack directory: ./objects/pack: "
+                        "Permission denied"), why
+    assert "warning:" not in why, why
+
+
+def test_a_pruned_review_reads_the_others_one_by_one(world, monkeypatch):
+    assert record(world, PASS)["result"] == "pass"
+    remote = world["members"]["beta"]["remote"]
+    _plant_pruned(world)
+    oids = {oid for oid, _ in _reviews(remote)}
+    calls = _review_fetches(monkeypatch, oids)
+
+    code, receipt = merge(world, "alpha")
+
+    assert code == merge_gate.EXIT_MERGED, receipt
+    assert len(calls) == 1 + len(oids), calls  # the batch, then one per review
+
+
+def test_any_other_batch_failure_refuses_with_it_after_one_fetch(world, monkeypatch):
+    moved = _move_beta(world, push=True)
+    beta = world["members"]["beta"]
+    oids = {oid for oid, _ in _reviews(beta["remote"])}
+    calls = _review_fetches(monkeypatch, oids)
+    store = beta["repo"] / ".git" / "objects"
+    dirs = [store, *sorted(p for p in store.rglob("*") if p.is_dir())]
+    for d in dirs:  # this clone cannot write what it fetches: not one review's fault
+        os.chmod(d, 0o555)
+    try:
+        code, why, receipt = _refusal(world)
+    finally:
+        for d in dirs:
+            os.chmod(d, 0o755)
+
+    assert code == merge_gate.EXIT_REFUSED, receipt
+    assert why.startswith(f"declared_set_pin_unmeasured: beta's pin {moved[:12]} could not be read from its remote: "
+                          "git fetch --no-tags: "), why
+    assert len(calls) == 1, calls
+
+
+IMPOSTOR = "refs/foo/refs/dev.synapt.grip/__reviews__/zz"
+
+
+def test_a_ref_that_only_ends_like_a_review_is_not_taken_for_one(world):
+    assert record(world, PASS)["result"] == "pass"
+    remote = world["members"]["beta"]["remote"]
+    for oid, ref in _reviews(remote):  # the only review naming the pin now lives under another prefix
+        subprocess.run(["git", "-C", str(remote), "update-ref", IMPOSTOR, oid], check=True)
+        subprocess.run(["git", "-C", str(remote), "update-ref", "-d", ref], check=True)
+    assert _reviews(remote) == []
+
+    code, why, receipt = _refusal(world)
+
+    assert code == merge_gate.EXIT_REFUSED, receipt
+    assert why.startswith("declared_set_pin_unreviewed: beta is pinned at "), why
+
+
+def test_a_ref_ending_like_a_real_review_does_not_drop_it(world):
+    assert record(world, PASS)["result"] == "pass"
+    remote = world["members"]["beta"]["remote"]
+    (_, ref), = _reviews(remote)
+    _plant_pruned(world, "refs/foo/" + ref)  # same tail as the real review, an oid the remote cannot serve
+
+    code, receipt = merge(world, "alpha")
+
+    assert code == merge_gate.EXIT_MERGED, receipt

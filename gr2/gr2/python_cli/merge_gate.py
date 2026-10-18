@@ -212,6 +212,14 @@ def _refresh_tracking(repo: Path, remote: str, into: str) -> dict | None:
 
 _REVIEW_REF_PREFIX = "refs/dev.synapt.grip/__reviews__/"
 _REVIEW_SCAN_CAP = 200  # reviews read per member remote; over it is a named refusal, never a silent partial read
+_OID_NOT_SERVED = ("not our ref", "no such remote ref")  # git's words when a remote will not serve one wanted oid
+
+
+def _first_error(exc: Exception) -> str:
+    """git's first `fatal:` or `error:` line from a failed _git call (a warning may come first), else its first line."""
+    command, _, said = str(exc).partition(": ")
+    lines = said.split("\n")
+    return f"{command}: " + next((line for line in lines if line.startswith(("fatal:", "error:"))), lines[0])
 
 
 def _pin_tie(root: Path, declaration: declared_sets.Declaration, into: str):
@@ -240,12 +248,14 @@ def _pin_tie(root: Path, declaration: declared_sets.Declaration, into: str):
             if tips:  # every review's objects in one fetch by id, read by id: no private ref to make or delete
                 try:
                     _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, *sorted(set(tips.values())))
-                except RuntimeError:  # one oid the remote no longer has fails the whole fetch: read the rest one by one
+                except RuntimeError as exc:  # one oid the remote no longer has fails the whole fetch: read the rest one by one
+                    if not any(said in str(exc) for said in _OID_NOT_SERVED):
+                        raise  # any other failure is the remote's or this clone's, not one review's: refuse with it
                     for oid in sorted(set(tips.values())):
                         try:
                             _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, oid)
                         except RuntimeError as exc:
-                            failed[oid] = str(exc).splitlines()[0] if str(exc) else "the fetch failed"
+                            failed[oid] = _first_error(exc)
             for oid in [tips[ref] for ref in sorted(tips) if tips[ref] not in failed]:
                 state = grip._read_repo_state(repo, oid, bind=True)
                 for key, fields in state.items():

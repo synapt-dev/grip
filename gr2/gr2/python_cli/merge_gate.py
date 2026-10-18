@@ -12,8 +12,10 @@ an unresolved member is `unknown`; no further member is pushed after one.
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -38,20 +40,46 @@ def _text(raw: bytes | str | None) -> str:
     return raw.decode("utf-8", "backslashreplace") if isinstance(raw, bytes) else (raw or "")
 
 
-def _push_verdict(out: list[str], url: str, into: str) -> list[str]:
-    """Git's own porcelain "!" line for refs/heads/<into>, read only in the block after git's "To <url>" line.
+def _pre_push_refused(trace: Path) -> bool | None:
+    """Whether the push's own pre-push hook exited nonzero, read from git's trace2 event file; None if unreadable.
 
-    A local pre-push hook's stdout lands on the same stream, and a declined push prints none of git's lines, so an
-    "!" line anywhere else is the hook's text, never the remote's answer.
+    Only the top-level process counts, named by the sid of the first "version" event (under a git alias that sid
+    has a "/" too, from the inherited GIT_TRACE2_PARENT_SID): a git run inside the hook logs under a child sid.
+    """
+    try:
+        events = [json.loads(ln) for ln in trace.read_text(encoding="utf-8", errors="replace").splitlines() if ln]
+    except (OSError, ValueError):
+        return None
+    top = next((e.get("sid") for e in events if isinstance(e, dict) and e.get("event") == "version"), None)
+    if not isinstance(top, str):
+        return None
+    mine = [e for e in events if isinstance(e, dict) and e.get("sid") == top]
+    hooks = {e.get("child_id") for e in mine if e.get("event") == "child_start"
+             and e.get("child_class") == "hook" and e.get("hook_name") == "pre-push"}
+    return any(e.get("event") == "child_exit" and e.get("child_id") in hooks and e.get("code") != 0 for e in mine)
+
+
+def _push_verdict(out: list[str], into: str, url: str | None = None) -> list[str]:
+    """Git's own porcelain "!" line for refs/heads/<into>, read only in the LAST "To " block, up to "Done".
+
+    Git prints the URL rewritten (insteadOf, pushInsteadOf, scp form) and with any credential dropped, so the
+    block is found by place, never by matching the remote's URL; a pre-push hook that said no is read apart, from
+    trace2, before this is asked. With no trace2 to read, `url` keeps the older reading: only the block after
+    "To <url>" exactly, so a hook's echoed "!" line is not read as the remote's.
     """
     block: list[str] | None = None
+    last: list[str] | None = None
     for ln in out:
         if ln.startswith("To "):
-            block = [] if ln == f"To {url}" else None
+            block = [] if url is None or ln == f"To {url}" else None
         elif block is not None and ln == "Done":
-            break
+            if url is not None:
+                break
+            last, block = block, None
         elif block is not None:
             block.append(ln)
+    if block is None and url is None:
+        block = last
     return [ln.replace("\t", " ") for ln in block or ()
             if ln.startswith("!") and ln.split("\t")[1:2] and ln.split("\t")[1].endswith(f":refs/heads/{into}")]
 
@@ -630,10 +658,17 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                 try:
                     # --porcelain marks a refusal the remote made ("[remote rejected]") apart from a push that never
                     # reached it; binary, because a hook may print bytes that are not UTF-8.
-                    proc = gitops.run(repo, "push", "--porcelain", f"--force-with-lease=refs/heads/{into}:{m['base']}",
-                                      m["remote"], f"{builds[r['key']]}:refs/heads/{into}", binary=True, timeout=120)
+                    # trace2 tells a refusing pre-push hook apart from the remote, whatever the hook prints (this
+                    # one push overrides a user's own GIT_TRACE2_EVENT); git < 2.27 writes no file: read stdout alone.
+                    with tempfile.TemporaryDirectory(prefix="gr2-push-") as tmp:
+                        trace = Path(tmp) / "trace2.json"
+                        proc = gitops.run(repo, "push", "--porcelain",
+                                          f"--force-with-lease=refs/heads/{into}:{m['base']}", m["remote"],
+                                          f"{builds[r['key']]}:refs/heads/{into}", binary=True, timeout=120,
+                                          env={**os.environ, "GIT_TRACE2_EVENT": str(trace)})
+                        hook_said = _pre_push_refused(trace)
                     out, err = (_text(b).split("\n") for b in (proc.stdout, proc.stderr))
-                    status = _push_verdict(out, m["remote"], into)
+                    status = [] if hook_said else _push_verdict(out, into, None if hook_said is False else m["remote"])
                     remote_said = any("[remote rejected]" in ln for ln in status)
                     if proc.returncode == 124:  # gitops' expiry: the push may still land after it
                         push_error, unconfirmed = f"push_unconfirmed: {_capped(chr(10).join(err).strip())}", True

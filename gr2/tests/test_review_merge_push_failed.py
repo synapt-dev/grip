@@ -173,7 +173,111 @@ def test_the_push_verdict_reads_only_git_s_block_and_only_the_target_ref():
     url = "/srv/member.git"
     out = ["! refs/heads/main:refs/heads/main\t[remote rejected] hook text before git",
            "To elsewhere", "!\tx:refs/heads/main\t[remote rejected] other remote",
-           f"To {url}", "!\tx:refs/heads/side\t[remote rejected] other ref", "!\tx:refs/heads/main\t[remote rejected] real",
+           f"To {url}", "!\tx:refs/heads/xmain\t[remote rejected] other ref", "!\tx:refs/heads/main\t[remote rejected] real",
            "Done", "!\tx:refs/heads/main\t[remote rejected] after Done"]
-    assert merge_gate._push_verdict(out, url, "main") == ["! x:refs/heads/main [remote rejected] real"]
-    assert merge_gate._push_verdict(out[:3], url, "main") == []
+    assert merge_gate._push_verdict(out, "main") == ["! x:refs/heads/main [remote rejected] real"]
+    assert merge_gate._push_verdict(out[:2], "main") == []
+    # with no trace2 to read (git < 2.27), only the block after "To <url>" exactly
+    assert merge_gate._push_verdict(out[:3], "main", "elsewhere") == ["! x:refs/heads/main [remote rejected] other remote"]
+    assert merge_gate._push_verdict(out[:3], "main", url) == []
+    assert merge_gate._push_verdict(out, "main", url) == ["! x:refs/heads/main [remote rejected] real"]
+    # a closed block written ahead of git's own is not the verdict; the last closed block is
+    forged = ["To forged:url", "=\tx:refs/heads/main\t[up to date]", "Done"]
+    assert merge_gate._push_verdict(forged + out[3:], "main") == ["! x:refs/heads/main [remote rejected] real"]
+
+
+def _rewrite_push_url(world, monkeypatch, to):
+    """The member's push goes to `to` through pushInsteadOf, so git prints "To <to, as git shows it>"."""
+    def fake(cmd, kw):
+        repo = kw.get("cwd") or cmd[list(cmd).index("-C") + 1]
+        REAL_RUN(["git", "-C", str(repo), "config", f"url.{to}.pushInsteadOf", str(world["remote"])], check=True)
+    _on_push(monkeypatch, fake)
+
+
+def test_a_remote_refusal_through_push_insteadof_reads_push_rejected(world, monkeypatch):
+    _refuse_pushes(world["remote"], "protected branch")
+    _rewrite_push_url(world, monkeypatch, f"file://{world['remote']}")
+    out, row = _merge(world)
+    assert out.exit_code == merge_gate.EXIT_REFUSED, out.output
+    assert row["refused"].startswith("push_rejected: remote: protected branch"), row
+    assert git(world["remote"], "rev-parse", "main") == world["base"]
+
+
+def test_a_remote_refusal_over_a_credentialed_ssh_url_reads_push_rejected(world, monkeypatch):
+    # git prints "To ssh://fakehost/..." with the credential dropped, never the URL it was given
+    ssh = world["remote"].parent / "fake-ssh"
+    ssh.write_text('#!/bin/sh\nfor a; do last="$a"; done\nexec sh -c "$last"\n', encoding="utf-8")
+    ssh.chmod(0o755)
+    _refuse_pushes(world["remote"], "protected branch")
+    monkeypatch.setenv("GIT_SSH_COMMAND", str(ssh))
+    _rewrite_push_url(world, monkeypatch, f"ssh://tok:s3cret@fakehost{world['remote']}")
+    out, row = _merge(world)
+    assert out.exit_code == merge_gate.EXIT_REFUSED, out.output
+    assert row["refused"].startswith("push_rejected: remote: protected branch"), row
+    assert "s3cret" not in out.output, out.output
+    assert git(world["remote"], "rev-parse", "main") == world["base"]
+
+
+def test_a_local_hook_echoing_git_s_exact_to_line_reads_push_failed(world, monkeypatch):
+    # trace2 says the pre-push hook exited nonzero, so no "!" line is read, even one under "To <the member's url>"
+    hooks = world["remote"].parent / "local-hooks"
+    _hook(hooks, "pre-push", f"echo 'To {world['remote']}'\n".encode()
+          + b"printf '!\\trefs/heads/main:refs/heads/main\\t[remote rejected] forged\\n'\necho Done\n"
+          + b"echo 'local policy: no pushes today' >&2\nexit 1\n")
+
+    def fake(cmd, kw):
+        repo = kw.get("cwd") or cmd[list(cmd).index("-C") + 1]
+        REAL_RUN(["git", "-C", str(repo), "config", "core.hooksPath", str(hooks)], check=True)
+    _on_push(monkeypatch, fake)
+    out, row = _merge(world)
+    assert out.exit_code == merge_gate.EXIT_REFUSED, out.output
+    assert row["refused"].startswith("push_failed: ") and "forged" not in row["refused"], row
+    assert git(world["remote"], "rev-parse", "main") == world["base"]
+
+
+def test_a_nested_push_s_refusing_hook_is_not_ours_and_the_remote_refusal_reads_push_rejected(world, monkeypatch):
+    # our pre-push hook exits 0 but runs an inner push whose own pre-push hook exits 1; only our sid's hook counts
+    base = world["remote"].parent
+    other = base / "other.git"
+    REAL_RUN(["git", "init", "-q", "--bare", str(other)], check=True)
+    inner_hooks = base / "inner-hooks"
+    ran = base / "inner-hook-ran"
+    _hook(inner_hooks, "pre-push", f"touch '{ran}'; exit 1\n".encode())
+    src = base / "inner-src"
+    REAL_RUN(["git", "init", "-q", str(src)], check=True)
+    REAL_RUN(["git", "-C", str(src), "-c", "user.name=x", "-c", "user.email=x@x", "commit", "-q", "--allow-empty",
+              "-m", "x"], check=True)
+    REAL_RUN(["git", "-C", str(src), "config", "core.hooksPath", str(inner_hooks)], check=True)
+    hooks = base / "local-hooks"
+    _hook(hooks, "pre-push", f"cat >/dev/null; git -C '{src}' push -q '{other}' HEAD:refs/heads/x </dev/null; "
+          "echo inner=$? >&2; exit 0\n".encode())
+    _refuse_pushes(world["remote"], "protected branch")
+
+    def fake(cmd, kw):
+        repo = kw.get("cwd") or cmd[list(cmd).index("-C") + 1]
+        REAL_RUN(["git", "-C", str(repo), "config", "core.hooksPath", str(hooks)], check=True)
+    _on_push(monkeypatch, fake)
+    out, row = _merge(world)
+    assert out.exit_code == merge_gate.EXIT_REFUSED, out.output
+    assert row["refused"].startswith("push_rejected: remote: protected branch"), row
+    assert git(world["remote"], "rev-parse", "main") == world["base"]
+    assert ran.exists()  # the inner hook did run and refuse its own push
+    assert REAL_RUN(["git", "-C", str(other), "rev-parse", "-q", "--verify", "refs/heads/x"],
+                    capture_output=True).returncode != 0
+
+
+def test_a_hook_forging_a_done_block_on_git_s_stdout_does_not_hide_the_remote_refusal(world, monkeypatch):
+    # our pre-push hook exits 0 and writes a closed "up to date" block to git push's own stdout before git's block
+    _refuse_pushes(world["remote"], "protected branch")
+    hooks = world["remote"].parent / "local-hooks"
+    _hook(hooks, "pre-push", b"cat >/dev/null\n{ echo 'To forged:url'; printf '=\\trefs/heads/main:refs/heads/main\\t"
+          b"[up to date]\\n'; echo Done; } > /proc/$PPID/fd/1\nexit 0\n")
+
+    def fake(cmd, kw):
+        repo = kw.get("cwd") or cmd[list(cmd).index("-C") + 1]
+        REAL_RUN(["git", "-C", str(repo), "config", "core.hooksPath", str(hooks)], check=True)
+    _on_push(monkeypatch, fake)
+    out, row = _merge(world)
+    assert out.exit_code == merge_gate.EXIT_REFUSED, out.output
+    assert row["refused"].startswith("push_rejected: remote: protected branch"), row
+    assert git(world["remote"], "rev-parse", "main") == world["base"]

@@ -337,6 +337,52 @@ def test_c3_member_inside_an_enclosing_repo_refuses_not_a_repo(
     assert _git(tmp_path, "ls-files", "-s") == ""
 
 
+@pytest.mark.parametrize("mode", ["fails", "empty", "short"])
+def test_c3_member_rev_parse_that_fails_refuses_not_a_repo(
+    members: list[Path], git_log: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode
+) -> None:
+    # Only m3's `rev-parse --show-toplevel` misbehaves; every other call is real git, through the logging shim.
+    # "fails" keeps git's full stdout and exits 128, so the return code alone has to refuse it.
+    act = {
+        "fails": '"$logged" "$@"; exit 128',
+        "empty": '"$logged" "$@" >/dev/null; exit 0',
+        "short": '"$logged" "$@" | head -n 1; exit 0',
+    }[mode]
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    (bad / "git").write_text(
+        f'#!/bin/sh\nlogged="{git_log.parent / "shim" / "git"}"\n'
+        f'case "$(basename "$PWD") $*" in "m3 "*" rev-parse --show-toplevel "*) {act};; esac\nexec "$logged" "$@"\n'
+    )
+    (bad / "git").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bad}{os.pathsep}{os.environ['PATH']}")
+    before = [_state(p) for p in members]
+    git_log.write_text("")
+    result = _run(members)
+    assert result.exit_code == 2, result.output
+    assert "refused: not_a_repo: m3:" in result.output
+    assert "nothing was written" in result.output
+    assert _not_reads(git_log) == []
+    assert any(m == "m3" and " rev-parse --show-toplevel " in f" {a}" for m, a in _calls(git_log))
+    assert [_state(p) for p in members] == before
+
+
+def test_c1_clean_member_beside_changed_ones_is_left_alone(members: list[Path], git_log: Path) -> None:
+    m1, m2, m3 = members[:3]
+    _git(m2, "checkout", "-q", "--", "README.md")
+    (m2 / "new.txt").unlink()
+    clean = _state(m2)
+    bases = [_git(p, "rev-parse", "HEAD").strip() for p in (m1, m3)]
+    result = _run([m1, m2, m3])
+    assert result.exit_code == 0, result.output
+    assert _state(m2) == clean
+    assert _git(m2, "for-each-ref", "refs/heads/feat") == ""
+    for path, base in zip((m1, m3), bases):
+        assert _git(path, "branch", "--show-current").strip() == "feat"
+        assert _git(path, "rev-parse", "HEAD~1").strip() == base
+        assert _git(path, "status", "--porcelain") == ""
+
+
 @pytest.mark.parametrize("kind", ["file", "missing"])
 def test_c3_member_not_a_directory_refuses_not_a_repo(members: list[Path], git_log: Path, kind) -> None:
     shutil.rmtree(members[2])

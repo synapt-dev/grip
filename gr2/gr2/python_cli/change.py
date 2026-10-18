@@ -99,9 +99,11 @@ def preflight(paths: list[Path], branch: str) -> list[Member]:
             "--git-path", "MERGE_HEAD", "--git-path", "CHERRY_PICK_HEAD", "--git-path", "REVERT_HEAD",
             "--git-path", "rebase-apply", "--git-path", "rebase-merge", "--git-path", "sequencer",
         )
-        top, *paths_pending = pending.stdout.split("\n")
-        if pending.returncode != 0:
+        # One line per argument; a run that failed or printed fewer would skip the markers it left out.
+        lines = pending.stdout.splitlines()
+        if pending.returncode != 0 or len(lines) != 7:
             raise ChangeRefused("not_a_repo", member.name, pending.stderr.strip() or "git rev-parse failed")
+        top, *paths_pending = lines
         if Path(top).resolve() != path.resolve():
             raise ChangeRefused("not_a_repo", member.name, f"inside the repo at {top}")
         if head_branch == "(detached)":

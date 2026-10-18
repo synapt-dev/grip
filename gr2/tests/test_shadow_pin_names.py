@@ -93,3 +93,10 @@ def test_a_backslash_ends_only_a_dotgit_name(world):
                           text=True)
     assert fsck.returncode == 0, fsck.stderr
 
+
+@pytest.mark.parametrize("pin", [".git\u200c", ".g\u200dit", "\ufeff.GIT", "a/.gi\u206ft", "\u202a.git"])
+def test_a_pin_hfs_reads_as_dotgit_is_refused_escaped(world, pin):
+    message = _refused(world, [pin])
+    assert f"pin {pin!r}" in message and "\\u" in message and "hasDotgit" in message
+
+

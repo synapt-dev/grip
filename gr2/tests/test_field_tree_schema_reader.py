@@ -259,7 +259,7 @@ for _ in sys.stdin.buffer:
 def _answering(monkeypatch, answer: bytes) -> list[subprocess.Popen]:
     started: list[subprocess.Popen] = []
 
-    def start(cwd, *args):
+    def start(cwd, *args, **kwargs):
         started.append(subprocess.Popen([sys.executable, "-c", _ANSWER, answer.hex()],
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE))
         return started[-1]
@@ -375,7 +375,7 @@ def test_another_kind_is_not_drained_even_when_its_cut_lands_on_a_newline(repo: 
     asked = git(repo, "hash-object", "-w", "--stdin", data=b"abc\n")
     started: list[subprocess.Popen] = []
 
-    def start(cwd, *args):
+    def start(cwd, *args, **kwargs):
         started.append(subprocess.Popen([sys.executable, "-c", _LONG_TREE, asked],
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE))
         return started[-1]

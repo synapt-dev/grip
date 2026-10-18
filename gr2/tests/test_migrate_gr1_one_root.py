@@ -138,9 +138,9 @@ def test_a_sibling_desk_is_never_read(tmp_path: Path, monkeypatch: pytest.Monkey
 
     real_start = gitops.start
 
-    def recording_start(cwd, *args):
+    def recording_start(cwd, *args, **kwargs):
         calls.append((["git", "-C", str(cwd), *args], None))
-        return real_start(cwd, *args)
+        return real_start(cwd, *args, **kwargs)
 
     monkeypatch.setattr(gitops, "_spawn", recording)
     monkeypatch.setattr(gitops, "start", recording_start)

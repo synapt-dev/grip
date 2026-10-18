@@ -25,13 +25,14 @@ SHA-256, and refuses to load any other bytes.
 from __future__ import annotations
 
 import hashlib
+import os
 import importlib.resources
 import re
 import subprocess
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from . import gitops
+from . import gitops, next_steps
 
 PACKAGE = "dev.synapt.grip.review.v1alpha1"
 SCHEMA_COMMIT = "a2707c456d137ce5cbabb18f7aa836897818d147"
@@ -365,7 +366,10 @@ class _Deadlined:
         if t.is_alive():
             self._proc.kill()
             t.join(1)  # the kill ends the pipe; let the read return before the stream closes
-            self._reader.close()
+            # a child of the process that still holds stdout keeps the read (and the stream's lock) past
+            # the kill: closing stdout would wait on it, so the reader lets go of the stream unclosed, and
+            # the daemon thread ends when the pipe does
+            self._reader.close(stdout=not t.is_alive())
             raise ReviewRecordError(f"git cat-file blob failed: answer truncated, "
                                     f"the batch process sent nothing for {self._deadline:g}s")
         if isinstance(got[0], BaseException):
@@ -463,7 +467,10 @@ class BatchReader(GitReader):
         if not _FULL_OID.fullmatch(oid):
             raise ReviewRecordError(f"git cat-file blob failed: {oid!r} is not a full object id")
         if self._cat is None:
-            self._cat = gitops.start(self.repo, "cat-file", "--batch")
+            # a review read is local: in a partial clone, an absent blob answers "missing" at once rather
+            # than reaching the network under the deadline (git before 2.44 ignores the variable)
+            self._cat = gitops.start(self.repo, "cat-file", "--batch",
+                                     env={**os.environ, "GIT_NO_LAZY_FETCH": "1"})
         self._cat.stdin.write(oid.encode() + b"\n")
         self._cat.stdin.flush()
         header = self._cat.stdout.readline().split()
@@ -483,6 +490,11 @@ class BatchReader(GitReader):
         if len(header) == 3 and not header[2].isdigit():
             self._abandon()  # a size that is not ASCII digits: the header is not git's
             raise ReviewRecordError(f"git cat-file blob failed: {oid} answered with an unreadable size")
+        remote = self._promisor() if header[1:] == [b"missing"] else None
+        if remote is not None:
+            raise ReviewRecordError(f"git cat-file blob failed: {oid} is missing locally (partial clone?); "
+                                    f"bring it in with: git -C {next_steps._shown(str(self.repo))} fetch -- "
+                                    f"{next_steps._shown(remote)} {next_steps._shown(oid)}")
         if len(header) != 3:
             if header[1:] != [b"missing"]:
                 self._abandon()  # an empty or unreadable header: the stream is gone or out of step
@@ -503,11 +515,26 @@ class BatchReader(GitReader):
         self._cat.kill()
         self.close()
 
-    def close(self) -> None:
+    def _promisor(self) -> str | None:
+        """The remote a partial clone fetches absent objects from: extensions.partialclone (git's own name for
+        it), else the first remote.<name>.promisor that is true (what a --filter clone writes); None when the repo
+        has neither, since then git has nowhere to fetch an absent object from."""
+        named = gitops.run(self.repo, "config", "--get", "extensions.partialclone").stdout.strip()
+        if named:
+            return named
+        found = gitops.run(self.repo, "config", "-z", "--type=bool", "--get-regexp", r"^remote\..*\.promisor$")
+        for entry in found.stdout.split("\0"):
+            key, _, value = entry.partition("\n")
+            if value == "true":
+                return key.removeprefix("remote.").removesuffix(".promisor")
+        return None
+
+    def close(self, stdout: bool = True) -> None:
         if self._cat is not None:
             self._cat.stdin.close()
             self._cat.wait()
-            self._cat.stdout.close()
+            if stdout:
+                self._cat.stdout.close()
             self._cat = None
 
 

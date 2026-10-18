@@ -146,3 +146,13 @@ def test_at_base_at_the_live_tip_writes_no_at_base_trailer(tmp_path: Path) -> No
     found = re.search(r"gr:[0-9a-f]{40}", result.output)
     assert result.exit_code == 0 and found, result.output
     assert "At-base" not in _git(w["ws"], "log", "-1", "--format=%B", found.group(0)[3:])
+
+
+def test_at_base_refuses_a_ref_the_remote_does_not_have(tmp_path: Path) -> None:
+    # Row: with no such --ref, observed was '' and the ancestor check never ran; exit 0.
+    w = _world(tmp_path)
+    result = runner.invoke(app, ["review", "pin", str(w["ws"]), "--repo", "src", "--remote", str(w["remote"]),
+                                 "--base", w["base"], "--head", w["head"], "--ref", "refs/heads/nope",
+                                 "--from-range", str(w["patch"]), "--at-base"])
+    assert result.exit_code == 2 and "base_not_live_head" in result.output, result.output
+    assert _git(w["ws"], "for-each-ref", "refs/dev.synapt.grip/") == ""

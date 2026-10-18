@@ -790,6 +790,8 @@ def _bind_review_rows_body(
         if row.get("at_base"):
             if not row.get("range_patch"):
                 raise GripReviewRefused("at_base_needs_range", key, "--at-base pins a frozen range only")
+            if not observed:  # no such ref on the remote: nothing to be at the base of
+                raise GripReviewRefused("base_not_live_head", base, observed)
             if base != observed:  # at the live tip the pin is an ordinary one; no trailer
                 at_base[key] = base
         elif base != observed:

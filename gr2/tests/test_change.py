@@ -151,6 +151,22 @@ def test_c2_refused_commit_undoes_every_member_written(members: list[Path], git_
     assert order == ["m3", "m2", "m1"], order
 
 
+def test_c6_refused_add_undoes_the_member_it_failed_in(members: list[Path], git_log: Path) -> None:
+    # git lists an untracked "GIT~1" but refuses to index it under protectNTFS: m3's checkout lands, its add fails.
+    # (Not ".GIT": on a case-insensitive disk that is the member's own .git.)
+    _git(members[2], "config", "core.protectNTFS", "true")
+    (members[2] / "GIT~1").write_text("not a repo\n")
+    before = [_state(p) for p in members]
+    git_log.write_text("")
+    result = _run(members)
+    assert result.exit_code == 2, result.output
+    assert "refused: add_failed: m3:" in result.output
+    assert "invalid path 'GIT~1'" in result.output
+    assert "undone: m3, m2, m1" in result.output
+    assert [_state(p) for p in members] == before
+    assert not [m for m, a in _calls(git_log) if m in ("m4", "m5") and set(a.split(" ")) & set(WRITES)]
+
+
 @pytest.mark.parametrize("sig, code", [("INT", 130), ("TERM", 143)])
 def test_c5_signal_mid_write_undoes_every_member_touched(members: list[Path], tmp_path: Path, sig, code) -> None:
     # m2's post-commit hook signals gr2 itself: the hook's parent is git, and git's parent is gr2.

@@ -8,10 +8,11 @@ from __future__ import annotations
 import dataclasses
 import json
 import subprocess
+import urllib.parse
 
 import pytest
 
-from gr2.python_cli import declared_sets, gitops, merge_gate, next_steps
+from gr2.python_cli import declared_sets, gitops, grip, merge_gate, next_steps
 from gr2.python_cli.app import app
 from tests.test_declared_sets import merge, record, world  # noqa: F401  (fixture and helpers)
 from tests.test_review_merge_gate import _git_identity  # noqa: F401  (fixture)
@@ -184,3 +185,19 @@ def test_git_error_shows_a_plain_named_remote_as_before(tmp_path):
     exc = _named_remote_error(tmp_path, PLAIN)
 
     assert PLAIN in exc.stderr and str(exc) == f"git ls-remote r: {exc.stderr}", str(exc)
+
+
+@pytest.mark.parametrize("url, token", [
+    ("ssh://us%3Aer%40x:FAKE%40TOK@127.0.0.1:9/x.git", "FAKE%40TOK"),
+    ("https://user%3AFAKETOK@127.0.0.1:9/x.git", "FAKETOK"),
+], ids=["ssh", "https"])
+def test_a_percent_encoded_userinfo_is_a_credential(tmp_path, url, token):
+    assert grip.url_has_credentials(url) is True
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    with pytest.raises(gitops.GitError) as caught:
+        gitops.out(repo, "ls-remote", url)
+
+    shown = str(caught.value)
+    assert shown.startswith("git ls-remote "), shown
+    assert token not in shown and urllib.parse.unquote(token) not in shown, shown

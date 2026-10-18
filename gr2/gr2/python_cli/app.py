@@ -5778,10 +5778,11 @@ def review_publish(
         review_id = commit if commit.startswith("gr:") else f"gr:{commit}"
         nxt = check = None
         if isinstance(exc, grip.GripReviewRefused):
-            paths = [m["path"] for m in grip.show_review_commit(ws, review_id[3:])["members"] if m["key"] == exc.expected]
-            clone = f"{str(ws).rstrip('/')}/{paths[0]}" if paths else str(ws)
-            nxt = next_steps.publish_refused_next(str(ws), review_id, exc.refusal, exc.expected, clone, exc.observed)
-            check = next_steps.PUBLISH_REFUSED_CHECK.get(exc.refusal)
+            hit = [m for m in grip.show_review_commit(ws, review_id[3:])["members"] if m["key"] == exc.expected]
+            clone = f"{str(ws).rstrip('/')}/{hit[0]['path']}" if hit else str(ws)
+            nxt = next_steps.publish_refused_next(str(ws), review_id, exc.refusal, exc.expected, clone,
+                                                  hit[0]["remote"] if hit else "", exc.observed)
+            check = next_steps.publish_refused_check(exc.refusal, clone)
         typer.echo(json.dumps({"id": review_id, "ref": ref,
                                "complete": False, "exit": grip.PUBLISH_EXIT_REFUSED, "members": [], "remotes": [],
                                "refused": refused, "next": nxt}))

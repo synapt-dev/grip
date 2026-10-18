@@ -8,6 +8,7 @@ preflight, 3 a later failure that landed nothing, 4 partial.
 from __future__ import annotations
 
 import json
+import re
 import shlex
 from pathlib import Path
 import subprocess
@@ -380,6 +381,35 @@ def test_a4h_head_moved_since_pin_runs_its_printed_repin_then_publishes_the_new_
     again = publish(new)
     assert again.exit_code == 0 and receipt(again)["complete"], (nxt, again.output)
     assert tip(beta["remote"], "refs/heads/feat") == git(beta["repo"], "rev-parse", "HEAD")
+
+
+def test_a4f_feature_moved_next_runs_as_printed_pull_then_pin_then_publish_exit_0(w, tmp_path):
+    # publish pushes head:refs/heads/<branch> without -u, so the clone has no upstream and a bare
+    # `git pull --no-rebase` fails "no tracking information"; the printed pull names the recorded remote and the branch.
+    beta = w["members"]["beta"]
+    other = tmp_path / "someone"
+    git(tmp_path, "clone", "--no-local", beta["repo"], other)
+    git(other, "checkout", "-q", "feat")
+    (other / "theirs.txt").write_text("someone else\n")
+    git(other, "add", "theirs.txt")
+    git(other, "commit", "-m", "theirs")
+    git(other, "push", beta["remote"], "feat")
+    ahead = tip(beta["remote"], "refs/heads/feat")
+    out = publish(w["review"])
+    assert out.exit_code == 2 and receipt(out)["refused"].startswith("feature_moved: beta"), out.output
+    pull = re.search(r"# after (git .*?);", receipt(out)["next"] or "")
+    assert pull, receipt(out)["next"]
+    argv = shlex.split(pull.group(1))
+    assert argv[:4] == ["git", "-C", str(beta["repo"]), "pull"], argv
+    pulled = subprocess.run(argv, capture_output=True, text=True)
+    assert pulled.returncode == 0, (argv, pulled.stderr)
+    assert git(beta["repo"], "rev-parse", "HEAD") == ahead
+    nxt, ran = _run_next(out)
+    assert ran.exit_code == 0, (nxt, ran.output)
+    new = next(t for t in ran.stdout.split() if t.startswith("gr:"))
+    again = publish(new)
+    assert again.exit_code == 0 and receipt(again)["complete"], (nxt, again.output)
+    assert tip(beta["remote"], "refs/heads/feat") == ahead
     out = publish(w["review"])
     assert out.exit_code == 0, out.output
     for m in w["members"].values():

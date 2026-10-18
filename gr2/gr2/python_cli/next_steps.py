@@ -95,27 +95,39 @@ def publish_unresolved_merge(workspace: str, review: str, path: str) -> str:
             f"to keep the merge instead, commit it and run gr2 review update {_shown(workspace)} {_shown(review)}")
 
 
+def publish_feature_moved(workspace: str, clone: str, remote: str, observed: str) -> str | None:
+    """feature_moved's `next`: pull the remote's commits, then pin again. publish pushes head:refs/heads/<branch>
+    without -u, so the clone usually has no upstream and a bare pull fails; the pull names the member's recorded
+    remote and the branch the refusal observed (`remote <branch> at <sha>`). Neither known: no command is safe."""
+    seen = re.fullmatch(r"remote (\S+) at (\S+)", observed)
+    if not seen or not remote:
+        return None
+    return (f"gr2 review pin {_shown(workspace)}   # after git -C {_shown(clone)} pull --no-rebase {_shown(remote)} "
+            f"{_shown(seen.group(1))}; publish the new gr: id (the remote's {_escaped(seen.group(1))} is at "
+            f"{_escaped(seen.group(2))})")
+
+
 # The `next` of each refusal a bare `review publish` raises, keyed by refusal: (workspace, review, member key, clone,
-# observed) -> the next command. None is deliberate: no command is safe to print, so the human lines say what to
+# remote, observed) -> the next command. None is deliberate: no command is safe to print, so the human lines say what to
 # check instead (PUBLISH_REFUSED_CHECK). A refusal in neither table prints next: null and nothing to check.
 PUBLISH_REFUSED_NEXT = {
-    "unresolved_merge": lambda ws, rid, key, clone, seen: publish_unresolved_merge(ws, rid, clone[len(ws.rstrip("/")) + 1:]),
+    "unresolved_merge": lambda ws, rid, key, clone, remote, seen: publish_unresolved_merge(ws, rid, clone[len(ws.rstrip("/")) + 1:]),
     "no_branch": None,
-    "head_moved_since_pin": lambda ws, rid, key, clone, seen: (
+    "head_moved_since_pin": lambda ws, rid, key, clone, remote, seen: (
         f"gr2 review pin {_shown(ws)}   # pins the clones' current heads as a new review; publish that gr: id. "
         f"To publish {_shown(rid)} instead, move {_shown(clone)} back to the pinned commit"),
     "member_clone_missing": None,
     "review_remote_required": None,
-    "feature_moved": lambda ws, rid, key, clone, seen: (
-        f"gr2 review pin {_shown(ws)}   # after git -C {_shown(clone)} pull --no-rebase brings in the remote's "
-        f"commits ({_shown(seen)}); publish the new gr: id"),
+    "feature_moved": lambda ws, rid, key, clone, remote, seen: publish_feature_moved(ws, clone, remote, seen),
     "remote_unreadable": None,
     "remote_credentials": None,
 }
 # A `next` runs as printed, so it never carries a `<placeholder>`: a value the review does not record is a check.
+# A check is a line, or (clone) -> the line where the clone's path is known.
 PUBLISH_REFUSED_CHECK = {
-    "no_branch": ("check: name a branch for the pinned commit (the review records the base it targets, not the "
-                  "feature branch): git -C <clone> switch -c <branch>, then rerun gr2 review publish"),
+    "no_branch": lambda clone: ("check: name a branch for the pinned commit (the review records the base it targets, "
+                                f"not the feature branch): git -C {_shown(clone)} switch -c <branch>, then rerun gr2 "
+                                "review publish"),
     "member_clone_missing": ("check: the clone named in refused: is gone, and with it any head not yet pushed; restore "
                              "it at that path with the pinned head (gr2 review show prints it) on a branch, then "
                              "rerun gr2 review publish"),
@@ -126,9 +138,15 @@ PUBLISH_REFUSED_CHECK = {
 }
 
 
-def publish_refused_next(workspace: str, review: str, refusal: str, key: str, clone: str, observed: str) -> str | None:
+def publish_refused_next(workspace: str, review: str, refusal: str, key: str, clone: str, remote: str,
+                         observed: str) -> str | None:
     build = PUBLISH_REFUSED_NEXT.get(refusal)
-    return build(workspace, review, key, clone, observed) if build else None
+    return build(workspace, review, key, clone, remote, observed) if build else None
+
+
+def publish_refused_check(refusal: str, clone: str) -> str | None:
+    check = PUBLISH_REFUSED_CHECK.get(refusal)
+    return check(clone) if callable(check) else check
 
 
 def _update_lines(workspace: str, receipt: dict) -> list[str]:

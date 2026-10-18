@@ -267,11 +267,7 @@ def project_review_carried_keys(workspace: Path, commit: str) -> set[str]:
     Guards the absent-objects case so a plain project-review commit is not an error."""
     _validate_bind_store(workspace)
     commit = _resolve_bound(workspace, commit)
-    root = {
-        line.strip()
-        for line in _bind_git(workspace, "ls-tree", "--name-only", commit).stdout.splitlines()
-        if line.strip()
-    }
+    root = _bind_root_names(workspace, commit)
     return _tree_keys(workspace, commit, "objects") if "objects" in root else set()
 
 
@@ -1010,11 +1006,7 @@ def _verify_review_commit_in_store(workspace: Path, commit: str) -> dict[str, ob
 
     stored_tree = _bind_git(workspace, "rev-parse", f"{commit}^{{tree}}").stdout.strip()
     rows = _read_repo_state(workspace, commit, bind=True)
-    root_paths = {
-        line.strip()
-        for line in _bind_git(workspace, "ls-tree", "--name-only", commit).stdout.splitlines()
-        if line.strip()
-    }
+    root_paths = _bind_root_names(workspace, commit)
     has_objects = "objects" in root_paths
     has_evidence = "evidence" in root_paths
     objects_keys = _tree_keys(workspace, commit, "objects") if has_objects else set()
@@ -1107,11 +1099,12 @@ def _verify_review_commit_in_store(workspace: Path, commit: str) -> dict[str, ob
 
 
 def _tree_keys(workspace: Path, commit: str, path: str) -> set[str]:
-    """The immediate child names of a subtree in a gr commit (empty if absent)."""
-    proc = _bind_git(workspace, "ls-tree", "--name-only", f"{commit}:{path}")
+    """The immediate child names of a subtree in a gr commit (empty if absent), read by NUL from ls-tree -z as
+    _bind_root_names is: splitlines would cut a key at U+2028 or U+0085, and strip would make "k " read as "k"."""
+    proc = _bind_git(workspace, "ls-tree", "-z", "--name-only", f"{commit}:{path}")
     if proc.returncode != 0:
         return set()
-    return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
+    return {n for n in proc.stdout.split("\0") if n}
 
 
 # A review bind is stored in one of two layouts. The legacy layout names its subtrees (.grip/, repos/,
@@ -1131,8 +1124,14 @@ def plain_member_key(key: str) -> bool:
 def _is_field_tree_bind(workspace: Path, commit: str) -> bool:
     """A bound commit whose tree has no `.grip` entry is read as a field tree, so a malformed record is
     refused for what is wrong with it rather than as "not a bind"."""
-    names = [n for n in _bind_git(workspace, "ls-tree", "--name-only", commit).stdout.splitlines() if n]
+    names = _bind_root_names(workspace, commit)
     return bool(names) and GRIP_DIR not in names
+
+
+def _bind_root_names(workspace: Path, commit: str) -> set[str]:
+    """The top-level entry names of a bound commit, read by NUL from ls-tree -z: splitlines would cut a name at
+    U+2028 under quotePath false, and strip would make "objects " read as "objects"."""
+    return {n for n in _bind_git(workspace, "ls-tree", "-z", "--name-only", commit).stdout.split("\0") if n}
 
 
 def _text(value: object) -> str:

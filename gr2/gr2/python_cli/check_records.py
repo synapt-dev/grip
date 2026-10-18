@@ -120,10 +120,10 @@ def _records(blob: bytes, head: str) -> list[dict]:
 
 
 def _snapshot(repo: Path, remote: str, store: _Store | None = None) -> str | None:
-    answer = _git(repo, "ls-remote", "--refs", _remote(remote), CHECK_REF).decode().splitlines()
+    answer = [line for line in _git(repo, "ls-remote", "--refs", _remote(remote), CHECK_REF).split(b"\n") if line]
     if not answer:
         return None
-    if len(answer) != 1 or len(answer[0].split()) != 2 or answer[0].split()[1] != CHECK_REF:
+    if len(answer) != 1 or len(answer[0].split(b"\t")) != 2 or answer[0].split(b"\t")[1] != CHECK_REF.encode():
         raise CheckRefused("cannot_measure_check_ref")
     staging = f"refs/dev.synapt.grip/__check_transfers__/{uuid.uuid4().hex}"
     fetched = None

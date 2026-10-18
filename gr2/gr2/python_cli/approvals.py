@@ -237,7 +237,7 @@ def _refuse_moved_base(workspace: Path, key: str, remote: str, base: str, review
     if remote.startswith("-") or any(ord(c) < 32 or ord(c) == 127 for c in remote):
         raise ApprovalRefused("approval_remote_invalid")
     default, at_base, tips = None, False, {}
-    for line in _git(workspace, "ls-remote", "--symref", "--", remote, "HEAD", "refs/heads/*").splitlines():
+    for line in _git(workspace, "ls-remote", "--symref", "--", remote, "HEAD", "refs/heads/*", raw=True).split("\n"):
         left, _, ref = line.partition("\t")
         if left.startswith("ref: refs/heads/") and ref == "HEAD":
             default = left.removeprefix("ref: refs/heads/")
@@ -260,7 +260,7 @@ def _remote_tips(workspace: Path, root: dict) -> dict[str, str | None]:
         remote = m["remote"]
         if remote.startswith("-") or any(ord(c) < 32 or ord(c) == 127 for c in remote):
             raise ApprovalRefused("approval_remote_invalid")
-        lines = _git(workspace, "ls-remote", "--", remote, ref).splitlines()
+        lines = _git(workspace, "ls-remote", "--", remote, ref, raw=True).split("\n")
         hits = [line.split("\t")[0] for line in lines if line.split("\t")[-1] == ref]
         if len(hits) > 1:
             raise ApprovalRefused("approval_chain_unmeasurable")
@@ -287,7 +287,7 @@ def _unique_pairs(pairs):
 
 
 def _read_link(workspace: Path, commit: str) -> dict:
-    entries = _git(workspace, "ls-tree", commit).splitlines()
+    entries = [e for e in _git(workspace, "ls-tree", "-z", commit, raw=True).split("\0") if e]
     if len(entries) != 1 or not re.fullmatch(r"100644 blob [0-9a-f]{40}\tapproval\.json", entries[0]):
         raise ApprovalRefused("approval_chain_broken: expected only plain approval.json")
     text = _git(workspace, "show", f"{commit}:approval.json", raw=True)

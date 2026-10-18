@@ -111,3 +111,16 @@ def test_update_does_not_read_a_grafted_tip_as_up_to_date(tmp_path):
     code, receipt = branch_update.update(work, "main")
     assert receipt["state"] != "up_to_date", receipt
     assert receipt["base"] == target
+
+
+def test_ancestry_stderr_is_git_error_not_graft_hint(tmp_path):
+    """A walk that stops on a missing parent reports git's own error first: callers print stderr's head."""
+    work, feature, _target = _setup(tmp_path)
+    tree = _git(work, "rev-parse", f"{feature}^{{tree}}")
+    body = f"tree {tree}\nparent {'2' * 40}\nauthor t <t@x> 1 +0000\ncommitter t <t@x> 1 +0000\n\nx\n"
+    orphan = subprocess.run(["git", "-C", str(work), "hash-object", "-t", "commit", "-w", "--stdin"], input=body,
+                            check=True, capture_output=True, text=True).stdout.strip()
+    proc = gitops.ancestry_proc(work, feature, orphan)
+    assert proc.returncode not in (0, 1)
+    assert "hint:" not in proc.stderr
+    assert "2" * 40 in proc.stderr.strip().splitlines()[0]

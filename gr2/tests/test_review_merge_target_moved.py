@@ -210,3 +210,78 @@ def test_single_member_target_deleted_at_the_push(world, monkeypatch):
     assert row["refused"] == f"target_deleted_at_push: remote main is gone, the gate read {world['base']}", row
     assert row["refusal"]["expected"] == world["base"] and row["refusal"]["observed"] is None, row
     assert "restore it" in row["next"], row
+
+
+# --- v3: a writer moved the target to the reviewed head (or past it) with no merge commit -------------------------
+
+def _ff_main(w, past: bool) -> str:
+    """Move the bare remote's main to the reviewed head, or one commit past it, as a fast-forward writer would."""
+    to = w["head"]
+    if past:
+        to = git(w["remote"], "commit-tree", git(w["remote"], "rev-parse", f"{to}^{{tree}}"), "-p", to, "-m", "past")
+    git(w["remote"], "update-ref", "refs/heads/main", to)
+    return to
+
+
+def _assert_already_on_target(out, w, now):
+    assert out.exit_code == merge_gate.EXIT_REFUSED, out.output
+    row = json.loads(out.stdout)["members"][0]
+    assert row["refused"] == f"head_already_on_target: the reviewed head {w['head']} is already in main at {now}", row
+    assert row["refusal"] == {"code": "head_already_on_target", "member": row["key"],
+                              "expected": w["base"], "observed": now}, row
+    assert row["final"] == "unmerged" and git(w["remote"], "rev-parse", "main") == now, row
+    # Never the update line: it pins the same head again and dead-ends at head_already_on_remote.
+    assert row["next"].startswith("next: nothing to merge") and "review update" not in row["next"], row
+
+
+def _ff_at_push(monkeypatch, w, past):
+    moved = {}
+
+    def run(cmd, *a, **kw):
+        if (not moved and isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "git"
+                and gitops.command_of(cmd) == "push" and str(cmd[-1]).endswith(":refs/heads/main")):
+            moved["oid"] = None
+            moved["oid"] = _ff_main(w, past)
+        return REAL_RUN(cmd, *a, **kw)
+
+    monkeypatch.setattr(merge_gate.subprocess, "run", run)
+    return moved
+
+
+def test_ff_to_head_at_the_push_reads_head_already_on_target(world, monkeypatch):
+    set_policy(world, 0)
+    moved = _ff_at_push(monkeypatch, world, past=False)
+    out = runner.invoke(app, ["review", "merge", "--approvals", "0"])
+    assert moved["oid"] == world["head"], moved
+    _assert_already_on_target(out, world, world["head"])
+
+
+def test_one_past_head_at_the_push_reads_head_already_on_target(world, monkeypatch):
+    set_policy(world, 0)
+    moved = _ff_at_push(monkeypatch, world, past=True)
+    out = runner.invoke(app, ["review", "merge", "--approvals", "0"])
+    assert moved["oid"] not in (None, world["head"]), moved
+    _assert_already_on_target(out, world, moved["oid"])
+
+
+def test_ff_to_head_before_the_gate_under_approvals_one_reads_head_already_on_target(world):
+    set_policy(world, 1)
+    assert approve_as(world, "Approver B").exit_code == 0
+    now = _ff_main(world, past=False)
+    _assert_already_on_target(runner.invoke(app, ["review", "merge", "--approvals", "1"]), world, now)
+
+
+def test_one_past_head_before_the_gate_under_approvals_one_reads_head_already_on_target(world):
+    set_policy(world, 1)
+    assert approve_as(world, "Approver B").exit_code == 0
+    now = _ff_main(world, past=True)
+    _assert_already_on_target(runner.invoke(app, ["review", "merge", "--approvals", "1"]), world, now)
+
+
+def test_a_target_moved_off_the_head_line_still_reads_target_moved_at_push(world, monkeypatch):
+    # The ancestry check must not swallow an ordinary move: main moved by a commit that does not hold the head.
+    set_policy(world, 0)
+    moved = move_main_before_the_push(monkeypatch, world)
+    out = runner.invoke(app, ["review", "merge", "--approvals", "0"])
+    assert json.loads(out.stdout)["members"][0]["refused"].startswith("target_moved_at_push"), out.stdout
+    assert moved["oid"]

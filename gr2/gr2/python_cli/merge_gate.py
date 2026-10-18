@@ -404,6 +404,10 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         if feat != m["head"]:
             row["refused"] = f"feature_moved: remote {feature} is {feat}, reviewed {m['head']}"
             row["_heads"] = (m["head"], feat)
+        elif target != m["base"] and ancestor == m["head"]:
+            # A writer moved the target to the reviewed head or past it with no merge commit: the work is already in.
+            row["refused"] = f"head_already_on_target: the reviewed head {m['head']} is already in {into} at {target}"
+            row["_heads"] = (m["base"], target)
         elif target != m["base"]:
             row["refused"] = f"base_moved: remote {into} is {target}, reviewed base {m['base']}"
             row["_heads"] = (m["base"], target)
@@ -616,13 +620,20 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                     # push no further member (the set lands on the base it was checked on, or not at all).
                     try:
                         now, unread = _remote_tip(repo, m["remote"], into), None
+                        # One more git call, on this failure path only: is the reviewed head already in the moved target?
+                        landed = bool(now and now != m["base"]) and gitops.run(
+                            repo, "merge-base", "--is-ancestor", m["head"], now).returncode == 0
                     except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
-                        now, unread = None, f"{type(exc).__name__}: {exc}"
+                        now, unread, landed = None, f"{type(exc).__name__}: {exc}", False
                     if unread:
                         r["refused"] = f"target_unread_at_push: {_capped(unread)}"
                     elif now is None:
                         r["refused"] = f"target_deleted_at_push: remote {into} is gone, the gate read {m['base']}"
                         r["_heads"] = (m["base"], None)
+                    elif landed:
+                        r["refused"] = (f"head_already_on_target: the reviewed head {m['head']} is already in {into} "
+                                        f"at {now}")
+                        r["_heads"] = (m["base"], now)
                     elif now != m["base"]:
                         r["refused"] = f"target_moved_at_push: remote {into} is {now}, the gate read {m['base']}"
                         r["_heads"] = (m["base"], now)

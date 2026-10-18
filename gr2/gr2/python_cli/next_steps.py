@@ -199,6 +199,11 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
         into = moved.group(1).removeprefix("refs/heads/") if moved else "<branch>"
         return (f"next: the target moved after the pin; bring every member up to it and pin again: "
                 f"gr2 review update {_shown(workspace)} {_shown(review)} --into {_shown(into)}")
+    if refused.startswith("head_already_on_target"):
+        # Not base_moved's answer: update would pin this same head again and refuse head_already_on_remote.
+        return ("next: nothing to merge; a writer moved the target to the reviewed head, or past it, with no merge "
+                "commit, so the reviewed work is already there and no gr2 command lands it again. Confirm the target's "
+                "tip is what you meant to ship; for new work, commit a new head and pin it")
     if refused.startswith("target_moved_at_push"):
         # The gate passed, then the target moved before the push landed: the same answer as base_moved.
         moved = re.match(r"target_moved_at_push: remote (\S+) is ", refused)

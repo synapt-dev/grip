@@ -380,6 +380,10 @@ next: the feature branch moved after the pin; to check the set as it is now: gr2
 
 next: pin a head before you push it. For this head, either commit a new head and pin it before pushing, or pin this one with --ratified gr:<id>, naming an earlier pin of this same head that was stamped
 
+### head_already_on_target
+
+next: nothing to merge; a writer moved the target to the reviewed head, or past it, with no merge commit, so the reviewed work is already there and no gr2 command lands it again. Confirm the target's tip is what you meant to ship; for new work, commit a new head and pin it
+
 ### head_behind_remote_branch
 
 next: the remote branch already holds commits past this head; pin what it holds: gr2 review pin <workspace> --head '<remote_tip>' with your other flags unchanged

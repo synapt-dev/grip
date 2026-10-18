@@ -1,10 +1,11 @@
-"""Full mode: a member's record is a field-commit that the grip commit carries as a parent.
+"""Full mode: a member's gitlink is its own commit, and what else the record says sits in a sidecar.
 
-THE SHAPE (the full-mode spec, sections 2 and 3): in a workspace whose grip.toml says `mode = "full"`, the grip tree
-holds a mode-160000 entry per member, but it points at a FIELD-COMMIT, whose tree is the member's record (the pin, the
-url, the tracked ref and the remote ref that covers the pin), and that field-commit is also a PARENT of the grip commit.
-A plain clone and a plain pull therefore carry every record while git materializes nothing under a member's path, and
-`git log --first-parent` is the workspace's own history.
+THE SHAPE: in a workspace whose grip.toml says `mode = "full"`, the grip tree holds a mode-160000 entry per member that
+points at the member's own commit (the pin), so plain `git status` agrees with `gr2 store status`. What the gitlink
+and grip.toml do not say sits under `.grip/fields/<name>/` in the same tree (the schema, the kind, a layer for a pin no
+remote holds, the records about the pin). A plain clone, a shallow clone and a plain pull carry every record, because
+it is in the grip commit's own tree, and the grip history holds grip commits only. (Before the sidecar, the gitlink
+named a field-commit carried as a parent; test_store_full_mode_layers keeps witnesses of that shape.)
 
 Smallest proof first: one covered pin per member. A pin that is on no remote is carried by a layer (see
 test_store_full_mode_layers).
@@ -55,60 +56,60 @@ def _advance(root: Path, member: str, *, push: bool) -> str:
     return git(work, "rev-parse", "HEAD").stdout.strip()
 
 
-def test_the_members_gitlink_points_at_a_field_commit_whose_tree_is_the_record(tmp_path):
+def test_the_members_gitlink_is_its_own_commit_and_the_sidecar_holds_the_rest(tmp_path):
     root = _full_store(tmp_path)
 
-    carrier = _gitlink(root, "alpha")
-
-    assert carrier != _member_head(root, "alpha"), "the entry must not be the member commit itself"
-    assert git(root, "cat-file", "-t", carrier).stdout.strip() == "commit"
-    names = git(root, "ls-tree", "--name-only", f"{carrier}^{{tree}}").stdout.split()
-    assert names == ["001.2_schema", "002.0_kind", "003.2_pin", "004.2_url", "005.2_ref", "006.2_covered_by", "013.0_covered_test"]
+    assert _gitlink(root, "alpha") == _member_head(root, "alpha"), "the gitlink is the member's own commit"
     assert git(root, "ls-tree", "HEAD", "--", "alpha").stdout.split()[0] == "160000"
+    names = git(root, "ls-tree", "--name-only", "HEAD:.grip/fields/alpha").stdout.split()
+    assert names == ["kind", "schema"], "a covered pin: no layer, no records, and no pin (the gitlink says it)"
 
 
-def test_the_field_commit_is_a_parent_of_the_grip_commit(tmp_path):
+def test_the_grip_commit_carries_the_records_in_its_own_tree(tmp_path):
+    """The field-commits were extra parents; the sidecar needs none. The first grip commit is a root commit."""
     root = _full_store(tmp_path)
 
     parents = git(root, "rev-list", "--parents", "-n", "1", "HEAD").stdout.split()[1:]
 
-    assert _gitlink(root, "alpha") in parents and _gitlink(root, "beta") in parents, parents
+    assert parents == [], parents
+    assert git(root, "cat-file", "blob", "HEAD:.grip/fields/beta/schema").stdout == mft.PACKAGE
 
 
-def test_first_parent_history_lists_grip_commits_only(tmp_path):
+def test_the_history_lists_grip_commits_only(tmp_path):
     root = _full_store(tmp_path)
     _advance(root, "beta", push=True)
     assert gr2(root, "commit", "-m", "second").returncode == 0
 
-    chain = git(root, "log", "--first-parent", "--format=%H").stdout.split()
-    subjects = git(root, "log", "--first-parent", "--format=%s").stdout.splitlines()
-    carriers = {_gitlink(root, "alpha"), _gitlink(root, "beta"), _gitlink(root, "beta", "HEAD~1")}
+    chain = git(root, "log", "--format=%H").stdout.split()
+    subjects = git(root, "log", "--format=%s").stdout.splitlines()
 
-    assert subjects == ["second", "first", "grip root"], subjects
-    assert not carriers & set(chain), "a field-commit is on the first-parent chain"
-    # every grip commit holds grip.toml; the empty root holds the first-parent place and holds nothing
-    assert all(git(root, "cat-file", "-e", f"{c}:grip.toml", check=False).returncode == 0 for c in chain[:2]), chain
+    assert subjects == ["second", "first"], subjects
+    assert all(git(root, "cat-file", "-e", f"{c}:grip.toml", check=False).returncode == 0 for c in chain), chain
+    assert not {_gitlink(root, "beta"), _gitlink(root, "beta", "HEAD~1")} & set(chain), "a member commit is in history"
 
 
-def test_a_plain_clone_carries_the_field_commits_and_projects_nothing(tmp_path):
+def test_a_plain_clone_carries_the_sidecar_and_projects_nothing(tmp_path):
     root = _full_store(tmp_path)
-    carrier = _gitlink(root, "alpha")
 
     git(tmp_path, "clone", str(root), "plain")
     plain = tmp_path / "plain"
 
-    assert git(plain, "cat-file", "-e", f"{carrier}^{{commit}}", check=False).returncode == 0
+    assert git(plain, "cat-file", "-e", "HEAD:.grip/fields/alpha/schema", check=False).returncode == 0
+    assert git(plain, "ls-tree", "HEAD", "--", "alpha").stdout.split()[2] == _member_head(root, "alpha")
     assert not (plain / ".gitmodules").exists(), "full mode never projects a .gitmodules"
     assert (plain / "alpha").is_dir() and list((plain / "alpha").iterdir()) == []
 
 
 def test_the_record_reads_back_whole(tmp_path):
+    from gr2.python_cli import grip_cli
+
     root = _full_store(tmp_path)
+    member = next(m for m in grip_cli._native_members(root, "HEAD") if m["name"] == "alpha")
 
-    record = mft.read(root, f"{_gitlink(root, 'alpha')}^{{tree}}")
+    record = grip_cli._field_record(root, member)
 
-    remote = git(root / "alpha", "remote", "get-url", "origin").stdout.strip()
-    assert record == dict(schema=mft.PACKAGE, kind=mft.KIND_REPO, pin=_member_head(root, "alpha"), url=remote,
+    # the url is grip.toml's (the sidecar does not repeat it); covered_by is derived from the member's upstream
+    assert record == dict(schema=mft.PACKAGE, kind=mft.KIND_REPO, pin=_member_head(root, "alpha"), url="",
                           ref="main", covered_by="refs/heads/main", layers=[], records=[], ref_defaulted=False,
                           covered_test=mft.COVER_REACHABLE)
 
@@ -253,17 +254,19 @@ def test_materialize_fetches_the_covering_ref_when_the_pin_is_on_no_default_bran
     assert git(fresh / "alpha", "rev-parse", "HEAD").stdout.strip() == pin
 
 
-def test_a_shallow_clone_that_lacks_the_records_is_a_named_refusal_not_a_traceback(tmp_path):
-    """The field-commits are PARENTS of the grip commit, and a depth-1 clone does not fetch parents."""
+def test_a_shallow_clone_reads_the_records_and_materializes(tmp_path):
+    """The field-commits were PARENTS and a depth-1 clone lacked them (a named refusal). The sidecar is in the grip
+    commit's own tree, so a depth-1 clone has every record and materializes each pin."""
     root = _full_store(tmp_path)
+    _advance(root, "alpha", push=True)
+    assert gr2(root, "commit", "-m", "alpha moved").returncode == 0
     git(tmp_path, "clone", "--depth", "1", f"file://{root}", "shallow")
 
     made = gr2(tmp_path / "shallow", "materialize", check=False)
 
     out = f"{made.stdout}\n{made.stderr}"
-    assert made.returncode == 4, out
-    assert "Traceback" not in out, out
-    assert "git fetch --unshallow" in out, out
+    assert made.returncode == 0 and "Traceback" not in out, out
+    assert git(tmp_path / "shallow" / "alpha", "rev-parse", "HEAD").stdout.strip() == _member_head(root, "alpha")
 
 
 @pytest.mark.parametrize("verb", ["check", "status"])
@@ -277,19 +280,18 @@ def test_check_and_status_read_the_record_pin_of_a_clean_full_mode_commit(tmp_pa
     assert done.returncode == 0, out
 
 
-def test_diff_names_the_empty_root_commit_and_still_diffs_real_commits(tmp_path):
+def test_diff_reads_the_gitlinks_of_two_grip_commits(tmp_path):
+    """The empty root commit that held the first-parent place is gone (the sidecar adds no parents), so its refusal
+    has no case to name; the diff of two real grip commits is what remains."""
     root = _full_store(tmp_path)
-    _advance(root, "alpha", push=True)
+    before = _member_head(root, "alpha")
+    after = _advance(root, "alpha", push=True)
     assert gr2(root, "commit", "-m", "alpha moved").returncode == 0
 
     real = gr2(root, "diff", "HEAD~1", "HEAD")
-    empty = gr2(root, "diff", "HEAD~2", "HEAD", check=False)
 
     assert real.returncode == 0, f"{real.stdout}\n{real.stderr}"
-    assert "alpha" in real.stdout
-    out = f"{empty.stdout}\n{empty.stderr}"
-    assert empty.returncode == 5, out
-    assert "empty root commit" in out and "fatal" not in out, out
+    assert f"alpha {before} -> {after}" in real.stdout, real.stdout
 
 
 def test_a_compat_store_that_flips_to_full_drops_the_gitmodules_gr2_wrote(tmp_path):

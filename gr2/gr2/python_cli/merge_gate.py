@@ -676,7 +676,7 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                         push_error = _capped("\n".join([ln for ln in err if ln.startswith("remote:")] + status))
                     elif proc.returncode:
                         why = [ln for ln in err if ln.strip() and not ln.startswith(("To ", "error: failed to push"))]
-                        push_error = _capped("\n".join(why + status) or f"git push exit {proc.returncode}")
+                        push_error = _capped("\n".join(why + status) or f"git push exit {next_steps._shown(str(proc.returncode))}")
                     else:
                         push_error = None
                 except (subprocess.SubprocessError, OSError) as exc:  # a timeout is not evidence nothing moved

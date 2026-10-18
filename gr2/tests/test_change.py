@@ -1,7 +1,8 @@
 """`gr2 change`: one change across members in one command.
 
 c1 is the happy path at N=5; c3 rows are phase-0 refusals, which must leave
-every member byte-equal (branch, HEAD, index, worktree) and run no write.
+every member byte-equal (branch, HEAD, index, worktree) and run no git verb but
+status and rev-parse.
 Git calls are counted with a PATH shim, per member.
 """
 
@@ -19,6 +20,7 @@ from gr2.python_cli.app import app
 
 N = 5
 WRITES = ("checkout", "add", "commit", "update-ref", "reset", "branch")
+READS = ("status", "rev-parse")
 
 
 def _git(path: Path, *args: str) -> str:
@@ -76,6 +78,20 @@ def git_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def _calls(log: Path) -> list[tuple[str, str]]:
     return [tuple(line.split("\t", 1)) for line in log.read_text().splitlines()]
+
+
+def _not_reads(log: Path) -> list[tuple[str, str]]:
+    """Every logged call whose verb is not a read: a refusal runs only status and rev-parse, nothing else."""
+    return [(m, a) for m, a in _calls(log) if _verb(a) not in READS]
+
+
+def _verb(argv: str) -> str:
+    """The git verb, past the global options gitops puts first (`-c key=value` pairs)."""
+    words = argv.split(" ")
+    i = 0
+    while i < len(words) and words[i].startswith("-"):
+        i += 2 if words[i] == "-c" else 1
+    return words[i] if i < len(words) else ""
 
 
 def _run(members: list[Path], *extra: str):
@@ -263,8 +279,7 @@ def test_c3_refusal_writes_nothing_in_any_member(members: list[Path], git_log: P
     assert result.exit_code == 2, result.output
     assert f"refused: {reason}: m3:" in result.output
     assert "nothing was written" in result.output
-    writes = [(m, a) for m, a in _calls(git_log) if set(a.split(" ")) & set(WRITES)]
-    assert writes == []
+    assert _not_reads(git_log) == []
     assert [_state(p) for p in members] == before
 
 
@@ -279,8 +294,7 @@ def test_c3_no_member_changed_refuses_nothing_changed(members: list[Path], git_l
     assert result.exit_code == 2, result.output
     assert "refused: nothing_changed: m1,m2,m3,m4,m5: no member has a change" in result.output
     assert "nothing was written" in result.output
-    writes = [(m, a) for m, a in _calls(git_log) if set(a.split(" ")) & set(WRITES)]
-    assert writes == []
+    assert _not_reads(git_log) == []
     assert [_state(p) for p in members] == before
 
 
@@ -298,8 +312,7 @@ def test_c3_repo_path_not_a_repo_refuses_not_a_repo(
     assert result.exit_code == 2, result.output
     assert "refused: not_a_repo: m3:" in result.output
     assert "nothing was written" in result.output
-    writes = [(m, a) for m, a in _calls(git_log) if set(a.split(" ")) & set(WRITES)]
-    assert writes == []
+    assert _not_reads(git_log) == []
     assert [_state(p) for p in others] == before
     assert sorted(p.name for p in members[2].iterdir()) == listing
 
@@ -318,8 +331,7 @@ def test_c3_member_inside_an_enclosing_repo_refuses_not_a_repo(
     assert result.exit_code == 2, result.output
     assert f"refused: not_a_repo: m3: inside the repo at {tmp_path}" in result.output
     assert "nothing was written" in result.output
-    writes = [(m, a) for m, a in _calls(git_log) if set(a.split(" ")) & set(WRITES)]
-    assert writes == []
+    assert _not_reads(git_log) == []
     assert [_state(p) for p in others] == before
     assert _git(tmp_path, "for-each-ref") == ""
     assert _git(tmp_path, "ls-files", "-s") == ""
@@ -337,8 +349,7 @@ def test_c3_member_not_a_directory_refuses_not_a_repo(members: list[Path], git_l
     assert result.exit_code == 2, result.output
     assert "refused: not_a_repo: m3: not a directory" in result.output
     assert "nothing was written" in result.output
-    writes = [(m, a) for m, a in _calls(git_log) if set(a.split(" ")) & set(WRITES)]
-    assert writes == []
+    assert _not_reads(git_log) == []
     assert [_state(p) for p in others] == before
     assert members[2].is_file() == (kind == "file")
 

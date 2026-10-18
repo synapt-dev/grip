@@ -57,14 +57,19 @@ def _run(monkeypatch, ws: Path, until: str, on_sleep, timeout: str = "5") -> tup
             polls[-1] += 1
         return real(cwd, *args, **kw)
 
-    def sleep(_s: float) -> None:
+    now = [0.0]
+
+    def sleep(s: float) -> None:
         on_sleep(len(polls))
         polls.append(0)
+        now[0] += s
 
     monkeypatch.setattr(gitops, "git", counting)
     # sync_wait's own time, not the global module: patching time.sleep itself lets any other sleeper in the
     # process fire the hook before the start read, which made the move part of the baseline (a 1-in-~20 flake).
-    monkeypatch.setattr(sync_wait, "time", SimpleNamespace(sleep=sleep, monotonic=time.monotonic))
+    # The clock is fake too and moves only by the sleeps, so the polls before --timeout are an exact count on any
+    # host; the wall clock gave a loaded host fewer polls than a row expected.
+    monkeypatch.setattr(sync_wait, "time", SimpleNamespace(sleep=sleep, monotonic=lambda: now[0]))
     result = CliRunner().invoke(app, ["sync", "wait", str(ws), "--all-members", "--until", until,
                                       "--timeout", timeout, "--interval", "1"])
     return result, polls
@@ -83,12 +88,12 @@ def test_any_returns_at_the_first_poll_after_one_member_moves_and_names_it(tmp_p
 def test_all_keeps_waiting_while_one_has_moved_and_times_out_with_its_own_exit(tmp_path, monkeypatch):
     ws, seeds = _workspace(tmp_path)
     result, polls = _run(monkeypatch, ws, "all", lambda k: _move(tmp_path, seeds, "beta") if k == 1 else None,
-                         timeout="0.3")
+                         timeout="3")
     assert result.exit_code == sync_wait.EXIT_TIMEOUT == 6, result.output
     assert "moved: beta" in result.output
     assert "not moved: alpha, gamma" in result.output
-    assert len(polls) > 2
-    assert all(c <= len(NAMES) for c in polls), polls
+    # start reads, then polls at 1 s (beta seen to move), 2 s and 3 s (the deadline): beta is not read again
+    assert polls == [3, 3, 2, 2], polls
 
 
 def test_all_returns_once_every_member_has_moved(tmp_path, monkeypatch):
@@ -210,10 +215,10 @@ def test_a_flaky_remote_that_fails_twice_but_never_in_a_row_runs_to_the_timeout(
         if k in (2, 4):
             g.rename(b)  # polls 3 and 5 read
 
-    result, polls = _run(monkeypatch, ws, "all", on_sleep, timeout="0.6")
+    result, polls = _run(monkeypatch, ws, "all", on_sleep, timeout="5")
     assert result.exit_code == 6, result.output
     assert "unreadable" not in result.output
-    assert len(polls) > 5, polls
+    assert polls == [3, 3, 3, 3, 3, 3], polls  # start reads, then 1 s to 5 s: fail, read, fail, read, then the deadline
 
 
 def test_a_remote_that_stops_answering_mid_wait_ends_by_the_timeout_and_is_not_called_not_moved(tmp_path, monkeypatch):

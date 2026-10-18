@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import shutil
 import subprocess
+import sys
 import threading
+import time
 import zlib
 from pathlib import Path
 
@@ -241,3 +243,157 @@ def test_a_one_byte_blob_and_an_empty_blob_still_read_through_the_batch_reader(r
     nl = git(repo, "hash-object", "-w", "--stdin", data=b"\n")
     with fd.BatchReader(repo) as batch:
         assert [batch.blob(one), batch.blob(empty), batch.blob(nl), batch.blob(one)] == [b"x", b"", b"\n", b"x"]
+
+
+# A stand-in for cat-file --batch that sends one fixed answer (hex in argv) for every request and stays
+# alive until its stdin closes or it is killed.
+_ANSWER = """
+import sys
+answer = bytes.fromhex(sys.argv[1])
+for _ in sys.stdin.buffer:
+    sys.stdout.buffer.write(answer)
+    sys.stdout.buffer.flush()
+"""
+
+
+def _answering(monkeypatch, answer: bytes) -> list[subprocess.Popen]:
+    started: list[subprocess.Popen] = []
+
+    def start(cwd, *args):
+        started.append(subprocess.Popen([sys.executable, "-c", _ANSWER, answer.hex()],
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE))
+        return started[-1]
+
+    monkeypatch.setattr(fd.gitops, "start", start)
+    return started
+
+
+def test_an_abbreviated_id_is_refused_before_any_git_process_starts(repo: Path, git_spawns) -> None:
+    """Rule: blob() is only ever asked by an id ls-tree named (full hex), so the header can be compared byte
+    for byte; an abbreviated id is refused at entry, and the full id still reads."""
+    oid = git(repo, "hash-object", "-w", "--stdin", data=b"abc\n")
+    git_spawns()
+    with fd.BatchReader(repo) as batch:
+        with pytest.raises(fd.ReviewRecordError, match="not a full object id"):
+            batch.blob(oid[:7])
+        assert batch._cat is None and git_spawns() == 0
+        assert batch.blob(oid) == b"abc\n"
+
+
+def test_a_header_naming_another_object_is_refused_before_its_body_is_read(repo: Path, monkeypatch) -> None:
+    """Rule: an answer whose header names another object is refused on the header alone, and the process is
+    killed; the reader does not wait for a body. The stand-in never sends one, so a reader that waits runs
+    into the deadline instead."""
+    asked = git(repo, "hash-object", "-w", "--stdin", data=b"abc\n")
+    other = git(repo, "hash-object", "-w", "--stdin", data=b"zz\n")
+    monkeypatch.setattr(fd.BatchReader, "DEADLINE", 2.0)
+    started = _answering(monkeypatch, other.encode() + b" blob 1048576\n")
+    with fd.BatchReader(repo) as batch:
+        t0 = time.monotonic()
+        with pytest.raises(fd.ReviewRecordError, match="answered for another object"):
+            batch.blob(asked)
+        assert time.monotonic() - t0 < 1.0
+        assert batch._cat is None and started[0].returncode is not None
+
+
+def test_another_kind_whose_body_does_not_end_in_a_newline_is_refused_and_abandoned(repo: Path, monkeypatch) -> None:
+    """Rule: only a blob's body can be checked against the id asked, so an object of another kind is refused
+    on its header and the process is killed and closed, its body left unread."""
+    asked = git(repo, "hash-object", "-w", "--stdin", data=b"abc\n")
+    started = _answering(monkeypatch, asked.encode() + b" tree 2\nabX")
+    with fd.BatchReader(repo) as batch:
+        with pytest.raises(fd.ReviewRecordError, match="out of step"):
+            batch.blob(asked)
+        assert batch._cat is None and started[0].returncode is not None
+
+
+def test_missing_for_another_object_is_refused_and_abandoned(repo: Path, monkeypatch) -> None:
+    """Rule: a "missing" answer counts only for the object asked; one naming another object means the stream
+    is out of step, so it is refused as such and the process is killed and closed."""
+    asked = git(repo, "hash-object", "-w", "--stdin", data=b"abc\n")
+    other = git(repo, "hash-object", "-w", "--stdin", data=b"zz\n")
+    started = _answering(monkeypatch, other.encode() + b" missing\n")
+    with fd.BatchReader(repo) as batch:
+        with pytest.raises(fd.ReviewRecordError, match="answered for another object"):
+            batch.blob(asked)
+        assert batch._cat is None and started[0].returncode is not None
+
+
+@pytest.mark.parametrize("kind,size,refusal", [(b"blob", b"abc", "unreadable size"), (b"tree", b"abc", "out of step"),
+                                               (b"blob", "٣".encode(), "unreadable size"),
+                                               (b"blob", b"1_0", "unreadable size"), (b"tree", b"1_0", "out of step")])
+def test_a_size_that_is_not_ascii_digits_is_refused_and_abandoned(repo: Path, monkeypatch, kind, size, refusal) -> None:
+    """Rule: a header naming the asked id is git's only when its size is ASCII digits; any other size (letters,
+    a non-ASCII digit, an underscore that int() would accept) is refused and the process is killed, never
+    surfacing as a ValueError. Another kind is refused on its kind before its size is looked at."""
+    asked = git(repo, "hash-object", "-w", "--stdin", data=b"abc\n")
+    monkeypatch.setattr(fd.BatchReader, "DEADLINE", 2.0)
+    started = _answering(monkeypatch, asked.encode() + b" " + kind + b" " + size + b"\n" + b"x" * 64 + b"\n")
+    with fd.BatchReader(repo) as batch:
+        with pytest.raises(fd.ReviewRecordError, match=refusal):
+            batch.blob(asked)
+        assert batch._cat is None and started[0].returncode is not None
+
+
+def test_an_id_carrying_a_newline_is_refused_before_any_git_process_starts(repo: Path, git_spawns) -> None:
+    """Rule: an id with a newline in it would be two requests on one stream; it is refused at entry with no
+    git process, so no "missing" line for its tail is ever left behind for the next read."""
+    oid = git(repo, "hash-object", "-w", "--stdin", data=b"abc\n")
+    git_spawns()
+    with fd.BatchReader(repo) as batch:
+        with pytest.raises(fd.ReviewRecordError, match="not a full object id"):
+            batch.blob(oid + "\n" + "0" * 40)
+        assert batch._cat is None and git_spawns() == 0
+        assert batch.blob(oid) == b"abc\n"
+
+
+def test_two_fields_naming_the_asked_id_but_not_missing_are_refused_and_abandoned(repo: Path, monkeypatch) -> None:
+    """Rule: of the two-field answers only git's "<id> missing" for the id asked keeps the process; any other
+    second word under the right id is a stream out of step, refused and killed."""
+    asked = git(repo, "hash-object", "-w", "--stdin", data=b"abc\n")
+    started = _answering(monkeypatch, asked.encode() + b" bogus\n")
+    with fd.BatchReader(repo) as batch:
+        with pytest.raises(fd.ReviewRecordError, match="not a blob"):
+            batch.blob(asked)
+        assert batch._cat is None and started[0].returncode is not None
+
+
+# A stand-in that answers its first request with a "tree 2" header over a body of ``ab\n`` and 4 MiB more,
+# then waits on stdin: the byte where the header says the body ends happens to be a newline.
+_LONG_TREE = """
+import os, sys
+sys.stdin.readline()
+os.write(1, sys.argv[1].encode() + b" tree 2\\nab\\n" + b"a" * (4 << 20) + b"\\n")
+sys.stdin.read()
+"""
+
+
+def test_another_kind_is_not_drained_even_when_its_cut_lands_on_a_newline(repo: Path, monkeypatch) -> None:
+    """Rule: another kind's body is never read off the stream, so no byte of it can make the reader trust the
+    stream: the process is killed on the header, and close() returns instead of waiting on a writer blocked
+    on the full pipe."""
+    asked = git(repo, "hash-object", "-w", "--stdin", data=b"abc\n")
+    started: list[subprocess.Popen] = []
+
+    def start(cwd, *args):
+        started.append(subprocess.Popen([sys.executable, "-c", _LONG_TREE, asked],
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE))
+        return started[-1]
+
+    monkeypatch.setattr(fd.gitops, "start", start)
+    got: list[object] = []
+
+    def read() -> None:
+        batch = fd.BatchReader(repo)
+        got.append(_answer(batch, asked))
+        got.append(batch._cat is None)
+        batch.close()
+        got.append("closed")
+
+    t = threading.Thread(target=read, daemon=True)
+    t.start()
+    t.join(8)
+    hung = t.is_alive()
+    started[0].kill()
+    t.join(5)
+    assert not hung and got == [None, True, "closed"]

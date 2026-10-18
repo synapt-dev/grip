@@ -96,7 +96,7 @@ class _Feed:
         return 0
 
 
-def _guarded_blob(monkeypatch, feed: _Feed, oid: str = "x") -> tuple[object, float]:
+def _guarded_blob(monkeypatch, feed: _Feed, oid: str = "1" * 40) -> tuple[object, float]:
     """The blob read under a 1 s deadline, on a thread the row guards: a read still running after
     GUARD fails the row, and the kill ends it."""
     monkeypatch.setattr(fd.BatchReader, "DEADLINE", 1.0, raising=False)

@@ -42,6 +42,8 @@ _PROTO_SHA256 = "4cc4162d6d15e098c3f24402bd7ae763661cde02ba83e48105d57aab41fd3c4
 MAX_FIELD_NUMBER = 999
 # ASCII digits only and matched whole: \d admits other scripts' digits and $ admits a
 # trailing newline, and either would give one field number two spellings.
+# a full object id as ls-tree names it: 40 hex (sha1) or 64 (sha256)
+_FULL_OID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 _ENTRY = re.compile(r"([0-9]{3})\.([0125])(r?)(?:_([A-Za-z0-9_]+))?")
 _BLOB_MODE, _TREE_MODE = "100644", "040000"
 
@@ -457,17 +459,32 @@ class BatchReader(GitReader):
             self._trees[oid] = listed[path]
 
     def blob(self, oid: str) -> bytes:
+        # every caller asks by an id ls-tree named, so the header must echo it byte for byte
+        if not _FULL_OID.fullmatch(oid):
+            raise ReviewRecordError(f"git cat-file blob failed: {oid!r} is not a full object id")
         if self._cat is None:
             self._cat = gitops.start(self.repo, "cat-file", "--batch")
         self._cat.stdin.write(oid.encode() + b"\n")
         self._cat.stdin.flush()
         header = self._cat.stdout.readline().split()
+        if len(header) == 3 and header[0] != oid.encode():
+            self._abandon()  # an answer for another object, refused before any of its body is read
+            raise ReviewRecordError(f"git cat-file blob failed: {oid} answered for another object")
+        if len(header) == 2 and header[0] != oid.encode():
+            self._abandon()  # "missing" for another object: the stream is out of step, not the object absent
+            raise ReviewRecordError(f"git cat-file blob failed: {oid} answered for another object")
         if len(header) == 3 and header[1] != b"blob":
-            # a present object of another kind still sends its body: read it off the stream, so a refusal
-            # leaves the reader serving the next request (a "missing" header has two fields and no body)
-            self._cat.stdout.read(int(header[2]) + 1)
-        if len(header) != 3 or header[1] != b"blob":
-            if len(header) != 3 and header[1:] != [b"missing"]:
+            # only a blob's body can be checked against the id asked, so another kind's is not read off the
+            # stream: draining it would trust a size nothing verifies, and the next answer would start there
+            self._abandon()
+            raise ReviewRecordError(f"git cat-file blob failed: {oid} is "
+                                    f"{header[1].decode(errors='replace')}, not a blob; its body is left unread, "
+                                    f"so the stream is out of step")
+        if len(header) == 3 and not header[2].isdigit():
+            self._abandon()  # a size that is not ASCII digits: the header is not git's
+            raise ReviewRecordError(f"git cat-file blob failed: {oid} answered with an unreadable size")
+        if len(header) != 3:
+            if header[1:] != [b"missing"]:
                 self._abandon()  # an empty or unreadable header: the stream is gone or out of step
             raise ReviewRecordError(f"git cat-file blob failed: {oid} is "
                                     f"{header[1].decode(errors='replace') if len(header) > 1 else 'unreadable'}, not a blob")

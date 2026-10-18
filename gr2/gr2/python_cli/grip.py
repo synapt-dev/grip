@@ -1238,10 +1238,13 @@ def _decode_field_tree(repo: Path, tree: str) -> dict[str, object]:
     if record.get("schema") != _REVIEW_BIND_SCHEMA or record.get("kind") != "review":
         raise GripCorruptError("not a gr2 pinned review commit")
     members: dict[str, dict[str, object]] = {}
+    folded: set[str] = set()
     for m in record.get("members", []):
         key = m.get("key", "")
-        if not plain_member_key(key) or key in members:
+        # Two spellings one filesystem reads as one directory (Demo-core, NFD) are a repeat too.
+        if not plain_member_key(key) or member_key_fold(key) in folded:
             raise GripCorruptError(f"invalid review repository tree: member key {key!r}")
+        folded.add(member_key_fold(key))
         # proto3 cannot tell an absent string from an empty one, so every repository field the legacy
         # verifier demands must be non-empty here.
         missing = [f for f in ("remote", "path", "commit", "base") if not m.get(f)]
@@ -2805,6 +2808,7 @@ def _read_repo_state(workspace: Path, ref: str, *, bind: bool = False) -> dict[s
         return {}
 
     repos: dict[str, dict[str, str]] = {}
+    folded: set[str] = set()
     for line in proc.stdout.strip().splitlines():
         if not line.strip():
             continue
@@ -2819,8 +2823,9 @@ def _read_repo_state(workspace: Path, ref: str, *, bind: bool = False) -> dict[s
                 blob = _g(workspace, "show", f"{ref}:repos/{name}/{fname}")
                 if blob.returncode == 0:
                     state[fname] = blob.stdout.strip()
-        if bind and not plain_member_key(name):
+        if bind and (not plain_member_key(name) or member_key_fold(name) in folded):
             raise GripCorruptError(f"invalid review repository tree: member key {name!r}")
+        folded.add(member_key_fold(name))
         repos[name] = state
 
     return repos

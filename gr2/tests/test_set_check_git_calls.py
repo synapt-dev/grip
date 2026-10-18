@@ -37,9 +37,9 @@ def _set_calls(s, monkeypatch):
         calls.append(gitops.command_of(argv))
         return spawn(argv, **kw)
 
-    def started(cwd, *args):
+    def started(cwd, *args, **kw):
         calls.append(" ".join(args))
-        return start(cwd, *args)
+        return start(cwd, *args, **kw)
 
     monkeypatch.setattr(gitops, "_spawn", counted)
     monkeypatch.setattr(gitops, "start", started)

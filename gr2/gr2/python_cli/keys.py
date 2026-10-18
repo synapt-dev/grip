@@ -1,5 +1,7 @@
-"""One canonical key per kind. A value of a kind is compared, looked up and stored as a key only after it passes
-through that kind's function here, so two spellings of the same thing can never be two keys.
+"""One canonical key per kind. A compare that passes both sides through a kind's function here sees two spellings
+of one thing as one key. Not every compare calls these yet: `member_path_key` is used by review_allocation's
+member check and by store_hooks; other member-path compares (declared_sets among them) still compare raw strings
+and can see two spellings as two keys.
 
 Remote URLs have two keys, because readers ask two questions whose safe errors point opposite ways:
 

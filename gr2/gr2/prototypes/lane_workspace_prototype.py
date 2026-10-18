@@ -1061,17 +1061,25 @@ def _origin_default_branch(repo_path: Path, url: str | None = None) -> str | Non
         # "cannot tell". The bound above is what makes that reachable at all — an
         # origin that accepts and says nothing used to block the verb outright.
         return None
-    for line in remote.stdout.splitlines():
-        if line.startswith("ref:") and line.rstrip().endswith("HEAD"):
-            ref = line.split()[1]
-            # Strip the PREFIX, never split on every slash: a default branch whose
-            # name contains one (`release/1.x`) came back as its last segment, so the
-            # guard compared the requested branch against a string the origin never
-            # reported and the no-isolation lane was created in silence.
-            if not ref.startswith("refs/heads/"):
-                return None
-            return ref.removeprefix("refs/heads/")
-    return None
+    # Only the row named exactly HEAD: ls-remote answers "HEAD" by tail, so a symref
+    # refs/heads/a/HEAD is listed too, and splitlines cut a target holding U+2028 or
+    # U+0085 into a piece that ended in HEAD. Two such rows, or one that is not
+    # "ref: <target>", cannot tell.
+    try:
+        rows = gitops.ls_remote_rows(remote.stdout)
+    except gitops.LsRemoteMalformed:
+        return None
+    heads = [left for left, name in rows if name == "HEAD" and left.startswith("ref:")]
+    if len(heads) != 1:
+        return None
+    ref = heads[0].removeprefix("ref: ")
+    # Strip the PREFIX, never split on every slash: a default branch whose
+    # name contains one (`release/1.x`) came back as its last segment, so the
+    # guard compared the requested branch against a string the origin never
+    # reported and the no-isolation lane was created in silence.
+    if ref == heads[0] or " " in ref or not ref.startswith("refs/heads/") or ref == "refs/heads/":
+        return None
+    return ref.removeprefix("refs/heads/")
 
 
 def _lane_branch_refusal(workspace_root: Path, spec: dict, repo: str, branch: str) -> str | None:

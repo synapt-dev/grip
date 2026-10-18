@@ -1,6 +1,7 @@
 """A non-empty ls-remote line without a tab is a FAULT, never absence. A git shim answers every ls-remote with
 `not-a-valid-ls-remote-row`, alone or beside a good row naming the asked ref, and each caller of
-gitops.ls_remote_rows must refuse rather than read a ref as absent or skip the line."""
+gitops.ls_remote_rows must refuse (or, for the lane guard, answer "cannot tell") rather than read a ref as absent or
+skip the line."""
 from __future__ import annotations
 
 import os
@@ -10,6 +11,7 @@ from pathlib import Path
 import pytest
 import typer
 
+from gr2.prototypes import lane_workspace_prototype as lwp
 from gr2.python_cli import app, defaults, gitops, grip_cli, merge_gate, merge_receipts, push, review, review_rebind
 
 BAD = "not-a-valid-ls-remote-row"
@@ -111,3 +113,7 @@ def test_host_pr_head_oid_refuses_duplicate(tmp_path, monkeypatch):
     monkeypatch.setattr(gitops, "git", lambda *a, **k: subprocess.CompletedProcess(a, 0, two, ""))
     with pytest.raises(review.ReviewError, match="2 rows named 'refs/pull/7/head'"):
         review.host_pr_head_oid(tmp_path, 7)
+
+
+def test_lane_guard_cannot_tell(shim):
+    assert lwp._origin_default_branch(shim, "origin") is None

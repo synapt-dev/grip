@@ -275,19 +275,28 @@ def test_a_never_named_pin_prints_the_publish_of_the_sibling_review_and_it_runs_
     assert merge(world, "alpha")[0] == merge_gate.EXIT_MERGED
 
 
-def test_with_no_review_of_the_pin_here_the_line_names_what_is_missing_and_runs(world):
-    moved = _move_beta(world, push=True)
+def test_with_no_review_of_the_pin_here_the_line_pins_one_and_runs_as_printed(world):
+    _move_beta(world, push=True)
+    beta = world["members"]["beta"]
 
     code, why, receipt = _refusal(world)
 
     assert code == merge_gate.EXIT_REFUSED and why.startswith("declared_set_pin_unreviewed: beta "), receipt
     line = _next(receipt)
-    assert "<" not in line and ">" not in line and "gr2 review publish" not in line, line
-    assert f"no review of beta at %h is pinned in {world['author']}" in line, line
+    assert line.startswith("next: gr2 review pin "), line  # an action, not a line that only echoes the gap
     argv = shlex.split(line.removeprefix("next: "))
-    shown = subprocess.run(argv, cwd=world["author"], capture_output=True, text=True)
-    assert shown.returncode == 0 and shown.stdout.startswith(f"no review of beta at {moved[:7]}"), shown
-    assert str(world["members"]["beta"]["remote"]) in shown.stdout, shown.stdout
+    assert argv[:3] == ["gr2", "review", "pin"] and "log" not in argv and "<" not in line, line
+    assert run_printed(line, world["author"]) == 0, line
+    code, why, receipt = _refusal(world)  # the pin is here now: the next line publishes it
+    assert _next(receipt).startswith("next: gr2 review publish "), receipt
+    assert run_printed(_next(receipt), world["author"]) == 0, receipt
+    assert merge(world, "alpha")[0] == merge_gate.EXIT_MERGED
+
+    found = {"beta": {"review": None, "remote": str(beta["remote"]), "path": str(beta["repo"]), "base": None,
+                      "ref": "refs/heads/main", "member_path": "beta", "pin": beta["head"]}}
+    gap = merge_gate.next_steps.merge_row(why, workspace=str(world["author"]), review="gr:abc", remote="/r.git",
+                                          path="/ws/m", head="h", checks=("test",), siblings=found)
+    assert gap.startswith("note: ") and "next:" not in gap and "gr2 review pin needs" in gap, gap
 
 
 @pytest.mark.parametrize("odd", ["it's a remote.git", 'say "hi" remote.git'])
@@ -304,9 +313,8 @@ def test_a_remote_with_a_space_or_a_quote_still_runs_as_printed(world, tmp_path,
     assert run_printed(line, world["author"]) == 0, line
     assert [ref for _, ref in _reviews(remote)] and beta["review"].removeprefix("gr:") in str(_reviews(remote)), line
 
-    found["beta"]["review"] = None  # and the missing-review line with the same remote and a workspace name of it
-    missing = merge_gate.next_steps.merge_row(why, workspace=str(tmp_path / odd), review="gr:abc", remote="/r.git",
-                                              path="/ws/m", head="h", checks=("test",), siblings=found)
-    assert run_printed(missing, world["author"]) == 0, missing
-    shown = subprocess.run(shlex.split(missing.removeprefix("next: ")), capture_output=True, text=True).stdout
-    assert shown.endswith(f" is pinned in {tmp_path / odd}; pin one, then publish it to {remote}\n"), shown
+    found["beta"].update(review=None, base=beta["base"], ref="refs/heads/main", member_path="beta", pin=beta["head"])
+    pin = merge_gate.next_steps.merge_row(why, workspace=str(world["author"]), review="gr:abc", remote="/r.git",
+                                          path="/ws/m", head="h", checks=("test",), siblings=found)
+    assert shlex.split(pin.removeprefix("next: "))[7] == str(remote), pin  # the pin line with the same remote
+    assert run_printed(pin, world["author"]) == 0, pin

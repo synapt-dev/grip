@@ -284,13 +284,14 @@ def _pin_tie(root: Path, declaration: declared_sets.Declaration, into: str):
                         f"and these reviews could not be read from it: {lost}: {said}")
         except (RuntimeError, subprocess.SubprocessError, OSError, grip.GripCorruptError) as exc:
             return f"declared_set_pin_unmeasured: {name}'s pin {short} could not be read from its remote: {exc}"
-        tie.siblings[name] = {"review": _local_review_of(root, declaration, name, pin), "remote": remote, "path": str(repo)}
+        tie.siblings[name] = {"review": _local_review_of(root, declaration, name, pin), "remote": remote, "path": str(repo),
+                             "base": tip, "ref": f"refs/heads/{into}", "member_path": info["path"], "pin": pin}
         if retracted:
             return (f"declared_set_pin_unreviewed: {name} is pinned at {short}, which is not merged into {into}, and "
                     f"the reviews that named it were retracted from its remote (ref deleted or moved): {retracted}")
         return (f"declared_set_pin_unreviewed: {name} is pinned at {short}, which is neither merged into {into} nor "
                 f"named by a review published on its remote")
-    tie.siblings = {}  # name -> its local review at the pin (or None), remote and clone, for the next line
+    tie.siblings = {}  # name -> its local review at the pin (or None), remote, clone and target head, for the next line
     return tie
 
 

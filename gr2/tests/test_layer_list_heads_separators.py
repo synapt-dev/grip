@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_store_full_mode_layers import _layered_store, _record_with_layers
+from tests.test_store_full_mode_layers import _layered_store, _sidecar_with_layer
 from tests.test_store_git_native_smoke import git, gr2
 
 SEPS = pytest.mark.parametrize("sep", ["\u2028", "\u0085"], ids=["u2028", "u0085"])
@@ -35,7 +35,7 @@ def test_a_layer_whose_head_name_holds_the_pin_after_a_separator_is_refused(tmp_
     raw = _bundle_of(root / "alpha", other, f"refs/heads/a{sep}{pin}")
     git(root / "alpha", "switch", "-q", "--detach", pin)
 
-    checked = gr2(_record_with_layers(root, [raw], pin=pin), "check", check=False)
+    checked = gr2(_sidecar_with_layer(root, raw, pin=pin), "check", check=False)
 
     assert checked.returncode == 3 and "full_mode_layer_does_not_carry_pin" in f"{checked.stdout}{checked.stderr}", (
         checked.stdout, checked.stderr)
@@ -46,6 +46,6 @@ def test_control_a_layer_whose_head_is_the_pin_under_such_a_name_is_accepted(tmp
     root, pin = _layered_store(tmp_path)
     raw = _bundle_of(root / "alpha", pin, f"refs/heads/a{sep}x")
 
-    checked = gr2(_record_with_layers(root, [raw], pin=pin), "check", check=False)
+    checked = gr2(_sidecar_with_layer(root, raw, pin=pin), "check", check=False)
 
     assert checked.returncode == 0, (checked.stdout, checked.stderr)

@@ -17,7 +17,11 @@ from tests.test_store_git_native_smoke import configure_identity, git, gr2, make
 
 
 def _record(root: Path, member: str) -> dict:
-    return mft.read(root, f"{_gitlink(root, member)}^{{tree}}")
+    """The member's record as the store reads it at HEAD: the sidecar, or a field-commit in the legacy shape."""
+    from gr2.python_cli import grip_cli
+
+    found = next(m for m in grip_cli._native_members(root, "HEAD") if m["name"] == member)
+    return grip_cli._field_record(root, found)
 
 
 def _layered_store(tmp_path: Path) -> tuple[Path, str]:
@@ -93,20 +97,6 @@ def test_check_accepts_a_layered_pin_and_names_the_state(tmp_path):
     assert checked.returncode == 0, f"{checked.stdout}\n{checked.stderr}"
     states = {m["name"]: m["state"] for m in json.loads(checked.stdout)["members"]}
     assert states == {"alpha": "layer", "beta": "upstream"}
-
-
-def _record_with_layers(root: Path, layers: list[bytes], pin: str | None = None) -> Path:
-    """The same store with alpha's record rewritten to carry `layers`, as any pusher could."""
-    pin = pin or _member_head(root, "alpha")
-    url = git(root / "alpha", "remote", "get-url", "origin").stdout.strip()
-    forged = mft.commit(root, dict(kind=mft.KIND_REPO, pin=pin, url=url, ref="main", layers=layers), "forged record")
-    git(root, "update-index", "--add", "--cacheinfo", f"160000,{forged},alpha")
-    tree = git(root, "write-tree").stdout.strip()
-    head = git(root, "rev-parse", "HEAD").stdout.strip()
-    made = git(root, "-c", "user.name=x", "-c", "user.email=x@example.invalid", "commit-tree", tree,
-               "-p", head, "-p", forged, "-m", "carry the forged record").stdout.strip()
-    git(root, "update-ref", "HEAD", made)
-    return root
 
 
 def _sidecar_with_layer(root: Path, layer: bytes, pin: str | None = None) -> Path:
@@ -314,7 +304,9 @@ def test_legacy_a_record_with_an_oversize_layer_is_refused_without_advising_unsh
 
 def test_two_layer_lists_with_the_same_bytes_joined_are_measured_separately_by_the_hook(tmp_path):
     """[A, B] and [A+B] are different records with the same joined bytes. The first (its last layer carries the pin) is
-    allowed and the second (its only layer's header names another commit) must not be skipped as a repeat of it."""
+    allowed and the second (its only layer's header names another commit) must not be skipped as a repeat of it.
+
+    Legacy-only: the sidecar holds one layer per pin (`layers/<pin>`), so a list of layers exists only in a field-commit."""
     root, pin = _layered_store(tmp_path)
     good = _record(root, "alpha")["layers"][0]
     git(root / "alpha", "switch", "-q", "-c", "other", "origin/main")
@@ -323,8 +315,8 @@ def test_two_layer_lists_with_the_same_bytes_joined_are_measured_separately_by_t
     git(root / "alpha", "commit", "-m", "a different commit")
     other = _bundle_bytes(root / "alpha", "HEAD")
     git(root / "alpha", "switch", "-q", "--detach", pin)
-    _record_with_layers(root, [other, good], pin=pin)
-    forged = _record_with_layers(root, [other + good], pin=pin)
+    _legacy_record_with_layers(root, [other, good], pin=pin)
+    forged = _legacy_record_with_layers(root, [other + good], pin=pin)
     bare = tmp_path / "root.git"
     git(tmp_path, "init", "--bare", str(bare))
 
@@ -415,7 +407,7 @@ def test_status_reads_missing_when_the_layers_do_not_carry_a_pin_no_remote_has(t
     git(root / "alpha", "commit", "-m", "a different commit")
     raw = _bundle_bytes(root / "alpha", "HEAD")
     git(root / "alpha", "switch", "-q", "--detach", pin)
-    _record_with_layers(root, [raw], pin=pin)
+    _sidecar_with_layer(root, raw, pin=pin)
 
     status = gr2(root, "status", "--json")
 
@@ -454,10 +446,11 @@ def test_status_reads_missing_for_a_layered_record_once_the_root_is_switched_out
     assert head.count('mode = "full"') == 1, "the workspace mode line, above the members"
     toml.write_text(head.replace('mode = "full"', 'mode = "compat"') + sep + rest, encoding="utf-8")
 
-    # Exit 4: outside full mode the gitlink (a field-commit) no longer equals the pin, and status says so.
+    # Exit 0: the gitlink is the member's own commit, so it still equals the pin outside full mode; only the layer
+    # stops counting.
     status = gr2(root, "status", "--json", check=False)
 
-    assert status.returncode == 4, f"{status.stdout}\n{status.stderr}"
+    assert status.returncode == 0, f"{status.stdout}\n{status.stderr}"
     rows = {m["name"]: m for m in json.loads(status.stdout)["members"]}
     assert rows["alpha"]["state"] == "missing", rows["alpha"]
 

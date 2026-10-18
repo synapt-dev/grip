@@ -23,7 +23,7 @@ def _two_members(tmp_path: Path) -> Path:
     return root
 
 
-def test_mode_full_writes_the_line_and_the_first_commit_records_field_commits(tmp_path):
+def test_mode_full_writes_the_line_and_the_first_commit_records_the_sidecar(tmp_path):
     root = _two_members(tmp_path)
 
     assert gr2(root, "init", "--mode", "full").returncode == 0
@@ -32,9 +32,10 @@ def test_mode_full_writes_the_line_and_the_first_commit_records_field_commits(tm
     assert workspace_mode.of_root(root) == "full"
     first = gr2(root, "commit", "-m", "first")
     assert first.returncode == 0, f"{first.stdout}\n{first.stderr}"
-    # In full mode the gitlink is a field-commit carrying the record, not the member's own commit.
+    # In full mode the gitlink is the member's own commit, and the fields sit in the sidecar beside it.
     gitlink = git(root, "ls-tree", "HEAD", "--", "alpha").stdout.split()[2]
-    assert gitlink != git(root / "alpha", "rev-parse", "HEAD").stdout.strip()
+    assert gitlink == git(root / "alpha", "rev-parse", "HEAD").stdout.strip()
+    assert git(root, "ls-tree", "-d", "HEAD", "--", ".grip/fields/alpha").stdout, "the fields sit in the sidecar"
 
 
 @pytest.mark.parametrize("args", [(), ("--mode", "compat")], ids=["no-mode", "mode-compat"])

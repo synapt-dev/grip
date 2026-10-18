@@ -7,8 +7,8 @@ judges a commit before its gitlink fold, so a commit whose grip.toml pin and git
 hook ("pin edited by hand") yet pushes when made past it, because it is byte for byte the commit the fold makes.
 - (a) a hand commit to a tracked non-pin file passes the hook, pushes (one atomic push), and the shadow advances to it.
 - (b) a hand-edited pin in grip.toml is refused at commit AND at push, naming the member; neither ref moves.
-- (c) full mode: the root gitlink is the member's field commit and differs from its recorded pin, and the fence still
-  passes a hand commit.
+- (c) full mode: the root gitlink is the member's own commit (its recorded pin; the fields sit in the sidecar), and
+  the fence passes a hand commit.
 - compat: the gitlink IS the pin, so (d) a hand gitlink bump the hook folded is
   recorded and a plain push takes it; (e) the same bump past the hook with grip.toml stale is refused naming the
   member; (f) the mode split is one predicate, `_gitlink_may_be_pin`, and its two answers are pinned.
@@ -105,7 +105,8 @@ def test_fence_c_reads_recorded_pins_not_the_gitlink_in_full_mode(tmp_path):
     pins = {name: git(root, "show", "HEAD:grip.toml").stdout.split(f'name = "{name}"', 1)[1]
             .split('pin = "', 1)[1].split('"', 1)[0] for name in ("alpha", "beta")}
     links = {name: git(root, "ls-tree", "HEAD", "--", name).stdout.split()[2] for name in ("alpha", "beta")}
-    assert all(links[n] != pins[n] for n in pins), ("the row needs gitlink != recorded pin (the field commit)", links, pins)
+    assert links == pins, ("the sidecar shape: each gitlink is the member's own commit, the pin it records", links, pins)
+    assert git(root, "ls-tree", "-d", "HEAD", "--", ".grip/fields/alpha").stdout, "the fields sit in the sidecar"
 
     hand = _hand_note(root)
     result = gr2(root, "push", check=False)

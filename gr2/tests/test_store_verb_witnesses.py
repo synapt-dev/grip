@@ -862,14 +862,13 @@ def test_an_author_named_only_by_env_does_not_let_git_guess_the_committer(
 def test_a_full_mode_store_commit_carries_the_committers_own_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Full mode records through commit-tree, the second store-commit path; it names the same identity."""
+    """Full mode records the sidecar beside the member's own gitlink; its commit names the same identity."""
     from tests.test_store_full_mode_carrier import _full_store
 
     _no_ambient_identity(tmp_path, monkeypatch)
     root = _full_store(tmp_path)   # sets the root's identity to Smoke and records one commit
 
-    parents = _git_out(root, "rev-list", "--parents", "-n", "1", "HEAD").split()[1:]
-    assert len(parents) > 1, "a full-mode commit carries its field commits as parents (the commit-tree path)"
+    assert _git_out(root, "ls-tree", "-d", "--name-only", "HEAD", "--", ".grip/fields/alpha"), "a full-mode commit"
     assert _git_out(root, "log", "-1", "--format=%an <%ae>|%cn <%ce>") == (
         "Smoke <smoke@example.test>|Smoke <smoke@example.test>"
     )

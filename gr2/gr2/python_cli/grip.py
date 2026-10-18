@@ -509,7 +509,7 @@ def _remote_ref_matches(workspace: Path, remote: str, ref: str) -> list[tuple[st
     if proc.returncode != 0:
         raise GripReviewRefused("remote_unreadable", ref, proc.stderr.strip()[:120])
     out = []
-    for row in proc.stdout.strip().splitlines():
+    for row in (r for r in proc.stdout.split("\n") if "\t" in r):
         sha, _, name = row.partition("\t")
         out.append((sha, name))
     return out
@@ -536,7 +536,7 @@ def _head_present_on_remote(workspace: Path, remote: str, head: str) -> bool:
     proc = _bind_git(workspace, "ls-remote", "--", remote)
     if proc.returncode != 0:
         raise GripReviewRefused("remote_unreadable", remote, proc.stderr.strip()[:120])
-    return any(row.split("\t", 1)[0] == head for row in proc.stdout.splitlines())
+    return any(row.split("\t", 1)[0] == head for row in proc.stdout.split("\n"))
 
 
 def _remote_ref_tips(workspace: Path, remote: str) -> dict[str, str]:
@@ -546,7 +546,7 @@ def _remote_ref_tips(workspace: Path, remote: str) -> dict[str, str]:
     if proc.returncode != 0:
         raise GripReviewRefused("remote_unreadable", remote, proc.stderr.strip()[:120])
     tips: dict[str, str] = {}
-    for row in proc.stdout.splitlines():
+    for row in proc.stdout.split("\n"):
         sha, _, name = row.partition("\t")
         if name:
             tips[name] = sha
@@ -1792,7 +1792,7 @@ def _review_remote_target(workspace: Path, remote: str, ref: str) -> str:
     proc = git(workspace, "ls-remote", "--refs", remote, ref, timeout=30)
     if proc.returncode:
         raise GripCorruptError(f"cannot_measure_review_ref: {proc.stderr.strip()}")
-    rows = [line.split() for line in proc.stdout.splitlines() if line.strip()]
+    rows = [line.split("\t") for line in proc.stdout.split("\n") if line]
     if not rows:
         raise ReviewStoreAbsent(f"remote_review_ref_missing: {ref}")
     # Rows that are not exactly this ref at one object are a fault, never read as absence.

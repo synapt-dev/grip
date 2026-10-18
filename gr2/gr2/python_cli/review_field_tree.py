@@ -440,6 +440,11 @@ def _blob_id(body: bytes, like: str) -> str:
     return algo(b"blob %d\0" % len(body) + body).hexdigest()
 
 
+# no field of a review record comes near this; a header naming more is refused before its body is read,
+# so a hostile or broken object cannot make the reader hold it in memory
+MAX_BLOB_BYTES = 16 * 1024 * 1024
+
+
 class BatchReader(GitReader):
     """Two git processes for a whole record: one ``ls-tree -r -t`` per root tree, indexed
     by tree id so every subtree it names is listed without another process, and one
@@ -523,6 +528,9 @@ class BatchReader(GitReader):
             raise ReviewRecordError(f"git cat-file blob failed: {oid} is "
                                     f"{header[1].decode(errors='replace') if len(header) > 1 else 'unreadable'}, not a blob")
         size = int(header[2])
+        if size > MAX_BLOB_BYTES:
+            self._abandon()  # its body is left unread, so the stream is out of step
+            raise ReviewRecordError(f"git cat-file blob failed: {oid} is {size} bytes, over the {MAX_BLOB_BYTES} byte limit")
         data = self._cat.stdout.read(size + 1)
         body = data[:size]
         # no length or newline check proves where an answer ends: only the body hashing to the id asked does

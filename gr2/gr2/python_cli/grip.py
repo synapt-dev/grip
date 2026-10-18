@@ -842,6 +842,10 @@ def _bind_review_rows_body(
                 raise GripReviewRefused("range_head_mismatch", head, from_head)
             obj = _carry_objects_from_range(workspace, remote, base, range_patch)
         if obj is not None:
+            size = len(obj["range.patch"].encode())
+            if size > fd.MAX_BLOB_BYTES:
+                # Refused here, before anything is written, so the store never holds a record its own reader refuses.
+                raise GripReviewRefused("range_patch_over_limit", f"<= {fd.MAX_BLOB_BYTES} bytes", f"{size} bytes")
             member.update(range_patch=obj["range.patch"], metadata=obj["metadata"], head_tree=obj["head-tree"])
             scan_items.append((f"{key}.range.patch", obj["range.patch"]))
         evidence = row.get("evidence")
@@ -1165,8 +1169,10 @@ def _check_field_tree(repo: Path, tree: str) -> dict[str, object]:
 def _decode_field_tree(repo: Path, tree: str) -> dict[str, object]:
     from . import review_field_tree as fd
     try:
-        fd.verify_tree(repo, tree)
-        record = fd.read_record(repo, tree)
+        # one reader for both passes: one ls-tree and one cat-file --batch for the whole tree
+        with fd.BatchReader(repo) as reader:
+            fd.verify_tree(repo, tree, reader=reader)
+            record = fd.read_record(repo, tree, reader=reader)
     except fd.ReviewRecordError as exc:
         raise GripCorruptError(f"invalid field tree review record: {exc}") from exc
     if record.get("schema") != _REVIEW_BIND_SCHEMA or record.get("kind") != "review":

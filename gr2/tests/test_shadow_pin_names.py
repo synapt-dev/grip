@@ -76,3 +76,20 @@ def test_a_pin_named_dotgit_in_any_case_is_refused(world, pin):
     assert f"pin {pin!r}" in message and "hasDotgit" in message
 
 
+@pytest.mark.parametrize("pin", ["git~1", "GIT~1", ".git.", ".git ", ".git. .", ".git::$INDEX_ALLOCATION",
+                                 "a/git~1:s", ".git\\", "GIT~1\\", "git~1.\\", ".git.\\x",
+                                 "a\\.git", "x\\.Git.\\y", "a\\b\\.git "])
+def test_a_pin_ntfs_reads_as_dotgit_is_refused(world, pin):
+    message = _refused(world, [pin])
+    assert f"pin {pin!r}" in message and "hasDotgit" in message
+
+
+def test_a_backslash_ends_only_a_dotgit_name(world):
+    repo, base, member = world
+    names = [".gitmodules\\", ".gitattributes\\", "gitmod~1\\x", "a\\.gitx", "a\\b"]
+    tree = sh._tree_with_pins(repo, base, dict.fromkeys(names, member))
+    _git(repo, "update-ref", "refs/heads/t", _git(repo, "commit-tree", tree, "-m", "s").strip())
+    fsck = subprocess.run(["git", "-C", str(repo), "fsck", "--strict", "--no-dangling"], capture_output=True,
+                          text=True)
+    assert fsck.returncode == 0, fsck.stderr
+

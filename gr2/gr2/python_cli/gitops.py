@@ -9,6 +9,20 @@ from . import next_steps
 
 # fsck's name rules ported from git: fsck.c fsck_tree, path.c is_ntfs_dotgit and is_ntfs_dot_generic,
 # utf8.c is_hfs_dotgit. A Windows or macOS checkout reads each such name as the repository's own entry.
+def _ntfs_tail(rest: str) -> bool:
+    """NTFS drops trailing spaces and dots, and reads ":<stream>" as a stream of the name before it."""
+    return rest.split(":", 1)[0].strip(" .") == ""
+
+
+def _is_ntfs_dotgit(name: str) -> bool:
+    """git ends this name at a backslash as well as at ':' (is_xplatform_dir_sep), and fsck checks every part after a backslash again; _is_ntfs_dot does neither."""
+    for part in name.split("\\"):
+        for head in (".git", "git~1"):
+            if part[:len(head)].isascii() and part[:len(head)].lower() == head and _ntfs_tail(part[len(head):]):
+                return True
+    return False
+
+
 def fsck_bad_name(name: str) -> str | None:
     """The message id git fsck reports for a tree or gitlink entry named ``name``, or None when fsck accepts
     the name. A tree built here holds no entry fsck would reject."""
@@ -18,7 +32,7 @@ def fsck_bad_name(name: str) -> str | None:
         return "hasDot"
     if name == "..":
         return "hasDotdot"
-    if name.isascii() and name.lower() == ".git":
+    if _is_ntfs_dotgit(name):
         return "hasDotgit"
     return None
 

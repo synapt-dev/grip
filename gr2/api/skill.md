@@ -376,6 +376,10 @@ next: gr2 check set '<workspace>' '<review>' -- <your combined test command>
 
 next: the set check failed at these heads and that failure is recorded; a rerun does not clear it. Fix the member, commit a new head, then pin, stamp, run gr2 check set on that head and publish it
 
+### declared_set_pin_unreviewed
+
+next: rerun gr2 review merge '<workspace>' '<review>'; if no review of the pinned member at its pin is on its remote (the ref deleted), publish a fresh one: gr2 review publish '<workspace>' <the pinned member's review id> --remote <the pinned member's remote>
+
 ### feature_moved
 
 next: the feature branch moved after the pin; to check the set as it is now: gr2 check set '<workspace>' '<review>' --at-remote-heads '<branch>' -- <your combined test command>. To merge it, commit a new head and pin it before you push, or pin this head with --ratified gr:<id>, naming an earlier pin of this same head that was stamped

@@ -235,3 +235,29 @@ def test_a_review_republished_after_the_scan_with_the_same_content_still_ties(wo
     assert done == [(oid, ref)] and _reviews(remote) == [[again, ref]] and again != oid, done
     assert code == merge_gate.EXIT_MERGED, receipt
 
+
+def test_an_unreviewed_pin_names_the_rerun_and_the_publish_with_its_remote_form(world, monkeypatch):
+    assert record(world, PASS)["result"] == "pass"
+    remote = world["members"]["beta"]["remote"]
+    _retract_after_scan(monkeypatch, remote)
+
+    code, why, receipt = _refusal(world)
+
+    assert code == merge_gate.EXIT_REFUSED and "retracted" in why, receipt
+    line = receipt["members"][0].get("next") or ""
+    review, pin = world["members"]["alpha"]["review"], why.split(" is pinned at ", 1)[1][:12]
+    assert line.startswith(f"next: rerun gr2 review merge {world['author']} {review}; "), line
+    assert f"no review of beta at {pin} " in line and "gr2 review publish " in line, line
+    assert line.endswith("<beta's review id> --remote <beta's remote>"), line
+
+
+def test_both_unreviewed_texts_have_a_next_line():
+    for why in ("declared_set_pin_unreviewed: beta is pinned at 0123456789ab, which is neither merged into main nor "
+                "named by a review published on its remote",
+                "declared_set_pin_unreviewed: beta is pinned at 0123456789ab, which is not merged into main, and the "
+                "reviews that named it were retracted from its remote (ref deleted or moved): refs/x"):
+        line = merge_gate.next_steps.merge_row(why, workspace="/ws", review="gr:abc", remote="/r.git", path="/ws/m",
+                                               head="h", checks=("test",))
+        assert line == ("next: rerun gr2 review merge /ws gr:abc; if no review of beta at 0123456789ab is on its "
+                        "remote (the ref deleted), publish a fresh one: gr2 review publish /ws <beta's review id> "
+                        "--remote <beta's remote>"), line

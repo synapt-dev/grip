@@ -157,6 +157,14 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
     """The next command for one member's merge refusal, or None when no single command answers it."""
     if refused.startswith("review_not_on_member_remote"):
         return f"next: gr2 review publish {_shown(workspace)} {_shown(review)} --remote {_shown(remote)}"
+    if refused.startswith("declared_set_pin_unreviewed"):
+        # The tie reads the sibling's own review on the sibling's own remote, and that ref may be re-published or
+        # deleted while the gate reads it: a rerun reads it again; a deleted one is put back by publishing it again.
+        tied = re.match(r"declared_set_pin_unreviewed: (.+) is pinned at ([0-9a-f]+), ", refused)
+        member, pin = (_shown(tied[1]), tied[2]) if tied else ("the pinned member", "its pin")
+        return (f"next: rerun gr2 review merge {_shown(workspace)} {_shown(review)}; if no review of {member} at {pin} "
+                f"is on its remote (the ref deleted), publish a fresh one: gr2 review publish {_shown(workspace)} "
+                f"<{member}'s review id> --remote <{member}'s remote>")
     if refused.startswith("check_set_fail"):
         # A recorded failure at these heads stays (a pass beside it does not erase it), so a rerun cannot clear it.
         return ("next: the set check failed at these heads and that failure is recorded; a rerun does not clear it. "

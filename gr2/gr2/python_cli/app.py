@@ -5750,7 +5750,7 @@ def _resolve_merged_defaults(ws: Path, review_id: Optional[str], into: Optional[
             repo = (ws / m["path"]).resolve()
             try:
                 out = merge_gate._git(repo, "ls-remote", "--symref", "--", m["remote"], "HEAD", raw=True)
-                rows = gitops.ls_remote_rows(out)
+                rows = gitops.ls_remote_rows(out, symref=True)
             except (RuntimeError, subprocess.SubprocessError, OSError, gitops.LsRemoteMalformed):
                 rows = []
             default = next((left.removeprefix("ref: refs/heads/") for left, ref in rows

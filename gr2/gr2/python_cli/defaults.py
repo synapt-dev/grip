@@ -123,7 +123,7 @@ def target_branch(members: list[tuple[Path, str, str]], given: str | None) -> tu
         out = _git(repo, "ls-remote", "--symref", "--", remote_url, "HEAD", "refs/heads/*", strip=False) or ""
         at_base, default = set(), None
         try:
-            rows = gitops.ls_remote_rows(out)
+            rows = gitops.ls_remote_rows(out, symref=True)
         except gitops.LsRemoteMalformed as exc:
             raise Unresolved(f"into_unresolved: {repo}: {exc}; pass --into <branch>") from None
         for left, ref in rows:

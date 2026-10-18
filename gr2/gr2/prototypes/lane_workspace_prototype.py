@@ -1066,7 +1066,7 @@ def _origin_default_branch(repo_path: Path, url: str | None = None) -> str | Non
     # U+0085 into a piece that ended in HEAD. Two such rows, or one that is not
     # "ref: <target>", cannot tell.
     try:
-        rows = gitops.ls_remote_rows(remote.stdout)
+        rows = gitops.ls_remote_rows(remote.stdout, symref=True)
     except gitops.LsRemoteMalformed:
         return None
     heads = [left for left, name in rows if name == "HEAD" and left.startswith("ref:")]

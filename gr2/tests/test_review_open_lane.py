@@ -1058,6 +1058,54 @@ def test_stamp_on_a_checkout_pr_lane_applies_the_pinned_lane_name_rule(review_wo
         assert [link["approver"]["name"] for link in back["links"]] == [name]
 
 
+def _plant_pr_lane_stamp(store, link, parent):
+    """Write a checkout-pr stamp the way approve_pr_lane does, without its name check (an older writer)."""
+    from gr2.python_cli import approvals
+
+    blob = subprocess.run(["git", "-C", str(store), "hash-object", "-w", "--stdin"], input=approvals.canonical(link),
+                          capture_output=True, text=True, check=True).stdout.strip()
+    tree = subprocess.run(["git", "-C", str(store), "mktree"], input=f"100644 blob {blob}\tapproval.json\n",
+                          capture_output=True, text=True, check=True).stdout.strip()
+    commit = _run(store, "commit-tree", tree, "-p", parent, "-m", "Approve")
+    _run(store, "update-ref", approvals.PR_PREFIX + link["head"], commit, parent)
+
+
+# A pinned link whose approver name breaks the rule makes _walk refuse the whole chain; a checkout-pr stamp
+# read back from the member clone is refused the same way, even beside a good stamp.
+@pytest.mark.parametrize("char, refused", [
+    (chr(9), True), (chr(127), True), (chr(1), True), (chr(10), True), (chr(0x2028), False),
+], ids=["tab", "del", "x01", "newline", "u2028"])
+def test_reading_a_checkout_pr_stamp_applies_the_pinned_lane_name_rule(review_world, monkeypatch, char, refused):
+    from typer.testing import CliRunner
+    from gr2.python_cli import approvals
+
+    world = review_world
+    ws, app_mod, lane = _checked_out_lane(world, monkeypatch)
+    stamped = CliRunner().invoke(app_mod.app, ["review", "stamp", str(lane)])
+    assert stamped.exit_code == 0, (stamped.output, stamped.exception)
+    repo = approvals.pr_lane_record(lane)["repo"]
+    good = approvals.pr_head_approvals(world["source"], repo, world["head_sha"])
+    assert good["count"] == 1, good
+    name = "Re" + char + "viewer"
+    _plant_pr_lane_stamp(world["source"], {
+        **good["links"][0], "approver": {"name": name, "key_id": ""}}, good["tip"])
+    root = {"review_id": "gr:" + "0" * 64, "author": "Author A", "members": []}
+    pinned = {**root, "schema": approvals.SCHEMA, "approver": {"name": name, "key_id": ""}, "verdict": "approve",
+              "prev": "0" * 64, "created_at": "2026-01-01T00:00:00Z"}
+    if refused:
+        with pytest.raises(approvals.ApprovalRefused) as walked:
+            approvals._validate_link(pinned, root, set())
+        with pytest.raises(approvals.ApprovalRefused) as read:
+            approvals.pr_head_approvals(world["source"], repo, world["head_sha"])
+        assert str(read.value) == str(walked.value) == "approval_chain_broken: invalid approver name"
+        again = CliRunner().invoke(app_mod.app, ["review", "stamp", str(lane)])
+        assert again.exit_code == 2, (again.output, again.exception)
+        assert again.output.splitlines()[0] == "approval_chain_broken: invalid approver name", again.output
+    else:
+        back = approvals.pr_head_approvals(world["source"], repo, world["head_sha"])
+        assert [link["approver"]["name"] for link in back["links"]] == ["Reviewer", name] and back["count"] == 2
+
+
 def test_a_pr_lane_approval_outlives_review_close_and_reads_back_by_repo_and_head(review_world, monkeypatch):
     """The approval lives in the workspace's clone of the repo, not the lane, so closing the lane keeps it."""
     from typer.testing import CliRunner

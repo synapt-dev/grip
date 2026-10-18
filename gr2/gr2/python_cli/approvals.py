@@ -527,6 +527,8 @@ def pr_head_approvals(store: Path, repo: str, head: str) -> dict:
             except ValueError as exc:
                 raise ApprovalRefused(f"approval_record_unreadable: {ref} at {commit}") from exc
             if link.get("repo") == repo and link.get("head") == head:
+                approver = link.get("approver")
+                check_approver_name(approver.get("name") if isinstance(approver, dict) else None)
                 links.append(link)
     links.reverse()
     return {"repo": repo, "head": head, "tip": tip or None,

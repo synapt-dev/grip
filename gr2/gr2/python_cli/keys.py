@@ -1,5 +1,14 @@
 """One canonical key per kind. A value of a kind is compared, looked up and stored as a key only after it passes
-through that kind's function here, so two spellings of the same thing can never be two keys."""
+through that kind's function here, so two spellings of the same thing can never be two keys.
+
+Remote URLs have two keys, because readers ask two questions whose safe errors point opposite ways:
+
+- `remote_url_key` answers "which repository does this URL name?" for a reader that matches or includes on equality
+  (store init's checkout-origin check, the merge gate). Its safe error is a false DIFFERENT, so it folds only
+  spellings that cannot name two repositories, and a local path keeps its `.git`.
+- `may_be_same_repository` answers "could these two URLs be one repository?" for a reader that only REFUSES on a
+  match (store push --atomic's aliased-member check). Its safe error is a false SAME, so it folds everything
+  `remote_url_key` folds and also treats a local path with and without `.git` as one, since git resolves either."""
 from __future__ import annotations
 
 import os
@@ -29,3 +38,14 @@ def remote_url_key(url: str, base: Path) -> tuple[str, str]:
     if sep and head and "/" not in head:  # git's scp-like form: a colon before any slash
         return head.rsplit("@", 1)[-1].lower(), tail.strip("/").removesuffix(".git")
     return "", os.path.realpath(u if os.path.isabs(u) else base / u)
+
+
+def may_be_same_repository(a: str, a_base: Path, b: str, b_base: Path) -> bool:
+    """True when `a` and `b` could name one repository: `remote_url_key` agrees, or both are local paths that differ
+    only by a trailing `.git` (git resolves `<dir>/root` to `<dir>/root.git` when only the latter exists). Use it
+    only to refuse, never to include. Each URL brings its own base, the clone it is configured in, since git resolves
+    a relative path there."""
+    ka, kb = remote_url_key(a, a_base), remote_url_key(b, b_base)
+    if not ka[0] and not kb[0]:
+        return ka[1].removesuffix(".git") == kb[1].removesuffix(".git")
+    return ka == kb

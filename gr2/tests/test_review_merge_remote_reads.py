@@ -108,3 +108,24 @@ def test_merge_reads_each_remote_once_per_moment_with_no_private_ref(tmp_path, m
     assert calls[("update-ref", True, True)] == 0, dict(calls)
     after = {n: _git(author / n, "for-each-ref", "--format=%(refname)") for n in mem}
     assert after == before  # the same ref names: no private ref made, none left behind
+
+
+def test_remote_tips_reads_a_line_separator_in_a_ref_name_as_part_of_the_name(tmp_path, monkeypatch):
+    """ls-remote does not quote U+2028 in a ref name and str.splitlines breaks on it: 'refs/heads/a<U+2028>b/refs/heads/main'
+    tail-matches the pattern refs/heads/main and, split there, is a row with no tab. Read by "\\n" it is one other ref."""
+    from gr2.python_cli import merge_gate
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gcfg"))
+    seed, remote, here = tmp_path / "seed", tmp_path / "r.git", tmp_path / "here"
+    for d in (seed, here):
+        d.mkdir(); _git(d, "init", "-q", "-b", "main")
+    _git(tmp_path, "init", "-q", "--bare", remote)
+    _git(seed, "-c", "user.name=A", "-c", "user.email=a@example.invalid", "commit", "-q", "--allow-empty", "-m", "main")
+    main = _git(seed, "rev-parse", "HEAD")
+    _git(seed, "-c", "user.name=A", "-c", "user.email=a@example.invalid", "commit", "-q", "--allow-empty", "-m", "other")
+    other = _git(seed, "rev-parse", "HEAD")
+    lookalike = "refs/heads/a" + chr(0x2028) + "b/refs/heads/main"
+    _git(seed, "push", "-q", remote, f"{main}:refs/heads/main", f"{other}:{lookalike}")
+    assert lookalike in _git(remote, "for-each-ref", "--format=%(refname)").split("\n")
+    tips = merge_gate._remote_tips(here, str(remote), ("main",))
+    assert tips == {"refs/heads/main": main}

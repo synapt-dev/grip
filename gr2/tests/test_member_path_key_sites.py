@@ -56,3 +56,19 @@ def test_a_member_spelled_dot_slash_alpha_keeps_its_pin_and_its_declared_ref(tmp
     monkeypatch.setattr(app_mod.repo_proto, "declared_repo_state", spy)
     app_mod._scan_existing_repos(root)
     assert seen["alpha"] == (pin, "dev")
+
+
+def test_a_grip_toml_dot_slash_alpha_carries_the_review_record_for_alpha(tmp_path, monkeypatch):
+    from gr2.python_cli import grip as grip_mod
+    from gr2.python_cli import grip_cli
+
+    root = tmp_path / "root"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "commit", "-q", "--allow-empty", "-m", "review")
+    _git(root, "update-ref", grip_cli.REVIEW_REF_ROOT + "r1", "HEAD")
+    pin = "ab" * 20
+    monkeypatch.setattr(grip_mod, "show_review_commit",
+                        lambda _root, _commit: {"members": [{"path": "alpha", "head": pin}]})
+    records = grip_cli._member_records(root, {"path": "./alpha", "pin": pin})
+    assert len(records) == 1

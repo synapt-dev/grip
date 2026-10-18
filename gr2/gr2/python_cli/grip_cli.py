@@ -1764,7 +1764,8 @@ def _member_records(root: Path, member: dict[str, str]) -> list[str]:
             # a ref under the review root that does not name a bind (or names one it does not point at) is not a review
             # record; any other failure (no store, a git read that fails) is raised, never read as "no records"
             continue
-        if not any(m["path"] == member["path"] and m["head"] == member["pin"] for m in view["members"]):
+        wanted = keys.member_path_key(member["path"])
+        if not any(keys.member_path_key(m["path"]) == wanted and m["head"] == member["pin"] for m in view["members"]):
             continue
         trees.add(_store_git(root, "rev-parse", f"{commit}^{{tree}}").stdout.strip())
         approval_ref = f"{APPROVAL_REF_ROOT}{commit}"

@@ -96,12 +96,14 @@ def freeze(repo: Path, target_ref: str, out_dir: Path, *, title: str, body: str)
     out_dir = Path(out_dir)
     if out_dir.exists():
         raise RebindRefused("out_dir_exists", f"a new version is a new dir: {out_dir}")
-    out_dir.mkdir(parents=True)
     base = _git(repo, "rev-parse", target_ref).stdout.strip()
     head = _git(repo, "rev-parse", "HEAD").stdout.strip()
     branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
     url = _git(repo, "remote", "get-url", "origin").stdout.strip()
     intended_ref = f"refs/heads/{branch}"
+    # read the remote before out_dir exists, so a refused listing leaves no half-written dir
+    state = _ref_state(repo, url, intended_ref)
+    out_dir.mkdir(parents=True)
     (out_dir / "range.patch").write_text(
         _git(repo, "format-patch", f"{base}..HEAD", "--stdout").stdout
     )
@@ -112,7 +114,7 @@ def freeze(repo: Path, target_ref: str, out_dir: Path, *, title: str, body: str)
     (out_dir / "pr-body.md").write_text(body)
     (out_dir / "REQUEST.md").write_text(
         f"repo: {repo.name}   branch: {branch}   intended ref: {intended_ref}\n"
-        f"intended ref on remote at freeze: {_ref_state(repo, url, intended_ref)}\n"
+        f"intended ref on remote at freeze: {state}\n"
         f"target: {target_ref} @ {base}\n"
         f"head: {head}\n"
     )
@@ -147,8 +149,18 @@ def _ref_state(repo: Path, url: str, ref: str | None) -> str:
     than an unconditional 'ABSENT' (false under --allow-public-ref)."""
     if not ref:
         return "unknown (no intended ref recorded)"
-    ls = _git(repo, "ls-remote", url, ref).stdout.split()
-    return f"PRESENT at {ls[0][:12]}" if ls else "ABSENT on remote"
+    oid = _remote_oid(repo, url, ref)
+    return f"PRESENT at {oid[:12]}" if oid else "ABSENT on remote"
+
+
+def _remote_oid(repo: Path, url: str, ref: str) -> str | None:
+    """The tip ``url`` advertises for exactly ``ref``, or None; a listing that names ``ref`` twice is refused."""
+    try:
+        return gitops.ls_remote_oid(_git(repo, "ls-remote", url, ref).stdout, ref)
+    except gitops.LsRemoteMalformed as exc:
+        raise RebindRefused("ls_remote_malformed", f"{url}: {exc}") from None
+    except ValueError as exc:
+        raise RebindRefused("ls_remote_ambiguous", f"{url}: {exc}") from None
 
 
 def _require_frozen_dir(frozen_dir: Path) -> None:
@@ -189,16 +201,15 @@ def rebind(frozen_dir: Path, repo: Path, target_ref: str, out_dir: Path,
     # sanctioned fix-forward on a branch already ratified and pushed.
     intended = _frozen_intended_ref(frozen_dir)
     if intended and not allow_public_ref:
-        present = _git(repo, "ls-remote", url, intended).stdout.split()
+        present = _remote_oid(repo, url, intended)
         if present:
             raise RebindRefused(
                 "intended_ref_public",
-                f"{intended} is already on {url} at {present[0][:12]}; a repin would "
+                f"{intended} is already on {url} at {present[:12]}; a repin would "
                 "force-push it — pass allow_public_ref for a ratified fix-forward",
             )
 
-    ls = _git(repo, "ls-remote", url, f"refs/heads/{branch}").stdout.split()
-    live_base = ls[0] if ls else None
+    live_base = _remote_oid(repo, url, f"refs/heads/{branch}")
     if not live_base:
         raise RebindRefused("no_live_base", f"cannot ls-remote refs/heads/{branch} from {url}")
 
@@ -297,7 +308,13 @@ def rebind(frozen_dir: Path, repo: Path, target_ref: str, out_dir: Path,
                 _git(clone, "branch", "-D", scratch, check=False)
         # else: frozen base not reconstructable; patch-id identity is authoritative.
 
-        # re-freeze: same title/body, new range/metadata against the moved base
+        # re-freeze: same title/body, new range/metadata against the moved base.
+        # carry the ORIGINAL intended ref (the feature branch being pushed), not the
+        # target branch, and print its MEASURED remote state (false-'ABSENT' under
+        # --allow-public-ref otherwise); read it before out_dir exists, so a refused
+        # listing leaves no half-written dir.
+        intended_ref = intended or f"refs/heads/{_branch_of(target_ref)}"
+        state = _ref_state(repo, url, intended_ref)
         out_dir.mkdir(parents=True)
         (out_dir / "range.patch").write_text(new_range)
         (out_dir / "metadata.fuller.txt").write_text(
@@ -305,13 +322,9 @@ def rebind(frozen_dir: Path, repo: Path, target_ref: str, out_dir: Path,
         )
         shutil.copyfile(frozen_dir / "pr-title.txt", out_dir / "pr-title.txt")
         shutil.copyfile(frozen_dir / "pr-body.md", out_dir / "pr-body.md")
-        # carry the ORIGINAL intended ref (the feature branch being pushed), not the
-        # target branch, and print its MEASURED remote state (false-'ABSENT' under
-        # --allow-public-ref otherwise).
-        intended_ref = intended or f"refs/heads/{_branch_of(target_ref)}"
         (out_dir / "REQUEST.md").write_text(
             f"repo: {repo.name}   branch: {_branch_of(intended_ref)}   intended ref: {intended_ref}\n"
-            f"intended ref on remote at freeze: {_ref_state(repo, url, intended_ref)}\n"
+            f"intended ref on remote at freeze: {state}\n"
             f"target: {target_ref} @ {live_base}\n"
             f"head: {new_head}\n"
         )

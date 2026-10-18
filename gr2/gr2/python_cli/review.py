@@ -189,13 +189,16 @@ def host_pr_head_oid(source_repo_root: Path, pr_number: int, *, remote: str = "o
     is detectable."""
     ref = f"refs/pull/{pr_number}/head"
     result = gitops.git(Path(source_repo_root), "ls-remote", remote, ref)
-    line = result.stdout.strip()
-    if result.returncode != 0 or not line:
+    try:
+        oid = gitops.ls_remote_oid(result.stdout, ref) if result.returncode == 0 else None
+    except ValueError as exc:
+        raise ReviewError(f"cannot read the host OID for PR {pr_number} on {remote!r}: {exc}") from None
+    if not oid:
         raise ReviewError(
             f"cannot read the host OID for PR {pr_number} ({ref}) on {remote!r}: "
             f"{result.stderr.strip() or 'ref not advertised'}"
         )
-    oid = line.split()[0].strip().lower()
+    oid = oid.lower()
     if not _SHA40.match(oid):
         raise ReviewError(f"host advertised a non-sha OID for PR {pr_number}: {oid!r}")
     return oid

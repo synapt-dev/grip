@@ -331,6 +331,16 @@ def ls_remote_rows(listing: str) -> list[tuple[str, str]]:
     return rows
 
 
+def ls_remote_oid(listing: str, ref: str) -> str | None:
+    """The oid of the one ls-remote row whose name is exactly ``ref``, or None when no row names it. ls-remote matches
+    its pattern by tail, so refs/heads/a/<ref> answers too and may sort first: the first row is an order, not the asked
+    ref. Two rows naming ``ref`` raise ValueError rather than pick one."""
+    oids = [oid for oid, name in ls_remote_rows(listing) if name == ref]
+    if len(oids) > 1:
+        raise ValueError(f"ls-remote listed {len(oids)} rows named {ref!r}")
+    return oids[0] if oids else None
+
+
 def for_each_ref_rows(listing: str) -> list[str]:
     """The non-empty rows of for-each-ref output, split on "\n" only. A ref name cannot hold "\n" (or any control
     character), but it may hold U+2028 and U+0085, which str.splitlines also cuts at and str.strip/str.split() also

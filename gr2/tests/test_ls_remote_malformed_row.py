@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 import typer
 
-from gr2.python_cli import app, defaults, gitops, grip_cli, merge_gate, merge_receipts, push
+from gr2.python_cli import app, defaults, gitops, grip_cli, merge_gate, merge_receipts, push, review, review_rebind
 
 BAD = "not-a-valid-ls-remote-row"
 OID = "1" * 40
@@ -47,6 +47,7 @@ CALLS = {
     "app_live_remote_tips": lambda r: app._live_remote_tips(r, "origin", "refs/heads/x"),
     "app_remote_tag_shas": lambda r: app._remote_tag_shas(r),
     "defaults_target_branch": lambda r: defaults.target_branch([(r, "origin", OID)], None),
+    "review_rebind_remote_oid": lambda r: review_rebind._remote_oid(r, "origin", "refs/heads/x"),
 }
 
 
@@ -98,3 +99,15 @@ def test_merged_defaults_unresolved(shim, monkeypatch):
     monkeypatch.setattr(merge_receipts, "runs", lambda ws, rid: [])
     with pytest.raises(defaults.Unresolved, match="into_unresolved"):
         app._resolve_merged_defaults(shim.parent, "gr:t", None)
+
+
+def test_host_pr_head_oid_refuses_malformed(shim):
+    with pytest.raises(review.ReviewError, match="not a row"):
+        review.host_pr_head_oid(shim, 7)
+
+
+def test_host_pr_head_oid_refuses_duplicate(tmp_path, monkeypatch):
+    two = f"{OID}\trefs/pull/7/head\n{'2' * 40}\trefs/pull/7/head\n"
+    monkeypatch.setattr(gitops, "git", lambda *a, **k: subprocess.CompletedProcess(a, 0, two, ""))
+    with pytest.raises(review.ReviewError, match="2 rows named 'refs/pull/7/head'"):
+        review.host_pr_head_oid(tmp_path, 7)

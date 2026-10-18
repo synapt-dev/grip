@@ -760,9 +760,14 @@ def test_git_adapter_keeps_input_timeout_and_raw_text(monkeypatch, tmp_path):
     monkeypatch.setattr(approvals.gitops, "run", launch)
     assert approvals._git(tmp_path, "hash-object", "--stdin", data="payload", raw=True) == "  result\n"
     assert approvals._git(tmp_path, "status") == "result"
+    for _, _, kwargs in seen:
+        env = kwargs.pop("env")
+        assert (env["GIT_NO_REPLACE_OBJECTS"], env["GIT_GRAFT_FILE"]) == ("1", "/dev/null")
+        assert env["PATH"] == approvals.os.environ["PATH"]
+    true_history = ("-c", "core.commitGraph=false")
     assert seen == [
-        (tmp_path, ("hash-object", "--stdin"), {"input": "payload", "timeout": 60, "raise_timeout": True}),
-        (tmp_path, ("status",), {"input": None, "timeout": 60, "raise_timeout": True}),
+        (tmp_path, (*true_history, "hash-object", "--stdin"), {"input": "payload", "timeout": 60, "raise_timeout": True}),
+        (tmp_path, (*true_history, "status"), {"input": None, "timeout": 60, "raise_timeout": True}),
     ]
 
 
@@ -1144,6 +1149,76 @@ def test_a_member_behind_one_side_of_a_fork_is_not_named(monkeypatch, order, hea
     with pytest.raises(approvals.ApprovalRefused, match="^approval_chain_divergent: ") as refused:
         approvals.count_approvals(None, root["review_id"])
     assert (refused.value.expected, refused.value.observed) == tuple(h * 40 for h in heads)
+
+
+_ANCESTORS = approvals._ancestors
+
+
+@pytest.mark.parametrize("order, chain", [
+    (("b", "c"), {"b": "bc", "c": "bc"}),
+    (("a", "b", "c"), {"a": "a", "b": "bc", "c": "bc"}),
+], ids=["two-tips-each-others-ancestor", "a-third-tip-outside-the-cycle"])
+def test_tips_in_a_cycle_are_divergent_and_name_no_fork_tips(monkeypatch, order, chain):
+    tips = {k + ".git": tip * 40 for k, tip in zip(FIVE, order)}
+    root = _five(monkeypatch, tips)
+    root["members"] = root["members"][:len(order)]
+    # an ancestry no commit graph can hold: b and c are each other's ancestor
+    monkeypatch.setattr(approvals, "_ancestors", lambda workspace, tip: {t * 40 for t in chain[tip[0]]})
+    with pytest.raises(approvals.ApprovalRefused, match="^approval_chain_divergent: ") as refused:
+        approvals.count_approvals(None, root["review_id"])
+    assert str(refused.value) == "approval_chain_divergent: " + approvals.canonical(tips)
+    assert (refused.value.expected, refused.value.observed) == (None, None)
+
+
+def _fork(repo, monkeypatch):
+    for key, value in {"GIT_AUTHOR_NAME": "Author A", "GIT_AUTHOR_EMAIL": "a@example.invalid",
+                       "GIT_COMMITTER_NAME": "Author A", "GIT_COMMITTER_EMAIL": "a@example.invalid",
+                       "GIT_CONFIG_NOSYSTEM": "1"}.items():
+        monkeypatch.setenv(key, value)
+    git(repo.parent, "init", "-q", repo.name)
+    empty = git(repo, "write-tree")
+    a = git(repo, "commit-tree", "-m", "a", empty)
+    b = git(repo, "commit-tree", "-m", "b", "-p", a, empty)
+    c = git(repo, "commit-tree", "-m", "c", "-p", a, empty)
+    return {"a": a, "b": b, "c": c}
+
+
+@pytest.mark.parametrize("local", ["none", "grafts", "replace"])
+@pytest.mark.parametrize("order", [("b", "c"), ("a", "b", "c")], ids=["fork-tips", "fork-tips-and-base"])
+def test_a_local_graft_or_replace_cycle_does_not_change_how_a_fork_reads(tmp_path, monkeypatch, local, order):
+    repo = tmp_path / "ws"
+    oid = _fork(repo, monkeypatch)
+    if local == "grafts":
+        (repo / ".git" / "info").mkdir(exist_ok=True)
+        (repo / ".git" / "info" / "grafts").write_text(f"{oid['b']} {oid['c']}\n{oid['c']} {oid['b']}\n")
+    elif local == "replace":
+        git(repo, "replace", "--graft", oid["b"], oid["c"])
+        git(repo, "replace", "--graft", oid["c"], oid["b"])
+    if local != "none":
+        # the cycle is live for plain git: each fork tip lists the other
+        assert oid["c"] in git(repo, "rev-list", oid["b"]) and oid["b"] in git(repo, "rev-list", oid["c"])
+    tips = {k + ".git": oid[t] for k, t in zip(FIVE, order)}
+    root = _five(monkeypatch, tips)
+    root["members"] = root["members"][:len(order)]
+    monkeypatch.setattr(approvals, "_ancestors", _ANCESTORS)
+    with pytest.raises(approvals.ApprovalRefused, match="^approval_chain_divergent: ") as refused:
+        approvals.count_approvals(repo, root["review_id"])
+    assert (refused.value.expected, refused.value.observed) == (oid["b"], oid["c"])
+
+
+def test_a_linear_chain_with_a_local_replace_cycle_still_reads_incomplete(tmp_path, monkeypatch):
+    repo = tmp_path / "ws"
+    oid = _fork(repo, monkeypatch)
+    # b already builds on a; a replacement that puts b under a closes the cycle
+    git(repo, "replace", "--graft", oid["a"], oid["b"])
+    assert oid["b"] in git(repo, "rev-list", oid["a"])
+    tips = {"api.git": oid["a"], "app.git": oid["b"]}
+    root = _five(monkeypatch, tips)
+    root["members"] = root["members"][:2]
+    monkeypatch.setattr(approvals, "_ancestors", _ANCESTORS)
+    with pytest.raises(approvals.ApprovalRefused, match="^approvals_incomplete: ") as refused:
+        approvals.count_approvals(repo, root["review_id"])
+    assert (refused.value.expected, refused.value.observed) == (oid["b"], None)
 
 
 def _merge(multi):

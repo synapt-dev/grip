@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import re
 import subprocess
 import tomllib
@@ -32,9 +33,15 @@ class ApprovalRefused(RuntimeError):
         self.expected, self.observed = expected, observed
 
 
+#: The chain is read as the commits really are: a local graft or replace object could make two links each other's
+#: ancestor, a cycle no pushed chain can hold, so they are off for every read here (and the commit-graph with them).
+_TRUE_HISTORY = {"GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull}
+
+
 def _git(repo: Path, *args: str, data: str | None = None, raw: bool = False) -> str:
     try:
-        p = gitops.run(repo, *args, input=data, timeout=60, raise_timeout=True)
+        p = gitops.run(repo, "-c", "core.commitGraph=false", *args, input=data, env={**os.environ, **_TRUE_HISTORY},
+                       timeout=60, raise_timeout=True)
     except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
         raise ApprovalRefused(f"approval_unmeasurable: {type(exc).__name__}") from exc
     if p.returncode:
@@ -400,6 +407,8 @@ def _refuse_split(workspace: Path, root: dict, tips: dict[str, str | None]) -> N
                               f"{len(tips)} members, not yet on {', '.join(missing)}", expected=longest[0])
     ancestry = {tip: _ancestors(workspace, tip) for tip in present}
     heads = [tip for tip in present if not any(tip in ancestry[other] for other in present if other != tip)]
+    if len(heads) < 2:
+        raise ApprovalRefused("approval_chain_divergent: " + canonical(tips))
     raise ApprovalRefused("approval_chain_divergent: " + canonical(tips), expected=heads[0], observed=heads[1])
 
 

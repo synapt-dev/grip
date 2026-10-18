@@ -402,6 +402,12 @@ class _Bounded:
         return getattr(self._proc, name)
 
 
+def _blob_id(body: bytes, like: str) -> str:
+    """The blob id of ``body`` in the hash of ``like`` (40 hex: sha1, 64: sha256)."""
+    algo = hashlib.sha1 if len(like) == 40 else hashlib.sha256
+    return algo(b"blob %d\0" % len(body) + body).hexdigest()
+
+
 class BatchReader(GitReader):
     """Two git processes for a whole record: one ``ls-tree -r -t`` per root tree, indexed
     by tree id so every subtree it names is listed without another process, and one
@@ -461,14 +467,24 @@ class BatchReader(GitReader):
             # leaves the reader serving the next request (a "missing" header has two fields and no body)
             self._cat.stdout.read(int(header[2]) + 1)
         if len(header) != 3 or header[1] != b"blob":
+            if len(header) != 3 and header[1:] != [b"missing"]:
+                self._abandon()  # an empty or unreadable header: the stream is gone or out of step
             raise ReviewRecordError(f"git cat-file blob failed: {oid} is "
                                     f"{header[1].decode(errors='replace') if len(header) > 1 else 'unreadable'}, not a blob")
         size = int(header[2])
         data = self._cat.stdout.read(size + 1)
-        if len(data) != size + 1:
-            self.close()  # the stream stopped mid-object; nothing after it can be trusted
-            raise ReviewRecordError(f"git cat-file blob failed: {oid} truncated")
-        return data[:size]
+        body = data[:size]
+        # no length or newline check proves where an answer ends: only the body hashing to the id asked does
+        if data[size:] != b"\n" or _blob_id(body, oid) != oid:
+            self._abandon()  # nothing after it can be trusted
+            raise ReviewRecordError(f"git cat-file blob failed: {oid} truncated, or answered with another object's bytes")
+        return body
+
+    def _abandon(self) -> None:
+        # kill before close: git may be blocked writing the rest of an overlong body into a full pipe,
+        # and close() waits for it to exit
+        self._cat.kill()
+        self.close()
 
     def close(self) -> None:
         if self._cat is not None:

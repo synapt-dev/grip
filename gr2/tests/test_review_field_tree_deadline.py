@@ -5,6 +5,7 @@ The repo has no pytest-timeout, so the row guards itself: the read runs on a thr
 read still running after the guard fails the row and kills what it started."""
 from __future__ import annotations
 
+import hashlib
 import os
 import threading
 import time
@@ -95,7 +96,7 @@ class _Feed:
         return 0
 
 
-def _guarded_blob(monkeypatch, feed: _Feed) -> tuple[object, float]:
+def _guarded_blob(monkeypatch, feed: _Feed, oid: str = "x") -> tuple[object, float]:
     """The blob read under a 1 s deadline, on a thread the row guards: a read still running after
     GUARD fails the row, and the kill ends it."""
     monkeypatch.setattr(fd.BatchReader, "DEADLINE", 1.0, raising=False)
@@ -105,7 +106,7 @@ def _guarded_blob(monkeypatch, feed: _Feed) -> tuple[object, float]:
 
     def read() -> None:
         try:
-            got.append(reader.blob("x"))
+            got.append(reader.blob(oid))
         except BaseException as exc:
             got.append(exc)
 
@@ -126,7 +127,8 @@ def test_batch_reader_takes_a_slow_live_blob_past_the_deadline(monkeypatch):
     about 2.4 s, longer than the deadline, and is never silent for more than 0.05 s."""
     size = 3 << 20
     body = [b"\0" * 65536] * (size // 65536) + [b"\n"]
-    got, took = _guarded_blob(monkeypatch, _Feed([b"x blob %d\n" % size, *body], 0.05))
+    oid = hashlib.sha1(b"blob %d\0" % size + b"\0" * size).hexdigest()
+    got, took = _guarded_blob(monkeypatch, _Feed([b"%s blob %d\n" % (oid.encode(), size), *body], 0.05), oid)
     assert got == b"\0" * size, got
     assert took > 1.0  # it outlasted the deadline
 

@@ -2,8 +2,11 @@
 objects. Each test names the rule it holds."""
 from __future__ import annotations
 
+import hashlib
 import shutil
 import subprocess
+import threading
+import zlib
 from pathlib import Path
 
 import pytest
@@ -138,3 +141,103 @@ def test_a_refused_object_leaves_the_batch_reader_serving_the_next_read(repo: Pa
         with pytest.raises(fd.ReviewRecordError):
             fd.to_protobuf(repo, bad, batch)
         assert fd.to_protobuf(repo, tree, batch) == fd.to_protobuf(repo, tree)
+
+
+def _lying_blob(repo: Path, size: int = 2, body: bytes = b"abc\n") -> str:
+    """A loose blob stored as ``body`` under its own id, but with a header claiming ``size`` bytes:
+    git cat-file --batch sends the header as stored, then the whole body and the newline."""
+    oid = git(repo, "hash-object", "-w", "--stdin", data=body)
+    path = repo / "objects" / oid[:2] / oid[2:]
+    path.chmod(0o644)
+    path.write_bytes(zlib.compress(b"blob %d\0" % size + body))
+    return oid
+
+
+def _answer(batch: fd.BatchReader, oid: str) -> bytes | None:
+    try:
+        return batch.blob(oid)
+    except fd.ReviewRecordError:
+        return None
+
+
+def test_a_header_that_understates_the_body_is_refused(repo: Path) -> None:
+    """Rule: the byte after a blob's body must be the newline that ends it; a header that understates the
+    body is refused as truncated, not answered with the bytes it claims."""
+    lying = _lying_blob(repo)
+    with fd.BatchReader(repo) as batch:
+        with pytest.raises(fd.ReviewRecordError, match="truncated"):
+            batch.blob(lying)
+
+
+def _object_id(body: bytes, like: str) -> str:
+    """The blob id of ``body``, in the hash of the id it is checked against (40 hex: sha1, 64: sha256)."""
+    algo = hashlib.sha1 if len(like) == 40 else hashlib.sha256
+    return algo(b"blob %d\0" % len(body) + body).hexdigest()
+
+
+def test_no_request_after_a_lying_header_is_answered_with_another_objects_bytes(repo: Path) -> None:
+    """Rule: after a header that understates its body, every later request on that reader, and on a new
+    one, is answered with its own object's bytes: each answer re-hashes to the id that was asked, and a
+    refusal is the only other outcome."""
+    lying = _lying_blob(repo)
+    zz = git(repo, "hash-object", "-w", "--stdin", data=b"zz\n")
+    qq = git(repo, "hash-object", "-w", "--stdin", data=b"qq\n")
+
+    with fd.BatchReader(repo) as batch:
+        answers = [(oid, _answer(batch, oid)) for oid in (lying, zz, zz, qq)]
+    with fd.BatchReader(repo) as batch:
+        answers.append((qq, _answer(batch, qq)))
+    wrong = [(oid, body, _object_id(body, oid)) for oid, body in answers
+             if body is not None and _object_id(body, oid) != oid]
+    assert wrong == [], wrong
+    assert [body for _, body in answers[1:]] == [b"zz\n", b"zz\n", b"qq\n", b"qq\n"], answers
+
+
+def test_a_header_one_short_of_a_body_ending_in_two_newlines_is_refused(repo: Path) -> None:
+    """Rule: a body that happens to hold a newline where the header says it ends is still refused, and
+    the newline git sends after it is not read as the next answer's header."""
+    lying = _lying_blob(repo, 3, b"ab\n\n")
+    zz = git(repo, "hash-object", "-w", "--stdin", data=b"zz\n")
+    qq = git(repo, "hash-object", "-w", "--stdin", data=b"qq\n")
+    with fd.BatchReader(repo) as batch:
+        assert [_answer(batch, oid) for oid in (lying, zz, qq, qq)] == [None, b"zz\n", b"qq\n", b"qq\n"]
+
+
+def test_a_writer_of_one_object_cannot_choose_a_later_answer(repo: Path) -> None:
+    """Rule: a body that carries a forged answer for another object after the size its header claims is
+    refused, and the forged bytes never answer that object."""
+    zz = git(repo, "hash-object", "-w", "--stdin", data=b"zz\n")
+    lying = _lying_blob(repo, 1, b"x\n%s blob 3\nEVL\n" % zz.encode())
+    with fd.BatchReader(repo) as batch:
+        assert [_answer(batch, oid) for oid in (lying, zz, zz)] == [None, b"zz\n", b"zz\n"]
+
+
+def test_a_refusal_ends_a_process_blocked_writing_a_long_body(repo: Path) -> None:
+    """Rule: a refusal kills the batch process before closing it; git blocked writing the rest of an
+    overlong body into a full pipe never exits on its own. The read runs on a thread, so a hang fails
+    the row instead of the run."""
+    lying = _lying_blob(repo, 2, b"a" * (4 << 20))
+    one = git(repo, "hash-object", "-w", "--stdin", data=b"x")
+    batch = fd.BatchReader(repo)
+    got: list = []
+    t = threading.Thread(target=lambda: got.append(_answer(batch, lying)), daemon=True)
+    t.start()
+    t.join(15)
+    try:
+        assert not t.is_alive(), "the refusal hung waiting on the batch process"
+    finally:
+        if t.is_alive() and batch._cat is not None:
+            batch._cat.kill()
+            t.join(5)
+    assert got == [None]
+    assert batch.blob(one) == b"x"  # a new process serves the next read
+    batch.close()
+
+
+def test_a_one_byte_blob_and_an_empty_blob_still_read_through_the_batch_reader(repo: Path) -> None:
+    """Rule: the newline check holds for the shortest bodies; a 1-byte blob and an empty blob read as stored."""
+    one = git(repo, "hash-object", "-w", "--stdin", data=b"x")
+    empty = git(repo, "hash-object", "-w", "--stdin", data=b"")
+    nl = git(repo, "hash-object", "-w", "--stdin", data=b"\n")
+    with fd.BatchReader(repo) as batch:
+        assert [batch.blob(one), batch.blob(empty), batch.blob(nl), batch.blob(one)] == [b"x", b"", b"\n", b"x"]

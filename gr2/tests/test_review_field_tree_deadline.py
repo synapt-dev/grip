@@ -233,3 +233,40 @@ def test_batch_reader_refuses_a_missing_blob_with_no_fetch_outside_a_partial_clo
             reader.blob(oid)
     assert f"{oid} is missing" in str(refused.value)
     assert "fetch" not in str(refused.value)
+
+
+def test_batch_reader_lists_and_checks_a_tree_clone_without_fetching(tmp_path):
+    """In a tree:0 clone every tree is absent. Each reader's ls-tree and the record check's fsck stay local like
+    the batch cat-file: the absent tree is refused, and nothing reaches the remote, which is gone."""
+    if tuple(int(n) for n in re.findall(r"\d+", git(tmp_path, "version"))[:2]) < (2, 44):
+        pytest.skip("git before 2.44 ignores GIT_NO_LAZY_FETCH")
+    remote = tmp_path / "remote"
+    git(tmp_path, "init", "-q", str(remote))
+    git(remote, "config", "uploadpack.allowFilter", "true")
+    (remote / "d").mkdir()
+    (remote / "d" / "f").write_text("far\n")
+    git(remote, "add", "d")
+    git(remote, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "d")
+    root = git(remote, "rev-parse", "HEAD^{tree}")
+    clone = tmp_path / "clone"
+    git(tmp_path, "clone", "-q", "--no-checkout", "--filter=tree:0", remote.as_uri(), str(clone))
+    # a fetch from the remote runs this upload-pack, which leaves a mark; the remote is gone, so it then fails
+    mark = tmp_path / "fetched"
+    pack = tmp_path / "upload-pack"
+    pack.write_text(f"#!/bin/sh\ntouch {mark}\nexec git-upload-pack \"$@\"\n")
+    pack.chmod(0o755)
+    git(clone, "config", "remote.origin.uploadpack", str(pack))
+    remote.rename(tmp_path / "gone")
+    for reader in (fd.BatchReader(clone), fd.GitReader(clone)):
+        with reader, pytest.raises(fd.ReviewRecordError) as refused:
+            reader.ls(root)
+        assert "git ls-tree failed" in str(refused.value)
+        assert not mark.exists(), f"{type(reader).__name__} ls-tree tried to fetch"
+    # fsck passes a tree the promisor holds; the check then reads it, and refuses it as absent
+    for reader in (fd.BatchReader(clone), None):
+        with pytest.raises(fd.ReviewRecordError) as refused:
+            fd.verify_tree(clone, root, reader=reader)
+        assert "git ls-tree failed" in str(refused.value)
+        assert not mark.exists(), "the record check tried to fetch"
+        if reader:
+            reader.close()

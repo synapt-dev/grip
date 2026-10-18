@@ -282,8 +282,8 @@ def decode(buf: bytes, message: str = "ReviewBind", schema: Schema | None = None
 
 # --- field trees -----------------------------------------------------------------
 
-def _git(repo: Path, *args: str, data: bytes | None = None) -> bytes:
-    proc = gitops.run(repo, *args, input=data, binary=True)
+def _git(repo: Path, *args: str, data: bytes | None = None, env: dict | None = None) -> bytes:
+    proc = gitops.run(repo, *args, input=data, binary=True, env=env)
     if proc.returncode != 0:
         raise ReviewRecordError(f"git {args[0]} failed: {proc.stderr.decode(errors='replace').strip()[:200]}")
     return proc.stdout
@@ -303,9 +303,9 @@ def _mktree(repo: Path, entries: list[Entry]) -> str:
     return _git(repo, "mktree", "-z", data=data).decode().strip()
 
 
-def _ls(repo: Path, tree: str) -> list[Entry]:
+def _ls(repo: Path, tree: str, env: dict | None = None) -> list[Entry]:
     out = []
-    for line in _git(repo, "ls-tree", "-z", tree).split(b"\0"):
+    for line in _git(repo, "ls-tree", "-z", tree, env=env).split(b"\0"):
         if not line:
             continue
         meta, name = line.split(b"\t", 1)
@@ -315,6 +315,12 @@ def _ls(repo: Path, tree: str) -> list[Entry]:
 
 
 # --- readers: how a stored record's objects are fetched ------------------------------
+
+def _local() -> dict:
+    """The environment for a review read: in a partial clone, an absent object answers missing at once rather
+    than reaching the network (git before 2.44 ignores the variable)."""
+    return {**os.environ, "GIT_NO_LAZY_FETCH": "1"}
+
 # A reader has ls(tree) -> entries, exactly as ls-tree reports them, and blob(oid) ->
 # bytes. The readers differ only in how many git processes they start, never in what
 # they return.
@@ -326,10 +332,10 @@ class GitReader:
         self.repo = Path(repo)
 
     def ls(self, tree: str) -> list[Entry]:
-        return _ls(self.repo, tree)
+        return _ls(self.repo, tree, env=_local())
 
     def blob(self, oid: str) -> bytes:
-        return _git(self.repo, "cat-file", "blob", oid)
+        return _git(self.repo, "cat-file", "blob", oid, env=_local())
 
     def close(self) -> None:
         pass
@@ -446,7 +452,7 @@ class BatchReader(GitReader):
     def _index(self, root: str) -> None:
         tree_at = {"": root}
         rows: list[tuple[str, Entry]] = []
-        for line in _git(self.repo, "ls-tree", "-r", "-t", "-z", root).split(b"\0"):
+        for line in _git(self.repo, "ls-tree", "-r", "-t", "-z", root, env=_local()).split(b"\0"):
             if not line:
                 continue
             meta, raw = line.split(b"\t", 1)
@@ -467,10 +473,8 @@ class BatchReader(GitReader):
         if not _FULL_OID.fullmatch(oid):
             raise ReviewRecordError(f"git cat-file blob failed: {oid!r} is not a full object id")
         if self._cat is None:
-            # a review read is local: in a partial clone, an absent blob answers "missing" at once rather
-            # than reaching the network under the deadline (git before 2.44 ignores the variable)
-            self._cat = gitops.start(self.repo, "cat-file", "--batch",
-                                     env={**os.environ, "GIT_NO_LAZY_FETCH": "1"})
+            # a review read is local: an absent blob answers "missing" rather than fetching under the deadline
+            self._cat = gitops.start(self.repo, "cat-file", "--batch", env=_local())
         self._cat.stdin.write(oid.encode() + b"\n")
         self._cat.stdin.flush()
         header = self._cat.stdout.readline().split()
@@ -519,10 +523,11 @@ class BatchReader(GitReader):
         """The remote a partial clone fetches absent objects from: extensions.partialclone (git's own name for
         it), else the first remote.<name>.promisor that is true (what a --filter clone writes); None when the repo
         has neither, since then git has nowhere to fetch an absent object from."""
-        named = gitops.run(self.repo, "config", "--get", "extensions.partialclone").stdout.strip()
+        named = gitops.run(self.repo, "config", "--get", "extensions.partialclone", env=_local()).stdout.strip()
         if named:
             return named
-        found = gitops.run(self.repo, "config", "-z", "--type=bool", "--get-regexp", r"^remote\..*\.promisor$")
+        found = gitops.run(self.repo, "config", "-z", "--type=bool", "--get-regexp", r"^remote\..*\.promisor$",
+                           env=_local())
         for entry in found.stdout.split("\0"):
             key, _, value = entry.partition("\n")
             if value == "true":
@@ -681,7 +686,7 @@ def verify_tree(repo: Path, tree: str, message: str = "ReviewBind", schema: Sche
     schema knows; occurrences run 0000001..n; and the record decodes by number. Names
     are never regenerated from the schema and compared. This checks a tree, not WHICH
     tree: binding a record to its identity is the ref writer's job."""
-    proc = gitops.run(repo, "fsck", "--strict", "--no-dangling", tree, binary=True)
+    proc = gitops.run(repo, "fsck", "--strict", "--no-dangling", tree, binary=True, env=_local())
     if proc.returncode != 0:
         raise ReviewRecordError(f"fsck refused record {tree}: {proc.stderr.decode(errors='replace').strip()[:200]}")
     reader = reader or GitReader(repo)

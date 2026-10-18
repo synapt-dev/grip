@@ -1920,8 +1920,8 @@ def _head_member_entry(document: dict, path: str, name: str | None = None) -> di
     matched by its committed name, which no working edit can change."""
     members = document.get("members", [])
     entries = [m for m in members if isinstance(m, dict) and m.get("pin")] if isinstance(members, list) else []
-    want = str(PurePosixPath(str(path)))
-    found = next((m for m in entries if str(PurePosixPath(str(m.get("path", "")))) == want), None)
+    want = keys.member_path_key(path)
+    found = next((m for m in entries if keys.member_path_key(m.get("path", "")) == want), None)
     if found is None and name:
         found = next((m for m in entries if m.get("name") == name), None)
     return found
@@ -1987,15 +1987,15 @@ def recorded_member_pin(root: Path, name: str, path: str | None = None) -> tuple
         document.get("members"), list) else []
     member = None
     if path:
-        want = str(PurePosixPath(str(path)))
-        member = next((m for m in members if str(PurePosixPath(str(m.get("path", "")))) == want), None)
+        want = keys.member_path_key(path)
+        member = next((m for m in members if keys.member_path_key(m.get("path", "")) == want), None)
     if member is None:
         member = next((m for m in members if m.get("name") == name), None)
     if member is None:
         # Dropped from the working file but still in the root commit: the working file is editable, so the commit's
         # pin is still the record.
         return _committed_record(root, str(path or name), name)
-    member_path = str(PurePosixPath(str(member.get("path") or path or name)))
+    member_path = keys.member_path_key(member.get("path") or path or name)
     head = _head_grip_toml(root)
     entry = _head_member_entry(head, member_path)
     committed = str(entry["pin"]) if entry else None
@@ -2020,7 +2020,7 @@ def _committed_record(root: Path, path: str, name: str) -> tuple[bool, str | Non
     entry = _head_member_entry(document, path, name)
     if entry is None:
         return False, None, ""
-    entry_path = str(PurePosixPath(str(entry.get("path") or path)))
+    entry_path = keys.member_path_key(entry.get("path") or path)
     recorded, source = _member_record(root, entry_path, str(entry["pin"]), _workspace_mode(document) == "full")
     return True, recorded, source
 
@@ -2372,7 +2372,7 @@ def _refuse_undeclared_gitlinks(root: Path, members: list[dict[str, str]]) -> No
 
 def _undeclared_gitlink_lines(root: Path, members: list[dict[str, str]]) -> list[str]:
     """One refusal line per root-index gitlink that no member declares; `check` raises them, `status` prints them."""
-    declared = {str(PurePosixPath(member["path"])) for member in members}   # the index spells `./a` and `a/` as `a`
+    declared = {keys.member_path_key(member["path"]) for member in members}   # the index spells `./a` and `a/` as `a`
     stray = sorted(path for path in store_hooks._index_gitlinks(root, None) if path not in declared)
     return [f"undeclared gitlink {path!r} in the root index: grip.toml has no member at that path; "
             f"declare it as a member, or remove it from the index with `git rm --cached -f -- {shlex.quote(path)}`"

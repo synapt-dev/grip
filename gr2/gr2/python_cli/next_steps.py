@@ -153,18 +153,26 @@ def remote_branch_diverged() -> str:
 
 
 def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: str, head: str,
-              checks: tuple[str, ...]) -> str | None:
-    """The next command for one member's merge refusal, or None when no single command answers it."""
+              checks: tuple[str, ...], siblings: dict | None = None) -> str | None:
+    """The next command for one member's merge refusal, or None when no single command answers it. ``siblings`` maps
+    a declared-set member's name to what the gate found for it: the newest review of it at its pin in this workspace
+    (or None), its remote and its clone."""
     if refused.startswith("review_not_on_member_remote"):
         return f"next: gr2 review publish {_shown(workspace)} {_shown(review)} --remote {_shown(remote)}"
     if refused.startswith("declared_set_pin_unreviewed"):
-        # The tie reads the sibling's own review on the sibling's own remote, and that ref may be re-published or
-        # deleted while the gate reads it: a rerun reads it again; a deleted one is put back by publishing it again.
+        # The tie reads the sibling's own review on the sibling's own remote, so the answer is to publish a review of
+        # the sibling at that pin there: the one this workspace holds, with its real id and remote. With none here,
+        # the line still runs: it reads the pin from the sibling's clone and says which review is missing.
         tied = re.match(r"declared_set_pin_unreviewed: (.+) is pinned at ([0-9a-f]+), ", refused)
-        member, pin = (_shown(tied[1]), tied[2]) if tied else ("the pinned member", "its pin")
-        return (f"next: rerun gr2 review merge {_shown(workspace)} {_shown(review)}; if no review of {member} at {pin} "
-                f"is on its remote (the ref deleted), publish a fresh one: gr2 review publish {_shown(workspace)} "
-                f"<{member}'s review id> --remote <{member}'s remote>")
+        found = (siblings or {}).get(tied[1]) if tied else None
+        if found is None:
+            return f"next: gr2 review merge {_shown(workspace)} {_shown(review)}"
+        if found["review"]:
+            return (f"next: gr2 review publish {_shown(workspace)} {_shown(found['review'])} "
+                    f"--remote {_shown(found['remote'])}")
+        name, ws, to = (v.replace("%", "%%") for v in (tied[1], workspace, found["remote"]))  # git reads % in --format
+        said = f"no review of {name} at %h is pinned in {ws}; pin one, then publish it to {to}"
+        return f"next: git -C {_shown(found['path'])} log -1 --format={_shown(said)} {tied[2]}"
     if refused.startswith("check_set_fail"):
         # A recorded failure at these heads stays (a pass beside it does not erase it), so a rerun cannot clear it.
         return ("next: the set check failed at these heads and that failure is recorded; a rerun does not clear it. "

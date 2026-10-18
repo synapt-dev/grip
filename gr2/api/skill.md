@@ -378,7 +378,7 @@ next: the set check failed at these heads and that failure is recorded; a rerun 
 
 ### declared_set_pin_unreviewed
 
-next: rerun gr2 review merge '<workspace>' '<review>'; if no review of the pinned member at its pin is on its remote (the ref deleted), publish a fresh one: gr2 review publish '<workspace>' <the pinned member's review id> --remote <the pinned member's remote>
+next: gr2 review merge '<workspace>' '<review>'
 
 ### feature_moved
 

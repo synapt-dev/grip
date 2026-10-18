@@ -284,12 +284,31 @@ def _pin_tie(root: Path, declaration: declared_sets.Declaration, into: str):
                         f"and these reviews could not be read from it: {lost}: {said}")
         except (RuntimeError, subprocess.SubprocessError, OSError, grip.GripCorruptError) as exc:
             return f"declared_set_pin_unmeasured: {name}'s pin {short} could not be read from its remote: {exc}"
+        tie.siblings[name] = {"review": _local_review_of(root, declaration, name, pin), "remote": remote, "path": str(repo)}
         if retracted:
             return (f"declared_set_pin_unreviewed: {name} is pinned at {short}, which is not merged into {into}, and "
                     f"the reviews that named it were retracted from its remote (ref deleted or moved): {retracted}")
         return (f"declared_set_pin_unreviewed: {name} is pinned at {short}, which is neither merged into {into} nor "
                 f"named by a review published on its remote")
+    tie.siblings = {}  # name -> its local review at the pin (or None), remote and clone, for the next line
     return tie
+
+
+def _local_review_of(root: Path, declaration: declared_sets.Declaration, name: str, pin: str) -> str | None:
+    """The newest review pinned in this workspace that names member `name` at exactly `pin`, as gr:<sha>; None when
+    there is none, or the store cannot be read (the next line then names what is missing)."""
+    try:
+        binds = grip.list_review_binds(root)
+    except (grip.GripCorruptError, grip.GripInitError, grip.ReviewStoreAbsent, OSError, subprocess.SubprocessError):
+        return None
+    for commit, _ in reversed(binds):
+        try:
+            state = grip._read_repo_state(root, commit, bind=True)
+        except (grip.GripCorruptError, OSError, subprocess.SubprocessError):
+            continue
+        if any(f.get("commit") == pin and declaration.member_name(k, f.get("path", "")) == name for k, f in state.items()):
+            return f"gr:{commit}"
+    return None
 
 
 def _toplevel(repo: Path) -> Path | None:
@@ -487,6 +506,7 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                                          "be parsed or carries URL userinfo; pin again from a remote without it and "
                                          "use a credential helper", "members": []}
     rows: list[dict] = []
+    siblings: dict[str, dict] = {}  # member key -> its declared set's tie findings, for the next lines
     root = Path(workspace).resolve()
     try:
         declaration = declared_sets.read(root)  # the committed grip.toml: a set is declared once, for every workspace
@@ -607,8 +627,9 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                 if declared["status"] == "fail" and declared["reason"] != "required_check_failed":
                     why = f"declared_set_unmeasured: {declared['reason']}"
                 else:
-                    why = declared_sets.judge(root, declaration, dset, member_name, m["head"], declared["records"],
-                                              _pin_tie(root, declaration, into))
+                    tie = _pin_tie(root, declaration, into)
+                    why = declared_sets.judge(root, declaration, dset, member_name, m["head"], declared["records"], tie)
+                    siblings[m["key"]] = tie.siblings
                 row["declared_set"] = {"set": dset.name, "refused": why}
                 if why:
                     row["refused"], row["state"] = why, None
@@ -665,7 +686,8 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
             if r["refused"]:
                 step = next_steps.merge_row(r["refused"], workspace=str(root), review="gr:" + view["id"].removeprefix("gr:"),
                                             remote=m["remote"], path=str((workspace / m["path"]).resolve()),
-                                            head=m["head"], checks=tuple(required_checks))
+                                            head=m["head"], checks=tuple(required_checks),
+                                            siblings=siblings.get(m["key"], {}))
                 if step:
                     r["next"] = step
             expected, observed = r.pop("_heads", (None, None))
@@ -810,7 +832,8 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         if r["refused"]:
             step = next_steps.merge_row(r["refused"], workspace=str(root), review="gr:" + view["id"].removeprefix("gr:"),
                                         remote=m["remote"], path=str((workspace / m["path"]).resolve()),
-                                        head=m["head"], checks=tuple(required_checks))
+                                        head=m["head"], checks=tuple(required_checks),
+                                        siblings=siblings.get(m["key"], {}))
             if step:
                 r["next"] = step
 

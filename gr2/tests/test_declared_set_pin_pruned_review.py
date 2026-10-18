@@ -7,11 +7,15 @@ line once. Any other batch failure refuses with it, after that one fetch."""
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
+
+import pytest
 
 from gr2.python_cli import merge_gate
 from tests.test_declared_set_pins import _move_beta, _refusal
 from tests.test_declared_sets import merge
+from tests.test_review_update import run_printed
 from tests.test_declared_sets import PASS, record, untouched, world  # noqa: F401  (fixtures)
 
 PRUNED = "refs/dev.synapt.grip/__reviews__/zz-pruned"
@@ -236,28 +240,73 @@ def test_a_review_republished_after_the_scan_with_the_same_content_still_ties(wo
     assert code == merge_gate.EXIT_MERGED, receipt
 
 
-def test_an_unreviewed_pin_names_the_rerun_and_the_publish_with_its_remote_form(world, monkeypatch):
+def _next(receipt):
+    return receipt["members"][0].get("next") or ""
+
+
+def test_a_retracted_pin_prints_the_publish_of_the_sibling_review_and_it_runs_as_printed(world, monkeypatch):
     assert record(world, PASS)["result"] == "pass"
-    remote = world["members"]["beta"]["remote"]
-    _retract_after_scan(monkeypatch, remote)
+    beta, real = world["members"]["beta"], merge_gate._git
+    _retract_after_scan(monkeypatch, beta["remote"])
 
     code, why, receipt = _refusal(world)
 
     assert code == merge_gate.EXIT_REFUSED and "retracted" in why, receipt
-    line = receipt["members"][0].get("next") or ""
-    review, pin = world["members"]["alpha"]["review"], why.split(" is pinned at ", 1)[1][:12]
-    assert line.startswith(f"next: rerun gr2 review merge {world['author']} {review}; "), line
-    assert f"no review of beta at {pin} " in line and "gr2 review publish " in line, line
-    assert line.endswith("<beta's review id> --remote <beta's remote>"), line
+    line = _next(receipt)
+    assert line == f"next: gr2 review publish {world['author']} {beta['review']} --remote {beta['remote']}", line
+    monkeypatch.setattr(merge_gate, "_git", real)  # the retraction is over
+    assert run_printed(line, world["author"]) == 0, line
+    code, receipt = merge(world, "alpha")
+    assert code == merge_gate.EXIT_MERGED, receipt  # the publish was the answer
 
 
-def test_both_unreviewed_texts_have_a_next_line():
-    for why in ("declared_set_pin_unreviewed: beta is pinned at 0123456789ab, which is neither merged into main nor "
-                "named by a review published on its remote",
-                "declared_set_pin_unreviewed: beta is pinned at 0123456789ab, which is not merged into main, and the "
-                "reviews that named it were retracted from its remote (ref deleted or moved): refs/x"):
-        line = merge_gate.next_steps.merge_row(why, workspace="/ws", review="gr:abc", remote="/r.git", path="/ws/m",
-                                               head="h", checks=("test",))
-        assert line == ("next: rerun gr2 review merge /ws gr:abc; if no review of beta at 0123456789ab is on its "
-                        "remote (the ref deleted), publish a fresh one: gr2 review publish /ws <beta's review id> "
-                        "--remote <beta's remote>"), line
+def test_a_never_named_pin_prints_the_publish_of_the_sibling_review_and_it_runs_as_printed(world):
+    assert record(world, PASS)["result"] == "pass"
+    beta = world["members"]["beta"]
+    for _, ref in _reviews(beta["remote"]):  # beta's review never reached its remote
+        subprocess.run(["git", "-C", str(beta["remote"]), "update-ref", "-d", ref], check=True)
+
+    code, why, receipt = _refusal(world)
+
+    assert code == merge_gate.EXIT_REFUSED and " nor named by a review published on its remote" in why, receipt
+    line = _next(receipt)
+    assert line == f"next: gr2 review publish {world['author']} {beta['review']} --remote {beta['remote']}", line
+    assert run_printed(line, world["author"]) == 0, line
+    assert merge(world, "alpha")[0] == merge_gate.EXIT_MERGED
+
+
+def test_with_no_review_of_the_pin_here_the_line_names_what_is_missing_and_runs(world):
+    moved = _move_beta(world, push=True)
+
+    code, why, receipt = _refusal(world)
+
+    assert code == merge_gate.EXIT_REFUSED and why.startswith("declared_set_pin_unreviewed: beta "), receipt
+    line = _next(receipt)
+    assert "<" not in line and ">" not in line and "gr2 review publish" not in line, line
+    assert f"no review of beta at %h is pinned in {world['author']}" in line, line
+    argv = shlex.split(line.removeprefix("next: "))
+    shown = subprocess.run(argv, cwd=world["author"], capture_output=True, text=True)
+    assert shown.returncode == 0 and shown.stdout.startswith(f"no review of beta at {moved[:7]}"), shown
+    assert str(world["members"]["beta"]["remote"]) in shown.stdout, shown.stdout
+
+
+@pytest.mark.parametrize("odd", ["it's a remote.git", 'say "hi" remote.git'])
+def test_a_remote_with_a_space_or_a_quote_still_runs_as_printed(world, tmp_path, odd):
+    beta = world["members"]["beta"]
+    remote = tmp_path / odd
+    subprocess.run(["git", "clone", "-q", "--bare", str(beta["remote"]), str(remote)], check=True)
+    why = (f"declared_set_pin_unreviewed: beta is pinned at {beta['head'][:12]}, which is neither merged into main nor "
+           "named by a review published on its remote")
+    found = {"beta": {"review": beta["review"], "remote": str(remote), "path": str(beta["repo"])}}
+    line = merge_gate.next_steps.merge_row(why, workspace=str(world["author"]), review="gr:abc", remote="/r.git",
+                                           path="/ws/m", head="h", checks=("test",), siblings=found)
+    assert shlex.split(line.removeprefix("next: "))[-3:] == [beta["review"], "--remote", str(remote)], line
+    assert run_printed(line, world["author"]) == 0, line
+    assert [ref for _, ref in _reviews(remote)] and beta["review"].removeprefix("gr:") in str(_reviews(remote)), line
+
+    found["beta"]["review"] = None  # and the missing-review line with the same remote and a workspace name of it
+    missing = merge_gate.next_steps.merge_row(why, workspace=str(tmp_path / odd), review="gr:abc", remote="/r.git",
+                                              path="/ws/m", head="h", checks=("test",), siblings=found)
+    assert run_printed(missing, world["author"]) == 0, missing
+    shown = subprocess.run(shlex.split(missing.removeprefix("next: ")), capture_output=True, text=True).stdout
+    assert shown.endswith(f" is pinned in {tmp_path / odd}; pin one, then publish it to {remote}\n"), shown

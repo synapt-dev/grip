@@ -126,8 +126,10 @@ def _open_from_range(workspace: str, review: str) -> str:
 def _pushed_branch_ambiguous(branches: str) -> list[str]:
     # Private, so the skill's refusal table keeps one row per printed code. No command answers this one (the caller
     # picks the branch), and a next line must run as printed, so next is null and the check line names the branches.
+    # Each name is escaped as the refused line escapes it; a branch name cannot hold a space, so the split is exact.
     return ["next: null",
-            f"check: {branches} all hold this head; --source must be a clone checked out on one of them"]
+            f"check: {', '.join(_shown(b) for b in branches.split(', '))} all hold this head; "
+            "--source must be a clone checked out on one of them"]
 
 
 def _unpushed_pin(path: str, sha: str, remote: str, branch: str | None, grip_toml: str, compat: bool) -> str:

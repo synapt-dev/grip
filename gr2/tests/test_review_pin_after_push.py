@@ -379,3 +379,13 @@ def test_p13_text_show_prints_pushed_before_pin(tmp_path):
     shown = runner.invoke(app, ["review", "show", str(w["ws"]), rid])
     assert shown.exit_code == 0, shown.output
     assert "  pushed before pin: refs/heads/feat" in shown.output.splitlines()
+
+
+def test_p12e_bidi_override_in_a_branch_name_is_escaped_on_the_check_line(tmp_path):
+    w = _world(tmp_path)
+    _git(w["src"], "push", "-q", "origin", f"{w['head']}:refs/heads/a‮b")
+    result = _pin(w, source=False)
+    assert result.exit_code != 0, result.output
+    assert "‮" not in result.output, result.output
+    assert ("check: 'refs/heads/a\\u202eb', refs/heads/feat all hold this head; "
+            "--source must be a clone checked out on one of them") in result.output.splitlines(), result.output

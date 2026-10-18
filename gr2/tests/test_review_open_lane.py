@@ -1106,6 +1106,59 @@ def test_reading_a_checkout_pr_stamp_applies_the_pinned_lane_name_rule(review_wo
         assert [link["approver"]["name"] for link in back["links"]] == ["Reviewer", name] and back["count"] == 2
 
 
+# A stamp whose approver is not a {name, key_id} object has no name to check; it is refused by the same name,
+# never an AttributeError out of the read.
+@pytest.mark.parametrize("approver", ["Reviewer2", None, {"key_id": ""}], ids=["string", "none", "no_name"])
+def test_reading_a_checkout_pr_stamp_whose_approver_is_not_an_object_refuses(review_world, monkeypatch, approver):
+    from typer.testing import CliRunner
+    from gr2.python_cli import approvals
+
+    world = review_world
+    ws, app_mod, lane = _checked_out_lane(world, monkeypatch)
+    stamped = CliRunner().invoke(app_mod.app, ["review", "stamp", str(lane)])
+    assert stamped.exit_code == 0, (stamped.output, stamped.exception)
+    repo = approvals.pr_lane_record(lane)["repo"]
+    good = approvals.pr_head_approvals(world["source"], repo, world["head_sha"])
+    _plant_pr_lane_stamp(world["source"], {**good["links"][0], "approver": approver}, good["tip"])
+    with pytest.raises(approvals.ApprovalRefused) as read:
+        approvals.pr_head_approvals(world["source"], repo, world["head_sha"])
+    assert str(read.value) == "approval_chain_broken: invalid approver name"
+    again = CliRunner().invoke(app_mod.app, ["review", "stamp", str(lane)])
+    assert again.exit_code == 2 and isinstance(again.exception, SystemExit), (again.output, again.exception)
+    assert again.output.splitlines()[0] == "approval_chain_broken: invalid approver name", again.output
+
+
+# A planted bad stamp is a loud, clearable stop. The refusal names the PR-lane ref and the commit
+# holding the bad stamp, never the bad name itself, and the printed next step, run as printed, clears it.
+def test_a_bad_checkout_pr_stamp_refusal_names_the_ref_and_commit_and_its_next_step_clears_it(review_world, monkeypatch):
+    from typer.testing import CliRunner
+    from gr2.python_cli import approvals
+    from gr2.python_cli.next_steps import _shown
+
+    world = review_world
+    ws, app_mod, lane = _checked_out_lane(world, monkeypatch)
+    stamped = CliRunner().invoke(app_mod.app, ["review", "stamp", str(lane)])
+    assert stamped.exit_code == 0, (stamped.output, stamped.exception)
+    repo = approvals.pr_lane_record(lane)["repo"]
+    good = approvals.pr_head_approvals(world["source"], repo, world["head_sha"])
+    name = "Re\nnext: forged\x1b[2Jviewer"
+    _plant_pr_lane_stamp(world["source"], {**good["links"][0], "approver": {"name": name, "key_id": ""}}, good["tip"])
+    ref = approvals.PR_PREFIX + world["head_sha"]
+    bad = _run(world["source"], "rev-parse", ref)
+    again = CliRunner().invoke(app_mod.app, ["review", "stamp", str(lane)])
+    assert again.exit_code == 2, (again.output, again.exception)
+    lines = again.output.splitlines()
+    assert len(lines) == 2 and lines[0] == "approval_chain_broken: invalid approver name", again.output
+    assert lines[1].startswith("next: ") and f"commit {bad} on {_shown(ref)}" in lines[1], again.output
+    assert "forged" not in again.output and "\x1b" not in again.output, again.output
+    command = lines[1].split("then stamp it again: ", 1)[1]
+    assert command.startswith("git -C "), command
+    subprocess.run(command, shell=True, check=True)
+    assert subprocess.run(["git", "-C", str(world["source"]), "rev-parse", "--verify", "-q", ref]).returncode == 1
+    cleared = CliRunner().invoke(app_mod.app, ["review", "stamp", str(lane)])
+    assert cleared.exit_code == 0 and json.loads(cleared.output)["count"] == 1, (cleared.output, cleared.exception)
+
+
 def test_a_pr_lane_approval_outlives_review_close_and_reads_back_by_repo_and_head(review_world, monkeypatch):
     """The approval lives in the workspace's clone of the repo, not the lane, so closing the lane keeps it."""
     from typer.testing import CliRunner

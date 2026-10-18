@@ -528,7 +528,16 @@ def pr_head_approvals(store: Path, repo: str, head: str) -> dict:
                 raise ApprovalRefused(f"approval_record_unreadable: {ref} at {commit}") from exc
             if link.get("repo") == repo and link.get("head") == head:
                 approver = link.get("approver")
-                check_approver_name(approver.get("name") if isinstance(approver, dict) else None)
+                try:
+                    check_approver_name(approver.get("name") if isinstance(approver, dict) else None)
+                except ApprovalRefused as exc:
+                    # Deleting the ref drops every stamp on this head; the compare-and-swap on the tip read here
+                    # keeps a stamp made since from going with it.
+                    raise ApprovalRefused(
+                        str(exc),
+                        next_step=f"next: the stamp in commit {commit} on {_shown(ref)} breaks the approver-name "
+                                  f"rule; remove this head's stamps, then stamp it again: "
+                                  f"git -C {_shown(str(store))} update-ref -d {_shown(ref)} {tip}") from None
                 links.append(link)
     links.reverse()
     return {"repo": repo, "head": head, "tip": tip or None,

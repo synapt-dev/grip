@@ -123,6 +123,13 @@ def _open_from_range(workspace: str, review: str) -> str:
     return f"gr2 review open {_shown(workspace)} {_shown(review)}"
 
 
+def _pushed_branch_ambiguous(branches: str) -> list[str]:
+    # Private, so the skill's refusal table keeps one row per printed code. No command answers this one (the caller
+    # picks the branch), and a next line must run as printed, so next is null and the check line names the branches.
+    return ["next: null",
+            f"check: {branches} all hold this head; --source must be a clone checked out on one of them"]
+
+
 def _unpushed_pin(path: str, sha: str, remote: str, branch: str | None, grip_toml: str, compat: bool) -> str:
     """Private, so the skill's refusal table keeps one row per printed code: this is `store commit`'s and
     `store check`'s coverage refusal, which prints no `refused: <code>`.

@@ -838,6 +838,11 @@ def _bind_review_rows_body(
             _judge_remote_branch(workspace, remote, row["source"], head, target, tips)
         if pushed_at:  # a fact about the order, recorded under --ratified too
             upstream = _head_branch(row["source"], target) if row.get("source") else None
+            if upstream not in pushed_at and len(pushed_at) > 1:
+                # Several branches hold the head and no source upstream names one: record none rather than guess.
+                tracked = f" (--source tracks {upstream})" if upstream else ""
+                raise GripReviewRefused("pushed_branch_ambiguous", f"--source <the clone whose branch it is>{tracked}",
+                                        ", ".join(pushed_at))
             pushed_before[key] = upstream if upstream in pushed_at else pushed_at[0]
 
         title = _norm_text(row.get("title", ""))

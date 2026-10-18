@@ -175,3 +175,36 @@ def test_a_swallowed_raise_mid_body_in_read_remote_check_ends_the_batch_process(
     assert "EIO mid-body" in box["result"]["reason"]
     assert _gone_within(box["proc"], 2), f"git still alive: {_git_children()}"
     assert _git_children() == []
+
+
+def test_a_swallowed_raise_on_the_header_in_read_remote_check_ends_the_batch_process(tmp_path, monkeypatch):
+    # the header read can raise before any body byte, with git blocked writing a >64 KiB answer:
+    # read_remote_check swallows it inside `with own:` the same way, so the reader must end git there too
+    repo, oid = _repo(tmp_path, 300 << 10)
+    git(repo, "add", "big")
+    git(repo, "commit", "-qm", "c")
+    head = git(repo, "rev-parse", "HEAD")
+    box: dict = {}
+    orig = fd.gitops.start
+    def start(*a, **k):
+        box["proc"] = orig(*a, **k)
+        return box["proc"]
+    def broken(self):
+        raise OSError(5, "EIO on the header")
+    monkeypatch.setattr(fd.gitops, "start", start)
+    monkeypatch.setattr(fd._Deadlined, "readline", broken)
+    monkeypatch.setattr(check_records, "_snapshot", lambda *a: "0" * len(head))
+    monkeypatch.setattr(check_records, "_entries", lambda *a: {head[:2] + "/" + head[2:]: oid})
+    member = dict(path=str(repo), remote="origin", key="m")
+    t = threading.Thread(target=lambda: box.update(
+        result=check_records.read_remote_check("origin", member, head, ["ci"])), daemon=True)
+    t.start()
+    t.join(1)
+    waiting = _git_children() if t.is_alive() else None  # counted while the join still waits
+    t.join(9)
+    assert not t.is_alive(), f"HUNG: git children counted mid-join: {waiting}"
+    assert not waiting, f"git children counted while the reader was live: {waiting}"
+    assert box["result"]["status"] == "fail"
+    assert "EIO on the header" in box["result"]["reason"]
+    assert _gone_within(box["proc"], 2), f"git still alive: {_git_children()}"
+    assert _git_children() == []

@@ -502,7 +502,13 @@ class BatchReader(GitReader):
             self._cat = gitops.start(self.repo, "cat-file", "--batch", env=_local())
         self._cat.stdin.write(oid.encode() + b"\n")
         self._cat.stdin.flush()
-        header = self._cat.stdout.readline().split()
+        try:
+            header = self._cat.stdout.readline().split()
+        except BaseException:
+            # the same as a body read: git may be blocked writing an answer a swallowed raise never reads
+            if self._cat is not None:
+                self._abandon()
+            raise
         if len(header) == 3 and header[0] != oid.encode():
             self._abandon()  # an answer for another object, refused before any of its body is read
             raise ReviewRecordError(f"git cat-file blob failed: {oid} answered for another object")

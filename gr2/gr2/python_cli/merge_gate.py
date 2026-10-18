@@ -256,11 +256,20 @@ def _pin_tie(root: Path, declaration: declared_sets.Declaration, into: str):
                             _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, oid)
                         except RuntimeError as exc:
                             failed[oid] = _first_error(exc)
-            for oid in [tips[ref] for ref in sorted(tips) if tips[ref] not in failed]:
-                state = grip._read_repo_state(repo, oid, bind=True)
-                for key, fields in state.items():
-                    if fields.get("commit") == pin and declaration.member_name(key, fields.get("path", "")) == name:
-                        return None
+            states: dict[str, dict] = {}
+            retracted = ""
+            named = []  # reviews whose recorded state names the pin, read by the oid the scan saw
+            for ref in [ref for ref in sorted(tips) if tips[ref] not in failed]:
+                if tips[ref] not in states:
+                    states[tips[ref]] = grip._read_repo_state(repo, tips[ref], bind=True)
+                if any(fields.get("commit") == pin and declaration.member_name(key, fields.get("path", "")) == name
+                       for key, fields in states[tips[ref]].items()):
+                    named.append(ref)
+            if named:  # a review counts only while its ref still names the oid read: deleted or moved is retracted
+                now = _remote_tips(repo, remote, (), tuple(named))
+                if any(now[ref] == tips[ref] for ref in named):
+                    return None
+                retracted = ", ".join(next_steps._shown(ref) for ref in named)
             if failed:  # no review that read names the pin, and one that did not read might: unmeasured, by ref
                 lost = ", ".join(next_steps._shown(ref) for ref in sorted(tips) if tips[ref] in failed)
                 said = "".join(c if c.isprintable() else ascii(c)[1:-1] for c in next(iter(failed.values())))
@@ -268,6 +277,9 @@ def _pin_tie(root: Path, declaration: declared_sets.Declaration, into: str):
                         f"and these reviews could not be read from it: {lost}: {said}")
         except (RuntimeError, subprocess.SubprocessError, OSError, grip.GripCorruptError) as exc:
             return f"declared_set_pin_unmeasured: {name}'s pin {short} could not be read from its remote: {exc}"
+        if retracted:
+            return (f"declared_set_pin_unreviewed: {name} is pinned at {short}, which is not merged into {into}, and "
+                    f"the reviews that named it were retracted from its remote (ref deleted or moved): {retracted}")
         return (f"declared_set_pin_unreviewed: {name} is pinned at {short}, which is neither merged into {into} nor "
                 f"named by a review published on its remote")
     return tie

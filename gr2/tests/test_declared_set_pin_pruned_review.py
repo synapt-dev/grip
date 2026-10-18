@@ -158,3 +158,67 @@ def test_a_ref_ending_like_a_real_review_does_not_drop_it(world):
     code, receipt = merge(world, "alpha")
 
     assert code == merge_gate.EXIT_MERGED, receipt
+
+
+def _retract_after_scan(monkeypatch, remote, to=None, only=None):
+    """Between the gate's scan and its fetch, the review ref (or just `only`) is deleted (objects kept) or moved to
+    `to`."""
+    real, done = merge_gate._git, []
+
+    def spy(repo, *args, **kw):
+        if args[:1] == ("fetch",) and not done and set(args) & {oid for oid, _ in _reviews(remote)}:
+            for oid, ref in [(oid, ref) for oid, ref in _reviews(remote) if only in (None, ref)]:
+                subprocess.run(["git", "-C", str(remote), "update-ref", *((ref, to) if to else ("-d", ref))], check=True)
+                done.append((oid, ref))
+        return real(repo, *args, **kw)
+    monkeypatch.setattr(merge_gate, "_git", spy)
+    return done
+
+
+def test_a_review_deleted_after_the_scan_with_its_objects_kept_is_not_counted(world, monkeypatch):
+    assert record(world, PASS)["result"] == "pass"
+    remote = world["members"]["beta"]["remote"]
+    done = _retract_after_scan(monkeypatch, remote)
+
+    code, why, receipt = _refusal(world)
+
+    assert len(done) == 1 and _reviews(remote) == [], done
+    subprocess.run(["git", "-C", str(remote), "cat-file", "-e", done[0][0]], check=True)  # objects kept
+    assert code == merge_gate.EXIT_REFUSED, receipt
+    assert why.startswith("declared_set_pin_unreviewed: beta is pinned at "), why
+    assert "retracted" in why and done[0][1] in why, why
+    assert untouched(world)
+
+
+def test_a_review_moved_after_the_scan_is_not_counted_for_the_old_oid(world, monkeypatch):
+    assert record(world, PASS)["result"] == "pass"
+    remote = world["members"]["beta"]["remote"]
+    elsewhere = subprocess.run(["git", "-C", str(remote), "rev-parse", "refs/heads/main"],
+                               capture_output=True, text=True, check=True).stdout.strip()
+    done = _retract_after_scan(monkeypatch, remote, to=elsewhere)
+
+    code, why, receipt = _refusal(world)
+
+    assert [ref for _, ref in done] == [ref for _, ref in _reviews(remote)] and done[0][0] != elsewhere, done
+    assert code == merge_gate.EXIT_REFUSED, receipt
+    assert why.startswith("declared_set_pin_unreviewed: beta is pinned at ") and done[0][1] in why, why
+    assert untouched(world)
+
+
+def _git_out(repo, *args):
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def test_one_of_two_reviews_retracted_after_the_scan_still_ties_by_the_other(world, monkeypatch):
+    assert record(world, PASS)["result"] == "pass"
+    remote = world["members"]["beta"]["remote"]
+    (oid, ref), = _reviews(remote)
+    second = ref + "-again"  # a second review naming the same pin, sorting after the first
+    subprocess.run(["git", "-C", str(remote), "update-ref", second, oid], check=True)
+    done = _retract_after_scan(monkeypatch, remote, only=ref)
+
+    code, receipt = merge(world, "alpha")
+
+    assert done == [(oid, ref)] and _reviews(remote) == [[oid, second]], done
+    assert code == merge_gate.EXIT_MERGED, receipt
+

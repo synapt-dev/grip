@@ -13,15 +13,15 @@ from gr2.python_cli import approval_schema, check_records
 COPIES = (
     (
         "dev.synapt.grip.review.v1alpha1",
-        "a2707c456d137ce5cbabb18f7aa836897818d147",
+        "b723390999e6529849123263e703629908ff0706",
         "review.proto",
-        "4cc4162d6d15e098c3f24402bd7ae763661cde02ba83e48105d57aab41fd3c44",
+        "7557a232e67cdf6b17e3e3b16a66fef6de1116d53550e078fad9fe6d1c8853d7",
     ),
     (
         "dev.synapt.grip.review.v1alpha1",
-        "a2707c456d137ce5cbabb18f7aa836897818d147",
+        "b723390999e6529849123263e703629908ff0706",
         "descriptor_set.pb",
-        "ea97492a92f1039440206b878af51a95f58bde730752760ee7dae87d3b6c5ec0",
+        "bf6b66c39618ac06ce554c636eccbc9ca2426cb24e1ac0a4403b2230b8f50481",
     ),
     (
         "dev.synapt.grip.approval.v1alpha1",

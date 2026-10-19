@@ -844,6 +844,10 @@ def _bind_review_rows_body(
         # tag, an unusual branch name) is left out, and that review defaults the way an older one does.
         if _PINNED_TARGET.fullmatch(target):
             member["target"] = target
+        # Only a declared member records it; an undeclared one gets no field, so publish reads it public.
+        visibility = _member_visibility(row)
+        if visibility:
+            member["visibility"] = visibility
 
         # (a): carry the frozen set inside the object. A row with a source repo
         # carries range.patch + fuller metadata + head-tree so a pre-push head
@@ -1283,9 +1287,13 @@ def _decode_field_tree(repo: Path, tree: str) -> dict[str, object]:
         target = m.get("target", "")
         if target and not _PINNED_TARGET.fullmatch(target):
             raise GripCorruptError(f"invalid review repository tree: {key} target is not a ref name")
+        # "" is undeclared: a record bound before the field (proto3 reads an absent string as "").
+        visibility = m.get("visibility") or ""
+        if visibility not in ("", "public", "private"):
+            raise GripCorruptError(f"invalid review repository tree: {key} visibility is not public or private")
         members[key] = {
             "repo": {"remote": m.get("remote", ""), "path": m.get("path", ""),
-                     "commit": m.get("commit", ""), "base": m.get("base", "")},
+                     "commit": m.get("commit", ""), "base": m.get("base", ""), "visibility": visibility},
             "remote_head": m.get("remote_head", ""), "title": m.get("title", ""), "body": m.get("body", ""),
             "objects": objects, "evidence": evidence, **({"target": target} if target else {}),
         }
@@ -1946,6 +1954,7 @@ def publish_review_commit(workspace: Path, commit: str, remote: str,
     # nothing leaves with a credential, and an author-local path never leaves this host.
     off_host = destination.startswith("https://")
     _member_preflight(workspace, full, for_push=False)
+    _refuse_visibility_mismatch(_read_repo_state(workspace, full, bind=True), destination)
     for key, fields in sorted(_read_repo_state(workspace, full, bind=True).items()):
         _refuse_remote_credentials(key, fields["remote"])
         if off_host and not _is_portable_remote(fields["remote"]):
@@ -1961,6 +1970,50 @@ def publish_review_commit(workspace: Path, commit: str, remote: str,
 
 
 PUBLISH_EXIT_OK, PUBLISH_EXIT_REFUSED, PUBLISH_EXIT_FAILED, PUBLISH_EXIT_PARTIAL = 0, 2, 3, 4
+
+
+def _member_visibility(row: dict[str, object]) -> str:
+    """The visibility bind records for a member: only a declared value (public or private); else "", no field."""
+    visibility = str(row.get("visibility") or "")
+    return visibility if visibility in ("public", "private") else ""
+
+
+def _refuse_visibility_mismatch(states: dict[str, dict[str, str]], destination: str) -> None:
+    """The review commit names every member, so it goes only where every member may be seen. A member with no
+    declared visibility (a record bound before the field) reads public, so a review of more than one member with any
+    undeclared member refuses until it is declared; a single member has nothing else to leak. The target is public
+    when a member's remote is it and that member is public. A target that is no member's remote reads private only
+    when it is host-local (an absolute path, or a file:// URL with no host); any other form may be seen by others,
+    so reads public. A public target with any private member refuses, before anything is pushed; public content in a
+    private target is no leak."""
+    from .review import ReviewError, canonical_source_identity
+
+    def identity(remote: str) -> str:
+        try:
+            return canonical_source_identity(remote, allow_local=True)
+        except ReviewError:
+            return remote
+    undeclared = sorted(key for key, f in states.items() if not f.get("visibility"))
+    if undeclared and len(states) > 1:
+        raise GripReviewRefused("visibility_mismatch", undeclared[0],
+                                f"{undeclared[0]!r} declares no visibility and reads public; declare the "
+                                f"'visibility' field (public or private) for {', '.join(map(repr, undeclared))}")
+    target = identity(destination)
+    owners = [f for f in states.values() if identity(f["remote"]) == target]
+    if owners:
+        shown = "private" if all(f.get("visibility") == "private" for f in owners) else "public"
+        why = f"the target {destination!r} is {shown}"
+    else:
+        parts = urlsplit(destination)
+        host_local = (parts.scheme == "file" and not parts.netloc) or Path(destination).is_absolute()
+        shown = "private" if host_local else "public"
+        why = (f"the target {destination!r} matches no member; "
+               + ("host-local; read as private" if host_local else "not host-local; read as public"))
+    if shown == "private":
+        return
+    for key, fields in sorted(states.items()):
+        if fields.get("visibility") == "private":
+            raise GripReviewRefused("visibility_mismatch", key, f"{key!r} is private but {why}")
 
 
 _LS_REMOTE_ROW = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\t.+")
@@ -1995,6 +2048,9 @@ def publish_review_all(workspace: Path, commit: str, ref: str | None = None) -> 
         raise GripCorruptError(f"review_ref_not_local: {canonical}")
     _require_review_content(workspace, full, canonical)
     rows = _member_preflight(workspace, full, for_push=True)
+    states = _read_repo_state(workspace, full, bind=True)
+    for row in rows:
+        _refuse_visibility_mismatch(states, str(row["remote"]))
     groups: dict[str, dict[str, object]] = {}
     for row in rows:
         try:

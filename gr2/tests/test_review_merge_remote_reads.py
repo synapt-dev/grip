@@ -46,7 +46,7 @@ def _world(d: Path, m: int, monkeypatch):
         r = author / n; _git(r, "checkout", "-qb", "feat"); (r / "p.txt").write_text(f"{n} reviewed\n")
         _git(r, "commit", "-qam", "reviewed"); head = _git(r, "rev-parse", "HEAD"); _git(r, "push", "-q", remote, "feat")
         mem[n] = dict(remote=remote, head=head)
-        rows.append(dict(key=n, path=n, remote=str(remote), base=base, head=head, ref="refs/heads/main", source=str(r)))
+        rows.append(dict(key=n, path=n, remote=str(remote), base=base, head=head, ref="refs/heads/main", source=str(r), visibility="public"))
     (d / "rows.json").write_text(json.dumps(rows))
     for ws in (author, recv):
         assert runner.invoke(app, ["store", "init", str(ws)]).exit_code == 0

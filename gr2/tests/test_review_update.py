@@ -60,7 +60,7 @@ def build(tmp_path, monkeypatch, names):
         git(m["repo"], "commit", "-am", "reviewed")
         m["head"] = git(m["repo"], "rev-parse", "HEAD")
         rows.append({"key": name, "path": name, "remote": str(m["remote"]), "base": m["base"], "head": m["head"],
-                     "ref": "refs/heads/main", "source": str(m["repo"])})
+                     "ref": "refs/heads/main", "source": str(m["repo"]), "visibility": "public"})
     (tmp_path / "rows.json").write_text(json.dumps(rows))
     monkeypatch.chdir(author)
     made = runner.invoke(app, ["review", "pin", str(author), "--rows-json", str(tmp_path / "rows.json")])

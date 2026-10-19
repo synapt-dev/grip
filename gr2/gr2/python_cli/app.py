@@ -5011,7 +5011,7 @@ def _refuse_json(refusal: str, message: str, code: int, notes: list[str] = ()) -
 _ROW_REQUIRED = ("key", "remote", "base", "head")
 # Every field of a rows-json entry is a string; a JSON number/bool/null/object
 # in any of them must refuse cleanly, not traceback downstream on a string op.
-_ROW_STRING_FIELDS = ("key", "remote", "base", "head", "path", "ref", "title", "body", "source", "range")
+_ROW_STRING_FIELDS = ("key", "remote", "base", "head", "path", "ref", "title", "body", "source", "range", "visibility")
 
 
 def _normalize_review_row(raw: object) -> dict:
@@ -5035,7 +5035,13 @@ def _normalize_review_row(raw: object) -> dict:
         "key": raw["key"], "remote": raw["remote"], "base": raw["base"], "head": raw["head"],
         "path": raw.get("path") or raw["key"], "ref": raw.get("ref", "refs/heads/dev"),
         "title": raw.get("title", ""), "body": raw.get("body", ""),
+        # A missing key or "" stays "" (undeclared, which publish reads as public); a given value must be one of the two.
+        "visibility": raw.get("visibility") or "",
     }
+    if row["visibility"] and row["visibility"] not in ("public", "private"):
+        raise typer.BadParameter(
+            f"rows-json entry {raw['key']!r} field 'visibility' must be public or private, got {row['visibility']!r}"
+        )
     if raw.get("source") and raw.get("range"):
         raise typer.BadParameter(
             f"rows-json entry {raw['key']!r}: 'source' and 'range' are mutually exclusive"

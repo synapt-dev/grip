@@ -11,6 +11,7 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Added
 
+- **`gr2` review publish refuses a private member.** A rows-json entry may carry `visibility` (`public` or `private`); bind records it only for a member that declares one, and absent or `""` binds undeclared. Publishing a review to a public target while any member is private now refuses with exit 2 before anything is pushed; a private target takes public members. An undeclared member (no recorded `visibility`, including every review bound before this change) reads public, so an old review of more than one member publishes only after its members are declared; a single-member review is exempt. A destination that is no member's remote reads public unless it is host-local (an absolute path or a file:// URL with no host). The review schema copy moves to revision b7233909 (Member field 15, `visibility`).
 - **`gr2 review pin --from-range --at-base`.** A frozen range cut on an older dev
   pins at the base it was cut on, read-only (nothing is rebased), and the pin names
   that base as at-base (`review show` reports `at_base`). Without the flag a moved

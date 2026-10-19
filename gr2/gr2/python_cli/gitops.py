@@ -198,9 +198,22 @@ def credential_values(argv, cwd: Path | None = None) -> frozenset[str]:
 
 
 def _masked(text: str, secrets: frozenset[str]) -> str:
-    """`text` with every known credential value replaced by the placeholder, longest first."""
-    for value in sorted(secrets, key=len, reverse=True):
+    """`text` with every known credential value replaced by the placeholder, longest first, then every run
+    that DECODES to a value: each character written as itself or as its percent-encoded UTF-8 bytes, hex in
+    either case, so an echo in an encoding credential_values did not build is masked too."""
+    ordered = sorted(secrets, key=len, reverse=True)
+    for value in ordered:
         text = text.replace(value, _CREDENTIAL_SHOWN)
+    if "%" not in text:
+        return text
+
+    def encoded(char: str) -> str:
+        hexed = (f"{byte:02X}" for byte in char.encode("utf-8", "surrogatepass"))
+        return "".join("%" + "".join(f"[{d}{d.lower()}]" if d.isalpha() else d for d in pair) for pair in hexed)
+
+    for value in ordered:
+        pattern = re.compile("".join(f"(?:{re.escape(char)}|{encoded(char)})" for char in value))
+        text = pattern.sub(_CREDENTIAL_SHOWN, text)
     return text
 
 

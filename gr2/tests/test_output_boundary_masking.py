@@ -20,6 +20,9 @@ N2 a real failed fetch of a remote whose query token is only in the repo's confi
 N3 a real failed push to that remote shows none;
 N4 a failed LOCAL verb keeps its stderr byte-identical;
 N5 a successful ls-remote of a local bare repo keeps its stdout unchanged.
+E1-E3 a token echoed percent-encoded in a form credential_values did not build (one character, lower-case hex,
+   every character) is masked;
+E4 a percent-encoding that decodes to no secret is left byte-identical.
 """
 from __future__ import annotations
 
@@ -307,3 +310,26 @@ def test_n5_a_successful_ls_remote_keeps_its_stdout(tmp_path, world):
     assert proc.returncode == 0
     assert proc.stdout == raw.stdout
     assert base in proc.stdout
+
+
+ENCODED_TOKEN = "FAKEtokQ1234zz"
+ENCODED_ARGS = ("fetch", "--", f"https://user:{ENCODED_TOKEN}@127.0.0.1:9/x.git")
+
+
+@pytest.mark.parametrize(
+    "echo",
+    [
+        pytest.param("FAKEtok%511234zz", id="e1_one_char_upper"),
+        pytest.param("FA%4bEtokQ1234zz", id="e2_one_char_lower_hex"),
+        pytest.param("".join(f"%{ord(c):02X}" for c in ENCODED_TOKEN), id="e3_every_char"),
+    ],
+)
+def test_e_a_token_echoed_in_an_unbuilt_encoding_is_masked(echo):
+    assert echo not in gitops.credential_values(ENCODED_ARGS)
+    text = gitops.shown_git_text(ENCODED_ARGS, f"remote: bad token {echo}\n")
+    assert text == f"remote: bad token {gitops._CREDENTIAL_SHOWN}\n"
+
+
+def test_e4_an_encoding_that_decodes_to_no_secret_is_unchanged():
+    stderr = "remote: path %41/b%2fc not found\n"
+    assert gitops.shown_git_text(ENCODED_ARGS, stderr) == stderr

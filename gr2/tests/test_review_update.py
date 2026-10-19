@@ -287,6 +287,26 @@ def test_u15_an_untracked_file_where_main_adds_one_refuses_before_any_member_is_
     assert not receipt(out)["new_review"]
 
 
+def test_u28_an_ignored_file_where_main_adds_a_tracked_one_refuses_before_any_member_is_merged(two):
+    """Git's merge overwrites an ignored file the target adds as tracked, and an undo deletes it. Either way the
+    user's file is gone, so it is in the way exactly as an untracked one is."""
+    move_main(two, "alpha", path="local.env", text="from main\n")
+    move_main(two, "beta")
+    alpha = two["members"]["alpha"]["repo"]
+    with open(alpha / ".git" / "info" / "exclude", "a") as f:
+        f.write("local.env\n")
+    mine = b"LOCAL=user bytes, never added\r\n"
+    (alpha / "local.env").write_bytes(mine)
+    assert git(alpha, "status", "--porcelain") == "", "local.env must be ignored, not merely untracked"
+    heads = {n: git(m["repo"], "rev-parse", "HEAD") for n, m in two["members"].items()}
+    out = update(two)
+    assert (alpha / "local.env").exists() and (alpha / "local.env").read_bytes() == mine, "the user's file is kept"
+    assert {n: git(m["repo"], "rev-parse", "HEAD") for n, m in two["members"].items()} == heads, "no merge anywhere"
+    assert out.exit_code == 2, out.output
+    assert receipt(out)["refused"].startswith("member_untracked_in_the_way: alpha: local.env"), receipt(out)
+    assert not receipt(out)["new_review"]
+
+
 def test_u16_a_fetch_failure_on_a_later_member_refuses_before_any_member_is_merged(two):
     move_main(two, "alpha")
     alpha, beta = two["members"]["alpha"], two["members"]["beta"]
@@ -343,9 +363,9 @@ def test_u17_a_bare_update_from_the_workspace_resolves_the_one_pinned_review(one
     assert parents(one["members"]["alpha"]["repo"]) == [one["members"]["alpha"]["head"], tip]
 
 
-def test_u19_a_pin_refused_after_members_merged_exits_4_and_names_what_moved(two, monkeypatch):
-    """The members merged, then the pin was refused: that is exit 4 (partial), not exit 2, because the
-    member clones moved and the receipt has to say which ones."""
+def test_u19_a_pin_refused_after_members_merged_restores_them_and_exits_2(two, monkeypatch):
+    """The members merged, then the pin was refused: each merge is undone, so nothing
+    moved and the exit is 2; the receipt names the clones it restored."""
     from gr2.python_cli import grip
 
     move_main(two, "alpha")
@@ -357,10 +377,36 @@ def test_u19_a_pin_refused_after_members_merged_exits_4_and_names_what_moved(two
     monkeypatch.setattr(grip, "create_review_bind_commit", refuse)
     out = update(two)
     r = receipt(out)
-    assert out.exit_code == 4, out.output
-    assert r["refused"].startswith("pin_refused") and r["merged"] == ["alpha", "beta"], r
-    assert "partial:" in out.stderr and "alpha, beta" in out.stderr, out.stderr
+    assert out.exit_code == 2, out.output
+    assert r["refused"].startswith("pin_refused") and r["merged"] == [] and r["restored"] == ["alpha", "beta"], r
+    assert "partial:" not in out.stderr and "restored:" in out.stderr and "alpha, beta" in out.stderr, out.stderr
+    for m in two["members"].values():
+        assert git(m["repo"], "rev-parse", "HEAD") == m["head"], "the merge must be undone"
 
+
+
+def test_u26_a_member_whose_reset_fails_stays_merged_and_the_exit_is_4(two, monkeypatch):
+    """Both members merged, then the pin was refused, and beta cannot be reset (its index.lock is taken after
+    its merge, before the restore). Alpha is restored; beta stays in merged, so the exit is 4, not 2."""
+    from gr2.python_cli import grip
+
+    move_main(two, "alpha")
+    move_main(two, "beta")
+    lock = two["members"]["beta"]["repo"] / ".git" / "index.lock"
+
+    def refuse(*args, **kwargs):
+        lock.write_text("")
+        raise grip.GripReviewRefused("pin_refused_in_test", "a pin", "refused")
+
+    monkeypatch.setattr(grip, "create_review_bind_commit", refuse)
+    out = update(two)
+    lock.unlink()
+    r = receipt(out)
+    alpha, beta = two["members"]["alpha"], two["members"]["beta"]
+    assert git(alpha["repo"], "rev-parse", "HEAD") == alpha["head"], "alpha is restored"
+    assert git(beta["repo"], "rev-parse", "HEAD") != beta["head"], "beta keeps its merge"
+    assert r["refused"].startswith("pin_refused") and r["merged"] == ["beta"] and r["restored"] == ["alpha"], r
+    assert out.exit_code == 4, out.output
 
 def test_u20_a_target_fast_forwarded_to_the_reviewed_head_is_not_reported_current(one):
     """The work already landed: the target is now the reviewed head. The member is up to date, but its base
@@ -414,3 +460,156 @@ def test_update_by_remote_name_writes_no_configured_ref_or_tag(tmp_path, monkeyp
     assert out.exit_code == 0, out.output
     assert git(repo, "rev-parse", "keep") == base
     assert git(repo, "tag", "-l") == ""
+
+
+def land_the_same_change(w, name):
+    """Main takes the reviewed change by another commit (a squash): merging it into feat adds nothing."""
+    return move_main(w, name, path="payload.txt", text=f"{name} reviewed\n")
+
+
+def clone_state(repo):
+    return (git(repo, "rev-parse", "HEAD"), git(repo, "write-tree"), git(repo, "status", "--porcelain"),
+            git(repo, "rev-parse", "--abbrev-ref", "HEAD"))
+
+
+def test_u21_a_refused_update_leaves_every_member_clone_as_it_found_it(two):
+    """The pin refused range_adds_nothing after the members merged. The refusal must
+    restore each clone (HEAD, index, worktree), so nothing moved and the exit says so."""
+    for name in two["members"]:
+        land_the_same_change(two, name)
+    before = {n: clone_state(m["repo"]) for n, m in two["members"].items()}
+    out = update(two)
+    r = receipt(out)
+    assert r["refused"].startswith("pin_refused") and "range_adds_nothing" in r["refused"], r
+    assert r["new_review"] is None, r
+    assert {n: clone_state(m["repo"]) for n, m in two["members"].items()} == before, "a refusal moves no clone"
+    assert out.exit_code == 2 and r["merged"] == [] and r["restored"] == ["alpha", "beta"], r
+
+
+def test_u22_a_second_refused_update_does_not_stack_another_merge(two):
+    for name in two["members"]:
+        land_the_same_change(two, name)
+    heads = {n: git(m["repo"], "rev-parse", "HEAD") for n, m in two["members"].items()}
+    first, second = update(two), update(two)
+    assert receipt(first)["refused"] and receipt(second)["refused"], (first.output, second.output)
+    for n, m in two["members"].items():
+        assert git(m["repo"], "rev-parse", "HEAD") == heads[n], f"{n}: refused runs stacked a merge"
+        assert len(parents(m["repo"])) == 1, n
+
+
+def test_u23_a_merge_that_fails_on_a_later_member_restores_the_earlier_ones(two):
+    """Beta's merge fails for a reason that is not a conflict (its index.lock is held, so git refuses the
+    merge and leaves no MERGE_HEAD) after alpha merged. Alpha's merge is undone, so every clone is as it
+    was and the exit is 2, naming the merge_failed member and the restored one."""
+    for name in two["members"]:
+        move_main(two, name)
+    before = {n: clone_state(m["repo"]) for n, m in two["members"].items()}
+    lock = two["members"]["beta"]["repo"] / ".git" / "index.lock"
+    lock.write_text("")
+    out = update(two)
+    lock.unlink()
+    r = receipt(out)
+    assert r["refused"].startswith("merge_failed: beta:"), r
+    assert {n: clone_state(m["repo"]) for n, m in two["members"].items()} == before, "a refusal moves no clone"
+    assert out.exit_code == 2 and r["merged"] == [] and r["restored"] == ["alpha"], r
+
+
+def test_u30_a_merged_member_whose_restore_fails_on_a_merge_failure_stays_merged_and_the_exit_is_4(two, monkeypatch):
+    """Alpha merges cleanly, then beta's merge fails (its index.lock is held) and alpha's index.lock is taken
+    after alpha's merge, so the restore cannot reset alpha. Alpha keeps its merge and stays in merged: exit 4."""
+    from gr2.python_cli import gitops
+
+    for name in two["members"]:
+        move_main(two, name)
+    alpha, beta = two["members"]["alpha"], two["members"]["beta"]
+    locks = [beta["repo"] / ".git" / "index.lock", alpha["repo"] / ".git" / "index.lock"]
+    real = gitops.run
+
+    def run(repo, *args, **kwargs):
+        if args[:1] == ("merge",) and repo == beta["repo"]:
+            locks[1].write_text("")
+        return real(repo, *args, **kwargs)
+
+    monkeypatch.setattr(gitops, "run", run)
+    locks[0].write_text("")
+    try:
+        out = update(two)
+    finally:
+        for lock in locks:
+            lock.unlink(missing_ok=True)
+    r = receipt(out)
+    assert git(alpha["repo"], "rev-parse", "HEAD") != alpha["head"], "alpha's reset failed, so it keeps its merge"
+    assert r["merged"] == ["alpha"] and "alpha" not in r.get("restored", []), r
+    assert r["refused"] and r["refused"].startswith("merge_failed: beta:"), r
+    assert out.exit_code == 4, out.output
+
+
+def test_u24_a_refusing_pre_merge_commit_hook_is_a_merge_failure_not_a_conflict(two):
+    """Beta's pre-merge-commit hook exits 1 after alpha merged. Git stops before the commit and leaves MERGE_HEAD,
+    but no path is unmerged, so it is a merge failure: beta's merge is aborted, alpha's undone, every clone is as
+    it was (no MERGE_HEAD left in beta) and the exit is 2."""
+    for name in two["members"]:
+        move_main(two, name)
+    beta = two["members"]["beta"]["repo"]
+    hook = beta / ".git" / "hooks" / "pre-merge-commit"
+    hook.write_text("#!/bin/sh\necho hook says no >&2\nexit 1\n")
+    hook.chmod(0o755)
+    before = {n: clone_state(m["repo"]) for n, m in two["members"].items()}
+    out = update(two)
+    r = receipt(out)
+    assert r["refused"] and r["refused"].startswith("merge_failed: beta:"), r
+    assert {n: clone_state(m["repo"]) for n, m in two["members"].items()} == before, "a refusal moves no clone"
+    assert not (beta / ".git" / "MERGE_HEAD").exists(), "the refused merge is aborted"
+    assert out.exit_code == 2 and r["merged"] == [] and r["restored"] == ["alpha"], r
+
+
+def test_u27_a_conflict_on_alpha_then_a_hook_refusal_on_beta_aborts_alpha_too(two):
+    """Alpha conflicts on shared.txt, then beta's pre-merge-commit hook exits 1. Exit 2 means nothing moved, so
+    alpha's conflicted merge is aborted as well: no MERGE_HEAD, no unmerged path, and the receipt names alpha."""
+    alpha = conflict(two, "alpha")
+    move_main(two, "beta")
+    beta = two["members"]["beta"]["repo"]
+    hook = beta / ".git" / "hooks" / "pre-merge-commit"
+    hook.write_text("#!/bin/sh\necho hook says no >&2\nexit 1\n")
+    hook.chmod(0o755)
+    before = {n: clone_state(m["repo"]) for n, m in two["members"].items()}
+    out = update(two)
+    r = receipt(out)
+    assert not (alpha / ".git" / "MERGE_HEAD").exists(), "alpha's conflicted merge is aborted"
+    assert git(alpha, "diff", "--name-only", "--diff-filter=U") == "", "no unmerged path is left in alpha"
+    assert {n: clone_state(m["repo"]) for n, m in two["members"].items()} == before, "a refusal moves no clone"
+    assert r["refused"] and r["refused"].startswith("merge_failed: beta:"), r
+    assert out.exit_code == 2 and r["merged"] == [] and r["restored"] == ["alpha"], r
+    assert r["members"][0]["state"] == "restored", r
+
+
+def test_u29_a_conflict_on_alpha_whose_abort_fails_stays_in_conflict_and_the_exit_is_4(two):
+    """Alpha conflicts on shared.txt, then beta's pre-merge-commit hook takes alpha's index.lock and exits 1, so
+    alpha's merge --abort fails. Alpha is still in conflict, so the exit is 4, not 2, and alpha is not restored."""
+    alpha = conflict(two, "alpha")
+    move_main(two, "beta")
+    beta = two["members"]["beta"]["repo"]
+    lock = alpha / ".git" / "index.lock"
+    hook = beta / ".git" / "hooks" / "pre-merge-commit"
+    hook.write_text(f"#!/bin/sh\n: > '{lock}'\necho hook says no >&2\nexit 1\n")
+    hook.chmod(0o755)
+    try:
+        out = update(two)
+    finally:
+        lock.unlink(missing_ok=True)
+    r = receipt(out)
+    assert (alpha / ".git" / "MERGE_HEAD").exists(), "alpha's abort failed, so its merge is still in progress"
+    assert r["members"][0]["state"] == "conflict", r
+    assert "alpha" not in r["restored"], r
+    assert r["refused"] and r["refused"].startswith("merge_failed: beta:"), r
+    assert out.exit_code == 4 and r["merged"] == [], r
+
+
+def test_u25_control_a_content_conflict_on_beta_is_still_a_conflict(two):
+    move_main(two, "alpha")
+    repo = conflict(two, "beta")
+    out = update(two)
+    r = receipt(out)
+    assert out.exit_code == 3 and r["refused"] is None, r
+    assert (r["members"][1]["state"], r["members"][1]["conflicts"]) == ("conflict", ["shared.txt"]), r
+    assert (repo / ".git" / "MERGE_HEAD").exists(), "a conflict is left for the author to resolve"

@@ -28,6 +28,7 @@ from gr2.prototypes import repo_maintenance_prototype as repo_proto
 
 from . import add as add_ops
 from .version import version_line
+from ..typer_settings import group_settings
 from .keys import member_path_key
 from . import branch as branch_ops
 from . import change as change_ops
@@ -94,7 +95,8 @@ app = typer.Typer(
         "isolated lanes to work in, and one grouped review per slice.\n\n"
         "To land a reviewed change: gr2 review pin, publish, stamp, gr2 check, then gr2 review merge; "
         "the steps are in gr2 review --help."
-    )
+    ),
+    **group_settings(),
 )
 
 
@@ -122,17 +124,17 @@ def _root(
     """gr2 workspace CLI."""
 
 
-repo_app = typer.Typer(help="Repo maintenance and inspection")
-lane_app = typer.Typer(help="Lane creation and navigation")
-lease_app = typer.Typer(help="Lane lease operations")
-review_app = typer.Typer(help="Review and reviewer requirement operations.\n\n" + next_steps.REVIEW_ORDER)
-check_app = typer.Typer(help="Run and read exact-head checks on a Git remote")
-pr_app = typer.Typer(help="Cross-repo PR orchestration")
-workspace_app = typer.Typer(help="Workspace bootstrap and materialization")
-spec_app = typer.Typer(help="Declarative workspace spec operations")
-exec_app = typer.Typer(help="Lane-aware execution planning and execution")
-sync_app = typer.Typer(help="Workspace-wide sync inspection and execution")
-target_app = typer.Typer(help="Stored PR target (settings.target) that prune and future verbs default to")
+repo_app = typer.Typer(help="Repo maintenance and inspection", **group_settings())
+lane_app = typer.Typer(help="Lane creation and navigation", **group_settings())
+lease_app = typer.Typer(help="Lane lease operations", **group_settings())
+review_app = typer.Typer(help="Review and reviewer requirement operations.\n\n" + next_steps.REVIEW_ORDER, **group_settings())
+check_app = typer.Typer(help="Run and read exact-head checks on a Git remote", **group_settings())
+pr_app = typer.Typer(help="Cross-repo PR orchestration", **group_settings())
+workspace_app = typer.Typer(help="Workspace bootstrap and materialization", **group_settings())
+spec_app = typer.Typer(help="Declarative workspace spec operations", **group_settings())
+exec_app = typer.Typer(help="Lane-aware execution planning and execution", **group_settings())
+sync_app = typer.Typer(help="Workspace-wide sync inspection and execution", **group_settings())
+target_app = typer.Typer(help="Stored PR target (settings.target) that prune and future verbs default to", **group_settings())
 
 app.add_typer(repo_app, name="repo")
 app.add_typer(lane_app, name="lane")
@@ -145,7 +147,7 @@ app.add_typer(spec_app, name="spec")
 app.add_typer(exec_app, name="exec")
 app.add_typer(sync_app, name="sync")
 app.add_typer(target_app, name="target")
-hooks_app = typer.Typer(help="Bind (trust) or revoke member-hook consent records.")
+hooks_app = typer.Typer(help="Bind (trust) or revoke member-hook consent records.", **group_settings())
 app.add_typer(hooks_app, name="hooks")
 # The snapshot store over .grip/.git. Its verb is `store` (init/snapshot/log/diff/
 # checkout); `grip` stays as a hidden alias for one release so existing callers keep
@@ -153,7 +155,7 @@ app.add_typer(hooks_app, name="hooks")
 app.add_typer(grip_app, name="store")
 app.add_typer(grip_app, name="grip", hidden=True)
 app.add_typer(config_cli_app, name="config")
-proto_app = typer.Typer(help="Render stored protobuf records")
+proto_app = typer.Typer(help="Render stored protobuf records", **group_settings())
 app.add_typer(proto_app, name="proto")
 
 

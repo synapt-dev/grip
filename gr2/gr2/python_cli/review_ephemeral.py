@@ -114,7 +114,7 @@ def _pattern_lines(profile_content: str, touched_paths: list[str]) -> list[str]:
 def touched_paths(mirror: Path, base: str, head: str) -> list[str]:
     """The paths ``base..head`` touches (the range-union source). Read from the
     bare mirror, which holds the complete commit+tree graph."""
-    proc = _git(mirror, "diff", "--name-only", base, head)
+    proc = gitops.real_history_run(mirror, "diff", "--name-only", base, head, via_cwd=True)
     if proc.returncode != 0:
         raise ReviewEphemeralError(
             f"cannot compute base..head touched paths ({base[:8]}..{head[:8]}) in {mirror}: "

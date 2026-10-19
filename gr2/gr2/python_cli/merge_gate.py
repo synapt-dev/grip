@@ -24,8 +24,10 @@ from . import check_records, declared_sets, gitops, grip, keys, merge_receipts, 
 EXIT_MERGED, EXIT_REFUSED, EXIT_PARTIAL = 0, 3, 4
 
 
-def _git(repo: Path, *args: str, check: bool = True, raw: bool = False) -> str:
-    proc = gitops.run(repo, *args, timeout=60, raise_timeout=True)  # an expiry raises, as it always did here
+def _git(repo: Path, *args: str, check: bool = True, raw: bool = False, history: bool = False) -> str:
+    # `history` reads the real history (gitops.real_history_run): for a merge-base or a rev-list the gate acts on.
+    runner = gitops.real_history_run if history else gitops.run
+    proc = runner(repo, *args, timeout=60, raise_timeout=True)  # an expiry raises, as it always did here
     if check:
         gitops._raise(proc, args, RuntimeError)
     return proc.stdout if raw else proc.stdout.strip()
@@ -161,7 +163,7 @@ def _remote_tip(repo: Path, remote: str, branch: str) -> str | None:
 
 def _merged_at(repo: Path, target: str, head: str) -> str | None:
     """The commit on target's first-parent chain whose SECOND parent is head, if any."""
-    for line in _git(repo, "rev-list", "--first-parent", "--parents", target).splitlines():
+    for line in _git(repo, "rev-list", "--first-parent", "--parents", target, history=True).splitlines():
         parts = line.split()
         if len(parts) >= 3 and parts[2] == head:
             return parts[0]
@@ -239,7 +241,7 @@ def _pin_tie(root: Path, declaration: declared_sets.Declaration, into: str):
         try:
             tips = _remote_tips(repo, remote, (into,), scan=_REVIEW_REF_PREFIX)  # the target and every review, one read
             tip = tips.pop(f"refs/heads/{into}")
-            if tip and gitops.run(repo, "merge-base", "--is-ancestor", pin, tip).returncode == 0:
+            if tip and gitops.is_ancestor(repo, pin, tip):
                 return None
             if len(tips) > _REVIEW_SCAN_CAP:
                 return (f"declared_set_pin_unmeasured: {name}'s remote advertises {len(tips)} reviews, over the "
@@ -544,7 +546,7 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
             tips = _remote_tips(repo, m["remote"], (into, feature), (review_ref,))
             target, feat, published = tips[f"refs/heads/{into}"], tips[f"refs/heads/{feature}"], tips[review_ref]
             merged = _merged_at(repo, target, m["head"]) if target else None
-            ancestor = _git(repo, "merge-base", m["head"], target) if target else ""
+            ancestor = _git(repo, "merge-base", m["head"], target, history=True) if target else ""
         except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
             # Every measurement fault, advertisement and history reads included, is a named refusal in the receipt.
             row["refused"] = f"remote_unmeasurable: {exc}"

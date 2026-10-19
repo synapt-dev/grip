@@ -114,7 +114,7 @@ def test_a_member_with_no_pin_is_named_not_bound(two_member_ws: Path) -> None:
         out_lines.append(line)
     toml.write_text("\n".join(out_lines) + "\n")
     code, out = _cli("review", "bind", str(ws))
-    assert code == 0 and "beta (the workspace records no usable pin)" in out
+    assert code == 0 and "beta (the workspace records no pin and its checkout is at the live head of refs/heads/main" in _flat(out)
 
 
 def test_the_rows_are_printed_before_anything_is_bound(two_member_ws: Path) -> None:

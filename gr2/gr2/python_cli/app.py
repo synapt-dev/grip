@@ -5115,8 +5115,8 @@ def review_bind(
             raise typer.BadParameter(f"{exc}; fix the file, or name the row with --repo/--remote/--base/--head or --rows-json")
         if choice.refused:
             raise typer.BadParameter(
-                f"cannot pin: {'; '.join(choice.refused)}. That member's checkout differs from the workspace's pin and "
-                "cannot be compared with it, so it may carry part of this change, and binding the other members "
+                f"cannot pin: {'; '.join(choice.refused)}. A member named here may carry part of this change (or, with no "
+                "workspace pin, cannot take the live head as its base), and binding the other members "
                 "alone could review part of the change set; "
                 "no review id was minted. Make the pin readable in that checkout (gr2 store materialize, or fetch "
                 "the pin) and pin again, or name the rows with --repo/--remote/--base/--head or --rows-json"

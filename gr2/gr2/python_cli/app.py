@@ -3759,7 +3759,10 @@ def _unpushed_commits(repo: Path, *, fetch: bool = True) -> list[tuple[str, str]
     for tips, prefix in ((["--branches"], "refs/heads/"), (["HEAD"], ""), (["--tags"], "refs/tags/")):
         out = gitops.run_argv(["git", "log", "--source", *tips, "--not", "--remotes", "--stdin", "--format=%H %S"],
                               cwd=repo, input=not_held).stdout
-        for line in out.splitlines():
+        # By "\n" only: str.splitlines also cuts at U+2028, U+2029 and U+0085, which a branch name may hold.
+        for line in out.split("\n"):
+            if not line:
+                continue
             sha, _, ref = line.partition(" ")
             found.setdefault(sha, prefix + ref.removeprefix(prefix))
     if found and not fetch:

@@ -5,7 +5,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from gr2.python_cli import lane_defaults, push
+from gr2.python_cli import grip, lane_defaults, push
+from tests.test_review_bind_verify import _fixture_remote, _grip_ws, _row
+from tests.test_review_bind_verify import _git as _bind_git
 from tests.test_store_full_mode_coverage import _vanished_covering_ref
 from tests.test_store_git_native_smoke import configure_identity, git, gr2
 
@@ -89,3 +91,38 @@ def test_store_covering_ref_vanished_without_a_lookalike(tmp_path):
     out = _materialize_after_vanish(tmp_path, lookalike=False)
 
     assert "full_mode_covering_ref_vanished" in out, out
+
+
+def _review_remote(tmp_path: Path, *, lookalike: bool) -> tuple[Path, str, str, str]:
+    """A bare remote with refs/heads/dev at base A and an unpushed head B; with ``lookalike``, B is pushed to
+    refs/heads/a/refs/heads/dev, which ls-remote lists before dev. Returns (workspace, remote, A, B)."""
+    remote, base, head = _fixture_remote(tmp_path)
+    if lookalike:
+        _bind_git(tmp_path / "work", "push", "origin", "HEAD:refs/heads/a/refs/heads/dev")
+        listed = _bind_git(tmp_path, "ls-remote", "--", remote, "refs/heads/dev")
+        assert listed.split()[1] == "refs/heads/a/refs/heads/dev", listed
+    return _grip_ws(tmp_path), remote, base, head
+
+
+def test_remote_head_reads_the_exact_row_beside_a_lookalike(tmp_path):
+    ws, remote, base, head = _review_remote(tmp_path, lookalike=True)
+
+    assert grip._remote_head(ws, remote, "refs/heads/dev") == base
+
+
+def test_review_receipt_liveness_sees_dev_unmoved_beside_a_lookalike(tmp_path):
+    remote, base, head = _fixture_remote(tmp_path)
+    ws = _grip_ws(tmp_path)
+    commit = grip.create_review_bind_commit(ws, [_row(remote, base, head)])
+    _bind_git(tmp_path / "work", "push", "origin", "HEAD:refs/heads/a/refs/heads/dev")
+
+    receipt = grip.build_review_receipt(ws, commit, actor="t", verdict="ratify", axes={}, run_results={})
+
+    assert receipt["liveness"][0]["live_remote_head"] == base
+    assert receipt["liveness"][0]["state"] == "equal"
+
+
+def test_remote_head_without_a_lookalike(tmp_path):
+    ws, remote, base, head = _review_remote(tmp_path, lookalike=False)
+
+    assert grip._remote_head(ws, remote, "refs/heads/dev") == base

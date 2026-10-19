@@ -496,9 +496,12 @@ def _norm_text(value: str) -> str:
 
 def _remote_head(workspace: Path, remote: str, ref: str) -> str:
     """The live head of one ref on a remote, or '' if absent. A ref name like
-    refs/heads/<branch>; ls-remote is read-only and needs no local ref."""
-    matches = _remote_ref_matches(workspace, remote, ref)
-    return matches[0][0] if matches else ""
+    refs/heads/<branch>; ls-remote is read-only and needs no local ref. Only the row named exactly
+    ``ref`` counts: a lookalike such as refs/heads/a/<ref> may sort first, and two exact rows refuse."""
+    exact = [tip for tip, name in _remote_ref_matches(workspace, remote, ref) if name == ref]
+    if len(exact) > 1:
+        raise GripReviewRefused("remote_unreadable", ref, f"ls-remote listed {len(exact)} rows named {ref}")
+    return exact[0] if exact else ""
 
 
 def _remote_ref_matches(workspace: Path, remote: str, ref: str) -> list[tuple[str, str]]:

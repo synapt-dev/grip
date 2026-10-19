@@ -102,7 +102,7 @@ Not there yet:
 | `spec` | show, validate |
 | `lane` | create, enter, exit, show, resolve, bind, lease, list, push, remove |
 | (top level) | branch, add, commit, change, push, prune, status, plan, apply, update |
-| `sync` | status, run |
+| `sync` | status, run, wait |
 | `pr` | create, status, checks, merge, view |
 | `check` | run, show, set |
 | `proto` | json |

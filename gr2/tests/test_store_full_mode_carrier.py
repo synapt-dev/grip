@@ -56,6 +56,29 @@ def _advance(root: Path, member: str, *, push: bool) -> str:
     return git(work, "rev-parse", "HEAD").stdout.strip()
 
 
+def _legacy_root(root: Path) -> Path:
+    """The root rewritten to the shape before the sidecar: each member's record (pin, url, its records) is a
+    field-commit, the gitlink names it, and the grip commit carries it as a PARENT, with no `.grip/fields` in the tree."""
+    from gr2.python_cli import grip_cli
+
+    links = []
+    for name in ("alpha", "beta"):
+        got = grip_cli._field_record(root, {"name": name, "path": name, "upstream": "origin/main"}, "HEAD")
+        url = git(root / name, "remote", "get-url", "origin").stdout.strip()
+        links.append((name, mft.commit(root, dict(kind=mft.KIND_REPO, pin=got["pin"], url=url, ref="main",
+                                                  covered_by="refs/heads/main", covered_test=mft.COVER_REACHABLE,
+                                                  records=got["records"]), "record")))
+    git(root, "rm", "-r", "-q", "--cached", "--sparse", "--ignore-unmatch", ".grip/fields")
+    for name, record in links:
+        git(root, "update-index", "--add", "--cacheinfo", f"160000,{record},{name}")
+    tree = git(root, "write-tree").stdout.strip()
+    parents = [arg for _, record in links for arg in ("-p", record)]
+    made = git(root, "-c", "user.name=x", "-c", "user.email=x@example.invalid", "commit-tree", tree,
+               "-p", git(root, "rev-parse", "HEAD").stdout.strip(), *parents, "-m", "legacy records").stdout.strip()
+    git(root, "update-ref", "HEAD", made)
+    return root
+
+
 def test_the_members_gitlink_is_its_own_commit_and_the_sidecar_holds_the_rest(tmp_path):
     root = _full_store(tmp_path)
 

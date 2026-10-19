@@ -12,7 +12,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from tests.test_store_full_mode_carrier import _advance, _full_store, _gitlink
+from gr2.python_cli import member_field_tree as mft
+from tests.test_store_full_mode_carrier import _advance, _full_store, _gitlink, _legacy_root
 from tests.test_store_git_native_smoke import configure_identity, git, gr2
 
 
@@ -272,6 +273,7 @@ def test_a_partial_clone_refuses_rather_than_drop_the_records_it_cannot_read(tmp
     if not _git_at_least(tmp_path, 2, 44):
         pytest.skip("git before 2.44 ignores GIT_NO_LAZY_FETCH")
     root, _ = _root_with_a_check_on_alpha(tmp_path)
+    _legacy_root(root)
     git(root, "config", "uploadpack.allowFilter", "true")
     git(tmp_path, "clone", "-q", "--filter=blob:none", f"file://{root}", "partial")
     partial = tmp_path / "partial"
@@ -302,6 +304,7 @@ def test_a_partial_clone_names_the_absent_record_when_reading_a_members_pin(tmp_
     if not _git_at_least(tmp_path, 2, 44):
         pytest.skip("git before 2.44 ignores GIT_NO_LAZY_FETCH")
     root, _ = _root_with_a_check_on_alpha(tmp_path)
+    _legacy_root(root)
     git(root, "config", "uploadpack.allowFilter", "true")
     git(tmp_path, "clone", "-q", "--filter=blob:none", f"file://{root}", "partial")
     partial = tmp_path / "partial"
@@ -357,6 +360,7 @@ def test_a_shallow_partial_clone_keeps_the_unshallow_advice_for_a_record_it_does
     if not _git_at_least(tmp_path, 2, 44):
         pytest.skip("git before 2.44 ignores GIT_NO_LAZY_FETCH")
     root, _ = _root_with_a_check_on_alpha(tmp_path)
+    _legacy_root(root)
     git(root, "config", "uploadpack.allowFilter", "true")
     git(tmp_path, "clone", "-q", "--depth", "1", "--filter=blob:none", f"file://{root}", "both")
     both = tmp_path / "both"

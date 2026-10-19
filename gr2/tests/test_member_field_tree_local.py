@@ -55,11 +55,11 @@ def test_member_record_read_in_a_full_clone_is_whole(tmp_path):
 
 def test_a_grip_command_in_a_blob_none_clone_prints_the_refusal_and_exits_non_zero(tmp_path):
     """The command's record read meets a blob the clone does not hold: it is refused by name, not a traceback."""
-    from tests.test_store_full_mode_carrier import _full_store, gr2
+    from tests.test_store_full_mode_carrier import _full_store, _legacy_root, gr2
 
     if tuple(int(n) for n in re.findall(r"\d+", git(tmp_path, "version"))[:2]) < (2, 44):
         pytest.skip("git before 2.44 ignores GIT_NO_LAZY_FETCH")
-    root = _full_store(tmp_path)
+    root = _legacy_root(_full_store(tmp_path))
     git(root, "config", "uploadpack.allowFilter", "true")
     clone = tmp_path / "partial"
     git(tmp_path, "clone", "-q", "--filter=blob:none", root.as_uri(), str(clone))
@@ -74,11 +74,11 @@ def test_a_grip_command_in_a_blob_none_clone_prints_the_refusal_and_exits_non_ze
 
 def test_the_partial_clone_refusal_does_not_tell_the_user_to_unshallow(tmp_path):
     """A blob:none clone is not shallow: its refusal names the fetch, and the unshallow advice would mislead."""
-    from tests.test_store_full_mode_carrier import _full_store, gr2
+    from tests.test_store_full_mode_carrier import _full_store, _legacy_root, gr2
 
     if tuple(int(n) for n in re.findall(r"\d+", git(tmp_path, "version"))[:2]) < (2, 44):
         pytest.skip("git before 2.44 ignores GIT_NO_LAZY_FETCH")
-    root = _full_store(tmp_path)
+    root = _legacy_root(_full_store(tmp_path))
     git(root, "config", "uploadpack.allowFilter", "true")
     clone = tmp_path / "partial"
     git(tmp_path, "clone", "-q", "--filter=blob:none", root.as_uri(), str(clone))
@@ -92,9 +92,9 @@ def test_the_partial_clone_refusal_does_not_tell_the_user_to_unshallow(tmp_path)
 
 def test_a_shallow_clone_without_the_record_still_names_unshallow(tmp_path):
     """The record is a parent of the grip commit, so a depth-1 clone does not reach it: that refusal keeps the advice."""
-    from tests.test_store_full_mode_carrier import _full_store, gr2
+    from tests.test_store_full_mode_carrier import _full_store, _legacy_root, gr2
 
-    root = _full_store(tmp_path)
+    root = _legacy_root(_full_store(tmp_path))
     clone = tmp_path / "shallow"
     git(tmp_path, "clone", "-q", "--depth=1", root.as_uri(), str(clone))
     assert git(clone, "rev-parse", "--is-shallow-repository") == "true"

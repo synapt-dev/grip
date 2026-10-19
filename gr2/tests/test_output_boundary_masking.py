@@ -370,3 +370,67 @@ def test_d3_a_two_word_git_dir_still_masks(path_origin):
     assert proc.returncode != 0
     assert TOKEN not in proc.stderr
     assert TOKEN not in proc.stdout
+
+
+# L1-L4: leased_push names its remote through gitops._shown_arg, and a failed `gh pr create/merge` (outside _spawn)
+# goes through gitops.shown_git_text with the repo gh ran in (the process cwd), so its config values are masked.
+from gr2.python_cli import leased_push, platform as platform_ops  # noqa: E402
+
+LEASE_REF = "refs/o/x"
+
+
+@pytest.fixture
+def lease_repo(tmp_path):
+    repo = tmp_path / "lease"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    git(repo, "commit", "-q", "--allow-empty", "-m", "base")
+    git(repo, "update-ref", LEASE_REF, "HEAD")
+    return repo
+
+
+def test_l1_remote_values_names_a_token_remote_without_its_token(lease_repo):
+    with pytest.raises(leased_push.PushRefused) as caught:
+        leased_push._remote_values(lease_repo, USERINFO_URL, [LEASE_REF])
+    print("l1 message:", str(caught.value))
+    assert TOKEN not in str(caught.value)
+    assert "ls-remote https://127.0.0.1:9/x.git failed" in str(caught.value)
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError,
+                   reason="push() checks the remote name in tracking.tracked first; names._leaf's ValueError prints it raw")
+def test_l2_push_to_a_token_remote_shows_no_token(lease_repo):
+    with pytest.raises((leased_push.PushRejected, leased_push.PushRefused, ValueError)) as caught:
+        leased_push.push(lease_repo, [LEASE_REF], org="o", remote=USERINFO_URL)
+    print("l2 raised:", type(caught.value).__name__, str(caught.value))
+    assert TOKEN not in str(caught.value)
+
+
+def test_l4_a_plain_remote_name_is_shown_unchanged(lease_repo):
+    git(lease_repo, "remote", "add", "origin", PLAIN_URL)
+    with pytest.raises(leased_push.PushRefused) as caught:
+        leased_push._remote_values(lease_repo, "origin", [LEASE_REF])
+    assert "ls-remote origin failed" in str(caught.value)
+
+
+@pytest.mark.parametrize("verb", ["create", "merge"])
+def test_l3_a_failed_gh_call_masks_the_origin_token_of_the_repo_it_ran_in(monkeypatch, path_origin, verb):
+    real_run = subprocess.run
+
+    def fake_run(argv, *args, **kwargs):
+        if argv[0] == "gh":
+            return subprocess.CompletedProcess(argv, 1, "", f"error: could not resolve remote {PATH_URL}\n")
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.chdir(path_origin)
+    monkeypatch.setattr(platform_ops.shutil, "which", lambda name, *a, **k: "/usr/bin/gh")
+    monkeypatch.setattr(platform_ops.subprocess, "run", fake_run)
+    adapter = platform_ops.GitHubAdapter()
+    with pytest.raises(platform_ops.AdapterError) as caught:
+        if verb == "create":
+            adapter.create_pr(platform_ops.CreatePRRequest(repo="o/x", title="t", body="b",
+                                                           head_branch="h", base_branch="main"))
+        else:
+            adapter.merge_pr("o/x", 1, method=platform_ops.MergeMethod.MERGE)
+    print("l3 message:", str(caught.value))
+    assert TOKEN not in str(caught.value)
+    assert "could not resolve remote" in str(caught.value)

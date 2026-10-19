@@ -705,9 +705,14 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                                           env={**os.environ, "GIT_TRACE2_EVENT": str(trace)})
                         hook_said = _pre_push_refused(trace)
                     out = _text(proc.stdout).split("\n")
-                    err = gitops._shown_stderr(proc.args, _text(proc.stderr)).split("\n")
+                    err = gitops._shown_stderr(proc.args, _text(proc.stderr))
+                    secrets = gitops.credential_values(proc.args, repo)
+                    err = gitops._masked(err, secrets).split("\n")
                     status = [] if hook_said else _push_verdict(out, into, None if hook_said is False else m["remote"])
                     remote_said = any("[remote rejected]" in ln for ln in status)
+                    # the verdict line carries the server's reason text: masked after the test, so a short
+                    # credential cannot erase the marker
+                    status = [gitops._masked(ln, secrets) for ln in status]
                     if proc.returncode == 124:  # gitops' expiry: the push may still land after it
                         push_error, unconfirmed = f"push_unconfirmed: {_capped(chr(10).join(err).strip())}", True
                     elif remote_said:  # the remote's own words and git's verdict line, never the URL it repeats

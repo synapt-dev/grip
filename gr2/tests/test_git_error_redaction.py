@@ -160,6 +160,53 @@ def test_push_error_never_shows_a_query_token(gate_world, monkeypatch):
     assert text.count(TOKEN) == 0, text
 
 
+def test_push_error_never_shows_a_token_the_remote_echoes_bare(gate_world, monkeypatch, tmp_path):
+    gate_check(gate_world)
+    bare = tmp_path / "echo.git"  # the remote's own copy, so the lease holds and the push reaches its hook
+    subprocess.run(["git", "clone", "-q", "--bare", str(gate_world["remote"]), str(bare)], check=True)
+    hook = bare / "hooks" / "pre-receive"
+    hook.write_text(f"#!/bin/sh\necho 'invalid token {TOKEN}' >&2\nexit 1\n")
+    hook.chmod(0o755)
+    # git rewrites the query URL to the bare one, while the push's own arguments still carry the token
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", f"url.{bare}.insteadOf")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", QUERY)
+    _push_to(monkeypatch, gate_world, QUERY)
+
+    res, receipt, text = _cli_merge(gate_world)
+
+    push_error = receipt["members"][0].get("push_error") or ""
+    assert res.exit_code == 3 and "invalid token" in push_error, text
+    assert text.count(TOKEN) == 0, text
+
+
+def test_push_error_never_shows_a_token_in_the_verdict_line_reason(gate_world, monkeypatch):
+    gate_check(gate_world)
+    _push_to(monkeypatch, gate_world, QUERY)
+    # the porcelain "!" line carries the server's reason text, which may echo the token
+    verdict = f"! refs/heads/main:refs/heads/main [remote rejected] (bad token {TOKEN})"
+    monkeypatch.setattr(merge_gate, "_push_verdict", lambda *a, **kw: [verdict])
+
+    res, receipt, text = _cli_merge(gate_world)
+
+    push_error = receipt["members"][0].get("push_error") or ""
+    assert res.exit_code == 3 and "remote rejected" in push_error, text
+    assert text.count(TOKEN) == 0, text
+
+
+def test_push_rejected_stays_rejected_when_the_password_is_the_word_rejected(gate_world, monkeypatch):
+    gate_check(gate_world)
+    # masking the verdict line before the "[remote rejected]" test would turn a refusal into "the remote never answered"
+    _push_to(monkeypatch, gate_world, f"https://u:rejected@127.0.0.1:9/a.git?access_token={TOKEN}")
+    verdict = f"! refs/heads/main:refs/heads/main [remote rejected] (bad token {TOKEN})"
+    monkeypatch.setattr(merge_gate, "_push_verdict", lambda *a, **kw: [verdict])
+
+    res, receipt, text = _cli_merge(gate_world)
+
+    assert res.exit_code == 3 and "push_rejected" in text and "push_failed" not in text, text
+    assert text.count(TOKEN) == 0, text
+
+
 def test_push_error_shows_a_plain_remote_as_before(gate_world, monkeypatch):
     gate_check(gate_world)
     pushed = _push_to(monkeypatch, gate_world, PLAIN)

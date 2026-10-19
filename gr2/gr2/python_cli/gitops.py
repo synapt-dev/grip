@@ -5,6 +5,7 @@ import re
 import subprocess
 import unicodedata
 from pathlib import Path
+from urllib.parse import quote, unquote, urlsplit
 
 from . import next_steps
 
@@ -153,13 +154,54 @@ DEFAULT_TIMEOUT = 600.0
 class GitError(RuntimeError):
     """A git command exited non-zero. Carries the return code and git's own message."""
 
-    def __init__(self, args: tuple[str, ...], returncode: int, stderr: str):
+    def __init__(self, args: tuple[str, ...], returncode: int, stderr: str, secrets: frozenset[str] = frozenset()):
         self.git_args, self.returncode, self.stderr = args, returncode, stderr
-        shown = [next_steps._shown(_shown_arg(arg)) for arg in args[:2]]
-        super().__init__(f"git {' '.join(shown)}: {_shown_stderr(args, stderr)}".rstrip(": "))
+        shown = [next_steps._shown(_masked(_shown_arg(arg), secrets)) for arg in args[:2]]
+        super().__init__(f"git {' '.join(shown)}: {_masked(_shown_stderr(args, stderr), secrets)}".rstrip(": "))
 
 
 _CREDENTIAL_SHOWN = "<a remote with a credential>"
+#: A credential value shorter than this is not masked, so a two-letter token does not shred ordinary words.
+_MIN_SECRET = 4
+_QUERY_PAIR = re.compile(r"""([A-Za-z0-9_.-]+)=([^&;#\s'"()<>]*)""")
+
+
+def credential_values(argv, cwd: Path | None = None) -> frozenset[str]:
+    """Every credential VALUE a git call could echo back: the userinfo password (and a non-ssh userinfo user),
+    each credential-named query value and any fragment, taken from the call's arguments and from every
+    `remote.*.url` / `remote.*.pushurl` of the repository at `cwd`, each raw, percent-decoded and re-encoded.
+    A git or server message may echo a value in a shape no pattern expects; masking the values catches it."""
+    from .grip import _CREDENTIAL_PARAMS  # lazy, as _shown_arg
+
+    texts = [str(arg) for arg in argv]
+    if cwd is not None:
+        proc = run(cwd, "config", "--get-regexp", r"^remote\..*\.(push)?url$", timeout=30)
+        texts += [line.split(" ", 1)[1] for line in proc.stdout.splitlines() if " " in line]
+    found: set[str] = set()
+    for text in texts:
+        if "://" in text:
+            try:
+                parts = urlsplit(text.split("::", 1)[-1] if "::" in text.split("://", 1)[0] else text)
+                found.add(parts.password or "")
+                if parts.scheme.lower() not in {"ssh", "git+ssh", "ssh+git"}:
+                    found.add(parts.username or "")
+            except ValueError:
+                pass
+        if "#" in text and "://" in text:
+            found.add(text.split("#", 1)[1])
+        if "?" in text:
+            for name, value in _QUERY_PAIR.findall(text.split("?", 1)[1]):
+                if name.strip().lower().replace("-", "_") in _CREDENTIAL_PARAMS:
+                    found.add(value)
+    values = {form for value in found for form in (value, unquote(value), quote(unquote(value), safe=""))}
+    return frozenset(value for value in values if len(value) >= _MIN_SECRET)
+
+
+def _masked(text: str, secrets: frozenset[str]) -> str:
+    """`text` with every known credential value replaced by the placeholder, longest first."""
+    for value in sorted(secrets, key=len, reverse=True):
+        text = text.replace(value, _CREDENTIAL_SHOWN)
+    return text
 # git's own rule for an scp-form address: a colon before the first slash (so `./a:b` stays a local path)
 _SCP_ADDRESS = re.compile(r"[^/]*:")
 
@@ -323,24 +365,25 @@ def check(proc: subprocess.CompletedProcess) -> subprocess.CompletedProcess:
     return proc
 
 
-def _raise(proc: subprocess.CompletedProcess, args: tuple[str, ...], error: type[Exception] | None) -> None:
+def _raise(proc: subprocess.CompletedProcess, args: tuple[str, ...], error: type[Exception] | None,
+           cwd: Path | None = None) -> None:
     if proc.returncode:
         err = proc.stderr.decode("utf-8", errors="replace") if isinstance(proc.stderr, bytes) else proc.stderr
-        exc = GitError(args, proc.returncode, err.strip())
+        exc = GitError(args, proc.returncode, err.strip(), credential_values([*proc.args, *args], cwd))
         raise exc if error is None else error(str(exc))
 
 
 def out(cwd: Path, *args: str, error: type[Exception] | None = None, strip: bool = True, **kw) -> str:
     """Text stdout of one git command; a non-zero exit raises GitError, or `error` when given."""
     proc = run(cwd, *args, **kw)
-    _raise(proc, args, error)
+    _raise(proc, args, error, cwd)
     return proc.stdout.strip() if strip else proc.stdout
 
 
 def out_bytes(cwd: Path, *args: str, error: type[Exception] | None = None, **kw) -> bytes:
     """Raw stdout bytes of one git command (stdin may be bytes); a non-zero exit raises like out()."""
     proc = run(cwd, *args, binary=True, **kw)
-    _raise(proc, args, error)
+    _raise(proc, args, error, cwd)
     return proc.stdout
 
 

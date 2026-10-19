@@ -47,7 +47,7 @@ ALLOWLIST: dict[tuple[str, str], str] = {
     ('gr2/python_cli/app.py', 'f"run `gr2 apply {workspace_root} --yes` first"'):
         'user-typed: the person passed this value in the command that prints it (app.py:4345)',
     # each value in shown is quoted with next_steps._shown (gitops.py:158); _shown_arg alone is not quote-safe
-    ('gr2/python_cli/gitops.py', 'super().__init__(f"git {\' \'.join(shown)}: {_shown_stderr(args, stderr)}".rstrip(": "))'):
+    ('gr2/python_cli/gitops.py', 'super().__init__(f"git {\' \'.join(shown)}: {_masked(_shown_stderr(args, stderr), secrets)}".rstrip(": "))'):
         'shown is built quoted: next_steps._shown(_shown_arg(arg)), gitops.py:158',
     ('gr2/python_cli/grip.py', '"next": None if complete else f"gr2 review publish {next_steps._shown(str(workspace))} gr:{full}" + ('):
         "placeholder-safe: full is the review commit's hex oid, resolved and pushed by gr2",

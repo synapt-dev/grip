@@ -15,6 +15,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import typer.main
+
+from gr2.python_cli import surface
 from gr2.python_cli.app import app
 
 README = Path(__file__).resolve().parents[1] / "README.md"
@@ -178,15 +181,23 @@ def _visible_tree() -> tuple[set[str], dict[str, set[str]]]:
     return top, groups
 
 
+def _in_help_all(path: str) -> bool:
+    """Plumbing a stranger can find: `gr2 help -a` lists the path, or a path under it (a group such as `lane lease`)."""
+    listed = [p for p, _ in surface.plumbing(typer.main.get_command(app))]
+    return any(p == path or p.startswith(path + " ") for p in listed)
+
+
 def test_the_readme_commands_table_names_no_hidden_verb() -> None:
+    # Findable means `--help` shows it or `gr2 help -a` lists it (the README names `gr2 help -a`); a
+    # compatibility alias, listed nowhere, still fails here.
     top, groups = _visible_tree()
     bad: list[str] = []
     for group, verb in _table_entries(README.read_text()):
         if group == "(top level)":
-            if verb not in top:
-                bad.append(f"{verb} (hidden or absent top-level command)")
-        elif group in groups and verb not in groups[group]:
-            bad.append(f"gr2 {group} {verb} (hidden: not in `--help`)")
+            if verb not in top and not _in_help_all(verb):
+                bad.append(f"{verb} (hidden or absent top-level command, and not in `gr2 help -a`)")
+        elif group in groups and verb not in groups[group] and not _in_help_all(f"{group} {verb}"):
+            bad.append(f"gr2 {group} {verb} (hidden: not in `--help` or `gr2 help -a`)")
     assert not bad, "the Commands table teaches verbs a stranger cannot find:\n  " + "\n  ".join(sorted(bad))
 
 

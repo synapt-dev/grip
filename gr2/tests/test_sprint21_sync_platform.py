@@ -568,7 +568,8 @@ def test_pr_command_group_exists_in_python_cli() -> None:
     assert "create" in result.stdout
     assert "status" in result.stdout
     assert "merge" in result.stdout
-    assert "checks" in result.stdout
+    # `pr checks` is plumbing since the help surface split: listed by `gr2 help -a`.
+    assert "gr2 pr checks " in runner.invoke(app, ["help", "-a"]).stdout
 
 
 def test_pr_commands_route_through_platform_adapter(tmp_path: Path, monkeypatch) -> None:

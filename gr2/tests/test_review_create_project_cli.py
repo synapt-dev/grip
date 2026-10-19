@@ -53,9 +53,10 @@ def test_create_project_refuses_a_lane_with_no_fork_base_cleanly(tmp_path: Path)
 
 
 def test_create_project_is_discoverable_from_help(tmp_path: Path) -> None:
-    # The door fix: a stranger reading help alone can find the producer. It appears
-    # in the review command list, and open-project's arg help names it.
-    review_help = runner.invoke(gr2_app.app, ["review", "--help"]).output
-    assert "create-project" in review_help
+    # The door fix: a stranger reading help alone can find the producer. It is
+    # plumbing since the help surface split, so `gr2 help -a` lists it, and
+    # open-project's arg help names it.
+    help_all = runner.invoke(gr2_app.app, ["help", "-a"]).output
+    assert "gr2 review create-project " in help_all
     open_help = runner.invoke(gr2_app.app, ["review", "open-project", "--help"]).output
     assert "create-project" in open_help

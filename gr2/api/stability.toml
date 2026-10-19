@@ -36,6 +36,12 @@
 # steps for the witness and the full-suite run are unlanded, and the exit table
 # it carries was introduced days ago. Marking it says the store verbs are
 # public today but not yet promised. LIFT THIS when the slice completes.
+#
+# PARTLY LIFTED with the help-surface cut: `gr2 --help` now shows the porcelain, and the
+# store verbs it shows that keep their names through the planned renames -- init, status,
+# check, push, materialize -- are STABLE for 2.x, with the store exit table and store init's
+# workspace_root argument. Their flags stay may-change below, as do store commit (to be renamed), the hidden
+# store verbs, and review publish/receive. tests/test_cli_help_surface.py pins this set.
 
 may-change = [
   # Native review transport is public but still under focused validation.
@@ -56,7 +62,6 @@ may-change = [
   "arg review read-pr pr_number <str>",
   "flag review read-pr --dir <str>",
   "flag review read-pr --url <str>",
-  "verb store check",
   "flag store check --json",
   "verb store checkout",
   "flag store checkout --json",
@@ -69,19 +74,15 @@ may-change = [
   "flag store diff --json",
   "arg store diff ref_a <str>",
   "arg store diff ref_b <str>",
-  "verb store init",
   "flag store init --json",
   "flag store init --member <str>",
-  "arg store init workspace_root <str>",
   "verb store log",
   "flag store log --json",
   "flag store log --max-count/-n <str>",
-  "verb store materialize",
   "flag store materialize --json",
   "verb store migrate",
   "flag store migrate --dry-run",
   "flag store migrate --json",
-  "verb store push",
   "flag store push --json",
   "flag store push --to <str>",
   # `store snapshot` is the hidden alias of `store commit` (section 5), removed
@@ -93,23 +94,10 @@ may-change = [
   "flag store snapshot --json",
   "flag store snapshot --message/-m <str>",
   "flag store snapshot --allow-rewind",
-  "verb store status",
   "flag store status --json",
-  # The group's exit table travels WITH its verbs rather than being promised on
-  # its own: marking it stable here would commit to the codes while the verbs
-  # that return them are still moving. LIFT THIS with the verbs above.
-  #
-  # ⚠ THE LAST ENTRY'S TRAILING SPACE IS LOAD-BEARING AND LIVES INSIDE THE
-  # QUOTES. `STORE_INCOMPLETE_PREFIX` ends in a space ("...store verb: "), and
-  # that space is half of what makes the code-5 message greppable -- so the
-  # entry uses a TOML LITERAL string (single quotes) to carry it verbatim. Do
-  # not reformat it to a basic string or trim the space: the marker lookup is an
-  # exact match, so either change makes the entry name nothing.
-  "exit store 0 ok",
-  "exit store 2 usage",
-  "exit store 3 refused-coverage",
-  "exit store 4 refused-inconsistent",
-  'exit store 5 cannot-measure prefix:"cannot complete this store verb: "',
+  # The store exit table (codes 0, 2, 3, 4 and 5, with the code-5 message prefix
+  # "cannot complete this store verb: ", trailing space included) was lifted to
+  # stable with the five store verbs above; it is no longer listed here.
 ]
 
 # A name a later slice will take, held so nobody defines it quietly in the

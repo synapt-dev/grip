@@ -202,6 +202,11 @@ def _masked(text: str, secrets: frozenset[str]) -> str:
     for value in sorted(secrets, key=len, reverse=True):
         text = text.replace(value, _CREDENTIAL_SHOWN)
     return text
+
+
+def shown_git_text(args, text: str, cwd: Path | None = None) -> str:
+    """git's output for a call run with `args` (in `cwd`) as GitError would show it, for a caller that puts it in its own message."""
+    return _masked(_shown_stderr(args, text), credential_values(args, cwd))
 # git's own rule for an scp-form address: a colon before the first slash (so `./a:b` stays a local path)
 _SCP_ADDRESS = re.compile(r"[^/]*:")
 

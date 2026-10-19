@@ -1009,6 +1009,7 @@ def test_stamp_on_a_checkout_pr_lane_binds_the_approval_to_repo_and_head(review_
     assert stamped.exit_code == 0, (stamped.output, stamped.exception)
     result = json.loads(stamped.output)
     assert (result["repo"], result["head"], result["count"]) == (record["repo"], world["head_sha"], 1)
+    assert result["counts_toward_merge"] is False, result  # no merge reads a PR-lane stamp
     back = approvals.pr_lane_approvals(lane)
     assert back["count"] == 1 and back["head"] == world["head_sha"] and back["repo"] == record["repo"]
     assert [(link["approver"]["name"], link["head"]) for link in back["links"]] == [("Reviewer", world["head_sha"])]
@@ -1029,6 +1030,69 @@ def test_stamp_on_a_checkout_pr_lane_whose_head_moved_refuses(review_world, monk
     stamped = CliRunner().invoke(app_mod.app, ["review", "stamp", str(lane)])
     assert stamped.exit_code == 2, (stamped.output, stamped.exception)
     assert "approval_head_moved" in stamped.output and world["head_sha"] in stamped.output, stamped.output
+    assert approvals.pr_head_approvals(world["source"], "any", world["head_sha"])["tip"] is None
+
+
+def test_stamp_by_the_pr_author_on_their_own_checkout_pr_lane_refuses_self_approval(review_world, monkeypatch):
+    """The PR head's author may not stamp it, as on a pinned review; nothing is stamped and the next line is the
+    PR lane's own (a different approver's lane), not a bind's receive."""
+    from typer.testing import CliRunner
+    from gr2.python_cli import approvals
+
+    world = review_world
+    ws, app_mod, lane = _checked_out_lane(world, monkeypatch)
+    _run(lane, "config", "user.name", "t")  # the author of the PR head
+    stamped = CliRunner().invoke(app_mod.app, ["review", "stamp", str(lane)])
+    assert stamped.exit_code == 2, (stamped.output, stamped.exception)
+    assert "self_approval" in stamped.output and "gr2 review stamp <their-lane>" in stamped.output, stamped.output
+    assert "review receive" not in stamped.output, stamped.output
+    assert approvals.pr_head_approvals(world["source"], "any", world["head_sha"])["tip"] is None
+
+
+def _lane_commit(lane, author, name):
+    (lane / f"{name}.txt").write_text(name + "\n")
+    _run(lane, "add", f"{name}.txt")
+    _run(lane, "-c", f"user.name={author}", "-c", "user.email=a@a", "commit", "-q", "-m", name)
+    return _run(lane, "rev-parse", "HEAD")
+
+
+@pytest.mark.parametrize("case", ["range_author", "head_author_empty_range", "other_control"])
+def test_pr_lane_self_approval_reads_the_head_and_every_range_author(review_world, monkeypatch, case):
+    """Any commit author in base..head refuses, not only the head's; the head's author refuses even when the
+    range is empty; a name in neither stamps (rc 0 control)."""
+    from gr2.python_cli import approvals
+
+    world = review_world
+    ws, app_mod, lane = _checked_out_lane(world, monkeypatch)
+    base = world["head_sha"]
+    _lane_commit(lane, "Range Author", "mid")
+    head = _lane_commit(lane, "Head Author", "tip")
+    if case == "head_author_empty_range":
+        base = head
+    real = approvals.pr_lane_record
+    monkeypatch.setattr(approvals, "pr_lane_record", lambda l: {**real(l), "base": base, "head": head})
+    name = {"range_author": "Range Author", "head_author_empty_range": "Head Author", "other_control": "Reviewer"}
+    _run(lane, "config", "user.name", name[case])
+    if case == "other_control":
+        assert approvals.approve_pr_lane(lane)["count"] == 1
+        return
+    with pytest.raises(approvals.ApprovalRefused, match="^self_approval$"):
+        approvals.approve_pr_lane(lane)
+    assert approvals.pr_head_approvals(world["source"], "any", head)["tip"] is None
+
+
+def test_pr_lane_option_shaped_base_in_the_record_is_a_revision_not_an_option(review_world, monkeypatch, tmp_path):
+    """The record's base reaches git log as a revision: an option-shaped base refuses and writes no file."""
+    from gr2.python_cli import approvals
+
+    world = review_world
+    ws, app_mod, lane = _checked_out_lane(world, monkeypatch)
+    out = tmp_path / "out"
+    real = approvals.pr_lane_record
+    monkeypatch.setattr(approvals, "pr_lane_record", lambda l: {**real(l), "base": f"--output={out}"})
+    with pytest.raises(approvals.ApprovalRefused, match="^approval_unmeasurable"):
+        approvals.approve_pr_lane(lane)
+    assert not list(tmp_path.glob("out*")), list(tmp_path.glob("out*"))
     assert approvals.pr_head_approvals(world["source"], "any", world["head_sha"])["tip"] is None
 
 

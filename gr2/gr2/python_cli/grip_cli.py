@@ -1183,6 +1183,11 @@ def _store_root_upward(root: Path | None) -> Path:
 
     found = _resolve_workspace_root(None)
     if not _is_workspace_root(found):
+        try:
+            _refuse_moved_workspace(found)  # a moved root has no grip.toml; it answers first, as from -C
+        except NativeStoreRefusal as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=exc.code)
         typer.echo(
             f"no workspace root at or above {found} (a store root's grip.toml, or .grip/workspace_spec.toml); "
             "run this inside a workspace, or name its root with -C <root>",

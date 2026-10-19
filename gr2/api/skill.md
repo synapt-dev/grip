@@ -22,7 +22,7 @@ Everything an operator needs for the jobs below is on this page, and the referen
 | show members, pins and record state | `gr2 store status` (workspace root) |
 | push the record to one address | `gr2 store push --to <bare repo>` (workspace root) |
 | rebuild every member from a record | `git clone <bare repo> <dest>`, then `gr2 store materialize` (in `<dest>`) |
-| pin a review over one or more members | `gr2 review pin --rows-json rows.json` (workspace root) |
+| pin a review over one or more members | `gr2 review pin <workspace>` (rows inferred from each member checkout ahead of the workspace pin); `--rows-json rows.json` only to pin a subset or a hand-picked base |
 | publish, stamp, check, merge a review | `gr2 review publish`, `gr2 review stamp`, `gr2 check run`, `gr2 review merge` (see the review flow below) |
 
 ## Recipes: whole jobs, one script each
@@ -345,6 +345,10 @@ Merge a pinned review into its members' remotes: preflight every member, merge n
 
 gr2 names the next step beside the refusal; the same text is here, keyed by the code. A code ending in `*` covers every code that starts with it and has no row of its own.
 
+### approvals_incomplete
+
+next: an approval stamp is still writing the chain to the members it names; retry the merge once it finishes. If a member stays without it, any approver's gr2 review stamp '<workspace>' '<review>' republishes the chain to the members that lack it
+
 ### approvals_insufficient
 
 next: more approvers are required; each one stamps from their own checkout: gr2 review stamp '<workspace>' '<review>'
@@ -385,6 +389,10 @@ next: gr2 check set '<workspace>' '<review>' -- <your combined test command>
 
 next: the set check failed at these heads and that failure is recorded; a rerun does not clear it. Fix the member, commit a new head, then pin, stamp, run gr2 check set on that head and publish it
 
+### declared_set_pin_unreviewed
+
+next: gr2 review merge '<workspace>' '<review>'
+
 ### feature_moved
 
 next: the feature branch moved after the pin; to check the set as it is now: gr2 check set '<workspace>' '<review>' --at-remote-heads '<branch>' -- <your combined test command>. To merge it, commit a new head and pin it before you push, or pin this head with --ratified gr:<id>, naming an earlier pin of this same head that was stamped
@@ -392,6 +400,10 @@ next: the feature branch moved after the pin; to check the set as it is now: gr2
 ### head_already_on_remote
 
 next: pin a head before you push it. For this head, either commit a new head and pin it before pushing, or pin this one with --ratified gr:<id>, naming an earlier pin of this same head that was stamped
+
+### head_already_on_target
+
+next: nothing to merge; the reviewed head is already in the target, so the reviewed work is there and no gr2 command lands it again. Confirm the target's tip is what you meant to ship; for new work, commit a new head and pin it
 
 ### head_behind_remote_branch
 
@@ -425,6 +437,18 @@ next: mark the PR ready (or reopen it) on the platform, then run the merge again
 
 next: install the GitHub CLI (gh) and authenticate it (gh auth login), then run the merge again; nothing was merged
 
+### push_failed
+
+next: the push did not reach the remote (git's message says why: auth, network, a local hook) and the target is still at the base the gate read, so nothing was pushed for this member or any after it; fix that, then run the same gr2 review merge again
+
+### push_rejected
+
+next: the remote refused the push (the reason is git's message in the refusal: a hook or a protected branch) and the target is still at the base the gate read, so nothing was pushed for this member or any after it; clear the rejection on the remote, then run the same gr2 review merge again
+
+### push_unconfirmed
+
+next: the push did not finish (a timeout or a failed start), so whether this member landed is unknown and no member after it was pushed; when the remote answers, read it with gr2 review merged '<workspace>' '<review>', then run the same gr2 review merge again (a landed member reads merged and is not pushed twice)
+
 ### remote_branch_diverged
 
 next: fetch the remote branch, integrate it into your branch locally (merge or rebase) as a new head, then pin that head before you push it
@@ -436,3 +460,15 @@ next: gr2 review publish '<workspace>' '<review>' --remote '<remote>'
 ### self_approval
 
 next: a different approver stamps it from their own workspace, after receiving it there: gr2 review receive <their-workspace> '<review>' --remote <member-remote>, then gr2 review stamp <their-workspace> '<review>'
+
+### target_deleted_at_push
+
+next: the target '<branch>' was deleted on the remote after the gate read it, so nothing was pushed for this member or any after it; restore it at the base the review was pinned on, then run the same gr2 review merge again
+
+### target_moved_at_push
+
+next: the target moved after the gate read it, so nothing was pushed; bring every member up to it and pin again: gr2 review update '<workspace>' '<review>' --into '<branch>'
+
+### target_unread_at_push
+
+next: the push failed and the target could not be read after it, so whether this member landed is unknown and no member after it was pushed; when the remote answers, read it with gr2 review merged '<workspace>' '<review>', then run the same gr2 review merge again (a landed member reads merged and is not pushed twice)

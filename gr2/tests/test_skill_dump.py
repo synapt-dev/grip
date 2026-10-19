@@ -62,11 +62,12 @@ def test_options_without_help_do_not_grow():
 # The exact codes, written out by hand: a floor let a renamed row pass. Change this set
 # in the same PR as next_steps.py, in front of a reader.
 EXPECTED_CODES = {
-    "approvals_insufficient", "approvals_unset", "at_base_not_ancestor", "at_base_tip_unfetchable", "at_base_unreachable", "base_moved", "check_absent", "check_fail", "check_set*",
-    "check_set_fail",
-    "feature_moved", "head_already_on_remote", "head_behind_remote_branch", "head_not_fetched", "not_received",
+    "approvals_incomplete", "approvals_insufficient", "approvals_unset", "at_base_not_ancestor", "at_base_tip_unfetchable", "at_base_unreachable", "base_moved", "check_absent", "check_fail", "check_set*",
+    "check_set_fail", "declared_set_pin_unreviewed",
+    "feature_moved", "head_already_on_remote", "head_already_on_target", "head_behind_remote_branch", "head_not_fetched", "not_received",
     "platform_head_moved_after_merge", "platform_head_unmeasured_after_merge", "platform_pr_ambiguous", "platform_pr_not_ready", "platform_unmeasurable",
-    "remote_branch_diverged", "review_not_on_member_remote", "self_approval",
+    "push_failed", "push_rejected", "push_unconfirmed", "remote_branch_diverged", "review_not_on_member_remote", "self_approval", "target_deleted_at_push",
+    "target_moved_at_push", "target_unread_at_push",
 }
 
 
@@ -110,3 +111,16 @@ def test_the_skill_name_differs_from_the_gitgrip_skill():
     if not (GR2.parent / "Cargo.toml").is_file():
         pytest.skip(f"{GR2.parent} is not the grip repo (a gr2-only tree), so {GITGRIP_SKILL} is not here")
     assert _frontmatter(GR2 / "api" / "skill.intro.md")["name"] != _frontmatter(GITGRIP_SKILL)["name"]
+
+
+def test_the_verb_map_names_the_bare_review_pin_first():
+    """Agents copy the first command the map names for a job. When the pin row named
+    `--rows-json` first, they hand-built a rows file even though a bare pin infers the rows
+    from each member checkout; the bare form must come first."""
+    rows = [line for line in SKILL.read_text(encoding="utf-8").splitlines()
+            if line.startswith("| pin a review")]
+    assert len(rows) == 1, rows
+    right = rows[0].split("|")[2]
+    first = right.split("`")[1]
+    assert first == "gr2 review pin <workspace>", rows[0]
+    assert "--rows-json" not in right.split(first)[0], rows[0]

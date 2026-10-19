@@ -277,11 +277,7 @@ def project_review_carried_keys(workspace: Path, commit: str) -> set[str]:
     Guards the absent-objects case so a plain project-review commit is not an error."""
     _validate_bind_store(workspace)
     commit = _resolve_bound(workspace, commit)
-    root = {
-        line.strip()
-        for line in _bind_git(workspace, "ls-tree", "--name-only", commit).stdout.splitlines()
-        if line.strip()
-    }
+    root = _bind_root_names(workspace, commit)
     return _tree_keys(workspace, commit, "objects") if "objects" in root else set()
 
 
@@ -510,9 +506,12 @@ def _norm_text(value: str) -> str:
 
 def _remote_head(workspace: Path, remote: str, ref: str) -> str:
     """The live head of one ref on a remote, or '' if absent. A ref name like
-    refs/heads/<branch>; ls-remote is read-only and needs no local ref."""
-    matches = _remote_ref_matches(workspace, remote, ref)
-    return matches[0][0] if matches else ""
+    refs/heads/<branch>; ls-remote is read-only and needs no local ref. Only the row named exactly
+    ``ref`` counts: a lookalike such as refs/heads/a/<ref> may sort first, and two exact rows refuse."""
+    exact = [tip for tip, name in _remote_ref_matches(workspace, remote, ref) if name == ref]
+    if len(exact) > 1:
+        raise GripReviewRefused("remote_unreadable", ref, f"ls-remote listed {len(exact)} rows named {ref}")
+    return exact[0] if exact else ""
 
 
 def _remote_ref_matches(workspace: Path, remote: str, ref: str) -> list[tuple[str, str]]:
@@ -523,7 +522,7 @@ def _remote_ref_matches(workspace: Path, remote: str, ref: str) -> list[tuple[st
     if proc.returncode != 0:
         raise GripReviewRefused("remote_unreadable", ref, proc.stderr.strip()[:120])
     out = []
-    for row in proc.stdout.strip().splitlines():
+    for row in (r for r in proc.stdout.split("\n") if "\t" in r):
         sha, _, name = row.partition("\t")
         out.append((sha, name))
     return out
@@ -550,7 +549,7 @@ def _head_present_on_remote(workspace: Path, remote: str, head: str) -> bool:
     proc = _bind_git(workspace, "ls-remote", "--", remote)
     if proc.returncode != 0:
         raise GripReviewRefused("remote_unreadable", remote, proc.stderr.strip()[:120])
-    return any(row.split("\t", 1)[0] == head for row in proc.stdout.splitlines())
+    return any(row.split("\t", 1)[0] == head for row in proc.stdout.split("\n"))
 
 
 def _remote_ref_tips(workspace: Path, remote: str) -> dict[str, str]:
@@ -560,7 +559,7 @@ def _remote_ref_tips(workspace: Path, remote: str) -> dict[str, str]:
     if proc.returncode != 0:
         raise GripReviewRefused("remote_unreadable", remote, proc.stderr.strip()[:120])
     tips: dict[str, str] = {}
-    for row in proc.stdout.splitlines():
+    for row in proc.stdout.split("\n"):
         sha, _, name = row.partition("\t")
         if name:
             tips[name] = sha
@@ -604,9 +603,9 @@ def _judge_remote_branch(workspace: Path, remote: str, source: str, head: str, r
         _source_capture(source, "fetch", "-q", "--no-tags", "--refmap=", "--no-write-fetch-head", "--", remote, upstream)
         if gitops.run(Path(source), "cat-file", "-e", f"{tip}^{{commit}}").returncode != 0:
             raise GripReviewRefused("remote_unreadable", f"{upstream} {tip}", "the remote branch moved during the pin")
-    if gitops.run(Path(source), "merge-base", "--is-ancestor", tip, head).returncode == 0:
+    if gitops.is_ancestor(Path(source), tip, head) is True:
         return
-    if gitops.run(Path(source), "merge-base", "--is-ancestor", head, tip).returncode == 0:
+    if gitops.is_ancestor(Path(source), head, tip) is True:
         raise GripReviewRefused("head_behind_remote_branch", head, f"{upstream} {tip}")
     raise GripReviewRefused("remote_branch_diverged", head, f"{upstream} {tip}")
 
@@ -658,7 +657,7 @@ def _carry_objects(workspace: Path, source: str, base: str, head: str) -> dict[s
     if merges:
         # A flattened range rebuilds the head's tree, so it must contain the base: otherwise the rebuild lacks what the
         # base gained since the author's last merge, and a passing set check would attest a combination never tested.
-        if gitops.run(Path(source), "merge-base", "--is-ancestor", base, head).returncode != 0:
+        if gitops.is_ancestor(Path(source), base, head) is not True:
             exc = GripReviewRefused("base_not_ancestor_of_head", base, head)
             exc.add_note("next: merge the target again (git merge origin/<branch>), resolve, and bind the new head")
             raise exc
@@ -863,6 +862,10 @@ def _bind_review_rows_body(
             obj = _carry_objects_from_range(workspace, remote, base, range_patch,
                                             at_base_of=observed if row.get("at_base") else None)
         if obj is not None:
+            size = len(obj["range.patch"].encode())
+            if size > fd.MAX_BLOB_BYTES:
+                # Refused here, before anything is written, so the store never holds a record its own reader refuses.
+                raise GripReviewRefused("range_patch_over_limit", f"<= {fd.MAX_BLOB_BYTES} bytes", f"{size} bytes")
             member.update(range_patch=obj["range.patch"], metadata=obj["metadata"], head_tree=obj["head-tree"])
             scan_items.append((f"{key}.range.patch", obj["range.patch"]))
         evidence = row.get("evidence")
@@ -959,7 +962,7 @@ def list_review_binds(workspace: Path) -> list[tuple[str, str]]:
     _validate_bind_store(workspace)
     out = _bind_git(workspace, "for-each-ref", "--format=%(refname)\t%(committerdate:iso-strict)", _REVIEW_REF_PREFIX)
     rows: dict[str, str] = {}
-    for line in out.stdout.splitlines():
+    for line in gitops.for_each_ref_rows(out.stdout):
         ref, _, when = line.partition("\t")
         if ref.startswith(_REVIEW_REF_PREFIX):
             parsed = _review_ref_id(ref)
@@ -1031,11 +1034,7 @@ def _verify_review_commit_in_store(workspace: Path, commit: str) -> dict[str, ob
 
     stored_tree = _bind_git(workspace, "rev-parse", f"{commit}^{{tree}}").stdout.strip()
     rows = _read_repo_state(workspace, commit, bind=True)
-    root_paths = {
-        line.strip()
-        for line in _bind_git(workspace, "ls-tree", "--name-only", commit).stdout.splitlines()
-        if line.strip()
-    }
+    root_paths = _bind_root_names(workspace, commit)
     has_objects = "objects" in root_paths
     has_evidence = "evidence" in root_paths
     objects_keys = _tree_keys(workspace, commit, "objects") if has_objects else set()
@@ -1128,11 +1127,12 @@ def _verify_review_commit_in_store(workspace: Path, commit: str) -> dict[str, ob
 
 
 def _tree_keys(workspace: Path, commit: str, path: str) -> set[str]:
-    """The immediate child names of a subtree in a gr commit (empty if absent)."""
-    proc = _bind_git(workspace, "ls-tree", "--name-only", f"{commit}:{path}")
+    """The immediate child names of a subtree in a gr commit (empty if absent), read by NUL from ls-tree -z as
+    _bind_root_names is: splitlines would cut a key at U+2028 or U+0085, and strip would make "k " read as "k"."""
+    proc = _bind_git(workspace, "ls-tree", "-z", "--name-only", f"{commit}:{path}")
     if proc.returncode != 0:
         return set()
-    return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
+    return {n for n in proc.stdout.split("\0") if n}
 
 
 # A review bind is stored in one of two layouts. The legacy layout names its subtrees (.grip/, repos/,
@@ -1152,8 +1152,14 @@ def plain_member_key(key: str) -> bool:
 def _is_field_tree_bind(workspace: Path, commit: str) -> bool:
     """A bound commit whose tree has no `.grip` entry is read as a field tree, so a malformed record is
     refused for what is wrong with it rather than as "not a bind"."""
-    names = [n for n in _bind_git(workspace, "ls-tree", "--name-only", commit).stdout.splitlines() if n]
+    names = _bind_root_names(workspace, commit)
     return bool(names) and GRIP_DIR not in names
+
+
+def _bind_root_names(workspace: Path, commit: str) -> set[str]:
+    """The top-level entry names of a bound commit, read by NUL from ls-tree -z: splitlines would cut a name at
+    U+2028 under quotePath false, and strip would make "objects " read as "objects"."""
+    return {n for n in _bind_git(workspace, "ls-tree", "-z", "--name-only", commit).stdout.split("\0") if n}
 
 
 def _text(value: object) -> str:
@@ -1190,8 +1196,10 @@ def _check_field_tree(repo: Path, tree: str) -> dict[str, object]:
 def _decode_field_tree(repo: Path, tree: str) -> dict[str, object]:
     from . import review_field_tree as fd
     try:
-        fd.verify_tree(repo, tree)
-        record = fd.read_record(repo, tree)
+        # one reader for both passes: one ls-tree and one cat-file --batch for the whole tree
+        with fd.BatchReader(repo) as reader:
+            fd.verify_tree(repo, tree, reader=reader)
+            record = fd.read_record(repo, tree, reader=reader)
     except fd.ReviewRecordError as exc:
         raise GripCorruptError(f"invalid field tree review record: {exc}") from exc
     if record.get("schema") != _REVIEW_BIND_SCHEMA or record.get("kind") != "review":
@@ -1812,7 +1820,7 @@ def _review_remote_target(workspace: Path, remote: str, ref: str) -> str:
     proc = git(workspace, "ls-remote", "--refs", remote, ref, timeout=30)
     if proc.returncode:
         raise GripCorruptError(f"cannot_measure_review_ref: {proc.stderr.strip()}")
-    rows = [line.split() for line in proc.stdout.splitlines() if line.strip()]
+    rows = [line.split("\t") for line in proc.stdout.split("\n") if line]
     if not rows:
         raise ReviewStoreAbsent(f"remote_review_ref_missing: {ref}")
     # Rows that are not exactly this ref at one object are a fault, never read as absence.
@@ -1903,6 +1911,19 @@ def publish_review_commit(workspace: Path, commit: str, remote: str,
 PUBLISH_EXIT_OK, PUBLISH_EXIT_REFUSED, PUBLISH_EXIT_FAILED, PUBLISH_EXIT_PARTIAL = 0, 2, 3, 4
 
 
+_LS_REMOTE_ROW = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\t.+")
+
+
+def _remote_tip(listing: str, ref: str) -> str | None:
+    """The tip ``ls-remote <dest> <ref>`` lists for exactly ``ref``, or None when it lists no such row. ls-remote matches
+    by tail, so refs/heads/a/<ref> answers too and may sort first; the row is chosen by its whole name. A non-empty
+    line that is not "<oid>\t<name>" raises ValueError: a listing that cannot be read is a fault, not absence."""
+    for line in listing.split("\n"):
+        if line and not _LS_REMOTE_ROW.fullmatch(line):
+            raise ValueError(f"ls-remote listed a malformed row {line[:80]!r}")
+    return gitops.ls_remote_oid(listing, ref)
+
+
 def publish_review_all(workspace: Path, commit: str, ref: str | None = None) -> tuple[int, dict[str, object]]:
     """Publish a pinned review to every member's own recorded remote: the PINNED head to the clone's current branch
     (never forced), then the review ref once per distinct remote, each verified by ls-remote.
@@ -1932,9 +1953,12 @@ def publish_review_all(workspace: Path, commit: str, ref: str | None = None) -> 
         on_remote = git(Path(workspace), "ls-remote", "--refs", destination, branch_ref, timeout=30)
         if on_remote.returncode:
             raise GripReviewRefused("remote_unreadable", str(row["key"]), on_remote.stderr.strip())
-        theirs = on_remote.stdout.split()[0] if on_remote.stdout.strip() else None
+        try:
+            theirs = _remote_tip(on_remote.stdout, branch_ref)
+        except ValueError as exc:
+            raise GripReviewRefused("remote_unreadable", str(row["key"]), str(exc)) from exc
         if theirs is not None and theirs != row["head"] and \
-                git(Path(row["clone"]), "merge-base", "--is-ancestor", theirs, str(row["head"])).returncode != 0:
+                gitops.is_ancestor(Path(row["clone"]), theirs, str(row["head"]), via_cwd=True) is not True:
             raise GripReviewRefused("feature_moved", str(row["key"]), f"remote {row['branch']} at {theirs}")
         row.update(destination=destination, branch_ref=branch_ref, theirs=theirs)
         try:
@@ -1960,11 +1984,20 @@ def publish_review_all(workspace: Path, commit: str, ref: str | None = None) -> 
             proc = git(Path(row["clone"]), "push", str(row["destination"]),
                        f"{row['head']}:{row['branch_ref']}", timeout=60)
             seen = git(Path(workspace), "ls-remote", "--refs", str(row["destination"]), str(row["branch_ref"]),
-                       timeout=30).stdout.split()
-            if proc.returncode or not seen or seen[0] != row["head"]:
+                       timeout=30)
+            there, fault = None, None
+            if seen.returncode == 0:
+                try:
+                    there = _remote_tip(seen.stdout, str(row["branch_ref"]))
+                except ValueError as exc:
+                    fault = f"remote_unreadable: {exc}"
+            if proc.returncode or there != row["head"]:
                 lines = proc.stderr.strip().splitlines()
-                m.update(head_state="failed", state="failed",
-                         error=lines[-1] if lines else f"head not at the pin on the remote after the push")
+                if proc.returncode and lines:
+                    error = lines[-1]
+                else:
+                    error = fault or (lines[-1] if lines else "head not at the pin on the remote after the push")
+                m.update(head_state="failed", state="failed", error=error)
                 failed = True
                 break
             m["head_state"] = "pushed"
@@ -2171,7 +2204,7 @@ def migrate_review_binds(workspace: Path) -> tuple[Path, list[dict[str, str]]]:
     _validate_bind_store(workspace)
     repo = _bind_dir(workspace)
     out = _bind_git(workspace, "for-each-ref", "--format=%(refname) %(objectname)", _REVIEW_REF_PREFIX)
-    targets = dict(line.split(" ", 1) for line in out.stdout.splitlines() if " " in line)
+    targets = dict(line.split(" ", 1) for line in gitops.for_each_ref_rows(out.stdout) if " " in line)
     legacy = sorted(r[len(_REVIEW_REF_PREFIX):] for r in targets
                     if r.startswith(_REVIEW_REF_PREFIX) and _SHA40.fullmatch(r[len(_REVIEW_REF_PREFIX):]))
     rows: list[dict[str, str]] = []

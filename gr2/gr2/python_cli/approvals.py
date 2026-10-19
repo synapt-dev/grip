@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import re
 import subprocess
 import tomllib
@@ -25,14 +26,30 @@ SCHEMA = approval_schema.PACKAGE
 class ApprovalRefused(RuntimeError):
     """A named refusal. `next_step`, when set, is the printed next line for the operator."""
 
-    def __init__(self, message: str, next_step: str | None = None) -> None:
+    def __init__(self, message: str, next_step: str | None = None, expected: str | None = None,
+                 observed: str | None = None) -> None:
         super().__init__(message)
         self.next_step = next_step
+        self.expected, self.observed = expected, observed
+
+
+#: The chain is read as the commits really are: a local graft or replace object could make two links each other's
+#: ancestor, a cycle no pushed chain can hold, so they are off for every read through _run (and the commit-graph
+#: with them); _git reads through it, and so does pr_head_approvals' read of the chain tip. The gitops reads left
+#: outside it: the `cat-file -e` presence check (a replace object there can at most cause an extra fetch, and the
+#: head is then read through _git); the `fetch` it gates (a transfer, which reads no chain link); the lane's
+#: `rev-parse HEAD` (it resolves a ref and peels nothing, and a replace object never changes a ref); and the
+#: lane's `config user.name` (an identity, not history).
+_TRUE_HISTORY = {"GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull}
+
+
+def _run(repo: Path, *args: str, **kw) -> subprocess.CompletedProcess:
+    return gitops.run(repo, "-c", "core.commitGraph=false", *args, env={**os.environ, **_TRUE_HISTORY}, **kw)
 
 
 def _git(repo: Path, *args: str, data: str | None = None, raw: bool = False) -> str:
     try:
-        p = gitops.run(repo, *args, input=data, timeout=60, raise_timeout=True)
+        p = _run(repo, *args, input=data, timeout=60, raise_timeout=True)
     except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
         raise ApprovalRefused(f"approval_unmeasurable: {type(exc).__name__}") from exc
     if p.returncode:
@@ -237,7 +254,7 @@ def _refuse_moved_base(workspace: Path, key: str, remote: str, base: str, review
     if remote.startswith("-") or any(ord(c) < 32 or ord(c) == 127 for c in remote):
         raise ApprovalRefused("approval_remote_invalid")
     default, at_base, tips = None, False, {}
-    for line in _git(workspace, "ls-remote", "--symref", "--", remote, "HEAD", "refs/heads/*").splitlines():
+    for line in _git(workspace, "ls-remote", "--symref", "--", remote, "HEAD", "refs/heads/*", raw=True).split("\n"):
         left, _, ref = line.partition("\t")
         if left.startswith("ref: refs/heads/") and ref == "HEAD":
             default = left.removeprefix("ref: refs/heads/")
@@ -260,7 +277,7 @@ def _remote_tips(workspace: Path, root: dict) -> dict[str, str | None]:
         remote = m["remote"]
         if remote.startswith("-") or any(ord(c) < 32 or ord(c) == 127 for c in remote):
             raise ApprovalRefused("approval_remote_invalid")
-        lines = _git(workspace, "ls-remote", "--", remote, ref).splitlines()
+        lines = _git(workspace, "ls-remote", "--", remote, ref, raw=True).split("\n")
         hits = [line.split("\t")[0] for line in lines if line.split("\t")[-1] == ref]
         if len(hits) > 1:
             raise ApprovalRefused("approval_chain_unmeasurable")
@@ -287,7 +304,7 @@ def _unique_pairs(pairs):
 
 
 def _read_link(workspace: Path, commit: str) -> dict:
-    entries = _git(workspace, "ls-tree", commit).splitlines()
+    entries = [e for e in _git(workspace, "ls-tree", "-z", commit, raw=True).split("\0") if e]
     if len(entries) != 1 or not re.fullmatch(r"100644 blob [0-9a-f]{40}\tapproval\.json", entries[0]):
         raise ApprovalRefused("approval_chain_broken: expected only plain approval.json")
     text = _git(workspace, "show", f"{commit}:approval.json", raw=True)
@@ -298,6 +315,12 @@ def _read_link(workspace: Path, commit: str) -> dict:
     except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
         raise ApprovalRefused("approval_chain_broken: invalid JSON") from exc
     return record
+
+
+def check_approver_name(name) -> None:
+    """The one approver-name rule: a pinned link and a checkout-pr stamp refuse the same names, the same way."""
+    if not isinstance(name, str) or not name or name != name.strip() or any(ord(c) < 32 or ord(c) == 127 for c in name):
+        raise ApprovalRefused("approval_chain_broken: invalid approver name")
 
 
 def _validate_link(record: dict, root: dict, authors: set[str]) -> str:
@@ -312,8 +335,7 @@ def _validate_link(record: dict, root: dict, authors: set[str]) -> str:
     if not isinstance(identity, dict) or set(identity) != {"name", "key_id"}:
         raise ApprovalRefused("approval_chain_broken: approver fields")
     name = identity["name"]
-    if not isinstance(name, str) or not name or name != name.strip() or any(ord(c) < 32 or ord(c) == 127 for c in name):
-        raise ApprovalRefused("approval_chain_broken: invalid approver name")
+    check_approver_name(name)
     if name in authors:
         raise ApprovalRefused("self_approval")
     if "sig" in record or identity["key_id"] != "" or record.get("keyring_tip", "") != "":
@@ -360,11 +382,7 @@ def _reconcile(workspace: Path, root: dict, authors: set[str], tips: dict[str, s
         _walk(workspace, root, authors, tip)
     if not candidates:
         return None
-    longest = []
-    for candidate in candidates:
-        ancestors = set(_git(workspace, "rev-list", candidate).splitlines())
-        if all(tip is None or tip in ancestors for tip in tips.values()):
-            longest.append(candidate)
+    longest = _longest(workspace, tips)
     if len(longest) != 1:
         raise ApprovalRefused("approval_chain_divergent: " + canonical(tips))
     tip = longest[0]
@@ -378,17 +396,47 @@ def _reconcile(workspace: Path, root: dict, authors: set[str], tips: dict[str, s
     return tip
 
 
+def _ancestors(workspace: Path, tip: str) -> set[str]:
+    return set(_git(workspace, "rev-list", tip).splitlines())
+
+
+def _longest(workspace: Path, tips: dict[str, str | None]) -> list[str]:
+    """The present tips every other present tip is an ancestor of: one for a linear chain, none for a fork."""
+    present = set(tips.values()) - {None}
+    return [c for c in present if present <= _ancestors(workspace, c)]
+
+
+def _refuse_split(workspace: Path, root: dict, tips: dict[str, str | None]) -> None:
+    """Refuse remote tips that are not one chain. Members with no chain, or behind on it, while every present tip is
+    an ancestor of one tip are a stamp still landing (incomplete); two tips not in line are a fork (divergent),
+    named by the first two tips that are not an ancestor of another present tip."""
+    present = list(dict.fromkeys(tip for tip in tips.values() if tip))
+    longest = _longest(workspace, tips)
+    if len(longest) == 1:
+        keys = {m["remote"]: m["key"] for m in root["members"]}
+        missing = [keys.get(remote, remote) for remote, tip in tips.items() if tip != longest[0]]
+        on = len(tips) - len(missing)
+        raise ApprovalRefused(f"approvals_incomplete: the approval chain at {longest[0][:12]} is on {on} of "
+                              f"{len(tips)} members, not yet on {', '.join(missing)}", expected=longest[0])
+    ancestry = {tip: _ancestors(workspace, tip) for tip in present}
+    heads = [tip for tip in present if not any(tip in ancestry[other] for other in present if other != tip)]
+    if len(heads) < 2:
+        raise ApprovalRefused("approval_chain_divergent: " + canonical(tips))
+    raise ApprovalRefused("approval_chain_divergent: " + canonical(tips), expected=heads[0], observed=heads[1])
+
+
 def count_approvals(workspace: Path, review_id: str, member_dirs: dict[str, Path] | None = None) -> dict:
     root, authors = _context(workspace, review_id, member_dirs)
     tips = _remote_tips(workspace, root)
     if len(set(tips.values())) != 1:
-        raise ApprovalRefused("approval_chain_divergent: " + canonical(tips))
+        _refuse_split(workspace, root, tips)
     tip = next(iter(tips.values()))
     links = _walk(workspace, root, authors, tip)
     current = _remote_tips(workspace, root)
     if current != tips:
-        raise ApprovalRefused("approval_chain_divergent: " + canonical(current) if len(set(current.values())) != 1
-                              else "approval_chain_moved: retry the measurement")
+        if len(set(current.values())) != 1:
+            _refuse_split(workspace, root, current)
+        raise ApprovalRefused("approval_chain_moved: retry the measurement")
     distinct = {link["approver"]: link for link in links}
     return {"review_id": root["review_id"], "tip": tip, "count": len(distinct), "links": list(distinct.values()), "signed": False}
 
@@ -450,7 +498,8 @@ def since_my_stamp(workspace: Path, review_id: str) -> dict:
         if then is None:  # not in the stamped pin: everything this pin reviews is new to the reviewer
             row["paths"] = sorted(m["files"] or [])
         elif then != now:
-            if gitops.run(repo, "merge-base", "--is-ancestor", then, now).returncode == 0:
+            # Read through _run, the same view as the rev-list below: a local graft cannot invent a range.
+            if _run(repo, "merge-base", "--is-ancestor", then, now).returncode == 0:
                 row["range"] = f"{then}..{now}"
                 row["commits"] = _git(repo, "rev-list", "--reverse", row["range"]).splitlines()
             # A rebased head has no range; the paths are still the diff between the two trees.
@@ -513,7 +562,7 @@ def pr_lane_store(lane: Path) -> Path:
 def pr_head_approvals(store: Path, repo: str, head: str) -> dict:
     """The approvals of (repo, head) held in `store`, the workspace member clone. Readable after the lane is gone."""
     ref = PR_PREFIX + head
-    tip = gitops.git(Path(store), "rev-parse", "--verify", "-q", ref + "^{commit}").stdout.strip()
+    tip = _run(Path(store), "rev-parse", "--verify", "-q", ref + "^{commit}").stdout.strip()
     links = []
     if tip:
         for commit in _git(store, "rev-list", tip).splitlines():
@@ -522,6 +571,17 @@ def pr_head_approvals(store: Path, repo: str, head: str) -> dict:
             except ValueError as exc:
                 raise ApprovalRefused(f"approval_record_unreadable: {ref} at {commit}") from exc
             if link.get("repo") == repo and link.get("head") == head:
+                approver = link.get("approver")
+                try:
+                    check_approver_name(approver.get("name") if isinstance(approver, dict) else None)
+                except ApprovalRefused as exc:
+                    # Deleting the ref drops every stamp on this head; the compare-and-swap on the tip read here
+                    # keeps a stamp made since from going with it.
+                    raise ApprovalRefused(
+                        str(exc),
+                        next_step=f"next: the stamp in commit {commit} on {_shown(ref)} breaks the approver-name "
+                                  f"rule; remove this head's stamps, then stamp it again: "
+                                  f"git -C {_shown(str(store))} update-ref -d {_shown(ref)} {_shown(tip)}") from None
                 links.append(link)
     links.reverse()
     return {"repo": repo, "head": head, "tip": tip or None,
@@ -554,6 +614,7 @@ def approve_pr_lane(lane: Path) -> dict:
     name = gitops.git(lane, "config", "user.name").stdout.strip()
     if not name:
         raise ApprovalRefused("approval_identity_missing")
+    check_approver_name(name)
     store = pr_lane_store(lane)
     current = pr_head_approvals(store, record["repo"], record["head"])
     if name not in {link["approver"]["name"] for link in current["links"]}:

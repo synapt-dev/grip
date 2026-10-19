@@ -12,9 +12,10 @@ an unresolved member is `unknown`; no further member is pushed after one.
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
-import uuid
+import tempfile
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -23,37 +24,139 @@ from . import check_records, declared_sets, gitops, grip, keys, merge_receipts, 
 EXIT_MERGED, EXIT_REFUSED, EXIT_PARTIAL = 0, 3, 4
 
 
-def _git(repo: Path, *args: str, check: bool = True) -> str:
+def _git(repo: Path, *args: str, check: bool = True, raw: bool = False) -> str:
     proc = gitops.run(repo, *args, timeout=60, raise_timeout=True)  # an expiry raises, as it always did here
     if check:
         gitops._raise(proc, args, RuntimeError)
-    return proc.stdout.strip()
+    return proc.stdout if raw else proc.stdout.strip()
+
+
+def _ls_remote(repo: Path, remote: str, *patterns: str) -> list[tuple[str, str]]:
+    """(oid, name) per advertised ref, split on "\n" from the raw output: str.splitlines and strip would cut a
+    name at U+2028 or U+0085."""
+    try:
+        return gitops.ls_remote_rows(_git(repo, "ls-remote", remote, *patterns, raw=True))
+    except gitops.LsRemoteMalformed as exc:
+        raise RuntimeError(f"ls-remote {remote} {' '.join(patterns)}: {exc}") from None
 
 
 _plain_remote = gitops.plain_remote
 
 
+def _text(raw: bytes | str | None) -> str:
+    """A binary git run's output as text; bytes that are not UTF-8 read as \\xNN, never a crash."""
+    return raw.decode("utf-8", "backslashreplace") if isinstance(raw, bytes) else (raw or "")
+
+
+def _pre_push_refused(trace: Path) -> bool | None:
+    """Whether the push's own pre-push hook exited nonzero, read from git's trace2 event file; None if unreadable.
+
+    Only the top-level process counts, named by the sid of the first "version" event (under a git alias that sid
+    has a "/" too, from the inherited GIT_TRACE2_PARENT_SID): a git run inside the hook logs under a child sid.
+    """
+    try:
+        events = [json.loads(ln) for ln in trace.read_text(encoding="utf-8", errors="replace").splitlines() if ln]
+    except (OSError, ValueError):
+        return None
+    top = next((e.get("sid") for e in events if isinstance(e, dict) and e.get("event") == "version"), None)
+    if not isinstance(top, str):
+        return None
+    mine = [e for e in events if isinstance(e, dict) and e.get("sid") == top]
+    hooks = {e.get("child_id") for e in mine if e.get("event") == "child_start"
+             and e.get("child_class") == "hook" and e.get("hook_name") == "pre-push"}
+    return any(e.get("event") == "child_exit" and e.get("child_id") in hooks and e.get("code") != 0 for e in mine)
+
+
+def _push_verdict(out: list[str], into: str, url: str | None = None) -> list[str]:
+    """Git's own porcelain "!" line for refs/heads/<into>, read only in the LAST "To " block, up to "Done".
+
+    Git prints the URL rewritten (insteadOf, pushInsteadOf, scp form) and with any credential dropped, so the
+    block is found by place, never by matching the remote's URL; a pre-push hook that said no is read apart, from
+    trace2, before this is asked. With no trace2 to read, `url` keeps the older reading: only the block after
+    "To <url>" exactly, so a hook's echoed "!" line is not read as the remote's.
+    """
+    block: list[str] | None = None
+    last: list[str] | None = None
+    for ln in out:
+        if ln.startswith("To "):
+            block = [] if url is None or ln == f"To {url}" else None
+        elif block is not None and ln == "Done":
+            if url is not None:
+                break
+            last, block = block, None
+        elif block is not None:
+            block.append(ln)
+    if block is None and url is None:
+        block = last
+    return [ln.replace("\t", " ") for ln in block or ()
+            if ln.startswith("!") and ln.split("\t")[1:2] and ln.split("\t")[1].endswith(f":refs/heads/{into}")]
+
+
+def _capped(text: str, cap: int = 300) -> str:
+    """Printable text, escaped FIRST and then cut to its head, so the cap counts what is printed."""
+    shown = next_steps._escaped(text)
+    return shown if len(shown) <= cap else f"{shown[:cap]} [{len(shown) - cap} chars cut]"
+
+
 def _advertised(repo: Path, remote: str, ref: str) -> str | None:
     """The oid the remote advertises for EXACTLY ref; ls-remote patterns also match nested refs by tail."""
     _plain_remote(remote)
-    hits = [line.split("\t") for line in _git(repo, "ls-remote", remote, ref).splitlines()]
+    hits = _ls_remote(repo, remote, ref)
     exact = [oid for oid, name in hits if name == ref]
     if len(exact) > 1:
         raise RuntimeError(f"ls-remote: {ref} advertised more than once")
     return exact[0] if exact else None
 
 
-def _remote_tip(repo: Path, remote: str, branch: str) -> str | None:
-    """Fetch one remote branch into a private ref and return its commit, None when absent."""
+def feature_moves(workspace: Path, members: list[dict], feature: str | None) -> dict[str, dict]:
+    """Per member: does the remote feature branch still name the pinned head? The advertisement read `_remote_tip`
+    makes first (ls-remote: no fetch, no ref written). moved_since_pin is None when it cannot be read, never False. feature names the branch
+    compared, so a reviewer whose checkouts sit on main sees that main is what moved."""
+    out = {}
+    for m in members:
+        row = {"moved_since_pin": None, "branch_head": None, "feature": feature}
+        if not feature:
+            row["unmeasured"] = "feature_unresolved: members are not on one branch"
+        elif grip.url_has_credentials(m["remote"]):  # a git error names its argv, so refuse by key before any call
+            row["unmeasured"] = "remote_credentials: the recorded remote cannot be parsed or carries URL userinfo"
+        else:
+            try:
+                tip = _advertised((Path(workspace) / m["path"]).resolve(), m["remote"], f"refs/heads/{feature}")
+                row.update(moved_since_pin=tip != m["head"], branch_head=tip)
+            except (RuntimeError, subprocess.SubprocessError, OSError, ValueError) as exc:
+                # Never the exception text: a git error names its argv, the remote URL included.
+                row["unmeasured"] = f"{type(exc).__name__}: the remote's advertisement of the feature branch could not be read"
+        out[m["key"]] = row
+    return out
+
+
+def _remote_tips(repo: Path, remote: str, branches: tuple[str, ...], listed: tuple[str, ...] = (),
+                 scan: str = "") -> dict[str, str | None]:
+    """One read of a remote for several exact refs: each branch's commit (its objects fetched by id) and each listed
+    ref's advertised oid, None when absent; with `scan`, also every ref advertised under that prefix, by its oid and
+    not fetched. One ls-remote and one fetch per remote, and no private ref to make or delete."""
     _plain_remote(remote)
-    if _advertised(repo, remote, f"refs/heads/{branch}") is None:
-        return None
-    staging = f"refs/dev.synapt.grip/__merge_transfers__/{uuid.uuid4().hex}"
-    try:
-        _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, f"refs/heads/{branch}:{staging}")
-        return _git(repo, "rev-parse", "--verify", f"{staging}^{{commit}}")
-    finally:
-        _git(repo, "update-ref", "-d", staging, check=False)
+    refs = tuple(f"refs/heads/{b}" for b in branches) + listed
+    hits = _ls_remote(repo, remote, *refs, *((f"{scan}*",) if scan else ()))
+    scanned = tuple(dict.fromkeys(name for _, name in hits if scan and name.startswith(scan) and name not in refs))
+    tips: dict[str, str | None] = {}
+    for ref in refs + scanned:  # ls-remote patterns also match nested refs by tail
+        exact = {oid for oid, name in hits if name == ref}
+        if len([name for _, name in hits if name == ref]) > 1:
+            raise RuntimeError(f"ls-remote: {ref} advertised more than once")
+        tips[ref] = exact.pop() if exact else None
+    wanted = sorted({tips[f"refs/heads/{b}"] for b in branches} - {None})
+    if wanted:
+        _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, *wanted)
+    for b in branches:
+        if tips[f"refs/heads/{b}"]:
+            tips[f"refs/heads/{b}"] = _git(repo, "rev-parse", "--verify", f"{tips[f'refs/heads/{b}']}^{{commit}}")
+    return tips
+
+
+def _remote_tip(repo: Path, remote: str, branch: str) -> str | None:
+    """One remote branch's commit, None when absent."""
+    return _remote_tips(repo, remote, (branch,))[f"refs/heads/{branch}"]
 
 
 def _merged_at(repo: Path, target: str, head: str) -> str | None:
@@ -96,9 +199,9 @@ def _refresh_tracking(repo: Path, remote: str, into: str) -> dict | None:
     if name is None:
         target = "origin" if "origin" in names else names[0]
         shown = next_steps._shown  # every value quoted whole: a refname may hold ';', so the line runs as printed
-        return {"command": f"git -C {shown(repo)} fetch --no-tags --refmap= -- {shown(remote)} "
+        return {"command": f"git -C {shown(repo)} fetch --no-tags --refmap= -- {shown(gitops._shown_arg(remote))} "
                            f"{shown(f'+refs/heads/{into}:refs/remotes/{target}/{into}')}",
-                "reason": f"no remote of this clone names {remote}"}
+                "reason": f"no remote of this clone names {gitops._shown_arg(remote)}"}
     spec = f"+refs/heads/{into}:refs/remotes/{name}/{into}"
     proc = gitops.run(repo, "fetch", "--no-tags", "-q", "--refmap=", name, spec, timeout=120)
     shown = next_steps._shown
@@ -109,6 +212,14 @@ def _refresh_tracking(repo: Path, remote: str, into: str) -> dict | None:
 
 _REVIEW_REF_PREFIX = "refs/dev.synapt.grip/__reviews__/"
 _REVIEW_SCAN_CAP = 200  # reviews read per member remote; over it is a named refusal, never a silent partial read
+_OID_NOT_SERVED = ("not our ref", "no such remote ref")  # git's words when a remote will not serve one wanted oid
+
+
+def _first_error(exc: Exception) -> str:
+    """git's first `fatal:` or `error:` line from a failed _git call (a warning may come first), else its first line."""
+    command, _, said = str(exc).partition(": ")
+    lines = said.split("\n")
+    return f"{command}: " + next((line for line in lines if line.startswith(("fatal:", "error:"))), lines[0])
 
 
 def _pin_tie(root: Path, declaration: declared_sets.Declaration, into: str):
@@ -126,29 +237,79 @@ def _pin_tie(root: Path, declaration: declared_sets.Declaration, into: str):
             return (f"declared_set_pin_unmeasured: {name} has no readable repository and remote here, so its pin "
                     f"{short} cannot be tied to a merged or reviewed head")
         try:
-            tip = _remote_tip(repo, remote, into)
+            tips = _remote_tips(repo, remote, (into,), scan=_REVIEW_REF_PREFIX)  # the target and every review, one read
+            tip = tips.pop(f"refs/heads/{into}")
             if tip and gitops.run(repo, "merge-base", "--is-ancestor", pin, tip).returncode == 0:
                 return None
-            refs = [line.split("\t")[1] for line in _git(repo, "ls-remote", remote, f"{_REVIEW_REF_PREFIX}*").splitlines()
-                    if "\t" in line and line.split("\t")[1].startswith(_REVIEW_REF_PREFIX)]
-            if len(refs) > _REVIEW_SCAN_CAP:
-                return (f"declared_set_pin_unmeasured: {name}'s remote advertises {len(refs)} reviews, over the "
+            if len(tips) > _REVIEW_SCAN_CAP:
+                return (f"declared_set_pin_unmeasured: {name}'s remote advertises {len(tips)} reviews, over the "
                         f"{_REVIEW_SCAN_CAP} this gate reads; its pin {short} cannot be tied to a reviewed head")
-            for ref in refs:
-                staging = f"refs/dev.synapt.grip/__merge_transfers__/{uuid.uuid4().hex}"
+            failed: dict[str, str] = {}  # oid -> git's first line, for reviews the remote advertises but cannot serve
+            if tips:  # every review's objects in one fetch by id, read by id: no private ref to make or delete
                 try:
-                    _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, f"{ref}:{staging}")
-                    state = grip._read_repo_state(repo, staging, bind=True)
-                finally:
-                    _git(repo, "update-ref", "-d", staging, check=False)
-                for key, fields in state.items():
-                    if fields.get("commit") == pin and declaration.member_name(key, fields.get("path", "")) == name:
-                        return None
+                    _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, *sorted(set(tips.values())))
+                except RuntimeError as exc:  # one oid the remote no longer has fails the whole fetch: read the rest one by one
+                    if not any(said in str(exc) for said in _OID_NOT_SERVED):
+                        raise  # any other failure is the remote's or this clone's, not one review's: refuse with it
+                    for oid in sorted(set(tips.values())):
+                        try:
+                            _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, oid)
+                        except RuntimeError as exc:
+                            failed[oid] = _first_error(exc)
+            states: dict[str, dict] = {}
+            retracted = ""
+
+            def names(oid: str) -> bool:
+                if oid not in states:
+                    states[oid] = grip._read_repo_state(repo, oid, bind=True)
+                return any(fields.get("commit") == pin and declaration.member_name(key, fields.get("path", "")) == name
+                           for key, fields in states[oid].items())
+
+            named = [ref for ref in sorted(tips) if tips[ref] not in failed and names(tips[ref])]  # by the oid scanned
+            if named:  # a review counts only while its ref still names the pin: deleted, or moved off it, is retracted
+                now = _remote_tips(repo, remote, (), tuple(named))
+                for ref in [ref for ref in named if now[ref]]:  # any one still naming it ties; re-published counts
+                    try:
+                        if now[ref] != tips[ref]:  # moved: read the new oid, which may hold the same review
+                            _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, now[ref])
+                        if names(now[ref]):
+                            return None
+                    except (RuntimeError, grip.GripCorruptError):
+                        continue  # the new oid does not read as a review: moved off the pin
+                retracted = ", ".join(next_steps._shown(ref) for ref in named)
+            if failed:  # no review that read names the pin, and one that did not read might: unmeasured, by ref
+                lost = ", ".join(next_steps._shown(ref) for ref in sorted(tips) if tips[ref] in failed)
+                said = "".join(c if c.isprintable() else ascii(c)[1:-1] for c in next(iter(failed.values())))
+                return (f"declared_set_pin_unmeasured: {name}'s pin {short} is named by no review its remote serves, "
+                        f"and these reviews could not be read from it: {lost}: {said}")
         except (RuntimeError, subprocess.SubprocessError, OSError, grip.GripCorruptError) as exc:
             return f"declared_set_pin_unmeasured: {name}'s pin {short} could not be read from its remote: {exc}"
+        tie.siblings[name] = {"review": _local_review_of(root, declaration, name, pin), "remote": remote, "path": str(repo),
+                             "base": tip, "ref": f"refs/heads/{into}", "member_path": info["path"], "pin": pin}
+        if retracted:
+            return (f"declared_set_pin_unreviewed: {name} is pinned at {short}, which is not merged into {into}, and "
+                    f"the reviews that named it were retracted from its remote (ref deleted or moved): {retracted}")
         return (f"declared_set_pin_unreviewed: {name} is pinned at {short}, which is neither merged into {into} nor "
                 f"named by a review published on its remote")
+    tie.siblings = {}  # name -> its local review at the pin (or None), remote, clone and target head, for the next line
     return tie
+
+
+def _local_review_of(root: Path, declaration: declared_sets.Declaration, name: str, pin: str) -> str | None:
+    """The newest review pinned in this workspace that names member `name` at exactly `pin`, as gr:<sha>; None when
+    there is none, or the store cannot be read (the next line then names what is missing)."""
+    try:
+        binds = grip.list_review_binds(root)
+    except (grip.GripCorruptError, grip.GripInitError, grip.ReviewStoreAbsent, OSError, subprocess.SubprocessError):
+        return None
+    for commit, _ in reversed(binds):
+        try:
+            state = grip._read_repo_state(root, commit, bind=True)
+        except (grip.GripCorruptError, OSError, subprocess.SubprocessError):
+            continue
+        if any(f.get("commit") == pin and declaration.member_name(k, f.get("path", "")) == name for k, f in state.items()):
+            return f"gr:{commit}"
+    return None
 
 
 def _toplevel(repo: Path) -> Path | None:
@@ -346,6 +507,7 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                                          "be parsed or carries URL userinfo; pin again from a remote without it and "
                                          "use a credential helper", "members": []}
     rows: list[dict] = []
+    siblings: dict[str, dict] = {}  # member key -> its declared set's tie findings, for the next lines
     root = Path(workspace).resolve()
     try:
         declaration = declared_sets.read(root)  # the committed grip.toml: a set is declared once, for every workspace
@@ -378,9 +540,9 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
             continue
         selected.add(m["key"])
         try:
-            target = _remote_tip(repo, m["remote"], into)
-            feat = _remote_tip(repo, m["remote"], feature)
-            published = _advertised(repo, m["remote"], f"refs/dev.synapt.grip/__reviews__/v1/{review_id}")
+            review_ref = f"refs/dev.synapt.grip/__reviews__/v1/{review_id}"
+            tips = _remote_tips(repo, m["remote"], (into, feature), (review_ref,))
+            target, feat, published = tips[f"refs/heads/{into}"], tips[f"refs/heads/{feature}"], tips[review_ref]
             merged = _merged_at(repo, target, m["head"]) if target else None
             ancestor = _git(repo, "merge-base", m["head"], target) if target else ""
         except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
@@ -398,6 +560,10 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         if feat != m["head"]:
             row["refused"] = f"feature_moved: remote {feature} is {feat}, reviewed {m['head']}"
             row["_heads"] = (m["head"], feat)
+        elif target != m["base"] and ancestor == m["head"]:
+            # The target moved to the reviewed head or past it: the work is already in.
+            row["refused"] = f"head_already_on_target: the reviewed head {m['head']} is already in {into} at {target}"
+            row["_heads"] = (m["base"], target)
         elif target != m["base"]:
             row["refused"] = f"base_moved: remote {into} is {target}, reviewed base {m['base']}"
             row["_heads"] = (m["base"], target)
@@ -462,8 +628,9 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                 if declared["status"] == "fail" and declared["reason"] != "required_check_failed":
                     why = f"declared_set_unmeasured: {declared['reason']}"
                 else:
-                    why = declared_sets.judge(root, declaration, dset, member_name, m["head"], declared["records"],
-                                              _pin_tie(root, declaration, into))
+                    tie = _pin_tie(root, declaration, into)
+                    why = declared_sets.judge(root, declaration, dset, member_name, m["head"], declared["records"], tie)
+                    siblings[m["key"]] = tie.siblings
                 row["declared_set"] = {"set": dset.name, "refused": why}
                 if why:
                     row["refused"], row["state"] = why, None
@@ -508,16 +675,20 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                 approval_receipt["skipped"] = True
         except (approvals.ApprovalRefused, grip.GripInitError, grip.GripCorruptError,
                 OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+            heads = (getattr(exc, "expected", None), getattr(exc, "observed", None))
             for r in rows:
                 if r["state"] == "ready":
                     r["refused"] = str(exc)
+                    if any(heads):
+                        r["_heads"] = heads
 
     if dry_run:
         for r, m in zip(rows, view["members"]):
             if r["refused"]:
                 step = next_steps.merge_row(r["refused"], workspace=str(root), review="gr:" + view["id"].removeprefix("gr:"),
                                             remote=m["remote"], path=str((workspace / m["path"]).resolve()),
-                                            head=m["head"], checks=tuple(required_checks))
+                                            head=m["head"], checks=tuple(required_checks),
+                                            siblings=siblings.get(m["key"], {}))
                 if step:
                     r["next"] = step
             expected, observed = r.pop("_heads", (None, None))
@@ -593,18 +764,73 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                         r["_heads"], r["stranded"] = (m["head"], now), now
                         break  # land no further member after a stranded one
                     continue
+                remote_said = unconfirmed = False
                 try:
-                    # An expiry is rc 124 here, so it lands in push_error and the state below is re-measured.
-                    proc = gitops.run(repo, "push", f"--force-with-lease=refs/heads/{into}:{m['base']}",
-                                      m["remote"], f"{builds[r['key']]}:refs/heads/{into}", timeout=120)
-                    push_error = proc.stderr.strip()[-300:] if proc.returncode else None
+                    # --porcelain marks a refusal the remote made ("[remote rejected]") apart from a push that never
+                    # reached it; binary, because a hook may print bytes that are not UTF-8.
+                    # trace2 tells a refusing pre-push hook apart from the remote, whatever the hook prints (this
+                    # one push overrides a user's own GIT_TRACE2_EVENT); git < 2.27 writes no file: read stdout alone.
+                    with tempfile.TemporaryDirectory(prefix="gr2-push-") as tmp:
+                        trace = Path(tmp) / "trace2.json"
+                        proc = gitops.run(repo, "push", "--porcelain",
+                                          f"--force-with-lease=refs/heads/{into}:{m['base']}", m["remote"],
+                                          f"{builds[r['key']]}:refs/heads/{into}", binary=True, timeout=120,
+                                          env={**os.environ, "GIT_TRACE2_EVENT": str(trace)})
+                        hook_said = _pre_push_refused(trace)
+                    out = _text(proc.stdout).split("\n")
+                    err = gitops._shown_stderr(proc.args, _text(proc.stderr))
+                    secrets = gitops.credential_values(proc.args, repo)
+                    err = gitops._masked(err, secrets).split("\n")
+                    status = [] if hook_said else _push_verdict(out, into, None if hook_said is False else m["remote"])
+                    remote_said = any("[remote rejected]" in ln for ln in status)
+                    # the verdict line carries the server's reason text: masked after the test, so a short
+                    # credential cannot erase the marker
+                    status = [gitops._masked(ln, secrets) for ln in status]
+                    if proc.returncode == 124:  # gitops' expiry: the push may still land after it
+                        push_error, unconfirmed = f"push_unconfirmed: {_capped(chr(10).join(err).strip())}", True
+                    elif remote_said:  # the remote's own words and git's verdict line, never the URL it repeats
+                        push_error = _capped("\n".join([ln for ln in err if ln.startswith("remote:")] + status))
+                    elif proc.returncode:
+                        why = [ln for ln in err if ln.strip() and not ln.startswith(("To ", "error: failed to push"))]
+                        push_error = _capped("\n".join(why + status) or f"git push exit {next_steps._shown(str(proc.returncode))}")
+                    else:
+                        push_error = None
                 except (subprocess.SubprocessError, OSError) as exc:  # a timeout is not evidence nothing moved
-                    push_error = f"push_unconfirmed: {type(exc).__name__}"
+                    push_error, unconfirmed = f"push_unconfirmed: {_capped(f'{type(exc).__name__}: {exc}')}", True
                 state, merged = _state(repo, m["remote"], into, m["head"])
                 by = "this_run" if merged == builds[r["key"]] else ("another_writer" if merged else None)
                 r.update(state=state, merged=merged, merged_by=by)
                 if push_error and by != "this_run":
                     r["push_error"] = push_error  # e.g. our lease lost to a writer who merged the same head
+                if push_error and state != "merged":
+                    # The push failed and the member did not land: name why, never a bare unmerged or unknown, and
+                    # push no further member (the set lands on the base it was checked on, or not at all).
+                    if unconfirmed:  # the push may still land: no read now tells this member's outcome
+                        r["refused"], r["_unmeasured"] = push_error, True
+                        break
+                    try:
+                        now, unread = _remote_tip(repo, m["remote"], into), None
+                        # One more git call, on this failure path only: is the reviewed head already in the moved target?
+                        landed = bool(now and now != m["base"]) and gitops.is_ancestor(repo, m["head"], now) is True
+                    except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
+                        now, unread, landed = None, f"{type(exc).__name__}: {exc}", False
+                    if unread:
+                        r["refused"] = f"target_unread_at_push: {_capped(unread)}"
+                    elif now is None:
+                        r["refused"] = f"target_deleted_at_push: remote {into} is gone, the gate read {m['base']}"
+                        r["_heads"] = (m["base"], None)
+                    elif landed:
+                        r["refused"] = (f"head_already_on_target: the reviewed head {m['head']} is already in {into} "
+                                        f"at {now}")
+                        r["_heads"] = (m["base"], now)
+                    elif now != m["base"]:
+                        r["refused"] = f"target_moved_at_push: remote {into} is {now}, the gate read {m['base']}"
+                        r["_heads"] = (m["base"], now)
+                    elif remote_said:  # still at the base the gate read: a hook or a protected branch said no
+                        r["refused"] = f"push_rejected: {push_error}"
+                    else:  # still at the base, and the remote never answered: auth, network or a local hook
+                        r["refused"] = f"push_failed: {push_error}"
+                    break
                 if state == "unknown":
                     break  # push no further members after an unresolved one
 
@@ -613,7 +839,8 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         if r["refused"]:
             step = next_steps.merge_row(r["refused"], workspace=str(root), review="gr:" + view["id"].removeprefix("gr:"),
                                         remote=m["remote"], path=str((workspace / m["path"]).resolve()),
-                                        head=m["head"], checks=tuple(required_checks))
+                                        head=m["head"], checks=tuple(required_checks),
+                                        siblings=siblings.get(m["key"], {}))
             if step:
                 r["next"] = step
 

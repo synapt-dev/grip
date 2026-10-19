@@ -78,7 +78,7 @@ def _local_branches(repo: Path) -> list[str]:
     proc = git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/")
     if proc.returncode != 0:
         raise PruneError(f"cannot list local branches in {repo}: {proc.stderr.strip()}")
-    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    return gitops.for_each_ref_rows(proc.stdout)
 
 
 def _ref_exists(repo: Path, ref: str) -> bool:

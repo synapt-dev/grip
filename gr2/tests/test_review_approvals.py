@@ -304,8 +304,9 @@ def test_divergent_remote_tips_refuse_and_approve_repairs_a_linear_partial(multi
     merged = runner.invoke(app, ["review", "merge"])
     assert merged.exit_code == 3, merged.output
     receipt = json.loads(merged.stdout)
-    assert all(row["refused"].startswith("approval_chain_divergent") for row in receipt["members"])
-    assert str(beta) in merged.output and str(multi["remote"]) in merged.output
+    assert all(row["refused"].startswith("approvals_incomplete") for row in receipt["members"])
+    assert all(row["refusal"]["expected"] == tip for row in receipt["members"])
+    assert "not yet on beta" in merged.output and "retry" in merged.output
     assert before == {str(m["remote"]): git(m["remote"], "rev-parse", "main") for m in multi["members"].values()}
     repaired = approve_as(multi, "Approver C")
     assert repaired.exit_code == 0, repaired.output
@@ -379,6 +380,7 @@ def test_count_refuses_divergence_without_writes(monkeypatch):
     monkeypatch.setattr(approvals, "_context", lambda *args: (root, {"Author A"}))
     monkeypatch.setattr(approvals, "_remote_tips", lambda *args: tips)
     monkeypatch.setattr(approvals, "_walk", lambda *args: [])
+    monkeypatch.setattr(approvals, "_ancestors", lambda workspace, tip: {tip})  # unrelated fake tips: a fork
     with pytest.raises(approvals.ApprovalRefused, match="approval_chain_divergent"):
         approvals.count_approvals(None, root["review_id"])
 
@@ -758,9 +760,14 @@ def test_git_adapter_keeps_input_timeout_and_raw_text(monkeypatch, tmp_path):
     monkeypatch.setattr(approvals.gitops, "run", launch)
     assert approvals._git(tmp_path, "hash-object", "--stdin", data="payload", raw=True) == "  result\n"
     assert approvals._git(tmp_path, "status") == "result"
+    for _, _, kwargs in seen:
+        env = kwargs.pop("env")
+        assert (env["GIT_NO_REPLACE_OBJECTS"], env["GIT_GRAFT_FILE"]) == ("1", "/dev/null")
+        assert env["PATH"] == approvals.os.environ["PATH"]
+    true_history = ("-c", "core.commitGraph=false")
     assert seen == [
-        (tmp_path, ("hash-object", "--stdin"), {"input": "payload", "timeout": 60, "raise_timeout": True}),
-        (tmp_path, ("status",), {"input": None, "timeout": 60, "raise_timeout": True}),
+        (tmp_path, (*true_history, "hash-object", "--stdin"), {"input": "payload", "timeout": 60, "raise_timeout": True}),
+        (tmp_path, (*true_history, "status"), {"input": None, "timeout": 60, "raise_timeout": True}),
     ]
 
 
@@ -1036,3 +1043,284 @@ def test_stamp_names_only_the_member_whose_target_moved(multi, moved, still):
     assert f"base_moved: {moved}:" in refusal and f"{still}:" not in refusal, refusal
     for m in multi["members"].values():
         assert _approval_refs(m["remote"]) == "", m["remote"]
+
+
+FIVE = ("api", "app", "core", "store", "svc")
+
+
+def _five(monkeypatch, tips):
+    root, _ = _sample_link()
+    root = {**root, "members": [{**root["members"][0], "key": k, "remote": k + ".git"} for k in FIVE]}
+    reads = iter(tips if isinstance(tips, list) else [tips, tips])
+    monkeypatch.setattr(approvals, "_context", lambda *args: (root, {"Author A"}))
+    monkeypatch.setattr(approvals, "_remote_tips", lambda *args: next(reads))
+    monkeypatch.setattr(approvals, "_walk", lambda *args: [{"approver": "Approver B"}])
+    # fake tips are unrelated commits: each is its own only ancestor, so two of them are a fork
+    monkeypatch.setattr(approvals, "_ancestors", lambda workspace, tip: {tip})
+    return root
+
+
+def test_a_chain_missing_on_one_member_while_the_rest_agree_is_incomplete(monkeypatch):
+    tips = {k + ".git": "b" * 40 for k in FIVE} | {"svc.git": None}
+    root = _five(monkeypatch, tips)
+    with pytest.raises(approvals.ApprovalRefused, match="^approvals_incomplete: ") as refused:
+        approvals.count_approvals(None, root["review_id"])
+    assert "4 of 5" in str(refused.value) and "not yet on svc" in str(refused.value)
+    assert "api" not in str(refused.value).split("not yet on", 1)[1]
+    assert (refused.value.expected, refused.value.observed) == ("b" * 40, None)
+
+
+@pytest.mark.parametrize("tips", [
+    {"api.git": "b" * 40, "app.git": "b" * 40, "core.git": "b" * 40, "store.git": "b" * 40, "svc.git": "c" * 40},
+    {"api.git": "b" * 40, "app.git": None, "core.git": "b" * 40, "store.git": None, "svc.git": "c" * 40},
+], ids=["last-differs", "with-missing"])
+def test_two_different_tips_are_divergent_with_both_tips_named(monkeypatch, tips):
+    root = _five(monkeypatch, tips)
+    with pytest.raises(approvals.ApprovalRefused, match="^approval_chain_divergent: ") as refused:
+        approvals.count_approvals(None, root["review_id"])
+    assert (refused.value.expected, refused.value.observed) == ("b" * 40, "c" * 40)
+
+
+def test_one_chain_on_every_member_counts(monkeypatch):
+    root = _five(monkeypatch, {k + ".git": "b" * 40 for k in FIVE})
+    assert approvals.count_approvals(None, root["review_id"])["count"] == 1
+
+
+def test_a_stamp_finishing_between_two_reads_is_incomplete_then_counts(monkeypatch):
+    late = {k + ".git": "b" * 40 for k in FIVE} | {"svc.git": None}
+    done = {k + ".git": "b" * 40 for k in FIVE}
+    root = _five(monkeypatch, [late, done, done])  # the refusal stops after its first read
+    with pytest.raises(approvals.ApprovalRefused, match="^approvals_incomplete: "):
+        approvals.count_approvals(None, root["review_id"])
+    assert approvals.count_approvals(None, root["review_id"])["count"] == 1
+
+
+@pytest.mark.parametrize("second, code, heads", [
+    ({k + ".git": "b" * 40 for k in FIVE} | {"svc.git": None}, "approvals_incomplete", ("b" * 40, None)),
+    ({k + ".git": "b" * 40 for k in FIVE} | {"svc.git": "c" * 40}, "approval_chain_divergent", ("b" * 40, "c" * 40)),
+], ids=["second-read-missing", "second-read-forked"])
+def test_a_chain_that_splits_during_the_walk_is_named_by_the_second_read(monkeypatch, second, code, heads):
+    agree = {k + ".git": "b" * 40 for k in FIVE}
+    root = _five(monkeypatch, [agree, second])
+    with pytest.raises(approvals.ApprovalRefused, match=f"^{code}: ") as refused:
+        approvals.count_approvals(None, root["review_id"])
+    assert (refused.value.expected, refused.value.observed) == heads
+
+
+def test_a_link_on_some_members_extending_the_rest_is_incomplete_at_the_longest_tip(monkeypatch):
+    tips = {"api.git": "b" * 40, "app.git": "c" * 40, "core.git": "b" * 40, "store.git": None, "svc.git": "b" * 40}
+    root = _five(monkeypatch, tips)
+    monkeypatch.setattr(approvals, "_ancestors", lambda workspace, tip: {"b" * 40, "c" * 40} if tip == "c" * 40 else {tip})
+    with pytest.raises(approvals.ApprovalRefused, match="^approvals_incomplete: ") as refused:
+        approvals.count_approvals(None, root["review_id"])
+    assert "at " + "c" * 12 + " is on 1 of 5 members, not yet on api, core, store, svc" in str(refused.value)
+    assert (refused.value.expected, refused.value.observed) == ("c" * 40, None)
+
+
+@pytest.mark.parametrize("order, heads", [
+    (("a", "b", "c"), ("b", "c")),
+    (("b", "a", "c"), ("b", "c")),
+    (("c", "a", "b"), ("c", "b")),
+    (("b", "a", "b", "c"), ("b", "c")),
+    (("a", "b", "c", "d"), ("b", "c")),
+], ids=["behind-first", "behind-middle", "behind-middle-reversed", "fork-tip-on-two-members", "three-way-fork"])
+def test_a_fork_with_a_member_behind_it_is_named_by_the_two_fork_tips(monkeypatch, order, heads):
+    tips = {k + ".git": tip * 40 for k, tip in zip(FIVE, order)}
+    root = _five(monkeypatch, tips)
+    root["members"] = root["members"][:len(order)]
+    # b, c and d each build on a: a fork, with the member on a behind every side
+    monkeypatch.setattr(approvals, "_ancestors", lambda workspace, tip: {"a" * 40, tip})
+    with pytest.raises(approvals.ApprovalRefused, match="^approval_chain_divergent: ") as refused:
+        approvals.count_approvals(None, root["review_id"])
+    assert (refused.value.expected, refused.value.observed) == tuple(h * 40 for h in heads)
+
+
+@pytest.mark.parametrize("order, heads", [
+    (("b", "c", "d"), ("c", "d")),
+    (("d", "b", "c"), ("d", "c")),
+], ids=["behind-one-side-first", "behind-one-side-middle"])
+def test_a_member_behind_one_side_of_a_fork_is_not_named(monkeypatch, order, heads):
+    tips = {k + ".git": tip * 40 for k, tip in zip(FIVE, order)}
+    root = _five(monkeypatch, tips)
+    root["members"] = root["members"][:len(order)]
+    # b and c build on a; d builds on b: the member on b is behind one side of the fork only
+    chain = {"b": "ab", "c": "ac", "d": "abd"}
+    monkeypatch.setattr(approvals, "_ancestors", lambda workspace, tip: {t * 40 for t in chain[tip[0]]})
+    with pytest.raises(approvals.ApprovalRefused, match="^approval_chain_divergent: ") as refused:
+        approvals.count_approvals(None, root["review_id"])
+    assert (refused.value.expected, refused.value.observed) == tuple(h * 40 for h in heads)
+
+
+_ANCESTORS = approvals._ancestors
+
+
+@pytest.mark.parametrize("order, chain", [
+    (("b", "c"), {"b": "bc", "c": "bc"}),
+    (("a", "b", "c"), {"a": "a", "b": "bc", "c": "bc"}),
+], ids=["two-tips-each-others-ancestor", "a-third-tip-outside-the-cycle"])
+def test_tips_in_a_cycle_are_divergent_and_name_no_fork_tips(monkeypatch, order, chain):
+    tips = {k + ".git": tip * 40 for k, tip in zip(FIVE, order)}
+    root = _five(monkeypatch, tips)
+    root["members"] = root["members"][:len(order)]
+    # an ancestry no commit graph can hold: b and c are each other's ancestor
+    monkeypatch.setattr(approvals, "_ancestors", lambda workspace, tip: {t * 40 for t in chain[tip[0]]})
+    with pytest.raises(approvals.ApprovalRefused, match="^approval_chain_divergent: ") as refused:
+        approvals.count_approvals(None, root["review_id"])
+    assert str(refused.value) == "approval_chain_divergent: " + approvals.canonical(tips)
+    assert (refused.value.expected, refused.value.observed) == (None, None)
+
+
+def _fork(repo, monkeypatch):
+    for key, value in {"GIT_AUTHOR_NAME": "Author A", "GIT_AUTHOR_EMAIL": "a@example.invalid",
+                       "GIT_COMMITTER_NAME": "Author A", "GIT_COMMITTER_EMAIL": "a@example.invalid",
+                       "GIT_CONFIG_NOSYSTEM": "1"}.items():
+        monkeypatch.setenv(key, value)
+    git(repo.parent, "init", "-q", repo.name)
+    empty = git(repo, "write-tree")
+    a = git(repo, "commit-tree", "-m", "a", empty)
+    b = git(repo, "commit-tree", "-m", "b", "-p", a, empty)
+    c = git(repo, "commit-tree", "-m", "c", "-p", a, empty)
+    return {"a": a, "b": b, "c": c}
+
+
+@pytest.mark.parametrize("local", ["none", "grafts", "replace"])
+@pytest.mark.parametrize("order", [("b", "c"), ("a", "b", "c")], ids=["fork-tips", "fork-tips-and-base"])
+def test_a_local_graft_or_replace_cycle_does_not_change_how_a_fork_reads(tmp_path, monkeypatch, local, order):
+    repo = tmp_path / "ws"
+    oid = _fork(repo, monkeypatch)
+    if local == "grafts":
+        (repo / ".git" / "info").mkdir(exist_ok=True)
+        (repo / ".git" / "info" / "grafts").write_text(f"{oid['b']} {oid['c']}\n{oid['c']} {oid['b']}\n")
+    elif local == "replace":
+        git(repo, "replace", "--graft", oid["b"], oid["c"])
+        git(repo, "replace", "--graft", oid["c"], oid["b"])
+    if local != "none":
+        # the cycle is live for plain git: each fork tip lists the other
+        assert oid["c"] in git(repo, "rev-list", oid["b"]) and oid["b"] in git(repo, "rev-list", oid["c"])
+    tips = {k + ".git": oid[t] for k, t in zip(FIVE, order)}
+    root = _five(monkeypatch, tips)
+    root["members"] = root["members"][:len(order)]
+    monkeypatch.setattr(approvals, "_ancestors", _ANCESTORS)
+    with pytest.raises(approvals.ApprovalRefused, match="^approval_chain_divergent: ") as refused:
+        approvals.count_approvals(repo, root["review_id"])
+    assert (refused.value.expected, refused.value.observed) == (oid["b"], oid["c"])
+
+
+def test_a_linear_chain_with_a_local_replace_cycle_still_reads_incomplete(tmp_path, monkeypatch):
+    repo = tmp_path / "ws"
+    oid = _fork(repo, monkeypatch)
+    # b already builds on a; a replacement that puts b under a closes the cycle
+    git(repo, "replace", "--graft", oid["a"], oid["b"])
+    assert oid["b"] in git(repo, "rev-list", oid["a"])
+    tips = {"api.git": oid["a"], "app.git": oid["b"]}
+    root = _five(monkeypatch, tips)
+    root["members"] = root["members"][:2]
+    monkeypatch.setattr(approvals, "_ancestors", _ANCESTORS)
+    with pytest.raises(approvals.ApprovalRefused, match="^approvals_incomplete: ") as refused:
+        approvals.count_approvals(repo, root["review_id"])
+    assert (refused.value.expected, refused.value.observed) == (oid["b"], None)
+
+
+def _merge(multi):
+    merged = runner.invoke(app, ["review", "merge"])
+    return merged, json.loads(merged.stdout)
+
+
+def test_merge_refuses_a_chain_still_landing_then_merges_when_the_stamp_finishes(multi):
+    set_policy(multi, 1)
+    made = approve_as(multi, "Approver B")
+    assert made.exit_code == 0, made.output
+    tip = json.loads(made.stdout)["tip"]
+    ref = approvals.PREFIX + multi["rid"]
+    beta = multi["members"]["beta"]["remote"]
+    git(beta, "update-ref", "-d", ref)
+    rec = set_check.run_set_check(multi["workspace"], multi["rid"], "set", [sys.executable, "-c", "pass"])
+    assert rec.get("result") == "pass", rec
+    merged, receipt = _merge(multi)
+    assert merged.exit_code == 3, merged.output
+    for row in receipt["members"]:
+        assert row["refusal"]["code"] == "approvals_incomplete", row
+        assert row["refusal"]["expected"] == tip
+    assert "not yet on beta" in merged.output and "next: " in merged.output and "retry" in merged.output
+    git(multi["workspace"], "push", beta, tip + ":" + ref)  # the stamp's last push lands
+    merged, receipt = _merge(multi)
+    assert merged.exit_code == 0, merged.output
+    assert receipt["approvals"]["count"] == 1
+
+
+def test_merge_names_both_tips_of_a_forked_chain(multi):
+    set_policy(multi, 1)
+    made = approve_as(multi, "Approver B")
+    assert made.exit_code == 0, made.output
+    tip = json.loads(made.stdout)["tip"]
+    previous = json.loads(git(multi["workspace"], "show", tip + ":approval.json"))
+    ref = approvals.PREFIX + multi["rid"]
+    forks = []
+    for name, member in zip(("Approver C", "Approver D"), multi["members"].values()):
+        record = {**previous, "approver": {"name": name, "key_id": ""}, "prev": approvals.digest(previous)}
+        fork = _write_link(multi, record, tip)
+        git(multi["workspace"], "push", member["remote"], fork + ":" + ref)
+        forks.append(fork)
+    rec = set_check.run_set_check(multi["workspace"], multi["rid"], "set", [sys.executable, "-c", "pass"])
+    assert rec.get("result") == "pass", rec
+    merged, receipt = _merge(multi)
+    assert merged.exit_code == 3, merged.output
+    for row in receipt["members"]:
+        assert row["refusal"]["code"] == "approval_chain_divergent", row
+        assert sorted([row["refusal"]["expected"], row["refusal"]["observed"]]) == sorted(forks)
+
+
+def test_merge_reads_a_second_approval_still_landing_as_incomplete_then_counts_it(multi):
+    set_policy(multi, 1)
+    made = approve_as(multi, "Approver B")
+    assert made.exit_code == 0, made.output
+    tip = json.loads(made.stdout)["tip"]
+    previous = json.loads(git(multi["workspace"], "show", tip + ":approval.json"))
+    ref = approvals.PREFIX + multi["rid"]
+    record = {**previous, "approver": {"name": "Approver C", "key_id": ""}, "prev": approvals.digest(previous)}
+    second = _write_link(multi, record, tip)
+    beta = multi["members"]["beta"]["remote"]
+    for key, member in multi["members"].items():
+        if key != "beta":  # the second stamp's first push lands; beta still has only B's link
+            git(multi["workspace"], "push", member["remote"], second + ":" + ref)
+    rec = set_check.run_set_check(multi["workspace"], multi["rid"], "set", [sys.executable, "-c", "pass"])
+    assert rec.get("result") == "pass", rec
+    merged, receipt = _merge(multi)
+    assert merged.exit_code == 3, merged.output
+    for row in receipt["members"]:
+        assert row["refusal"]["code"] == "approvals_incomplete", row
+        assert row["refusal"]["expected"] == second
+    assert "1 of 2" in merged.output and "not yet on beta" in merged.output and "retry" in merged.output
+    git(multi["workspace"], "push", beta, second + ":" + ref)  # the second stamp's last push lands
+    merged, receipt = _merge(multi)
+    assert merged.exit_code == 0, merged.output
+    assert receipt["approvals"]["count"] == 2
+
+
+def test_a_pr_chain_tip_reached_through_a_replaced_tag_reads_the_real_links(tmp_path, monkeypatch):
+    for key in ("AUTHOR", "COMMITTER"):
+        monkeypatch.setenv(f"GIT_{key}_NAME", "Author A")
+        monkeypatch.setenv(f"GIT_{key}_EMAIL", "a@example.invalid")
+    store, head = tmp_path / "store", "1" * 40
+    git(tmp_path, "init", "-q", store)
+
+    def link(name):
+        body = json.dumps({"repo": "api", "head": head, "approver": {"name": name}})
+        blob = subprocess.run(["git", "-C", str(store), "hash-object", "-w", "--stdin"], input=body,
+                              capture_output=True, text=True, check=True).stdout.strip()
+        tree = subprocess.run(["git", "-C", str(store), "mktree"], input=f"100644 blob {blob}\tapproval.json\n",
+                              capture_output=True, text=True, check=True).stdout.strip()
+        return git(store, "commit-tree", tree, "-m", name)
+
+    real, other = link("Real Approver"), link("Never Approved")
+    git(store, "tag", "-a", "-m", "real", "real", real)
+    git(store, "tag", "-a", "-m", "other", "other", other)
+    git(store, "update-ref", approvals.PR_PREFIX + head, git(store, "rev-parse", "real"))
+    git(store, "replace", "-f", git(store, "rev-parse", "real"), git(store, "rev-parse", "other"))
+    # the replacement is live for plain git: the PR ref now peels to the other commit
+    assert git(store, "rev-parse", approvals.PR_PREFIX + head + "^{commit}") == other
+    got = approvals.pr_head_approvals(store, "api", head)
+    assert [link["approver"]["name"] for link in got["links"]] == ["Real Approver"]
+    assert (got["tip"], got["count"]) == (real, 1)
+    # a head with no PR ref still reads as no chain
+    assert approvals.pr_head_approvals(store, "api", "2" * 40)["tip"] is None

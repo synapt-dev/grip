@@ -1,10 +1,18 @@
 """The read-only review verbs. `review blockers` is the merge gate's preflight and stops before any build or
 push; `review stamps` reads the approval chain. Neither moves a remote ref."""
 import json
+from pathlib import Path
+
+import pytest
 
 from gr2.python_cli import approvals
 from gr2.python_cli.app import app
 from tests.test_review_approvals import approve_as, git, runner, set_policy, world  # noqa: F401  (world is a fixture)
+
+
+def old(row):
+    """A member row without the live-branch fields (rowed in test_review_stamps_moved.py): the shape before them."""
+    return {k: v for k, v in row.items() if k not in ("moved_since_pin", "branch_head", "feature", "unmeasured")}
 
 
 def refs(remote):
@@ -59,7 +67,7 @@ def test_stamps_reads_who_and_when_and_writes_nothing(world):
     assert out["count"] == approvals.count_approvals(world["workspace"], world["rid"])["count"] == 2
     assert {s["approver"] for s in out["stamps"]} == {"Approver B", "Approver C"}
     assert all(s["created_at"].endswith("Z") and len(s["link"]) == 40 for s in out["stamps"])
-    assert out["members"] == [{"key": out["members"][0]["key"], "head": world["head"]}]
+    assert [old(m) for m in out["members"]] == [{"key": out["members"][0]["key"], "head": world["head"]}]
     assert (out["required"], out["required_state"]) == (None, "unset")  # dev refuses approvals_unset; the read reports it
     assert refs(world["remote"]) == before
 
@@ -243,7 +251,7 @@ def test_since_my_stamp_on_the_current_pin_is_unchanged(world):
     assert result.exit_code == 0, result.output
     out = json.loads(result.stdout)
     assert out["changed"] is False and out["stamped_review"] == out["review_id"] == "gr:" + world["rid"]
-    assert out["members"] == [{"key": "member", "stamped_head": world["head"], "current_head": world["head"],
+    assert [old(m) for m in out["members"]] == [{"key": "member", "stamped_head": world["head"], "current_head": world["head"],
                                "changed": False, "range": None, "commits": [], "paths": []}]
 
 
@@ -317,7 +325,7 @@ def test_since_my_stamp_names_a_member_added_after_the_stamp_as_new(world):
     out = json.loads(result.stdout)
     assert out["stamped_review"] == "gr:" + world["rid"] and out["changed"] is True
     rows = {m["key"]: m for m in out["members"]}
-    assert rows["other"] == {"key": "other", "stamped_head": None, "current_head": head, "changed": True,
+    assert old(rows["other"]) == {"key": "other", "stamped_head": None, "current_head": head, "changed": True,
                              "range": None, "commits": [], "paths": ["added"]}
     assert rows["member"]["changed"] is True and rows["member"]["range"] == f"{world['head']}..{moved}"
 
@@ -340,5 +348,34 @@ def test_since_my_stamp_on_a_rebased_head_has_no_range_and_the_tree_diff(world):
     result = since(world)
     assert result.exit_code == 0, result.output
     [m] = json.loads(result.stdout)["members"]
-    assert m == {"key": "member", "stamped_head": world["head"], "current_head": head, "changed": True,
+    assert old(m) == {"key": "member", "stamped_head": world["head"], "current_head": head, "changed": True,
                  "range": None, "commits": [], "paths": ["payload", "rebased"]}
+
+
+@pytest.mark.parametrize("graft", ["replace-graft", "grafts-file"])
+def test_since_my_stamp_on_a_rebased_head_ignores_a_local_graft_onto_the_stamped_head(world, graft):
+    """A local graft or replace object making the stamped head a parent of the rebased one invents no range."""
+    assert approve_as(world, "Approver B").exit_code == 0
+    member = world["member"]
+    git(member, "reset", "-q", "--hard", world["base"])
+    (member / "rebased").write_text("rebased\n")
+    git(member, "add", "rebased")
+    git(member, "commit", "-m", "rebased")
+    head = git(member, "rev-parse", "HEAD")
+    git(member, "push", "-f", world["remote"], "feature")
+    git(world["workspace"], "config", "user.name", "Author A")
+    bound = runner.invoke(app, ["review", "bind", "--repo", "member", "--remote", str(world["remote"]),
+                               "--base", world["base"], "--head", head, "--ref", "refs/heads/main",
+                               "--source", str(member)])
+    assert bound.exit_code == 0, bound.output
+    if graft == "replace-graft":
+        git(member, "replace", "--graft", head, world["head"])
+    else:
+        (Path(git(member, "rev-parse", "--absolute-git-dir")) / "info" / "grafts").write_text(
+            f"{head} {world['head']}\n")
+    result = since(world)
+    assert result.exit_code == 0, result.output
+    [m] = json.loads(result.stdout)["members"]
+    assert {k: m[k] for k in ("stamped_head", "current_head", "range", "commits", "paths")} == {
+        "stamped_head": world["head"], "current_head": head, "range": None, "commits": [],
+        "paths": ["payload", "rebased"]}

@@ -66,16 +66,18 @@ class RemoteCheck(NamedTuple):
 
 
 def _ls_remote(url: str, ref: str, timeout: float) -> str | None:
-    """The sha ``ref`` points at on ``url``, "" when the remote answered and has no such ref. Raises
-    ``TimeoutError`` or ``OSError`` when the remote could not be asked."""
+    """The sha of the row named exactly ``ref`` on ``url``, "" when the remote answered and has no such ref. Raises
+    ``TimeoutError`` or ``OSError`` when the remote could not be asked or its listing could not be read."""
     try:
         out = gitops.run_argv(["git", "ls-remote", "--", url, ref], timeout=max(timeout, 0.1), env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}, raise_timeout=True)
     except subprocess.TimeoutExpired as exc:
         raise TimeoutError("did not answer in time") from exc
     if out.returncode != 0:
         raise OSError((out.stderr.strip().splitlines() or ["ls-remote failed"])[-1])
-    line = out.stdout.split("\n", 1)[0].strip()
-    return line.split()[0] if line else ""
+    try:
+        return gitops.ls_remote_oid(out.stdout, ref) or ""
+    except ValueError as exc:
+        raise OSError(f"ls-remote answered a malformed listing: {exc}") from exc
 
 
 def check_remote_branch(repos: list[Repo], branch: str, *, budget: float = REMOTE_CHECK_BUDGET_S) -> RemoteCheck:

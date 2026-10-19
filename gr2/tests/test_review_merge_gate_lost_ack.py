@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import uuid
 
 import pytest
 
@@ -94,7 +95,8 @@ def test_a_push_oserror_that_never_landed_is_unconfirmed_not_a_crash(world, monk
     code, receipt = merge(world)
     row = receipt["members"][0]
     assert row["state"] == "unmerged" and row["push_error"].startswith("push_unconfirmed"), row
-    assert code == merge_gate.EXIT_REFUSED, receipt
+    assert row["refused"] == "push_unconfirmed: OSError: git vanished", row
+    assert code == merge_gate.EXIT_PARTIAL, receipt  # the push may have landed: never read as a clean refusal
     assert git(world["remote"], "rev-parse", "main") == world["base"]
 
 
@@ -388,8 +390,7 @@ def test_a_symlinked_fanout_dir_under_a_real_objects_dir_is_refused(world, tmp_p
 def test_a_symlinked_reflog_file_is_refused_and_never_appended_to(world, tmp_path, monkeypatch):
     check(world)
     git(world["member"], "config", "core.logAllRefUpdates", "always")
-    fixed = merge_gate.uuid.UUID(int=0x1138)
-    monkeypatch.setattr(merge_gate.uuid, "uuid4", lambda: fixed)  # deterministic staging ref, so its log can be planted
+    fixed = uuid.UUID(int=0x1138)  # a planted log name; the gate makes no staging ref, the walk must still refuse it
     victim = tmp_path / "outside-reflog"
     victim.write_bytes(b"victim\n")
     logdir = world["member"] / ".git" / "logs" / "refs" / "dev.synapt.grip" / "__merge_transfers__"
@@ -436,8 +437,7 @@ def test_every_git_command_the_gate_runs_disables_auto_maintenance(world, monkey
 def test_an_unlistable_log_subtree_is_refused_not_skipped(world, tmp_path, monkeypatch):
     check(world)
     git(world["member"], "config", "core.logAllRefUpdates", "always")
-    fixed = merge_gate.uuid.UUID(int=0x41B3)
-    monkeypatch.setattr(merge_gate.uuid, "uuid4", lambda: fixed)
+    fixed = uuid.UUID(int=0x41B3)  # a planted log name; the gate makes no staging ref, the walk must still refuse it
     victim = tmp_path / "outside-reflog"
     victim.write_bytes(b"victim\n")
     logdir = world["member"] / ".git" / "logs" / "refs" / "dev.synapt.grip" / "__merge_transfers__"

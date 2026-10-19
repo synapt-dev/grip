@@ -3,7 +3,6 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import functools
-import importlib.metadata
 import io
 import json
 import os
@@ -29,6 +28,8 @@ from gr2.prototypes import repo_maintenance_prototype as repo_proto
 
 from . import add as add_ops
 from .version import version_line
+from ..typer_settings import group_settings
+from .keys import member_path_key
 from . import branch as branch_ops
 from . import change as change_ops
 from . import commit as commit_ops
@@ -94,7 +95,8 @@ app = typer.Typer(
         "isolated lanes to work in, and one grouped review per slice.\n\n"
         "To land a reviewed change: gr2 review pin, publish, stamp, gr2 check, then gr2 review merge; "
         "the steps are in gr2 review --help."
-    )
+    ),
+    **group_settings(),
 )
 
 
@@ -122,17 +124,17 @@ def _root(
     """gr2 workspace CLI."""
 
 
-repo_app = typer.Typer(help="Repo maintenance and inspection")
-lane_app = typer.Typer(help="Lane creation and navigation")
-lease_app = typer.Typer(help="Lane lease operations")
-review_app = typer.Typer(help="Review and reviewer requirement operations.\n\n" + next_steps.REVIEW_ORDER)
-check_app = typer.Typer(help="Run and read exact-head checks on a Git remote")
-pr_app = typer.Typer(help="Cross-repo PR orchestration")
-workspace_app = typer.Typer(help="Workspace bootstrap and materialization")
-spec_app = typer.Typer(help="Declarative workspace spec operations")
-exec_app = typer.Typer(help="Lane-aware execution planning and execution")
-sync_app = typer.Typer(help="Workspace-wide sync inspection and execution")
-target_app = typer.Typer(help="Stored PR target (settings.target) that prune and future verbs default to")
+repo_app = typer.Typer(help="Repo maintenance and inspection", **group_settings())
+lane_app = typer.Typer(help="Lane creation and navigation", **group_settings())
+lease_app = typer.Typer(help="Lane lease operations", **group_settings())
+review_app = typer.Typer(help="Review and reviewer requirement operations.\n\n" + next_steps.REVIEW_ORDER, **group_settings())
+check_app = typer.Typer(help="Run and read exact-head checks on a Git remote", **group_settings())
+pr_app = typer.Typer(help="Cross-repo PR orchestration", **group_settings())
+workspace_app = typer.Typer(help="Workspace bootstrap and materialization", **group_settings())
+spec_app = typer.Typer(help="Declarative workspace spec operations", **group_settings())
+exec_app = typer.Typer(help="Lane-aware execution planning and execution", **group_settings())
+sync_app = typer.Typer(help="Workspace-wide sync inspection and execution", **group_settings())
+target_app = typer.Typer(help="Stored PR target (settings.target) that prune and future verbs default to", **group_settings())
 
 app.add_typer(repo_app, name="repo")
 app.add_typer(lane_app, name="lane")
@@ -145,7 +147,7 @@ app.add_typer(spec_app, name="spec")
 app.add_typer(exec_app, name="exec")
 app.add_typer(sync_app, name="sync")
 app.add_typer(target_app, name="target")
-hooks_app = typer.Typer(help="Bind (trust) or revoke member-hook consent records.")
+hooks_app = typer.Typer(help="Bind (trust) or revoke member-hook consent records.", **group_settings())
 app.add_typer(hooks_app, name="hooks")
 # The snapshot store over .grip/.git. Its verb is `store` (init/snapshot/log/diff/
 # checkout); `grip` stays as a hidden alias for one release so existing callers keep
@@ -153,7 +155,7 @@ app.add_typer(hooks_app, name="hooks")
 app.add_typer(grip_app, name="store")
 app.add_typer(grip_app, name="grip", hidden=True)
 app.add_typer(config_cli_app, name="config")
-proto_app = typer.Typer(help="Render stored protobuf records")
+proto_app = typer.Typer(help="Render stored protobuf records", **group_settings())
 app.add_typer(proto_app, name="proto")
 
 
@@ -264,7 +266,7 @@ def _start_lane_branch(repo_name: str, repo: Path, branch: str, ref: str | None,
     remote = git(repo, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{branch}^{{commit}}")
     if remote.returncode == 0:
         tip = remote.stdout.strip()
-        if head != tip and seed_is_work and git(repo, "merge-base", "--is-ancestor", head, tip).returncode != 0:
+        if head != tip and seed_is_work and gitops.is_ancestor(repo, head, tip, via_cwd=True) is not True:
             print(f"gr2: {repo_name}: {branch} keeps the local work at {head[:12]}, which origin/{branch} "
                   f"({tip[:12]}) does not contain; it tracks origin/{branch}", file=sys.stderr)
         elif head != tip:
@@ -279,17 +281,20 @@ def _start_lane_branch(repo_name: str, repo: Path, branch: str, ref: str | None,
         fork = base.stdout.strip() if base.returncode == 0 and base.stdout.strip() else head
         print(f"gr2: {repo_name}: continues origin/{branch} at {head[:12]}; fork base {fork[:12]}", file=sys.stderr)
         return fork, None
-    if seed_is_work and git(repo, "merge-base", "--is-ancestor", head, integration).returncode == 0:
+    if seed_is_work and gitops.is_ancestor(repo, head, integration, via_cwd=True) is True:
         seed_is_work = False  # the local branch holds nothing its target lacks: there is no work to keep
     start = "local" if seed_is_work else "pin" if at_pin else "tip"
     if start == "tip":
         target = f"refs/heads/{ref}" if ref else "HEAD"
         live = git(repo, "ls-remote", "origin", target)
         # ls-remote matches a pattern by its tail, so refs/heads/x/refs/heads/main answers for main: take the exact name.
-        rows = (line.split("\t", 1) for line in live.stdout.splitlines() if "\t" in line) if live.returncode == 0 else ()
+        try:
+            rows, garbled = (gitops.ls_remote_rows(live.stdout) if live.returncode == 0 else ()), False
+        except gitops.LsRemoteMalformed:
+            rows, garbled = (), True
         tip = next((sha for sha, name in rows if name == target), "")
         if not tip:
-            why = "cannot read the live tip of" if live.returncode else "the remote has no branch"
+            why = "cannot read the live tip of" if live.returncode or garbled else "the remote has no branch"
             print(f"gr2: {repo_name}: {why} origin/{ref or 'HEAD'}; {branch} starts at the pin", file=sys.stderr)
             start = "pin"
         elif tip != head:
@@ -888,7 +893,10 @@ def _pr_create_for_review(workspace_root, review, platform, base_branch, draft, 
         seen = git(workspace_root, "ls-remote", m["remote"], f"refs/heads/{branch}", timeout=_REMOTE_TIP_TIMEOUT)
         if seen.returncode != 0:
             _refuse(f"cannot read {branch} on {m['key']}'s remote: {seen.stderr.strip()}")
-        tips = [line.split()[0] for line in seen.stdout.splitlines() if line.split()[1:] == [f"refs/heads/{branch}"]]
+        try:
+            tips = [sha for sha, name in gitops.ls_remote_rows(seen.stdout) if name == f"refs/heads/{branch}"]
+        except gitops.LsRemoteMalformed as exc:
+            _refuse(f"cannot read {branch} on {m['key']}'s remote: {exc}")
         if tips != [m["commit"]]:
             where = tips[0][:12] if tips else "absent"
             _refuse(f"{m['key']}: {branch} on the remote is {where}, not the reviewed commit {m['commit'][:12]}; push the reviewed commit first")
@@ -925,8 +933,11 @@ def _live_remote_tips(workspace_root: Path, remote: str, *refs: str) -> dict[str
     if seen.returncode != 0:
         _refuse(f"cannot read {' and '.join(refs)} on the remote: {seen.stderr.strip()}")
     tips = {}
-    for line in seen.stdout.splitlines():
-        sha, _, name = line.partition("\t")
+    try:
+        rows = gitops.ls_remote_rows(seen.stdout)
+    except gitops.LsRemoteMalformed as exc:
+        _refuse(f"cannot read {' and '.join(refs)} on the remote: {exc}")
+    for sha, name in rows:
         if name in refs:  # ls-remote matches a pattern by its tail, so refs/heads/x also lists a/refs/heads/x
             tips[name] = sha
     return tips
@@ -1291,6 +1302,9 @@ def _scan_existing_repos(workspace_root: Path) -> list[dict[str, object]]:
     pins = _root_gitlink_pins(workspace_root)
     declared_refs = repo_proto.root_submodule_branches(workspace_root)
     modules = repo_proto.root_submodule_declarations(workspace_root)
+    # The same, as member keys, for the declared-state lookup: `.gitmodules` may spell a path `./alpha` or `alpha/`.
+    pins_by_key = {member_path_key(path): pin for path, pin in pins.items()}
+    declared_refs_by_key = {member_path_key(path): ref for path, ref in declared_refs.items()}
 
     if pins:
         # A root that pins members has a KNOWN member set, at ANY depth: the
@@ -1362,8 +1376,8 @@ def _scan_existing_repos(workspace_root: Path) -> list[dict[str, object]]:
         repo.update(
             repo_proto.declared_repo_state(
                 child,
-                pinned=pins.get(str(repo["path"])),
-                declared_ref=declared_refs.get(str(repo["path"])),
+                pinned=pins_by_key.get(member_path_key(repo["path"])),
+                declared_ref=declared_refs_by_key.get(member_path_key(repo["path"])),
             )
         )
         repos.append(repo)
@@ -1511,6 +1525,30 @@ def sync_run(
         typer.echo(syncops.render_sync_result(result))
     if result.status in {"blocked", "failed", "partial_failure"}:
         raise typer.Exit(code=1)
+
+
+@sync_app.command("wait")
+def sync_wait(
+    workspace_root: Optional[Path] = typer.Argument(None),
+    all_members: bool = typer.Option(False, "--all-members", help="Wait on every member the workspace declares"),
+    until: str = typer.Option("any", "--until", help="any: return when one member moves; all: when every member has"),
+    timeout: float = typer.Option(1800.0, "--timeout", help="Seconds before giving up (exit 6)"),
+    interval: float = typer.Option(30.0, "--interval", help="Seconds between polls (>= 1)"),
+) -> None:
+    """Wait until any or all members move on their remote: one ls-remote per member per poll. Exit 0 met, 6 timeout, 3 refused, 7 unreadable."""
+    from . import sync_wait as sync_wait_ops
+
+    if not all_members:
+        typer.echo("refused: name the members to wait on: --all-members", err=True)
+        raise typer.Exit(code=sync_wait_ops.EXIT_REFUSED)
+    if until not in {"any", "all"}:
+        typer.echo(f"refused: --until must be any or all, not {until!r}", err=True)
+        raise typer.Exit(code=sync_wait_ops.EXIT_REFUSED)
+    workspace_root = _resolve_workspace_root(workspace_root)
+    code = sync_wait_ops.wait(workspace_root, until=until, timeout=timeout, interval=interval, echo=typer.echo,
+                                 err=lambda line: typer.echo(line, err=True))
+    if code:
+        raise typer.Exit(code=code)
 
 
 def _require_superproject(workspace_root: Path) -> None:
@@ -3721,7 +3759,10 @@ def _unpushed_commits(repo: Path, *, fetch: bool = True) -> list[tuple[str, str]
     for tips, prefix in ((["--branches"], "refs/heads/"), (["HEAD"], ""), (["--tags"], "refs/tags/")):
         out = gitops.run_argv(["git", "log", "--source", *tips, "--not", "--remotes", "--stdin", "--format=%H %S"],
                               cwd=repo, input=not_held).stdout
-        for line in out.splitlines():
+        # By "\n" only: str.splitlines also cuts at U+2028, U+2029 and U+0085, which a branch name may hold.
+        for line in out.split("\n"):
+            if not line:
+                continue
             sha, _, ref = line.partition(" ")
             found.setdefault(sha, prefix + ref.removeprefix(prefix))
     if found and not fetch:
@@ -3746,7 +3787,11 @@ def _remote_tag_shas(repo: Path) -> list[str]:
         if listed.returncode != 0:
             raise SystemExit(f"cannot list {remote}'s tags in {repo}, so cannot show a tagged commit is pushed: "
                              f"{listed.stderr.strip()}")
-        shas += [line.split()[0] for line in listed.stdout.splitlines() if line.strip()]
+        try:
+            shas += [oid for oid, _ in gitops.ls_remote_rows(listed.stdout)]
+        except gitops.LsRemoteMalformed as exc:
+            raise SystemExit(f"cannot list {remote}'s tags in {repo}, so cannot show a tagged commit is pushed: "
+                             f"{exc}") from None
     if not shas:
         return []
     have = gitops.run_argv(["git", "cat-file", "--batch-check=%(objectname)"], cwd=repo,
@@ -5718,11 +5763,11 @@ def _resolve_merged_defaults(ws: Path, review_id: Optional[str], into: Optional[
         for m in view["members"]:
             repo = (ws / m["path"]).resolve()
             try:
-                out = merge_gate._git(repo, "ls-remote", "--symref", "--", m["remote"], "HEAD")
-            except (RuntimeError, subprocess.SubprocessError, OSError):
-                out = ""
-            default = next((left.removeprefix("ref: refs/heads/") for left, _, ref in
-                            (line.partition("\t") for line in out.splitlines())
+                out = merge_gate._git(repo, "ls-remote", "--symref", "--", m["remote"], "HEAD", raw=True)
+                rows = gitops.ls_remote_rows(out, symref=True)
+            except (RuntimeError, subprocess.SubprocessError, OSError, gitops.LsRemoteMalformed):
+                rows = []
+            default = next((left.removeprefix("ref: refs/heads/") for left, ref in rows
                             if left.startswith("ref: refs/heads/") and ref == "HEAD"), None)
             if default is None:
                 raise defaults.Unresolved(f"into_unresolved: {m['path']}: no remote default branch readable; "
@@ -5916,6 +5961,27 @@ def review_blockers(
         raise typer.Exit(code)
 
 
+def _stamps_moved(ws: Path, rid: str, rows: list[dict], head_field: str) -> None:
+    """A stamp is valid for its pin; say per member whether the remote feature branch has left the pin since."""
+    members = grip.show_review_commit(ws, rid)["members"]
+    try:
+        feature = defaults.branch([(ws / m["path"]).resolve() for m in members], None)[0]
+    except defaults.Unresolved:
+        feature = None
+    moves = merge_gate.feature_moves(ws, members, feature)
+    for row in rows:
+        move = moves.get(row["key"], {"moved_since_pin": None, "branch_head": None, "feature": feature,
+                                      "unmeasured": "not in this pin"})
+        row.update(move)
+        if move["moved_since_pin"]:
+            typer.echo(f"{row['key']} moved since the pin: stamps cover {row[head_field]}, the branch "
+                       f"{next_steps._shown(feature)} is at {move['branch_head'] or 'nothing (absent)'}; "
+                       "blockers and merge will refuse", err=True)
+        elif move["moved_since_pin"] is None:
+            typer.echo(f"{row['key']}: unknown whether the branch moved since the pin ({move['unmeasured']}); "
+                       f"stamps cover {row[head_field]}", err=True)
+
+
 @review_app.command("stamps", cls=ReviewHeadCommand)
 def review_stamps(
     workspace_root: Path,
@@ -5933,6 +5999,7 @@ def review_stamps(
         rid = (review_id or approvals.current_review(ws)).removeprefix("gr:")
         if since_my_stamp:
             result = approvals.since_my_stamp(ws, rid)
+            _stamps_moved(ws, rid, result.get("members", []), "current_head")
             typer.echo(json.dumps(result))
             if "refused" in result:
                 raise typer.Exit(3)  # a measured no, as `blockers` "not ready"; 5 stays for what cannot be read
@@ -5951,6 +6018,7 @@ def review_stamps(
         result["stamps"] = [{"approver": l["approver"], "link": l["commit"],
                              "created_at": approvals._read_link(ws, l["commit"]).get("created_at")}
                             for l in result.pop("links")]
+        _stamps_moved(ws, rid, result["members"], "head")
     except (grip.ReviewStoreAbsent, approvals.ApprovalRefused, grip.GripInitError, grip.GripCorruptError,
             OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
         typer.echo(json.dumps({"review_id": review_id, "refused": f"{type(exc).__name__}: {exc}"}))

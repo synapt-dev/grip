@@ -243,8 +243,8 @@ def fold(repo: Path, ref: str = "STOOK", *, org: str, message: str,
     if proc.returncode != 0:
         raise AppendError(f"for-each-ref failed: {proc.stderr.decode(errors='replace').strip()[:200]}")
     tips = {}
-    for line in proc.stdout.decode().splitlines():
-        commit, tree = line.split()
+    for line in gitops.for_each_ref_rows(proc.stdout.decode()):
+        commit, tree = line.split(" ")
         tips[commit] = (commit, tree)
     if not tips:
         return {}

@@ -1061,17 +1061,25 @@ def _origin_default_branch(repo_path: Path, url: str | None = None) -> str | Non
         # "cannot tell". The bound above is what makes that reachable at all — an
         # origin that accepts and says nothing used to block the verb outright.
         return None
-    for line in remote.stdout.splitlines():
-        if line.startswith("ref:") and line.rstrip().endswith("HEAD"):
-            ref = line.split()[1]
-            # Strip the PREFIX, never split on every slash: a default branch whose
-            # name contains one (`release/1.x`) came back as its last segment, so the
-            # guard compared the requested branch against a string the origin never
-            # reported and the no-isolation lane was created in silence.
-            if not ref.startswith("refs/heads/"):
-                return None
-            return ref.removeprefix("refs/heads/")
-    return None
+    # Only the row named exactly HEAD: ls-remote answers "HEAD" by tail, so a symref
+    # refs/heads/a/HEAD is listed too, and splitlines cut a target holding U+2028 or
+    # U+0085 into a piece that ended in HEAD. Two such rows, or one that is not
+    # "ref: <target>", cannot tell.
+    try:
+        rows = gitops.ls_remote_rows(remote.stdout, symref=True)
+    except gitops.LsRemoteMalformed:
+        return None
+    heads = [left for left, name in rows if name == "HEAD" and left.startswith("ref:")]
+    if len(heads) != 1:
+        return None
+    ref = heads[0].removeprefix("ref: ")
+    # Strip the PREFIX, never split on every slash: a default branch whose
+    # name contains one (`release/1.x`) came back as its last segment, so the
+    # guard compared the requested branch against a string the origin never
+    # reported and the no-isolation lane was created in silence.
+    if ref == heads[0] or " " in ref or not ref.startswith("refs/heads/") or ref == "refs/heads/":
+        return None
+    return ref.removeprefix("refs/heads/")
 
 
 def _lane_branch_refusal(workspace_root: Path, spec: dict, repo: str, branch: str) -> str | None:
@@ -1354,7 +1362,7 @@ def bind_bound_lane(
         raise SystemExit(
             f"bind refuses: base {base!r} is not a full 40-hex commit sha"
         )
-    if gitops.git(resolved, "merge-base", "--is-ancestor", base, current_head).returncode != 0:
+    if gitops.is_ancestor(resolved, base, current_head, via_cwd=True) is not True:
         raise SystemExit(
             f"bind refuses: base {base} is not an ancestor of the worktree head {current_head} "
             "(not a commit, or head does not descend from it); it cannot bound the reviewed range"
@@ -1434,7 +1442,7 @@ def pr_create_bound_lane(
             or receipt.get("repo") != identity or receipt.get("lane_kind") != "bound"
             or not all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value) for value in (base, head))
             or head != lane_doc.get("bound_head")
-            or gitops.git(resolved, "merge-base", "--is-ancestor", base, head).returncode != 0):
+            or gitops.is_ancestor(resolved, base, head, via_cwd=True) is not True):
         raise SystemExit("pr create refuses: review receipt does not match the bound worktree identity/range")
     if base == head:
         raise SystemExit(

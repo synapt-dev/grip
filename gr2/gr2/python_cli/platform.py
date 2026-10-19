@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import contextlib
-import importlib.metadata
+import importlib
 import inspect
 import json
 import re
@@ -715,6 +715,8 @@ def register_platform_adapter(name: str, factory: Callable[[], PlatformAdapter])
 def get_platform_adapter(name: str) -> PlatformAdapter:
     normalized = name.strip().lower()
     factory = _ADAPTER_FACTORIES.get(normalized)
+    import importlib.metadata  # about 17 ms; only adapter lookup reads entry points
+
     entries = [
         entry
         for entry in importlib.metadata.entry_points(group=PLATFORM_ADAPTER_ENTRY_POINTS)

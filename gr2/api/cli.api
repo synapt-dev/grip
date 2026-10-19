@@ -908,6 +908,12 @@ json  store status .root.porcelain                                    may-change
 json  store status .root.state  enum(clean,dirty)                     may-change
 json  store status .status  enum(status)                              may-change
 verb  store status                                                    may-change
+# sync
+exit  sync 0 ok                                                       stable
+exit  sync 2 usage                                                    stable
+exit  sync 3 refused                                                  stable
+exit  sync 6 timeout                                                  stable
+exit  sync 7 unreadable                                               stable
 # sync run
 arg   sync run workspace_root <str>                                   stable
 flag  sync run --dirty <str>                                          stable
@@ -918,6 +924,13 @@ arg   sync status workspace_root <str>                                stable
 flag  sync status --dirty <str>                                       stable
 flag  sync status --json                                              stable
 verb  sync status                                                     stable
+# sync wait
+arg   sync wait workspace_root <str>                                  stable
+flag  sync wait --all-members                                         stable
+flag  sync wait --interval <str>                                      stable
+flag  sync wait --timeout <str>                                       stable
+flag  sync wait --until <str>                                         stable
+verb  sync wait                                                       stable
 # target set
 arg   target set branch <str>                                         stable
 flag  target set --remote <str>                                       stable

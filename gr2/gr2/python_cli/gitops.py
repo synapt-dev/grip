@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import unicodedata
 from pathlib import Path
+from urllib.parse import quote, unquote, urlsplit
 
 from . import next_steps
 
@@ -152,9 +154,94 @@ DEFAULT_TIMEOUT = 600.0
 class GitError(RuntimeError):
     """A git command exited non-zero. Carries the return code and git's own message."""
 
-    def __init__(self, args: tuple[str, ...], returncode: int, stderr: str):
+    def __init__(self, args: tuple[str, ...], returncode: int, stderr: str, secrets: frozenset[str] = frozenset()):
         self.git_args, self.returncode, self.stderr = args, returncode, stderr
-        super().__init__(f"git {' '.join(args[:2])}: {stderr}".rstrip(": "))
+        shown = [next_steps._shown(_masked(_shown_arg(arg), secrets)) for arg in args[:2]]
+        super().__init__(f"git {' '.join(shown)}: {_masked(_shown_stderr(args, stderr), secrets)}".rstrip(": "))
+
+
+_CREDENTIAL_SHOWN = "<a remote with a credential>"
+#: A credential value shorter than this is not masked, so a two-letter token does not shred ordinary words.
+_MIN_SECRET = 4
+_QUERY_PAIR = re.compile(r"""([A-Za-z0-9_.-]+)=([^&;#\s'"()<>]*)""")
+
+
+def credential_values(argv, cwd: Path | None = None) -> frozenset[str]:
+    """Every credential VALUE a git call could echo back: the userinfo password (and a non-ssh userinfo user),
+    each credential-named query value and any fragment, taken from the call's arguments and from every
+    `remote.*.url` / `remote.*.pushurl` of the repository at `cwd`, each raw, percent-decoded and re-encoded.
+    A git or server message may echo a value in a shape no pattern expects; masking the values catches it."""
+    from .grip import _CREDENTIAL_PARAMS  # lazy, as _shown_arg
+
+    texts = [str(arg) for arg in argv]
+    if cwd is not None:
+        proc = run(cwd, "config", "--get-regexp", r"^remote\..*\.(push)?url$", timeout=30)
+        texts += [line.split(" ", 1)[1] for line in proc.stdout.splitlines() if " " in line]
+    found: set[str] = set()
+    for text in texts:
+        if "://" in text:
+            try:
+                parts = urlsplit(text.split("::", 1)[-1] if "::" in text.split("://", 1)[0] else text)
+                found.add(parts.password or "")
+                if parts.scheme.lower() not in {"ssh", "git+ssh", "ssh+git"}:
+                    found.add(parts.username or "")
+            except ValueError:
+                pass
+        if "#" in text and "://" in text:
+            found.add(text.split("#", 1)[1])
+        if "?" in text:
+            for name, value in _QUERY_PAIR.findall(text.split("?", 1)[1]):
+                if name.strip().lower().replace("-", "_") in _CREDENTIAL_PARAMS:
+                    found.add(value)
+    values = {form for value in found for form in (value, unquote(value), quote(unquote(value), safe=""))}
+    return frozenset(value for value in values if len(value) >= _MIN_SECRET)
+
+
+def _masked(text: str, secrets: frozenset[str]) -> str:
+    """`text` with every known credential value replaced by the placeholder, longest first."""
+    for value in sorted(secrets, key=len, reverse=True):
+        text = text.replace(value, _CREDENTIAL_SHOWN)
+    return text
+# git's own rule for an scp-form address: a colon before the first slash (so `./a:b` stays a local path)
+_SCP_ADDRESS = re.compile(r"[^/]*:")
+
+
+def _strip_userinfo(url: str) -> str:
+    from .migration import _strip_url_userinfo  # lazy: migration imports this module's importers
+
+    return _strip_url_userinfo(url)
+
+
+def _shown_arg(arg: str) -> str:
+    """An argument as an error message may show it: a URL loses its userinfo, and a URL that still carries a
+    credential after that (a token in the query, an unparsable address) is named, not shown. An scp-form address
+    (user@host:path, which git reaches over ssh) that carries a credential is named too. Any other argument is
+    returned as written."""
+    from .grip import url_has_credentials  # lazy, as above
+
+    if "://" not in arg:
+        return _CREDENTIAL_SHOWN if _SCP_ADDRESS.match(arg) and url_has_credentials(arg) else arg
+    if not url_has_credentials(arg):
+        return arg
+    stripped = _strip_userinfo(arg)
+    return _CREDENTIAL_SHOWN if url_has_credentials(stripped) else stripped
+
+
+def _shown_stderr(args, stderr: str) -> str:
+    """git's stderr for a command run with `args`, each argument that carries a credential replaced as `_shown_arg`
+    shows it. git strips userinfo from the URLs it prints, not a credential in the query, so both forms are replaced.
+    A remote named in `args` prints the URL from git's config, so every URL in the stderr is shown as `_shown_arg`
+    shows it too. git prints an scp-form address without its `user@` (`'host:x.git?access_token=...'`), so every
+    word with a colon and no `://` is shown as `_shown_arg` shows it as well; a word with no credential stays."""
+    for arg in args:
+        if (redacted := _shown_arg(str(arg))) != str(arg):
+            stderr = stderr.replace(str(arg), redacted).replace(_strip_userinfo(str(arg)), redacted)
+    stderr = _URL_IN_TEXT.sub(lambda m: _shown_arg(m.group(0)), stderr)
+    return _SCP_IN_TEXT.sub(lambda m: m.group(0) if "://" in m.group(0) else _shown_arg(m.group(0)), stderr)
+
+
+_URL_IN_TEXT = re.compile(r"""[A-Za-z][A-Za-z0-9+.-]*://[^\s'"]+""")
+_SCP_IN_TEXT = re.compile(r"""[^\s'"/]+:[^\s'"]*""")
 
 
 # Git's global options that take their value as the next word; `--opt=value` forms are one word.
@@ -278,24 +365,25 @@ def check(proc: subprocess.CompletedProcess) -> subprocess.CompletedProcess:
     return proc
 
 
-def _raise(proc: subprocess.CompletedProcess, args: tuple[str, ...], error: type[Exception] | None) -> None:
+def _raise(proc: subprocess.CompletedProcess, args: tuple[str, ...], error: type[Exception] | None,
+           cwd: Path | None = None) -> None:
     if proc.returncode:
         err = proc.stderr.decode("utf-8", errors="replace") if isinstance(proc.stderr, bytes) else proc.stderr
-        exc = GitError(args, proc.returncode, err.strip())
+        exc = GitError(args, proc.returncode, err.strip(), credential_values([*proc.args, *args], cwd))
         raise exc if error is None else error(str(exc))
 
 
 def out(cwd: Path, *args: str, error: type[Exception] | None = None, strip: bool = True, **kw) -> str:
     """Text stdout of one git command; a non-zero exit raises GitError, or `error` when given."""
     proc = run(cwd, *args, **kw)
-    _raise(proc, args, error)
+    _raise(proc, args, error, cwd)
     return proc.stdout.strip() if strip else proc.stdout
 
 
 def out_bytes(cwd: Path, *args: str, error: type[Exception] | None = None, **kw) -> bytes:
     """Raw stdout bytes of one git command (stdin may be bytes); a non-zero exit raises like out()."""
     proc = run(cwd, *args, binary=True, **kw)
-    _raise(proc, args, error)
+    _raise(proc, args, error, cwd)
     return proc.stdout
 
 
@@ -313,6 +401,50 @@ def plain_remote(remote: str, error: type[Exception] = RuntimeError) -> str:
     return positional(remote, "remote", error)
 
 
+class LsRemoteMalformed(ValueError):
+    """An ls-remote answer holding a line that is not a row (no tab, or an oid that is not 40 or 64 lowercase hex):
+    a fault, never an absent ref."""
+
+
+_OID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+
+
+def ls_remote_rows(listing: str, symref: bool = False) -> list[tuple[str, str]]:
+    """(oid, name) per row of ls-remote output, split on "\n" only: str.splitlines and str.split() also cut at U+2028
+    and U+0085, which a ref name may hold. A non-empty line without a tab, or whose oid is not 40 (sha1) or 64 (sha256)
+    lowercase hex, raises LsRemoteMalformed: dropping it would read a garbled answer as "the remote does not hold that
+    ref", and keeping it would hand a caller a tip git never named, so each caller turns it into its own fault. Only a
+    caller that asked ``--symref`` passes ``symref=True``, and then a "ref: <target>" row stands in place of an oid."""
+    rows = []
+    for line in listing.split("\n"):
+        if not line:
+            continue
+        if "\t" not in line:
+            raise LsRemoteMalformed(f"ls-remote answered a line that is not a row: {line[:80]!r}")
+        oid, name = line.split("\t", 1)
+        if not (_OID.fullmatch(oid) or (symref and oid.startswith("ref: "))):
+            raise LsRemoteMalformed(f"ls-remote answered a row whose oid is not an object id: {line[:80]!r}")
+        rows.append((oid, name))
+    return rows
+
+
+def ls_remote_oid(listing: str, ref: str) -> str | None:
+    """The oid of the one ls-remote row whose name is exactly ``ref``, or None when no row names it. ls-remote matches
+    its pattern by tail, so refs/heads/a/<ref> answers too and may sort first: the first row is an order, not the asked
+    ref. Two rows naming ``ref`` raise ValueError rather than pick one."""
+    oids = [oid for oid, name in ls_remote_rows(listing) if name == ref]
+    if len(oids) > 1:
+        raise ValueError(f"ls-remote listed {len(oids)} rows named {ref!r}")
+    return oids[0] if oids else None
+
+
+def for_each_ref_rows(listing: str) -> list[str]:
+    """The non-empty rows of for-each-ref output, split on "\n" only. A ref name cannot hold "\n" (or any control
+    character), but it may hold U+2028 and U+0085, which str.splitlines also cuts at and str.strip/str.split() also
+    eat; each caller splits its own --format fields from the row."""
+    return [line for line in listing.split("\n") if line]
+
+
 def git(
     cwd: Path, *args: str, timeout: float | None = DEFAULT_TIMEOUT
 ) -> subprocess.CompletedProcess[str]:
@@ -327,6 +459,31 @@ def git(
     necessary rather than nice.
     """
     return run(cwd, *args, timeout=timeout, via_cwd=True)
+
+
+#: A replace ref (refs/replace/<sha>) swaps one object for another on every read, so a tip replaced by a commit
+#: whose parent is X would read as descending from X; a line "<tip> <X>" in .git/info/grafts gives the tip X as a
+#: parent the same way, and GIT_NO_REPLACE_OBJECTS does not turn grafts off. An ancestry answer gr2 acts on reads
+#: the real history: no replace refs, an empty graft file in place of info/grafts, and no commit-graph (ancestry_proc).
+REAL_HISTORY_ENV = {"GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull}
+
+
+def ancestry_proc(repo: Path, ancestor: str, descendant: str, *, via_cwd: bool = False) -> subprocess.CompletedProcess:
+    """`git merge-base --is-ancestor ancestor descendant` in the real history (replace refs, grafts and
+    commit-graph files ignored), for a caller that reports git's own stderr; rc 0 is yes, 1 is no, anything else is "could not tell". `via_cwd` as in run()."""
+    # Any graft file, even an empty one, makes git print a deprecation hint on stderr ahead of its own error. A
+    # commit-graph file (this repo's or an alternate's) stores parents of its own that git trusts over the objects, so
+    # the walk reads the commit objects instead. REAL_HISTORY_ENV goes last so a caller's GIT_GRAFT_FILE cannot win.
+    return run(repo, "-c", "advice.graftFileDeprecated=false", "-c", "core.commitGraph=false",
+               "merge-base", "--is-ancestor", ancestor, descendant,
+               env={**os.environ, **REAL_HISTORY_ENV}, via_cwd=via_cwd)
+
+
+def is_ancestor(repo: Path, ancestor: str, descendant: str, *, via_cwd: bool = False) -> bool | None:
+    """True when `ancestor` is an ancestor of `descendant` in the real history (replace refs and grafts ignored),
+    False when it is not, None when git could not tell (a missing object, a bad name, a timeout)."""
+    rc = ancestry_proc(repo, ancestor, descendant, via_cwd=via_cwd).returncode
+    return True if rc == 0 else False if rc == 1 else None
 
 
 def is_git_repo(path: Path) -> bool:

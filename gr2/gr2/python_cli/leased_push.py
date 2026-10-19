@@ -70,8 +70,8 @@ def push(repo: Path, refs: list[str], *, org: str, remote: str = "origin", atomi
     for r in refs:
         old = tracked[r]
         if old and old != local[r] and not may_rewind(r) and \
-                gitops.run(repo, "merge-base", "--is-ancestor", old, local[r]).returncode != 0:
-            kind = "rewind" if gitops.run(repo, "merge-base", "--is-ancestor", local[r], old).returncode == 0 else "rewrite"
+                gitops.is_ancestor(repo, old, local[r]) is not True:
+            kind = "rewind" if gitops.is_ancestor(repo, local[r], old) is True else "rewrite"
             raise PushRefused(r, f"{kind}: {local[r]} does not descend from the remote's {old} (allow_rewind to take it)")
     args = ["push", "--porcelain"] + (["--atomic"] if atomic else [])
     args += [f"--force-with-lease={r}:{tracked[r] or ''}" for r in refs]

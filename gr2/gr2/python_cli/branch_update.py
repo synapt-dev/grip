@@ -85,7 +85,7 @@ def update(repo: Path, into: str, remote: str = "origin") -> tuple[int, dict]:
     # Pushed means the branch of the same name on the remote is this head (the configured upstream is not
     # consulted): the merge lands on work others can already see.
     pushed = _fetch(repo, remote, branch)
-    if not pushed or gitops.run(repo, "merge-base", "--is-ancestor", head, pushed).returncode:
+    if not pushed or gitops.is_ancestor(repo, head, pushed) is not True:
         return done(EXIT_REFUSED, refused=f"unpushed: {remote} {branch} lacks {head[:12]}; push it, then run update again")
     if pushed != head:
         return done(EXIT_REFUSED, refused=f"behind_remote: {remote} {branch} is at {pushed[:12]}, past {head[:12]}; "
@@ -95,7 +95,7 @@ def update(repo: Path, into: str, remote: str = "origin") -> tuple[int, dict]:
     if not tip:
         return done(EXIT_REFUSED, refused=f"fetch_failed: {remote} {into}")
     receipt["base"] = tip
-    if gitops.run(repo, "merge-base", "--is-ancestor", tip, "HEAD").returncode == 0:
+    if gitops.is_ancestor(repo, tip, "HEAD") is True:
         return done(EXIT_DONE, "up_to_date")
     paths = _in_the_way(repo, tip)
     if paths:

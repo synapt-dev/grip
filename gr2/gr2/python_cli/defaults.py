@@ -15,12 +15,13 @@ class Unresolved(ValueError):
     """The repo does not determine this value; the message names the flag that supplies it."""
 
 
-def _git(repo: Path, *args: str) -> str | None:
-    """stdout of one git command through the shared gitops helper, or None when it fails or `repo` is not a dir."""
+def _git(repo: Path, *args: str, strip: bool = True) -> str | None:
+    """stdout of one git command through the shared gitops helper, or None when it fails or `repo` is not a dir.
+    strip=False keeps a listing whole: strip also eats a trailing U+2028 or U+0085, which a ref name may end with."""
     if not repo.is_dir():
         return None
     p = gitops.git(repo, *args)
-    return p.stdout.strip() if p.returncode == 0 else None
+    return (p.stdout.strip() if strip else p.stdout) if p.returncode == 0 else None
 
 
 def own_repo(path: Path) -> bool:
@@ -119,10 +120,13 @@ def target_branch(members: list[tuple[Path, str, str]], given: str | None) -> tu
         return given, "given"
     common: set[str] | None = None
     for repo, remote_url, base in members:
-        out = _git(repo, "ls-remote", "--symref", "--", remote_url, "HEAD", "refs/heads/*") or ""
+        out = _git(repo, "ls-remote", "--symref", "--", remote_url, "HEAD", "refs/heads/*", strip=False) or ""
         at_base, default = set(), None
-        for line in out.splitlines():
-            left, _, ref = line.partition("\t")
+        try:
+            rows = gitops.ls_remote_rows(out, symref=True)
+        except gitops.LsRemoteMalformed as exc:
+            raise Unresolved(f"into_unresolved: {repo}: {exc}; pass --into <branch>") from None
+        for left, ref in rows:
             if left.startswith("ref: refs/heads/") and ref == "HEAD":
                 default = left.removeprefix("ref: refs/heads/")
             elif left == base and ref.startswith("refs/heads/"):

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from gr2.python_cli import grip, lane_defaults, push
+from gr2.python_cli import grip, lane_defaults, push, sync_wait
 from tests.test_review_bind_verify import _fixture_remote, _grip_ws, _row
 from tests.test_review_bind_verify import _git as _bind_git
 from tests.test_store_full_mode_coverage import _vanished_covering_ref
@@ -126,3 +126,45 @@ def test_remote_head_without_a_lookalike(tmp_path):
     ws, remote, base, head = _review_remote(tmp_path, lookalike=False)
 
     assert grip._remote_head(ws, remote, "refs/heads/dev") == base
+
+
+_LINE_SEP_MAIN = "refs/heads/main\u2028/refs/heads/main"
+
+
+def _sync_remote(tmp_path: Path, *, main: bool, lookalike: bool) -> tuple[Path, sync_wait.Member, str]:
+    """A bare remote holding refs/heads/main at commit X when ``main``, and refs/heads/main<U+2028>/refs/heads/main at
+    X when ``lookalike``: ls-remote's pattern refs/heads/main tail-matches that name, and str.splitlines cuts it at
+    U+2028 into a row named refs/heads/main. Returns (workspace, member, X)."""
+    remote = tmp_path / "remote.git"
+    git(tmp_path, "init", "--bare", "-b", "main", str(remote))
+    clone = tmp_path / "clone"
+    git(tmp_path, "init", "-b", "main", str(clone))
+    configure_identity(clone)
+    git(clone, "commit", "--allow-empty", "-m", "x")
+    x = git(clone, "rev-parse", "HEAD").stdout.strip()
+    git(clone, "push", str(remote), "HEAD:refs/heads/side")
+    if main:
+        git(remote, "update-ref", "refs/heads/main", x)
+    if lookalike:
+        git(remote, "update-ref", _LINE_SEP_MAIN, x)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    return ws, sync_wait.Member("m", "m", str(remote), "main", None), x
+
+
+def test_sync_wait_read_remote_reads_a_lone_line_separator_lookalike_as_no_main(tmp_path):
+    ws, member, x = _sync_remote(tmp_path, main=False, lookalike=True)
+
+    assert sync_wait._read_remote(ws, member, 30.0) == (None, "no refs/heads/main on the remote")
+
+
+def test_sync_wait_read_remote_reads_plain_main(tmp_path):
+    ws, member, x = _sync_remote(tmp_path, main=True, lookalike=False)
+
+    assert sync_wait._read_remote(ws, member, 30.0) == (x, "")
+
+
+def test_sync_wait_read_remote_reads_main_beside_a_line_separator_lookalike(tmp_path):
+    ws, member, x = _sync_remote(tmp_path, main=True, lookalike=True)
+
+    assert sync_wait._read_remote(ws, member, 30.0) == (x, "")

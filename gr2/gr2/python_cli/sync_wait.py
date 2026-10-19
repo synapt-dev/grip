@@ -45,11 +45,13 @@ def _read_remote(workspace_root: Path, m: Member, left: float) -> tuple[str | No
     if proc.returncode != 0:
         lines = (proc.stderr or "").strip().splitlines()
         return None, lines[0] if lines else f"git ls-remote exited {proc.returncode}"
-    for line in proc.stdout.splitlines():
-        oid, _, name = line.partition("\t")
-        if name == _remote_ref(m):
-            return oid, ""
-    return None, f"no {_remote_ref(m)} on the remote"
+    try:
+        oid = gitops.ls_remote_oid(proc.stdout, _remote_ref(m))
+    except ValueError as exc:
+        return None, f"ls-remote answered a malformed listing: {exc}"
+    if oid is None:
+        return None, f"no {_remote_ref(m)} on the remote"
+    return oid, ""
 
 
 def _seen_oid(workspace_root: Path, m: Member) -> str | None:

@@ -303,18 +303,28 @@ NETWORK = frozenset({"clone", "fetch", "ls-remote", "push", "pull", "remote", "s
 
 
 def _repo_dir(args, cwd: Path | None) -> Path | None:
-    """The repository a git call runs in: the value after `-C`, `--git-dir` or `--git-dir=` in `args`, else `cwd`.
+    """The repository a git call runs in, read from git's own global options in `args` as git reads them.
 
-    A relative value is resolved against `cwd` when one is given, as git resolves it."""
-    for flag in ("-C", "--git-dir"):
-        value = None
-        if flag in args[:-1]:
-            value = args[args.index(flag) + 1]
-        elif flag == "--git-dir":
-            value = next((arg[len("--git-dir="):] for arg in args if arg.startswith("--git-dir=")), None)
-        if value is not None:
-            return cwd / value if cwd is not None else Path(value)
-    return cwd
+    Every `-C` is applied in order from `cwd`: a relative one joins the path so far, an absolute one replaces it, an
+    empty one is skipped (`git -C W -C repo` runs in W/repo). The last `--git-dir` / `--git-dir=` then applies on top."""
+    here, git_dir = cwd, None
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        word = args[i]
+        if word in _GLOBAL_WITH_VALUE and i + 1 < len(args):
+            value = args[i + 1]
+            if word == "-C" and value:
+                here = here / value if here is not None else Path(value)
+            elif word == "--git-dir":
+                git_dir = value
+            i += 2
+            continue
+        if word.startswith("--git-dir="):
+            git_dir = word[len("--git-dir="):]
+        i += 1
+    if git_dir is not None:
+        return here / git_dir if here is not None else Path(git_dir)
+    return here
 
 
 def _spawn(argv: list[str], *, cwd: Path | None, input, binary: bool, env: dict | None,

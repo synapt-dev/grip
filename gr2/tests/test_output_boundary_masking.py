@@ -440,3 +440,33 @@ def test_l3_a_failed_gh_call_masks_the_origin_token_of_the_repo_it_ran_in(monkey
     print("l3 message:", str(caught.value))
     assert TOKEN not in str(caught.value)
     assert "could not resolve remote" in str(caught.value)
+
+
+# M1-M2: git composes every -C in order (`git -C W -C repo` runs in W/repo; an absolute -C replaces the path so far),
+# so _repo_dir must read the config of the repo git really ran in. W is itself a repo whose origin carries no token,
+# and the token is echoed inside a path origin (not a scheme URL), so only the config-value layer can mask it.
+@pytest.fixture
+def outer_repo(tmp_path):
+    outer = tmp_path / "outer"
+    subprocess.run(["git", "init", "-q", str(outer)], check=True)
+    git(outer, "remote", "add", "origin", "/nonexistent/plain.git")
+    inner = outer / "repo"
+    subprocess.run(["git", "init", "-q", str(inner)], check=True)
+    git(inner, "remote", "add", "origin", PATH_URL)
+    return outer
+
+
+def test_m1_a_relative_second_dash_c_is_composed_onto_the_first(outer_repo):
+    proc = gitops.run_argv(["git", "-C", str(outer_repo), "-C", "repo", "remote", "update"])
+    print("m1 masked stderr:", repr(proc.stderr))
+    assert proc.returncode != 0
+    assert TOKEN not in proc.stderr
+    assert TOKEN not in proc.stdout
+
+
+def test_m2_an_absolute_second_dash_c_replaces_the_first(outer_repo, path_origin):
+    proc = gitops.run_argv(["git", "-C", str(outer_repo), "-C", str(path_origin), "remote", "update"])
+    print("m2 masked stderr:", repr(proc.stderr))
+    assert proc.returncode != 0
+    assert TOKEN not in proc.stderr
+    assert TOKEN not in proc.stdout

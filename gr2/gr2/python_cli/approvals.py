@@ -76,7 +76,8 @@ def _bind_record(workspace: Path, rid: str) -> dict:
     from . import review_field_tree as fd
     tree = _git(workspace, "rev-parse", rid + "^{tree}")
     try:
-        wire = fd.to_protobuf(workspace, tree)
+        with fd.BatchReader(workspace) as reader:
+            wire = fd.to_protobuf(workspace, tree, reader)
         occurrences = [{"number": n, "wire_type": wt,
                         "payload": base64.b64encode(payload).decode("ascii")}
                        for n, wt, payload in fd.fields(wire)]

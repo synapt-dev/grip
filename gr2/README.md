@@ -42,7 +42,7 @@ gr2 store commit -m "first snapshot"    # record the workspace once; lanes start
 
 `store commit` reads the workspace from the current directory, which is why the walk starts with `cd ~/ws`; from anywhere else, name it: `gr2 store commit -C ~/ws -m "..."`. It prints nothing on success; each repo it records for the first time gets one note on stderr.
 
-For a full-mode workspace, where each member is recorded as a field-commit (the skill's Recipe 2), make the store with `gr2 store init --mode full ~/ws` in place of the `store init` line above. A store keeps the mode it was made with: `--mode` on an existing store that declares another mode is refused (exit 4).
+For a full-mode workspace, where each member is recorded by its own commit as the gitlink, with its fields in the .grip/fields sidecar (the skill's Recipe 2), make the store with `gr2 store init --mode full ~/ws` in place of the `store init` line above. A store keeps the mode it was made with: `--mode` on an existing store that declares another mode is refused (exit 4).
 
 A **unit** is one worker — you, or one agent — and `default` is created for you. A **lane** is one piece of work spanning repos, with its own clones, so two lanes never step on each other:
 

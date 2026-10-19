@@ -502,7 +502,13 @@ class BatchReader(GitReader):
             self._cat = gitops.start(self.repo, "cat-file", "--batch", env=_local())
         self._cat.stdin.write(oid.encode() + b"\n")
         self._cat.stdin.flush()
-        header = self._cat.stdout.readline().split()
+        try:
+            header = self._cat.stdout.readline().split()
+        except BaseException:
+            # the same as a body read: git may be blocked writing an answer a swallowed raise never reads
+            if self._cat is not None:
+                self._abandon()
+            raise
         if len(header) == 3 and header[0] != oid.encode():
             self._abandon()  # an answer for another object, refused before any of its body is read
             raise ReviewRecordError(f"git cat-file blob failed: {oid} answered for another object")
@@ -531,7 +537,13 @@ class BatchReader(GitReader):
         if size > MAX_BLOB_BYTES:
             self._abandon()  # its body is left unread, so the stream is out of step
             raise ReviewRecordError(f"git cat-file blob failed: {oid} is {size} bytes, over the {MAX_BLOB_BYTES} byte limit")
-        data = self._cat.stdout.read(size + 1)
+        try:
+            data = self._cat.stdout.read(size + 1)
+        except BaseException:
+            # a caller may swallow this raise and close() cleanly: end git here, while it may be blocked writing
+            if self._cat is not None:
+                self._abandon()
+            raise
         body = data[:size]
         # no length or newline check proves where an answer ends: only the body hashing to the id asked does
         if data[size:] != b"\n" or _blob_id(body, oid) != oid:
@@ -547,6 +559,13 @@ class BatchReader(GitReader):
 
     def _promisor(self) -> str | None:
         return _promisor(self.repo)
+
+    def __exit__(self, kind, *exc) -> None:
+        # a raise can land with a body still on the pipe: git blocks writing it, and close() would wait forever
+        if kind is not None and self._cat is not None:
+            self._abandon()
+        else:
+            self.close()
 
     def close(self, stdout: bool = True) -> None:
         if self._cat is not None:

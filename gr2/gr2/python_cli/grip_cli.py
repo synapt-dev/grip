@@ -29,7 +29,7 @@ from . import next_steps
 from . import store_hooks
 from . import workspace_mode
 from .gitops import git, repo_dirty
-from .layout import MOVED_MARKER, grip_dir
+from .layout import FIELDS_DIR, MOVED_MARKER, grip_dir
 from .root_option import ROOT_OPTION, RootOptionalCommand
 from .spec_apply import unit_member_path, validate_grip_toml
 from ..typer_settings import group_settings
@@ -1827,7 +1827,6 @@ def _member_records(root: Path, member: dict[str, str]) -> list[str]:
     return sorted(trees)
 
 
-FIELDS_DIR = ".grip/fields"
 #: The sparse-checkout pattern that keeps the field sidecar out of the work tree. Readers read it from the object store.
 FIELDS_SPARSE_PATTERN = f"!/{FIELDS_DIR}/"
 

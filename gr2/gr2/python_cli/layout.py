@@ -50,6 +50,10 @@ GRIP_DIR = ".grip"
 #: object store). THE ONE SPELLING of it in the source, for the same reason as `GRIP_DIR`.
 MOVED_MARKER = ".grip-moved"
 
+#: The field sidecar a FULL workspace's root commit carries for each member (its record and
+#: layers, read from the object store), under `GRIP_DIR` so it spells `.grip` only once.
+FIELDS_DIR = f"{GRIP_DIR}/fields"
+
 #: The prefix every review lane control file (marker, receipt, log) starts with, so a review
 #: member key can never name one of them.
 LANE_CONTROL_PREFIX = ".grip-review"

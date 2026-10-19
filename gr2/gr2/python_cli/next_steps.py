@@ -153,10 +153,31 @@ def remote_branch_diverged() -> str:
 
 
 def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: str, head: str,
-              checks: tuple[str, ...]) -> str | None:
-    """The next command for one member's merge refusal, or None when no single command answers it."""
+              checks: tuple[str, ...], siblings: dict | None = None) -> str | None:
+    """The next command for one member's merge refusal, or None when no single command answers it. ``siblings`` maps
+    a declared-set member's name to what the gate found for it: the newest review of it at its pin in this workspace
+    (or None), its remote, its clone and its target's live head."""
     if refused.startswith("review_not_on_member_remote"):
         return f"next: gr2 review publish {_shown(workspace)} {_shown(review)} --remote {_shown(remote)}"
+    if refused.startswith("declared_set_pin_unreviewed"):
+        # The tie reads the sibling's own review on the sibling's own remote, so the answer is to publish a review of
+        # the sibling at that pin there: the one this workspace holds, with its real id and remote. With none here, the
+        # line pins one (the publish is the next line after it); with no target head to pin against, a note says so.
+        tied = re.match(r"declared_set_pin_unreviewed: (.+) is pinned at ([0-9a-f]+), ", refused)
+        found = (siblings or {}).get(tied[1]) if tied else None
+        if found is None:
+            return f"next: gr2 review merge {_shown(workspace)} {_shown(review)}"
+        if found["review"]:
+            return (f"next: gr2 review publish {_shown(workspace)} {_shown(found['review'])} "
+                    f"--remote {_shown(found['remote'])}")
+        if found.get("base"):  # pin the sibling at its pin against its target's live head; its publish comes next
+            return (f"next: gr2 review pin {_shown(workspace)} --repo {_shown(tied[1])} --remote {_shown(found['remote'])} "
+                    f"--base {_shown(found['base'])} --head {_shown(found['pin'])} --ref {_shown(found['ref'])} "
+                    f"--path {_shown(found['member_path'])} --source {_shown(found['path'])}")
+        # No live head of the target to pin against, so no pin command would run as printed: say so, not as a next.
+        return (f"note: no review of {_shown(tied[1])} at {tied[2]} is pinned in {_shown(workspace)}, and its remote "
+                f"{_shown(found['remote'])} serves no {_shown(found['ref'])} to pin it against; gr2 review pin needs that "
+                f"head as --base")
     if refused.startswith("check_set_fail"):
         # A recorded failure at these heads stays (a pass beside it does not erase it), so a rerun cannot clear it.
         return ("next: the set check failed at these heads and that failure is recorded; a rerun does not clear it. "

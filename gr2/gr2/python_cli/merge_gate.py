@@ -16,7 +16,6 @@ import json
 import os
 import subprocess
 import tempfile
-import uuid
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -32,13 +31,13 @@ def _git(repo: Path, *args: str, check: bool = True, raw: bool = False) -> str:
     return proc.stdout if raw else proc.stdout.strip()
 
 
-def _ls_remote(repo: Path, remote: str, pattern: str) -> list[tuple[str, str]]:
+def _ls_remote(repo: Path, remote: str, *patterns: str) -> list[tuple[str, str]]:
     """(oid, name) per advertised ref, split on "\n" from the raw output: str.splitlines and strip would cut a
     name at U+2028 or U+0085."""
     try:
-        return gitops.ls_remote_rows(_git(repo, "ls-remote", remote, pattern, raw=True))
+        return gitops.ls_remote_rows(_git(repo, "ls-remote", remote, *patterns, raw=True))
     except gitops.LsRemoteMalformed as exc:
-        raise RuntimeError(f"ls-remote {remote} {pattern}: {exc}") from None
+        raise RuntimeError(f"ls-remote {remote} {' '.join(patterns)}: {exc}") from None
 
 
 _plain_remote = gitops.plain_remote
@@ -131,17 +130,33 @@ def feature_moves(workspace: Path, members: list[dict], feature: str | None) -> 
     return out
 
 
-def _remote_tip(repo: Path, remote: str, branch: str) -> str | None:
-    """Fetch one remote branch into a private ref and return its commit, None when absent."""
+def _remote_tips(repo: Path, remote: str, branches: tuple[str, ...], listed: tuple[str, ...] = (),
+                 scan: str = "") -> dict[str, str | None]:
+    """One read of a remote for several exact refs: each branch's commit (its objects fetched by id) and each listed
+    ref's advertised oid, None when absent; with `scan`, also every ref advertised under that prefix, by its oid and
+    not fetched. One ls-remote and one fetch per remote, and no private ref to make or delete."""
     _plain_remote(remote)
-    if _advertised(repo, remote, f"refs/heads/{branch}") is None:
-        return None
-    staging = f"refs/dev.synapt.grip/__merge_transfers__/{uuid.uuid4().hex}"
-    try:
-        _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, f"refs/heads/{branch}:{staging}")
-        return _git(repo, "rev-parse", "--verify", f"{staging}^{{commit}}")
-    finally:
-        _git(repo, "update-ref", "-d", staging, check=False)
+    refs = tuple(f"refs/heads/{b}" for b in branches) + listed
+    hits = _ls_remote(repo, remote, *refs, *((f"{scan}*",) if scan else ()))
+    scanned = tuple(dict.fromkeys(name for _, name in hits if scan and name.startswith(scan) and name not in refs))
+    tips: dict[str, str | None] = {}
+    for ref in refs + scanned:  # ls-remote patterns also match nested refs by tail
+        exact = {oid for oid, name in hits if name == ref}
+        if len([name for _, name in hits if name == ref]) > 1:
+            raise RuntimeError(f"ls-remote: {ref} advertised more than once")
+        tips[ref] = exact.pop() if exact else None
+    wanted = sorted({tips[f"refs/heads/{b}"] for b in branches} - {None})
+    if wanted:
+        _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, *wanted)
+    for b in branches:
+        if tips[f"refs/heads/{b}"]:
+            tips[f"refs/heads/{b}"] = _git(repo, "rev-parse", "--verify", f"{tips[f'refs/heads/{b}']}^{{commit}}")
+    return tips
+
+
+def _remote_tip(repo: Path, remote: str, branch: str) -> str | None:
+    """One remote branch's commit, None when absent."""
+    return _remote_tips(repo, remote, (branch,))[f"refs/heads/{branch}"]
 
 
 def _merged_at(repo: Path, target: str, head: str) -> str | None:
@@ -197,10 +212,14 @@ def _refresh_tracking(repo: Path, remote: str, into: str) -> dict | None:
 
 _REVIEW_REF_PREFIX = "refs/dev.synapt.grip/__reviews__/"
 _REVIEW_SCAN_CAP = 200  # reviews read per member remote; over it is a named refusal, never a silent partial read
+_OID_NOT_SERVED = ("not our ref", "no such remote ref")  # git's words when a remote will not serve one wanted oid
 
 
-def _review_refs(repo: Path, remote: str) -> list[str]:
-    return [name for _, name in _ls_remote(repo, remote, f"{_REVIEW_REF_PREFIX}*") if name.startswith(_REVIEW_REF_PREFIX)]
+def _first_error(exc: Exception) -> str:
+    """git's first `fatal:` or `error:` line from a failed _git call (a warning may come first), else its first line."""
+    command, _, said = str(exc).partition(": ")
+    lines = said.split("\n")
+    return f"{command}: " + next((line for line in lines if line.startswith(("fatal:", "error:"))), lines[0])
 
 
 def _pin_tie(root: Path, declaration: declared_sets.Declaration, into: str):
@@ -218,28 +237,79 @@ def _pin_tie(root: Path, declaration: declared_sets.Declaration, into: str):
             return (f"declared_set_pin_unmeasured: {name} has no readable repository and remote here, so its pin "
                     f"{short} cannot be tied to a merged or reviewed head")
         try:
-            tip = _remote_tip(repo, remote, into)
+            tips = _remote_tips(repo, remote, (into,), scan=_REVIEW_REF_PREFIX)  # the target and every review, one read
+            tip = tips.pop(f"refs/heads/{into}")
             if tip and gitops.run(repo, "merge-base", "--is-ancestor", pin, tip).returncode == 0:
                 return None
-            refs = _review_refs(repo, remote)
-            if len(refs) > _REVIEW_SCAN_CAP:
-                return (f"declared_set_pin_unmeasured: {name}'s remote advertises {len(refs)} reviews, over the "
+            if len(tips) > _REVIEW_SCAN_CAP:
+                return (f"declared_set_pin_unmeasured: {name}'s remote advertises {len(tips)} reviews, over the "
                         f"{_REVIEW_SCAN_CAP} this gate reads; its pin {short} cannot be tied to a reviewed head")
-            for ref in refs:
-                staging = f"refs/dev.synapt.grip/__merge_transfers__/{uuid.uuid4().hex}"
+            failed: dict[str, str] = {}  # oid -> git's first line, for reviews the remote advertises but cannot serve
+            if tips:  # every review's objects in one fetch by id, read by id: no private ref to make or delete
                 try:
-                    _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, f"{ref}:{staging}")
-                    state = grip._read_repo_state(repo, staging, bind=True)
-                finally:
-                    _git(repo, "update-ref", "-d", staging, check=False)
-                for key, fields in state.items():
-                    if fields.get("commit") == pin and declaration.member_name(key, fields.get("path", "")) == name:
-                        return None
+                    _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, *sorted(set(tips.values())))
+                except RuntimeError as exc:  # one oid the remote no longer has fails the whole fetch: read the rest one by one
+                    if not any(said in str(exc) for said in _OID_NOT_SERVED):
+                        raise  # any other failure is the remote's or this clone's, not one review's: refuse with it
+                    for oid in sorted(set(tips.values())):
+                        try:
+                            _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, oid)
+                        except RuntimeError as exc:
+                            failed[oid] = _first_error(exc)
+            states: dict[str, dict] = {}
+            retracted = ""
+
+            def names(oid: str) -> bool:
+                if oid not in states:
+                    states[oid] = grip._read_repo_state(repo, oid, bind=True)
+                return any(fields.get("commit") == pin and declaration.member_name(key, fields.get("path", "")) == name
+                           for key, fields in states[oid].items())
+
+            named = [ref for ref in sorted(tips) if tips[ref] not in failed and names(tips[ref])]  # by the oid scanned
+            if named:  # a review counts only while its ref still names the pin: deleted, or moved off it, is retracted
+                now = _remote_tips(repo, remote, (), tuple(named))
+                for ref in [ref for ref in named if now[ref]]:  # any one still naming it ties; re-published counts
+                    try:
+                        if now[ref] != tips[ref]:  # moved: read the new oid, which may hold the same review
+                            _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, now[ref])
+                        if names(now[ref]):
+                            return None
+                    except (RuntimeError, grip.GripCorruptError):
+                        continue  # the new oid does not read as a review: moved off the pin
+                retracted = ", ".join(next_steps._shown(ref) for ref in named)
+            if failed:  # no review that read names the pin, and one that did not read might: unmeasured, by ref
+                lost = ", ".join(next_steps._shown(ref) for ref in sorted(tips) if tips[ref] in failed)
+                said = "".join(c if c.isprintable() else ascii(c)[1:-1] for c in next(iter(failed.values())))
+                return (f"declared_set_pin_unmeasured: {name}'s pin {short} is named by no review its remote serves, "
+                        f"and these reviews could not be read from it: {lost}: {said}")
         except (RuntimeError, subprocess.SubprocessError, OSError, grip.GripCorruptError) as exc:
             return f"declared_set_pin_unmeasured: {name}'s pin {short} could not be read from its remote: {exc}"
+        tie.siblings[name] = {"review": _local_review_of(root, declaration, name, pin), "remote": remote, "path": str(repo),
+                             "base": tip, "ref": f"refs/heads/{into}", "member_path": info["path"], "pin": pin}
+        if retracted:
+            return (f"declared_set_pin_unreviewed: {name} is pinned at {short}, which is not merged into {into}, and "
+                    f"the reviews that named it were retracted from its remote (ref deleted or moved): {retracted}")
         return (f"declared_set_pin_unreviewed: {name} is pinned at {short}, which is neither merged into {into} nor "
                 f"named by a review published on its remote")
+    tie.siblings = {}  # name -> its local review at the pin (or None), remote, clone and target head, for the next line
     return tie
+
+
+def _local_review_of(root: Path, declaration: declared_sets.Declaration, name: str, pin: str) -> str | None:
+    """The newest review pinned in this workspace that names member `name` at exactly `pin`, as gr:<sha>; None when
+    there is none, or the store cannot be read (the next line then names what is missing)."""
+    try:
+        binds = grip.list_review_binds(root)
+    except (grip.GripCorruptError, grip.GripInitError, grip.ReviewStoreAbsent, OSError, subprocess.SubprocessError):
+        return None
+    for commit, _ in reversed(binds):
+        try:
+            state = grip._read_repo_state(root, commit, bind=True)
+        except (grip.GripCorruptError, OSError, subprocess.SubprocessError):
+            continue
+        if any(f.get("commit") == pin and declaration.member_name(k, f.get("path", "")) == name for k, f in state.items()):
+            return f"gr:{commit}"
+    return None
 
 
 def _toplevel(repo: Path) -> Path | None:
@@ -437,6 +507,7 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                                          "be parsed or carries URL userinfo; pin again from a remote without it and "
                                          "use a credential helper", "members": []}
     rows: list[dict] = []
+    siblings: dict[str, dict] = {}  # member key -> its declared set's tie findings, for the next lines
     root = Path(workspace).resolve()
     try:
         declaration = declared_sets.read(root)  # the committed grip.toml: a set is declared once, for every workspace
@@ -469,9 +540,9 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
             continue
         selected.add(m["key"])
         try:
-            target = _remote_tip(repo, m["remote"], into)
-            feat = _remote_tip(repo, m["remote"], feature)
-            published = _advertised(repo, m["remote"], f"refs/dev.synapt.grip/__reviews__/v1/{review_id}")
+            review_ref = f"refs/dev.synapt.grip/__reviews__/v1/{review_id}"
+            tips = _remote_tips(repo, m["remote"], (into, feature), (review_ref,))
+            target, feat, published = tips[f"refs/heads/{into}"], tips[f"refs/heads/{feature}"], tips[review_ref]
             merged = _merged_at(repo, target, m["head"]) if target else None
             ancestor = _git(repo, "merge-base", m["head"], target) if target else ""
         except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
@@ -557,8 +628,9 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                 if declared["status"] == "fail" and declared["reason"] != "required_check_failed":
                     why = f"declared_set_unmeasured: {declared['reason']}"
                 else:
-                    why = declared_sets.judge(root, declaration, dset, member_name, m["head"], declared["records"],
-                                              _pin_tie(root, declaration, into))
+                    tie = _pin_tie(root, declaration, into)
+                    why = declared_sets.judge(root, declaration, dset, member_name, m["head"], declared["records"], tie)
+                    siblings[m["key"]] = tie.siblings
                 row["declared_set"] = {"set": dset.name, "refused": why}
                 if why:
                     row["refused"], row["state"] = why, None
@@ -615,7 +687,8 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
             if r["refused"]:
                 step = next_steps.merge_row(r["refused"], workspace=str(root), review="gr:" + view["id"].removeprefix("gr:"),
                                             remote=m["remote"], path=str((workspace / m["path"]).resolve()),
-                                            head=m["head"], checks=tuple(required_checks))
+                                            head=m["head"], checks=tuple(required_checks),
+                                            siblings=siblings.get(m["key"], {}))
                 if step:
                     r["next"] = step
             expected, observed = r.pop("_heads", (None, None))
@@ -760,7 +833,8 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         if r["refused"]:
             step = next_steps.merge_row(r["refused"], workspace=str(root), review="gr:" + view["id"].removeprefix("gr:"),
                                         remote=m["remote"], path=str((workspace / m["path"]).resolve()),
-                                        head=m["head"], checks=tuple(required_checks))
+                                        head=m["head"], checks=tuple(required_checks),
+                                        siblings=siblings.get(m["key"], {}))
             if step:
                 r["next"] = step
 

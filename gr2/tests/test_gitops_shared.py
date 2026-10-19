@@ -313,6 +313,8 @@ def _one_member_merge(monkeypatch, tmp_path, merge_tree):
     monkeypatch.setattr(merge_gate, "_store_inside", lambda *a: True)
     monkeypatch.setattr(merge_gate, "_remote_tip", lambda p, r, b: base if b == "main" else head)
     monkeypatch.setattr(merge_gate, "_advertised", lambda *a: rid)
+    monkeypatch.setattr(merge_gate, "_remote_tips", lambda p, r, branches, listed=(): {
+        **{f"refs/heads/{b}": base if b == "main" else head for b in branches}, **{x: rid for x in listed}})
     monkeypatch.setattr(merge_gate, "_merged_at", lambda *a: None)
     monkeypatch.setattr(merge_gate, "_git", lambda *a, **k: base)
     monkeypatch.setattr(merge_gate.check_records, "read_remote_check",

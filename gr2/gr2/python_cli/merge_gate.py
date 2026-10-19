@@ -859,16 +859,19 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
         if merged:
             r["merged"] = merged
         final.append(state)
-    # A partial whose refused member's feature moved: its old pin cannot merge it, so its next is the new pin alone.
-    # The members the run left unpushed ride on the first such next only, so no two printed lines pin them twice.
+    # A partial whose refused member's feature or target moved: its old pin cannot merge it, and `review update` pins
+    # every member, so its next is the new pin alone (on the observed target when the target moved). The members the
+    # run left unpushed ride on the first such next only, so no two printed lines pin them twice.
     landed = [r["key"] for r in rows if r.get("final") == "merged"]
     waiting_given = False
     for r, m in zip(rows, view["members"]):
-        if landed and (r["refused"] or "").startswith("feature_moved") and r.get("final") == "unmerged":
+        refused = r["refused"] or ""
+        target_moved = refused.startswith(("base_moved", "target_moved_at_push"))
+        if landed and (refused.startswith("feature_moved") or target_moved) and r.get("final") == "unmerged":
             r["next"] = next_steps._partial_moved_row(
                 workspace=str(root), key=m["key"], member_path=m["path"], path=str((workspace / m["path"]).resolve()),
-                remote=m["remote"], base=m["base"], into=into, feature=feature, landed=landed,
-                approvals=required_approvals,
+                remote=m["remote"], base=r["_heads"][1] if target_moved else m["base"], into=into, feature=feature,
+                landed=landed, approvals=required_approvals, moved="target" if target_moved else "feature",
                 waiting=[{"key": w["key"], "member_path": w["path"], "path": str((workspace / w["path"]).resolve()),
                           "remote": w["remote"], "base": w["base"], "head": w["head"]}
                          for o, w in zip(rows, view["members"])

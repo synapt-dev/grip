@@ -147,7 +147,10 @@ def test_second_member_lease_lost_leaves_the_first_merged_and_names_both(slice2,
     assert rows["beta"]["final"] == "unmerged", rows["beta"]
     assert rows["beta"]["refusal"] == {"code": "target_moved_at_push", "member": "beta", "expected": b["base"],
                                        "observed": moved[str(b["remote"])]}, rows["beta"]
-    assert "gr2 review update" in rows["beta"]["next"], rows["beta"]
+    # alpha landed, so update would pin it again and refuse: the next merges the observed target and pins beta alone.
+    seen = moved[str(b["remote"])]
+    assert "gr2 review update" not in rows["beta"]["next"], rows["beta"]
+    assert f"merge --no-edit {seen}" in rows["beta"]["next"] and f"--base {seen}" in rows["beta"]["next"], rows["beta"]
 
 
 def test_first_member_push_rejected_names_git_escaped_and_pushes_no_further_member(slice2, monkeypatch):

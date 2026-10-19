@@ -302,8 +302,9 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
 
 
 def _partial_moved_row(*, workspace: str, key: str, member_path: str, path: str, remote: str, base: str, into: str,
-                      feature: str, landed: list[str], approvals: int | None, waiting: list[dict] = ()) -> str:
-    """The refused member's next on a PARTIAL merge whose feature branch moved: the old pin cannot merge it (the
+                      feature: str, landed: list[str], approvals: int | None, waiting: list[dict] = (), moved: str = "feature") -> str:
+    """The refused member's next on a PARTIAL merge whose feature branch moved (or, with moved="target", whose target
+    moved, base being the observed target): the old pin cannot merge it (the
     check over the moved set does not move the pin), and a pin over every member refuses on the merged ones' old
     base, so the recovery is a new pin of this member alone, merged as its own review. Members the run left unpushed
     (`waiting`: key/path/member_path/remote/base/head) follow, each pinned alone at its pinned head, which is already
@@ -324,6 +325,14 @@ def _partial_moved_row(*, workspace: str, key: str, member_path: str, path: str,
               for w in waiting]
     then = (f" (then {', '.join(_shown(w['key']) for w in waiting)}, not pushed after the refusal, each pinned alone "
             "at its pinned head)") if waiting else ""
+    if moved == "target":
+        # The target moved, not the feature: `review update` pins every member and refuses on the merged ones, so the
+        # member merges the observed target in (committed, not pushed) and the new pin's base is that target.
+        return (f"next: {', '.join(_shown(k) for k in landed)} already merged and {_shown(into)} moved on "
+                f"{_shown(key)}'s remote, so this review cannot merge {_shown(key)}; pin {_shown(key)} alone on a new "
+                f"head{then}. First merge the target into the member and commit it, without pushing: git -C "
+                f"{_shown(path)} fetch {_shown(remote)} {_shown('refs/heads/' + into)} && git -C {_shown(path)} merge "
+                f"--no-edit {_shown(base)}; then, with <your new commit> its sha, run: {' && '.join(steps)}")
     return (f"next: {', '.join(_shown(k) for k in landed)} already merged and {_shown(key)}'s feature branch moved, so "
             f"this review cannot merge {_shown(key)}; pin {_shown(key)} alone on a new head{then}. First bring the "
             f"branch up and commit your change: git -C {_shown(path)} pull --ff-only {_shown(remote)} "

@@ -1550,8 +1550,8 @@ def sync_wait(
     workspace_root: Optional[Path] = typer.Argument(None),
     all_members: bool = typer.Option(False, "--all-members", help="Wait on every member the workspace declares"),
     until: str = typer.Option("any", "--until", help="any: return when one member moves; all: when every member has"),
-    timeout: float = typer.Option(1800.0, "--timeout", help="Seconds before giving up (exit 6)"),
-    interval: float = typer.Option(30.0, "--interval", help="Seconds between polls (>= 1)"),
+    timeout: float = typer.Option(1800.0, "--timeout", help="Seconds before giving up (exit 6); names when each unmoved member was last read"),
+    interval: float = typer.Option(30.0, "--interval", help="Seconds from the end of one poll to the start of the next (>= 1); a poll starts early enough to end by --timeout"),
 ) -> None:
     """Wait until any or all members move on their remote: one ls-remote per member per poll. Exit 0 met, 6 timeout, 3 refused, 7 unreadable."""
     from . import sync_wait as sync_wait_ops

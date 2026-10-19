@@ -254,6 +254,13 @@ def push_lane(
     root push later refuses."""
     from gr2.prototypes import lane_workspace_prototype as lane_proto
 
+    with lane_proto.lane_read_scope():
+        return _push_lane(workspace_root, owner_unit, lane_name, remote, set_upstream, force_with_lease)
+
+
+def _push_lane(workspace_root, owner_unit, lane_name, remote, set_upstream, force_with_lease) -> list[LaneRepoPush]:
+    from gr2.prototypes import lane_workspace_prototype as lane_proto
+
     from .commit import _lane_repo_targets
 
     doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)

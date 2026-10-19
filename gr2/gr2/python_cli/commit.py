@@ -176,6 +176,7 @@ def _lane_repo_targets(
     return [(repo, lane_proto.lane_repo_root(workspace_root, owner_unit, lane_name, repo)) for repo in repos]
 
 
+@lane_proto.lane_read_scope()
 def commit_lane(
     workspace_root: Path,
     owner_unit: str,

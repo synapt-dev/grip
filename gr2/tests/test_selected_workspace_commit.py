@@ -197,3 +197,41 @@ def test_snapshot_metadata_comes_from_committed_native_members(selected_workspac
             assert row['path'] == member['path']
             assert row['remote'] == str(remote)
             assert row['commit'] == row['base'] == member['pin']
+
+
+def _commit_paths_lane(ws, commits, rows, name):
+    result = runner.invoke(app.app, ['lane','create',str(ws),'a',name,'--workspace-commit',commits[1]])
+    assert result.exit_code == 0, result.output
+    root = ws/'agents/a/lanes'/name
+    for member in rows[1]:
+        path = root/member['path']
+        _git(path,'config','user.name','test');_git(path,'config','user.email','test@example.invalid')
+    return root
+
+
+def test_lane_commit_reads_native_members_once_per_command(selected_workspace, monkeypatch):
+    from gr2.python_cli.commit import commit_lane
+    ws, _, commits, rows = selected_workspace
+    root = _commit_paths_lane(ws, commits, rows, 'once')
+    calls = []
+    real = grip_cli._native_members
+    monkeypatch.setattr(grip_cli, '_native_members', lambda *a, **k: calls.append(a) or real(*a, **k))
+    for n, word in enumerate(['one', 'two']):
+        for member in rows[1]:
+            (root/member['path']/'payload').write_text(word+' '+member['name'])
+            _git(root/member['path'],'add','payload')
+        receipt = commit_lane(ws, 'a', 'commit '+word, lane_name='once')
+        assert all(r.status == 'committed' for r in receipt.results)
+        # Once in each command: a read kept from the first command would make the second count zero.
+        assert len(calls) == n + 1
+
+
+def test_lane_read_scope_rereads_a_rewritten_lane_record(selected_workspace):
+    ws, _, commits, rows = selected_workspace
+    _commit_paths_lane(ws, commits, rows, 'rewrite')
+    path = lanes.lane_file(ws, 'a', 'rewrite')
+    with lanes.lane_read_scope():
+        first = lanes.load_lane_doc(ws, 'a', 'rewrite')
+        assert 'rewritten' not in first
+        path.write_text('rewritten = "yes"\n'+path.read_text())
+        assert lanes.load_lane_doc(ws, 'a', 'rewrite')['rewritten'] == 'yes'

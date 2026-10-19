@@ -421,3 +421,27 @@ def test_a_record_field_that_git_would_act_on_as_an_option_is_refused_at_the_rea
 
     with pytest.raises(mft.FieldTreeError, match=field):
         mft.read(tmp_path, tree)
+
+
+def test_materialize_in_a_plain_clone_hides_the_sidecar_before_any_store_commit(tmp_path):
+    """A plain clone checks .grip/fields out; materialize adds the sidecar pattern with the member ones, so the clone
+    does not keep the sidecar on disk until its first store commit."""
+    from gr2.python_cli import grip_cli
+
+    root = _full_store(tmp_path)
+    _advance(root, "alpha", push=False)
+    assert gr2(root, "commit", "-m", "alpha unpushed").returncode == 0
+    bare = tmp_path / "root.git"
+    git(tmp_path, "init", "--bare", str(bare))
+    assert git(root, "push", str(bare), "HEAD:refs/heads/main", check=False).returncode == 0
+    git(tmp_path, "clone", "--branch", "main", str(bare), "plain")
+    plain = tmp_path / "plain"
+    configure_identity(plain)
+    assert (plain / ".grip" / "fields").is_dir()   # the precondition: a plain clone checks the sidecar out
+
+    made = gr2(plain, "materialize")
+
+    assert made.returncode == 0, f"{made.stdout}\n{made.stderr}"
+    assert not (plain / ".grip" / "fields").exists()
+    sparse = plain / git(plain, "rev-parse", "--git-path", "info/sparse-checkout").stdout.strip()
+    assert grip_cli.FIELDS_SPARSE_PATTERN in sparse.read_text(encoding="utf-8").splitlines()

@@ -3303,9 +3303,10 @@ def _own_member_paths(root: Path, members: list[dict[str, str]]) -> None:
     pattern '!/<path>' (no trailing slash: a gitlink is a file entry, and a slash pattern matches directories only),
     and sets sparse.expectFilesOutsideOfPatterns so git does not clear skip-worktree when the member's checkout appears
     there. Both are set BEFORE any member is cloned in. info/exclude does nothing here: the gitlink is tracked. The
-    patterns are ADDED to the ones the root's owner set, never replacing them. Measured on git 2.50."""
+    patterns are ADDED to the ones the root's owner set, never replacing them. The `.grip/fields/` pattern goes in with
+    them, so a plain clone hides the sidecar at materialize, not only at its first store commit. Measured on git 2.50."""
     _store_git(root, "config", "sparse.expectFilesOutsideOfPatterns", "true")
-    patterns = [f"!/{m['path'].strip('/')}" for m in members]
+    patterns = [f"!/{m['path'].strip('/')}" for m in members] + [FIELDS_SPARSE_PATTERN]
     if _add_sparse_patterns(root, patterns):
         _store_git(root, "sparse-checkout", "reapply")
 

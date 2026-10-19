@@ -379,3 +379,68 @@ def test_p4_slow_reads_at_the_deadline_are_not_failed_reads(tmp_path, monkeypatc
     assert result.exit_code == 6, result.output
     assert "failed" not in result.output, result.output
     assert "not moved as of the last read: alpha at 114s, gamma at 102s; not read before the deadline: beta" in result.output, result.output
+
+
+def _beta_from(monkeypatch, ws: Path, *, at: float, stall: bool, timeout: str):
+    """Reads take 0.5 s on a fake clock; from the time at, beta's read fails: at once, or (stall) only when its bound,
+    the time left to the deadline, runs out."""
+    now, real = [0.0], gitops.git
+
+    def read(cwd, *args, **kw):
+        if "ls-remote" not in args:
+            return real(cwd, *args, **kw)
+        if "/beta.git" in args[-2] and now[0] >= at:
+            if stall:
+                now[0] += kw["timeout"]
+                return subprocess.CompletedProcess(args, 128, "", f"fatal: git timed out after {kw['timeout']:g}s")
+            return subprocess.CompletedProcess(args, 128, "", "fatal: repository not found")
+        now[0] += 0.5
+        return real(cwd, *args, **kw)
+
+    def sleep(s: float) -> None:
+        now[0] += s
+
+    monkeypatch.setattr(gitops, "git", read)
+    monkeypatch.setattr(sync_wait, "time", SimpleNamespace(sleep=sleep, monotonic=lambda: now[0]))
+    return CliRunner().invoke(app, ["sync", "wait", str(ws), "--all-members", "--until", "all",
+                                    "--timeout", timeout, "--interval", "1"])
+
+
+def test_p5_a_fast_second_failure_in_the_last_poll_is_unreadable_not_cut(tmp_path, monkeypatch):
+    ws, _ = _workspace(tmp_path)
+    result = _beta_from(monkeypatch, ws, at=2.0, stall=False, timeout="4")
+    assert result.exit_code == 7, result.output
+    assert "unreadable: beta fatal: repository not found" in result.output, result.output
+
+
+def test_p7_timeout_zero_reports_the_start_reads(tmp_path, monkeypatch):
+    ws, _ = _workspace(tmp_path)
+    result = _timed(monkeypatch, ws, "all", per_read=0.05, timeout="0", interval="1")
+    assert result.exit_code == 6, result.output
+    assert "timeout after 0s: all not met; not moved as of the last read: alpha at 0.2s, beta at 0.2s, gamma at 0.2s" in result.output, result.output
+
+
+def test_p8_a_cut_read_after_a_failed_read_keeps_the_failure(tmp_path, monkeypatch):
+    ws, _ = _workspace(tmp_path)
+    now, real, beta = [0.0], gitops.git, []
+
+    def read(cwd, *args, **kw):
+        if "ls-remote" not in args:
+            return real(cwd, *args, **kw)
+        if "/beta.git" in args[-2] and now[0] >= 2.0:
+            beta.append(now[0])
+            if len(beta) == 1:
+                now[0] += 0.5
+                return subprocess.CompletedProcess(args, 128, "", "fatal: repository not found")
+            now[0] += kw["timeout"]
+            return subprocess.CompletedProcess(args, 124, "", f"git timed out after {kw['timeout']}s")
+        now[0] += 0.5
+        return real(cwd, *args, **kw)
+
+    monkeypatch.setattr(gitops, "git", read)
+    monkeypatch.setattr(sync_wait, "time", SimpleNamespace(sleep=lambda s: now.__setitem__(0, now[0] + s), monotonic=lambda: now[0]))
+    result = CliRunner().invoke(app, ["sync", "wait", str(ws), "--all-members", "--until", "all", "--timeout", "5", "--interval", "1"])
+    assert len(beta) == 2, (beta, result.output)
+    assert result.exit_code == 6, result.output
+    assert "last read failed: beta (fatal: repository not found)" in result.output, result.output
+    assert "not read before the deadline" not in result.output, result.output

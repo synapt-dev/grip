@@ -56,6 +56,11 @@ def _read_remote(workspace_root: Path, m: Member, left: float) -> tuple[str | No
     return oid, ""
 
 
+def _timed_out(why: str) -> bool:
+    """git's own timeout (gitops' expiry note), not an answer from the remote such as "repository not found"."""
+    return why.removeprefix("fatal: ").startswith("git timed out after ")
+
+
 def _seen_oid(workspace_root: Path, m: Member) -> str | None:
     checkout = workspace_root / m.path
     if not m.ref or not (checkout / ".git").exists():
@@ -115,16 +120,16 @@ def wait(
     dur, last, cut = max(clock() - t0, 0.1), False, set()
     while True:
         began, need, opening = clock(), dur, bool(first)
-        for m in members:
+        # A member whose last read failed is read first: its next read decides the wait, so the deadline must not cut it.
+        for m in sorted(members, key=lambda m: m.name not in failed):
             if m.name in moved:
                 continue
             if m.name not in first and clock() >= deadline:
                 continue  # no time left to start a read: the member keeps its last read
             fresh, left = m.name not in first, deadline - clock()
             oid, why = _read_remote(workspace_root, m, left) if fresh else (first.pop(m.name), "")
-            if oid is None and left < need:
-                cut.add(m.name)  # started with less than a poll's time left, so the deadline cut it: not a failed read
-                failed.pop(m.name, None)
+            if oid is None and left < need and _timed_out(why):
+                cut.add(m.name)  # git's own timeout on a starved bound: the deadline cut it, not a failed read; an earlier failure stands
                 continue
             cut.discard(m.name)
             if oid is None:
@@ -142,7 +147,7 @@ def wait(
         if (until == "any" and moved) or len(moved) == len(members):
             echo(f"met: {until}: moved {', '.join(moved)}")
             return EXIT_MET
-        # The next poll starts --interval after this one, or earlier, so that a poll as long as this one (or the start
+        # The next poll starts --interval after this one ENDS, or earlier, so that a poll as long as this one (or the start
         # reads) ends by the deadline; a poll at the deadline would read nothing.
         dur, left = max(dur if opening else 0.0, clock() - began, 0.1), deadline - clock()
         if last or left <= 0:

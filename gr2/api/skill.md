@@ -22,7 +22,7 @@ Everything an operator needs for the jobs below is on this page, and the referen
 | show members, pins and record state | `gr2 store status` (workspace root) |
 | push the record to one address | `gr2 store push --to <bare repo>` (workspace root) |
 | rebuild every member from a record | `git clone <bare repo> <dest>`, then `gr2 store materialize` (in `<dest>`) |
-| pin a review over one or more members | `gr2 review pin --rows-json rows.json` (workspace root) |
+| pin a review over one or more members | `gr2 review pin <workspace>` (rows inferred from each member checkout ahead of the workspace pin); `--rows-json rows.json` only to pin a subset or a hand-picked base |
 | publish, stamp, check, merge a review | `gr2 review publish`, `gr2 review stamp`, `gr2 check run`, `gr2 review merge` (see the review flow below) |
 
 ## Recipes: whole jobs, one script each

@@ -10,6 +10,11 @@ G1 an ls-remote refusal (grip._remote_ref_matches, _head_present_on_remote, _rem
    a token in its userinfo carries the token in neither its subject nor its detail;
 G2 a token that straddles the 120-character cut leaves no prefix in the detail (masking runs before the cut);
 G3 a plain remote name and git's plain stderr are shown unchanged.
+C1 a failed clone (run_argv stubbed, rc 128) comes back with git's echoed token masked, returncode and args unchanged;
+C2 a real failed clone of a URL with a query token shows no token in its stderr;
+C3 a clone that exits 0 comes back byte-identical;
+C4 a binary clone comes back untouched, even when it fails;
+C5 clone_repo's SystemExit shows no token in the stderr part of its message.
 """
 from __future__ import annotations
 
@@ -130,3 +135,56 @@ def test_g3_a_plain_remote_name_and_stderr_are_shown_unchanged(monkeypatch, tmp_
     refused = ls_remote_refusal(monkeypatch, tmp_path, call, "origin", stderr)
     assert refused.observed == stderr
     assert refused.expected == ("refs/heads/main" if name == "_remote_ref_matches" else "origin")
+
+
+CLONE_URL = f"https://u:{TOKEN}@h/x.git"
+REFUSED_URL = f"https://127.0.0.1:9/x.git?access_token={TOKEN}"
+
+
+def stub_clone(monkeypatch, returncode: int, stderr):
+    calls = []
+
+    def ran(argv, **kwargs):
+        calls.append(kwargs)
+        return subprocess.CompletedProcess(argv, returncode, b"" if kwargs.get("binary") else "", stderr)
+
+    monkeypatch.setattr(gitops, "run_argv", ran)
+    return calls
+
+
+def test_c1_a_failed_clone_masks_the_echoed_token(monkeypatch, tmp_path):
+    stub_clone(monkeypatch, 128, f"Cloning into 'x'...\nfatal: unable to access '{CLONE_URL}/': 403\n")
+    proc = gitops.clone(CLONE_URL, str(tmp_path))
+    assert TOKEN not in proc.stderr
+    assert proc.returncode == 128
+    assert proc.args == ["git", "clone", CLONE_URL, str(tmp_path)]
+
+
+def test_c2_a_real_failed_clone_shows_no_token(tmp_path):
+    proc = gitops.clone("--", REFUSED_URL, str(tmp_path / "x"))
+    print("c2 masked stderr:", repr(proc.stderr))
+    assert proc.returncode != 0
+    assert TOKEN not in proc.stderr
+
+
+def test_c3_a_clone_that_exits_zero_is_unchanged(monkeypatch, tmp_path):
+    stub_clone(monkeypatch, 0, "Cloning into 'x'...\n")
+    assert gitops.clone("--", CLONE_URL, str(tmp_path)).stderr == "Cloning into 'x'...\n"
+
+
+def test_c4_a_binary_clone_is_untouched(monkeypatch, tmp_path):
+    raw = f"fatal: unable to access '{CLONE_URL}/': 403".encode()
+    stub_clone(monkeypatch, 128, raw)
+    proc = gitops.clone("--", CLONE_URL, str(tmp_path), binary=True)
+    assert proc.stderr is raw
+    assert proc.returncode == 128
+
+
+def test_c5_clone_repo_shows_no_token_in_its_stderr_part(tmp_path):
+    """Only the stderr part (after the first newline) is checked: the subject line still names the URL as given,
+    and masking that subject is the next change, not this one."""
+    with pytest.raises(SystemExit) as caught:
+        gitops.clone_repo(REFUSED_URL, tmp_path / "x")
+    message = str(caught.value)
+    assert "\n" in message
+    assert TOKEN not in message.split("\n", 1)[1]

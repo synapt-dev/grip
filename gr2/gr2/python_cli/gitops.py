@@ -351,8 +351,13 @@ def run_argv(argv: list[str], *, cwd: Path | None = None, input: str | bytes | N
 def clone(*args: str, cwd: Path | None = None, binary: bool = False, env: dict | None = None,
           timeout: float | None = None) -> subprocess.CompletedProcess:
     """`git clone <args>`: the one place gr2 clones. Unbounded by default, because a clone's
-    duration scales with the repository, not with anything gr2 controls."""
-    return run_argv(["git", "clone", *args], cwd=cwd, binary=binary, env=env, timeout=timeout)
+    duration scales with the repository, not with anything gr2 controls. A failed text clone's stderr comes back
+    masked as shown_git_text masks it, because every caller puts it in a message as it is."""
+    proc = run_argv(["git", "clone", *args], cwd=cwd, binary=binary, env=env, timeout=timeout)
+    if proc.returncode == 0 or binary or not proc.stderr:
+        return proc
+    return subprocess.CompletedProcess(proc.args, proc.returncode, proc.stdout,
+                                       shown_git_text(("clone", *args), proc.stderr, cwd))
 
 
 def logical_argv(argv) -> list[str]:

@@ -411,11 +411,13 @@ def resolve_sources_from_pins(
                 review.gitops.positional(str(local), "path")
             except RuntimeError as exc:
                 raise OpenGrReviewError(f"local source for {pin.key!r}: {exc}") from exc
-            fetched = git(mirror, "fetch", "--quiet", "--", str(Path(local)), pin.head)
+            fetch_args = ("fetch", "--quiet", "--", str(Path(local)), pin.head)
+            fetched = git(mirror, *fetch_args)
             if fetched.returncode != 0:
+                said = review.gitops.shown_git_text(fetch_args, fetched.stderr.strip() or fetched.stdout.strip(), mirror)
                 raise OpenGrReviewError(
                     f"cannot top up review mirror for {pin.key!r} from local source "
-                    f"{local!r}: {fetched.stderr.strip() or fetched.stdout.strip()}"
+                    f"{review.gitops._shown_arg(str(local))!r}: {said}"
                 )
             git(mirror, "update-ref", f"refs/localsrc/{pin.key}/head", pin.head)
         for label, sha in (("base", pin.base), ("head", pin.head)):

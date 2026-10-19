@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlsplit
 
+from . import gitops
+
 
 @dataclass(frozen=True)
 class PRRef:
@@ -367,7 +369,7 @@ class GitHubAdapter:
                 check=False,
             )
         if proc.returncode != 0:
-            raise AdapterError(proc.stderr.strip() or proc.stdout.strip() or "gh pr create failed")
+            raise AdapterError(gitops.shown_git_text((), proc.stderr.strip() or proc.stdout.strip() or "gh pr create failed", Path.cwd()))
         url = proc.stdout.strip()
         return PRRef(
             repo=request.repo,
@@ -422,7 +424,7 @@ class GitHubAdapter:
             check=False,
         )
         if proc.returncode != 0:
-            raise AdapterError(proc.stderr.strip() or proc.stdout.strip() or "gh pr merge failed")
+            raise AdapterError(gitops.shown_git_text((), proc.stderr.strip() or proc.stdout.strip() or "gh pr merge failed", Path.cwd()))
 
         # `gh pr merge` is silent on successful non-interactive merges. Read
         # the immutable PR record rather than reconstructing a receipt from

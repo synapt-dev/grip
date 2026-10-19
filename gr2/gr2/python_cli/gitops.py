@@ -198,10 +198,28 @@ def credential_values(argv, cwd: Path | None = None) -> frozenset[str]:
 
 
 def _masked(text: str, secrets: frozenset[str]) -> str:
-    """`text` with every known credential value replaced by the placeholder, longest first."""
-    for value in sorted(secrets, key=len, reverse=True):
+    """`text` with every known credential value replaced by the placeholder, longest first, then every run
+    that DECODES to a value: each character written as itself or as its percent-encoded UTF-8 bytes, hex in
+    either case, so an echo in an encoding credential_values did not build is masked too."""
+    ordered = sorted(secrets, key=len, reverse=True)
+    for value in ordered:
         text = text.replace(value, _CREDENTIAL_SHOWN)
+    if "%" not in text:
+        return text
+
+    def encoded(char: str) -> str:
+        hexed = (f"{byte:02X}" for byte in char.encode("utf-8", "surrogatepass"))
+        return "".join("%" + "".join(f"[{d}{d.lower()}]" if d.isalpha() else d for d in pair) for pair in hexed)
+
+    for value in ordered:
+        pattern = re.compile("".join(f"(?:{re.escape(char)}|{encoded(char)})" for char in value))
+        text = pattern.sub(_CREDENTIAL_SHOWN, text)
     return text
+
+
+def shown_git_text(args, text: str, cwd: Path | None = None) -> str:
+    """git's output for a call run with `args` (in `cwd`) as GitError would show it, for a caller that puts it in its own message."""
+    return _masked(_shown_stderr(args, text), credential_values(args, cwd))
 # git's own rule for an scp-form address: a colon before the first slash (so `./a:b` stays a local path)
 _SCP_ADDRESS = re.compile(r"[^/]*:")
 
@@ -280,16 +298,56 @@ def _child_env(env: dict | None) -> dict | None:
     return child
 
 
+#: The git commands that talk to a remote, whose failure output can carry a URL with a credential in it.
+NETWORK = frozenset({"clone", "fetch", "ls-remote", "push", "pull", "remote", "submodule"})
+
+
+def _repo_dir(args, cwd: Path | None) -> Path | None:
+    """The repository a git call runs in, read from git's own global options in `args` as git reads them.
+
+    Every `-C` is applied in order from `cwd`: a relative one joins the path so far, an absolute one replaces it, an
+    empty one is skipped (`git -C W -C repo` runs in W/repo). The last `--git-dir` / `--git-dir=` then applies on top."""
+    here, git_dir = cwd, None
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        word = args[i]
+        if word in _GLOBAL_WITH_VALUE and i + 1 < len(args):
+            value = args[i + 1]
+            if word == "-C" and value:
+                here = here / value if here is not None else Path(value)
+            elif word == "--git-dir":
+                git_dir = value
+            i += 2
+            continue
+        if word.startswith("--git-dir="):
+            git_dir = word[len("--git-dir="):]
+        i += 1
+    if git_dir is not None:
+        return here / git_dir if here is not None else Path(git_dir)
+    return here
+
+
 def _spawn(argv: list[str], *, cwd: Path | None, input, binary: bool, env: dict | None,
            timeout: float | None, raise_timeout: bool) -> subprocess.CompletedProcess:
     """The one place gr2 starts git: an expiry is rc 124 with empty output unless the caller asks for the raise.
 
-    A clone is never bounded, whichever helper asked for it: its duration scales with the repository."""
-    if command_of(argv) == "clone":
+    A clone is never bounded, whichever helper asked for it: its duration scales with the repository.
+    A failed text call of a NETWORK command comes back with its stdout and stderr masked as shown_git_text masks
+    them, because callers put git's output in a message as it is (often `stderr or stdout`)."""
+    command = command_of(argv)
+    if command == "clone":
         timeout = None
     try:
-        return subprocess.run(argv, cwd=cwd, input=input, env=_child_env(env), capture_output=True, text=not binary,
+        proc = subprocess.run(argv, cwd=cwd, input=input, env=_child_env(env), capture_output=True, text=not binary,
                               check=False, timeout=timeout)
+        # `config` (which credential_values runs to read the remote urls) is not in NETWORK, so this cannot recurse.
+        if proc.returncode == 0 or binary or command not in NETWORK:
+            return proc
+        args = logical_argv(argv)[1:]
+        repo = _repo_dir(args, cwd)
+        return subprocess.CompletedProcess(proc.args, proc.returncode,
+                                           shown_git_text(args, proc.stdout, repo) if proc.stdout else proc.stdout,
+                                           shown_git_text(args, proc.stderr, repo) if proc.stderr else proc.stderr)
     except subprocess.TimeoutExpired:
         if raise_timeout:
             raise
@@ -730,7 +788,7 @@ def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | N
             remote_proc = run_argv(["git", "--git-dir", str(cache_repo_root), "remote", "set-url", "origin", effective_url])
             if remote_proc.returncode != 0:
                 raise SystemExit(
-                    f"failed to repoint repo cache origin to {effective_url}:\n"
+                    f"failed to repoint repo cache origin to {_shown_arg(effective_url)}:\n"
                     f"{remote_proc.stderr or remote_proc.stdout}"
                 )
 
@@ -754,7 +812,7 @@ def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | N
     cache_repo_root.parent.mkdir(parents=True, exist_ok=True)
     proc = clone("--mirror", "--", seed_source, str(cache_repo_root))
     if proc.returncode != 0:
-        raise SystemExit(f"failed to seed repo cache {seed_source} -> {cache_repo_root}:\n{proc.stderr or proc.stdout}")
+        raise SystemExit(f"failed to seed repo cache {_shown_arg(seed_source)} -> {cache_repo_root}:\n{proc.stderr or proc.stdout}")
 
     if seed_from_local:
         # The mirror's origin must be the URL that will actually work for a
@@ -767,7 +825,7 @@ def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | N
         if remote_proc.returncode != 0:
             raise SystemExit(
                 f"seeded repo cache from local checkout {local_source} but failed to repoint "
-                f"origin to {effective_url}:\n{remote_proc.stderr or remote_proc.stdout}"
+                f"origin to {_shown_arg(effective_url)}:\n{remote_proc.stderr or remote_proc.stdout}"
             )
     return True
 
@@ -787,7 +845,7 @@ def clone_repo(url: str, target_repo_root: Path, *, reference_repo_root: Path | 
     reference = ["--reference-if-able", str(reference_repo_root)] if reference_repo_root is not None else []
     proc = clone(*reference, "--", url, str(target_repo_root))
     if proc.returncode != 0:
-        raise SystemExit(f"failed to clone {url} -> {target_repo_root}:\n{proc.stderr or proc.stdout}")
+        raise SystemExit(f"failed to clone {_shown_arg(url)} -> {target_repo_root}:\n{proc.stderr or proc.stdout}")
     return True
 
 

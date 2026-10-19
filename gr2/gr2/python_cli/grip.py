@@ -161,7 +161,7 @@ def _carry_objects_from_range(workspace: Path, remote: str, base: str, range_pat
         lane = Path(td) / "recon"
         clone = gitops.clone("--quiet", remote, str(lane))
         if clone.returncode != 0:
-            raise GripCorruptError(f"cannot clone {remote} to derive review head-tree: {clone.stderr.strip()[:160]}")
+            raise GripCorruptError(f"cannot clone {gitops._shown_arg(remote)} to derive review head-tree: {clone.stderr.strip()[:160]}")
 
         def _lg(*a: str, allow_fail: bool = False) -> subprocess.CompletedProcess[str]:
             p = gitops.run(lane, "-c", "user.name=grip-review", "-c", "user.email=review@grip", *a)
@@ -508,9 +508,10 @@ def _remote_ref_matches(workspace: Path, remote: str, ref: str) -> list[tuple[st
     """(tip, full name) of every ref ls-remote matches for ``ref``, in its order. ls-remote matches
     whole path components from the end, so `trunk` names refs/heads/trunk, refs/heads/a/trunk and
     refs/tags/trunk alike."""
-    proc = _bind_git(workspace, "ls-remote", "--", remote, ref)
+    args = ("ls-remote", "--", remote, ref)
+    proc = _bind_git(workspace, *args)
     if proc.returncode != 0:
-        raise GripReviewRefused("remote_unreadable", ref, proc.stderr.strip()[:120])
+        raise GripReviewRefused("remote_unreadable", ref, gitops.shown_git_text(args, proc.stderr.strip(), workspace)[:120])
     out = []
     for row in (r for r in proc.stdout.split("\n") if "\t" in r):
         sha, _, name = row.partition("\t")
@@ -536,18 +537,22 @@ def _head_present_on_remote(workspace: Path, remote: str, head: str) -> bool:
     """True if the head SHA is already an object any ref on the remote points at.
     A pre-push branch's head is present at no ref; a re-freeze of an already
     pushed head is refused unless a prior ratify receipt is named."""
-    proc = _bind_git(workspace, "ls-remote", "--", remote)
+    args = ("ls-remote", "--", remote)
+    proc = _bind_git(workspace, *args)
     if proc.returncode != 0:
-        raise GripReviewRefused("remote_unreadable", remote, proc.stderr.strip()[:120])
+        raise GripReviewRefused("remote_unreadable", gitops._shown_arg(remote),
+                                gitops.shown_git_text(args, proc.stderr.strip(), workspace)[:120])
     return any(row.split("\t", 1)[0] == head for row in proc.stdout.split("\n"))
 
 
 def _remote_ref_tips(workspace: Path, remote: str) -> dict[str, str]:
     """Every ref on the remote and its tip, read by ls-remote at the moment of the call. Pin judges
     a pushed head by these, never by a refs/remotes tracking copy in some clone, which may be stale."""
-    proc = _bind_git(workspace, "ls-remote", "--", remote)
+    args = ("ls-remote", "--", remote)
+    proc = _bind_git(workspace, *args)
     if proc.returncode != 0:
-        raise GripReviewRefused("remote_unreadable", remote, proc.stderr.strip()[:120])
+        raise GripReviewRefused("remote_unreadable", gitops._shown_arg(remote),
+                                gitops.shown_git_text(args, proc.stderr.strip(), workspace)[:120])
     tips: dict[str, str] = {}
     for row in proc.stdout.split("\n"):
         sha, _, name = row.partition("\t")
@@ -1547,7 +1552,7 @@ def reconstruct_review_lane(
     if how is None:
         clone = gitops.clone("--quiet", remote, str(lane_dir))
         if clone.returncode != 0:
-            raise GripReviewRefused("clone_failed", remote, clone.stderr.strip()[:160])
+            raise GripReviewRefused("clone_failed", gitops._shown_arg(remote), clone.stderr.strip()[:160])
         how = {"source": "remote", "profile": "none"}
     if _lg("rev-parse", "--verify", f"{base}^{{commit}}", allow_fail=True).returncode != 0:
         raise GripReviewRefused("base_unreachable_on_remote", base, remote)

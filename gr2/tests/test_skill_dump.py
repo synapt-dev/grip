@@ -111,3 +111,16 @@ def test_the_skill_name_differs_from_the_gitgrip_skill():
     if not (GR2.parent / "Cargo.toml").is_file():
         pytest.skip(f"{GR2.parent} is not the grip repo (a gr2-only tree), so {GITGRIP_SKILL} is not here")
     assert _frontmatter(GR2 / "api" / "skill.intro.md")["name"] != _frontmatter(GITGRIP_SKILL)["name"]
+
+
+def test_the_verb_map_names_the_bare_review_pin_first():
+    """Agents copy the first command the map names for a job. When the pin row named
+    `--rows-json` first, they hand-built a rows file even though a bare pin infers the rows
+    from each member checkout; the bare form must come first."""
+    rows = [line for line in SKILL.read_text(encoding="utf-8").splitlines()
+            if line.startswith("| pin a review")]
+    assert len(rows) == 1, rows
+    right = rows[0].split("|")[2]
+    first = right.split("`")[1]
+    assert first == "gr2 review pin <workspace>", rows[0]
+    assert "--rows-json" not in right.split(first)[0], rows[0]

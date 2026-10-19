@@ -5,7 +5,11 @@ O1 a --local-source given as an https URL with a token in its userinfo: the mirr
    with the userinfo stripped, and no token;
 O2 an scp-form source with a token in its query: the error names it by the placeholder, and no token;
 O3 a plain local path that does not exist is still named in full (nothing is over-masked);
-O4 shown_git_text masks a token git's output echoes, in a URL and bare.
+O4 shown_git_text masks a token git's output echoes, in a URL and bare;
+G1 an ls-remote refusal (grip._remote_ref_matches, _head_present_on_remote, _remote_ref_tips) for an https remote with
+   a token in its userinfo carries the token in neither its subject nor its detail;
+G2 a token that straddles the 120-character cut leaves no prefix in the detail (masking runs before the cut);
+G3 a plain remote name and git's plain stderr are shown unchanged.
 """
 from __future__ import annotations
 
@@ -81,3 +85,48 @@ def test_o4_shown_git_text_masks_an_echoed_token():
     text = gitops.shown_git_text(("fetch", "--", url), f"fatal: unable to access '{url}': the server said {TOKEN}")
     assert TOKEN not in text
     assert gitops._CREDENTIAL_SHOWN in text
+
+
+LS_REMOTE_SITES = [
+    ("_remote_ref_matches", lambda grip, ws, remote: grip._remote_ref_matches(ws, remote, "refs/heads/main")),
+    ("_head_present_on_remote", lambda grip, ws, remote: grip._head_present_on_remote(ws, remote, "0" * 40)),
+    ("_remote_ref_tips", lambda grip, ws, remote: grip._remote_ref_tips(ws, remote)),
+]
+
+
+def ls_remote_refusal(monkeypatch, tmp_path, call, remote: str, stderr: str):
+    from gr2.python_cli import grip
+
+    def failed(workspace, *args, **kwargs):
+        return subprocess.CompletedProcess(["git", *args], 128, "", stderr)
+
+    monkeypatch.setattr(grip, "_bind_git", failed)
+    with pytest.raises(grip.GripReviewRefused) as caught:
+        call(grip, tmp_path, remote)
+    assert caught.value.refusal == "remote_unreadable"
+    return caught.value
+
+
+@pytest.mark.parametrize("name,call", LS_REMOTE_SITES, ids=[n for n, _ in LS_REMOTE_SITES])
+def test_g1_an_ls_remote_refusal_shows_no_token(monkeypatch, tmp_path, name, call):
+    remote = f"https://u:{TOKEN}@h/x.git"
+    refused = ls_remote_refusal(monkeypatch, tmp_path, call, remote, f"fatal: unable to access '{remote}/': 403")
+    assert TOKEN not in refused.expected
+    assert TOKEN not in refused.observed
+
+
+@pytest.mark.parametrize("name,call", LS_REMOTE_SITES, ids=[n for n, _ in LS_REMOTE_SITES])
+def test_g2_a_token_straddling_the_cut_leaves_no_prefix(monkeypatch, tmp_path, name, call):
+    remote = f"https://u:{TOKEN}@h/x.git"
+    stderr = "fatal: " + "x" * 103 + TOKEN + " was refused"
+    assert stderr.index(TOKEN) == 110
+    refused = ls_remote_refusal(monkeypatch, tmp_path, call, remote, stderr)
+    assert not any(TOKEN[:n] in refused.observed for n in range(4, len(TOKEN) + 1))
+
+
+@pytest.mark.parametrize("name,call", LS_REMOTE_SITES, ids=[n for n, _ in LS_REMOTE_SITES])
+def test_g3_a_plain_remote_name_and_stderr_are_shown_unchanged(monkeypatch, tmp_path, name, call):
+    stderr = "fatal: could not read from remote repository"
+    refused = ls_remote_refusal(monkeypatch, tmp_path, call, "origin", stderr)
+    assert refused.observed == stderr
+    assert refused.expected == ("refs/heads/main" if name == "_remote_ref_matches" else "origin")

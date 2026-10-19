@@ -508,9 +508,10 @@ def _remote_ref_matches(workspace: Path, remote: str, ref: str) -> list[tuple[st
     """(tip, full name) of every ref ls-remote matches for ``ref``, in its order. ls-remote matches
     whole path components from the end, so `trunk` names refs/heads/trunk, refs/heads/a/trunk and
     refs/tags/trunk alike."""
-    proc = _bind_git(workspace, "ls-remote", "--", remote, ref)
+    args = ("ls-remote", "--", remote, ref)
+    proc = _bind_git(workspace, *args)
     if proc.returncode != 0:
-        raise GripReviewRefused("remote_unreadable", ref, proc.stderr.strip()[:120])
+        raise GripReviewRefused("remote_unreadable", ref, gitops.shown_git_text(args, proc.stderr.strip(), workspace)[:120])
     out = []
     for row in (r for r in proc.stdout.split("\n") if "\t" in r):
         sha, _, name = row.partition("\t")
@@ -536,18 +537,22 @@ def _head_present_on_remote(workspace: Path, remote: str, head: str) -> bool:
     """True if the head SHA is already an object any ref on the remote points at.
     A pre-push branch's head is present at no ref; a re-freeze of an already
     pushed head is refused unless a prior ratify receipt is named."""
-    proc = _bind_git(workspace, "ls-remote", "--", remote)
+    args = ("ls-remote", "--", remote)
+    proc = _bind_git(workspace, *args)
     if proc.returncode != 0:
-        raise GripReviewRefused("remote_unreadable", remote, proc.stderr.strip()[:120])
+        raise GripReviewRefused("remote_unreadable", gitops._shown_arg(remote),
+                                gitops.shown_git_text(args, proc.stderr.strip(), workspace)[:120])
     return any(row.split("\t", 1)[0] == head for row in proc.stdout.split("\n"))
 
 
 def _remote_ref_tips(workspace: Path, remote: str) -> dict[str, str]:
     """Every ref on the remote and its tip, read by ls-remote at the moment of the call. Pin judges
     a pushed head by these, never by a refs/remotes tracking copy in some clone, which may be stale."""
-    proc = _bind_git(workspace, "ls-remote", "--", remote)
+    args = ("ls-remote", "--", remote)
+    proc = _bind_git(workspace, *args)
     if proc.returncode != 0:
-        raise GripReviewRefused("remote_unreadable", remote, proc.stderr.strip()[:120])
+        raise GripReviewRefused("remote_unreadable", gitops._shown_arg(remote),
+                                gitops.shown_git_text(args, proc.stderr.strip(), workspace)[:120])
     tips: dict[str, str] = {}
     for row in proc.stdout.split("\n"):
         sha, _, name = row.partition("\t")

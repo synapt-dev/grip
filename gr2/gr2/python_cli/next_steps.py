@@ -177,6 +177,11 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
     if refused.startswith("approvals_unset"):
         return (f"next: say how many approvals this merge needs: rerun with --approvals N (--approvals 0 merges "
                 f"without approvals), or set [approvals] required = N in {_shown(workspace)}/grip.toml")
+    if refused.startswith("approvals_incomplete"):
+        # A stamp writes the chain to each member remote in turn, so a read in that window finds it on some only.
+        return (f"next: an approval stamp is still writing the chain to the members it names; retry the merge once "
+                f"it finishes. If a member stays without it, any approver's gr2 review stamp {_shown(workspace)} "
+                f"{_shown(review)} republishes the chain to the members that lack it")
     if refused.startswith("approvals_insufficient"):
         return (f"next: more approvers are required; each one stamps from their own checkout: "
                 f"gr2 review stamp {_shown(workspace)} {_shown(review)}")

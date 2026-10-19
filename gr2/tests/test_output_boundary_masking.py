@@ -396,13 +396,19 @@ def test_l1_remote_values_names_a_token_remote_without_its_token(lease_repo):
     assert "ls-remote https://127.0.0.1:9/x.git failed" in str(caught.value)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="push() checks the remote name in tracking.tracked first; names._leaf's ValueError prints it raw")
 def test_l2_push_to_a_token_remote_shows_no_token(lease_repo):
+    # push() checks the remote name in tracking.tracked first; the name check's ValueError shows it masked.
     with pytest.raises((leased_push.PushRejected, leased_push.PushRefused, ValueError)) as caught:
         leased_push.push(lease_repo, [LEASE_REF], org="o", remote=USERINFO_URL)
     print("l2 raised:", type(caught.value).__name__, str(caught.value))
     assert TOKEN not in str(caught.value)
+
+
+def test_l5_a_plain_bad_remote_name_is_still_quoted_in_full(lease_repo):
+    with pytest.raises(ValueError) as caught:
+        leased_push.push(lease_repo, [LEASE_REF], org="o", remote="Bad Name")
+    assert "one lowercase ref component" in str(caught.value)
+    assert "'Bad Name'" in str(caught.value)
 
 
 def test_l4_a_plain_remote_name_is_shown_unchanged(lease_repo):

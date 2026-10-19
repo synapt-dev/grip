@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import re
 
+from . import gitops
+
 _COMPONENT = re.compile(r"[a-z0-9][a-z0-9._-]*")
 
 
@@ -31,7 +33,8 @@ def strict(name: str, what: str) -> str:
     if (not isinstance(name, str) or not _COMPONENT.fullmatch(name) or ".." in name
             or name.endswith(".") or name.endswith(".lock") or (what == "ref" and name == "stook")):
         raise ValueError(f"{what} must be one lowercase ref component ([a-z0-9][a-z0-9._-]*, "
-                         f"no '..', no trailing '.', no '.lock' suffix): {name!r}")
+                         f"no '..', no trailing '.', no '.lock' suffix): "
+                         f"{gitops._shown_arg(name) if isinstance(name, str) else name!r}")
     return name
 
 

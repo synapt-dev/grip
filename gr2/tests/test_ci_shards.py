@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import zlib
 from pathlib import Path
 
 import pytest
@@ -51,6 +52,16 @@ def test_the_shards_partition_the_collected_tests() -> None:
     for shard in shards:  # a file is never split across shards
         files = {test.split("::", 1)[0] for test in shard}
         assert not files & {t.split("::", 1)[0] for other in shards if other is not shard for t in other}
+
+
+def test_a_sharded_run_leaves_no_shard_setting_for_child_processes() -> None:
+    probe = "tests/test_ci_shard_env_not_inherited.py"
+    shard = f"{zlib.crc32(probe.encode()) % 6 + 1}/6"  # the probe's own shard (the conftest's hash), so the run keeps it
+    env = {k: v for k, v in os.environ.items() if k != "GR2_TEST_SHARD"}
+    env["GR2_TEST_SHARD"] = shard
+    result = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", probe],
+                            cwd=GR2, env=env, capture_output=True, text=True, timeout=300)
+    assert result.returncode == 0 and "1 passed" in result.stdout, result.stdout[-2000:] + result.stderr[-2000:]
 
 
 @pytest.mark.parametrize("value", ["3", "0/3", "4/3", "a/3", "1/0", "1/"])

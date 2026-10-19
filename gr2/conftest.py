@@ -33,7 +33,10 @@ _project_root_resolved = _project_root.resolve()
 # shard i, so a file never splits and its module fixtures stay whole. The hash is crc32 of the file's path as
 # pytest names it (relative to the rootdir), the same on every machine, and the n shards partition the suite:
 # tests/test_ci_shards.py collects each shard and checks every test lands in exactly one.
+# The setting is read once at configure time and REMOVED from the environment, so a test that runs pytest (or
+# anything else) in a child process does not shard the child's run too.
 SHARD_ENV = "GR2_TEST_SHARD"
+_SHARD_KEY = pytest.StashKey["tuple[int, int] | None"]()
 
 
 def shard_of(path: str, count: int) -> int:
@@ -49,10 +52,10 @@ def _shard_setting(value: str) -> tuple[int, int]:
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    value = os.environ.get(SHARD_ENV, "")
-    if not value:
+    setting = config.stash.get(_SHARD_KEY, None)
+    if setting is None:
         return
-    index, count = _shard_setting(value)
+    index, count = setting
     keep, drop = [], []
     for item in items:
         (keep if shard_of(item.nodeid.split("::", 1)[0], count) == index else drop).append(item)
@@ -107,6 +110,9 @@ def pytest_configure(config: pytest.Config) -> None:
     bytes would pass here. The fix belongs in that helper -- give it the same explicit
     ``PYTHONPATH`` its two siblings carry -- and is deliberately not in this change.
     """
+    value = os.environ.pop(SHARD_ENV, "")
+    config.stash[_SHARD_KEY] = _shard_setting(value) if value else None
+
     probe = "import gr2.python_cli.app as m; print(m.__file__)"
     env = {**os.environ, "PYTHONPATH": str(_project_root)}
     try:

@@ -155,7 +155,7 @@ class GitError(RuntimeError):
 
     def __init__(self, args: tuple[str, ...], returncode: int, stderr: str):
         self.git_args, self.returncode, self.stderr = args, returncode, stderr
-        shown = [_shown_arg(arg) for arg in args[:2]]
+        shown = [next_steps._shown(_shown_arg(arg)) for arg in args[:2]]
         super().__init__(f"git {' '.join(shown)}: {_shown_stderr(args, stderr)}".rstrip(": "))
 
 

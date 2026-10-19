@@ -46,8 +46,9 @@ ALLOWLIST: dict[tuple[str, str], str] = {
         "placeholder-safe: sha is git's own rev-parse of stash@{0}, hex",
     ('gr2/python_cli/app.py', 'f"run `gr2 apply {workspace_root} --yes` first"'):
         'user-typed: the person passed this value in the command that prints it (app.py:4345)',
-    ('gr2/python_cli/gitops.py', 'super().__init__(f"git {\' \'.join(args[:2])}: {stderr}".rstrip(": "))'):
-        'diagnostic: names the git verb gr2 ran, not a line to run',
+    # each value in shown is quoted with next_steps._shown (gitops.py:158); _shown_arg alone is not quote-safe
+    ('gr2/python_cli/gitops.py', 'super().__init__(f"git {\' \'.join(shown)}: {_shown_stderr(args, stderr)}".rstrip(": "))'):
+        'shown is built quoted: next_steps._shown(_shown_arg(arg)), gitops.py:158',
     ('gr2/python_cli/grip.py', '"next": None if complete else f"gr2 review publish {next_steps._shown(str(workspace))} gr:{full}" + ('):
         "placeholder-safe: full is the review commit's hex oid, resolved and pushed by gr2",
     ('gr2/python_cli/grip_cli.py', 'advice = f"gr2 store {verb}"'):

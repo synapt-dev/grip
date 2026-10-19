@@ -5650,6 +5650,11 @@ def review_show(
     a clone lacking either commit refuses as member_objects_missing rather than read the pinned text."""
     if commit is None:
         commit = _the_one_review_bind(workspace_root.resolve(), "show")
+    project = _review_call(grip.project_review_id, workspace_root.resolve(), _strip_gr_prefix(commit))
+    if project is not None:
+        _show_project_review(workspace_root.resolve(), project, json_output=json_output, member=member,
+                             with_diff=diff or stat)
+        return
     result = _review_call(grip.show_review_commit, workspace_root.resolve(), _strip_gr_prefix(commit))
     if member is not None:
         keys = [str(m["key"]) for m in result["members"]]
@@ -5697,6 +5702,42 @@ def review_show(
             typer.echo(review_diff.printable(line))
 
 
+def _show_project_review(workspace: Path, project: str, *, json_output: bool, member: Optional[str],
+                         with_diff: bool) -> None:
+    """`review show` of a project-review-KIND id: what `read_project_review_commit` decodes, per member its
+    repository, base and head. The kind carries no texts or range, so --diff/--stat are refused."""
+    gr = f"gr:{project}"
+    if with_diff:
+        typer.echo(f"gr2: {gr} is a project review (kind {grip._PROJECT_REVIEW_SCHEMA}); --diff and --stat read a "
+                   "pinned review's range. Open it with `gr2 review open-project` and diff in the lane", err=True)
+        raise typer.Exit(code=2)
+    members = [{"key": r["key"], "remote": r["repo"], "path": r["path"], "base": r["base"], "head": r["head"]}
+               for r in _review_call(grip.read_project_review_commit, workspace, project)]
+    if member is not None:
+        if member not in [m["key"] for m in members]:
+            typer.echo(f"gr2: no member {next_steps._shown(member)} in {gr}; its members: "
+                       + ", ".join(next_steps._shown(m["key"]) for m in members), err=True)
+            raise typer.Exit(code=2)
+        members = [m for m in members if m["key"] == member]
+    if json_output:
+        typer.echo(json.dumps({"id": gr, "kind": grip._PROJECT_REVIEW_SCHEMA, "members": members}, indent=2))
+        return
+    typer.echo(f"{gr}  project review ({len(members)} member{'s' if len(members) != 1 else ''})")
+    for m in members:
+        typer.echo(f"{next_steps._shown(m['key'])}: {m['base'][:12]}..{m['head'][:12]}  {next_steps._shown(m['remote'])}")
+
+
+def _refuse_project_review_verify(workspace: Path, commit: str) -> None:
+    """`review verify` recomputes a pinned review's tree; a project review's record is fields only (its reader
+    checks the schema and each member's fields, not the tree), so it is refused by kind, never called corrupt."""
+    project = grip.project_review_id(workspace, commit)
+    if project is not None:
+        raise grip.GripReviewRefused(
+            "project_review_not_verified",
+            "a pinned review; verify recomputes a pinned review's tree. Read this one with `gr2 review open-project`",
+            f"gr:{project}, kind {grip._PROJECT_REVIEW_SCHEMA}")
+
+
 @review_app.command("list", hidden=True, cls=RootOptionalCommand)
 def review_list(
     workspace_root: Path,
@@ -5720,6 +5761,7 @@ def review_verify(
     corruption, not drift. With no id, selects the workspace's sole pinned review."""
     if commit is None:
         commit = _the_one_review_bind(workspace_root.resolve(), "verify")
+    _review_call(_refuse_project_review_verify, workspace_root.resolve(), _strip_gr_prefix(commit))
     result = _review_call(grip.verify_review_commit, workspace_root.resolve(), _strip_gr_prefix(commit))
     if json_output:
         typer.echo(json.dumps(result, indent=2, default=str))

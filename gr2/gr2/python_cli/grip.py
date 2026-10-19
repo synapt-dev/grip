@@ -321,6 +321,15 @@ def read_project_review_commit(workspace: Path, commit: str) -> list[dict[str, s
     return decoded
 
 
+def project_review_id(workspace: Path, commit: str) -> str | None:
+    """The full id when a bound commit is project-review KIND (what `review create-project` writes), else None.
+    Reads the kind only; `read_project_review_commit` decodes the record."""
+    _validate_bind_store(workspace)
+    full = _resolve_bound(workspace, commit)
+    schema = _bind_git(workspace, "show", f"{full}:.grip/schema")
+    return full if schema.returncode == 0 and schema.stdout.strip() == _PROJECT_REVIEW_SCHEMA else None
+
+
 # ---------------------------------------------------------------------------
 # kind=workspace: a lane's resolved repository state captured as one gr commit.
 # Same section-5 shape as the review kind, different .grip/kind. Records the

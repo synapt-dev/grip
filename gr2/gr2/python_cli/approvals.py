@@ -317,6 +317,12 @@ def _read_link(workspace: Path, commit: str) -> dict:
     return record
 
 
+def check_approver_name(name) -> None:
+    """The one approver-name rule: a pinned link and a checkout-pr stamp refuse the same names, the same way."""
+    if not isinstance(name, str) or not name or name != name.strip() or any(ord(c) < 32 or ord(c) == 127 for c in name):
+        raise ApprovalRefused("approval_chain_broken: invalid approver name")
+
+
 def _validate_link(record: dict, root: dict, authors: set[str]) -> str:
     required = {"schema", "review_id", "members", "approver", "author", "verdict", "prev", "created_at"}
     if not required.issubset(record) or set(record) - required - {"sig", "keyring_tip"}:
@@ -329,8 +335,7 @@ def _validate_link(record: dict, root: dict, authors: set[str]) -> str:
     if not isinstance(identity, dict) or set(identity) != {"name", "key_id"}:
         raise ApprovalRefused("approval_chain_broken: approver fields")
     name = identity["name"]
-    if not isinstance(name, str) or not name or name != name.strip() or any(ord(c) < 32 or ord(c) == 127 for c in name):
-        raise ApprovalRefused("approval_chain_broken: invalid approver name")
+    check_approver_name(name)
     if name in authors:
         raise ApprovalRefused("self_approval")
     if "sig" in record or identity["key_id"] != "" or record.get("keyring_tip", "") != "":
@@ -566,6 +571,17 @@ def pr_head_approvals(store: Path, repo: str, head: str) -> dict:
             except ValueError as exc:
                 raise ApprovalRefused(f"approval_record_unreadable: {ref} at {commit}") from exc
             if link.get("repo") == repo and link.get("head") == head:
+                approver = link.get("approver")
+                try:
+                    check_approver_name(approver.get("name") if isinstance(approver, dict) else None)
+                except ApprovalRefused as exc:
+                    # Deleting the ref drops every stamp on this head; the compare-and-swap on the tip read here
+                    # keeps a stamp made since from going with it.
+                    raise ApprovalRefused(
+                        str(exc),
+                        next_step=f"next: the stamp in commit {commit} on {_shown(ref)} breaks the approver-name "
+                                  f"rule; remove this head's stamps, then stamp it again: "
+                                  f"git -C {_shown(str(store))} update-ref -d {_shown(ref)} {_shown(tip)}") from None
                 links.append(link)
     links.reverse()
     return {"repo": repo, "head": head, "tip": tip or None,
@@ -598,6 +614,7 @@ def approve_pr_lane(lane: Path) -> dict:
     name = gitops.git(lane, "config", "user.name").stdout.strip()
     if not name:
         raise ApprovalRefused("approval_identity_missing")
+    check_approver_name(name)
     store = pr_lane_store(lane)
     current = pr_head_approvals(store, record["repo"], record["head"])
     if name not in {link["approver"]["name"] for link in current["links"]}:

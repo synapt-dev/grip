@@ -303,10 +303,17 @@ NETWORK = frozenset({"clone", "fetch", "ls-remote", "push", "pull", "remote", "s
 
 
 def _repo_dir(args, cwd: Path | None) -> Path | None:
-    """The repository a git call runs in: the value after `-C` or `--git-dir` in `args`, else `cwd`."""
+    """The repository a git call runs in: the value after `-C`, `--git-dir` or `--git-dir=` in `args`, else `cwd`.
+
+    A relative value is resolved against `cwd` when one is given, as git resolves it."""
     for flag in ("-C", "--git-dir"):
+        value = None
         if flag in args[:-1]:
-            return Path(args[args.index(flag) + 1])
+            value = args[args.index(flag) + 1]
+        elif flag == "--git-dir":
+            value = next((arg[len("--git-dir="):] for arg in args if arg.startswith("--git-dir=")), None)
+        if value is not None:
+            return cwd / value if cwd is not None else Path(value)
     return cwd
 
 

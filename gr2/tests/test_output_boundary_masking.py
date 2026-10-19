@@ -333,3 +333,40 @@ def test_e_a_token_echoed_in_an_unbuilt_encoding_is_masked(echo):
 def test_e4_an_encoding_that_decodes_to_no_secret_is_unchanged():
     stderr = "remote: path %41/b%2fc not found\n"
     assert gitops.shown_git_text(ENCODED_ARGS, stderr) == stderr
+
+
+#: A path-shaped origin: git names it in a "does not appear to be a git repository" line that no URL pattern matches,
+#: so only the repo config read by credential_values can mask it.
+PATH_URL = f"/nonexistent/x.git?access_token={TOKEN}"
+
+
+@pytest.fixture
+def path_origin(tmp_path):
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    git(repo, "remote", "add", "origin", PATH_URL)
+    return repo
+
+
+def test_d1_a_one_word_git_dir_reads_the_token_from_that_repo(path_origin):
+    proc = gitops.run_argv(["git", f"--git-dir={path_origin}/.git", "remote", "update"])
+    print("d1 masked stderr:", repr(proc.stderr))
+    assert proc.returncode != 0
+    assert TOKEN not in proc.stderr
+    assert TOKEN not in proc.stdout
+
+
+def test_d2_a_relative_dash_c_is_resolved_against_cwd(path_origin):
+    proc = gitops.run_argv(["git", "-C", path_origin.name, "fetch", "origin"], cwd=path_origin.parent)
+    print("d2 masked stderr:", repr(proc.stderr))
+    assert proc.returncode != 0
+    assert TOKEN not in proc.stderr
+    assert TOKEN not in proc.stdout
+
+
+def test_d3_a_two_word_git_dir_still_masks(path_origin):
+    proc = gitops.run_argv(["git", "--git-dir", str(path_origin / ".git"), "remote", "update"])
+    print("d3 masked stderr:", repr(proc.stderr))
+    assert proc.returncode != 0
+    assert TOKEN not in proc.stderr
+    assert TOKEN not in proc.stdout

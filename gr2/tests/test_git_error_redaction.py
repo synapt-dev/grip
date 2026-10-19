@@ -204,6 +204,56 @@ def test_git_error_shows_an_scp_address_and_a_colon_argument_as_written(args):
     assert _error(*args) == f"git {' '.join(args)}: fatal: unable to access"
 
 
+def _rejected_scp_push(tmp_path, monkeypatch, address, named):
+    """Push to `address` over a fake ssh that reaches a local bare repo whose pre-receive hook declines, so git prints
+    the address (without its `user@`) in `To ...` and `failed to push some refs to '...'`."""
+    repo, bare, ssh = tmp_path / "repo", tmp_path / "bare.git", tmp_path / "ssh"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+    (bare / "hooks" / "pre-receive").write_text("#!/bin/sh\nexit 1\n")
+    (bare / "hooks" / "pre-receive").chmod(0o755)
+    ssh.write_text(f"#!/bin/sh\nexec git-receive-pack '{bare}'\n")
+    ssh.chmod(0o755)
+    monkeypatch.setenv("GIT_SSH_COMMAND", str(ssh))
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=x", "-c", "user.email=x@x", "commit", "-q",
+                    "--allow-empty", "-m", "x"], check=True)
+    if named:
+        subprocess.run(["git", "-C", str(repo), "remote", "add", "r", address], check=True)
+    with pytest.raises(gitops.GitError) as caught:
+        gitops.out(repo, "push", "r" if named else address, "HEAD:refs/heads/x")
+    assert "failed to push some refs to" in caught.value.stderr, caught.value.stderr
+    return caught.value
+
+
+def test_git_error_never_shows_a_token_of_a_named_scp_remote_in_git_stderr(tmp_path, monkeypatch):
+    exc = _rejected_scp_push(tmp_path, monkeypatch, f"git@127.0.0.1:x.git?access_token={TOKEN}", named=True)
+
+    assert TOKEN not in str(exc), str(exc)
+
+
+def test_git_error_never_shows_a_token_of_an_scp_address_in_git_stderr(tmp_path, monkeypatch):
+    exc = _rejected_scp_push(tmp_path, monkeypatch, f"git@127.0.0.1:x.git?access_token={TOKEN}", named=False)
+
+    assert TOKEN not in str(exc), str(exc)
+
+
+def test_git_error_shows_a_plain_scp_remote_in_git_stderr_as_before(tmp_path, monkeypatch):
+    exc = _rejected_scp_push(tmp_path, monkeypatch, "git@127.0.0.1:x.git", named=True)
+
+    assert str(exc) == f"git push r: {exc.stderr}".rstrip(": "), str(exc)
+    assert "To 127.0.0.1:x.git\n" in str(exc) and "to '127.0.0.1:x.git'" in str(exc), str(exc)
+
+
+@pytest.mark.parametrize("stderr", [
+    "fatal: 'r' does not appear to be a git repository",
+    "To 127.0.0.1:x.git\n ! [rejected]        HEAD -> x (fetch first)",
+    "error: cannot push refs/heads/a:refs/heads/b to 'o'",
+    "error: src refspec x does not match any",
+])
+def test_git_error_shows_git_stderr_with_a_colon_as_written(stderr):
+    assert str(gitops.GitError(("push", "o"), 1, stderr)) == f"git push o: {stderr}"
+
+
 @pytest.mark.parametrize("url, token", [
     ("ssh://us%3Aer%40x:FAKE%40TOK@127.0.0.1:9/x.git", "FAKE%40TOK"),
     ("https://user%3AFAKETOK@127.0.0.1:9/x.git", "FAKETOK"),

@@ -74,6 +74,8 @@ gr2 = ["schemas/*.json", "schemas/*/*.proto", "schemas/*/*.pb", "PLATFORM_ADAPTE
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "gr2/overlay/tests"]
+# A passed test's tmp_path (and the isolation dirs inside it) goes at its teardown, not at session end.
+tmp_path_retention_policy = "failed"
 
 [tool.ruff]
 target-version = "py311"

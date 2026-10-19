@@ -740,7 +740,7 @@ def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | N
             remote_proc = run_argv(["git", "--git-dir", str(cache_repo_root), "remote", "set-url", "origin", effective_url])
             if remote_proc.returncode != 0:
                 raise SystemExit(
-                    f"failed to repoint repo cache origin to {effective_url}:\n"
+                    f"failed to repoint repo cache origin to {_shown_arg(effective_url)}:\n"
                     f"{remote_proc.stderr or remote_proc.stdout}"
                 )
 
@@ -764,7 +764,7 @@ def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | N
     cache_repo_root.parent.mkdir(parents=True, exist_ok=True)
     proc = clone("--mirror", "--", seed_source, str(cache_repo_root))
     if proc.returncode != 0:
-        raise SystemExit(f"failed to seed repo cache {seed_source} -> {cache_repo_root}:\n{proc.stderr or proc.stdout}")
+        raise SystemExit(f"failed to seed repo cache {_shown_arg(seed_source)} -> {cache_repo_root}:\n{proc.stderr or proc.stdout}")
 
     if seed_from_local:
         # The mirror's origin must be the URL that will actually work for a
@@ -777,7 +777,7 @@ def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | N
         if remote_proc.returncode != 0:
             raise SystemExit(
                 f"seeded repo cache from local checkout {local_source} but failed to repoint "
-                f"origin to {effective_url}:\n{remote_proc.stderr or remote_proc.stdout}"
+                f"origin to {_shown_arg(effective_url)}:\n{remote_proc.stderr or remote_proc.stdout}"
             )
     return True
 
@@ -797,7 +797,7 @@ def clone_repo(url: str, target_repo_root: Path, *, reference_repo_root: Path | 
     reference = ["--reference-if-able", str(reference_repo_root)] if reference_repo_root is not None else []
     proc = clone(*reference, "--", url, str(target_repo_root))
     if proc.returncode != 0:
-        raise SystemExit(f"failed to clone {url} -> {target_repo_root}:\n{proc.stderr or proc.stdout}")
+        raise SystemExit(f"failed to clone {_shown_arg(url)} -> {target_repo_root}:\n{proc.stderr or proc.stdout}")
     return True
 
 

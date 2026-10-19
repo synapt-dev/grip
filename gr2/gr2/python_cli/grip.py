@@ -161,7 +161,7 @@ def _carry_objects_from_range(workspace: Path, remote: str, base: str, range_pat
         lane = Path(td) / "recon"
         clone = gitops.clone("--quiet", remote, str(lane))
         if clone.returncode != 0:
-            raise GripCorruptError(f"cannot clone {remote} to derive review head-tree: {clone.stderr.strip()[:160]}")
+            raise GripCorruptError(f"cannot clone {gitops._shown_arg(remote)} to derive review head-tree: {clone.stderr.strip()[:160]}")
 
         def _lg(*a: str, allow_fail: bool = False) -> subprocess.CompletedProcess[str]:
             p = gitops.run(lane, "-c", "user.name=grip-review", "-c", "user.email=review@grip", *a)
@@ -1537,7 +1537,7 @@ def reconstruct_review_lane(
     if how is None:
         clone = gitops.clone("--quiet", remote, str(lane_dir))
         if clone.returncode != 0:
-            raise GripReviewRefused("clone_failed", remote, clone.stderr.strip()[:160])
+            raise GripReviewRefused("clone_failed", gitops._shown_arg(remote), clone.stderr.strip()[:160])
         how = {"source": "remote", "profile": "none"}
     if _lg("rev-parse", "--verify", f"{base}^{{commit}}", allow_fail=True).returncode != 0:
         raise GripReviewRefused("base_unreachable_on_remote", base, remote)

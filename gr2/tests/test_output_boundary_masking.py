@@ -180,11 +180,61 @@ def test_c4_a_binary_clone_is_untouched(monkeypatch, tmp_path):
     assert proc.returncode == 128
 
 
-def test_c5_clone_repo_shows_no_token_in_its_stderr_part(tmp_path):
-    """Only the stderr part (after the first newline) is checked: the subject line still names the URL as given,
-    and masking that subject is the next change, not this one."""
+def test_c5_clone_repo_shows_no_token_in_its_message(tmp_path):
     with pytest.raises(SystemExit) as caught:
         gitops.clone_repo(REFUSED_URL, tmp_path / "x")
     message = str(caught.value)
     assert "\n" in message
-    assert TOKEN not in message.split("\n", 1)[1]
+    assert TOKEN not in message
+
+
+# The URL a caller writes as the SUBJECT of its own error goes through gitops._shown_arg too.
+USERINFO_URL = f"https://u:{TOKEN}@127.0.0.1:9/x.git"
+QUERY_URL = f"https://127.0.0.1:9/x.git?access_token={TOKEN}"
+PLAIN_URL = "https://127.0.0.1:9/x.git"
+
+
+@pytest.mark.parametrize("url", [USERINFO_URL, QUERY_URL], ids=["userinfo", "query"])
+def test_s1_clone_repo_names_the_url_without_its_token(monkeypatch, tmp_path, url):
+    stub_clone(monkeypatch, 128, "fatal: unable to access: 403\n")
+    with pytest.raises(SystemExit) as caught:
+        gitops.clone_repo(url, tmp_path / "x")
+    message = str(caught.value)
+    assert message.startswith("failed to clone ")
+    assert TOKEN not in message
+
+
+def test_s2_a_cache_seeded_from_a_token_url_names_it_without_the_token(monkeypatch, tmp_path):
+    stub_clone(monkeypatch, 128, "fatal: unable to access: 403\n")
+    with pytest.raises(SystemExit) as caught:
+        gitops.ensure_repo_cache(QUERY_URL, tmp_path / "cache.git")
+    message = str(caught.value)
+    assert message.startswith("failed to seed repo cache ")
+    assert TOKEN not in message
+
+
+def test_s3_a_review_lane_clone_failure_names_the_remote_without_its_token(monkeypatch, tmp_path):
+    """reconstruct_review_lane refuses a credentialed remote before it dials, so the clone_failed subject is
+    reached here with that check and the bind store stubbed: the mask is the second line of defence."""
+    from gr2.python_cli import grip
+
+    record = {"k": {"remote": USERINFO_URL, "base": "0" * 40, "commit": "1" * 40}}
+    monkeypatch.setattr(grip, "_validate_bind_store", lambda ws: None)
+    monkeypatch.setattr(grip, "_resolve_bound", lambda ws, c: c)
+    monkeypatch.setattr(grip, "_carries_objects", lambda ws, c, k: True)
+    monkeypatch.setattr(grip, "_read_repo_state", lambda ws, c, bind=False: record)
+    monkeypatch.setattr(grip, "_refuse_remote_credentials", lambda k, r: None)
+    monkeypatch.setattr(grip, "_carried", lambda *a: "")
+    monkeypatch.setattr(gitops, "clone", lambda *a, **kw: subprocess.CompletedProcess(a, 128, "", "fatal: 403"))
+    with pytest.raises(grip.GripReviewRefused) as caught:
+        grip.reconstruct_review_lane(tmp_path, "c", "k", tmp_path / "lane")
+    assert caught.value.refusal == "clone_failed"
+    assert TOKEN not in caught.value.expected
+    assert TOKEN not in str(caught.value)
+
+
+def test_s4_a_plain_url_is_named_in_full(monkeypatch, tmp_path):
+    stub_clone(monkeypatch, 128, "fatal: unable to access: 403\n")
+    with pytest.raises(SystemExit) as caught:
+        gitops.clone_repo(PLAIN_URL, tmp_path / "x")
+    assert f"failed to clone {PLAIN_URL} -> " in str(caught.value)
